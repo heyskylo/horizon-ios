@@ -1,43 +1,13 @@
 //! The controller's menu cursor in inventories: a crosshair whose centre is
-//! the point it clicks. Horizon's own art (pad_cursor.png).
+//! the point it clicks. Horizon's own art, packed with the button glyphs (`pad_glyph`).
 
 /// The atlas sprite.
-pub const SPRITE: &str = "horizon/pad_cursor";
-/// The texture's size in texels, and the size it's drawn at in GUI pixels
-/// (an item's).
-pub const SIZE: u32 = 32;
+pub const SPRITE: &str = "horizon:gui/controller/crosshair_inv";
+/// The size it's drawn at in GUI pixels (an item's); its texture is twice that.
 pub const DRAWN: f32 = 16.0;
 
-const PNG: &[u8] = include_bytes!("pad_cursor.png");
-
-/// The texture as `SIZE` square RGBA texels.
-pub fn pixels() -> Vec<u8> {
-    decode(PNG).expect("pad_cursor.png is a 32x32 PNG")
-}
-
-fn decode(bytes: &[u8]) -> Option<Vec<u8>> {
-    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
-    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let mut reader = decoder.read_info().ok()?;
-    let info = reader.info();
-    if (info.width, info.height) != (SIZE, SIZE) {
-        return None;
-    }
-    let mut buf = vec![0; reader.output_buffer_size()?];
-    let frame = reader.next_frame(&mut buf).ok()?;
-    let channels = frame.color_type.samples();
-    Some(
-        buf.chunks(channels)
-            .take((SIZE * SIZE) as usize)
-            .flat_map(|p| match channels {
-                4 => [p[0], p[1], p[2], p[3]],
-                3 => [p[0], p[1], p[2], 255],
-                2 => [p[0], p[0], p[0], p[1]],
-                _ => [p[0], p[0], p[0], 255],
-            })
-            .collect(),
-    )
-}
+pub(crate) const PNG: &[u8] =
+    include_bytes!("../../horizon-client/assets/horizon/textures/gui/controller/crosshair_inv.png");
 
 /// Where to draw the cursor (top-left, GUI pixels) so its centre lands on
 /// the GUI point `at`.
@@ -51,10 +21,12 @@ mod tests {
 
     #[test]
     fn the_cursor_is_a_crosshair_centred_on_its_point() {
-        let px = pixels();
-        assert_eq!(px.len(), (SIZE * SIZE * 4) as usize);
-        let alpha = |x: u32, y: u32| px[((y * SIZE + x) * 4 + 3) as usize];
-        let middle = (SIZE / 2 - 1)..=(SIZE / 2);
+        let (_, w, h, px) = crate::pad_glyph::images()
+            .find(|i| i.0 == SPRITE)
+            .expect("the cursor is packed");
+        assert_eq!((w as f32, h as f32), (DRAWN * 2.0, DRAWN * 2.0));
+        let alpha = |x: u32, y: u32| px[((y * w + x) * 4 + 3) as usize];
+        let middle = (w / 2 - 1)..=(w / 2);
         assert!(
             middle
                 .clone()

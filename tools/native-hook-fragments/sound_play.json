@@ -1,0 +1,19 @@
+{
+  "hooks": [
+    {
+      "name": "sound_play",
+      "target": "horizon_client_lib::sound_playback::native_sound_play",
+      "side": "client",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "client sound parameter interception before playback and live channel updates (`native_sound_play`).",
+  "doc_summary": "`sound_play` intercepts actual client sound starts and live parameter updates. `SoundPlayback` identifies the instance, event, source, position, relative flag and whether it is starting. Edit base volume/pitch transiently or cancel before subtitles/backend writes; invalid edits cancel. No Host/world borrow or reverb/DSP is supplied. Runs on the game thread; use existing client hooks for world/acoustics state. Bundles need \"hooks\": @API:sound_play@.",
+  "comments": [
+    "crates/horizon-client/src/sound_playback.rs"
+  ]
+}

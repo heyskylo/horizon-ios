@@ -382,7 +382,7 @@ impl Game<'_> {
     /// `ParticleTypes.STREAM_CODEC`'s value for `options`: the type's
     /// network id and the data it carries (`state` for the block particles).
     /// None while not serving, or for a particle whose data isn't sent from
-    /// here (items, vibrations, trails).
+    /// here (items, trails).
     pub(super) fn network_particle(
         &self,
         options: &ParticleOptions,
@@ -432,7 +432,11 @@ impl Game<'_> {
                 let (water_blocks, burst_impulse_base) = options.geyser?;
                 Some(ParticleData::GeyserBase(water_blocks, burst_impulse_base))
             }
-            T::Item | T::Trail | T::Vibration => return None,
+            T::Vibration => {
+                let (source, _, ticks) = options.vibration.clone()?;
+                Some(ParticleData::Vibration { source, ticks })
+            }
+            T::Item | T::Trail => return None,
             _ => None,
         };
         Some(Particle { id, data })
@@ -493,9 +497,11 @@ impl Game<'_> {
             Some(ParticleData::Trail(target, color, duration)) => {
                 ParticleOptions::trail(*target, *color as u32 & 0xFF_FFFF, *duration)
             }
-            Some(ParticleData::Vibration { source, ticks }) => {
-                ParticleOptions::vibration(self.vibration_destination(source)?, *ticks)
-            }
+            Some(ParticleData::Vibration { source, ticks }) => ParticleOptions::vibration(
+                source.clone(),
+                self.vibration_destination(source)?,
+                *ticks,
+            ),
             Some(_) => return None,
         })
     }
@@ -534,6 +540,10 @@ impl Game<'_> {
         let Some(options) = self.received_particle(&p.particle, p.pos) else {
             return;
         };
+        // Combat feel Legacy draws a hit as 1.8.9 did: no sweep, no damage hearts.
+        if self.settings.extras.pvp.combat.hides_particle(options.ty) {
+            return;
+        }
         let (d, s) = (p.dist.map(f64::from), p.max_speed.map(f64::from));
         // ClientLevel.addParticle: the camera's 32 blocks and the Particles
         // option, unless the packet or the type overrides the limiter.
@@ -911,18 +921,25 @@ mod tests {
         );
     }
 
-    /// `ShulkerBullet.hurtServer`: fifteen crit particles (spread 0.2, speed 0.0)
-    /// are sent to tracking players within 32 blocks.
-    #[test]
-    fn hitting_shulker_bullet_sends_15_crit_particles_to_players() {
+    /// A hub whose `minecraft:particle_type` registry holds `particle_names`
+    /// in registry order, plus a near guest at (5, 64, 5) and a far one at
+    /// (100, 64, 100).
+    fn test_hub(
+        label: &str,
+        particle_names: Vec<String>,
+    ) -> (
+        Hub,
+        std::sync::mpsc::Receiver<Out>,
+        std::sync::mpsc::Receiver<Out>,
+    ) {
         let config = NetConfig {
             announce: false,
-            ..NetConfig::loopback(0, "ShulkerBulletTest".into(), 2)
+            ..NetConfig::loopback(0, label.into(), 2)
         };
         let mut sync = data::SyncData::empty();
         sync.builtin.registries.insert(
             "minecraft:particle_type".to_string(),
-            horizon_protocol::registry::Ids::from_names(vec!["minecraft:crit".to_string()]),
+            horizon_protocol::registry::Ids::from_names(particle_names),
         );
         let sync = std::sync::Arc::new(sync);
         let lan = Lan::start_with(sync.clone(), config).unwrap();
@@ -948,49 +965,60 @@ mod tests {
         };
         let mut hub = Hub::new(lan, sync, encoder, hub_config);
 
+        let guest = |conn, uuid, name: &str, at, tx| {
+            let mut g = Guest::new(
+                Joined {
+                    conn,
+                    uuid,
+                    name: name.into(),
+                    properties: Vec::new(),
+                    info: horizon_protocol::packets::configuration::ClientInformation::new(8),
+                    brand: "vanilla".into(),
+                    sender: PlayerSender::new(tx, std::sync::Arc::default()),
+                    latency: std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0)),
+                    address: format!("127.0.0.1:{}", 25565 + conn).parse().unwrap(),
+                    expected: false,
+                    configured: Default::default(),
+                },
+                1,
+                at,
+                8,
+            );
+            g.placed = true;
+            g.dimension = "minecraft:overworld".into();
+            g
+        };
         let (tx_near, rx_near) = std::sync::mpsc::channel();
-        let mut near = Guest::new(
-            Joined {
-                conn: 1,
-                uuid: 1,
-                name: "NearPlayer".into(),
-                properties: Vec::new(),
-                info: horizon_protocol::packets::configuration::ClientInformation::new(8),
-                brand: "vanilla".into(),
-                sender: PlayerSender::new(tx_near, std::sync::Arc::default()),
-                latency: std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0)),
-                address: "127.0.0.1:25565".parse().unwrap(),
-                expected: false,
-            },
-            1,
-            [5.0, 64.0, 5.0],
-            8,
-        );
-        near.placed = true;
-        near.dimension = "minecraft:overworld".into();
-        hub.guests.push(near);
-
+        hub.guests
+            .push(guest(1, 1, "NearPlayer", [5.0, 64.0, 5.0], tx_near));
         let (tx_far, rx_far) = std::sync::mpsc::channel();
-        let mut far = Guest::new(
-            Joined {
-                conn: 2,
-                uuid: 2,
-                name: "FarPlayer".into(),
-                properties: Vec::new(),
-                info: horizon_protocol::packets::configuration::ClientInformation::new(8),
-                brand: "vanilla".into(),
-                sender: PlayerSender::new(tx_far, std::sync::Arc::default()),
-                latency: std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0)),
-                address: "127.0.0.1:25566".parse().unwrap(),
-                expected: false,
-            },
-            2,
-            [100.0, 64.0, 100.0],
-            8,
-        );
-        far.placed = true;
-        far.dimension = "minecraft:overworld".into();
-        hub.guests.push(far);
+        hub.guests
+            .push(guest(2, 2, "FarPlayer", [100.0, 64.0, 100.0], tx_far));
+        (hub, rx_near, rx_far)
+    }
+
+    /// The one `ClientboundLevelParticlesPacket` a guest receives.
+    fn level_particles(rx: &std::sync::mpsc::Receiver<Out>) -> play::LevelParticles {
+        let out = rx
+            .try_recv()
+            .expect("guest should receive a LevelParticles packet");
+        let body = match out {
+            Out::Packet(body) => body,
+            _ => panic!("expected Out::Packet"),
+        };
+        let mut r = horizon_protocol::buf::Reader::new(&body);
+        let id = r.varint().unwrap();
+        match play::Clientbound::decode(id, r.rest()).unwrap() {
+            play::Clientbound::LevelParticles(p) => p,
+            other => panic!("expected LevelParticles packet, got {other:?}"),
+        }
+    }
+
+    /// `ShulkerBullet.hurtServer`: fifteen crit particles (spread 0.2, speed 0.0)
+    /// are sent to tracking players within 32 blocks.
+    #[test]
+    fn hitting_shulker_bullet_sends_15_crit_particles_to_players() {
+        let (hub, rx_near, rx_far) = test_hub("ShulkerBulletTest", vec!["minecraft:crit".into()]);
 
         let at = [0.0, 64.0, 0.0];
         let options = ParticleOptions::simple(ParticleType::from_name("crit").unwrap());
@@ -1001,25 +1029,55 @@ mod tests {
             "far guest should not receive particles"
         );
 
-        let out = rx_near
-            .try_recv()
-            .expect("near guest should receive LevelParticles packet");
-        let body = match out {
-            Out::Packet(body) => body,
-            _ => panic!("expected Out::Packet"),
+        let p = level_particles(&rx_near);
+        assert_eq!(p.count, 15);
+        assert_eq!(p.dist, [0.2, 0.2, 0.2]);
+        assert_eq!(p.max_speed, [0.0; 3]);
+        assert_eq!(p.pos, at);
+        assert_eq!(p.particle.id, 0);
+    }
+
+    /// `VibrationSystem.Ticker.trySelectAndScheduleVibration`: the one packet
+    /// is at the vibration's origin, count 1, no spread or speed, and carries
+    /// the listener's `PositionSource` and the arrival time in ticks. The
+    /// block listeners send a block position; the warden and allay send
+    /// themselves (`EntityPositionSource`).
+    #[test]
+    fn vibration_particles_carry_their_listener_and_arrival_ticks() {
+        // `Particle::read` reads a vibration's data from its pinned id, 58.
+        let mut names = vec!["minecraft:empty".to_string(); 58];
+        names.push("minecraft:vibration".to_string());
+        let (hub, rx_near, rx_far) = test_hub("VibrationTest", names);
+
+        let source = PositionSource::Block([3, 64, -7]);
+        let at = [1.25, 64.0, 3.75];
+        let options = ParticleOptions::vibration(source.clone(), [3.5, 64.5, -6.5], 14);
+        send_hub_level_particles(&hub, &options, at, [0.0; 3], 0.0, 1, None);
+
+        assert!(rx_far.try_recv().is_err(), "only players within 32 blocks");
+        let p = level_particles(&rx_near);
+        assert_eq!(p.count, 1, "one signal");
+        assert_eq!(p.dist, [0.0; 3]);
+        assert_eq!(p.max_speed, [0.0; 3]);
+        assert_eq!(p.randomization, 0, "DEFAULT");
+        assert_eq!(p.pos, at);
+        assert_eq!(p.particle.id, 58);
+        assert_eq!(
+            p.particle.data,
+            Some(ParticleData::Vibration { source, ticks: 14 })
+        );
+
+        // A listener entity travels as `EntityPositionSource`: its id and the
+        // offset to its eyes.
+        let source = PositionSource::Entity {
+            id: 42,
+            y_offset: 1.15,
         };
-        let mut r = horizon_protocol::buf::Reader::new(&body);
-        let id = r.varint().unwrap();
-        let packet = play::Clientbound::decode(id, r.rest()).unwrap();
-        match packet {
-            play::Clientbound::LevelParticles(p) => {
-                assert_eq!(p.count, 15);
-                assert_eq!(p.dist, [0.2, 0.2, 0.2]);
-                assert_eq!(p.max_speed, [0.0; 3]);
-                assert_eq!(p.pos, at);
-                assert_eq!(p.particle.id, 0);
-            }
-            other => panic!("expected LevelParticles packet, got {other:?}"),
-        }
+        let options = ParticleOptions::vibration(source.clone(), [0.5, 65.0, 0.5], 7);
+        let particle = Game::hub_particle(&hub, &options, None).expect("a vibration particle");
+        assert_eq!(
+            particle.data,
+            Some(ParticleData::Vibration { source, ticks: 7 })
+        );
     }
 }

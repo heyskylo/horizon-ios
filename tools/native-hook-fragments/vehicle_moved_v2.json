@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "vehicle_moved_v2",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_vehicle_moved_v2",
+      "neoforge": "none (NeoForge has no such event; Bukkit's VehicleMoveEvent)",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "a ridden vehicle's move with its id, which a mod may cancel or send elsewhere, mounts included (`native_vehicle_moved_v2`), leaving `native_vehicle_moved` as it was.",
+  "doc_summary": "`native_vehicle_moved_v2(player, dimension, vehicle, kind, from, to, cancel)`: an additive version of `native_vehicle_moved`, heard right after v1 and also for a ridden mob; cancel and the vehicle is put back at `from` with its riders, change `to` and it is put there. Bundles need \"hooks\": @API:vehicle_moved_v2@."
+}

@@ -668,6 +668,7 @@ struct NewItem {
     crafting_remainder: Option<String>,
     /// `StandingAndWallBlockItem.wallBlock`, when its block declares it.
     wall_block: Option<String>,
+    place_block: Option<String>,
 }
 
 struct Plan<'a> {
@@ -1191,11 +1192,18 @@ impl<'a> Plan<'a> {
                     components: component_patch(&b.decl.id, &b.decl.components)?,
                     crafting_remainder: None,
                     wall_block: b.decl.wall_block.clone(),
+                    place_block: None,
                 });
             }
         }
         for m in &sorted {
             for i in &m.content.items {
+                if let Some(target) = &i.place_block
+                    && !defaults.contains_key(target)
+                    && !blocks.iter().any(|b| &b.decl.id == target)
+                {
+                    return Err(format!("{}: place_block {target:?} is not a block", i.id).into());
+                }
                 items.push(NewItem {
                     rename: Rename::new(&i.template, &i.id),
                     max_stack_size: i.max_stack_size,
@@ -1203,6 +1211,7 @@ impl<'a> Plan<'a> {
                     components: component_patch(&i.id, &i.components)?,
                     crafting_remainder: i.crafting_remainder.clone(),
                     wall_block: None,
+                    place_block: i.place_block.clone(),
                 });
             }
         }
@@ -1382,6 +1391,22 @@ impl<'a> Plan<'a> {
             BTreeSet::new()
         };
         for i in &self.items {
+            if !components && let Some(block) = &i.place_block {
+                map.set(
+                    &i.rename.to,
+                    J::Obj(vec![
+                        (
+                            "class".into(),
+                            J::Arr(vec![J::Str("BlockItem".into()), J::Str("Item".into())]),
+                        ),
+                        (
+                            "fields".into(),
+                            J::Obj(vec![("block".into(), J::Str(block.clone()))]),
+                        ),
+                    ]),
+                );
+                continue;
+            }
             let Some(v) = map.get(&i.rename.from) else {
                 continue;
             };
@@ -1867,11 +1892,14 @@ const BIOME_TAGS: &str = "worldgen/biome_tags.json";
 /// worldgen loader reads each from (id → the file's text): what structure
 /// mods hold. Biomes, noise and density functions change the terrain and
 /// are not read from mods.
-const WORLDGEN_BUNDLES: [(&str, &str); 6] = [
+const WORLDGEN_BUNDLES: [(&str, &str); 7] = [
     ("structure", "worldgen/structures.json"),
     ("structure_set", "worldgen/structure_sets.json"),
     ("template_pool", "worldgen/template_pools.json"),
     ("processor_list", "worldgen/processor_lists.json"),
+    // 26.3 names the folder `feature`; `configured_feature` is the 26.2 name, kept
+    // so older mods still load.
+    ("feature", "worldgen/features.json"),
     ("configured_feature", "worldgen/features.json"),
     ("placed_feature", "worldgen/placed_features.json"),
 ];
@@ -2703,7 +2731,10 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
 }
 
 /// The root to load: `base` itself with no content, else the mods' overlay
-/// over it, built in `cache/mod-content`.
+/// over it, built in `cache/mod-content/<stamp>`: one folder per mod set, so
+/// a running game keeps reading the root it was given while a switch builds
+/// another (docs/design/mod-hotload.md). Roots of other sets unused for a day
+/// are removed.
 ///
 /// The root is built once and kept: later starts with the same build, base
 /// and mod files reuse it. With ATM10's carried mods a build takes about
@@ -2715,19 +2746,104 @@ pub fn resource_root(base: &Path, mods: &[ContentMod], cache: &Path) -> Result<P
     {
         return Ok(base.to_owned());
     }
-    let out = cache.join("mod-content");
     let stamp = stamp(base, mods)?;
+    let roots = cache.join("mod-content");
+    let out = roots.join(&stamp[..ROOT_NAME]);
     if fs::read(out.join(STAMP)).is_ok_and(|s| s == stamp.as_bytes()) {
         // A reused root warns as the build did.
         let warnings = fs::read_to_string(out.join(WARNINGS)).unwrap_or_default();
         warnings.lines().for_each(|w| log::warn!("Horizon: {w}"));
+        // Used again: kept another day.
+        let _ = fs::write(out.join(STAMP), &stamp);
         return Ok(out);
     }
     for warning in build(base, mods, &out)? {
         log::warn!("Horizon: {warning}");
     }
     fs::write(out.join(STAMP), stamp)?;
+    prune_roots(&roots, &out, KEEP_ROOTS);
     Ok(out)
+}
+
+/// The length of a root's folder name: the start of its stamp.
+const ROOT_NAME: usize = 16;
+/// How long a root no start or switch used is kept.
+const KEEP_ROOTS: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// Removes from `roots` the roots other than `current` whose stamp is older
+/// than `keep`, and what an older game left there (one root built straight in
+/// the folder). A game still running on a removed root was started more than
+/// `keep` ago and reads its tables already; only the folders' own names are
+/// touched.
+fn prune_roots(roots: &Path, current: &Path, keep: std::time::Duration) {
+    let Ok(entries) = fs::read_dir(roots) else {
+        return;
+    };
+    let old_layout = roots.join(STAMP).exists();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == current {
+            continue;
+        }
+        let name = entry.file_name();
+        let is_root = name.len() == ROOT_NAME
+            && name
+                .to_string_lossy()
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit())
+            && path.is_dir();
+        let stale = match is_root {
+            true => fs::metadata(path.join(STAMP))
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_none_or(|age| age > keep),
+            // The old single root's files and folders.
+            false => old_layout,
+        };
+        if !stale {
+            continue;
+        }
+        let removed = match path.is_dir() {
+            true => fs::remove_dir_all(&path),
+            false => fs::remove_file(&path),
+        };
+        if let Err(e) = removed {
+            log::warn!(
+                "Horizon: an old mod content root stays: {}: {e}",
+                path.display()
+            );
+        }
+    }
+}
+
+/// Whether turning a content mod on or off can apply in a running game
+/// (docs/design/mod-hotload.md): its assets and data can, through the
+/// resource reload and the server's data reload. What a world numbers or
+/// generates from cannot yet: then the translation key of why.
+pub fn live_switch(content: &Content) -> std::result::Result<(), &'static str> {
+    if !content.blocks.is_empty()
+        || !content.items.is_empty()
+        || !content.effects.is_empty()
+        || !content.entity_types.is_empty()
+        || !content.menu_types.is_empty()
+        || !content.creative_tabs.is_empty()
+    {
+        return Err("horizon.mods.switch.registries");
+    }
+    let worldgen = |file: &&String| {
+        let mut parts = file.split('/');
+        parts.next() == Some("data")
+            && parts.nth(1).is_some_and(|folder| {
+                matches!(folder, "worldgen" | "dimension" | "dimension_type")
+                    || folder == "tags" && file.contains("/tags/worldgen/")
+                    || matches!(folder, "neoforge" | "forge") && file.contains("/biome_modifier/")
+            })
+    };
+    if content.files.iter().any(|f| worldgen(&f)) {
+        return Err("horizon.mods.switch.worldgen");
+    }
+    Ok(())
 }
 
 /// In a root built by [`build`]: its warnings, one per line.

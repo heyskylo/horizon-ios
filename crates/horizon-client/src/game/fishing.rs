@@ -349,6 +349,34 @@ impl Game<'_> {
                 "vz": hook.velocity.z.to_bits() as i64, "nibble": hook.nibble, "next": hook.random.next_long(),
             }));
         }
+        // The client must take the same block hit before moving as the server;
+        // otherwise it lands farther away and slides back on the next update.
+        let stone = self
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        self.level_set(block, stone).unwrap();
+        for (case, motion) in [
+            Vec3::new(0.2, -0.4, 0.1),
+            Vec3::new(-0.2, -0.4, 0.1),
+            Vec3::new(0.0, -0.6, -0.2),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut state = (Vec3::new(x, 301.1, z), motion, State::Flying, false);
+            let mut random = LegacyRandom::new(0);
+            for tick in 0..5 {
+                state = self.client_hook_step(state, &mut random);
+                rows.push(serde_json::json!({
+                    "case": case, "tick": tick,
+                    "position": [state.0.x - f64::from(block[0]), state.0.y, state.0.z - f64::from(block[2])],
+                    "motion": [state.1.x, state.1.y, state.1.z],
+                }));
+            }
+        }
         self.hook = old_hook;
         self.offhand = old_offhand;
         self.player.as_mut().unwrap().position = old_position;
@@ -380,6 +408,8 @@ impl Game<'_> {
             };
             let mut cancel = false;
             self.native_player_fish(uuid, &name, state, &mut cancel);
+            let hand = self.hand;
+            self.native_player_fish_v2(uuid, &name, state, hand, &mut cancel);
             if cancel {
                 return true;
             }
@@ -398,6 +428,11 @@ impl Game<'_> {
                 1.0,
                 pitch,
             );
+            // A rod that broke during retrieval is now an empty ItemStack,
+            // whose use-effects component is absent.
+            if let Some(rod) = self.held().cloned() {
+                self.use_vibration(&rod, "minecraft:item_interact_finish");
+            }
         } else {
             let pitch = 0.4 / (self.world.random.next_float() * 0.4 + 0.8);
             self.audio.play(
@@ -445,6 +480,7 @@ impl Game<'_> {
             });
             // FishingRodItem.use counts a cast, not a reel-in.
             self.award_stat("used", "minecraft:fishing_rod", 1);
+            self.use_vibration(stack, "minecraft:item_interact_start");
         }
         self.swing_arm();
         true
@@ -732,6 +768,17 @@ impl Game<'_> {
                 {
                     let mut cancel = false;
                     self.native_player_fish(uuid, &name, 1, &mut cancel);
+                    // A bite has no hand of its own: the one holding the rod, the main
+                    // hand first, as `FishingHook.shouldStopFishing` looks.
+                    let hand = if self
+                        .stack_in(self.selected)
+                        .is_some_and(|s| &*s.item == "minecraft:fishing_rod")
+                    {
+                        horizon_client::first_person::Hand::Main
+                    } else {
+                        horizon_client::first_person::Hand::Off
+                    };
+                    self.native_player_fish_v2(uuid, &name, 1, hand, &mut cancel);
                     if cancel {
                         h.time_until_lured = 0;
                         h.time_until_hooked = 0;
@@ -862,6 +909,10 @@ impl Game<'_> {
         ];
         let liquid = self.water_height(b[0], b[1], b[2]).map_or(0.0, |w| w.0);
         let in_water = liquid > 0.0;
+        // The block a flying bobber meets or rests on this tick (and the face), for
+        // `native_fishing_hook_landed` once the tick is done.
+        let rested = h.on_ground;
+        let mut landed: Option<([i32; 3], [i32; 3])> = None;
         match h.state {
             State::Flying => {
                 if in_water {
@@ -874,27 +925,9 @@ impl Game<'_> {
                 // checkCollision: find the first block and entity on the movement
                 // segment so a fast hook cannot tunnel or catch through a wall.
                 let to = h.position.add_vector(h.velocity);
-                let block_hit = {
-                    let mut scene = SceneCollisions {
-                        world: &self.world,
-                        binding: self.collision,
-                        subject: None,
-                    };
-                    traverse_blocks(h.position, to, 1024, |p: BlockPos| {
-                        let state = self.world.block(p.x, p.y, p.z);
-                        if self.res.facts().is_air(state) {
-                            return None;
-                        }
-                        let shape = self
-                            .collision
-                            .collision_shape(&mut scene, state, [p.x, p.y, p.z])
-                            .ok()?;
-                        shape.clip(h.position, to, p)
-                    })
-                    .ok()
-                    .flatten()
-                };
-                let entity_end = block_hit.map_or(to, |hit| hit.location);
+                let block_hit_at = self.hook_block_hit_at(h.position, to);
+                let block_hit = block_hit_at.map(|hit| hit.location);
+                let entity_end = block_hit.unwrap_or(to);
                 let owner = self.lan_acting;
                 let own_vehicle = self.own_vehicle();
                 let hit = first_entity_hit(
@@ -964,13 +997,15 @@ impl Game<'_> {
                         }
                     }
                 } else if let Some(hit) = block_hit {
+                    landed = block_hit_at
+                        .map(|at| ([at.block.x, at.block.y, at.block.z], at.direction.normal()));
                     // Projectile.onHit on a block: PROJECTILE_LAND.
                     self.projectile_event(
                         "minecraft:projectile_land",
                         Some(horizon_client::mobs::Who::Player),
-                        [hit.location.x, hit.location.y, hit.location.z],
+                        [hit.x, hit.y, hit.z],
                     );
-                    h.velocity = rebound(h.velocity, hit.location, h.position);
+                    h.velocity = rebound(h.velocity, hit, h.position);
                 }
             }
             State::Hooked(id) => {
@@ -1060,7 +1095,7 @@ impl Game<'_> {
             }
         }
         if !in_water && !h.on_ground {
-            h.velocity.y -= 0.03;
+            h.velocity.y -= f64::from(0.03_f32);
         }
         let mut scene = SceneCollisions {
             world: &self.world,
@@ -1086,7 +1121,24 @@ impl Game<'_> {
             h.velocity.y * 0.92,
             h.velocity.z * 0.92,
         );
+        // A bobber lying on a block (on the ground as the tick began or ends) rests on
+        // the block under its centre, on that block's top.
+        if landed.is_none() && h.state == State::Flying && (rested || h.on_ground) {
+            let below = [
+                h.position.x.floor() as i32,
+                (h.position.y - 1.0e-4).floor() as i32,
+                h.position.z.floor() as i32,
+            ];
+            landed = Some((below, [0, 1, 0]));
+        }
+        let id = h.id;
         self.hook = Some(h);
+        // The mods hear a server player's bobber on a block with the bobber in place, so
+        // `native_remove_entity` can take it.
+        if let (Some((block, face)), Some(player)) = (landed, self.lan_acting_uuid) {
+            let dimension = self.dim.id();
+            self.native_fishing_hook_landed(player, id, dimension, block, face);
+        }
     }
     /// The players a hook can catch: everyone but spectators and the dead
     /// (`Projectile.canHitEntity`), the host and the guests in the level.
@@ -1584,6 +1636,31 @@ impl Game<'_> {
         self.remote_hooks = hooks;
     }
 
+    /// `FishingHook.checkCollision` clips blocks on both sides of the connection.
+    fn hook_block_hit(&self, from: Vec3, to: Vec3) -> Option<Vec3> {
+        self.hook_block_hit_at(from, to).map(|hit| hit.location)
+    }
+    /// [`Self::hook_block_hit`] with the block and the face it meets.
+    fn hook_block_hit_at(&self, from: Vec3, to: Vec3) -> Option<horizon_core::geometry::BlockHit> {
+        let mut scene = SceneCollisions {
+            world: &self.world,
+            binding: self.collision,
+            subject: None,
+        };
+        traverse_blocks(from, to, 1024, |p: BlockPos| {
+            let state = self.world.block(p.x, p.y, p.z);
+            if self.res.facts().is_air(state) {
+                return None;
+            }
+            self.collision
+                .collision_shape(&mut scene, state, [p.x, p.y, p.z])
+                .ok()?
+                .clip(from, to, p)
+        })
+        .ok()
+        .flatten()
+    }
+
     /// `FishingHook.tick`: one tick of movement without the fishing (the
     /// server's): position, motion, state and whether it rests on the ground.
     fn client_hook_step(
@@ -1608,7 +1685,11 @@ impl Game<'_> {
             State::Flying if velocity == Vec3::ZERO && on_ground => {
                 return (position, velocity, state, on_ground);
             }
-            State::Flying => {}
+            State::Flying => {
+                if let Some(hit) = self.hook_block_hit(position, position.add_vector(velocity)) {
+                    velocity = rebound(velocity, hit, position);
+                }
+            }
             State::Hooked(id) => {
                 // updateHookedEntity: at 0.8 of the hooked entity's height.
                 let hooked = if self
@@ -1661,7 +1742,7 @@ impl Game<'_> {
             }
         }
         if !in_water && !on_ground {
-            velocity.y -= 0.03;
+            velocity.y -= f64::from(0.03_f32);
         }
         let mut scene = SceneCollisions {
             world: &self.world,
@@ -1683,6 +1764,43 @@ impl Game<'_> {
         }
         velocity = Vec3::new(velocity.x * 0.92, velocity.y * 0.92, velocity.z * 0.92);
         (position, velocity, state, on_ground)
+    }
+
+    /// Takes the server's fishing bobber `id` out of the level in place, for
+    /// `native_remove_entity`: the bobber of the player in place, or another of this
+    /// level's players' (out of reach during a guest's turn, when the hub is taken out).
+    /// Its tracking removes it from the clients; the rod is left as when the bobber goes
+    /// by itself. Whether it was there.
+    pub(super) fn remove_server_hook(&mut self, id: u32) -> bool {
+        if self.remote.is_some() || id == 0 {
+            return false;
+        }
+        if self.hook.as_ref().is_some_and(|h| h.id == id) {
+            self.hook = None;
+            return true;
+        }
+        let Some(host) = self.lan.as_mut() else {
+            return false;
+        };
+        let owner = host
+            .hub
+            .guests
+            .iter()
+            .filter(|g| host.hub.here(g))
+            .map(|g| g.conn)
+            .find(|conn| {
+                host.play
+                    .get(conn)
+                    .and_then(|p| p.hook.as_ref())
+                    .is_some_and(|h| h.id == id)
+            });
+        match owner.and_then(|conn| host.play.get_mut(&conn)) {
+            Some(play) => {
+                play.hook = None;
+                true
+            }
+            None => false,
+        }
     }
 
     pub(super) fn remove_remote_hook(&mut self, id: u32) {

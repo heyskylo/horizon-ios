@@ -67,15 +67,21 @@ impl Game<'_> {
         let (at, count, xz, height, floating) = match self.res.behaviours().bone_meal_spreads(state)
         {
             Some(spreads) => {
-                // BonemealableBlock.getParticlePos: below for rooted dirt
-                // (its hanging roots) and mangrove leaves (their propagule).
-                let at = match &*facts.get(state).name {
-                    "minecraft:rooted_dirt" | "minecraft:mangrove_leaves" => [p[0], p[1] - 1, p[2]],
-                    _ => p,
-                };
                 if spreads {
-                    (at, count * 3, 3.0, 1.0, false)
+                    // BonemealableBlock.getParticlePos: a NEIGHBOR_SPREADER
+                    // (grass, nylium, netherrack, moss) sparks over the block
+                    // above it, where its spread lands (#11310).
+                    ([p[0], p[1] + 1, p[2]], count * 3, 3.0, 1.0, false)
                 } else {
+                    // getParticlePos of a GROWER is the block itself, below
+                    // for rooted dirt (its hanging roots) and mangrove leaves
+                    // (their propagule).
+                    let at = match &*facts.get(state).name {
+                        "minecraft:rooted_dirt" | "minecraft:mangrove_leaves" => {
+                            [p[0], p[1] - 1, p[2]]
+                        }
+                        _ => p,
+                    };
                     // ParticleUtils.spawnParticleInBlock: up to the
                     // block's shape (a full block when air).
                     (at, count, 0.5, self.block_shape_top(at), true)
