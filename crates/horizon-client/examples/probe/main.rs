@@ -102,6 +102,7 @@ mod spawn_rules_fixture;
 mod sprint_probe;
 mod squid_client_probe;
 mod stack_foil_fixture;
+mod stack_mining_probe;
 mod storage_menu_fixture;
 mod subtitle_fixture;
 mod tab_list_fixture;
@@ -136,6 +137,7 @@ probes! {
     camera_probe,
     squid_client_probe,
     creative_mining_probe,
+    stack_mining_probe,
     cushion_placement_probe,
     cauldron_fixture,
     chat_screen_fixture,
