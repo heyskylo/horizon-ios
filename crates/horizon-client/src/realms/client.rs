@@ -697,6 +697,12 @@ impl RealmsClient {
 
     /// `RealmsClient.execute`: the body of a 2xx answer, else the error.
     fn execute(request: ureq::Request, body: Option<&str>) -> Result<String, RealmsError> {
+        // `Request.post`: a body goes out as application/json (the frontend answers 415
+        // to a text/plain POST).
+        let request = match body {
+            Some(_) => request.set("Content-Type", "application/json"),
+            None => request,
+        };
         let result = match body {
             Some(body) => request.send_string(body),
             None => request.call(),

@@ -783,6 +783,12 @@ impl Screen {
                 }
                 if let Some(result) = detail_job.as_ref().and_then(take) {
                     *detail_job = None;
+                    // `RealmsConfigureWorldScreen.fetchServerData`: the detail *is* the
+                    // screen's server copy (its region preference is what the settings
+                    // draft starts from; the list's copy does not carry it).
+                    if let Ok(fetched) = &result {
+                        *server = fetched.clone();
+                    }
                     *detail = Some(result);
                 }
                 if let Some(result) = tier_job.as_ref().and_then(take) {
@@ -3454,6 +3460,34 @@ impl Screen {
                         batch.fill(atlas, left + 1.0, y + 1.0, 298.0, 12.0, 0xFF00_0000);
                     }
                     batch.text(atlas, &label, left + 5.0, y + 2.0, u32::MAX, true);
+                    // `Entry.extractContent`: the region's `ServiceQuality` icon, 10x8 at
+                    // the row's right (`ping_5` great to `ping_2` poor, `ping_unknown`).
+                    if let Some(region) = region
+                        && let Some(quality) = regions
+                            .iter()
+                            .find(|data| &data.region == region)
+                            .map(|data| data.service_quality)
+                    {
+                        let icon = match quality {
+                            1 => "gui/sprites/icon/ping_5",
+                            2 => "gui/sprites/icon/ping_4",
+                            3 => "gui/sprites/icon/ping_3",
+                            4 => "gui/sprites/icon/ping_2",
+                            _ => "gui/sprites/icon/ping_unknown",
+                        };
+                        if atlas.sprites.contains_key(icon) {
+                            crate::ui::blit_sprite(
+                                batch,
+                                atlas,
+                                icon,
+                                left + 300.0 - 18.0,
+                                y + 2.0,
+                                10.0,
+                                8.0,
+                                u32::MAX,
+                            );
+                        }
+                    }
                 }
             }
             SubScreen::SlotOptions {
