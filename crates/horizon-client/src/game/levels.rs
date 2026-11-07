@@ -513,6 +513,11 @@ impl Game<'_> {
         for (k, dim) in dims.into_iter().enumerate() {
             // Each level's share of the tick (the first one also reads the network and runs the
             // tick's shared parts): `horizon-report`'s `level_*` spans.
+            horizon_threads::work::set_dim(match dim {
+                Dim::Overworld => 1,
+                Dim::Nether => 2,
+                Dim::End => 3,
+            });
             let _level_span = horizon_client::spans::guard(match dim {
                 Dim::Overworld => "level_overworld",
                 Dim::Nether => "level_the_nether",
@@ -603,6 +608,18 @@ impl Game<'_> {
     /// spans the tick itself recorded: a dedicated server's performance report turns them on to
     /// record its ticks.
     pub(super) fn tick_server_spans(
+        &mut self,
+        paused: bool,
+        record: impl FnOnce(f32, Option<f32>, Vec<horizon_client::spans::Span>, usize),
+    ) -> Result<()> {
+        let started = Instant::now();
+        horizon_threads::work::tick_start();
+        let result = self.tick_server_recorded(paused, record);
+        horizon_threads::work::tick_end(started.elapsed().as_nanos() as u64);
+        result
+    }
+
+    fn tick_server_recorded(
         &mut self,
         paused: bool,
         record: impl FnOnce(f32, Option<f32>, Vec<horizon_client::spans::Span>, usize),

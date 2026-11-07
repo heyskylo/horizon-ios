@@ -4580,6 +4580,7 @@ impl Game<'_> {
             }
         }
         self.tick_dropped_items(&mut round);
+        horizon_threads::work::clear_work();
         self.native_tick_post_batch(round);
     }
     fn tick_dropped_items(&mut self, round: &mut native_ticks::TickRound) {
@@ -4596,7 +4597,9 @@ impl Game<'_> {
         // `ItemUtils.onContainerDestroyed`: what a destroyed item held, and
         // where it lay, for adding to the level once its own tick is done.
         let mut destroyed: Vec<(ItemStack, Vec3)> = Vec::new();
+        let item_type = horizon_threads::work::entity_id("minecraft:item");
         for i in 0..items.len() {
+            horizon_threads::work::set_entity(item_type);
             if removed[i] {
                 // Merged into an earlier item before its own tick: it never ticked.
                 round.not_ticked(items[i].id);
@@ -5475,6 +5478,7 @@ impl Game<'_> {
         if !debug {
             self.tick_scheduled()?;
         }
+        horizon_threads::work::clear_work();
         self.with_level(|b, level, ticks| {
             horizon_client::spans::time("random_ticks", || {
                 for (x, z) in ticking.into_iter().filter(|_| !debug) {
@@ -5509,6 +5513,7 @@ impl Game<'_> {
                 }
             });
         });
+        horizon_threads::work::clear_work();
         laps = horizon_client::spans::laps();
         let sent = self.lan_broadcast_changes();
         laps.lap("tb_broadcast");
@@ -19975,6 +19980,7 @@ impl Game<'_> {
                     self.observe_fullscreen();
                     self.sync_ime();
                     let now = Instant::now();
+                    horizon_threads::work::tick_start();
                     let frame_cpu = self
                         .options
                         .spikes
@@ -20103,6 +20109,7 @@ impl Game<'_> {
                     }
                     if let Some(r) = self.renderer.as_mut() {
                         let cpu = now.elapsed().saturating_sub(r.last_wait);
+                        horizon_threads::work::tick_end(cpu.as_nanos() as u64);
                         if rendered {
                             let ms = |d: Duration| d.as_secs_f32() * 1000.0;
                             self.frame_graph.record(

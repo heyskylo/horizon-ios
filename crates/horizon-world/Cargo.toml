@@ -14,6 +14,7 @@ serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 postcard = { version = "=1.1.3", default-features = false, features = ["alloc"] }
 horizon-core = { path = "../horizon-core" }
+horizon-threads = { path = "../horizon-threads" }
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }
 lz4_flex = { version = "0.14", default-features = false, features = ["std", "safe-encode", "safe-decode", "checked-decode"] }
 xxhash-rust = { version = "0.8.19", features = ["xxh32"] }

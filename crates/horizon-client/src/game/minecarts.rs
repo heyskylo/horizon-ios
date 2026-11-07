@@ -1812,6 +1812,7 @@ impl Game<'_> {
                 continue;
             }
             let kind = self.carts[i].kind.id();
+            horizon_threads::work::set_entity(horizon_threads::work::entity_id(kind));
             if !self.native_tick_pre_one(&mut round, id, kind) {
                 continue;
             }
@@ -1847,6 +1848,7 @@ impl Game<'_> {
             // After the ticked cart is stored: a mod reads and changes the cart as it is now.
             self.native_tick_post_one(&round, id, kind);
         }
+        horizon_threads::work::clear_work();
         // On the server for every cart, the ridden ones too.
         let mut hint = 0;
         for id in ids {

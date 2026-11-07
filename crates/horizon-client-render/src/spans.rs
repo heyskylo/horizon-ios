@@ -82,22 +82,31 @@ pub fn time<T>(name: &'static str, f: impl FnOnce() -> T) -> T {
 pub struct Guard {
     open: Option<(&'static str, Instant, Option<Duration>, u8)>,
     _heap: Option<horizon_threads::heap_census::Tag>,
+    /// The sampler's span before this one.
+    outer: u16,
 }
 /// Start a span named `name` that ends when the returned [`Guard`] is dropped.
 #[inline]
 pub fn guard(name: &'static str) -> Guard {
     let _heap = horizon_threads::heap_tag(name);
+    let outer = horizon_threads::work::enter_span(name);
     if !recording_here() {
-        return Guard { open: None, _heap };
+        return Guard {
+            open: None,
+            _heap,
+            outer,
+        };
     }
     let depth = DEPTH.with(|d| d.replace(d.get().saturating_add(1)));
     Guard {
         open: Some((name, Instant::now(), cpu_if_enabled(), depth)),
         _heap,
+        outer,
     }
 }
 impl Drop for Guard {
     fn drop(&mut self) {
+        horizon_threads::work::leave_span(self.outer);
         let Some((name, started, cpu, depth)) = self.open.take() else {
             return;
         };
@@ -652,6 +661,46 @@ mod tests {
     fn spans_switch() -> MutexGuard<'static, ()> {
         static SWITCH: Mutex<()> = Mutex::new(());
         SWITCH.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Samples taken inside a named span carry its id, with spans off, and the span is left after it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn samples_inside_a_span_carry_its_id() {
+        use horizon_threads::{sampler, work};
+        use std::time::{Duration, Instant};
+        let worker = std::thread::spawn(|| {
+            assert!(sampler::sampled_thread("spans-id-test"));
+            let config = sampler::Config {
+                hz: 1000,
+                ..Default::default()
+            };
+            let session = sampler::start(config, |n| n == "spans-id-test").unwrap();
+            let busy = |ms| {
+                let until = Instant::now() + Duration::from_millis(ms);
+                while Instant::now() < until {
+                    std::hint::black_box(0);
+                }
+            };
+            super::time("spans_id_test_named", || busy(60));
+            assert_eq!(sampler::span(), 0);
+            busy(60);
+            let mut spans = Vec::new();
+            session.stop(|_, r| spans.push(r.ctx.span));
+            spans
+        });
+        let spans = worker.join().unwrap();
+        let inside = |s: &u16| work::name(work::Space::Span, *s) == Some("spans_id_test_named");
+        let (named, plain) = (
+            spans.iter().filter(|s| inside(s)).count(),
+            spans.iter().filter(|s| **s == 0).count(),
+        );
+        assert!(
+            named > 30 && plain > 30,
+            "{named} named, {plain} outside of {} samples",
+            spans.len()
+        );
+        assert_eq!(named + plain, spans.len(), "no other span id");
     }
 
     /// A slow tick's notes are its slowest steps, slowest first; short steps and steps on a
