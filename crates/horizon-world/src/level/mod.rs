@@ -791,6 +791,9 @@ pub trait LevelAccess {
     /// placed at `pos` (`BlockEntity.loadWithComponents`): a bee nest a grown
     /// tree placed gets its bees. Levels without block entities drop it.
     fn load_block_entity(&mut self, _pos: BlockPos, _nbt: crate::nbt::Compound) {}
+    /// A live dungeon's already selected spawner data. Optional and
+    /// creation-only: an owning level must preserve every existing entry.
+    fn create_feature_spawner(&mut self, _pos: BlockPos, _nbt: crate::nbt::Compound) {}
     /// Biome identifier at `pos` (`minecraft:plains`), for features placed by
     /// block behaviour (bone meal flowers). None when unknown.
     fn biome_name(&self, _pos: BlockPos) -> Option<&str> {
