@@ -144,15 +144,7 @@ impl Game<'_> {
                 let uuid = self.uuid_for(id);
                 let i = self.boats.iter().position(|b| b.id == id)?;
                 let b = &self.boats[i];
-                let mut tag = entity_nbt::boat_to_nbt(
-                    &b.entity_type(),
-                    b.position,
-                    b.velocity,
-                    [b.yaw, b.pitch],
-                    uuid,
-                    self.persist.raw.get(&id),
-                    b.chest.then_some(&b.items[..]),
-                );
+                let mut tag = b.to_nbt(uuid, self.persist.raw.get(&id));
                 // AbstractBoat.addAdditionalSaveData: the live or pending leash.
                 self.write_boat_leash(&mut tag, i);
                 tag
@@ -441,7 +433,7 @@ impl Game<'_> {
             }
             Target::Boat(id) => {
                 // AbstractBoat.readAdditionalSaveData over Entity.load: the
-                // position, rotation, motion, NoGravity and a chest boat's items.
+                // position, rotation, motion, NoGravity, Fire and a chest boat's items.
                 let (position, velocity, yaw) =
                     entity_nbt::boat_from_nbt(&tag).ok_or_else(stale)?;
                 let uuid = self.uuid_for(id);
@@ -457,6 +449,7 @@ impl Game<'_> {
                 b.previous_yaw = yaw;
                 b.pitch = entity_nbt::rotation(&tag)[1];
                 b.no_gravity = entity_nbt::flag(&tag, "NoGravity");
+                b.fire_ticks = crate::game::boats::saved_fire(&tag);
                 if b.chest {
                     b.items = save::decode_items(tag.get("Items"), crate::game::boats::CHEST_SLOTS);
                 }

@@ -26,6 +26,7 @@ use horizon_core::{
     random::RandomSource,
 };
 use horizon_world::collision_context::CollisionContext;
+use horizon_world::nbt::Tag;
 use std::{collections::HashMap, f32::consts::PI, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,6 +81,9 @@ pub(super) struct Boat {
     pub hurt_time: i32,
     pub hurt_dir: i32,
     pub damage: f32,
+    /// `Entity.remainingFireTicks` (`Fire` in its save): burning while
+    /// positive, a fire block's cooldown while negative.
+    pub fire_ticks: i32,
     /// `Entity.noGravity` (`NoGravity` in its save).
     pub no_gravity: bool,
     pub paddles: [f32; 2],
@@ -148,9 +152,19 @@ fn snowflake_velocity(known: Vec3, random: &mut impl RandomSource) -> Option<[f6
     let za = (random.next_float() * 2.0 - 1.0) * 0.083_333_336_f32;
     Some([f64::from(xa), f64::from(0.05_f32), f64::from(za)])
 }
+/// `Entity.load`'s `Fire` (a short; 0 when absent).
+pub(super) fn saved_fire(tag: &Tag) -> i32 {
+    i32::from(horizon_client::save::number(tag.get("Fire")).unwrap_or(0) as i16)
+}
 pub(super) const WIDTH: f64 = 1.375;
 pub(super) const HEIGHT: f64 = 0.5625;
 impl Boat {
+    /// `AbstractBoat.tick`: the hurt wobble and the damage wear off, before
+    /// `Entity.baseTick` can burn the boat.
+    fn wear_off_hurt(&mut self) {
+        self.hurt_time = (self.hurt_time - 1).max(0);
+        self.damage = (self.damage - 1.0).max(0.0);
+    }
     /// `AbstractBoat.tick`: passengers lose control after 60 consecutive
     /// underwater ticks; any other status resets the counter.
     fn tick_submersion(&mut self) {
@@ -191,6 +205,7 @@ impl Boat {
             hurt_time: 0,
             hurt_dir: 1,
             damage: 0.0,
+            fire_ticks: 0,
             no_gravity: false,
             paddles: [0.0; 2],
             paddling: [false; 2],
@@ -223,6 +238,23 @@ impl Boat {
             Vec3::new(p.x - w, p.y, p.z - w),
             Vec3::new(p.x + w, p.y + HEIGHT, p.z + w),
         )
+    }
+    /// `Entity.saveWithoutId` with `AbstractChestBoat`'s items: the loaded
+    /// compound `raw` under the live fields.
+    pub(super) fn to_nbt(&self, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
+        let mut tag = horizon_client::entity_nbt::boat_to_nbt(
+            &self.entity_type(),
+            self.position,
+            self.velocity,
+            [self.yaw, self.pitch],
+            uuid,
+            raw,
+            self.chest.then_some(&self.items[..]),
+        );
+        if let Tag::Compound(map) = &mut tag {
+            map.insert("Fire".into(), Tag::Short(self.fire_ticks as i16));
+        }
+        tag
     }
     /// The start of `Entity.move`: a boat made stuck since its last move goes its
     /// velocity times the multiplier, and its velocity and the multiplier are spent.
@@ -648,8 +680,10 @@ impl Game<'_> {
         b.old_status = b.status;
         b.status = self.boat_status(&mut b);
         b.tick_submersion();
-        b.hurt_time = (b.hurt_time - 1).max(0);
-        b.damage = (b.damage - 1.0).max(0.0);
+        // `tick_boats_now` wears it off for the boats it ticks, before they burn.
+        if controlled {
+            b.wear_off_hurt();
+        }
         // A remote client gets the controller from the passenger packet, even when
         // this window occupies the second seat. Local worlds derive it here.
         if self.remote.is_none() {
@@ -854,7 +888,11 @@ impl Game<'_> {
                     || driven.contains(&id)
                     || !ticking(p.x.floor() as i32, p.z.floor() as i32)
                 {
-                    // Its rider's client moves it, but the lead still ticks.
+                    // Its rider's client moves it, but the server still burns it.
+                    if ticking(p.x.floor() as i32, p.z.floor() as i32) && self.boat_fire_tick(i) {
+                        break 'boat;
+                    }
+                    // The lead still ticks too.
                     if ticking(p.x.floor() as i32, p.z.floor() as i32) && self.remote.is_none() {
                         let mut b = self.boats[i].clone();
                         self.tick_boat_leash(&mut b);
@@ -879,9 +917,13 @@ impl Game<'_> {
                 else {
                     break 'boat;
                 };
-                let b = self.boats[i].clone();
-                self.boats[i] = self.tick_boat(b, false);
-                self.boat_server_passes(id, &driven, &ticking, &round);
+                self.boats[i].wear_off_hurt();
+                // Entity.baseTick burns it before it moves; the fire may break it.
+                if !self.boat_fire_tick(i) {
+                    let b = self.boats[i].clone();
+                    self.boats[i] = self.tick_boat(b, false);
+                    self.boat_server_passes(id, &driven, &ticking, &round);
+                }
                 self.native_tick_post_one(&round, id, &kind);
             }
             i = match self.boats.get(i) {
@@ -916,6 +958,9 @@ impl Game<'_> {
             return;
         }
         if self.remote.is_none() {
+            if self.boat_fire_passes(i) {
+                return;
+            }
             self.boat_powder_snow_snowflakes(i);
         }
         // `AbstractBoat.tick` counts submersion on the server even when
@@ -1115,15 +1160,104 @@ impl Game<'_> {
     /// `PowderSnowBlock.entityInside` for a boat: the powder snow cells its box, and the box it
     /// had before its move, reach into (`Entity.checkInsideBlocks` along the move).
     fn boat_powder_snow_cells(&self, b: &Boat) -> Vec<[i32; 3]> {
-        let mut cells = powder_snow_cells(b.bounds(), |p| self.is_powder_snow(p));
+        self.boat_inside_cells(b, |p| self.is_powder_snow(p))
+    }
+    /// The cells of the blocks `wanted` picks that boat `b`'s box, and the box it had before its
+    /// move, reach into (`Entity.checkInsideBlocks` along the move).
+    fn boat_inside_cells(&self, b: &Boat, wanted: impl Fn([i32; 3]) -> bool) -> Vec<[i32; 3]> {
+        let mut cells = powder_snow_cells(b.bounds(), &wanted);
         if b.previous != b.position {
-            for p in powder_snow_cells(Boat::bounds_at(b.previous), |p| self.is_powder_snow(p)) {
+            for p in powder_snow_cells(Boat::bounds_at(b.previous), &wanted) {
                 if !cells.contains(&p) {
                     cells.push(p);
                 }
             }
         }
         cells
+    }
+    /// `BaseFireBlock.fireDamage` of a fire block at `p`.
+    fn fire_damage_at(&self, p: [i32; 3]) -> Option<f32> {
+        match &*self.res.facts().get(self.world.block(p[0], p[1], p[2])).name {
+            "minecraft:fire" => Some(1.0),
+            "minecraft:soul_fire" => Some(2.0),
+            _ => None,
+        }
+    }
+    /// `Entity.baseTick` on the server: a burning boat takes 1 fire damage
+    /// every 20 ticks (none in lava) and burns a tick down. True when the fire
+    /// broke it.
+    fn boat_fire_tick(&mut self, i: usize) -> bool {
+        if self.remote.is_some() || self.boats[i].fire_ticks <= 0 {
+            return false;
+        }
+        let burn = self.boats[i].fire_ticks % 20 == 0 && !self.in_lava(self.boats[i].bounds());
+        self.boats[i].fire_ticks -= 1;
+        burn && self.burn_boat(i, 1.0)
+    }
+    /// The fire of the two `applyEffectsFromBlocks` in `AbstractBoat.tick`:
+    /// fire blocks light the boat once a pass (`BaseFireBlock.fireIgnite`, a
+    /// cooldown tick at a time) and each burns it; a burning boat melts the
+    /// powder snow it is in (with `mob_griefing`); water, powder snow and rain
+    /// put it out; and a boat neither burning nor lit has its cooldown
+    /// cleared. True when the fire broke it.
+    fn boat_fire_passes(&mut self, i: usize) -> bool {
+        let b = &self.boats[i];
+        let fires: Vec<f32> = self
+            .boat_inside_cells(b, |p| self.fire_damage_at(p).is_some())
+            .into_iter()
+            .filter_map(|p| self.fire_damage_at(p))
+            .collect();
+        let water = self.in_fluid(b.bounds(), Fluid::Water);
+        let (at, top) = (b.position, b.bounds().max_position().y);
+        let rain = self.in_rain(at, top);
+        for _ in 0..2 {
+            let before = self.boats[i].fire_ticks;
+            if !fires.is_empty() {
+                let fire = &mut self.boats[i].fire_ticks;
+                if *fire < 0 {
+                    *fire += 1;
+                }
+                if *fire >= 0 {
+                    // igniteForSeconds(8)
+                    *fire = (*fire).max(160);
+                }
+                for &damage in &fires {
+                    if self.burn_boat(i, damage) {
+                        return true;
+                    }
+                }
+            }
+            // A burning boat may have melted it in the pass before.
+            let snow = self.boat_powder_snow_cells(&self.boats[i]);
+            if self.boats[i].fire_ticks > 0 && self.ui.rules.bool("mob_griefing") {
+                for &cell in &snow {
+                    self.powder_snow_melt(BlockPos::new(cell[0], cell[1], cell[2]));
+                }
+            }
+            let fire = &mut self.boats[i].fire_ticks;
+            if water || !snow.is_empty() || rain {
+                // clearFire
+                *fire = (*fire).min(0);
+            }
+            let now = *fire;
+            if now <= 0 && now <= before {
+                *fire = 0;
+            }
+            if before > 0 && now <= 0 {
+                self.extinguish_sound([at.x, at.y, at.z]);
+            }
+        }
+        false
+    }
+    /// `VehicleEntity.hurtServer` for fire (`inFire`, `onFire`), which an
+    /// `Invulnerable` boat ignores. True when the boat broke.
+    fn burn_boat(&mut self, i: usize, damage: f32) -> bool {
+        let invulnerable = self
+            .persist
+            .raw
+            .get(&self.boats[i].id)
+            .is_some_and(|tag| horizon_client::entity_nbt::flag(tag, "Invulnerable"));
+        !invulnerable && self.hurt_boat(i, damage, false)
     }
     /// `PowderSnowBlock.entityInside`'s `ServerLevel.sendParticles`: a boat that moved
     /// horizontally in powder snow throws snowflakes the players around see. `AbstractBoat.tick`
@@ -1171,12 +1305,16 @@ impl Game<'_> {
     /// Whether a vehicle's box, deflated by 1e-5, reaches into lava below its
     /// surface (`Entity.collidedWithFluid`).
     pub(super) fn in_lava(&self, bb: Aabb) -> bool {
+        self.in_fluid(bb, Fluid::Lava)
+    }
+    /// Whether a box, deflated by 1e-5, reaches into `fluid` below its surface.
+    fn in_fluid(&self, bb: Aabb, fluid: Fluid) -> bool {
         let (lo, hi) = (bb.min_position(), bb.max_position());
         let e = 1.0e-5;
         for x in (lo.x + e).floor() as i32..=(hi.x - e).floor() as i32 {
             for y in (lo.y + e).floor() as i32..=(hi.y - e).floor() as i32 {
                 for z in (lo.z + e).floor() as i32..=(hi.z - e).floor() as i32 {
-                    if let Some((height, _)) = self.fluid_height_of(x, y, z, Some(Fluid::Lava))
+                    if let Some((height, _)) = self.fluid_height_of(x, y, z, Some(fluid))
                         && lo.y + e < f64::from(y) + f64::from(height)
                     {
                         return true;
