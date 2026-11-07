@@ -830,7 +830,12 @@ impl Game<'_> {
     pub(super) fn arrow_post_hurt_effects(&mut self, p: &Projectile, who: Who) {
         let from_item = p.arrow.as_ref().map(|a| &a.pickup_item);
         let mut effects: Vec<(&'static str, i32, i32)> = match from_item {
-            Some(s) if &*s.item == "minecraft:spectral_arrow" => vec![("glowing", 200, 0)],
+            // SpectralArrow.doPostHurtEffects: Glowing for the arrow's own
+            // (saved) Duration.
+            Some(s) if &*s.item == "minecraft:spectral_arrow" => {
+                let ticks = p.arrow.as_ref().map_or(200, |a| a.spectral_duration);
+                vec![("glowing", ticks, 0)]
+            }
             Some(s) => {
                 let scale = s.potion_duration_scale();
                 brewing::contents_effects(s)

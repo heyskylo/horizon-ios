@@ -11432,7 +11432,8 @@ impl Remote {
     pub(super) fn listed_player_count(&self) -> usize {
         self.listed.len()
     }
-    /// Players in the server's player list, this one included.
+    /// Players in the server's player list, this one included (for Discord).
+    #[cfg(feature = "discord")]
     pub(super) fn player_count(&self) -> usize {
         self.players.len()
     }
