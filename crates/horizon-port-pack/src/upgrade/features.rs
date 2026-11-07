@@ -5,7 +5,7 @@ use serde_json::{Map, Value, json};
 /// Feature types 26.3 dropped for compositions of other features; a pack
 /// using them needs vanilla's composition, which the upgrade does not
 /// write.
-const REPLACED_FEATURES: [&str; 12] = [
+const REPLACED_FEATURES: [&str; 11] = [
     "basalt_columns",
     "basalt_pillar",
     "coral_mushroom",
@@ -17,8 +17,35 @@ const REPLACED_FEATURES: [&str; 12] = [
     "seagrass",
     "twisting_vines",
     "weeping_vines",
-    "random_patch",
 ];
+
+/// 1.21.1's patch features (`RandomPatchConfiguration`): `flower` and
+/// `no_bonemeal_flower` place exactly like `random_patch`.
+const PATCHES: [&str; 3] = ["random_patch", "flower", "no_bonemeal_flower"];
+
+/// A patch in 26.3's form, as vanilla's own patches were rewritten: its
+/// placed feature tried `tries` times at a trapezoid offset of the spreads
+/// (`nextInt(s + 1) - nextInt(s + 1)`), inside a one-entry selector so the
+/// configured feature stays one file.
+fn patch(config: &Value, report: &mut Report) -> Value {
+    let int = |k: &str, d: i64| config.get(k).and_then(Value::as_i64).unwrap_or(d);
+    let (tries, xz, y) = (int("tries", 128), int("xz_spread", 7), int("y_spread", 3));
+    let trap = |n: i64| json!({"type": "minecraft:trapezoid", "min": -n, "max": n, "plateau": 0});
+    let mut placement = vec![
+        json!({"type": "minecraft:count", "count": tries}),
+        json!({"type": "minecraft:offset", "x": trap(xz), "y": trap(y), "z": trap(xz)}),
+    ];
+    let inner = config.get("feature").cloned().unwrap_or_default();
+    let feature = if inner.is_object() {
+        let p = placed(&inner, report);
+        placement.extend(p["placement"].as_array().into_iter().flatten().cloned());
+        p["feature"].clone()
+    } else {
+        json!({"type": "minecraft:simple_random_selector", "features": [inner]})
+    };
+    json!({"type": "minecraft:simple_random_selector",
+        "features": [{"feature": feature, "placement": placement}]})
+}
 
 /// 26.2 block state provider types and their 26.3 names.
 fn provider(t: &str) -> Option<&'static str> {
@@ -54,6 +81,9 @@ pub(super) fn feature(v: &Value, report: &mut Report) -> Value {
     let Some(t) = kind(v) else {
         return v.clone();
     };
+    if PATCHES.contains(&t) {
+        return patch(o.get("config").unwrap_or(&Value::Null), report);
+    }
     if REPLACED_FEATURES.contains(&t) {
         report.unknown(format!("feature {t} (written as data in 26.3)"));
     }
