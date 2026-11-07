@@ -1203,6 +1203,34 @@ mod tests {
     use super::*;
     use crate::banner_layer::BannerLayer;
 
+    /// `set_banner_pattern` (and `set_components`) hand a banner's layers over
+    /// as a component; the renderer and the tooltip read `banner_patterns`, so
+    /// they have to come out of it.
+    #[test]
+    fn a_loot_banner_patterns_component_dresses_the_banner() {
+        let mut stack = ItemStack::new("minecraft:white_banner", 1);
+        stack.data_mut().set_loot_component(
+            "minecraft:banner_patterns",
+            &serde_json::json!([
+                {"pattern": "minecraft:stripe_bottom", "color": "red"},
+                {"pattern": "minecraft:border", "color": "blue"},
+            ]),
+        );
+        let layers = &stack.data().expect("a component box").banner_patterns;
+        assert_eq!(
+            layers,
+            &[
+                BannerLayer::new("minecraft:stripe_bottom", "red"),
+                BannerLayer::new("minecraft:border", "blue"),
+            ]
+        );
+        // A null component takes them off again.
+        stack
+            .data_mut()
+            .set_loot_component("minecraft:banner_patterns", &serde_json::Value::Null);
+        assert!(stack.data().is_none_or(|d| d.banner_patterns.is_empty()));
+    }
+
     fn check_lodestone_saved_default(decoded: bool) {
         const TRACKER: &str = "minecraft:lodestone_tracker";
         const CUSTOM: &str = "minecraft:custom_data";

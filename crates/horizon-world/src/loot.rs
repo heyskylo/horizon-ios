@@ -2049,6 +2049,66 @@ mod namespace_tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// `SetBannerPatternFunction`: a banner from a loot table gets the layers
+    /// the table names - over the ones an earlier function wrote when the
+    /// function appends, and alone when it does not.
+    #[test]
+    fn set_banner_pattern_writes_the_layers() {
+        let root = std::env::temp_dir().join(format!("horizon-loot-banner-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let table = r#"{"pools": [{"rolls": 1, "entries": [{"type": "minecraft:item", "name": "minecraft:white_banner",
+            "modifier": [
+                {"type": "minecraft:set_components", "components": {"minecraft:banner_patterns": [{"pattern": "minecraft:stripe_bottom", "color": "red"}]}},
+                {"type": "minecraft:set_banner_pattern", "append": true,
+                 "patterns": [{"pattern": "minecraft:border", "color": "blue"}]}
+            ]}]}]}"#;
+        let files = [
+            ("items.json", r#"{"minecraft:white_banner": {}}"#),
+            ("data/minecraft/loot_table/chests/banner.json", table),
+        ];
+        for (name, text) in files {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        let data = LootData::load(&root, &PackOverlay::NONE).unwrap();
+        let filled = data.fill("minecraft:chests/banner", 5, 27, None);
+        let banner = filled.iter().flatten().next().expect("a banner");
+        let component: Vec<_> = banner
+            .components
+            .iter()
+            .filter(|(k, _)| k == "minecraft:banner_patterns")
+            .collect();
+        assert_eq!(component.len(), 1, "{:?}", banner.components);
+        assert_eq!(
+            component[0].1,
+            serde_json::json!([
+                {"pattern": "minecraft:stripe_bottom", "color": "red"},
+                {"pattern": "minecraft:border", "color": "blue"},
+            ])
+        );
+        // Without `append` the function's layers are the whole list.
+        let table = table.replace(r#""append": true,"#, r#""append": false,"#);
+        fs::write(
+            root.join("data/minecraft/loot_table/chests/banner.json"),
+            table,
+        )
+        .unwrap();
+        let data = LootData::load(&root, &PackOverlay::NONE).unwrap();
+        let filled = data.fill("minecraft:chests/banner", 5, 27, None);
+        let banner = filled.iter().flatten().next().expect("a banner");
+        let component: Vec<_> = banner
+            .components
+            .iter()
+            .filter(|(k, _)| k == "minecraft:banner_patterns")
+            .collect();
+        assert_eq!(
+            component[0].1,
+            serde_json::json!([{"pattern": "minecraft:border", "color": "blue"}])
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// `SetInstrumentFunction`: a goat horn from a loot table gets one of the options as its instrument.
     #[test]
     fn set_instrument_picks_one_of_its_options() {
