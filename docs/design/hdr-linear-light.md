@@ -184,8 +184,9 @@ With HDR on:
   converted as Horizon's own draws are under `blend = "linear"`, so they darken or cover light above white too, the
   world border's red vignette included.
 - **`keep_world` becomes a pass** instead of a copy. The frame keeps the world, light above white included; the pass
-  writes it clipped to white, in gamma, with alpha 0, into the HUD's target in today's HDR frame format
-  (`Rgba16Unorm` where the device draws it, else 8-bit). That backdrop is what the HUD draws on, so it clips as today.
+  writes it clipped to white, in gamma, with alpha 0, into the HUD's target. That backdrop is what the HUD draws on,
+  so it starts at white at most, as today. The target is in the frame's format, so the HUD's pipelines draw on it as on
+  the frame with HDR switched off; the display pass clips what the HUD drew at white.
 - **The HUD and menus keep today's blends, alpha included**, so the crosshair and `GUI_INVERT` (which invert what is
   under them), the text highlight, the menu blur and CIT glint layers (whose blends may read the destination's alpha,
   `hud/cit_glint.rs`) see what they see today; the backdrop's alpha 0 is the alpha `keep_world` leaves today.
