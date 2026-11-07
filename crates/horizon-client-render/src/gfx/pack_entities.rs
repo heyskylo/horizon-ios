@@ -30,7 +30,7 @@ pub fn buffers() -> [Option<wgpu::VertexBufferLayout<'static>>; 1] {
 /// What `gbuffers_entities` and `gbuffers_block` read from an entity vertex: camera-relative
 /// position, the shared atlas's UV, colour, light (block, sky in 16ths) and the world-oriented
 /// normal. The quad's corners, read from the same vertices at set 1, give the face normal where
-/// the vertex has none (block entities) and `at_tangent` along the texture's u, as for terrain.
+/// the vertex has none (custom geometry) and `at_tangent` along the texture's u, as for terrain.
 pub fn inputs() -> horizon_shaders::GbuffersInputs {
     let words = std::mem::size_of::<Vertex>() / 4;
     let mut declarations = "layout(location = 0) in vec3 hz_v_pos;\nlayout(location = 1) in vec2 hz_v_uv;\n\
