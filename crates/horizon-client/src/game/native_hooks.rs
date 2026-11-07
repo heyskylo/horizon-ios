@@ -1002,10 +1002,10 @@ use crate::mod_api::NativeTextField;
 use horizon_assets::item_model::StackView;
 use horizon_client::mod_api::EntityDataValue;
 use horizon_client::mod_api::{
-    self, HudMode, NativeBossBar, NativeCamera, NativeCommand, NativeDispensed, NativeFluidAction,
-    NativeFluidDrain, NativeFluidStack, NativeFluidTankView, NativeLifecycleContext,
-    NativeNoteBlockChange, NativeServerPlayer, RecipeBookCategory, ServerTickPhase, TickSpan,
-    WorldPhase,
+    self, BlockProperties, HudMode, NativeBossBar, NativeCamera, NativeCommand, NativeDispensed,
+    NativeFluidAction, NativeFluidDrain, NativeFluidStack, NativeFluidTankView,
+    NativeLifecycleContext, NativeNoteBlockChange, NativeServerPlayer, RecipeBookCategory,
+    ServerTickPhase, TickSpan, WorldPhase,
 };
 use horizon_client::mod_api::{AttachmentResult, Attachments, Holder, LayerDefinition, Suggestion};
 pub(crate) use horizon_client::mod_api::{
@@ -1174,6 +1174,20 @@ pub(super) use horizon_world::level::flags;
 pub(crate) const NATIVE_HOOKS_API: u32 = 413;
 
 impl GameLevel<'_> {
+    /// `EntityBlock.newBlockEntity` with the actual placed state. The first
+    /// entity supplied owns the result. No response means no new entity.
+    /// This is a creation callback, not a validity test: an existing entity
+    /// survives property changes within the same block, even if a fresh
+    /// instance of that state would have no entity. The actual block name and
+    /// property map are borrowed from the registry. No world, RNG or Host is
+    /// attached to a constructor; no context is allocated for this callback.
+    pub(super) fn native_block_entity_from_state(
+        block: &str,
+        properties: &BlockProperties,
+        entity: &mut Option<(String, Compound)>,
+    ) {
+        mod_api::dispatch_block_entity_from_state(mod_api::mods(), block, properties, entity);
+    }
     /// A hopper at `pos` is about to pick up `count` of `item`. Set `cancel` to leave the dropped stack in the world. Server-side. 232.
     #[inline(always)]
     pub(super) fn native_hopper_pickup_item(
@@ -3279,6 +3293,14 @@ impl Game<'_> {
         entity: &mut Option<(String, Compound)>,
     ) {
         mod_api::dispatch_block_entity(self, mod_api::mods(), block, entity);
+    }
+    /// Opt a non-vanilla block into a state-aware block entity factory.
+    /// Set true for your block and never clear an earlier declaration. Asked
+    /// once per block when this level's immutable ownership table is built.
+    /// A declared block never falls back to API15, including when its state
+    /// factory returns no entity. @API:state_block_entity_factory@
+    pub(super) fn native_stateful_block_entity(&self, block: &str, stateful: &mut bool) {
+        mod_api::dispatch_stateful_block_entity(self, mod_api::mods(), block, stateful);
     }
     /// Whether block `block`'s block entity ticks (`EntityBlock.getTicker`):
     /// set `ticks` when it is yours. Asked for each of the block's states
@@ -10427,16 +10449,19 @@ impl Game<'_> {
         {
             return false;
         }
+        self.ensure_stateful_entity_table();
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
         let previous = self.world.block(pos[0], pos[1], pos[2]);
         let changed =
             self.with_level(|b, level, ticks| b.set_block(level, ticks, at, state, flags));
         let new = self.res.facts().get(state).name.clone();
         let landed = self.world.block(pos[0], pos[1], pos[2]);
+        let needs_entity = !self.world.block_entities.stateful_entity(landed.0)
+            && self.res.facts().get(previous).name != new;
         if changed
-            && self.res.facts().get(previous).name != new
+            && needs_entity
             && self.res.facts().get(landed).name == new
-            && let Some(entity) = self.new_block_entity(&new)
+            && let Some(entity) = self.new_block_entity_for_state(landed)
         {
             self.world
                 .block_entities
@@ -11604,6 +11629,55 @@ impl Game<'_> {
             }
             .into(),
         )))
+    }
+    /// Compile static factory ownership lazily: creation can precede the
+    /// first block-entity tick (commands, chunk sync or a harness).
+    pub(super) fn ensure_stateful_entity_table(&mut self) {
+        if self.world.block_entities.has_stateful_entity_table() {
+            return;
+        }
+        let registry = self.pack.assets.registry;
+        let mut blocks = FxHashMap::default();
+        let states = (0..registry.len() as u32)
+            .map(|id| {
+                let Some(state) = registry.state(BlockStateId(id)) else {
+                    return false;
+                };
+                if state.name.starts_with("minecraft:") {
+                    return false;
+                }
+                *blocks.entry(state.name.as_str()).or_insert_with(|| {
+                    let mut stateful = false;
+                    self.native_stateful_block_entity(&state.name, &mut stateful);
+                    stateful
+                })
+            })
+            .collect();
+        self.world.block_entities.set_stateful_entities(states);
+    }
+    /// Actual-state creation for all placement/synchronization callers.
+    /// Undeclared blocks retain the existing API15/vanilla factory exactly.
+    pub(super) fn new_block_entity_for_state(
+        &mut self,
+        state: BlockStateId,
+    ) -> Option<BlockEntity> {
+        self.ensure_stateful_entity_table();
+        if self.world.block_entities.stateful_entity(state.0) {
+            let mut entity = None;
+            let state = self.pack.assets.registry.state(state)?;
+            GameLevel::native_block_entity_from_state(&state.name, &state.properties, &mut entity);
+            let (id, nbt) = entity?;
+            return Some(BlockEntity::Mod(Box::new(
+                ModBlockEntityFields {
+                    id,
+                    nbt,
+                    ..Default::default()
+                }
+                .into(),
+            )));
+        }
+        let name = self.pack.assets.registry.state(state)?.name.clone();
+        self.new_block_entity(&name)
     }
     /// The containers of the mod blocks' block entities, by block state
     /// (`native_block_entity_container`), checked.

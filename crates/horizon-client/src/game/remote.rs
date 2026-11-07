@@ -2843,8 +2843,20 @@ impl Game<'_> {
         // LevelChunk.setBlockState: another block's block entity goes, even
         // one of the same type (a mod's blocks may share one).
         let other_block = previous.is_some_and(|p| self.res.facts().get(p).name != name);
-        // A mod block's is the mod's own (`native_block_entity`), as on the server.
-        match self.new_block_entity(&name) {
+        self.ensure_stateful_entity_table();
+        // State-aware factories decide creation only. A valid same-block
+        // instance survives even when the new state would create none.
+        if !other_block
+            && self.world.block_entities.stateful_entity(state.0)
+            && matches!(
+                self.world.block_entities.get(&pos),
+                Some(BlockEntity::Mod(_))
+            )
+        {
+            return;
+        }
+        // A mod block's is the mod's own, as on the server.
+        match self.new_block_entity_for_state(state) {
             Some(entity) => {
                 let same = self.world.block_entities.get(&pos).is_some_and(|e| {
                     e.id() == entity.id() && !(other_block && matches!(e, BlockEntity::Mod(_)))
