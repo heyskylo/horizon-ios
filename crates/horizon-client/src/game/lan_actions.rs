@@ -158,6 +158,7 @@ pub(super) struct GuestSwap {
     i: usize,
     play: GuestPlay,
     player: Option<PlayerMotion>,
+    player_save_projection: (Option<i32>, Option<bool>),
     /// The guest's eye height and the game's.
     eye: (f32, f32),
     yaw: f32,
@@ -481,6 +482,10 @@ impl Game<'_> {
             &mut self.player_attachments,
             self.guest_attachments.entry(g.uuid).or_default(),
         );
+        let player_save_projection = (
+            self.level.player_impulse_grace.take(),
+            self.level.player_fall_particles.take(),
+        );
         self.sculk.swap_player(&mut play.sculk);
         // The guest's own CombatTracker: damage to them is not the host's.
         // A new body starts with no record of the last one.
@@ -651,6 +656,7 @@ impl Game<'_> {
             i,
             play,
             player,
+            player_save_projection,
             eye,
             yaw,
             pitch,
@@ -752,6 +758,7 @@ impl Game<'_> {
             i,
             mut play,
             mut player,
+            player_save_projection,
             eye,
             yaw,
             pitch,
@@ -993,6 +1000,8 @@ impl Game<'_> {
         std::mem::swap(&mut self.adv.unlocked, &mut g.recipes_unlocked);
         std::mem::swap(&mut self.level.recipe_book, &mut g.recipe_book);
         std::mem::swap(&mut self.level.player_extra, &mut g.saved);
+        self.level.player_impulse_grace = player_save_projection.0;
+        self.level.player_fall_particles = player_save_projection.1;
         std::mem::swap(&mut self.stats, &mut play.stats);
         std::mem::swap(&mut self.hook, &mut play.hook);
         self.adv.loaded = adv_loaded;
