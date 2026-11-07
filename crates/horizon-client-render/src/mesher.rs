@@ -268,6 +268,10 @@ pub struct SectionMesh {
     /// model order before.
     pub sides: Sides,
     pub translucent: Vec<TerrainVertex>,
+    /// Whether `packed` holds far tile records (`lod::packed`) rather than
+    /// section records (`mesher::packed`): the two are read apart, by the base
+    /// vertex their draws use.
+    pub packed_far: bool,
     /// `solid` in the compact layout (`packed`), when the renderer reads it and it is
     /// smaller; empty otherwise. Made by `sort_solid`.
     pub packed: Vec<[u32; 6]>,
@@ -300,6 +304,7 @@ impl Default for SectionMesh {
             sides: Sides::default(),
             translucent: Vec::new(),
             packed: Vec::new(),
+            packed_far: false,
             solid_tints: Vec::new(),
             visibility: ALL_VISIBLE,
             block_entities: Vec::new(),
@@ -334,6 +339,7 @@ impl SectionMesh {
         self.solid.clear();
         self.translucent.clear();
         self.packed.clear();
+        self.packed_far = false;
         self.solid_tints.clear();
         self.block_entities.clear();
         self.lights.clear();
@@ -363,6 +369,7 @@ impl SectionMesh {
         self.sides = sides::sort_tinted(&mut self.solid, &mut self.solid_tints);
         self.bounds = self.compute_bounds();
         self.packed.clear();
+        self.packed_far = false;
         if packed::packing() && quads > 0 && self.solid_tints.len() == quads {
             self.packed = packed::layout(&self.solid, &self.solid_tints);
         }

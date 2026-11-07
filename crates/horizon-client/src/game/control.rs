@@ -1416,6 +1416,8 @@ impl Game<'_> {
                 "resident_sections": r.resident_sections(),
                 "arena_bytes": arena_bytes,
                 "section_vertex_bytes": section_vertex_bytes,
+                "packed_layout": r.packed_layout(),
+                "vertex_bytes_split": r.vertex_bytes_split(),
                 "gpu_allocated_bytes": memory.as_ref().map(|m| m.total_allocated_bytes),
                 "gpu_reserved_bytes": memory.as_ref().map(|m| m.total_reserved_bytes),
             })

@@ -455,6 +455,9 @@ struct SectionGpu {
     /// (`packed`, `mesher::packed`) a record each and the vertices of those without one.
     solid_slots: u64,
     packed: bool,
+    /// Its records are a far tile's (`lod::packed`), not a section's: the two
+    /// layouts are told apart by the base vertex its draws use.
+    packed_far: bool,
     /// Where the solid quads' buckets by facing side end (`mesher::Sides`).
     sides: Sides,
     translucent: u32,
@@ -526,14 +529,19 @@ impl SectionGpu {
         self.solid > 0 && (0..sections as i32).contains(&key.1)
     }
     /// The base vertex of its solid draws: quad `q`'s corners are `base + 4 * q` on (the
-    /// quad indices). In the compact layout they name its record's slot past
-    /// `PACKED_BASE` (terrain.wgsl's `section_corner`).
+    /// quad indices). In a compact layout they name its record's slot past
+    /// `PACKED_BASE`, or past `FAR_BASE` for a far tile's records, which is how
+    /// terrain.wgsl's `section_corner` tells the two apart.
     fn solid_base(&self) -> u32 {
-        if self.packed {
-            packed::PACKED_BASE + 4 * self.start as u32
-        } else {
-            self.start as u32
+        if !self.packed {
+            return self.start as u32;
         }
+        let base = if self.packed_far {
+            crate::lod::packed::FAR_BASE
+        } else {
+            packed::PACKED_BASE
+        };
+        base + 4 * self.start as u32
     }
     /// GPU culling's record of it at `key`, its quads within `bounds`
     /// (`SectionMesh::bounds`) and in their buckets by facing side (`sides`),
@@ -2316,6 +2324,23 @@ impl Renderer {
             levels[level][1] += u64::from(tile.mesh.solid + tile.mesh.translucent);
         }
         levels
+    }
+    /// Whether solid quads go to the arena in the compact layout
+    /// (`packed_quads`), and whether far tiles' own records are on
+    /// (`lod::packed::far_packing`).
+    pub fn packed_layout(&self) -> [bool; 2] {
+        [self.packed_quads, crate::lod::packed::far_packing()]
+    }
+    /// Bytes of the arena the resident chunk sections hold, and of the one far
+    /// tiles hold: the same split `gpu_census` reports, for `status`, so the
+    /// compact layouts can be seen working.
+    pub fn vertex_bytes_split(&self) -> [u64; 2] {
+        let stride = std::mem::size_of::<TerrainVertex>() as u64;
+        let used = |s: &SectionGpu| (s.solid_slots + u64::from(s.translucent) * 4) * stride;
+        [
+            self.sections.values().map(used).sum(),
+            self.lods.values().map(|tile| used(&tile.mesh)).sum(),
+        ]
     }
     /// Bytes of the section vertex arenas' buffers, and of the vertices
     /// resident sections hold in them.
@@ -5456,6 +5481,7 @@ impl Renderer {
             solid,
             solid_slots,
             packed,
+            packed_far: packed && mesh.packed_far,
             sides: if mesh.sides.quads() == solid {
                 mesh.sides
             } else {
@@ -5931,7 +5957,9 @@ impl Renderer {
         }
         self.packed_quads = want;
         packed::pack_quads(want);
-        if !want && self.sections.values().any(|s| s.packed) {
+        let laid_out = self.sections.values().any(|s| s.packed)
+            || self.lods.values().any(|t| t.drawn().packed);
+        if !want && laid_out {
             self.sections_dropped = true;
             self.clear_sections(self.layout);
         }
@@ -12560,6 +12588,7 @@ mod tests {
             translucent_at: (0, u64::from(solid) * 4),
             solid,
             solid_slots: u64::from(solid) * 4,
+            packed_far: false,
             packed: false,
             sides: crate::mesher::Sides::unsorted(solid),
             translucent,

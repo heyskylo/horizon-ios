@@ -9,6 +9,7 @@ use crate::{
 };
 pub mod cache;
 mod mesh;
+pub mod packed;
 use horizon_world::registry::BlockStateId;
 use std::{
     collections::VecDeque,
@@ -1414,7 +1415,13 @@ impl Lod {
                                     &edges,
                                     &input.finer,
                                 );
+                                // Sorts the quads by facing side, and clears
+                                // the compact layout: a far tile has no tints
+                                // for `mesher::packed`, so its own records
+                                // (`lod::packed`) are laid out here, from the
+                                // quads in the order the sort left them.
                                 mesh.sort_solid();
+                                crate::lod::packed::lay_out(&mut mesh);
                                 let [ox, _, oz] = job.key.origin();
                                 let size = job.key.size();
                                 mesh.keep = keep_finer
