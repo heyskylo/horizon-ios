@@ -107,6 +107,10 @@ pub(super) struct CombatTracker {
     /// The hit on the player now runs its post-attack effects (thorns) only
     /// if the player lives through it (`WitherSkull.onHitEntity`).
     pub(super) post_attack_if_alive: bool,
+    /// The mob whose swing is being applied, when the caller knows it. Without
+    /// it the attacker is the mob nearest to where the hit came from, which
+    /// walks every mob.
+    pub(super) melee_mob: Option<u32>,
     /// A firework rocket's burst is hurting the player now: the rocket is
     /// the direct entity (`rocket_hurt_player`).
     pub(super) rocket_hit: bool,

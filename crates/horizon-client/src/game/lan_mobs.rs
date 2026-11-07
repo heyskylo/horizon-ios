@@ -235,16 +235,22 @@ impl Game<'_> {
     }
 
     /// Mob events aimed at a guest, run as that guest (`guest_hit_by`).
-    pub(super) fn lan_guest_mob_events(&mut self, events: Vec<(u32, MobEvent)>) {
+    pub(super) fn lan_guest_mob_events(&mut self, events: Vec<(u32, u32, MobEvent)>) {
         if events.is_empty() {
             return;
         }
         let Some(mut host) = self.lan.take() else {
             return;
         };
-        for (conn, e) in events {
+        for (conn, mob, e) in events {
             self.guest_hit_by(&mut host, conn, |g| {
+                // The mob swung: no guessing which one from where it stood.
+                if matches!(e, MobEvent::AttackPlayer(..)) {
+                    g.combat.melee_mob = Some(mob);
+                }
                 let _ = g.handle_mob_events(vec![e]);
+                // Used up by the hit; a blow that hurt nobody leaves it to no other.
+                g.combat.melee_mob = None;
             });
         }
         self.lan = Some(host);
