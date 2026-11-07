@@ -7,12 +7,12 @@
 //! Speed's `location_changed` and `tick` effects and the
 //! `minecraft:location_changed` disk effect (frost walker).
 use super::Game;
-use horizon_client::random_source;
 use horizon_client::{
     enchant::{EffectContext, Enchantments, level_value},
     items::ItemStack,
     mobs::Who,
     projectiles::Projectile,
+    random_source,
 };
 use horizon_core::{position::BlockPos, random::RandomSource};
 use horizon_world::{fluid::FluidKind, level::LevelAccess, registry::BlockStateId};

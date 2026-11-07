@@ -10,7 +10,6 @@ use super::remote_chunks::{ChunkDecoder, ChunkFormat, Next};
 use super::{Dim, Game, Mining, Screen};
 use horizon_client::actions::Action;
 use horizon_client::first_person::{Hand, SwingAnimation};
-use horizon_client::random_source;
 use horizon_client::{
     Result,
     blocks::Fluid,
@@ -24,6 +23,7 @@ use horizon_client::{
     mobs::{Mob, MobType, Who},
     motion::{MotionWorld, PlayerMotion},
     net::{Event, Session},
+    random_source,
     save::SaveDir,
     screen_effects,
     sprint::Keys,

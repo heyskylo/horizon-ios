@@ -11,7 +11,6 @@ use super::{
     Dim, Game,
     potions::{Victim, mob_can_be_affected},
 };
-use horizon_client::random_source;
 use horizon_client::{
     health::HurtSource,
     hud::HudBatch,
@@ -20,6 +19,7 @@ use horizon_client::{
     mobs::{Damage, DamageKind, Who},
     particles::{ParticleOptions, ParticleType},
     projectiles::ProjectileKind,
+    random_source,
     text::Text,
 };
 use horizon_core::position::BlockPos;

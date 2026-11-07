@@ -4,7 +4,6 @@
 //! damage with line of sight, and the client explosion (`createFireworks`).
 use super::{Game, Hit, item_draw::owner_at, view_vector};
 use horizon_assets::item_model::DisplayContext;
-use horizon_client::random_source;
 use horizon_client::{
     block_entity_render::vertex_light,
     collisions::SceneCollisions,
@@ -14,6 +13,7 @@ use horizon_client::{
     mobs::{Damage, Species, Who},
     particles::{FireworkExplosion, ParticleOptions, ParticleType},
     projectiles::ProjectileWorld,
+    random_source,
     text::Text,
 };
 use horizon_core::{

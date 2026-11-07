@@ -1,7 +1,8 @@
-//! `RandomSource.create()`: generators seeded from a counter and the clock,
-//! for the client's own randomness that vanilla doesn't seed (sounds, screen
-//! animations). Kept out of `horizon_core::random`, whose streams are only
-//! ever seeded.
+//! The randoms vanilla creates unseeded: `RandomSource.create()` (sounds,
+//! screens, the torch flicker, a raid's random) and an entity's own random
+//! (`Entity.random`). Each is seeded from one shared counter and the clock, as
+//! `RandomSupport.generateUniqueSeed` does. Kept out of `horizon_core::random`,
+//! whose streams are only ever seeded explicitly.
 use horizon_core::random::LegacyRandom;
 
 /// `RandomSource.create()`.
@@ -17,7 +18,9 @@ pub fn entity() -> LegacyRandom {
     create()
 }
 
-/// `RandomSupport.generateUniqueSeed`.
+/// `RandomSupport.generateUniqueSeed`. Under `HORIZON_STILL` (screenshots that
+/// come out the same every run) the clock is left out, so the seeds repeat run
+/// to run, in the order they are taken.
 pub fn unique_seed() -> i64 {
     use std::sync::atomic::{AtomicI64, Ordering};
     static UNIQUIFIER: AtomicI64 = AtomicI64::new(8_682_522_807_148_012);
@@ -29,10 +32,19 @@ pub fn unique_seed() -> i64 {
             Err(v) => current = v,
         }
     };
+    if still() {
+        return next;
+    }
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos() as i64);
     next ^ nanos
+}
+
+/// `HORIZON_STILL=1`, read once, as the clock's `still_requested` reads it.
+fn still() -> bool {
+    static STILL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *STILL.get_or_init(|| std::env::var("HORIZON_STILL").is_ok_and(|v| v == "1"))
 }
 
 #[cfg(test)]

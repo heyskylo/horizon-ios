@@ -3,11 +3,11 @@
 //! getOrigin, then PlayerSpawnFinder.findSpawn picks a free column around
 //! the world spawn within the respawn radius.
 use super::Game;
-use horizon_client::random_source;
 use horizon_client::{
     Result,
     assets::Properties,
     collisions::{SceneCollisions, no_collision_or_liquid},
+    random_source,
     world::World,
     world_spawn::{
         PlayerSpawnFinder, SpawnCandidate, SpawnLevel, level_respawn_pos, spawn_pos_in_chunk,

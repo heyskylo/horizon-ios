@@ -5,12 +5,12 @@
 //! fanned Multishot angles and their shot pitches. `Player.getProjectile`
 //! finds the ammo for bows and crossbows.
 use super::{Game, shield::OFFHAND_SLOT, view_vector};
-use horizon_client::random_source;
 use horizon_client::{
     enchant::EffectContext,
     items::ItemStack,
     mobs::Who,
     projectiles::{Projectile, ProjectileKind},
+    random_source,
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
 

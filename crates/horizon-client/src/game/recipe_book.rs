@@ -5,12 +5,12 @@
 //! (`ServerPlaceRecipe`). Which recipes are known comes from the advancement
 //! rewards; the open and filter settings are saved with the player.
 use super::{Game, Screen};
-use horizon_client::random_source;
 use horizon_client::{
     containers::{BlockEntity, FurnaceKind},
     hud::{HudBatch, Rect, rgba},
     items::ItemStack,
     menu::place::{PostPlace, Stacked},
+    random_source,
     recipe_book::{Book, BookType, ClientBook, Collection, Entry, GhostTarget, Tab},
     recipe_book_screen::{
         self as screen, ButtonView, Call, Drawn, GhostView, ItemCall, OverlayRecipe, OverlayView,

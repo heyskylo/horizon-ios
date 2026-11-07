@@ -2,12 +2,12 @@
 //! entities (`entities/*.mca`, per chunk like vanilla's `EntityStorage`) and
 //! scheduled block/fluid ticks (chunk `block_ticks`/`fluid_ticks`).
 use super::{FallingBlock, Game};
-use horizon_client::random_source;
 use horizon_client::{
     Result,
     chunk::Chunk,
     entity_nbt,
     mobs::Who,
+    random_source,
     save::{ChunkExtras, random_uuid, text, uuid_from_text, uuid_text},
     scoreboard::Scoreboard,
 };

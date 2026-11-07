@@ -3,11 +3,11 @@
 //! checks every 100 ticks, breaking by attack (`dropItem`), saving, and
 //! `PaintingRenderer` quads.
 use super::{Game, Hit, entity_culling::default_range};
-use horizon_client::random_source;
 use horizon_client::{
     entities::{ItemFrame, Painting},
     items::ItemStack,
     mesher::Vertex,
+    random_source,
 };
 use horizon_core::{
     geometry::{Aabb, Vec3},
