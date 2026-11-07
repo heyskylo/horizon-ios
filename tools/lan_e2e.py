@@ -5605,7 +5605,9 @@ def server_player(host, game):
 def check_shield(host, guest, out):
     """An axe disables a raised shield for 5 s (100 ticks), counted down once a tick on the
     server: a vindicator's axe hits each player's shield, then the cooldown left falls by about 40
-    over 40 ticks (#1316)."""
+    over 40 ticks (#1316). Each player's own game is told (BlocksAttacks.disable's item cooldown,
+    ServerItemCooldowns' Cooldown packet): its hotbar shows the shield's cooldown, and once the
+    100 ticks are up, no longer (#11805)."""
     host('command', command='gamerule natural_health_regeneration false')
     rates = {}
     try:
@@ -5638,9 +5640,12 @@ def check_shield(host, guest, out):
             game.raw('mouse', 'right', 'up')
             assert first, f'{game.name}: the vindicator never disabled the shield'
             start = server_player(host, game)['shield_cooldown']
+            shown = game('state')['player']['shield_cooldown_shown']
             game.wait(40)
             end = server_player(host, game)['shield_cooldown']
-            rates[game.name] = {'first': first, 'start': start, 'end': end}
+            game.wait(70)
+            over = game('state')['player']['shield_cooldown_shown']
+            rates[game.name] = {'first': first, 'start': start, 'end': end, 'shown': shown, 'over': over}
             game.shot(out, 'shield')
             game('command', command='item replace entity @s weapon.offhand with minecraft:air')
             game('command', command='effect clear @s')
@@ -5651,6 +5656,9 @@ def check_shield(host, guest, out):
         assert r['first'] <= 100, f'{name}: {rates}'
         # Once a tick: 40 down over 40 ticks, give or take the ticks the two queries straddle.
         assert 30 <= r['start'] - r['end'] <= 50, f'{name}: {rates}'
+        # The player's own hotbar: the cooldown while the shield is disabled, none after.
+        assert r['shown'] > 0, f'{name}: their game was not told the shield is disabled: {rates}'
+        assert r['over'] == 0, f'{name}: their game still shows the cooldown after it ended: {rates}'
     return rates
 
 
