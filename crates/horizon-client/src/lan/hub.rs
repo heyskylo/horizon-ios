@@ -3322,6 +3322,7 @@ impl Hub {
             horizontal_collision: false,
             needs_sync: false,
             sync_position: false,
+            stepped: false,
             idle: false,
             bare: false,
             minecart_steps: None,

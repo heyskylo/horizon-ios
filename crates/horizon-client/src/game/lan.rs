@@ -1967,6 +1967,7 @@ impl Game<'_> {
             e.velocity = place.velocity;
             e.needs_sync = m.needs_sync;
             e.sync_position = m.sync_position;
+            e.stepped = true;
             (e.idle, e.bare) = (idle, bare);
             e.leash = leash;
             if bare {

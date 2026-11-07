@@ -78,6 +78,10 @@ pub struct EntityState {
     /// `Entity.syncPosition`: a living entity bounced this tick; where it is
     /// becomes a step of the next move sent (`SteppedInterpolationTracker`).
     pub sync_position: bool,
+    /// `LivingEntity.createInterpolationHandler`: a `SteppedInterpolationTracker`
+    /// on the server, so its moves are sent as stepped paths. Every other entity
+    /// has a no-op tracker and sends a linear one.
+    pub stepped: bool,
     /// Outside `DistanceManager.inEntityTickingRange`: `ChunkMap.tick` sends
     /// its changes only if it changed section or needs sync (its lead aside,
     /// which `Leashable` sends at once).
@@ -123,6 +127,7 @@ impl EntityState {
         self.horizontal_collision = false;
         self.needs_sync = false;
         self.sync_position = false;
+        self.stepped = false;
         self.idle = false;
         self.bare = false;
         self.leash = None;
@@ -480,9 +485,11 @@ impl ServerEntity {
         // SteppedInterpolationTracker.updateTracking: a tick more since the
         // last step, and a step where the entity bounced (Entity.syncPosition,
         // which only living entities' movement sets).
-        self.ticks_since_step += 1;
-        if e.sync_position {
-            self.add_step(e.position);
+        if e.stepped {
+            self.ticks_since_step += 1;
+            if e.sync_position {
+                self.add_step(e.position);
+            }
         }
         // SynchedEntityData.isDirty: once for every client.
         let dirty = e.meta != self.meta;
@@ -530,7 +537,9 @@ impl ServerEntity {
             let send_position = self.arrow || d >= 7.629_394_5e-6 || self.tick.is_multiple_of(60);
             // SteppedInterpolationTracker.getPositionPath, then clear: the
             // current position is the last step of a bounced path.
-            self.add_step(e.position);
+            if e.stepped {
+                self.add_step(e.position);
+            }
             let path = if self.tracked_steps.is_empty() {
                 PositionPath::Linear(e.position)
             } else {
@@ -1438,6 +1447,7 @@ mod tests {
             horizontal_collision: false,
             needs_sync: false,
             sync_position: false,
+            stepped: false,
             idle: false,
             bare: false,
             leash: None,
