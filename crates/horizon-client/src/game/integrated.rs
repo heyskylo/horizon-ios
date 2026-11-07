@@ -561,6 +561,7 @@ impl Game<'_> {
         self.server_packs_world_pack(&folder);
         self.connect_local(pipe, &player)?;
         if let Some(r) = self.remote.as_mut() {
+            r.save_folder = Some(folder.clone());
             // `new LevelLoadTracker(newWorld ? 500L : 0L)`.
             r.level_load = horizon_client::level_loading::LevelLoadTracker::new(if new_world {
                 horizon_client::level_loading::LEVEL_LOAD_CLOSE_DELAY_MS
@@ -971,7 +972,8 @@ impl Game<'_> {
                     g.chat_capture = Some(Vec::new());
                     // A command a native mod registered goes to the mods
                     // first, as the owner's own chat does (the console is
-                    // level 4, so every registered usage is allowed).
+                    // level 4, so every registered usage is allowed; one with
+                    // a permission node asks the mods for the owner).
                     if !g.perform_native_command(conn, 4, command.trim()) {
                         g.run_command(&command);
                     }

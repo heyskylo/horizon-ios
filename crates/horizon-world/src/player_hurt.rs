@@ -96,10 +96,10 @@ pub fn server_player_hurt_server<W: ServerPlayerHurtWorld>(
             }
         }
         CausingEntity::Arrow(a) => {
-            if let Some(p) = w.arrow_player_owner(s, a)? {
-                if !w.can_harm_player(s, p)? {
-                    return Ok(false);
-                }
+            if let Some(p) = w.arrow_player_owner(s, a)?
+                && !w.can_harm_player(s, p)?
+            {
+                return Ok(false);
             }
         }
         CausingEntity::Other => {}
