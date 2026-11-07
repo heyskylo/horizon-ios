@@ -15,6 +15,8 @@ use crate::unwind::{self, MAX_FRAMES, StackBounds};
 
 mod eh;
 mod linux;
+
+pub(crate) use eh::{Loaded, loaded_modules};
 use linux as os;
 
 pub const DEFAULT_HZ: u32 = 250;
@@ -547,9 +549,9 @@ impl Session {
                         0
                     }
                     TAG_FRAMES => {
-                        let words = payload.chunks_exact(8);
+                        let (words, _) = payload.as_chunks::<8>();
                         for (slot, w) in record.frames.iter_mut().zip(words) {
-                            *slot = usize::from_ne_bytes(w.try_into().unwrap());
+                            *slot = usize::from_ne_bytes(*w);
                         }
                         payload.len() / 8
                     }

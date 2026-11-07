@@ -305,3 +305,198 @@ fn a_wall_session_also_records_cpu_samples_without_mixing_them() {
         "{waiting} waiting vs {running} running"
     );
 }
+
+#[inline(never)]
+fn caller_a() {
+    black_box(11u64);
+}
+
+#[inline(never)]
+fn caller_b() {
+    black_box(22u64);
+}
+
+#[inline(never)]
+fn spin_fast_unit() {
+    spin_fast(0);
+}
+
+#[inline(never)]
+fn spin_slow_unit() {
+    spin_slow(0);
+}
+
+fn addr(f: fn()) -> usize {
+    f as *const () as usize
+}
+
+/// Function-start stacks, innermost first; callers sit one byte in so the call-site lookup stays inside them.
+fn stack_of(fns: &[fn()]) -> Vec<usize> {
+    fns.iter()
+        .enumerate()
+        .map(|(i, f)| addr(*f) + usize::from(i != 0))
+        .collect()
+}
+
+fn addresses(agg: &Aggregate) -> Vec<u64> {
+    agg.counts
+        .keys()
+        .flat_map(|k| agg.path(k.node))
+        .filter_map(|n| match agg.frame(n) {
+            Frame::Addr(a) => Some(a),
+            _ => None,
+        })
+        .collect()
+}
+
+fn synthetic_tree() -> Aggregate {
+    let mut agg = Aggregate::new(50_000_000);
+    let shapes: [(&[fn()], u64, u64); 4] = [
+        (&[spin_fast_unit, caller_a], 1, 5),
+        (&[spin_fast_unit, caller_b], 1, 2),
+        (&[caller_a], 1, 1),
+        (&[spin_slow_unit, caller_a], 2, 3),
+    ];
+    for (tick, tick_ns) in [(1u64, 9_000_000u64), (2, 80_000_000)] {
+        for (fns, _, n) in shapes.iter().filter(|s| s.1 == tick) {
+            for _ in 0..*n {
+                agg.add("t", &synthetic(Kind::Cpu, tick, 0, &stack_of(fns)));
+            }
+        }
+        agg.add("t", &synthetic(Kind::Tick, tick, tick_ns, &[]));
+    }
+    agg.finish();
+    agg
+}
+
+fn short(res: &Resolved, id: u32) -> String {
+    res.name(id).rsplit("::").next().unwrap().to_string()
+}
+
+#[test]
+fn the_merged_tree_names_functions_and_counts_known_weights() {
+    let agg = synthetic_tree();
+    let res = Resolved::new(&agg, &symbolize(addresses(&agg)));
+    let all = res.flame(&weights(&agg, |_| true));
+    let thread = &all.kids[0];
+    assert_eq!(
+        (res.name(thread.name), thread.own, thread.total),
+        ("thread t", 0, 11)
+    );
+    let shape = |node: &FNode| -> Vec<(String, u64, u64)> {
+        let mut kids: Vec<_> = node
+            .kids
+            .iter()
+            .map(|k| (short(&res, k.name), k.own, k.total))
+            .collect();
+        kids.sort();
+        kids
+    };
+    assert_eq!(
+        shape(thread),
+        [("caller_a".into(), 1, 9), ("caller_b".into(), 0, 2)]
+    );
+    let a = thread
+        .kids
+        .iter()
+        .find(|k| short(&res, k.name) == "caller_a")
+        .unwrap();
+    assert_eq!(
+        shape(a),
+        [
+            ("spin_fast_unit".into(), 5, 5),
+            ("spin_slow_unit".into(), 3, 3)
+        ]
+    );
+
+    let rows: Vec<_> = top_functions(&res, &all, 10)
+        .into_iter()
+        .map(|r| (short(&res, r.name), r.own, r.total))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("spin_fast_unit".to_string(), 7, 7),
+            ("spin_slow_unit".to_string(), 3, 3),
+            ("caller_a".to_string(), 1, 9),
+            ("caller_b".to_string(), 0, 2),
+        ]
+    );
+
+    let slow = res.flame(&weights(&agg, |k| k.slow));
+    assert_eq!(slow.total, 3);
+    let slow_rows: Vec<_> = top_functions(&res, &slow, 10)
+        .into_iter()
+        .map(|r| (short(&res, r.name), r.own, r.total))
+        .collect();
+    assert_eq!(
+        slow_rows,
+        [
+            ("spin_slow_unit".to_string(), 3, 3),
+            ("caller_a".to_string(), 0, 3)
+        ]
+    );
+}
+
+#[test]
+fn symbolizing_names_real_functions_and_leaks_no_path() {
+    let targets = [
+        spin_fast as *const () as u64,
+        spin_slow as *const () as u64,
+        0x10,
+    ];
+    let symbols = symbolize(targets);
+    assert!(
+        symbols.frames(targets[0])[0]
+            .name
+            .ends_with("tests::spin_fast")
+    );
+    assert!(
+        symbols.frames(targets[1])[0]
+            .name
+            .ends_with("tests::spin_slow")
+    );
+    assert_eq!(symbols.frames(0x10)[0].name, "[unmapped 0x10]");
+    assert!(symbols.frames(0x99).is_empty());
+    let secrets = [
+        std::env::var("HOME").unwrap_or_default(),
+        std::env::current_exe().unwrap().display().to_string(),
+    ];
+    for sym in targets.iter().flat_map(|&t| symbols.frames(t)) {
+        let shown = format!("{} {:?}", sym.name, sym.file);
+        assert!(
+            secrets
+                .iter()
+                .filter(|s| s.len() > 3)
+                .all(|s| !shown.contains(s.as_str())),
+            "{shown}"
+        );
+        assert!(
+            sym.file.as_deref().is_none_or(|f| !f.contains('/')),
+            "{:?}",
+            sym.file
+        );
+    }
+}
+
+fn two_functions() {
+    spin_slow(150);
+    spin_fast(20);
+}
+
+#[test]
+fn a_live_session_puts_the_function_that_ran_longest_first() {
+    let (profile, _) = profiled("p-top", config(false), two_functions);
+    let res = Resolved::new(&profile.agg, &symbolize(addresses(&profile.agg)));
+    let flame = res.flame(&weights(&profile.agg, |_| true));
+    assert_eq!(flame.total, profile.agg.cpu_samples);
+    let total_of = |name: &str| {
+        top_functions(&res, &flame, usize::MAX)
+            .into_iter()
+            .find(|r| short(&res, r.name) == name)
+            .map_or(0, |r| r.total)
+    };
+    let (slow, fast) = (total_of("spin_slow"), total_of("spin_fast"));
+    assert!(fast > 0 && slow > 3 * fast, "{slow} vs {fast}");
+    assert!(slow <= flame.total);
+}

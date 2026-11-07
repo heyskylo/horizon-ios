@@ -667,7 +667,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn samples_inside_a_span_carry_its_id() {
-        use horizon_threads::{profile, sampler};
+        use horizon_threads::{sampler, work};
         use std::time::{Duration, Instant};
         let worker = std::thread::spawn(|| {
             assert!(sampler::sampled_thread("spans-id-test"));
@@ -690,8 +690,7 @@ mod tests {
             spans
         });
         let spans = worker.join().unwrap();
-        let inside =
-            |s: &u16| profile::name(profile::Space::Span, *s) == Some("spans_id_test_named");
+        let inside = |s: &u16| work::name(work::Space::Span, *s) == Some("spans_id_test_named");
         let (named, plain) = (
             spans.iter().filter(|s| inside(s)).count(),
             spans.iter().filter(|s| **s == 0).count(),

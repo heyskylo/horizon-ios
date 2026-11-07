@@ -9,8 +9,12 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::sampler;
 
 mod agg;
+mod symbols;
+mod tree;
 
 pub use agg::{Aggregate, Frame, Key, State, TickStats};
+pub use symbols::{Sym, Symbols, symbolize};
+pub use tree::{FNode, Interner, ROOT, Resolved, Row, top_functions, weights};
 
 const DRAIN_EVERY: Duration = Duration::from_millis(100);
 

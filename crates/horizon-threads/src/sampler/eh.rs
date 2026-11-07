@@ -14,10 +14,11 @@ use super::Regs;
 
 type Data = Arc<[u8]>;
 
-struct Loaded {
-    path: String,
-    base: u64,
-    range: Range<u64>,
+/// A loaded ELF object: its file, load bias and address range.
+pub(crate) struct Loaded {
+    pub path: String,
+    pub base: u64,
+    pub range: Range<u64>,
 }
 
 /// An ELF file's sections as framehop wants them; only the unwind tables are read, not the code.
@@ -73,6 +74,19 @@ unsafe extern "C" fn collect(
     0
 }
 
+/// The objects mapped into the process now.
+pub(crate) fn loaded_modules() -> Vec<Loaded> {
+    let mut modules: Vec<Loaded> = Vec::new();
+    // SAFETY: the callback runs before this returns and only touches `modules`.
+    unsafe {
+        libc::dl_iterate_phdr(
+            Some(collect),
+            &mut modules as *mut Vec<Loaded> as *mut c_void,
+        )
+    };
+    modules
+}
+
 fn load(m: &Loaded) -> Option<Module<Data>> {
     let cache = ReadCache::new(File::open(&m.path).ok()?);
     let file = object::File::parse(&cache).ok()?;
@@ -111,14 +125,7 @@ impl StackUnwinder {
 
     /// Adds the objects loaded since the last call (a `dlopen`ed driver's frames resolve from the next drain on).
     pub fn refresh(&mut self) {
-        let mut modules: Vec<Loaded> = Vec::new();
-        // SAFETY: the callback runs before this returns and only touches `modules`.
-        unsafe {
-            libc::dl_iterate_phdr(
-                Some(collect),
-                &mut modules as *mut Vec<Loaded> as *mut c_void,
-            )
-        };
+        let modules = loaded_modules();
         for m in modules.iter().filter(|m| self.seen.insert(m.base)) {
             if let Some(module) = load(m) {
                 self.unwinder.add_module(module);
