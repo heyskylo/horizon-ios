@@ -11,8 +11,12 @@ from pathlib import Path
 import shutil
 import sys
 
-import test_command_exec_parity as runner
-from loaded_pig_tags_corpus import cases
+if __package__:
+    from . import test_command_exec_parity as runner
+    from .loaded_pig_tags_corpus import cases
+else:
+    import test_command_exec_parity as runner
+    from loaded_pig_tags_corpus import cases
 
 
 def callback(row):
