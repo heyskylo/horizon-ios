@@ -656,11 +656,8 @@ impl Font {
                     pending: Vec::new(),
                     full: false,
                 },
-                random: horizon_core::random::LegacyRandom::new(
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0, |d| d.as_nanos() as i64),
-                ),
+                // `Font.random`: `RandomSource.create()`.
+                random: crate::random_source::create(),
             }),
             generation: std::cell::Cell::new(next_generation()),
             uniform: false,

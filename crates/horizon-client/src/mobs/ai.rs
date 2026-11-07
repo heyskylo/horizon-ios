@@ -19,6 +19,9 @@ use horizon_core::{
 };
 
 #[cfg(test)]
+#[path = "fall_flying_tests.rs"]
+mod fall_flying_tests;
+#[cfg(test)]
 #[path = "wet_fire_tests.rs"]
 mod wet_fire_tests;
 
@@ -684,6 +687,7 @@ pub fn tick(
         super::villager_brain::woken(m, w.game_time);
     }
     if m.no_ai {
+        update_fall_flying(m, w, events);
         reset_effect_fall_distance(m);
         // Mob.aiStep still runs without AI (only serverAiStep is skipped),
         // so undead still burn in daylight and the endermite's life keeps
@@ -739,6 +743,7 @@ pub fn tick(
     } else {
         ai_step(m, w, level_random, events);
     }
+    count_fall_fly_ticks(m);
     effects_from_blocks(m, w, level_random, events);
     extinguish_if_wet(m, w, was_on_fire, events);
     if m.species() == Species::SulfurCube && m.alive() {
@@ -1155,6 +1160,10 @@ fn extinguish_if_wet(m: &mut Mob, w: &MobWorld, was_on_fire: bool, events: &mut 
 /// Entity.baseTick + LivingEntity.baseTick + Mob.baseTick.
 /// Returns the burning state immediately before block-contact ignition.
 fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
+    // LivingEntity.baseTick refreshes a loaded sleeper before Entity.baseTick.
+    if m.first_tick {
+        super::villager::refresh_sleeping_position(m, w);
+    }
     // Entity.canSpawnSprintParticle / spawnSprintParticle (a dashing cat or
     // ocelot): a server level drops the particle, but its spot is drawn
     // from the mob's random first.
@@ -1238,9 +1247,11 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
             m.damage(1.0, Damage::of(DamageKind::InWall));
         }
         // Air supply and drowning (WaterAnimal.handleAirSupply for aquatic mobs).
+        // Nautilus.baseTick: NoAI skips only the custom handler; the
+        // superclass Breath/drown path must still process its air.
         if m.species() == Species::Axolotl {
             axolotl_air_supply(m, w);
-        } else if m.kind.flags.needs_water {
+        } else if m.kind.flags.needs_water && !(m.no_ai && m.species() == Species::Nautilus) {
             if !m.fluids.in_water {
                 m.air -= 1;
                 if m.air == -20 {
@@ -1585,6 +1596,70 @@ fn ageable_step(
     }
 }
 
+/// `LivingEntity.updateFallFlying` on the server, which `aiStep` calls while
+/// the glide flag is set, with or without AI: a mob that cannot glide
+/// (`canGlide`: on the ground, riding, levitating, or no slot holding a
+/// glider whose next damage will not break it, `canGlideUsing`) stops
+/// gliding; else on every 20th glide tick one of its gliders, picked with
+/// `Util.getRandom` from the mob's own random, takes a point of wear.
+/// `checkFallDistanceAccumulation` and the `ELYTRA_GLIDE` game event of
+/// every 10th tick are not ported here.
+fn update_fall_flying(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+    use horizon_world::player_inventory::EquipmentSlot;
+    if !m.extra.fall_flying {
+        return;
+    }
+    let gliders: Vec<EquipmentSlot> = match w.items {
+        Some(items) => EquipmentSlot::ALL
+            .into_iter()
+            .filter(|&slot| {
+                super::finalize::equipment_stack(m, slot).is_some_and(|stack| {
+                    crate::item_sync::can_glide_using(&stack, glider_slot_name(slot), items)
+                })
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    if m.on_ground
+        || m.extra.mount.is_some()
+        || m.has_effect("minecraft:levitation")
+        || gliders.is_empty()
+    {
+        m.extra.fall_flying = false;
+        return;
+    }
+    let ticks = m.extra.fall_fly_ticks + 1;
+    if ticks % 10 == 0 && (ticks / 10) % 2 == 0 {
+        let pick = m.random.next_int_bound(gliders.len() as i32).unwrap_or(0) as usize;
+        events.push(MobEvent::GliderWear {
+            mob: m.id,
+            slot: gliders[pick],
+        });
+    }
+}
+/// `EquipmentSlot`'s serialized name, which `equippable` names its slot by.
+fn glider_slot_name(slot: horizon_world::player_inventory::EquipmentSlot) -> &'static str {
+    use horizon_world::player_inventory::EquipmentSlot as S;
+    match slot {
+        S::MainHand => "mainhand",
+        S::OffHand => "offhand",
+        S::Feet => "feet",
+        S::Legs => "legs",
+        S::Chest => "chest",
+        S::Head => "head",
+        S::Body => "body",
+        S::Saddle => "saddle",
+    }
+}
+/// `LivingEntity.tick` after `aiStep`: the glide's tick count.
+fn count_fall_fly_ticks(m: &mut Mob) {
+    m.extra.fall_fly_ticks = if m.extra.fall_flying {
+        m.extra.fall_fly_ticks + 1
+    } else {
+        0
+    };
+}
+
 /// `LivingEntity.aiStep`: both flight effects discard accumulated fall before
 /// travel, even when NoAI skips the server AI step.
 fn reset_effect_fall_distance(m: &mut Mob) {
@@ -1649,6 +1724,7 @@ fn ai_step(m: &mut Mob, w: &MobWorld, level_random: &mut LegacyRandom, events: &
         f64::from(m.ai.yya),
         f64::from(m.ai.zza),
     );
+    update_fall_flying(m, w, events);
     reset_effect_fall_distance(m);
     if super::equine::moved_by_client(m) {
         // LivingEntity.travelRidden: the rider's client moves it
@@ -1915,6 +1991,9 @@ fn server_ai_step(
     if m.species() == Species::Villager {
         // Villager.customServerAiStep: the brain, then the raid sound roll.
         super::villager_brain::tick(m, w, level_random, events);
+        if let Some(player) = super::villager::ext_mut(m).last_traded_player.take() {
+            events.push(MobEvent::VillagerTrade { mob: m.id, player });
+        }
         let _ = m.random.next_int_bound(100);
     }
     if m.species() == Species::Warden {
@@ -4085,6 +4164,124 @@ mod bed_wake_tests {
     use super::*;
     use crate::mobs::world::with_test_world;
 
+    #[test]
+    #[ignore = "needs prepared vanilla resources"]
+    fn loaded_sleeping_position_refreshes_in_actual_mob_tick() {
+        use horizon_world::nbt::Tag;
+        let build = |world: &mut crate::world::World,
+                     registry: &horizon_world::registry::BlockRegistry| {
+            world.chunks.insert(
+                (0, 0),
+                std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+            );
+            let stone = registry.default_state("minecraft:stone").unwrap();
+            for x in 0..12 {
+                for z in 0..12 {
+                    world.set(x, 63, z, stone).unwrap();
+                }
+            }
+            let mut bed = registry
+                .state(registry.default_state("minecraft:red_bed").unwrap())
+                .unwrap()
+                .clone();
+            bed.properties.insert("facing".into(), "north".into());
+            bed.properties.insert("occupied".into(), "false".into());
+            for (part, z) in [("head", 0), ("foot", 1)] {
+                bed.properties.insert("part".into(), part.into());
+                world.set(0, 64, z, registry.id(&bed).unwrap()).unwrap();
+            }
+        };
+        let ran = crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+            assert_eq!(w.block_name(0, 64, 0), "minecraft:red_bed");
+            assert_eq!(w.prop(0, 64, 0, "part"), Some("head"));
+            assert_eq!(w.prop(0, 64, 0, "facing"), Some("north"));
+            let types = [(
+                "minecraft:villager".to_owned(),
+                std::sync::Arc::new(types.types["minecraft:villager"].clone()),
+            )]
+            .into_iter()
+            .collect();
+            let input = horizon_world::nbt::parse_snbt(r#"{id:"minecraft:villager",Pos:[0.5d,64.5625d,0.5d],Health:20f,NoAI:1b,NoGravity:1b,PersistenceRequired:1b,sleeping_pos:[I;0,64,0],Motion:[0d,0d,0d]}"#).unwrap().0;
+            let mut loaded =
+                crate::entity_nbt::mob_from_nbt(&input, &types, 233, Some(w.registry)).unwrap();
+            assert_eq!(
+                loaded.position,
+                Vec3::new(0.5, 64.5625, 0.5),
+                "loading alone must not perform the first-tick correction"
+            );
+            assert!(loaded.first_tick && loaded.no_ai && loaded.no_gravity);
+            assert!(super::super::villager::sleeping(&loaded));
+            assert_eq!(
+                super::super::villager::sleeping_pos(&loaded),
+                Some([0, 64, 0])
+            );
+            let mut awake_input = input.clone();
+            let Tag::Compound(ref mut fields) = awake_input else {
+                unreachable!()
+            };
+            fields.remove(&"sleeping_pos".into());
+            fields.insert(
+                "Pos".into(),
+                Tag::List(
+                    [5.5_f64, 64.0, 5.5]
+                        .map(|v| Tag::Double(v.to_bits()))
+                        .to_vec(),
+                ),
+            );
+            let mut awake =
+                crate::entity_nbt::mob_from_nbt(&awake_input, &types, 234, Some(w.registry))
+                    .unwrap();
+            let mut normal = awake.clone();
+            normal.id = 235;
+            let mut normal_events = Vec::new();
+            assert!(super::super::villager::start_sleeping(
+                &mut normal,
+                [0, 64, 0],
+                w,
+                &mut normal_events
+            ));
+            assert_eq!(normal.position, Vec3::new(0.5, 64.6875, 0.5));
+            assert!(normal_events.iter().any(|e| matches!(
+                e,
+                MobEvent::BedOccupied {
+                    pos: [0, 64, 0],
+                    occupied: true
+                }
+            )));
+            let mut random = LegacyRandom::new(0);
+            let mut loaded_events = Vec::new();
+            for n in 1..=2 {
+                assert!(loaded.tick(w, &mut random, &mut loaded_events));
+                assert_eq!(loaded.age, n);
+                assert!(!loaded.first_tick);
+                assert_eq!(
+                    loaded.position,
+                    Vec3::new(0.5, 64.6875, 0.5),
+                    "actual loaded sleeper at tick {n}"
+                );
+                assert_eq!(loaded.velocity, Vec3::ZERO);
+                assert_eq!(loaded.health, 20.0);
+                assert_eq!(
+                    super::super::villager::sleeping_pos(&loaded),
+                    Some([0, 64, 0])
+                );
+                assert!(awake.tick(w, &mut random, &mut Vec::new()));
+                assert_eq!(awake.position, Vec3::new(5.5, 64.0, 5.5));
+                assert!(!super::super::villager::sleeping(&awake));
+                assert!(normal.tick(w, &mut random, &mut normal_events));
+                assert_eq!(normal.position, Vec3::new(0.5, 64.6875, 0.5));
+                assert_eq!(normal.velocity, Vec3::ZERO);
+            }
+            assert!(
+                !loaded_events
+                    .iter()
+                    .any(|e| matches!(e, MobEvent::BedOccupied { .. })),
+                "refresh must not re-run startSleeping side effects"
+            );
+        });
+        assert!(ran, "prepared Mob/bed world must actually run");
+    }
+
     /// `LivingEntity.tick` wakes a sleeper whose bed is gone before
     /// `aiStep` — `Mob.no_ai` skips the step, not the check (#7875).
     fn no_ai_sleeper() -> Option<Mob> {
@@ -4459,7 +4656,9 @@ mod fox_screech_tests {
 
             let mut end = night.clone();
             end.daylight = true;
-            end.end = true;
+            end.dimension_type =
+                horizon_world::dimension_type::DimensionFacts::vanilla("minecraft:the_end")
+                    .unwrap();
             assert!(
                 sounds(&end, types)
                     .iter()
@@ -5484,6 +5683,80 @@ mod dolphin_noai_air_tests {
     #[test]
     fn normal_dolphins_keep_their_underwater_countdown() {
         check(true, false, 4800, [4799, 4798]);
+    }
+}
+
+#[cfg(test)]
+mod nautilus_noai_air_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn check(water: bool, no_ai: bool, initial: i32, expected: [i32; 2]) {
+        let build = |world: &mut crate::world::World,
+                     registry: &horizon_world::registry::BlockRegistry| {
+            world
+                .chunks
+                .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+            if water {
+                let state = registry.default_state("minecraft:water").unwrap();
+                for x in 0..=4 {
+                    for z in 0..=4 {
+                        for y in 0..=8 {
+                            world.set(x, y, z, state).unwrap();
+                        }
+                    }
+                }
+            }
+        };
+        let ran = crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+            let kind = Arc::new(types.types["minecraft:nautilus"].clone());
+            assert!(kind.flags.needs_water && kind.flags.breathes_water);
+            let mut mob = Mob::new(1, kind, Vec3::new(2.5, 3.0, 2.5), 0.0);
+            mob.no_ai = no_ai;
+            mob.no_gravity = true;
+            mob.persistent = true;
+            mob.attrs.speed = 0.0;
+            mob.health = 10.0;
+            mob.air = initial;
+            let mut random = LegacyRandom::new(0);
+            let mut events = Vec::new();
+            for (index, expected) in expected.into_iter().enumerate() {
+                assert!(tick(&mut mob, w, &mut random, &mut events));
+                assert_eq!(mob.age, (index + 1) as u32);
+                assert_eq!(mob.fluids.eye_in_water, water);
+                assert_eq!(mob.health, 10.0);
+                assert_eq!(mob.no_ai, no_ai);
+                assert_eq!(
+                    mob.air,
+                    expected,
+                    "water={water}, NoAI={no_ai}, initial={initial}, tick={}",
+                    index + 1
+                );
+            }
+        });
+        if !ran {
+            eprintln!("Prepared mob data unavailable; Nautilus full-tick coverage did not run");
+        }
+    }
+
+    /// `Nautilus.baseTick`: NoAI skips only handleAirSupply; super.baseTick
+    /// still refills a breathing mob by four, capped at300.
+    #[test]
+    fn noai_nautilus_keeps_superclass_refill_in_both_media() {
+        for water in [false, true] {
+            check(water, true, 300, [300, 300]);
+            check(water, true, 100, [104, 108]);
+        }
+    }
+
+    /// With AI, handleAirSupply still uses the pre-super air on land and
+    /// writes300 in water. The NoAI exception must not alter that policy.
+    #[test]
+    fn normal_nautilus_keeps_its_custom_handler() {
+        check(false, false, 300, [299, 298]);
+        check(false, false, 100, [99, 98]);
+        check(true, false, 300, [300, 300]);
+        check(true, false, 100, [300, 300]);
     }
 }
 

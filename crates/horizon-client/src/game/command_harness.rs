@@ -166,7 +166,7 @@ impl Game<'_> {
         // its hub record, which leave_guest would otherwise overwrite.
         self.in_owner_level(|g| {
             let mut host = g.lan.take().ok_or("command harness: no hub")?;
-            g.start_server_trip(&mut host, conn, plan.dim, Some(plan));
+            g.start_server_trip(&mut host, conn, plan.dim, Some(plan), false);
             g.lan = Some(host);
             Ok(())
         })
@@ -271,9 +271,19 @@ impl Game<'_> {
                     self.chat_capture = Some(Vec::new());
                     self.cmds.results = Some(Vec::new());
                     self.harness_owner(|g| {
+                        let previous = g.command_source;
+                        if op["source"].as_str() == Some("console") {
+                            // Actual server source; permission-only `as_console`
+                            // otherwise keeps the connected owner's entity.
+                            g.command_source = Some(super::commands::execute::Source {
+                                silent: false,
+                                ..g.server_source()
+                            });
+                        }
                         g.as_console(|g| {
                             g.run_command(command.strip_prefix('/').unwrap_or(command))
                         });
+                        g.command_source = previous;
                         Ok(())
                     })?;
                     let messages = self.chat_capture.take().unwrap_or_default();
@@ -293,6 +303,36 @@ impl Game<'_> {
                             out.push('\n');
                         }
                     }
+                }
+                "projectile_saved_type" => {
+                    let uuid = u128::from_str_radix(
+                        &op["uuid"]
+                            .as_str()
+                            .ok_or("projectile type: missing UUID")?
+                            .replace('-', ""),
+                        16,
+                    )?;
+                    let state = self.harness_owner(|g| {
+                        let Some(super::commands::Target::Projectile(id)) = g.target_by_uuid(uuid) else {
+                            return Err("projectile type: missing loaded projectile".into());
+                        };
+                        let actual = *g.persist.uuids.get(&id).ok_or("projectile type: missing actual UUID")?;
+                        if horizon_client::lan::playerdata::ints_uuid(actual) != uuid {
+                            return Err("projectile type: UUID mismatch".into());
+                        }
+                        let p = g.creatures.projectiles.iter().find(|p| p.id == id)
+                            .ok_or("projectile type: missing model")?;
+                        // Read the live save adapter's type, not the generic selector alias.
+                        // No Duration value is supplied by this admission observation.
+                        let saved = horizon_client::entity_nbt::arrow_to_nbt(p, actual, None, None, None)
+                            .ok_or("projectile type: not an actual arrow")?;
+                        Ok(json!({"uuid":actual,"kind":horizon_client::entity_nbt::kind(&saved)
+                            .ok_or("projectile type: missing saved type")?,
+                            "pos":[p.position.x,p.position.y,p.position.z],"no_gravity":p.no_gravity}))
+                    })?;
+                    out.push_str(&json!({"cmd":format!("#projectile_saved_type {}",op["label"].as_str().unwrap_or("")),
+                        "messages":[],"results":[],"state":state}).to_string());
+                    out.push('\n');
                 }
                 "raid_state" => {
                     let state = self.harness_owner(|g| g.raid_fixture_state(&op))?;

@@ -245,6 +245,30 @@ def smithing_cases(g):
                 yield 'smith\t%s\t%s\t%s' % (stack(rng.choice(recipe['template'])), stack(base, 1, trim=trim), stack(rng.choice(recipe['addition'])))
 
 
+def smithing_transform_cases():
+    """Decode custom recipes on both sides; exercise actual optional matching and assembly."""
+    base = stack('minecraft:stick', custom_name='"Original"', repair_cost='7', custom_data='{kept:1}')
+    for template in [None, 'minecraft:diamond']:
+        for addition in [None, 'minecraft:diamond']:
+            recipe = {'type': 'minecraft:smithing_transform', 'base': 'minecraft:stick',
+                      'result': {'id': 'minecraft:emerald', 'count': 3,
+                                 'components': {'minecraft:custom_name': 'Upgraded', 'minecraft:repair_cost': 0}}}
+            if template is not None:
+                recipe['template'] = template
+            if addition is not None:
+                recipe['addition'] = addition
+            for t in ['-', stack('minecraft:diamond')]:
+                for a in ['-', stack('minecraft:diamond')]:
+                    yield '\t'.join(['smith_transform', json.dumps(recipe, separators=(',', ':')), t, base, a])
+    for result in ['minecraft:emerald', {'id': 'minecraft:emerald', 'count': 0},
+                   {'id': 'minecraft:emerald', 'count': 100}, {'id': 'minecraft:diamond_sword', 'count': 2},
+                   {'id': 'minecraft:emerald', 'components': {'!minecraft:custom_name': {}}},
+                   {'id': 'minecraft:emerald', 'components': {'minecraft:max_damage': 10}},
+                   {'id': 'minecraft:emerald', 'count': 65, 'components': {'minecraft:max_stack_size': 99}}]:
+        recipe = {'type': 'minecraft:smithing_transform', 'base': 'minecraft:stick', 'result': result}
+        yield '\t'.join(['smith_transform', json.dumps(recipe, separators=(',', ':')), '-', base, '-'])
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--seed', type=int, default=7)
@@ -252,10 +276,17 @@ def main():
     parser.add_argument('--specials', type=int, default=1500)
     parser.add_argument('--random', type=int, default=4000)
     parser.add_argument('--limit', type=int, default=3)
+    parser.add_argument('--smithing-transforms-only', action='store_true')
     args = parser.parse_args()
     work = lib.work_dir('recipe-parity')
     vanilla = lib.Vanilla(work)
     vanilla.compile('ParityData', 'VanillaRecipeOracle')
+    if args.smithing_transforms_only:
+        cases = list(smithing_transform_cases())
+        (work / 'cases.txt').write_text(''.join(c + '\n' for c in cases))
+        vanilla.run('VanillaRecipeOracle', work / 'cases.txt', work / 'native.txt')
+        lib.cargo_example('horizon-client', 'recipe_fixture', lib.RESOURCES, work / 'cases.txt', work / 'rust.txt')
+        raise SystemExit(bool(lib.compare(cases, work / 'native.txt', work / 'rust.txt', lambda *_: 'smithing transform', limit=args.limit)))
     vanilla.run('VanillaRecipeOracle', 'dump', work / 'recipes.jsonl')
     recipes = [json.loads(line) for line in (work / 'recipes.jsonl').read_text().splitlines()]
     # Shaped recipes: widths come from the data pack.
@@ -285,6 +316,7 @@ def main():
     for item in [i for i in items if i != 'minecraft:air']:
         cases.append('stonecut\t' + stack(item))
     cases += list(smithing_cases(g))
+    cases += list(smithing_transform_cases())
     (work / 'cases.txt').write_text(''.join(c + '\n' for c in cases))
     vanilla.run('VanillaRecipeOracle', work / 'cases.txt', work / 'native.txt')
     lib.cargo_example('horizon-client', 'recipe_fixture', lib.RESOURCES, work / 'cases.txt', work / 'rust.txt')

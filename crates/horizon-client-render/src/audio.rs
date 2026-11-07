@@ -1071,7 +1071,7 @@ impl Audio {
             listener: [0.0; 3],
             listener_yaw: 0.0,
             master: 1.0,
-            random: LegacyRandom::new(crate::sound_engine::unique_seed()),
+            random: crate::random_source::create(),
             source_override: None,
             capture: None,
             heard: Default::default(),
@@ -1232,7 +1232,7 @@ impl Audio {
             listener: [0.0; 3],
             listener_yaw: 0.0,
             master: self.master,
-            random: LegacyRandom::new(crate::sound_engine::unique_seed()),
+            random: crate::random_source::create(),
             source_override: None,
             capture: None,
             heard: Default::default(),
@@ -1482,7 +1482,7 @@ impl Audio {
                 "minecraft:ui.button.click",
                 1.0,
                 0.25,
-                SoundEngine::unseeded(),
+                crate::random_source::create(),
             ),
             false,
         );
@@ -1624,7 +1624,7 @@ impl Audio {
             f64::from(pos[2]) + 0.5,
         ];
         let event = crate::sound_events::normalize(event);
-        let instance = SoundInstance::for_jukebox_song(&event, at, SoundEngine::unseeded());
+        let instance = SoundInstance::for_jukebox_song(&event, at, crate::random_source::create());
         self.play_instance(instance, true).0
     }
     /// Stop and drop a held instance.

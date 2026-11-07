@@ -336,9 +336,8 @@ impl Game<'_> {
     /// `PalettedTextureManager.getOrPrepare` for the trims drawn this frame
     /// (the player's armour and the armour stands'): each generated texture
     /// goes into an atlas trim slot, a free one, else the least recently
-    /// drawn.
+    /// drawn. Reuse the completed preparation while the requests and atlas stay the same.
     pub(super) fn prepare_trims(&mut self) {
-        use horizon_client::hud::TRIM_SLOTS;
         let assets = &self.armor_stand_assets;
         let items = self.items();
         let mut wanted: Vec<TrimTexture> = Vec::new();
@@ -398,60 +397,12 @@ impl Game<'_> {
                 wanted.push(t);
             }
         }
-        for t in wanted {
-            let name = t.sprite();
-            // Entries the atlas no longer has (rebuilt by a resource reload) are free.
-            let sprites = &self.gui.atlas.sprites;
-            self.trim_slots.retain(|(n, _)| sprites.contains_key(n));
-            if let Some(i) = self.trim_slots.iter().position(|e| e.0 == name) {
-                let e = self.trim_slots.remove(i);
-                self.trim_slots.push(e);
-                continue;
-            }
-            let Some((w, h, rgba)) = t.generate(&self.armor_stand_assets.root) else {
-                continue;
-            };
-            let used: Vec<usize> = self.trim_slots.iter().map(|e| e.1).collect();
-            let slot = match (0..TRIM_SLOTS).find(|i| !used.contains(i)) {
-                Some(free) => free,
-                None => {
-                    let (old, slot) = self.trim_slots.remove(0);
-                    self.gui.atlas.sprites.remove(&old);
-                    slot
-                }
-            };
-            let Some(area) = self
-                .gui
-                .atlas
-                .sprites
-                .get(&format!("horizon/trim{slot}"))
-                .copied()
-            else {
-                continue;
-            };
-            if w > area.w || h > area.h {
-                continue;
-            }
-            let (aw, ah) = (self.gui.atlas.width as f32, self.gui.atlas.height as f32);
-            let (x, y) = ((area.u0 * aw).round(), (area.v0 * ah).round());
-            self.map_patches.push(horizon_client::font::Patch {
-                x: x as u32,
-                y: y as u32,
-                width: w,
-                height: h,
-                rgba,
-            });
-            let rect = horizon_client::hud::Rect {
-                u0: area.u0,
-                v0: area.v0,
-                u1: (x + w as f32) / aw,
-                v1: (y + h as f32) / ah,
-                w,
-                h,
-            };
-            self.gui.atlas.sprites.insert(name.clone(), rect);
-            self.trim_slots.push((name, slot));
-        }
+        self.trim_slots.prepare(
+            wanted,
+            &assets.root,
+            &mut self.gui.atlas,
+            &mut self.map_patches,
+        );
     }
     /// `ArmorStandItem.useOn`.
     /// `ArmorStandItem.useOn` up to its `FAIL`s, which a client checks too:

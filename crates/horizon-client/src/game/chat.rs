@@ -164,6 +164,8 @@ pub struct UiState {
     pub difficulty: u8,
     /// F1: hide the HUD.
     pub hide_gui: bool,
+    /// Native HUD mode: keep hands visible while the HUD is hidden.
+    pub show_hand_when_hidden: bool,
     /// Death message key set by the cause of death (e.g. /kill).
     pub death_cause: Option<String>,
     /// Path of an F2 screenshot waiting for its frame.
@@ -183,6 +185,46 @@ pub struct UiState {
 }
 
 impl UiState {
+    pub fn hud_mode(&self) -> super::native_client_services::HudMode {
+        use super::native_client_services::HudMode;
+        match (self.hide_gui, self.show_hand_when_hidden) {
+            (false, _) => HudMode::AllVisible,
+            (true, true) => HudMode::NoHud,
+            (true, false) => HudMode::AllHidden,
+        }
+    }
+
+    pub fn set_hud_mode(&mut self, mode: super::native_client_services::HudMode) {
+        use super::native_client_services::HudMode;
+        self.hide_gui = mode != HudMode::AllVisible;
+        self.show_hand_when_hidden = mode == HudMode::NoHud;
+    }
+
+    pub fn hand_hidden(&self) -> bool {
+        self.hide_gui && !self.show_hand_when_hidden
+    }
+
+    /// The effective first-person hand gate, before per-hand mod cancellation.
+    pub fn hands_drawn(
+        &self,
+        spectator: bool,
+        sleeping: bool,
+        first_person: bool,
+        alive: bool,
+        dead_screen: bool,
+    ) -> bool {
+        !spectator && !self.hand_hidden() && !sleeping && first_person && alive && !dead_screen
+    }
+
+    fn toggle_hide_gui(&mut self) {
+        use super::native_client_services::HudMode;
+        self.set_hud_mode(if self.hide_gui {
+            HudMode::AllVisible
+        } else {
+            HudMode::AllHidden
+        });
+    }
+
     /// The state a window starts with: the chat remembers the commands kept
     /// in the game folder (`ChatComponent`'s constructor).
     pub fn new() -> Self {
@@ -191,6 +233,138 @@ impl UiState {
             ui.chat.load_history(&dir);
         }
         ui
+    }
+}
+
+#[cfg(test)]
+mod hud_mode_tests {
+    use super::UiState;
+    use crate::mod_api::{self, ClientTickPreEvent, Hooks, Host, HudMode};
+
+    #[test]
+    fn hud_modes_drive_the_effective_hud_and_hand_gate() {
+        let mut ui = UiState::default();
+        for (mode, hidden, hand) in [
+            (HudMode::AllVisible, false, true),
+            (HudMode::NoHud, true, true),
+            (HudMode::AllHidden, true, false),
+        ] {
+            ui.set_hud_mode(mode);
+            assert_eq!(ui.hud_mode(), mode);
+            // This is the same flag that every HUD gate and API 410 read.
+            assert_eq!(ui.hide_gui, hidden);
+            assert_eq!(ui.hands_drawn(false, false, true, true, false), hand);
+            // No mode can bypass the other first-person hand restrictions.
+            assert!(!ui.hands_drawn(true, false, true, true, false));
+            assert!(!ui.hands_drawn(false, true, true, true, false));
+            assert!(!ui.hands_drawn(false, false, false, true, false));
+            assert!(!ui.hands_drawn(false, false, true, false, false));
+            assert!(!ui.hands_drawn(false, false, true, true, true));
+        }
+    }
+
+    #[test]
+    fn vanilla_f1_remains_two_state_and_clears_the_hand_override() {
+        let mut ui = UiState::default();
+        assert_eq!(ui.hud_mode(), HudMode::AllVisible);
+        ui.toggle_hide_gui();
+        assert_eq!(ui.hud_mode(), HudMode::AllHidden);
+        assert!(ui.hand_hidden());
+        ui.toggle_hide_gui();
+        assert_eq!(ui.hud_mode(), HudMode::AllVisible);
+        ui.set_hud_mode(HudMode::NoHud);
+        ui.toggle_hide_gui();
+        assert_eq!(ui.hud_mode(), HudMode::AllVisible);
+        ui.toggle_hide_gui();
+        assert_eq!(ui.hud_mode(), HudMode::AllHidden);
+        // Existing hidden state also hides hands without a separate setting.
+        let ui = UiState {
+            hide_gui: true,
+            ..Default::default()
+        };
+        assert_eq!(ui.hud_mode(), HudMode::AllHidden);
+        assert!(ui.hand_hidden());
+    }
+
+    struct Client(UiState);
+    impl Host for Client {
+        fn hud_mode(&self) -> HudMode {
+            self.0.hud_mode()
+        }
+        fn set_hud_mode(&mut self, mode: HudMode) {
+            self.0.set_hud_mode(mode);
+        }
+    }
+    struct ThreeState;
+    impl Hooks for ThreeState {
+        fn client_tick_pre(&self, host: &mut dyn Host, _: &mut ClientTickPreEvent) {
+            host.set_hud_mode(match host.hud_mode() {
+                HudMode::AllVisible => HudMode::NoHud,
+                HudMode::NoHud => HudMode::AllHidden,
+                HudMode::AllHidden => HudMode::AllVisible,
+            });
+        }
+    }
+
+    #[test]
+    fn generated_dispatch_exposes_hud_mode_helpers_to_existing_callbacks() {
+        let mods: Vec<Box<dyn Hooks>> = vec![Box::new(ThreeState)];
+        let mut client = Client(UiState::default());
+        for (mode, hidden, hand) in [
+            (HudMode::NoHud, true, true),
+            (HudMode::AllHidden, true, false),
+            (HudMode::AllVisible, false, true),
+        ] {
+            mod_api::dispatch_client_tick_pre(&mut client, &mods);
+            assert_eq!(client.hud_mode(), mode);
+            assert_eq!(client.0.hide_gui, hidden);
+            assert_eq!(client.0.hands_drawn(false, false, true, true, false), hand);
+        }
+        mod_api::dispatch_client_tick_pre(&mut client, &[]);
+        assert_eq!(client.hud_mode(), HudMode::AllVisible);
+    }
+
+    /// Exercise the generated Host bridge against a real Game with silent audio
+    /// and no window, renderer, server loop or network connection.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn native_hud_mode_game_bridge_respects_client_and_guest_guards() {
+        use crate::game::{execution_role::ExecutionRole, native_machines::tests::server_game};
+        let mut game = server_game();
+        assert!(game.window.is_none());
+        assert!(game.renderer.is_none());
+        let mods: Vec<Box<dyn Hooks>> = vec![Box::new(ThreeState)];
+        for role in [
+            ExecutionRole::IntegratedServer,
+            ExecutionRole::DedicatedServer,
+        ] {
+            game.options.execution_role = role;
+            mod_api::dispatch_client_tick_pre(&mut game, &mods);
+            assert_eq!(Host::hud_mode(&game), HudMode::AllVisible);
+        }
+        game.options.execution_role = ExecutionRole::Client;
+        mod_api::dispatch_client_tick_pre(&mut game, &mods);
+        assert_eq!(Host::hud_mode(&game), HudMode::NoHud);
+        assert!(game.ui.hide_gui);
+        assert!(game.ui.hands_drawn(false, false, true, true, false));
+
+        // A server callback borrowing another actor cannot change the window's mode.
+        game.lan_acting = Some(17);
+        mod_api::dispatch_client_tick_pre(&mut game, &mods);
+        assert_eq!(Host::hud_mode(&game), HudMode::NoHud);
+        game.lan_acting = None;
+        mod_api::dispatch_client_tick_pre(&mut game, &mods);
+        assert_eq!(Host::hud_mode(&game), HudMode::AllHidden);
+        assert!(!game.ui.hands_drawn(false, false, true, true, false));
+
+        game.toggle_hide_gui();
+        assert_eq!(Host::hud_mode(&game), HudMode::AllVisible);
+        Host::set_hud_mode(&mut game, HudMode::NoHud);
+        game.toggle_hide_gui();
+        assert_eq!(Host::hud_mode(&game), HudMode::AllVisible);
+        game.toggle_hide_gui();
+        assert_eq!(Host::hud_mode(&game), HudMode::AllHidden);
+        assert!(game.ui.hand_hidden());
     }
 }
 
@@ -1680,7 +1854,7 @@ impl Game<'_> {
     }
     /// F1 hides the HUD (see `hud`); the screenshot key still works.
     pub(super) fn toggle_hide_gui(&mut self) {
-        self.ui.hide_gui = !self.ui.hide_gui;
+        self.ui.toggle_hide_gui();
     }
     /// F2: ScreenShot.grab into `screenshots/` with vanilla's file name. The
     /// file it will write, `None` without a window to draw.
@@ -2225,7 +2399,11 @@ mod enchantment_snapshot_tests {
         let pack = dir.join("datapacks/model");
         let tags = pack.join("data/h024/tags/enchantment");
         std::fs::create_dir_all(&tags).unwrap();
-        std::fs::write(pack.join("pack.mcmeta"), "{}").unwrap();
+        std::fs::write(
+            pack.join("pack.mcmeta"),
+            r#"{"pack":{"description":"fixture"}}"#,
+        )
+        .unwrap();
         std::fs::write(tags.join("empty.json"), r#"{"values":[]}"#).unwrap();
         std::fs::write(
             dir.join("datapacks.json"),

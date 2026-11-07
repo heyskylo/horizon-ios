@@ -395,6 +395,9 @@ impl BlockEntity {
         if name == "minecraft:daylight_detector" {
             return Some(Self::DaylightDetector);
         }
+        if name.ends_with("copper_golem_statue") {
+            return Some(Self::CopperGolemStatue(Default::default()));
+        }
         if name == "minecraft:beacon" {
             return Some(Self::Beacon(Box::new(Beacon {
                 last_check_y: i32::MIN / 2,
@@ -460,6 +463,7 @@ impl BlockEntity {
             Self::CommandBlock(_) => crate::command_block::Mode::of_block(name).is_some(),
             Self::Skull(_) => is_skull(name),
             Self::Banner(_) => name.ends_with("_banner"),
+            Self::CopperGolemStatue(_) => name.ends_with("copper_golem_statue"),
             Self::Shelf(_) => name == "minecraft:shelf" || name.ends_with("_shelf"),
             Self::Mod(_) => !name.starts_with("minecraft:"),
             Self::Beehive(_) => matches!(name, "minecraft:beehive" | "minecraft:bee_nest"),
@@ -510,6 +514,7 @@ impl BlockEntity {
             Self::Lectern(_) => "minecraft:lectern",
             Self::Sculk(s) => s.id(),
             Self::Banner(_) => "minecraft:banner",
+            Self::CopperGolemStatue(_) => "minecraft:copper_golem_statue",
             Self::Crafter(_) => "minecraft:crafter",
             Self::CreakingHeart(_) => "minecraft:creaking_heart",
             Self::Spawner(_) => "minecraft:mob_spawner",
@@ -558,7 +563,7 @@ impl BlockEntity {
             Self::Mod(m) => m.items.iter().flatten().cloned().collect(),
             Self::Lectern(l) => l.book.iter().cloned().collect(),
             Self::Sculk(_) => Vec::new(),
-            Self::Banner(_) => Vec::new(),
+            Self::Banner(_) | Self::CopperGolemStatue(_) => Vec::new(),
             Self::Crafter(c) => c.items.iter().flatten().cloned().collect(),
             Self::Campfire(c) => c.items.iter().flatten().cloned().collect(),
             Self::ChiseledBookshelf(b) => b.items.iter().flatten().cloned().collect(),
@@ -575,6 +580,7 @@ impl BlockEntity {
             | Self::Lectern(_)
             | Self::Sculk(_)
             | Self::Banner(_)
+            | Self::CopperGolemStatue(_)
             | Self::EndGateway(_)
             | Self::Skull(_)
             | Self::PotentSulfur(_)
@@ -609,6 +615,7 @@ impl BlockEntity {
             | Self::Lectern(_)
             | Self::Sculk(_)
             | Self::Banner(_)
+            | Self::CopperGolemStatue(_)
             | Self::EndGateway(_)
             | Self::Skull(_)
             | Self::PotentSulfur(_)
