@@ -9190,7 +9190,10 @@ impl Game<'_> {
                     id: self.mobs[i].id as i32,
                 }));
                 self.pvp_attacked(self.mobs[i].id as i32, distance);
-                let (target, player) = (self.mobs[i].id, &*self.mobs[i].kind.id == "minecraft:player");
+                let (target, player) = (
+                    self.mobs[i].id,
+                    &*self.mobs[i].kind.id == "minecraft:player",
+                );
                 self.native_client_attack(target, player);
                 self.remote_player_attack(i);
                 self.reset_attack_strength();
