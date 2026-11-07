@@ -1063,6 +1063,7 @@ impl Game<'_> {
         // Nothing is kept around the spawn while nobody is on.
         self.streaming.radius = -1;
         self.settle_spawn()?;
+        self.prepare_levels()?;
         let gate_lists = lists.clone();
         let gate: LoginGate = Arc::new(move |address, uuid, name| {
             // `ServerActivityMonitor.reportLoginActivity`: a login attempt, however it ends. The management
