@@ -643,6 +643,8 @@ impl Game<'_> {
             self.lan_acting_permission.replace(g.permission),
             self.lan_acting_entity.replace(g.entity_id as u32),
         );
+        // The damage hooks name the guest by UUID from here on.
+        super::native_damage::note_player(g.entity_id, g.uuid);
         let packets = std::mem::take(&mut self.guest_packets);
         let entity_events = std::mem::take(&mut self.guest_entity_events);
         let equipment_breaks = std::mem::take(&mut self.guest_equipment_breaks);
@@ -1690,6 +1692,8 @@ impl Game<'_> {
             }
             host.hub.container_closed(conn, window);
         }
+        // A mod's menu with input slots gives them back (`clearContainer`).
+        self.native_menu_returned(host, conn, removal);
         self.lan_merchant_closed(host, conn, None);
         self.lan_crafting_removed(host, conn, None, removal);
         if removal == MenuRemoval::Disconnected {
@@ -2046,6 +2050,13 @@ impl Game<'_> {
         let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
             return;
         };
+        // Plugin channels a client registers in play (minecraft:register), from a dead player
+        // too; the packet goes on as before.
+        if let S::CustomPayload(p) = &packet
+            && let Some(register) = horizon_client::lan::channel_registration(&p.channel)
+        {
+            self.guest_channels(host, gi, &p.data, register);
+        }
         // A plugin channel's message on a channel that isn't one of Horizon's own (the match below
         // takes those) is for the mods, from a dead player too: vanilla's handleCustomPayload doesn't
         // look at health.
@@ -2666,6 +2677,7 @@ impl Game<'_> {
             S::ResourcePack(r) => {
                 let (uuid, name) = (host.hub.guests[gi].uuid, host.hub.guests[gi].name.clone());
                 self.as_guest(host, conn, |g| {
+                    g.native_resource_pack_status_v2(uuid, &name, r.id, r.action);
                     g.native_resource_pack_status(uuid, &name, r.action);
                 });
             }
@@ -2721,6 +2733,8 @@ impl Game<'_> {
                 }
             }
             S::ContainerClick(p) => {
+                // A mod's menu on an away player's file: read before the click.
+                let away = self.away_menu_click_start(host, gi, p.container);
                 let rules = ItemRules(world_items!(self));
                 let slots = host.hub.guests[gi]
                     .menu
@@ -2729,6 +2743,10 @@ impl Game<'_> {
                     .map(|m| m.slots);
                 let before = slots.and_then(|s| s.read(&self.world, &host.hub.guests[gi]));
                 let drops = host.hub.container_click(conn, &p, &mut self.world, &rules);
+                let drops = match away {
+                    Some(click) => self.away_menu_click_end(host, gi, click, drops),
+                    None => drops,
+                };
                 // A click that changed the container's slots: BlockEntity.setChanged,
                 // so comparators read it again (a double chest's other half follows).
                 if let Some(Slots::Block(key) | Slots::Double(key, _)) = slots
@@ -2765,6 +2783,7 @@ impl Game<'_> {
                     self.close_guest_vehicle_menu(host, conn, key);
                 }
                 host.hub.container_closed(conn, p.container);
+                self.native_menu_returned(host, conn, MenuRemoval::Live);
                 self.guest_carried_back(host, gi);
             }
             S::ChatCommand(c) => self.guest_chat_command(host, conn, &c.command),
@@ -6421,6 +6440,7 @@ mod respawn_world_point_tests {
                 latency: Arc::new(AtomicI32::new(0)),
                 address: "127.0.0.1:25565".parse().unwrap(),
                 expected: false,
+                configured: Default::default(),
             },
             2,
             [0.5, 100.0, 0.5],
@@ -6557,6 +6577,7 @@ mod respawn_world_point_tests {
                 latency: Arc::new(AtomicI32::new(0)),
                 address: "127.0.0.1:25565".parse().unwrap(),
                 expected: false,
+                configured: Default::default(),
             },
             2,
             [0.5, 100.0, 0.5],

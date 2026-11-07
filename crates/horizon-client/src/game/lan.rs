@@ -2176,6 +2176,8 @@ impl Game<'_> {
                     {
                         self.lan = Some(host);
                         self.native_player_logged_in(uuid, &name);
+                        // What the client said in its configuration (native_packets.rs).
+                        self.configuration_heard(uuid, &name);
                         // A hook's command can close the hub.
                         host = self.lan.take()?;
                     }
@@ -2427,7 +2429,7 @@ impl Game<'_> {
                 .take()
                 .expect("the hub is back after the advancement grants");
         }
-        if !host.hub.native_menu_events.is_empty() {
+        if !host.hub.native_menu_events.is_empty() || !host.hub.native_menu_returns.is_empty() {
             self.lan = Some(host);
             horizon_client::spans::time("lan_menu_events", || self.run_native_menu_events());
             host = self
@@ -2797,7 +2799,7 @@ impl Game<'_> {
                 .take()
                 .expect("the hub is back after the advancement grants");
         }
-        if !host.hub.native_menu_events.is_empty() {
+        if !host.hub.native_menu_events.is_empty() || !host.hub.native_menu_returns.is_empty() {
             self.lan = Some(host);
             self.run_native_menu_events();
             host = self
@@ -2835,6 +2837,7 @@ impl Game<'_> {
         drop(holding);
         self.flush_attachment_sync(&mut host);
         self.flush_native_net(&mut host);
+        self.flush_native_player_fx(&mut host);
         self.flush_far_terrain(&mut host);
         lan::flush_all(host.hub.guests.iter().map(|g| &g.sender));
         self.lan = Some(host);

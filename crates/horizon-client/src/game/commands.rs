@@ -906,7 +906,7 @@ impl Game<'_> {
     /// the entity lists (a kind added there joins `@e` once it names its
     /// `Target`), then the kinds that are not on the walk. An
     /// unsorted selector lists them in that order.
-    fn level_candidates(&self) -> Vec<Target> {
+    pub(in crate::game) fn level_candidates(&self) -> Vec<Target> {
         use super::entity::{Entity as _, entity_lists_of, for_each_entity};
         let mut candidates = Vec::new();
         for_each_entity!(entity_lists_of!(self), entity => {

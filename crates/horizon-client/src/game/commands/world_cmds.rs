@@ -195,9 +195,37 @@ impl Game<'_> {
             _ => by.and_then(|t| self.target_position(t)),
         };
         // Destruction can remove the target before its success message is built.
-        let discarded_name = matches!(target, Target::Item(_) | Target::Boat(_) | Target::Cart(_))
+        let item_name = matches!(target, Target::Item(_) | Target::Boat(_) | Target::Cart(_))
             .then(|| self.target_name(target));
-        let hurt = match target {
+        let hurt = self.damage_target(target, amount, &ty, cause, by, from);
+        if !hurt {
+            return Err(err("commands.damage.invulnerable", &[]));
+        }
+        let name = item_name.unwrap_or_else(|| self.target_name(target));
+        self.feedback(Text::translate(
+            "commands.damage.success",
+            &[
+                Text::literal(horizon_client::snbt::java_float(amount)),
+                name,
+            ],
+        ));
+        Ok(1)
+    }
+
+    /// `DamageCommand.damage`'s hurt: `target` takes `amount` of `ty` (`minecraft:mob_attack`)
+    /// from the causing entity `cause` and the direct one `by` (the causing one is either when
+    /// the other is none), from `from` (the knockback's direction): whether it was hurt. Also
+    /// `native_hurt_entity`'s.
+    pub(in crate::game) fn damage_target(
+        &mut self,
+        target: Target,
+        amount: f32,
+        ty: &str,
+        cause: Option<Target>,
+        by: Option<Target>,
+        from: Option<[f64; 3]>,
+    ) -> bool {
+        match target {
             // The causing mob is the one the hit is credited to and thorns
             // answer; the source position gives the knockback its direction.
             Target::Player | Target::Guest(_) => {
@@ -217,9 +245,9 @@ impl Game<'_> {
                         return false;
                     }
                     if let Some(name) = named {
-                        g.note_direct_entity(&ty, name);
+                        g.note_direct_entity(ty, name);
                     }
-                    g.hurt_player_from(amount, from, &ty, attacker)
+                    g.hurt_player_from(amount, from, ty, attacker)
                 })
                 .unwrap_or(false)
             }
@@ -240,7 +268,7 @@ impl Game<'_> {
                     _ => None,
                 };
                 let damage = Damage {
-                    kind: Self::damage_kind(&ty),
+                    kind: Self::damage_kind(ty),
                     attacker,
                     from,
                     attacker_species,
@@ -271,15 +299,15 @@ impl Game<'_> {
                     self.command_damage_mob(id, amount, damage)
                 }
             }
-            Target::Item(id) => self.command_damage_item(id, amount, &ty, cause.or(by)),
+            Target::Item(id) => self.command_damage_item(id, amount, ty, cause.or(by)),
             Target::Boat(_) | Target::Cart(_) => {
-                self.command_damage_vehicle(target, amount, &ty, cause.or(by))
+                self.command_damage_vehicle(target, amount, ty, cause.or(by))
             }
             Target::Dragon(id) => self.command_damage_dragon(
                 id,
                 amount,
-                &ty,
-                Self::damage_kind(&ty),
+                ty,
+                Self::damage_kind(ty),
                 (
                     by,
                     cause.or(by),
@@ -287,22 +315,10 @@ impl Game<'_> {
                 ),
             ),
             Target::Crystal(id) => {
-                self.command_damage_crystal(id, &ty, Self::damage_kind(&ty), cause.or(by))
+                self.command_damage_crystal(id, ty, Self::damage_kind(ty), cause.or(by))
             }
             _ => false,
-        };
-        if !hurt {
-            return Err(err("commands.damage.invulnerable", &[]));
         }
-        let name = discarded_name.unwrap_or_else(|| self.target_name(target));
-        self.feedback(Text::translate(
-            "commands.damage.success",
-            &[
-                Text::literal(horizon_client::snbt::java_float(amount)),
-                name,
-            ],
-        ));
-        Ok(1)
     }
 
     /// `VehicleEntity.hurtServer`: report acceptance even when the vehicle survives.
