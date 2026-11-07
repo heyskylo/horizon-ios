@@ -838,8 +838,21 @@ fn fill_noise_inner<B: TerrainBlockStates>(
                 }
                 let state = if solid {
                     default_block
-                } else if air_above.is_some_and(|limit| world_y > limit) {
+                } else if let Some(limit) = air_above.filter(|&limit| world_y > limit) {
+                    // Air above the aquifer's level, and so is the run of
+                    // non-positive densities below that stays above it: nothing is
+                    // written for them and `note_skipped` only clears a flag, so
+                    // one call covers the run. A NaN (not `<= 0.0`) ends the run and
+                    // starts its own.
+                    let mut run = 1usize;
+                    while run <= y
+                        && col_density[y - run] <= 0.0
+                        && world_y.wrapping_sub(run as i32) > limit
+                    {
+                        run += 1;
+                    }
                     aquifer.note_skipped();
+                    y -= run - 1;
                     continue;
                 } else {
                     aquifer

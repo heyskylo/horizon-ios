@@ -20,10 +20,14 @@ pub use crate::extras::Corner;
 pub use crate::extras_hud::Corners;
 pub use crate::first_person::Hand;
 pub use crate::fog::{FogData, FogType};
+pub use crate::game::NativeChunkSnapshot;
+pub use crate::game::NativeEffect;
 pub use crate::game::NativeFluidTank;
+pub use crate::game::NativeInventoryKind;
 pub use crate::game::native_block_entity_draw::{BlockEntityDraw, CubeFace};
 pub use crate::game::native_client_services::{
-    NativeClientEntity, NativeClientHead, NativeClientProfile, NativeClientState,
+    NativeClientEntity, NativeClientHead, NativeClientItem, NativeClientProfile, NativeClientState,
+    NativeScreenKind, NativeWorldId,
 };
 pub use crate::game::{
     ItemEnergyBuffer, NativeBiomeId, NativeBlockEdit, NativeBlockReadError, NativeBlockRun,
@@ -54,6 +58,8 @@ pub use crate::music::{Music, MusicLayer};
 pub use crate::particles::{ParticleOptions, ParticleType};
 pub use crate::recipe_book::RecipeBookCategory;
 pub use crate::sound_engine::SoundPlayback;
+/// A named step of the server tick and its wall and CPU milliseconds (`native_server_tick_timed`).
+pub use crate::spans::Span as TickSpan;
 pub use crate::text::Text;
 pub use crate::world_primitives::{PrimitiveShape, WorldPrimitive, WorldPrimitives};
 pub use horizon_assets::item_model::{DisplayContext, StackView};
@@ -62,11 +68,17 @@ pub use horizon_core::{
     position::BlockPos,
     random::{LegacyRandom, RandomSource},
 };
+/// A synched entity data value (`ClientboundSetEntityDataPacket`'s), as `entity_data_to` hands
+/// them over.
+pub use horizon_protocol::entity_data::Value as EntityDataValue;
 /// The server's play packets `client_packet` hands over, decoded.
 pub use horizon_protocol::packets::play::Clientbound as ClientboundPlayPacket;
 /// The play packets a client sends, as `native_send_packet` takes them.
 pub use horizon_protocol::packets::play::Serverbound as ServerboundPlayPacket;
 pub use horizon_world::consumable::UseAnimation;
+/// Vanilla's `TagParser`: the tag an SNBT text holds and the bytes it read
+/// (`ItemStack::from_nbt` reads an item from it). API @API:item_from_snbt@.
+pub use horizon_world::nbt::parse_snbt;
 pub use horizon_world::player_inventory::EquipmentSlot;
 pub use horizon_world::{
     attachments::{
@@ -77,10 +89,16 @@ pub use horizon_world::{
     loot::{LootStack, NativeLootContext},
     nbt::{Compound, Tag},
     registry::BlockStateId,
-    worldgen::structure::{Mirror, Rotation},
+    worldgen::{
+        native_generate::{NativeGenerate, NativeLodColumn, NativeProtoChunk},
+        structure::{Mirror, Rotation},
+    },
 };
 pub use serde_json;
 use serde_json::{Map, Value};
+/// The slot range a menu's input slots take (`native_open_menu_with_input`).
+/// API @API:menu_input@.
+pub use std::ops::Range;
 use std::time::Duration;
 /// The window events `input_key` hands over (`winit::event::KeyEvent`) and their key types.
 pub use winit;
@@ -449,6 +467,61 @@ pub struct NativeZoom {
     pub turn: f32,
 }
 
+/// A boss bar a server mod shows one player (`native_boss_bar`), as Bukkit's
+/// `BossBar` holds it. API @API:boss_bar@.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NativeBossBar {
+    pub name: Text,
+    /// How full the bar is, 0 to 1.
+    pub progress: f32,
+    /// `BossBarColor`'s ordinal: 0 pink, 1 blue, 2 red, 3 green, 4 yellow,
+    /// 5 purple, 6 white.
+    pub color: i32,
+    /// `BossBarOverlay`'s ordinal: 0 progress (no notches), 1 six notches,
+    /// 2 ten, 3 twelve, 4 twenty.
+    pub overlay: i32,
+    /// `BossEvent`'s flags: the sky darkens, boss music plays, fog thickens.
+    pub darken: bool,
+    pub music: bool,
+    pub fog: bool,
+}
+
+/// One open level of a server, counted for a diagnostics mod (`native_level_stats`): Bukkit's
+/// `World.getLoadedChunks`, `getForceLoadedChunks`, `getEntities` and `Chunk.getTileEntities`
+/// in numbers. API @API:level_stats@.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct NativeLevelStats {
+    /// The chunks it holds loaded.
+    pub chunks: usize,
+    /// The chunks `/forceload` and mods' tickets (`native_force_chunk`) keep loaded.
+    pub forced_chunks: usize,
+    pub block_entities: usize,
+    /// The block entities that tick (`Level.blockEntityTickers`).
+    pub ticking_block_entities: usize,
+    /// Its entities by type (`minecraft:zombie`), players included, the most first and ties
+    /// by name.
+    pub entities: Vec<(String, usize)>,
+    /// Its block entities by type (`minecraft:chest`, else a mod block's name), in the same
+    /// order.
+    pub block_entity_types: Vec<(String, usize)>,
+}
+
+/// What one mob type cost one level's ticks while a mod sampled them
+/// (`native_take_mob_costs`). API @API:server_tick_timed@.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct NativeMobCost {
+    /// The level, `minecraft:overworld`.
+    pub dimension: String,
+    /// The mob type, `minecraft:zombie`.
+    pub kind: String,
+    /// The time its mobs' own ticks took (their riders' inside), in nanoseconds.
+    pub nanos: u64,
+    /// The mob ticks timed.
+    pub mob_ticks: u64,
+}
+
 /// A player on the server, as a server hook sees them.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
@@ -476,6 +549,57 @@ pub struct NativeServerPlayer {
     /// The IP address the player connects from (behind a Velocity proxy: the address the proxy forwards);
     /// empty when not known. API 407.
     pub address: String,
+    /// The connection's round-trip time in milliseconds, as the keep-alive measured it and the
+    /// player list shows it (`ServerCommonPacketListenerImpl.latency`). The fields below are API
+    /// @API:server_player_state@; 0, false or None where the server does not hold them.
+    pub latency: i32,
+    /// The protocol version the client connected with (the server's own: others are refused).
+    pub protocol: i32,
+    /// The experience level and the progress to the next one, 0 to 1.
+    pub xp_level: i32,
+    pub xp_progress: f32,
+    /// On the ground, as the player's last accepted move said.
+    pub on_ground: bool,
+    /// The player's abilities as the client is told them (`Abilities.flying`, `mayfly`,
+    /// `invulnerable`, `walkingSpeed`, `flyingSpeed`): speeds 0.1 and 0.05 by default.
+    pub flying: bool,
+    pub may_fly: bool,
+    pub invulnerable: bool,
+    pub walk_speed: f32,
+    pub fly_speed: f32,
+    /// Holding sneak (`Player.isShiftKeyDown`).
+    pub sneaking: bool,
+    /// The eyes' height above the feet in the current pose (`Entity.getEyeHeight`): 1.62
+    /// standing, 1.27 crouching, 0.4 swimming or gliding, 0.2 asleep.
+    pub eye_height: f32,
+    /// The selected hotbar slot, 0 to 8.
+    pub selected_slot: u8,
+    /// The name a server mod shows for the player (`native_set_nickname`), if one does.
+    pub nickname: Option<String>,
+    /// The level a player needs to see this one, when a server mod hid them
+    /// (`native_hide_player`).
+    pub hidden: Option<u8>,
+}
+
+/// What a player's client told the server about itself, and what the server sent it
+/// (`native_player_client`). API @API:player_client@.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct NativeClientInfo {
+    /// The client's brand (`minecraft:brand`): `vanilla`, `fabric`, `horizon`...
+    pub brand: String,
+    /// `ClientInformation`: the language (`en_us`), the view distance it asks for, chat
+    /// visibility (0 full, 1 system, 2 hidden), main hand (0 left, 1 right) and particles
+    /// (0 all, 1 decreased, 2 minimal).
+    pub language: String,
+    pub view_distance: i8,
+    pub chat_visibility: i32,
+    pub main_hand: i32,
+    pub particle_status: i32,
+    /// The chunks the server has sent it and holds as sent.
+    pub sent_chunks: usize,
+    /// The bytes received from and sent to it on the wire, where the connection counts them.
+    pub wire_bytes: Option<(u64, u64)>,
 }
 
 /// A command a native mod adds, as one usage: words, then arguments
@@ -483,7 +607,10 @@ pub struct NativeServerPlayer {
 /// `pay <player:player> <amount:integer>`, `balance [player:player]`,
 /// `eco give <player:player> <amount:integer>`. Kinds: `word`, `text` (the
 /// rest of the line, last), `integer`, `number`, `boolean`, `player`,
-/// `item`, `block_pos`. Usages of one command share their words; the
+/// `item`, `block_pos`; and the kinds whose completions the player's client
+/// asks the server for (`native_tab_complete_v2`): `word?`, `text?` and
+/// `player_name` (a word, any name accepted, that the server completes with
+/// the online players' names). Usages of one command share their words; the
 /// server merges them into one tree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -491,6 +618,9 @@ pub struct NativeCommand {
     pub usage: String,
     /// The operator level a player needs to see and run it (0: everyone).
     pub level: u8,
+    /// The permission node that decides instead, when set
+    /// ([`NativeCommand::permission`]). API @API:command_permission@.
+    pub permission: Option<String>,
 }
 
 impl NativeCommand {
@@ -499,6 +629,7 @@ impl NativeCommand {
         Self {
             usage: usage.to_owned(),
             level: 0,
+            permission: None,
         }
     }
     /// The same, for operators of `level` and above.
@@ -506,8 +637,52 @@ impl NativeCommand {
         Self {
             usage: usage.to_owned(),
             level: level.min(4),
+            permission: None,
         }
     }
+    /// The same, for the players who have the permission node `node`
+    /// (Bukkit's `plugin.yml` `permission:`): the server asks
+    /// `native_has_permission(player, node, level)` before it shows or runs
+    /// the command, so a permissions mod grants or refuses it whatever the
+    /// player's level, and without one the level decides as before. A
+    /// command's node is the first one its usages give.
+    /// API @API:command_permission@.
+    pub fn permission(mut self, node: &str) -> Self {
+        self.permission = Some(node.to_owned());
+        self
+    }
+}
+
+/// What a command a mod ran did (`native_run_command_captured`): whether it
+/// ran without failing, its result and the lines it answered with, in order.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct NativeCommandResult {
+    pub ran: bool,
+    /// Vanilla's `CommandResultCallback` value: the sum of the successful
+    /// results (one for a plain command, one per fork of `execute as @a run`),
+    /// 0 when it failed (`execute if entity` of nobody). A mod's command gives
+    /// 1 when a mod ran it.
+    pub result: i32,
+    pub output: Vec<Text>,
+}
+
+/// A command of the server (`native_command_info`): vanilla's or one a mod
+/// registered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct NativeCommandInfo {
+    /// Its own name, an alias resolved (`teleport` for `tp`).
+    pub name: String,
+    /// The other names that run it (`tp` for `teleport`).
+    pub aliases: Vec<String>,
+    /// Its usages: vanilla's one line, as `/help` gives it, or each usage a
+    /// mod registered.
+    pub usages: Vec<String>,
+    /// The operator level a player needs to run it (0: everyone).
+    pub level: u8,
+    /// Whether vanilla has it; false for a mod's.
+    pub vanilla: bool,
 }
 
 /// Which `Game` observes the phase; a mirror `Game` never fires.
@@ -948,6 +1123,21 @@ mod tests {
                 pitch: 0.0,
                 entity_id: 0,
                 address: String::new(),
+                latency: 0,
+                protocol: 0,
+                xp_level: 0,
+                xp_progress: 0.0,
+                on_ground: true,
+                flying: false,
+                may_fly: false,
+                invulnerable: false,
+                walk_speed: 0.1,
+                fly_speed: 0.05,
+                sneaking: false,
+                eye_height: 1.62,
+                selected_slot: 0,
+                nickname: None,
+                hidden: None,
             })
         }
         fn action_bar(&mut self, _uuid: u128, line: Text) -> bool {
