@@ -125,16 +125,27 @@ impl Game<'_> {
         menu: &mut Menu,
         op: impl FnOnce(&mut Menu, &Env) -> R,
     ) -> R {
-        // The cartography table reads and makes the host level's maps.
-        let maps = (menu.kind() == Kind::Cartography).then(|| {
+        // Crafting and cartography read and derive this level's saved maps.
+        let maps = matches!(
+            menu.kind(),
+            Kind::Cartography | Kind::Crafting | Kind::Inventory
+        )
+        .then(|| {
             let g = &host.hub.guests[gi];
-            let held: Vec<ItemStack> = (0..menu.slot_count())
+            (0..menu.slot_count())
                 .filter_map(|s| menu.slot(s).cloned())
                 .chain(g.inventory.iter().flatten().cloned())
                 .chain(g.carried.clone())
-                .collect();
-            self.level_maps(&held)
-        });
+                .collect::<Vec<_>>()
+        })
+        .filter(|held| {
+            menu.kind() == Kind::Cartography
+                || held
+                    .iter()
+                    .filter_map(super::maps::map_id)
+                    .any(|id| self.map(id).is_some())
+        })
+        .map(|held| self.level_maps(&held));
         let env = Env {
             maps: maps.as_ref().map(|m| m as &dyn horizon_client::menu::Maps),
             limited_crafting: host.hub.limited_crafting,

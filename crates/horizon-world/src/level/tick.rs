@@ -483,7 +483,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         if data.implements(super::classes::Interface::WeatheringCopper) {
             let upper_door = data.is(Class::Door) && b.table.text(state, p.half) == "upper";
             let right_chest = data.is(Class::Chest) && b.table.text(state, p.kind) == "right";
-            if !upper_door && !right_chest {
+            // WeatheringCopperChestBlock.randomTick: a chest someone has open
+            // does not weather, and draws nothing (#11378).
+            let viewed_chest = data.is(Class::Chest) && self.level.container_open(pos);
+            if !upper_door && !right_chest && !viewed_chest {
                 self.copper_change_over_time(state, pos);
             }
         }

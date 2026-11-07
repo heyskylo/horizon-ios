@@ -398,7 +398,8 @@ of the frame ([#8750](https://github.com/horizon-rust/horizon/issues/8750)).
   mob AI during a step, can differ when other server work drew on them first, and ids follow the
   order the server loads and creates entities in, which loading changes from run to run. What an
   id seeds can then differ: a minecart's offset against z-fighting, a mob's client random. Give
-  facings and variants in the command (`{Rotation:[0f,0f]}`) for a repeatable scene.
+  facings and variants in the command (`{Rotation:[0f,0f]}`) for a repeatable scene. An end
+  crystal's spin and bob start from its position instead, so they are the same in every run.
 - A script should wait until the world has loaded before it changes it: a command that acts on
   what is loaded (`kill @e`, `fill`) finds more or less of it otherwise.
 - The player still ticks while frozen, as in vanilla: stand the player on a block (it falls

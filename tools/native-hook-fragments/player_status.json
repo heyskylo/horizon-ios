@@ -1,0 +1,10 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "player_food", "target": "horizon_client::game::native_player_state::Game<'_>::native_player_food"},
+    {"name": "set_player_status", "target": "horizon_client::game::native_player_state::Game<'_>::native_set_player_status"}
+  ],
+  "rust_summary": "a player's food read (`native_player_food`) and their health, food and experience set (`native_set_player_status`), as Bukkit's `setHealth`, `setFoodLevel`, `setSaturation` and `setExp`; health 0 kills.",
+  "doc_summary": "`native_player_food(uuid)` reads a player's food level, saturation and exhaustion; `native_set_player_status(uuid, health, food, xp)` sets each that is given, as Bukkit's `setHealth`, `setFoodLevel`, `setSaturation`, `setExhaustion` and `setExp`; health 0 kills as `/kill` does. Bundles need \"hooks\": @API:player_status@.",
+  "comments": ["crates/horizon-client/src/game/native_player_state.rs"]
+}

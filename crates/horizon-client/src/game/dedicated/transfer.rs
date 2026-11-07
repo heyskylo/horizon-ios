@@ -4,7 +4,8 @@
 //! `player-export <uuid> [freeze]` (the source answers with the player's record) and
 //! `player-release <uuid> <hand-over> moved [announce] | abort` (the source lets the player go),
 //! `player-import <uuid> <json>` and `player-confirm <uuid> <hand-over>` (the target takes the
-//! record and lets the held player in). They run
+//! record and lets the held player in), and `transfer-status` (the counts a proxy reads before
+//! it sends players here). They run
 //! between two ticks, on the server thread, so the player is never caught half-way through a
 //! tick. The rules are `lan/arrivals.rs`'s. All of them are refused while `server.toml`'s
 //! `[transfer]` is off.
@@ -37,6 +38,16 @@ impl Game<'_> {
         let (level, line) = arrivals::request_log(verb, name.as_deref(), args, &reply);
         super::log(level, &line);
         reply
+    }
+
+    /// `transfer-status`: the counts a proxy reads before it sends players here
+    /// (`arrivals::status_request`). A proxy asks it every few seconds, so it writes nothing to
+    /// the log.
+    pub(super) fn transfer_status(&self) -> Value {
+        match self.lan.as_ref() {
+            Some(host) => arrivals::status_request(&host.hub, Instant::now()),
+            None => json!({ "error": "the server is not open to players" }),
+        }
     }
 
     fn run_player_request(&mut self, verb: &str, args: &str) -> Value {
