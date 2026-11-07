@@ -18,11 +18,15 @@ use horizon_core::{
     random::{LegacyRandom, RandomSource},
 };
 
+#[cfg(test)]
+#[path = "wet_fire_tests.rs"]
+mod wet_fire_tests;
+
 use crate::powder_snow::particle_velocity as powder_snow_particle_velocity;
 
 /// The inside-block effects of fire and lava (`InsideBlockEffectType`
 /// FIRE_IGNITE and LAVA_IGNITE): ignite, then hurt.
-fn block_contact_damage(m: &mut Mob, w: &MobWorld, fire: f32) {
+fn block_contact_damage(m: &mut Mob, fire: f32) {
     if fire > 0.0 && !m.kind.flags.fire_immune {
         let multiplier = m.burning_time();
         m.fire_ticks = crate::motion::environment::ignite_contact(
@@ -36,10 +40,6 @@ fn block_contact_damage(m: &mut Mob, w: &MobWorld, fire: f32) {
     if m.fluids.in_lava && !m.kind.flags.fire_immune {
         m.ignite_for_ticks(300);
         m.damage(4.0, Damage::of(DamageKind::Lava));
-    }
-    // Entity.applyEffectsFromBlocks: rain puts the fire out afterwards.
-    if m.fire_ticks > 0 && in_rain(m, w) {
-        m.fire_ticks = 0;
     }
 }
 
@@ -658,7 +658,7 @@ pub fn tick(
     if m.species() == Species::Strider {
         super::strider::pre_tick(m, w, events);
     }
-    base_tick(m, w, events);
+    let was_on_fire = base_tick(m, w, events);
     if m.species() == Species::Rabbit {
         super::rabbit::base_tick(m);
     }
@@ -740,6 +740,7 @@ pub fn tick(
         ai_step(m, w, level_random, events);
     }
     effects_from_blocks(m, w, level_random, events);
+    extinguish_if_wet(m, w, was_on_fire, events);
     if m.species() == Species::SulfurCube && m.alive() {
         // SulfurCube.doPush applies the body's contact damage even with NoAI.
         // Player contact keeps its existing player_push route.
@@ -1134,8 +1135,26 @@ fn in_wall(
     (c0[0]..=c1[0])
         .any(|x| (c0[1]..=c1[1]).any(|y| (c0[2]..=c1[2]).any(|z| intersects(x, y, z, &bounds))))
 }
+fn extinguish_if_wet(m: &mut Mob, w: &MobWorld, was_on_fire: bool, events: &mut Vec<MobEvent>) {
+    // Entity.applyEffectsFromBlocks snapshots burning before contact ignition.
+    // Rain also clears newly ignited fire, but only a previously burning mob
+    // plays the hiss and consumes its two pitch draws. This includes NoAI mobs.
+    if m.fire_ticks > 0 && (m.fluids.in_water || in_rain(m, w)) {
+        m.fire_ticks = 0;
+        if was_on_fire {
+            events.push(MobEvent::Sound(
+                "entity.generic.extinguish_fire",
+                [m.position.x, m.position.y, m.position.z],
+                0.7,
+                1.6 + (m.random.next_float() - m.random.next_float()) * 0.4,
+            ));
+        }
+    }
+}
+
 /// Entity.baseTick + LivingEntity.baseTick + Mob.baseTick.
-fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+/// Returns the burning state immediately before block-contact ignition.
+fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
     // Entity.canSpawnSprintParticle / spawnSprintParticle (a dashing cat or
     // ocelot): a server level drops the particle, but its spot is drawn
     // from the mob's random first.
@@ -1162,17 +1181,8 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if fire > 0.0 {
         m.ticks_frozen = 0;
     }
-    // Fire: water or rain (Entity.isInRain) extinguishes, lava ignites,
-    // burning hurts every second.
-    if m.fire_ticks > 0 && (m.fluids.in_water || in_rain(m, w)) {
-        m.fire_ticks = 0;
-        events.push(MobEvent::Sound(
-            "entity.generic.extinguish_fire",
-            m.center(),
-            0.7,
-            1.6 + (m.random.next_float() - m.random.next_float()) * 0.4,
-        ));
-    }
+    // Entity.baseTick counts burning damage and the fire timer before
+    // Entity.applyEffectsFromBlocks extinguishes a wet mob later in the tick.
     if m.fire_ticks > 0 {
         if m.kind.flags.fire_immune {
             m.fire_ticks = 0;
@@ -1291,7 +1301,8 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     // baseTick has counted the fire and the hurt timers down: a fire block or
     // lava ignites to the full 160 / 300 ticks and its hit lands after the
     // invulnerable time of that tick has already dropped.
-    block_contact_damage(m, w, fire);
+    let was_on_fire = m.fire_ticks > 0;
+    block_contact_damage(m, fire);
     // Enderman.hurtServer teleports inside the hurt (fire, lava, a block).
     enderman_hurt_teleports(m, w, events);
     if !m.alive() {
@@ -1311,6 +1322,7 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     }
     // Entity.baseTick ends with Leashable.tickLeash.
     super::leash::tick(m, w, events);
+    was_on_fire
 }
 /// `LivingEntity.aiStep`'s "freezing" with `InsideBlockEffectType.FREEZE`:
 /// powder snow builds `ticks_frozen` up, anywhere else it melts twice as
