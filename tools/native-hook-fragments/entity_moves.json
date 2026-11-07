@@ -1,0 +1,45 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "entity_teleport_to",
+      "target": "horizon_client::game::native_entity_moves::Game<'_>::native_entity_teleport_to",
+      "receiver": "entity"
+    },
+    {
+      "name": "entity_set_rotation",
+      "target": "horizon_client::game::native_entity_moves::Game<'_>::native_entity_set_rotation",
+      "receiver": "entity"
+    },
+    {
+      "name": "entity_head_yaw",
+      "target": "horizon_client::game::native_entity_moves::Game<'_>::native_entity_head_yaw",
+      "receiver": "entity"
+    },
+    {
+      "name": "entity_set_head_yaw",
+      "target": "horizon_client::game::native_entity_moves::Game<'_>::native_entity_set_head_yaw",
+      "receiver": "entity"
+    },
+    {
+      "name": "entity_direction",
+      "target": "horizon_client::game::native_entity_moves::Game<'_>::native_entity_direction",
+      "receiver": "entity"
+    },
+    {
+      "name": "entity_dimensions",
+      "target": "horizon_client::game::native_entity_moves::Game<'_>::native_entity_dimensions",
+      "receiver": "entity"
+    },
+    {
+      "name": "entity_push",
+      "target": "horizon_client::game::native_entity_moves::Game<'_>::native_entity_push",
+      "receiver": "entity"
+    }
+  ],
+  "rust_summary": "moving and turning an entity through an `EntityRef`: teleport, rotation, head yaw, facing, size and pushes.",
+  "doc_summary": "`entity.teleport_to(host, pos, rotation)` and `set_rotation(host, yaw, pitch)` (as `/tp` and `/rotate` move and turn it), `head_yaw`, `set_head_yaw`, `direction` (`north`...), `dimensions` (width, height) and `push(host, delta)`. Bundles need \"hooks\": @API:entity_moves@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_entity_moves.rs"
+  ]
+}

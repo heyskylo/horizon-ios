@@ -40,6 +40,7 @@ pub use crate::game::{
     NativePlayer, NativePlayerRender, NativeReloadListener, NativeShake, NativeStructureBlock,
     NativeStructureTemplate, NativeWorldDraw,
 };
+pub use crate::gamerules::Value as GameRuleValue;
 pub use crate::gfx::native_render::{
     BlockSpriteArrays, RenderHooks, RenderNeeds, RenderNeedsEvent, WorldDrawn, WorldDrawnEvent,
     wgpu,

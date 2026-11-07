@@ -8574,7 +8574,7 @@ impl Game<'_> {
                     .play("minecraft:item.honeycomb.wax_on", Some(at), 1.0, 1.0);
             }
             waxes
-        } else if let Some((_, sound, _, _, particle)) =
+        } else if let Some((_, sound, _, _, particle, _)) =
             self.block_transform(stack, hit.pos, hit.face)
         {
             self.transform_particle(&particle, hit.pos);
@@ -11432,7 +11432,8 @@ impl Remote {
     pub(super) fn listed_player_count(&self) -> usize {
         self.listed.len()
     }
-    /// Players in the server's player list, this one included.
+    /// Players in the server's player list, this one included (for Discord).
+    #[cfg(feature = "discord")]
     pub(super) fn player_count(&self) -> usize {
         self.players.len()
     }

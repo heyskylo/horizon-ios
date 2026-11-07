@@ -15,7 +15,7 @@ const VERSION: &str = match option_env!("HORIZON_VERSION") {
 const HELP: &str = "\
 horizon-prepare: prepare Horizon's resources from your own Minecraft Java Edition
 
-Usage: horizon-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [--root PATH] [--output PATH]
+Usage: horizon-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [--prism-dir PATH] [--root PATH] [--output PATH]
                        [--version-json PATH] [--client-jar PATH] [--libraries-dir PATH] [--assets-dir PATH]
                        [--java-home PATH] [--complete] [--progress json]
        horizon-prepare --check [--root PATH] [--output PATH]
@@ -32,6 +32,9 @@ Usage: horizon-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [-
                         (default: HORIZON_SERVER_JAR, or the copy imported before)
   --minecraft-dir PATH  The official launcher's game directory with your installed copy
                         (default: HORIZON_MINECRAFT_DIR, or the launcher's own)
+  --prism-dir PATH      A Prism Launcher or MultiMC root, or one of its instances, to read as is:
+                        its rewritten version JSON, Maven libraries, assets and components. No
+                        server jar is downloaded: its client jar stands in for the server side
   --version-json PATH   The pinned version's JSON, where --minecraft-dir has none
   --client-jar PATH     The pinned client jar, where --minecraft-dir has none
   --libraries-dir PATH  The folder of the client's libraries (Maven layout)
@@ -138,6 +141,7 @@ fn main() -> ExitCode {
             }
             "--server-jar" => value("--server-jar").map(|v| options.server_jar = Some(v)),
             "--minecraft-dir" => value("--minecraft-dir").map(|v| options.minecraft_dir = Some(v)),
+            "--prism-dir" => value("--prism-dir").map(|v| options.inputs.prism_dir = Some(v)),
             "--version-json" => {
                 value("--version-json").map(|v| options.inputs.version_json = Some(v))
             }
