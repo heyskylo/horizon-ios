@@ -655,6 +655,7 @@ pub fn encode_block_entity(
     }
     let components = match e {
         BlockEntity::Banner(b) => b.components.clone(),
+        BlockEntity::CopperGolemStatue(components) => components.clone(),
         _ => Compound::new(),
     };
     let mut entries = vec![
@@ -798,7 +799,8 @@ pub fn encode_block_entity(
             }
         }
         // Encoded above.
-        BlockEntity::DaylightDetector | BlockEntity::Mod(_) => {}
+        BlockEntity::DaylightDetector | BlockEntity::CopperGolemStatue(_) | BlockEntity::Mod(_) => {
+        }
         // PotentSulfurBlockEntity.saveAdditional.
         BlockEntity::PotentSulfur(sulfur) => {
             entries.push(("countdown", Tag::Int(sulfur.waiting_countdown)))
@@ -1123,6 +1125,13 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
         | BlockEntity::Skull(_)
         | BlockEntity::DaylightDetector
         | BlockEntity::Mod(_) => {}
+        // `BlockEntity.loadAdditional`: the components the block entity keeps.
+        BlockEntity::CopperGolemStatue(components) => {
+            *components = match tag.get("components") {
+                Some(Tag::Compound(c)) => c.clone(),
+                _ => Compound::new(),
+            };
+        }
         BlockEntity::Spawner(s) => **s = crate::mobs::spawner::Spawner::load(tag),
         BlockEntity::TrialSpawner(s) => **s = crate::mobs::trial_spawner::TrialSpawner::load(tag),
         BlockEntity::Vault(v) => **v = crate::vault::Vault::load(tag),
@@ -6610,6 +6619,59 @@ mod tests {
             decode_block_entity(&ender),
             Some((_, crate::containers::BlockEntity::Mod(_)))
         ));
+    }
+    /// `CopperGolemStatueBlockEntity.createStatue`: the golem's styled custom
+    /// name lives in the statue's components, through every weathering stage,
+    /// a save and its item.
+    #[test]
+    fn copper_golem_statue_keeps_the_golem_name() {
+        use crate::containers::BlockEntity;
+        let name = Tag::compound([
+            ("text", string("Bob")),
+            ("color", string("gold")),
+            ("bold", Tag::Byte(1)),
+        ]);
+        let components: Compound = [("minecraft:custom_name".into(), name.clone())].into();
+        for block in [
+            "minecraft:copper_golem_statue",
+            "minecraft:exposed_copper_golem_statue",
+            "minecraft:weathered_copper_golem_statue",
+            "minecraft:oxidized_copper_golem_statue",
+            "minecraft:waxed_oxidized_copper_golem_statue",
+        ] {
+            // Scraping and waxing swap the block, so every stage keeps the entity.
+            let entity = BlockEntity::for_block(block).expect(block);
+            assert!(entity.fits(block), "{block}");
+            let BlockEntity::CopperGolemStatue(_) = entity else {
+                panic!("{block}: not a statue");
+            };
+        }
+        let entity = BlockEntity::CopperGolemStatue(components.clone());
+        let tag = encode_block_entity((1, 2, 3), &entity, "minecraft:oxidized_copper_golem_statue");
+        assert_eq!(
+            tag.get("id"),
+            Some(&string("minecraft:copper_golem_statue"))
+        );
+        let (pos, back) = decode_block_entity(&tag).expect("statue");
+        assert_eq!(pos, (1, 2, 3));
+        let BlockEntity::CopperGolemStatue(back) = back else {
+            panic!("not a statue");
+        };
+        assert_eq!(back, components);
+        // The statue item carries the name (`getItem`: collectComponents).
+        let saved = crate::block_entity_nbt::canonical(&tag).expect("canonical statue");
+        let patch = crate::block_entity_item::pick(&saved);
+        assert_eq!(patch.get(&"minecraft:custom_name".into()), Some(&name));
+        // Placing that item gives the entity the name back.
+        let fresh = crate::block_entity_nbt::canonical(&encode_block_entity(
+            (1, 2, 3),
+            &BlockEntity::CopperGolemStatue(Compound::new()),
+            "minecraft:copper_golem_statue",
+        ))
+        .expect("canonical statue");
+        let placed = crate::block_entity_item::place(&fresh, &patch, false);
+        let (_, placed) = decode_block_entity(&placed).expect("placed statue");
+        assert!(matches!(placed, BlockEntity::CopperGolemStatue(c) if c == components));
     }
     #[test]
     fn banner_block_entity_round_trips() {

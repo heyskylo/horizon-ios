@@ -66,6 +66,8 @@ impl Pending {
             ],
             BlockEntity::Skull(_) => &["minecraft:custom_name"],
             BlockEntity::Beehive(_) => &["minecraft:bees"],
+            // The statue loot tables copy the custom name of the golem it was.
+            BlockEntity::CopperGolemStatue(_) => &["minecraft:custom_name"],
             _ => &[],
         };
         if !include.is_empty() {
