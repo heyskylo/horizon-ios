@@ -53,6 +53,12 @@ def inline_predicate_constants():
 
 def predicate_selector_fixtures(group_names):
     fixtures = {}
+    if 'mob custom name components' in group_names:
+        try:
+            from .mob_name_predicate_corpus import predicates as name_predicates
+        except ImportError:
+            from mob_name_predicate_corpus import predicates as name_predicates
+        fixtures.update(name_predicates())
     if 'mob effect predicate view' in group_names:
         try:
             from .mob_effect_predicate_corpus import predicates as effect_predicates
@@ -924,6 +930,80 @@ def item_command_damage():
             cmd(f'/damage {mob} 3', expect_result=1),
             cmd(f'/data get entity {mob} Health', expect_result=7)]
     return ops + setup('/kill @e[tag=item_hurt_actor]', '/scoreboard objectives remove item_hurt', '/tick unfreeze')
+
+
+def snbt_trailing_commas():
+    """SnbtGrammar: a compound, a list and a typed array may end with a comma; an empty one
+    may not hold only a comma, and two commas in a row are an error."""
+    ops = []
+    for value in ('{a:1b,}', '{a:1b,b:"x",}', '[1,2,]', '["a",]', '[{},]', '[I;1,2,]', '[B;1b,]', '[L;1L,]',
+                  '{a:[1,],b:{c:2,},}', '{,}', '[,]', '[I;,]', '{a:1b,,}', '[1,,2]', '{a:1b,}x'):
+        ops += [cmd(f'/data modify storage horizon:snbt v set value {value}'),
+                cmd('/data get storage horizon:snbt v')]
+    # A text component argument reads the same grammar.
+    ops += [cmd('/tellraw @s {text:"comma",color:"red",}'), cmd('/tellraw @s ["a",{text:"b",},]')]
+    ops += [cmd('/summon minecraft:marker 0 200 0 {Tags:["snbt_comma",],}'),
+            cmd('/data get entity @e[type=minecraft:marker,tag=snbt_comma,limit=1] Tags'),
+            cmd('/kill @e[type=minecraft:marker,tag=snbt_comma]'),
+            cmd('/data remove storage horizon:snbt v')]
+    return ops
+
+
+def dragon_command_damage():
+    """DamageCommand -> EnderDragon.hurtServer (the body: a quarter plus up to 1, health only
+    with a player behind it or #is_explosion, success either way) and EndCrystal.hurtServer
+    (removed unless invulnerable, fire or the dragon's; generic_kill bypasses Invulnerable)."""
+    ops = setup('/forceload add 0 0 63 47', '/tick freeze')
+    ops += [{'op': 'settle'}]
+    dragon = '@e[tag=dmg_dragon,limit=1]'
+    ops += setup('/summon ender_dragon 8.5 160 8.5 {Tags:["dmg_actor","dmg_dragon"],NoAI:1b,DragonPhase:0}')
+    ops += [cmd(f'/execute if entity {dragon}', expect_result=1),
+            cmd(f'/data get entity {dragon} Health', expect_result=200)]
+    for damage, health in (
+        ('8', 200),                         # no player, not an explosion: lands, no health
+        ('8 minecraft:explosion', 197),     # 8 / 4 + 1
+        ('40 minecraft:generic by @s', 189),  # 11 within the cooldown: only the excess over 3
+        ('4 minecraft:in_fire by @s', 189),  # reallyHurt refuses fire; hurt still succeeds
+        ('0', 189),                         # under 0.01: refused, invulnerable
+    ):
+        ops += [cmd(f'/damage {dragon} {damage}'),
+                cmd(f'/data get entity {dragon} Health', expect_result=health)]
+    for i, (label, nbt, hits) in enumerate((
+        ('blast', '', (('1', False),)),
+        ('explosion', '', (('1 minecraft:explosion', False),)),
+        ('fire', '', (('1 minecraft:in_fire', True),)),
+        ('shield', ',Invulnerable:1b', (('1', True), ('1 minecraft:generic_kill', False))),
+        ('by_dragon', '', ((f'1 minecraft:generic by {dragon}', True), ('1', False))),
+    )):
+        crystal = f'@e[tag=dmg_{label},limit=1]'
+        x, z = (40, 56, 40, 56, 40)[i], (8, 8, 24, 24, 40)[i]
+        ops += setup(f'/summon end_crystal {x}.5 160 {z}.5 {{Tags:["dmg_actor","dmg_{label}"],ShowBottom:0b{nbt}}}')
+        ops += [cmd(f'/execute if entity {crystal}', expect_result=1)]
+        for damage, stays in hits:
+            ops += [cmd(f'/damage {crystal} {damage}'),
+                    cmd(f'/execute {"if" if stays else "unless"} entity {crystal}', expect_result=1)]
+    # The dragons are summoned holding their pattern (0): a summoned dragon hovers (10), which
+    # is sitting, and Horizon summons it holding (a separate gap).
+    # One dragon at a time from here. dealDefaultKnockback: fireworks are #is_explosion (the
+    # hit counts) and not #no_knockback, so the dragon is pushed away from the `at` position.
+    knock = '@e[tag=dmg_knock,limit=1]'
+    ops += setup('/kill @e[tag=dmg_dragon]',
+                 '/summon ender_dragon 24.5 160 40.5 {Tags:["dmg_actor","dmg_knock"],NoAI:1b,DragonPhase:0}')
+    ops += [cmd(f'/damage {knock} 10 minecraft:fireworks at 44.5 160 40.5'),
+            cmd(f'/data get entity {knock} Health', expect_result=196),
+            cmd(f'/data get entity {knock} Motion[0] 1000'),
+            cmd(f'/data get entity {knock} Motion[2] 1000')]
+    # AbstractDragonSittingPhase.onHurt: a perched dragon takes nothing from a direct arrow,
+    # so the hit is under 0.01 and refused.
+    perch = '@e[tag=dmg_perch,limit=1]'
+    ops += setup('/kill @e[tag=dmg_knock]',
+                 '/summon ender_dragon 8.5 160 40.5 {Tags:["dmg_actor","dmg_perch"],NoAI:1b,DragonPhase:6}',
+                 '/summon arrow 8.5 170 40.5 {Tags:["dmg_actor","dmg_arrow"],NoGravity:1b}')
+    ops += [cmd(f'/damage {perch} 10 minecraft:arrow by @e[tag=dmg_arrow,limit=1] from @s'),
+            cmd(f'/data get entity {perch} Health', expect_result=200),
+            cmd(f'/damage {perch} 10 minecraft:arrow by @s'),
+            cmd(f'/data get entity {perch} Health', expect_result=196)]  # 196.5
+    return ops + setup('/kill @e[tag=dmg_actor]', '/tick unfreeze', '/forceload remove all')
 
 
 def execute():
@@ -1837,12 +1917,23 @@ def advancement_reward_fixtures(group_names):
 
 def function_return_fixtures(group_names):
     functions = {}
+    if 'function condition fallthrough' in group_names:
+        try:
+            from .function_condition_corpus import functions as condition_functions
+        except ImportError:
+            from function_condition_corpus import functions as condition_functions
+        functions.update(condition_functions())
     if any(name.startswith('wolf anger ') for name in group_names):
         try:
             from .wolf_anger_corpus import functions as anger_functions
         except ImportError:
             from wolf_anger_corpus import functions as anger_functions
         functions.update(anger_functions())
+    if 'macro source type error' in group_names:
+        functions.update({'command_macro:apply': '$scoreboard players add #hits macro_error $(amount)\n',
+                          'command_macro:admit': 'scoreboard players add #admit macro_error 1\n',
+                          'command_macro:fail': 'return fail\n',
+                          'command_macro:zero': 'return 0\n'})
     if 'function return feedback' in group_names:
         functions.update({'parity:fail': 'return fail\n', 'parity:zero': 'return 0\n',
                           'parity:value': 'return 7\n', 'parity:empty': '# no commands\n',
@@ -1856,6 +1947,52 @@ def function_return_fixtures(group_names):
                           'h291:nested': 'scoreboard players add @s reward_nested 1\n',
                           'minecraft:h291_alias': 'scoreboard players add @s reward_alias 1\n'})
     return functions
+
+
+def macro_source_type_error():
+    ops = [cmd('/tick freeze'), cmd('/datapack list enabled'),
+           cmd('/scoreboard objectives add macro_error dummy', expect_result=1),
+           cmd('/scoreboard players set #hits macro_error 0', expect_result=0),
+           cmd('/scoreboard players set #admit macro_error 0', expect_result=0),
+           cmd('/data modify storage command_macro:args number set value 7', expect_result=1),
+           cmd('/data modify storage command_macro:args text set value "seven"', expect_result=1),
+           cmd('/data modify storage command_macro:args valid set value {amount:2}', expect_result=1),
+           cmd('/data get storage command_macro:args number', expect_result=7),
+           cmd('/data get storage command_macro:args text', expect_result=5),
+           cmd('/execute if data storage command_macro:args {number:7,text:"seven",valid:{amount:2}}', expect_result=1),
+           cmd('/function command_macro:admit'),
+           cmd('/scoreboard players get #admit macro_error', expect_result=1)]
+    ops += setup('/execute store result score #clock macro_error run time query gametime')
+    count = 0
+    for path in ['valid', 'number', 'text', 'missing']:
+        call = f'function command_macro:apply with storage command_macro:args {path}'
+        direct = cmd('/' + call)
+        if path != 'valid':
+            direct['expect_callback'] = [False, 0]
+        ops.append(direct)
+        count += 2 if path == 'valid' else 0
+        ops += [cmd('/scoreboard players get #hits macro_error', expect_result=count),
+                cmd('/scoreboard players set #r macro_error 31', expect_result=31),
+                cmd('/scoreboard players set #s macro_error 17', expect_result=17),
+                cmd('/execute store result score #r macro_error store success score #s macro_error run ' + call),
+                # Independently measured: no return leaves sentinels; errors store failure.
+                cmd('/scoreboard players get #r macro_error', expect_result=31 if path == 'valid' else 0),
+                cmd('/scoreboard players get #s macro_error', expect_result=17 if path == 'valid' else 0)]
+        count += 2 if path == 'valid' else 0
+        ops.append(cmd('/scoreboard players get #hits macro_error', expect_result=count))
+    for name in ['fail', 'zero']:
+        call = cmd(f'/function command_macro:{name}')
+        call['expect_callback'] = [name == 'zero', 0]
+        ops += [call,
+                cmd('/scoreboard players set #r macro_error 31', expect_result=31),
+                cmd('/scoreboard players set #s macro_error 17', expect_result=17),
+                cmd(f'/execute store result score #r macro_error store success score #s macro_error run function command_macro:{name}'),
+                cmd('/scoreboard players get #r macro_error', expect_result=0),
+                cmd('/scoreboard players get #s macro_error', expect_result=int(name == 'zero')),
+                cmd('/scoreboard players get #hits macro_error', expect_result=count)]
+    ops += setup('/execute store result score #elapsed macro_error run time query gametime',
+                 '/scoreboard players operation #elapsed macro_error -= #clock macro_error')
+    return ops + [cmd('/scoreboard players get #elapsed macro_error', expect_result=0)]
 
 
 def function_return_feedback():
@@ -1887,6 +2024,14 @@ def function_return_feedback():
                   cmd('/execute if score #clock audit = #after audit', expect_result=1),
                   cmd('/scoreboard objectives remove audit')])
     return lines
+
+
+def function_condition_fallthrough():
+    try:
+        from .function_condition_corpus import conditions
+    except ImportError:
+        from function_condition_corpus import conditions
+    return conditions()
 
 
 def functions_and_packs():
@@ -2378,6 +2523,48 @@ def ender_dragon():
         *setup('/execute in minecraft:overworld run tp @s 8.5 230 8.5 0 0'),
         {'op': 'settle'},
     ]
+
+
+def summoned_dragon_hovers():
+    """EnderDragon's constructor sets EnderDragonPhase.HOVERING; only EnderDragonFight.createNewDragon
+    moves its dragon to the holding pattern. A dragon from /summon hovers where it was put: the
+    hover phase's target is its own position, and no fight takes it on outside the End."""
+    dragon = '@e[tag=hover_dragon,limit=1]'
+    ops = setup('/forceload add 0 0 31 31')
+    ops += [{'op': 'settle'}]
+    ops += setup('/summon ender_dragon 16.5 160 16.5 {Tags:["hover_dragon"]}')
+    ops += [cmd(f'/data get entity {dragon} DragonPhase', expect_result=10)]
+    for _ in range(6):
+        ops += [{'op': 'tick', 'n': 20},
+                cmd(f'/data get entity {dragon} DragonPhase'),
+                *[cmd(f'/data get entity {dragon} Pos[{i}] 100') for i in range(3)]]
+    # DragonHoverPhase.getFlySpeed is 1: a hovering dragon thrown upwards climbs back to its
+    # target at up to 0.01 a tick (ydd / horizontal distance clamped to the fly speed).
+    rise = '@e[tag=hover_rise,limit=1]'
+    ops += setup('/kill @e[tag=hover_dragon]',
+                 '/summon ender_dragon 16.5 160 16.5 {Tags:["hover_rise"],DragonPhase:10,Motion:[0.0d,0.5d,0.0d]}')
+    for _ in range(4):
+        ops += [{'op': 'tick', 'n': 10},
+                *[cmd(f'/data get entity {rise} Pos[{i}] 1000') for i in range(3)]]
+    return ops + setup('/kill @e[tag=hover_rise]', '/forceload remove all')
+
+
+def dragon_scanning_turn():
+    """DragonSittingScanningPhase: the dragon turns towards the player only while they are more
+    than 10 degrees off its heading. Summoned 6 blocks south of a survival player with yaw 0
+    (looking towards -z, at them), it holds still; one with yaw 90 turns. Its parts are at the
+    origin until its first aiStep, so its first turn aims from there (far away: a small step)."""
+    ops = setup('/gamemode survival', '/execute at @s run forceload add ~-32 ~-32 ~32 ~32')
+    ops += [{'op': 'settle'}]
+    for label, yaw in (('facing', 0), ('away', 90)):
+        dragon = f'@e[tag=scan_{label},limit=1]'
+        ops += setup(f'/execute at @s run summon ender_dragon ~ ~ ~6 {{Tags:["scan_{label}"],DragonPhase:6,Rotation:[{yaw}.0f,0.0f]}}')
+        for _ in range(3):
+            ops += [{'op': 'tick', 'n': 2},
+                    cmd(f'/data get entity {dragon} Rotation[0] 1000'),
+                    cmd(f'/data get entity {dragon} DragonPhase')]
+        ops += setup(f'/kill {dragon}')
+    return ops + setup('/gamemode creative', '/forceload remove all')
 
 
 def place_structure():
@@ -5669,10 +5856,11 @@ ISOLATED_REINFORCEMENTS = frozenset({'command zombie reinforcements', 'command r
 # These overlays replace built-in recipes, never beside the corpus's fixed vanilla recipe-count controls.
 ISOLATED_RECIPES = frozenset({'crafting recipe priority', 'crafting base recipe control', 'transmute result patches'})
 ISOLATED_FRAME_MAPS = frozenset({'frame live map detachment', 'treasure map copies'})
+ISOLATED_MACRO_TYPE = frozenset({'macro source type error'})
 ISOLATED_PICKUP_SAVE = frozenset({'mob saved pickup loot'})
 ISOLATED_ORB_UUID = frozenset({'orb saved UUID'})
 ISOLATED_STAND_FALL = frozenset({'stand saved fall distance'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_MACRO_TYPE | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL
 
 
 def groups():
@@ -5684,6 +5872,10 @@ def groups():
         from .mob_effect_predicate_corpus import cases as mob_effect_predicates
     except ImportError:
         from mob_effect_predicate_corpus import cases as mob_effect_predicates
+    try:
+        from .mob_name_predicate_corpus import cases as mob_name_predicates
+    except ImportError:
+        from mob_name_predicate_corpus import cases as mob_name_predicates
     try:
         from .frame_map_corpus import frame_maps, treasure_map_copies
         from .allay_damage_corpus import allay_player_damage
@@ -5708,11 +5900,13 @@ def groups():
         from item_merge_corpus import stack_limit_merges
     return [
         ('setup', group_setup()),
+        ('macro source type error', macro_source_type_error()),
         ('stand saved fall distance', stand_saved_fall()),
         ('orb saved UUID', orb_saved_uuid()),
         ('mob saved pickup loot', mob_saved_pickup_loot()),
         ('transmute result patches', transmute_patches(cmd, setup)),
         ('mob effect predicate view', mob_effect_predicates(cmd, setup)),
+        ('mob custom name components', mob_name_predicates(cmd, setup)),
         ('frame live map detachment', frame_maps(cmd, setup)),
         ('treasure map copies', treasure_map_copies(cmd, setup)),
         ('allay player damage immunity', allay_player_damage(cmd, setup)),
@@ -5789,6 +5983,8 @@ def groups():
         ('large fireball fire', large_fireball_fire()),
         ('mannequin pose anchors', mannequin_pose_anchors()),
         ('item command damage', item_command_damage()),
+        ('dragon command damage', dragon_command_damage()),
+        ('SNBT trailing commas', snbt_trailing_commas()),
         ('execute', execute()),
         ('projectile origin', projectile_origin()),
         ('selector missing predicates', selector_missing_predicates()),
@@ -5822,6 +6018,7 @@ def groups():
         ('mob full resistance hits', mob_full_resistance_hits()),
         ('sulfur cube loaded health', sulfur_cube_loaded_health()),
         ('function return feedback', function_return_feedback()),
+        ('function condition fallthrough', function_condition_fallthrough()),
         ('ticking and random', ticking()),
         ('compute', compute()),
         ('social and scoreboard', social()),
@@ -5831,6 +6028,8 @@ def groups():
         ('creative shulker drops', creative_shulker_drops()),
         ('minecart drag', minecart_drag()),
         ('ender dragon', ender_dragon()),
+        ('summoned dragon hovers', summoned_dragon_hovers()),
+        ('dragon scanning turn', dragon_scanning_turn()),
         ('place structure', place_structure()),
         ('template container loot table', template_container_loot_table()),
         ('tame wolf kills', tame_wolf_kills()),

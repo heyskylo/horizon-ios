@@ -157,17 +157,17 @@ fn visit(tag: &Tag, out: &mut String) {
         }
         Tag::Compound(c) => {
             out.push('{');
-            let mut entries: Vec<(String, &Tag)> =
-                c.iter().map(|(k, v)| (string_of(k), v)).collect();
-            entries.sort_by(|a, b| a.0.cmp(&b.0));
-            for (i, (k, v)) in entries.iter().enumerate() {
+            // JavaString keys already follow StringTagVisitor's UTF-16 order.
+            // Sorting converted Rust strings would put supplementary keys last.
+            for (i, (k, v)) in c.iter().enumerate() {
+                let k = string_of(k);
                 if i > 0 {
                     out.push(',');
                 }
-                if unquoted_key(k) {
-                    out.push_str(k);
+                if unquoted_key(&k) {
+                    out.push_str(&k);
                 } else {
-                    out.push_str(&quote_and_escape(k));
+                    out.push_str(&quote_and_escape(&k));
                 }
                 out.push(':');
                 visit(v, out);

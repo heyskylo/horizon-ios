@@ -1,0 +1,26 @@
+{
+  "hooks": [
+    {
+      "name": "living_damage_pre",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_living_damage_pre",
+      "neoforge": "LivingDamageEvent.Pre",
+      "side": "server",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
+    },
+    {
+      "name": "living_damage_post",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_living_damage_post",
+      "neoforge": "LivingDamageEvent.Post",
+      "side": "server",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "the damage a living entity's health takes, before and after (`native_living_damage_pre`, `native_living_damage_post`).",
+  "doc_summary": "the damage that reaches a living entity's health: `native_living_damage_pre` may change it once armour, enchantment protection, effects and absorption have taken their part, and `native_living_damage_post` hears what came off, as NeoForge's `LivingDamageEvent.Pre` and `.Post` do, for players, mobs and the ender dragon ([Damage the health takes](#damage-the-health-takes)). Bundles need \"hooks\": @API:living_damage@."
+}

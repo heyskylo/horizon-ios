@@ -33,6 +33,19 @@ pub trait Noise: std::fmt::Debug + Send + Sync {
         }
         Ok(())
     }
+    /// [`Noise::add_to_volume`] for a caller that reads only the Ys set in `needed`: bit `y` of
+    /// `needed[column]`, X/Z columns in buffer order. The other Ys may be left unchanged.
+    fn add_to_needed(
+        &self,
+        buffer: &mut [f32],
+        volume: DensityVolume,
+        xz_scale: f64,
+        y_scale: f64,
+        amplitude: f32,
+        _needed: &[u64],
+    ) -> Result<(), DensityError> {
+        self.add_to_volume(buffer, volume, xz_scale, y_scale, amplitude)
+    }
 }
 
 impl Noise for PerlinNoise {
@@ -55,6 +68,17 @@ impl Noise for PerlinNoise {
     ) -> Result<(), DensityError> {
         PerlinNoise::add_to_volume(self, buffer, volume, xz_scale, y_scale, amplitude)
     }
+    fn add_to_needed(
+        &self,
+        buffer: &mut [f32],
+        volume: DensityVolume,
+        xz_scale: f64,
+        y_scale: f64,
+        amplitude: f32,
+        needed: &[u64],
+    ) -> Result<(), DensityError> {
+        PerlinNoise::add_to_needed(self, buffer, volume, xz_scale, y_scale, amplitude, needed)
+    }
 }
 impl Noise for SmearedPerlinNoise {
     fn range(&self) -> Result<[f32; 2], NanRange> {
@@ -75,6 +99,19 @@ impl Noise for SmearedPerlinNoise {
         amplitude: f32,
     ) -> Result<(), DensityError> {
         SmearedPerlinNoise::add_to_volume(self, buffer, volume, xz_scale, y_scale, amplitude)
+    }
+    fn add_to_needed(
+        &self,
+        buffer: &mut [f32],
+        volume: DensityVolume,
+        xz_scale: f64,
+        y_scale: f64,
+        amplitude: f32,
+        needed: &[u64],
+    ) -> Result<(), DensityError> {
+        SmearedPerlinNoise::add_to_needed(
+            self, buffer, volume, xz_scale, y_scale, amplitude, needed,
+        )
     }
 }
 impl Noise for SimplexNoise {
@@ -144,17 +181,43 @@ impl Noise for NoiseStack {
         y_scale: f64,
         amplitude: f32,
     ) -> Result<(), DensityError> {
+        self.add_layers(buffer, volume, [xz_scale, y_scale], amplitude, None)
+    }
+    fn add_to_needed(
+        &self,
+        buffer: &mut [f32],
+        volume: DensityVolume,
+        xz_scale: f64,
+        y_scale: f64,
+        amplitude: f32,
+        needed: &[u64],
+    ) -> Result<(), DensityError> {
+        self.add_layers(buffer, volume, [xz_scale, y_scale], amplitude, Some(needed))
+    }
+}
+impl NoiseStack {
+    fn add_layers(
+        &self,
+        buffer: &mut [f32],
+        volume: DensityVolume,
+        [xz_scale, y_scale]: [f64; 2],
+        amplitude: f32,
+        needed: Option<&[u64]>,
+    ) -> Result<(), DensityError> {
         if buffer.len() < volume.size() {
             return Err(DensityError::BufferTooShort);
         }
         for layer in &self.layers {
-            layer.noise.add_to_volume(
-                buffer,
-                volume,
-                xz_scale * layer.frequency,
-                y_scale * layer.frequency,
-                amplitude * layer.amplitude,
-            )?;
+            let (xz_scale, y_scale) = (xz_scale * layer.frequency, y_scale * layer.frequency);
+            let amplitude = amplitude * layer.amplitude;
+            match needed {
+                Some(needed) => layer
+                    .noise
+                    .add_to_needed(buffer, volume, xz_scale, y_scale, amplitude, needed)?,
+                None => layer
+                    .noise
+                    .add_to_volume(buffer, volume, xz_scale, y_scale, amplitude)?,
+            }
         }
         Ok(())
     }

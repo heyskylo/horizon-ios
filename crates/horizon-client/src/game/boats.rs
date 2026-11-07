@@ -830,6 +830,11 @@ impl Game<'_> {
     }
     /// Every boat but the ridden one (which ticks with its rider).
     pub(super) fn tick_boats(&mut self) {
+        self.vehicles_ticking(true);
+        self.tick_boats_now();
+        self.vehicles_ticking(false);
+    }
+    fn tick_boats_now(&mut self) {
         // ServerLevel.tick: only entities in entity-ticking chunks tick.
         let ticking = self.entity_ticking_area();
         let mut round = self.native_tick_round();
@@ -929,7 +934,7 @@ impl Game<'_> {
     /// client moves only the boat its player drives.
     fn boat_can_simulate_movement(&self, id: u32) -> bool {
         if self.remote.is_some() {
-            self.riding == Some(id)
+            self.controls_boat(id)
         } else {
             !self.guest_vehicles().contains(&id)
         }
@@ -1371,7 +1376,6 @@ impl Game<'_> {
         if sneaking
             || self.boats[i].out_of_control >= 60.0
             || self.riding.is_some()
-            || !self.may_board()
             || self.ridden_by_guest(self.boats[i].id)
             || !self.boat_has_room(i)
         {
@@ -1484,7 +1488,12 @@ impl Game<'_> {
         self.hurt_boat_result(i, damage, creative).unwrap_or(false)
     }
     /// None means a canceled hit; Some records whether an accepted hit destroyed it.
-    fn hurt_boat_result(&mut self, i: usize, mut damage: f32, creative: bool) -> Option<bool> {
+    pub(super) fn hurt_boat_result(
+        &mut self,
+        i: usize,
+        mut damage: f32,
+        creative: bool,
+    ) -> Option<bool> {
         let mut cancel = false;
         self.native_vehicle_damage("boat", &mut damage, &mut cancel);
         if cancel {

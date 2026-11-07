@@ -294,6 +294,13 @@ impl Game<'_> {
                         }
                     }
                 }
+                "raid_state" => {
+                    let state = self.harness_owner(|g| g.raid_fixture_state(&op))?;
+                    let row = json!({"cmd":format!("#raid_state {} {}",op["label"].as_str().unwrap_or(""),op["id"]),
+                        "messages":[],"results":[],"state":state});
+                    out.push_str(&row.to_string());
+                    out.push('\n');
+                }
                 "mob_anger" => {
                     // Metadata-state equality through the production writer, not packet delivery.
                     let uuid = u128::from_str_radix(
