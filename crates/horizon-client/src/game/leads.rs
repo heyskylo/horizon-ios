@@ -532,6 +532,12 @@ impl Game<'_> {
             attached |= self.take_knot_boats(knot_pos);
         }
         if attached {
+            let event_at = if knot_hit {
+                [knot.x, knot.y - 0.25, knot.z]
+            } else {
+                knot_pos.map(|v| f64::from(v) + 0.5)
+            };
+            self.lead_game_event("minecraft:block_attach", event_at);
             self.lead_sound("tied", at);
             self.swing_arm();
         }

@@ -485,11 +485,6 @@ pub struct HealthHud {
     /// `Util.getMillis()` of the last health change.
     pub last_health_time: i64,
     pub health_blink_time: i64,
-    /// `Hud.leftHeight` and `rightHeight` once the health, armor, food, mount
-    /// and air layers have run; the selected item name and the action bar sit
-    /// above them.
-    pub left_height: i32,
-    pub right_height: i32,
     /// `Hud.lastBubblePopSoundPlayed`.
     pub last_bubble_pop_sound: i32,
     /// The `ui.hud.bubble_pop` volume and pitch `playAirBubblePoppedSound`
@@ -655,9 +650,6 @@ impl HealthHud {
         let rows = ceil((max_health + absorption as f32) / 2.0 / 10.0);
         let row_height = (10 - (rows - 2)).max(3);
         let mut y_air = y_base - 10;
-        self.left_height = 39 + (rows - 1) * row_height + 10 + if i.armor > 0 { 10 } else { 0 };
-        // The mount's heart rows (`extractVehicleHealth`); food adds its row below.
-        self.right_height = 39 + 10 * ((i.vehicle_hearts + 9) / 10);
         let offset_index = if i.regeneration {
             i.tick % ceil(max_health + 5.0)
         } else {
@@ -752,13 +744,11 @@ impl HealthHud {
                 }
             }
             y_air -= 10;
-            self.right_height += 10;
         }
         // Hud.extractAirBubbles.
         let max_air = i.max_air.max(1);
         let air = i.air.clamp(0, max_air);
         if i.under_water || air < max_air {
-            self.right_height += 10;
             let rows = (f64::from(i.vehicle_hearts) / 10.0).ceil() as i32;
             let y = y_air - (rows - 1) * 10;
             let bubble = |offset: i32| ceil(((air + offset) * 10) as f32 / max_air as f32);

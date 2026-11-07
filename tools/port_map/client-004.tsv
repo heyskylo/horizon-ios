@@ -18,6 +18,7 @@ EntityRenderDispatcher.shouldRender	skip:other		frustum culling only; Horizon cu
 EntityRenderDispatcher.extractEntity	skip:other		render-state wrapper with a crash report; Horizon has no separate extraction stage
 EntityRenderDispatcher.fillRendererDetails	skip:debug		crash report detail
 EntityRenderDispatcher.onResourceManagerReload	skip:data		renderer rebuild on resource reload; Horizon loads its assets from files
+EntityRenderer.getBoundingBoxForCulling	port	crates/horizon-client/src/game/entity_culling.rs::cull_box	Entity.getInterpolatedBoundingBox(partialTick) - the box at the frame's position - grown by 0.5 for the frustum test; the renderer overrides have their own rows, and a dropped item's is game/item_draw.rs::dropped_item_cull_box
 EntityRenderer.getBlockLightLevel	port	crates/horizon-client/src/game/creatures.rs::Game::mob_geometry	burning mobs, projectiles and dropped items drawn at full block light (game/creatures.rs::Game::mob_geometry, game/item_draw.rs::Game::dropped_item_geometry); other entities use world light
 EntityRenderer.submit	inline	crates/horizon-client/src/game.rs::Game::entity_geometry	leash ropes and name tags drawn in their own passes from there
 EntityRenderer.shouldShowName	port	crates/horizon-client/src/game/names.rs::Game::name_tags	named mob under the crosshair

@@ -85,6 +85,62 @@ pub struct Joined {
     /// The login used up an expectation of a proxy's (`player-expect`) when it
     /// started (`arrivals`).
     pub expected: bool,
+    /// What the client said during its configuration that the game hears once it joined.
+    pub configured: Configured,
+}
+
+/// What a client said during its configuration, kept for the game (`native_packets.rs`): the
+/// plugin channels it registered (`minecraft:register`), in order, and its answers to the
+/// server's resource pack (pack id, `ServerboundResourcePackPacket.Action` id), in order.
+#[derive(Clone, Debug, Default)]
+pub struct Configured {
+    pub channels: Vec<String>,
+    pub pack_answers: Vec<(u128, i32)>,
+}
+
+/// The most plugin channels kept for one client ([`apply_channels`]).
+pub const MAX_CHANNELS: usize = 128;
+/// The longest plugin channel name kept, in bytes.
+pub const MAX_CHANNEL_NAME: usize = 256;
+
+/// Whether a plugin channel message on `channel` registers channels (`minecraft:register`,
+/// true) or unregisters them (`minecraft:unregister`, false), as Bukkit's and Fabric's
+/// clients and proxies send them; None for any other channel. Vanilla reads neither.
+pub fn channel_registration(channel: &str) -> Option<bool> {
+    match channel {
+        "minecraft:register" => Some(true),
+        "minecraft:unregister" => Some(false),
+        _ => None,
+    }
+}
+
+/// Applies a register or unregister message's NUL-separated channel names to `channels`: the
+/// names it added or removed, in the message's order. A name that isn't printable ASCII with a
+/// `:`, is longer than [`MAX_CHANNEL_NAME`], or would take `channels` past [`MAX_CHANNELS`] is
+/// skipped; a name already registered, or not registered, changes nothing.
+pub fn apply_channels(channels: &mut Vec<String>, data: &[u8], register: bool) -> Vec<String> {
+    let mut changed = Vec::new();
+    for name in data.split(|b| *b == 0) {
+        let Ok(name) = std::str::from_utf8(name) else {
+            continue;
+        };
+        if name.len() > MAX_CHANNEL_NAME
+            || !name.contains(':')
+            || !name.bytes().all(|b| b.is_ascii_graphic())
+        {
+            continue;
+        }
+        if register {
+            if channels.len() < MAX_CHANNELS && !channels.iter().any(|c| c == name) {
+                channels.push(name.to_owned());
+                changed.push(name.to_owned());
+            }
+        } else if let Some(at) = channels.iter().position(|c| c == name) {
+            channels.remove(at);
+            changed.push(name.to_owned());
+        }
+    }
+    changed
 }
 /// What a [`PlayerSender`] made for a test's channel gives it.
 pub enum Out {
@@ -982,6 +1038,37 @@ pub(super) fn test_loopback() -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn channel_messages_register_and_unregister_each_name_once() {
+        let mut channels = Vec::new();
+        let added = super::apply_channels(
+            &mut channels,
+            b"fabric:registry/sync\0voxy:info\0voxy:info\0nocolon\0bad name:x",
+            true,
+        );
+        assert_eq!(added, ["fabric:registry/sync", "voxy:info"]);
+        assert_eq!(channels, ["fabric:registry/sync", "voxy:info"]);
+        let removed = super::apply_channels(&mut channels, b"voxy:info\0other:one", false);
+        assert_eq!(removed, ["voxy:info"]);
+        assert_eq!(channels, ["fabric:registry/sync"]);
+        let many: Vec<u8> = (0..200)
+            .map(|i| format!("m:c{i}"))
+            .collect::<Vec<_>>()
+            .join("\0")
+            .into_bytes();
+        super::apply_channels(&mut channels, &many, true);
+        assert_eq!(channels.len(), super::MAX_CHANNELS);
+        assert_eq!(
+            super::channel_registration("minecraft:register"),
+            Some(true)
+        );
+        assert_eq!(
+            super::channel_registration("minecraft:unregister"),
+            Some(false)
+        );
+        assert_eq!(super::channel_registration("minecraft:brand"), None);
+    }
+
     #[test]
     fn a_local_server_accepts_only_the_requested_loopback_address() {
         let lan = super::Lan::start_with(

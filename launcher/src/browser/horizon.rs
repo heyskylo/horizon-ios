@@ -818,7 +818,14 @@ fn install_version(
     home: &Path,
     progress: &dyn Fn(&str, f32),
 ) -> Result<installed::Entry, String> {
-    install_version_guarded(index, local, p, v, home, &|_| Ok(()), progress)
+    let entry = install_version_guarded(index, local, p, v, home, &|_| Ok(()), progress)?;
+    // The player asked for this install: the mod starts on. An automatic update installs
+    // through the guarded function alone, so it leaves the player's on/off choice as it was
+    // (#10071).
+    if entry.kind == Kind::Mod {
+        java::set_enabled(home, &p.id, true)?;
+    }
+    Ok(entry)
 }
 
 /// [`install_version`], with `guard` asked about the downloaded file once it passed the index's
@@ -897,9 +904,6 @@ fn install_version_guarded(
         .and_then(|o| o.path(home))
     {
         let _ = fs::remove_file(old);
-    }
-    if project.kind == Kind::Mod {
-        java::set_enabled(home, &p.id, true)?;
     }
     let entry = installed::Entry {
         source: SourceId::Horizon,
