@@ -1354,6 +1354,11 @@ impl HudAtlas {
                 bordered.insert(image.0.clone());
             }
         }
+        if full {
+            let (width, height, rgba) =
+                decode_bytes(include_bytes!("jei_recipes/config_button.png"))?;
+            images.push(("horizon/recipes/settings".to_owned(), width, height, rgba));
+        }
         images.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)));
         let (width, placements, glyph_region) =
             Self::layout_leaving_out(&mut images, &mut animated, &cit_names, MAX_ATLAS_SIZE)?;

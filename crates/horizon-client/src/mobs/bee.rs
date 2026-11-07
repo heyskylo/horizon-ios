@@ -220,10 +220,13 @@ fn start_anger_timer(m: &mut Mob, w: &MobWorld) {
     let ticks = next_int(m, 400, 780);
     st(m).anger_end = w.game_time + i64::from(ticks);
 }
+/// `NeutralMob.isValidPlayerTarget`: not creative or spectator, and not on
+/// Peaceful.
 fn valid_player_target(w: &MobWorld) -> bool {
-    w.player
-        .as_ref()
-        .is_some_and(|p| !p.creative && !p.spectator)
+    w.difficulty.id != 0
+        && w.player
+            .as_ref()
+            .is_some_and(|p| !p.creative && !p.spectator)
 }
 /// `NeutralMob.updatePersistentAnger(level, false)`.
 fn update_persistent_anger(m: &mut Mob, w: &MobWorld) {
@@ -1093,6 +1096,12 @@ impl Goal for GrowCrop {
         for i in 1..=2 {
             let p = [here[0], here[1] - i, here[2]];
             if let Some(state) = grown(cx.w, p) {
+                // The growth sparks (level event 2011), then the crop.
+                cx.events.push(MobEvent::LevelEvent {
+                    id: 2011,
+                    pos: p,
+                    data: 15,
+                });
                 cx.events.push(MobEvent::SetBlock { pos: p, state });
                 st(m).crops_grown += 1;
             }
@@ -1269,6 +1278,80 @@ mod tests {
         k.species = Species::Bee;
         k.attack_damage = 2.0;
         Mob::new(3, kind, Vec3::ZERO, 0.0)
+    }
+
+    /// `NeutralMob.updatePersistentAnger`: anger at the player ends on
+    /// Peaceful, as for a creative or spectator player (#11377).
+    #[test]
+    fn peaceful_ends_a_bees_anger_at_the_player() {
+        with_test_world(&[], |w, _| {
+            for (difficulty, still_angry) in [(2, true), (0, false)] {
+                let mut w = w.clone();
+                w.player = Some(crate::mobs::world::test_player(Vec3::new(1.0, 0.0, 0.0)));
+                w.difficulty =
+                    crate::mobs::spawning::LocalDifficulty::new(difficulty, 18000, 0, 0.0);
+                let mut m = bee();
+                let b = super::st(&mut m);
+                b.angry_at = Some(Who::Player);
+                b.anger_end = w.game_time + 400;
+                super::update_persistent_anger(&mut m, &w);
+                let angry = super::get(&m).is_some_and(|b| b.angry_at.is_some());
+                assert_eq!(angry, still_angry, "difficulty {difficulty}");
+            }
+        });
+    }
+
+    /// `BeeGrowCropGoal.tick`: level event 2011 (data 15) comes before the
+    /// crop's new state (#11377).
+    #[test]
+    fn a_bee_sparks_a_crop_before_growing_it() {
+        use crate::mobs::goals::Goal;
+        crate::mobs::world::with_built_test_world(
+            &[],
+            |world, registry| {
+                let wheat = registry.default_state("minecraft:wheat").unwrap();
+                world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                );
+                world.set(0, 63, 0, wheat).unwrap();
+            },
+            |w, _| {
+                let mut m = bee();
+                m.position = Vec3::new(0.5, 64.0, 0.5);
+                let mut random = LegacyRandom::new(1);
+                let mut events = Vec::new();
+                // The goal grows on a 1-in-reduced(30) roll.
+                for _ in 0..1000 {
+                    if !events.is_empty() {
+                        break;
+                    }
+                    let mut cx = Cx {
+                        w,
+                        lr: &mut random,
+                        events: &mut events,
+                    };
+                    super::GrowCrop.tick(&mut m, &mut cx);
+                }
+                assert!(
+                    matches!(
+                        events[..],
+                        [
+                            MobEvent::LevelEvent {
+                                id: 2011,
+                                pos: [0, 63, 0],
+                                data: 15
+                            },
+                            MobEvent::SetBlock {
+                                pos: [0, 63, 0],
+                                ..
+                            }
+                        ]
+                    ),
+                    "{events:?}"
+                );
+            },
+        );
     }
 
     /// `Bee.doHurtTarget` on Normal: a mob is poisoned for 10 seconds (200 ticks).
