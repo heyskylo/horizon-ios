@@ -1565,6 +1565,9 @@ mod loot_table_tests {
 }
 
 #[cfg(test)]
+mod saved_tag_tests;
+
+#[cfg(test)]
 mod mod_block_entity_tests;
 
 #[cfg(test)]
