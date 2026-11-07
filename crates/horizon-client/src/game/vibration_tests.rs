@@ -165,3 +165,51 @@ fn tying_to_fence_and_knot_posts_block_attach_from_player() {
         });
     }
 }
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn saddling_a_pig_posts_equip_from_the_pig() {
+    let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+    let settings = Settings::default();
+    let loaded = load_resources(
+        root.clone(),
+        None,
+        &root,
+        &settings,
+        std::time::Instant::now(),
+        false,
+        true,
+        &Progress::new(),
+        &mut |_, _| unreachable!(),
+    )
+    .unwrap();
+    let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+    options.resources = root.clone();
+    options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+    let mut game = Game::new(
+        &loaded.resources,
+        loaded.pack,
+        loaded.gui.unwrap(),
+        options,
+        settings,
+        Audio::silent(&root),
+        None,
+    )
+    .unwrap();
+    game.world
+        .chunks
+        .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+    let kind = game.res.mob_types().get("minecraft:pig").unwrap().clone();
+    game.mobs
+        .push(Mob::new(42, kind, Vec3::new(2.5, 4.0, 3.5), 0.0));
+    *game.held_mut() = Some(ItemStack::new("minecraft:saddle", 1));
+    super::sculk::TEST_POSTED_EVENTS.with(|events| *events.borrow_mut() = Some(Vec::new()));
+    assert!(game.interact_mount(0, "minecraft:saddle"));
+    super::sculk::TEST_POSTED_EVENTS.with(|events| {
+        assert!(events.borrow().as_ref().unwrap().contains(&(
+            "minecraft:equip",
+            [2.5, 4.0, 3.5],
+            Some(Who::Mob(42))
+        )));
+    });
+}

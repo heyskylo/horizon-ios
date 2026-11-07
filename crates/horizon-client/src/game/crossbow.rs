@@ -492,8 +492,8 @@ mod tests {
 
     /// `AbstractArrow`'s constructor runs `EnchantmentHelper.onProjectileSpawned`
     /// for the weapon the arrow is fired from, bow or crossbow, so a Flame
-    /// crossbow shoots burning arrows: Flame's 5 second ignite, 100 ticks, on
-    /// every arrow of a Multishot volley (#10482).
+    /// crossbow shoots burning arrows: Flame's `Ignite(constant(100))` is 100
+    /// seconds, 2000 ticks, on every arrow of a Multishot volley (#10482).
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn a_flame_crossbow_shoots_burning_arrows() {
@@ -516,10 +516,10 @@ mod tests {
                 .collect()
         };
         assert_eq!(shoot(&[], 1), vec![0]);
-        assert_eq!(shoot(&["minecraft:flame"], 1), vec![100]);
+        assert_eq!(shoot(&["minecraft:flame"], 1), vec![2000]);
         assert_eq!(
             shoot(&["minecraft:flame", "minecraft:multishot"], 3),
-            vec![100; 3]
+            vec![2000; 3]
         );
     }
 

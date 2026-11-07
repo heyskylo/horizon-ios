@@ -1,7 +1,7 @@
 //! `FlowingFluid` (water and lava) ticking and spreading, `LiquidBlock`
 //! interactions, liquid containers (waterlogging) and bucket pickup.
 use super::{
-    Behaviours, Dimension, LevelAccess, Sim, Spread,
+    Behaviours, LevelAccess, Sim, Spread,
     classes::{Class, Interface},
     update::{HORIZONTAL, above, below, rel},
 };
@@ -105,7 +105,7 @@ impl Behaviours {
 
 impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     fn fast_lava(&self) -> bool {
-        self.level.dimension() == Dimension::Nether
+        self.level.dimension_type().fast_lava
     }
     /// `Fluid.getTickDelay`.
     pub(crate) fn fluid_tick_delay(&self, kind: FluidKind) -> i32 {

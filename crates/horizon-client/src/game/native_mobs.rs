@@ -140,7 +140,7 @@ fn finite(v: [f64; 3]) -> bool {
 }
 
 /// `/summon`'s world bounds (`Level.isInSpawnableBounds`).
-fn spawnable(pos: [f64; 3]) -> bool {
+pub(super) fn spawnable(pos: [f64; 3]) -> bool {
     finite(pos)
         && (-30_000_000.0..30_000_000.0).contains(&pos[0])
         && (-30_000_000.0..30_000_000.0).contains(&pos[2])

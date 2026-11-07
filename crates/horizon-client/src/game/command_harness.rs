@@ -294,6 +294,36 @@ impl Game<'_> {
                         }
                     }
                 }
+                "projectile_saved_type" => {
+                    let uuid = u128::from_str_radix(
+                        &op["uuid"]
+                            .as_str()
+                            .ok_or("projectile type: missing UUID")?
+                            .replace('-', ""),
+                        16,
+                    )?;
+                    let state = self.harness_owner(|g| {
+                        let Some(super::commands::Target::Projectile(id)) = g.target_by_uuid(uuid) else {
+                            return Err("projectile type: missing loaded projectile".into());
+                        };
+                        let actual = *g.persist.uuids.get(&id).ok_or("projectile type: missing actual UUID")?;
+                        if horizon_client::lan::playerdata::ints_uuid(actual) != uuid {
+                            return Err("projectile type: UUID mismatch".into());
+                        }
+                        let p = g.creatures.projectiles.iter().find(|p| p.id == id)
+                            .ok_or("projectile type: missing model")?;
+                        // Read the live save adapter's type, not the generic selector alias.
+                        // No Duration value is supplied by this admission observation.
+                        let saved = horizon_client::entity_nbt::arrow_to_nbt(p, actual, None, None, None)
+                            .ok_or("projectile type: not an actual arrow")?;
+                        Ok(json!({"uuid":actual,"kind":horizon_client::entity_nbt::kind(&saved)
+                            .ok_or("projectile type: missing saved type")?,
+                            "pos":[p.position.x,p.position.y,p.position.z],"no_gravity":p.no_gravity}))
+                    })?;
+                    out.push_str(&json!({"cmd":format!("#projectile_saved_type {}",op["label"].as_str().unwrap_or("")),
+                        "messages":[],"results":[],"state":state}).to_string());
+                    out.push('\n');
+                }
                 "raid_state" => {
                     let state = self.harness_owner(|g| g.raid_fixture_state(&op))?;
                     let row = json!({"cmd":format!("#raid_state {} {}",op["label"].as_str().unwrap_or(""),op["id"]),
@@ -726,6 +756,12 @@ impl Game<'_> {
                     );
                     out.push('\n');
                 }
+                "map_carried" => {
+                    self.harness_owner(|g| {
+                        g.tick_maps();
+                        Ok(())
+                    })?;
+                }
                 "craft_menu_click" | "craft_menu_state" | "craft_menu_close" => {
                     let owner = self.serving.as_ref().ok_or("no server")?.owner;
                     let state = self.in_owner_level(|g| -> Result<Value> {
@@ -824,10 +860,21 @@ impl Game<'_> {
                     let id = op["id"].as_i64().ok_or("command harness: map id")? as i32;
                     let value = self.harness_owner(|g| {
                         Ok(match g.map(id) {
-                            Some(m) => format!(
-                                "scale={},locked={},center={},{}",
-                                m.scale, m.locked, m.center[0], m.center[1]
-                            ),
+                            Some(m) => {
+                                let mut value = format!(
+                                    "scale={},locked={},center={},{}",
+                                    m.scale, m.locked, m.center[0], m.center[1]
+                                );
+                                if op["red_x"].as_bool().unwrap_or(false) {
+                                    let count = m
+                                        .decorations
+                                        .iter()
+                                        .filter(|d| d.sprite == "map/decorations/red_x")
+                                        .count();
+                                    value.push_str(&format!(",red_x={count}"));
+                                }
+                                value
+                            }
                             None => "missing".to_owned(),
                         })
                     })?;
