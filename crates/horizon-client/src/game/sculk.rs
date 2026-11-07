@@ -616,6 +616,8 @@ impl Game<'_> {
 
     /// `Level.gameEvent`: tell the listeners within reach.
     pub(super) fn post_game_event(&mut self, event: &'static str, pos: [f64; 3], ctx: Context) {
+        #[cfg(test)]
+        super::item_use::interact_vibration_tests::record_event(event, pos, ctx.source);
         self.post_game_event_with(event, pos, |_| ctx);
     }
     /// [`Self::post_game_event`] with the context worked out only when some
@@ -2401,5 +2403,139 @@ mod tests {
         assert_eq!(center((1, 2, 3)), [1.5, 2.5, 3.5]);
         assert_eq!(block_of([1.5, 2.5, -0.5]), [1, 2, -1]);
         assert_eq!(dist_sqr([0, 0, 0], (3, 4, 0)), 25);
+    }
+}
+
+#[cfg(test)]
+mod command_damage_listener_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use horizon_client::chunk::Chunk;
+    use horizon_core::position::ChunkPos;
+    use std::sync::Arc;
+
+    fn selected(game: &Game<'_>, key: (i32, i32, i32)) -> Option<(Info, i64)> {
+        let Some(BlockEntity::Sculk(sensor)) = game.world.block_entities.get(&key) else {
+            panic!("actual command-created sensor must be registered");
+        };
+        sensor.vibration.selector.current
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn command_damage_posts_before_teleport_and_deduplicates_the_scan() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources required"),
+        );
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        for x in 0..=2 {
+            game.world
+                .chunks
+                .insert((x, 0), Arc::new(Chunk::empty(x, 0)));
+            game.block_ticks
+                .add_empty_chunk(ChunkPos::new(x, 0))
+                .unwrap();
+        }
+        assert!(game.run_command("forceload add 0 0 47 15"));
+        assert!(game.run_command("fill 0 199 0 47 199 15 stone"));
+        assert_eq!(
+            game.world.block(4, 199, 4),
+            game.pack
+                .assets
+                .registry
+                .default_state("minecraft:stone")
+                .unwrap()
+        );
+        let origin = (7, 200, 4);
+        let destination = (39, 200, 4);
+        for (index, accepted) in [true, false].into_iter().enumerate() {
+            if index != 0 {
+                assert!(game.run_command("setblock 7 200 4 air strict"));
+                assert!(game.run_command("setblock 39 200 4 air strict"));
+            }
+            let uuid = format!("00000071-0000-0000-0000-{:012x}", index + 1);
+            assert!(game.run_command(&format!(
+                "summon pig 4.5 200 4.5 {{UUID:[I;113,0,0,{}],Health:10f,NoAI:1b,NoGravity:1b,Invulnerable:{}b,Motion:[0d,0d,0d]}}",
+                index + 1, if accepted {0} else {1},
+            )));
+            let id = game.mobs.last().expect("actual summon must create pig").id;
+            assert_eq!(game.uuid_for(id), [113, 0, 0, index as i32 + 1]);
+            assert!(game.run_command("setblock 7 200 4 sculk_sensor strict"));
+            assert!(game.run_command("setblock 39 200 4 sculk_sensor strict"));
+            game.sculk_prepare();
+            game.sculk_sync_index();
+            assert!(selected(&game, origin).is_none());
+            assert!(selected(&game, destination).is_none());
+            let before = game.world.game_time;
+            let mob = game.mobs.iter().find(|m| m.id == id).unwrap();
+            assert_eq!(mob.species(), Species::Pig);
+            assert_eq!(mob.health, 10.0);
+            assert!(mob.no_ai && mob.no_gravity);
+            assert_eq!(mob.position, Vec3::new(4.5, 200.0, 4.5));
+            assert_eq!(
+                game.run_command(&format!("damage {uuid} 2 minecraft:cactus")),
+                accepted
+            );
+            let mob = game.mobs.iter().find(|m| m.id == id).unwrap();
+            assert_eq!(mob.health, if accepted { 8.0 } else { 10.0 });
+            if accepted {
+                let (event, tick) =
+                    selected(&game, origin).expect("accepted command hit must already be heard");
+                assert_eq!(event.event, "minecraft:entity_damage");
+                assert_eq!(event.pos, [4.5, 200.0, 4.5]);
+                assert_eq!(event.source, Some(Who::Mob(id)));
+                assert_eq!(tick, before);
+                assert_eq!(
+                    game.sculk.damaged.get(&id).copied(),
+                    mob.last_damage.map(|(_, tick)| tick)
+                );
+            } else {
+                assert!(selected(&game, origin).is_none());
+                assert!(!game.sculk.damaged.contains_key(&id));
+            }
+            assert!(game.run_command(&format!("tp {uuid} 36.5 200 4.5")));
+            assert_eq!(game.world.game_time, before);
+            assert_eq!(
+                game.mobs.iter().find(|m| m.id == id).unwrap().position,
+                Vec3::new(36.5, 200.0, 4.5)
+            );
+            assert!(selected(&game, destination).is_none());
+            if accepted {
+                assert_eq!(selected(&game, origin).unwrap().0.pos, [4.5, 200.0, 4.5]);
+            }
+            game.world.game_time += 1;
+            game.tick_mob_sculk_events();
+            assert!(
+                selected(&game, destination).is_none(),
+                "end-of-tick scan must not post the old hit again at the moved victim"
+            );
+        }
     }
 }
