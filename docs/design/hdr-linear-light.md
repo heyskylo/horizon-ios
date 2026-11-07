@@ -81,7 +81,11 @@ below); where HDR's settings live (a later note).
   highlights. A pack that leaves it out gets Horizon's:
   in HDR a roll-off into the headroom (ITU-R BT.2390's EETF in PQ; HDR's black level already uses the same
   recommendation's lift), in SDR a clip at white, as vanilla. A pack that only grades keeps Horizon's tone curve;
-  one that only tone maps needs no post chain.
+  one that only tone maps needs no post chain. Horizon's curve keeps light as it is up to its knee, 60% of the peak
+  and at least paper white, where HDR lighting eased into the peak before it. The source's peak is where the EETF
+  puts its knee there (13.7 times paper white at 203 and 1000 nits, PQ's 10 000 nits at most), and light past it
+  shows at the peak. The curve acts on the brightest channel and scales the others with it, so light keeps its hue
+  as it eases and no channel passes the peak.
 - **Horizon's display pass is always last** and can't be replaced: it clamps to the headroom, converts to BT.2020
   for HDR10, lifts the black level, encodes (PQ, scRGB, or 2.2 for SDR) and shows what the HUD and menus cover at
   UI Brightness, as today.
