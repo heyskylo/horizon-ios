@@ -973,10 +973,11 @@ impl Game<'_> {
                 return;
             }
             let uuid = self.uuid_for(id);
-            let tag = horizon_client::entity_nbt::item_entity_to_nbt(
+            let tag = horizon_client::entity_nbt::item_entity_to_nbt_with_items(
                 &self.dropped[i],
                 uuid,
                 self.persist_raw(id),
+                self.items(),
             );
             self.remove_dropped(i);
             self.detach_entity(id);
