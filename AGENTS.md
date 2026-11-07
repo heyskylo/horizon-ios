@@ -120,7 +120,7 @@ python3 tools/agent_control_e2e.py         # horizon-ctl / MCP end to end
   Source paths remain in `crates/horizon-client/`. Measure actual harness selection on refreshed
   records with `tools/parity.py --changed-files paths.txt --list`; historical counts are not a guarantee.
 - Rust integration tests: `crates/horizon-client/tests/` (`lan_bot.rs`, `generation_saves.rs`, `streaming_meshes.rs`).
-- Linux needs `libasound2-dev libudev-dev`; `--no-default-features` drops audio and controllers (the server build).
+- Linux needs `libasound2-dev libudev-dev`; `--no-default-features` drops audio, controllers, `discord`, `friends` and `heartbeat` (the server build).
 - Run and drive the game (starts the `horizon-client` beside `horizon-ctl`; other arguments go to the game):
   `target/fast/horizon-ctl --socket $PWD/ctl.sock launch --world W --creative --offscreen --wait --resources $PWD/.local/horizon-client/26.3`,
   then `horizon-ctl --socket … state|keys|turn|command|screenshot|quit`

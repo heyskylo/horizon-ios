@@ -113,6 +113,7 @@ mod decorated_pot;
 mod dedicated;
 mod deflect;
 mod dialogs;
+#[cfg(feature = "discord")]
 mod discord;
 mod dispense_fixture;
 mod dispenser;
@@ -140,6 +141,11 @@ mod fishing;
 mod fov;
 mod foxes;
 mod frames;
+#[cfg(feature = "friends")]
+mod friends;
+// Without Play with Friends: nothing shared, no Friends button (game/friends_off.rs).
+#[cfg(not(feature = "friends"))]
+#[path = "game/friends_off.rs"]
 mod friends;
 mod functions;
 mod game_mode;
@@ -3188,6 +3194,7 @@ struct Game<'a> {
     /// This game is that server thread's (game/integrated.rs).
     serving: Option<integrated::Serving>,
     /// The open world is shared behind an invite code (game/friends.rs).
+    #[cfg(feature = "friends")]
     friends: Option<friends::Sharing>,
     /// The Social Interactions screen and the players whose chat is hidden (game/social.rs).
     social: social::Social,
@@ -19586,7 +19593,9 @@ impl Game<'_> {
                     self.track_toggle_screens();
                     self.heal_hold_latches();
                     // For the "I'm playing" ping: an atomic, sent on when it changes.
+                    #[cfg(feature = "heartbeat")]
                     horizon_client::heartbeat::set_lan(self.is_published());
+                    #[cfg(feature = "discord")]
                     self.update_discord_presence();
                     let steps = self.clock.advance(elapsed);
                     for _ in 0..steps {
@@ -20411,6 +20420,7 @@ impl<'a> Game<'a> {
             test_defs: std::cell::RefCell::new(HashMap::new()),
             test_highlights: HashMap::new(),
             game_tests: game_tests::GameTests::default(),
+            #[cfg(feature = "friends")]
             friends: None,
             social: Default::default(),
             debug_keys: Default::default(),
@@ -22338,6 +22348,7 @@ fn run_event_loop(mut game: Game<'_>) -> Result<()> {
     narrator::stop();
     leave_fullscreen_after(&result, &mut game.settings);
     result?;
+    #[cfg(feature = "discord")]
     horizon_client::discord_presence::stop();
     write_report(&game)?;
     if let Some(e) = game.error.take() {
@@ -22877,6 +22888,7 @@ fn run_loading(
         App::Loading(loading) => leave_fullscreen_after(&result, &mut loading.settings),
     }
     result?;
+    #[cfg(feature = "discord")]
     horizon_client::discord_presence::stop();
     match app {
         App::Ready(mut split) => {
@@ -22963,6 +22975,7 @@ pub fn run_with() -> Result<()> {
     // for a server, a benchmark, a run that quits by itself, a harness's fixture or a run that
     // horizon-ctl drives: those start in a source checkout and wrote the list there.
     if !options.offscreen && !synchronous_startup(&options) {
+        #[cfg(feature = "heartbeat")]
         horizon_client::heartbeat::start();
         let player_dir = horizon_client::logging::player_dir();
         if let Err(e) = horizon_client::multiplayer::add_official_server(&player_dir) {
@@ -22995,6 +23008,7 @@ pub fn run_with() -> Result<()> {
         narrator::start(&early_settings);
     }
     // "Playing Horizon" on Discord: never for a server; an automated run only talks to a test's fake Discord.
+    #[cfg(feature = "discord")]
     if options.dedicated.is_none() {
         let automated = options.benchmark.is_some()
             || options.offscreen

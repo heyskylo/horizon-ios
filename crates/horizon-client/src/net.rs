@@ -417,18 +417,42 @@ impl Drop for Session {
 /// An address of the form `friend:K7QM-3XPD` joins a friend's world through
 /// its invite code (horizon-friends): the session goes through a tunnel the
 /// client reaches on a loopback port, so everything after is a plain join.
+#[cfg(feature = "friends")]
 pub const FRIEND: &str = horizon_friends::ADDRESS_PREFIX;
+/// Without the `friends` feature such an address is refused (`join_friend`).
+#[cfg(not(feature = "friends"))]
+pub const FRIEND: &str = "friend:";
+
+/// Whether `code` is an invite code; with `full`, only a full one (a short
+/// relay code could also be a host name).
+#[cfg(feature = "friends")]
+pub fn is_invite(code: &str, full: bool) -> bool {
+    use horizon_friends::invite::{Parsed, parse};
+    match parse(code) {
+        Some(Parsed::Long(_)) => true,
+        Some(Parsed::Short(_)) => !full,
+        None => false,
+    }
+}
+/// Without the `friends` feature nothing is one.
+#[cfg(not(feature = "friends"))]
+pub fn is_invite(_code: &str, _full: bool) -> bool {
+    false
+}
 
 /// An address as players and logs see it: a friend's invite code stays
 /// out of it (its secret is in there).
 pub fn shown_address(address: &str) -> String {
     match address.strip_prefix(FRIEND) {
+        #[cfg(feature = "friends")]
         Some(code) => match horizon_friends::invite::parse(code) {
             Some(horizon_friends::invite::Parsed::Short(c)) => {
                 format!("Friend's world ({}-****)", c.nameplate)
             }
             _ => "Friend's world".to_owned(),
         },
+        #[cfg(not(feature = "friends"))]
+        Some(_) => "Friend's world".to_owned(),
         None => address.to_owned(),
     }
 }
@@ -439,7 +463,14 @@ pub fn friends_relay_setting() -> Option<String> {
     let dir = std::env::current_dir().ok()?;
     crate::ui_theme::preference(&dir, "friendsRelay")
         .filter(|r| !r.is_empty())
-        .or_else(horizon_friends::relay_url)
+        .or_else(relay_from_env)
+}
+#[cfg(feature = "friends")]
+use horizon_friends::relay_url as relay_from_env;
+/// `HORIZON_RELAY_URL` is the friends feature's: none without it.
+#[cfg(not(feature = "friends"))]
+fn relay_from_env() -> Option<String> {
+    None
 }
 /// Remember the relay typed on Join a friend (empty forgets it).
 pub fn save_friends_relay(relay: &str) {
@@ -450,6 +481,7 @@ pub fn save_friends_relay(relay: &str) {
 
 /// Reach the friend's world from the code (directly, or through a relay)
 /// and open the tunnel: the loopback address to connect to.
+#[cfg(feature = "friends")]
 fn join_friend(code: &str, lang: &Language, send: &Sender<Event>) -> Result<(String, u16), Reason> {
     use horizon_friends::{
         PathMode,
@@ -476,6 +508,16 @@ fn join_friend(code: &str, lang: &Language, send: &Sender<Event>) -> Result<(Str
         .serve_loopback()
         .map_err(|e| Reason::plain(e.to_string()))?;
     Ok(("127.0.0.1".to_owned(), port))
+}
+
+/// A build without Play with Friends: the address is refused, never retried.
+#[cfg(not(feature = "friends"))]
+fn join_friend(code: &str, lang: &Language, _: &Sender<Event>) -> Result<(String, u16), Reason> {
+    Err(Reason::keyed_arg(
+        "horizon.multiplayer.invalid_address",
+        lang,
+        &shown_address(&format!("{FRIEND}{code}")),
+    ))
 }
 
 fn status(send: &Sender<Event>, text: &str) {
