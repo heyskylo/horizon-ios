@@ -2,6 +2,8 @@ use std::fmt;
 
 use horizon_perf_format::v1::Side;
 
+use crate::wire::SideName;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Error {
     NotGzip,
@@ -15,11 +17,7 @@ pub enum Error {
 }
 
 pub fn side_name(side: Side) -> &'static str {
-    match side {
-        Side::Server => "server",
-        Side::Client => "client",
-        Side::Unspecified => "unknown",
-    }
+    SideName::from(side).as_str()
 }
 
 impl fmt::Display for Error {

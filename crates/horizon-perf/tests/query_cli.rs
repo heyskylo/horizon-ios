@@ -3,8 +3,9 @@ mod common;
 use std::process::Command;
 
 use common::hand::{NAMES, Names, capture};
-use common::{TempDir, save};
-use serde_json::{Value, json};
+use common::{TempDir, save, span_rows};
+use horizon_perf::query::Row;
+use horizon_perf::wire::{Envelope, Op, OpName};
 
 fn run(args: &[&str]) -> (Option<i32>, String, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_horizon-perf"))
@@ -25,10 +26,10 @@ fn a_query_prints_one_json_line_and_exits_zero() {
     let (code, stdout, stderr) = run(&["query", "spans", "--slow", "--limit", "1", &file]);
     assert_eq!((code, stderr.as_str()), (Some(0), ""));
     assert_eq!(stdout.lines().count(), 1);
-    let reply: Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(reply["rows"][0]["id"], "s:tick_lan");
-    assert_eq!(reply["rows"].as_array().unwrap().len(), 1);
-    assert_eq!(reply["selection"]["slow"], true);
+    let reply: Envelope<Row> = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(span_rows(&reply)[0].id, "s:tick_lan");
+    assert_eq!(reply.rows().len(), 1);
+    assert!(reply.selection.unwrap().slow);
 }
 
 #[test]
@@ -37,11 +38,8 @@ fn a_failed_query_still_prints_its_error_as_json_and_exits_one() {
     let file = save(&dir, "run.hzperf", &capture(&Names::new(&NAMES)));
     let (code, stdout, stderr) = run(&["query", "tick", "k:55", &file]);
     assert_eq!(code, Some(1));
-    let reply: Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(
-        (reply["ok"].clone(), reply["op"].clone()),
-        (json!(false), json!("tick"))
-    );
+    let reply: Envelope<Row> = serde_json::from_str(&stdout).unwrap();
+    assert_eq!((reply.ok, reply.op), (false, OpName::Query(Op::Tick)));
     assert!(stderr.contains("does not keep tick 55"), "{stderr}");
 }
 
@@ -55,11 +53,8 @@ fn without_a_file_a_query_reads_the_latest_capture_of_the_directory() {
     );
     let (code, stdout, _) = run(&["query", "meta", "--dir", dir.path().to_str().unwrap()]);
     assert_eq!(code, Some(0));
-    let reply: Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(
-        reply["captures"][0]["file"],
-        "profile-20261107-143204Z.hzperf"
-    );
+    let reply: Envelope<Row> = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(reply.captures[0].file, "profile-20261107-143204Z.hzperf");
 }
 
 #[test]
@@ -70,6 +65,7 @@ fn bad_filters_are_usage_errors() {
         vec!["query", "spans", "--side", "both"],
         vec!["query", "spans", "--select", "gpu"],
         vec!["query", "spans", "--where", "color=red"],
+        vec!["query", "world", "--by", "nope"],
         vec!["query", "spans", "--frobnicate"],
     ] {
         let (code, _, stderr) = run(&args);

@@ -9,36 +9,15 @@ const DRIFT_SHARE: f64 = 0.05;
 const NEGLIGIBLE_MS: f64 = 0.05;
 const NEGLIGIBLE_SHARE: f64 = 0.02;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Verdict {
-    TooFewBlocks,
-    WithinNoise,
-    Negligible,
-    Slower,
-    Faster,
-    New,
-    Gone,
-}
+pub use crate::wire::Verdict;
 
 impl Verdict {
-    pub fn word(self) -> &'static str {
-        match self {
-            Verdict::TooFewBlocks => "too_few_blocks",
-            Verdict::WithinNoise => "within_noise",
-            Verdict::Negligible => "negligible",
-            Verdict::Slower => "slower",
-            Verdict::Faster => "faster",
-            Verdict::New => "new",
-            Verdict::Gone => "gone",
-        }
-    }
-
     /// The summary's one-word form: `~` for within noise or negligible, `?` for too few blocks.
     pub fn mark(self) -> &'static str {
         match self {
             Verdict::WithinNoise | Verdict::Negligible => "~",
             Verdict::TooFewBlocks => "?",
-            other => other.word(),
+            other => other.as_str(),
         }
     }
 }

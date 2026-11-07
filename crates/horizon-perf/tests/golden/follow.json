@@ -7,4 +7,4 @@
 {"event":"mark","name":"after the fix","side":"server","t":2.75}
 {"args":[30.0,1048576.0],"code":"WARNING_CODE_TIMELINE_CAPPED","event":"warning","side":"server","t":2.8}
 {"event":"stop","reason":"normal","side":"server","t":3.0}
-{"event":"stop","reason":"window cap","side":"client","t":3.0}
+{"event":"stop","reason":"window_cap","side":"client","t":3.0}

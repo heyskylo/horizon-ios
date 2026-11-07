@@ -6,9 +6,10 @@ use std::time::{Duration, SystemTime};
 
 use common::{SERVER, TempDir, health, start, stop, write_capture};
 use horizon_perf::cli::{CliError, Env, run};
+use horizon_perf::watch::{Event, HealthNote, SlowNote, SlowSpan};
+use horizon_perf::wire::{SideName, UnitKind};
 use horizon_perf_format::v1::*;
 use horizon_perf_format::{CaptureWriter, Field};
-use serde_json::{Value, json};
 
 fn env(home: Option<&std::path::Path>) -> Env {
     Env {
@@ -114,19 +115,45 @@ fn follow_json_prints_one_object_per_line() {
     let path = dir.path().join("a.hzperf");
     fs::write(&path, write_capture(&watched_fields()).bytes).unwrap();
     let text = output(&["follow", path.to_str().unwrap(), "--json"], &env(None)).unwrap();
-    let lines: Vec<Value> = text
+    let lines: Vec<Event> = text
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
     assert_eq!(lines.len(), 7);
     assert_eq!(
         lines[1],
-        json!({"event": "health", "side": "server", "t": 1.0, "rss_mb": 0.0, "tps": 20.0, "players": 0})
+        Event::Health(HealthNote {
+            side: SideName::Server,
+            t: 1.0,
+            rss_mb: 0.0,
+            tps: Some(20.0),
+            mspt_avg: None,
+            mspt_p95: None,
+            mspt_max: None,
+            fps: None,
+            frame_ms_p95: None,
+            players: Some(0),
+        })
     );
     assert_eq!(
         lines[3],
-        json!({"event": "slow", "side": "server", "t": 2.5, "unit": "tick", "counter": 48812,
-               "wall_ms": 312.4f32, "top": [{"name": "tick_lan", "wall_ms": 180.2f32}, {"name": "#9", "wall_ms": 61.0}]})
+        Event::Slow(SlowNote {
+            side: SideName::Server,
+            t: 2.5,
+            unit: UnitKind::Tick,
+            counter: 48812,
+            wall_ms: f64::from(312.4f32),
+            top: vec![
+                SlowSpan {
+                    name: "tick_lan".into(),
+                    wall_ms: f64::from(180.2f32)
+                },
+                SlowSpan {
+                    name: "#9".into(),
+                    wall_ms: 61.0
+                },
+            ],
+        })
     );
 }
 

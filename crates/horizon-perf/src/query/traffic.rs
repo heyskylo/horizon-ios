@@ -1,6 +1,6 @@
-use serde_json::{Value, json};
-
+use super::rows::{NetPlayer, NetTotal, Row};
 use super::{Ctx, QueryError, Reply, num, opt_num};
+use crate::wire::Unit;
 
 const KIB: f64 = 1024.0;
 
@@ -84,22 +84,27 @@ pub(super) fn net(ctx: &Ctx) -> Result<Reply, QueryError> {
     let (out, inn): (u64, u64) = players
         .iter()
         .fold((0, 0), |a, p| (a.0 + p.bytes_out, a.1 + p.bytes_in));
-    let all = json!({
-        "id": "n:all",
-        "players": players.len(),
-        "out_bytes": out,
-        "in_bytes": inn,
-        "out_kib_s": num(out as f64 / KIB / span),
-        "in_kib_s": num(inn as f64 / KIB / span),
-    });
+    let all = NetTotal {
+        id: "n:all".to_string(),
+        players: players.len(),
+        out_bytes: out,
+        in_bytes: inn,
+        out_kib_s: num(out as f64 / KIB / span),
+        in_kib_s: num(inn as f64 / KIB / span),
+    };
     players.sort_by(|a, b| {
         b.out_kib_s()
             .total_cmp(&a.out_kib_s())
             .then(a.index.cmp(&b.index))
     });
-    let mut rows = vec![all];
-    rows.extend(players.iter().take(ctx.q.filters.limit).map(player_json));
-    let mut reply = Reply::new("kib_per_s", rows);
+    let mut rows = vec![Row::NetTotal(all)];
+    rows.extend(
+        players
+            .iter()
+            .take(ctx.q.filters.limit)
+            .map(|p| Row::NetPlayer(player_row(p))),
+    );
+    let mut reply = Reply::new(Unit::KibPerS, rows);
     reply.window = Some(crate::view::Window { from, to });
     Ok(reply)
 }
@@ -108,18 +113,18 @@ pub(crate) fn player_id(index: u32) -> String {
     crate::ids::Id::new(crate::ids::Kind::Player, format!("p{index}")).to_string()
 }
 
-fn player_json(p: &PlayerRate) -> Value {
-    json!({
-        "id": player_id(p.index),
-        "index": p.index,
-        "joined_t": num(p.joined_t),
-        "left_t": opt_num(p.left_t),
-        "out_bytes": p.bytes_out,
-        "in_bytes": p.bytes_in,
-        "packets_out": p.packets_out,
-        "packets_in": p.packets_in,
-        "out_kib_s": num(p.out_kib_s()),
-        "in_kib_s": num(p.in_kib_s()),
-        "peak_out_kib_s": num(p.peak_out_bytes_per_s / KIB),
-    })
+fn player_row(p: &PlayerRate) -> NetPlayer {
+    NetPlayer {
+        id: player_id(p.index),
+        index: p.index,
+        joined_t: num(p.joined_t),
+        left_t: opt_num(p.left_t),
+        out_bytes: p.bytes_out,
+        in_bytes: p.bytes_in,
+        packets_out: p.packets_out,
+        packets_in: p.packets_in,
+        out_kib_s: num(p.out_kib_s()),
+        in_kib_s: num(p.in_kib_s()),
+        peak_out_kib_s: num(p.peak_out_bytes_per_s / KIB),
+    }
 }

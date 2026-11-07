@@ -6,9 +6,17 @@ use std::time::Duration;
 use common::blocks::{CHILDREN, server, steady};
 use common::hand::{NAMES, Names, capture};
 use common::{CLIENT, SERVER, TempDir, save, start, stop};
+use horizon_perf::bench_diff::BenchReply;
 use horizon_perf::cli::{Env, run};
+use horizon_perf::diff::DiffEnvelope;
+use horizon_perf::query::Row;
+use horizon_perf::watch::Event;
+use horizon_perf::wire::Envelope;
 use horizon_perf_format::Field;
 use horizon_perf_format::v1::*;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use serde_json::Value;
 
 /// A client capture whose start and stop carry every field `meta` prints, with frames on the render thread.
 fn client_fields() -> Vec<Field> {
@@ -279,7 +287,11 @@ fn fixtures() -> Fixtures {
         ("client", save(&dir, "client.hzperf", &client_fields())),
         (
             "base",
-            save(&dir, "base.hzperf", &server(&CHILDREN, &steady(12, 0), "release")),
+            save(
+                &dir,
+                "base.hzperf",
+                &server(&CHILDREN, &steady(12, 0), "release"),
+            ),
         ),
         (
             "head",
@@ -314,7 +326,14 @@ fn steady_frames(phase: &str, base: f64, cpu: bool) -> Vec<(&str, u32, f64, Opti
     [0.0, 0.1, -0.1, 0.2, -0.2, 0.0, 0.1, -0.1]
         .iter()
         .enumerate()
-        .map(|(i, d)| (phase, i as u32, base + d, (cpu && i % 2 == 0).then_some(base / 2.0)))
+        .map(|(i, d)| {
+            (
+                phase,
+                i as u32,
+                base + d,
+                (cpu && i % 2 == 0).then_some(base / 2.0),
+            )
+        })
         .collect()
 }
 
@@ -325,24 +344,78 @@ const CASES: &[(&str, &[&str])] = &[
     (
         "spans_names_where",
         &[
-            "query", "spans", "--names", "streaming,tick_lan", "--where", "span=streaming",
-            "--where", "dim=overworld", "{hand}",
+            "query",
+            "spans",
+            "--names",
+            "streaming,tick_lan",
+            "--where",
+            "span=streaming",
+            "--where",
+            "dim=overworld",
+            "{hand}",
         ],
     ),
-    ("spans_window", &["query", "spans", "--from", "2", "--to", "mark:after the fix", "{hand}"]),
-    ("spans_window_from_end", &["query", "spans", "--from", "-5", "{hand}"]),
-    ("net_window", &["query", "net", "--from", "2", "--to", "8", "--limit", "1", "{hand}"]),
+    (
+        "spans_window",
+        &[
+            "query",
+            "spans",
+            "--from",
+            "2",
+            "--to",
+            "mark:after the fix",
+            "{hand}",
+        ],
+    ),
+    (
+        "spans_window_from_end",
+        &["query", "spans", "--from", "-5", "{hand}"],
+    ),
+    (
+        "net_window",
+        &[
+            "query", "net", "--from", "2", "--to", "8", "--limit", "1", "{hand}",
+        ],
+    ),
     (
         "world_where_two",
-        &["query", "world", "--where", "dim=overworld", "--where", "dimension=the_nether", "--by", "entity", "{hand}"],
+        &[
+            "query",
+            "world",
+            "--where",
+            "dim=overworld",
+            "--where",
+            "dimension=the_nether",
+            "--by",
+            "entity",
+            "{hand}",
+        ],
     ),
-    ("spans_unknown_name", &["query", "spans", "--names", "nope", "{hand}"]),
-    ("spans_ambiguous_name", &["query", "spans", "--names", "t", "{hand}"]),
-    ("spans_client", &["query", "spans", "--side", "client", "{client}"]),
-    ("spans_slow_client", &["query", "spans", "--slow", "--side", "client", "{client}"]),
+    (
+        "spans_unknown_name",
+        &["query", "spans", "--names", "nope", "{hand}"],
+    ),
+    (
+        "spans_ambiguous_name",
+        &["query", "spans", "--names", "t", "{hand}"],
+    ),
+    (
+        "spans_client",
+        &["query", "spans", "--side", "client", "{client}"],
+    ),
+    (
+        "spans_slow_client",
+        &["query", "spans", "--slow", "--side", "client", "{client}"],
+    ),
     ("ticks", &["query", "ticks", "{hand}"]),
-    ("ticks_worst_over", &["query", "ticks", "--worst", "2", "--over", "100", "{hand}"]),
-    ("ticks_client", &["query", "ticks", "--side", "client", "{client}"]),
+    (
+        "ticks_worst_over",
+        &["query", "ticks", "--worst", "2", "--over", "100", "{hand}"],
+    ),
+    (
+        "ticks_client",
+        &["query", "ticks", "--side", "client", "{client}"],
+    ),
     ("tick", &["query", "tick", "k:101", "{hand}"]),
     ("tick_incomplete", &["query", "tick", "100", "{hand}"]),
     ("tick_missing", &["query", "tick", "k:55", "{hand}"]),
@@ -350,44 +423,102 @@ const CASES: &[(&str, &[&str])] = &[
     (
         "series",
         &[
-            "query", "series", "span:tick_lan", "h:players", "x:streaming.updates{kind=light}",
-            "streaming", "--every", "4", "{hand}",
+            "query",
+            "series",
+            "span:tick_lan",
+            "h:players",
+            "x:streaming.updates{kind=light}",
+            "streaming",
+            "--every",
+            "4",
+            "{hand}",
         ],
     ),
     (
         "series_client",
-        &["query", "series", "h:fps", "h:frame_ms_p95", "span:chunk_upload", "--side", "client", "--thread", "render", "--every", "5", "{client}"],
+        &[
+            "query",
+            "series",
+            "h:fps",
+            "h:frame_ms_p95",
+            "span:chunk_upload",
+            "--side",
+            "client",
+            "--thread",
+            "render",
+            "--every",
+            "5",
+            "{client}",
+        ],
     ),
-    ("series_unknown", &["query", "series", "h:nonsense", "{hand}"]),
-    ("series_unknown_span", &["query", "series", "span:nonsense", "{hand}"]),
-    ("series_unknown_counter", &["query", "series", "x:nonsense", "{hand}"]),
-    ("series_ambiguous", &["query", "series", "nonsense", "{hand}"]),
+    (
+        "series_unknown",
+        &["query", "series", "h:nonsense", "{hand}"],
+    ),
+    (
+        "series_unknown_span",
+        &["query", "series", "span:nonsense", "{hand}"],
+    ),
+    (
+        "series_unknown_counter",
+        &["query", "series", "x:nonsense", "{hand}"],
+    ),
+    (
+        "series_ambiguous",
+        &["query", "series", "nonsense", "{hand}"],
+    ),
     ("series_none", &["query", "series", "{hand}"]),
     ("world", &["query", "world", "{hand}"]),
-    ("world_entity", &["query", "world", "--by", "entity", "{hand}"]),
+    (
+        "world_entity",
+        &["query", "world", "--by", "entity", "{hand}"],
+    ),
     (
         "world_block_entity",
-        &["query", "world", "--by", "block_entity", "--where", "dimension=overworld", "{hand}"],
+        &[
+            "query",
+            "world",
+            "--by",
+            "block_entity",
+            "--where",
+            "dimension=overworld",
+            "{hand}",
+        ],
     ),
     ("world_cost", &["query", "world", "--by", "cost", "{hand}"]),
-    ("world_bad_by", &["query", "world", "--by", "nope", "{hand}"]),
     ("net", &["query", "net", "{hand}"]),
     ("meta", &["query", "meta", "{hand}"]),
     ("meta_client", &["query", "meta", "{client}"]),
     ("memory", &["query", "memory", "{hand}"]),
     ("memory_label", &["query", "memory", "start", "{hand}"]),
     ("memory_diff", &["query", "memory", "--diff", "{hand}"]),
-    ("memory_diff_labels", &["query", "memory", "--diff", "start", "stop", "--min-mb", "0.5", "{hand}"]),
-    ("memory_bad_label", &["query", "memory", "--diff", "start", "later", "{hand}"]),
+    (
+        "memory_diff_labels",
+        &[
+            "query", "memory", "--diff", "start", "stop", "--min-mb", "0.5", "{hand}",
+        ],
+    ),
+    (
+        "memory_bad_label",
+        &["query", "memory", "--diff", "start", "later", "{hand}"],
+    ),
     ("marks", &["query", "marks", "{hand}"]),
     ("warnings", &["query", "warnings", "{hand}"]),
     ("samples_op", &["query", "hot", "{hand}"]),
     ("unknown_op", &["query", "nonsense", "{hand}"]),
     ("bare_world", &["query", "world", "{bare}"]),
-    ("side_missing", &["query", "spans", "--side", "client", "{hand}"]),
+    (
+        "side_missing",
+        &["query", "spans", "--side", "client", "{hand}"],
+    ),
     ("two_files_one_op", &["query", "ticks", "{hand}", "{hand2}"]),
     ("diff", &["diff", "{base}", "{head}", "--json"]),
-    ("diff_limited", &["diff", "{base}", "{head}", "--json", "--limit", "5", "--min-ms", "1"]),
+    (
+        "diff_limited",
+        &[
+            "diff", "{base}", "{head}", "--json", "--limit", "5", "--min-ms", "1",
+        ],
+    ),
     ("diff_same", &["diff", "{base}", "{base}", "--json"]),
     ("bench_ab", &["diff", "{benchA}", "{benchB}", "--json"]),
     ("bench_frames", &["diff", "{benchC}", "{benchB}", "--json"]),
@@ -398,9 +529,9 @@ fn run_case(args: &[&str], paths: &[(&'static str, String)]) -> String {
     let args: Vec<String> = args
         .iter()
         .map(|a| {
-            paths
-                .iter()
-                .fold((*a).to_string(), |a, (key, path)| a.replace(&format!("{{{key}}}"), path))
+            paths.iter().fold((*a).to_string(), |a, (key, path)| {
+                a.replace(&format!("{{{key}}}"), path)
+            })
         })
         .collect();
     let env = Env {
@@ -418,15 +549,77 @@ fn golden_path(name: &str) -> std::path::PathBuf {
         .join(format!("{name}.json"))
 }
 
-#[test]
-fn golden_outputs_are_written_when_asked() {
-    if std::env::var_os("GOLDEN_WRITE").is_none() {
-        return;
+/// The wire shape a case prints, one value per line.
+#[derive(Clone, Copy)]
+enum Shape {
+    Query,
+    Diff,
+    Bench,
+    Follow,
+}
+
+impl Shape {
+    fn of(name: &str, args: &[&str]) -> Shape {
+        match (args[0], name.starts_with("bench")) {
+            ("follow", _) => Shape::Follow,
+            ("diff", true) => Shape::Bench,
+            ("diff", false) => Shape::Diff,
+            _ => Shape::Query,
+        }
     }
+
+    /// Parses `line` into its type and serializes it back.
+    fn round_trip(self, line: &str) -> String {
+        fn back<T: Serialize + DeserializeOwned>(line: &str) -> String {
+            let typed: T = serde_json::from_str(line).unwrap_or_else(|e| panic!("{e}: {line}"));
+            serde_json::to_string(&typed).unwrap()
+        }
+        match self {
+            Shape::Query => back::<Envelope<Row>>(line),
+            Shape::Diff => back::<DiffEnvelope>(line),
+            Shape::Bench => back::<BenchReply>(line),
+            Shape::Follow => back::<Event>(line),
+        }
+    }
+}
+
+fn values(text: &str) -> Vec<Value> {
+    text.lines()
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{e}: {l}")))
+        .collect()
+}
+
+#[test]
+fn every_reply_is_the_json_it_was_before_the_types() {
     let fx = fixtures();
     for (name, args) in CASES {
-        let path = golden_path(name);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, run_case(args, &fx.paths)).unwrap();
+        let golden = std::fs::read_to_string(golden_path(name)).unwrap();
+        let out = run_case(args, &fx.paths);
+        assert_eq!(values(&out), values(&golden), "{name}");
+    }
+}
+
+#[test]
+fn golden_replies_parse_into_the_types_and_serialize_back_to_themselves() {
+    for (name, args) in CASES {
+        let golden = std::fs::read_to_string(golden_path(name)).unwrap();
+        let shape = Shape::of(name, args);
+        let back: Vec<Value> = golden
+            .lines()
+            .map(|l| serde_json::from_str(&shape.round_trip(l)).unwrap())
+            .collect();
+        assert_eq!(back, values(&golden), "{name}");
+    }
+}
+
+#[test]
+fn what_the_cli_prints_is_what_its_types_serialize_to() {
+    let fx = fixtures();
+    for (name, args) in CASES {
+        let out = run_case(args, &fx.paths);
+        let shape = Shape::of(name, args);
+        for line in out.lines() {
+            assert_eq!(shape.round_trip(line), line, "{name}");
+        }
     }
 }

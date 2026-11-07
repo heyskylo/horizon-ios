@@ -2,61 +2,120 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::{Value, json};
+use horizon_bench::compare::{Ab, Paired, Verdict as PairVerdict};
+use serde::{Deserialize, Serialize};
 
-use crate::diff::{DiffOptions, Row, row};
+use crate::diff::{DiffCapture, DiffOptions, DiffRow, Row, captures, row};
+use crate::wire::{BenchKind, DiffOp, Role, Unit, vocab};
 
-pub const FORMAT: &str = "horizon-benchmark-report";
+pub use horizon_bench::FORMAT;
 
-/// Frames fields compared when no `ab` is present; the CPU and GPU ones only when every repeat has them.
-const METRICS: [&str; 4] = ["p50_ms", "p95_ms", "cpu_p50_ms", "gpu_p50_ms"];
+vocab! {
+    /// Frames fields compared when no `ab` is present; the CPU and GPU ones only when every repeat has them.
+    BenchMetric {
+        P50Ms = "p50_ms",
+        P95Ms = "p95_ms",
+        CpuP50Ms = "cpu_p50_ms",
+        GpuP50Ms = "gpu_p50_ms",
+    }
+}
+
+/// What `diff` reads of a benchmark report: its frames and its A/B result.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct BenchReport {
+    #[serde(default)]
+    frames: Vec<BenchFrame>,
+    #[serde(default)]
+    ab: Option<Ab>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+struct BenchFrame {
+    phase: Option<String>,
+    p50_ms: Option<f64>,
+    p95_ms: Option<f64>,
+    cpu_p50_ms: Option<f64>,
+    gpu_p50_ms: Option<f64>,
+}
+
+impl BenchFrame {
+    fn get(&self, metric: BenchMetric) -> Option<f64> {
+        match metric {
+            BenchMetric::P50Ms => self.p50_ms,
+            BenchMetric::P95Ms => self.p95_ms,
+            BenchMetric::CpuP50Ms => self.cpu_p50_ms,
+            BenchMetric::GpuP50Ms => self.gpu_p50_ms,
+        }
+    }
+}
 
 /// True when the bytes look like a JSON document rather than a gzip capture.
 pub fn looks_like_report(bytes: &[u8]) -> bool {
     bytes.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'{')
 }
 
-pub fn parse(bytes: &[u8]) -> Result<Value, String> {
-    let report: Value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-    match report.get("format").and_then(Value::as_str) {
-        Some(FORMAT) => Ok(report),
-        other => Err(format!("not a benchmark report: format {other:?}")),
+pub fn parse(bytes: &[u8]) -> Result<BenchReport, String> {
+    #[derive(Deserialize)]
+    struct Header {
+        format: Option<String>,
     }
+    let header: Header = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+    if header.format.as_deref() != Some(FORMAT) {
+        return Err(format!(
+            "not a benchmark report: format {:?}",
+            header.format.as_deref()
+        ));
+    }
+    serde_json::from_slice(bytes).map_err(|e| e.to_string())
 }
 
-/// A report's A/B result: which report it is in, and the `ab` object untouched.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Ab {
-    pub report: &'static str,
-    pub ab: Value,
+/// A report's A/B result and which report it is in.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AbSection {
+    pub report: Role,
+    pub ab: Ab,
 }
 
 #[derive(Clone, Debug)]
 pub struct BenchDiff {
-    pub ab: Vec<Ab>,
+    pub ab: Vec<AbSection>,
     pub rows: Vec<Row>,
     pub warnings: Vec<String>,
 }
 
-fn phases(report: &Value) -> BTreeMap<String, BTreeMap<&'static str, Vec<f64>>> {
-    let mut out: BTreeMap<String, BTreeMap<&'static str, Vec<f64>>> = BTreeMap::new();
-    let frames = report.get("frames").and_then(Value::as_array);
-    for frame in frames.into_iter().flatten() {
-        let Some(phase) = frame.get("phase").and_then(Value::as_str) else {
+/// The reply of `diff --json` on two benchmark reports.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BenchReply {
+    pub ok: bool,
+    pub op: DiffOp,
+    pub captures: Vec<DiffCapture>,
+    pub kind: BenchKind,
+    pub unit: Unit,
+    pub ab: Vec<AbSection>,
+    pub rows: Vec<DiffRow>,
+    pub warnings: Vec<String>,
+}
+
+fn phases(report: &BenchReport) -> BTreeMap<String, BTreeMap<BenchMetric, Vec<f64>>> {
+    let mut out: BTreeMap<String, BTreeMap<BenchMetric, Vec<f64>>> = BTreeMap::new();
+    for frame in &report.frames {
+        let Some(phase) = &frame.phase else {
             continue;
         };
-        let metrics = out.entry(phase.to_string()).or_default();
-        for name in METRICS {
-            if let Some(v) = frame.get(name).and_then(Value::as_f64) {
-                metrics.entry(name).or_default().push(v);
+        let metrics = out.entry(phase.clone()).or_default();
+        for &metric in BenchMetric::ALL {
+            if let Some(v) = frame.get(metric) {
+                metrics.entry(metric).or_default().push(v);
             }
         }
     }
     let repeats = |phase: &str| {
-        frames
-            .into_iter()
-            .flatten()
-            .filter(|f| f.get("phase").and_then(Value::as_str) == Some(phase))
+        report
+            .frames
+            .iter()
+            .filter(|f| f.phase.as_deref() == Some(phase))
             .count()
     };
     for (phase, metrics) in &mut out {
@@ -67,19 +126,19 @@ fn phases(report: &Value) -> BTreeMap<String, BTreeMap<&'static str, Vec<f64>>> 
 }
 
 /// Compares two reports; `ab` results are carried over and never recomputed.
-pub fn diff(a: &Value, b: &Value, options: &DiffOptions) -> BenchDiff {
+pub fn diff(a: &BenchReport, b: &BenchReport, options: &DiffOptions) -> BenchDiff {
     let mut ab = Vec::new();
     let mut warnings = Vec::new();
-    for (report, value) in [("a", a), ("b", b)] {
-        if let Some(found) = value.get("ab").filter(|v| !v.is_null()) {
-            ab.push(Ab {
+    for (report, value) in [(Role::A, a), (Role::B, b)] {
+        if let Some(found) = &value.ab {
+            ab.push(AbSection {
                 report,
                 ab: found.clone(),
             });
-            if found.get("first_block_outside_range") == Some(&Value::Bool(true)) {
+            if found.first_block_outside_range {
                 warnings.push(format!(
                     "{}'s first block lies outside its later B blocks",
-                    report.to_uppercase()
+                    report.as_str().to_uppercase()
                 ));
             }
         }
@@ -92,9 +151,9 @@ pub fn diff(a: &Value, b: &Value, options: &DiffOptions) -> BenchDiff {
         names.dedup();
         for phase in names {
             let (ma, mb) = (pa.get(phase), pb.get(phase));
-            for metric in METRICS {
-                let va = ma.and_then(|m| m.get(metric));
-                let vb = mb.and_then(|m| m.get(metric));
+            for &metric in BenchMetric::ALL {
+                let va = ma.and_then(|m| m.get(&metric));
+                let vb = mb.and_then(|m| m.get(&metric));
                 if let Some(r) = row(
                     &format!("bench:{phase}.{metric}"),
                     va.map(Vec::as_slice),
@@ -118,7 +177,7 @@ pub fn diff(a: &Value, b: &Value, options: &DiffOptions) -> BenchDiff {
             rows.truncate(limit);
         }
     } else if ab.len() == 1 {
-        let other = if ab[0].report == "a" { "B" } else { "A" };
+        let other = if ab[0].report == Role::A { "B" } else { "A" };
         warnings.push(format!("report {other} has no A/B result"));
     }
     BenchDiff { ab, rows, warnings }
@@ -129,18 +188,16 @@ impl BenchDiff {
         let mut out = format!("A {a}  B {b}  (benchmark reports, ms per frame)\n");
         for section in &self.ab {
             let ab = &section.ab;
-            let text = |key: &str| ab.get(key).and_then(Value::as_str).unwrap_or("?");
             out.push_str(&format!(
-                "ab in {}: {} {} vs {}, {} pairs of {} s blocks\n",
-                section.report.to_uppercase(),
-                text("switch"),
-                text("a"),
-                text("b"),
-                ab.get("pairs").map_or("?".to_string(), Value::to_string),
-                ab.get("block_s").map_or("?".to_string(), Value::to_string),
+                "ab in {}: {} {} vs {}, {} pairs of {:?} s blocks\n",
+                section.report.as_str().to_uppercase(),
+                ab.switch,
+                ab.a,
+                ab.b,
+                ab.pairs,
+                ab.block_s,
             ));
-            let results = ab.get("result").and_then(Value::as_object);
-            for (metric, r) in results.into_iter().flatten() {
+            for (metric, r) in &ab.result {
                 out.push_str(&format!("  {}\n", ab_line(metric, r)));
             }
         }
@@ -155,31 +212,41 @@ impl BenchDiff {
         out
     }
 
-    pub fn json(&self, a: &str, b: &str) -> Value {
-        json!({
-            "ok": true,
-            "op": "diff",
-            "captures": [{"role": "a", "file": a}, {"role": "b", "file": b}],
-            "kind": "benchmark",
-            "unit": "ms_per_frame",
-            "ab": self.ab.iter().map(|s| json!({"report": s.report, "ab": s.ab})).collect::<Vec<_>>(),
-            "rows": self.rows.iter().map(Row::json).collect::<Vec<_>>(),
-            "warnings": self.warnings,
-        })
+    /// The JSON report; `a` and `b` are the files' names.
+    pub fn reply(&self, a: &str, b: &str) -> BenchReply {
+        BenchReply {
+            ok: true,
+            op: DiffOp::Diff,
+            captures: captures(a, b),
+            kind: BenchKind::Benchmark,
+            unit: Unit::MsPerFrame,
+            ab: self.ab.clone(),
+            rows: self.rows.iter().map(Row::wire).collect(),
+            warnings: self.warnings.clone(),
+        }
     }
 }
 
-fn ab_line(metric: &str, r: &Value) -> String {
-    let field = |key: &str| r.get(key).map_or("?".to_string(), Value::to_string);
-    let ci = match r.get("ci95").and_then(Value::as_array).map(Vec::as_slice) {
-        Some([lo, hi]) => format!("CI [{lo}, {hi}]"),
-        _ => "no CI".to_string(),
+fn verdict_word(verdict: PairVerdict) -> &'static str {
+    match verdict {
+        PairVerdict::TooFewPairs => "too_few_pairs",
+        PairVerdict::WithinNoise => "within_noise",
+        PairVerdict::Negligible => "negligible",
+        PairVerdict::Slower => "slower",
+        PairVerdict::Faster => "faster",
+    }
+}
+
+fn ab_line(metric: &str, r: &Paired) -> String {
+    let ci = match r.ci95 {
+        Some([lo, hi]) => format!("CI [{lo:?}, {hi:?}]"),
+        None => "no CI".to_string(),
     };
-    let verdict = r.get("verdict").and_then(Value::as_str).unwrap_or("?");
     format!(
-        "{metric:<14} {} → {}  {} ms  {ci}  {verdict}",
-        field("a"),
-        field("b"),
-        field("diff"),
+        "{metric:<14} {:?} → {:?}  {:?} ms  {ci}  {}",
+        r.a,
+        r.b,
+        r.diff,
+        verdict_word(r.verdict),
     )
 }

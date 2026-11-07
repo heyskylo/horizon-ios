@@ -7,16 +7,27 @@ use std::fmt;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::time::Duration;
 
 use horizon_perf_format::v1::Side;
+use serde::Serialize;
 
 use crate::follow::Follower;
 use crate::read::read_capture;
 use crate::summary::{Baseline, DEFAULT_BUDGET, SummaryOptions, summarize};
 use crate::watch::Watcher;
+use crate::wire::{GroupBy, Op, SideName, vocab};
 
-pub const USAGE: &str = "\
+/// The usage text, with the ops and groupings listed from their enums.
+pub fn usage() -> String {
+    let by = GroupBy::ALL
+        .iter()
+        .map(|g| g.as_str())
+        .collect::<Vec<_>>()
+        .join("|");
+    format!(
+        "\
 usage:
   horizon-perf summary [FILE|latest] [--baseline FILE] [--budget TOKENS] [--side client|server] [--thread T] [--slow|--all] [--dir DIR]
   horizon-perf query   OP [ARGS] [FILE...] [FILTERS]   JSON always
@@ -24,14 +35,77 @@ usage:
   horizon-perf list    [DIR]
   horizon-perf follow  [FILE|latest] [--every S] [--json] [--dir DIR]
 
-OPs: spans, ticks, tick, series, world, net, meta, memory, marks, warnings.
+OPs: {ops}.
 FILTERS: --side client|server --thread T --from T --to T (seconds; negative counts from the end; mark:NAME) --limit N --dir DIR
   spans: --slow --names a,b   ticks: --worst N --over MS   series: FIELD... --every S (h:NAME, span:NAME, x:NAME)
-  memory: --diff [LABEL_A LABEL_B] --min-mb X   world: --by dimension|entity|block_entity|cost [LABEL]
+  memory: --diff [LABEL_A LABEL_B] --min-mb X   world: --by {by} [LABEL]
 
 diff compares B against A (A is the earlier run): two captures, or two benchmark reports (benchmarks/*.json). summary --baseline FILE compares against an earlier capture.
 FILE defaults to latest: the newest finished .hzperf in --dir, else in $HORIZON_HOME/reports, else in ./reports.
-follow's latest is the newest .hzperf, finished or not.";
+follow's latest is the newest .hzperf, finished or not.",
+        ops = Op::answered()
+    )
+}
+
+vocab! {
+    /// A `--flag` of any command.
+    Flag {
+        Side = "side",
+        Thread = "thread",
+        Select = "select",
+        Where = "where",
+        From = "from",
+        To = "to",
+        Limit = "limit",
+        Dir = "dir",
+        Names = "names",
+        Worst = "worst",
+        Over = "over",
+        Every = "every",
+        MinMb = "min-mb",
+        MinMs = "min-ms",
+        By = "by",
+        Budget = "budget",
+        Baseline = "baseline",
+        Slow = "slow",
+        All = "all",
+        Diff = "diff",
+        Json = "json",
+    }
+}
+
+impl Flag {
+    /// A switch stands alone; every other flag takes the value after it.
+    fn is_switch(self) -> bool {
+        match self {
+            Flag::Slow | Flag::All | Flag::Diff | Flag::Json => true,
+            Flag::Side
+            | Flag::Thread
+            | Flag::Select
+            | Flag::Where
+            | Flag::From
+            | Flag::To
+            | Flag::Limit
+            | Flag::Dir
+            | Flag::Names
+            | Flag::Worst
+            | Flag::Over
+            | Flag::Every
+            | Flag::MinMb
+            | Flag::MinMs
+            | Flag::By
+            | Flag::Budget
+            | Flag::Baseline => false,
+        }
+    }
+}
+
+/// One reply as the line it is printed as.
+fn json_line<T: Serialize>(reply: &T) -> Result<String, CliError> {
+    serde_json::to_string(reply)
+        .map(|text| text + "\n")
+        .map_err(failed)
+}
 
 const FOLLOW_CHUNK: usize = 64 * 1024;
 
@@ -81,67 +155,69 @@ pub fn run(args: &[String], env: &Env, out: &mut dyn Write) -> Result<(), CliErr
         "follow" => follow(rest, env, out),
         "query" => query::query(rest, env, out),
         "diff" => diff::run(rest, env, out),
-        "help" | "--help" | "-h" => writeln!(out, "{USAGE}").map_err(failed),
+        "help" | "--help" | "-h" => writeln!(out, "{}", usage()).map_err(failed),
         other => Err(CliError::Usage(format!("unknown command {other}"))),
     }
 }
 
 struct Parsed {
     positional: Vec<String>,
-    flags: HashMap<String, String>,
+    flags: HashMap<Flag, String>,
 }
 
-fn parse(args: &[String], valued: &[&str], switches: &[&str]) -> Result<Parsed, CliError> {
+/// Splits `args` into positionals and the flags in `allowed`; a repeated `--where` joins its values.
+fn parse(args: &[String], allowed: &[Flag]) -> Result<Parsed, CliError> {
     let mut parsed = Parsed {
         positional: Vec::new(),
         flags: HashMap::new(),
     };
     let mut args = args.iter();
     while let Some(arg) = args.next() {
-        let Some(flag) = arg.strip_prefix("--") else {
+        let Some(text) = arg.strip_prefix("--") else {
             parsed.positional.push(arg.clone());
             continue;
         };
-        let (name, inline) = match flag.split_once('=') {
+        let (name, inline) = match text.split_once('=') {
             Some((name, value)) => (name, Some(value.to_string())),
-            None => (flag, None),
+            None => (text, None),
         };
-        if name == "where"
-            && valued.contains(&"where")
-            && let Some(earlier) = parsed.flags.get("where").cloned()
-        {
-            let value = inline
-                .clone()
-                .or_else(|| args.next().cloned())
-                .unwrap_or_default();
-            parsed
-                .flags
-                .insert("where".into(), format!("{earlier},{value}"));
-        } else if switches.contains(&name) && inline.is_none() {
-            parsed.flags.insert(name.into(), String::new());
-        } else if valued.contains(&name) {
-            let value = match inline {
-                Some(v) => v,
-                None => args
-                    .next()
-                    .cloned()
-                    .ok_or_else(|| CliError::Usage(format!("--{name} needs a value")))?,
-            };
-            parsed.flags.insert(name.into(), value);
-        } else {
+        let Some(flag) = Flag::from_str(name).ok().filter(|f| allowed.contains(f)) else {
             return Err(CliError::Usage(format!("unknown option --{name}")));
+        };
+        if flag.is_switch() {
+            if inline.is_some() {
+                return Err(CliError::Usage(format!("unknown option --{name}")));
+            }
+            parsed.flags.insert(flag, String::new());
+            continue;
+        }
+        let value = match inline {
+            Some(v) => v,
+            None => args
+                .next()
+                .cloned()
+                .ok_or_else(|| CliError::Usage(format!("--{flag} needs a value")))?,
+        };
+        match parsed.flags.get(&flag) {
+            Some(earlier) if flag == Flag::Where => {
+                let joined = format!("{earlier},{value}");
+                parsed.flags.insert(flag, joined);
+            }
+            _ => {
+                parsed.flags.insert(flag, value);
+            }
         }
     }
     Ok(parsed)
 }
 
 impl Parsed {
-    fn number<T: std::str::FromStr>(&self, name: &str) -> Result<Option<T>, CliError> {
+    fn number<T: std::str::FromStr>(&self, flag: Flag) -> Result<Option<T>, CliError> {
         self.flags
-            .get(name)
+            .get(&flag)
             .map(|v| {
                 v.parse()
-                    .map_err(|_| CliError::Usage(format!("--{name} needs a number, got {v}")))
+                    .map_err(|_| CliError::Usage(format!("--{flag} needs a number, got {v}")))
             })
             .transpose()
     }
@@ -189,12 +265,14 @@ fn file_name(path: &Path) -> String {
 }
 
 fn side_flag(parsed: &Parsed) -> Result<Option<Side>, CliError> {
-    match parsed.flags.get("side").map(String::as_str) {
-        None => Ok(None),
-        Some("server") => Ok(Some(Side::Server)),
-        Some("client") => Ok(Some(Side::Client)),
-        Some(other) => Err(CliError::Usage(format!(
-            "--side is client or server, got {other}"
+    let Some(text) = parsed.flags.get(&Flag::Side) else {
+        return Ok(None);
+    };
+    match SideName::from_str(text) {
+        Ok(SideName::Server) => Ok(Some(Side::Server)),
+        Ok(SideName::Client) => Ok(Some(Side::Client)),
+        Ok(SideName::Unspecified) | Err(_) => Err(CliError::Usage(format!(
+            "--side is client or server, got {text}"
         ))),
     }
 }
@@ -202,25 +280,32 @@ fn side_flag(parsed: &Parsed) -> Result<Option<Side>, CliError> {
 fn summary(args: &[String], env: &Env, out: &mut dyn Write) -> Result<(), CliError> {
     let parsed = parse(
         args,
-        &["budget", "side", "thread", "dir", "baseline"],
-        &["slow", "all"],
+        &[
+            Flag::Budget,
+            Flag::Side,
+            Flag::Thread,
+            Flag::Dir,
+            Flag::Baseline,
+            Flag::Slow,
+            Flag::All,
+        ],
     )?;
-    if parsed.flags.contains_key("slow") && parsed.flags.contains_key("all") {
+    if parsed.flags.contains_key(&Flag::Slow) && parsed.flags.contains_key(&Flag::All) {
         return Err(CliError::Usage(
             "--slow and --all exclude each other".into(),
         ));
     }
     let options = SummaryOptions {
-        budget_tokens: parsed.number("budget")?.unwrap_or(DEFAULT_BUDGET),
+        budget_tokens: parsed.number(Flag::Budget)?.unwrap_or(DEFAULT_BUDGET),
         side: side_flag(&parsed)?,
-        thread: parsed.flags.get("thread").cloned(),
-        slow: parsed.flags.contains_key("slow"),
+        thread: parsed.flags.get(&Flag::Thread).cloned(),
+        slow: parsed.flags.contains_key(&Flag::Slow),
         baseline: None,
     };
-    let dir = parsed.flags.get("dir").map(String::as_str);
+    let dir = parsed.flags.get(&Flag::Dir).map(String::as_str);
     let baseline = parsed
         .flags
-        .get("baseline")
+        .get(&Flag::Baseline)
         .map(|file| -> Result<Baseline, CliError> {
             let path = resolve(Some(file), dir, env, true)?;
             match diff::load(&path)? {
@@ -248,7 +333,7 @@ fn summary(args: &[String], env: &Env, out: &mut dyn Write) -> Result<(), CliErr
 }
 
 fn list(args: &[String], env: &Env, out: &mut dyn Write) -> Result<(), CliError> {
-    let parsed = parse(args, &[], &[])?;
+    let parsed = parse(args, &[])?;
     let dir = reports_dir(parsed.one_file()?, env);
     let paths = files::captures_in(&dir)
         .map_err(|e| failed(format!("cannot read {}: {e}", dir.display())))?;
@@ -263,18 +348,18 @@ fn list(args: &[String], env: &Env, out: &mut dyn Write) -> Result<(), CliError>
 }
 
 fn follow(args: &[String], env: &Env, out: &mut dyn Write) -> Result<(), CliError> {
-    let parsed = parse(args, &["every", "dir"], &["json"])?;
-    let every: f64 = parsed.number("every")?.unwrap_or(1.0);
+    let parsed = parse(args, &[Flag::Every, Flag::Dir, Flag::Json])?;
+    let every: f64 = parsed.number(Flag::Every)?.unwrap_or(1.0);
     let path = resolve(
         parsed.one_file()?,
-        parsed.flags.get("dir").map(String::as_str),
+        parsed.flags.get(&Flag::Dir).map(String::as_str),
         env,
         false,
     )?;
     let mut file =
         File::open(&path).map_err(|e| failed(format!("cannot open {}: {e}", path.display())))?;
     let mut follower = Follower::new();
-    let mut watcher = Watcher::new(every, parsed.flags.contains_key("json"));
+    let mut watcher = Watcher::new(every, parsed.flags.contains_key(&Flag::Json));
     let mut chunk = vec![0u8; FOLLOW_CHUNK];
     loop {
         let n = file.read(&mut chunk).map_err(failed)?;

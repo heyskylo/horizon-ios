@@ -2,19 +2,27 @@
 
 mod meta;
 mod notes;
+pub mod rows;
 mod series;
 mod spans;
 mod ticks;
 pub(crate) mod traffic;
 mod world;
 
+use std::collections::BTreeMap;
+
 use horizon_perf_format::v1::{Capture, Side};
-use serde_json::{Map, Value, json};
 
 use crate::error::side_name;
 use crate::view::{View, Window};
+use crate::wire::{
+    Candidate, CaptureInfo, ContextKey, Envelope, GroupBy, KindName, Op, OpName, Select, SideName,
+    Unit, bound,
+};
 
+pub use crate::wire::{fine, num, opt_num};
 pub use notes::warning_text;
+pub use rows::Row;
 
 /// A loaded capture and the name it is listed under.
 pub struct Loaded {
@@ -32,9 +40,10 @@ pub enum Bound {
 pub struct Filters {
     pub side: Option<Side>,
     pub thread: Option<String>,
-    pub select: String,
+    pub select: Select,
     pub slow: bool,
-    pub where_: Vec<(String, String)>,
+    /// The values given for each key, in the order given.
+    pub where_: BTreeMap<ContextKey, Vec<String>>,
     pub from: Option<Bound>,
     pub to: Option<Bound>,
     pub limit: usize,
@@ -45,9 +54,9 @@ impl Default for Filters {
         Self {
             side: None,
             thread: None,
-            select: "cpu".into(),
+            select: Select::Cpu,
             slow: false,
-            where_: Vec::new(),
+            where_: BTreeMap::new(),
             from: None,
             to: None,
             limit: DEFAULT_LIMIT,
@@ -56,16 +65,10 @@ impl Default for Filters {
 }
 
 pub const DEFAULT_LIMIT: usize = 25;
-const OPS: [&str; 10] = [
-    "spans", "ticks", "tick", "series", "world", "net", "meta", "memory", "marks", "warnings",
-];
-const SAMPLE_OPS: [&str; 10] = [
-    "hot", "tree", "callers", "callees", "split", "group", "frames", "gpu", "bench", "samples",
-];
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Query {
-    pub op: String,
+    pub op: Op,
     /// What follows the op and is not a file: ids, names, field names, labels.
     pub args: Vec<String>,
     pub filters: Filters,
@@ -75,14 +78,31 @@ pub struct Query {
     pub every: Option<f64>,
     pub diff: bool,
     pub min_mb: Option<f64>,
-    pub by: Option<String>,
+    pub by: Option<GroupBy>,
+}
+
+impl Query {
+    pub fn new(op: Op) -> Self {
+        Self {
+            op,
+            args: Vec::new(),
+            filters: Filters::default(),
+            names: Vec::new(),
+            worst: None,
+            over: None,
+            every: None,
+            diff: false,
+            min_mb: None,
+            by: None,
+        }
+    }
 }
 
 /// A failed query; `candidates` are (id, name) pairs when a name was ambiguous or unknown.
 #[derive(Clone, Debug, PartialEq)]
 pub struct QueryError {
     pub message: String,
-    pub candidates: Vec<(String, String)>,
+    pub candidates: Vec<Candidate>,
 }
 
 impl QueryError {
@@ -93,23 +113,16 @@ impl QueryError {
         }
     }
 
-    pub fn with(message: impl Into<String>, candidates: Vec<(String, String)>) -> Self {
+    pub fn with(message: impl Into<String>, candidates: Vec<Candidate>) -> Self {
         Self {
             message: message.into(),
             candidates,
         }
     }
 
-    pub fn to_json(&self, op: &str) -> Value {
-        let mut out = json!({"ok": false, "op": op, "error": self.message});
-        if !self.candidates.is_empty() {
-            out["candidates"] = self
-                .candidates
-                .iter()
-                .map(|(id, name)| json!({"id": id, "name": name}))
-                .collect();
-        }
-        out
+    /// The reply for a query that failed, naming `op` as the caller typed it.
+    pub fn envelope(&self, op: OpName) -> Envelope<Row> {
+        Envelope::failure(op, &self.message, self.candidates.clone())
     }
 }
 
@@ -121,14 +134,14 @@ impl std::fmt::Display for QueryError {
 
 /// What one operation answers; the envelope around it is common.
 pub(crate) struct Reply {
-    pub unit: &'static str,
-    pub rows: Vec<Value>,
+    pub unit: Unit,
+    pub rows: Vec<Row>,
     pub warnings: Vec<String>,
     pub window: Option<Window>,
 }
 
 impl Reply {
-    pub fn new(unit: &'static str, rows: Vec<Value>) -> Self {
+    pub fn new(unit: Unit, rows: Vec<Row>) -> Self {
         Self {
             unit,
             rows,
@@ -211,57 +224,18 @@ impl Ctx<'_> {
     }
 }
 
-/// Rounds to 3 decimals as spec A does; a number that cannot be written in JSON becomes null.
-pub(crate) fn num(v: f64) -> Value {
-    if v.is_finite() {
-        json!((v * 1000.0).round() / 1000.0)
-    } else {
-        Value::Null
-    }
-}
-
-/// Six decimals, for shares that are a fraction of a percent.
-pub(crate) fn fine(v: f64) -> Value {
-    if v.is_finite() {
-        json!((v * 1e6).round() / 1e6)
-    } else {
-        Value::Null
-    }
-}
-
-pub(crate) fn opt_num(v: Option<f64>) -> Value {
-    v.map_or(Value::Null, num)
-}
-
-pub(crate) fn kind_name(kind: horizon_perf_format::v1::Kind) -> &'static str {
-    use horizon_perf_format::v1::Kind;
-    match kind {
-        Kind::Dedicated => "dedicated",
-        Kind::Integrated => "integrated",
-        Kind::Client => "client",
-        Kind::Unspecified => "unknown",
-    }
-}
-
 /// Runs one query over one or more loaded captures; only `spans` takes several.
-pub fn run(q: &Query, files: &[Loaded]) -> Result<Value, QueryError> {
-    if SAMPLE_OPS.contains(&q.op.as_str()) {
+pub fn run(q: &Query, files: &[Loaded]) -> Result<Envelope<Row>, QueryError> {
+    if q.op.needs_samples() {
         return Err(QueryError::new(format!(
             "query {} reads the samples section, which this horizon-perf does not read yet",
             q.op
         )));
     }
-    if !OPS.contains(&q.op.as_str()) {
-        return Err(QueryError::new(format!(
-            "unknown query op {}; ops: {}",
-            q.op,
-            OPS.join(", ")
-        )));
-    }
     if files.is_empty() {
         return Err(QueryError::new("no capture given"));
     }
-    if files.len() > 1 && q.op != "spans" {
+    if files.len() > 1 && q.op != Op::Spans {
         return Err(QueryError::new(format!(
             "query {} takes one capture, got {}",
             q.op,
@@ -273,24 +247,33 @@ pub fn run(q: &Query, files: &[Loaded]) -> Result<Value, QueryError> {
         files,
         views: files.iter().map(|f| View::new(&f.capture)).collect(),
     };
-    let reply = match q.op.as_str() {
-        "spans" => spans::spans(&ctx)?,
-        "ticks" => ticks::ticks(&ctx)?,
-        "tick" => ticks::tick(&ctx)?,
-        "series" => series::series(&ctx)?,
-        "world" => world::world(&ctx)?,
-        "net" => traffic::net(&ctx)?,
-        "meta" => meta::meta(&ctx)?,
-        "memory" => notes::memory(&ctx)?,
-        "marks" => notes::marks(&ctx)?,
-        "warnings" => notes::warnings(&ctx)?,
-        _ => unreachable!("checked against OPS"),
+    let reply = match q.op {
+        Op::Spans => spans::spans(&ctx)?,
+        Op::Ticks => ticks::ticks(&ctx)?,
+        Op::Tick => ticks::tick(&ctx)?,
+        Op::Series => series::series(&ctx)?,
+        Op::World => world::world(&ctx)?,
+        Op::Net => traffic::net(&ctx)?,
+        Op::Meta => meta::meta(&ctx)?,
+        Op::Memory => notes::memory(&ctx)?,
+        Op::Marks => notes::marks(&ctx)?,
+        Op::Warnings => notes::warnings(&ctx)?,
+        Op::Hot
+        | Op::Tree
+        | Op::Callers
+        | Op::Callees
+        | Op::Split
+        | Op::Group
+        | Op::Frames
+        | Op::Gpu
+        | Op::Bench
+        | Op::Samples => unreachable!("answered above"),
     };
     Ok(envelope(&ctx, reply))
 }
 
-fn envelope(ctx: &Ctx, reply: Reply) -> Value {
-    let captures: Vec<Value> = ctx
+fn envelope(ctx: &Ctx, reply: Reply) -> Envelope<Row> {
+    let captures: Vec<CaptureInfo> = ctx
         .files
         .iter()
         .zip(&ctx.views)
@@ -301,13 +284,13 @@ fn envelope(ctx: &Ctx, reply: Reply) -> Value {
                 .start
                 .iter()
                 .find(|s| Some(s.side()) == sides.first().copied())
-                .map_or("unknown", |s| kind_name(s.kind()));
-            json!({
-                "file": file.file,
-                "sides": sides.iter().map(|&s| side_name(s)).collect::<Vec<_>>(),
-                "kind": kind,
-                "seconds": num(sides.first().map_or(0.0, |&s| view.end(s))),
-            })
+                .map_or(KindName::Unspecified, |s| KindName::from(s.kind()));
+            CaptureInfo {
+                file: file.file.clone(),
+                sides: sides.iter().map(|&s| SideName::from(s)).collect(),
+                kind,
+                seconds: num(sides.first().map_or(0.0, |&s| view.end(s))),
+            }
         })
         .collect();
     let f = &ctx.q.filters;
@@ -318,33 +301,27 @@ fn envelope(ctx: &Ctx, reply: Reply) -> Value {
         .map(|t| t.units);
     let end = side.map(|s| ctx.views[0].end(s)).unwrap_or(0.0);
     let window = reply.window.unwrap_or(Window { from: 0.0, to: end });
-    let mut where_ = Map::new();
-    for (key, value) in &f.where_ {
-        match where_.get_mut(key) {
-            None => {
-                where_.insert(key.clone(), json!(value));
-            }
-            Some(Value::Array(all)) => all.push(json!(value)),
-            Some(first) => *first = json!([first.clone(), value]),
-        }
-    }
-    json!({
-        "ok": true,
-        "op": ctx.q.op,
-        "captures": captures,
-        "selection": {
-            "side": side.map(side_name),
-            "thread": thread.map(|(s, id)| ctx.views[0].text(s, id)),
-            "select": f.select,
-            "slow": f.slow,
-            "where": where_,
-            "from": num(window.from),
-            "to": num(window.to),
-            "ticks": ticks,
-            "samples": Value::Null,
-        },
-        "unit": reply.unit,
-        "rows": reply.rows,
-        "warnings": reply.warnings,
-    })
+    let selection = crate::wire::Selection {
+        side: side.map(SideName::from),
+        thread: thread.map(|(s, id)| ctx.views[0].text(s, id).into_owned()),
+        select: f.select,
+        slow: f.slow,
+        where_: f
+            .where_
+            .iter()
+            .map(|(key, values)| (*key, values.as_slice().into()))
+            .collect(),
+        from: bound(window.from),
+        to: bound(window.to),
+        ticks,
+        samples: None,
+    };
+    Envelope::success(
+        OpName::Query(ctx.q.op),
+        captures,
+        Some(selection),
+        reply.unit,
+        reply.rows,
+        reply.warnings,
+    )
 }

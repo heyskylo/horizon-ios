@@ -14,6 +14,7 @@ pub mod stats;
 pub mod summary;
 pub mod view;
 pub mod watch;
+pub mod wire;
 
 pub use error::Error;
 pub use follow::{Entry, Follower};

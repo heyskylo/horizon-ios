@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 use std::process::ExitCode;
 
-use horizon_perf::cli::{CliError, Env, USAGE, run};
+use horizon_perf::cli::{CliError, Env, run, usage};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -12,7 +12,7 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(CliError::Usage(message)) => {
-            eprintln!("horizon-perf: {message}\n{USAGE}");
+            eprintln!("horizon-perf: {message}\n{}", usage());
             ExitCode::from(2)
         }
         Err(CliError::Failed(message)) => {

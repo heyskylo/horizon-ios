@@ -1,41 +1,16 @@
-use horizon_perf_format::v1::{CounterKind, HealthSample, Side};
-use serde_json::json;
+use std::str::FromStr;
 
+use horizon_perf_format::v1::{CounterKind, Side};
+
+use super::rows::{Row, SeriesRow};
 use super::{Ctx, QueryError, Reply, num, opt_num};
-use crate::health::Series;
+use crate::health::{HealthField, Series};
 use crate::ids::{self, Id, Kind};
 use crate::view::{CounterInfo, View};
-
-type Pick = fn(&HealthSample) -> Option<f32>;
+use crate::wire::{Candidate, SeriesUnit, Unit};
 
 const DEFAULT_EVERY_S: f64 = 30.0;
 const MAX_POINTS: usize = 2000;
-
-const HEALTH: [(&str, &str, Pick); 23] = [
-    ("tps", "ticks/s", |h| h.tps),
-    ("mspt_avg", "ms", |h| h.mspt_avg),
-    ("mspt_p50", "ms", |h| h.mspt_p50),
-    ("mspt_p95", "ms", |h| h.mspt_p95),
-    ("mspt_max", "ms", |h| h.mspt_max),
-    ("fps", "frames/s", |h| h.fps),
-    ("frame_ms_p50", "ms", |h| h.frame_ms_p50),
-    ("frame_ms_p95", "ms", |h| h.frame_ms_p95),
-    ("frame_ms_p99", "ms", |h| h.frame_ms_p99),
-    ("frame_ms_max", "ms", |h| h.frame_ms_max),
-    ("frame_cpu_ms_p50", "ms", |h| h.frame_cpu_ms_p50),
-    ("frame_gpu_ms_p50", "ms", |h| h.frame_gpu_ms_p50),
-    ("cpu_process_cores", "cores", |h| Some(h.cpu_process_cores)),
-    ("cpu_system_cores", "cores", |h| Some(h.cpu_system_cores)),
-    ("rss_mb", "MB", |h| Some(h.rss_mb)),
-    ("physical_used_mb", "MB", |h| Some(h.physical_used_mb)),
-    ("swap_used_mb", "MB", |h| Some(h.swap_used_mb)),
-    ("allocator_commit_mb", "MB", |h| h.allocator_commit_mb),
-    ("allocs_per_s", "per s", |h| h.allocs_per_s),
-    ("alloc_mib_per_s", "MiB/s", |h| h.alloc_mib_per_s),
-    ("players", "count", |h| Some(h.players as f32)),
-    ("chunks", "count", |h| Some(h.chunks as f32)),
-    ("entities", "count", |h| Some(h.entities as f32)),
-];
 
 /// Time series, resampled into `--every` seconds; `--from` before 0 reaches into the history tiers.
 pub(super) fn series(ctx: &Ctx) -> Result<Reply, QueryError> {
@@ -68,38 +43,38 @@ pub(super) fn series(ctx: &Ctx) -> Result<Reply, QueryError> {
     for arg in &ctx.q.args {
         for field in resolve(ctx, side, arg)? {
             let (id, unit, values) = field.values(ctx, side, &buckets)?;
-            rows.push(json!({
-                "field": id,
-                "unit": unit,
-                "step_s": num(every),
-                "t": starts.iter().map(|&t| num(t)).collect::<Vec<_>>(),
-                "values": values.into_iter().map(opt_num).collect::<Vec<_>>(),
+            rows.push(Row::Series(SeriesRow {
+                field: id,
+                unit,
+                step_s: num(every),
+                t: starts.iter().map(|&t| num(t)).collect(),
+                values: values.into_iter().map(opt_num).collect(),
             }));
         }
     }
-    let mut reply = Reply::new("series", rows);
+    let mut reply = Reply::new(Unit::Series, rows);
     reply.window = Some(window);
     Ok(reply)
 }
 
 enum Field {
-    Health(usize),
+    Health(HealthField),
     Span(String),
     Counter(CounterInfo),
 }
 
 fn resolve(ctx: &Ctx, side: Side, arg: &str) -> Result<Vec<Field>, QueryError> {
     let view = &ctx.views[0];
-    let health_named = |name: &str| HEALTH.iter().position(|h| h.0 == name);
+    let health_named = |name: &str| HealthField::from_str(name).ok();
     let health_candidates = || {
-        HEALTH
+        HealthField::ALL
             .iter()
-            .map(|h| (format!("h:{}", h.0), h.0.to_string()))
+            .map(|h| Candidate::new(format!("h:{h}"), h.to_string()))
             .collect::<Vec<_>>()
     };
     if let Some(name) = arg.strip_prefix("h:") {
         return health_named(name)
-            .map(|i| vec![Field::Health(i)])
+            .map(|field| vec![Field::Health(field)])
             .ok_or_else(|| {
                 QueryError::with(format!("no health field named {name}"), health_candidates())
             });
@@ -110,8 +85,8 @@ fn resolve(ctx: &Ctx, side: Side, arg: &str) -> Result<Vec<Field>, QueryError> {
     if arg.starts_with("x:") {
         return counters_named(view, side, arg.strip_prefix("x:").unwrap_or(arg));
     }
-    if let Some(i) = health_named(arg) {
-        return Ok(vec![Field::Health(i)]);
+    if let Some(field) = health_named(arg) {
+        return Ok(vec![Field::Health(field)]);
     }
     if let Ok(found) = counters_named(view, side, arg) {
         return Ok(found);
@@ -139,7 +114,7 @@ fn span_name(ctx: &Ctx, side: Side, name: &str) -> Result<String, QueryError> {
         .rows
         .iter()
         .take(10)
-        .map(|r| (ids::span(&r.name), r.name.clone()))
+        .map(|r| Candidate::new(ids::span(&r.name), r.name.clone()))
         .collect();
     Err(QueryError::with(
         format!("no span named {name}"),
@@ -184,7 +159,7 @@ fn counters_named(view: &View, side: Side, text: &str) -> Result<Vec<Field>, Que
             .counters(side)
             .iter()
             .take(10)
-            .map(|c| (ids::counter(&c.name, &c.labels), c.name.clone()))
+            .map(|c| Candidate::new(ids::counter(&c.name, &c.labels), c.name.clone()))
             .collect();
         return Err(QueryError::with(
             format!("no counter named {text}"),
@@ -200,19 +175,18 @@ impl Field {
         ctx: &Ctx,
         side: Side,
         buckets: &[(f64, f64)],
-    ) -> Result<(String, String, Vec<Option<f64>>), QueryError> {
+    ) -> Result<(String, SeriesUnit, Vec<Option<f64>>), QueryError> {
         let view = &ctx.views[0];
         match self {
-            Field::Health(i) => {
-                let (name, unit, pick) = HEALTH[*i];
-                let series = Series::new(view.capture, side, pick);
+            Field::Health(field) => {
+                let series = Series::new(view.capture, side, field.pick());
                 let values = buckets
                     .iter()
                     .map(|&(lo, hi)| series.mean(lo, hi, 0.0))
                     .collect();
                 Ok((
-                    Id::new(Kind::Health, name).to_string(),
-                    unit.to_string(),
+                    Id::new(Kind::Health, field.as_str()).to_string(),
+                    SeriesUnit::Health(field.unit()),
                     values,
                 ))
             }
@@ -230,11 +204,11 @@ impl Field {
                     })
                     .collect();
                 let unit = if side == Side::Client {
-                    "ms_per_frame"
+                    Unit::MsPerFrame
                 } else {
-                    "ms_per_tick"
+                    Unit::MsPerTick
                 };
-                Ok((ids::span(name), unit.to_string(), values))
+                Ok((ids::span(name), SeriesUnit::Span(unit), values))
             }
             Field::Counter(info) => {
                 let points = counter_points(ctx, side, info.id);
@@ -248,7 +222,11 @@ impl Field {
                     (true, unit) => format!("{unit}_per_s"),
                     (false, unit) => unit.to_string(),
                 };
-                Ok((ids::counter(&info.name, &info.labels), unit, values))
+                Ok((
+                    ids::counter(&info.name, &info.labels),
+                    SeriesUnit::Counter(unit),
+                    values,
+                ))
             }
         }
     }
