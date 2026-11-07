@@ -206,6 +206,7 @@ the crafting result, armour to the player's grid.
 - **Sliders**: left and right move the value (one pixel per press like
   vanilla's arrow keys, faster while held); A does nothing on a slider, as a
   click would jump the handle.
+- **The server list**: the bumpers move the selected server up or down, as its arrows do.
 - **Lists** follow focus: a step out of a list that can still scroll that way
   scrolls it and lands on the next row once it is drawn, so every row can be
   reached; the buttons below or above come after its last or first row.
@@ -369,7 +370,7 @@ Steam + X opens it at any time. "On-Screen Keyboard: Auto / Horizon / Steam"
 Both modes send the same pointer events, but neither reaches everything. Focus mode
 registers targets on: the title menus (main, world list and its search, create
 and edit world, delete, multiplayer list and its edit screens), every options
-page (vanilla's and Horizon Settings with the pages it opens except Replay Studio, key and
+page (vanilla's and Horizon Settings with the pages it opens, key and
 controller binds, language list), pause and Play with Friends, death, chat, signs and books (their buttons), the
 survival and creative inventories, every container and station (chests,
 furnaces, brewing, crafter, crafting table with its recipe book, anvil,
@@ -377,7 +378,7 @@ grindstone, smithing, stonecutter, loom, cartography, enchanting, beacon,
 villager and wandering-trader trades, mount inventories), and the LAN /
 world options. Where a screen draws something clickable no target names
 (the advancements map, the statistics lists, the pack screen's rows, the
-book's page text), the pad drives the pointer instead, as it does on Replay Studio, which registers nothing yet.
+book's page text), the pad drives the pointer instead.
 
 ## Glyphs
 
@@ -460,6 +461,12 @@ Deadzones are radial (the stick's length, so diagonals aren't clipped) and the
 remaining range is rescaled to 0..1. Look uses a squared curve for precise
 aim near the centre, up to 200°/s yaw and 140°/s pitch at the default
 sensitivity, slower while scoping with a spyglass.
+
+## Playing in the background
+
+Play in Background (off by default, per player) lets the pad keep driving the game while its window
+has no focus, and a game the pad is playing doesn't pause on losing focus. Every game on the PC reads
+every pad: for a pad in one window and the keyboard in another, turn Controllers off in the keyboard's.
 
 ## Rumble
 

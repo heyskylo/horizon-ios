@@ -97,10 +97,16 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
             vec![
                 (
                     "Controller",
-                    vec![option(
-                        Opt::PadEnabled,
-                        "Off, the game ignores every controller for this player.",
-                    )],
+                    vec![
+                        option(
+                            Opt::PadEnabled,
+                            "Off, the game ignores every controller for this player.",
+                        ),
+                        option(
+                            Opt::PadPlayInBackground,
+                            "The controller keeps playing while this window isn't focused, and losing focus won't pause.",
+                        ),
+                    ],
                 ),
                 (
                     "Look",
@@ -279,6 +285,7 @@ impl Item {
         match self {
             Item::Option(Opt::PadEnabled) => Some(c.enabled),
             Item::Option(Opt::PadVibration) => Some(c.vibration),
+            Item::Option(Opt::PadPlayInBackground) => Some(c.play_in_background),
             Item::Option(Opt::PadAdaptiveTriggers) => Some(c.adaptive_triggers),
             Item::Option(Opt::PadInvertX) => Some(c.invert_x),
             Item::Option(Opt::PadInvertY) => Some(c.invert_y),
@@ -604,6 +611,7 @@ impl ControllerUi {
                             hover,
                             focused,
                             held: self.dragging == Some(item),
+                            key: None,
                         };
                         shell::row(batch, atlas, &cols, y, &view);
                     }
@@ -1265,6 +1273,7 @@ mod tests {
         for opt in [
             Opt::PadEnabled,
             Opt::PadVibration,
+            Opt::PadPlayInBackground,
             Opt::PadAdaptiveTriggers,
             Opt::PadLightbar,
             Opt::PadLookSensitivity,

@@ -124,7 +124,34 @@ impl Launcher {
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.import_build(cx)))
                 .into_any_element()
         };
-        let mut page = div().flex().flex_col().child(head).child(
+        let sponsor = (!self.links.sponsor.is_empty()).then(|| {
+            let url = self.links.sponsor.clone();
+            crate::glass::plate(radius::PANEL)
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(16.))
+                .p(px(24.))
+                .mb(px(24.))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .child(
+                            ui::text(16., FontWeight::SEMIBOLD, ink::FULL)
+                                .child(tr("Support the work below")),
+                        )
+                        .child(ui::text(14., FontWeight::NORMAL, ink::BODY).child(tr(
+                            "Horizon is built in the open. Sponsors fund the next release.",
+                        ))),
+                )
+                .child(
+                    ui::quiet_icon("sponsor", Some("github"), tr("Sponsor on GitHub"), 36., &t)
+                        .on_click(move |_: &ClickEvent, _, cx| cx.open_url(&url)),
+                )
+        });
+        let mut page = div().flex().flex_col().child(head).children(sponsor).child(
             div()
                 .flex()
                 .items_center()
@@ -205,7 +232,9 @@ impl Launcher {
                 };
                 let mut line = published(&release.date, &release.time);
                 let right = self.glass_release_action(&release, cx);
+                let notes = self.notes_section(&release, cx);
                 self.glass_version_card(&release.tag, title, &mut line, i == 0, on_disk, right)
+                    .child(notes)
             },
         );
         page.child(list)
@@ -488,5 +517,68 @@ impl Launcher {
             }
             d
         })
+    }
+}
+
+impl Launcher {
+    /// A release's "Patch notes" toggle and, once opened, its notes under it (the release's
+    /// own Markdown). Opened state is kept per release in `notes_open`.
+    pub(super) fn notes_section(&self, release: &Release, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let open = self.notes_open.contains(&release.tag);
+        let tag = release.tag.clone();
+        let id = SharedString::from(format!("notes-{tag}"));
+        let turn = |s: gpui::Svg| {
+            s.with_transformation(gpui::Transformation::rotate(gpui::radians(if open {
+                std::f32::consts::PI
+            } else {
+                0.
+            })))
+        };
+        let (label, chevron) = if t.glass {
+            (
+                ui::text(14., FontWeight::MEDIUM, ink::BODY).child(tr("Patch notes")),
+                turn(ui::icon("arrow-down-01", 16., ui::white(ink::NOTE))),
+            )
+        } else {
+            (
+                text(theme::UI)
+                    .text_color(t.ink_soft)
+                    .child(tr("Patch notes")),
+                turn(blocks::icon("chevron-down", 16., t.muted)),
+            )
+        };
+        let toggle = div()
+            .id(id)
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .cursor_pointer()
+            .child(label)
+            .child(chevron)
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                if !this.notes_open.remove(&tag) {
+                    this.notes_open.insert(tag.clone());
+                }
+                cx.notify();
+            }));
+        let body = open.then(|| {
+            div()
+                .max_w(px(640.))
+                .child(if release.body.trim().is_empty() {
+                    text(theme::UI)
+                        .text_color(t.muted)
+                        .child(tr("No notes for this release."))
+                        .into_any_element()
+                } else {
+                    markdown::render(&release.body, &t)
+                })
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .child(toggle)
+            .children(body)
     }
 }
