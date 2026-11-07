@@ -394,7 +394,24 @@ pub struct InviteCode {
 #[derive(Clone, Debug, Deserialize, Default)]
 struct InviteCodeListResponse {
     #[serde(default, deserialize_with = "nullable")]
-    invite_codes: Vec<InviteCode>,
+    result: Vec<InviteCode>,
+}
+
+impl InviteCode {
+    /// `InviteCodeList.parse`: the answer is an array, or an object whose `result` is one;
+    /// an entry without its code is dropped, as `InviteCode.parse`'s null is.
+    pub fn parse_list(json: &str) -> Vec<Self> {
+        let list = if let Ok(list) = serde_json::from_str::<Vec<Self>>(json) {
+            list
+        } else {
+            serde_json::from_str::<InviteCodeListResponse>(json)
+                .unwrap_or_default()
+                .result
+        };
+        list.into_iter()
+            .filter(|code| !code.code.is_empty())
+            .collect()
+    }
 }
 
 /// `RealmsWorldOptions`: a slot's options. Fields the JSON lacks keep the values of its
@@ -961,9 +978,7 @@ impl RealmsClient {
             &format!("api/v1.0/invite/codes?realmId={realm_id}"),
             None,
         )?;
-        serde_json::from_str::<InviteCodeListResponse>(&json)
-            .map(|r| r.invite_codes)
-            .map_err(|_| RealmsError::Parse)
+        Ok(InviteCode::parse_list(&json))
     }
 
     /// `RealmsClient.createInviteCode`: `POST api/v1.0/invite/codes` with
@@ -1194,6 +1209,20 @@ mod tests {
         );
     }
 
+    /// `InviteCodeList.parse`: the answer is an array or `{"result":[...]}`, and an entry
+    /// without its code is dropped.
+    #[test]
+    fn the_invite_code_list_reads_an_array_or_its_result() {
+        let array = r#"[{"code":"A","enabled":true},{"code":"","enabled":true}]"#;
+        let codes = InviteCode::parse_list(array);
+        assert_eq!(codes.len(), 1, "an entry without a code is dropped");
+        assert_eq!(codes[0].code, "A");
+        assert!(codes[0].enabled);
+        let wrapped = r#"{"result":[{"code":"B","expirationDate":17}]}"#;
+        let codes = InviteCode::parse_list(wrapped);
+        assert_eq!(codes.len(), 1);
+        assert_eq!(codes[0].expiration_date, Some(17));
+    }
     #[test]
     fn server_list_reads_camel_case_and_nulls() {
         let raw = r#"{"servers":[{"id":12345,"remoteSubscriptionId":"sub","name":"Test Realm",
