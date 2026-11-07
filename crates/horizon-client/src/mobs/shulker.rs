@@ -130,6 +130,7 @@ impl<'w, 'r> BlockSpace<'w, 'r> {
         };
         CollisionContext::for_entity(
             CollisionEntity {
+                kind: horizon_world::collision_context::EntityContextKind::Living,
                 identity: EntityIdentity(u64::from(m.id)),
                 // A teleport candidate is queried before setPos changes the entity.
                 y: m.position.y,

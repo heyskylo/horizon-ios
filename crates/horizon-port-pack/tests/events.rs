@@ -99,6 +99,8 @@ const LABELS: &str = r#"{"hooks": [
     {"name": "block_entity_container", "neoforge": "Capabilities.Item.BLOCK"},
     {"name": "recipes_received", "neoforge": "RecipesReceivedEvent"},
     {"name": "standalone_models", "neoforge": "ModelEvent.RegisterStandalone"},
+    {"name": "render_tooltip_texture", "neoforge": "RenderTooltipEvent.Texture"},
+    {"name": "anvil_craft_pre", "neoforge": "AnvilCraftEvent.Pre"},
     {"name": "hud"}
 ]}"#;
 
@@ -155,6 +157,20 @@ fn labels_give_counterparts_phases_notes_and_new_names() {
         (
             Status::Hooked(hooks(&["standalone_models"])),
             Some("ModelEvent.RegisterStandalone".to_owned())
+        )
+    );
+    assert_eq!(
+        c.status("RenderTooltipEvent.Color"),
+        (
+            Status::Hooked(hooks(&["render_tooltip_texture"])),
+            Some("RenderTooltipEvent.Texture".to_owned())
+        )
+    );
+    assert_eq!(
+        c.status("AnvilRepairEvent"),
+        (
+            Status::Hooked(hooks(&["anvil_craft_pre"])),
+            Some("AnvilCraftEvent.Pre".to_owned())
         )
     );
     for missing in [
