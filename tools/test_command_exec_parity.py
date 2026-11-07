@@ -172,6 +172,8 @@ def main():
             sys.exit(f'{name} failed ({result.returncode}):\n{tail}')
 
     groups = corpus_module.groups()
+    if not args.only:
+        groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_GUEST_CLOSE]
     if args.macro_source_type_fixture or args.only == "macro source type error":
         groups = [(name, ops) for name, ops in groups if name == "macro source type error"]
     elif not args.only:

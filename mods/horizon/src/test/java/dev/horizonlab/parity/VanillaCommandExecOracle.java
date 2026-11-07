@@ -937,7 +937,8 @@ public final class VanillaCommandExecOracle {
                         record.add("results", results);
                         out.append(gson.toJson(record)).append('\n');
                     }
-                    case "close_menu" -> player.closeContainer();
+                    case "close_menu" -> player.connection.handleContainerClose(
+                        new net.minecraft.network.protocol.game.ServerboundContainerClosePacket(player.containerMenu.containerId));
                     case "menu_state" -> {
                         int slots = player.containerMenu == player.inventoryMenu ? 0 : player.containerMenu.slots.size() - 36;
                         JsonObject state = new JsonObject();state.addProperty("own_slots", slots);

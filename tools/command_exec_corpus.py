@@ -5860,10 +5860,15 @@ ISOLATED_MACRO_TYPE = frozenset({'macro source type error'})
 ISOLATED_PICKUP_SAVE = frozenset({'mob saved pickup loot'})
 ISOLATED_ORB_UUID = frozenset({'orb saved UUID'})
 ISOLATED_STAND_FALL = frozenset({'stand saved fall distance'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_MACRO_TYPE | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL
+ISOLATED_GUEST_CLOSE = frozenset({'guest container close event'})
+ISOLATED_GROUPS = (ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_MACRO_TYPE | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_GUEST_CLOSE)
 
 
 def groups():
+    try:
+        from .guest_close_event_corpus import cases as guest_close_events
+    except ImportError:
+        from guest_close_event_corpus import cases as guest_close_events
     try:
         from .transmute_patch_corpus import cases as transmute_patches
     except ImportError:
@@ -5900,6 +5905,7 @@ def groups():
         from item_merge_corpus import stack_limit_merges
     return [
         ('setup', group_setup()),
+        ('guest container close event', guest_close_events()),
         ('macro source type error', macro_source_type_error()),
         ('stand saved fall distance', stand_saved_fall()),
         ('orb saved UUID', orb_saved_uuid()),
