@@ -5,8 +5,8 @@ use horizon_assets::{
 };
 
 fn face() -> BakedFace {
-    BakedFace {
-        quad: bake_flat_face(
+    BakedFace::new(
+        bake_flat_face(
             [0.0; 3],
             [16.0; 3],
             [0.0, 0.0, 16.0, 16.0],
@@ -18,11 +18,11 @@ fn face() -> BakedFace {
             -1,
         )
         .unwrap(),
-        layer: 7,
-        opaque: true,
-        translucent: false,
-        fusion: None,
-    }
+        7,
+        true,
+        false,
+        None,
+    )
 }
 fn sprite(name: &str) -> Option<u32> {
     match name {
