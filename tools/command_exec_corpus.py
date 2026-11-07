@@ -5622,7 +5622,8 @@ def piston_entity_tick_order():
 
 
 def scheduled_item_birth():
-    """#12017: an item a scheduled block tick drops ticks in that tick's entity pass."""
+    """#12017: an item a scheduled block tick drops ticks in that tick's entity pass;
+    one an entity's block contact drops does not."""
     ops = []
     for front in ('air', 'powder_snow'):
         ops += setup('/kill @e[type=!player]', '/fill 0 200 0 5 215 5 air',
@@ -5635,6 +5636,17 @@ def scheduled_item_birth():
             ops.append({'op': 'tick', 'n': 1})
             ops.append(cmd(f'/execute if entity {item}'))
             ops.append(cmd(f'/data get entity {item} Age'))
+    # A boat breaks a lily pad in its own tick (`applyEffectsFromBlocks`), inside
+    # the entity pass: that drop waits for the next tick.
+    ops += setup('/kill @e[type=!player]', '/fill 0 200 0 5 215 5 air',
+                 '/fill 0 200 0 2 200 2 water', '/setblock 1 201 1 lily_pad',
+                 '/summon oak_boat 1.5 201 1.5 {NoGravity:1b}')
+    item = '@e[type=item,x=1.5,y=201.5,z=1.5,distance=..3,limit=1]'
+    for _ in range(3):
+        ops.append({'op': 'tick', 'n': 1})
+        ops.append(cmd('/execute if block 1 201 1 lily_pad'))
+        ops.append(cmd(f'/execute if entity {item}'))
+        ops.append(cmd(f'/data get entity {item} Age'))
     ops += setup('/kill @e[type=!player]', '/fill 0 200 0 5 215 5 air')
     return ops
 
