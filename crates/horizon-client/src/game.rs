@@ -88,6 +88,8 @@ mod chat_filter;
 mod chiseled_bookshelf;
 mod client_ambient;
 mod clipboard;
+#[cfg(test)]
+mod clone_block_ticks_tests;
 mod code_of_conduct;
 mod combat;
 mod command_blocks;
