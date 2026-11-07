@@ -1,0 +1,18 @@
+{
+  "hooks": [
+    {
+      "name": "player_pre_login",
+      "target": "horizon_client_lib::lan::conn::native_player_pre_login",
+      "neoforge": "none (Bukkit's AsyncPlayerPreLoginEvent)",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "collect",
+        "out": "defer"
+      }
+    }
+  ],
+  "rust_summary": "a player logging in, on the connection's thread before the server's checks, held for the mods' answers or refused (`native_player_pre_login`).",
+  "doc_summary": "`native_player_pre_login(player, name, address, defer)` hears a player logging in on the connection's own thread, before the server's own checks: a mod pushes a receiver onto `defer` and answers on it from any thread, `Ok` to let the player on, `Err(reason)` to refuse; the login waits for every answer, 20 s at most. No `Game` and no helper there. Bundles need \"hooks\": @API:player_pre_login@.",
+  "comments": ["crates/horizon-client/src/lan/conn.rs"]
+}

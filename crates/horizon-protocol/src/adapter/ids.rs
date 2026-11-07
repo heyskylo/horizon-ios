@@ -158,6 +158,15 @@ pub fn quirks() -> Quirks {
     }
 }
 
+/// The older version's quirks while packets are encoded for it on this thread (an older client, or what is
+/// sent to an older server); none otherwise. The writers then lay those structures out as it reads them.
+pub fn quirks_written() -> Quirks {
+    match ACTIVE.get() {
+        Some((ids, Way::Down)) => ids.quirks,
+        _ => Quirks::NONE,
+    }
+}
+
 impl Ids {
     /// Bits per entry of a chunk section's global block palette: the older version's, then the pinned one's
     /// (`Mth.ceillog2` of the state count).
