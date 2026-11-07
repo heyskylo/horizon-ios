@@ -376,8 +376,8 @@ impl Ambience {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::sound_engine::{Bound, TickContext, test_backend::Null};
+    use super::*;        use crate::sound_engine::{Bound, SoundEngine, TickContext, test_backend::Null};
+
     use crate::sound_events::SoundRegistry;
 
     fn engine() -> SoundEngine {
