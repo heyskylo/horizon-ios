@@ -1250,5 +1250,7 @@
   "Use a different Microsoft account": "Kasuta teist Microsofti kontot",
   "Buy": "Osta",
   "Gift": "Kingi",
-  "Looks": "Välimused"
+  "Looks": "Välimused",
+  "Found on this computer": "Leitud sellest arvutist",
+  "Modpacks other launchers keep here. Import makes a copy; theirs stays as it is.": "Modipakid, mida teised käivitid siin hoiavad. Import teeb koopia; nende oma jääb samaks."
 }

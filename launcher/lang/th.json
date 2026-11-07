@@ -1250,5 +1250,7 @@
   "Use a different Microsoft account": "ใช้บัญชี Microsoft อื่น",
   "Buy": "ซื้อ",
   "Gift": "ซื้อเป็นของขวัญ",
-  "Looks": "ลุค"
+  "Looks": "ลุค",
+  "Found on this computer": "พบในคอมพิวเตอร์เครื่องนี้",
+  "Modpacks other launchers keep here. Import makes a copy; theirs stays as it is.": "ม็อดแพ็กที่ลันเชอร์อื่นเก็บไว้ที่นี่ การนำเข้าจะสร้างสำเนา ส่วนของเดิมยังคงอยู่เหมือนเดิม"
 }

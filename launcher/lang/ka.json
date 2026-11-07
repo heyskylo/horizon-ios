@@ -1250,5 +1250,7 @@
   "Use a different Microsoft account": "გამოიყენეთ სხვა Microsoft-ის ანგარიში",
   "Buy": "ყიდვა",
   "Gift": "ჩუქება",
-  "Looks": "იერსახეები"
+  "Looks": "იერსახეები",
+  "Found on this computer": "ნაპოვნია ამ კომპიუტერზე",
+  "Modpacks other launchers keep here. Import makes a copy; theirs stays as it is.": "მოდპაკები, რომლებსაც სხვა ლაუნჩერები აქ ინახავენ. იმპორტი ქმნის ასლს; მათი რჩება ისე, როგორც არის."
 }
