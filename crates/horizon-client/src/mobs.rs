@@ -1295,6 +1295,9 @@ pub struct Extra {
     pub attributes: Option<Box<finalize::Attributes>>,
     /// Brain memories `finalizeSpawn` sets: (memory, value, ticks to expiry).
     pub memories: Vec<(&'static str, i64, i64)>,
+    /// `AbstractHorse.temper` inherited by Camel/CamelHusk; independent of
+    /// the seven horse/llama species' legacy `variant3` storage.
+    pub camel_temper: i32,
     /// A camel's `LAST_POSE_CHANGE_TICK`.
     pub pose_change_tick: i64,
     /// Whether a camel sits (`egg_time` is then the age it sat down at).
