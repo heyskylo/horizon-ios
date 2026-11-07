@@ -194,7 +194,7 @@ fn not_drawn(m: &Manifest, switch: bool) -> Option<String> {
 }
 
 /// `HORIZON_HDR_FRAME=float`: shader API 0.2 packs are drawn, on a float frame where the
-/// renderer is made with one picked.
+/// renderer is made with one picked, as HDR without a pack is (`PickedPack::hdr_float`).
 pub(super) fn linear_frame_switch() -> bool {
     std::env::var("HORIZON_HDR_FRAME").is_ok_and(|v| v == "float")
 }
