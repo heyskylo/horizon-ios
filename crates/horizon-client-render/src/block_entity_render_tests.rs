@@ -993,7 +993,9 @@ fn cached_closed_chests_match_the_direct_model_and_rebuild_when_opening() {
     scene.nether = true;
     let nether_closed = render_cached(&scene);
     assert_same_vertices(&nether_closed, &render_direct(&renderer, &scene, &blocks));
-    assert_vertices_differ(&closed_again, &nether_closed);
+    // The nether is the entity shader's flag now (`entity_light`'s `l1` and
+    // `globals.time.y`), not a baked colour, so the cached geometry serves both.
+    assert_same_vertices(&closed_again, &nether_closed);
 }
 
 #[test]

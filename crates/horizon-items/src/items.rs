@@ -13,6 +13,10 @@ use std::{
     sync::Arc,
 };
 
+fn tool_number(value: &horizon_world::nbt::Tag) -> Option<f32> {
+    horizon_world::datafix::dynamic::as_number(value).map(|n| n.float_value())
+}
+
 /// A fire starter's use sound: `SoundEvents.FIRECHARGE_USE` or
 /// `FLINTANDSTEEL_USE`.
 pub fn fire_starter_sound(fire_charge: bool) -> &'static str {
@@ -1119,6 +1123,12 @@ impl Items {
         let Some(held) = held.filter(|s| s.count > 0 && &*s.item != "minecraft:air") else {
             return true;
         };
+        if held
+            .data()
+            .is_some_and(|d| d.other("!minecraft:tool").is_some())
+        {
+            return true;
+        }
         if let Some(tool) = held.data().and_then(|d| d.other("minecraft:tool")) {
             return tool
                 .get("can_destroy_blocks_in_creative")
@@ -1133,6 +1143,22 @@ impl Items {
     }
     /// `Tool.getMiningSpeed` for the held item (1.0 without a tool component).
     pub fn mining_speed(&self, held: Option<&ItemStack>, block: &str) -> f32 {
+        let held = held.filter(|s| s.count > 0 && &*s.item != "minecraft:air");
+        if let Some(stack) = held {
+            if stack
+                .data()
+                .is_some_and(|d| d.other("!minecraft:tool").is_some())
+            {
+                return 1.0;
+            }
+            if let Some(tool) = stack.data().and_then(|d| d.other("minecraft:tool")) {
+                return self
+                    .stack_tool_rule(tool, block, "speed")
+                    .and_then(tool_number)
+                    .or_else(|| tool.get("default_mining_speed").and_then(tool_number))
+                    .unwrap_or(1.0);
+            }
+        }
         let Some(info) = held.and_then(|s| self.get(&s.item)) else {
             return 1.0;
         };
@@ -1151,6 +1177,21 @@ impl Items {
     }
     /// `Tool.isCorrectForDrops`.
     pub fn correct_for_drops(&self, held: Option<&ItemStack>, block: &str) -> bool {
+        let held = held.filter(|s| s.count > 0 && &*s.item != "minecraft:air");
+        if let Some(stack) = held {
+            if stack
+                .data()
+                .is_some_and(|d| d.other("!minecraft:tool").is_some())
+            {
+                return false;
+            }
+            if let Some(tool) = stack.data().and_then(|d| d.other("minecraft:tool")) {
+                return horizon_world::datafix::dynamic::as_bool(
+                    self.stack_tool_rule(tool, block, "correct_for_drops"),
+                    false,
+                );
+            }
+        }
         let Some(info) = held.and_then(|s| self.get(&s.item)) else {
             return false;
         };
@@ -1162,6 +1203,78 @@ impl Items {
             }
         }
         false
+    }
+    fn stack_tool_rule<'a>(
+        &self,
+        tool: &'a horizon_world::nbt::Tag,
+        block: &str,
+        field: &str,
+    ) -> Option<&'a horizon_world::nbt::Tag> {
+        use horizon_world::nbt::Tag;
+        let Tag::List(rules) = tool.get("rules")? else {
+            return None;
+        };
+        rules.iter().find_map(|rule| {
+            let value = rule.get(field)?;
+            let matches = |value: &Tag| match value {
+                Tag::String(spec) => spec.to_string().is_ok_and(|s| {
+                    let tag = s.starts_with('#');
+                    let id = s.strip_prefix('#').unwrap_or(&s);
+                    horizon_world::datafix::identifier(id).is_some_and(|(namespace, path)| {
+                        let id = format!("{namespace}:{path}");
+                        if tag {
+                            self.block_in_tag(&id, block)
+                        } else {
+                            id == block
+                        }
+                    })
+                }),
+                _ => false,
+            };
+            match rule.get("blocks")? {
+                Tag::List(blocks) if blocks.iter().any(matches) => Some(value),
+                spec if matches(spec) => Some(value),
+                _ => None,
+            }
+        })
+    }
+    /// The stack's TOOL component, including its default mining wear.
+    pub fn mining_damage(&self, stack: &ItemStack) -> Option<u32> {
+        if stack.count == 0 || &*stack.item == "minecraft:air" {
+            return None;
+        }
+        if stack
+            .data()
+            .is_some_and(|d| d.other("!minecraft:tool").is_some())
+        {
+            return None;
+        }
+        if let Some(tool) = stack.data().and_then(|d| d.other("minecraft:tool")) {
+            return Some(
+                horizon_world::datafix::dynamic::as_int(tool.get("damage_per_block"), 1).max(0)
+                    as u32,
+            );
+        }
+        self.get(&stack.item)?.tool_damage_per_block
+    }
+    /// Mining wear on an already durable item prototype. Custom durability on
+    /// non-durable items needs item-aware DAMAGE-presence decoding first.
+    pub fn mining_damage_capacity(&self, stack: &ItemStack) -> u32 {
+        let prototype_max = self.get(&stack.item).map_or(0, |info| info.max_damage);
+        let component = |id| stack.data().and_then(|d| d.other(id));
+        if prototype_max == 0
+            || stack.count == 0
+            || &*stack.item == "minecraft:air"
+            || component("!minecraft:max_damage").is_some()
+            || component("!minecraft:damage").is_some()
+            || component("minecraft:unbreakable").is_some()
+        {
+            return 0;
+        }
+        match component("minecraft:max_damage") {
+            Some(value) => horizon_world::datafix::dynamic::as_int(Some(value), 0).max(0) as u32,
+            _ => prototype_max,
+        }
     }
     /// Whether a loot table (`minecraft:blocks/stone`, ...) exists.
     pub fn has_loot_table(&self, id: &str) -> bool {
@@ -1201,6 +1314,7 @@ impl Items {
             killed_by_player: false,
             explosion_radius: None,
             this_entity: false,
+            target: None,
             keep_empty,
         };
         ctx.evaluate(table, random)
@@ -1247,18 +1361,29 @@ impl Items {
         self.block_drops_in(registry, state, held, random, None)
     }
     /// `LootCommand.dropBlockLoot`: only replacement retains empty result positions.
+    /// `this_entity`: the command has a source entity (the optional THIS_ENTITY).
     pub fn block_drops_for_command<R: RandomSource>(
         &self,
         registry: &BlockRegistry,
         state: BlockStateId,
         held: Option<&ItemStack>,
         random: &mut R,
+        this_entity: bool,
         keep_empty: bool,
     ) -> Vec<ItemStack> {
         if !keep_empty {
-            return self.block_drops(registry, state, held, random);
+            return self.block_drops_exploded(
+                registry,
+                state,
+                held,
+                &[],
+                random,
+                None,
+                None,
+                this_entity,
+            );
         }
-        self.block_drops_raw(registry, state, held, random, None, None, false, true)
+        self.block_drops_raw(registry, state, held, random, None, None, this_entity, true)
             .into_iter()
             .filter(|drop| !drop.item.starts_with(DYNAMIC))
             .collect()
@@ -1379,6 +1504,7 @@ impl Items {
                 killed_by_player: false,
                 explosion_radius,
                 this_entity: breaker,
+                target: None,
                 keep_empty,
             };
             return ctx.evaluate(table, random);
@@ -1391,6 +1517,7 @@ impl Items {
             killed_by_player: false,
             explosion_radius,
             this_entity: breaker,
+            target: None,
             keep_empty,
         };
         ctx.evaluate(table, random)
@@ -1427,6 +1554,7 @@ impl Items {
             killed_by_player,
             explosion_radius: None,
             this_entity: false,
+            target: None,
             keep_empty,
         };
         // LootTable.getRandomItemsRaw visits the table itself first.
@@ -1465,6 +1593,7 @@ impl Items {
             killed_by_player: false,
             explosion_radius: None,
             this_entity: false,
+            target: None,
             keep_empty: false,
         };
         match table.get("random_sequence").and_then(Value::as_str) {
@@ -1492,6 +1621,7 @@ impl Items {
             killed_by_player,
             explosion_radius: None,
             this_entity: false,
+            target: None,
             keep_empty: false,
         };
         ctx.evaluate(table, random)
@@ -1503,7 +1633,7 @@ impl Items {
         held: Option<&ItemStack>,
         random: &mut R,
     ) -> Vec<ItemStack> {
-        self.entity_drops_for_command(entity, killed_by_player, held, random, false)
+        self.entity_drops_context(entity, killed_by_player, held, None, random, false)
     }
     /// `LootCommand.dropKillLoot`: output-list adapter; replacement keeps emitted empties.
     pub fn entity_drops_for_command<R: RandomSource>(
@@ -1511,6 +1641,38 @@ impl Items {
         entity: &str,
         killed_by_player: bool,
         held: Option<&ItemStack>,
+        random: &mut R,
+        keep_empty: bool,
+    ) -> Vec<ItemStack> {
+        self.entity_drops_context(entity, killed_by_player, held, None, random, keep_empty)
+    }
+    /// `LootCommand.dropKillLoot`: bind actual target predicates without changing the evaluator.
+    #[allow(clippy::too_many_arguments)]
+    pub fn entity_drops_with_target<R: RandomSource>(
+        &self,
+        entity: &str,
+        killed_by_player: bool,
+        held: Option<&ItemStack>,
+        target: &horizon_world::loot::LootEntity,
+        matcher: &dyn Fn(&Value, &horizon_world::loot::LootEntity) -> bool,
+        random: &mut R,
+        keep_empty: bool,
+    ) -> Vec<ItemStack> {
+        self.entity_drops_context(
+            entity,
+            killed_by_player,
+            held,
+            Some((target, matcher)),
+            random,
+            keep_empty,
+        )
+    }
+    fn entity_drops_context<R: RandomSource>(
+        &self,
+        entity: &str,
+        killed_by_player: bool,
+        held: Option<&ItemStack>,
+        target: Option<EntityTarget<'_>>,
         random: &mut R,
         keep_empty: bool,
     ) -> Vec<ItemStack> {
@@ -1527,6 +1689,7 @@ impl Items {
             killed_by_player,
             explosion_radius: None,
             this_entity: false,
+            target,
             keep_empty,
         };
         ctx.evaluate(table, random)
@@ -1563,6 +1726,10 @@ impl LootContext<'_> {
         out
     }
 }
+type EntityTarget<'a> = (
+    &'a horizon_world::loot::LootEntity,
+    &'a dyn Fn(&Value, &horizon_world::loot::LootEntity) -> bool,
+);
 struct LootContext<'a> {
     items: &'a Items,
     block: &'a str,
@@ -1573,6 +1740,8 @@ struct LootContext<'a> {
     explosion_radius: Option<f32>,
     /// `LootContextParams.THIS_ENTITY` is set (a player broke the block).
     this_entity: bool,
+    /// Actual command target, used only by `entity_properties` for `this`.
+    target: Option<EntityTarget<'a>>,
     /// Command replacement consumes the emitted list positions, including empty stacks.
     keep_empty: bool,
 }
@@ -1764,6 +1933,12 @@ impl LootContext<'_> {
                     c["unenchanted_chance"].as_f64().unwrap_or(0.0) as f32
                 };
                 random.next_float() < chance
+            }
+            "minecraft:entity_properties"
+                if c["entity"].as_str() == Some("this") && self.target.is_some() =>
+            {
+                let (target, matcher) = self.target.unwrap();
+                matcher(&c["predicate"], target)
             }
             // `this` with no checks (snow, chorus flower) holds when an entity
             // broke the block (LootItemEntityPropertyCondition needs the entity).
@@ -2545,6 +2720,47 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn admitted_tool_rules_override_defaults_and_removals_survive_saving() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-tool-components-{}", std::process::id()));
+        fs::create_dir_all(root.join("data/minecraft/loot_table")).unwrap();
+        fs::write(root.join("items.json"), r#"{"minecraft:stick":{},"minecraft:diamond_pickaxe":{"minecraft:max_damage":1561,"minecraft:tool":{"rules":[{"blocks":"minecraft:stone","speed":8.0,"correct_for_drops":true}],"damage_per_block":1}}}"#).unwrap();
+        let items = Items::catalog(&root, &PackOverlay::NONE).unwrap();
+        let mut pick = ItemStack::new("minecraft:diamond_pickaxe", 1);
+        assert_eq!(items.mining_speed(Some(&pick), "minecraft:stone"), 8.0);
+        assert!(items.correct_for_drops(Some(&pick), "minecraft:stone"));
+        let removal = crate::item_data::command_components("[!tool]").unwrap();
+        (pick.damage, pick.extra) = crate::item_data::decode_components(Some(&removal));
+        let restored =
+            crate::item_nbt::item_from_nbt(&crate::item_nbt::item_to_nbt(&pick)).unwrap();
+        assert_eq!(items.mining_speed(Some(&restored), "minecraft:stone"), 1.0);
+        assert!(!items.correct_for_drops(Some(&restored), "minecraft:stone"));
+        assert_eq!(items.mining_damage(&restored), None);
+        let mut stick = ItemStack::new("minecraft:stick", 1);
+        let tool = crate::item_data::command_components(r#"[tool={rules:[{blocks:"stone",correct_for_drops:false},{blocks:["stone","dirt"],speed:7.0f,correct_for_drops:true},{blocks:"stone",speed:90.0f}],default_mining_speed:2.0f,damage_per_block:3}]"#).unwrap();
+        (stick.damage, stick.extra) = crate::item_data::decode_components(Some(&tool));
+        assert_eq!(items.mining_speed(Some(&stick), "minecraft:stone"), 7.0);
+        assert!(!items.correct_for_drops(Some(&stick), "minecraft:stone"));
+        assert_eq!(items.mining_speed(Some(&stick), "minecraft:cobweb"), 2.0);
+        assert_eq!(items.mining_damage(&stick), Some(3));
+        assert_eq!(items.mining_damage_capacity(&stick), 0);
+        stick.data_mut().set_other(
+            "minecraft:max_damage",
+            Some(horizon_world::nbt::Tag::Int(20)),
+        );
+        assert_eq!(
+            items.mining_damage_capacity(&stick),
+            0,
+            "MAX_DAMAGE alone does not supply DAMAGE"
+        );
+        stick.count = 0;
+        assert_eq!(items.mining_speed(Some(&stick), "minecraft:stone"), 1.0);
+        assert!(!items.correct_for_drops(Some(&stick), "minecraft:stone"));
+        assert_eq!(items.mining_damage(&stick), None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn command_loot_keeps_zero_positions_without_changing_filtered_rolls() {
         let mut items = Items::for_tests(HashMap::new());
         let zero = json!({"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:iron_ingot",
@@ -2890,6 +3106,95 @@ mod tests {
         );
     }
 
+    #[test]
+    fn entity_target_context_leaves_unaffected_rolls_and_rng_continuation_unchanged() {
+        let mut items = Items::for_tests(HashMap::new());
+        items.loot = Arc::new([("minecraft:entities/test".into(), json!({"pools":[{
+            "rolls":{"type":"minecraft:uniform","min":1,"max":3},
+            "condition":{"type":"minecraft:all_of","terms":[
+                {"type":"minecraft:killed_by_player"},
+                {"type":"minecraft:match_tool","predicate":{"items":"minecraft:stick"}}]},
+            "entries":[{"type":"minecraft:item","name":"minecraft:diamond","weight":1},
+                       {"type":"minecraft:item","name":"minecraft:iron_ingot","weight":3}],
+            "modifier":[{"type":"minecraft:set_count","count":{"type":"minecraft:uniform","min":1,"max":4}}]
+        }]}))].into_iter().collect());
+        let target = horizon_world::loot::LootEntity::new("minecraft:sheep");
+        let held = ItemStack::new("minecraft:stick", 1);
+        let unused = |_: &Value, _: &horizon_world::loot::LootEntity| -> bool {
+            panic!("no entity predicate on this unaffected path")
+        };
+        for seed in [0, 1, 99, i64::MAX] {
+            for by_player in [false, true] {
+                let mut old = LegacyRandom::new(seed);
+                let mut bound = old.clone();
+                let expected =
+                    items.entity_drops("minecraft:test", by_player, Some(&held), &mut old);
+                let actual = items.entity_drops_with_target(
+                    "minecraft:test",
+                    by_player,
+                    Some(&held),
+                    &target,
+                    &unused,
+                    &mut bound,
+                    false,
+                );
+                assert_eq!(actual, expected);
+                assert_eq!(bound.next_long(), old.next_long());
+                assert_eq!(bound.next_int_bound(137), old.next_int_bound(137));
+            }
+        }
+    }
+
+    #[test]
+    fn entity_target_context_reuses_the_loaded_matcher_only_for_this() {
+        use horizon_world::loot::{LootData, LootEntity};
+        let root = std::env::temp_dir().join(format!("h036-items-matcher-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("data/minecraft/loot_table")).unwrap();
+        std::fs::write(root.join("items.json"), "{}").unwrap();
+        let data = LootData::load(&root, &PackOverlay::NONE).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        let matcher = |p: &Value, e: &LootEntity| data.entity_matches(p, Some(e));
+        let mut items = Items::for_tests(HashMap::new());
+        for who in ["this", "attacker"] {
+            items.loot = Arc::new(
+                [(
+                    "minecraft:entities/sheep".into(),
+                    json!({"pools":[{"rolls":1,"entries":[{
+                        "type":"minecraft:item","name":"minecraft:white_wool",
+                        "condition":{"type":"minecraft:entity_properties","entity":who,"predicate":{
+                            "minecraft:components":{"minecraft:sheep/color":"white"},
+                            "minecraft:type_specific/sheep":{"sheared":false}}}
+                    }]}]}),
+                )]
+                .into_iter()
+                .collect(),
+            );
+            for (color, sheared) in [("white", false), ("white", true), ("red", false)] {
+                let mut target = LootEntity::new("minecraft:sheep");
+                target.sheep = Some((color.into(), sheared));
+                let mut random = LegacyRandom::new(36);
+                let actual = items.entity_drops_with_target(
+                    "minecraft:sheep",
+                    true,
+                    None,
+                    &target,
+                    &matcher,
+                    &mut random,
+                    false,
+                );
+                assert_eq!(
+                    !actual.is_empty(),
+                    who == "this" && color == "white" && !sheared
+                );
+                assert!(
+                    items
+                        .entity_drops("minecraft:sheep", true, None, &mut LegacyRandom::new(36))
+                        .is_empty()
+                );
+            }
+        }
+    }
+
     fn ctx<'a>(
         items: &'a Items,
         held: Option<&'a ItemStack>,
@@ -2904,6 +3209,7 @@ mod tests {
             killed_by_player: block.is_empty(),
             explosion_radius: None,
             this_entity: false,
+            target: None,
             keep_empty: false,
         }
     }

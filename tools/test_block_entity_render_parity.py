@@ -7,8 +7,10 @@ extractRenderState and submit, and captures what it submits: model vertices
 after setupAnim and the pose stack (sprite-local UVs, tint, normal, light),
 text calls and items. `examples/probe/block_entity_render_fixture` replays the case
 through Horizon's BlockEntityRenderer. Quads are matched by texture and
-position; colours compare vanilla's tint times the entity shader's
-`minecraft_mix_light` for the vanilla normal with Horizon's baked colour.
+position; colours compare vanilla's tint with Horizon's and world models compare
+their face normal too, since the entity shader (and a shader pack) applies
+`minecraft_mix_light` from it rather than Horizon baking the shade. The loom's
+GUI preview keeps its baked `Lighting.Entry.ITEMS_FLAT` colour.
 
   test_block_entity_render_parity.py [--filter SUBSTRING] [--detail N] [--tolerance EPS]
 """
@@ -173,7 +175,13 @@ def mix(normal, lit=(L0, L1)):
     return min(1.0, (d(lit[0]) + d(lit[1])) * 0.6 + 0.4)
 
 
-def vanilla_quads(submits, lit=(L0, L1)):
+def vanilla_quads(submits, lit=(L0, L1), shaded=False):
+    """Vanilla's model quads as `{texture, v, rgb, alpha, light, overlay, normal}`.
+
+    The world path expects the tint alone and the face normal (the entity shader
+    applies `minecraft_mix_light` from it, as a shader pack does); GUI previews
+    (the loom) expect Horizon's baked `Lighting.Entry.ITEMS_FLAT` colour.
+    """
     quads, other = [], []
     for s in submits:
         custom = s['type'] == 'submitCustomGeometry'
@@ -184,12 +192,14 @@ def vanilla_quads(submits, lit=(L0, L1)):
         for i in range(0, len(verts), 4):
             q = verts[i:i + 4]
             tint = q[0][3] & 0xFFFFFFFF
-            # Custom geometry (beacon beams) is unlit; models get the entity shader's mix light.
-            b = 1.0 if custom else mix(q[0][8:11], lit)
+            # Custom geometry (beacon beams) is unlit; GUI models are baked on
+            # the CPU like Horizon's item renderer.
+            b = mix(q[0][8:11], lit) if (shaded and not custom) else 1.0
             ch = lambda shift: int(((tint >> shift) & 255) * b)
             quads.append({'texture': s['texture'], 'v': [v[:3] + v[4:6] for v in q],
                           'rgb': [ch(16), ch(8), ch(0)], 'alpha': tint >> 24, 'light': q[0][7],
-                          'overlay': q[0][6], 'type': s['renderType'], 'custom': custom})
+                          'overlay': q[0][6], 'type': s['renderType'], 'custom': custom,
+                          'normal': None if custom or shaded else q[0][8:11]})
     return quads, other
 
 
@@ -224,7 +234,9 @@ def pair(vq, rq):
 
 def compare_case(v, r, tol):
     problems = []
-    vq, other = vanilla_quads(v['submits'], FLAT if 'loom' in v['case'] else (L0, L1))
+    shaded = 'loom' in v['case']
+    vq, other = vanilla_quads(
+        v['submits'], FLAT if shaded else (L0, L1), shaded=shaded)
     for s in other:
         if s['type'] == 'submitText':
             continue
@@ -259,6 +271,11 @@ def compare_case(v, r, tol):
         if area(a['v']) > 1e-9 and (any(abs(x - y) > 1 for x, y in zip(a['rgb'], rgb)) or (got >> 24) != a['alpha']):
             problems.append(f'{a["texture"]} colour {a["rgb"]}/{a["alpha"]} != {rgb}/{got >> 24} at {a["v"]}')
             break
+        if a['normal'] is not None and area(a['v']) > 1e-9:
+            normal = [c / 127.0 for c in b['normal'][:3]]
+            if any(abs(x - y) > 0.02 for x, y in zip(a['normal'], normal)) or b['normal'][3] <= 0:
+                problems.append(f'{a["texture"]} normal {a["normal"]} != {normal}/{b["normal"][3]} at {a["v"]}')
+                break
         if a['light'] != light_coords(b['light']):
             problems.append(f'{a["texture"]} light {a["light"]:#x} != {light_coords(b["light"]):#x}')
             break
