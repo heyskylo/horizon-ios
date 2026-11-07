@@ -709,6 +709,16 @@ fn smooth(value: f32, target: f32, half_life: f32, dt: f32) -> f32 {
 }
 
 impl FrameUniforms {
+    /// Forgets the frames before (the previous camera, smoothed values, the clock and the
+    /// centre depth), keeping the pack's atlas size and shadow settings.
+    pub(super) fn reset_history(&mut self) {
+        *self = Self {
+            atlas: self.atlas,
+            shadow: std::mem::take(&mut self.shadow),
+            ..Self::default()
+        };
+    }
+
     /// This frame's values for a render size of `size` pixels.
     pub fn update(&mut self, frame: &Frame, inputs: &PackInputs, size: [u32; 2]) {
         let now = std::time::Instant::now();
@@ -2367,6 +2377,61 @@ pub(super) mod initial_history_tests {
         assert_eq!((sixty.elapsed, sixty.delta), (1.0, 1.0 / 60.0));
     }
 
+    /// A reset pack draws its next frame as its first: no previous camera, smoothed values
+    /// at their targets, the clock from 0; the atlas size it was given stays.
+    #[test]
+    fn a_reset_forgets_the_uniforms_history_and_keeps_the_pack_s_settings() {
+        let hud = HudBatch::new([16, 16]);
+        let mut f = frame(&hud);
+        let mut uniforms = FrameUniforms {
+            atlas: [256, 128],
+            ..Default::default()
+        };
+        let mut inputs = PackInputs {
+            rain: 1.0,
+            eye_light: [15, 15],
+            frame_timing: Some(FrameTiming {
+                counter: 800,
+                elapsed: 99.0,
+                delta: 1.0,
+            }),
+            ..Default::default()
+        };
+        uniforms.center_depth_raw = Some(0.25);
+        uniforms.update(&f, &inputs, [16, 16]);
+        f.camera = glam::DVec3::new(7.0, 12.0, -30.0);
+        f.yaw = 77.0;
+        inputs.rain = 0.25;
+        inputs.eye_light = [3, 8];
+        inputs.frame_timing = None;
+        uniforms.reset_history();
+        uniforms.update(&f, &inputs, [16, 16]);
+        let float = |name| match uniforms.values[index(name).unwrap()] {
+            Value::F(v) => v,
+            _ => panic!("float uniform expected"),
+        };
+        let int = |name| match uniforms.values[index(name).unwrap()] {
+            Value::I(v) => v,
+            _ => panic!("integer uniform expected"),
+        };
+        assert_eq!(int("frameCounter")[0], 0);
+        assert_eq!(float("frameTime")[0], 0.0);
+        assert_eq!(int("atlasSize")[..2], [256, 128]);
+        assert_eq!(float("wetness")[0], 0.25);
+        assert_eq!(int("eyeBrightnessSmooth")[..2], [48, 128]);
+        assert_eq!(float("centerDepthSmooth")[0], 1.0);
+        for (previous, current) in [
+            ("previousCameraPosition", "cameraPosition"),
+            ("gbufferPreviousModelView", "gbufferModelView"),
+            ("gbufferPreviousProjection", "gbufferProjection"),
+        ] {
+            assert_eq!(
+                float(previous).map(f32::to_bits),
+                float(current).map(f32::to_bits)
+            );
+        }
+    }
+
     /// Iris 1.11.7 (probe pack): `ambientLight` is the dimension type's (0.1 in the Nether,
     /// 0.25 in the End), and `playerMood` and `constantMood` both the cave mood.
     #[test]
@@ -2411,6 +2476,7 @@ pub(super) mod initial_history_tests {
             skybox: false,
             end_sky: false,
             end_sky_sprite: None,
+            boss_world_fog: false,
             environment_fog: None,
             water_fog: [0.0; 3],
             fog: None,

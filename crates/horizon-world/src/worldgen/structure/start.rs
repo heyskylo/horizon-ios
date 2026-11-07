@@ -693,13 +693,13 @@ impl StructureRegistry {
                 return false;
             }
         }
-        if let Some(avoid) = set.avoid.as_ref().filter(|_| zones) {
-            if avoid.sets.iter().any(|other| {
+        if let Some(avoid) = set.avoid.as_ref().filter(|_| zones)
+            && avoid.sets.iter().any(|other| {
                 let range = avoid.chunk_count;
                 self.has_start_in_range(other, seed, x, z, range, rings, avoid.their_zones)
-            }) {
-                return false;
-            }
+            })
+        {
+            return false;
         }
         if set.frequency < 1. && !reduce(set.reduction, seed, set.salt, x, z, set.frequency) {
             return false;
@@ -1496,12 +1496,11 @@ pub fn beardifier(
     let mut kernels: Option<BoundingBox> = None;
     for start in starts {
         let def = &registry.structures[start.structure];
-        if let Some(enhanced) = &def.enhanced_terrain {
-            if let Some(b) =
+        if let Some(enhanced) = &def.enhanced_terrain
+            && let Some(b) =
                 enhanced.collect(start, chunk, &mut kernel_pieces, &mut kernel_junctions)
-            {
-                include(b, &mut kernels);
-            }
+        {
+            include(b, &mut kernels);
         }
         let adjustment = def.terrain;
         if adjustment == TerrainAdjustment::None {

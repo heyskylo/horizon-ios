@@ -298,6 +298,14 @@ pub enum PostPlace {
     Ghost,
 }
 
+/// Why a viewer transfer could not move a complete set of ingredients.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransferError {
+    Missing,
+    NoRoom,
+    Unavailable,
+}
+
 /// The menu slots a placement works on.
 struct Grid {
     width: usize,
@@ -384,7 +392,8 @@ impl Menu {
         }
         let ingredients: Vec<&Ingredient> = placement.ingredients.iter().collect();
         let post = if stacked.try_pick(&ingredients, 1, None) {
-            self.place(env, id, &grid, &placement, &mut stacked, use_max);
+            let matches = self.recipe_in_grid(env, id);
+            self.place(env, &grid, &placement, &mut stacked, use_max, matches);
             PostPlace::Nothing
         } else {
             self.clear_grid(env, &grid);
@@ -393,6 +402,51 @@ impl Menu {
         // AbstractCraftingMenu.finishPlacingRecipe: the result follows the grid.
         self.recompute(env);
         post
+    }
+
+    /// Move one set of ingredients from the player's real inventory and grid.
+    /// The viewer leaves both alone on failure, including in creative mode.
+    pub fn transfer_recipe(&mut self, env: &Env, id: &str) -> Result<(), TransferError> {
+        if !matches!(self.kind, Kind::Inventory | Kind::Crafting) || self.carried.is_some() {
+            return Err(TransferError::Unavailable);
+        }
+        let grid = self.place_grid().ok_or(TransferError::Unavailable)?;
+        let placement = env
+            .recipes
+            .placement(id)
+            .ok_or(TransferError::Unavailable)?;
+        if placement.impossible()
+            || placement.ingredients.len() > grid.inputs.len()
+            || placement
+                .shaped
+                .is_some_and(|(w, h)| w > grid.width || h > grid.height)
+        {
+            return Err(TransferError::Unavailable);
+        }
+        let mut stacked = self.stacked_contents(env);
+        let ingredients: Vec<_> = placement.ingredients.iter().collect();
+        if !stacked.try_pick(&ingredients, 1, None) {
+            return Err(TransferError::Missing);
+        }
+        // The vanilla placement can return leftover grid items as drops.
+        // A viewer transfer must keep the original slots if it cannot move
+        // every input without dropping anything.
+        let previous = self.containers.clone();
+        let (drops, dropped) = (self.drops.len(), self.dropped.len());
+        self.place(env, &grid, &placement, &mut stacked, false, false);
+        let no_room = self.dropped.len() != dropped;
+        if no_room || !self.recipe_in_grid(env, id) {
+            self.containers = previous;
+            self.drops.truncate(drops);
+            self.dropped.truncate(dropped);
+            return Err(if no_room {
+                TransferError::NoRoom
+            } else {
+                TransferError::Unavailable
+            });
+        }
+        self.recompute(env);
+        Ok(())
     }
 
     /// `recipeMatches`: the recipe already fills the grid.
@@ -417,14 +471,13 @@ impl Menu {
     fn place(
         &mut self,
         env: &Env,
-        id: &str,
         grid: &Grid,
         placement: &Placement,
         stacked: &mut Stacked,
         use_max: bool,
+        matches: bool,
     ) {
         let ingredients: Vec<&Ingredient> = placement.ingredients.iter().collect();
-        let matches = self.recipe_in_grid(env, id);
         let biggest = stacked.try_pick_all(&ingredients, i32::MAX, None);
         if matches {
             for &s in &grid.inputs {

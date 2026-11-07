@@ -1,0 +1,15 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "draw_terrain_model",
+      "target": "horizon_client::game::native_terrain_model::Game<'_>::native_draw_terrain_model",
+      "mod_api": {}
+    }
+  ],
+  "rust_summary": "explicit terrain-sheet native model materials, shading and UV shifts.",
+  "doc_summary": "`native_draw_terrain_model(draw,model,NativeModelRenderOptions)` draws a standalone model with animated block sprite arrays. Material `Model` respects solid/cutout/cutout_mipped quads, or explicitly select `Solid`, `Cutout` or `CutoutMipped`. Cutout uses alpha .1 without mipmaps; mipmapped cutout uses .5. All cull backs and use ordinary opaque color/depth writes. `NativeModelShade::{Model,Off,Entity}` controls directional shading independently of light, including fullbright. `NativeModelUvShift` names original/target sprites and unit-sprite scale/offset; invalid/missing mappings fail before geometry. `uv_shrink_ratio` defaults zero and explicitly supports older FaceBakery UV policy without guessing atlas dimensions. `tint` defaults white and multiplies only tinted quads. Ordinary native model/fluid/Canvas/OIT behavior is unchanged. Bundles need \"hooks\": @API:terrain_model@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_terrain_model.rs"
+  ]
+}

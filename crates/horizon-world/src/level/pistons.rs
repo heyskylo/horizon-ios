@@ -311,16 +311,15 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             let pushed_pos = rel_n(pos, direction, 2);
             let pushed = self.state(pushed_pos);
             let mut event = 1;
-            if b.is_block(pushed, b.named.moving_piston) && b.facing(pushed) == direction {
-                if let Some(piston) = self.moving_piston(pushed_pos) {
-                    if piston.extending
-                        && (piston.progress_o < 0.5
-                            || self.level.game_time() == piston.last_ticked
-                            || self.ticks.handling_tick)
-                    {
-                        event = 2;
-                    }
-                }
+            if b.is_block(pushed, b.named.moving_piston)
+                && b.facing(pushed) == direction
+                && let Some(piston) = self.moving_piston(pushed_pos)
+                && piston.extending
+                && (piston.progress_o < 0.5
+                    || self.level.game_time() == piston.last_ticked
+                    || self.ticks.handling_tick)
+            {
+                event = 2;
             }
             self.block_event(pos, block, event, direction as i32);
         }
@@ -752,13 +751,13 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 let two = rel_n(pos, direction, 2);
                 let moving_state = self.state(two);
                 let mut piston_piece = false;
-                if b.is_block(moving_state, b.named.moving_piston) {
-                    if let Some(entity) = self.moving_piston(two) {
-                        if entity.direction == direction && entity.extending {
-                            self.moving_piston_final_tick(two);
-                            piston_piece = true;
-                        }
-                    }
+                if b.is_block(moving_state, b.named.moving_piston)
+                    && let Some(entity) = self.moving_piston(two)
+                    && entity.direction == direction
+                    && entity.extending
+                {
+                    self.moving_piston_final_tick(two);
+                    piston_piece = true;
                 }
                 if !piston_piece {
                     let is_piston = b.is_block(moving_state, b.named.piston)

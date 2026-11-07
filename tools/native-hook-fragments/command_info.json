@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "command_info", "target": "horizon_client::game::native_server::Game<'_>::native_command_info"}
+  ],
+  "rust_summary": "a server command looked up by name, an alias resolved (`native_command_info`).",
+  "doc_summary": "`native_command_info(label)` looks up the server's command `label` names, a mod's registered one or vanilla's with its alias resolved (Bukkit's `CommandMap.getCommand`), as a `NativeCommandInfo`: name, aliases, usages, operator level, whether vanilla has it. Bundles need \"hooks\": @API:command_info@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_server.rs"
+  ]
+}
