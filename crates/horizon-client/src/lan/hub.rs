@@ -99,6 +99,29 @@ pub struct BodyFlags {
     pub glowing: bool,
 }
 
+/// The game's native movement hook (`native_player_move`), set once by the game: player, name,
+/// from, to (which it may change), yaw, pitch, on_ground and cancel.
+pub type MoveHook = fn(u128, &str, [f64; 3], &mut [f64; 3], f32, f32, bool, &mut bool);
+pub static PLAYER_MOVE: std::sync::OnceLock<MoveHook> = std::sync::OnceLock::new();
+
+/// The game's native teleport hook (`native_player_teleport`), set once by the game: player,
+/// name, cause, from dimension, from, to dimension, to, relative flags and cancel.
+pub type TeleportHook =
+    fn(u128, &str, &str, &str, [f64; 3], &str, &mut [f64; 3], &mut u32, &mut bool);
+pub static PLAYER_TELEPORT: std::sync::OnceLock<TeleportHook> = std::sync::OnceLock::new();
+
+thread_local! {
+    static TELEPORT_CAUSE: std::cell::Cell<Option<&'static str>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Names the cause (`command`, `ender_pearl`...) of the next [`Hub::teleport`] or
+/// [`Hub::teleport_keeping_motion`] on this thread, which `native_player_teleport` then hears,
+/// and gives the one named before. A teleport sent with no cause named is not heard.
+pub fn teleport_cause(cause: Option<&'static str>) -> Option<&'static str> {
+    TELEPORT_CAUSE.replace(cause)
+}
+
 /// Everything the hub needs from the game for one tick.
 pub struct TickCtx<'a> {
     pub world: &'a mut World,
@@ -424,6 +447,16 @@ pub fn display_name(uuid: u128, name: &str) -> Tag {
         ),
         ("insertion", string(name)),
     ])
+}
+
+/// `ChunkMap.getPlayerViewDistance`: `Mth.clamp(requested, 2, server)` (Java's max then min
+/// order also handles a management value below two without panicking when the bounds cross),
+/// under a native mod's limit for the player.
+fn guest_view(requested: i8, server: i32, limit: Option<i32>) -> i32 {
+    i32::from(requested)
+        .max(2)
+        .min(server)
+        .min(limit.unwrap_or(i32::MAX))
 }
 
 /// `LivingEntity.DATA_ARROW_COUNT_ID` (12) and `DATA_STINGER_COUNT_ID` (13):
@@ -801,16 +834,43 @@ impl Hub {
     /// (ChunkMap.getPlayerViewDistance).
     pub fn set_view_distance(&mut self, distance: i32) {
         self.config.view_distance = distance;
-        let distance = self.chunk_radius();
-        self.broadcast(&C::SetChunkCacheRadius(play::Distance { distance }));
+        for g in self.guests.iter().filter(|g| g.placed) {
+            let distance = self.told_radius(g);
+            g.send(&C::SetChunkCacheRadius(play::Distance { distance }));
+        }
         for g in &mut self.guests {
-            // Mth.clamp(requested, 2, serverViewDistance): Java's max then min order also
-            // handles a management value below two without panicking when the bounds cross.
-            g.view_distance = i32::from(g.info.view_distance)
-                .max(2)
-                .min(self.config.view_distance);
+            g.view_distance = guest_view(
+                g.info.view_distance,
+                self.config.view_distance,
+                g.view_limit,
+            );
             g.center = None;
         }
+    }
+    /// A native mod's view distance for one player (`native_set_player_view_distance`): `limit`
+    /// (2 to 32) caps what the player `uuid` is sent and tracks below the server's view distance,
+    /// None gives it the server's again. The player is told its radius and its chunks follow on
+    /// its next view update. False for no such player.
+    pub fn set_guest_view_limit(&mut self, uuid: u128, limit: Option<i32>) -> bool {
+        let Some(i) = self.guests.iter().position(|g| g.uuid == uuid) else {
+            return false;
+        };
+        let server = self.config.view_distance;
+        let g = &mut self.guests[i];
+        g.view_limit = limit.map(|l| l.clamp(2, 32));
+        g.view_distance = guest_view(g.info.view_distance, server, g.view_limit);
+        g.center = None;
+        let g = &self.guests[i];
+        if g.placed {
+            let distance = self.told_radius(g);
+            g.send(&C::SetChunkCacheRadius(play::Distance { distance }));
+        }
+        true
+    }
+    /// The radius `g` is told: the server's (`chunk_radius`), under its own limit.
+    fn told_radius(&self, g: &Guest) -> i32 {
+        let radius = self.chunk_radius();
+        g.view_limit.map_or(radius, |l| l.min(radius))
     }
     /// The radius the players are told (Login, SetChunkCacheRadius): with the far ring on, its
     /// `max_view_distance`, so that a client keeps and draws what it is sent past the view.
@@ -824,6 +884,7 @@ impl Hub {
         self.far.as_ref().map_or(g.view_distance, |far| {
             i32::from(g.info.view_distance)
                 .min(far.max)
+                .min(g.view_limit.unwrap_or(i32::MAX))
                 .max(g.view_distance)
         })
     }
@@ -1735,7 +1796,24 @@ impl Hub {
         let Some(g) = self.guest(conn) else {
             return Vec::new();
         };
-        let packet = self.commands_packet(g.permission);
+        Self::names_of(&self.commands_packet(g.permission, &[]))
+    }
+
+    /// The root commands `conn`'s level leaves out of their tree, which an
+    /// operator of level 4 would get, in the tree's order.
+    pub fn command_names_above(&self, conn: u32) -> Vec<String> {
+        let theirs = self.command_names(conn);
+        if self.guest(conn).is_none() {
+            return Vec::new();
+        }
+        Self::names_of(&self.commands_packet(4, &[]))
+            .into_iter()
+            .filter(|n| !theirs.contains(n))
+            .collect()
+    }
+
+    /// The names of a tree's root commands, in its order.
+    fn names_of(packet: &play::Commands) -> Vec<String> {
         packet
             .nodes
             .get(packet.root as usize)
@@ -1747,6 +1825,13 @@ impl Hub {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Sends `conn`'s player their command tree again, as it stands.
+    pub fn send_commands_to(&self, conn: u32) {
+        if let Some(i) = self.guests.iter().position(|g| g.conn == conn && g.placed) {
+            self.send_commands(i);
+        }
     }
 
     /// Whether vanilla's command tree has a command of this name.
@@ -1782,7 +1867,7 @@ impl Hub {
     /// Commands.sendCommands: the command tree for this player.
     fn send_commands(&self, i: usize) {
         let g = &self.guests[i];
-        let mut packet = self.commands_packet(g.permission);
+        let mut packet = self.commands_packet(g.permission, &g.granted_commands);
         // What the mods took out is not in the tree the client gets.
         if !g.hidden_commands.is_empty() {
             let hidden: Vec<i32> = packet
@@ -1800,17 +1885,19 @@ impl Hub {
         g.send(&C::Commands(packet));
     }
 
-    /// The command tree a player of this permission level gets.
-    fn commands_packet(&self, permission: u8) -> play::Commands {
+    /// The command tree a player of this permission level gets, with the
+    /// root commands the mods `granted` above it.
+    fn commands_packet(&self, permission: u8, granted: &[String]) -> play::Commands {
         match &self.sync.commands {
             Some(tree) => {
                 let dedicated = !self.config.integrated;
-                tree.packet_with_features(
+                tree.packet_granting(
                     permission,
                     dedicated,
                     &self.sync.builtin,
                     &self.mod_commands.0,
                     &self.sync.features,
+                    granted,
                 )
             }
             None => play::Commands {
@@ -1831,9 +1918,62 @@ impl Hub {
 
     /// ServerGamePacketListenerImpl.teleport: move the client and wait for its confirmation.
     pub fn teleport(&mut self, i: usize, position: Option<[f64; 3]>) {
+        let Some((position, relatives)) = self.heard_teleport(i, position, 0) else {
+            return;
+        };
         // ServerPlayer.teleportTo: resetFlyingTicks.
         self.guests[i].above_ground_ticks = 0;
-        self.teleport_relative(i, position, 0);
+        self.teleport_relative(i, position, relatives);
+    }
+
+    /// `native_player_teleport` for a teleport of guest `i` whose cause was named
+    /// ([`teleport_cause`]): where it goes and with which relative flags, none when a mod
+    /// canceled it. A rider is not heard: its vehicle carries it.
+    fn heard_teleport(
+        &mut self,
+        i: usize,
+        position: Option<[f64; 3]>,
+        relatives: i32,
+    ) -> Option<(Option<[f64; 3]>, i32)> {
+        let cause = TELEPORT_CAUSE.take();
+        let (Some(cause), Some(hook)) = (cause, PLAYER_TELEPORT.get()) else {
+            return Some((position, relatives));
+        };
+        let g = &self.guests[i];
+        if g.vehicle.is_some() {
+            return Some((position, relatives));
+        }
+        let (from, dimension) = (g.position, g.dimension.as_str());
+        let (mut to, mut relative, mut cancel) =
+            (position.unwrap_or(from), relatives as u32, false);
+        hook(
+            g.uuid,
+            &g.name,
+            cause,
+            dimension,
+            from,
+            dimension,
+            &mut to,
+            &mut relative,
+            &mut cancel,
+        );
+        let at = if cancel {
+            from
+        } else if to.iter().all(|v| v.is_finite()) {
+            to
+        } else {
+            position.unwrap_or(from)
+        };
+        // The body the game moved goes where the player ends up.
+        if at != position.unwrap_or(from)
+            && let Some(m) = self.guests[i].motion.as_mut()
+        {
+            m.position = Vec3::new(at[0], at[1], at[2]);
+        }
+        // Only the look and the motion may be kept: the position is absolute.
+        use play::relative::{DELTA_X, DELTA_Y, DELTA_Z, ROTATE_DELTA, X_ROT, Y_ROT};
+        let kept = (Y_ROT | X_ROT | DELTA_X | DELTA_Y | DELTA_Z | ROTATE_DELTA) as u32;
+        (!cancel).then_some((Some(at), (relative & kept) as i32))
     }
 
     /// `ServerGamePacketListenerImpl.teleport` alone (a refused or too fast
@@ -1845,10 +1985,13 @@ impl Hub {
     /// A teleport to `position` that keeps the player's motion and look
     /// (`Relative.DELTA` and `Relative.ROTATION`: an End gateway's).
     pub fn teleport_keeping_motion(&mut self, i: usize, position: [f64; 3]) {
-        self.guests[i].above_ground_ticks = 0;
         use play::relative::{DELTA_X, DELTA_Y, DELTA_Z, ROTATE_DELTA, X_ROT, Y_ROT};
         let relatives = Y_ROT | X_ROT | DELTA_X | DELTA_Y | DELTA_Z | ROTATE_DELTA;
-        self.teleport_relative(i, Some(position), relatives);
+        let Some((position, relatives)) = self.heard_teleport(i, Some(position), relatives) else {
+            return;
+        };
+        self.guests[i].above_ground_ticks = 0;
+        self.teleport_relative(i, position, relatives);
     }
 
     /// A rider's own teleport when its vehicle is teleported
@@ -3771,7 +3914,8 @@ impl Hub {
                 // handlePlayerAbilities: the client flies only if it may.
                 S::PlayerAbilities(p) => {
                     let g = &mut self.guests[i];
-                    let flying = p.flags & 2 != 0 && (g.creative() || g.spectator());
+                    let flying =
+                        p.flags & 2 != 0 && (g.creative() || g.spectator() || g.allow_flight);
                     // The change is the game's to announce (the mods may refuse it).
                     if flying != g.flying {
                         g.flying = flying;
@@ -3894,9 +4038,8 @@ impl Hub {
                     let old_language = g.info.language.clone();
                     // PlayerModelPart.HAT (bit 6): the tab list shows the hat layer.
                     let was_hat = g.info.model_customisation & 0x40 != 0;
-                    g.view_distance = i32::from(info.view_distance)
-                        .max(2)
-                        .min(self.config.view_distance);
+                    g.view_distance =
+                        guest_view(info.view_distance, self.config.view_distance, g.view_limit);
                     g.info = info;
                     if g.info.main_hand != old_main_hand {
                         events.push(HostEvent::MainHandChanged(conn, g.info.main_hand == 0));
@@ -4162,6 +4305,33 @@ impl Hub {
                 None => {}
             }
         }
+        // Bukkit's PlayerMoveEvent: the mods hear a move that passed the checks. Canceled, the
+        // player is sent back; moved elsewhere, they are put there and their client told.
+        let (mut to, mut placed) = (to, false);
+        if let Some(hook) = PLAYER_MOVE.get() {
+            let g = &self.guests[i];
+            if to != start || (yaw, pitch) != (g.yaw, g.pitch) {
+                let (mut there, mut cancel) = (to, false);
+                let on_ground = flags & 1 != 0;
+                hook(
+                    g.uuid,
+                    &g.name,
+                    start,
+                    &mut there,
+                    yaw,
+                    pitch,
+                    on_ground,
+                    &mut cancel,
+                );
+                if cancel {
+                    self.resend_teleport(i, Some(start));
+                    return;
+                }
+                if there != to && there.iter().all(|v| v.is_finite()) {
+                    (to, placed) = (there, true);
+                }
+            }
+        }
         // clientIsFloating, from the move that is accepted: no upward-or-level
         // step onto something, nothing but air around the body, and nothing
         // that lets the player hover (the server's allow-flight, mayfly,
@@ -4174,6 +4344,7 @@ impl Hub {
                 && !g.spectator()
                 && !self.config.allow_flight
                 && !g.creative()
+                && !g.allow_flight
                 && g.effects.get("levitation").is_none()
                 && !g.fall_flying
                 && !g
@@ -4215,6 +4386,9 @@ impl Hub {
         g.head_yaw = g.yaw;
         g.on_ground = on_ground;
         g.ticks = g.ticks.max(1);
+        if placed {
+            self.resend_teleport(i, None);
+        }
     }
 
     /// `ServerGamePacketListenerImpl.noBlocksAround`: every block of the
@@ -4501,6 +4675,24 @@ impl Hub {
         g.send(&g.abilities());
     }
 
+    /// Let a guest fly in any game mode, or not (`Abilities.mayfly`), and set
+    /// whether they fly now (`Abilities.flying`), then tell them
+    /// (`onUpdateAbilities`). Creative and spectator fly whatever `allow` is;
+    /// a player who may not fly does not fly.
+    pub fn set_flight(&mut self, conn: u32, allow: bool, flying: bool) {
+        let Some(g) = self.guest_mut(conn) else {
+            return;
+        };
+        g.allow_flight = allow && !g.creative() && !g.spectator();
+        let may = g.allow_flight || g.creative() || g.spectator();
+        g.flying = g.spectator() || (flying && may);
+        if let Some(motion) = g.motion.as_mut() {
+            motion.may_fly = may;
+            motion.flying = g.flying;
+        }
+        g.send(&g.abilities());
+    }
+
     pub fn disconnect_all(&mut self) {
         let reason = translatable("multiplayer.disconnect.server_shutdown", &[]);
         for g in &self.guests {
@@ -4541,6 +4733,35 @@ impl Hub {
         }
     }
 
+    /// A player shown again with their current profile (Paper's `hidePlayer`, then `showPlayer`):
+    /// every placed player who sees them, they included, is sent their list entry anew
+    /// (ClientboundPlayerInfoRemove, then an entry with every action), and the others their entity
+    /// again at the next tick ([`Self::respawned`]), so a changed skin is drawn.
+    pub fn resend_profile(&mut self, i: usize) {
+        let g = &self.guests[i];
+        let (uuid, id) = (g.uuid, g.entity_id);
+        let entry = self.player_info(
+            uuid,
+            &g.name,
+            g.game_mode,
+            g.latency.load(Ordering::Relaxed),
+        );
+        let remove = C::PlayerInfoRemove(play::PlayerInfoRemove { uuids: vec![uuid] });
+        let add = C::PlayerInfoUpdate(play::PlayerInfoUpdate {
+            actions: Self::INFO_ACTIONS,
+            entries: vec![entry],
+        });
+        for other in self
+            .guests
+            .iter()
+            .filter(|o| o.placed && !o.tab_hidden.contains(&uuid))
+        {
+            other.send(&remove);
+            other.send(&add);
+        }
+        self.respawned(id);
+    }
+
     /// A respawn point whose block is gone or blocked: the respawning player
     /// is sent NO_RESPAWN_BLOCK_AVAILABLE and says
     /// `block.minecraft.spawn.not_valid` in its chat.
@@ -4557,7 +4778,8 @@ impl Hub {
     /// PlayerList.respawn: back to `at` with a fresh start. The vanilla client waits on its
     /// level loading screen from the Respawn packet until the level info's "level chunks load
     /// start" event and the chunk under the player, so the packets follow vanilla's order.
-    pub fn respawn(&mut self, i: usize, at: [f64; 3], ctx: &TickCtx) {
+    /// `rotation` is the yaw and pitch they face (vanilla's 0, 0 unless a mod chose others).
+    pub fn respawn(&mut self, i: usize, at: [f64; 3], rotation: [f32; 2], ctx: &TickCtx) {
         let info = self.spawn_info(i, 0);
         self.close_container_for(i);
         let g = &mut self.guests[i];
@@ -4567,6 +4789,8 @@ impl Hub {
         // reports it loaded.
         g.load_timeout = super::guest::CLIENT_LOADED_TIMEOUT;
         g.loading = true;
+        // ServerPlayer.restoreFrom: the new player's abilities are its mode's.
+        g.allow_flight = false;
         // ServerLevel.removePlayerImmediately: the dead player's
         // Entity.setRemoved (KILLED) stops its riding; the new player rides
         // nothing.
@@ -4589,8 +4813,7 @@ impl Hub {
         // ServerPlayer.restoreFrom: the game mode again (onUpdateAbilities).
         g.send(&g.abilities());
         // The new player faces the level's respawn direction (snapTo).
-        g.yaw = 0.0;
-        g.pitch = 0.0;
+        [g.yaw, g.pitch] = rotation;
         g.position = at;
         g.previous_position = at;
         g.send(&C::Respawn(play::Respawn {

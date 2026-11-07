@@ -38,11 +38,13 @@ fn corners(b: Aabb) -> ([f64; 3], [f64; 3]) {
     ([lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z])
 }
 
-/// A boat or minecart a server player rode, followed for
-/// `native_vehicle_moved`.
+/// A boat, minecart or mount a server player rode, followed for
+/// `native_vehicle_moved` (a mount only for its v2).
 pub(super) struct WatchedVehicle {
     id: u32,
     dim: Dim,
+    /// A mob (a horse, a pig), which v1 does not hear.
+    mount: bool,
     /// The server player it carries now.
     rider: Option<u128>,
     /// Where the hook last heard of it.
@@ -52,18 +54,25 @@ pub(super) struct WatchedVehicle {
 }
 
 impl Game<'_> {
-    /// Where the boat or minecart `id` of this level is.
-    fn watched_vehicle_position(&self, id: u32) -> Option<[f64; 3]> {
+    /// Where the boat, minecart or mount `id` of this level is, and whether
+    /// it is a mount.
+    fn watched_vehicle_position(&self, id: u32) -> Option<([f64; 3], bool)> {
         let at = |v: Vec3| [v.x, v.y, v.z];
         self.boats
             .iter()
             .find(|b| b.id == id)
-            .map(|b| at(b.position))
+            .map(|b| (at(b.position), false))
             .or_else(|| {
                 self.carts
                     .iter()
                     .find(|c| c.id == id)
-                    .map(|c| at(c.position))
+                    .map(|c| (at(c.position), false))
+            })
+            .or_else(|| {
+                self.mobs
+                    .iter()
+                    .find(|m| m.id == id && !m.removed)
+                    .map(|m| (at(m.position), true))
             })
     }
 
@@ -82,7 +91,7 @@ impl Game<'_> {
         }
         let dim = self.dim;
         for &(id, _, uuid) in &riders {
-            let Some(at) = self.watched_vehicle_position(id) else {
+            let Some((at, mount)) = self.watched_vehicle_position(id) else {
                 continue;
             };
             match self.watched_vehicles.iter_mut().find(|w| w.id == id) {
@@ -90,6 +99,7 @@ impl Game<'_> {
                 None => self.watched_vehicles.push(WatchedVehicle {
                     id,
                     dim,
+                    mount,
                     rider: Some(uuid),
                     at,
                     still: 0,
@@ -97,7 +107,7 @@ impl Game<'_> {
             }
         }
         let mut kept = Vec::new();
-        // (rider's connection and UUID, vehicle type, from, to)
+        // (rider's connection and UUID, vehicle, type, mount, from, to)
         let mut moved = Vec::new();
         for mut w in std::mem::take(&mut self.watched_vehicles) {
             // Another level's vehicle is told of on that level's tick.
@@ -106,7 +116,7 @@ impl Game<'_> {
                 continue;
             }
             // Broken, or gone from this level.
-            let Some(now) = self.watched_vehicle_position(w.id) else {
+            let Some((now, _)) = self.watched_vehicle_position(w.id) else {
                 continue;
             };
             let rider = riders.iter().find(|r| r.0 == w.id);
@@ -118,7 +128,7 @@ impl Game<'_> {
                     self.level_entity(w.id as i32)
                         .unwrap_or(super::commands::Target::Boat(w.id)),
                 );
-                moved.push((rider.map(|r| (r.1, r.2)), kind, from, now));
+                moved.push((rider.map(|r| (r.1, r.2)), w.id, kind, w.mount, from, now));
             } else {
                 w.still += 1;
                 if w.rider.is_none() && w.still > 200 {
@@ -130,21 +140,66 @@ impl Game<'_> {
         self.watched_vehicles = kept;
         // The rider's state is swapped in for the call, so the helpers reach
         // them; a vehicle nobody rides is told of with nobody swapped in.
-        for (rider, kind, from, to) in moved {
-            let Some((conn, uuid)) = rider else {
-                self.native_vehicle_moved(None, &kind, from, to);
-                continue;
+        for (rider, id, kind, mount, from, to) in moved {
+            let (mut dest, mut cancel) = (to, false);
+            let mut hook = |game: &mut Self| {
+                if !mount {
+                    game.native_vehicle_moved(rider.map(|r| r.1), &kind, from, to);
+                }
+                let player = rider.map(|r| r.1);
+                game.native_vehicle_moved_v2(
+                    player,
+                    dim.id(),
+                    id,
+                    &kind,
+                    from,
+                    &mut dest,
+                    &mut cancel,
+                );
             };
-            let Some(mut host) = self.lan.take() else {
-                continue;
-            };
-            let hook = |game: &mut Self| game.native_vehicle_moved(Some(uuid), &kind, from, to);
-            if self.lan_acting == Some(conn) {
-                hook(self);
-            } else {
-                self.as_guest(&mut host, conn, hook);
+            match rider {
+                None => hook(self),
+                Some((conn, _)) => {
+                    let Some(mut host) = self.lan.take() else {
+                        continue;
+                    };
+                    if self.lan_acting == Some(conn) {
+                        hook(self);
+                    } else {
+                        self.as_guest(&mut host, conn, hook);
+                    }
+                    self.lan = Some(host);
+                }
             }
-            self.lan = Some(host);
+            self.native_vehicle_move_answer(id, from, to, dest, cancel);
+        }
+    }
+
+    /// `native_vehicle_moved_v2`'s answer: a canceled move puts the vehicle
+    /// back at `from`, a changed `to` puts it there, with its riders
+    /// (`native_teleport_vehicle`), and the watch hears it from there.
+    fn native_vehicle_move_answer(
+        &mut self,
+        id: u32,
+        from: [f64; 3],
+        to: [f64; 3],
+        dest: [f64; 3],
+        cancel: bool,
+    ) {
+        let at = if cancel {
+            from
+        } else if dest != to && dest.iter().all(|v| v.is_finite()) {
+            dest
+        } else {
+            return;
+        };
+        if !self.native_teleport_vehicle(self.dim.id(), id, at) {
+            return;
+        }
+        if let Some((now, _)) = self.watched_vehicle_position(id)
+            && let Some(w) = self.watched_vehicles.iter_mut().find(|w| w.id == id)
+        {
+            w.at = now;
         }
     }
 

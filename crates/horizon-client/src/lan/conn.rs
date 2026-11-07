@@ -12,6 +12,7 @@ use super::{
     forwarding,
     io_pool::{self, Session as _},
 };
+use horizon_client_core::text::Text;
 use horizon_protocol::{
     PROTOCOL_VERSION,
     connection::{ConnWriter, Connection, Counters},
@@ -472,6 +473,26 @@ pub fn serve_local(
     serve_connection(Connection::local(pipe), MEMORY_ADDRESS, shared, None)
 }
 
+/// A client's handshake (`ClientIntentionPacket`) reached the server, on the connection's own thread, before
+/// the server acts on its `intent` (1 status, 2 login, 3 transfer): `address` is the peer's (behind a proxy, the
+/// proxy's), `host` the server address the client says it connects to, with whatever a proxy put after it
+/// (Floodgate's data). A mod may rewrite `host` (the server itself reads nothing from it; later mods see the new
+/// one), or set `cancel` to refuse the connection: a login or a transfer is disconnected with `reason` (a plain
+/// "Disconnected" if it is left unset), a status ping is closed unanswered. Once for each network connection, the
+/// legacy server list ping (`0xFE`) and an integrated server's own player excepted. There is no `Game` on this
+/// thread: no helper works, and the hook must not block for long (the connection waits for it). API
+/// @API:handshake@.
+#[inline(never)]
+pub fn native_handshake(
+    address: std::net::SocketAddr,
+    host: &mut String,
+    intent: i32,
+    cancel: &mut bool,
+    reason: &mut Option<Text>,
+) {
+    crate::native_client_hooks::handshake(address, host, intent, cancel, reason);
+}
+
 fn serve_connection(
     mut c: Connection,
     address: std::net::SocketAddr,
@@ -481,10 +502,40 @@ fn serve_connection(
     let e = |e: horizon_protocol::Error| e.to_string();
     c.reader.set_read_timeout(Some(LOGIN_TIMEOUT)).map_err(e)?;
     let (id, payload) = c.recv().map_err(e)?;
-    let intention = match handshake::Serverbound::decode(id, &payload).map_err(e)? {
-        handshake::Serverbound::Intention(i) => i,
-        _ => return Err("expected a handshake".into()),
+    // Behind a proxy (forwarding on, see `serve_login`) the host may be as long as Paper takes it there, for the
+    // data a proxy puts after it (Floodgate's); otherwise vanilla's 255.
+    let forwarding = shared.config.forwarding_secret.is_some()
+        && shared.config.online.is_none()
+        && !c.is_memory();
+    let mut intention = if forwarding {
+        handshake::decode_intention(id, &payload, handshake::PROXY_HOST_LIMIT).map_err(e)?
+    } else {
+        match handshake::Serverbound::decode(id, &payload).map_err(e)? {
+            handshake::Serverbound::Intention(i) => i,
+            _ => return Err("expected a handshake".into()),
+        }
     };
+    // Native mods, on this connection's thread, before the intent is acted on.
+    if !c.is_memory() {
+        let (mut cancel, mut reason) = (false, None);
+        native_handshake(
+            address,
+            &mut intention.host,
+            intention.intent,
+            &mut cancel,
+            &mut reason,
+        );
+        if cancel {
+            if matches!(intention.intent, handshake::LOGIN | handshake::TRANSFER) {
+                let reason = match reason {
+                    Some(text) => super::data::component_nbt(&text.component()),
+                    None => translatable("multiplayer.disconnect.generic", &[]),
+                };
+                login_disconnect(&mut c, &reason);
+            }
+            return Ok(());
+        }
+    }
     match intention.intent {
         // ServerHandshakePacketListenerImpl: a server that does not reply
         // to status requests closes the connection.
@@ -702,6 +753,63 @@ fn authenticate(
     }
 }
 
+/// A player logging in, on the connection's own thread, after the session service (online mode) or the proxy
+/// (forwarding) has named them and before the server's own checks (name, whitelist, bans, player limit), as
+/// Bukkit's `AsyncPlayerPreLoginEvent`: `address` is theirs (behind a proxy, the one it forwarded). A mod that
+/// needs time (a database load) or may refuse pushes a receiver onto `defer` and answers on it, from any thread:
+/// `Ok` lets the player on to the server's checks, `Err` refuses them with that reason. The login waits for every
+/// answer, 20 s at most in all (a vanilla client gives up after 30 s of silence); an answer that doesn't come by
+/// then, or whose sender is dropped, refuses them with a plain "Disconnected". Mods answer without waiting on
+/// each other, so loads run side by side. Once for each player who logs in over the network, the integrated
+/// server's own player excepted. There is no `Game` on this thread: no helper works. API
+/// @API:player_pre_login@.
+#[inline(never)]
+pub fn native_player_pre_login(
+    player: u128,
+    name: &str,
+    address: std::net::SocketAddr,
+    defer: &mut Vec<std::sync::mpsc::Receiver<Result<(), horizon_client_core::text::Text>>>,
+) {
+    crate::native_client_hooks::player_pre_login(player, name, address, defer);
+}
+
+/// How long a login waits in all for the mods' answers to `native_player_pre_login`.
+const PRE_LOGIN_WAIT: Duration = Duration::from_secs(20);
+
+/// The refusal among the mods' answers to `native_player_pre_login`, each waited for until
+/// [`PRE_LOGIN_WAIT`] is up: an `Err`'s reason, or a plain "Disconnected" for an answer that didn't come in
+/// time or never will. None lets the player in.
+fn pre_login_refusal(
+    defer: Vec<std::sync::mpsc::Receiver<Result<(), horizon_client_core::text::Text>>>,
+) -> Option<horizon_world::nbt::Tag> {
+    let until = Instant::now() + PRE_LOGIN_WAIT;
+    for answer in defer {
+        match answer.recv_timeout(until.saturating_duration_since(Instant::now())) {
+            Ok(Ok(())) => {}
+            Ok(Err(text)) => return Some(super::data::component_nbt(&text.component())),
+            Err(_) => return Some(translatable("multiplayer.disconnect.generic", &[])),
+        }
+    }
+    None
+}
+
+/// A joining player's profile, on the connection's own thread, once the server has let them in (the name,
+/// whitelist, ban and server-full checks have passed) and before it sends `LoginFinished`: `properties` are
+/// what the session service (online mode) or the proxy (forwarding) gave, none in offline mode. A mod may
+/// change, add or remove them (a skin's `textures`), within `GameProfile`'s limits (a name of up to 64
+/// characters, a signature of up to 1024): the player's own client and every player list then get the new
+/// ones. Once for each player who logs in over the network, the integrated server's own player excepted.
+/// There is no `Game` on this thread: no helper works. The hook may block for a lookup (a database's); the
+/// login waits for it, but a vanilla client gives up after 30 s of silence. API @API:player_profile@.
+#[inline(never)]
+pub fn native_player_profile(
+    player: u128,
+    name: &str,
+    properties: &mut Vec<horizon_protocol::packets::login::Property>,
+) {
+    crate::native_client_hooks::player_profile(player, name, properties);
+}
+
 fn serve_login(
     mut c: Connection,
     address: std::net::SocketAddr,
@@ -748,7 +856,7 @@ fn serve_login(
         .forwarding_secret
         .as_deref()
         .filter(|_| online.is_none() && !c.is_memory());
-    let (uuid, properties) = match (online, forwarding) {
+    let (uuid, mut properties) = match (online, forwarding) {
         (Some(online), _) => {
             match authenticate(&mut c, shared, online, &hello.name, address, &user) {
                 Ok(Ok(profile)) => profile,
@@ -795,12 +903,26 @@ fn serve_login(
         },
         (None, None) => (offline_uuid(&hello.name), Vec::new()),
     };
+    // The mods may hold the login for their answers, or refuse it, before the server's checks.
+    if !c.is_memory() {
+        let mut defer = Vec::new();
+        native_player_pre_login(uuid, &name, address, &mut defer);
+        if let Some(reason) = pre_login_refusal(defer) {
+            let text = refuse(&mut c, shared, "Server thread", &user, &reason);
+            lost(shared, &user, &text);
+            return Ok(());
+        }
+    }
     // verifyLoginAndFinishConnectionSetup: PlayerList.canPlayerLogin, then
     // duplicates and a full server.
     if let Some(reason) = shared.try_admit(address, uuid, &name) {
         let text = refuse(&mut c, shared, "Server thread", &user, &reason);
         lost(shared, &user, &text);
         return Ok(());
+    }
+    // The mods may change the profile's properties before anyone is sent them.
+    if !c.is_memory() {
+        native_player_profile(uuid, &name, &mut properties);
     }
     // A player a proxy said would arrive (`player-expect`) uses the expectation up
     // here, as the login starts: one that ran out while the player was still in

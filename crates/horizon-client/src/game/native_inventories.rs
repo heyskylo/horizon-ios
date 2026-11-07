@@ -15,9 +15,8 @@ use horizon_client::{
 use std::path::Path;
 
 /// Which of a player's inventories (`native_inventory`).
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum NativeInventoryKind {
+pub enum NativeInventoryKind {
     /// 41 slots: 0..9 the hotbar, 9..36 the rest (as `Inventory`), 36..40
     /// the armour (feet, legs, chest, head), 40 the off hand.
     Player,
@@ -299,6 +298,142 @@ impl Game<'_> {
             set_guest_slots(&mut host.hub.guests[i], to_kind, dst);
         }
         Ok(())
+    }
+
+    /// Replaces the player `uuid`'s whole inventory `kind` with `slots`,
+    /// `kind.size()` of them in `native_inventory`'s numbering (Bukkit's
+    /// `PlayerInventory.setContents`). For `Player`, `selected` (0..9), when
+    /// given, becomes the held hotbar slot, and the cursor and the 2x2
+    /// crafting grid are emptied (what they held is gone), as for an
+    /// inventory loaded from elsewhere. Live or their file, as
+    /// `native_inventory`; a player on the server is sent their whole
+    /// inventory at once. Err as `native_inventory`, or for a wrong number
+    /// of slots or a `selected` past the hotbar. @API:set_inventory@.
+    pub(super) fn native_set_inventory(
+        &mut self,
+        uuid: u128,
+        kind: NativeInventoryKind,
+        slots: Vec<Option<ItemStack>>,
+        selected: Option<usize>,
+    ) -> Result<(), String> {
+        if slots.len() != kind.size() {
+            return Err(format!("{} slots, not {}", kind.size(), slots.len()));
+        }
+        if selected.is_some_and(|s| s >= 9 || kind != NativeInventoryKind::Player) {
+            return Err("no such hotbar slot".into());
+        }
+        let ((), live) = self.native_edit_slots(uuid, kind, |s, held| {
+            *s = slots;
+            if let Some(selected) = selected {
+                *held = selected;
+            }
+            Ok(())
+        })?;
+        if let (Some(i), NativeInventoryKind::Player) = (live, kind) {
+            use horizon_protocol::packets::play::{Clientbound, SetHeldSlot};
+            let hub = &mut self.lan.as_mut().expect("live").hub;
+            let g = &mut hub.guests[i];
+            g.carried = None;
+            g.craft_grid = Default::default();
+            g.craft_result = None;
+            hub.send_inventory(i);
+            let g = &hub.guests[i];
+            g.send(&Clientbound::SetHeldSlot(SetHeldSlot {
+                slot: g.selected as i32,
+            }));
+        }
+        Ok(())
+    }
+
+    /// Puts `new` in slot `slot` of the player `uuid`'s inventory `kind`
+    /// (`native_inventory`'s numbering: armour and the off hand too), which
+    /// must still hold exactly `expected` (None: empty), and returns what was
+    /// there (Bukkit's `setItem`, checked like `native_move_stack`). Live or
+    /// their file; a player's screen follows with the tick's sync. Err as
+    /// `native_inventory`, for no such slot, or when the slot changed.
+    /// @API:set_inventory_slot@.
+    pub(super) fn native_set_inventory_slot(
+        &mut self,
+        uuid: u128,
+        kind: NativeInventoryKind,
+        slot: usize,
+        expected: Option<&ItemStack>,
+        new: Option<ItemStack>,
+    ) -> Result<Option<ItemStack>, String> {
+        let (old, _) = self.native_edit_slots(uuid, kind, |s, _| {
+            let at = s.get_mut(slot).ok_or("no such slot")?;
+            if at.as_ref() != expected {
+                return Err("that stack changed".into());
+            }
+            Ok(std::mem::replace(at, new))
+        })?;
+        Ok(old)
+    }
+
+    /// Takes the stacks out of the player `uuid`'s inventory (`Player`
+    /// numbering) slots, each of which must still hold exactly its stack, all
+    /// or none, and returns them in order. Live or their file; a player's
+    /// screen follows with the tick's sync. Err as `native_inventory`, for a
+    /// slot named twice, or when one changed (nothing is taken then).
+    /// @API:set_inventory_slot@.
+    pub(super) fn native_take_stacks(
+        &mut self,
+        uuid: u128,
+        slots: &[(usize, ItemStack)],
+    ) -> Result<Vec<ItemStack>, String> {
+        let (taken, _) = self.native_edit_slots(uuid, NativeInventoryKind::Player, |s, _| {
+            for (k, (slot, stack)) in slots.iter().enumerate() {
+                if slots[..k].iter().any(|(other, _)| other == slot) {
+                    return Err("a slot named twice".into());
+                }
+                if s.get(*slot).and_then(Option::as_ref) != Some(stack) {
+                    return Err("that stack changed".into());
+                }
+            }
+            Ok(slots
+                .iter()
+                .filter_map(|(slot, _)| s[*slot].take())
+                .collect())
+        })?;
+        Ok(taken)
+    }
+
+    /// Edits the player `uuid`'s inventory `kind` (and, for `Player`, the
+    /// held hotbar slot) live or in their file, as `native_inventory` reads
+    /// it: nothing is written when `edit` fails. The guest's hub index when
+    /// they are on the server.
+    fn native_edit_slots<R>(
+        &mut self,
+        uuid: u128,
+        kind: NativeInventoryKind,
+        edit: impl FnOnce(&mut Vec<Option<ItemStack>>, &mut usize) -> Result<R, String>,
+    ) -> Result<(R, Option<usize>), String> {
+        // A just-disconnected player can already be absent from the hub.
+        let _ = self.finish_player_autosaves(true);
+        match self.native_inventory_side(uuid)? {
+            Side::Live(i) => {
+                let g = &mut self.lan.as_mut().expect("live").hub.guests[i];
+                let mut slots = guest_slots(g, kind);
+                let mut held = g.selected;
+                let r = edit(&mut slots, &mut held)?;
+                set_guest_slots(g, kind, slots);
+                g.selected = held;
+                Ok((r, Some(i)))
+            }
+            Side::File(mut level) => {
+                let mut slots = level_slots(&level, kind);
+                let mut held = usize::try_from(level.selected_slot).unwrap_or(0);
+                let r = edit(&mut slots, &mut held)?;
+                set_level_slots(&mut level, kind, slots);
+                level.selected_slot = held as i32;
+                write_dat(
+                    &playerdata::path(&self.world_root, uuid),
+                    level.player_tag(),
+                )
+                .map_err(|e| format!("the player's file: {e}"))?;
+                Ok((r, None))
+            }
+        }
     }
 
     /// Sends the player `uuid` the whole picture of map `map_id`: 128 x 128
