@@ -248,6 +248,15 @@ impl PalettedContainer {
     pub fn bits(&self) -> u8 {
         self.bits
     }
+    /// What the stored ids stand for — the values of the list palette, `None`
+    /// for a single value (`uniform()`) and for the global palette, whose
+    /// stored ids are the values.
+    pub fn palette(&self) -> Option<&[u32]> {
+        match &self.palette {
+            Palette::List(list) => Some(list),
+            _ => None,
+        }
+    }
     /// Entries in the palette (the global palette reports its bit capacity).
     #[inline]
     pub fn palette_len(&self) -> usize {
@@ -277,6 +286,29 @@ impl PalettedContainer {
     /// `get` of the entries `start..start + out.len()`, the palette matched once.
     #[inline]
     pub fn get_run(&self, start: usize, out: &mut [u32]) {
+        if out.len() == 2 && !matches!(self.palette, Palette::Single(_)) {
+            let bits = usize::from(self.bits);
+            let per = 64 / bits;
+            let slot = start % per;
+            if slot + 1 < per {
+                let word = self.words[start / per] >> (slot * bits);
+                let mask = mask(self.bits);
+                let a = (word & mask) as usize;
+                let b = ((word >> bits) & mask) as usize;
+                match &self.palette {
+                    Palette::List(list) => {
+                        out[0] = list[a];
+                        out[1] = list[b];
+                    }
+                    Palette::Global => {
+                        out[0] = a as u32;
+                        out[1] = b as u32;
+                    }
+                    Palette::Single(_) => unreachable!(),
+                }
+                return;
+            }
+        }
         match &self.palette {
             Palette::Single(value) => out.fill(*value),
             Palette::List(list) => {
@@ -461,6 +493,36 @@ impl PalettedContainer {
                         *cell = ((word >> (slot * bits)) & m) as u32;
                     }
                 }
+            }
+        }
+    }
+    /// The stored ids through `map`: `out[i] = map[id of entry i]`, in index
+    /// order, the id being a palette id for a list palette and the value
+    /// itself for the global one (see `palette`). A single-value palette
+    /// stores no ids: `out` is left as it is.
+    pub fn unpack_ids_mapped<T: Copy>(&self, out: &mut [T], map: &[T]) {
+        assert_eq!(out.len(), self.strategy.entries());
+        // Four bits a linear palette's usual width: a whole word of them is a
+        // row of 16, and immediate shifts for the compiler to unroll.
+        if self.bits == 4 {
+            for (row, &word) in out.as_chunks_mut::<16>().0.iter_mut().zip(&self.words) {
+                for (x, cell) in row.iter_mut().enumerate() {
+                    *cell = map[((word >> (x * 4)) & 0xF) as usize];
+                }
+            }
+            return;
+        }
+        if self.bits == 0 {
+            return;
+        }
+        let bits = usize::from(self.bits);
+        let per = 64 / bits;
+        let m = mask(self.bits);
+        for (chunk, &word) in out.chunks_mut(per).zip(&self.words) {
+            let mut shift = 0;
+            for cell in chunk {
+                *cell = map[((word >> shift) & m) as usize];
+                shift += bits;
             }
         }
     }
@@ -776,6 +838,11 @@ mod tests {
                 .map(|_| (rng(&mut state) % distinct) as u32)
                 .collect();
             let container = PalettedContainer::from_values(BLOCKS, &values);
+            for start in 0..4095 {
+                let mut pair = [u32::MAX; 2];
+                container.get_run(start, &mut pair);
+                assert_eq!(pair, values[start..start + 2]);
+            }
             for _ in 0..200 {
                 let start = (rng(&mut state) % 4096) as usize;
                 let len = (rng(&mut state) % 20) as usize;
@@ -1206,8 +1273,8 @@ mod tests {
             let y = i >> 8;
             let r = rng(&mut state);
             terrain.push(match y {
-                0..=8 if r % 40 == 0 => 2000 + (r >> 8) as u32 % 6,
-                0..=8 if r % 13 == 0 => 0,
+                0..=8 if r.is_multiple_of(40) => 2000 + (r >> 8) as u32 % 6,
+                0..=8 if r.is_multiple_of(13) => 0,
                 0..=8 => 1,
                 9..=10 => 10,
                 11 => 9,
