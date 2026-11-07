@@ -771,7 +771,7 @@ pub struct Graphics {
     /// is made (start, resource-pack reload), like `translucent_batching`, where it is offered
     /// (`smooth_gradients_offered`).
     pub hdr_smooth_gradients: bool,
-    /// The shader pack picked in `shaderpacks/` (`shader_pack_list`); empty: none. Its key is
+    /// The native `horizon:<manifest-id>` or classic filename picked in `shaderpacks/`; empty: none. Its key is
     /// not `shaderPack`, which versions before the clean-room rewrite saved and which stays
     /// ignored.
     pub shader_pack: String,

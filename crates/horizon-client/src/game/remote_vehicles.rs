@@ -16,6 +16,7 @@
 use super::{Game, Keys, ray_box};
 use crate::Result;
 use horizon_client::mobs::{Mob, equine, happy_ghast};
+use horizon_client::{keybinds, text::Text};
 use horizon_core::geometry::{Aabb, Vec3};
 use horizon_protocol::packets::play::{self, Serverbound as S};
 
@@ -210,6 +211,19 @@ impl Game<'_> {
         if passengers.contains(&me) {
             if self.riding != Some(vehicle_id) {
                 self.riding = Some(vehicle_id);
+                // ClientPacketListener.handleSetEntityPassengersPacket: boarding says how to get off,
+                // on the overlay and to the narrator.
+                let key = if self.cushions.iter().any(|c| c.id == vehicle_id) {
+                    "mount.sit"
+                } else {
+                    "mount.onboard"
+                };
+                let message = Text::translate(
+                    key,
+                    &[keybinds::display_name(self.settings.keys.get("key.sneak"))],
+                );
+                self.say_system_now(&message);
+                self.titles.set_overlay(message, false);
                 if let Some(c) = self.carts.iter_mut().find(|c| c.id == vehicle_id) {
                     c.passenger_yaw_delta = 0.0;
                 }
@@ -285,6 +299,46 @@ impl Game<'_> {
             self.position_rider();
             return Ok(true);
         }
+        // Generic entities are valid vehicles too (plugins use displays as seats).
+        // Keep riding set so sendChanges sends rotation, never a walking position.
+        if !self.cushions.iter().any(|c| c.id == id)
+            && !self.boats.iter().any(|b| b.id == id)
+            && !self.carts.iter().any(|c| c.id == id)
+        {
+            let index = std::collections::HashMap::new();
+            if let Some(at) = self.passenger_riding_position(id, None, None, &index) {
+                let before = self
+                    .text_displays
+                    .get(&(id as i32))
+                    .map(|d| d.seat().1)
+                    .or_else(|| {
+                        self.armor_stands.iter().find(|a| a.id == id).map(|a| {
+                            let delta = a.previous.subtract(a.position);
+                            at + glam::DVec3::new(delta.x, delta.y, delta.z)
+                        })
+                    });
+                if let Some(p) = self.player.as_mut() {
+                    let scale = p.dimensions.width
+                        / horizon_client::pose::Pose::Standing.dimensions(1.0).width;
+                    let (seat, previous) = generic_player_seat(at, before.unwrap_or(at), scale);
+                    let previous = if before.is_some() {
+                        previous
+                    } else {
+                        p.position
+                    };
+                    self.previous_position = if self.posed_rider != self.riding {
+                        seat
+                    } else {
+                        previous
+                    };
+                    self.posed_rider = self.riding;
+                    p.position = seat;
+                    p.velocity = Vec3::ZERO;
+                    p.fall_distance = 0.0;
+                }
+                return Ok(true);
+            }
+        }
         let seat = if let Some(c) = self.cushions.iter().find(|c| c.id == id) {
             // The seat does not move; the rider sits on the cushion.
             Some(c.seat())
@@ -298,10 +352,13 @@ impl Game<'_> {
                 b = self.tick_boat(b, true);
                 b.input = [keys.left, keys.right, keys.forward, keys.backward];
             }
-            // positionRider: the seat turns with the boat; clampRotation.
+            // positionRider: the seat turns with the boat; clampRotation,
+            // which moves `yRotO` (the held lead's old look) with the view.
             self.yaw += b.delta_rotation;
             let delta = (self.yaw - b.yaw + 180.0).rem_euclid(360.0) - 180.0;
-            self.yaw += delta.clamp(-105.0, 105.0) - delta;
+            let clamped = delta.clamp(-105.0, 105.0) - delta;
+            self.yaw += clamped;
+            self.rope_rot_old.0 += clamped;
             self.boats[i] = b;
             // In front of a mob that shares the boat.
             Some(self.player_boat_seat(i))
@@ -577,8 +634,38 @@ fn mount_move(m: &Mob) -> S {
     })
 }
 
+/// Avatar's VEHICLE attachment scales independently of the vehicle's seat.
+fn generic_player_seat(at: glam::DVec3, before: glam::DVec3, scale: f32) -> (Vec3, Vec3) {
+    let offset = 0.6 * f64::from(scale);
+    (
+        Vec3::new(at.x, at.y - offset, at.z),
+        Vec3::new(before.x, before.y - offset, before.z),
+    )
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn local_player_on_block_display_and_interaction() {
+        for kind in ["minecraft:block_display", "minecraft:interaction"] {
+            let at = glam::DVec3::new(10.5, -59.5, 0.5);
+            let before = glam::DVec3::new(10.0, -59.0, 0.5);
+            let (seat, previous) = super::generic_player_seat(at, before, 1.0);
+            assert_eq!(
+                seat,
+                horizon_core::geometry::Vec3::new(10.5, -60.1, 0.5),
+                "{kind}"
+            );
+            assert_eq!(
+                previous,
+                horizon_core::geometry::Vec3::new(10.0, -59.6, 0.5),
+                "{kind}"
+            );
+            let (scaled, _) = super::generic_player_seat(at, before, 2.0);
+            assert_eq!(scaled.y, -60.7, "{kind}");
+        }
+    }
+
     use super::*;
     use horizon_client::mobs::MobTypes;
 
