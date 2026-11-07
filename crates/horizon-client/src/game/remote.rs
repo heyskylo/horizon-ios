@@ -11205,8 +11205,11 @@ mod tests {
         assert!(game.native_open_chat("/tp ").is_err());
         assert!(game.ui.chat_screen.is_none());
         game.player = Some(
-            horizon_client::motion::PlayerMotion::new(game.motion, horizon_core::geometry::Vec3::ZERO)
-                .unwrap(),
+            horizon_client::motion::PlayerMotion::new(
+                game.motion,
+                horizon_core::geometry::Vec3::ZERO,
+            )
+            .unwrap(),
         );
         game.screen = Screen::Paused;
         assert!(game.native_open_chat("/tp ").is_err());
