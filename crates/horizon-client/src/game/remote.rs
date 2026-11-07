@@ -1331,6 +1331,7 @@ impl Game<'_> {
 
         self.remote = Some(Remote {
             session,
+            save_folder: None,
             brand: "horizon-studio".into(),
             features: vec!["minecraft:vanilla".into()],
             quiet_commands: false,
