@@ -17250,6 +17250,7 @@ impl Game<'_> {
                 .sprites
                 .get("environment/end_sky")
                 .map(|r| [r.u0, r.v0, r.u1, r.v1]),
+            boss_world_fog: self.boss_overlay.should_create_world_fog(),
             environment_fog: (self.dim == Dim::Nether).then_some((sky.fog_start, sky.fog_end)),
             cave_culling,
             water_fog,
@@ -22349,6 +22350,7 @@ fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         skybox: false,
         end_sky: false,
         end_sky_sprite: None,
+        boss_world_fog: false,
         environment_fog: None,
         water_fog: [0.0; 3],
         fog: None,
