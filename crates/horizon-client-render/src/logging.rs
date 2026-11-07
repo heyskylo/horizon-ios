@@ -274,6 +274,8 @@ enum Out {
         date: NaiveDate,
         lines: Vec<String>,
         stderr: Option<String>,
+        /// The message's level, thread and text, for the [`set_line_hook`] callback.
+        record: (log::Level, String, String),
     },
     /// Answer once everything before is written.
     Flush(mpsc::SyncSender<()>),
@@ -293,12 +295,14 @@ struct Writer {
 impl Writer {
     fn run(mut self, out: mpsc::Receiver<Out>) {
         let stderr = io::stderr();
+        let mut hook_alive = true;
         for msg in out {
             match msg {
                 Out::Write {
                     date,
                     lines,
                     stderr: message,
+                    record: (level, thread, text),
                 } => {
                     if let Some(message) = message {
                         let _ = writeln!(stderr.lock(), "{message}");
@@ -318,6 +322,12 @@ impl Writer {
                         let mut text = lines.join("\n");
                         text.push('\n');
                         let _ = latest.file.write_all(text.as_bytes());
+                    }
+                    // After the file has it. A callback that panics is not called again: the
+                    // panic's own log line would reach it next.
+                    if let Some(hook) = LINE_HOOK.get().filter(|_| hook_alive) {
+                        let call = || hook(level.as_str(), &thread, &text, &lines.join("\n"));
+                        hook_alive = std::panic::catch_unwind(call).is_ok();
                     }
                 }
                 Out::Flush(done) => {
@@ -394,6 +404,18 @@ impl Floods {
 }
 
 static LOGGER: std::sync::OnceLock<Logger> = std::sync::OnceLock::new();
+
+/// What [`set_line_hook`] installed: level (`INFO`, `WARN`, `ERROR`), thread, message, and the
+/// lines as `latest.log` got them.
+type LineHook = fn(&str, &str, &str, &str);
+static LINE_HOOK: std::sync::OnceLock<LineHook> = std::sync::OnceLock::new();
+
+/// Calls `hook` on the log's writer thread for each message written to the log, once the file
+/// has it, so the thread that logged never waits on it. Once per process; a second call keeps
+/// the first.
+pub fn set_line_hook(hook: LineHook) {
+    let _ = LINE_HOOK.set(hook);
+}
 
 fn ours(target: &str) -> bool {
     target.starts_with("horizon")
@@ -490,6 +512,7 @@ impl Logger {
             date: now.date_naive(),
             lines,
             stderr,
+            record: (level, thread.to_owned(), message.to_owned()),
         };
         if let Err(mpsc::SendError(Out::Write {
             stderr: Some(message),
@@ -502,12 +525,25 @@ impl Logger {
     }
 }
 
+/// The `latest.log` this run writes, once `init` opened it.
+static LATEST_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// The `latest.log` this run writes, absolute; None before `init` and when it logs to the
+/// terminal only.
+pub fn latest_path() -> Option<PathBuf> {
+    LATEST_PATH.get().cloned()
+}
+
 /// Starts the log in `home/logs`. The main thread shows as `main_thread` in it. Messages are
 /// still printed when the file cannot be opened.
 pub fn init(home: &Path, main_thread: &'static str) {
     let dir = logs_dir(home);
     let file = match open_latest(&dir) {
-        Ok(Some(latest)) => Some(latest),
+        Ok(Some(latest)) => {
+            let path = dir.join("latest.log");
+            let _ = LATEST_PATH.set(std::path::absolute(&path).unwrap_or(path));
+            Some(latest)
+        }
         Ok(None) => {
             eprintln!(
                 "Horizon: another game is writing {}; this one logs to the terminal only",
