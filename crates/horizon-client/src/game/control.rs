@@ -1124,6 +1124,10 @@ impl Game<'_> {
             }
             "bench" => {
                 let seconds: f64 = arg(1)?.parse()?;
+                // `Duration::from_secs_f64` panics on a negative, NaN or huge number.
+                if !(seconds.is_finite() && (0.0..=86_400.0).contains(&seconds)) {
+                    return Err("bench takes 0 to 86400 seconds".into());
+                }
                 if self.pending_bench.is_some() {
                     return Err("a benchmark is already running".into());
                 }
