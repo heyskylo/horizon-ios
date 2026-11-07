@@ -19,6 +19,7 @@ sha1 = "0.10"
 sha2 = "0.10"
 # AES-NI at run time on x86 for the connection cipher (crypto/blocks.rs).
 aes = "0.8.4"
+socket2 = { version = "0.5", features = ["all"] }
 
 # The name servers of Windows' network adapters, for Minecraft SRV redirects.
 [target.'cfg(windows)'.dependencies]

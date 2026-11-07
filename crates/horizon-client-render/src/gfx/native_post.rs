@@ -849,6 +849,15 @@ impl NativeFrame {
         inputs
     }
 
+    /// Forgets the frames before, as a freshly loaded pack: the post stage's next `history` is
+    /// black, eased values start at their targets, wetness dry, the frame count at 0.
+    pub(super) fn reset_history(&mut self) {
+        self.last = None;
+        self.frames = 0;
+        self.wetness = (0.0, None);
+        self.start = std::time::Instant::now();
+    }
+
     /// Takes the post stage's pending history reset. It stays pending if post rendering is
     /// skipped for a frame, so the first frame it does render still sees black history.
     pub(super) fn take_history_reset(&mut self) -> bool {
@@ -1117,6 +1126,13 @@ impl NativePost {
             .map(|(l, _)| l.as_str())
             .chain(tonemap)
             .collect()
+    }
+
+    /// Forgets the pack's own targets (`[[post]] output`): made again, blank, on the next frame,
+    /// as for a pack just made. Its pipelines stay.
+    pub(super) fn reset_history(&mut self) {
+        self.named = None;
+        self.groups = None;
     }
 
     fn prepare(
@@ -1735,6 +1751,152 @@ mod tests {
             second.wetness
         );
         assert!(!native.take_history_reset());
+    }
+
+    /// After a reset, the same frames give the same inputs, to the bit, as a pack just made,
+    /// however the frames before moved the eased values, wetness and the frame count.
+    #[test]
+    fn a_reset_frame_gives_a_fresh_pack_s_inputs() {
+        use crate::gfx::pack_uniforms::FrameTiming;
+        let Some((device, _)) = device() else {
+            return;
+        };
+        let hud = crate::hud::HudBatch::new([4, 4]);
+        let mut frame = crate::gfx::pack_uniforms::initial_history_tests::frame(&hud);
+        let new = || {
+            NativeFrame::new(
+                &device,
+                None,
+                Vec::new(),
+                Default::default(),
+                None,
+                Api::V0_1,
+            )
+        };
+        let (mut used, mut fresh) = (new(), new());
+        frame.pack.rain = 1.0;
+        frame.pack.eye_light = [12, 3];
+        frame.pack.eye_in = 1;
+        for n in 1..=5 {
+            frame.pack.frame_timing = Some(FrameTiming::nth(n, 700.0));
+            used.next_inputs(&frame, [4, 4]);
+        }
+        used.reset_history();
+        frame.pack.eye_light = [2, 15];
+        frame.pack.eye_in = 0;
+        for n in 1..=3 {
+            frame.pack.frame_timing = Some(FrameTiming::nth(n, 50.0));
+            let inputs = [&mut used, &mut fresh].map(|f| f.next_inputs(&frame, [4, 4]));
+            assert_eq!(
+                bytemuck::bytes_of(&inputs[0]),
+                bytemuck::bytes_of(&inputs[1]),
+                "frame {n}"
+            );
+            assert_eq!(used.take_history_reset(), fresh.take_history_reset());
+        }
+    }
+
+    /// After a reset a pass reads its pack's own targets blank, as in a pack just made: here
+    /// `fb`, which a pass reads before the pass that writes it, so it holds last frame's.
+    #[test]
+    fn a_reset_post_reads_its_own_targets_blank() {
+        let Some((device, queue)) = device() else {
+            return;
+        };
+        let manifest = "schema = 1
+id = \"t\"
+name = \"T\"
+version = \"1\"
+api = \"0.1\"
+            [[post]]
+file = \"a.wgsl\"
+[[post]]
+file = \"b.wgsl\"
+output = \"fb\"
+            [[post]]
+file = \"c.wgsl\"
+";
+        let a = "fn post(input: PostInput) -> vec4<f32> { return vec4<f32>(textureLoad(fb, vec2<i32>(input.pixel), 0).rgb + 0.25, 1.0); }
+";
+        let pass = "fn post(input: PostInput) -> vec4<f32> { return input.color; }
+";
+        let files = [
+            (MANIFEST, manifest),
+            ("a.wgsl", a),
+            ("b.wgsl", pass),
+            ("c.wgsl", pass),
+        ]
+        .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
+        .into();
+        let report = check(&Pack::from_files(files).unwrap()).unwrap();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let frame = NativeFrame::new(
+            &device,
+            None,
+            Vec::new(),
+            Default::default(),
+            None,
+            Api::V0_1,
+        );
+        let mut post = NativePost::new(
+            &device,
+            report.stages,
+            &report.manifest,
+            &[],
+            format,
+            &frame,
+            None,
+        )
+        .unwrap();
+        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+        let color = texture(&device, format, usage).create_view(&Default::default());
+        let depth = texture(&device, wgpu::TextureFormat::Depth32Float, usage)
+            .create_view(&Default::default());
+        let screen = texture(
+            &device,
+            format,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        );
+        let view = screen.create_view(&Default::default());
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT * 4),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let red = |post: &mut NativePost| {
+            let mut encoder = device.create_command_encoder(&Default::default());
+            let world = (&color, &depth, &frame.surface_view);
+            post.run(&device, &mut encoder, world, &view, [4, 4], false, None);
+            encoder.copy_texture_to_buffer(
+                screen.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT),
+                        rows_per_image: Some(4),
+                    },
+                },
+                screen.size(),
+            );
+            queue.submit([encoder.finish()]);
+            buffer
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, |r| r.unwrap());
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let red = buffer.slice(..).get_mapped_range().unwrap()[0];
+            buffer.unmap();
+            red
+        };
+        let near = |got: u8, want: u8| got.abs_diff(want) <= 1;
+        for want in [64, 128, 191] {
+            let got = red(&mut post);
+            assert!(near(got, want), "{got} before the reset, {want} expected");
+        }
+        post.reset_history();
+        let got = red(&mut post);
+        assert!(near(got, 64), "{got} after the reset: fb kept last frame's");
     }
 
     fn device() -> Option<(wgpu::Device, wgpu::Queue)> {

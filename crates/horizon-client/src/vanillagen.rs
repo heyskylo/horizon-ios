@@ -284,6 +284,14 @@ impl VanillaTerrain {
                 "Horizon: {} placed features cannot run and will be skipped",
                 unsupported.len()
             );
+            // Name them, so a pack's author can find what to fix; capped, so a broken pack can't flood the log.
+            const NAMED: usize = 20;
+            for (name, reason) in unsupported.iter().take(NAMED) {
+                log::warn!("Horizon:   {name}: {reason}");
+            }
+            if unsupported.len() > NAMED {
+                log::warn!("Horizon:   and {} more", unsupported.len() - NAMED);
+            }
             if !dir.join("blocks/block-properties.nbt").exists() {
                 log::warn!(
                     "Horizon: the worldgen bundle lacks the block behavior exports (worldgen/blocks/*.nbt); \
