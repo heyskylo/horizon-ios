@@ -6,6 +6,10 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 413 adds chunk tickets in a level nobody is in (`native_force_chunk_in`).
+//!
+//! API 412 adds chunks a mod keeps loaded and ticking (`native_force_chunk`, `native_forced_chunks`).
+//!
 //! API 411 adds client Host services, GUI painting, model-head snapshots and client lifecycle notifications.
 //!
 //! API 410 adds a final foreground GUI overlay (`native_gui_render_post`) and the current frame's camera during GUI rendering.
@@ -1167,7 +1171,7 @@ pub(super) use horizon_world::level::flags;
 
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
-pub(crate) const NATIVE_HOOKS_API: u32 = 411;
+pub(crate) const NATIVE_HOOKS_API: u32 = 413;
 
 impl GameLevel<'_> {
     /// A hopper at `pos` is about to pick up `count` of `item`. Set `cancel` to leave the dropped stack in the world. Server-side. 232.
