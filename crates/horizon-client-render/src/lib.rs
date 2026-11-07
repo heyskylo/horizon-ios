@@ -42,6 +42,7 @@ pub mod dynamic_light;
 pub mod effects;
 pub mod environment;
 pub mod extras;
+pub(crate) mod extras_ui;
 pub mod fast_hash;
 pub mod fluid_render;
 pub mod fog;

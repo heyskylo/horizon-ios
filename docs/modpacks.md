@@ -377,16 +377,23 @@ events a mod listens to and the capabilities it uses. A listener is an `@Subscri
 parameter, or a method reference or lambda that takes one event
 (`NeoForge.EVENT_BUS.addListener(this::onTick)`). It looks each name up in the hook catalog's
 `neoforge` names ([native-hooks-neoforge.md](native-hooks-neoforge.md)). Over a folder of jars it
-ranks the names by how many mods use them. Each name gets one of four answers:
+ranks the names by how many mods use them. Each name gets one of five answers:
 
 - a hook;
 - another phase's hook (`player_tick` for `PlayerTickEvent.Pre`);
 - a hook whose label says why it isn't quite the counterpart;
+- data: the event is gone because vanilla made what it built into data, and the answer names the
+  registries a port writes instead;
 - none.
 
 Names NeoForge changed after 1.21.1 (`Capabilities.ItemHandler`, `Capabilities.EnergyStorage`,
-`AddReloadListenerEvent`) are looked up under their new ones. The report reads names only, never
-code: it says where a port starts, for a human to check.
+`AddReloadListenerEvent`) are looked up under their new ones. `VillagerTradesEvent` and
+`WandererTradesEvent` are data: 26.1 made villager trades the `trade_set` and `villager_trade`
+registries (NeoForge's 26.1 primer), and 26.3's NeoForge has neither event. A port writes each
+trade as a `villager_trade` file and adds it to the tag a set reads (`armorer/level_1`'s set takes
+`#minecraft:armorer/level_1`). Tags merge, so several mods can add to one level. The files come from
+the mod's own data or from `data_pack_files`. The report reads names only, never code: it says
+where a port starts, for a human to check.
 
 On ATM10's 498 jars (2026-11-05, 8 s), 416 of 497 mods listen to events or use capabilities: 6,616
 uses of 326 names. Main's catalog had a hook for 23% of those uses, and 43% once #9924 labelled 32
