@@ -4125,6 +4125,9 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             }
             Mode::Multiplayer(screen) => match screen.confirm() {
                 crate::multiplayer::Outcome::Connect { address, lan } => {
+                    if matches!(screen, crate::multiplayer::Screen::Direct { .. }) {
+                        crate::multiplayer::remember_direct_join(&self.saves, &address);
+                    }
                     (Action::Connect { address, lan }, true)
                 }
                 _ => (Action::None, false),
