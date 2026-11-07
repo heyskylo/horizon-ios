@@ -143,10 +143,10 @@ impl<S: Clone, E> Consumable<S, E> {
         stack: &StackRef<I, K, V>,
     ) -> Result<bool, W::Error> {
         let food = world.food(stack);
-        if let Some(food) = food {
-            if world.is_player() {
-                return world.can_eat(food.can_always_eat);
-            }
+        if let Some(food) = food
+            && world.is_player()
+        {
+            return world.can_eat(food.can_always_eat);
         }
         Ok(true)
     }

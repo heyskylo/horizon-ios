@@ -6,7 +6,7 @@ autotests = false
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-rust-version = "1.90"
+rust-version.workspace = true
 description = "Reusable client systems, control tool and parity probes"
 
 [lib]

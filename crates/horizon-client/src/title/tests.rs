@@ -2598,3 +2598,29 @@ fn the_multiplayer_screens_have_their_own_ids() {
         "disconnected"
     );
 }
+
+#[test]
+fn native_field_visitor_excludes_preparing_and_game_rule_editors() {
+    let mut f = Fixture::new();
+    f.title.mode = Mode::Multiplayer(crate::multiplayer::Screen::Direct {
+        address: "safe".into(),
+    });
+    f.title.preparing = true;
+    assert!(
+        !f.title
+            .edit_focused_text_field(|_| panic!("preparing has no editable native field"))
+    );
+    f.title.preparing = false;
+    *f.title.rules.get_mut() = Some(RulesScreen::for_creation(
+        &crate::gamerules::GameRules::default(),
+    ));
+    assert!(
+        !f.title
+            .edit_focused_text_field(|_| panic!("rule editors retain their own validation"))
+    );
+    *f.title.rules.get_mut() = None;
+    assert!(
+        f.title
+            .edit_focused_text_field(|field| assert_eq!(field.value, "safe"))
+    );
+}
