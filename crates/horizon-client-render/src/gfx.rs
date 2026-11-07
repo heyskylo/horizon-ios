@@ -170,6 +170,7 @@ mod hdr_icc;
 mod hdr_stats;
 pub use hdr::Calibration as HdrCalibration;
 pub mod block_light;
+mod custom_sky;
 mod displace;
 pub mod lightning;
 mod lod;
@@ -1208,6 +1209,9 @@ pub struct Renderer {
     celestial_buffer: wgpu::Buffer,
     end_sky: end_sky::EndSky,
     stars: stars::Stars,
+    /// OptiFine custom sky layers (`crate::custom_sky`), and the frame's from the game.
+    custom_sky: custom_sky::CustomSky,
+    custom_sky_draws: Vec<crate::custom_sky::Draw>,
     /// The glowing entities' outline (`LevelRenderer.entityOutlineTarget`).
     entity_outline: entity_outline::EntityOutline,
     panorama: panorama::Panorama,
@@ -4595,6 +4599,7 @@ impl Renderer {
         let uploads = upload::Uploads::new(&device);
         let section_uploads = upload::Uploads::with_chunk(&device, SECTION_UPLOAD_CHUNK);
         let stars = stars::Stars::new(&device, frame_format);
+        let custom_sky = custom_sky::CustomSky::new(&device, frame_format);
         let entity_outline = entity_outline::EntityOutline::new(
             &device,
             (&entity_shader, &entity_layout, &entity_vertex),
@@ -4717,6 +4722,8 @@ impl Renderer {
             celestial_buffer,
             end_sky: end_sky::EndSky::default(),
             stars,
+            custom_sky,
+            custom_sky_draws: Vec::new(),
             entity_outline,
             panorama,
             border_pipeline,
@@ -4932,6 +4939,15 @@ impl Renderer {
             }
         }
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+    }
+    /// The pack's OptiFine custom sky layer textures (`crate::custom_sky::CustomSky::load`).
+    pub fn set_custom_sky(&mut self, pack: &crate::custom_sky::CustomSky) {
+        self.custom_sky.set_pack(&self.device, &self.queue, pack);
+    }
+    /// The custom sky layers the next frame draws (`CustomSky::draws`): the game refills it each
+    /// frame, empty when the world's sky has none.
+    pub fn custom_sky_draws(&mut self) -> &mut Vec<crate::custom_sky::Draw> {
+        &mut self.custom_sky_draws
     }
     /// The resource packs' `core/rendertype_lines` (`HudAtlas::lines_shader`) for the block
     /// outline, or the built-in one.
@@ -8954,6 +8970,12 @@ impl Renderer {
                 brightness,
             );
         }
+        self.custom_sky.prepare(
+            &mut self.uploads,
+            &mut encoder,
+            jittered,
+            &self.custom_sky_draws,
+        );
         let celestial_vertices = frame.celestial.len().min(2048 * 4);
         if frame.end_sky && !frame.title {
             self.end_sky.prepare(&self.device, frame.end_sky_sprite);
@@ -9697,6 +9719,12 @@ impl Renderer {
                                 pass.set_vertex_buffer(0, self.sunrise_buffer.slice(..));
                                 pass.draw(0..sunrise_fan::VERTICES as u32, 0..1);
                             }
+                            // OptiFine custom sky layers, over the disc and sunrise and under the
+                            // sun, moon and stars.
+                            if self.custom_sky.is_drawing() {
+                                self.custom_sky.draw(&mut pass);
+                                pass.set_bind_group(0, &self.group, &[]);
+                            }
                         }
                     }
                 }
@@ -9709,6 +9737,13 @@ impl Renderer {
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     if frame.end_sky {
                         self.end_sky.draw(&mut pass);
+                        // The End's custom sky layers go over its sky box.
+                        if self.custom_sky.is_drawing() && !pack_draws_sky && self.native.is_none()
+                        {
+                            self.custom_sky.draw(&mut pass);
+                            pass.set_pipeline(&self.celestial_pipeline);
+                            pass.set_bind_group(0, &self.entity_group, &[]);
+                        }
                     }
                     if celestial_vertices > 0 && !pack_draws_celestial {
                         // The Overworld's bodies start with the sun's quad
