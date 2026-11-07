@@ -344,7 +344,7 @@ impl Launcher {
             return;
         }
         let (skin, slim) = (self.wardrobe.as_ref().and_then(|w| w.skin.clone()))
-            .unwrap_or_else(|| (plain_skin(), false));
+            .unwrap_or_else(|| (stand_in_skin(), false));
         let scale = self.scale;
         for ask in asks {
             let skin = skin.clone();
@@ -382,7 +382,7 @@ impl Launcher {
         let w = self.wardrobe.as_ref()?;
         let (me, c) = (w.saved.me.as_ref()?, w.saved.catalogue.as_ref()?);
         let worn = self.shop_tried(me, c);
-        let (skin, slim) = w.skin.clone().unwrap_or_else(|| (plain_skin(), false));
+        let (skin, slim) = w.skin.clone().unwrap_or_else(|| (stand_in_skin(), false));
         let emote = worn.get("emote").cloned();
         let outfit = Outfit {
             skin,

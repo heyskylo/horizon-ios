@@ -467,7 +467,9 @@ for it. No countdowns, scarcity, buyer counts, "limited" wording or loot boxes.
   by the item files' hashes (and the skin). An item alone at an angle (a back item from behind, an
   aura from above, a trail's particles grown), a shirt on a plain figure, an emote on the player at
   its fullest move, a look on the player, the pack as its looks side by side. Name tags show as the
-  game draws them.
+  game draws them. Without a skin the launcher can read (signed out, offline, an unreadable one),
+  the player is Horizon's stand-in, the website shop's own original art (`stand_in` in
+  `wardrobe_page.rs`, `standInSkin` on the site), never Mojang's Steve or Alex.
 - **A tile opens it big**: the account's own player in 3D wearing it over what it wears
   (`shop::try_on`; drag to turn, scroll to zoom; an emote plays, again each time it ends), its name,
   price and line, a look's or the pack's items, *Buy* (not for what the account owns) and *Gift*
