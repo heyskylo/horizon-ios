@@ -23,7 +23,11 @@ fn stack(row: &Value) -> ItemStack {
             Tag::compound([
                 (
                     "id",
-                    Tag::String(format!("minecraft:{}", e["id"].as_str().unwrap()).into()),
+                    Tag::String(
+                        format!("minecraft:{}", e["id"].as_str().unwrap())
+                            .as_str()
+                            .into(),
+                    ),
                 ),
                 ("duration", Tag::Int(e["duration"].as_i64().unwrap() as i32)),
                 ("amplifier", Tag::Int(e["amp"].as_i64().unwrap() as i32)),
@@ -136,7 +140,6 @@ fn actual_thrown_contents_match_pinned_methods() {
         game.player
             .as_mut()
             .unwrap()
-            .health
             .set_health(health, false)
             .unwrap();
         game.potions = PotionState::default();

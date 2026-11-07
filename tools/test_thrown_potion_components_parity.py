@@ -87,13 +87,16 @@ def baseline_source(root):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--phase', required=True, choices=['oracle','baseline','fixed'])
-    p.add_argument('--work-dir', type=Path, required=True)
+    p.add_argument('--phase', default='all', choices=['all','oracle','baseline','fixed'])
+    p.add_argument('--work-dir', type=Path, default=lab.LOCAL/'thrown-potion-components-parity')
     p.add_argument('--lab-root', type=Path, help='existing authenticated .local artifact directory, read only')
-    p.add_argument('--resources', type=Path, required=True)
+    p.add_argument('--resources', type=Path, default=lab.RESOURCES)
     a=p.parse_args()
     root=lab.ROOT
-    if (root/'.local/horizon-client').exists():
+    requested_phase=a.phase
+    if requested_phase=='all':
+        a.phase='fixed'
+    if a.resources.resolve()!=lab.RESOURCES.resolve() and (root/'.local/horizon-client').exists():
         p.error('default prepared resources must remain absent for this explicit fixture')
     build=a.work_dir.resolve(); build.mkdir(parents=True,exist_ok=True)
     if a.lab_root:
@@ -101,7 +104,7 @@ def main():
     lock,jars,libraries=artifacts.verify_artifacts()
     rows=corpus(); input_bytes=(json.dumps(rows,indent=2)+'\n').encode()
     inputs=build/'inputs.json'; expected=build/'java.json'
-    if a.phase!='oracle' and inputs.read_bytes()!=input_bytes:
+    if requested_phase not in ('all','oracle') and inputs.read_bytes()!=input_bytes:
         p.error('input changed since the pinned Java oracle run')
     inputs.write_bytes(input_bytes)
     source=root/f'mods/horizon/src/test/java/dev/horizonlab/parity/{ORACLE}.java'
@@ -122,7 +125,7 @@ def main():
             result=subprocess.run(list(map(str,command)),cwd=cwd or root,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=timeout)
         if result.returncode:
             raise RuntimeError(f'{label} failed ({result.returncode}); see {build/(label+".log")}')
-    if a.phase=='oracle':
+    if requested_phase in ('all','oracle'):
         classes=build/'classes'; classes.mkdir(exist_ok=True)
         cp=os.pathsep.join(map(str,[jars['server'],*libraries]))
         expected.unlink(missing_ok=True)
@@ -137,8 +140,9 @@ def main():
         assert len(observed)==len(rows) and [r['id'] for r in observed]==[r['id'] for r in rows]
         provenance['reference_sha256']=sha(expected.read_bytes())
         (build/'oracle-provenance.json').write_text(json.dumps(provenance,indent=2)+'\n')
-        print(f'{len(rows)} isolated pinned-method rows recorded; no Horizon execution')
-        return
+        print(f'{len(rows)} isolated pinned-method rows recorded; no Horizon execution yet',flush=True)
+        if requested_phase=='oracle':
+            return
     reference=json.loads((build/'oracle-provenance.json').read_text())
     for key in ('input_sha256','oracle_source_sha256','native_source_sha256','driver_source_sha256','helper_source_sha256','server_sha256'):
         assert reference[key]==provenance[key], f'provenance changed: {key}'
