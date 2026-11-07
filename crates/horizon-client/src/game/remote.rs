@@ -7923,7 +7923,7 @@ impl Game<'_> {
             return;
         }
         // startDestroyBlock refuses a restricted break before predicting it.
-        if self.remote_break_restricted() {
+        if self.remote_break_restricted(hit.pos) {
             self.mining = None;
             return;
         }
@@ -8104,12 +8104,21 @@ impl Game<'_> {
         }
         self.mining = None;
     }
-    /// `Player.blockActionRestricted` as far as this client reads it: a
-    /// spectator never breaks, an adventure player only with a main-hand
-    /// item the server gave `can_break`. Whether its predicate matches the
-    /// block is left to the server, which sends the block back if not.
-    fn remote_break_restricted(&self) -> bool {
+    /// `Player.blockActionRestricted` for the block at `pos`: a spectator
+    /// never breaks, an adventure player only with a main-hand item whose
+    /// `can_break` matches the block (`ItemStack.canBreakBlockInAdventureMode`).
+    /// A predicate this client could not decode (exact components) only
+    /// tells that the server gave one, and the server sends the block back
+    /// if it does not match.
+    fn remote_break_restricted(&self, pos: [i32; 3]) -> bool {
         use horizon_protocol::item::{WirePatch, component::CAN_BREAK};
+        if self
+            .held()
+            .and_then(|s| s.data())
+            .is_some_and(|d| d.other("minecraft:can_break").is_some())
+        {
+            return self.block_action_restricted(pos);
+        }
         self.spectator()
             || (!self.may_build()
                 && !self
@@ -9803,7 +9812,7 @@ impl Game<'_> {
                     self.swing_arm();
                     self.send(S::Punch(Empty));
                 }
-            } else if self.remote_break_restricted() {
+            } else if self.remote_break_restricted(hit.pos) {
                 // continueDestroyBlock returned false: no swing.
             } else if !air {
                 self.remote_mining(false);
