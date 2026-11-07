@@ -9299,11 +9299,16 @@ impl Game<'_> {
             self.gui_layer("minecraft:scoreboard_sidebar", &mut batch, |g, batch| {
                 g.draw_scoreboard(batch);
             });
-            if subtitles == Subtitles::Now {
+            if subtitles != Subtitles::Hidden {
                 self.gui_layer("minecraft:subtitle_overlay", &mut batch, |g, batch| {
                     g.draw_subtitles(batch);
                 });
             }
+        } else if subtitles == Subtitles::Deferred {
+            // F1 hid the HUD, but an in-game screen still shows the subtitles.
+            self.gui_layer("minecraft:subtitle_overlay", &mut batch, |g, batch| {
+                g.draw_subtitles(batch);
+            });
         }
         let atlas = &self.gui.atlas;
         if show_hud
@@ -9382,13 +9387,6 @@ impl Game<'_> {
         // prompts, books and sign editors drawn over gameplay keep it, draw
         // after this point and so over what a mod drew.
         self.fire_screen_render_post(&mut batch);
-        // `Hud.extractDeferredSubtitles`: the subtitles an in-game screen
-        // deferred draw over it, and over its tooltips, under the toasts.
-        if subtitles == Subtitles::Deferred {
-            self.gui_layer("minecraft:subtitle_overlay", &mut batch, |g, batch| {
-                g.draw_subtitles(batch);
-            });
-        }
         self.draw_saving_indicator(&mut batch);
         // ToastManager.extractRenderState: F1 hides the toasts too.
         self.draw_toasts(&mut batch, !show_hud);
@@ -23437,8 +23435,10 @@ enum Subtitles {
     Hidden,
     /// In the HUD's own pass, under any screen that draws later.
     Now,
-    /// Deferred (`Hud.extractDeferredSubtitles`): over the open in-game
-    /// screen, whether or not the HUD is hidden.
+    /// Deferred (`Hud.extractDeferredSubtitles`): an in-game screen draws
+    /// them from `Screen.extractBackground`, under its slots and tooltips,
+    /// whether or not the HUD is hidden. Horizon draws them just before the
+    /// screen, which keeps that order (only the screen's dimming goes over them).
     Deferred,
 }
 
