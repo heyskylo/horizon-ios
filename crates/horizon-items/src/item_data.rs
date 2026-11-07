@@ -150,6 +150,12 @@ impl StackData {
     pub fn set_loot_component(&mut self, id: &str, value: &serde_json::Value) {
         let tag = (!value.is_null()).then(|| horizon_client_core::scoreboard::json_to_tag(value));
         match id {
+            // `set_banner_pattern` (and `set_components`) write the layers a
+            // banner or shield wears; the renderer and the tooltip read them
+            // from `banner_patterns`, not from a tag in `other`.
+            "minecraft:banner_patterns" => {
+                self.banner_patterns = crate::banner_layer::layers_from_nbt(tag.as_ref());
+            }
             "minecraft:trim" => {
                 self.trim = match (value["material"].as_str(), value["pattern"].as_str()) {
                     (Some(material), Some(pattern)) => {
@@ -1195,6 +1201,7 @@ pub fn command_components(text: &str) -> Result<Tag, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::banner_layer::BannerLayer;
 
     fn check_lodestone_saved_default(decoded: bool) {
         const TRACKER: &str = "minecraft:lodestone_tracker";
