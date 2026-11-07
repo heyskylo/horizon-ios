@@ -259,6 +259,8 @@ impl Game<'_> {
                     );
                 }
                 Ok(None) => {}
+                // Stopped because it isn't wanted any more: not the pack's failure.
+                Err(refused) if refused.is_cancelled() => {}
                 Err(refused) => {
                     for note in refused.notes {
                         log::warn!("shader pack {name}: {note}");

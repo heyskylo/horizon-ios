@@ -478,6 +478,12 @@ impl Game<'_> {
                     self.confirm_trusted_link(ACCESSIBILITY_HELP_LINK, Screen::Options)
                 }
                 Event::Narrator => self.narrator_status_changed(),
+                Event::OpenStudioReplay(path) => {
+                    let path = path.to_string_lossy().to_string();
+                    if let Err(e) = self.open_studio_replay(&path) {
+                        log::warn!("Horizon Studio: could not open {path}: {e}");
+                    }
+                }
                 Event::OpenStudioFolder => {
                     let dir = std::path::PathBuf::from("recordings");
                     let _ = std::fs::create_dir_all(&dir);

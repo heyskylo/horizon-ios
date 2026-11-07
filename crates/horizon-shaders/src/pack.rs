@@ -7,6 +7,10 @@ use std::fmt;
 use std::fs;
 use std::io::{self, Cursor, Read};
 use std::path::{Path, PathBuf};
+
+/// The most bytes one file of a zipped pack unpacks to: far above any `.properties`, `.lang` or
+/// GLSL file, with room for the largest textures packs carry.
+pub const MAX_FILE: u64 = 64 << 20;
 use std::sync::Arc;
 
 use zip::ZipArchive;
@@ -131,8 +135,16 @@ impl Pack {
     }
 
     /// The bytes of a file, by its path inside `shaders` (`lang/en_us.lang`). `None` when it
-    /// doesn't exist or the path leaves the folder.
+    /// doesn't exist, the path leaves the folder, or a zipped file unpacks to more than
+    /// [`MAX_FILE`].
     pub fn read(&self, path: &str) -> Option<Vec<u8>> {
+        self.read_capped(path, MAX_FILE)
+    }
+
+    /// [`Pack::read`] with at most `cap` bytes from a zipped file. A zip's sizes are its own claim:
+    /// nothing is allocated from the declared size, and the inflated bytes stop one past `cap`, so
+    /// a deflate bomb in a downloaded pack (1.5 GiB of spaces zip to 1.5 MiB) can't abort the game.
+    fn read_capped(&self, path: &str, cap: u64) -> Option<Vec<u8>> {
         let path = normalize(path)?;
         match &self.files {
             Files::Folder(root) => fs::read(root.join(&path)).ok(),
@@ -140,9 +152,12 @@ impl Pack {
                 // A clone shares the bytes and the central directory; reading needs `&mut`.
                 let mut archive = archive.clone();
                 let mut entry = archive.by_index(*entries.get(&path)?).ok()?;
-                let mut out = Vec::with_capacity(entry.size() as usize);
-                entry.read_to_end(&mut out).ok()?;
-                Some(out)
+                if entry.size() > cap {
+                    return None;
+                }
+                let mut out = Vec::new();
+                (&mut entry).take(cap + 1).read_to_end(&mut out).ok()?;
+                (out.len() as u64 <= cap).then_some(out)
             }
         }
     }
@@ -276,6 +291,26 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_zipped_file_past_the_cap_reads_as_missing() {
+        // A deflate bomb: 64 KiB of spaces zip to almost nothing. Read with a 16 KiB cap here
+        // (MAX_FILE in the game), it is refused whatever it declares; the rest of the pack reads.
+        let bytes = zip(&[
+            ("shaders/shaders.properties", vec![b' '; 64 << 10]),
+            ("shaders/lib/common.glsl", b"void main() {}".to_vec()),
+        ]);
+        assert!(bytes.len() < 4 << 10);
+        let pack = Pack::from_zip_bytes("P.zip", bytes).unwrap();
+        assert_eq!(pack.read_capped("shaders.properties", 16 << 10), None);
+        assert_eq!(
+            pack.read_capped("shaders.properties", 64 << 10)
+                .unwrap()
+                .len(),
+            64 << 10
+        );
+        assert_eq!(pack.read("lib/common.glsl").unwrap(), b"void main() {}");
     }
 
     #[test]

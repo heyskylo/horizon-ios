@@ -243,6 +243,7 @@ const GROUPS: [(Group, &str); 6] = [
 /// pack of ours (#10490): colour 0.25 × 0.5 over the disc's 1.0 read 1.125, alpha 0.5.
 pub const STARS_BLEND: Blend = [Factor::SrcAlpha, Factor::One, Factor::One, Factor::Zero];
 
+#[derive(Clone)]
 pub struct PostProgram {
     /// The program's name (`composite3`).
     pub name: String,
@@ -425,6 +426,7 @@ pub enum ShadowCulling {
     Reversed,
 }
 
+#[derive(Clone)]
 pub struct Post {
     /// The folder the programs came from: `""` for `shaders` itself, else `world0`...
     pub folder: String,

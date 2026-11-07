@@ -125,9 +125,50 @@ def corpus(types):
     return cases
 
 
+def obstruction_cases(types):
+    """`Mob.checkSpawnObstruction` on the same column worlds: the default
+    liquid/unobstructed answer and each class's override, with water and lava
+    in the feet or head cell, Ocelot's sea-level and grass/leaves base, and
+    the level's unobstructed flag both ways."""
+    rng = random.Random(0x4F425354)
+    cases = []
+    scenarios = [
+        dict(at0='minecraft:air', at1='minecraft:air', unobstructed=1),
+        dict(at0='minecraft:water', at1='minecraft:water', unobstructed=1),
+        dict(at0='minecraft:lava', at1='minecraft:lava', unobstructed=1),
+        dict(at0='minecraft:water', at1='minecraft:air', unobstructed=1),
+        dict(at0='minecraft:air', at1='minecraft:air', unobstructed=0),
+        dict(at0='minecraft:water', at1='minecraft:water', unobstructed=0),
+        dict(at0='minecraft:air', at1='minecraft:air', y=50, sea=63, **{'at-1': 'minecraft:grass_block'}, unobstructed=1),
+        dict(at0='minecraft:air', at1='minecraft:air', y=50, sea=63, **{'at-1': 'minecraft:stone'}, unobstructed=1),
+        dict(at0='minecraft:air', at1='minecraft:air', y=70, sea=63, **{'at-1': 'minecraft:grass_block'}, unobstructed=1),
+        dict(at0='minecraft:air', at1='minecraft:air', y=70, sea=63, **{'at-1': 'minecraft:oak_leaves'}, unobstructed=1),
+    ]
+    for t in types:
+        n = t.split(':')[1]
+        # These three need data components that a bare EntityType.create lacks.
+        if n in ('wandering_trader', 'warden', 'wither', 'iron_golem'):
+            continue
+        for k, scenario in enumerate(scenarios):
+            y = scenario.get('y', 64)
+            fields = {key: value for key, value in scenario.items() if key.startswith('at')}
+            fields['unobstructed'] = scenario['unobstructed']
+            fields['sea'] = scenario.get('sea', 63)
+            cases.append(f'{n}/obstruction/{k} type={t} mode=obstruction y={y} '
+                         + ' '.join(f'{key}={value}' for key, value in fields.items()))
+        # The Ocelot override's y >= sea path with both base block tags.
+        for k, (y, below) in enumerate(((64, 'minecraft:grass_block'), (64, 'minecraft:oak_leaves'),
+                                        (62, 'minecraft:grass_block'), (63, 'minecraft:stone'))):
+            cases.append(f'{n}/ocelot/{k} type={t} mode=obstruction y={y} at-1={below} '
+                         f'at0=minecraft:air at1=minecraft:air unobstructed=1 sea=63')
+    return cases
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--prepare', action='store_true')
+    parser.add_argument('--no-obstruction', action='store_true',
+                        help='leave out the Mob.checkSpawnObstruction family, reproducing the previous corpus')
     args = parser.parse_args()
     build = lab.LOCAL / 'rust-spawn-rules-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -143,6 +184,8 @@ def main():
     tested = base.source_hashes(sources)
     inputs = build / 'inputs.txt'
     cases = corpus(types)
+    if not args.no_obstruction:
+        cases += obstruction_cases(types)
     inputs.write_text(''.join(line + '\n' for line in cases), encoding='utf-8')
     classes = build / 'classes'
     classes.mkdir(exist_ok=True)

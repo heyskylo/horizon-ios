@@ -1,0 +1,75 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "entity_is_shift_key_down",
+      "target": "horizon_client::game::native_entity_state::Game<'_>::native_entity_is_shift_key_down",
+      "receiver": "entity"
+    },
+    {
+      "name": "entity_is_crouching",
+      "target": "horizon_client::game::native_entity_state::Game<'_>::native_entity_is_crouching",
+      "receiver": "entity"
+    },
+    {
+      "name": "entity_is_sprinting",
+      "target": "horizon_client::game::native_entity_state::Game<'_>::native_entity_is_sprinting",
+      "receiver": "entity"
+    },
+    {
+      "name": "entity_is_in_water",
+      "target": "horizon_client::game::native_entity_state::Game<'_>::native_entity_is_in_water",
+      "receiver": "entity"
+    },
+    {
+      "name": "entity_is_in_lava",
+      "target": "horizon_client::game::native_entity_state::Game<'_>::native_entity_is_in_lava",
+      "receiver": "entity"
+    },
+    {
+      "name": "entity_fire_immune",
+      "target": "horizon_client::game::native_entity_state::Game<'_>::native_entity_fire_immune",
+      "receiver": "entity"
+    },
+    {
+      "name": "entity_fire_ticks",
+      "target": "horizon_client::game::native_entity_state::Game<'_>::native_entity_fire_ticks",
+      "receiver": "entity"
+    },
+    {
+      "name": "entity_air_supply",
+      "target": "horizon_client::game::native_entity_state::Game<'_>::native_entity_air_supply",
+      "receiver": "entity"
+    },
+    {
+      "name": "entity_max_air_supply",
+      "target": "horizon_client::game::native_entity_state::Game<'_>::native_entity_max_air_supply",
+      "receiver": "entity"
+    },
+    {
+      "name": "entity_is_silent",
+      "target": "horizon_client::game::native_entity_state::Game<'_>::native_entity_is_silent",
+      "receiver": "entity"
+    },
+    {
+      "name": "entity_set_silent",
+      "target": "horizon_client::game::native_entity_state::Game<'_>::native_entity_set_silent",
+      "receiver": "entity"
+    },
+    {
+      "name": "entity_is_invisible",
+      "target": "horizon_client::game::native_entity_state::Game<'_>::native_entity_is_invisible",
+      "receiver": "entity"
+    },
+    {
+      "name": "entity_pose",
+      "target": "horizon_client::game::native_entity_state::Game<'_>::native_entity_pose",
+      "receiver": "entity"
+    }
+  ],
+  "rust_summary": "an entity's state flags through an `EntityRef`: sneaking, sprinting, water and lava, fire, air, silence, invisibility and pose.",
+  "doc_summary": "`entity.is_shift_key_down(host)`, `is_crouching`, `is_sprinting`, `is_in_water`, `is_in_lava`, `fire_immune`, `fire_ticks`, `air_supply`, `max_air_supply`, `is_silent`, `set_silent(host, silent)`, `is_invisible` and `pose` (`standing`, `crouching`...). Players and mobs have them all; other kinds return `None` for what Horizon doesn't keep for them. Bundles need \"hooks\": @API:entity_state@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_entity_state.rs"
+  ]
+}

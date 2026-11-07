@@ -1153,6 +1153,91 @@ mod tests {
     }
 
     #[test]
+    fn loaded_tnt_fuse_uses_numeric_short_and_saves_without_raw() {
+        use horizon_world::nbt::Tag;
+        let Some(mut game) = server_game() else {
+            return;
+        };
+        let cases = [
+            (None, 80),
+            (Some(Tag::Short(80)), 80),
+            (Some(Tag::Short(2)), 2),
+            (Some(Tag::Short(-1)), -1),
+            (Some(Tag::Byte(-2)), -2),
+            (Some(Tag::Int(32768)), -32768),
+            (Some(Tag::Long(65535)), -1),
+            (Some(Tag::Long(i64::MAX)), -1),
+            (Some(Tag::Float((-1.5_f32).to_bits())), -2),
+            (Some(Tag::Double((-1.5_f64).to_bits())), -2),
+            (Some(Tag::Double(1.5_f64.to_bits())), 1),
+            (Some(Tag::Double(32768.75_f64.to_bits())), -32768),
+            (Some(Tag::String("wrong_type".into())), 80),
+        ];
+        for (value, expected) in cases {
+            let mut tag = Tag::compound([
+                (
+                    "Pos",
+                    Tag::List(vec![
+                        Tag::Double(4.5_f64.to_bits()),
+                        Tag::Double(200_f64.to_bits()),
+                        Tag::Double(4.5_f64.to_bits()),
+                    ]),
+                ),
+                (
+                    "Motion",
+                    Tag::List(vec![
+                        Tag::Double(0.125_f64.to_bits()),
+                        Tag::Double(0),
+                        Tag::Double(0),
+                    ]),
+                ),
+                ("NoGravity", Tag::Byte(1)),
+                ("block_state", Tag::String("minecraft:stone".into())),
+                ("explosion_power", Tag::Float(2.5_f32.to_bits())),
+                ("owner", Tag::IntArray(vec![5, 6, 7, 8])),
+                ("CustomName", Tag::String("Fuse control".into())),
+                ("Tags", Tag::List(vec![Tag::String("h090".into())])),
+            ]);
+            if let (Some(value), Tag::Compound(fields)) = (value, &mut tag) {
+                fields.insert("fuse".into(), value);
+            }
+            let i = game.tnts.len();
+            game.load_tnt(tag.clone(), Some([90, 0, 0, i as i32 + 1]));
+            let t = &game.tnts[i];
+            assert_eq!(t.fuse, expected, "{tag:?}");
+            assert_eq!(t.velocity, Vec3::new(0.125, 0.0, 0.0));
+            assert!(t.no_gravity);
+            assert_eq!(t.power, 2.5);
+            let state = t.block_state_nbt(game.pack.assets.registry);
+            assert_eq!(state, Tag::String("minecraft:stone".into()));
+            let saved = crate::entity_nbt::tnt_to_nbt(
+                t.position,
+                t.velocity,
+                t.on_ground,
+                t.fuse,
+                t.power,
+                state,
+                t.rotation,
+                [90, 0, 0, i as i32 + 1],
+                None,
+                None,
+            );
+            assert_eq!(saved.get("fuse"), Some(&Tag::Short(expected as i16)));
+            let saved = game.tnt_nbt(i);
+            for field in [
+                "owner",
+                "CustomName",
+                "Tags",
+                "Motion",
+                "block_state",
+                "explosion_power",
+            ] {
+                assert_eq!(saved.get(field), tag.get(field), "{field}");
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn live_data_commands_adopt_into_the_existing_tnt() {
         use crate::game::commands::Target;
