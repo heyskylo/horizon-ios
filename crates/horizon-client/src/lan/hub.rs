@@ -2839,7 +2839,10 @@ impl Hub {
     /// PlayerChunkSender.sendNextChunks' choice: ready chunks, closest first,
     /// as many as the batch quota the client's acknowledgements pace allows,
     /// with their places in the queue. What the view leaves of the quota goes
-    /// to the far ring, as far as its brake lets it reach.
+    /// to the far ring, as far as its brake lets it reach. A memory connection
+    /// that has not loaded yet sends every ready view column in that one
+    /// batch; the quota recorded for it covers them, so the tick after
+    /// `PlayerLoaded` is capped again.
     fn next_batch<'w>(
         &mut self,
         i: usize,
@@ -2855,6 +2858,10 @@ impl Hub {
             return None;
         }
         let budget = g.batch_quota.floor() as usize;
+        // The integrated server's own player, still on the loading screen.
+        // LAN guests and a client that has loaded keep the quota above.
+        let burst = g.address == super::conn::MEMORY_ADDRESS && !g.loaded;
+        let near_take = if burst { g.chunk_queue.len() } else { budget };
         // ChunkStatus.LIGHT needs its neighbours at INITIALIZE_LIGHT: a
         // column whose light layers would leave one out waits for it.
         let ready = |c: &Chunk| {
@@ -2875,11 +2882,12 @@ impl Hub {
             .enumerate()
             .filter_map(|(idx, key)| Some((idx, &**world.chunks.get(key)?)))
             .filter(|(_, c)| ready(c))
-            .take(budget)
+            .take(near_take)
             .collect();
         let mut far = Vec::new();
         if let (Some(ring), Some((cx, cz))) = (self.far.as_mut(), g.center) {
-            let mut left = budget - near.len();
+            // What the view left of the vanilla quota. A first-view burst can take more than that.
+            let mut left = budget.saturating_sub(near.len());
             for (idx, &(x, z)) in g.far_queue.iter().enumerate().take(super::far::LOOKS) {
                 if left == 0 {
                     break;
@@ -2899,6 +2907,11 @@ impl Hub {
                 left -= usize::from(column.is_some());
                 far.push((idx, column));
             }
+        }
+        // `update_chunks` subtracts the batch. Covering the near columns keeps that from going
+        // negative, so the next tick's `.min(chunks_per_tick)` cap holds again.
+        if burst {
+            g.batch_quota = g.batch_quota.max(near.len() as f32);
         }
         (!near.is_empty() || !far.is_empty()).then_some(Batch { near, far })
     }
@@ -4188,10 +4201,15 @@ impl Hub {
                 // bow's arrow, a trident, a spear) and a stab use the player's
                 // position and known movement now (#8423): shot after the move, an
                 // arrow left the position of the tick after the release, a tick
-                // ahead of the camera's instead of a tick behind it.
+                // ahead of the camera's instead of a tick behind it. A STAB (8) does
+                // not hold the move: held a tick, the jump the move carries
+                // (handlePlayerPositionChange's jumpFromGround) ran a tick after the
+                // Lunge's impulse, and the server took two moves in the next tick
+                // (lunge_motion, every jump phase).
                 S::PlayerAction(p) => {
+                    let stab = p.action == 8;
                     events.push(HostEvent::Packet(conn, Box::new(S::PlayerAction(p))));
-                    held = self.move_queued(i);
+                    held = !stab && self.move_queued(i);
                 }
                 // handleUseItem uses the player's position and known movement now:
                 // a later move must not overtake a throw before the game runs it.
@@ -6000,18 +6018,17 @@ mod tests {
         );
     }
 
-    /// #8423: a RELEASE_USE_ITEM shoots from the player's position and known
-    /// movement of the last move the server handled; the move the client sent
-    /// after it waits for the next tick, as vanilla handles the two in order.
-    #[test]
-    fn a_release_shoots_before_the_move_behind_it() {
+    /// Drains guest 0's inbox holding a player action (`action`) and the move
+    /// its client sent after it in the same client tick: the packets handed to
+    /// the game, and the guest's position and known movement before.
+    fn drain_action_then_move(action: i32) -> (Hub, Vec<S>, ([f64; 3], [f64; 3])) {
         let (mut hub, _rx) = hub_with_a_guest();
         hub.guests[0].load_timeout = 0;
         let before = (hub.guests[0].position, hub.guests[0].known_movement);
         let inbox = &mut hub.guests[0].inbox;
         inbox.push_back((
             S::PlayerAction(play::PlayerAction {
-                action: 6,
+                action,
                 pos: [0; 3],
                 direction: 0,
                 sequence: 0,
@@ -6045,14 +6062,23 @@ mod tests {
             border: &border,
             streaming: None,
         };
-        let events = hub.drain_packets(&mut ctx);
-        let handled: Vec<&S> = events
-            .iter()
+        let handled = hub
+            .drain_packets(&mut ctx)
+            .into_iter()
             .filter_map(|e| match e {
-                HostEvent::Packet(_, p) => Some(&**p),
+                HostEvent::Packet(_, p) => Some(*p),
                 _ => None,
             })
             .collect();
+        (hub, handled, before)
+    }
+
+    /// #8423: a RELEASE_USE_ITEM shoots from the player's position and known
+    /// movement of the last move the server handled; the move the client sent
+    /// after it waits for the next tick, as vanilla handles the two in order.
+    #[test]
+    fn a_release_shoots_before_the_move_behind_it() {
+        let (hub, handled, before) = drain_action_then_move(6);
         assert!(
             matches!(handled[..], [S::PlayerAction(_)]),
             "the game was handed {handled:?}"
@@ -6070,6 +6096,20 @@ mod tests {
             before,
             "the shot's position"
         );
+    }
+
+    /// A STAB's move runs in the same tick: held for the next one, the jump it
+    /// carries came a tick after the Lunge's impulse (lunge_motion).
+    #[test]
+    fn a_stab_keeps_the_move_behind_it_in_its_tick() {
+        let (hub, handled, before) = drain_action_then_move(8);
+        assert!(
+            matches!(handled[..], [S::PlayerAction(_)]),
+            "the game was handed {handled:?}"
+        );
+        let g = &hub.guests[0];
+        assert!(g.inbox.is_empty(), "the move waited for the next tick");
+        assert_eq!(g.position[0], before.0[0] + 0.3, "the move was not handled");
     }
 
     /// The owner's own shoulder parrots are sent when a slot changes.
@@ -6326,5 +6366,108 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A single-player memory connection sends every ready view column before
+    /// `PlayerLoaded`. After that, on a respawn, and for a socket guest, the
+    /// batch is `chunks_per_tick` again (64). An unlit column stays out, and
+    /// the gates that send nothing still do.
+    #[test]
+    fn memory_connection_first_view_sends_every_ready_column() {
+        let (mut hub, _rx) = hub_with_a_guest();
+        hub.ticks = 3;
+        {
+            let g = &mut hub.guests[0];
+            g.chunks_per_tick = 64.0;
+            g.batch_quota = 0.0;
+            g.address = crate::lan::conn::MEMORY_ADDRESS;
+            g.loaded = false;
+        }
+        // The unlit column first, then 80 lit ones (`floor_at`'s empty column, lit).
+        let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);
+        let mut dark = crate::chunk::Chunk::empty(100, 100);
+        dark.lit = false;
+        world.chunks.insert((100, 100), std::sync::Arc::new(dark));
+        hub.guests[0].chunk_queue.push((100, 100));
+        for i in 0..80 {
+            let (x, z) = (i % 16, i / 16);
+            let mut chunk = crate::chunk::Chunk::empty(x, z);
+            chunk.lit = true;
+            world.chunks.insert((x, z), std::sync::Arc::new(chunk));
+            hub.guests[0].chunk_queue.push((x, z));
+        }
+
+        let batch = hub
+            .next_batch(0, &world, None)
+            .expect("the first view sends");
+        assert_eq!(
+            batch.near.len(),
+            80,
+            "every ready column leaves in one batch"
+        );
+        assert!(
+            batch.near.iter().all(|(_, c)| c.lit),
+            "an unlit column is not ready"
+        );
+        assert!(batch.far.is_empty());
+        assert!(hub.guests[0].batch_quota >= 80.0);
+
+        hub.guests[0].loaded = true;
+        let loaded = hub
+            .next_batch(0, &world, None)
+            .expect("a loaded client still receives chunks");
+        assert_eq!(loaded.near.len(), 64, "PlayerLoaded puts the cap back");
+
+        hub.guests[0].address = "127.0.0.1:25565".parse().unwrap();
+        hub.guests[0].loaded = false;
+        hub.guests[0].batch_quota = 0.0;
+        let socket = hub
+            .next_batch(0, &world, None)
+            .expect("a socket guest still receives chunks");
+        assert_eq!(socket.near.len(), 64, "a socket guest keeps the quota");
+
+        hub.guests[0].address = crate::lan::conn::MEMORY_ADDRESS;
+        hub.guests[0].loaded = true;
+        hub.guests[0].loading = true;
+        hub.guests[0].batch_quota = 0.0;
+        let respawn = hub
+            .next_batch(0, &world, None)
+            .expect("a respawned player still receives chunks");
+        assert_eq!(
+            respawn.near.len(),
+            64,
+            "a respawn stays on the vanilla pace"
+        );
+
+        // Seventy lit columns, the unlit one still queued: all seventy, in one batch.
+        hub.guests[0].loaded = false;
+        hub.guests[0].batch_quota = 0.0;
+        hub.guests[0].chunk_queue.truncate(71);
+        let seventy = hub
+            .next_batch(0, &world, None)
+            .expect("seventy ready columns send");
+        assert_eq!(seventy.near.len(), 70);
+        assert!(seventy.near.iter().all(|(_, c)| c.lit));
+
+        hub.guests[0].unacknowledged = hub.guests[0].max_unacknowledged;
+        assert!(
+            hub.next_batch(0, &world, None).is_none(),
+            "too many batches still waiting sends nothing"
+        );
+
+        hub.guests[0].unacknowledged = 0;
+        hub.ticks = hub.guests[0].placed_at + 1;
+        assert!(
+            hub.next_batch(0, &world, None).is_none(),
+            "the tick after placement still waits"
+        );
+
+        hub.ticks = 3;
+        hub.guests[0].chunk_queue.clear();
+        hub.guests[0].far_queue.clear();
+        assert!(
+            hub.next_batch(0, &world, None).is_none(),
+            "an empty queue sends nothing"
+        );
     }
 }

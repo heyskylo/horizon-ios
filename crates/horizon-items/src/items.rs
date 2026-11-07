@@ -1182,6 +1182,16 @@ impl Items {
         held: Option<&ItemStack>,
         random: &mut R,
     ) -> Vec<ItemStack> {
+        self.inline_loot_table_for_command(table, held, random, false)
+    }
+    /// `LootCommand.dropFishingLoot`: output-list adapter; replacement keeps emitted empties.
+    pub fn inline_loot_table_for_command<R: RandomSource>(
+        &self,
+        table: &Value,
+        held: Option<&ItemStack>,
+        random: &mut R,
+        keep_empty: bool,
+    ) -> Vec<ItemStack> {
         let empty = horizon_world::chunk::BlockProperties::new();
         let ctx = LootContext {
             items: self,
@@ -1192,6 +1202,7 @@ impl Items {
             explosion_radius: None,
             this_entity: false,
             target: None,
+            keep_empty,
         };
         ctx.evaluate(table, random)
     }
@@ -1235,6 +1246,23 @@ impl Items {
         random: &mut R,
     ) -> Vec<ItemStack> {
         self.block_drops_in(registry, state, held, random, None)
+    }
+    /// `LootCommand.dropBlockLoot`: only replacement retains empty result positions.
+    pub fn block_drops_for_command<R: RandomSource>(
+        &self,
+        registry: &BlockRegistry,
+        state: BlockStateId,
+        held: Option<&ItemStack>,
+        random: &mut R,
+        keep_empty: bool,
+    ) -> Vec<ItemStack> {
+        if !keep_empty {
+            return self.block_drops(registry, state, held, random);
+        }
+        self.block_drops_raw(registry, state, held, random, None, None, false, true)
+            .into_iter()
+            .filter(|drop| !drop.item.starts_with(DYNAMIC))
+            .collect()
     }
     /// `block_drops` drawing from the table's random sequence when it has one
     /// (`sequences`: the world's sequences and seed), as BlockState.getDrops.
@@ -1302,8 +1330,9 @@ impl Items {
         explosion: Option<f32>,
         breaker: bool,
     ) -> Vec<ItemStack> {
-        let drops =
-            self.block_drops_raw(registry, state, held, random, sequences, explosion, breaker);
+        let drops = self.block_drops_raw(
+            registry, state, held, random, sequences, explosion, breaker, false,
+        );
         if !drops.iter().any(|d| d.item.starts_with(DYNAMIC)) {
             return drops;
         }
@@ -1328,6 +1357,7 @@ impl Items {
         sequences: Option<(&mut crate::random_sequences::RandomSequences, i64)>,
         explosion_radius: Option<f32>,
         breaker: bool,
+        keep_empty: bool,
     ) -> Vec<ItemStack> {
         let Some(block) = registry.state(state) else {
             return vec![];
@@ -1351,6 +1381,7 @@ impl Items {
                 explosion_radius,
                 this_entity: breaker,
                 target: None,
+                keep_empty,
             };
             return ctx.evaluate(table, random);
         }
@@ -1363,6 +1394,7 @@ impl Items {
             explosion_radius,
             this_entity: breaker,
             target: None,
+            keep_empty,
         };
         ctx.evaluate(table, random)
     }
@@ -1374,6 +1406,17 @@ impl Items {
         killed_by_player: bool,
         held: Option<&ItemStack>,
         random: &mut R,
+    ) -> Vec<ItemStack> {
+        self.loot_table_for_command(id, killed_by_player, held, random, false)
+    }
+    /// `LootCommand.dropChestLoot`: output-list adapter; replacement keeps emitted empties.
+    pub fn loot_table_for_command<R: RandomSource>(
+        &self,
+        id: &str,
+        killed_by_player: bool,
+        held: Option<&ItemStack>,
+        random: &mut R,
+        keep_empty: bool,
     ) -> Vec<ItemStack> {
         let Some(table) = self.loot.get(id) else {
             return vec![];
@@ -1388,6 +1431,7 @@ impl Items {
             explosion_radius: None,
             this_entity: false,
             target: None,
+            keep_empty,
         };
         // LootTable.getRandomItemsRaw visits the table itself first.
         NESTED_ROLLS.with(|v| v.borrow_mut().push(id.to_owned()));
@@ -1426,6 +1470,7 @@ impl Items {
             explosion_radius: None,
             this_entity: false,
             target: None,
+            keep_empty: false,
         };
         match table.get("random_sequence").and_then(Value::as_str) {
             Some(sequence) => ctx.evaluate(table, sequences.get(sequence, seed)),
@@ -1453,6 +1498,7 @@ impl Items {
             explosion_radius: None,
             this_entity: false,
             target: None,
+            keep_empty: false,
         };
         ctx.evaluate(table, random)
     }
@@ -1463,9 +1509,21 @@ impl Items {
         held: Option<&ItemStack>,
         random: &mut R,
     ) -> Vec<ItemStack> {
-        self.entity_drops_context(entity, killed_by_player, held, None, random)
+        self.entity_drops_context(entity, killed_by_player, held, None, random, false)
+    }
+    /// `LootCommand.dropKillLoot`: output-list adapter; replacement keeps emitted empties.
+    pub fn entity_drops_for_command<R: RandomSource>(
+        &self,
+        entity: &str,
+        killed_by_player: bool,
+        held: Option<&ItemStack>,
+        random: &mut R,
+        keep_empty: bool,
+    ) -> Vec<ItemStack> {
+        self.entity_drops_context(entity, killed_by_player, held, None, random, keep_empty)
     }
     /// `LootCommand.dropKillLoot`: bind actual target predicates without changing the evaluator.
+    #[allow(clippy::too_many_arguments)]
     pub fn entity_drops_with_target<R: RandomSource>(
         &self,
         entity: &str,
@@ -1474,6 +1532,7 @@ impl Items {
         target: &horizon_world::loot::LootEntity,
         matcher: &dyn Fn(&Value, &horizon_world::loot::LootEntity) -> bool,
         random: &mut R,
+        keep_empty: bool,
     ) -> Vec<ItemStack> {
         self.entity_drops_context(
             entity,
@@ -1481,6 +1540,7 @@ impl Items {
             held,
             Some((target, matcher)),
             random,
+            keep_empty,
         )
     }
     fn entity_drops_context<R: RandomSource>(
@@ -1490,6 +1550,7 @@ impl Items {
         held: Option<&ItemStack>,
         target: Option<EntityTarget<'_>>,
         random: &mut R,
+        keep_empty: bool,
     ) -> Vec<ItemStack> {
         let name = entity.trim_start_matches("minecraft:");
         let Some(table) = self.loot.get(&format!("minecraft:entities/{name}")) else {
@@ -1505,6 +1566,7 @@ impl Items {
             explosion_radius: None,
             this_entity: false,
             target,
+            keep_empty,
         };
         ctx.evaluate(table, random)
     }
@@ -1528,10 +1590,10 @@ impl LootContext<'_> {
                     random,
                     &mut produced,
                 );
-                for mut stack in produced {
+                for (mut stack, emitted) in produced {
                     ctx.modifiers(&pool["modifier"], &mut stack, random);
                     ctx.modifiers(&table["modifier"], &mut stack, random);
-                    if stack.count > 0 {
+                    if stack.count > 0 || (ctx.keep_empty && emitted) {
                         out.push(stack);
                     }
                 }
@@ -1556,6 +1618,8 @@ struct LootContext<'a> {
     this_entity: bool,
     /// Actual command target, used only by `entity_properties` for `this`.
     target: Option<EntityTarget<'a>>,
+    /// Command replacement consumes the emitted list positions, including empty stacks.
+    keep_empty: bool,
 }
 impl LootContext<'_> {
     /// Level of an enchantment on the tool / killer's weapon.
@@ -1791,11 +1855,13 @@ impl LootContext<'_> {
             .all(|c| self.condition(c, random))
     }
     /// Expand entries; returns whether an entry succeeded (for alternatives).
+    /// The last candidate field distinguishes emitted items from empty/deferred
+    /// placeholders, without changing existing selection/modifier draws.
     fn expand<R: RandomSource>(
         &self,
         e: &Value,
         random: &mut R,
-        out: &mut Vec<(i32, ItemStack, Value)>,
+        out: &mut Vec<(i32, ItemStack, Value, bool)>,
     ) -> bool {
         if !self.conditions(e, random) {
             return false;
@@ -1811,6 +1877,7 @@ impl LootContext<'_> {
                         extra: None,
                     },
                     e["modifier"].clone(),
+                    true,
                 ));
                 true
             }
@@ -1848,6 +1915,7 @@ impl LootContext<'_> {
                         extra: None,
                     },
                     Value::Null,
+                    false,
                 ));
                 true
             }
@@ -1863,6 +1931,7 @@ impl LootContext<'_> {
                         extra: None,
                     },
                     e.clone(),
+                    true,
                 ));
                 true
             }
@@ -1876,6 +1945,7 @@ impl LootContext<'_> {
                         extra: None,
                     },
                     Value::Null,
+                    false,
                 ));
                 true
             }
@@ -1886,7 +1956,7 @@ impl LootContext<'_> {
         &self,
         entries: &[Value],
         random: &mut R,
-        produced: &mut Vec<ItemStack>,
+        produced: &mut Vec<(ItemStack, bool)>,
     ) {
         let mut candidates = Vec::new();
         for e in entries {
@@ -1910,13 +1980,13 @@ impl LootContext<'_> {
             }
             chosen
         };
-        let (_, mut stack, modifiers) = candidates.swap_remove(pick);
+        let (_, mut stack, modifiers, emitted) = candidates.swap_remove(pick);
         if &*stack.item == NESTED {
             self.nested(&modifiers, random, produced);
             return;
         }
         self.modifiers(&modifiers, &mut stack, random);
-        produced.push(stack);
+        produced.push((stack, emitted));
     }
     /// `NestedLootTable.createItemStack`: the entry's table rolls in full
     /// (its pools and its own functions), then the entry's functions apply to
@@ -1925,7 +1995,7 @@ impl LootContext<'_> {
         &self,
         entry: &Value,
         random: &mut R,
-        produced: &mut Vec<ItemStack>,
+        produced: &mut Vec<(ItemStack, bool)>,
     ) {
         let (name, table) = match &entry["value"] {
             Value::String(name) => (name.as_str(), self.items.loot.get(name.as_str())),
@@ -1948,7 +2018,7 @@ impl LootContext<'_> {
         NESTED_ROLLS.with(|v| v.borrow_mut().pop());
         for mut stack in stacks {
             self.modifiers(&entry["modifier"], &mut stack, random);
-            produced.push(stack);
+            produced.push((stack, true));
         }
     }
     /// An enchantment function's `options` (`HolderSet`): a tag, a list or
@@ -2525,6 +2595,103 @@ mod tests {
     use horizon_core::random::LegacyRandom;
     use serde_json::json;
 
+    #[test]
+    fn command_loot_keeps_zero_positions_without_changing_filtered_rolls() {
+        let mut items = Items::for_tests(HashMap::new());
+        let zero = json!({"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:iron_ingot",
+            "modifier":{"type":"minecraft:set_count","count":0}}]});
+        let positive =
+            json!({"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:iron_ingot"}]});
+        let flat = json!({"pools":[zero, positive]});
+        let empty = json!({"pools":[{"rolls":1,"entries":[{"type":"minecraft:empty"}]}]});
+        let nested =
+            json!({"pools":[{"rolls":1,"entries":[{"type":"minecraft:loot_table","value":flat}]}]});
+        let random = json!({"pools":[zero, {"rolls":{"type":"minecraft:uniform","min":1,"max":3},
+            "entries":[{"type":"minecraft:item","name":"minecraft:iron_ingot"},
+                       {"type":"minecraft:item","name":"minecraft:gold_ingot"}]}]});
+        let summary = |stacks: Vec<ItemStack>| {
+            stacks
+                .into_iter()
+                .map(|s| (s.item.to_string(), s.count))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            summary(items.inline_loot_table_for_command(
+                &flat,
+                None,
+                &mut LegacyRandom::new(39),
+                true
+            )),
+            vec![
+                ("minecraft:iron_ingot".into(), 0),
+                ("minecraft:iron_ingot".into(), 1)
+            ]
+        );
+        assert!(
+            items
+                .inline_loot_table_for_command(&empty, None, &mut LegacyRandom::new(39), true)
+                .is_empty(),
+            "EmptyLootItem emits nothing, rather than an empty item position"
+        );
+        let deferred = json!({"pools":[{"rolls":1,"entries":[{"type":"minecraft:dynamic","name":"minecraft:contents"}],
+            "modifier":{"type":"minecraft:set_count","count":0}}]});
+        assert!(
+            items
+                .inline_loot_table_for_command(&deferred, None, &mut LegacyRandom::new(39), true)
+                .is_empty(),
+            "deferred dynamic placeholders are not emitted items"
+        );
+        for table in [flat, empty, nested, random, deferred] {
+            items.loot = Arc::new(
+                [
+                    ("test:table".into(), table.clone()),
+                    ("minecraft:entities/pig".into(), table.clone()),
+                ]
+                .into_iter()
+                .collect(),
+            );
+            for seed in 0..32 {
+                let mut natural_rng = LegacyRandom::new(seed);
+                let natural =
+                    summary(items.inline_loot_table_with_tool(&table, None, &mut natural_rng));
+                let continuation = natural_rng.next_long();
+                let mut command_rng = LegacyRandom::new(seed);
+                let command =
+                    items.inline_loot_table_for_command(&table, None, &mut command_rng, true);
+                assert_eq!(
+                    summary(command.into_iter().filter(|s| s.count > 0).collect()),
+                    natural
+                );
+                assert_eq!(
+                    command_rng.next_long(),
+                    continuation,
+                    "output policy consumes no randomness"
+                );
+                let mut named_rng = LegacyRandom::new(seed);
+                let named =
+                    items.loot_table_for_command("test:table", false, None, &mut named_rng, true);
+                assert_eq!(
+                    summary(named.into_iter().filter(|s| s.count > 0).collect()),
+                    natural
+                );
+                assert_eq!(named_rng.next_long(), continuation);
+                let mut entity_rng = LegacyRandom::new(seed);
+                let entity = items.entity_drops_for_command(
+                    "minecraft:pig",
+                    false,
+                    None,
+                    &mut entity_rng,
+                    true,
+                );
+                assert_eq!(
+                    summary(entity.into_iter().filter(|s| s.count > 0).collect()),
+                    natural
+                );
+                assert_eq!(entity_rng.next_long(), continuation);
+            }
+        }
+    }
+
     /// `LootCommand.dropFishingLoot` carries TOOL even for an inline holder.
     #[test]
     fn inline_fishing_keeps_the_actual_tool_context() {
@@ -2576,10 +2743,26 @@ mod tests {
                     summary(items.inline_loot_table_with_tool(table, held, &mut inline_rng)),
                     expected
                 );
+                let mut command_rng = LegacyRandom::new(41);
+                assert_eq!(
+                    summary(items.inline_loot_table_for_command(
+                        table,
+                        held,
+                        &mut command_rng,
+                        true
+                    )),
+                    expected
+                );
+                let continuation = named_rng.next_long();
                 assert_eq!(
                     inline_rng.next_long(),
-                    named_rng.next_long(),
+                    continuation,
                     "same evaluator draw order"
+                );
+                assert_eq!(
+                    command_rng.next_long(),
+                    continuation,
+                    "command output keeps TOOL and draw order"
                 );
             }
             let mut random = LegacyRandom::new(41);
@@ -2788,6 +2971,7 @@ mod tests {
                     &target,
                     &unused,
                     &mut bound,
+                    false,
                 );
                 assert_eq!(actual, expected);
                 assert_eq!(bound.next_long(), old.next_long());
@@ -2831,6 +3015,7 @@ mod tests {
                     &target,
                     &matcher,
                     &mut random,
+                    false,
                 );
                 assert_eq!(
                     !actual.is_empty(),
@@ -2860,6 +3045,7 @@ mod tests {
             explosion_radius: None,
             this_entity: false,
             target: None,
+            keep_empty: false,
         }
     }
 
