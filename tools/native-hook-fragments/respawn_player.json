@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "respawn_player", "target": "horizon_client::game::native_travel::Game<'_>::native_respawn_player"}
+  ],
+  "rust_summary": "a dead server player respawned without their client's Respawn click (`native_respawn_player`), as Spigot's `player.spigot().respawn()`.",
+  "doc_summary": "`native_respawn_player(uuid)` respawns a dead server player as their client's Respawn click does, after the players' packets of the server tick. Bundles need \"hooks\": @API:respawn_player@.",
+  "comments": ["crates/horizon-client/src/game/native_travel.rs"]
+}

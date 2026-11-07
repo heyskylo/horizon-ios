@@ -13462,26 +13462,33 @@ CHECK_FNS['death-credit'] = check_death_credit
 def set_legacy_rules(game, on):
     """The PvP page's "1.8 combat in worlds you host" switch, as a player flips it."""
     game('options', page='pvp')
-    for _ in range(40):
+    # The switch sits at the end of the page: wheel down over the list until it stops moving, so the row is
+    # whole inside the list (a click on a row half under the list's edge lands outside it, as in vanilla).
+    switch = None
+    for _ in range(60):
         ui = game.raw('ui')
-        switch = next((w for w in ui['widgets']
-                       if w.get('label', '').startswith('1.8 combat in worlds you host')), None)
-        if switch:
+        found = next((w for w in ui['widgets']
+                      if w.get('label', '').startswith('1.8 combat in worlds you host')), None)
+        if found and switch and found['bounds'] == switch['bounds']:
             break
-        # The switch sits at the end of the page: wheel down over the list.
+        switch = found
         width, height = ui['gui_size']
         game.raw('scroll-at', f'{width / 2:.1f}', f'{height / 2:.1f}', -3)
     assert switch, 'the PvP page has no "1.8 combat in worlds you host" switch'
     if switch['label'].endswith('On') != on:
         game('click', id=switch['id'])
+        now = next(w for w in game.raw('ui')['widgets'] if w.get('id') == switch['id'])
+        assert now['label'].endswith('On') == on, f'the click did not flip the switch: {now}'
     game('close')
     game.wait(5)
 
 
 def check_legacy_pvp(host, guest, out):
     """The host's legacy combat rules (crates/horizon-client/src/legacy_combat.rs) on a guest's diamond axe hits:
-    one at full charge, and one right after a hotbar swap, which empties the charge on the server
-    (ServerPlayer's attack item change resets attackStrengthTicker).
+    one at full charge, and one right after a hotbar swap and back, which empties the charge on the server
+    (Player.tick resets attackStrengthTicker when the main hand's item changes). The stick is held a few ticks:
+    the client sends a slot change from its next tick (MultiPlayerGameMode.tick), so a swap and back within one
+    tick sends nothing, as vanilla's.
 
     1.8.9, EntityPlayer.attackTargetEntityWithCurrentItem: the hit deals the attack damage attribute, which is
     EntityPlayer.applyEntityAttributes' base 1 plus the axe's weapon modifier (ItemAxe's 3.0F +
@@ -13515,7 +13522,7 @@ def check_legacy_pvp(host, guest, out):
         before = health()
         assert before == 20.0, f'the host was not healed: {before}'
         # One ctl process keeps the swap and the hit together.
-        guest.script(['select 2', 'select 1', 'attack'] if swap else ['attack'])
+        guest.script(['select 2', 'wait 3', 'select 1', 'attack'] if swap else ['attack'])
         guest.wait(10)
         return before - health()
 
