@@ -357,37 +357,17 @@ impl Game<'_> {
                 p.position.z,
             ];
             let look = super::view_vector(self.yaw, self.pitch);
-            self.infested_hurt(at, look, None);
+            // The player's draws come from the world's random.
+            let velocities =
+                horizon_client::mobs::infested_silverfish(&mut self.world.random, look);
+            self.spawn_infested(at, velocities);
         }
     }
-    /// A living mob's own random (`Entity.random`), else the world's.
-    fn bearer_random(&mut self, bearer: Option<u32>) -> &mut LegacyRandom {
-        match bearer.and_then(|id| self.mobs.iter().position(|m| m.id == id)) {
-            Some(i) => &mut self.mobs[i].random,
-            None => &mut self.world.random,
-        }
-    }
-    /// `InfestedMobEffect.onMobHurt`: a 10% chance of one or two silverfish at
-    /// `at` (half the bearer's height up), thrown along its look direction.
-    /// The draws are the bearer's (`mob.getRandom()`): `bearer` is the mob,
-    /// none for the player (the world's random).
-    pub(super) fn infested_hurt(&mut self, at: [f64; 3], look: [f64; 3], bearer: Option<u32>) {
-        if self.bearer_random(bearer).next_float() > 0.1 {
-            return;
-        }
-        let count = 1 + self.bearer_random(bearer).next_int_bound(2).unwrap_or(0);
-        for _ in 0..count {
-            // Mth.randomBetween(-PI / 2, PI / 2), then the look direction
-            // scaled by (0.3, 0.45, 0.3) and turned about the y axis.
-            let half = std::f32::consts::FRAC_PI_2;
-            let angle = self.bearer_random(bearer).next_float() * (2.0 * half) - half;
-            let (sin, cos) = angle.sin_cos();
-            let (x, z) = (look[0] * 0.3, look[2] * 0.3);
-            let velocity = Vec3::new(
-                f64::from(x as f32 * cos + z as f32 * sin),
-                look[1] * 0.3 * 1.5,
-                f64::from(-x as f32 * sin + z as f32 * cos),
-            );
+    /// `InfestedMobEffect.spawnSilverfish`: a silverfish at `at` (half the
+    /// bearer's height up) for each of the velocities the bearer's random drew
+    /// (`horizon_client::mobs::infested_silverfish`).
+    pub(super) fn spawn_infested(&mut self, at: [f64; 3], velocities: Vec<Vec3>) {
+        for velocity in velocities {
             if let Some(id) = self.spawn_mob_for("minecraft:silverfish", at, false, true)
                 && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
             {

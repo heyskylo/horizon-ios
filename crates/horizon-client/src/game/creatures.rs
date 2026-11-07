@@ -1980,7 +1980,7 @@ impl Game<'_> {
         }
         let mut killed = false;
         let mut hurt = false;
-        let mut infested = false;
+        let mut infested = Vec::new();
         let aim = self.attacker_aim(source.attacker);
         // So `living_knockback_v2` sees who hit and what they hold.
         let _attacker = self.knockback_scope_for(source.attacker);
@@ -1997,7 +1997,7 @@ impl Game<'_> {
                             self.audio
                                 .play(&format!("minecraft:{s}"), Some(center), volume, pitch);
                         }
-                        MobEvent::Infested { .. } => infested = true,
+                        MobEvent::Infested { at, velocities } => infested.push((at, velocities)),
                         other => {
                             // Left for the end of the tick.
                             t.outbox.push(other);
@@ -2009,8 +2009,8 @@ impl Game<'_> {
         if hurt {
             self.resolve_player_responsible(target, source);
         }
-        if infested {
-            self.mob_infested(target);
+        for (at, velocities) in infested {
+            self.spawn_infested(at, velocities);
         }
         if hurt
             && let Some(Who::Mob(attacker)) = source.attacker
@@ -2073,18 +2073,6 @@ impl Game<'_> {
             .flat_map(|h| h.hub.guests.iter())
             .find(|g| g.placed && g.uuid == uuid)
             .map(|g| Some(g.conn))
-    }
-    /// `InfestedMobEffect.onMobHurt` for a mob: silverfish from half its height up.
-    pub(super) fn mob_infested(&mut self, mob: u32) {
-        if let Some(m) = self.mobs.iter().find(|m| m.id == mob) {
-            let at = [
-                m.position.x,
-                m.position.y + f64::from(m.height()) / 2.0,
-                m.position.z,
-            ];
-            let look = m.view_vector();
-            self.infested_hurt(at, look, Some(mob));
-        }
     }
     /// `LivingEntity.dropFromGiftLootTable`: the gift table from its random
     /// sequence with the mob as `this` (a chicken's egg depends on its
@@ -2788,7 +2776,7 @@ impl Game<'_> {
                 MobEvent::BecomeStatue { mob } => self.golem_become_statue(mob),
                 MobEvent::EnterHive { mob, hive } => self.bee_enter_hive(mob, hive),
                 MobEvent::ParrotToShoulder { mob } => self.parrot_to_shoulder(mob),
-                MobEvent::Infested { mob } => self.mob_infested(mob),
+                MobEvent::Infested { at, velocities } => self.spawn_infested(at, velocities),
                 MobEvent::Gift { target, item } => {
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == target)
                         && m.saddle_item().is_none()

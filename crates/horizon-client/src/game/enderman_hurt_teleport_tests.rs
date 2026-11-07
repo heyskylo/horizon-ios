@@ -142,7 +142,12 @@ fn an_infested_endermans_silverfish_come_out_where_it_was_hurt() {
     mob.add_effect("minecraft:infested", 200, 0);
     // What `Mob::damage` leaves for a projectile's hit: the effect's spawn and
     // `repeatedlyTryToTeleport`.
-    mob.outbox.push(MobEvent::Infested { mob: 600 });
+    let velocities = horizon_client::mobs::infested_silverfish(&mut mob.random, mob.view_vector());
+    let from = [at.x, at.y + f64::from(mob.height()) / 2.0, at.z];
+    mob.outbox.push(MobEvent::Infested {
+        at: from,
+        velocities,
+    });
     mob.extra.counter2 = 64;
     game.mobs.push(mob);
     game.settle_hurt_teleports().unwrap();

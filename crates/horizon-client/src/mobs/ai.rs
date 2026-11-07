@@ -2631,7 +2631,6 @@ pub fn after_hurt(m: &mut Mob, source: &Damage) {
     m.ai.no_action_time = 0;
     match m.species() {
         Species::Armadillo => super::armadillo::after_hurt(m, source),
-        Species::Shulker => super::shulker::after_hurt(m),
         Species::Warden => super::warden::hurt(m, source),
         Species::Nautilus | Species::ZombieNautilus => super::nautilus::after_hurt(m, source),
         Species::Zombie
@@ -3432,17 +3431,19 @@ mod poison_effect_tests {
         tick_effects(&mut pig, None);
         assert_eq!(pig.health, 19.2);
         // `onMobHurt` finds Infested in the same in-place list: the hurt mob
-        // leaves a silverfish call in the outbox.
-        let mut pig = Mob::new(2, pig_kind.clone(), Vec3::new(0.0, 4.0, 0.0), 0.0);
-        pig.extra.effects.push(("minecraft:poison", 25, 0));
-        pig.extra.effects.push(("minecraft:infested", -1, 0));
-        tick_effects(&mut pig, None);
-        assert!(
+        // leaves its silverfish in the outbox when its random passes the
+        // effect's 1-in-10 chance (some seed among the first hundred does).
+        let spawned = (0..100).any(|seed| {
+            let mut pig = Mob::new(2, pig_kind.clone(), Vec3::new(0.0, 4.0, 0.0), 0.0);
+            pig.extra.effects.push(("minecraft:poison", 25, 0));
+            pig.extra.effects.push(("minecraft:infested", -1, 0));
+            pig.random = horizon_core::random::LegacyRandom::new(seed);
+            tick_effects(&mut pig, None);
             pig.outbox
                 .iter()
-                .any(|e| matches!(e, MobEvent::Infested { .. })),
-            "a hurt while infested pushes Infested"
-        );
+                .any(|e| matches!(e, MobEvent::Infested { .. }))
+        });
+        assert!(spawned, "a hurt while infested pushes Infested");
     }
 
     /// `MobEffectInstance.hasRemainingDuration` is false at 0 ticks, so an effect

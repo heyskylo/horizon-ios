@@ -1743,9 +1743,12 @@ pub enum MobEvent {
         slot: usize,
         stack: Option<crate::items::ItemStack>,
     },
-    /// `InfestedMobEffect.onMobHurt`: the mob was hurt while infested.
+    /// `InfestedMobEffect.onMobHurt`: the mob was hurt while infested and its
+    /// draws (`infested_silverfish`) spawn silverfish at `at`, half its height
+    /// up where it was hurt, each thrown with its velocity.
     Infested {
-        mob: u32,
+        at: [f64; 3],
+        velocities: Vec<Vec3>,
     },
     /// `LivingEntity.hurtArmor` (`doHurtEquipment`): a hit that landed on a mob
     /// wearing body armour (a horse's) leaves the piece owing
@@ -3161,6 +3164,31 @@ impl<'a> Teams<'a> {
         }
     }
 }
+/// `InfestedMobEffect.onMobHurt`'s draws from the bearer's random
+/// (`mob.getRandom()`): a 10% chance of one or two silverfish, each thrown
+/// along `look` (`spawnSilverfish`). Their velocities; none when the chance
+/// fails.
+pub fn infested_silverfish(random: &mut LegacyRandom, look: [f64; 3]) -> Vec<Vec3> {
+    if random.next_float() > 0.1 {
+        return Vec::new();
+    }
+    let count = 1 + random.next_int_bound(2).unwrap_or(0);
+    (0..count)
+        .map(|_| {
+            // Mth.randomBetween(-PI / 2, PI / 2), then the look direction
+            // scaled by (0.3, 0.45, 0.3) and turned about the y axis.
+            let half = std::f32::consts::FRAC_PI_2;
+            let angle = random.next_float() * (2.0 * half) - half;
+            let (sin, cos) = angle.sin_cos();
+            let (x, z) = (look[0] * 0.3, look[2] * 0.3);
+            Vec3::new(
+                f64::from(x as f32 * cos + z as f32 * sin),
+                look[1] * 0.3 * 1.5,
+                f64::from(-x as f32 * sin + z as f32 * cos),
+            )
+        })
+        .collect()
+}
 /// `Entity.random` of a client's copy of entity `id` first seen at `position`: vanilla's is its
 /// own (`RandomSource.create()`), drawn on by nothing else; this one is seeded from the two.
 pub fn entity_random(id: u32, position: Vec3) -> LegacyRandom {
@@ -3765,8 +3793,25 @@ impl Mob {
             self.outbox
                 .push(MobEvent::Sound("entity.iron_golem.damage", at, 1.0, 1.0));
         }
+        // LivingEntity.hurtServer ends with MobEffectInstance.onMobHurt, so
+        // Infested draws from the mob's random here, before a subclass's own
+        // draws after `super.hurtServer` (an enderman's or a shulker's
+        // teleport), and its silverfish come out where the mob was hurt.
         if self.has_effect("minecraft:infested") {
-            self.outbox.push(MobEvent::Infested { mob: self.id });
+            let look = self.view_vector();
+            let velocities = infested_silverfish(&mut self.random, look);
+            if !velocities.is_empty() {
+                let at = [
+                    self.position.x,
+                    self.position.y + f64::from(self.height()) / 2.0,
+                    self.position.z,
+                ];
+                self.outbox.push(MobEvent::Infested { at, velocities });
+            }
+        }
+        // Shulker.hurtServer: the low-health teleport roll after `super.hurtServer`.
+        if self.species() == Species::Shulker {
+            shulker::after_hurt(self);
         }
         // Squid.hurtServer: a squid hurt after a living entity hit it squirts ink.
         if matches!(self.species(), Species::Squid | Species::GlowSquid)
