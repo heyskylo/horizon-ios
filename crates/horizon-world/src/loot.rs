@@ -1628,6 +1628,29 @@ impl<R: RandomSource> Context<'_, R> {
                 stack.names.retain(|(k, _)| *k != id);
                 stack.names.push((id, f["name"].clone()));
             }
+            // SetBannerPatternFunction: the layers a banner or shield gets,
+            // replacing the component's own list or added to its end
+            // (`BannerPatternLayers.Builder.addAll` twice). A layer is a
+            // pattern id and a dye name, so the list is kept as it came.
+            "minecraft:set_banner_pattern" => {
+                let id = "minecraft:banner_patterns";
+                let layers = f["patterns"].as_array().cloned().unwrap_or_default();
+                let layers = if f["append"].as_bool() == Some(true) {
+                    stack
+                        .components
+                        .iter()
+                        .find(|(k, _)| k == id)
+                        .and_then(|(_, v)| v.as_array().cloned())
+                        .unwrap_or_default()
+                        .into_iter()
+                        .chain(layers)
+                        .collect()
+                } else {
+                    layers
+                };
+                stack.components.retain(|(k, _)| k != id);
+                stack.components.push((id.to_owned(), Value::Array(layers)));
+            }
             // SetComponentsFunction: the patch's components, applied when the
             // stack becomes an item (trim on worn armour, see `mobs::finalize`).
             "minecraft:set_components" => {
