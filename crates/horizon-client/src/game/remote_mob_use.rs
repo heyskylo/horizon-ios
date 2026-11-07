@@ -259,6 +259,12 @@ fn mob_swings(m: &Mob, item: &str) -> bool {
         }
         // Panda.mobInteract: its bamboo answers SUCCESS_SERVER.
         Species::Panda if food => return false,
+        // WanderingTrader.mobInteract: trading answers SUCCESS_SERVER, and so
+        // does a spawn egg (Mob.checkAndHandleImportantInteractions); a lead
+        // or a named name tag answers before it.
+        Species::WanderingTrader if !matches!(item, "minecraft:lead" | "minecraft:name_tag") => {
+            return false;
+        }
         // Cat.mobInteract: food tames an untamed cat, and heals a hurt
         // tame one: SUCCESS before Animal.mobInteract is reached.
         Species::Cat if food && (!m.extra.tame || hurt) => return true,
