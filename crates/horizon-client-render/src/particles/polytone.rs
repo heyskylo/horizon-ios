@@ -712,7 +712,7 @@ impl Host for Ctx<'_> {
             (CAMERA, "x" | "y" | "z") => num(frame.camera[axis(name)]),
             (CAMERA, "viewDistance") => num(f64::from(frame.render_distance * 16)),
             (CAMERA, _) => self.positional(ParticleLevel::block_at(frame.camera), name, args),
-            (GLOBAL, "rain") => num(f64::from(frame.rain)),
+            (GLOBAL, "rain") => num(frame.global_rain()),
             (GLOBAL, "time") => num(frame.game_time as f64),
             (GLOBAL, "dayTime") => num(frame.day_time as f64),
             (GLOBAL, "skyType") => num(f64::from(frame.sky_type)),
