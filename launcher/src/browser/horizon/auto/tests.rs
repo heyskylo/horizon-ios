@@ -40,6 +40,7 @@ fn index_of(versions: &[(&str, &str, &Path)]) -> Index {
             capabilities: vec![horizon_mods::Capability::Registries],
             api_level: None,
             game: (*game).into(),
+            broken_on: Vec::new(),
             requires: Vec::new(),
             file: index::File {
                 name: path.file_name().unwrap().to_string_lossy().into_owned(),
@@ -321,4 +322,219 @@ fn the_report_says_what_changed_and_nothing_otherwise() {
         r.lines(),
         ["Updated automatically: Ruby 1.1.0, Glow 2.0.", "held"]
     );
+}
+
+/// Turning a mod off in the Mods page is the player's choice, and an automatic update replaces
+/// the file without undoing it (#10071). A new install and the player's own install turn it on.
+#[test]
+fn an_automatic_update_keeps_a_disabled_mod_off() {
+    use crate::browser::horizon::install_version;
+    use crate::browser::java;
+    let dir = scratch("auto-disabled");
+    let home = dir.join("home");
+    let v1 = ruby(&dir, "1.0.0", &["lamp"], &[]);
+    let v2 = ruby(&dir, "1.1.0", &["lamp", "ore"], &[]);
+    let v3 = ruby(&dir, "1.2.0", &["lamp", "ore", "brick"], &[]);
+    let first = index_of(&[("1.0.0", GAME, &v1)]);
+    let p = first.project("ruby").unwrap();
+    install_version(&first, true, p, &p.versions[0], &home, &|_, _| {}).unwrap();
+    assert!(java::is_enabled(&home, "ruby"), "a new install is on");
+
+    // The player turns it off; the automatic update replaces its file and leaves it off.
+    java::set_enabled(&home, "ruby", false).unwrap();
+    let index = index_of(&[("1.1.0", GAME, &v2), ("1.0.0", GAME, &v1)]);
+    let report = run_with(&index, true, &home, &PLAY, &|_, _| {});
+    assert_eq!(report.updated, ["Ruby 1.1.0"], "{report:?}");
+    assert!(!java::is_enabled(&home, "ruby"), "the update kept it off");
+    assert_eq!(
+        installed_ruby(&home),
+        ("1.1.0".into(), fs::read(&v2).unwrap())
+    );
+
+    // Turned back on, the next automatic update leaves it on.
+    java::set_enabled(&home, "ruby", true).unwrap();
+    let index = index_of(&[("1.2.0", GAME, &v3), ("1.1.0", GAME, &v2)]);
+    let report = run_with(&index, true, &home, &PLAY, &|_, _| {});
+    assert_eq!(report.updated, ["Ruby 1.2.0"], "{report:?}");
+    assert!(java::is_enabled(&home, "ruby"));
+
+    // The player's own install of the installed, disabled mod turns it on again.
+    java::set_enabled(&home, "ruby", false).unwrap();
+    let v4 = ruby(&dir, "1.3.0", &["lamp"], &[]);
+    let index = index_of(&[("1.3.0", GAME, &v4), ("1.2.0", GAME, &v3)]);
+    let p = index.project("ruby").unwrap();
+    install_version(&index, true, p, &p.versions[0], &home, &|_, _| {}).unwrap();
+    assert!(java::is_enabled(&home, "ruby"), "an explicit install is on");
+    assert_eq!(
+        installed_ruby(&home),
+        ("1.3.0".into(), fs::read(&v4).unwrap())
+    );
+}
+
+#[test]
+fn auto_update_and_manual_mutation_do_not_race_or_lose_entries() {
+    use std::sync::mpsc::channel;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let dir = scratch("auto-race-install");
+    let home = dir.join("home");
+    let v1 = ruby(&dir, "1.0.0", &["block1"], &[]);
+    let v2 = ruby(&dir, "1.1.0", &["block1"], &[]);
+    let index = Arc::new(index_of(&[("1.1.0", GAME, &v2), ("1.0.0", GAME, &v1)]));
+
+    // Start with Ruby 1.0.0 installed.
+    let p_ruby = index.project("ruby").unwrap();
+    install_version_guarded(
+        &index,
+        true,
+        p_ruby,
+        &p_ruby.versions[1], // 1.0.0
+        &home,
+        &|_| Ok(()),
+        &|_, _| {},
+    )
+    .unwrap();
+
+    let initial = installed::Installed::load(&home);
+    assert_eq!(initial.entries.len(), 1);
+    assert_eq!(initial.entries[0].version, "1.0.0");
+
+    let (auto_started_tx, auto_started_rx) = channel();
+    let (auto_resume_tx, auto_resume_rx) = channel();
+
+    let home_auto = home.clone();
+    let index_auto = index.clone();
+    let auto_thread = std::thread::spawn(move || {
+        let resume = std::sync::Mutex::new(auto_resume_rx);
+        run_with(&index_auto, true, &home_auto, &PLAY, &|_line, _fraction| {
+            let _ = auto_started_tx.send(());
+            if let Ok(rx) = resume.lock() {
+                let _ = rx.recv_timeout(Duration::from_secs(5));
+            }
+        })
+    });
+
+    auto_started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("auto update started");
+
+    let home_manual = home.clone();
+    let index_manual = index.clone();
+    let manual_thread = std::thread::spawn(move || {
+        let p_coords = index_manual.project("coords_hud").unwrap();
+        install_version_guarded(
+            &index_manual,
+            true,
+            p_coords,
+            &p_coords.versions[0],
+            &home_manual,
+            &|_| Ok(()),
+            &|_, _| {},
+        )
+    });
+
+    let _ = auto_resume_tx.send(());
+
+    let report = auto_thread.join().expect("auto thread finished");
+    assert_eq!(report.updated, vec!["Ruby 1.1.0"]);
+
+    let manual_result = manual_thread.join().expect("manual thread finished");
+    assert!(manual_result.is_ok(), "{:?}", manual_result.err());
+
+    let final_installed = installed::Installed::load(&home);
+    assert_eq!(
+        final_installed.entries.len(),
+        2,
+        "entries clobbered: {:?}",
+        final_installed.entries
+    );
+    let ruby_entry = final_installed
+        .find(SourceId::Horizon, "ruby")
+        .expect("ruby present");
+    assert_eq!(ruby_entry.version, "1.1.0");
+    let coords_entry = final_installed
+        .find(SourceId::Horizon, "coords_hud")
+        .expect("coords_hud present");
+    assert_eq!(coords_entry.version, "0.1.0");
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn auto_update_does_not_revive_concurrently_removed_mod() {
+    use std::sync::mpsc::channel;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let dir = scratch("auto-race-remove");
+    let home = dir.join("home");
+    let v1 = ruby(&dir, "1.0.0", &["block1"], &[]);
+    let v2 = ruby(&dir, "1.1.0", &["block1"], &[]);
+    let index = Arc::new(index_of(&[("1.1.0", GAME, &v2), ("1.0.0", GAME, &v1)]));
+
+    let p_ruby = index.project("ruby").unwrap();
+    install_version_guarded(
+        &index,
+        true,
+        p_ruby,
+        &p_ruby.versions[1],
+        &home,
+        &|_| Ok(()),
+        &|_, _| {},
+    )
+    .unwrap();
+    let p_coords = index.project("coords_hud").unwrap();
+    install_version_guarded(
+        &index,
+        true,
+        p_coords,
+        &p_coords.versions[0],
+        &home,
+        &|_| Ok(()),
+        &|_, _| {},
+    )
+    .unwrap();
+
+    assert_eq!(installed::Installed::load(&home).entries.len(), 2);
+
+    let (auto_started_tx, auto_started_rx) = channel();
+    let (auto_resume_tx, auto_resume_rx) = channel();
+
+    let home_auto = home.clone();
+    let index_auto = index.clone();
+    let auto_thread = std::thread::spawn(move || {
+        let resume = std::sync::Mutex::new(auto_resume_rx);
+        run_with(&index_auto, true, &home_auto, &PLAY, &|_line, _fraction| {
+            let _ = auto_started_tx.send(());
+            if let Ok(rx) = resume.lock() {
+                let _ = rx.recv_timeout(Duration::from_secs(5));
+            }
+        })
+    });
+
+    auto_started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("auto update started");
+
+    let home_manual = home.clone();
+    let remove_thread = std::thread::spawn(move || installed::remove(&home_manual, "coords_hud"));
+
+    let _ = auto_resume_tx.send(());
+
+    let _report = auto_thread.join().expect("auto thread finished");
+    let remove_result = remove_thread.join().expect("remove thread finished");
+    assert!(remove_result.is_ok(), "{:?}", remove_result.err());
+
+    let final_installed = installed::Installed::load(&home);
+    assert_eq!(final_installed.entries.len(), 1);
+    assert!(final_installed
+        .find(SourceId::Horizon, "coords_hud")
+        .is_none());
+    let ruby_entry = final_installed
+        .find(SourceId::Horizon, "ruby")
+        .expect("ruby present");
+    assert_eq!(ruby_entry.version, "1.1.0");
+
+    fs::remove_dir_all(&dir).unwrap();
 }

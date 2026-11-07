@@ -125,8 +125,10 @@ impl Game<'_> {
         self.options_from_title = from_title;
         self.options_to_game = false;
         let minecart_improvements = self.minecart_improvements();
+        let mods_live = self.mods_live_now();
         let ui = &mut self.ui.options;
         ui.open_at(!from_title && self.title.is_none(), page);
+        ui.mods_live = mods_live;
         ui.minecart_improvements = minecart_improvements;
         let root = self.options.resources.clone();
         ui.languages = lang::available(&[&root]);
@@ -221,7 +223,13 @@ impl Game<'_> {
             (true, None) => {
                 let was = window.fullscreen().is_some();
                 if !was {
-                    window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+                    if window.is_maximized() {
+                        window.set_maximized(false);
+                    }
+                    let monitor = window
+                        .current_monitor()
+                        .or_else(|| window.primary_monitor());
+                    window.set_fullscreen(Some(Fullscreen::Borderless(monitor)));
                 }
                 self.ui.options.calibration_fullscreen = Some(was);
             }
@@ -346,6 +354,8 @@ impl Game<'_> {
                 Event::Changed => {
                     self.settings.save(&Self::options_path());
                     self.apply_settings();
+                    self.switch_mods();
+                    self.sync_native_switches();
                     self.sync_pregen_option();
                     self.sync_agent_control();
                     self.ui.options.agent_status = self.agent_status_lines();
@@ -436,6 +446,14 @@ impl Game<'_> {
                 // The website, through ConfirmLinkScreen as other links.
                 Event::OpenModPage(url) => self.confirm_trusted_link(&url, Screen::Options),
                 Event::ListShaderPacks => {
+                    let (key, _) = horizon_client::shader_pack_list::resolve(
+                        &Self::shader_packs_dir(),
+                        &self.settings.horizon.shader_pack,
+                    );
+                    if key != self.settings.horizon.shader_pack {
+                        self.settings.horizon.shader_pack = key;
+                        self.settings.save(&Self::options_path());
+                    }
                     self.settings.shader_packs =
                         horizon_client::shader_pack_list::scan(&Self::shader_packs_dir());
                 }
@@ -456,6 +474,7 @@ impl Game<'_> {
                 Event::NativeSettings(i) => self.native_settings_refresh(i),
                 Event::NativeButton(i, b) => self.native_settings_event(i, b),
                 Event::Credits => self.open_win_screen(false, super::win::Finish::Options),
+                Event::HudEditor => self.open_hud_editor(true),
                 // AccessibilityOptionsScreen's link button: ConfirmLinkScreen
                 // back to the options screen.
                 Event::AccessibilityHelp => {
@@ -615,7 +634,11 @@ impl Game<'_> {
             }
             if let Some(w) = &self.window {
                 let on = w.fullscreen().is_none();
-                w.set_fullscreen(on.then_some(Fullscreen::Borderless(None)));
+                if on && w.is_maximized() {
+                    w.set_maximized(false);
+                }
+                let monitor = w.current_monitor().or_else(|| w.primary_monitor());
+                w.set_fullscreen(on.then_some(Fullscreen::Borderless(monitor)));
                 if !on {
                     windowed_again(w);
                 }
@@ -696,7 +719,7 @@ fn detected_controller_style(
     fallback: horizon_client::gamepad::GlyphStyle,
 ) -> horizon_client::gamepad::GlyphStyle {
     device.map_or(fallback, |d| {
-        horizon_client::gamepad::GlyphStyle::of_vendor(d.vendor)
+        horizon_client::gamepad::GlyphStyle::of_device(d.vendor, d.product)
     })
 }
 

@@ -22,6 +22,13 @@ class ParityIssuesTests(unittest.TestCase):
         # A harness that never passed in an audit (d) gets no issue; one that keeps passing (e) nothing.
         self.assertEqual(issues.plan(now, {}, {}), [])
 
+    def test_many_new_failures_at_once_are_one_report(self):
+        many = [("open", f"h{i}") for i in range(issues.MASS_FAILURE + 1)]
+        self.assertEqual(issues.mass_failure(many + [("comment", "x"), ("close", "y")]),
+                         [f"h{i}" for i in range(issues.MASS_FAILURE + 1)])
+        # A few real regressions still get one issue each.
+        self.assertEqual(issues.mass_failure([("open", "a"), ("open", "b"), ("comment", "c")]), [])
+
 
 if __name__ == "__main__":
     unittest.main()

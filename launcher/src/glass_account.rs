@@ -15,13 +15,24 @@ use horizon_theme::glass::{fill, ink, radius};
 
 impl Launcher {
     pub(super) fn glass_account(&mut self, cx: &mut Context<Self>) -> Div {
+        let wide = self.window_width >= crate::glass_home::WIDE;
         let left = self.glass_who_plays(cx);
         let right = self.glass_microsoft_card(cx);
-        div()
-            .flex()
-            .gap(px(8.))
-            .child(left.flex_1().min_w_0().p(px(24.)))
-            .child(right.flex_none().w(px(400.)))
+        if wide {
+            div()
+                .flex()
+                .flex_row()
+                .gap(px(8.))
+                .child(left.flex_1().min_w(px(280.)).p(px(20.)))
+                .child(right.flex_none().w(px(360.)))
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(16.))
+                .child(left.w_full().min_w_0().p(px(20.)))
+                .child(right.w_full())
+        }
     }
 
     /// The player now, the offline names and the field to add one.
@@ -178,20 +189,20 @@ impl Launcher {
             .child(header)
             .child(
                 ui::text(13., FontWeight::MEDIUM, 0.6)
-                    .mt(px(32.))
+                    .mt(px(20.))
                     .child(tr("Offline names")),
             )
             .child(chips)
             .child(
                 ui::text(13., FontWeight::NORMAL, 0.5)
-                    .mt(px(12.))
+                    .mt(px(10.))
                     .line_height(px(19.5))
                     .child(tr(
                         "3 to 16 letters, numbers or underscores. Switch names from the top bar \
                          too. Online servers don't take offline names.",
                     )),
             )
-            .children(self.skin_panel(cx).map(|p| p.mt(px(16.))))
+            .children(self.skin_panel(cx).map(|p| p.mt(px(12.))))
     }
 
     /// An offline name's chip: its head and name, a tick on the one playing; white at 14 % for

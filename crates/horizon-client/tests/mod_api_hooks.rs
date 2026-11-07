@@ -80,6 +80,39 @@ fn recipe_book_categories_accept_mod_declarations() {
 }
 
 #[test]
+fn layer_definitions_collect_each_mods_layers_in_order() {
+    use horizon_client::mod_api::{
+        CubeListBuilder, LayerDefinition, LayerDefinitionsEvent, MeshDefinition, PartPose,
+        dispatch_layer_definitions,
+    };
+    struct Golem(&'static str);
+    impl Hooks for Golem {
+        fn layer_definitions(&self, event: &mut LayerDefinitionsEvent<'_>) {
+            let mut mesh = MeshDefinition::new();
+            let root = mesh.root();
+            let head = CubeListBuilder::create()
+                .tex_offs(0, 0)
+                .add_box([-4.0, -8.0, -4.0], [8.0, 8.0, 8.0]);
+            mesh.add_or_replace_child(root, "head", head, PartPose::offset(0.0, 6.0, 0.0));
+            event
+                .layers
+                .push((self.0.into(), LayerDefinition::create(mesh, 64, 32)));
+        }
+    }
+    let mods: Vec<Box<dyn Hooks>> = vec![
+        Box::new(Golem("first:golem#main")),
+        Box::new(Golem("second:golem#main")),
+    ];
+    let mut layers = Vec::new();
+    dispatch_layer_definitions(&mods, &mut layers);
+    let ids: Vec<_> = layers.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(ids, ["first:golem#main", "second:golem#main"]);
+    let model = layers[0].1.bake_root();
+    let head = model.get_child("head").expect("the head part");
+    assert_eq!((head.y, head.polygons.len()), (6.0, 6));
+}
+
+#[test]
 fn received_chat_is_replaced_in_order_and_cancel_stops_later_mods() {
     use horizon_client::mod_api::{ClientChatReceivedEvent, Flow, dispatch_client_chat_received};
     use horizon_client::text::Text;
@@ -176,6 +209,74 @@ fn client_packet_hands_a_mod_the_decoded_packet() {
     );
 }
 
+/// #9036, part of #9873: a landing's block change (farmland trampled into
+/// dirt, a turtle egg broken) goes through a hook a mod can cancel, before its
+/// neighbour updates - so a claims mod can keep the crop above standing.
+#[test]
+fn a_landing_change_a_mod_cancels_keeps_the_block_as_it_was() {
+    use horizon_client::mod_api::{
+        EntityChangeBlockV2Event, Flow, Hooks, Host, dispatch_entity_change_block_v2,
+    };
+    struct TestHost;
+    impl Host for TestHost {}
+    struct Claims;
+    impl Hooks for Claims {
+        fn entity_change_block_v2(
+            &self,
+            _host: &mut dyn Host,
+            event: &mut EntityChangeBlockV2Event<'_>,
+        ) -> Flow {
+            // A guest's landing: who trampled, the position and both states.
+            assert_eq!(event.player, Some(7));
+            assert_eq!(event.entity, None);
+            assert_eq!(event.kind, "minecraft:player");
+            assert_eq!(event.pos, [0, 64, 0]);
+            assert_eq!(event.from, "minecraft:farmland");
+            assert_eq!(event.to, "minecraft:dirt");
+            Flow::Cancel
+        }
+    }
+    struct Unreached;
+    impl Hooks for Unreached {
+        fn entity_change_block_v2(
+            &self,
+            _host: &mut dyn Host,
+            _event: &mut EntityChangeBlockV2Event<'_>,
+        ) -> Flow {
+            panic!("a cancelled change is not offered to later mods");
+        }
+    }
+    let mods: Vec<Box<dyn Hooks>> = vec![Box::new(Claims), Box::new(Unreached)];
+    let mut host = TestHost;
+    let mut cancel = false;
+    dispatch_entity_change_block_v2(
+        &mut host,
+        &mods,
+        Some(7),
+        None,
+        "minecraft:player",
+        [0, 64, 0],
+        "minecraft:farmland",
+        "minecraft:dirt",
+        &mut cancel,
+    );
+    assert!(cancel, "the farmland stays");
+    // No mods: the change goes ahead.
+    let mut cancel = false;
+    dispatch_entity_change_block_v2(
+        &mut host,
+        &[],
+        Some(7),
+        None,
+        "minecraft:player",
+        [0, 64, 0],
+        "minecraft:farmland",
+        "minecraft:dirt",
+        &mut cancel,
+    );
+    assert!(!cancel);
+}
+
 #[test]
 fn a_tank_hook_can_refuse_a_fluid() {
     use horizon_client::mod_api::{
@@ -228,4 +329,347 @@ fn a_tank_hook_can_refuse_a_fluid() {
         &mut cancel,
     );
     assert!(!cancel, "the water tank takes water");
+}
+
+/// `AnvilUpdateEvent`: each mod changes the result after the one before it,
+/// vanilla's stays readable, and a cancel stops the mods after it.
+#[test]
+fn an_anvil_update_is_changed_in_turn_and_cancel_stops_later_mods() {
+    use horizon_client::items::ItemStack;
+    use horizon_client::mod_api::{AnvilUpdateEvent, Flow, dispatch_anvil_update};
+    struct TestHost;
+    impl Host for TestHost {}
+    // An anvil recipe of its own: iron and an emerald give a diamond.
+    struct Recipe;
+    impl Hooks for Recipe {
+        fn anvil_update(&self, _host: &mut dyn Host, event: &mut AnvilUpdateEvent<'_>) -> Flow {
+            if event.item_name == Some("void") {
+                return Flow::Cancel;
+            }
+            if &*event.left.item == "minecraft:iron_ingot"
+                && event.right.is_some_and(|r| &*r.item == "minecraft:emerald")
+            {
+                *event.output = Some(ItemStack::new("minecraft:diamond", 1));
+                event.xp_cost = 5;
+                event.material_cost = 1;
+            }
+            Flow::Continue
+        }
+    }
+    // A level off whatever the mods before it charge.
+    struct Discount;
+    impl Hooks for Discount {
+        fn anvil_update(&self, _host: &mut dyn Host, event: &mut AnvilUpdateEvent<'_>) -> Flow {
+            assert_eq!(event.vanilla_xp_cost, 3, "vanilla's cost stays readable");
+            event.xp_cost -= 1;
+            Flow::Continue
+        }
+    }
+    let mods: Vec<Box<dyn Hooks>> = vec![Box::new(Recipe), Box::new(Discount)];
+    let update = |left: &str, right: Option<&str>, item_name: Option<&str>| {
+        let (left, right) = (ItemStack::new(left, 1), right.map(|r| ItemStack::new(r, 4)));
+        let vanilla = ItemStack::new("minecraft:iron_sword", 1);
+        let mut output = Some(vanilla.clone());
+        let (mut xp_cost, mut material_cost, mut canceled) = (3, 0, false);
+        dispatch_anvil_update(
+            &mut TestHost,
+            &mods,
+            7,
+            "Steve",
+            &left,
+            right.as_ref(),
+            item_name,
+            Some(&vanilla),
+            3,
+            0,
+            &mut output,
+            &mut xp_cost,
+            &mut material_cost,
+            &mut canceled,
+        );
+        (
+            output.map(|o| o.item.to_string()),
+            xp_cost,
+            material_cost,
+            canceled,
+        )
+    };
+    let diamond = Some("minecraft:diamond".to_owned());
+    let sword = Some("minecraft:iron_sword".to_owned());
+    assert_eq!(
+        update("minecraft:iron_ingot", Some("minecraft:emerald"), None),
+        (diamond, 4, 1, false)
+    );
+    // Other inputs keep vanilla's result, less the discount.
+    assert_eq!(
+        update("minecraft:iron_sword", None, Some("")),
+        (sword.clone(), 2, 0, false)
+    );
+    // A cancel: the discount never ran, and the caller empties the result.
+    assert_eq!(
+        update("minecraft:iron_sword", None, Some("void")),
+        (sword, 3, 0, true)
+    );
+}
+
+#[test]
+fn tooltip_render_pre_intercepts_rendering_and_draws_gui_items() {
+    use horizon_client::hud::HudBatch;
+    use horizon_client::items::ItemStack;
+    use horizon_client::mod_api::{
+        Flow, KeyCode, TooltipRenderPreEvent, dispatch_tooltip_render_pre,
+    };
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    struct TestHost {
+        draw_count: AtomicU32,
+        with_text_seen: AtomicBool,
+    }
+    impl Host for TestHost {
+        fn gui_draw_item(&self, _batch: &mut HudBatch, stack: &ItemStack, at: [f32; 2]) {
+            if &*stack.item == "minecraft:shulker_box" && at == [16.0, 32.0] {
+                self.draw_count.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        fn gui_draw_item_with(
+            &self,
+            _batch: &mut HudBatch,
+            stack: &ItemStack,
+            at: [f32; 2],
+            text: Option<&str>,
+        ) {
+            if &*stack.item == "minecraft:diamond" && at == [20.0, 40.0] && text == Some("5") {
+                self.with_text_seen.store(true, Ordering::SeqCst);
+            }
+        }
+        fn has_shift_down(&self) -> bool {
+            true
+        }
+        fn has_control_down(&self) -> bool {
+            false
+        }
+        fn has_alt_down(&self) -> bool {
+            false
+        }
+        fn is_key_down(&self, key: KeyCode) -> bool {
+            key == KeyCode::ShiftLeft
+        }
+    }
+
+    struct ShulkerPreviewMod;
+    impl Hooks for ShulkerPreviewMod {
+        fn tooltip_render_pre(
+            &self,
+            host: &mut dyn Host,
+            event: &mut TooltipRenderPreEvent<'_>,
+        ) -> Flow {
+            if &*event.stack.item == "minecraft:shulker_box"
+                && host.has_shift_down()
+                && host.is_key_down(KeyCode::ShiftLeft)
+            {
+                host.gui_draw_item(event.batch, event.stack, [event.x, event.y]);
+                let inner = ItemStack::new("minecraft:diamond", 5);
+                host.gui_draw_item_with(event.batch, &inner, [20.0, 40.0], Some("5"));
+                return Flow::Cancel;
+            }
+            Flow::Continue
+        }
+    }
+
+    let mut host = TestHost {
+        draw_count: AtomicU32::new(0),
+        with_text_seen: AtomicBool::new(false),
+    };
+    let mods: Vec<Box<dyn Hooks>> = vec![Box::new(ShulkerPreviewMod)];
+    let shulker = ItemStack::new("minecraft:shulker_box", 1);
+    assert_eq!(shulker.container().len(), 0);
+    assert!(shulker.custom_data().is_none());
+
+    let mut batch = HudBatch::new([800, 600]);
+    let mut cancel = false;
+    dispatch_tooltip_render_pre(
+        &mut host,
+        &mods,
+        &shulker,
+        &mut batch,
+        16.0,
+        32.0,
+        &mut cancel,
+    );
+
+    assert!(cancel, "tooltip_render_pre cancelled vanilla tooltip");
+    assert_eq!(
+        host.draw_count.load(Ordering::SeqCst),
+        1,
+        "gui_draw_item was called"
+    );
+    assert!(
+        host.with_text_seen.load(Ordering::SeqCst),
+        "gui_draw_item_with was called"
+    );
+
+    let stone = ItemStack::new("minecraft:stone", 64);
+    let mut cancel_stone = false;
+    dispatch_tooltip_render_pre(
+        &mut host,
+        &mods,
+        &stone,
+        &mut batch,
+        16.0,
+        32.0,
+        &mut cancel_stone,
+    );
+    assert!(
+        !cancel_stone,
+        "unhandled stack continues to vanilla tooltip"
+    );
+}
+
+/// #10563: a right-click on an entity hears the point clicked before the
+/// entity's own interact; a claim ends it before the mods after.
+#[test]
+fn entity_interact_specific_hears_the_click_point_and_a_claim_ends_it() {
+    use horizon_client::items::ItemStack;
+    use horizon_client::mod_api::{
+        EntityInteractSpecificEvent, Flow, dispatch_entity_interact_specific,
+    };
+    use std::sync::{Arc, Mutex};
+
+    struct TestHost;
+    impl Host for TestHost {}
+
+    #[derive(Default)]
+    struct Log {
+        calls: Vec<(String, i32, String, [f64; 3])>,
+    }
+
+    struct Recorder {
+        name: String,
+        log: Arc<Mutex<Log>>,
+    }
+    impl Hooks for Recorder {
+        fn entity_interact_specific(
+            &self,
+            _host: &mut dyn Host,
+            event: &mut EntityInteractSpecificEvent<'_>,
+        ) -> Flow {
+            self.log.lock().unwrap().calls.push((
+                self.name.clone(),
+                event.entity,
+                event.kind.to_string(),
+                event.location,
+            ));
+            Flow::Continue
+        }
+    }
+
+    struct Claims;
+    impl Hooks for Claims {
+        fn entity_interact_specific(
+            &self,
+            _host: &mut dyn Host,
+            _event: &mut EntityInteractSpecificEvent<'_>,
+        ) -> Flow {
+            Flow::Cancel
+        }
+    }
+
+    let held = ItemStack::new("minecraft:stick", 1);
+
+    // No claim: both mods hear the call in order, and the second sees the
+    // entity, kind and point the caller passed.
+    let log = Arc::new(Mutex::new(Log::default()));
+    let mods: Vec<Box<dyn Hooks>> = vec![
+        Box::new(Recorder {
+            name: "first".into(),
+            log: log.clone(),
+        }),
+        Box::new(Recorder {
+            name: "second".into(),
+            log: log.clone(),
+        }),
+    ];
+    let mut host = TestHost;
+    let mut claimed = false;
+    dispatch_entity_interact_specific(
+        &mut host,
+        &mods,
+        7,
+        "minecraft:cow",
+        Some(&held),
+        [0.25, 1.5, -0.125],
+        &mut claimed,
+    );
+    assert!(!claimed, "no mod claimed the click");
+    let calls = log.lock().unwrap();
+    assert_eq!(calls.calls.len(), 2, "both mods heard the click");
+    assert_eq!(calls.calls[0].0.as_str(), "first");
+    assert_eq!(calls.calls[1].0.as_str(), "second");
+    assert_eq!(calls.calls[1].1, 7);
+    assert_eq!(calls.calls[1].2.as_str(), "minecraft:cow");
+    assert_eq!(calls.calls[1].3, [0.25, 1.5, -0.125]);
+    drop(calls);
+
+    // A claim stops later mods and sets `claimed`.
+    let log = Arc::new(Mutex::new(Log::default()));
+    let mods: Vec<Box<dyn Hooks>> = vec![
+        Box::new(Claims),
+        Box::new(Recorder {
+            name: "second".into(),
+            log: log.clone(),
+        }),
+    ];
+    let mut host = TestHost;
+    let mut claimed = false;
+    dispatch_entity_interact_specific(
+        &mut host,
+        &mods,
+        7,
+        "minecraft:cow",
+        Some(&held),
+        [0.25, 1.5, -0.125],
+        &mut claimed,
+    );
+    assert!(claimed, "the first mod claimed the click");
+    assert!(
+        log.lock().unwrap().calls.is_empty(),
+        "the second mod was skipped"
+    );
+}
+
+#[test]
+fn a_screen_background_hook_can_cancel_vanilla_gradient() {
+    use horizon_client::mod_api::{
+        Flow, Hooks, Host, ScreenTransparentBackgroundEvent, dispatch_screen_transparent_background,
+    };
+    struct TestHost;
+    impl Host for TestHost {}
+    struct BlurMod;
+    impl Hooks for BlurMod {
+        fn screen_transparent_background(
+            &self,
+            _host: &dyn Host,
+            event: &mut ScreenTransparentBackgroundEvent<'_>,
+        ) -> Flow {
+            if event.screen == "inventory" {
+                Flow::Cancel
+            } else {
+                Flow::Continue
+            }
+        }
+    }
+    let mut batch = horizon_client::hud::HudBatch::new([800, 600]);
+    let mut cancel = false;
+    dispatch_screen_transparent_background(&TestHost, &[], "inventory", &mut batch, &mut cancel);
+    assert!(!cancel, "vanilla gradient drawn without mods");
+    let mods: Vec<Box<dyn Hooks>> = vec![Box::new(BlurMod)];
+    let mut cancel = false;
+    dispatch_screen_transparent_background(&TestHost, &mods, "chest", &mut batch, &mut cancel);
+    assert!(!cancel, "other screens keep vanilla background");
+    let mut cancel = false;
+    dispatch_screen_transparent_background(&TestHost, &mods, "inventory", &mut batch, &mut cancel);
+    assert!(
+        cancel,
+        "inventory cancels vanilla gradient for blur/custom draw"
+    );
 }

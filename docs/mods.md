@@ -14,14 +14,19 @@ Mods are **off by default**. A fresh install has no `horizon-mods` folder and pl
 
 ## Playing with mods
 
-1. Install a mod from the launcher's Mods page ([mod-browser.md](mod-browser.md)), or put its files by hand in the
+1. Install a mod from the launcher's Mods page ([mod-browser.md](mod-browser.md)) or from the game (Options > Mods >
+   **Browse Mods**: Horizon's registry, checked as the launcher checks it), or put its files by hand in the
    game folder (the one holding `options.txt`): a content mod's `.hmod` (or a folder holding `horizon-mod.toml`) in
    `horizon-mods/`. Native mods go in `horizon-native-mods/`, and the launcher builds them
    ([native-mods.md](native-mods.md)).
 2. Options > **Mods** lists them with what each may do ("May add blocks, items, mob effects and entity types to your
    worlds") and a switch. They start off. The choice is kept in `horizon-mods.txt` (`mod.<id>:true`).
-3. A content mod's blocks, items, mob effects and entity types load once, when the game starts: restart the game after
-   a switch.
+3. A switch applies at once when the mod has only assets and data (textures, models, sounds, languages, recipes, tags,
+   loot tables, advancements, functions): the game reloads its resources, then the world's data as `/reload` does,
+   and the players of a world open to LAN get the new data. A mod that adds blocks, items, mob effects, entity or menu
+   types, or changes world generation, still loads only when the game starts: the Mods page says to restart, and its
+   switch waits outside a world. On another server's world every content mod's switch waits: the server owns its
+   data ([design/mod-hotload.md](design/mod-hotload.md)).
 4. A mod that can't load shows why, in red, on its row.
 
 Two turned-on content mods never own the same namespace: the first by file name loads, and the other stays out with
@@ -57,6 +62,22 @@ cargo horizon-mod check target/horizon-mod/my_mod.hmod   # the registry's checks
   with `--key <public key> --signature <file>.minisig`. It reads `.hmod`, `.hnmod`, `.hpack`, resource pack `.zip`
   and `.hshader` files.
 - `registry build|review|check|list|release|page` is the registry repository's CI ([api/mod-index.md](api/mod-index.md)).
+
+### A real-game Recipes check
+
+`python tools/lan_e2e.py --check recipes-hmod --bin-dir PATH` runs two real clients against the
+host's integrated server. `PATH` must contain `horizon-client` compiled with the official native
+Recipes mod and a matching `horizon-ctl`. This opt-in check fails if Recipes is absent; ordinary
+LAN runs do not require it.
+
+The runner installs the same original `tools/fixtures/recipes_hmod` package in both scratch game
+folders. It finds the output of an original recipe (flint to two echo shards), checks unknown recipes
+and missing ingredients, fills the
+crafting grid through Recipes' `+` button, takes the result, and checks authoritative inventory counts
+before and after Save and Quit/rejoin. Logs, screenshots and `recipes-hmod.json` go under `--out`.
+As an assertion canary, changing only the fixture's result count from two to one must fail the custom
+result check; restore it before running the passing case. This is a content scenario, not general
+Java-mod compatibility or custom-item registration coverage.
 
 ### The manifest
 
@@ -217,6 +238,14 @@ gets its own damage and durability, or a tool its mining speed:
       "operation": "add_value", "slot": "mainhand" }],
     "!minecraft:repairable": {} } }
 ```
+
+An item may set `"place_block": "ruby:frame"` to place an ordinary block while retaining its
+own item ID. The target must exist and be a vanilla block or a block in the item's namespace;
+it may have `"item": false`. Multiple items can place the same block. Components still come
+from the item template; specialized behavior such as a sign or bucket item's placement is not
+copied. The compiled binding is used by server placement and client prediction. Placement
+contexts receive the original item ID, and survival placement consumes that item's stack.
+Without `place_block`, template behavior is unchanged.
 
 Native mods can register component types before content loads. A content item
 can set a registered type with a JSON value, such as `"sample:charge": {"charge": 42}`.
@@ -426,7 +455,7 @@ A pool addition holds `"elements"` as a pool does, a processor list addition `"p
 Lithostitched's `add_structure_set_entries`, `add_template_pool_elements` and `add_processor_list_processors` modifiers
 do on NeoForge and Fabric, and `horizon-port-pack carry` writes the last two from those.
 
-A mod's own configured and placed features (`data/<ns>/worldgen/configured_feature/`, `placed_feature/`) and mob spawn
+A mod's own configured and placed features (`data/<ns>/worldgen/feature/`, 26.3's folder, or the older `configured_feature/`; `placed_feature/`) and mob spawn
 changes reach biomes it does not own (vanilla's) through NeoForge's biome modifiers, files in
 `data/<ns>/neoforge/biome_modifier/` (older Forge mods: `data/<ns>/forge/biome_modifier/`, `forge:` types).
 `add_features` appends its `features` to one generation `step` of every biome in `biomes`; `remove_features` takes them

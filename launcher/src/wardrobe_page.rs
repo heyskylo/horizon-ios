@@ -7,7 +7,7 @@
 //! basket and the founder claim, paid on the website; "Claim for free" where Paddle doesn't sell:
 //! `Claim::here`, decided by the service), and three switches:
 //! Show my cosmetics (the account's, on the service), Hide
-//! other players' cosmetics and Show other players' auras and trails (the game's
+//! other players' cosmetics and Hide other players' trails and auras (the game's
 //! `horizon-extras.txt`, `horizon_cosmetics::prefs`, also in its settings).
 //!
 //! It opens on the outfit kept on disk (`wardrobe::Saved`), so it shows offline and when the
@@ -35,11 +35,14 @@ const TOAST: Duration = Duration::from_secs(4);
 
 /// The slots a row each, with their names. Name tags have no model; launcher themes are free in
 /// Settings, not worn.
-const SLOTS: [(&str, &str); 5] = [
+const SLOTS: [(&str, &str); 8] = [
     ("head", "Head"),
     ("back", "Back"),
     ("torso", "Shirt"),
     ("shoulder", "Shoulder pet"),
+    ("companion", "Companion"),
+    ("trail", "Trail"),
+    ("aura", "Aura"),
     ("name_tag", "Name tag"),
 ];
 
@@ -504,6 +507,12 @@ impl Launcher {
                 }
                 saved.me = Some(me);
             });
+            // Paddle sells where the player is now: the Shop offers its free checkout instead.
+            if result.as_ref().is_err_and(Error::use_checkout) {
+                if let Some(me) = saved.me.as_mut() {
+                    me.claim.one_click = false;
+                }
+            }
             if let Err(e) = saved.save(&dir(), &uuid) {
                 eprintln!("Horizon: the outfit is not saved: {e}");
             }
@@ -564,7 +573,7 @@ impl Launcher {
         // The founder set's order: head, shirt, back, name tag.
         let order = |i: &Item| {
             use horizon_cosmetics::Slot::*;
-            [Head, Torso, Back, Shoulder, NameTag]
+            [Head, Torso, Back, Shoulder, Companion, Trail, Aura, NameTag]
                 .iter()
                 .position(|s| *s == i.slot)
         };
@@ -576,6 +585,9 @@ impl Launcher {
             horizon_cosmetics::Slot::Shoulder => "shoulder",
             horizon_cosmetics::Slot::NameTag => "name_tag",
             horizon_cosmetics::Slot::Emote => "emote",
+            horizon_cosmetics::Slot::Companion => "companion",
+            horizon_cosmetics::Slot::Trail => "trail",
+            horizon_cosmetics::Slot::Aura => "aura",
         };
         let state = std::env::var("HORIZON_WARDROBE_STATE").unwrap_or_default();
         let mut equipped = std::collections::BTreeMap::new();
@@ -1292,13 +1304,13 @@ impl Launcher {
             )
             .child(
                 item(
-                    "wardrobe-auras",
-                    prefs.auras,
-                    "Show other players' auras and trails",
+                    "wardrobe-hide-fx",
+                    prefs.hide_fx,
+                    "Hide other players' trails and auras",
                     "Off by default. Also in the game's Horizon settings.",
                 )
                 .on_click(save(Prefs {
-                    auras: !prefs.auras,
+                    hide_fx: !prefs.hide_fx,
                     ..prefs
                 })),
             )

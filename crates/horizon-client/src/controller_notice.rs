@@ -4,6 +4,7 @@
 //! reconnects, a solo game's controller coming and going) decides that for itself.
 use crate::gamepad::{Button, GlyphStyle};
 use crate::hud::{HudAtlas, HudBatch, rgba};
+use crate::pad_glyph;
 use crate::toasts::Slide;
 use std::time::{Duration, Instant};
 
@@ -129,12 +130,9 @@ impl NoticeSlot {
         let w = batch.width;
         let width = |text: &str| HudBatch::text_width(atlas, text).ceil();
         let max = (w - 24.0).min(260.0);
-        let glyph = notice.glyph.map(|g| {
-            (
-                g.button.label(g.style),
-                width(g.button.label(g.style)) + 4.0,
-            )
-        });
+        let glyph = notice
+            .glyph
+            .map(|g| (g, pad_glyph::width(atlas, g.button, g.style) + 4.0));
         let indent = glyph.map_or(0.0, |g| g.1);
         let lines = crate::split_profiles::wrap(&notice.body, max - indent, width);
         let inner = lines
@@ -151,8 +149,8 @@ impl NoticeSlot {
         for (k, line) in lines.iter().enumerate() {
             let lx = (px + (pw - width(line) - indent) / 2.0).floor();
             let y = py + 18.0 + 10.0 * k as f32;
-            if let (0, Some((label, _))) = (k, glyph) {
-                batch.text(atlas, label, lx, y, rgba(255, 255, 255, 255), false);
+            if let (0, Some((g, _))) = (k, glyph) {
+                pad_glyph::draw(batch, atlas, g.button, g.style, lx, y);
             }
             batch.text(atlas, line, lx + indent, y, rgba(200, 200, 200, 255), false);
         }
@@ -171,20 +169,6 @@ pub fn panel(batch: &mut HudBatch, atlas: &HudAtlas, [px, py, pw, ph]: [f32; 4])
     ] {
         batch.fill(atlas, x, y, fw, fh, edge);
     }
-}
-
-/// A button as printed on the pad, in its colour, on a dark key `gw` wide.
-pub fn key(
-    batch: &mut HudBatch,
-    atlas: &HudAtlas,
-    label: &str,
-    color: u32,
-    x: f32,
-    y: f32,
-    gw: f32,
-) {
-    batch.fill(atlas, x - 1.0, y - 2.0, gw, 11.0, rgba(40, 40, 40, 255));
-    batch.text(atlas, label, x + 1.0, y, color, false);
 }
 
 #[cfg(test)]
