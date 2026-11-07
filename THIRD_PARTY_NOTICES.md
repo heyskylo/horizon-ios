@@ -256,3 +256,22 @@ NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
 LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+## fdlibm
+
+`crates/horizon-core/src/jmath/fdlibm.rs` and the `fdlibm_asin`, `fdlibm_atan` and
+`fdlibm_atan2` functions in `crates/horizon-core/src/geometry/trig.rs` are Rust ports of
+[fdlibm](https://www.netlib.org/fdlibm/) 5.3, Sun's freely distributable math library, whose
+results the Java SE API specifies for `StrictMath`. `fdlibm.rs` ports `e_log.c`, `e_log10.c`,
+`s_cbrt.c` and `e_hypot.c`, and, with fused multiply-adds, `s_sin.c`, `s_cos.c`, `k_sin.c`,
+`k_cos.c` and `e_rem_pio2.c`; `trig.rs` ports `e_asin.c`, `s_atan.c` and `e_atan2.c`. This
+notice also heads both files:
+
+```
+Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+
+Developed at SunSoft, a Sun Microsystems, Inc. business.
+Permission to use, copy, modify, and distribute this
+software is freely granted, provided that this notice
+is preserved.
+```
