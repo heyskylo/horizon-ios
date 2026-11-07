@@ -5580,6 +5580,7 @@ impl Game<'_> {
                         pl.position = to;
                         pl.velocity = Vec3::ZERO;
                         pl.fall_distance = 0.0;
+                        pl.impulse.reset();
                         pl.teleported = true;
                     }
                     if self.lan_acting.is_some() {
@@ -8393,6 +8394,78 @@ mod tests {
             corners.iter().copied().reduce(glam::Vec3::min).unwrap(),
             corners.iter().copied().reduce(glam::Vec3::max).unwrap(),
         )
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn ender_pearl_clears_impulse_before_next_fall() {
+        use super::{Game, Hit, Projectile, Vec3, Who};
+        use crate::game::{Audio, Options, Progress, Settings, load_resources};
+        use horizon_client::motion::{MotionWorld, PlayerMotion};
+
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let mut player = PlayerMotion::new(game.motion, Vec3::new(0.0, 64.0, 0.0)).unwrap();
+        player
+            .impulse
+            .set_ignore_fall_damage(true, Some(player.position));
+        player.fall_distance = 4.0;
+        game.player = Some(player);
+        let destination = Vec3::new(0.0, 80.0, 0.0);
+        let mut pearl = Projectile::new(ProjectileKind::EnderPearl, destination, Some(Who::Player));
+        pearl.previous = destination;
+        game.projectile_hit(
+            &pearl,
+            Hit::Block {
+                pos: [0, 80, 0],
+                at: destination,
+                face: [0; 3],
+            },
+        )
+        .unwrap();
+        let player = game.player.as_mut().unwrap();
+        assert_eq!(player.position, destination);
+        assert_eq!(player.fall_distance, 0.0);
+        let damaged = MotionWorld {
+            entities: &[],
+            player,
+            scene: &mut game.world,
+            assets: &game.pack.assets,
+            collision_binding: game.collision,
+            resources: game.motion,
+            health: &game.health_resources,
+        }
+        .cause_mount_fall(10.0, 1.0)
+        .unwrap();
+        assert!(
+            damaged,
+            "a ten-block fall after the teleport must cause damage"
+        );
     }
 
     #[test]
