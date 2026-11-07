@@ -670,6 +670,49 @@ impl Game<'_> {
                         Ok(())
                     })?;
                 }
+                "mob_interact" => {
+                    // The owner's real Interact packet on a live mob, by UUID.
+                    let uuid = u128::from_str_radix(
+                        &op["uuid"]
+                            .as_str()
+                            .ok_or("mob click: missing UUID")?
+                            .replace('-', ""),
+                        16,
+                    )?;
+                    self.in_owner_level(|g| -> Result<()> {
+                        let id = g
+                            .mob_by_uuid(horizon_client::lan::playerdata::uuid_ints(uuid))
+                            .filter(|id| g.mobs.iter().any(|m| m.id == *id && !m.removed))
+                            .ok_or("mob click: missing live mob")?;
+                        let owner = g.serving.as_ref().ok_or("mob click: no server")?.owner;
+                        let conn = g
+                            .lan
+                            .as_ref()
+                            .and_then(|h| {
+                                h.hub
+                                    .guests
+                                    .iter()
+                                    .find(|p| p.uuid == owner && p.placed)
+                                    .map(|p| p.conn)
+                            })
+                            .ok_or("mob click: owner not connected")?;
+                        let mut host = g.lan.take().ok_or("mob click: no hub")?;
+                        g.lan_guest_packet(
+                            &mut host,
+                            conn,
+                            horizon_protocol::packets::play::Serverbound::Interact(
+                                horizon_protocol::packets::play::Interact {
+                                    id: id as i32,
+                                    hand: 0,
+                                    location: [0.0; 3],
+                                    secondary: false,
+                                },
+                            ),
+                        );
+                        g.lan = Some(host);
+                        Ok(())
+                    })?;
+                }
                 "use_item" => {
                     let owner = self
                         .serving
