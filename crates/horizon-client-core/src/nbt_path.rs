@@ -726,11 +726,16 @@ fn parse_node(text: &str, i: usize, first: bool) -> Result<(Node, usize), PathEr
                 Some(b']') => Ok((Node::AllElements, j + 1)),
                 _ => {
                     let start = j;
-                    if b.get(j) == Some(&b'-') {
+                    // StringReader.readInt scans all allowed number characters
+                    // before parsing, including malformed signs and decimal points.
+                    while b
+                        .get(j)
+                        .is_some_and(|c| c.is_ascii_digit() || matches!(c, b'-' | b'.'))
+                    {
                         j += 1;
                     }
-                    while b.get(j).is_some_and(u8::is_ascii_digit) {
-                        j += 1;
+                    if start == j {
+                        return Err(PathError::new("parsing.int.expected", vec![], start));
                     }
                     let n: i32 = text[start..j].parse().map_err(|_| {
                         PathError::new(
@@ -792,6 +797,13 @@ fn read_quoted(text: &str, i: usize) -> Result<(String, usize), PathError> {
     let mut escaped = false;
     for (o, c) in text[i + 1..].char_indices() {
         if escaped {
+            if c != quote && c != '\\' {
+                return Err(PathError::new(
+                    "parsing.quote.escape",
+                    vec![c.to_string()],
+                    i + 1 + o,
+                ));
+            }
             out.push(c);
             escaped = false;
         } else if c == '\\' {
@@ -840,6 +852,40 @@ fn parse_compound(text: &str, i: usize) -> Result<(Tag, usize), PathError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn quoted_escapes_and_index_tokens_match_brigadier() {
+        let cases = [
+            (r#""a\q""#, "parsing.quote.escape", vec!["q"], 3),
+            (r#"'a\x'"#, "parsing.quote.escape", vec!["x"], 3),
+            ("[1.0]", "parsing.int.invalid", vec!["1.0"], 1),
+            ("[.]", "parsing.int.invalid", vec!["."], 1),
+            ("[--1]", "parsing.int.invalid", vec!["--1"], 1),
+            ("[2147483648]", "parsing.int.invalid", vec!["2147483648"], 1),
+            ("[+1]", "parsing.int.expected", vec![], 1),
+            (r#""é\q""#, "parsing.quote.escape", vec!["q"], 4),
+            (r#""é"[1.0]"#, "parsing.int.invalid", vec!["1.0"], 5),
+        ];
+        let mut failures = Vec::new();
+        for (text, key, args, cursor) in cases {
+            match NbtPath::parse_prefix(text) {
+                Err(error) if error.key == key && error.args == args && error.cursor == cursor => {}
+                other => failures.push(format!("{text:?}: {other:?}")),
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn valid_quoted_escapes_still_select_the_exact_field() {
+        let root = Tag::compound([("a\"b", Tag::Int(7)), ("a\\b", Tag::Int(8))]);
+        for (path, value) in [(r#""a\"b""#, 7), (r#""a\\b""#, 8)] {
+            assert_eq!(
+                NbtPath::parse(path).unwrap().get(&root).unwrap(),
+                vec![Tag::Int(value)]
+            );
+        }
+    }
+
     #[test]
     fn field_provenance_handles_quotes_and_filters_without_matching_lists() {
         for text in [
