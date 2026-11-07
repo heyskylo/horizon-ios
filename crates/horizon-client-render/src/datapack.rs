@@ -731,14 +731,54 @@ impl DataStore {
         }
         s
     }
-    /// `FunctionManager.getTag`: the functions a tag expands to (nested tags
-    /// included, each function once).
+    /// `ServerFunctionLibrary.getTag`: only valid function tags expand
+    /// (nested tags included, each function once).
     pub fn tag_functions(&self, id: &str) -> Vec<String> {
         let mut out = Vec::new();
         let mut seen_fns = std::collections::HashSet::new();
         let mut seen_tags = std::collections::HashSet::new();
-        self.expand(id, &mut out, &mut seen_fns, &mut seen_tags);
+        let invalid = self.invalid_function_tags(id);
+        self.expand(id, &mut out, &mut seen_fns, &mut seen_tags, &invalid);
         out
+    }
+    /// `TagLoader.tryBuildTag`: missing required members invalidate their tag and
+    /// required parents. Optional invalid children contribute nothing.
+    /// Resolve against the current accepted function map, without caching a
+    /// candidate store or changing the existing expansion's cycle handling.
+    fn invalid_function_tags<'a>(&'a self, id: &'a str) -> std::collections::HashSet<&'a str> {
+        let mut invalid = std::collections::HashSet::new();
+        let mut parents: std::collections::HashMap<&str, Vec<&str>> =
+            std::collections::HashMap::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut pending = vec![id];
+        while let Some(tag) = pending.pop() {
+            if !seen.insert(tag) {
+                continue;
+            }
+            let Some(entries) = self.function_tags.get(tag) else {
+                invalid.insert(tag);
+                continue;
+            };
+            for (entry, required) in entries {
+                if let Some(child) = entry.strip_prefix('#') {
+                    pending.push(child);
+                    if *required {
+                        parents.entry(child).or_default().push(tag);
+                    }
+                } else if *required && !self.functions.contains_key(entry) {
+                    invalid.insert(tag);
+                }
+            }
+        }
+        pending.extend(invalid.iter().copied());
+        while let Some(child) = pending.pop() {
+            for &parent in parents.get(child).into_iter().flatten() {
+                if invalid.insert(parent) {
+                    pending.push(parent);
+                }
+            }
+        }
+        invalid
     }
     /// Depth-first walk keeping first-seen order. Each tag is expanded at most
     /// once, so reference cycles end and nesting depth is not capped.
@@ -748,18 +788,19 @@ impl DataStore {
         out: &mut Vec<String>,
         seen_fns: &mut std::collections::HashSet<&'a str>,
         seen_tags: &mut std::collections::HashSet<&'a str>,
+        invalid: &std::collections::HashSet<&'a str>,
     ) {
-        if !seen_tags.insert(id) {
+        if invalid.contains(id) || !seen_tags.insert(id) {
             return;
         }
         let Some(entries) = self.function_tags.get(id) else {
             return;
         };
-        for (e, required) in entries {
+        for (e, _) in entries {
             match e.strip_prefix('#') {
-                Some(inner) => self.expand(inner, out, seen_fns, seen_tags),
+                Some(inner) => self.expand(inner, out, seen_fns, seen_tags, invalid),
                 None => {
-                    if (self.functions.contains_key(e) || *required) && seen_fns.insert(e) {
+                    if self.functions.contains_key(e) && seen_fns.insert(e) {
                         out.push(e.clone());
                     }
                 }
@@ -1240,6 +1281,20 @@ mod tests {
     #[test]
     fn tag_resolution_dedupes_fast_ends_cycles_and_nests_deeply() {
         let mut store = DataStore::default();
+        // Every referenced function exists; missing required ones invalidate a tag.
+        for id in (0..25_000)
+            .map(|i| format!("t:f{i}"))
+            .chain(["t:x", "t:y", "t:deep"].map(str::to_owned))
+        {
+            store.functions.insert(
+                id.clone(),
+                Function {
+                    id,
+                    lines: Vec::new(),
+                    parameters: Vec::new(),
+                },
+            );
+        }
         let big: Vec<(String, bool)> = (0..50_000)
             .map(|i| (format!("t:f{}", i % 25_000), true))
             .collect();

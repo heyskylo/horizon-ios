@@ -1694,3 +1694,220 @@ mod entity_score_tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
+
+#[cfg(test)]
+mod required_tag_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn real_pack_required_tag_failures_execute_no_partial_functions() {
+        use crate::game::{Audio, Options, Settings, load_resources};
+        use std::time::{Instant, SystemTime, UNIX_EPOCH};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &crate::game::Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-required-tags-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let pack = dir.join("datapacks/h145");
+        let write = |path: &str, body: &str| {
+            let path = pack.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        };
+        let (major, minor) = horizon_core::version::DATA_PACK_FORMAT;
+        write(
+            "pack.mcmeta",
+            &serde_json::json!({"pack": {
+                "description": "Required dependency test", "pack_format": major,
+                "min_format": [major, minor], "max_format": [major, minor],
+            }})
+            .to_string(),
+        );
+        for (i, name) in ["a", "b", "c"].iter().enumerate() {
+            write(
+                &format!("data/h145/function/{name}.mcfunction"),
+                &format!(
+                    "scoreboard players add {name} h145 1\nscoreboard players operation order h145 *= ten h145\nscoreboard players add order h145 {}\n",
+                    i + 1,
+                ),
+            );
+        }
+        let tags = serde_json::json!({
+            "empty": [], "ordered": ["h145:a", "h145:b", "h145:a"],
+            "nested": ["#h145:empty", "#h145:ordered", "h145:a"],
+            "optional_member": ["h145:a", {"id":"h145:missing","required":false}, "h145:b"],
+            "optional_child": ["h145:a", {"id":"#h145:missing","required":false}, "h145:b"],
+            "missing_first": ["h145:missing", "h145:a"],
+            "missing_last": ["h145:a", "h145:missing"],
+            "missing_child": ["h145:a", "#h145:missing"],
+            "invalid_child": ["h145:c", "h145:missing"],
+            "required_invalid_child": ["h145:a", "#h145:invalid_child", "h145:b"],
+            "optional_invalid_child": ["h145:a", {"id":"#h145:invalid_child","required":false}, "h145:b"],
+        });
+        for (name, values) in tags.as_object().unwrap() {
+            write(
+                &format!("data/h145/tags/function/{name}.json"),
+                &serde_json::json!({"values": values}).to_string(),
+            );
+        }
+        game.world_root = dir.clone();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let run = |game: &mut Game<'_>, line: &str| {
+            game.exec = ExecState::default();
+            let source = game.player_source();
+            if let Err(error) = game.execute_line(line, source) {
+                assert!(line.contains("function #h145:"), "{line}: {error:?}");
+                assert_eq!(error.key, "commands.function.scheduled.no_functions");
+            }
+        };
+        run(&mut game, "scoreboard objectives add h145 dummy");
+        run(&mut game, "scoreboard players set ten h145 10");
+        run(&mut game, "scoreboard players set sentinel h145 73");
+        let clock = game.world.game_time;
+        run(&mut game, "reload");
+        assert_eq!(
+            game.score.board.score("sentinel", "h145").unwrap().value,
+            73
+        );
+        assert!(game.fns.enabled.contains(&"file/h145".to_owned()));
+        assert!(
+            game.fns.store.errors.is_empty(),
+            "{:?}",
+            game.fns.store.errors
+        );
+        for name in ["a", "b", "c"] {
+            assert!(
+                game.fns
+                    .store
+                    .functions
+                    .contains_key(&format!("h145:{name}"))
+            );
+        }
+        for name in tags.as_object().unwrap().keys() {
+            assert!(
+                game.fns
+                    .store
+                    .function_tags
+                    .contains_key(&format!("h145:{name}"))
+            );
+        }
+        let score = |game: &Game<'_>, key: &str| game.score.board.score(key, "h145").unwrap().value;
+        let reset = |game: &mut Game<'_>| {
+            for key in ["a", "b", "c", "order"] {
+                run(game, &format!("scoreboard players set {key} h145 0"));
+                assert_eq!(score(game, key), 0);
+            }
+        };
+        // Independent actual functions and valid tag controls run before the defect assertions.
+        for (target, expected) in [
+            ("h145:a", [1, 0, 0, 1]),
+            ("h145:b", [0, 1, 0, 2]),
+            ("h145:c", [0, 0, 1, 3]),
+            ("#h145:empty", [0, 0, 0, 0]),
+            ("#h145:ordered", [1, 1, 0, 12]),
+            ("#h145:nested", [1, 1, 0, 12]),
+            ("#h145:optional_member", [1, 1, 0, 12]),
+            ("#h145:optional_child", [1, 1, 0, 12]),
+        ] {
+            reset(&mut game);
+            run(&mut game, &format!("function {target}"));
+            assert_eq!(
+                [
+                    score(&game, "a"),
+                    score(&game, "b"),
+                    score(&game, "c"),
+                    score(&game, "order")
+                ],
+                expected,
+                "{target}"
+            );
+        }
+        println!(
+            "H145 actual pack metadata, functions, empty/nested/dedup, optional-missing and reload controls admitted"
+        );
+        let mut failures = Vec::new();
+        for name in [
+            "missing_first",
+            "missing_last",
+            "missing_child",
+            "invalid_child",
+            "required_invalid_child",
+            "optional_invalid_child",
+        ] {
+            reset(&mut game);
+            run(&mut game, "scoreboard players set result h145 31");
+            run(&mut game, "scoreboard players set success h145 17");
+            assert_eq!((score(&game, "result"), score(&game, "success")), (31, 17));
+            run(
+                &mut game,
+                &format!(
+                    "execute store result score result h145 store success score success h145 run function #h145:{name}"
+                ),
+            );
+            let actual = [
+                score(&game, "a"),
+                score(&game, "b"),
+                score(&game, "c"),
+                score(&game, "order"),
+            ];
+            let expected = if name == "optional_invalid_child" {
+                [1, 1, 0, 12]
+            } else {
+                [0, 0, 0, 0]
+            };
+            if actual != expected {
+                failures.push(format!("{name}: {actual:?} expected {expected:?}"));
+            }
+            let ids = game.fns.store.tag_functions(&format!("h145:{name}"));
+            let expected_ids: Vec<String> = if name == "optional_invalid_child" {
+                vec!["h145:a".into(), "h145:b".into()]
+            } else {
+                Vec::new()
+            };
+            if ids != expected_ids {
+                failures.push(format!(
+                    "{name}: DataStore {ids:?} expected {expected_ids:?}"
+                ));
+            }
+        }
+        assert_eq!(game.world.game_time, clock);
+        drop(game);
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(
+            failures.is_empty(),
+            "required tag partial execution: {failures:#?}"
+        );
+    }
+}
