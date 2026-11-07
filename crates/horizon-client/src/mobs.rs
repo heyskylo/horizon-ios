@@ -4156,14 +4156,16 @@ impl Mob {
     /// living mob (6 << amplifier, magic) and heals an undead one, a healing effect
     /// the reverse (4 << amplifier), both scaled by `scale`.
     pub fn apply_heal_or_harm(&mut self, harm: bool, inverted: bool, amplifier: i32, scale: f64) {
-        let amp = amplifier.clamp(0, 30);
+        // HealOrHarmMobEffect.applyEffectTick: Java's `<<` takes the distance
+        // modulo 32 and wraps; a heal is at least 0.
+        let shift = amplifier as u32;
         if harm != inverted {
             self.damage(
-                (scale * f64::from(6i32 << amp)) as i32 as f32,
+                (scale * f64::from(6i32.wrapping_shl(shift))) as i32 as f32,
                 Damage::of(DamageKind::Magic),
             );
         } else {
-            let heal = (scale * f64::from(4i32 << amp)) as i32 as f32;
+            let heal = (scale * f64::from(4i32.wrapping_shl(shift).max(0))) as i32 as f32;
             self.heal(heal);
         }
     }
@@ -4200,15 +4202,10 @@ impl Mob {
         if self.species() == Species::Wither || !self.can_be_affected(effect) {
             return;
         }
-        // AbsorptionMobEffect.addAttributeModifiers: at least 4 hearts-halves per level.
-        if effect == "minecraft:absorption"
-            && self
-                .extra
-                .effects
-                .iter()
-                .find(|e| e.0 == effect)
-                .is_none_or(|e| amplifier > e.2)
-        {
+        // AbsorptionMobEffect.onEffectStarted, which addEffect runs for every
+        // effect it accepts, new, stronger or not: at least 4 hearts-halves per
+        // level of the effect given (#11386).
+        if effect == "minecraft:absorption" {
             self.absorption = self.absorption.max(4.0 * (amplifier + 1) as f32);
         }
         if let Some(e) = self.extra.effects.iter_mut().find(|e| e.0 == effect) {
