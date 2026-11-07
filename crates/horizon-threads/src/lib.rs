@@ -1,6 +1,7 @@
 //! Scheduling hints for the game's threads and its allocator: the few OS calls
 //! that the other crates, which forbid unsafe code, can't make themselves.
 
+pub mod alloc_count;
 /// The game window's boot screen, before wgpu's first frame paints over it.
 #[cfg(target_os = "windows")]
 pub mod boot_paint;
@@ -350,6 +351,16 @@ pub fn catch_stop_signals() {}
 pub type Allocator = mimalloc::MiMalloc;
 /// The game's mimalloc allocator.
 pub const ALLOCATOR: Allocator = mimalloc::MiMalloc;
+
+/// The game's global allocator: the census, else counting mimalloc, else mimalloc.
+#[cfg(feature = "alloc-census")]
+pub type GameAllocator = heap_census::CensusAllocator;
+#[cfg(all(feature = "alloc-count", not(feature = "alloc-census")))]
+pub type GameAllocator = alloc_count::CountingAllocator;
+#[cfg(not(feature = "alloc-count"))]
+pub type GameAllocator = mimalloc::MiMalloc;
+/// The value of [`GameAllocator`].
+pub const GAME_ALLOCATOR: GameAllocator = GameAllocator {};
 
 /// The global allocator of a build with the `alloc-census` feature: live
 /// heap bytes by startup step and thread, for `horizon-ctl memory`.

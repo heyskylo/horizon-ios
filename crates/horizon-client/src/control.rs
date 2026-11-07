@@ -10,6 +10,7 @@
 //! writes `{"transport":"tcp","port":N,"token":"..."}` to the path, readable
 //! only by its user; a client's first line must then be `auth TOKEN`.
 use crate::block_entity_render::StaticCacheFrameStats;
+use horizon_threads::alloc_count::{Counts, ON};
 use std::{
     io::{self, BufRead, BufReader, Read, Write},
     net::{Ipv4Addr, TcpListener, TcpStream},
@@ -20,6 +21,7 @@ use std::{
         mpsc,
     },
     thread,
+    time::Instant,
 };
 
 #[cfg(unix)]
@@ -393,6 +395,7 @@ fn serve(stream: Stream, sender: &mpsc::Sender<Request>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     /// The check agrees with the system at every length around its limit.
     #[cfg(unix)]
@@ -537,6 +540,67 @@ mod tests {
         assert_eq!(summary["static_entities_drawn_avg_per_frame"], 4.0);
         assert_eq!(summary["dynamic_entities_drawn_avg_per_frame"], 3.0);
     }
+
+    fn counts(allocs: u64, bytes: u64, frees: u64, freed: u64) -> Counts {
+        Counts {
+            allocs,
+            bytes,
+            frees,
+            freed,
+        }
+    }
+
+    #[test]
+    fn allocations_are_summarized_per_frame_and_per_second() {
+        let mut stats = FrameStats::default();
+        let start = Instant::now();
+        for (i, a) in [100u64, 200, 300, 400, 1000].into_iter().enumerate() {
+            // Window: 10 blocks kept; process: twice the blocks, 1 MiB per 100, 20 blocks and 1 MiB kept.
+            let window = counts(a, a * 1024, a - 10, 0);
+            let all = counts(
+                2 * a,
+                (2 * a / 100) << 20,
+                2 * a - 20,
+                ((2 * a / 100) - 1) << 20,
+            );
+            stats.record_allocs(window, all, start + Duration::from_millis(100 * i as u64));
+        }
+        let alloc = stats.alloc_summary();
+        let window = &alloc["window_thread"];
+        assert_eq!(window["allocs_per_frame"]["avg"], 400.0);
+        assert_eq!(window["allocs_per_frame"]["p50"], 300.0);
+        assert_eq!(window["allocs_per_frame"]["p95"], 1000.0);
+        assert_eq!(window["allocs_per_frame"]["max"], 1000.0);
+        assert_eq!(window["kib_per_frame"]["p50"], 300.0);
+        assert_eq!(window["frees_per_frame_avg"], 390.0);
+        // The first frame only starts the clock: the rates cover the four after it, 0.4 s.
+        let process = &alloc["process"];
+        assert_eq!(process["allocs_per_s"], 9500.0);
+        assert_eq!(process["frees_per_s"], 9300.0);
+        assert_eq!(process["mib_per_s"], 95.0);
+        assert_eq!(process["net_mib"], 4.0);
+        assert_eq!(stats.alloc_counts(), [100, 200, 300, 400, 1000]);
+    }
+
+    #[test]
+    fn one_frame_has_counts_but_no_rate() {
+        let mut stats = FrameStats::default();
+        stats.record_allocs(counts(5, 64, 5, 64), counts(9, 99, 9, 99), Instant::now());
+        let alloc = stats.alloc_summary();
+        assert_eq!(alloc["window_thread"]["allocs_per_frame"]["max"], 5.0);
+        assert!(alloc["process"]["allocs_per_s"].is_null());
+        assert!(FrameStats::default().alloc_summary().is_null());
+    }
+
+    #[test]
+    fn the_summary_has_alloc_only_when_the_game_counts() {
+        let mut stats = FrameStats::default();
+        stats.record(10.0);
+        stats.record_allocs(counts(5, 64, 5, 64), Counts::default(), Instant::now());
+        assert_eq!(stats.summary()["alloc"].is_null(), !ON);
+        stats.reset();
+        assert!(stats.alloc_counts().is_empty() && stats.alloc_summary().is_null());
+    }
 }
 
 /// Frame durations since the last reset, summarized like the Java recorder,
@@ -553,6 +617,15 @@ pub struct FrameStats {
     static_bytes_uploaded: u64,
     static_entities_drawn: u64,
     dynamic_entities_drawn: u64,
+    /// Window-thread allocations and bytes of each rendered frame (`alloc-count` builds).
+    allocs: Vec<u32>,
+    alloc_bytes: Vec<u64>,
+    /// Window-thread frees summed over the frames in `allocs`.
+    alloc_frees: u64,
+    /// When the first and the last frame since the reset were recorded.
+    alloc_span: Option<(Instant, Instant)>,
+    /// All threads' counts over the frames after the first, the time base of the rates.
+    alloc_process: Counts,
 }
 
 /// The parts of a frame's CPU time: world streaming and uploads, game ticks,
@@ -635,6 +708,72 @@ impl FrameStats {
         summary["cpu_ms"] = self.cpu.clone().into();
         summary["gpu_ms"] = self.gpu.clone().into();
     }
+    /// One frame's allocations: this thread's since the last frame, all threads' since then.
+    pub fn record_allocs(&mut self, window: Counts, process: Counts, now: Instant) {
+        if self.allocs.len() < Self::LIMIT {
+            self.allocs
+                .push(u32::try_from(window.allocs).unwrap_or(u32::MAX));
+            self.alloc_bytes.push(window.bytes);
+            self.alloc_frees += window.frees;
+        }
+        match &mut self.alloc_span {
+            None => self.alloc_span = Some((now, now)),
+            Some((_, last)) => {
+                *last = now;
+                let sum = &mut self.alloc_process;
+                sum.allocs += process.allocs;
+                sum.bytes += process.bytes;
+                sum.frees += process.frees;
+                sum.freed += process.freed;
+            }
+        }
+    }
+    /// Window-thread allocations of every recorded frame, in order.
+    pub fn alloc_counts(&self) -> &[u32] {
+        &self.allocs
+    }
+    /// Window-thread bytes allocated in every recorded frame, in order.
+    pub fn alloc_bytes(&self) -> &[u64] {
+        &self.alloc_bytes
+    }
+    /// The `alloc` object of [`summary`](Self::summary), `null` before a frame was recorded.
+    fn alloc_summary(&self) -> serde_json::Value {
+        let n = self.allocs.len();
+        if n == 0 {
+            return serde_json::Value::Null;
+        }
+        let round = |v: f64| (v * 10.0).round() / 10.0;
+        let stats = |mut values: Vec<f64>| {
+            values.sort_by(f64::total_cmp);
+            let pick = |p: f64| values[((n as f64 * p).ceil() as usize).clamp(1, n) - 1];
+            serde_json::json!({
+                "avg": round(values.iter().sum::<f64>() / n as f64),
+                "p50": round(pick(0.5)),
+                "p95": round(pick(0.95)),
+                "max": round(values[n - 1]),
+            })
+        };
+        let per_second =
+            |amount: u64, seconds: f64| (seconds > 0.0).then(|| round(amount as f64 / seconds));
+        let seconds = self.alloc_span.map_or(0.0, |(first, last)| {
+            last.duration_since(first).as_secs_f64()
+        });
+        let mib = |bytes: u64| bytes as f64 / 1048576.0;
+        let process = &self.alloc_process;
+        serde_json::json!({
+            "window_thread": {
+                "allocs_per_frame": stats(self.allocs.iter().map(|&a| f64::from(a)).collect()),
+                "kib_per_frame": stats(self.alloc_bytes.iter().map(|&b| b as f64 / 1024.0).collect()),
+                "frees_per_frame_avg": round(self.alloc_frees as f64 / n as f64),
+            },
+            "process": {
+                "allocs_per_s": per_second(process.allocs, seconds),
+                "mib_per_s": (seconds > 0.0).then(|| round(mib(process.bytes) / seconds)),
+                "frees_per_s": per_second(process.frees, seconds),
+                "net_mib": round(mib(process.bytes) - mib(process.freed)),
+            },
+        })
+    }
     pub fn reset(&mut self) {
         self.millis.clear();
         self.cpu.clear();
@@ -645,6 +784,11 @@ impl FrameStats {
         self.static_bytes_uploaded = 0;
         self.static_entities_drawn = 0;
         self.dynamic_entities_drawn = 0;
+        self.allocs.clear();
+        self.alloc_bytes.clear();
+        self.alloc_frees = 0;
+        self.alloc_span = None;
+        self.alloc_process = Counts::default();
     }
     pub fn summary(&self) -> serde_json::Value {
         let mut sorted = self.millis.clone();
@@ -695,6 +839,7 @@ impl FrameStats {
             "dynamic_entities_drawn": self.dynamic_entities_drawn,
             "static_entities_drawn_avg_per_frame": self.static_entities_drawn as f64 / n as f64,
             "dynamic_entities_drawn_avg_per_frame": self.dynamic_entities_drawn as f64 / n as f64,
+            "alloc": if ON { self.alloc_summary() } else { serde_json::Value::Null },
         })
     }
 }
