@@ -6,6 +6,33 @@ use horizon_client::mod_api::{
 
 struct Keys;
 
+#[test]
+fn a_mod_observes_the_applied_chat_suggestion() {
+    use horizon_client::mod_api::{ChatSuggestionAppliedEvent, dispatch_chat_suggestion_applied};
+    use std::sync::{Arc, Mutex};
+
+    struct TestHost;
+    impl Host for TestHost {}
+    struct Listener(Arc<Mutex<Vec<String>>>);
+    impl Hooks for Listener {
+        fn chat_suggestion_applied(
+            &self,
+            _host: &dyn Host,
+            event: &mut ChatSuggestionAppliedEvent<'_>,
+        ) {
+            assert_eq!(event.original, "😀 hi st");
+            assert_eq!((event.start, event.end), (6, 8));
+            assert_eq!(event.suggestion, "Steve");
+            assert_eq!(event.input, "😀 hi Steve");
+            self.0.lock().unwrap().push(event.input.to_owned());
+        }
+    }
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let mods: Vec<Box<dyn Hooks>> = vec![Box::new(Listener(calls.clone()))];
+    dispatch_chat_suggestion_applied(&TestHost, &mods, "😀 hi st", 6, 8, "Steve", "😀 hi Steve");
+    assert_eq!(*calls.lock().unwrap(), ["😀 hi Steve"]);
+}
+
 impl Hooks for Keys {
     fn key(&self, _host: &mut dyn Host, event: &mut KeyEvent<'_>) {
         let _ = (event.key, event.pressed);

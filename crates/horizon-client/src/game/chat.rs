@@ -1,5 +1,8 @@
 //! Chat, the command registries and the per-world state behind commands
 //! (game rules, the world clock, difficulty), bound to the game.
+#[cfg(test)]
+mod suggestion_completion_tests;
+
 use super::{Game, Screen};
 use horizon_client::{
     chat::{
@@ -1059,6 +1062,23 @@ impl Game<'_> {
                 self.ui.chat_screen = Some(screen);
             }
         }
+        self.notify_chat_suggestion_completion();
+    }
+    fn notify_chat_suggestion_completion(&mut self) {
+        if let Some(completion) = self
+            .ui
+            .chat_screen
+            .as_mut()
+            .and_then(ChatScreen::take_suggestion_completion)
+        {
+            self.native_chat_suggestion_applied(
+                &completion.original,
+                completion.range.0,
+                completion.range.1,
+                &completion.text,
+                &completion.input,
+            );
+        }
     }
     /// The server's completions for an `ask_server` request
     /// (ClientPacketListener.handleCommandSuggestions).
@@ -1170,6 +1190,7 @@ impl Game<'_> {
         }
         if let Some(screen) = self.ui.chat_screen.as_mut() {
             if screen.click(&m, &c, cursor.0 as f64, cursor.1 as f64) {
+                self.notify_chat_suggestion_completion();
                 return;
             }
         } else {

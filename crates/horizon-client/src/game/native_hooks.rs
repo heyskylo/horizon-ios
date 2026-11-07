@@ -6480,6 +6480,32 @@ impl Game<'_> {
         );
     }
 
+    /// `CommandSuggestions.SuggestionsList.useSuggestion`: a suggestion was
+    /// applied in the chat by Tab or a click, after updating the input and caret.
+    /// `start..end` is a Java UTF-16 range in `original`, the list's original
+    /// input even when cycling. `suggestion` is the selected replacement;
+    /// `input` is the resulting field value after its length limit. Client-only,
+    /// read-only; previews, navigation and command-block editors do not fire it.
+    /// API @API:chat_suggestion_applied@.
+    pub(super) fn native_chat_suggestion_applied(
+        &self,
+        original: &str,
+        start: usize,
+        end: usize,
+        suggestion: &str,
+        input: &str,
+    ) {
+        mod_api::dispatch_chat_suggestion_applied(
+            self,
+            mod_api::mods(),
+            original,
+            start,
+            end,
+            suggestion,
+            input,
+        );
+    }
+
     /// NeoForge's `ToastAddEvent`: a new toast is about to be queued. `kind`
     /// is `advancement`, `recipe`, `tutorial`, `system` or `now_playing`;
     /// `id` is the advancement id, the first recipe id, the tutorial hint
