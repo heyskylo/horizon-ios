@@ -2951,6 +2951,12 @@ impl Game<'_> {
             ctx.has("strict"),
             ctx.has("keep"),
         );
+        let normalize_note = !strict
+            && self
+                .res
+                .behaviours()
+                .data(state)
+                .is(horizon_world::level::classes::Class::Note);
         let mut count = 0;
         // Whether the filter takes a state, worked out once per state: a fill visits up to 32768 blocks of a handful
         // of states, and matching a tag is a name lookup.
@@ -2965,7 +2971,9 @@ impl Game<'_> {
                         continue;
                     }
                     // Already the block it would become: nothing to place (place_state would do nothing either).
-                    if plain && current == state {
+                    // `BlockInput.place` can change a note's instrument even
+                    // when the raw input equals the current state.
+                    if plain && current == state && !normalize_note {
                         continue;
                     }
                     if let Some(f) = &filter {
@@ -3002,6 +3010,11 @@ impl Game<'_> {
                         air
                     } else {
                         state
+                    };
+                    let target = if normalize_note && target == state {
+                        self.block_input_state([x, y, z], &block, target, strict)?
+                    } else {
+                        target
                     };
                     if self.place_state([x, y, z], target, strict)? || affected {
                         count += 1;
@@ -4834,5 +4847,139 @@ mod forced_respawn_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod fill_note_instrument_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use horizon_client::{chunk::Chunk, motion::PlayerMotion};
+    use horizon_core::position::ChunkPos;
+    use std::sync::Arc;
+    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+                .join(format!("h164-{:?}", std::thread::current().id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
+        game.creative = true;
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("tick freeze"));
+        assert!(game.run_command("fill 0 198 0 15 199 15 stone"));
+        test(&mut game);
+    }
+
+    fn instrument(game: &Game<'_>, x: i32, z: i32) -> String {
+        let state = game
+            .pack
+            .assets
+            .registry
+            .state(game.world.block(x, 200, z))
+            .unwrap();
+        assert_eq!(state.name, "minecraft:note_block");
+        state.properties["instrument"].clone()
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn ordinary_fill_normalizes_a_note_block_against_real_stone() {
+        with_game(|game| {
+            let clock = game.world.game_time;
+            assert!(
+                game.world.chunks.contains_key(&(0, 0)),
+                "actual fill chunk is resident"
+            );
+            assert!(game.run_command("execute if block 4 199 4 stone"));
+            assert!(game.run_command("execute if block 4 200 4 air"));
+            assert!(game.run_command("setblock 8 200 4 note_block"));
+            assert_eq!(
+                instrument(game, 8, 4),
+                "basedrum",
+                "positive setblock counterpart"
+            );
+            assert!(game.run_command("fill 4 200 4 4 200 4 note_block"));
+            assert_eq!(
+                instrument(game, 4, 4),
+                "basedrum",
+                "actual registered fill must normalize instrument"
+            );
+            assert!(game.run_command("execute if block 4 200 4 note_block[note=0,powered=false]"));
+            assert_eq!(game.world.game_time, clock);
+        });
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn an_existing_default_state_does_not_skip_note_normalization() {
+        with_game(|game| {
+            let clock = game.world.game_time;
+            assert!(game.run_command("setblock 4 200 4 note_block strict"));
+            assert_eq!(instrument(game, 4, 4), "harp");
+            assert!(
+                game.run_command("fill 4 200 4 4 200 4 note_block"),
+                "valid fill changes existing harp to basedrum"
+            );
+            assert_eq!(instrument(game, 4, 4), "basedrum");
+            assert_eq!(game.world.game_time, clock);
+        });
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn strict_explicit_and_filtered_out_inputs_keep_their_existing_contracts() {
+        with_game(|game| {
+            let clock = game.world.game_time;
+            assert!(game.run_command("fill 4 200 4 4 200 4 note_block strict"));
+            assert_eq!(instrument(game, 4, 4), "harp");
+            assert!(game.run_command("fill 8 200 4 8 200 4 note_block[instrument=banjo,note=7]"));
+            assert_eq!(instrument(game, 8, 4), "banjo");
+            assert!(game.run_command("execute if block 8 200 4 note_block[note=7,powered=false]"));
+            assert!(game.run_command("fill 12 200 4 12 200 4 note_block[instrument=harp,note=7]"));
+            assert_eq!(instrument(game, 12, 4), "harp");
+            assert!(!game.run_command("fill 4 200 4 4 200 4 note_block[instrument=banjo] keep"));
+            assert!(
+                !game
+                    .run_command("fill 4 200 4 4 200 4 note_block[instrument=banjo] replace glass")
+            );
+            assert_eq!(instrument(game, 4, 4), "harp");
+            assert_eq!(game.world.game_time, clock);
+        });
     }
 }
