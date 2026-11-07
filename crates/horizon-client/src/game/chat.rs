@@ -757,6 +757,36 @@ impl Game<'_> {
         self.right = false;
         self.capture(false);
     }
+    /// The open chat box's text and its cursor, counted in characters; `None`
+    /// while the chat screen isn't open. API @API:chat_input@.
+    #[allow(dead_code)]
+    pub(super) fn native_chat_input(&self) -> Option<(String, usize)> {
+        let screen = self.ui.chat_screen.as_ref()?;
+        Some((screen.input.value.clone(), screen.input.cursor))
+    }
+    /// Replaces the open chat box's text and puts the cursor at `cursor`
+    /// (characters, clamped to the text), as an edit: completions refresh as
+    /// they do for typing. What typing can't put in the box isn't put there
+    /// either (`chat_box_text`), and the 256-character limit holds. An error
+    /// while the chat screen isn't open. API @API:chat_input@.
+    #[allow(dead_code)]
+    pub(super) fn native_set_chat_input(
+        &mut self,
+        text: &str,
+        cursor: usize,
+    ) -> Result<(), String> {
+        let m = Measure(&self.gui.atlas.font);
+        let c = Commands {
+            dispatcher: chat_tree(&self.remote),
+            registries: &self.ui.registries,
+        };
+        let Some(screen) = self.ui.chat_screen.as_mut() else {
+            return Err("the chat isn't open".into());
+        };
+        screen.suggest_command(&m, &c, &chat_box_text(text));
+        screen.input.move_cursor_to(&m, cursor, false);
+        Ok(())
+    }
     pub(super) fn close_chat(&mut self, reason: ChatExit) {
         // InBedChatScreen.onClose: leaving the screen means getting up; the
         // screen goes once the player has woken (`tick_in_bed_chat`).
@@ -1699,6 +1729,14 @@ impl Game<'_> {
     }
 }
 /// `yyyy-MM-dd_HH.mm.ss[_n].png` (Util.getFilenameFormattedDateTime, in local time).
+/// What a mod may write into the chat box: the characters `ChatScreen`'s
+/// typing lets in (`StringUtil.isAllowedChatCharacter`: no control
+/// characters, no DEL, no section sign).
+fn chat_box_text(text: &str) -> String {
+    text.chars()
+        .filter(|&ch| ch >= ' ' && ch != '\u{7f}' && ch != '§')
+        .collect()
+}
 pub fn screenshot_name(dir: &std::path::Path) -> String {
     // Util.getFilenameFormattedDateTime: the local date and time.
     let base = chrono::Local::now().format("%Y-%m-%d_%H.%M.%S").to_string();
@@ -1729,6 +1767,17 @@ const LINK_COPY: usize = 1;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A mod's text reaches the chat box as typing would leave it: emoji and
+    /// accents stay, control characters, DEL and the section sign go.
+    #[test]
+    fn a_mods_chat_text_keeps_what_typing_allows() {
+        assert_eq!(
+            super::chat_box_text("hi :smile: → 😀 é"),
+            "hi :smile: → 😀 é"
+        );
+        assert_eq!(super::chat_box_text("a\nb\tc\u{7f}d§6e"), "abcd6e");
+    }
 
     /// `ChatScreen.shouldDiscardDraft`.
     #[test]
