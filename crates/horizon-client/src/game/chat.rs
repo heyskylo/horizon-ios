@@ -286,7 +286,8 @@ fn resource_ids(root: &Path) -> Arc<ResourceIds> {
     entity_types.sort();
     let (timelines, markers) = overworld_timelines(root);
     let ids = Arc::new(ResourceIds {
-        recipes: ids_under(&data.join("recipe"), "json"),
+        // `/recipe <id>` must suggest a content mod's recipes too.
+        recipes: json_ids_of_every_namespace(root, "recipe"),
         // `/loot ... loot <id>` must find a content mod's tables too.
         loot_tables: json_ids_of_every_namespace(root, "loot_table"),
         templates: templates_under(&root.join("worldgen/structure")),
@@ -358,11 +359,6 @@ fn command_export(dir: &Path, keep: bool) -> Option<Arc<Registries>> {
         cache.push((dir.to_owned(), export.clone()));
     }
     export
-}
-
-/// The `minecraft:` ids of the `extension` files under `root`, sorted.
-fn ids_under(root: &Path, extension: &str) -> Vec<String> {
-    ids_in(root, extension, "minecraft")
 }
 
 /// The ids of the `.json` files in `data/<namespace>/<kind>` of every
@@ -1832,6 +1828,23 @@ mod tests {
         assert_eq!(
             resource_ids(&root).loot_tables,
             ["minecraft:chests/a", "mymod:rooms/b"]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A content mod's recipes are suggested with vanilla's, so `/recipe`
+    /// offers the ids the recipe index knows.
+    #[test]
+    fn recipes_of_every_namespace_are_listed() {
+        let root = std::env::temp_dir().join(format!("horizon-recipe-ids-{}", std::process::id()));
+        for dir in ["data/minecraft/recipe", "data/mymod/recipe/press"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join("data/minecraft/recipe/stick.json"), "{}").unwrap();
+        std::fs::write(root.join("data/mymod/recipe/press/iron.json"), "{}").unwrap();
+        assert_eq!(
+            resource_ids(&root).recipes,
+            ["minecraft:stick", "mymod:press/iron"]
         );
         let _ = std::fs::remove_dir_all(&root);
     }
