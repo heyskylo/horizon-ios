@@ -95,6 +95,8 @@ def main():
     parser.add_argument('--allow-gaps', action='store_true', help='report mismatches without failing')
     parser.add_argument('--wolf-anger-clock-diagnostic', action='store_true',
                         help='retain the separate loaded-NoAI absolute anger clock diagnostic')
+    parser.add_argument('--vehicle-kill-diagnostic', action='store_true',
+                        help='retain random drop UUID/motion and whole vehicle bodies outside the explicit-content gate')
     parser.add_argument('--only', help='run only corpus groups whose name contains this')
     parser.add_argument('--array-storage-diagnostic', action='store_true',
                         help='run all numeric-array edit cases, including the known wildcard/string storage side effects')
@@ -320,6 +322,9 @@ def main():
         groups = [("pufferfish player contact", contact_fixture(args.pufferfish_body_diagnostic))]
     if args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
+    if args.vehicle_kill_diagnostic:
+        from vehicle_kill_corpus import vehicle_kill_contents
+        groups = [('setup', corpus_module.group_setup()), ('vehicle kill contents', vehicle_kill_contents(corpus_module.cmd, True))]
     if args.slot_codec_diagnostic:
         groups.append(('slot source codec diagnostic', [corpus_module.cmd(
             '/item fill block 4 200 4 {type:"minecraft:slot_range",slots:"container.99"} with diamond')]))
