@@ -1580,7 +1580,7 @@ fn put_attributes(map: &mut Compound, m: &Mob, a: &crate::mobs::finalize::Attrib
     }
     map.insert("attributes".into(), Tag::List(list));
 }
-/// `AttributeMap.save` of a sulfur cube's body archetype attributes: the
+/// `AttributeMap.pack` of a sulfur cube's body archetype attributes: the
 /// base and permanent modifiers of each instance its own map holds (the
 /// archetype's transient modifiers are not saved).
 fn put_sulfur_attributes(map: &mut Compound, m: &Mob) {
