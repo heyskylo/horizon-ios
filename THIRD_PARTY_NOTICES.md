@@ -215,6 +215,6 @@ THE SOFTWARE.
 
 ## Just Enough Items
 
-The Recipes GUI sprites under `crates/horizon-client-render/src/jei_recipes` are from
+The Recipes GUI sprites and settings icon under `crates/horizon-client-render/src/jei_recipes` are from
 [Just Enough Items 31.17.0.108](https://github.com/mezz/JustEnoughItems/tree/0371fa6fafa14635a356019e4604f5580b26a34f)
 by mezz and contributors, under the MIT license in that directory (`LICENSE.txt`).
