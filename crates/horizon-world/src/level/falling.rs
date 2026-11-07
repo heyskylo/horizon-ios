@@ -124,10 +124,10 @@ impl Behaviours {
         }
         // Fallable.onLand
         if concrete {
-            if self.is_water_fluid(self.fluid(current).kind()) || sim.concrete_touches_liquid(pos) {
-                if let Some(solid) = self.data(state).link {
-                    sim.set_block_and_update(pos, self.default_of(solid));
-                }
+            if (self.is_water_fluid(self.fluid(current).kind()) || sim.concrete_touches_liquid(pos))
+                && let Some(solid) = self.data(state).link
+            {
+                sim.set_block_and_update(pos, self.default_of(solid));
             }
         } else if self.instance_of(state, Class::Anvil) {
             sim.level_event(1031, pos, 0);

@@ -4,8 +4,10 @@
 
 pub mod mcpr;
 pub mod recorder;
+pub mod replay;
 
 pub use mcpr::{
     McprReader, McprWriter, Metadata, RecoveryReport, TimestampedPacket, recover_crashed_recordings,
 };
 pub use recorder::{RecorderStatus, StudioRecorder, generate_recording_filename};
+pub use replay::ReplayDriver;

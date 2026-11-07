@@ -281,6 +281,9 @@ pub struct Guest {
     /// The 36 inventory slots (hotbar first), armor (head..feet) and off hand.
     pub inventory: Vec<Option<ItemStack>>,
     pub armor: [Option<ItemStack>; 4],
+    /// Armor as of this player's last `collectEquipmentChanges` look; swapped
+    /// with `armor` so each player compares against their own snapshot.
+    pub location_armor: [Option<ItemStack>; 4],
     pub offhand: Option<ItemStack>,
     pub selected: usize,
     pub carried: Option<ItemStack>,
@@ -530,6 +533,7 @@ impl Guest {
             logs_kept: None,
             inventory: vec![None; 36],
             armor: [None, None, None, None],
+            location_armor: [None, None, None, None],
             offhand: None,
             selected: 0,
             carried: None,

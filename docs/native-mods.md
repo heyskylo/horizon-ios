@@ -1,5 +1,7 @@
 # Native mods
 
+`native_chat_suggestion_applied(original, start, end, suggestion, input)` reports a suggestion accepted in the open chat by Tab or a mouse click, after the text and caret have changed. `original` is the suggestion list's input before any completion; `start` and `end` are the replaced range in that string, in Java UTF-16 units (end exclusive). They keep referring to `original` when Tab cycles through the list. `suggestion` is the selected replacement text, and `input` is the actual resulting field value, including any length-limit truncation. This is a read-only notification: previews, list navigation, server replies, ordinary typing and command-block editors do not fire it. Trait mods implement `Hooks::chat_suggestion_applied`; mixin bundles use `chat_suggestion_applied`, hook version 1. Bundles need "hooks": @API:chat_suggestion_applied@ (assigned at merge).
+
 API 362 adds `native_compute_fov_modifier(player, base, modifier)` on the client each tick for the local player's FOV scale, after vanilla effects and before zoom and camera easing. `player` contains the calculation inputs and `base` is the original scale. Non-finite modifiers or values outside 0.01..=10 fall back to `base`. It does not affect a spectator camera on a mob. Bundles need "hooks": 362.
 
 The client hook `native_client_packet(packet)` hears each play packet the server sends, decoded (`ClientboundPlayPacket`, `horizon_protocol`'s `play::Clientbound`), just before the game handles it, custom payloads included and in the order they came. It only reads: the game handles the packet as it would without the mod. Packets the network thread handles itself (keep-alives, bundle delimiters, resource packs, cookies, server links, transfers, disconnects, the configuration switch, `minecraft:brand`, far terrain tiles) and the configuration phase are not heard. Bundles need "hooks": 408.
@@ -558,7 +560,7 @@ are compiled into `horizon-client`; a stable API crate for mods' own crates is #
 (`crc32fast = "1"`, `{ version, features, default-features, optional }`); each must already be in Horizon's lock
 file in a version that matches, and builds in exactly that version. The crates that are there only for mods are listed in
 `crates/horizon-mod-deps/Cargo.toml` (optional dependencies, with the features mods may turn on; nothing builds them):
-`mysql` 27 (blocking MariaDB/MySQL client, `minimal-rust` + `rustls-tls-ring` + `chrono`, no default features), `redis` 1
+`mysql` 28 (blocking MariaDB/MySQL client, `minimal-rust` + `rustls-tls-ring` + `chrono`, no default features), `redis` 1
 (blocking, no default features), `tungstenite` 0.30 (websocket over a stream the mod opens, no default features),
 `rusty-opus` 1 (Opus encoder and decoder), `quinn` 0.11 (QUIC on tokio, features `runtime-tokio` + `rustls-ring`, no
 default features), `rusqlite` 0.41 (SQLite, `bundled` + `cache`, no default features; builds SQLite's C source),
@@ -3724,6 +3726,9 @@ a dimension.
 - `level.block_state(host, pos)` (`minecraft:oak_stairs[facing=east,…]`, as `/setblock` takes it), `block` (the name
   alone), `block_property(host, pos, key)`, `is_loaded`, `height` (lowest `y` and height), `game_time` and `day_time`
   read any level the server has loaded, not only the one in place. A block in a chunk that isn't loaded reads as `None`.
+- `level.seed(host)`, `difficulty` (`"normal"`, as `/difficulty` names it), `game_rule(host, "keep_inventory")` (a
+  `GameRuleValue`, `Bool` or `Int`; None for an unknown rule), `weather` (rain and thunder levels, 0.0 to 1.0; both 0
+  where the level has no weather), `is_raining` and `is_thundering` read its world settings.
 - `host.living(entity)` gives a `LivingRef` for a mob, a player, an armor stand or the dragon (vanilla's
   `LivingEntity`); `living.entity()` goes back. `living.equipment(host, EquipmentSlot::Head)` and `hand_item(host,
   Hand::Main)` read its equipment (an empty slot reads as `None`); `set_equipment(host, slot, stack)` puts a stack in a
@@ -3768,6 +3773,59 @@ inventory, creative) and for a menu whose slots the client doesn't lay out (a le
 
 Each read is a `Host` method too (`host.entity_position(entity)`): a helper whose catalog entry names a `receiver`
 (`entity`, `level`) also becomes a method of that handle.
+
+### Entities a client sees
+
+`crates/horizon-client/src/game/native_client_services.rs`: lists for a client mod that draws the creatures, players
+and dropped items around the player, such as a radar, name tags or a spectator's entity ESP. They read the client's own copy of what
+the server shows the window, so they work the same in single player, on a LAN and on a server. Each is empty (or
+`None`) on a server. They are snapshots: call them each frame and keep what you need.
+
+- `native_client_entities()` (API 411) lists the mobs and other players the client knows, dying ones included (`alive`
+  false). The window's own player is never in it (`native_player()` gives it), nor are the ender dragon, armor stands,
+  vehicles, projectiles, displays and the other entities Horizon keeps outside its mob list. Each
+  `NativeClientEntity` has the entity's `id` (the id `native_entity(id)` takes, for its custom name and the other
+  handle reads), `position` and `previous_position`, `bounds`, `height`, `head_yaw`, `head_pitch`, `alive`,
+  `invisible` (the flag or the effect), and for a player its `player_uuid` and `player_name`. From API
+  @API:client_entity_list@ it also has:
+
+  | Field | What it is |
+  |---|---|
+  | `kind` | The entity type, `minecraft:zombie`. |
+  | `yaw` | `Entity.getYRot` in degrees, 0 facing south, 90 west. |
+  | `baby` | `isBaby`. |
+  | `spectator` | A player in spectator mode, whom vanilla draws only to spectators. |
+  | `texture` | The texture vanilla's renderer selects for its body (`EntityRenderer.getTextureLocation`): the variant's, the baby's (`entity/cow/cow_temperate_baby`), and for a player its skin (`skins/<hash>` once downloaded, else the default skin for its UUID, `entity/player/slim/efe`). A pack's random textures and custom entity models are not followed. |
+
+  `entity.position_at(state.world_partial_tick)` (with `native_client_state()`) is where the frame draws it,
+  `Entity.getPosition(partialTick)`.
+- `native_client_items()` (API @API:client_entity_list@) lists the dropped items the client shows, as
+  `NativeClientItem`: `id`, `stack`, `position`, `previous_position` and `position_at`. `native_item_entities` stays
+  server-only.
+- `native_client_texture(name)` (API @API:client_entity_list@) gives a texture's pixels as `TexturePixels` by the name
+  `texture` or `NativeClientProfile::skin` gives: a downloaded skin while the client holds it in memory (64x64), else
+  `native_client_resources().texture(name)` ([Block states and resource files](#block-states-and-resource-files)), the
+  resource packs' texture of that name. It decodes on each call, so cache the result by name, and clear the cache in
+  `native_client_resources_reloaded`: other packs can change the pixels under a name. It is `None` for a texture it
+  can't read and for a skin still downloading: ask again later.
+- A player's skin by UUID: for a player in the level, find it in `native_client_entities()` by `player_uuid` and read
+  its `texture`. `native_client_profiles()` (API 411) covers the player list instead, in the level or not: each
+  entry's `uuid`, `name` and `skin` (the default one until the download is ready). `native_client_texture(name)` gives
+  either's pixels.
+
+A loop over them, from a mixin helper bound to the game:
+
+```rust
+let (Some(state), Some(me)) = (game.native_client_state(), game.native_player()) else { return };
+for e in game.native_client_entities().iter().filter(|e| e.alive && !e.invisible && !e.spectator) {
+    let [x, _, z] = e.position_at(state.world_partial_tick);
+    let face = e.texture.as_deref().and_then(|t| game.native_client_texture(t)); // cache it by name
+    // draw at (x - me.x, z - me.z)
+}
+for item in game.native_client_items() {
+    let [x, _, z] = item.position_at(state.world_partial_tick);
+}
+```
 
 ### Mobs drawn by a mod
 
@@ -3908,6 +3966,34 @@ give it what Horizon's own rows use, without reading `Game`'s fields:
 
 Bundles need `"hooks": @API:health_hud_state@`.
 
+### What a client HUD reads
+
+A minimap, a coordinates line or a waypoint mod reads the player and the session through helpers, not `Game`'s fields.
+They answer the same on a server's client, a LAN guest and single player's window, which is a client of its own server
+thread:
+
+- `native_player()` is the player's feet this tick, their yaw and pitch as the mouse turned them this frame, and their
+  dimension. `native_camera()` is the frame's interpolated camera, and `native_clock()` the time of day.
+- `native_client_state()` (None on a server) has, besides `gui_hidden` (F1):
+  - `screen`, what covers the world: `Playing` (nothing), `Chat`, `Death` (the death screen) or `Other` (the pause
+    menu, an inventory or container, a sign, a book, a dialog or prompt, the loading screen, the title's screens). Xaero's
+    minimap draws on `Playing` and `Chat` only.
+  - `debug_screen`: F3's debug screen is showing.
+  - `world`, the world joined, for a mod's data per world: `NativeWorldId::Singleplayer(folder)` is the save's folder in
+    `saves/` (its LAN host and splitscreen seats too), `Server(address)` the address as the player joined it
+    (`mc.example.com:25565`). A friend's world is `friend:` and what its invite shows anyone, its host's addresses and
+    its relay nameplate, never the invite's secret; the host's code is new each time it shares, so this names that
+    sharing only, as a LAN world's port does. None before a world is joined. A later Horizon may add kinds, so match
+    it with a `_` arm.
+  - `sleeping_pos`: the head of the bed the player sleeps in, as the server says (`LivingEntity.getSleepingPos`); None
+    while awake. `native_block(pos)` names the bed.
+- `native_biome(pos)` is the biome at a block (`minecraft:plains`, a data pack's own), as `Level.getBiome` picks it
+  through `BiomeManager`'s zoom; None where that chunk isn't loaded.
+- `native_data_dir(mod_id)` is the mod's own folder, `horizon-mods/.horizon-mod-data/<id>/` in the instance; the helper
+  doesn't make it. Every world shares it: keep a world's files in a folder named from `world`.
+
+Bundles need `"hooks": @API:session_state@`.
+
 ### Toasts a mod hides
 
 `native_toast_add(kind, id, cancel)` (client) is NeoForge's `ToastAddEvent`: it is heard once for each new toast, just
@@ -3972,6 +4058,23 @@ NeoForge's `ClientPlayerNetworkEvent.LoggingOut`. It is told before a connection
 `native_client_level_unload`, and only when a connection ends: NeoForge's documentation says its event may also fire as
 a new integrated server is created, and Horizon's doesn't. A mod keeps its per-server state between the two: caches, a
 handshake with its server half, a welcome message. Bundles need `"hooks": @API:client_player_network_logging_in@`.
+
+### The local player's combat, on the client
+
+API @API:client_combat@, `crates/horizon-client/src/game/native_hooks.rs`: what the window sees of its own player's
+fights, on any server (a vanilla one, a plugin server, single player's own thread). The server hooks
+(`native_attack_entity`, `native_living_incoming_damage`) run only where Horizon is the server, so a client mod such as
+a battle-music or combat-HUD mod listens to these instead.
+
+- `native_client_attack(target, player)`: the local player attacked entity `target`, right after the attack packet left
+  (`MultiPlayerGameMode.attack`, the same point vanilla swings the arm). `player` is whether `target` is another
+  player. Whether the hit lands is the server's to say: a hit that lands comes back as that entity's hurt animation.
+- `native_client_hurt(attacker, player)`: the server says the local player was hurt (`ClientboundDamageEventPacket`,
+  the packet that tilts the camera and plays the hurt sound). `attacker` is the entity that caused it when the server
+  names one (the shooter of an arrow, not the arrow; none for falling, lava or a cactus), `player` whether this client
+  knows it as a player. An attacker out of this client's tracking range is still named, as not a player.
+
+Both are only told: nothing to answer or cancel. Client only. Bundles need `"hooks": @API:client_combat@`.
 
 ### Sounds a client mod plays
 
@@ -4215,6 +4318,13 @@ edits and sends it, or presses Escape, and it goes into the chat history then li
 256-character limit and its character filter. It is an error with no player in a world, and while another screen
 (the chat itself included) is open. Bundles need `"hooks": @API:open_chat@`.
 
+While the chat is open, `native_chat_input()` (API @API:chat_input@, `crates/horizon-client/src/game/chat.rs`) gives its
+text and cursor (counted in characters), `None` when it's closed, and `native_set_chat_input(text, cursor)` replaces
+them, as an edit: completions refresh as they do for typing, so a mod that turns `:smile:` into an emoji as it's typed
+runs from `native_screen_char_typed_pre` and writes the result back. The cursor is clamped to the text. Only what typing
+lets in reaches the box (no control characters, DEL or section sign), within its 256-character limit. Writing is an
+error while the chat isn't open. Bundles need `"hooks": @API:chat_input@`.
+
 ### Packets a client mod sends
 
 API 409, `crates/horizon-client/src/game/native_net.rs`: `native_send_packet(packet)` sends one
@@ -4226,6 +4336,15 @@ so a packet that needs a sequence number, a signature or the client's own state 
 chat) is the mod's to get right. It is an error when the player isn't in a server's play state (not connected, not
 joined yet or being reconfigured), and for a custom payload over the limit. Mod messages between the halves of one
 Horizon mod stay with `native_net_send_to_server`. Bundles need `"hooks": 409`.
+
+### Screenshots a client mod takes
+
+API @API:take_screenshot@, `crates/horizon-client/src/game/native_client_services.rs`: `native_take_screenshot()` takes a
+screenshot as F2 does (`ScreenShot.grab`): of the next frame, at the game's resolution times Screenshot Quality, into
+`screenshots/` with vanilla's file name, with the same "Saved screenshot as" line in chat. It returns the path (a string) of the file it will
+write, which exists once that frame is drawn. It is an error without a window to draw (a server, an offscreen run with
+no renderer), and while another screenshot waits for the frame (F2's, an agent's or the world icon's): call it again
+next frame. A timed or repeated screenshot mod calls it from its tick. Bundles need `"hooks": @API:take_screenshot@`.
 
 ### Server menus
 
@@ -4901,3 +5020,13 @@ The client `tooltip_color` hook changes the background and top and bottom border
 # Camera and collision reads
 
 The `native_camera()` helper returns the most recently extracted world frame's camera, or none before one exists. Its position, interpolated eye height, partial tick, angles, final FOV, near/far planes and dimension accompany column-major view and projection matrices. The view is camera-relative and includes bob and spin; projection uses reversed Z. Earlier callbacks in a frame can see the previous frame. `native_block_collision(pos)` returns block-local `[min_x, min_y, min_z, max_x, max_y, max_z]` boxes with an empty collision context; unloaded blocks and collision errors give no boxes.
+
+### Wind burst block protection
+
+The pending `wind_burst` hook receives `dimension`, `center` and mutable `blocks`
+just before wind-charge, breeze-charge or Wind Burst mace block interactions.
+Remove positions to keep their doors, levers, candles and other reactive blocks
+unchanged. The list has already been shuffled; entity knockback and the shuffle's
+random draws are unaffected. A breeze blocked by `mob_griefing` does not call the hook.
+This is separate from `explosion_detonate`, and does not cancel the burst's sound,
+particles or entity effects. The pending fragment assigns its API number at merge.

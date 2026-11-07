@@ -32,7 +32,6 @@ pub struct NativeStructureBlock {
 }
 
 // Native mods use this; nothing in Horizon does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// For a server mod: structure template `id` (`mymod:hut`, found as
     /// `StructureTemplateManager.get` finds it: the world's saved structures,

@@ -932,6 +932,32 @@ def item_command_damage():
     return ops + setup('/kill @e[tag=item_hurt_actor]', '/scoreboard objectives remove item_hurt', '/tick unfreeze')
 
 
+def enderman_command_damage():
+    """DamageCommand -> Enderman.hurtServer: with no living entity behind the damage,
+    random.nextInt(10) != 0 teleports the enderman then and there (teleport()), also when
+    the hurt cooldown refuses the hit. The world is frozen, so no AI step does it later. The
+    enderman floats (NoGravity) 32 blocks over a stone floor, so its teleport lands on it."""
+    ops = setup('/forceload add 128 128 223 223', '/fill 144 199 144 208 199 208 minecraft:stone')
+    # Every chunk a target can land in holds its entities (else @e no longer sees it there).
+    ops += [{'op': 'settle', 'required_chunks': [[x, z] for x in range(9, 14) for z in range(9, 14)]}]
+    ops += setup('/tick freeze')
+    ender = '@e[tag=hurt_tp,limit=1]'
+    ops += setup('/summon enderman 176.5 232 176.5 {Tags:["hurt_tp"],NoGravity:1b,PersistenceRequired:1b}')
+    ops += [cmd(f'/execute if entity {ender}', expect_result=1)]
+    # Nine draws in ten teleport. Hit again only while it is still where it was (a second
+    # teleport from the floor could leave it): four leave it in place one time in 10^4.
+    origin = '/execute positioned 176.5 232 176.5 as @e[tag=hurt_tp,distance=..0.5] run '
+    ops += [cmd(f'/damage {ender} 1')]
+    ops += setup(*[origin + 'damage @s 1'] * 3)
+    ops += [cmd(f'/execute if entity {ender}', expect_result=1),
+            cmd('/execute if entity @e[tag=hurt_tp,x=144,y=200,z=144,dx=64,dy=0,dz=64]', expect_result=1),
+            cmd('/execute positioned 176.5 232 176.5 unless entity @e[tag=hurt_tp,distance=..0.5]',
+                expect_result=1)]
+    ops += setup('/kill @e[tag=hurt_tp]', '/fill 144 199 144 208 199 208 minecraft:air',
+                 '/forceload remove 128 128 223 223', '/tick unfreeze')
+    return ops
+
+
 def snbt_trailing_commas():
     """SnbtGrammar: a compound, a list and a typed array may end with a comma; an empty one
     may not hold only a comma, and two commas in a row are an error."""
@@ -5855,15 +5881,24 @@ def command_zombie_reinforcements(once=False, raw=False, legacy=False):
 ISOLATED_REINFORCEMENTS = frozenset({'command zombie reinforcements', 'command reinforcement once'})
 # These overlays replace built-in recipes, never beside the corpus's fixed vanilla recipe-count controls.
 ISOLATED_RECIPES = frozenset({'crafting recipe priority', 'crafting base recipe control', 'transmute result patches'})
-ISOLATED_FRAME_MAPS = frozenset({'frame live map detachment'})
+ISOLATED_FRAME_MAPS = frozenset({'frame live map detachment', 'treasure map copies'})
+ISOLATED_MAP_CRAFTING = frozenset({'craft map takes'})
 ISOLATED_MACRO_TYPE = frozenset({'macro source type error'})
 ISOLATED_PICKUP_SAVE = frozenset({'mob saved pickup loot'})
 ISOLATED_ORB_UUID = frozenset({'orb saved UUID'})
 ISOLATED_STAND_FALL = frozenset({'stand saved fall distance'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_MACRO_TYPE | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL
 
 
 def groups():
+    try:
+        from .data_literal_corpus import storage_literals
+    except ImportError:
+        from data_literal_corpus import storage_literals
+    try:
+        from .craft_map_take_corpus import cases as craft_map_takes
+    except ImportError:
+        from craft_map_take_corpus import cases as craft_map_takes
     try:
         from .transmute_patch_corpus import cases as transmute_patches
     except ImportError:
@@ -5877,7 +5912,7 @@ def groups():
     except ImportError:
         from mob_name_predicate_corpus import cases as mob_name_predicates
     try:
-        from .frame_map_corpus import frame_maps
+        from .frame_map_corpus import frame_maps, treasure_map_copies
         from .allay_damage_corpus import allay_player_damage
         from .wolf_anger_corpus import groups as wolf_anger_groups
         from .allay_healing_corpus import allay_healing
@@ -5888,7 +5923,7 @@ def groups():
         from .gateway_passenger_corpus import gateway_passengers
         from .item_merge_corpus import stack_limit_merges
     except ImportError:
-        from frame_map_corpus import frame_maps
+        from frame_map_corpus import frame_maps, treasure_map_copies
         from allay_damage_corpus import allay_player_damage
         from wolf_anger_corpus import groups as wolf_anger_groups
         from allay_healing_corpus import allay_healing
@@ -5908,6 +5943,8 @@ def groups():
         ('mob effect predicate view', mob_effect_predicates(cmd, setup)),
         ('mob custom name components', mob_name_predicates(cmd, setup)),
         ('frame live map detachment', frame_maps(cmd, setup)),
+        ('treasure map copies', treasure_map_copies(cmd, setup)),
+        ('craft map takes', craft_map_takes(cmd, setup)),
         ('allay player damage immunity', allay_player_damage(cmd, setup)),
         *wolf_anger_groups(cmd, setup),
         ('allay passive healing', allay_healing(cmd, setup)),
@@ -5935,6 +5972,7 @@ def groups():
 
 
         ('decorated pot data', decorated_pot_data()),
+        ('modern data literal values', storage_literals(cmd)),
         ('comparator output data', comparator_output_data()),
         ('hopper empty slot limits', hopper_empty_slot_limits()),
         ('End clock commands', end_clock_commands()),
@@ -5983,6 +6021,7 @@ def groups():
         ('mannequin pose anchors', mannequin_pose_anchors()),
         ('item command damage', item_command_damage()),
         ('dragon command damage', dragon_command_damage()),
+        ('enderman command damage', enderman_command_damage()),
         ('SNBT trailing commas', snbt_trailing_commas()),
         ('execute', execute()),
         ('projectile origin', projectile_origin()),

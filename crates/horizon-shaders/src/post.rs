@@ -243,6 +243,7 @@ const GROUPS: [(Group, &str); 6] = [
 /// pack of ours (#10490): colour 0.25 × 0.5 over the disc's 1.0 read 1.125, alpha 0.5.
 pub const STARS_BLEND: Blend = [Factor::SrcAlpha, Factor::One, Factor::One, Factor::Zero];
 
+#[derive(Clone)]
 pub struct PostProgram {
     /// The program's name (`composite3`).
     pub name: String,
@@ -425,6 +426,7 @@ pub enum ShadowCulling {
     Reversed,
 }
 
+#[derive(Clone)]
 pub struct Post {
     /// The folder the programs came from: `""` for `shaders` itself, else `world0`...
     pub folder: String,
@@ -1091,15 +1093,19 @@ fn load_shadow(
         // Observed in probe packs of ours (p9063a, p9063c), not a rule Iris states: Iris 1.11.7
         // honoured a `colortexNFormat` declared only in `shadow.fsh` or `shadowcomp.fsh` of a
         // pack Horizon runs without a shadow pass. So the colortex formats of the shadow
-        // programs' fragment shaders are read here, and nothing else of them (nothing else was
-        // probed). The other shadow programs' files were not probed; they are read as `shadow`.
+        // programs' fragment shaders are read here, with `shadow.fsh`'s shadow settings
+        // (`shadowDistance` and `sunPathRotation` probed, #10490), and nothing else of them
+        // (nothing else was probed). The other shadow programs' files were not probed; they are
+        // read as `shadow`, formats only.
         let names = ["shadow", "shadow_water", "shadow_entities", "shadow_block"]
             .map(str::to_owned)
             .into_iter()
             .chain(std::iter::once("shadowcomp".to_owned()))
             .chain((1..=99).map(|n| format!("shadowcomp{n}")));
         for name in names {
-            loader.read_formats(&name);
+            // `shadow.fsh`'s shadow settings count too (`Config::read_formats_and_shadow`).
+            let shadow = name == "shadow";
+            loader.read_formats(&name, shadow);
         }
         return;
     }
@@ -1356,8 +1362,9 @@ impl Loader<'_> {
     }
 
     /// Reads the colortex formats of program `name` without loading it, when it is there and
-    /// enabled: those of its fragment shader, as [`Self::load`] reads them.
-    fn read_formats(&mut self, name: &str) {
+    /// enabled: those of its fragment shader, as [`Self::load`] reads them; with `shadow`, its
+    /// shadow settings too.
+    fn read_formats(&mut self, name: &str, shadow: bool) {
         let path = |ext: &str| match self.folder {
             "" => format!("{name}.{ext}"),
             f => format!("{f}/{name}.{ext}"),
@@ -1374,7 +1381,11 @@ impl Loader<'_> {
             return;
         }
         let fragment = self.preprocess(&fsh);
-        self.post.config.read_formats(&fragment);
+        if shadow {
+            self.post.config.read_formats_and_shadow(&fragment);
+        } else {
+            self.post.config.read_formats(&fragment);
+        }
     }
 
     /// Stage file `path` through the preprocessor; the pack's images declared without a format
@@ -2662,6 +2673,43 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
         assert!(!post.shadow_pass);
         let post = load("shadow.enabled = true\n", Some("0,1,2,3,4"));
         assert_eq!(buffers(&post), (2, Some(vec![0, 1]), vec![vec![]]));
+    }
+
+    /// A pack without a shadow pass still takes `shadow.fsh`'s shadow settings, not
+    /// `shadow.vsh`'s: Iris 1.11.7 applied `shadowDistance` and `sunPathRotation` from the first
+    /// (shadow projection, sun position) and not from the second, with probe packs of ours whose
+    /// shadow buffers nothing read (#10490).
+    #[test]
+    fn shadow_fsh_settings_count_without_a_shadow_pass() {
+        let settings = "const float shadowDistance = 48.0;\nconst float sunPathRotation = 20.0;\n";
+        let load = |vsh: &str, fsh: &str| {
+            let files = [
+                ("shaders/final.vsh", VSH),
+                ("shaders/final.fsh", FSH),
+                ("shaders/shadow.vsh", vsh),
+                ("shaders/shadow.fsh", fsh),
+            ];
+            let pack = Pack::from_zip_bytes("t", zip(&files)).unwrap();
+            let properties = Properties::parse("", &Macros::default());
+            load_post(
+                &pack,
+                "",
+                &properties,
+                &Macros::standard(),
+                &GameInputs::default(),
+            )
+        };
+        let with = |text: &str, file: &str| format!("#version 120\n{text}{}", &file[13..]);
+        let post = load(VSH, &with(settings, FSH));
+        assert!(!post.shadow_pass);
+        let s = &post.config.shadow;
+        assert_eq!((s.distance, s.sun_path_rotation), (48.0, 20.0));
+        let post = load(&with(settings, VSH), FSH);
+        let (s, d) = (&post.config.shadow, crate::config::Shadow::default());
+        assert_eq!(
+            (s.distance, s.sun_path_rotation),
+            (d.distance, d.sun_path_rotation)
+        );
     }
 
     /// A shadow program with a geometry stage draws terrain, entities and block entities, each

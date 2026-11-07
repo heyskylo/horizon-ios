@@ -1,7 +1,7 @@
 //! Blocks driven by the overworld day timeline's environment attributes
 //! (`gameplay/eyeblossom_open`, `gameplay/turtle_egg_hatch_chance`) and the
 //! dried ghast's hydration ticks.
-use super::{Dimension, LevelAccess, LevelEvent, Sim, update::below};
+use super::{LevelAccess, LevelEvent, Sim, update::below};
 use crate::registry::BlockStateId;
 use horizon_core::{position::BlockPos, random::RandomSource};
 use std::sync::Arc;
@@ -27,7 +27,9 @@ pub(crate) fn box_scan_order(min: BlockPos, max: BlockPos) -> Vec<BlockPos> {
 
 impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     fn day_ticks(&self) -> Option<i64> {
-        (self.level.dimension() == Dimension::Overworld)
+        self.level
+            .dimension_type()
+            .has_timeline("minecraft:day")
             .then(|| self.level.day_time().rem_euclid(24000))
     }
     /// `EnvironmentAttributes.EYEBLOSSOM_OPEN` (day timeline: open from 12600

@@ -12,6 +12,7 @@ use crate::{
     keybinds::{self, CATEGORIES, KeyBinds, all_mappings},
     lang::{self, LanguageInfo},
     settings::{SOUND_SOURCES, Settings},
+    settings_shell as shell,
     text::{self, Style, Text},
     ui,
 };
@@ -293,6 +294,7 @@ impl Opt {
             // the namespace the client bundles (assets/horizon/lang).
             Opt::PadEnabled => "horizon.options.controller",
             Opt::PadVibration => "horizon.options.vibration",
+            Opt::PadPlayInBackground => "horizon.options.play_in_background",
             Opt::PadAdaptiveTriggers => "horizon.options.adaptive_triggers",
             Opt::PadLightbar => "horizon.options.lightbar",
             Opt::PadLookSensitivity => "horizon.options.look_sensitivity",
@@ -828,6 +830,7 @@ impl Opt {
             Opt::JapaneseGlyphs => on_off(s.japanese_glyphs),
             Opt::PadEnabled => on_off(s.controller.enabled),
             Opt::PadVibration => on_off(s.controller.vibration),
+            Opt::PadPlayInBackground => on_off(s.controller.play_in_background),
             Opt::PadAdaptiveTriggers => on_off(s.controller.adaptive_triggers),
             Opt::PadInvertX => on_off(s.controller.invert_x),
             Opt::PadInvertY => on_off(s.controller.invert_y),
@@ -1125,6 +1128,9 @@ impl Opt {
             Opt::JapaneseGlyphs => s.japanese_glyphs = !s.japanese_glyphs,
             Opt::PadEnabled => s.controller.enabled = !s.controller.enabled,
             Opt::PadVibration => s.controller.vibration = !s.controller.vibration,
+            Opt::PadPlayInBackground => {
+                s.controller.play_in_background = !s.controller.play_in_background
+            }
             Opt::PadAdaptiveTriggers => {
                 s.controller.adaptive_triggers = !s.controller.adaptive_triggers
             }
@@ -1515,6 +1521,8 @@ pub enum Event {
     PlayMusicTrack(String, String),
     /// Open the recordings folder in the system file browser.
     OpenStudioFolder,
+    /// Start playback from the selected Studio recording.
+    OpenStudioReplay(std::path::PathBuf),
 }
 /// A row of the Music page: the track, and the pool it is played from.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1617,6 +1625,8 @@ pub struct OptionsUi {
     center_language: bool,
     pub graphics: crate::graphics_ui::GraphicsUi,
     pub controller: crate::controller_ui::ControllerUi,
+    /// Horizon Extras, on the settings shell.
+    extras: shell::Shell<crate::extras_ui::ExtrasScreen>,
     pub shader: crate::shader_ui::ShaderUi,
     pub split_profiles: crate::split_profiles::SplitProfiles,
     /// HDR calibration while its page is open.
@@ -1649,7 +1659,7 @@ pub struct OptionsUi {
     /// The list's rows as last laid out: each row's top and bottom (GUI
     /// pixels), for the narration's row under the mouse.
     row_bands: Vec<[f32; 2]>,
-    /// The Extras or PvP & HUD items that take a whole row (`wide_extras`), measured
+    /// The PvP & HUD items that take a whole row (`wide_extras`), measured
     /// when the page is drawn.
     wide_extras: Vec<crate::extras::Item>,
 }
@@ -1695,6 +1705,7 @@ impl Default for OptionsUi {
             center_language: false,
             graphics: Default::default(),
             controller: Default::default(),
+            extras: Default::default(),
             shader: Default::default(),
             split_profiles: Default::default(),
             calibration: None,
@@ -1763,24 +1774,23 @@ fn option_widget(s: &Settings, opt: Opt, x: f32, y: f32, w: f32) -> Widget {
         Kind::Cycle => button(x, y, w, opt.label(s), Act::Cycle(opt)),
     }
 }
-/// The Extras or PvP & HUD page's rows: its items under their headers.
-fn extras_rows(page: Page) -> Vec<Result<crate::extras::Item, &'static str>> {
-    match page {
-        Page::Pvp => crate::pvp::rows()
-            .into_iter()
-            .map(|r| r.map(crate::extras::Item::Pvp))
-            .collect(),
-        _ => crate::extras::rows(),
-    }
+/// The least GUI size a shell screen lays its keys out for, before it has been drawn at its own.
+const MIN_KEY_GUI: (f32, f32) = (480.0, 240.0);
+/// The PvP & HUD page's rows: its items under their headers.
+fn pvp_rows() -> Vec<Result<crate::extras::Item, &'static str>> {
+    crate::pvp::rows()
+        .into_iter()
+        .map(|r| r.map(crate::extras::Item::Pvp))
+        .collect()
 }
-/// The items of `page`'s rows whose label, with any of their first values, is wider than a
+/// The items of PvP & HUD's rows whose label, with any of their first values, is wider than a
 /// half-width button holds (`width` measures text with the screen's font): those take the
 /// whole row, so no label slides past its edges, in any language.
-fn wide_extras(s: &Settings, page: Page, width: impl Fn(&str) -> f32) -> Vec<crate::extras::Item> {
+fn wide_extras(s: &Settings, width: impl Fn(&str) -> f32) -> Vec<crate::extras::Item> {
     // A button's label keeps 2 px off each edge (`AbstractButton.renderString`'s margin),
     // past which it slides back and forth.
     let room = 150.0 - 4.0;
-    extras_rows(page)
+    pvp_rows()
         .into_iter()
         .filter_map(Result::ok)
         .filter(|&item| {
@@ -2004,6 +2014,9 @@ impl OptionsUi {
         if !self.focus_from_keyboard {
             self.focus = None;
         }
+        if let Some(shell) = self.shell_mut() {
+            shell.blur_search();
+        }
     }
     /// A switch of `horizon-extras.txt` as the Extras page draws it: "Caption: On".
     fn extra_button(&self, s: &Settings, item: crate::extras::Item) -> Widget {
@@ -2056,7 +2069,10 @@ impl OptionsUi {
                 }
                 Page::Controller | Page::PadBinds => self.controller.typing(),
                 _ if Self::shader_page(self.page()).is_some() => self.shader.typing(),
-                _ => self.settings_search_active(),
+                _ => match self.shell() {
+                    Some(shell) => shell.typing(),
+                    None => self.settings_search_active(),
+                },
             }
     }
     /// Jump straight to a page (control socket / tests).
@@ -2172,6 +2188,9 @@ impl OptionsUi {
         if let Some(at) = Self::shader_page(page) {
             self.shader.open(at);
         }
+        if let Some(shell) = self.shell_mut() {
+            shell.open();
+        }
         if page == Page::SplitSetup {
             self.split_setup.reset();
         }
@@ -2181,6 +2200,34 @@ impl OptionsUi {
         if page == Page::Studio {
             self.studio.refresh();
         }
+    }
+    /// The open page's screen on the settings shell. This, with `shell_mut`, is all a screen
+    /// needs here: drawing, clicks, the wheel, a stick's scrolling, keys and typing all go
+    /// through them, so no input path can miss one.
+    fn shell(&self) -> Option<&dyn shell::Hosted> {
+        match self.page() {
+            Page::Extras => Some(&self.extras),
+            _ => None,
+        }
+    }
+    fn shell_mut(&mut self) -> Option<&mut dyn shell::Hosted> {
+        match self.page() {
+            Page::Extras => Some(&mut self.extras),
+            _ => None,
+        }
+    }
+    /// What a shell screen's outputs do to these options.
+    fn shell_events(&mut self, s: &mut Settings, outputs: Vec<shell::Output>) -> Vec<Event> {
+        let mut events = Vec::new();
+        for output in outputs {
+            match output {
+                shell::Output::Event(event) => events.push(event),
+                shell::Output::BindKey(name) => self.selected_key = Some(name),
+                shell::Output::Push(page) => self.push(page),
+                shell::Output::Done => events.extend(self.back(s)),
+            }
+        }
+        events
     }
     /// What the graphics screen's actions do to these options.
     fn graphics_events(
@@ -2532,41 +2579,6 @@ impl OptionsUi {
         }
         rows
     }
-    /// The row that reaches the Zoom mod that replaced the extra: its switch and settings page
-    /// when it is built in, else a note saying where it is installed (Options > Mods). Zoom
-    /// became an official native mod, so Extras has no setting of its own for it (#8713).
-    fn zoom_mod_row(s: &Settings) -> Row {
-        let Some(i) = s
-            .mods
-            .installed
-            .iter()
-            .position(|m| m.id == "zoom" && m.native.is_some())
-        else {
-            // A note, not a button: Options > Mods already has the one way into the Mods page
-            // (`every_setting_and_page_is_reached_from_one_place`).
-            return Row::Note(lang::get("horizon.extras.zoom_mod_install"));
-        };
-        let label = || Text::option_name_value(tr("horizon.extras.zoom"), on_off(s.mods.is_on(i)));
-        let toggle = |width| button(0.0, 0.0, width, label(), Act::ToggleMod(i));
-        let settings = s.mods.installed[i]
-            .native
-            .as_ref()
-            .is_some_and(|page| !page.keys.is_empty() || !page.buttons.is_empty());
-        if settings {
-            Row::Buttons(
-                toggle(150.0),
-                Some(button(
-                    0.0,
-                    0.0,
-                    150.0,
-                    tr("horizon.mods.settings"),
-                    Act::ModSettings(i),
-                )),
-            )
-        } else {
-            Row::Buttons(toggle(310.0), None)
-        }
-    }
     /// A native mod's page: its name, its keys as Key Binds rows (the
     /// player's choice, else the default), then its buttons.
     fn native_rows(&self, s: &Settings, i: usize) -> Vec<Row> {
@@ -2607,7 +2619,7 @@ impl OptionsUi {
     fn list_rows(&self, s: &Settings) -> Vec<Row> {
         match self.page() {
             Page::SplitSetup => Vec::new(),
-            Page::Extras | Page::Pvp => {
+            Page::Pvp => {
                 // Each section's switches two to a row, as vanilla's
                 // OptionsList.addSmall lays out an options screen; one whose label would run
                 // past half a row in this language (`wide_extras`) gets the whole row.
@@ -2635,21 +2647,12 @@ impl OptionsUi {
                         widget
                     }
                 };
-                // PvP & HUD opens with its preset; Extras doesn't repeat it, nor the way there
-                // (Horizon Settings has it).
+                // PvP & HUD opens with its preset (Horizon Settings has the way there).
                 let preset = button(0.0, 0.0, 150.0, tr("horizon.pvp.preset"), Act::PvpPreset);
-                let mut rows = Vec::new();
-                if self.page() == Page::Extras {
-                    // Zoom, the FPS counter, Keystrokes and the Minimap are official mods now;
-                    // Extras keeps a way to the one players look for here (#8713).
-                    rows.push(Self::zoom_mod_row(s));
-                }
-                if self.page() == Page::Pvp {
-                    // The editor moves what the game shows: only from a world.
-                    let edit = button(0.0, 0.0, 150.0, tr("horizon.pvp.editor"), Act::HudEditor);
-                    let edit = if self.in_world { edit } else { inactive(edit) };
-                    rows.push(Row::Buttons(preset, Some(edit)));
-                }
+                // The editor moves what the game shows: only from a world.
+                let edit = button(0.0, 0.0, 150.0, tr("horizon.pvp.editor"), Act::HudEditor);
+                let edit = if self.in_world { edit } else { inactive(edit) };
+                let mut rows = vec![Row::Buttons(preset, Some(edit))];
                 let mut section = Vec::new();
                 let flush = |rows: &mut Vec<Row>, section: &mut Vec<crate::extras::Item>| {
                     let mut half = None;
@@ -2665,7 +2668,7 @@ impl OptionsUi {
                     }
                     rows.extend(half.map(|h| Row::Buttons(extra(h, 150.0), None)));
                 };
-                for row in extras_rows(self.page()) {
+                for row in pvp_rows() {
                     match row {
                         Err(header) => {
                             flush(&mut rows, &mut section);
@@ -3647,6 +3650,12 @@ impl OptionsUi {
             self.shader.draw(s, batch, atlas, cursor, self.in_world);
             return;
         }
+        let waiting = self.selected_key;
+        let in_world = self.in_world;
+        if let Some(shell) = self.shell_mut() {
+            shell.draw(s, batch, atlas, cursor, in_world, waiting);
+            return;
+        }
         if self.page() == Page::SplitSetup {
             self.split_setup.on = s.extras.splitscreen;
             // The controller picks a tile up between presses: the screen's size from the draw.
@@ -3675,8 +3684,8 @@ impl OptionsUi {
             crate::screen_draw::paint(batch, atlas, &draws);
             return;
         }
-        if matches!(self.page(), Page::Extras | Page::Pvp) {
-            self.wide_extras = wide_extras(s, self.page(), |t| atlas.font.width(t));
+        if self.page() == Page::Pvp {
+            self.wide_extras = wide_extras(s, |t| atlas.font.width(t));
         }
         let (widgets, top, bottom, content) = self.layout(s, w, h);
         self.size = (w, h);
@@ -3978,6 +3987,9 @@ impl OptionsUi {
             return match self.studio.click((x, y), size) {
                 StudioAction::None => Vec::new(),
                 StudioAction::Refresh => vec![Event::ButtonClick],
+                StudioAction::OpenReplay(path) => {
+                    vec![Event::ButtonClick, Event::OpenStudioReplay(path)]
+                }
                 StudioAction::OpenFolder => vec![Event::ButtonClick, Event::OpenStudioFolder],
                 StudioAction::Back => {
                     let mut events = vec![Event::ButtonClick];
@@ -4009,6 +4021,22 @@ impl OptionsUi {
                 self.graphics
                     .click(s, (x, y), size, framebuffer, drag, right, self.shift);
             return self.graphics_events(s, actions);
+        }
+        if self.shell().is_some() {
+            // Waiting on a key: a mouse button binds, as on Key Binds.
+            if self.selected_key.is_some() && !drag {
+                let button = if right {
+                    winit::event::MouseButton::Right
+                } else {
+                    winit::event::MouseButton::Left
+                };
+                return self.bind_mouse(s, button);
+            }
+            let shift = self.shift;
+            let outputs = self.shell_mut().map_or_else(Vec::new, |shell| {
+                shell.click(s, (x, y), size, drag, right, shift)
+            });
+            return self.shell_events(s, outputs);
         }
         if Self::controller_page(self.page()).is_some() {
             // Waiting on a button: a click cancels the wait.
@@ -4286,7 +4314,9 @@ impl OptionsUi {
         // release, even if the pointer has left the widget or its value stayed.
         let slider = self.dragging.take().is_some();
         let (shader_slider, shader_pack) = self.shader.release();
-        let graphics_slider = self.graphics.release() | self.controller.release() | shader_slider;
+        let shell_slider = self.shell_mut().is_some_and(|shell| shell.release());
+        let graphics_slider =
+            self.graphics.release() | self.controller.release() | shader_slider | shell_slider;
         let calibration_slider = self.calibration.as_mut().is_some_and(|c| c.release());
         let split_drop = self.split_setup.release();
         if slider || graphics_slider || calibration_slider {
@@ -4364,6 +4394,13 @@ impl OptionsUi {
     ) -> Vec<Event> {
         self.size = size;
         self.framebuffer = framebuffer;
+        if self.resource_error.is_some() {
+            return Vec::new();
+        }
+        if let Some(shell) = self.shell_mut() {
+            let outputs = shell.wheel(s, size, cursor, amount);
+            return self.shell_events(s, outputs);
+        }
         if Self::graphics_page(self.page()).is_some() {
             let actions = self.graphics.wheel(s, size, cursor, framebuffer, amount);
             return self.graphics_events(s, actions);
@@ -4455,8 +4492,16 @@ impl OptionsUi {
         if self.resource_error.is_some() {
             return;
         }
+        if let Some(shell) = self.shell_mut() {
+            shell.scroll(s, size, amount);
+            return;
+        }
         if Self::graphics_page(self.page()).is_some() {
             self.graphics.scroll(s, size, amount);
+            return;
+        }
+        if self.page() == Page::Studio {
+            self.studio.wheel(amount);
             return;
         }
         if Self::controller_page(self.page()).is_some() {
@@ -4647,6 +4692,10 @@ impl OptionsUi {
             self.scroll = 0.0;
         } else if self.page() == Page::SplitProfiles {
             self.split_profiles.type_text(text);
+        } else if let Some(shell) = self.shell_mut() {
+            if shell.typing() {
+                shell.type_text(text);
+            }
         } else if Self::graphics_page(self.page()).is_some() && self.graphics.typing() {
             self.graphics.type_text(text);
         } else if Self::controller_page(self.page()).is_some() && self.controller.typing() {
@@ -4683,6 +4732,9 @@ impl OptionsUi {
         }
         if self.page() == Page::SplitProfiles {
             return self.split_profiles.shortcut(shortcut, clipboard);
+        }
+        if let Some(shell) = self.shell_mut() {
+            return shell.shortcut(shortcut, clipboard);
         }
         if Self::graphics_page(self.page()).is_some() {
             return self.graphics.shortcut(shortcut, clipboard);
@@ -4816,6 +4868,14 @@ impl OptionsUi {
                 return events;
             }
             return events;
+        }
+        let gui = (
+            self.size.0.max(MIN_KEY_GUI.0),
+            self.size.1.max(MIN_KEY_GUI.1),
+        );
+        if let Some(shell) = self.shell_mut() {
+            let outputs = shell.key(s, key, text, shift, gui);
+            return self.shell_events(s, outputs);
         }
         if Self::controller_page(self.page()).is_some() {
             let size = (self.size.0.max(480.0), self.size.1.max(240.0));
@@ -5175,6 +5235,7 @@ impl OptionsUi {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extras_ui::ExtraRow;
 
     /// The window allows the input method only while `typing` says a search
     /// box has the focus (`Game::text_field_focused`), so a page without one
@@ -5620,6 +5681,9 @@ mod tests {
                 if ui.controller_open() {
                     texts.extend(ui.controller.row_names(&s));
                 }
+                if ui.page() == Page::Extras {
+                    texts.extend(ui.extras.row_labels(&s));
+                }
             }
             texts
         })
@@ -5988,7 +6052,7 @@ mod tests {
         let atlas = atlas();
         let mut s = Settings::default();
         let mut ui = OptionsUi::default();
-        ui.show(Page::Extras);
+        ui.show(Page::Pvp);
         let (widgets, _, _, _) = ui.layout(&s, 480.0, 480.0);
         let extra = widgets
             .iter()
@@ -5998,7 +6062,7 @@ mod tests {
                     WKind::Button {
                         act: Act::Extra(item),
                         ..
-                    } if !matches!(item, crate::extras::Item::SortKey)
+                    } if item.key_name().is_none()
                 )
             })
             .unwrap();
@@ -6044,19 +6108,17 @@ mod tests {
 
     #[test]
     fn extras_reaches_the_zoom_mod_that_replaced_the_extra() {
+        let atlas = atlas();
         let mut s = Settings::default();
         let mut ui = OptionsUi::default();
         ui.show(Page::Extras);
         let english = || lang::Language::load(&[], "en_us");
         // Without the mod, Extras says where it is installed (a note, not a second way into
         // Options > Mods).
-        let (widgets, _, _, _) = lang::scoped(english(), || ui.layout(&s, 480.0, 4000.0)).0;
+        let labels = lang::scoped(english(), || ui.extras.row_labels(&s)).0;
         assert!(
-            widgets.iter().any(|w| matches!(
-                &w.kind,
-                WKind::Text { text, .. } if text.plain() == "Zoom: install from Mods"
-            )),
-            "Extras has no hint for the Zoom mod"
+            labels.iter().any(|l| l == "Zoom: install from Mods"),
+            "Extras has no hint for the Zoom mod: {labels:?}"
         );
         // Built in, Zoom's settings live on its page: Extras opens that page.
         s.mods.installed.push(crate::mod_list::Installed {
@@ -6070,30 +6132,28 @@ mod tests {
                 buttons: Vec::new(),
             }),
         });
-        let (widgets, _, _, _) = lang::scoped(english(), || ui.layout(&s, 480.0, 4000.0)).0;
-        assert!(
-            widgets.iter().any(|w| matches!(
-                &w.kind,
-                WKind::Button {
-                    act: Act::ModSettings(0),
-                    label,
-                    ..
-                } if label.plain() == "Settings"
-            )),
-            "Extras doesn't open the Zoom mod's settings"
+        let labels = lang::scoped(english(), || ui.extras.row_labels(&s)).0;
+        assert!(labels.iter().any(|l| l == "Settings"), "{labels:?}");
+        // The mod's switch is beside it, so Extras keeps the Zoom setting it had.
+        assert!(labels.iter().any(|l| l.starts_with("Zoom: ")), "{labels:?}");
+        let size = (480.0, 480.0);
+        let on = s.mods.is_on(0);
+        let at = ui.extras.point_at(&s, size, ExtraRow::Zoom(0));
+        assert_eq!(
+            ui.click(&mut s, &atlas, at.0, at.1, size, [960, 960], false, false),
+            vec![Event::ButtonClick, Event::Changed]
         );
-        // The mod's switch is on the same row, so Extras keeps the Zoom setting it had.
-        assert!(
-            widgets.iter().any(|w| matches!(
-                &w.kind,
-                WKind::Button {
-                    act: Act::ToggleMod(0),
-                    label,
-                    ..
-                } if label.plain().starts_with("Zoom")
-            )),
-            "Extras doesn't switch the Zoom mod"
+        assert_ne!(s.mods.is_on(0), on);
+        let at = ui.extras.point_at(&s, size, ExtraRow::ZoomSettings(0));
+        assert_eq!(
+            ui.click(&mut s, &atlas, at.0, at.1, size, [960, 960], false, false),
+            vec![
+                Event::ButtonClick,
+                Event::ButtonClick,
+                Event::NativeSettings(0)
+            ]
         );
+        assert_eq!(ui.page(), Page::NativeMod(0));
     }
 
     #[test]
@@ -6437,32 +6497,27 @@ mod tests {
             );
             assert_eq!(ui.page(), page);
         }
-        let (widgets, _, _, _) = ui.layout(&s, size.0, size.1);
         assert_eq!(
-            widgets
-                .iter()
-                .filter(|w| matches!(
-                    w.kind,
-                    WKind::Button {
-                        act: Act::Extra(_),
-                        ..
-                    }
-                ))
-                .count(),
-            crate::extras::rows().iter().filter(|r| r.is_ok()).count()
+            ui.extras.row_labels(&s).len(),
+            // And the note about the Zoom mod over them.
+            1 + crate::extras::rows().iter().filter(|r| r.is_ok()).count()
         );
+        let press = |ui: &mut OptionsUi, s: &mut Settings, item: crate::extras::Item| {
+            let at = ui.extras.point_at(s, size, ExtraRow::Item(item));
+            ui.click(s, &atlas, at.0, at.1, size, [960, 960], false, false)
+        };
         assert_eq!(
-            click(&mut ui, &mut s, Act::Extra(crate::extras::Item::Sort)),
+            press(&mut ui, &mut s, crate::extras::Item::Sort),
             vec![Event::ButtonClick, Event::Changed]
         );
         assert!(s.extras.sort);
         assert_eq!(
-            click(&mut ui, &mut s, Act::Extra(crate::extras::Item::Pregen)),
+            press(&mut ui, &mut s, crate::extras::Item::Pregen),
             vec![Event::ButtonClick, Event::Changed]
         );
         assert!(s.extras.pregen);
         assert_eq!(
-            click(&mut ui, &mut s, Act::Extra(crate::extras::Item::SortKey)),
+            press(&mut ui, &mut s, crate::extras::Item::SortKey),
             vec![Event::ButtonClick]
         );
         assert_eq!(ui.selected_key, Some(crate::extras::SORT_KEY));
@@ -6475,17 +6530,29 @@ mod tests {
             crate::extras::Extras::parse(&s.extras.serialize()),
             s.extras
         );
-        // In a window too short for the page, the wheel scrolls to its end.
-        let short = (480.0, 180.0);
-        ui.scroll(&s, short, -1000.0);
-        let (_, top, bottom, content) = ui.layout(&s, short.0, short.1);
-        assert!(content > bottom - top);
-        assert_eq!(ui.scroll, content - (bottom - top));
         assert_eq!(
             ui.key(&mut s, &atlas, winit::keyboard::KeyCode::Escape, None),
             vec![Event::Changed]
         );
         assert_eq!(ui.page(), Page::Horizon);
+    }
+
+    /// Every way a pad or a wheel scrolls a page on the shell moves the same list: Replay Studio's
+    /// took the wheel and missed `scroll_at`, so a stick couldn't scroll it.
+    #[test]
+    fn the_wheel_and_the_stick_scroll_a_page_on_the_shell_alike() {
+        let mut s = Settings::default();
+        let mut ui = OptionsUi::default();
+        ui.show(Page::Extras);
+        // Too short for the page.
+        let short = (480.0, 180.0);
+        ui.wheel(&mut s, short, (0.0, 0.0), [960, 360], -1.0);
+        let one = ui.extras.scroll_amount();
+        assert!(one > 0.0);
+        ui.scroll_at(&s, short, (0.0, 0.0), -1.0);
+        assert_eq!(ui.extras.scroll_amount(), 2.0 * one);
+        ui.scroll_at(&s, short, (0.0, 0.0), 2.0);
+        assert_eq!(ui.extras.scroll_amount(), 0.0);
     }
 
     #[test]
@@ -7318,7 +7385,7 @@ mod tests {
     /// An Extras or PvP & HUD label wider than half a row takes the whole row, so every label
     /// fits its button: "Keep channels for UI sounds: Off" did not.
     #[test]
-    fn extras_labels_fit_their_buttons() {
+    fn pvp_labels_fit_their_buttons() {
         // Vanilla's font: 6 px a glyph, a few narrower ones.
         let width = |t: &str| {
             t.chars()
@@ -7333,9 +7400,9 @@ mod tests {
         };
         let s = Settings::default();
         let mut ui = OptionsUi::default();
-        for page in [Page::Extras, Page::Pvp] {
-            ui.stack = vec![Page::Main, page];
-            ui.wide_extras = wide_extras(&s, page, width);
+        {
+            ui.stack = vec![Page::Main, Page::Pvp];
+            ui.wide_extras = wide_extras(&s, width);
             let rows = ui.list_rows(&s);
             let buttons: Vec<&Widget> = rows
                 .iter()
@@ -7349,20 +7416,11 @@ mod tests {
                     continue;
                 };
                 let label = label.plain();
-                assert!(width(&label) <= b.w - 4.0, "{page:?}: {label} on {}", b.w);
+                assert!(width(&label) <= b.w - 4.0, "{label} on {}", b.w);
             }
             // Short ones keep vanilla's two to a row.
-            assert!(buttons.iter().any(|b| b.w == 150.0), "{page:?}");
+            assert!(buttons.iter().any(|b| b.w == 150.0));
         }
-        ui.stack = vec![Page::Main, Page::Extras];
-        ui.wide_extras = wide_extras(&s, Page::Extras, width);
-        for item in [
-            crate::extras::Item::UiSoundReserve,
-            crate::extras::Item::WheelCyclesSettings,
-        ] {
-            assert!(ui.wide_extras.contains(&item), "{item:?}");
-        }
-        assert!(!ui.wide_extras.contains(&crate::extras::Item::AutoReconnect));
     }
 
     /// Every setting a player reaches, from the Options screen through every button that opens
@@ -7778,20 +7836,9 @@ mod tests {
         s.extras.wheel_cycles_settings = true;
         ui.show(Page::Extras);
         let size = (480.0, 600.0);
-        let (widgets, _, _, _) = ui.layout(&s, size.0, size.1);
-        let sort_wd = widgets
-            .iter()
-            .find(|w| {
-                matches!(
-                    w.kind,
-                    WKind::Button {
-                        act: Act::Extra(crate::extras::Item::Sort),
-                        ..
-                    }
-                )
-            })
-            .unwrap();
-        let cursor = (sort_wd.x + 5.0, sort_wd.y + 5.0);
+        let cursor = ui
+            .extras
+            .point_at(&s, size, ExtraRow::Item(crate::extras::Item::Sort));
         assert!(!s.extras.sort);
         ui.wheel(&mut s, size, cursor, [854, 480], 1.0);
         assert!(s.extras.sort);
@@ -8274,55 +8321,5 @@ mod tests {
         ui.click(&mut s, &atlas, px, py, size, [854, 480], false, false);
         assert_eq!(s.particles, 0);
         ui.shift = false;
-
-        // Also verify Act::Extra on Page::Extras
-        ui.show(Page::Extras);
-        let (widgets, top, _, _) = ui.layout(&s, size.0, size.1);
-        if let Some(extra_btn) = widgets.iter().find(|wd| {
-            matches!(
-                wd.kind,
-                WKind::Button {
-                    active: true,
-                    act: Act::Extra(crate::extras::Item::CosmeticsOthers),
-                    ..
-                }
-            )
-        }) {
-            // Extras has enough rows to scroll: click the cycle button inside
-            // the list's viewport, as a player would after scrolling to it.
-            ui.scroll = (extra_btn.y - top).max(0.0);
-            let (widgets, _, _, _) = ui.layout(&s, size.0, size.1);
-            let extra_btn = widgets
-                .iter()
-                .find(|wd| {
-                    matches!(
-                        wd.kind,
-                        WKind::Button {
-                            act: Act::Extra(crate::extras::Item::CosmeticsOthers),
-                            ..
-                        }
-                    )
-                })
-                .unwrap();
-            let (ex, ey) = (extra_btn.x + 1.0, extra_btn.y + 1.0);
-            use horizon_cosmetics::prefs::Others;
-            // Not chosen, nothing owned: shows Hidden.
-            assert_eq!(s.extras.cosmetics_others, None);
-            assert_eq!(s.extras.effective_others(), Others::Hidden);
-
-            // Forward (wraps to Shown), now a choice
-            ui.click(&mut s, &atlas, ex, ey, size, [854, 480], false, false);
-            assert_eq!(s.extras.cosmetics_others, Some(Others::Shown));
-
-            // Backward with shift
-            ui.shift = true;
-            ui.click(&mut s, &atlas, ex, ey, size, [854, 480], false, false);
-            assert_eq!(s.extras.cosmetics_others, Some(Others::Hidden));
-
-            // Backward again
-            ui.click(&mut s, &atlas, ex, ey, size, [854, 480], false, false);
-            assert_eq!(s.extras.cosmetics_others, Some(Others::NameTags));
-            ui.shift = false;
-        }
     }
 }

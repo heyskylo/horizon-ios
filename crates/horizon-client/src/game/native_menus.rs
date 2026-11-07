@@ -25,7 +25,7 @@ use std::ops::Range;
 /// of a native menu of `size` slots landed on, when it is the player's
 /// inventory below the menu (`ChestMenu`: the menu's slots, then the
 /// inventory's 27, then the hotbar's 9).
-#[allow(dead_code)]
+#[allow(dead_code, reason = "native mod API (docs/native-mods.md)")]
 pub(crate) fn native_menu_inventory_slot(size: usize, slot: i32) -> Option<usize> {
     let n = usize::try_from(slot).ok()?.checked_sub(size)?;
     match n {
@@ -114,7 +114,6 @@ fn exchange(
 /// `native_perform_command`, the menus can be opened and filled, but
 /// `native_player_stacks` and `native_exchange_items` refuse: call them from
 /// `native_menu_clicked` or `native_server_tick`).
-#[allow(dead_code)]
 impl Game<'_> {
     pub(super) fn native_conn(&self, uuid: u128) -> Option<u32> {
         let host = self.lan.as_ref()?;

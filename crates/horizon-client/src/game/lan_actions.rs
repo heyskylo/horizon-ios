@@ -542,6 +542,7 @@ impl Game<'_> {
         self.pitch = g.pitch;
         std::mem::swap(&mut self.inventory, &mut g.inventory);
         std::mem::swap(&mut self.armor, &mut g.armor);
+        std::mem::swap(&mut self.location_armor, &mut g.location_armor);
         std::mem::swap(&mut self.offhand, &mut g.offhand);
         std::mem::swap(&mut self.carried, &mut g.carried);
         let selected = std::mem::replace(&mut self.selected, g.selected);
@@ -1046,6 +1047,7 @@ impl Game<'_> {
         g.selected = std::mem::replace(&mut self.selected, selected);
         std::mem::swap(&mut self.inventory, &mut g.inventory);
         std::mem::swap(&mut self.armor, &mut g.armor);
+        std::mem::swap(&mut self.location_armor, &mut g.location_armor);
         std::mem::swap(&mut self.offhand, &mut g.offhand);
         std::mem::swap(&mut self.carried, &mut g.carried);
         // A teleport with a rotation (commands) turns the guest. `/rotate`
@@ -2425,6 +2427,9 @@ impl Game<'_> {
                     .border
                     .contains(f64::from(p.pos[0]), f64::from(p.pos[2]))
                 {
+                    if spectator && self.spectator_use_portal(host, conn, gi, p.pos) {
+                        return;
+                    }
                     let logged = self.world.block_log.as_ref().map_or(0, Vec::len);
                     let heard = self.audio.capture.as_ref().map_or(0, Vec::len);
                     let used = self.as_guest(host, conn, |g| {
@@ -2432,6 +2437,7 @@ impl Game<'_> {
                         g.forced_hit = Some(hit);
                         g.guest_use = Some(GuestUse::OnBlock(hand));
                         let swings = g.swings_started;
+                        let predicted = g.predicted_swings;
                         // InteractionResult.consumesAction: a FAIL (`use_failed`,
                         // as BlockItem.place's failed placement) does not count,
                         // even though the click ended on it.
@@ -2449,7 +2455,8 @@ impl Game<'_> {
                         reset_use_attack_strength(&mut g.attack_ticks, swings, g.swings_started);
                         g.forced_hit = None;
                         g.guest_use = None;
-                        (g.swings_started != swings, consumed, attempt)
+                        let echo = g.swings_started != swings && g.predicted_swings == predicted;
+                        (echo, consumed, attempt)
                     });
                     let swung = used.map(|u| u.0);
                     self.lan_swing_back(host, conn, swung);
@@ -2794,6 +2801,9 @@ impl Game<'_> {
             }
             S::CustomPayload(p) if p.channel == horizon_client::lod_net::CHANNEL => {
                 self.guest_far_terrain(host, conn, &p.data)
+            }
+            S::CustomPayload(p) if p.channel == horizon_client::lan::recipes::TRANSFER_CHANNEL => {
+                self.guest_recipe_transfer(host, conn, &p.data);
             }
             S::ChatCommandSigned(p) => self.guest_signed_command(host, conn, p),
             S::ChangeDifficulty(p) if host.hub.guests[gi].permission >= 2 => {
@@ -4919,11 +4929,34 @@ impl Game<'_> {
             g.moves_from_ground
         };
         if g.spectator() {
-            // Spectators' effects still run (LivingEntity.baseTick).
+            // ServerPlayer.doTick runs the player's whole tick for a spectator
+            // too, unless its box touches an unloaded chunk
+            // (`touchingUnloadedChunk`): its effects (LivingEntity.baseTick),
+            // Player.aiStep's tickRegeneration and foodData.tick go on while
+            // it watches (#11312). The hazards, the travel and the movement
+            // statistics below are what a spectator's body skips.
+            let (at, body) = (g.position, g.dimensions());
+            let loaded =
+                !touching_unloaded_chunk(at, body, |x, z| self.world.chunks.contains_key(&(x, z)));
             if !g.effects.list.is_empty() {
                 self.as_guest(host, conn, |game| game.tick_mob_effects());
             }
-            self.as_guest(host, conn, |game| game.handle_shoulder_entities());
+            self.as_guest(host, conn, |game| {
+                game.handle_shoulder_entities();
+                if !loaded {
+                    return;
+                }
+                let rules = game.world.health_rules;
+                let Some(player) = game.player.as_mut() else {
+                    return;
+                };
+                // Entity.baseTick's clocks (hurtTime, invulnerableTime) run too.
+                player.health.advance_clock();
+                let _ = player.peaceful_regeneration(rules);
+                let _ = player.food_tick(&game.health_resources, rules);
+                let events = std::mem::take(&mut player.events);
+                game.record_combat(&events);
+            });
             return;
         }
         let in_wall = !g.sleeping && self.in_wall(g.position, g.dimensions());
@@ -5306,6 +5339,11 @@ impl Game<'_> {
             if g.fall_flying != gliding {
                 g.fall_flying = gliding;
                 changed = Some((g.uuid, g.name.clone(), gliding));
+            } else if !gliding {
+                // A refused start changes nothing on the server, so no flags
+                // update would follow; force one, so the client that predicted
+                // the glide takes the cleared bit and ends it.
+                g.sent_shared ^= -128;
             }
         }
         if let Some((uuid, name, gliding)) = changed {
@@ -5942,10 +5980,10 @@ impl Game<'_> {
     }
 
     /// A use the server ran swung the guest's hand: their own client is told
-    /// too (`swing(hand, true)` for a SwingSource.SERVER result). Horizon's
-    /// client does not run uses itself, so it does not predict the swing; a
-    /// client that did (a block placed) is still in the first half of its
-    /// swing and ignores it (`SwingState.startIfAble`).
+    /// too (`swing(hand, true)` for a result that is not SwingSource.PREDICTED).
+    /// A predicted swing (a block placed, a block's own SUCCESS) is the
+    /// client's own: sent back, it arrived after the first half of that swing
+    /// on a slow connection and swung the arm again (#9887).
     fn lan_swing_back(&mut self, host: &mut LanHost, conn: u32, swung: Option<bool>) {
         if swung != Some(true) {
             return;
@@ -5995,6 +6033,27 @@ fn swing_packet(id: i32, hand: Hand, animation: SwingAnimation) -> C {
         kind: i32::from(animation.kind),
         duration: animation.duration,
     })
+}
+
+/// `Entity.touchingUnloadedChunk`: the box at `at` inflated by one block
+/// reaches a chunk that is not loaded (`Level.hasChunksAt` over the floor of
+/// its minimum and the ceiling of its maximum, as section coordinates).
+fn touching_unloaded_chunk(
+    at: [f64; 3],
+    body: Dimensions,
+    loaded: impl Fn(i32, i32) -> bool,
+) -> bool {
+    let half = f64::from(body.width) / 2.0 + 1.0;
+    let section = |v: f64| (v as i32) >> 4;
+    let (x0, x1) = (
+        section((at[0] - half).floor()),
+        section((at[0] + half).ceil()),
+    );
+    let (z0, z1) = (
+        section((at[2] - half).floor()),
+        section((at[2] + half).ceil()),
+    );
+    !(x0..=x1).all(|x| (z0..=z1).all(|z| loaded(x, z)))
 }
 
 /// The block columns `Entity.isInWall` looks at: `AABB.ofSize` around the
@@ -6598,5 +6657,225 @@ mod respawn_world_point_tests {
         drop(host);
         drop(game);
         std::fs::remove_dir_all(scratch).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod swing_echo_tests {
+    use super::ItemStack;
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_client::chunk::Chunk;
+    use horizon_client::lan::{Joined, NetConfig, Out, PlayerSender, guest::Guest, hub::HubConfig};
+    use horizon_core::position::ChunkPos;
+    use horizon_protocol::packets::{
+        configuration::ClientInformation,
+        play::{self, Clientbound, Serverbound},
+    };
+    use std::sync::{Arc, atomic::AtomicI32, mpsc};
+
+    /// handleUseItemOn swings the player's arm, but sends the swing to the
+    /// player's own client only when the client did not predict it: a block
+    /// placed (SUCCESS) is the client's own swing, a bed's use
+    /// (SUCCESS_SERVER) is not (#9887).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn only_a_server_only_use_swings_back_to_the_player() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::env::temp_dir().join(format!("horizon-swing-echo-unit-{}", std::process::id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap()
+            .0;
+        let mut chunk = Chunk::empty(0, 0);
+        for x in 0..16 {
+            for z in 0..16 {
+                chunk.set(x, 199, z, stone);
+            }
+        }
+        game.world.chunks.insert((0, 0), Arc::new(chunk));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("setblock 6 200 4 red_bed[facing=north,part=foot]"));
+        assert!(game.run_command("setblock 6 200 3 red_bed[facing=north,part=head]"));
+        game.lan_host(
+            super::super::lan::LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            NetConfig {
+                announce: false,
+                ..NetConfig::loopback(0, "swing-echo-test".into(), 2)
+            },
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: "minecraft:overworld".into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 2,
+                integrated: false,
+                levels: Default::default(),
+            },
+        )
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut guest = Guest::new(
+            Joined {
+                conn: 2,
+                uuid: 331,
+                name: "SwingGuest".into(),
+                properties: Vec::new(),
+                info: ClientInformation::new(2),
+                brand: "test".into(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
+            },
+            2,
+            [4.5, 200.0, 4.5],
+            2,
+        );
+        guest.dimension = "minecraft:overworld".into();
+        guest.placed = true;
+        guest.loaded = true;
+        guest.inventory[0] = Some(ItemStack::new("minecraft:stone", 16));
+        guest.selected = 0;
+        let mut host = game.lan.take().unwrap();
+        host.hub.guests.push(guest);
+        let id = host.hub.guests[0].entity_id;
+        let swings_back = || {
+            let mut n = 0;
+            for out in rx.try_iter() {
+                let bodies = match out {
+                    Out::Packet(body) => vec![body],
+                    Out::Packets(bodies) => bodies,
+                    Out::Disconnect(_) => panic!("unexpected disconnect"),
+                };
+                for body in bodies {
+                    let mut r = horizon_protocol::buf::Reader::new(&body);
+                    let packet_id = r.varint().unwrap();
+                    if let Ok(Clientbound::SwingAnimation(p)) =
+                        Clientbound::decode(packet_id, r.rest())
+                        && p.id == id
+                    {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        };
+        let use_on = |pos: [i32; 3], cursor: [f32; 3], sequence: i32| {
+            Serverbound::UseItemOn(play::UseItemOn {
+                hand: 0,
+                pos,
+                face: 1,
+                cursor,
+                inside: false,
+                world_border: false,
+                sequence,
+            })
+        };
+        // BlockItem.place: SUCCESS, the client's own swing.
+        game.lan_guest_packet(&mut host, 2, use_on([4, 199, 6], [0.5, 1.0, 0.5], 1));
+        assert_eq!(game.world.block(4, 200, 6).0, stone, "the stone is placed");
+        assert_eq!(swings_back(), 0, "a placement is not swung back");
+        // The swing ends before the next use can start one.
+        for _ in 0..8 {
+            game.lan_swings(&mut host);
+        }
+        host.hub.guests[0].selected = 1;
+        // BedBlock.useWithoutItem: SUCCESS_SERVER, the server's swing only.
+        game.lan_guest_packet(&mut host, 2, use_on([6, 200, 4], [0.5, 0.5625, 0.5], 2));
+        assert_eq!(swings_back(), 1, "a bed's use is swung back");
+    }
+}
+
+#[cfg(test)]
+mod unloaded_chunk_tests {
+    use super::touching_unloaded_chunk;
+    use horizon_client::pose::Dimensions;
+
+    /// `Entity.touchingUnloadedChunk` (#11312): the box inflated by one block
+    /// is checked chunk by chunk; a player in the middle of a loaded chunk
+    /// touches none, one within a block of its edge touches the neighbour.
+    #[test]
+    fn a_box_within_a_block_of_a_chunk_edge_touches_the_next_chunk() {
+        let body = Dimensions {
+            width: 0.6,
+            height: 1.8,
+            eye_height: 1.62,
+        };
+        let only_origin = |x: i32, z: i32| (x, z) == (0, 0);
+        assert!(!touching_unloaded_chunk(
+            [8.0, 64.0, 8.0],
+            body,
+            only_origin
+        ));
+        // 15.5 + 0.3 + 1 reaches 16.8, in chunk 1.
+        assert!(touching_unloaded_chunk(
+            [15.5, 64.0, 8.0],
+            body,
+            only_origin
+        ));
+        // 14.0 + 1.3 = 15.3: Mth.ceil gives 16, the first block of chunk 1.
+        assert!(touching_unloaded_chunk(
+            [14.0, 64.0, 8.0],
+            body,
+            only_origin
+        ));
+        // 13.5 + 1.3 = 14.8: ceil 15, still chunk 0.
+        assert!(!touching_unloaded_chunk(
+            [13.5, 64.0, 8.0],
+            body,
+            only_origin
+        ));
+        // Everything loaded: nothing is touched anywhere.
+        assert!(!touching_unloaded_chunk(
+            [15.9, 64.0, -0.5],
+            body,
+            |_, _| true
+        ));
     }
 }
