@@ -755,7 +755,7 @@ mod tests {
             rain_fog_multiplier: 0.1,
             ..FogState::default()
         };
-        let mut settled = start;
+        let mut settled = start.clone();
         settle_rain_fog(&mut settled, 0.5, 15, true);
         assert_eq!(settled.rain_fog_multiplier, 0.5);
         let mut eased = start;
