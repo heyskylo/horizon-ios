@@ -153,8 +153,6 @@ struct EndFlash {
     old_intensity: f32,
     x_angle: f32,
     y_angle: f32,
-    /// Ticks until the delayed weather.end_flash sound.
-    sound_in: Option<u32>,
 }
 impl EndFlash {
     fn tick(&mut self, clock: i64) {
@@ -178,9 +176,10 @@ impl EndFlash {
         } else {
             0.0
         };
-        if self.intensity > 0.0 && self.old_intensity <= 0.0 {
-            self.sound_in = Some(30);
-        }
+    }
+    /// `EndFlashState.flashStartedThisTick`.
+    fn started_this_tick(&self) -> bool {
+        self.intensity > 0.0 && self.old_intensity <= 0.0
     }
     fn intensity(&self, partial: f32) -> f32 {
         self.old_intensity + (self.intensity - self.old_intensity) * partial
@@ -516,6 +515,29 @@ impl Game<'_> {
         None
     }
 
+    /// `ClientLevel.tick`'s End flash, on every client in the End:
+    /// `EndFlashState.tick`, and when a flash starts (not under the credits)
+    /// its `DirectionalSoundInstance`, played 30 ticks later from the camera
+    /// toward the flash.
+    pub(super) fn tick_end_flash(&mut self) {
+        if self.dim != Dim::End {
+            return;
+        }
+        self.end.flash.tick(self.world.game_time);
+        if self.end.flash.started_this_tick() && self.win.is_none() {
+            let flash = &self.end.flash;
+            let instance = horizon_client::sound_engine::SoundInstance::directional(
+                "minecraft:weather.end_flash",
+                horizon_client::sound_engine::WEATHER,
+                horizon_client::sound_engine::SoundEngine::unseeded(),
+                self.audio.listener,
+                flash.x_angle,
+                flash.y_angle,
+            );
+            self.audio.play_instance_after(instance, 30);
+        }
+    }
+
     /// End portals, End gateways and the exit portal, once per tick.
     pub(super) fn tick_end(&mut self) -> Result<()> {
         self.end.gateway_cooldown = self.end.gateway_cooldown.saturating_sub(1);
@@ -531,17 +553,6 @@ impl Game<'_> {
         self.native_joins_flush(false, 0);
         self.tick_crystals();
         self.tick_eyes();
-        if self.dim == Dim::End {
-            self.end.flash.tick(self.world.game_time);
-            if let Some(n) = self.end.flash.sound_in.as_mut() {
-                *n = n.saturating_sub(1);
-                if *n == 0 {
-                    self.end.flash.sound_in = None;
-                    self.audio
-                        .play("minecraft:weather.end_flash", None, 1.0, 1.0);
-                }
-            }
-        }
         if self.dim == Dim::End {
             self.ensure_exit_portal()?;
         }
