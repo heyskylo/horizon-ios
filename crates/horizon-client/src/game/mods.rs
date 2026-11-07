@@ -966,8 +966,12 @@ mod tests {
             living_fall: |_, _, _, _, _| {},
             living_jump: |_, _| {},
             register_goals: |mob| dispatch_register_goals(&MODS, mob),
+            player_pre_login: |_, _, _, _| {},
+            player_profile: |_, _, _| {},
             ingredient: |_, _, _| {},
             ingredient_test: |_, _, _, _| {},
+            log_line: |_, _, _, _| {},
+            handshake: |_, _, _, _, _| {},
         });
         assert!(installed.is_ok());
 

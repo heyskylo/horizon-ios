@@ -105,6 +105,16 @@ impl Base<'_> {
         }
         tag
     }
+    /// Preserve Entity data without flags owned by Mob's save writer.
+    /// Only the dedicated boat, item and armor-stand writers use this path.
+    fn non_mob_tag(&self, raw: Option<&Tag>) -> Tag {
+        let mut tag = self.tag(raw);
+        if let Tag::Compound(map) = &mut tag {
+            map.remove(&"NoAI".into());
+            map.remove(&"PersistenceRequired".into());
+        }
+        tag
+    }
 }
 
 /// `Entity.saveWithoutId`'s common fields for entities Horizon keeps as raw
@@ -128,8 +138,8 @@ pub fn fill_common_defaults(tag: &mut Tag) {
 
 /// The mobs that save `Age` and `AgeLocked`.
 fn saves_age(s: crate::mobs::Species) -> bool {
-    use crate::mobs::{Species, drops::can_be_baby, finalize::ageable};
-    s == Species::Tadpole || (ageable(s) && can_be_baby(s))
+    use crate::mobs::{Species, finalize::ageable, species::can_be_a_baby};
+    s == Species::Tadpole || (ageable(s) && can_be_a_baby(s))
 }
 /// `LivingEntity` + `Mob` (+ `AgeableMob`, creeper and skeleton specifics).
 /// The mobs whose class extends vanilla's `Animal` (and so save `InLove`):
@@ -633,15 +643,11 @@ pub fn mob_to_nbt(
         if species != crate::mobs::Species::Tadpole {
             map.insert("ForcedAge".into(), Tag::Int(m.extra.forced_age));
         }
-    } else if matches!(
-        species,
-        crate::mobs::Species::Parrot
-            | crate::mobs::Species::Slime
-            | crate::mobs::Species::MagmaCube
-            | crate::mobs::Species::ZombieNautilus
-    ) {
+    } else if crate::mobs::finalize::ageable(species) {
         // AgeableMob.addAdditionalSaveData writes nothing when canBeABaby is
-        // false: drop the ignored values a raw input compound carried.
+        // false — the frog, the parrot, the zombie nautilus, the camel husk,
+        // the slime and the magma cube: drop the ignored values a raw input
+        // compound carried rather than writing them back out.
         for key in ["Age", "ForcedAge", "AgeLocked"] {
             map.remove(&key.into());
         }
@@ -2356,7 +2362,7 @@ pub fn item_entity_to_nbt(e: &ItemEntity, uuid: [i32; 4], raw: Option<&Tag>) -> 
         on_ground: e.on_ground,
         fall_distance: 0.0,
     };
-    let mut tag = base.tag(raw);
+    let mut tag = base.non_mob_tag(raw);
     for (key, value) in [
         ("Item", item_to_nbt(&e.stack)),
         ("Health", Tag::Short(e.health as i16)),
@@ -3428,7 +3434,7 @@ pub fn armor_stand_to_nbt(a: &ArmorStand, uuid: [i32; 4], raw: Option<&Tag>) -> 
         on_ground: a.on_ground,
         fall_distance: a.enchantment_fall_distance,
     };
-    let mut tag = base.tag(raw);
+    let mut tag = base.non_mob_tag(raw);
     let equipment: Vec<(&str, Tag)> = ArmorStand::SLOTS
         .iter()
         .zip(&a.equipment)
@@ -3582,7 +3588,7 @@ pub fn boat_to_nbt(
         on_ground: false,
         fall_distance: 0.0,
     }
-    .tag(raw);
+    .non_mob_tag(raw);
     if let (Some(items), Tag::Compound(map)) = (items, &mut tag) {
         map.insert("Items".into(), crate::save::encode_items(items));
     }
@@ -4038,11 +4044,16 @@ mod tests {
     }
 
     #[test]
-    fn cubes_omit_supplied_age_and_pigs_keep_modeled_age() {
+    fn an_ageable_mob_that_cannot_be_a_baby_saves_no_age() {
         use crate::mobs::Species;
+        // AgeableMob.addAdditionalSaveData writes Age only when canBeABaby is
+        // true, so every ageable class that overrides it to false writes none
+        // of it: a frog and a camel husk keep no raw `Age` either.
         for (species, id) in [
             (Species::Slime, "minecraft:slime"),
             (Species::MagmaCube, "minecraft:magma_cube"),
+            (Species::Frog, "minecraft:frog"),
+            (Species::CamelHusk, "minecraft:camel_husk"),
             (Species::Pig, "minecraft:pig"),
         ] {
             let mut kind = crate::mobs::sensor_scan_tests::kind();
@@ -4929,6 +4940,95 @@ mod tests {
                 );
                 if source.is_some() {
                     assert_eq!(saved.get("Unrelated"), Some(&string("keep")));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn non_mob_saves_drop_mob_flags_without_losing_entity_fields() {
+        let uuid = [104, 0, 0, 1];
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let def = Arc::make_mut(&mut kind);
+        def.id = "minecraft:pig".into();
+        def.species = crate::mobs::Species::Pig;
+        let types = [("minecraft:pig".into(), kind)].into();
+        for input in [None, Some(0), Some(1)] {
+            for id in [
+                "minecraft:oak_boat",
+                "minecraft:oak_chest_boat",
+                "minecraft:armor_stand",
+                "minecraft:item",
+                "minecraft:pig",
+            ] {
+                let mut raw = Tag::compound([
+                    ("id", string(id)),
+                    ("Pos", doubles(&[4.5, 200.0, 4.5])),
+                    ("Motion", doubles(&[0.0, 0.0, 0.0])),
+                    ("Silent", Tag::Byte(1)),
+                    ("NoGravity", Tag::Byte(1)),
+                    ("Invulnerable", Tag::Byte(1)),
+                    ("PortalCooldown", Tag::Int(17)),
+                    ("Tags", Tag::List(vec![string("audit")])),
+                    ("Unrelated", string("keep")),
+                    (
+                        "Item",
+                        item_to_nbt(&crate::items::ItemStack::new("minecraft:stone", 1)),
+                    ),
+                ]);
+                if let Some(value) = input {
+                    put(&mut raw, "NoAI", Tag::Byte(value));
+                    put(&mut raw, "PersistenceRequired", Tag::Byte(value));
+                }
+                let stand = armor_stand_from_nbt(&raw, 1).unwrap();
+                let item = item_entity_from_nbt(&raw, 1, 0.0).unwrap();
+                let boat = boat_from_nbt(&raw).unwrap();
+                for source in [None, Some(&raw)] {
+                    let saved = match id {
+                        "minecraft:armor_stand" => armor_stand_to_nbt(&stand, uuid, source),
+                        "minecraft:item" => item_entity_to_nbt(&item, uuid, source),
+                        "minecraft:pig" => {
+                            let mut mob = mob_from_nbt(&raw, &types, 1, None).unwrap();
+                            // The writer must use live state, even opposite stale raw values.
+                            mob.no_ai = input != Some(1);
+                            mob.persistent = input != Some(1);
+                            mob_to_nbt(&mob, uuid, source, None, |_| None)
+                        }
+                        _ => boat_to_nbt(
+                            id,
+                            boat.0,
+                            boat.1,
+                            [boat.2, 0.0],
+                            uuid,
+                            source,
+                            (id == "minecraft:oak_chest_boat").then_some(&[]),
+                        ),
+                    };
+                    if id == "minecraft:pig" {
+                        let live = input != Some(1);
+                        assert_eq!(saved.get("NoAI"), live.then_some(&Tag::Byte(1)));
+                        assert_eq!(
+                            saved.get("PersistenceRequired"),
+                            Some(&Tag::Byte(i8::from(live)))
+                        );
+                    } else {
+                        assert!(saved.get("NoAI").is_none(), "{id} {input:?}");
+                        assert!(saved.get("PersistenceRequired").is_none(), "{id} {input:?}");
+                    }
+                    assert_eq!(saved.get("UUID"), Some(&Tag::IntArray(uuid.to_vec())));
+                    assert_eq!(saved.get("Pos"), raw.get("Pos"));
+                    if source.is_some() {
+                        for key in [
+                            "Silent",
+                            "NoGravity",
+                            "Invulnerable",
+                            "PortalCooldown",
+                            "Tags",
+                            "Unrelated",
+                        ] {
+                            assert_eq!(saved.get(key), raw.get(key), "{id} {key}");
+                        }
+                    }
                 }
             }
         }
@@ -7761,6 +7861,23 @@ mod generic_home_nbt_tests {
             ("home_pos", Tag::IntArray(vec![90, 91, 92])),
             ("audit:unrelated", Tag::Int(7)),
         ])
+    }
+
+    #[test]
+    fn spawned_trader_home_restricts_and_survives_save() {
+        let mut m = mob(Species::WanderingTrader, "minecraft:wandering_trader");
+        crate::mobs::trader::start_visit(&mut m, [4, 201, 0]);
+        m.position = Vec3::new(19.5, 201.0, 0.5);
+        assert!(crate::mobs::trader::within_home(&m));
+        m.position = Vec3::new(20.5, 201.0, 0.5);
+        assert!(!crate::mobs::trader::within_home(&m));
+        let saved = mob_to_nbt(&m, [0; 4], None, None, |_| None);
+        assert_eq!(saved.get("home_radius"), Some(&Tag::Int(16)));
+        assert_eq!(saved.get("home_pos"), Some(&Tag::IntArray(vec![4, 201, 0])));
+        let mut loaded = mob(Species::WanderingTrader, "minecraft:wandering_trader");
+        loaded.position = m.position;
+        read_mob_home(&mut loaded, &saved);
+        assert!(!crate::mobs::trader::within_home(&loaded));
     }
 
     #[test]
