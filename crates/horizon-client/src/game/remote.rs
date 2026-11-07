@@ -8205,7 +8205,18 @@ impl Game<'_> {
                     )
                 })
                 .unwrap_or((false, false));
-            let passes = is_painting || frame_passes || boat_passes || cart_passes;
+            // Cushion.interact on a client: PASS when sneaked at or when
+            // something already sits on it, CONSUME (no swing) otherwise.
+            let is_cushion = self.cushions.iter().any(|c| c.id as i32 == hit.id);
+            let cushion_passes = is_cushion
+                && (sneaking
+                    || self.riding.is_some_and(|r| r as i32 == hit.id)
+                    || self
+                        .mobs
+                        .iter()
+                        .any(|m| m.extra.mount.is_some_and(|r| r as i32 == hit.id)));
+            let passes =
+                is_painting || frame_passes || boat_passes || cart_passes || cushion_passes;
             // Otherwise the main hand's turn takes it; there is no off hand turn.
             if response.is_none() && hand == Hand::Off && !passes {
                 return false;
@@ -8237,8 +8248,9 @@ impl Game<'_> {
             }
             // Minecart.interact boards the cart and answers CONSUME on the client,
             // which ends the click without an arm swing. AbstractBoat.interact
-            // answers SUCCESS there, which swings.
-            if remote_object_swings(response, is_rideable_cart) {
+            // answers SUCCESS there, which swings. Cushion.interact answers
+            // CONSUME there too.
+            if remote_object_swings(response, is_rideable_cart || is_cushion) {
                 self.with_hand(hand, Game::swing_arm);
             }
             return true;
