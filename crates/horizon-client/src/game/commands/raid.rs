@@ -145,6 +145,8 @@ mod tests {
     fn raid_check_finds_a_raid_counting_down_and_the_horn_is_local_only() {
         let mut game = server_game();
         game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 0.5)).unwrap());
+        // RaidCommand needs the owner's permission level (3).
+        game.ui.registries.permission = 4;
         game.chat_capture = Some(Vec::new());
         game.audio.capture = Some(Vec::new());
         let (id, _) = game.raiding.raids.create_or_extend([0, 64, 0], 2, None, 3);
