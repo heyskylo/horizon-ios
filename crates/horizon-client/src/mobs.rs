@@ -4276,6 +4276,10 @@ impl Mob {
         } else {
             self.extra.effects.push((effect, ticks, amplifier));
         }
+        // MobEffect.addAttributeModifiers, then refreshDirtyAttributes.
+        if effect == "minecraft:health_boost" {
+            finalize::health_boost_changed(self);
+        }
     }
     pub fn speed_bonus(&self) -> f64 {
         ai::speed_bonus(self)

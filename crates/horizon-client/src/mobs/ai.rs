@@ -3015,7 +3015,16 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
             m.absorption = (m.absorption - 4.0 * (e.2 + 1) as f32).max(0.0);
         }
     }
+    let boost_gone = m
+        .extra
+        .effects
+        .iter()
+        .any(|e| e.0 == "minecraft:health_boost" && e.1 <= 0 && e.1 != -1);
     m.extra.effects.retain(|e| e.1 > 0 || e.1 == -1);
+    // LivingEntity.onEffectsRemoved -> refreshDirtyAttributes.
+    if boost_gone {
+        super::finalize::health_boost_changed(m);
+    }
     m.extra
         .hidden_effects
         .retain(|h| m.extra.effects.iter().any(|e| e.0 == *h));

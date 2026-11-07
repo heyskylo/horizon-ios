@@ -2546,3 +2546,248 @@ mod xp_bottle_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod mob_health_boost_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_client::{chunk::Chunk, motion::PlayerMotion};
+    use horizon_core::{geometry::Vec3, position::ChunkPos};
+    use std::sync::Arc;
+
+    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+                .join(format!("h205-{:?}", std::thread::current().id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
+        game.creative = true;
+        test(&mut game);
+    }
+    fn pig(game: &Game<'_>, n: i32) -> usize {
+        let i: Vec<usize> = (0..game.mobs.len())
+            .filter(|&i| game.persist.uuid_of(game.mobs[i].id) == Some([205, 0, 0, n]))
+            .collect();
+        assert_eq!(i.len(), 1, "one live pig with UUID {n}");
+        i[0]
+    }
+    fn health(game: &Game<'_>, n: i32) -> f32 {
+        game.mobs[pig(game, n)].health
+    }
+    fn boost(game: &Game<'_>, n: i32) -> Option<(i32, i32)> {
+        let i = pig(game, n);
+        game.mobs[i]
+            .extra
+            .effects
+            .iter()
+            .find(|e| e.0 == "minecraft:health_boost")
+            .map(|e| (e.1, e.2))
+    }
+
+    /// Expected values from the official 26.3 server: Health Boost II adds 8
+    /// to max_health without healing; Instant Health heals up to it on the next
+    /// tick; removing the effect (`/effect clear`, or running out) clamps
+    /// Health to the maximum without it (LivingEntity.onAttributeUpdated).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and a scratch HORIZON_HOME"]
+    fn health_boost_heals_to_its_maximum_and_clamps_when_it_goes() {
+        with_game(|game| {
+            // name, UUID word, Health, setup
+            let cases: [(&str, i32, f32, &[&str]); 5] = [
+                (
+                    "boost",
+                    1,
+                    10.0,
+                    &["effect give @e[tag=T,limit=1] minecraft:health_boost 100 1"],
+                ),
+                (
+                    "expiry",
+                    2,
+                    10.0,
+                    &["effect give @e[tag=T,limit=1] minecraft:health_boost 2 1"],
+                ),
+                ("noboost", 3, 10.0, &[]),
+                ("heal", 5, 5.0, &[]),
+                (
+                    "base",
+                    6,
+                    10.0,
+                    &["attribute @e[tag=T,limit=1] minecraft:max_health base set 14"],
+                ),
+            ];
+            for (name, n, h, setup) in cases {
+                let tag = format!("h205_{name}");
+                assert!(game.run_command(&format!(
+                    "summon minecraft:pig {}.5 200 4.5 {{UUID:[I;205,0,0,{n}],Tags:[\"{tag}\"],PersistenceRequired:1b,Silent:1b,NoAI:1b,Health:{h}f}}",
+                    2 * n
+                )));
+                for c in setup {
+                    assert!(game.run_command(&c.replace('T', &tag)), "{name}: {c}");
+                }
+            }
+            // Setup controls: the effect is there, nothing healed on the add.
+            assert_eq!(boost(game, 1), Some((2000, 1)));
+            assert_eq!(boost(game, 2), Some((40, 1)));
+            for (_, n, h, _) in cases {
+                assert_eq!(health(game, n), h, "UUID {n}: no heal on the add");
+            }
+            for (name, n, _, _) in cases {
+                let level = if name == "heal" { 0 } else { 1 };
+                assert!(game.run_command(&format!(
+                    "effect give @e[tag=h205_{name},limit=1] minecraft:instant_health 1 {level}"
+                )));
+                let _ = n;
+            }
+            game.tick_world(true).unwrap();
+            // The one tick: the boosts counted down once.
+            assert_eq!(boost(game, 1), Some((1999, 1)), "the mobs ticked once");
+            let mut failures = Vec::new();
+            let check = |game: &Game<'_>,
+                         failures: &mut Vec<String>,
+                         phase: &str,
+                         expected: [(i32, f32); 5]| {
+                for (n, h) in expected {
+                    if health(game, n) != h {
+                        failures.push(format!(
+                            "{phase}: UUID {n} Health {}, expected {h}",
+                            health(game, n)
+                        ));
+                    }
+                }
+            };
+            check(
+                game,
+                &mut failures,
+                "healed",
+                [(1, 18.0), (2, 18.0), (3, 10.0), (5, 9.0), (6, 14.0)],
+            );
+            assert!(
+                game.run_command("effect clear @e[tag=h205_boost,limit=1] minecraft:health_boost")
+            );
+            check(
+                game,
+                &mut failures,
+                "cleared",
+                [(1, 10.0), (2, 18.0), (3, 10.0), (5, 9.0), (6, 14.0)],
+            );
+            for _ in 0..40 {
+                game.tick_world(true).unwrap();
+            }
+            if boost(game, 2).is_some() {
+                failures.push("expiry: the effect did not run out in 40 ticks".into());
+            }
+            check(
+                game,
+                &mut failures,
+                "expired",
+                [(1, 10.0), (2, 10.0), (3, 10.0), (5, 9.0), (6, 14.0)],
+            );
+            assert!(failures.is_empty(), "mob health boost: {failures:#?}");
+        });
+    }
+
+    /// Existing-behavior preservation, not parity: a sulfur cube's size and a
+    /// tame wolf write their maximum straight into the cache, outside the
+    /// attribute model. Health Boost leaves those caches (and Health) as they
+    /// are; the attribute model's own refresh never replaces them.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and a scratch HORIZON_HOME"]
+    fn health_boost_keeps_a_size_or_tame_maximum_owned_outside_the_attributes() {
+        with_game(|game| {
+            // tag, UUID word, summon, amplifier
+            let cases = [
+                // size 3: cache 12, the attribute model 20
+                ("h205_cube", 20, "sulfur_cube 4.5 200 8.5 {Size:2", 1),
+                // size 5: cache 20 = the model's 20 by coincidence
+                ("h205_cube_equal", 22, "sulfur_cube 6.5 200 8.5 {Size:4", 1),
+                // tame: cache 40, model 8; Health Boost II
+                ("h205_wolf", 21, "wolf 8.5 200 8.5 {", 1),
+                // tame: Health Boost VIII (+32) makes the model 40 = the cache
+                ("h205_wolf_equal", 23, "wolf 10.5 200 8.5 {", 7),
+            ];
+            let mut ids = Vec::new();
+            for (tag, n, summon, _) in cases {
+                let sep = if summon.ends_with('{') { "" } else { "," };
+                assert!(game.run_command(&format!(
+                    "summon minecraft:{summon}{sep}UUID:[I;205,0,0,{n}],Tags:[\"{tag}\"],NoAI:1b,PersistenceRequired:1b,Silent:1b}}"
+                )));
+                let i = pig(game, n);
+                if tag.starts_with("h205_wolf") {
+                    horizon_client::mobs::tame::set_tame(&mut game.mobs[i], true);
+                }
+                ids.push(i);
+            }
+            let state = |game: &Game<'_>| -> Vec<(f32, f32)> {
+                ids.iter()
+                    .map(|&i| (game.mobs[i].attrs.max_health, game.mobs[i].health))
+                    .collect()
+            };
+            let before = state(game);
+            assert_eq!(
+                before.iter().map(|s| s.0).collect::<Vec<_>>(),
+                [12.0, 20.0, 40.0, 40.0]
+            );
+            assert_eq!(
+                horizon_client::mobs::finalize::max_health(&game.mobs[ids[1]]),
+                20.0,
+                "the coincidence: the model's value equals the size cache"
+            );
+            for (tag, _, _, amp) in cases {
+                assert!(game.run_command(&format!(
+                    "effect give @e[tag={tag},limit=1] minecraft:health_boost 100 {amp}"
+                )));
+            }
+            assert_eq!(
+                horizon_client::mobs::finalize::max_health(&game.mobs[ids[3]]),
+                40.0,
+                "the coincidence: the boosted model equals the tame cache"
+            );
+            assert_eq!(
+                state(game),
+                before,
+                "the size/tame cache and Health keep their owner"
+            );
+            for (tag, _, _, _) in cases {
+                assert!(game.run_command(&format!(
+                    "effect clear @e[tag={tag},limit=1] minecraft:health_boost"
+                )));
+            }
+            assert_eq!(state(game), before, "and after the clear");
+        });
+    }
+}
