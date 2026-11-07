@@ -94,6 +94,8 @@ pub(in crate::game) struct OtherEntity {
     pub yaw: f32,
     pub pitch: f32,
     pub item_transformation: Option<super::native_entities::ItemDisplayTransformation>,
+    /// A `minecraft:interaction`'s saved settings; None for every other kind.
+    pub interaction: Option<super::interactions::InteractionState>,
 }
 pub(super) fn err(key: &str, args: &[&dyn std::fmt::Display]) -> CommandError {
     CommandError::tr(key, args)

@@ -266,6 +266,7 @@ impl Game<'_> {
                         id,
                         kind: "minecraft:area_effect_cloud".into(),
                         item_transformation: None,
+                        interaction: None,
                         position: horizon_core::geometry::Vec3::new(x, y, z),
                         yaw: 0.0,
                         pitch: 0.0,
@@ -513,7 +514,9 @@ impl Game<'_> {
                     .others
                     .iter_mut()
                     .find(|o| {
-                        o.id == id && matches!(o.kind.as_str(), "minecraft:marker" | "marker")
+                        o.id == id
+                            && (matches!(o.kind.as_str(), "minecraft:marker" | "marker")
+                                || crate::game::interactions::is_interaction(&o.kind))
                     })
                     .ok_or_else(stale)?;
                 let position = entity_nbt::position(&tag).ok_or_else(stale)?;
@@ -521,6 +524,11 @@ impl Game<'_> {
                 marker.position = position;
                 marker.yaw = yaw;
                 marker.pitch = pitch;
+                // Interaction.readAdditionalSaveData on the same entity.
+                if crate::game::interactions::is_interaction(&marker.kind) {
+                    marker.interaction =
+                        Some(crate::game::interactions::InteractionState::from_tag(&tag));
+                }
                 // Keep the existing marker identity even when the input edits UUID or id.
                 set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
                 set_key(&mut tag, "id", Tag::String(marker.kind.as_str().into()));

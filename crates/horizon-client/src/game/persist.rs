@@ -970,6 +970,8 @@ impl Game<'_> {
         self.next_entity += 1;
         let id = self.next_entity;
         let uuid = entity_nbt::uuid(&tag);
+        let interaction = super::interactions::is_interaction(kind)
+            .then(|| super::interactions::InteractionState::from_tag(&tag));
         self.remember(id, uuid, tag);
         self.others.push(super::commands::OtherEntity {
             id,
@@ -978,6 +980,7 @@ impl Game<'_> {
             yaw: rotation[0],
             pitch: rotation[1],
             item_transformation,
+            interaction,
         });
         Some(id)
     }
@@ -1011,7 +1014,10 @@ impl Game<'_> {
             if let Some(transformation) = o.item_transformation {
                 c.insert("transformation".into(), transformation.to_tag());
             }
-            if matches!(o.kind.as_str(), "minecraft:interaction" | "interaction") {
+            if let Some(state) = &o.interaction {
+                // Interaction.addAdditionalSaveData, from the live settings.
+                state.write(c);
+            } else if super::interactions::is_interaction(&o.kind) {
                 // Interaction.addAdditionalSaveData always writes these settings.
                 c.entry("width".into())
                     .or_insert(Tag::Float(1.0_f32.to_bits()));
