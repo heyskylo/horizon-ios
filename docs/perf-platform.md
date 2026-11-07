@@ -107,10 +107,10 @@ It holds exactly three things:
 - **The generated types.** It holds the `.proto` files under `proto/horizon/perf/v1/` and a `build.rs` that compiles
   them with `protox` (a pure-Rust `.proto` compiler, so neither volunteers nor CI install `protoc`). `prost-build`'s
   `compile_fds` turns the descriptor set into Rust types. The runtime dependency is `prost`.
-- **The gzip writer.** It sits on `miniz_oxide`, which the game crates already use directly
-  (`crates/horizon-client/Cargo.toml:63`, `crates/horizon-client-render/Cargo.toml:42`), and `crc32fast` for the gzip
-  trailer (already in `Cargo.lock`). It runs on its own writer thread, which drains a bounded channel; a full channel
-  makes the producer drop the message and count it, never block (§3.4).
+- **The gzip writer.** It sits on `flate2` (pure-Rust backends only: `miniz_oxide` in standalone and wasm builds; in
+  the game, Cargo's feature unification turns on the workspace's `zlib-rs`, also pure Rust). It runs on its own writer
+  thread, which drains a bounded channel; a full channel makes the producer drop the message and count it, never
+  block, except `Stop`, which waits (§3.4).
 - **The in-memory health recorder and the counter registry** (§3.6), as pure data structures fed by the game.
 
 Nothing else goes in: no reader, no query, no statistics, no JSON, no serde. It builds for `wasm32-unknown-unknown`, so
@@ -127,7 +127,7 @@ binary, `horizon-perf`. Modules: `read` (whole-file reader), `follow` (increment
 `stats` (§6.6), `summary` (§5), `export` (pprof, folded, Perfetto), `attach`, `cli`, `mcp` (§8), `wasm` (C-ABI exports
 for the web UI, behind feature `wasm`).
 
-Dependencies: `horizon-perf-format`, `prost`, `miniz_oxide`, `serde_json` (query replies are JSON for agents; this is
+Dependencies: `horizon-perf-format`, `prost`, `flate2`, `serde_json` (query replies are JSON for agents; this is
 not an export of the capture). It depends on no other internal crate. The library builds for `wasm32-unknown-unknown`,
 so it uses no `libc`, no threads, no clock and no file system outside `cli` and `mcp`.
 
@@ -139,7 +139,7 @@ known to build for wasm32. A dev-dependency test checks that a report written by
 
 | Crate | Depends on | Notes |
 |---|---|---|
-| `horizon-perf-format` | `prost`, `miniz_oxide`, `crc32fast`; build: `protox`, `prost-build` | no internal crates |
+| `horizon-perf-format` | `prost`, `flate2` (pure-Rust backends); build: `protox`, `prost-build` | no internal crates |
 | `horizon-client-render` | `horizon-perf-format` | converts `horizon_threads` aggregates, spans and `PassTiming` into messages (`perf_capture.rs`) |
 | `horizon-client-lib`, `horizon-client` (game, dedicated server) | `horizon-perf-format` | triggers, the writer, the remote channel (§4.2) |
 | `horizon-threads` | nothing new | stays free of internal dependencies; it keeps producing its in-memory `Profile` |
@@ -171,7 +171,7 @@ deflated. pprof stays an export.
 These rules let a reader watch a capture grow while it is being written.
 
 1. **Whole fields only.** The writer appends whole top-level fields of `Capture` (tag, length, message) and nothing
-   else. After each one it does a deflate sync flush (`TDEFLFlush::Sync` in `miniz_oxide`), so the bytes on disk always
+   else. After each one it does a deflate sync flush (`FlushCompress::Sync` through `flate2`), so the bytes on disk always
    inflate to a whole number of top-level fields.
 2. **Live data is repeated and appended.** Anything meant to be visible live (health samples, counters, the slow
    ring, span blocks, timeline chunks, marks, warnings, memory snapshots) is a `repeated` field. Each new value is one
@@ -1064,7 +1064,7 @@ None at the moment.
 | Q6, Q7 | One issue per piece under a tracker issue, no fixed lanes; the design doc lives in the repo. |
 | Q8 | The user owns the contract (`.proto`, fixtures). |
 | Q9 | One gzip stream holding one protobuf `Capture`; no frames, index, crash recovery or partial reads; our tools only. The live-follow rules (§3.2) are part of the contract. |
-| Q10 | Whole-file gzip/deflate via `miniz_oxide`. |
+| Q10 | Whole-file gzip/deflate, pure Rust (`flate2`; F1 #232). |
 | Q11 | The `.proto` files are the contract. No JSON export for now, but nothing that breaks the canonical JSON mapping. |
 | Q12 | Codegen with `protox` in `build.rs`. |
 | Q13 | No size budget for now; compile flags later if needed. |
