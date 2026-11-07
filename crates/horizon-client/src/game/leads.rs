@@ -430,8 +430,11 @@ impl Game<'_> {
                 self.mobs[index].extra.leash = Some(Holder::Player);
                 self.mobs[index].extra.leash_player = Some(holder);
                 self.lead_sound("tied", at);
-                // The lead is always used up.
-                if let Some(stack) = self.held_mut().as_mut() {
+                // `Player.interactOn` restores the count of a player with
+                // infinite materials (creative); others spend the lead.
+                if !self.creative
+                    && let Some(stack) = self.held_mut().as_mut()
+                {
                     stack.count -= 1;
                     if stack.count == 0 {
                         *self.held_mut() = None;
@@ -529,6 +532,12 @@ impl Game<'_> {
             attached |= self.take_knot_boats(knot_pos);
         }
         if attached {
+            let event_at = if knot_hit {
+                [knot.x, knot.y - 0.25, knot.z]
+            } else {
+                knot_pos.map(|v| f64::from(v) + 0.5)
+            };
+            self.lead_game_event("minecraft:block_attach", event_at);
             self.lead_sound("tied", at);
             self.swing_arm();
         }

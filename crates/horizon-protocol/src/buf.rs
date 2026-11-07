@@ -7,6 +7,14 @@ use std::marker::PhantomData;
 
 /// Vanilla's default NBT quota for network tags (NbtAccounter.defaultQuota).
 pub const NBT_QUOTA: usize = 2_097_152;
+/// The least `NbtAccounter` charges for one tag: `EndTag`'s `SELF_SIZE_IN_BYTES`, the smallest
+/// tag's (every other tag costs more: `ByteTag` 9 bytes, a compound 48 plus its entries).
+const MIN_TAG_COST: usize = 8;
+/// The most tags one network NBT value can hold within [`NBT_QUOTA`]: vanilla charges each at least
+/// [`MIN_TAG_COST`] of its estimated heap, so a value with more tags is one vanilla refuses too. A
+/// byte count alone let a crafted server send ~1 M byte tags in 1 MB that vanilla refuses and that
+/// take ~32 bytes each here; capped, one value's tags take at most ~8 MiB.
+pub const NBT_MAX_TAGS: usize = NBT_QUOTA / MIN_TAG_COST;
 
 /// A cursor over a received packet body.
 pub struct Reader<'a> {
@@ -132,6 +140,7 @@ impl<'a> Reader<'a> {
     pub fn nbt(&mut self) -> Result<Tag> {
         let limits = nbt::Limits {
             max_bytes: NBT_QUOTA,
+            max_nodes: NBT_MAX_TAGS,
             ..nbt::Limits::default()
         };
         let (tag, used) = nbt::read_network(&self.data[self.pos..], limits)
@@ -334,8 +343,37 @@ impl<const N: usize> Codec<String> for StrN<N> {
         w.string(v)
     }
 }
-/// Identifier.STREAM_CODEC: a resource location string.
-pub type Ident = StrN<32767>;
+/// Identifier.STREAM_CODEC: a validated resource location, with the default namespace.
+pub struct Ident;
+impl Codec<String> for Ident {
+    fn read(r: &mut Reader) -> Result<String> {
+        let value = r.string(32767)?;
+        // A namespaced identifier (what vanilla writes) goes back as read.
+        let qualified = value.find(':').is_some_and(|i| i > 0);
+        let (namespace, path) = value.split_once(':').unwrap_or(("", &value));
+        let namespace = if namespace.is_empty() {
+            "minecraft"
+        } else {
+            namespace
+        };
+        if !namespace
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_.-".contains(&c))
+            || !path
+                .bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"/_.-".contains(&c))
+        {
+            return Err(Error::new("invalid resource identifier"));
+        }
+        if qualified {
+            return Ok(value);
+        }
+        Ok(format!("{namespace}:{path}"))
+    }
+    fn write(v: &String, w: &mut Writer) {
+        w.string(v)
+    }
+}
 /// VarInt-prefixed bytes.
 pub struct Bytes;
 impl Codec<Vec<u8>> for Bytes {
@@ -623,6 +661,36 @@ macro_rules! packet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A network NBT list of `n` byte tags: one root list plus `n` elements.
+    fn byte_list(n: usize) -> Vec<u8> {
+        let mut data = vec![9, 1];
+        data.extend_from_slice(&(n as i32).to_be_bytes());
+        data.resize(data.len() + n, 7);
+        data
+    }
+
+    #[test]
+    fn network_nbt_holds_no_more_tags_than_vanillas_quota_admits() {
+        // Vanilla charges each tag at least 8 bytes of its 2 MiB quota (EndTag's size; a byte in a
+        // list costs it 13), so it refuses any value with more than 262,144 tags: refused here too,
+        // whatever few bytes they take.
+        assert_eq!(NBT_MAX_TAGS, 262_144);
+        let fits = byte_list(NBT_MAX_TAGS - 1);
+        let mut r = Reader::new(&fits);
+        match r.nbt().unwrap() {
+            Tag::List(values) => assert_eq!(values.len(), NBT_MAX_TAGS - 1),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(r.remaining(), 0);
+        let over = byte_list(NBT_MAX_TAGS);
+        assert!(
+            over.len() < NBT_QUOTA / 4,
+            "a few hundred KB, far under the byte quota"
+        );
+        let refused = Reader::new(&over).nbt().unwrap_err().to_string();
+        assert!(refused.contains("node limit"), "{refused}");
+    }
 
     fn round<T: PartialEq + std::fmt::Debug, C: Codec<T>>(v: T) -> Vec<u8> {
         let mut w = Writer::new();

@@ -298,6 +298,12 @@ pub trait ProjectileWorld {
     fn ignites(&self, _p: [i32; 3]) -> bool {
         false
     }
+    /// `BubbleColumnBlock.entityInside`'s view of the block at `p`: a bubble
+    /// column's `drag`, and whether nothing is above it (its surface, where
+    /// it throws harder); None for any other block.
+    fn bubble_column(&self, _p: [i32; 3]) -> Option<(bool, bool)> {
+        None
+    }
 }
 /// `CollisionGetter.clipIncludingBorder` over a block clip's result: a ray
 /// from inside the world border whose hit (or end, on a miss) lies outside it
@@ -634,9 +640,10 @@ impl Projectile {
     }
     /// `EntityRenderer.getPackedLightCoords` lights an entity from the block
     /// its `getLightProbePosition` is in, which is `getEyePosition`: the eye
-    /// height of its box, not the cell its feet rest in.
-    pub fn light_probe_y(&self) -> f64 {
-        self.position.y + self.kind.eye_height()
+    /// height of its box over `getPosition(partialTick)`, so the frame's
+    /// position rather than this tick's, and not the cell its feet rest in.
+    pub fn light_probe_y(&self, partial: f64) -> f64 {
+        self.previous.y + (self.position.y - self.previous.y) * partial + self.kind.eye_height()
     }
     pub fn water_bubbles(&self) -> Option<([f64; 3], [f64; 3])> {
         if !self.touching_water {
@@ -1043,6 +1050,107 @@ impl Projectile {
     pub fn tick(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
         self.tick_with(w, true)
     }
+    /// One tick of a server's projectile on its client: [`tick`](Self::tick)
+    /// with `ThrowableProjectile.tick`'s bubble columns, which push it on the
+    /// client too, so a pearl held in a stasis chamber hovers between the
+    /// server's updates instead of sinking and snapping back. The integrated
+    /// and dedicated servers push their pearls in the creature tick instead.
+    pub fn tick_remote(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
+        if !self.is_throwable_projectile() {
+            return self.tick(w);
+        }
+        // handleFirstTickBubbleColumn: before gravity, every column block in
+        // the box (`findBlocksIn`, BlockPos.containing of both corners),
+        // entered precisely.
+        if self.age == 0 {
+            let b = self.bounds();
+            let (lo, hi) = (b.min_position(), b.max_position());
+            for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
+                for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
+                    for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
+                        if let Some((drag, surface)) = w.bubble_column([x, y, z]) {
+                            self.bubble_column_push(drag, surface);
+                        }
+                    }
+                }
+            }
+        }
+        let from = self.position;
+        let result = self.tick(w);
+        self.bubble_columns_along(w, from);
+        result
+    }
+    /// A `ThrowableProjectile`: the thrown kinds but llama spit, a plain
+    /// `Projectile` with its own tick.
+    fn is_throwable_projectile(&self) -> bool {
+        self.is_thrown() && self.kind != ProjectileKind::LlamaSpit
+    }
+    /// `Projectile.onAboveBubbleColumn` / `onInsideBubbleColumn`: unlike
+    /// `Entity`'s, a projectile's pushes are not clamped.
+    fn bubble_column_push(&mut self, drag: bool, surface: bool) {
+        self.velocity.y += match (drag, surface) {
+            (true, _) => -0.03,
+            (false, true) => 0.1,
+            (false, false) => 0.06,
+        };
+    }
+    /// `applyEffectsFromBlocks`' bubble columns (`Entity.checkInsideBlocks`):
+    /// the blocks the box swept through from `from`, each once, pushing when
+    /// the move was long or the final box (deflated by 1e-5F) is inside it.
+    fn bubble_columns_along(&mut self, w: &impl ProjectileWorld, from: Vec3) {
+        let to = self.position;
+        let eps = f64::from(1.0e-5_f32);
+        let deflated = self.bounds().deflate(Vec3::new(eps, eps, eps));
+        let far = from.distance_squared(to) > 0.999_990_000_000_252_6f64 * 0.999_990_000_000_252_6;
+        let mut cells = Vec::new();
+        let mut used = 0;
+        let _ = horizon_core::geometry::sweep_intersected_blocks(
+            from,
+            to,
+            deflated,
+            1_000_000,
+            |p, step| {
+                if step >= 16 {
+                    return false;
+                }
+                used = step;
+                cells.push(p);
+                true
+            },
+        );
+        // A sweep that used all 16 steps checks the end position once more.
+        if used + 1 >= 16 {
+            let _ = horizon_core::geometry::sweep_intersected_blocks(
+                to,
+                to,
+                deflated,
+                1_000_000,
+                |p, step| {
+                    if step >= 1 {
+                        return false;
+                    }
+                    cells.push(p);
+                    true
+                },
+            );
+        }
+        // Each block once, in the sweep's order: a handful of cells, no set.
+        for (i, &p) in cells.iter().enumerate() {
+            if cells[..i].contains(&p) {
+                continue;
+            }
+            let Some((drag, surface)) = w.bubble_column([p.x, p.y, p.z]) else {
+                continue;
+            };
+            let cell = Aabb::new(
+                Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z)),
+                Vec3::new(f64::from(p.x + 1), f64::from(p.y + 1), f64::from(p.z + 1)),
+            );
+            if far || deflated.intersects(cell) {
+                self.bubble_column_push(drag, surface);
+            }
+        }
+    }
     /// One tick that meets nothing: what `tick` would have done had its hit been
     /// canceled (`ProjectileImpactEvent`). The projectile goes the whole way of its
     /// motion and flies on, with no hit to act on.
@@ -1302,6 +1410,100 @@ mod tests {
         fn targets(&self) -> &[(Who, Aabb)] {
             &self.0
         }
+    }
+    /// Water filled with one kind of bubble column, as in a stasis chamber.
+    struct Column {
+        drag: bool,
+        surface: bool,
+    }
+    impl ProjectileWorld for Column {
+        fn clip(&self, _: Vec3, _: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
+            None
+        }
+        fn in_water(&self, _: Aabb) -> bool {
+            true
+        }
+        fn targets(&self) -> &[(Who, Aabb)] {
+            &[]
+        }
+        fn bubble_column(&self, _: [i32; 3]) -> Option<(bool, bool)> {
+            Some((self.drag, self.surface))
+        }
+    }
+    /// A pearl resting in the water of a column, past its first tick.
+    fn resting_pearl() -> Projectile {
+        let mut p = Projectile::new(ProjectileKind::EnderPearl, Vec3::new(0.5, 100.2, 0.5), None);
+        p.age = 5;
+        p.touching_water = true;
+        p
+    }
+    #[test]
+    fn a_pearl_in_a_bubble_column_is_pushed_after_it_moves() {
+        // ThrowableProjectile.tick: gravity 0.03, the water drag 0.8F, the
+        // move, then applyEffectsFromBlocks' BubbleColumnBlock.entityInside:
+        // Projectile.onInsideBubbleColumn adds 0.06 (-0.03 dragging down) and
+        // onAboveBubbleColumn 0.1 at the surface, with no clamp.
+        let drag = f64::from(0.8_f32);
+        for (column, push) in [
+            (
+                Column {
+                    drag: false,
+                    surface: false,
+                },
+                0.06,
+            ),
+            (
+                Column {
+                    drag: false,
+                    surface: true,
+                },
+                0.1,
+            ),
+            (
+                Column {
+                    drag: true,
+                    surface: false,
+                },
+                -0.03,
+            ),
+            (
+                Column {
+                    drag: true,
+                    surface: true,
+                },
+                -0.03,
+            ),
+        ] {
+            let mut p = resting_pearl();
+            p.tick_remote(&column);
+            assert_eq!(p.position.y, 100.2 + -0.03 * drag, "the move comes first");
+            assert_eq!(
+                p.velocity.y,
+                -0.03 * drag + push,
+                "drag {} surface {}",
+                column.drag,
+                column.surface
+            );
+        }
+    }
+    #[test]
+    fn a_new_pearl_takes_its_first_bubble_column_push_before_gravity() {
+        // ThrowableProjectile.handleFirstTickBubbleColumn on the first tick,
+        // before gravity, then the air drag 0.99F (not yet touching water),
+        // then the push after the move.
+        let mut p = Projectile::new(ProjectileKind::EnderPearl, Vec3::new(0.5, 100.2, 0.5), None);
+        p.tick_remote(&Column {
+            drag: false,
+            surface: false,
+        });
+        let air = f64::from(0.99_f32);
+        assert_eq!(p.velocity.y, (0.06 - 0.03) * air + 0.06);
+    }
+    #[test]
+    fn a_pearl_outside_any_bubble_column_only_falls() {
+        let mut p = resting_pearl();
+        p.tick_remote(&Empty(vec![]));
+        assert_eq!(p.velocity.y, -0.03 * f64::from(0.8_f32));
     }
     #[test]
     fn first_tick_shoot_event_uses_base_tick_position_and_saved_flag() {
@@ -2033,16 +2235,38 @@ mod render_light_tests {
             effect: None,
         });
         arrow.position = Vec3::new(0.5, 64.9, 0.5);
-        assert_eq!(arrow.light_probe_y().floor(), 65.0);
+        assert_eq!(arrow.light_probe_y(1.0).floor(), 65.0);
         assert_eq!(arrow.position.y.floor(), 64.0);
         // A wind charge's entity type declares no eye height, so it keeps its feet.
         let mut wind = shot(ProjectileKind::WindCharge);
         wind.position = Vec3::new(0.5, 64.9, 0.5);
-        assert_eq!(wind.light_probe_y(), 64.9);
+        assert_eq!(wind.light_probe_y(1.0), 64.9);
         // A snowball's box is a quarter block: the eye is 0.2125 up.
         let mut ball = shot(ProjectileKind::Snowball);
         ball.position = Vec3::new(0.5, 64.8, 0.5);
-        assert!((ball.light_probe_y() - 64.8 - 0.85 * 0.25).abs() < 1e-6);
+        assert!((ball.light_probe_y(1.0) - 64.8 - 0.85 * 0.25).abs() < 1e-6);
+    }
+
+    /// `getEyePosition(partialTick)` reads `getPosition(partialTick)`: an arrow
+    /// falling from 64 to 65 is probed at 64.63 for the first half of the frame
+    /// (the cell at 64) and only reaches the cell at 65 when the frame ends.
+    /// Horizon read the tick's own position, so the light popped a frame early.
+    #[test]
+    fn a_projectile_probe_follows_the_frame() {
+        let mut arrow = shot(ProjectileKind::Arrow {
+            base_damage: 2.0,
+            critical: false,
+            effect: None,
+        });
+        arrow.previous = Vec3::new(0.5, 64.0, 0.5);
+        arrow.position = Vec3::new(0.5, 65.0, 0.5);
+        assert!((arrow.light_probe_y(0.0) - 64.13).abs() < 1e-6);
+        assert_eq!(arrow.light_probe_y(0.0).floor(), 64.0);
+        assert_eq!(arrow.light_probe_y(0.5).floor(), 64.0);
+        assert!((arrow.light_probe_y(0.5) - 64.63).abs() < 1e-6);
+        assert_eq!(arrow.light_probe_y(1.0).floor(), 65.0);
+        // The old probe, this tick's position, was 65.0 for every frame.
+        assert_eq!((arrow.position.y + arrow.kind.eye_height()).floor(), 65.0);
     }
 }
 crate::impl_joined!(Projectile);

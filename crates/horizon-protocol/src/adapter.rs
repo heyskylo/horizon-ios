@@ -8,6 +8,7 @@
 //! ([`ClientSession`], roadmap `older-clients`), when its owner lets such clients join.
 pub mod client_session;
 pub mod ids;
+pub mod layout_26_2;
 pub mod session;
 mod translate;
 pub mod v1_21_10;
@@ -103,13 +104,13 @@ impl ServerVersion {
         const BEFORE_26_3: ids::Quirks = ids::Quirks {
             tag_slot_display_is_id: true,
             pot_decorations_are_items: true,
-            either_holder_song_and_tag_resistance: false,
+            either_holders_and_tag_resistance: false,
             stacks_in_components: false,
         };
-        // Before 26.1 a jukebox song was an EitherHolder, damage resistance a tag, and the items components
-        // hold ItemStacks.
+        // Before 26.1 registry entries in components (a jukebox song, an instrument, a trim material...)
+        // were EitherHolders, damage resistance a tag, and the items components hold ItemStacks.
         const BEFORE_26_1: ids::Quirks = ids::Quirks {
-            either_holder_song_and_tag_resistance: true,
+            either_holders_and_tag_resistance: true,
             stacks_in_components: true,
             ..BEFORE_26_3
         };

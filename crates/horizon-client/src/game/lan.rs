@@ -2,7 +2,10 @@
 //! server threads and the play-state hub, feeds it the world's entities each
 //! tick and turns what the guests do into gameplay. A world that is not open
 //! costs one `Option` check per tick.
+mod event_timings;
+
 use super::{Game, shield::OFFHAND_SLOT};
+use event_timings::EventTimings;
 use horizon_client::{
     Result,
     lan::{
@@ -259,6 +262,11 @@ pub(super) struct LanHost {
     /// Native mods' commands and the level each needs, once asked
     /// (game/native_server.rs).
     pub native_commands: Option<HashMap<String, u8>>,
+    /// The permission node of each native mod's command that has one
+    /// (`NativeCommand::permission`), in registration order.
+    pub native_command_nodes: Vec<(String, String)>,
+    /// The usages behind them, as the mods registered them.
+    pub native_usages: Vec<horizon_client::mod_api::NativeCommand>,
     /// The players a native mod leaves out of the sleep count when they
     /// aren't in bed (`native_sleep_ignored`).
     pub sleep_ignored: std::collections::HashSet<u128>,
@@ -1447,6 +1455,8 @@ impl Game<'_> {
             quiet: std::collections::VecDeque::new(),
             far,
             native_commands: None,
+            native_command_nodes: Vec::new(),
+            native_usages: Vec::new(),
             sleep_ignored: Default::default(),
             states: Default::default(),
             states_next_entity: None,
@@ -2041,9 +2051,10 @@ impl Game<'_> {
         // after the loop.
         let timed = horizon_client::spans::recording_here();
         let mut previous = None;
+        let mut timings = EventTimings::new(horizon_client::spans::NOTE_MS);
         for event in events {
             if timed {
-                note_event(&host, previous.take());
+                note_event(&host, previous.take(), &mut timings);
                 let detail = self.event_detail(&host, &event);
                 previous = Some((Instant::now(), event_kind(&event), detail));
             }
@@ -2078,12 +2089,16 @@ impl Game<'_> {
                 }
                 HostEvent::Joined(conn) => {
                     // The mods may refuse the login before the player is placed.
-                    if let Some((uuid, name)) =
-                        host.hub.guest(conn).map(|g| (g.uuid, g.name.clone()))
+                    if let Some((uuid, name, permission)) = host
+                        .hub
+                        .guest(conn)
+                        .map(|g| (g.uuid, g.name.clone(), g.permission))
                     {
                         let mut cancel = false;
                         let mut reason = None;
+                        self.native_login_permission = Some((uuid, permission));
                         self.native_player_login(uuid, &name, &mut cancel, &mut reason);
+                        self.native_login_permission = None;
                         if cancel {
                             let reason = match reason {
                                 Some(text) => {
@@ -2154,6 +2169,8 @@ impl Game<'_> {
                     {
                         self.lan = Some(host);
                         self.native_player_logged_in(uuid, &name);
+                        // What the client said in its configuration (native_packets.rs).
+                        self.configuration_heard(uuid, &name);
                         // A hook's command can close the hub.
                         host = self.lan.take()?;
                     }
@@ -2168,6 +2185,11 @@ impl Game<'_> {
                             let conn = guest.conn;
                             let at = host.hub.guests.len();
                             host.hub.guests.push(*guest);
+                            // Bukkit's PlayerQuitEvent: the mods hear them leave while
+                            // they are still here.
+                            if !host.players_told_left {
+                                host = self.tell_mods_logging_out(host, conn)?;
+                            }
                             self.guest_disconnected(&mut host, conn);
                             *guest = host.hub.guests.remove(at);
                         }
@@ -2314,9 +2336,15 @@ impl Game<'_> {
                         host = self.lan.take().expect("the hub is back after the commands");
                     }
                 }
+                HostEvent::Jump { conn, from, yaw } => {
+                    self.guest_jump(&mut host, conn, from, yaw);
+                }
             }
         }
-        note_event(&host, previous);
+        note_event(&host, previous, &mut timings);
+        for burst in timings.bursts() {
+            horizon_client::spans::note(burst.ms, || describe_burst(&host, &burst));
+        }
         Some(host)
     }
 
@@ -2394,13 +2422,21 @@ impl Game<'_> {
                 .take()
                 .expect("the hub is back after the advancement grants");
         }
-        if !host.hub.native_menu_events.is_empty() {
+        if !host.hub.native_menu_events.is_empty() || !host.hub.native_menu_returns.is_empty() {
             self.lan = Some(host);
             horizon_client::spans::time("lan_menu_events", || self.run_native_menu_events());
             host = self
                 .lan
                 .take()
                 .expect("the hub is back after the menu events");
+        }
+        if !self.native_moves.is_empty() {
+            self.lan = Some(host);
+            horizon_client::spans::time("lan_native_moves", || self.run_native_moves());
+            host = self
+                .lan
+                .take()
+                .expect("the hub is back after the mods' moves");
         }
         host.states = entities;
         self.level_pass.packets_drained = true;
@@ -2539,6 +2575,7 @@ impl Game<'_> {
         // What the tick sends a guest goes to its connection at the end.
         let holding = lan::Holding::start();
         self.register_native_commands(&mut host);
+        self.resend_native_trees(&mut host);
         // The host's own commands' (and command blocks') players moving
         // to another level, and their broadcastToAdmins lines.
         if !self.level_teleports.is_empty() {
@@ -2581,13 +2618,7 @@ impl Game<'_> {
             let mut states = std::mem::take(&mut host.states);
             if has_guests {
                 self.lan_assign_ids();
-                let guests: Vec<(u32, i32)> = host
-                    .hub
-                    .guests
-                    .iter()
-                    .filter_map(|g| Some((g.vehicle?, g.entity_id)))
-                    .collect();
-                self.lan_riding(&guests, &mut host.hub.riding);
+                self.lan_riding(&host.hub.guests, &mut host.hub.riding);
                 // Idle states are kept only when the players' moves are in:
                 // the clients that could pair are known. The range scale is
                 // the one the tracker gets below.
@@ -2755,7 +2786,7 @@ impl Game<'_> {
                 .take()
                 .expect("the hub is back after the advancement grants");
         }
-        if !host.hub.native_menu_events.is_empty() {
+        if !host.hub.native_menu_events.is_empty() || !host.hub.native_menu_returns.is_empty() {
             self.lan = Some(host);
             self.run_native_menu_events();
             host = self
@@ -2793,6 +2824,7 @@ impl Game<'_> {
         drop(holding);
         self.flush_attachment_sync(&mut host);
         self.flush_native_net(&mut host);
+        self.flush_native_player_fx(&mut host);
         self.flush_far_terrain(&mut host);
         lan::flush_all(host.hub.guests.iter().map(|g| &g.sender));
         self.lan = Some(host);
@@ -2859,6 +2891,27 @@ impl Game<'_> {
             g.health = 20.0;
             g.food = 20;
             g.dimension = super::Dim::Overworld.id().to_owned();
+        }
+        // Spigot's PlayerSpawnLocationEvent: the mods may place them elsewhere.
+        let (mut dimension, mut position, mut rotation) =
+            (g.dimension.clone(), g.position, [g.yaw, g.pitch]);
+        self.native_player_spawn_location(
+            g.uuid,
+            &g.name,
+            &mut dimension,
+            &mut position,
+            &mut rotation,
+        );
+        if dimension != g.dimension && super::Dim::from_id(&dimension).id() == dimension {
+            g.dimension = dimension;
+        }
+        if position != g.position && position.iter().all(|v| v.is_finite()) {
+            g.position = position;
+            g.previous_position = position;
+        }
+        if rotation != [g.yaw, g.pitch] && rotation.iter().all(|v| v.is_finite()) {
+            (g.yaw, g.pitch) = (rotation[0], rotation[1]);
+            g.head_yaw = g.yaw;
         }
         // A server places each player in their own level (`PlayerList.placeNewPlayer`).
         let back = self.dim;
@@ -3358,6 +3411,7 @@ fn event_kind(event: &HostEvent) -> EventKind {
         HostEvent::Joined(c) => ("join", Some(*c), None),
         HostEvent::Left(g) => ("leave", None, Some(g.name.clone())),
         HostEvent::Packet(c, p) => (p.name(), Some(*c), None),
+        HostEvent::Jump { conn, .. } => ("jump", Some(*conn), None),
         HostEvent::MainHandChanged(c, _) => ("main hand", Some(*c), None),
         HostEvent::LocaleChanged(c, _) => ("locale", Some(*c), None),
         HostEvent::PlayerLoaded(c) => ("loaded", Some(*c), None),
@@ -3410,27 +3464,66 @@ fn level_event_except(id: i32, acting: Option<u32>, collateral_break: bool) -> O
 
 /// Notes how long the event that started at `started` took (`spans::note`), with what it
 /// was about when [`Game::event_detail`] said.
-fn note_event(host: &LanHost, started: Option<(Instant, EventKind, Option<UseDetail>)>) {
-    let Some((started, (kind, conn, name), detail)) = started else {
+fn note_event(
+    host: &LanHost,
+    started: Option<(Instant, EventKind, Option<UseDetail>)>,
+    timings: &mut EventTimings<(Option<u32>, Option<String>), UseDetail>,
+) {
+    let Some((started, kind, detail)) = started else {
         return;
     };
-    horizon_client::spans::note(started.elapsed().as_secs_f32() * 1000.0, || {
-        let who = name
-            .or_else(|| conn.and_then(|c| host.hub.guest(c)).map(|g| g.name.clone()))
-            .or_else(|| conn.map(|c| format!("connection {c}")));
-        let line = match who {
-            Some(who) => format!("{kind} of {who}"),
-            None => kind.to_owned(),
-        };
-        match detail {
-            Some(d) => format!("{line} ({d})"),
-            None => line,
-        }
-    });
+    let ms = started.elapsed().as_secs_f32() * 1000.0;
+    horizon_client::spans::note(ms, || describe_event(host, &kind, detail.as_ref()));
+    let (name, conn, player) = kind;
+    timings.add(name, (conn, player), detail, ms);
+}
+
+/// The player an event came from: its name, else its connection.
+fn who(host: &LanHost, conn: Option<u32>, name: Option<String>) -> Option<String> {
+    name.or_else(|| conn.and_then(|c| host.hub.guest(c)).map(|g| g.name.clone()))
+        .or_else(|| conn.map(|c| format!("connection {c}")))
+}
+
+/// A burst's note: `213 x UseItemOn under 10 ms each (…); most from Steve: 140 of them, 710.0 ms`.
+fn describe_burst(
+    host: &LanHost,
+    burst: &event_timings::Burst<(Option<u32>, Option<String>), UseDetail>,
+) -> String {
+    let mut line = format!(
+        "{} x {} under {} ms each",
+        burst.count,
+        burst.kind,
+        horizon_client::spans::NOTE_MS
+    );
+    if let Some(d) = &burst.detail {
+        line.push_str(&format!(" ({d})"));
+    }
+    if let Some(((conn, name), count, ms)) = &burst.top
+        && let Some(who) = who(host, *conn, name.clone())
+    {
+        line.push_str(&format!("; most from {who}: {count} of them, {ms:.1} ms"));
+    }
+    line
+}
+
+fn describe_event(
+    host: &LanHost,
+    (kind, conn, name): &EventKind,
+    detail: Option<&UseDetail>,
+) -> String {
+    let line = match who(host, *conn, name.clone()) {
+        Some(who) => format!("{kind} of {who}"),
+        None => (*kind).to_owned(),
+    };
+    match detail {
+        Some(d) => format!("{line} ({d})"),
+        None => line,
+    }
 }
 
 /// What a use packet was about, taken before it ran (the use may consume the item or change
 /// the block): the item in the hand it names and, on a block, that block, where, and the face.
+#[derive(PartialEq)]
 struct UseDetail {
     item: Option<Arc<str>>,
     block: Option<(Arc<str>, [i32; 3], i32)>,
@@ -3477,7 +3570,30 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{OFFHAND_SLOT, equipment_slot_name, living_flags, mob_freeze_meta};
+    use super::{EventTimings, OFFHAND_SLOT, equipment_slot_name, living_flags, mob_freeze_meta};
+
+    #[test]
+    fn a_burst_of_short_events_still_has_a_slow_tick_note() {
+        use horizon_client::spans;
+        // Thread-local recording avoids changing instrumentation on other test threads.
+        spans::record_here(true);
+        spans::take_notes();
+        let mut timings = EventTimings::new(spans::NOTE_MS);
+        for _ in 0..200 {
+            spans::note(5.0, || "UseItemOn of fixture player".into());
+            timings.add("UseItemOn", "fixture player", None::<()>, 5.0);
+        }
+        assert!(
+            spans::take_notes().is_empty(),
+            "every individual event is below NOTE_MS"
+        );
+        for burst in timings.bursts() {
+            spans::note(burst.ms, || format!("{} x {}", burst.count, burst.kind));
+        }
+        let notes = spans::take_notes();
+        spans::record_here(false);
+        assert_eq!(notes, vec![(1000.0, "200 x UseItemOn".into())]);
+    }
     use horizon_client::mobs::Mob;
     use horizon_protocol::entity_data::{Value, serializer};
 

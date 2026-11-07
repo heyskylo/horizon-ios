@@ -129,14 +129,22 @@ pub fn clientbound(
                 if Some(e.kind) == falling_block {
                     e.data = ids.block_state.up(e.data).unwrap_or(0);
                 }
-                e.kind = ids.entity_type.up(e.kind).unwrap_or(e.kind);
+                // An unknown server type may name an unrelated mob in the pinned registry.
+                let Some(kind) = ids.entity_type.up(e.kind) else {
+                    return Ok(None);
+                };
+                e.kind = kind;
             }
             strip_id(p.encode())
         }
         (State::Play, cb::BLOCK_ENTITY_DATA) => {
             let mut p = decode_play(ids, id, payload)?;
             if let play::Clientbound::BlockEntityData(b) = &mut p {
-                b.kind = ids.block_entity_type.up(b.kind).unwrap_or(b.kind);
+                // Match the chunk path: the block still draws without an unsupported block entity.
+                let Some(kind) = ids.block_entity_type.up(b.kind) else {
+                    return Ok(None);
+                };
+                b.kind = kind;
             }
             strip_id(p.encode())
         }
@@ -207,7 +215,7 @@ pub fn clientbound(
 }
 
 /// Pinned entity type ids the translation looks for.
-mod packet_ids_entity {
+pub(super) mod packet_ids_entity {
     /// `minecraft:falling_block` in 26.3.
     pub const FALLING_BLOCK: i32 = 52;
 }
@@ -266,12 +274,7 @@ pub fn serverbound(
         (State::Play, sb::PUNCH) => {
             let mut w = Writer::new();
             w.varint(0);
-            let swing = if session.version.at_most(ServerVersion::V1_21_11) {
-                v1_21_11::SWING
-            } else {
-                V26_2_SWING
-            };
-            Ok(Some((swing, w.data)))
+            Ok(Some((swing_id(session.version), w.data)))
         }
         (State::Play, sb::SET_CREATIVE_MODE_SLOT | sb::CONTAINER_CLICK) => {
             let p = play::Serverbound::decode(id, payload)?;
@@ -287,6 +290,15 @@ pub fn serverbound(
 
 /// 26.2's serverbound `swing` (play), which 26.3 replaced with `punch`.
 const V26_2_SWING: i32 = 63;
+
+/// The id an older `version` numbers its serverbound `swing` (play) by.
+pub(super) fn swing_id(version: ServerVersion) -> i32 {
+    if version.at_most(ServerVersion::V1_21_11) {
+        v1_21_11::SWING
+    } else {
+        V26_2_SWING
+    }
+}
 
 /// A play packet decoded with the older version's ids renumbered as they are read.
 fn decode_play(ids: &'static Ids, id: i32, payload: &[u8]) -> Result<play::Clientbound> {
@@ -374,7 +386,7 @@ fn respawn(payload: &[u8]) -> Result<Vec<u8>> {
 /// The column's sections with their block states renumbered and packed for the pinned palette width (a
 /// section on the older global palette uses fewer bits per entry), and its light masks as 26.3 sends them.
 /// Biomes are the server's own registry and stay as they are.
-fn chunk(ids: &'static Ids, payload: &[u8]) -> Result<Vec<u8>> {
+pub(super) fn chunk(ids: &'static Ids, payload: &[u8]) -> Result<Vec<u8>> {
     let mut r = Reader::new(payload);
     let x = r.i32()?;
     let z = r.i32()?;
@@ -439,7 +451,7 @@ fn light(r: &mut Reader) -> Result<crate::chunk::LightData> {
     })
 }
 
-fn light_update(payload: &[u8]) -> Result<Vec<u8>> {
+pub(super) fn light_update(payload: &[u8]) -> Result<Vec<u8>> {
     let mut r = Reader::new(payload);
     let x = r.varint()?;
     let z = r.varint()?;
@@ -516,7 +528,7 @@ fn advancements(ids: &'static Ids, payload: &[u8]) -> Result<Vec<u8>> {
 
 /// 26.2: flags, position, spread, one max speed, an Int count, then the particle. 26.3 sends the particle
 /// first, a speed per axis, a VarInt count and how the spread is drawn (0, gaussian, as 26.2 did).
-fn particles(ids: &'static Ids, payload: &[u8]) -> Result<Vec<u8>> {
+pub(super) fn particles(ids: &'static Ids, payload: &[u8]) -> Result<Vec<u8>> {
     let mut r = Reader::new(payload);
     let override_limiter = r.bool()?;
     let always_show = r.bool()?;
@@ -547,7 +559,7 @@ fn particles(ids: &'static Ids, payload: &[u8]) -> Result<Vec<u8>> {
 
 /// 26.2 sends a move as three Short deltas (1/4096 of a block) then on-ground, and a turn as the two angles
 /// then on-ground; 26.3 packs on-ground with the delta's step count, and sends it before the angles.
-fn move_entity(payload: &[u8], pos: bool, rot: bool) -> Result<Vec<u8>> {
+pub(super) fn move_entity(payload: &[u8], pos: bool, rot: bool) -> Result<Vec<u8>> {
     let mut r = Reader::new(payload);
     let id = r.varint()?;
     let delta = if pos {
@@ -574,7 +586,7 @@ fn move_entity(payload: &[u8], pos: bool, rot: bool) -> Result<Vec<u8>> {
 
 /// 26.2: the entity, PositionMoveRotation (position, motion, the two angles), on-ground. 26.3 sends where it
 /// goes as a path, then the angles; the motion is no longer sent.
-fn position_sync(payload: &[u8]) -> Result<Vec<u8>> {
+pub(super) fn position_sync(payload: &[u8]) -> Result<Vec<u8>> {
     let mut r = Reader::new(payload);
     let id = r.varint()?;
     let position = [r.f64()?, r.f64()?, r.f64()?];
@@ -598,7 +610,7 @@ fn position_sync(payload: &[u8]) -> Result<Vec<u8>> {
 
 /// 26.2's animate swings hands too (0 main, 3 off), which 26.3 sends as `swing_animation`; the others were
 /// renumbered (wake up 2 -> 0, critical hits 4, 5 -> 1, 2).
-fn animate(payload: &[u8]) -> Result<(i32, Vec<u8>)> {
+pub(super) fn animate(payload: &[u8]) -> Result<(i32, Vec<u8>)> {
     let mut r = Reader::new(payload);
     let id = r.varint()?;
     let action = r.u8()?;
@@ -1070,6 +1082,82 @@ mod v26_1 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_1_21_11_unknown_entity_is_dropped_and_vanilla_entities_are_remapped() {
+        let session = Session::new(ServerVersion::V1_21_11);
+        for (kind, data, expected) in [
+            (157, 0, None),
+            (0, 0, Some((0, 0))),
+            (51, 27, Some((52, 28))), // falling block, with a state whose id changed
+        ] {
+            let packet = play::Clientbound::AddEntity(play::AddEntity {
+                id: 7,
+                uuid: 1,
+                kind,
+                position: [0.0; 3],
+                velocity: [0.0; 3],
+                pitch: 0,
+                yaw: 0,
+                head_yaw: 0,
+                data,
+            });
+            let body = strip_id(packet.encode());
+            let translated = clientbound(
+                &session,
+                State::Play,
+                packet_ids::play::clientbound::ADD_ENTITY,
+                &body,
+            )
+            .unwrap();
+            match expected {
+                None => assert!(translated.is_none()),
+                Some(expected) => {
+                    let (id, body) = translated.unwrap();
+                    assert_eq!(id, packet_ids::play::clientbound::ADD_ENTITY);
+                    let p = play::Clientbound::decode(id, &body.unwrap()).unwrap();
+                    let play::Clientbound::AddEntity(e) = p else {
+                        panic!("{p:?}");
+                    };
+                    assert_eq!((e.kind, e.data), expected);
+                    assert_eq!(e.id, 7);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_1_21_11_unknown_block_entity_update_is_dropped() {
+        let session = Session::new(ServerVersion::V1_21_11);
+        for (kind, expected) in [(49, None), (1, Some(1))] {
+            let packet = play::Clientbound::BlockEntityData(play::BlockEntityData {
+                pos: [1, 2, 3],
+                kind,
+                tag: horizon_world::nbt::Tag::Compound(Default::default()),
+            });
+            let body = strip_id(packet.encode());
+            let translated = clientbound(
+                &session,
+                State::Play,
+                packet_ids::play::clientbound::BLOCK_ENTITY_DATA,
+                &body,
+            )
+            .unwrap();
+            match expected {
+                None => assert!(translated.is_none()),
+                Some(expected) => {
+                    let (id, body) = translated.unwrap();
+                    assert_eq!(id, packet_ids::play::clientbound::BLOCK_ENTITY_DATA);
+                    let p = play::Clientbound::decode(id, &body.unwrap()).unwrap();
+                    let play::Clientbound::BlockEntityData(b) = p else {
+                        panic!("{p:?}");
+                    };
+                    assert_eq!(b.kind, expected);
+                    assert_eq!(b.pos, [1, 2, 3]);
+                }
+            }
+        }
+    }
+
     fn ids() -> &'static Ids {
         super::super::ServerVersion::V26_2.ids().unwrap()
     }
@@ -1202,5 +1290,21 @@ mod tests {
         assert_eq!(action(0), Some(0)); // start destroying
         assert_eq!(action(1), None); // change_destroy_direction, new in 26.3
         assert_eq!(action(3), Some(2)); // stop destroying: 3 in 26.3, 2 in 26.2
+    }
+}
+
+/// 26.2's readers, for the tests of the layout written for a 26.2 client (`layout_26_2`).
+#[cfg(test)]
+pub(super) mod tests_support {
+    use super::*;
+
+    pub fn login_26_2(payload: &[u8]) -> Result<Vec<u8>> {
+        login(payload)
+    }
+    pub fn respawn_26_2(payload: &[u8]) -> Result<Vec<u8>> {
+        respawn(payload)
+    }
+    pub fn advancements_26_2(ids: &'static Ids, payload: &[u8]) -> Result<Vec<u8>> {
+        advancements(ids, payload)
     }
 }

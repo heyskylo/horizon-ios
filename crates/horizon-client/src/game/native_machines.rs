@@ -17,7 +17,6 @@ use winit::keyboard::KeyCode;
 const FAKE_EYE: f32 = 1.62;
 
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// Breaks the block at `pos` as a machine does, with no player: vanilla's
     /// `Level.destroyBlock(pos, true)` with the loot rolled for `tool`
@@ -262,7 +261,7 @@ impl Game<'_> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::super::{
         Audio, Options, Progress, Settings,
         boats::Boat,
@@ -278,7 +277,7 @@ mod tests {
 
     /// A server's game on the prepared resources: nobody is playing, and the
     /// chunk at the origin is loaded.
-    fn server_game() -> Game<'static> {
+    pub(crate) fn server_game() -> Game<'static> {
         let root = std::path::PathBuf::from(
             std::env::var_os("HORIZON_TEST_RESOURCES")
                 .expect("set HORIZON_TEST_RESOURCES to prepared resources"),

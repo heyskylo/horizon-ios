@@ -538,6 +538,11 @@ impl BlockEntities {
         });
         Arc::clone(&self.tickers)
     }
+    /// How many block entities tick (`Level.blockEntityTickers`, the slots still live), as of
+    /// the last [`Self::tickers`]: what a diagnostics mod counts.
+    pub fn ticking_len(&self) -> usize {
+        self.live.len()
+    }
     /// Whether a slot from `tickers` still ticks.
     pub fn is_live(&self, (pos, slot): (Pos, u32)) -> bool {
         self.live.get(&pos) == Some(&slot) && self.map.contains_key(&pos)

@@ -230,7 +230,7 @@ fn shift_b_repeats_each_horizontal_sample_and_preserves_tail() {
     sampler
         .sample_volume(&mut context, &mut buffer, volume)
         .unwrap();
-    for column in buffer[..volume.size()].chunks_exact(3) {
+    for column in buffer[..volume.size()].as_chunks::<3>().0 {
         assert!(column.iter().all(|v| v.to_bits() == column[0].to_bits()));
     }
     assert_eq!(&buffer[volume.size()..], &[19.0, 19.0]);
@@ -1009,4 +1009,72 @@ fn kept_planes_match_fresh_slices_across_vertical_lattices() {
     }
     // Two fresh evaluations and one kept plane.
     assert_eq!(input.1.load(Ordering::Relaxed), 3);
+}
+
+#[test]
+fn lerp_samples_its_branches_only_where_alpha_reads_them() {
+    // Hides `sample_needed`, so the branch is sampled everywhere.
+    #[derive(Debug)]
+    struct Everywhere(Arc<dyn DensitySampler>);
+    impl DensitySampler for Everywhere {
+        fn sample_value(&self, c: &mut SamplerContext, p: [i32; 3]) -> Result<f32, SampleError> {
+            self.0.sample_value(c, p)
+        }
+        fn sample_volume(
+            &self,
+            context: &mut SamplerContext,
+            buffer: &mut [f32],
+            volume: DensityVolume,
+        ) -> Result<(), SampleError> {
+            self.0.sample_volume(context, buffer, volume)
+        }
+    }
+    // The overworld's terrain noise: its alpha is often exactly 0 or 1.
+    let blended = BlendedNoise {
+        xz_scale: 0.25,
+        y_scale: 0.125,
+        xz_factor: 80.0,
+        y_factor: 160.0,
+        smear_scale_multiplier: 8.0,
+    };
+    let lerp = blended.compile(&mut LegacyRandom::new(12345)).unwrap();
+    let everywhere = |value: &DensityValue| match value {
+        DensityValue::Sampler(sampler) => {
+            DensityValue::Sampler(Arc::new(Everywhere(Arc::clone(sampler))))
+        }
+        DensityValue::Constant(value) => DensityValue::Constant(*value),
+    };
+    let reference = LerpSampler {
+        alpha: Arc::clone(&lerp.alpha),
+        first: everywhere(&lerp.first),
+        second: everywhere(&lerp.second),
+    };
+    let mut context = SamplerContext::default();
+    let (mut clamped, mut mixed) = (0, 0);
+    for (sizes, minimum, steps) in [
+        ([5, 49, 5], [0, -64, 0], [4, 8, 4]),
+        ([5, 49, 5], [-2000, -64, 3000], [4, 8, 4]),
+        ([3, 64, 2], [512, -64, -512], [4, 6, 4]),
+        ([2, 65, 2], [96, -64, 96], [4, 6, 4]),
+    ] {
+        let volume = DensityVolume::new(sizes, minimum, steps).unwrap();
+        let (mut actual, mut expected) = (vec![0.0; volume.size()], vec![0.0; volume.size()]);
+        lerp.sample_volume(&mut context, &mut actual, volume)
+            .unwrap();
+        reference
+            .sample_volume(&mut context, &mut expected, volume)
+            .unwrap();
+        assert_eq!(
+            actual.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            "{sizes:?} {minimum:?}"
+        );
+        lerp.alpha
+            .sample_volume(&mut context, &mut actual, volume)
+            .unwrap();
+        clamped += actual.iter().filter(|&&a| a == 0.0 || a == 1.0).count();
+        mixed += actual.iter().filter(|&&a| a != 0.0 && a != 1.0).count();
+    }
+    // Both kinds of alpha occur, so both branches are skipped somewhere and read somewhere.
+    assert!(clamped > 0 && mixed > 0, "{clamped} {mixed}");
 }

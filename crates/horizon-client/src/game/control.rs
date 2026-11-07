@@ -53,6 +53,7 @@ const HELP: &[&str] = &[
     "fill X1 Y1 Z1 X2 Y2 Z2 BLOCK   set a box of loaded blocks",
     "resume                         leave the pause menu",
     "screenshot PATH                write the next frame as PNG",
+    "screenshot-sequence FRAMES STEP_MS PATH|cancel  a shader pack's first frames on a set clock (HORIZON_STILL), the last as PNG",
     "chat TEXT                      send a chat line or /command as if typed",
     "type TEXT                      type into the open chat box (key enter tap sends)",
     "chat-log [N]                   the newest N chat messages (default 10)",
@@ -260,6 +261,21 @@ impl Game<'_> {
     /// Nothing here is a key — the caller drops control characters. `Err` when
     /// no text box of the screen takes them.
     pub(super) fn type_chars_into_screen(&mut self, text: &str) -> Result<()> {
+        // Overlays own the input even when a text box remains focused behind them.
+        if self.dialog_open() {
+            self.dialog_type(text);
+            return Ok(());
+        }
+        if self.prompt_open() {
+            return Ok(());
+        }
+        if let Some(result) = self.type_text_field_input(text) {
+            return result;
+        }
+        self.type_chars_unhooked(text)
+    }
+
+    pub(super) fn type_chars_unhooked(&mut self, text: &str) -> Result<()> {
         if self.book.is_some() {
             self.book_type(text);
             return Ok(());
@@ -294,6 +310,11 @@ impl Game<'_> {
             // The anvil's rename box, while it has an input to name.
             Screen::Inventory if self.station_typing() => self.station_text(Some(text), false),
             Screen::Creative if self.creative_screen.tab().search => {
+                // CreativeModeInventoryScreen.charTyped: the chat key that
+                // opened the tab does not type its letter.
+                if std::mem::take(&mut self.creative_ignore_text) {
+                    return Ok(());
+                }
                 // As typed: replaces a selected query, keeps the length limit.
                 self.creative_search_edit(Some(text))
             }
@@ -339,6 +360,10 @@ impl Game<'_> {
         event_loop: &dyn EventLoopCtl,
     ) -> Result<Option<Value>> {
         let words: Vec<&str> = line.split_whitespace().collect();
+        self.screenshot_sequence_gate(words.first().copied())?;
+        if words.first() == Some(&"screenshot-sequence") {
+            return self.screenshot_sequence_command(line, reply);
+        }
         if self.pending_save.is_some() && words.first() != Some(&"quit") {
             return Err("a world save is in progress".into());
         }
@@ -435,6 +460,27 @@ impl Game<'_> {
                 }
                 Ok(Some(json!({ "ok": true, "gpu_passes": self.gpu_passes })))
             }
+            // Every thread's spans as a timeline Perfetto opens (`spans::trace`).
+            "trace" => match words.get(1).copied() {
+                None => Ok(Some(
+                    json!({ "ok": true, "tracing": horizon_client::spans::trace::on() }),
+                )),
+                Some("stop") => Ok(Some(
+                    json!({ "ok": true, "events": horizon_client::spans::trace::stop() }),
+                )),
+                Some(file) => {
+                    let seconds = match words.get(2) {
+                        None => None,
+                        Some(s) => Some(
+                            s.parse::<u32>()
+                                .map_err(|_| "trace [FILE [SECONDS] | stop]")?,
+                        ),
+                    };
+                    horizon_client::spans::trace::start(std::path::Path::new(file), seconds)
+                        .map_err(|e| format!("trace {file}: {e}"))?;
+                    Ok(Some(json!({ "ok": true, "tracing": true, "file": file })))
+                }
+            },
             "render-capture" => match words.get(1).copied() {
                 None => {
                     let r = self.renderer.as_ref().ok_or("no renderer")?;
@@ -989,6 +1035,12 @@ impl Game<'_> {
                 // key event fires it. A cancelled character is dropped, so
                 // `type` types the survivors only.
                 // `\b` is the socket's backspace sentinel, not two characters.
+                if text != "\\b"
+                    && let Some(result) = self.type_text_field_input(text)
+                {
+                    result?;
+                    return ok();
+                }
                 let typed = if text == "\\b" {
                     text.to_owned()
                 } else {
@@ -1038,6 +1090,7 @@ impl Game<'_> {
                 if page == Page::ShaderPacks {
                     self.settings.shader_packs =
                         horizon_client::shader_pack_list::scan(&Self::shader_packs_dir());
+                    self.open_shader_options();
                 }
                 ok()
             }
