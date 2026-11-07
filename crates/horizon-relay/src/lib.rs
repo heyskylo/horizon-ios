@@ -413,6 +413,7 @@ fn handle(state: &Arc<State>, mut stream: TcpStream, peer: SocketAddr) -> io::Re
     let first_line = horizon_friends::deadline(&stream, state.config.first_line)?;
     stream.set_read_timeout(Some(state.config.first_line))?;
     let _ = stream.set_nodelay(true);
+    let _ = horizon_friends::set_tcp_keepalive(&stream);
     let mut line = wire::read_line(&mut stream)?.ok_or(io::ErrorKind::UnexpectedEof)?;
     if state.config.proxy_protocol {
         if !state
@@ -774,6 +775,7 @@ fn bridge(
         for s in [&guest, &host] {
             s.set_read_timeout(Some(state.config.idle))?;
             let _ = s.set_nodelay(true);
+            let _ = horizon_friends::set_tcp_keepalive(s);
         }
         let (g, h, st) = (guest.try_clone()?, host.try_clone()?, state.clone());
         let up = std::thread::Builder::new()
@@ -788,7 +790,7 @@ fn bridge(
 fn copy(state: &State, mut from: TcpStream, mut to: TcpStream) {
     let rate = state.config.session_rate;
     let mut bucket = Bucket::new(rate, (rate / 2.0).max(16384.0), Instant::now());
-    let mut buf = vec![0u8; 16 * 1024];
+    let mut buf = [0u8; 16 * 1024];
     loop {
         let n = match from.read(&mut buf) {
             Ok(0) | Err(_) => break,
