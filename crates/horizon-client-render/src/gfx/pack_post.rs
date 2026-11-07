@@ -1398,7 +1398,12 @@ impl Job {
 ///
 /// A refusal doesn't stop the others: every job is made, so that the serial rebuild `new` then
 /// runs finds the driver's shader cache warm instead of compiling the rest cold, one at a time.
-fn compile(device: &wgpu::Device, jobs: &[Job]) -> Option<(String, String)> {
+/// `cancel` set stops handing out jobs: the caller then drops the pack (`PackPost::new`).
+fn compile(
+    device: &wgpu::Device,
+    jobs: &[Job],
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Option<(String, String)> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let threads = std::thread::available_parallelism()
         .map_or(1, |n| n.get())
@@ -1409,7 +1414,9 @@ fn compile(device: &wgpu::Device, jobs: &[Job]) -> Option<(String, String)> {
     std::thread::scope(|scope| {
         for _ in 0..threads {
             scope.spawn(|| {
-                while let Some(job) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
+                while !cancel.load(Ordering::Relaxed)
+                    && let Some(job) = jobs.get(next.fetch_add(1, Ordering::Relaxed))
+                {
                     if let Err(e) = checked(device, || job.create(device)) {
                         let mut refused = refused.lock().unwrap_or_else(|e| e.into_inner());
                         refused.get_or_insert((job.label().to_owned(), e));
@@ -2310,6 +2317,22 @@ pub struct Refused {
     pub notes: Vec<String>,
 }
 
+impl Refused {
+    /// The reason of a build stopped by its `cancel` flag (`PackPost::new`).
+    const CANCELLED: &str = "cancelled";
+    fn cancelled(notes: Vec<String>) -> Self {
+        Self {
+            reason: Self::CANCELLED.into(),
+            notes,
+        }
+    }
+    /// Whether the build was cancelled (another pack or dimension asked for): not the pack's
+    /// fault, so nothing to report to the player.
+    pub fn is_cancelled(&self) -> bool {
+        self.reason == Self::CANCELLED
+    }
+}
+
 impl PackPost {
     /// Builds the pipelines of `post` for a screen of `screen` format. An error when the pack
     /// can't show anything on the screen: the game turns it off, as a pack that fails to load.
@@ -2317,6 +2340,9 @@ impl PackPost {
     /// The pack is laid out first and its pipelines are made after, all at once (`compile`).
     /// When wgpu or the driver refuses one, the pack is built again a program at a time, so that
     /// the program is skipped with its note as it always was.
+    ///
+    /// `cancel` set (the pack isn't wanted any more) stops the build between programs: a refusal
+    /// whose `is_cancelled` is true.
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -2324,10 +2350,17 @@ impl PackPost {
         post: Post,
         screen: wgpu::TextureFormat,
         world: World<'_>,
+        cancel: &std::sync::atomic::AtomicBool,
     ) -> Result<Self, Refused> {
+        use std::sync::atomic::Ordering;
         let spare = (post.clone(), world.clone());
-        let (built, jobs) = Self::build(device, queue, adapter, post, screen, world, true)?;
-        let Some((program, refused)) = compile(device, &jobs) else {
+        let (built, jobs) = Self::build(device, queue, adapter, post, screen, world, true, cancel)?;
+        let refused = compile(device, &jobs, cancel);
+        // Some pipelines may be left unmade: the pack can't draw.
+        if cancel.load(Ordering::Relaxed) {
+            return Err(Refused::cancelled(built.notes));
+        }
+        let Some((program, refused)) = refused else {
             return Ok(built);
         };
         log::warn!(
@@ -2335,7 +2368,8 @@ impl PackPost {
         );
         drop((built, jobs));
         let (post, world) = spare;
-        Self::build(device, queue, adapter, post, screen, world, false).map(|(built, _)| built)
+        Self::build(device, queue, adapter, post, screen, world, false, cancel)
+            .map(|(built, _)| built)
     }
 
     /// `new`'s work: with `defer`, the pipelines are left to make (the jobs returned).
@@ -2348,6 +2382,7 @@ impl PackPost {
         screen: wgpu::TextureFormat,
         world: World<'_>,
         defer: bool,
+        cancel: &std::sync::atomic::AtomicBool,
     ) -> Result<(Self, Vec<Job>), Refused> {
         // What the pack's shaders need of its storage buffers, before its parts move out.
         let minimums = post.buffer_minimums();
@@ -2503,6 +2538,10 @@ impl PackPost {
             jobs: defer.then(Default::default),
         };
         let mut build = |mut p: horizon_shaders::PostProgram, geometry: Option<&Geometry<'_>>| {
+            // Not wanted any more: the rest is skipped and the build refused below.
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                return None;
+            }
             let in_shadow = p.group.shadow();
             let mut compute = std::mem::take(&mut p.compute);
             if !gpu.compute {
@@ -2842,6 +2881,9 @@ impl PackPost {
             .filter(|p| !skip.split(',').any(|s| s == p.name))
             .filter_map(|p| build(p, None))
             .collect();
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(Refused::cancelled(notes));
+        }
         let stand_ins = pack_images::stand_ins(device, stand_ins.take());
         // Terrain in two parts draws both or neither: one alone would leave the other part's
         // terrain undrawn. Without either, the game draws all terrain, as when the terrain
@@ -5530,10 +5572,14 @@ mod tests {
             (slot.clone(), Job::Compute(slot, job))
         };
         let plain = "@compute @workgroup_size(1) fn main() {}";
+        let go = std::sync::atomic::AtomicBool::new(false);
         let (slots, jobs): (Vec<_>, Vec<_>) = (0..12)
             .map(|i| job(&format!("composite{i}"), module(plain)))
             .unzip();
-        assert_eq!(compile(&device, &jobs), None);
+        // Cancelled before it starts: nothing is made (`new` then drops the pack).
+        assert_eq!(compile(&device, &jobs, &true.into()), None);
+        assert!(slots.iter().all(|s| s.get().is_none()));
+        assert_eq!(compile(&device, &jobs, &go), None);
         assert!(slots.iter().all(|s| s.get().is_some()));
         // A binding the layout doesn't have: wgpu refuses the pipeline.
         let bound = "@group(0) @binding(0) var<storage, read_write> b: array<u32>;\n\
@@ -5542,7 +5588,7 @@ mod tests {
         let (slots, mut jobs): (Vec<_>, Vec<_>) =
             (0..4).map(|i| job(&format!("c{i}"), module(plain))).unzip();
         jobs.insert(2, bad);
-        let (program, _why) = compile(&device, &jobs).expect("the pipeline is refused");
+        let (program, _why) = compile(&device, &jobs, &go).expect("the pipeline is refused");
         assert_eq!(program, "deferred3");
         // The refusal stops none of the others: they are all made.
         assert!(slots.iter().all(|s| s.get().is_some()));

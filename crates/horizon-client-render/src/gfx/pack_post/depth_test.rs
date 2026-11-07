@@ -83,6 +83,7 @@ impl Gpu {
             post,
             T::Rgba8Unorm,
             world,
+            &Default::default(),
         )
         .expect("the pack runs");
         assert!(

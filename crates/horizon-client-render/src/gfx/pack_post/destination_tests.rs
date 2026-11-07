@@ -244,6 +244,7 @@ impl Fixture {
                 weather: false,
                 hand: false,
             },
+            &Default::default(),
         )
     }
 
