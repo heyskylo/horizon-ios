@@ -1581,6 +1581,48 @@ mod tests {
     /// A mod block's block entity goes out with its block's own type and the
     /// tag its mod gives; a mod block whose mod made none is left out.
     #[test]
+    fn a_loaded_chunks_update_tag_consumes_only_transient_client_fields() {
+        let builtin = Builtin::parse(
+            r#"{"minecraft:block_entity_type":{"entries":{"test:machine":{"protocol_id":49}}}}"#,
+        )
+        .unwrap();
+        let states = ["minecraft:air", "test:machine"].map(|n| (Arc::<str>::from(n), false));
+        let mut encoder = ChunkEncoder::new(states, &builtin, &[], &[]);
+        encoder.mod_update_tag = Some(|_, entity| {
+            let mut tag = entity.nbt.clone();
+            tag.extend(entity.take_client_update_fields());
+            Some(tag)
+        });
+        let mut chunk = Chunk::empty(0, 0);
+        let pos = (1, MIN_Y + 2, 3);
+        chunk.set(pos.0, pos.1, pos.2, 1);
+        let mut machine = ModBlockEntity::new(crate::containers::ModBlockEntityFields {
+            id: "test:machine".into(),
+            nbt: Compound::from([("progress".into(), Tag::Int(7))]),
+            ..Default::default()
+        });
+        let revision = machine.revision();
+        let effects = Tag::List(vec![Tag::Int(23)]);
+        machine.set_client_update_fields(Compound::from([("effects".into(), effects.clone())]));
+        let entities = HashMap::from([(pos, BlockEntity::Mod(Box::new(machine)))]);
+        let saved = crate::save::encode_block_entity(pos, &entities[&pos], "test:machine");
+        let first = encoder.encode(&chunk, &entities).chunk.block_entities;
+        assert_eq!(first[0].tag.get("effects"), Some(&effects));
+        assert_eq!(first[0].tag.get("progress"), Some(&Tag::Int(7)));
+        let second = encoder.encode(&chunk, &entities).chunk.block_entities;
+        assert!(second[0].tag.get("effects").is_none());
+        assert_eq!(second[0].tag.get("progress"), Some(&Tag::Int(7)));
+        assert_eq!(
+            crate::save::encode_block_entity(pos, &entities[&pos], "test:machine"),
+            saved
+        );
+        let BlockEntity::Mod(machine) = &entities[&pos] else {
+            unreachable!();
+        };
+        assert_eq!(machine.revision(), revision);
+    }
+
+    #[test]
     fn mod_block_entities_carry_their_blocks_type_and_the_mods_tag() {
         let builtin = Builtin::parse(
             r#"{"minecraft:block_entity_type": {"entries": {

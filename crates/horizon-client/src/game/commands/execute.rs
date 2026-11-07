@@ -1156,7 +1156,7 @@ impl Game<'_> {
         Ok((true, count))
     }
     /// The biome name at a block position.
-    fn biome_name_at_block(&self, p: [i32; 3]) -> Option<String> {
+    pub(in crate::game) fn biome_name_at_block(&self, p: [i32; 3]) -> Option<String> {
         let chunk = self.world.chunks.get(&(p[0] >> 4, p[2] >> 4))?;
         // The world's table (`world_biomes!`): a packed biome's id is past
         // the built-in list, and `Biomes::get` would clamp it to the last

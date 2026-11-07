@@ -1,5 +1,5 @@
 //! Client services for trait mods, without exposing `Game` or the atlas.
-use super::Game;
+use super::{Game, Screen};
 use horizon_client::{
     client_resources::TexturePixels,
     collisions::SceneCollisions,
@@ -7,9 +7,12 @@ use horizon_client::{
     hud_layout::GuiDraw,
     items::ItemStack,
     mod_api::Text,
+    net::FRIEND,
 };
 use horizon_core::geometry::Vec3;
+use horizon_friends::invite::{self, Parsed};
 use std::borrow::Cow;
+use std::net::SocketAddr;
 use winit::keyboard::KeyCode;
 
 /// This window's state; unavailable on a server or before a window is attached.
@@ -27,6 +30,89 @@ pub struct NativeClientState {
     pub yaw: f32,
     pub pitch: f32,
     pub menu_blur: f32,
+    /// What covers the world. API @API:session_state@.
+    pub screen: NativeScreenKind,
+    /// F3's debug screen is showing (`DebugScreenOverlay.showDebugScreen`).
+    /// API @API:session_state@.
+    pub debug_screen: bool,
+    /// The world joined, None before one is. API @API:session_state@.
+    pub world: Option<NativeWorldId>,
+    /// The head of the bed the player sleeps in, as the server says
+    /// (`LivingEntity.getSleepingPos`). API @API:session_state@.
+    pub sleeping_pos: Option<[i32; 3]>,
+}
+
+/// What covers the world, in the kinds a HUD tells apart (vanilla's
+/// `Minecraft.screen`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NativeScreenKind {
+    /// No screen: the world is played.
+    #[default]
+    Playing,
+    /// The chat box (`ChatScreen`), which a minimap still draws under.
+    Chat,
+    /// The death screen (`DeathScreen`).
+    Death,
+    /// Any other: the pause menu, an inventory or container, a sign, book,
+    /// dialog or prompt, the loading screen, the title's screens.
+    Other,
+}
+
+impl NativeScreenKind {
+    /// `covered`: a screen Horizon keeps outside `Screen` is up over it.
+    fn of(screen: Screen, covered: bool) -> Self {
+        match screen {
+            _ if covered => Self::Other,
+            Screen::Playing => Self::Playing,
+            Screen::Chat => Self::Chat,
+            Screen::Dead => Self::Death,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// The world this window plays, for a mod that keeps data per world, as
+/// Xaero's minimap and JourneyMap do. A later Horizon may add kinds.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum NativeWorldId {
+    /// Single player, its LAN host and splitscreen seats: the save's folder
+    /// in `saves/`, not its shown name.
+    Singleplayer(String),
+    /// A server, a LAN world joined included: its address as the player
+    /// joined it (`mc.example.com:25565`). A friend's world is `friend:` and
+    /// what its invite shows anyone (its host's addresses and its relay
+    /// nameplate), never the invite's secret.
+    Server(String),
+}
+
+impl NativeWorldId {
+    /// `save` is set for single player's world joined through memory.
+    fn of(save: Option<&str>, address: &str) -> Self {
+        match (save, address.strip_prefix(FRIEND)) {
+            (Some(folder), _) => Self::Singleplayer(folder.to_owned()),
+            (None, Some(code)) => Self::Server(format!("{FRIEND}{}", invite_public_part(code))),
+            (None, None) => Self::Server(address.to_owned()),
+        }
+    }
+}
+
+/// The part of a friend's invite anyone may see. A host's code is fresh each
+/// time it shares, so a friend's world is known for that sharing only. The
+/// relay is kept beside the addresses: two hosts on other networks can share
+/// a private address and the fixed direct port.
+fn invite_public_part(code: &str) -> String {
+    match invite::parse(code) {
+        Some(Parsed::Short(code)) => code.nameplate,
+        Some(Parsed::Long(invite)) => {
+            let relay = invite
+                .relay
+                .map(|r| format!("{}/{}", r.address, r.code.nameplate));
+            let endpoints = invite.endpoints.iter().map(SocketAddr::to_string);
+            endpoints.chain(relay).collect::<Vec<_>>().join(",")
+        }
+        None => String::new(),
+    }
 }
 
 /// A living entity known to the client, before interpolation. No authoritative writes.
@@ -150,6 +236,20 @@ impl Game<'_> {
             yaw: self.yaw,
             pitch: self.pitch,
             menu_blur: self.settings.menu_blur as f32,
+            screen: NativeScreenKind::of(
+                self.screen,
+                self.title.is_some()
+                    || self.screen_over_playing()
+                    || self.remote_screen_up()
+                    || self.pack_reload.is_some(),
+            ),
+            debug_screen: self.debug,
+            world: self
+                .remote
+                .as_ref()
+                .filter(|r| r.logged_in)
+                .map(|r| NativeWorldId::of(r.save_folder.as_deref(), &r.session.address)),
+            sleeping_pos: self.sleeping,
         })
     }
     /// Bulk client render data. Unlike EntityRef, this snapshot expires independently of handles.
@@ -440,7 +540,90 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::NativeClientEntity;
+    use super::*;
+    use horizon_friends::code::Code;
+
+    #[test]
+    fn a_world_is_its_save_in_single_player_and_its_address_on_a_server() {
+        assert_eq!(
+            NativeWorldId::of(Some("New World"), "local"),
+            NativeWorldId::Singleplayer("New World".into())
+        );
+        assert_eq!(
+            NativeWorldId::of(None, "mc.example.com:25565"),
+            NativeWorldId::Server("mc.example.com:25565".into())
+        );
+    }
+
+    #[test]
+    fn friends_worlds_are_told_apart_by_their_hosts_never_by_their_secrets() {
+        const PORT: u16 = 50000;
+        const RELAY: &str = "relay.example.com:443";
+        // A short code: its nameplate, then its secret.
+        let short = |nameplate: &str, secret: &str| Code {
+            nameplate: nameplate.into(),
+            secret: secret.into(),
+        };
+        let invite = |secret: u8, host: &str, relay: Option<Code>| {
+            let code = invite::Invite {
+                secret: [secret; invite::SECRET],
+                port: PORT,
+                endpoints: vec![format!("{host}:{PORT}").parse().unwrap()],
+                relay: relay.map(|code| invite::RelayRef {
+                    address: RELAY.into(),
+                    code,
+                }),
+            }
+            .encode();
+            NativeWorldId::of(None, &format!("{FRIEND}{code}"))
+        };
+        assert_ne!(
+            invite(1, "192.168.1.5", None),
+            invite(1, "192.168.1.6", None),
+            "two friends"
+        );
+        assert_ne!(
+            invite(1, "192.168.1.5", Some(short("ABCD", "WXYZ"))),
+            invite(1, "192.168.1.5", Some(short("EFGH", "WXYZ"))),
+            "two friends on other networks behind the same private address"
+        );
+        assert_eq!(
+            invite(1, "192.168.1.5", Some(short("ABCD", "WXYZ"))),
+            invite(2, "192.168.1.5", Some(short("ABCD", "QRST"))),
+            "the invite's and the relay code's secrets take no part"
+        );
+        let typed = |code: Code| NativeWorldId::of(None, &format!("{FRIEND}{code}"));
+        assert_eq!(typed(short("ABCD", "WXYZ")), typed(short("ABCD", "QRST")));
+        assert_eq!(
+            typed(short("ABCD", "WXYZ")),
+            NativeWorldId::Server(format!("{FRIEND}ABCD"))
+        );
+    }
+
+    #[test]
+    fn a_hud_tells_chat_and_death_from_other_screens() {
+        assert_eq!(
+            NativeScreenKind::of(Screen::Playing, false),
+            NativeScreenKind::Playing
+        );
+        assert_eq!(
+            NativeScreenKind::of(Screen::Chat, false),
+            NativeScreenKind::Chat
+        );
+        assert_eq!(
+            NativeScreenKind::of(Screen::Dead, false),
+            NativeScreenKind::Death
+        );
+        assert_eq!(
+            NativeScreenKind::of(Screen::Inventory, false),
+            NativeScreenKind::Other
+        );
+        assert_eq!(
+            NativeScreenKind::of(Screen::Chat, true),
+            NativeScreenKind::Other,
+            "a sign or dialog over chat covers the world"
+        );
+    }
 
     #[test]
     fn an_entity_is_drawn_between_its_last_two_tick_positions() {

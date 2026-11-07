@@ -260,6 +260,21 @@ impl Game<'_> {
     /// Nothing here is a key — the caller drops control characters. `Err` when
     /// no text box of the screen takes them.
     pub(super) fn type_chars_into_screen(&mut self, text: &str) -> Result<()> {
+        // Overlays own the input even when a text box remains focused behind them.
+        if self.dialog_open() {
+            self.dialog_type(text);
+            return Ok(());
+        }
+        if self.prompt_open() {
+            return Ok(());
+        }
+        if let Some(result) = self.type_text_field_input(text) {
+            return result;
+        }
+        self.type_chars_unhooked(text)
+    }
+
+    pub(super) fn type_chars_unhooked(&mut self, text: &str) -> Result<()> {
         if self.book.is_some() {
             self.book_type(text);
             return Ok(());
@@ -1015,6 +1030,12 @@ impl Game<'_> {
                 // key event fires it. A cancelled character is dropped, so
                 // `type` types the survivors only.
                 // `\b` is the socket's backspace sentinel, not two characters.
+                if text != "\\b"
+                    && let Some(result) = self.type_text_field_input(text)
+                {
+                    result?;
+                    return ok();
+                }
                 let typed = if text == "\\b" {
                     text.to_owned()
                 } else {
