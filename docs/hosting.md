@@ -370,7 +370,7 @@ it is. Nothing restarts: the report runs beside the game.
 The same command also writes `reports/profile-<time>Z.hzperf`, a capture the performance tools read
 ([perf-platform.md](perf-platform.md)): the settings and machine, the health history from before it (TPS and
 MSPT over the last 10 minutes to 7 days), a sample each second, the counters and the slow ticks with their steps.
-It prints the file's path and where to open it. Past 30 files or 1 GiB the oldest `profile-*.hzperf` is deleted;
+`horizon-server report` prints only that path and address; the text summary stays in `perf-<time>.txt`. Past 30 files or 1 GiB the oldest `profile-*.hzperf` is deleted;
 a file you renamed is never touched. `--no-samples` is accepted (the call-tree samples arrive with a later piece).
 
 To see a slow stretch tick by tick, `horizon-trace [SECONDS]` (30 by default, up to 300) writes every thread's timed
