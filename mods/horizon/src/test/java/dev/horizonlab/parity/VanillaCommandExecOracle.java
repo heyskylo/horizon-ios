@@ -836,6 +836,14 @@ public final class VanillaCommandExecOracle {
                             }
                         }
                     }
+                    case "boat_interact" -> {
+                        var boat = level.getEntity(UUID.fromString(op.get("uuid").getAsString()));
+                        if (!(boat instanceof net.minecraft.world.entity.vehicle.boat.AbstractBoat))
+                            throw new IllegalStateException("boat click: missing live boat");
+                        player.connection.handleInteract(new net.minecraft.network.protocol.game.ServerboundInteractPacket(
+                            boat.getId(), net.minecraft.world.InteractionHand.MAIN_HAND,
+                            net.minecraft.world.phys.Vec3.ZERO, false));
+                    }
                     case "use_item" -> {
                         if (!op.has("sequence")) {
                             player.gameMode.useItem(player, player.level(), player.getMainHandItem(),
