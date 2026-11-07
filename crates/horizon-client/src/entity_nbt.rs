@@ -7876,10 +7876,9 @@ mod shulker_bullet_nbt_tests {
         );
     }
 
-    /// A bullet with no target — a `/summon`ed one, or one loaded without its
-    /// target — writes no `Target` key at all, as vanilla's
-    /// `if (this.finalTarget != null)` does, and no `Dir` until it has chosen a
-    /// step. `Steps` and the deltas are always written, zero or not.
+    /// `ShulkerBullet.readAdditionalSaveData`: `Dir` goes through
+    /// `Direction.from3DDataValue`, which wraps any byte, and `Steps` is read
+    /// as saved, negative or not.
     #[test]
     fn a_loaded_dir_wraps_and_steps_keep_their_sign() {
         // `Direction.from3DDataValue(b)` is `BY_3D_DATA[abs(b % 6)]`, and
@@ -7901,6 +7900,10 @@ mod shulker_bullet_nbt_tests {
         }
     }
 
+    /// A bullet with no target — a `/summon`ed one, or one loaded without its
+    /// target — writes no `Target` key at all, as vanilla's
+    /// `if (this.finalTarget != null)` does, and no `Dir` until it has chosen a
+    /// step. `Steps` and the deltas are always written, zero or not.
     #[test]
     fn a_bullet_without_a_target_writes_no_target_key() {
         let bare = Tag::compound([
