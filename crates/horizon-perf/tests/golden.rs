@@ -149,6 +149,7 @@ fn client_fields() -> Vec<Field> {
             dropped_samples: 3,
             dropped_messages: 1,
             timeline_stopped_t: Some(9.5),
+            ..Default::default()
         }),
     }));
     fields

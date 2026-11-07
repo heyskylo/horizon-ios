@@ -433,6 +433,17 @@ Notes on fields:
   - `WorstUnit.spans` is the whole span tree, parents before children, with `depth`.
   - `PlayerTraffic` arrays start at the capture's start; a block before the player joined is 0.
   - `MemorySnapshot.value_mb` holds MB when the path's last key (before any `[name]`) ends in `_mb`, otherwise a count.
+- What the dedicated server fills (S1b):
+  - `span_blocks` and `spans` are for the thread `Server thread`, in blocks of 5 s from the capture's start. A tick's
+    spans are merged by (name, parent name); `Histogram.edges_ms` is fixed in the server (`server_perf/spans.rs`).
+  - `net` counts the wire bytes of each connection once a second and leaves `packets_in` and `packets_out` empty,
+    because the hub does not count packets yet.
+  - `world` has the labels `start` and `stop`; `entity_costs` and `workers` come at the stop. Loose entities are
+    counted as `minecraft:item`, `minecraft:experience_orb`, `minecraft:minecart` and `minecraft:boat`, and all
+    projectiles together as `horizon:projectile`.
+  - `Start.game_rules` and `Start.horizon_options` are the allowlists in `capture.proto`; a field is added there
+    when a switch starts to matter for what a tick costs.
+  - `Overhead.mob_timing_ms_per_tick` and `mob_timing_share` price the mob tick sampling next to `spans_*`.
 - `horizon-perf query` rounds numbers to 3 decimals. `spans --slow` averages over the slow ticks; `ticks` and `tick`
   prefer a unit's whole tree from `spans.worst` over the 8 largest spans of `slow` and `slow_history`.
 

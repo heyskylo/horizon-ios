@@ -355,25 +355,26 @@ samples them for everyone in turn, behind the ticks, so far terrain never slows 
 distance or over a player's limits is refused, and a client that keeps breaking the limits is disconnected.
 Tiles are sampled again for each player who asks (there is no cache yet). Vanilla clients never hear of it.
 
-`horizon-server report` records the running server for 60 seconds (`report 300` for five minutes, up to 600),
-then prints a short summary and saves it in `reports/`: `perf-<time>.txt` and `perf-<time>.json`. They say where
-the ticks' time went, phase by phase (mobs, block ticks, block entities, the network and the chunks it
-sends, saving...), the slowest ticks, how many entities of each type, chunks, players, memory, CPU, and the
-settings that matter (view and simulation distance, max players). Since format 2 they also give each dimension's
-share of the tick (`level_*`), what each mob type costs per dimension (one tick in four times every mob: ms a
-tick, mobs, µs a mob), the chunk workers' CPU by job (load, generate, decorate, finish, light), the network bytes
-a player sends and receives, and what recording cost the tick (measured, usually well under 1 % of MSPT). They
-hold no names, UUIDs or addresses, so you can attach them to an issue as they are. On the console it is
-`horizon-report [SECONDS]`; `horizon-report stop` writes the report now and `horizon-report status` says how far
-it is. Nothing restarts: the report runs beside the game.
+`horizon-server report` records the running server for 60 seconds (`report 300` for five minutes, up to 600) into
+`reports/profile-<time>Z.hzperf`, a capture the performance tools read ([perf-platform.md](perf-platform.md)), and
+prints where it went. On the console it is `horizon-report [SECONDS]`; `horizon-report stop` ends it now and
+`horizon-report status` says how far it is. Nothing restarts: the report runs beside the game.
 
-The same command also writes `reports/profile-<time>Z.hzperf`, a capture the performance tools read
-([perf-platform.md](perf-platform.md)): the settings and machine, the health history from before it (TPS and
-MSPT over the last 10 minutes to 7 days), a sample each second, the counters and the slow ticks with their steps.
-`horizon-server report` prints only that path and address; the text summary stays in `perf-<time>.txt`. Past 30 files or 1 GiB the oldest `profile-*.hzperf` is deleted;
-a file you renamed is never touched. On Linux the tick thread is also sampled 250 times a second (about 0.05 % of the tick
-thread), and the capture holds where the CPU time went, by function and by what the server was doing (step, entity type, block,
-dimension, chunk); `--no-samples` leaves that out. Finishing the file after the window can take a few seconds and does not stall ticks.
+The capture holds the settings, the machine, the Horizon switches and the few game rules that change what a tick
+costs, the health history from before it (TPS and MSPT over the last 10 minutes to 7 days), a sample each second,
+the counters and the slow ticks with their steps. It says where the ticks' time went, phase by phase (mobs, block
+ticks, block entities, the network and the chunks it sends, saving...), in blocks of five seconds and as totals,
+with each dimension's share of the tick (`level_*`) and the 16 slowest ticks with their whole step tree. It counts
+the chunks, entities and block entities of each dimension at the start and at the end, and gives what each mob type
+costs per dimension (one tick in four times every mob: ms a tick, mobs, µs a mob), the chunk workers' CPU by job
+(load, generate, decorate, finish, light), the bytes each player sends and receives in each block, and what recording
+cost the tick (measured, usually well under 1 % of MSPT). It holds no names, UUIDs or addresses (players are
+numbered in the order they joined), no seed and no world name, so you can attach it to an issue as it is. Past 30
+files or 1 GiB the oldest `profile-*.hzperf` is deleted; a file you renamed is never touched. On Linux the tick thread is also sampled 250 times a second (about 0.05 % of the tick thread), and the capture
+holds where the CPU time went, by function and by what the server was doing (step, entity type, block, dimension,
+chunk); `--no-samples` leaves that out. Finishing the file after the window can take a few seconds and does not stall
+ticks. The old `perf-<time>.json` and `.txt` files are no
+longer written; the ones already in `reports/` stay.
 
 To see a slow stretch tick by tick, `horizon-trace [SECONDS]` (30 by default, up to 300) writes every thread's timed
 steps to `reports/trace-<time>.json`; [ui.perfetto.dev](https://ui.perfetto.dev) opens it as a timeline, one row per

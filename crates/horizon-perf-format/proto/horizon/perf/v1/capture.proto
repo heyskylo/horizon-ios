@@ -181,11 +181,27 @@ message Settings {
   optional int32 network_compression_threshold = 4;
 }
 
-// Typed allowlist of game rules; its fields are added by the pieces that fill it.
-message GameRules {}
+// Typed allowlist of the game rules that change what a tick costs; never the world's whole rule set.
+message GameRules {
+  optional int32 random_tick_speed = 1;
+  optional int32 max_entity_cramming = 2;
+  // -1 spreads fire everywhere.
+  optional int32 fire_spread_radius_around_player = 3;
+  optional bool advance_time = 4;
+  optional bool mob_griefing = 5;
+  optional bool spawn_mobs = 6;
+  optional bool spawn_monsters = 7;
+  optional bool spawner_blocks_work = 8;
+}
 
-// Typed allowlist of Horizon switches, boolean or numeric; its fields are added by the pieces that fill it.
-message HorizonOptions {}
+// Typed allowlist of the Horizon switches that change what a tick costs, boolean or numeric.
+message HorizonOptions {
+  // The far ring's distance in chunks; 0 when off.
+  optional uint32 max_view_distance = 1;
+  // How far the server serves LOD tiles, in chunks; 0 when off.
+  optional uint32 lod_distance = 2;
+  optional bool anticheat = 3;
+}
 
 enum ModKind {
   MOD_KIND_UNSPECIFIED = 0;
@@ -352,6 +368,10 @@ message Overhead {
   uint64 dropped_messages = 6;
   // Set when the timeline stopped early.
   optional double timeline_stopped_t = 7;
+  // Timing the mobs' ticks (one tick in four), priced on this machine at the end.
+  float mob_timing_ms_per_tick = 8;
+  // Share of the tick thread.
+  float mob_timing_share = 9;
 }
 
 // Per thread, per block of block_s (default 5 s); span[i] ran under parent[i] (string ids, 0 for a root).
@@ -450,7 +470,7 @@ message TypeCount {
 }
 
 message DimensionCounts {
-  // String id of the dimension, for example overworld.
+  // String id of the dimension's registry id, for example minecraft:overworld.
   uint32 dimension = 1;
   uint32 chunks = 2;
   repeated TypeCount entities = 3;
@@ -483,6 +503,7 @@ message PlayerTraffic {
   optional double left_t = 3;
   repeated uint64 bytes_in = 4;
   repeated uint64 bytes_out = 5;
+  // Empty on a side that does not count packets.
   repeated uint32 packets_in = 6;
   repeated uint32 packets_out = 7;
 }
