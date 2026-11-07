@@ -161,14 +161,7 @@ impl Game<'_> {
             self.spawn_trader_llama(id, 4);
         }
         if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-            m.extra.ints[5] = trader::DESPAWN_DELAY;
-            m.extra.point = Some([
-                f64::from(reference[0]),
-                f64::from(reference[1]),
-                f64::from(reference[2]),
-            ]);
-            m.extra.home = Some(reference);
-            m.extra.ints[4] = 16;
+            trader::start_visit(m, reference);
         }
         true
     }

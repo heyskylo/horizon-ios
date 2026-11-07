@@ -80,6 +80,38 @@ pub struct Ids {
     pub dropped_components: &'static [(u16, &'static str)],
     /// EntityDataSerializers' registration order (not a registry).
     pub entity_data_serializer: Remap,
+    /// What a client of the older version is shown in place of pinned entries it lacks.
+    pub substitutes: Substitutes,
+}
+
+/// For a server sending to an older client: pinned entries the older version lacks, each with the pinned
+/// entry that stands in for it there, as runs `(from, to, length)` in the pinned numbering (a stand-in is
+/// one the older version has). An entry in no run has none: what carries it is dropped or emptied.
+#[derive(Clone, Copy, Debug)]
+pub struct Substitutes {
+    pub block_state: &'static [(u16, u16, u16)],
+    pub block: &'static [(u16, u16, u16)],
+    pub item: &'static [(u16, u16, u16)],
+    pub entity_type: &'static [(u16, u16, u16)],
+    pub particle_type: &'static [(u16, u16, u16)],
+    pub sound_event: &'static [(u16, u16, u16)],
+}
+impl Substitutes {
+    pub const NONE: Self = Self {
+        block_state: &[],
+        block: &[],
+        item: &[],
+        entity_type: &[],
+        particle_type: &[],
+        sound_event: &[],
+    };
+}
+
+/// The older version's id of the pinned `id`, or of the entry standing in for it there (`substitutes`).
+pub fn down_or_substitute(remap: Remap, substitutes: &[(u16, u16, u16)], id: i32) -> Option<i32> {
+    remap
+        .down(id)
+        .or_else(|| remap.down(lookup(substitutes, id)?))
 }
 
 /// Layout differences inside structures the pinned readers decode while ids are renumbered up.
@@ -171,9 +203,15 @@ fn apply(id: i32, pick: impl Fn(&Ids) -> Remap) -> i32 {
     }
 }
 
-/// An item id as read or about to be written on this thread.
+/// An item id as read or about to be written on this thread. Written for an older client, an item it
+/// lacks becomes its stand-in.
 pub fn item(id: i32) -> i32 {
-    apply(id, |ids| ids.item)
+    match ACTIVE.get() {
+        Some((ids, Way::Down)) => {
+            down_or_substitute(ids.item, ids.substitutes.item, id).unwrap_or(-1)
+        }
+        _ => apply(id, |ids| ids.item),
+    }
 }
 /// A data component type id as read or about to be written on this thread.
 pub fn component(id: i32) -> i32 {
