@@ -144,6 +144,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | `stats [reset] [raw]` | `stats` | Frame-time summary since the last reset | `reset` (boolean): start counting again<br>`raw` (boolean): every frame time too (frame_ms, cpu_ms, gpu_ms) |
 | `gpu-passes [on\|off]` | CLI only | Time Horizon's own render passes on the GPU, shown in F3 and in stats and bench | `mode` (on, off): on or off; without it, only reports |
 | `trace [FILE [SECONDS] \| stop]` | CLI only | Write every thread's timed spans to FILE as a timeline that ui.perfetto.dev opens, for SECONDS or until stop | none |
+| `screenshot-sequence FRAMES STEP_MS PATH\|cancel` | CLI only | Draw a shader pack's first FRAMES frames on a set clock and write the last as a PNG | `frames` (string, required): frames to draw, 1 to 10000, or cancel<br>`step_ms` (number): milliseconds between frames on the pack's clock, more than 0 (16.666667 for 60 fps)<br>`path` (text): the PNG to write |
 | `render-capture on\|off\|DIR` | CLI only | Keep CPU copies of the meshes the renderer draws (on), or write the next frame's scene to DIR for the scene_replay example | none |
 | `fly X1 Y1 Z1 X2 Y2 Z2 SECONDS [PITCH [raw]]` | CLI only | Fly the camera along a line, then reply with the frame summary | none |
 | `record-start [NAME] [--no-world]` | `record_start` | Record input, state and the world for a bug repro | `name` (string): folder name after the timestamp (default session)<br>`--no-world` (boolean): do not copy the world (a server session) |

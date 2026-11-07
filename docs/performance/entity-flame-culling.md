@@ -9,8 +9,9 @@ numerical slack and all yaw rotations covered. Invalid/unusual dimensions keep t
 
 Mobs (including charged blazes), dropped items, armor stands and the visible local body use
 the gate before light lookup. Fire simulation, damage, dynamic lights and visible flame geometry
-are unchanged. Native mods do not disable the optimization. Shader packs and TAA keep the
-original path; TAA's jittered projection can extend beyond this camera frustum. This is
+are unchanged. Native mods do not disable the optimization. Shader packs keep the original
+path. Under TAA the gate uses a frustum widened by one rendered pixel per side, which covers
+every jitter phase (`taa_frustum` in gfx.rs). This is
 automatic preparation culling without a new setting.
 
 ## Measurement
@@ -52,8 +53,8 @@ visible flames in the reference scene.
 Five baseline/candidate comparisons at 1280×720 were identical: front, above the body,
 the same edge with OIT enabled, a side view, and behind. Unit tests bound actual emitted
 vertices for seven dimensions, three scales, 24 yaws and cameras near the world border,
-and verify that unsupported dimensions retain the original path. Shader-pack/TAA paths bypass
-the optimization; no shader-pack or TAA rendering gain is claimed.
+and verify that unsupported dimensions retain the original path. Shader-pack paths bypass
+the optimization; no shader-pack rendering gain is claimed.
 
 Armor-stand flame reception is not used as a benchmark: an existing shared-flag decoding gap
 in `remote_objects.rs` ignores its burning bit. This change does not address that separate bug.

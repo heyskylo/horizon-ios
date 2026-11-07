@@ -33,7 +33,7 @@ queue (the hub, or `/suggest` on Discord) rather than to issues, which are for b
 Wherever vanilla has a feature, vanilla is the specification, down to the order of random calls. "Parity" here means
 Horizon gives the same results as the pinned 26.3 client and server for the same inputs, checked by a **harness**: a
 `tools/test_*_parity.py` script that runs a small Java oracle against the real game and a Rust probe against Horizon,
-and compares their outputs. There are about 290 of them.
+and compares their outputs.
 
 - **Read the vanilla code before writing Horizon's.** `tools/rea_vanilla.py` queries the pinned game bytecode:
   `python3 tools/rea_vanilla.py method net.minecraft.world.level.block.DispenserBlock dispenseFrom`.
