@@ -5399,6 +5399,7 @@ mod tests {
                 latency: Arc::new(std::sync::atomic::AtomicI32::new(0)),
                 address: "127.0.0.1:25566".parse().unwrap(),
                 expected: false,
+                configured: Default::default(),
             },
             2,
             [0.5, 64.0, 0.5],
