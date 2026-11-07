@@ -437,14 +437,15 @@ impl FixedStep {
     /// `TickRateManager.tick` for one tick, then whether the world runs
     /// (`runsNormally`). Also the sprint check that opens a sprint tick.
     pub fn world_runs(&mut self) -> bool {
+        // MinecraftServer checks for a finished sprint before tickServer
+        // asks the tick-rate manager whether the levels should run.
+        if self.manager.is_sprinting() && self.manager.remaining_sprint_ticks() == 0 {
+            self.sprint_report = Some(self.manager.finish_tick_sprint());
+        }
         self.manager.base.tick();
         self.sprint_checked = false;
         if self.manager.is_sprinting() {
-            let (_, report) = self.manager.check_should_sprint_this_tick(self.now_ns());
-            self.sprint_checked = report.is_none();
-            if report.is_some() {
-                self.sprint_report = report;
-            }
+            self.sprint_checked = self.manager.check_should_sprint_this_tick(self.now_ns()).0;
         }
         self.manager.base.runs_normally()
     }
@@ -576,6 +577,25 @@ mod tests {
         }
         m.base.tick();
         assert!(!m.base.runs_normally());
+    }
+    #[test]
+    fn a_finished_sprint_restores_freeze_before_the_next_world_tick() {
+        for was_frozen in [false, true] {
+            let mut clock = FixedStep::default();
+            clock.set_frozen(was_frozen);
+            assert_eq!(clock.world_runs(), !was_frozen);
+
+            assert!(!clock.start_sprint(1));
+            assert!(clock.world_runs());
+            assert!(!clock.frozen());
+            assert!(clock.take_sprint_report().is_none());
+
+            assert_eq!(clock.world_runs(), !was_frozen);
+            assert_eq!(clock.frozen(), was_frozen);
+            assert!(clock.take_sprint_report().is_some());
+            assert_eq!(clock.world_runs(), !was_frozen);
+            assert!(clock.take_sprint_report().is_none());
+        }
     }
     #[test]
     fn the_camera_keeps_interpolating_in_a_frozen_level() {

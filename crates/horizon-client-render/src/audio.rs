@@ -856,27 +856,50 @@ fn cards_changed(seen: Option<&str>, cards: Option<&str>) -> bool {
     }
 }
 
+/// The buffer size to request for `open_device`. On Linux the ALSA backend's
+/// `BufferSize::Default` means a ~100 ms buffer, so sound effects come out
+/// about 100 ms late: request a short fixed buffer (1024 frames) by default.
+/// An environment override `HORIZON_AUDIO_BUFFER` can specify `default` or a
+/// custom frame count (e.g. 2048) when the default short buffer underruns
+/// (e.g. PipeWire min-quantum >= 1024).
+#[cfg(feature = "audio")]
+fn target_buffer_size(
+    range: (u32, u32),
+    var: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Option<cpal::BufferSize> {
+    if let Some(val) = var("HORIZON_AUDIO_BUFFER").and_then(|v| v.into_string().ok()) {
+        if val == "default" {
+            return Some(cpal::BufferSize::Default);
+        }
+        if let Ok(frames) = val.parse::<u32>() {
+            return Some(cpal::BufferSize::Fixed(frames.clamp(range.0, range.1)));
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Some(cpal::BufferSize::Fixed(1024u32.clamp(range.0, range.1)))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
 /// The cpal `StreamConfig` to open an output stream with. On Linux the ALSA
 /// backend's `BufferSize::Default` means a ~100 ms buffer, so sound effects
 /// come out about 100 ms late: request a short fixed buffer there. Other
 /// platforms keep cpal's default behaviour.
 #[cfg(feature = "audio")]
 fn audio_stream_config(config: &cpal::SupportedStreamConfig) -> cpal::StreamConfig {
-    #[cfg(target_os = "linux")]
-    {
-        let range = match config.buffer_size() {
-            cpal::SupportedBufferSize::Range { min, max } => (*min, *max),
-            cpal::SupportedBufferSize::Unknown => (256, 4096),
-        };
-        let target = 1024u32.clamp(range.0, range.1);
-        let mut sc = config.config();
-        sc.buffer_size = cpal::BufferSize::Fixed(target);
-        sc
+    let mut sc = config.config();
+    let range = match config.buffer_size() {
+        cpal::SupportedBufferSize::Range { min, max } => (*min, *max),
+        cpal::SupportedBufferSize::Unknown => (256, 4096),
+    };
+    if let Some(bs) = target_buffer_size(range, |name| std::env::var_os(name)) {
+        sc.buffer_size = bs;
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        config.config()
-    }
+    sc
 }
 
 #[cfg(feature = "audio")]
@@ -1803,6 +1826,42 @@ mod tests {
         assert!(
             output_disabled(env(&[("HORIZON_NO_AUDIO", "1"), ("HORIZON_AUDIO", "1")])).is_some()
         );
+    }
+    #[test]
+    #[cfg(feature = "audio")]
+    fn buffer_size_override_and_defaults() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                pairs
+                    .iter()
+                    .find(|(k, _)| *k == name)
+                    .map(|(_, v)| std::ffi::OsString::from(*v))
+            }
+        };
+        let range = (256, 4096);
+        assert_eq!(
+            target_buffer_size(range, env(&[("HORIZON_AUDIO_BUFFER", "default")])),
+            Some(cpal::BufferSize::Default)
+        );
+        assert_eq!(
+            target_buffer_size(range, env(&[("HORIZON_AUDIO_BUFFER", "2048")])),
+            Some(cpal::BufferSize::Fixed(2048))
+        );
+        assert_eq!(
+            target_buffer_size(range, env(&[("HORIZON_AUDIO_BUFFER", "100")])),
+            Some(cpal::BufferSize::Fixed(256))
+        );
+        assert_eq!(
+            target_buffer_size(range, env(&[("HORIZON_AUDIO_BUFFER", "10000")])),
+            Some(cpal::BufferSize::Fixed(4096))
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            target_buffer_size(range, env(&[])),
+            Some(cpal::BufferSize::Fixed(1024))
+        );
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(target_buffer_size(range, env(&[])), None);
     }
     #[test]
     fn linear_attenuation_reaches_zero_at_the_max_distance() {
