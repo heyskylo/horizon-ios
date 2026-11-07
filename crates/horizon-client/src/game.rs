@@ -15326,7 +15326,7 @@ impl Game<'_> {
         let render_distance_changed = self.streaming.radius != self.settings.render_distance;
         self.streaming.radius = self.settings.render_distance;
         // Options.renderDistance, biomeBlendRadius, ambientOcclusion,
-        // cutoutLeaves and the leaf-culling mode: LevelRenderer.allChanged
+        // cutoutLeaves and the leaf-culling mode: LevelExtractor.allChanged
         // when they change.
         let leaf_culling = self.effective_leaf_culling();
         let (s, st) = (&self.settings, &self.streaming);
@@ -15367,7 +15367,7 @@ impl Game<'_> {
             self.all_sections_changed();
         }
     }
-    /// `LevelRenderer.allChanged`: displayed sections and mesh work are
+    /// `LevelExtractor.allChanged`: displayed sections and mesh work are
     /// discarded, then every loaded section is rebuilt.
     fn all_sections_changed(&mut self) {
         self.clear_lod();

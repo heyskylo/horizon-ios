@@ -1126,21 +1126,21 @@ impl Streaming {
     pub fn lod_source(&self) -> Arc<dyn LodSource> {
         self.saves.clone()
     }
-    /// Resource packs reloaded (`LevelRenderer.allChanged`): mesh with the new
+    /// Resource packs reloaded (`LevelExtractor.allChanged`): mesh with the new
     /// models and sprites, and rebuild every loaded section. Meshes in flight
     /// were made with the old resources; their results are dropped.
     pub fn reload_resources(&mut self, world: &mut World, context: Arc<WorkerContext>) {
         *self.shared.context.write().unwrap() = context;
         self.reload_sections(world);
     }
-    /// `LevelRenderer.allChanged`: discard mesh work made before the reload and
+    /// `LevelExtractor.allChanged`: discard mesh work made before the reload and
     /// rebuild every loaded, lit section.
     pub fn reload_sections(&mut self, world: &mut World) {
         self.meshing.clear();
         self.compile_started.clear();
         Self::mark_loaded_sections_dirty(world, &self.lit);
     }
-    /// The resident sections `LevelRenderer.allChanged` queues again. An
+    /// The resident sections `LevelExtractor.allChanged` queues again. An
     /// unlit column will queue itself when its light job completes.
     fn mark_loaded_sections_dirty(world: &mut World, lit: &FxHashSet<(i32, i32)>) {
         for &(x, z) in world.chunks.keys() {

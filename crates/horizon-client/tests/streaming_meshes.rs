@@ -118,7 +118,7 @@ fn columns_loaded_past_the_render_distance_mesh_when_they_come_in_range() {
     };
     assert_eq!(all_in_range(&meshed), 49);
 
-    // `LevelRenderer.allChanged` (F3+A and a changed render distance) drops
+    // `LevelExtractor.allChanged` (F3+A and a changed render distance) drops
     // every displayed section. Streaming must produce all of them again.
     meshed.clear();
     streaming.reload_sections(&mut world);
