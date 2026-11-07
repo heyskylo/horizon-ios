@@ -179,12 +179,54 @@ pub(super) fn player_json(world: &Path, dir: &str, uuid: [i32; 4]) -> PathBuf {
     );
     world.join("players").join(dir).join(format!("{text}.json"))
 }
+/// `FileUtil.isValidPathSegment`: not `.` or `..`, and only the characters
+/// `[-._a-z0-9]`. A player name with a capital letter in it is refused like any
+/// other segment vanilla would not write to disk.
+fn valid_path_segment(segment: &str) -> bool {
+    segment != "."
+        && segment != ".."
+        && segment.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'.' | b'_')
+        })
+}
+
+/// `PlayerList.locateStatsFile`: the player's stats file, with the one an older
+/// version named after the player (`stats/<name>.json`) moved to the uuid file the
+/// first time it is asked for. A uuid file that is already there wins, and a move
+/// that fails leaves the old one in place.
+pub(super) fn locate_player_json(world: &Path, dir: &str, uuid: [i32; 4], name: &str) -> PathBuf {
+    let uuid_file = player_json(world, dir, uuid);
+    if uuid_file.exists() {
+        return uuid_file;
+    }
+    let file = format!("{name}.json");
+    if !valid_path_segment(&file) {
+        return uuid_file;
+    }
+    let named = uuid_file.with_file_name(&file);
+    if !named.is_file() {
+        return uuid_file;
+    }
+    match std::fs::rename(&named, &uuid_file) {
+        Ok(()) => uuid_file,
+        Err(e) => {
+            log::warn!(
+                "Horizon: failed to move the {} file {} to {}: {e}",
+                dir,
+                named.display(),
+                uuid_file.display()
+            );
+            named
+        }
+    }
+}
 impl Game<'_> {
     fn stats_path(&self) -> Option<PathBuf> {
-        Some(player_json(
+        Some(locate_player_json(
             &self.world_root,
             "stats",
             self.level.player_uuid?,
+            &self.options.player_name(),
         ))
     }
     /// `ServerStatsCounter.parseLocal`.
