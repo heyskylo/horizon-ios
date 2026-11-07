@@ -409,11 +409,15 @@ impl Game<'_> {
             _ => OmenTick::Continue,
         }
     }
-    /// The Raid Omen sound when the effect is first added.
+    /// The Raid Omen sound when the effect is first added
+    /// (`MobEffect.onEffectAdded`: at the player's feet).
     pub(super) fn raid_omen_added(&mut self) {
-        let eye = self.eye_position().unwrap_or_default();
+        let Some(p) = self.player.as_ref() else {
+            return;
+        };
+        let at = [p.position.x, p.position.y, p.position.z];
         self.audio
-            .play("minecraft:event.mob_effect.raid_omen", Some(eye), 1.0, 1.0);
+            .play("minecraft:event.mob_effect.raid_omen", Some(at), 1.0, 1.0);
     }
     /// `Raids.createOrExtendRaid`: not for spectators, with the `raids` rule
     /// and where raids may start; the raid centres on the occupied village
@@ -1462,10 +1466,12 @@ impl Game<'_> {
         let new = self.potions.effects.get("bad_omen").is_none();
         self.potions.effects.add(effect);
         let eye = self.eye_position().unwrap_or_default();
-        // MobEffect.onEffectAdded: Bad Omen's sound when it is new.
-        if new {
+        // MobEffect.onEffectAdded: Bad Omen's sound when it is new, at the
+        // player's feet.
+        if new && let Some(p) = self.player.as_ref() {
+            let at = [p.position.x, p.position.y, p.position.z];
             self.audio
-                .play("minecraft:event.mob_effect.bad_omen", Some(eye), 1.0, 1.0);
+                .play("minecraft:event.mob_effect.bad_omen", Some(at), 1.0, 1.0);
         }
         self.audio
             .play("minecraft:item.ominous_bottle.dispose", Some(eye), 1.0, 1.0);
