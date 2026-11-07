@@ -2,6 +2,7 @@
 //! block entity and storage data accessors over the game state.
 use super::{Arg, Context, Game, R, Target, err};
 use horizon_client::{
+    containers::BlockEntity,
     data_cmd::{self, Op, path_error},
     entity_nbt,
     nbt_path::NbtPath,
@@ -117,7 +118,12 @@ impl Game<'_> {
             Target::Item(id) => {
                 let uuid = self.uuid_for(id);
                 let e = self.dropped.iter().find(|e| e.id == id)?;
-                entity_nbt::item_entity_to_nbt(e, uuid, self.persist.raw.get(&id))
+                entity_nbt::item_entity_to_nbt_with_items(
+                    e,
+                    uuid,
+                    self.persist.raw.get(&id),
+                    self.items(),
+                )
             }
             Target::Stand(id) => {
                 let uuid = self.uuid_for(id);
@@ -173,6 +179,21 @@ impl Game<'_> {
             }
             Target::Projectile(id) => {
                 let uuid = self.uuid_for(id);
+                // A homing bullet's `Target` is the entity's, not the raw
+                // compound's, as `save_projectile` writes it.
+                let who = self
+                    .creatures
+                    .projectiles
+                    .iter()
+                    .find(|p| p.id == id)
+                    .and_then(|p| match &p.kind {
+                        horizon_client::projectiles::ProjectileKind::ShulkerBullet {
+                            target: Some(who),
+                            ..
+                        } => Some(*who),
+                        _ => None,
+                    });
+                let target = who.and_then(|who| self.save_who_uuid(who));
                 let p = self.creatures.projectiles.iter().find(|p| p.id == id)?;
                 let owner = if p.owner == Some(horizon_client::mobs::Who::Player) {
                     player_uuid
@@ -190,7 +211,7 @@ impl Game<'_> {
                 entity_nbt::arrow_to_nbt(p, uuid, p.owner_uuid.or(owner), in_block, raw)
                     .or_else(|| entity_nbt::fireball_to_nbt(p, uuid, owner, raw))
                     .or_else(|| entity_nbt::throwable_to_nbt(p, uuid, owner, raw))
-                    .or_else(|| entity_nbt::spit_or_bullet_to_nbt(p, uuid, owner, raw))?
+                    .or_else(|| entity_nbt::spit_or_bullet_to_nbt(p, uuid, owner, target, raw))?
             }
             Target::Crystal(id) => {
                 let c = self.crystals.iter().find(|c| c.id == id)?;
@@ -244,6 +265,7 @@ impl Game<'_> {
                     &super::OtherEntity {
                         id,
                         kind: "minecraft:area_effect_cloud".into(),
+                        item_transformation: None,
                         position: horizon_core::geometry::Vec3::new(x, y, z),
                         yaw: 0.0,
                         pitch: 0.0,
@@ -742,7 +764,18 @@ impl Game<'_> {
                 if let Some((_, mut new)) = save::decode_block_entity(&tag) {
                     self.take_loot_table(key, &tag, &mut new);
                     self.load_block_name(key, &new, &tag);
-                    self.world.block_entities.insert(key, new);
+                    if let (Some(BlockEntity::Mod(current)), BlockEntity::Mod(loaded)) =
+                        (self.world.block_entities.get_mut(&key), &mut new)
+                        && current.id == loaded.id
+                    {
+                        // BlockDataAccessor.setData loads the existing entity.
+                        // Replace its saved fields, preserving runtime data and
+                        // identity; DerefMut still invalidates content caches.
+                        current.nbt = std::mem::take(&mut loaded.nbt);
+                        current.items = std::mem::take(&mut loaded.items);
+                    } else {
+                        self.world.block_entities.insert(key, new);
+                    }
                     self.world.set_block_lock(key, &tag);
                     self.update_spawner_display(key);
                     // BlockDataAccessor.setData: setChanged and sendBlockUpdated(3),
@@ -874,13 +907,15 @@ impl Game<'_> {
         }
         self.cmd_data_in(id, ctx, target)
     }
+    /// `DataCommands.mergeData`: literal values keep the modern argument
+    /// parser's decoded Tag contract through execution.
     fn cmd_data_in(&mut self, id: &str, ctx: &Context, target: DataRef) -> R<i32> {
         match id {
             "data.merge" => {
                 let Some(Arg::Str(nbt)) = ctx.get("nbt") else {
                     return Ok(0);
                 };
-                let (nbt, _) = parse_snbt(nbt).map_err(|e| err("argument.nbt.invalid", &[&e]))?;
+                let nbt = horizon_client::command::snbt::parse_fully(nbt)?;
                 let old = self.data_of(&target)?;
                 if horizon_client::nbt_path::too_deep(&nbt, 0) {
                     return Err(err("arguments.nbtpath.too_deep", &[]));
@@ -934,6 +969,8 @@ impl Game<'_> {
     fn system_feedback(&mut self, message: Text) {
         self.feedback(message);
     }
+    /// `DataCommands.manipulateData`: literal sources use the same SNBT
+    /// decode contract as command admission; stored sources are unchanged.
     fn cmd_data_modify(&mut self, ctx: &Context, target: DataRef) -> R<i32> {
         let target_path = self.path_arg(ctx, "targetPath")?;
         let after_modify: Vec<&String> = ctx
@@ -959,11 +996,7 @@ impl Game<'_> {
             let Some(Arg::Str(text)) = ctx.get("value") else {
                 return Ok(0);
             };
-            vec![
-                parse_snbt(text)
-                    .map_err(|e| err("argument.nbt.invalid", &[&e]))?
-                    .0,
-            ]
+            vec![horizon_client::command::snbt::parse_fully(text)?]
         } else {
             let source = self.data_ref(ctx, 1)?;
             let data = self.data_of(&source)?;
@@ -1547,6 +1580,12 @@ mod loot_table_tests {
 }
 
 #[cfg(test)]
+mod saved_tag_tests;
+
+#[cfg(test)]
+mod mod_block_entity_tests;
+
+#[cfg(test)]
 mod arrow_owner_tests {
     use super::Target;
     use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
@@ -1652,5 +1691,125 @@ mod arrow_owner_tests {
                 assert_eq!(game.world.game_time, time);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod modern_literal_tests {
+    use super::*;
+    use crate::game::commands::execute::ExecState;
+    use crate::game::{Audio, Options, Progress, Settings, load_resources};
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn admitted_modern_literals_reach_actual_storage_as_typed_tags() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let run = |g: &mut Game<'_>, line: &str| {
+            g.exec = ExecState::default();
+            let source = g.player_source();
+            g.execute_line(line, source)
+        };
+        let cases = [
+            ("hex", "0x10", "16", Tag::Int(16)),
+            ("underscore", "1_000", "1000", Tag::Int(1000)),
+            ("unicode4", r#""\u0041""#, r#""A""#, Tag::String("A".into())),
+            ("hex2", r#""\x41""#, r#""A""#, Tag::String("A".into())),
+            (
+                "unicode8",
+                r#""\U00000041""#,
+                r#""A""#,
+                Tag::String("A".into()),
+            ),
+            (
+                "trailing",
+                "{n:3,}",
+                "{n:3}",
+                Tag::compound([("n", Tag::Int(3))]),
+            ),
+            ("plain", "plain", r#""plain""#, Tag::String("plain".into())),
+        ];
+        let clock = game.world.game_time;
+        let mut differences = Vec::new();
+        for (name, modern, plain, expected) in &cases {
+            for route in ["merge", "modify"] {
+                let target = format!("h189:{route}_{name}");
+                let reference = format!("h189:ref_{route}_{name}");
+                let seed = ["data merge storage ", &target, r#" {v:"seed"}"#].concat();
+                assert_eq!(run(&mut game, &seed).unwrap(), 1);
+                assert_eq!(
+                    game.score.storage.get(&target).get("v"),
+                    Some(&Tag::String("seed".into()))
+                );
+                let canonical = ["data merge storage ", &reference, " {v:", plain, "}"].concat();
+                assert_eq!(run(&mut game, &canonical).unwrap(), 1);
+                assert_eq!(game.score.storage.get(&reference).get("v"), Some(expected));
+                let command = if route == "merge" {
+                    ["data merge storage ", &target, " {v:", modern, "}"].concat()
+                } else {
+                    ["data modify storage ", &target, " v set value ", modern].concat()
+                };
+                let dispatcher = horizon_client::command::vanilla::game_dispatcher_with_features(
+                    &game.level.enabled_features,
+                );
+                assert!(
+                    dispatcher
+                        .parse(&command, &game.ui.registries)
+                        .executable()
+                        .is_ok(),
+                    "admission: {route}/{name}"
+                );
+                let result = run(&mut game, &command);
+                let actual = game.score.storage.get(&target).get("v").cloned();
+                if result.as_ref().ok() != Some(&1) || actual.as_ref() != Some(expected) {
+                    differences.push(format!("{route}/{name}: result={result:?}, stored={actual:?}, expected={expected:?}"));
+                }
+                // Copy actual canonical stored data back: equality is a real
+                // no-change failure, independent of a formatter or parser stub.
+                let copy = [
+                    "data modify storage ",
+                    &target,
+                    " v set from storage ",
+                    &reference,
+                    " v",
+                ]
+                .concat();
+                if run(&mut game, &copy).is_ok() {
+                    differences.push(format!(
+                        "{route}/{name}: canonical copy changed the stored Tag"
+                    ));
+                }
+                assert_eq!(game.score.storage.get(&target).get("v"), Some(expected));
+            }
+        }
+        assert_eq!(game.world.game_time, clock);
+        assert!(differences.is_empty(), "{}", differences.join("\n"));
     }
 }

@@ -540,7 +540,6 @@
   "Game arguments": "Oyun argümanları",
   "Horizon is built in the open. Sponsors fund the next release.": "Horizon açık olarak geliştiriliyor. Sponsorlar bir sonraki sürümü finanse ediyor.",
   "In use": "Kullanımda",
-  "Loading patch notes…": "Sürüm notları yükleniyor…",
   "Loading releases…": "Sürümler yükleniyor…",
   "No releases yet.": "Henüz sürüm yok.",
   "Proxy": "Proxy",
@@ -548,7 +547,6 @@
   "Support the work below": "Aşağıdaki çalışmayı destekle",
   "Unsigned": "İmzasız",
   "Verified": "Doğrulandı",
-  "What changed in each release, newest first.": "Her sürümde neyin değiştiği, en yeniden eskiye.",
   "Developer options": "Developer options",
   "Close": "Close",
   "No servers yet: add one here or in the game's Multiplayer screen.": "No servers yet: add one here or in the game's Multiplayer screen.",
@@ -668,7 +666,6 @@
   "{count} lines, the game is running": "{count} lines, the game is running",
   "Move to trash": "Move to trash",
   "{name} moved to the trash.": "{name} moved to the trash.",
-  "Couldn't load patch notes. {error}": "Couldn't load patch notes. {error}",
   "Couldn't load releases. {error}": "Couldn't load releases. {error}",
   "Launcher {version}": "Launcher {version}",
   "Launcher {version}  {percent}%": "Launcher {version}  {percent}%",
@@ -1256,5 +1253,8 @@
   "{host} has no horizon-server. Install it there first, as the hosting guide says.": "{host} has no horizon-server. Install it there first, as the hosting guide says.",
   "Couldn't connect to {host}: {reason}": "Couldn't connect to {host}: {reason}",
   "Couldn't connect to {host}.": "Couldn't connect to {host}.",
-  "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}."
+  "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}.",
+  "Open in private window": "Gizli pencerede aç",
+  "Open this link in a private window to pick another account.": "Başka bir hesap seçmek için bu bağlantıyı gizli pencerede açın.",
+  "Use a different Microsoft account": "Farklı bir Microsoft hesabı kullan"
 }

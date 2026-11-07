@@ -243,7 +243,6 @@
   "Choose a picture…": "Һүрәт һайлағыҙ...",
   "{source} · needed by another mod": "{source} · икенсе модҡа кәрәк",
   "Delete…": "Юйырға...",
-  "Loading patch notes…": "Патч иҫкәрмәләрен тейәү...",
   "No native mod is turned on.": "Бер ниндәй ҙә туған мод ҡабыҙылмай.",
   "Use these jars": "Был банкаларҙы ҡулланығыҙ",
   "Starting": "Башланғыс",
@@ -577,7 +576,6 @@
   "Add": "Өҫтәү",
   "Clear filters": "Фильтрҙарҙы таҙартыу",
   "Downloads": "Йөкләүҙәр",
-  "What changed in each release, newest first.": "Һәр релизда нимә үҙгәрҙе, иң яңыһы тәүҙә.",
   "Made the instance {name} from the shared file.": "{name} экземплярын уртаҡ файлдан эшләне.",
   "For the game and the commands; INST_NAME, INST_DIR and the other instance variables are set too.": "Уйын һәм командалар өсөн; INST_NAME, INST_DIR һәм башҡа үҙгәртеүселәр ҙә ҡуйыла.",
   "copied from your folder": "һеҙҙең папканан күсерелгән",
@@ -666,7 +664,6 @@
   "Modpacks": "Модпактар",
   "{name} moved to the trash.": "{name} сүплеккә күсерелгән.",
   "Copied": "Күсерелгән",
-  "Couldn't load patch notes. {error}": "Патч иҫкәрмәләрен тейәп булманы. {error}",
   "Couldn't load releases. {error}": "Релиздарҙы тейәп булманы. {error}",
   "Launcher {version}": "Пуск {version}",
   "Launcher {version}  {percent}%": "Пуск {version} {percent}%",
@@ -1256,5 +1253,8 @@
   "{host} has no horizon-server. Install it there first, as the hosting guide says.": "{host} has no horizon-server. Install it there first, as the hosting guide says.",
   "Couldn't connect to {host}: {reason}": "Couldn't connect to {host}: {reason}",
   "Couldn't connect to {host}.": "Couldn't connect to {host}.",
-  "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}."
+  "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}.",
+  "Open in private window": "Шәхси тәҙрәлә асыу",
+  "Open this link in a private window to pick another account.": "Башҡа иҫәп яҙмаһын һайлау өсөн был һылтанманы шәхси тәҙрәлә асығыҙ.",
+  "Use a different Microsoft account": "Башҡа Microsoft иҫәп яҙмаһын ҡулланыу"
 }

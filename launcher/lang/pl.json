@@ -244,7 +244,6 @@
   "Choose a picture…": "Wybierz obraz…",
   "{source} · needed by another mod": "{source} · wymagany przez inny mod",
   "Delete…": "Usuń…",
-  "Loading patch notes…": "Ładowanie informacji o wydaniu…",
   "No native mod is turned on.": "Żaden mod natywny nie jest włączony.",
   "Use these jars": "Use these jars",
   "Starting": "Uruchamianie",
@@ -579,7 +578,6 @@
   "Add": "Dodaj",
   "Clear filters": "Wyczyść filtry",
   "Downloads": "Pobrania",
-  "What changed in each release, newest first.": "Co się zmieniło w poszczególnych wersjach, od najnowszych.",
   "Made the instance {name} from the shared file.": "Utworzono instancję {name} z udostępnionego pliku.",
   "For the game and the commands; INST_NAME, INST_DIR and the other instance variables are set too.": "Dla gry i poleceń; ustawiane są również INST_NAME, INST_DIR oraz pozostałe zmienne instancji.",
   "copied from your folder": "copied from your folder",
@@ -668,7 +666,6 @@
   "Modpacks": "Modpacki",
   "{name} moved to the trash.": "Przeniesiono {name} do kosza.",
   "Copied": "Skopiowano",
-  "Couldn't load patch notes. {error}": "Couldn't load patch notes. {error}",
   "Couldn't load releases. {error}": "Couldn't load releases. {error}",
   "Launcher {version}": "Launcher {version}",
   "Launcher {version}  {percent}%": "Launcher {version}  {percent}%",
@@ -1256,5 +1253,8 @@
   "{host} has no horizon-server. Install it there first, as the hosting guide says.": "{host} has no horizon-server. Install it there first, as the hosting guide says.",
   "Couldn't connect to {host}: {reason}": "Couldn't connect to {host}: {reason}",
   "Couldn't connect to {host}.": "Couldn't connect to {host}.",
-  "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}."
+  "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}.",
+  "Open in private window": "Otwórz w oknie prywatnym",
+  "Open this link in a private window to pick another account.": "Otwórz ten link w oknie prywatnym, aby wybrać inne konto.",
+  "Use a different Microsoft account": "Użyj innego konta Microsoft"
 }

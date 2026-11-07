@@ -7,6 +7,85 @@ fn full() -> ChatAbilities {
     ChatAbilities::new(ChatVisibility::Full)
 }
 
+#[test]
+fn accepted_suggestions_report_utf16_ranges_and_tab_cycles() {
+    use winit::keyboard::KeyCode as K;
+    let font = font();
+    let m = Measure(&font);
+    let registries = Registries {
+        players: vec!["Steve".into(), "Steven".into()],
+        ..Registries::default()
+    };
+    let c = Commands {
+        dispatcher: crate::command::vanilla::game_dispatcher(),
+        registries: &registries,
+    };
+    let mut screen = ChatScreen::new(&m, &c, "", false, 0, 640, 360, full());
+    screen.type_text(&m, &c, "😀 hi st");
+    assert!(screen.take_suggestion_completion().is_none());
+    screen.key(&m, &c, &[], K::Tab, false, false);
+    assert!(
+        screen.take_suggestion_completion().is_none(),
+        "opening is not accepting"
+    );
+    for (shift, text) in [(false, "Steve"), (false, "Steven"), (true, "Steve")] {
+        screen.key(&m, &c, &[], K::Tab, shift, false);
+        assert_eq!(screen.value(), format!("😀 hi {text}"));
+        assert_eq!(
+            screen.take_suggestion_completion(),
+            Some(SuggestionCompletion {
+                original: "😀 hi st".into(),
+                range: (6, 8),
+                text: text.into(),
+                input: format!("😀 hi {text}"),
+            })
+        );
+        assert!(
+            screen.take_suggestion_completion().is_none(),
+            "reported once"
+        );
+    }
+    screen.key(&m, &c, &[], K::ArrowDown, false, false);
+    assert!(
+        screen.take_suggestion_completion().is_none(),
+        "selection is not accepting"
+    );
+    screen.key(&m, &c, &[], K::Escape, false, false);
+    assert!(screen.take_suggestion_completion().is_none());
+}
+
+#[test]
+fn clicked_suggestion_reports_the_actual_length_limited_input() {
+    use winit::keyboard::KeyCode as K;
+    let font = font();
+    let m = Measure(&font);
+    let registries = Registries {
+        players: vec!["Steve".into()],
+        ..Registries::default()
+    };
+    let c = Commands {
+        dispatcher: crate::command::vanilla::game_dispatcher(),
+        registries: &registries,
+    };
+    let mut screen = ChatScreen::new(&m, &c, "", false, 0, 640, 360, full());
+    screen.input.max_length = 6;
+    screen.type_text(&m, &c, "hi st");
+    screen.key(&m, &c, &[], K::Tab, false, false);
+    let [x, y, _, _] = screen.suggestions.as_ref().unwrap().rect;
+    assert!(screen.click(&m, &c, f64::from(x + 1), f64::from(y + 1)));
+    assert_eq!(screen.value(), "hi Ste");
+    assert_eq!(
+        screen.take_suggestion_completion(),
+        Some(SuggestionCompletion {
+            original: "hi st".into(),
+            range: (3, 5),
+            text: "Steve".into(),
+            input: "hi Ste".into(),
+        })
+    );
+    assert!(screen.take_suggestion_completion().is_none());
+}
+
 fn font() -> Font {
     // The missing-glyph metrics let these tests run without game assets.
     Font::load(
@@ -483,8 +562,18 @@ fn ask_server_nodes_wait_for_the_servers_completions() {
     tab(&mut screen);
     assert_eq!(screen.value(), "/bossbar get pt");
     screen.server_suggestions(&m, &c, request, (13, 2), reply("pt6:check"));
+    assert!(screen.take_suggestion_completion().is_none());
     tab(&mut screen);
     assert_eq!(screen.value(), "/bossbar get pt6:check");
+    assert_eq!(
+        screen.take_suggestion_completion(),
+        Some(SuggestionCompletion {
+            original: "/bossbar get pt".into(),
+            range: (13, 15),
+            text: "pt6:check".into(),
+            input: "/bossbar get pt6:check".into(),
+        })
+    );
     // Without the server's provider the local list is done at once.
     let local = crate::command::vanilla::game_dispatcher();
     let c = Commands {

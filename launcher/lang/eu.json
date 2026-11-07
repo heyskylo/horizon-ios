@@ -243,7 +243,6 @@
   "Choose a picture…": "Aukeratu argazki bat...",
   "{source} · needed by another mod": "{source} · beste mod batek behar du",
   "Delete…": "Ezabatu…",
-  "Loading patch notes…": "Adabaki-oharrak kargatzen…",
   "No native mod is turned on.": "Ez dago mod natiborik aktibatuta.",
   "Use these jars": "Erabili pote hauek",
   "Starting": "Hasi",
@@ -577,7 +576,6 @@
   "Add": "Gehitu",
   "Clear filters": "Garbitu iragazkiak",
   "Downloads": "Deskargak",
-  "What changed in each release, newest first.": "Argitalpen bakoitzean zer aldatu den, berriena lehenik.",
   "Made the instance {name} from the shared file.": "{name} instantzia egin da partekatutako fitxategitik.",
   "For the game and the commands; INST_NAME, INST_DIR and the other instance variables are set too.": "Jokorako eta aginduetarako; INST_NAME, INST_DIR eta beste instantzia-aldagaiak ere ezarrita daude.",
   "copied from your folder": "zure karpetatik kopiatu",
@@ -666,7 +664,6 @@
   "Modpacks": "Modpackak",
   "{name} moved to the trash.": "{name} zakarrontzira eraman dute.",
   "Copied": "Kopiatua",
-  "Couldn't load patch notes. {error}": "Ezin izan dira adabaki-oharrak kargatu. {error}",
   "Couldn't load releases. {error}": "Ezin izan dira kargatu bertsioak. {error}",
   "Launcher {version}": "Abiarazlea {version}",
   "Launcher {version}  {percent}%": "Abiarazlea {version} {percent}%",
@@ -1256,5 +1253,8 @@
   "{host} has no horizon-server. Install it there first, as the hosting guide says.": "{host} has no horizon-server. Install it there first, as the hosting guide says.",
   "Couldn't connect to {host}: {reason}": "Couldn't connect to {host}: {reason}",
   "Couldn't connect to {host}.": "Couldn't connect to {host}.",
-  "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}."
+  "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}.",
+  "Open in private window": "Ireki leiho pribatuan",
+  "Open this link in a private window to pick another account.": "Ireki esteka hau leiho pribatu batean beste kontu bat aukeratzeko.",
+  "Use a different Microsoft account": "Erabili beste Microsoft kontu bat"
 }
