@@ -45,6 +45,7 @@ mod entity_death_loot_fixture;
 mod entity_particles_probe;
 mod entity_sound_packet_fixture;
 mod environment_fixture;
+mod falling_block_fixture;
 mod finalize_spawn_fixture;
 mod fire_starter_sound_probe;
 mod firework_tooltip_fixture;
@@ -145,6 +146,7 @@ probes! {
     creative_search_fixture,
     emitter_particles_probe,
     enchanting_fixture,
+    falling_block_fixture,
     entity_anim_fixture,
     entity_components_probe,
     entity_death_loot_fixture,
