@@ -1000,7 +1000,10 @@ pub fn resource_root(vanilla: &Path, packs: &[Pack], cache: &Path) -> io::Result
         (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)
     });
     let out = cache.join(format!("{hash:016x}"));
+    cache::hold(&out)?;
     build_overlay(vanilla, packs, &out)?;
+    // Old selections' overlays would otherwise stay for good, each a whole unpacked copy.
+    cache::prune(cache);
     Ok(out)
 }
 
