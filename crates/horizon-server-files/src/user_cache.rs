@@ -140,6 +140,13 @@ impl UserCache {
         Some(self.infos[index].user.clone())
     }
 
+    /// The player with this name (any case) while their entry hasn't expired: `get(String)` without
+    /// the lookup, the offline player and any change to the cache.
+    pub fn find_by_name(&self, name: &str) -> Option<NameAndId> {
+        let info = &self.infos[*self.by_name.get(&name.to_lowercase())?];
+        (now_millis() < info.expires).then(|| info.user.clone())
+    }
+
     /// `get(String)`: the player with this name (any case). An expired entry is
     /// dropped; a name not cached is asked of `lookup` (the profile service,
     /// given the lower-case name) and, failing that, made an offline player
@@ -272,6 +279,23 @@ mod tests {
             c.to_json(),
             r#"[{"uuid":"069a79f4-44e9-4726-a5be-fca90e38aaf5","name":"Notch","expiresOn":"2099-01-01 00:00:00 +0000"},{"uuid":"61699b2e-d327-4a01-9f1e-0ea8c3f06bc6","name":"Alex","expiresOn":"2099-01-01 00:00:00 +0000"}]"#
         );
+    }
+
+    #[test]
+    fn find_by_name_only_reads() {
+        let (c, _) = cache(
+            r#"[{"uuid":"069a79f4-44e9-4726-a5be-fca90e38aaf5","name":"Notch","expiresOn":"2099-01-01 00:00:00 +0000"},
+                {"uuid":"61699b2e-d327-4a01-9f1e-0ea8c3f06bc6","name":"Expired","expiresOn":"2000-01-01 00:00:00 +0000"}]"#,
+        );
+        let before = c.to_json();
+        assert_eq!(
+            c.find_by_name("nOtCh").map(|u| u.name),
+            Some("Notch".into())
+        );
+        // An expired entry, an unknown name: nothing, and no offline player made up.
+        assert_eq!(c.find_by_name("Expired"), None);
+        assert_eq!(c.find_by_name("Nobody"), None);
+        assert_eq!(c.to_json(), before);
     }
 
     #[test]

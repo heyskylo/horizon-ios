@@ -1,0 +1,18 @@
+{
+  "hooks": [
+    {
+      "name": "chunk_generate",
+      "target": "horizon_world::worldgen::native_generate::native_chunk_generate",
+      "neoforge": "none (NeoForge has no such event, a mod registers its own ChunkGenerator; Bukkit's ChunkGenerator.generateNoise)",
+      "side": "server",
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "a chunk's terrain built by a mod before vanilla's noise (`native_chunk_generate`), with vanilla's surface, carvers, structures and features on request.",
+  "doc_summary": "`native_chunk_generate(dimension, chunk, seed, flat, chunk_out, generate)` is asked for every chunk a level generates, after its biomes and structure starts and before the noise (Bukkit's `ChunkGenerator.generateNoise`): a mod sets the blocks with `chunk_out.set_block` and answers `NativeGenerate::Replaced { surface, carvers, structures, decorations }`, and vanilla adds only what the flags ask for; `set_biomes` and `clear_structures` work with either answer. It runs on the generation workers, several chunks at once. Bundles need \"hooks\": @API:chunk_generate@.",
+  "comments": [
+    "crates/horizon-world/src/worldgen/native_generate.rs"
+  ]
+}

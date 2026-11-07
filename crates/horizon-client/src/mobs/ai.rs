@@ -2936,7 +2936,7 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
         } else {
             m.extra.effects[i].1
         };
-        let interval = |base: i32| (base >> amp.max(0)).max(1);
+        let interval = |base: i32| base.wrapping_shr(amp as u32).max(1);
         // A refused mod effect is left at 0 ticks for the retain below.
         let mut expired = false;
         match effect {
@@ -3278,6 +3278,55 @@ mod poison_effect_tests {
             zombie.health, initial_zombie_health,
             "undead mobs are immune to poison"
         );
+    }
+
+    /// `LivingEntity.addEffect` runs `AbsorptionMobEffect.onEffectStarted` for
+    /// every effect it accepts: the same Absorption given again refills the
+    /// shield, and a weaker one still tops it up to its own level (#11386).
+    #[test]
+    fn absorption_refills_on_every_accepted_add() {
+        use std::sync::Arc;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("entity-types.json").exists() {
+            return;
+        }
+        let data = MobTypes::load(&root).unwrap();
+        let kind = Arc::new(data.types.get("minecraft:cow").unwrap().clone());
+        let mut cow = Mob::new(1, kind, Vec3::new(0.0, 4.0, 0.0), 0.0);
+        cow.add_effect("absorption", 600, 0);
+        assert_eq!(cow.absorption, 4.0);
+        // A hit used it up.
+        cow.absorption = 0.0;
+        cow.add_effect("absorption", 600, 0);
+        assert_eq!(cow.absorption, 4.0, "the same effect again refills it");
+        cow.add_effect("absorption", 600, 2);
+        assert_eq!(cow.absorption, 12.0);
+        cow.absorption = 2.0;
+        cow.add_effect("absorption", 600, 0);
+        assert_eq!(cow.absorption, 4.0, "a weaker one tops it up to its level");
+    }
+
+    /// Instant health and harm given at amplifier 32 shift by 0, as Java's
+    /// `<<` does (#11386).
+    #[test]
+    fn instant_effects_shift_like_java_on_mobs() {
+        use std::sync::Arc;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("entity-types.json").exists() {
+            return;
+        }
+        let data = MobTypes::load(&root).unwrap();
+        let kind = Arc::new(data.types.get("minecraft:iron_golem").unwrap().clone());
+        let mut golem = Mob::new(1, kind, Vec3::new(0.0, 4.0, 0.0), 0.0);
+        golem.attrs.max_health = 100.0;
+        golem.health = 60.0;
+        golem.add_effect("instant_health", 6, 32);
+        tick_effects(&mut golem, None);
+        assert_eq!(golem.health, 64.0);
     }
 
     /// A mob's effects act on it: instant health and harm (inverted for the
