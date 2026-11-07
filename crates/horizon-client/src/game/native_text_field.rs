@@ -473,6 +473,7 @@ mod tests {
                 &Measure(&font),
                 &commands,
                 "underlying",
+                false,
                 0,
                 640,
                 360,
