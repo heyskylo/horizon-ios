@@ -71,10 +71,10 @@ impl Game<'_> {
     /// A screenshot as F2 takes it (`ScreenShot.grab`): of the next frame, at
     /// the game's resolution times Screenshot Quality, into `screenshots/` with
     /// vanilla's file name, and the same "Saved screenshot as" line in chat.
-    /// The file it will write; an error without a window to draw, or while
+    /// The file it will write, as a path string; an error without a window to draw, or while
     /// another screenshot waits for the frame (F2's, an agent's, the world
     /// icon's), which a mod's would replace. API @API:take_screenshot@.
-    pub(super) fn native_take_screenshot(&mut self) -> Result<std::path::PathBuf, String> {
+    pub(super) fn native_take_screenshot(&mut self) -> Result<String, String> {
         let Some(renderer) = self.renderer.as_ref() else {
             return Err("no window to take it from".into());
         };
@@ -82,6 +82,7 @@ impl Game<'_> {
             return Err("another screenshot is waiting for the frame".into());
         }
         self.take_screenshot()
+            .map(|path| path.to_string_lossy().into_owned())
             .ok_or_else(|| "the screenshots folder can't be made".into())
     }
     /// Client/window/connection state, including when menus cover the world.
