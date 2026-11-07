@@ -114,6 +114,9 @@ pub fn saved_line(path: &Path) -> String {
 
 /// Whether the file's gzip stream has ended: false for a capture still being written.
 pub fn is_complete(path: &Path) -> io::Result<bool> {
+    if fs::metadata(path)?.len() == 0 {
+        return Ok(false);
+    }
     let mut gz = GzDecoder::new(File::open(path)?);
     let mut buf = [0u8; 64 * 1024];
     loop {

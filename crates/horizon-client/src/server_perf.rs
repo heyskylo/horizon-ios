@@ -1,5 +1,4 @@
-//! A dedicated server's performance capture (docs/perf-platform.md §3, §4.1): the always-on health history and slow ring, and
-//! the `.hzperf` file that `horizon-report` writes from them.
+//! A dedicated server's .hzperf capture (docs/perf-platform.md §3, §4.1) and the always-on health history and slow ring behind it.
 use crate::spans::Span;
 use horizon_perf_format::files;
 use horizon_perf_format::v1::{Kind, Options, Side, Start, Stop, StopReason, Trigger, Unit};
@@ -121,7 +120,7 @@ impl ServerPerf {
                 unit: Unit::Tick,
                 counter: self.ticks,
                 wall_ms,
-                cpu_ms: detail.cpu_ms.unwrap_or(wall_ms),
+                cpu_ms: detail.cpu_ms.unwrap_or(0.0),
                 top: detail
                     .spans
                     .iter()

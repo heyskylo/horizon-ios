@@ -113,6 +113,9 @@ It holds exactly three things:
   block, except `Stop`, which waits (§3.4).
 - **The in-memory health recorder and the counter registry** (§3.6), as pure data structures fed by the game.
 
+One recorded exception: `files` (capture file names, retention, the saved line, `is_complete`) lives here because
+`horizon-server` and the game both need it and the server cannot depend on `horizon-client` (§13, J).
+
 Nothing else goes in: no reader, no query, no statistics, no JSON, no serde. It builds for `wasm32-unknown-unknown`, so
 `horizon-perf` and the web UI share its types. No size budget is set for now. If the crate grows, compile features
 can gate parts of it later.
@@ -1098,3 +1101,4 @@ None at the moment.
 | G | No CODEOWNERS: once merged, anyone can edit the contract (supersedes Q8's ownership after the contract lands). |
 | H | Both the UI and the upload layer are built compatible with playhorizon.dev's stack (Next.js App Router on Railway, JSON `/api/…`, `no-store`) so they plug in later: `web/perf/` is a Next.js App Router app with `app/perf/` and `app/api/perf/`. Upload and share links are now in scope on the self-hosted instance (supersedes Q5's "local files only"); sharing is an explicit user action. |
 | I | Upload storage: RustFS (S3-compatible) on the umceko cluster, 1 GiB PV on `local-path`; not Railway for now. Size cap 64 MiB; per-IP limit 20 uploads/hour. Retention: two states: temporary uploads are deleted after 1 h; Share pins a capture for 30 days or until deleted with its token; above 90 % volume use, new uploads get 507. |
+| J | `horizon-perf-format::files` (capture file naming, retention, the saved line, `is_complete`) lives in the format crate although §2.1 lists three things: `horizon-server` writes and finds captures too and cannot depend on `horizon-client`. Do not move it back. |

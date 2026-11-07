@@ -215,3 +215,17 @@ fn a_second_capture_cannot_start_and_stopping_with_none_running_is_none() {
     perf.stop_capture(0.0, R::Shutdown).unwrap().unwrap();
     assert_eq!(fs::read_dir(&scratch.0).unwrap().count(), 1);
 }
+
+#[test]
+fn a_slow_tick_without_detail_has_no_spans_and_no_invented_cpu_time() {
+    let scratch = Scratch::new("nodetail");
+    let mut perf = ServerPerf::new(0.0, 250.0);
+    perf.start_capture(0.0, &scratch.0, options(5.0)).unwrap();
+    perf.tick(0.5, 400.0, None, WorldCounts::default);
+    let saved = perf.stop_capture(1.0, R::Normal).unwrap().unwrap();
+    let c = read(&saved.path);
+    assert_eq!(c.slow.len(), 1);
+    assert_eq!(c.slow[0].wall_ms, 400.0);
+    assert_eq!(c.slow[0].cpu_ms, 0.0);
+    assert!(c.slow[0].top.is_empty());
+}

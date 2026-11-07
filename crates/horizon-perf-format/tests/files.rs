@@ -141,3 +141,11 @@ fn a_capture_is_complete_only_after_its_stream_ends() {
     writer.finish().unwrap();
     assert!(files::is_complete(&path).unwrap());
 }
+
+#[test]
+fn a_file_just_created_is_not_complete() {
+    let scratch = Scratch::new("empty");
+    let path = scratch.0.join("c.hzperf");
+    fs::File::create(&path).unwrap();
+    assert!(!files::is_complete(&path).unwrap());
+}

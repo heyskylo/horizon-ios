@@ -283,8 +283,7 @@ pub fn moderate(dir: &Path, command: &str, words: &[String]) -> Result<(), Strin
     Ok(())
 }
 
-/// `report [SECONDS] [--no-samples]`: the running game records a performance capture for that long (60 s by
-/// default, at most 600) into `reports/profile-<time>Z.hzperf`; this prints where it went and where to open it.
+/// `report [SECONDS] [--no-samples]`: records a capture into `reports/profile-<time>Z.hzperf` and prints where it went.
 pub fn report(dir: &Path, words: &[String]) -> Result<(), String> {
     let (seconds, line) = report_line(words)?;
     let client = running(dir)?;
@@ -296,10 +295,14 @@ pub fn report(dir: &Path, words: &[String]) -> Result<(), String> {
         println!("{}", line.as_str().unwrap_or_default());
     }
     println!("Recording for {seconds} s...");
-    // The file grows from the start and is finished a moment after the last recorded tick.
-    let deadline = Instant::now() + Duration::from_secs(seconds + 60);
+    // The file grows from the start and is finished a moment after the last tick; checking it earlier re-inflates it for nothing.
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(seconds + 60);
     while Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(500));
+        if started.elapsed().as_secs() < seconds {
+            continue;
+        }
         if let Some(path) = capture_files(&reports)
             .into_iter()
             .find(|p| !before.contains(p))
