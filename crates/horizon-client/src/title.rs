@@ -3559,7 +3559,9 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 Action::None
             }
             (Mode::Main, Some(8)) => {
-                self.mode = Mode::Realms(crate::realms::Screen::new());
+                // The upload screen lists the game's own worlds (`saves`).
+                self.mode =
+                    Mode::Realms(crate::realms::Screen::with_saves(Some(self.saves.clone())));
                 Action::None
             }
             (Mode::Realms(screen), hit) => match screen.click(hit, x, y, (w, h)) {
