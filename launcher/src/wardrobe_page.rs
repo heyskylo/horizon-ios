@@ -558,7 +558,8 @@ impl Launcher {
     /// `HORIZON_LAUNCHER_PAGE=wardrobe` (or `shop`) in a development build: the page for a made-up account
     /// that owns the items of `HORIZON_COSMETICS_LOCAL` and wears the first of each slot, for
     /// screenshots. Nothing is asked of Mojang or the service, and nothing is saved.
-    /// `HORIZON_WARDROBE_STATE=offline|failed|empty|no_paddle` shows that state instead.
+    /// `HORIZON_WARDROBE_STATE=offline|failed|empty|no_paddle` shows that state instead, and
+    /// `HORIZON_COSMETICS_CATALOGUE=<file>` the shop of a saved `GET /v1/catalogue`.
     pub(super) fn wardrobe_preview(&mut self) {
         use horizon_launcher::wardrobe::{Claim, Entry, Me, Purchase};
         let Some(dir) = std::env::var_os("HORIZON_COSMETICS_LOCAL") else {
@@ -596,7 +597,15 @@ impl Launcher {
                 .entry(slot(i).to_owned())
                 .or_insert_with(|| i.id.clone());
         }
-        let ids: Vec<String> = items.iter().map(|i| i.id.clone()).collect();
+        // `HORIZON_COSMETICS_CATALOGUE=<file>`: a catalogue as the service answers it (prices,
+        // sets, collections), the account owning only its founder set.
+        let sold: Option<Catalogue> = std::env::var_os("HORIZON_COSMETICS_CATALOGUE")
+            .and_then(|f| serde_json::from_slice(&std::fs::read(f).ok()?).ok());
+        let mut ids: Vec<String> = items.iter().map(|i| i.id.clone()).collect();
+        if let Some(c) = &sold {
+            ids.retain(|id| c.claim.items.contains(id));
+            equipped.retain(|_, id| ids.contains(id));
+        }
         let claim = Claim {
             state: ClaimState::Open,
             items: ids.clone(),
@@ -643,6 +652,13 @@ impl Launcher {
             sets: Vec::new(),
             collections: Vec::new(),
             supporter: None,
+        };
+        let catalogue = match sold {
+            Some(c) => Catalogue {
+                claim: claim.clone(),
+                ..c
+            },
+            None => catalogue,
         };
         let account = account::Account {
             uuid: "00000000000000000000000000000001".into(),
