@@ -1188,6 +1188,18 @@ impl SuggestLayout {
     };
 }
 
+/// A suggestion accepted by Tab or a click (`SuggestionsList.useSuggestion`).
+#[derive(Debug, PartialEq, Eq)]
+pub struct SuggestionCompletion {
+    /// The suggestion list's original input, also when cycling with Tab.
+    pub original: String,
+    /// The replaced range in `original`, as Java UTF-16 start/end offsets.
+    pub range: (usize, usize),
+    pub text: String,
+    /// The resulting input, after the text field's length limit.
+    pub input: String,
+}
+
 /// The open chat screen: vanilla's `ChatScreen` with its `EditBox` and
 /// `CommandSuggestions` (argument colouring, usage lines, parse errors,
 /// the suggestion list, Tab completion, history).
@@ -1211,6 +1223,7 @@ pub struct ChatScreen {
     /// the command up to the cursor.
     request: Option<(i32, String)>,
     suggestions: Option<SuggestionList>,
+    completion: Option<SuggestionCompletion>,
     usage: Vec<Text>,
     usage_position: i32,
     usage_width: i32,
@@ -1333,6 +1346,7 @@ impl ChatScreen {
             awaiting: None,
             request: None,
             suggestions: None,
+            completion: None,
             usage: Vec::new(),
             usage_position: 0,
             usage_width: 0,
@@ -1370,6 +1384,7 @@ impl ChatScreen {
             awaiting: None,
             request: None,
             suggestions: None,
+            completion: None,
             usage: Vec::new(),
             usage_position: 0,
             usage_width: 0,
@@ -1384,6 +1399,11 @@ impl ChatScreen {
     }
     pub fn value(&self) -> &str {
         &self.input.value
+    }
+    /// Take the most recently accepted suggestion, at most once. Call after
+    /// each key or click to observe every acceptance, including Tab cycling.
+    pub fn take_suggestion_completion(&mut self) -> Option<SuggestionCompletion> {
+        self.completion.take()
     }
     /// Replace the input for a suggest-command link and refresh completions.
     pub fn suggest_command(&mut self, m: &Measure, c: &Commands, command: &str) {
@@ -1733,6 +1753,17 @@ impl ChatScreen {
         self.select(l, l.current as isize);
         self.keep_suggestions = false;
         l.tab_cycles = true;
+        let units = |byte: usize| {
+            l.original[..byte.min(l.original.len())]
+                .encode_utf16()
+                .count()
+        };
+        self.completion = Some(SuggestionCompletion {
+            original: l.original.clone(),
+            range: (units(s.range.0), units(s.range.1)),
+            text: s.text,
+            input: self.input.value.clone(),
+        });
     }
     /// `ChatScreen.keyPressed`.
     pub fn key(
