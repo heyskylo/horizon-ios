@@ -38,6 +38,15 @@ pub(crate) struct Columns {
 const NOTE_LINES: usize = 2;
 /// The height of a line of description.
 const NOTE_LINE_H: f32 = 10.0;
+/// The strip's text from its left edge, and its first line (the name) from its top.
+const DOCK_INSET: f32 = 12.0;
+const DOCK_NAME_Y: f32 = 8.0;
+/// A cost's square before the name: its side, how far down it sits, and the name after it.
+const COST_SQUARE: f32 = 4.0;
+const COST_SQUARE_Y: f32 = 10.0;
+const COST_NAME_X: f32 = 8.0;
+/// What the strip keeps clear at its right of a name with its cost.
+const COST_LINE_SLACK: f32 = 32.0;
 /// A taller strip leaves the list at least this high.
 const MIN_LIST_H: f32 = 60.0;
 impl Columns {
@@ -772,6 +781,10 @@ pub(crate) struct Row<R> {
     pub(crate) chosen: Option<String>,
     /// Can be used now (a setting of a switch that is off can't).
     pub(crate) live: bool,
+    /// Why it can't be used now: shown in the strip, greyed, instead of what it does.
+    pub(crate) why: Option<String>,
+    /// What it costs, beside its name in the strip.
+    pub(crate) cost: Option<style::Cost>,
 }
 impl<R> Row<R> {
     pub(crate) fn new(id: R, name: String, value: Value) -> Self {
@@ -782,6 +795,8 @@ impl<R> Row<R> {
             about: String::new(),
             chosen: None,
             live: true,
+            why: None,
+            cost: None,
         }
     }
     pub(crate) fn about(mut self, about: String) -> Self {
@@ -790,6 +805,18 @@ impl<R> Row<R> {
     }
     pub(crate) fn live(mut self, live: bool) -> Self {
         self.live = live;
+        self
+    }
+    /// Greyed, saying why, while there is a reason it can't be used.
+    #[allow(dead_code)] // The graphics screen's rows will (#11487).
+    pub(crate) fn blocked(mut self, why: Option<String>) -> Self {
+        self.live = why.is_none();
+        self.why = why;
+        self
+    }
+    #[allow(dead_code)] // The graphics screen's rows will (#11487).
+    pub(crate) fn cost(mut self, cost: style::Cost) -> Self {
+        self.cost = Some(cost);
         self
     }
     /// Its whole caption ("Name: value"), for the narrator and the widget tree.
@@ -885,6 +912,28 @@ pub(crate) trait Screen {
     ) -> Option<Vec<Output>> {
         None
     }
+    /// Whether the screen has Undo, which puts back what it changed (`undo`) since it opened.
+    fn undoes(&self) -> bool {
+        false
+    }
+    /// Undo: put back, from the settings as the screen opened (`before`), what it changes.
+    fn undo(&mut self, _s: &mut Settings, _before: &Settings) {}
+    /// Whether what a row did (its outputs) is a change Undo puts back.
+    fn changes(&self, outputs: &[Output]) -> bool {
+        changes_settings(outputs)
+    }
+}
+
+/// Whether `outputs` say a setting changed, or a key is being bound to one.
+pub(crate) fn changes_settings(outputs: &[Output]) -> bool {
+    use crate::options_ui::Event;
+    let changed = |output: &Output| {
+        matches!(
+            output,
+            Output::BindKey(_) | Output::Event(Event::Changed | Event::SliderDrag)
+        )
+    };
+    outputs.iter().any(changed)
 }
 
 /// A fingerprint of `parts` for [`Screen::stamp`]: their `Debug` text, hashed as it is written,
@@ -970,10 +1019,11 @@ pub(crate) trait Hosted {
 
 /// What the keyboard or a controller can focus.
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Target<P, R> {
+pub(crate) enum Target<P, R> {
     Row(R),
     Page(P),
     Search,
+    Undo,
     Done,
 }
 
@@ -1022,6 +1072,10 @@ pub(crate) struct Shell<S: Screen> {
     waiting: Option<&'static str>,
     /// The rows as last built, and what for.
     built: Option<(Built<S::Page, S::Row>, Rc<View<S::Page, S::Row>>)>,
+    /// The settings as the screen found them, for Undo (`Screen::undoes`), and whether it
+    /// changed them since.
+    before: Option<Box<Settings>>,
+    changed: bool,
 }
 impl<S: Screen + Default> Default for Shell<S> {
     fn default() -> Self {
@@ -1041,6 +1095,8 @@ impl<S: Screen + Default> Default for Shell<S> {
             picked: None,
             waiting: None,
             built: None,
+            before: None,
+            changed: false,
         }
     }
 }
@@ -1083,6 +1139,35 @@ impl<S: Screen> Shell<S> {
     /// A row may read otherwise now: the screen changed something.
     fn rebuild(&mut self) {
         self.built = None;
+    }
+    /// A row did `outputs`: it reads anew, and Undo has something to put back if they changed it.
+    fn did(&mut self, outputs: &[Output]) {
+        self.rebuild();
+        // Only a screen with Undo has something for it to put back.
+        if self.screen.undoes() && self.screen.changes(outputs) {
+            self.changed = true;
+        }
+    }
+    /// Remember the settings before the first change, for Undo.
+    fn keep(&mut self, s: &Settings) {
+        if self.screen.undoes() && self.before.is_none() {
+            self.before = Some(Box::new(s.clone()));
+        }
+    }
+    /// Undo, gone once it has put the settings back.
+    fn undo(&mut self, s: &mut Settings) -> Vec<Output> {
+        if let Some(before) = self.before.take() {
+            self.screen.undo(s, &before);
+            self.before = Some(before);
+        }
+        self.changed = false;
+        self.rebuild();
+        vec![CLICK, Output::Event(crate::options_ui::Event::Changed)]
+    }
+    /// Open at `page`.
+    #[allow(dead_code)] // The graphics screen, opened at its HDR page, will (#11487).
+    pub(crate) fn show(&mut self, page: S::Page) {
+        self.page = Some(page);
     }
     /// The screen's rows: the open page's or, while searching, every page's whose name or
     /// description has the search in it, under their pages' names. The row being changed stays
@@ -1211,14 +1296,14 @@ impl<S: Screen> Shell<S> {
                 };
                 self.dragging = Some(row.id);
                 self.screen.slide(s, row.id, position);
-                self.rebuild();
+                self.did(&[DRAGGED]);
                 vec![DRAGGED]
             }
             _ => {
                 self.can_change_value = false;
                 let mut outputs = vec![CLICK];
                 outputs.extend(self.screen.press(s, row.id, back));
-                self.rebuild();
+                self.did(&outputs);
                 outputs
             }
         }
@@ -1244,6 +1329,9 @@ impl<S: Screen> Shell<S> {
             if live {
                 out.push((Target::Row(id), cols.row(y)));
             }
+        }
+        if self.changed {
+            out.push((Target::Undo, cols.button(1)));
         }
         out.push((Target::Done, cols.button(0)));
         out
@@ -1340,10 +1428,14 @@ impl<S: Screen> Shell<S> {
         current: Option<S::Page>,
     ) {
         let cols = &view.cols;
-        let [x, y, ..] = cols.dock;
+        let [x, y, w, _] = cols.dock;
+        let left = x + DOCK_INSET;
+        let top = y + DOCK_NAME_Y;
         style::panel(batch, atlas, cols.dock);
-        let (name, about) = match described.map(|i| &view.rows[i]) {
-            Some(row) => (row.name.as_str(), row.described()),
+        let row = described.map(|i| &view.rows[i]);
+        let why = row.and_then(|row| row.why.as_deref().filter(|_| !row.live));
+        let (name, about) = match row {
+            Some(row) => (row.name.as_str(), why.unwrap_or(row.described())),
             None => {
                 let Some(page) = view.pages.iter().find(|p| Some(p.0) == current) else {
                     return;
@@ -1351,11 +1443,30 @@ impl<S: Screen> Shell<S> {
                 (page.1.as_str(), page.2.as_str())
             }
         };
-        let name = Text::literal(name.to_owned());
-        batch.text_styled(atlas, &name, x + 12.0, y + 8.0, style::WHITE, true);
+        match row.and_then(|row| row.cost) {
+            // Its cost in its colour, after a square of it.
+            Some(cost) => {
+                let line = format!("{name} · {}", lang::get(cost.label()));
+                let line = style::fit(atlas, &line, w - COST_LINE_SLACK);
+                let line = Text::literal(line).with_color(cost.rgb());
+                let square = [left, y + COST_SQUARE_Y, COST_SQUARE, COST_SQUARE];
+                style::fill(batch, atlas, square, style::cost_color(cost));
+                let after = left + COST_NAME_X;
+                batch.text_styled(atlas, &line, after, top, style::WHITE, true);
+            }
+            None => {
+                let name = Text::literal(name.to_owned());
+                batch.text_styled(atlas, &name, left, top, style::WHITE, true);
+            }
+        }
         // Labelled for the widget tree: what the strip says is what a test or an agent reads.
         crate::widgets::record(about, cols.dock, false);
-        dock_note(batch, atlas, cols, about.to_owned(), style::GREY);
+        let color = if why.is_some() {
+            style::MUTED
+        } else {
+            style::GREY
+        };
+        dock_note(batch, atlas, cols, about.to_owned(), color);
     }
 }
 impl<S: Screen + Default> Hosted for Shell<S> {
@@ -1372,6 +1483,7 @@ impl<S: Screen + Default> Hosted for Shell<S> {
         waiting: Option<&'static str>,
     ) {
         self.waiting = waiting;
+        self.keep(s);
         let view = self.view(s, (batch.width, batch.height));
         let cols = view.cols;
         backdrop(batch, atlas, in_world);
@@ -1422,6 +1534,14 @@ impl<S: Screen + Default> Hosted for Shell<S> {
             crate::widgets::focus_link(cols.search(), true, row);
         }
         self.draw_dock(batch, atlas, &view, described, current);
+        // Undo, over Done, only once there is something to undo.
+        if self.changed {
+            let undo = cols.button(1);
+            let label = Text::literal(lang::get("Undo"));
+            let flags = (self.shows_focus(Target::Undo), false);
+            crate::widgets::declare_action(crate::widgets::Action::Apply, undo, true);
+            foot_button(batch, atlas, undo, &label, cursor, flags);
+        }
         let done = cols.button(0);
         let label = Text::literal(lang::get("Done"));
         let flags = (self.shows_focus(Target::Done), true);
@@ -1437,6 +1557,7 @@ impl<S: Screen + Default> Hosted for Shell<S> {
         right: bool,
         shift: bool,
     ) -> Vec<Output> {
+        self.keep(s);
         let view = self.view(s, size);
         let cols = view.cols;
         let at = |[rx, ry, rw, rh]: [f32; 4]| ui::hovered((x, y), rx, ry, rw, rh);
@@ -1454,7 +1575,7 @@ impl<S: Screen + Default> Hosted for Shell<S> {
             }
             if let Some(row) = self.dragging {
                 self.screen.slide(s, row, cols.slider_at(x));
-                self.rebuild();
+                self.did(&[DRAGGED]);
                 return vec![DRAGGED];
             }
             return Vec::new();
@@ -1486,6 +1607,11 @@ impl<S: Screen + Default> Hosted for Shell<S> {
         if at(cols.button(0)) {
             self.focus = Some(Target::Done);
             return vec![CLICK, Output::Done];
+        }
+        if self.changed && at(cols.button(1)) {
+            // Undo goes away with the change it undid.
+            self.focus = None;
+            return self.undo(s);
         }
         for (i, page) in self.tabs(&view) {
             if at(cols.page(i)) && self.has(page, &view) {
@@ -1534,7 +1660,7 @@ impl<S: Screen + Default> Hosted for Shell<S> {
             if let Some(row) = self.row_at(&view, at).filter(|row| row.live)
                 && let Some(outputs) = self.screen.wheel_step(s, row.id, amount > 0.0)
             {
-                self.rebuild();
+                self.did(&outputs);
                 return outputs;
             }
         }
@@ -1557,6 +1683,7 @@ impl<S: Screen + Default> Hosted for Shell<S> {
         size: (f32, f32),
     ) -> Vec<Output> {
         use winit::keyboard::KeyCode as K;
+        self.keep(s);
         if key == K::Escape {
             self.can_change_value = false;
             return vec![Output::Done];
@@ -1608,7 +1735,7 @@ impl<S: Screen + Default> Hosted for Shell<S> {
             let width = view.cols.track().1 + 8.0;
             let next = slider_step(position, steps, width, key == K::ArrowRight);
             self.screen.slide(s, row.id, next);
-            self.rebuild();
+            self.did(&[DRAGGED]);
             return vec![DRAGGED];
         }
         if matches!(
@@ -1644,6 +1771,11 @@ impl<S: Screen + Default> Hosted for Shell<S> {
                 Some(row) => self.activate(s, row, shift, None),
                 None => Vec::new(),
             },
+            Some(Target::Undo) => {
+                // Undo goes away with the change it undid: Done has the focus.
+                self.focus = Some(Target::Done);
+                self.undo(s)
+            }
             Some(Target::Done) => vec![CLICK, Output::Done],
             Some(Target::Search) | None => Vec::new(),
         }
@@ -1699,6 +1831,14 @@ impl<S: Screen> Shell<S> {
     pub(crate) fn scroll_amount(&self) -> f32 {
         self.scroll.amount
     }
+    /// What the shell's own focus is on.
+    pub(crate) fn focused(&self) -> Option<Target<S::Page, S::Row>> {
+        self.focus
+    }
+    /// Undo shows: the screen changed something since it opened.
+    pub(crate) fn changed(&self) -> bool {
+        self.changed
+    }
     /// The row the shell's own focus is on.
     pub(crate) fn focused_row(&self) -> Option<S::Row> {
         match self.focus {
@@ -1740,6 +1880,7 @@ mod tests {
     const FIRST_FILLER: u32 = 10;
     const FILLERS: u32 = 40;
     const GREY: u32 = 100;
+    const WHY: &str = "Not here.";
     impl Screen for Probe {
         type Page = u8;
         type Row = u32;
@@ -1768,7 +1909,9 @@ mod tests {
                     ..Row::new(CHOICE, "Paint".to_owned(), Value::Choice(value.to_owned()))
                         .about("Picks a colour.".to_owned())
                 },
-                Row::new(GREY, "Greyed".to_owned(), Value::Press).live(false),
+                Row::new(GREY, "Greyed".to_owned(), Value::Press)
+                    .about("Does a thing.".to_owned())
+                    .blocked(Some(WHY.to_owned())),
             ];
             rows.extend((0..FILLERS).map(|i| {
                 Row::new(FIRST_FILLER + i, format!("Filler {i}"), Value::Press)
@@ -1792,12 +1935,20 @@ mod tests {
                 },
             ]
         }
-        fn press(&mut self, _: &mut Settings, row: u32, back: bool) -> Vec<Output> {
+        fn press(&mut self, s: &mut Settings, row: u32, back: bool) -> Vec<Output> {
             self.pressed.push((row, back));
-            if row == CHOICE {
-                self.choice = (self.choice + 1) % CHOICES.len();
+            match row {
+                CHOICE => self.choice = (self.choice + 1) % CHOICES.len(),
+                FIRST_FILLER => s.fov += 1.0,
+                _ => {}
             }
             vec![CHANGED]
+        }
+        fn undoes(&self) -> bool {
+            true
+        }
+        fn undo(&mut self, s: &mut Settings, before: &Settings) {
+            s.fov = before.fov;
         }
         fn slide(&mut self, _: &mut Settings, _: u32, position: f32) {
             self.slider = position;
@@ -1896,6 +2047,72 @@ mod tests {
             vec![CLICK, CHANGED]
         );
         assert_eq!(shell.screen.pressed, [(cut, false)]);
+    }
+
+    #[test]
+    fn undo_appears_after_a_change_and_puts_back_what_the_screen_opened_with() {
+        let mut s = Settings::default();
+        let mut shell = Shell::<Probe>::default();
+        let undo = Columns::of(SIZE.0, SIZE.1).button(1);
+        let on_undo = (undo[0] + 2.0, undo[1] + 2.0);
+        // Nothing changed: there is no Undo to press.
+        assert!(
+            shell
+                .click(&mut s, on_undo, SIZE, false, false, false)
+                .is_empty()
+        );
+        let at = middle_of(&mut shell, FIRST_FILLER, SIZE);
+        shell.click(&mut s, at, SIZE, false, false, false);
+        assert_eq!(s.fov, 71.0);
+        // Another option changed meanwhile isn't the screen's to put back.
+        s.chat_opacity = 0.25;
+        assert_eq!(
+            shell.click(&mut s, on_undo, SIZE, false, false, false),
+            vec![CLICK, CHANGED]
+        );
+        assert_eq!((s.fov, s.chat_opacity), (70.0, 0.25));
+        assert!(
+            shell
+                .click(&mut s, on_undo, SIZE, false, false, false)
+                .is_empty()
+        );
+        // From the keyboard: Tab reaches it, Enter undoes and leaves the focus on Done.
+        shell.click(&mut s, at, SIZE, false, false, false);
+        let reached = (0..100).any(|_| {
+            shell.key(&mut s, K::Tab, None, false, SIZE);
+            shell.focus == Some(Target::Undo)
+        });
+        assert!(reached);
+        assert_eq!(
+            shell.key(&mut s, K::Enter, None, false, SIZE),
+            vec![CLICK, CHANGED]
+        );
+        assert_eq!(s.fov, 70.0);
+        assert_eq!(shell.focus, Some(Target::Done));
+    }
+
+    #[test]
+    fn the_strip_says_why_a_greyed_row_cant_be_used() {
+        let atlas = atlas();
+        let s = Settings::default();
+        let mut shell = Shell::<Probe>::default();
+        let mut batch = HudBatch::new([1708, 960]);
+        let size = (batch.width, batch.height);
+        let strip = |batch: &mut HudBatch, shell: &mut Shell<Probe>, at| {
+            shell.draw(&s, batch, &atlas, at, false, None);
+            crate::widgets::end_frame(crate::widgets::generation() + 1);
+            let dock = Columns::of(size.0, size.1).dock;
+            let labelled = crate::widgets::last_labelled();
+            let found = labelled.iter().find(|w| [w.x, w.y, w.w, w.h] == dock);
+            found.map(|w| w.label.clone())
+        };
+        let grey = middle_of(&mut shell, GREY, size);
+        assert_eq!(strip(&mut batch, &mut shell, grey).as_deref(), Some(WHY));
+        let choice = middle_of(&mut shell, CHOICE, size);
+        assert_eq!(
+            strip(&mut batch, &mut shell, choice).as_deref(),
+            Some(CHOICES[0].1)
+        );
     }
 
     #[test]
