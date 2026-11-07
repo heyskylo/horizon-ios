@@ -1425,6 +1425,7 @@ impl Game<'_> {
         let mut e = horizon_client::effects::EffectInstance::new(id, p.duration, p.amplifier);
         e.ambient = p.flags & 1 != 0;
         e.visible = p.flags & 2 != 0;
+        e.show_icon = p.flags & 4 != 0;
         let list = &mut self.potions.effects.list;
         match list.iter_mut().find(|x| x.id == id) {
             // forceAddEffect's copyBlendState: an updated effect keeps its fade.

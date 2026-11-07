@@ -89,7 +89,7 @@ impl Game<'_> {
             return;
         };
         let result = Pack::read(path).map_err(|e| vec![e]).and_then(|pack| {
-            if let Some(why) = not_drawn(&pack.manifest) {
+            if let Some(why) = not_drawn(&pack.manifest, linear_frame_switch()) {
                 return Err(vec![why]);
             }
             let report = check(&pack)
@@ -176,20 +176,27 @@ impl Game<'_> {
 }
 
 /// Why the game doesn't draw a pack the check may still pass: what it asks of shader API 0.2
-/// (docs/design/hdr-linear-light.md, steps 3 and 4) isn't served yet.
-fn not_drawn(m: &Manifest) -> Option<String> {
+/// (docs/design/hdr-linear-light.md, steps 3 and 4) isn't served yet. 0.2 itself is drawn
+/// under `HORIZON_HDR_FRAME=float` (`switch`).
+fn not_drawn(m: &Manifest, switch: bool) -> Option<String> {
     if m.blend == Blend::Linear {
         return Some(
             "[frame] blend = \"linear\" isn't served yet: leave it out, or set \"gamma\"".into(),
         );
     }
-    (m.api != Api::V0_1).then(|| {
+    (m.api != Api::V0_1 && !switch).then(|| {
         format!(
-            "it is written for shader API {}, which is experimental and not drawn yet: \
-             horizon-shader check takes it, the game takes shader API 0.1",
+            "it is written for shader API {}, which is experimental and drawn only under \
+             HORIZON_HDR_FRAME=float: horizon-shader check takes it, the game takes shader API 0.1",
             m.api
         )
     })
+}
+
+/// `HORIZON_HDR_FRAME=float`: shader API 0.2 packs are drawn, on a float frame where the
+/// renderer is made with one picked.
+pub(super) fn linear_frame_switch() -> bool {
+    std::env::var("HORIZON_HDR_FRAME").is_ok_and(|v| v == "float")
 }
 
 /// A hash of the names, sizes and modification times of the pack's files and of its saved
@@ -291,14 +298,17 @@ mod tests {
     }
 
     #[test]
-    fn only_shader_api_0_1_is_drawn() {
-        assert_eq!(not_drawn(&manifest("0.1", "")), None);
-        let why = not_drawn(&manifest("0.2", "")).unwrap();
+    fn shader_api_0_2_is_drawn_only_under_the_switch() {
+        for switch in [false, true] {
+            assert_eq!(not_drawn(&manifest("0.1", ""), switch), None);
+            let why = not_drawn(&manifest("0.2", "[frame]\nblend = \"linear\"\n"), switch);
+            assert!(why.unwrap().contains("blend = \"linear\" isn't served yet"));
+        }
+        let why = not_drawn(&manifest("0.2", ""), false).unwrap();
         assert!(
-            why.contains("shader API 0.2, which is experimental"),
+            why.contains("drawn only under HORIZON_HDR_FRAME=float"),
             "{why}"
         );
-        let why = not_drawn(&manifest("0.2", "[frame]\nblend = \"linear\"\n")).unwrap();
-        assert!(why.contains("blend = \"linear\" isn't served yet"), "{why}");
+        assert_eq!(not_drawn(&manifest("0.2", ""), true), None);
     }
 }
