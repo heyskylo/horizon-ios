@@ -51,6 +51,7 @@ mod fire_starter_sound_probe;
 mod firework_tooltip_fixture;
 mod first_person_probe;
 mod frame_limiter_probe;
+mod furnace_fixture;
 mod game_loop_probe;
 mod ghost_recipe_fixture;
 mod held_drop_fixture;
@@ -128,6 +129,7 @@ probes! {
     block_entity_tickers_fixture,
     block_particles_fixture,
     block_transform_fixture,
+    furnace_fixture,
     brewing_fixture,
     breaking_fixture,
     block_tint_probe,
