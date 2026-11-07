@@ -2535,7 +2535,16 @@ mod xp_bottle_tests {
             (None, Vec3::new(0.0, 0.0, 1.0), 2, -1.0),
         ] {
             game.orbs.clear();
-            game.splash(&bottle, at, None, face, 0, &PotionOwner::default(), false, motion);
+            game.splash(
+                &bottle,
+                at,
+                None,
+                face,
+                0,
+                &PotionOwner::default(),
+                false,
+                motion,
+            );
             assert!(!game.orbs.is_empty());
             let at = [at.x, at.y, at.z];
             for o in game.orbs.iter() {
