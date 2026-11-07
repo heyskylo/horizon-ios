@@ -4,23 +4,14 @@
 //! entity as `/tp` and `/rotate` do, so clients see it as they see those.
 //! Reads return `None`, writes false, for a stale handle or on a client.
 use super::entity::{Entity as _, EntityHandle, with_entity_mut};
-use super::{Game, commands::Target};
+use super::{Game, commands::Target, native_mobs::spawnable};
 use horizon_client::mod_api::EntityRef;
 use horizon_core::geometry::Vec3;
-
-/// `Level.isInSpawnableBounds` and `/tp`'s limits: 30,000,000 blocks out,
-/// 20,000,000 up or down.
-fn in_bounds([x, y, z]: [f64; 3]) -> bool {
-    [x, y, z].iter().all(|v| v.is_finite())
-        && x.abs() < 30_000_000.0
-        && z.abs() < 30_000_000.0
-        && y.abs() < 20_000_000.0
-}
 
 /// `Direction.fromYRot`: the horizontal direction a yaw faces.
 fn facing(yaw: f32) -> &'static str {
     const BY_2D: [&str; 4] = ["south", "west", "north", "east"];
-    BY_2D[((f64::from(yaw) / 90.0 + 0.5).floor() as i64 & 3) as usize]
+    BY_2D[((f64::from(yaw) / 90.0 + 0.5).floor() as i32 & 3) as usize]
 }
 
 impl Game<'_> {
@@ -37,7 +28,7 @@ impl Game<'_> {
         let Some(t) = self.native_entity_target(entity) else {
             return false;
         };
-        if !in_bounds(pos) || rotation.is_some_and(|r| !r.iter().all(|v| v.is_finite())) {
+        if !spawnable(pos) || rotation.is_some_and(|r| !r.iter().all(|v| v.is_finite())) {
             return false;
         }
         self.teleport_to(t, pos, rotation, true);
@@ -140,9 +131,48 @@ mod tests {
 
     #[test]
     fn positions_stay_inside_the_worlds_bounds() {
-        assert!(super::in_bounds([29_999_999.0, -64.0, 0.0]));
-        assert!(!super::in_bounds([30_000_000.0, 64.0, 0.0]));
-        assert!(!super::in_bounds([0.0, 20_000_001.0, 0.0]));
-        assert!(!super::in_bounds([f64::NAN, 64.0, 0.0]));
+        assert!(super::spawnable([29_999_999.0, -64.0, 0.0]));
+        assert!(!super::spawnable([30_000_000.0, 64.0, 0.0]));
+        assert!(!super::spawnable([0.0, 20_000_001.0, 0.0]));
+        assert!(!super::spawnable([f64::NAN, 64.0, 0.0]));
+    }
+    /// Independent vanilla outcomes for spawn bounds and the yaw-to-direction conversion.
+    #[test]
+    fn move_boundaries_match_vanilla() {
+        use serde_json::Value;
+        let cases = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/native_entity_moves.jsonl"
+        ));
+        let expected = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/native_entity_moves_expected.jsonl"
+        ));
+        let rows = |text: &str| {
+            text.lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let (cases, expected) = (rows(cases), rows(expected));
+        assert_eq!(cases.len(), expected.len());
+        assert!(cases.len() >= 20);
+        for (input, expected) in cases.iter().zip(&expected) {
+            assert_eq!(input["name"], expected["name"]);
+            let pos = std::array::from_fn(|i| input["pos"][i].as_f64().unwrap());
+            let yaw = input["yaw"].as_f64().unwrap() as f32;
+            assert_eq!(
+                super::spawnable(pos),
+                expected["spawnable"].as_bool().unwrap(),
+                "{}",
+                input["name"]
+            );
+            assert_eq!(
+                super::facing(yaw),
+                expected["direction"].as_str().unwrap(),
+                "{}",
+                input["name"]
+            );
+        }
     }
 }
