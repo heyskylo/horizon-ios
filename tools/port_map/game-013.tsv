@@ -148,3 +148,5 @@ Sniffer.jumpFromGround	port	crates/horizon-client/src/mobs/living.rs::jump_from_
 Sniffer.mobInteract	inline	crates/horizon-client/src/mobs/ai.rs::eating_sound	the eating sound plays when the food was taken (feed_animal)
 Sniffer.playEatingSound	port	crates/horizon-client/src/mobs/ai.rs::eating_sound	Species::Sniffer arm: entity.sniffer.eat with pitch 0.8 to 1.2
 Sniffer.playSearchingSound	port	crates/horizon-client/src/game/sniffers.rs::Game::tick_sniffer_effects	searching sound every 20 ticks while searching, near any player
+Parrot.canBeABaby	port	crates/horizon-client/src/mobs/species.rs::can_be_a_baby	the false arm: a parrot with a negative Age is an adult, and its getVoicePitch is the plain range
+ZombieNautilus.canBeABaby	port	crates/horizon-client/src/mobs/species.rs::can_be_a_baby	the false arm: a zombie nautilus with a negative Age is an adult

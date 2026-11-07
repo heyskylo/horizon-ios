@@ -71,6 +71,8 @@ pub(crate) struct TestLevel {
     /// `ShulkerBoxBlockEntity.isClosed` at a position: `true` for a shut lid,
     /// `false` for an open box. Positions not listed have no block entity.
     pub shulker_closed: HashMap<BlockPos, bool>,
+    /// The containers `container_open` reports as open.
+    pub opened: HashSet<BlockPos>,
 }
 impl TestLevel {
     fn new(b: &Behaviours) -> Self {
@@ -92,10 +94,14 @@ impl TestLevel {
             openers: HashMap::new(),
             opener_rechecks: Vec::new(),
             shulker_closed: HashMap::new(),
+            opened: HashSet::new(),
         }
     }
 }
 impl LevelAccess for TestLevel {
+    fn container_open(&self, pos: BlockPos) -> bool {
+        self.opened.contains(&pos)
+    }
     fn recheck_container_openers(&mut self, pos: BlockPos) -> Option<(i32, i32)> {
         self.opener_rechecks.push(pos);
         self.openers.get(&pos).copied()
@@ -375,6 +381,65 @@ fn block_observation_follows_successful_commits_only() {
 }
 
 #[test]
+fn a_level_can_keep_a_lever_as_it_is() {
+    use std::cell::RefCell;
+
+    struct Holder {
+        inner: TestLevel,
+        hold: bool,
+        seen: RefCell<Vec<(BlockPos, i32, i32)>>,
+    }
+    impl LevelAccess for Holder {
+        fn block_state(&self, pos: BlockPos) -> BlockStateId {
+            self.inner.block_state(pos)
+        }
+        fn set_raw(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId> {
+            self.inner.set_raw(pos, state)
+        }
+        fn is_loaded(&self, pos: BlockPos) -> bool {
+            self.inner.is_loaded(pos)
+        }
+        fn random(&mut self) -> &mut LegacyRandom {
+            self.inner.random()
+        }
+        fn game_time(&self) -> i64 {
+            self.inner.game_time()
+        }
+        fn redstone_change(&self, pos: BlockPos, old: i32, new: &mut i32) {
+            self.seen.borrow_mut().push((pos, old, *new));
+            if self.hold {
+                *new = old;
+            }
+        }
+    }
+    let Some(f) = fixture() else { return };
+    let b = &f.behaviours;
+    let mut level = Holder {
+        inner: TestLevel::new(b),
+        hold: true,
+        seen: RefCell::new(Vec::new()),
+    };
+    let mut ticks = Ticks::new(0);
+    let pos = BlockPos::new(0, 80, 0);
+    let stone = f.registry.default_state("minecraft:stone").unwrap();
+    for z in [-1, 1] {
+        level.set_raw(BlockPos::new(0, 80, z), stone);
+    }
+    let lever = f.registry.default_state("minecraft:lever").unwrap();
+    level.set_raw(pos, lever);
+    // Held: the pull is heard, and the lever stays off.
+    b.sim(&mut level, &mut ticks).lever_pull(pos, lever);
+    assert_eq!(level.block_state(pos), lever);
+    assert_eq!(level.seen.borrow()[..], [(pos, 0, 15)]);
+    // Let go: the same pull turns it on.
+    level.hold = false;
+    b.sim(&mut level, &mut ticks).lever_pull(pos, lever);
+    let pulled = level.block_state(pos);
+    assert!(b.table.bool(pulled, b.props.powered));
+    assert_eq!(level.seen.borrow().len(), 2);
+}
+
+#[test]
 fn neighbor_observation_follows_dispatch_order() {
     use std::cell::RefCell;
 
@@ -438,6 +503,25 @@ fn neighbor_observation_follows_dispatch_order() {
         level.seen.borrow().last(),
         Some(&(BlockPos::new(3, 4, 5), b.air(), changed, true))
     );
+}
+
+/// `WeatheringCopperChestBlock.randomTick`: a copper chest someone has open
+/// skips `changeOverTime` and its draws; a closed one draws (#11378).
+#[test]
+fn a_viewed_copper_chest_does_not_weather() {
+    let Some(f) = fixture() else { return };
+    let mut w = World::new(f);
+    let pos = BlockPos::new(0, 64, 0);
+    let chest = w.id("copper_chest", &[("type", "single")]);
+    w.put(pos, chest);
+    let draw = |w: &World| w.level.random.clone().next_long();
+    w.level.opened.insert(pos);
+    let before = draw(&w);
+    f.behaviours.random_tick(&mut w.level, &mut w.ticks, pos);
+    assert_eq!(draw(&w), before, "an open chest draws nothing");
+    w.level.opened.clear();
+    f.behaviours.random_tick(&mut w.level, &mut w.ticks, pos);
+    assert_ne!(draw(&w), before, "a closed one rolls changeOverTime");
 }
 
 #[test]

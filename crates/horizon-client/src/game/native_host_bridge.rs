@@ -14,7 +14,6 @@ use horizon_client::{
 use horizon_world::{player_inventory::EquipmentSlot, registry::BlockStateId};
 
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// A copy of the mod block entity at `pos`, to read without changing it:
     /// a press reading the basin under it, a client mod drawing a machine

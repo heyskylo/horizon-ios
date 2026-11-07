@@ -512,6 +512,7 @@ pub(crate) fn with_resource_test_world(
         others_grid: None,
         others_index: None,
         others_villagers: None,
+        others_solid: None,
         daylight: true,
         monsters_burn: false,
         game_time: 1000,

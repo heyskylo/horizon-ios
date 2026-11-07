@@ -19,6 +19,7 @@ pub use crate::crafting::{CustomRecipe, Ingredient};
 pub use crate::extras::Corner;
 pub use crate::extras_hud::Corners;
 pub use crate::first_person::Hand;
+pub use crate::fluid_render::NativeFluidRenderOptions;
 pub use crate::fog::{FogData, FogType};
 pub use crate::game::NativeChunkSnapshot;
 pub use crate::game::NativeEffect;
@@ -26,8 +27,10 @@ pub use crate::game::NativeFluidTank;
 pub use crate::game::NativeInventoryKind;
 pub use crate::game::native_block_entity_draw::{BlockEntityDraw, CubeFace};
 pub use crate::game::native_client_services::{
-    NativeClientEntity, NativeClientHead, NativeClientProfile, NativeClientState,
+    NativeClientEntity, NativeClientHead, NativeClientItem, NativeClientProfile, NativeClientState,
+    NativeScreenKind, NativeWorldId,
 };
+pub use crate::game::native_text_field::NativeTextField;
 pub use crate::game::{
     ItemEnergyBuffer, NativeBiomeId, NativeBlockEdit, NativeBlockReadError, NativeBlockRun,
     NativeClientBiomes, NativeClientChunks, NativeClock, NativeColumnBlocks, NativeComponentError,
@@ -57,6 +60,8 @@ pub use crate::music::{Music, MusicLayer};
 pub use crate::particles::{ParticleOptions, ParticleType};
 pub use crate::recipe_book::RecipeBookCategory;
 pub use crate::sound_engine::SoundPlayback;
+/// A named step of the server tick and its wall and CPU milliseconds (`native_server_tick_timed`).
+pub use crate::spans::Span as TickSpan;
 pub use crate::text::Text;
 pub use crate::world_primitives::{PrimitiveShape, WorldPrimitive, WorldPrimitives};
 pub use horizon_assets::item_model::{DisplayContext, StackView};
@@ -65,11 +70,17 @@ pub use horizon_core::{
     position::BlockPos,
     random::{LegacyRandom, RandomSource},
 };
+/// A synched entity data value (`ClientboundSetEntityDataPacket`'s), as `entity_data_to` hands
+/// them over.
+pub use horizon_protocol::entity_data::Value as EntityDataValue;
 /// The server's play packets `client_packet` hands over, decoded.
 pub use horizon_protocol::packets::play::Clientbound as ClientboundPlayPacket;
 /// The play packets a client sends, as `native_send_packet` takes them.
 pub use horizon_protocol::packets::play::Serverbound as ServerboundPlayPacket;
 pub use horizon_world::consumable::UseAnimation;
+/// Vanilla's `TagParser`: the tag an SNBT text holds and the bytes it read
+/// (`ItemStack::from_nbt` reads an item from it). API @API:item_from_snbt@.
+pub use horizon_world::nbt::parse_snbt;
 pub use horizon_world::player_inventory::EquipmentSlot;
 pub use horizon_world::{
     attachments::{
@@ -80,10 +91,16 @@ pub use horizon_world::{
     loot::{LootStack, NativeLootContext},
     nbt::{Compound, Tag},
     registry::BlockStateId,
-    worldgen::structure::{Mirror, Rotation},
+    worldgen::{
+        native_generate::{NativeGenerate, NativeLodColumn, NativeProtoChunk},
+        structure::{Mirror, Rotation},
+    },
 };
 pub use serde_json;
 use serde_json::{Map, Value};
+/// The slot range a menu's input slots take (`native_open_menu_with_input`).
+/// API @API:menu_input@.
+pub use std::ops::Range;
 use std::time::Duration;
 /// The window events `input_key` hands over (`winit::event::KeyEvent`) and their key types.
 pub use winit;
@@ -450,6 +467,61 @@ pub struct NativeZoom {
     pub factor: f32,
     pub smooth: bool,
     pub turn: f32,
+}
+
+/// A boss bar a server mod shows one player (`native_boss_bar`), as Bukkit's
+/// `BossBar` holds it. API @API:boss_bar@.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NativeBossBar {
+    pub name: Text,
+    /// How full the bar is, 0 to 1.
+    pub progress: f32,
+    /// `BossBarColor`'s ordinal: 0 pink, 1 blue, 2 red, 3 green, 4 yellow,
+    /// 5 purple, 6 white.
+    pub color: i32,
+    /// `BossBarOverlay`'s ordinal: 0 progress (no notches), 1 six notches,
+    /// 2 ten, 3 twelve, 4 twenty.
+    pub overlay: i32,
+    /// `BossEvent`'s flags: the sky darkens, boss music plays, fog thickens.
+    pub darken: bool,
+    pub music: bool,
+    pub fog: bool,
+}
+
+/// One open level of a server, counted for a diagnostics mod (`native_level_stats`): Bukkit's
+/// `World.getLoadedChunks`, `getForceLoadedChunks`, `getEntities` and `Chunk.getTileEntities`
+/// in numbers. API @API:level_stats@.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct NativeLevelStats {
+    /// The chunks it holds loaded.
+    pub chunks: usize,
+    /// The chunks `/forceload` and mods' tickets (`native_force_chunk`) keep loaded.
+    pub forced_chunks: usize,
+    pub block_entities: usize,
+    /// The block entities that tick (`Level.blockEntityTickers`).
+    pub ticking_block_entities: usize,
+    /// Its entities by type (`minecraft:zombie`), players included, the most first and ties
+    /// by name.
+    pub entities: Vec<(String, usize)>,
+    /// Its block entities by type (`minecraft:chest`, else a mod block's name), in the same
+    /// order.
+    pub block_entity_types: Vec<(String, usize)>,
+}
+
+/// What one mob type cost one level's ticks while a mod sampled them
+/// (`native_take_mob_costs`). API @API:server_tick_timed@.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct NativeMobCost {
+    /// The level, `minecraft:overworld`.
+    pub dimension: String,
+    /// The mob type, `minecraft:zombie`.
+    pub kind: String,
+    /// The time its mobs' own ticks took (their riders' inside), in nanoseconds.
+    pub nanos: u64,
+    /// The mob ticks timed.
+    pub mob_ticks: u64,
 }
 
 /// A player on the server, as a server hook sees them.

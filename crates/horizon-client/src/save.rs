@@ -3712,8 +3712,9 @@ pub struct Level {
     pub post_effects: Vec<String>,
     /// Player.lastDeathLocation: the dimension and block of the last death.
     pub last_death: Option<(String, [i32; 3])>,
-    /// Player.active_effects: (id, duration, amplifier, ambient, show_particles).
-    pub active_effects: Vec<(String, i32, i32, bool, bool)>,
+    /// Player.active_effects: (id, duration, amplifier, ambient,
+    /// show_particles, show_icon).
+    pub active_effects: Vec<crate::effects::SavedEffect>,
     /// Player.EnderItems: the ender chest inventory (27 slots).
     pub ender_items: Vec<Option<crate::items::ItemStack>>,
     /// The `recipeBook` compound: open/filter settings and unlocked recipes.
@@ -4086,26 +4087,7 @@ impl Level {
         self.active_effects = match p.get("active_effects") {
             Some(Tag::List(list)) => list
                 .iter()
-                .filter_map(|e| {
-                    let id = text(e.get("id"))?;
-                    let get = |k: &str| number(e.get(k));
-                    // `MobEffectInstance.Details` stores `amplifier` as
-                    // `ExtraCodecs.UNSIGNED_BYTE`: the NBT byte is signed, and
-                    // `UnsignedBytes.toInt` maps it back to 0..=255. A plain
-                    // sign-extend turns 255 (byte -1) into -1, which
-                    // `EffectInstance::new` then clamps to the lowest level.
-                    let amplifier = match e.get("amplifier") {
-                        Some(Tag::Byte(v)) => i32::from(*v as u8),
-                        other => number(other).unwrap_or(0) as i32,
-                    };
-                    Some((
-                        id,
-                        get("duration").unwrap_or(0) as i32,
-                        amplifier,
-                        get("ambient").unwrap_or(0) != 0,
-                        get("show_particles").is_none_or(|v| v != 0),
-                    ))
-                })
+                .filter_map(|e| Some(read_effect_details(e, &text(e.get("id"))?)))
                 .collect(),
             _ => Vec::new(),
         };
@@ -4219,28 +4201,9 @@ impl Level {
                 Tag::List(
                     self.active_effects
                         .iter()
-                        .map(|(id, duration, amplifier, ambient, particles)| {
-                            let mut effect =
-                                vec![("id", string(id)), ("duration", Tag::Int(*duration))];
-                            // MobEffectInstance.Details: amplifier defaults to zero.
-                            if *amplifier != 0 {
-                                // Same unsigned byte the codec writes:
-                                // `Mth.clamp` to 0..=255, then `byteValue`.
-                                effect.push((
-                                    "amplifier",
-                                    Tag::Byte((*amplifier).clamp(0, 255) as u8 as i8),
-                                ));
-                            }
-                            // optionalFieldOf("ambient", false) and
-                            // ("show_particles", true): defaults are not written;
-                            // show_icon is always written.
-                            if *ambient {
-                                effect.push(("ambient", Tag::Byte(1)));
-                            }
-                            if !*particles {
-                                effect.push(("show_particles", Tag::Byte(0)));
-                            }
-                            effect.push(("show_icon", Tag::Byte(i8::from(*particles))));
+                        .map(|e| {
+                            let mut effect = vec![("id", string(&e.id))];
+                            effect.extend(effect_details(e));
                             Tag::compound(effect)
                         })
                         .collect(),
@@ -5202,6 +5165,59 @@ fn record_is_old(root: &NamedTag) -> bool {
     };
     before_blending || root.tag.get("blending_data").is_some()
 }
+
+/// `MobEffectInstance.Details` read under its effect's `id`, the
+/// `hidden_effect` chain included.
+fn read_effect_details(e: &Tag, id: &str) -> crate::effects::SavedEffect {
+    let get = |k: &str| number(e.get(k));
+    // `Details` stores `amplifier` as `ExtraCodecs.UNSIGNED_BYTE`: the NBT
+    // byte is signed, and `UnsignedBytes.toInt` maps it back to 0..=255. A
+    // plain sign-extend turns 255 (byte -1) into -1, which
+    // `EffectInstance::new` then clamps to the lowest level.
+    let amplifier = match e.get("amplifier") {
+        Some(Tag::Byte(v)) => i32::from(*v as u8),
+        other => number(other).unwrap_or(0) as i32,
+    };
+    let particles = get("show_particles").is_none_or(|v| v != 0);
+    crate::effects::SavedEffect {
+        id: id.to_owned(),
+        duration: get("duration").unwrap_or(0) as i32,
+        amplifier,
+        ambient: get("ambient").unwrap_or(0) != 0,
+        particles,
+        // Details.CODEC: `show_icon` defaults to `show_particles`.
+        icon: get("show_icon").map_or(particles, |v| v != 0),
+        hidden: e
+            .get("hidden_effect")
+            .map(|h| Box::new(read_effect_details(h, id))),
+    }
+}
+/// `MobEffectInstance.Details.MAP_CODEC`'s fields, `hidden_effect` nested.
+fn effect_details(e: &crate::effects::SavedEffect) -> Vec<(&'static str, Tag)> {
+    let mut details = vec![("duration", Tag::Int(e.duration))];
+    // Amplifier defaults to zero; when written it is the codec's unsigned
+    // byte: `Mth.clamp` to 0..=255, then `byteValue`.
+    if e.amplifier != 0 {
+        details.push((
+            "amplifier",
+            Tag::Byte(e.amplifier.clamp(0, 255) as u8 as i8),
+        ));
+    }
+    // optionalFieldOf("ambient", false) and ("show_particles", true):
+    // defaults are not written; show_icon is always written.
+    if e.ambient {
+        details.push(("ambient", Tag::Byte(1)));
+    }
+    if !e.particles {
+        details.push(("show_particles", Tag::Byte(0)));
+    }
+    details.push(("show_icon", Tag::Byte(i8::from(e.icon))));
+    if let Some(hidden) = &e.hidden {
+        details.push(("hidden_effect", Tag::compound(effect_details(hidden))));
+    }
+    details
+}
+
 #[cfg(test)]
 mod tests {
     use crate::mobs::spawner::SpawnDataExt;
@@ -6516,6 +6532,36 @@ mod tests {
         assert_eq!(again.update_tag(), spawner.update_tag());
     }
     #[test]
+    fn transient_client_update_fields_are_not_saved_or_restored() {
+        use crate::containers::{BlockEntity, ModBlockEntity, ModBlockEntityFields};
+        let saved = horizon_world::nbt::parse_snbt(
+            r#"{id:"test:machine",x:5,y:-60,z:12,progress:7,unknown:{value:2b}}"#,
+        )
+        .unwrap()
+        .0;
+        let (pos, mut entity) = decode_block_entity(&saved).unwrap();
+        let BlockEntity::Mod(machine) = &mut entity else {
+            panic!("not a mod's");
+        };
+        let revision = machine.revision();
+        let pending = Compound::from([("effects".into(), Tag::Int(23))]);
+        machine.set_client_update_fields(pending.clone());
+        assert_eq!(encode_block_entity(pos, &entity, "test:machine"), saved);
+        let (_, cold) = decode_block_entity(&saved).unwrap();
+        let BlockEntity::Mod(cold) = cold else {
+            panic!("not a mod's");
+        };
+        assert!(cold.take_client_update_fields().is_empty());
+        let BlockEntity::Mod(machine) = &entity else {
+            unreachable!();
+        };
+        assert_eq!(machine.take_client_update_fields(), pending);
+        assert_eq!(machine.revision(), revision);
+        let fresh = ModBlockEntity::new(ModBlockEntityFields::default());
+        assert!(fresh.take_client_update_fields().is_empty());
+    }
+
+    #[test]
     fn mod_block_entity_round_trips() {
         let saved = horizon_world::nbt::parse_snbt(
             r#"{id:"gtmod:macerator",x:5,y:-60,z:12,energy:1200L,progress:7,Items:[{Slot:0b,id:"minecraft:iron_ore",count:3}]}"#,
@@ -7152,12 +7198,111 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    fn eff(
+        id: &str,
+        duration: i32,
+        amplifier: i32,
+        ambient: bool,
+        particles: bool,
+        icon: bool,
+    ) -> crate::effects::SavedEffect {
+        crate::effects::SavedEffect {
+            ambient,
+            particles,
+            icon,
+            ..crate::effects::SavedEffect::new(id, duration, amplifier)
+        }
+    }
+
+    #[test]
+    fn a_player_keeps_the_effects_hidden_under_a_stronger_one() {
+        // MobEffectInstance.Details.CODEC nests `hidden_effect` (no id of its
+        // own): Poison II for 6 s over Poison I for 30 s over Poison I
+        // forever, as `/effect give` leaves them.
+        let tag = Tag::compound([(
+            "active_effects",
+            Tag::List(vec![Tag::compound([
+                ("id", string("minecraft:poison")),
+                ("duration", Tag::Int(120)),
+                ("amplifier", Tag::Byte(1)),
+                ("show_icon", Tag::Byte(1)),
+                (
+                    "hidden_effect",
+                    Tag::compound([
+                        ("duration", Tag::Int(600)),
+                        ("ambient", Tag::Byte(1)),
+                        ("show_icon", Tag::Byte(1)),
+                        (
+                            "hidden_effect",
+                            Tag::compound([
+                                ("duration", Tag::Int(-1)),
+                                ("show_particles", Tag::Byte(0)),
+                                ("show_icon", Tag::Byte(0)),
+                            ]),
+                        ),
+                    ]),
+                ),
+            ])]),
+        )]);
+        let mut level = Level::default();
+        level.read_player(&tag);
+        let expected = crate::effects::SavedEffect {
+            hidden: Some(Box::new(crate::effects::SavedEffect {
+                hidden: Some(Box::new(eff(
+                    "minecraft:poison",
+                    -1,
+                    0,
+                    false,
+                    false,
+                    false,
+                ))),
+                ..eff("minecraft:poison", 600, 0, true, true, true)
+            })),
+            ..eff("minecraft:poison", 120, 1, false, true, true)
+        };
+        assert_eq!(level.active_effects, [expected]);
+        // Written back, the chain is the same compound.
+        assert_eq!(
+            level.player_tag().get("active_effects"),
+            tag.get("active_effects")
+        );
+    }
+
+    #[test]
+    fn a_saved_effect_without_show_icon_takes_show_particles() {
+        // MobEffectInstance.Details.CODEC: `show_icon` defaults to
+        // `show_particles`; an explicit one is kept apart from it.
+        let effect = |extra: Vec<(&'static str, Tag)>| {
+            let mut e = vec![
+                ("id", string("minecraft:darkness")),
+                ("duration", Tag::Int(260)),
+            ];
+            e.extend(extra);
+            Tag::compound(e)
+        };
+        let mut level = Level::default();
+        level.read_player(&Tag::compound([(
+            "active_effects",
+            Tag::List(vec![
+                effect(vec![("show_particles", Tag::Byte(0))]),
+                effect(vec![]),
+                effect(vec![("show_icon", Tag::Byte(0))]),
+            ]),
+        )]));
+        let flags: Vec<_> = level
+            .active_effects
+            .iter()
+            .map(|e| (e.particles, e.icon))
+            .collect();
+        assert_eq!(flags, [(false, false), (true, true), (true, false)]);
+    }
+
     #[test]
     fn effects_that_ended_are_not_saved_again() {
         // A player loaded with an effect that has since run out: the loaded
         // compound still holds it, but the save writes only what is active.
         let mut level = Level {
-            active_effects: vec![("minecraft:speed".into(), 200, 1, false, true)],
+            active_effects: vec![eff("minecraft:speed", 200, 1, false, true, true)],
             ..Level::default()
         };
         let loaded = level.player_tag();
@@ -7170,10 +7315,10 @@ mod tests {
     #[test]
     fn effect_amplifier_default_is_omitted_from_saved_players() {
         let effects = vec![
-            ("minecraft:luck".into(), -1, 0, false, false),
-            ("minecraft:speed".into(), 200, 1, true, false),
-            ("minecraft:regeneration".into(), 40, 128, false, true),
-            ("minecraft:strength".into(), -1, 255, false, true),
+            eff("minecraft:luck", -1, 0, false, false, false),
+            eff("minecraft:speed", 200, 1, true, false, true),
+            eff("minecraft:regeneration", 40, 128, false, true, false),
+            eff("minecraft:strength", -1, 255, false, true, true),
         ];
         for raw in [
             None,
@@ -7210,19 +7355,16 @@ mod tests {
                     Some(Tag::Byte(-1))
                 ],
             );
-            for (entry, (id, duration, _, ambient, particles)) in entries.iter().zip(&effects) {
-                assert_eq!(entry.get("id"), Some(&string(id)));
-                assert_eq!(entry.get("duration"), Some(&Tag::Int(*duration)));
+            for (entry, e) in entries.iter().zip(&effects) {
+                assert_eq!(entry.get("id"), Some(&string(&e.id)));
+                assert_eq!(entry.get("duration"), Some(&Tag::Int(e.duration)));
                 // MobEffectInstance.Details.MAP_CODEC leaves out ambient false
                 // and show_particles true.
-                let ambient_tag = ambient.then_some(Tag::Byte(1));
+                let ambient_tag = e.ambient.then_some(Tag::Byte(1));
                 assert_eq!(entry.get("ambient"), ambient_tag.as_ref());
-                let particles_tag = (!*particles).then_some(Tag::Byte(0));
+                let particles_tag = (!e.particles).then_some(Tag::Byte(0));
                 assert_eq!(entry.get("show_particles"), particles_tag.as_ref());
-                assert_eq!(
-                    entry.get("show_icon"),
-                    Some(&Tag::Byte(i8::from(*particles)))
-                );
+                assert_eq!(entry.get("show_icon"), Some(&Tag::Byte(i8::from(e.icon))));
             }
             assert_eq!(
                 level.active_effects, effects,
@@ -7241,9 +7383,9 @@ mod tests {
         // it with `ExtraCodecs.UNSIGNED_BYTE`: `255.byteValue()` is -1 and
         // `128.byteValue()` is -128; `UnsignedBytes.toInt` restores both.
         let effects = vec![
-            ("minecraft:strength".into(), -1, 255, false, true),
-            ("minecraft:regeneration".into(), -1, 128, false, true),
-            ("minecraft:speed".into(), 40, 1, false, true),
+            eff("minecraft:strength", -1, 255, false, true, true),
+            eff("minecraft:regeneration", -1, 128, false, true, true),
+            eff("minecraft:speed", 40, 1, false, true, true),
         ];
         let level = Level {
             active_effects: effects.clone(),
