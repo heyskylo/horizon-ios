@@ -66,7 +66,7 @@ FireworkRocketItem.getEntityJustOutsideOfBlockPos	port	crates/horizon-client/src
 HangingEntityItem.mayPlace	port	crates/horizon-client/src/game/paintings.rs::Game::place_painting	paintings take no vertical face; an item frame (ItemFrameItem.mayPlace) may go on one and only needs the build height, which place_item_frame checks
 HangingEntityItem.appendHoverText	port	crates/horizon-client/src/game/stations.rs::Game::stack_tooltip_lines	
 Item.getDestroySpeed	port	crates/horizon-items/src/items.rs::Items::mining_speed	
-Item.finishUsingItem	port	crates/horizon-client/src/game.rs::Game::consume_held	the consumable effects are applied by apply_consume_effect
+Item.finishUsingItem	port	crates/horizon-client/src/game/using_item.rs::Game::consume_held	the consumable effects are applied by apply_consume_effect
 Item.getBarColor	port	crates/horizon-client-render/src/hud_overlays.rs::damage_bar	width and hue from the damage fraction
 Item.mineBlock	port	crates/horizon-client/src/game.rs::Game::mine_block_with_held	
 Item.isCorrectToolForDrops	port	crates/horizon-items/src/items.rs::Items::correct_for_drops	
