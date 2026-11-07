@@ -21110,8 +21110,7 @@ impl WorldRestLoader {
     }
 }
 
-impl Game<'_> {
-}
+impl Game<'_> {}
 
 /// `key.hotbar.1` to `key.hotbar.9` in a menu.
 const HOTBAR_DIGITS: [KeyCode; 9] = [

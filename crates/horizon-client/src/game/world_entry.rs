@@ -165,7 +165,9 @@ impl Game<'_> {
             None => self.res.items(),
         }
     }
-    pub(super) fn mob_suffocation(&self) -> &horizon_world::suffocation::SuffocationRegistry<'static> {
+    pub(super) fn mob_suffocation(
+        &self,
+    ) -> &horizon_world::suffocation::SuffocationRegistry<'static> {
         self.world_tables
             .as_ref()
             .map_or_else(|| self.res.suffocation(), |t| &t.suffocation)
