@@ -114,6 +114,7 @@ pub(in crate::game) fn guest(
             latency: Arc::new(std::sync::atomic::AtomicI32::new(0)),
             address: "127.0.0.1:1".parse().unwrap(),
             expected: false,
+            configured: Default::default(),
         },
         conn as i32,
         [0.5, 1.0, 0.5],
