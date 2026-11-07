@@ -491,6 +491,14 @@ impl ServerEntity {
                 self.add_step(e.position);
             }
         }
+        // ServerEntity.sendChanges: a bounce moves the update clock onto its next
+        // send tick (UpdateInterval.nextInterval; 0 for NEVER), so it goes out now.
+        if e.sync_position {
+            self.tick = self
+                .tick
+                .checked_div(self.interval)
+                .map_or(0, |n| (n + 1) * self.interval);
+        }
         // SynchedEntityData.isDirty: once for every client.
         let dirty = e.meta != self.meta;
         let due = self.interval != 0 && self.tick.is_multiple_of(self.interval);
