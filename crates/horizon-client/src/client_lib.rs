@@ -23,8 +23,8 @@ pub use horizon_client_render::{
     screen_draw, screen_effects, sculk, section_mask, server_terrain, settings, shader_options,
     shader_pack_list, signs, skins, sound_engine, sound_events, sound_preview, spans, split_layout,
     split_map, split_profiles, sprites, streaming, structure_block, tab_list, telemetry,
-    test_block, test_instance_block, testgen, title_edition, trims, ui, vault, weather, widgets,
-    world, worldborder, zip,
+    terrain_model, test_block, test_instance_block, testgen, title_edition, trims, ui, vault,
+    weather, widgets, world, worldborder, zip,
 };
 pub mod attack_strength;
 pub mod attribute_updates;
