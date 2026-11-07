@@ -172,6 +172,7 @@ impl Game<'_> {
         if changed {
             let infos = super::packs::pack_infos(&self.vanilla_root(), &self.server_packs.active);
             self.ui.options.update_pack_infos(infos);
+            self.ui.options.pack_configs = super::packs::pack_configs(&self.vanilla_root());
         }
     }
     pub(super) fn draw_options(&mut self, batch: &mut HudBatch) {
@@ -399,6 +400,11 @@ impl Game<'_> {
                 }
                 Event::Packs(_) => {
                     self.settings.save(&Self::options_path());
+                    self.reload_packs();
+                }
+                Event::PackOptions { entries, chosen } => {
+                    super::packs::save_pack_options(&entries, chosen);
+                    self.ui.options.pack_configs = super::packs::pack_configs(&self.vanilla_root());
                     self.reload_packs();
                 }
                 Event::OpenPackFolder => {

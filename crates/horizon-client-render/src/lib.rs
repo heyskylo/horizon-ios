@@ -82,6 +82,7 @@ pub mod options_fixes;
 pub mod options_ui;
 pub mod overlay;
 pub mod pack_browser;
+pub mod pack_options_ui;
 pub mod pack_screen;
 pub mod packs;
 pub mod pad_cursor;
