@@ -654,12 +654,8 @@ impl Game<'_> {
             // that this larger rendered model stays behind an occluder.
             let culling = entity.then(|| {
                 // The posed envelope walks every model point in every copy;
-                // no occlusion decision reads it while culling is off.
-                // Keep TAA's existing preparation path: skipping this walk
-                // regressed windowed 1% lows despite reducing CPU time.
-                if self.settings.horizon.entity_culling == EntityCullingMode::Off
-                    && !self.settings.horizon.taa
-                {
+                // with culling off the decision is `Bypass` whatever it holds.
+                if self.settings.horizon.entity_culling == EntityCullingMode::Off {
                     return EntityCullDecision::Bypass;
                 }
                 state
