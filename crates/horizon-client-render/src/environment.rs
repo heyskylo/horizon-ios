@@ -2,14 +2,22 @@
 //! dimension type's attributes, the biome layer, the dimension's timelines and, where it can
 //! have weather, the rain and thunder layers, sampled into the sky state the renderer draws.
 use crate::Result;
-use horizon_world::environment_attributes::{AttributeMap, Value, attribute};
+use horizon_world::environment_attributes::{
+    Attribute, AttributeMap, Entry, Kind, Value, attribute,
+};
 use horizon_world::environment_system::{BiomeBlend, Builder, Conditions, System};
 use horizon_world::environment_timeline::Timeline;
 use serde_json::Value as Json;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 pub struct Environment {
     system: System,
+    /// Biome attribute maps by biome id, where resource packs changed them; the biome layer
+    /// reads these instead of the biome's own.
+    biomes: HashMap<String, AttributeMap>,
+    /// Packs' biome `post_process` maps by biome id: a biome layer after the weather.
+    post: HashMap<String, AttributeMap>,
 }
 
 #[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -49,6 +57,172 @@ pub struct Sample<'a> {
     pub blend: Option<&'a BiomeBlend<'a>>,
     /// The biome at the camera, for attributes that don't blend.
     pub biome: Option<&'a AttributeMap>,
+    /// The same for the packs' biome post-process group.
+    pub post_blend: Option<&'a BiomeBlend<'a>>,
+    pub post_biome: Option<&'a AttributeMap>,
+}
+
+/// Resource packs' Polytone biome and dimension modifiers (#11486): layers they add to, change
+/// in or remove from the attribute stack.
+#[derive(Default)]
+pub struct PackModifiers {
+    biomes: Vec<horizon_polytone::BiomeModifier>,
+    dimensions: Vec<horizon_polytone::DimensionModifier>,
+}
+
+impl PackModifiers {
+    /// Every `assets/<namespace>/polytone/{biome,dimension}_modifiers/**.json` under a pack
+    /// overlay root. A file that fails to parse is skipped with a warning.
+    pub fn read(pack_root: &Path) -> Self {
+        let mut out = Self::default();
+        let Ok(namespaces) = std::fs::read_dir(pack_root.join("assets")) else {
+            return out;
+        };
+        for namespace in namespaces.flatten() {
+            for kind in ["biome_modifiers", "dimension_modifiers"] {
+                let mut stack = vec![namespace.path().join("polytone").join(kind)];
+                while let Some(dir) = stack.pop() {
+                    for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                        let path = entry.path();
+                        if path.is_dir() {
+                            stack.push(path);
+                            continue;
+                        }
+                        let Ok(relative) = path.strip_prefix(pack_root) else {
+                            continue;
+                        };
+                        let relative = relative.to_string_lossy();
+                        let implicit = horizon_polytone::implicit_id(&relative, kind);
+                        let json = match horizon_world::json_file::read::<Json>(&path) {
+                            Ok(json) => json,
+                            Err(e) => {
+                                log::warn!("{relative}: {e}");
+                                continue;
+                            }
+                        };
+                        let parsed = if kind == "biome_modifiers" {
+                            horizon_polytone::BiomeModifier::parse(&json, implicit.as_deref())
+                                .map(|m| m.map(|m| out.biomes.push(m)))
+                        } else {
+                            horizon_polytone::DimensionModifier::parse(&json, implicit.as_deref())
+                                .map(|m| m.map(|m| out.dimensions.push(m)))
+                        };
+                        if let Err(e) = parsed {
+                            log::warn!("{relative}: {e}");
+                        }
+                    }
+                }
+            }
+        }
+        out.biomes.sort_by_key(|m| m.priority);
+        out.dimensions.sort_by_key(|m| m.priority);
+        out
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.biomes.is_empty() && self.dimensions.is_empty()
+    }
+}
+
+/// A Polytone layer as a vanilla entry: `Some(None)` removes the attribute's entry, `None` is a
+/// value not supported yet (expressions and colormaps).
+fn vanilla_entry(
+    attribute: &'static Attribute,
+    layer: &horizon_polytone::Layer,
+) -> Option<Option<Entry>> {
+    use horizon_polytone::{Argument, Layer, Modifier};
+    let (modifier, argument) = match layer {
+        Layer::Remove => return Some(None),
+        Layer::Apply {
+            modifier, argument, ..
+        } => (modifier, argument),
+    };
+    let op = match modifier {
+        Modifier::Override => "override",
+        Modifier::Add => "add",
+        Modifier::Subtract => "subtract",
+        Modifier::Multiply => "multiply",
+        Modifier::Minimum => "minimum",
+        Modifier::Maximum => "maximum",
+        Modifier::AlphaBlend => "alpha_blend",
+        Modifier::BlendToGray => "blend_to_gray",
+        Modifier::And => "and",
+        Modifier::Nand => "nand",
+        Modifier::Or => "or",
+        Modifier::Nor => "nor",
+        Modifier::Xor => "xor",
+        Modifier::Xnor => "xnor",
+    };
+    let json = match argument {
+        Argument::Number(n) => Json::from(*n),
+        Argument::Bool(b) => Json::Bool(*b),
+        // Polytone colours may leave out the `#`; vanilla's codec wants it, 6 digits for RGB.
+        Argument::Color(c) if attribute.kind == Kind::RgbColor => {
+            Json::String(format!("#{:06x}", c & 0x00ff_ffff))
+        }
+        Argument::Color(c) => Json::String(format!("#{c:08x}")),
+        Argument::Object(o) => Json::Object(o.clone()),
+        Argument::Colormap(_) | Argument::Expression(_) => return None,
+    };
+    match Entry::with_modifier(attribute, op, &json) {
+        Ok(entry) => Some(Some(entry)),
+        Err(e) => {
+            log::warn!("{}: {e}", attribute.id);
+            None
+        }
+    }
+}
+
+/// Applies a group of Polytone layers to `map`: entries set or replaced, `REMOVE` drops them.
+fn apply_group(map: &mut AttributeMap, group: &horizon_polytone::Attributes) {
+    for (id, layer) in group {
+        let Some(attribute) = attribute(id) else {
+            log::warn!("unknown attribute {id}");
+            continue;
+        };
+        match vanilla_entry(attribute, layer) {
+            Some(Some(entry)) => map.set(attribute, entry),
+            Some(None) => map.remove(attribute),
+            None => {}
+        }
+    }
+}
+
+/// The biome ids a `#tag` (`data/<namespace>/tags/worldgen/biome/<path>.json`) holds, nested
+/// tags included.
+fn biome_tag(
+    root: &Path,
+    tag: &str,
+    cache: &mut HashMap<String, HashSet<String>>,
+) -> HashSet<String> {
+    if let Some(hit) = cache.get(tag) {
+        return hit.clone();
+    }
+    cache.insert(tag.to_owned(), HashSet::new());
+    let (namespace, path) = tag.split_once(':').unwrap_or(("minecraft", tag));
+    let file = root.join(format!("data/{namespace}/tags/worldgen/biome/{path}.json"));
+    let mut out = HashSet::new();
+    if let Ok(json) = horizon_world::json_file::read::<Json>(&file) {
+        for value in json["values"].as_array().into_iter().flatten() {
+            let id = value
+                .as_str()
+                .or_else(|| value["id"].as_str())
+                .unwrap_or_default();
+            match id.strip_prefix('#') {
+                Some(inner) => out.extend(biome_tag(root, inner, cache)),
+                None if !id.is_empty() => {
+                    out.insert(if id.contains(':') {
+                        id.to_owned()
+                    } else {
+                        format!("minecraft:{id}")
+                    });
+                }
+                None => {}
+            }
+        }
+    }
+    cache.insert(tag.to_owned(), out.clone());
+    out
 }
 
 /// The timeline ids a dimension type's `timelines` names: an id, a `#tag` or a list,
@@ -87,25 +261,72 @@ impl Environment {
     /// biome layer for every attribute some biome sets, its timelines (in tag order), and the
     /// weather where `Level.canHaveWeather` (sky light, no ceiling, not the End).
     pub fn load_dimension(root: &Path, dimension: &str) -> Result<Self> {
+        Self::load_dimension_with(root, dimension, &PackModifiers::default())
+    }
+
+    /// The same with resource packs' Polytone modifiers (wiki "Environment Attributes"): a
+    /// dimension modifier's `base` changes the dimension's own entries, `rain` and `thunder`
+    /// the weather's, `post_process` adds a layer after all others; a biome modifier's `base`
+    /// changes the biome's entries, `post_process` adds a biome layer after the weather.
+    /// Modifiers apply lowest priority first, so the highest wins.
+    pub fn load_dimension_with(
+        root: &Path,
+        dimension: &str,
+        packs: &PackModifiers,
+    ) -> Result<Self> {
         let json: Json = horizon_world::json_file::read(
             &root.join(format!("data/minecraft/dimension_type/{dimension}.json")),
         )?;
+        let id = format!("minecraft:{dimension}");
+        let mine: Vec<_> = packs
+            .dimensions
+            .iter()
+            .filter(|m| m.targets.matches(&id, |_| false))
+            .collect();
+        let mut dimension_map = AttributeMap::parse(&json["attributes"])?;
+        let (mut rain, mut thunder) = horizon_world::environment_system::weather_maps();
+        let mut dimension_post = AttributeMap::default();
+        for m in &mine {
+            apply_group(&mut dimension_map, &m.base);
+            apply_group(&mut rain, &m.rain);
+            apply_group(&mut thunder, &m.thunder);
+            apply_group(&mut dimension_post, &m.post_process);
+        }
         let mut builder = Builder::default();
-        builder.constant_layer(&AttributeMap::parse(&json["attributes"])?);
+        builder.constant_layer(&dimension_map);
         // Without biome data (a bare dimension type), there is no biome layer.
-        let mut biomes = Vec::new();
+        let mut biomes = HashMap::new();
+        let mut post = HashMap::new();
+        let tags = std::cell::RefCell::new(HashMap::new());
         if let Ok(folder) =
             horizon_world::json_folder::read(&root.join("data/minecraft/worldgen/biome"))
         {
             for file in folder.files.iter().filter(|f| !f.name.contains('/')) {
                 let biome: Json = horizon_world::json_file::parse(&file.path, file.bytes()?)?;
-                match AttributeMap::parse(&biome["attributes"]) {
-                    Ok(map) => biomes.push(map),
-                    Err(e) => log::warn!("biome {}: {e}", file.name),
+                let name = format!("minecraft:{}", file.name);
+                let mut map = match AttributeMap::parse(&biome["attributes"]) {
+                    Ok(map) => map,
+                    Err(e) => {
+                        log::warn!("biome {}: {e}", file.name);
+                        continue;
+                    }
+                };
+                let mut post_map = AttributeMap::default();
+                for m in &packs.biomes {
+                    let in_tag =
+                        |tag: &str| biome_tag(root, tag, &mut tags.borrow_mut()).contains(&name);
+                    if m.targets.matches(&name, in_tag) {
+                        apply_group(&mut map, &m.base);
+                        apply_group(&mut post_map, &m.post_process);
+                    }
                 }
+                if !post_map.is_empty() {
+                    post.insert(name.clone(), post_map);
+                }
+                biomes.insert(name, map);
             }
         }
-        builder.biome_layer(&biomes);
+        builder.biome_layer(biomes.values());
         let mut ids = Vec::new();
         timeline_ids(root, &json["timelines"], &mut ids, 0);
         for id in ids {
@@ -125,11 +346,30 @@ impl Environment {
             && json["has_ceiling"].as_bool() != Some(true)
             && dimension != "the_end";
         if weather {
-            builder.weather_layers();
+            builder.weather_layers_with(&rain, &thunder);
         }
+        builder.biome_post_layer(post.values());
+        builder.constant_layer(&dimension_post);
         Ok(Self {
             system: builder.build(),
+            biomes,
+            post,
         })
+    }
+
+    /// A biome's attribute map (by id, `minecraft:plains`), as the packs left it.
+    pub fn biome(&self, id: &str) -> Option<&AttributeMap> {
+        self.biomes.get(id)
+    }
+
+    /// A biome's post-process map from the packs, if any sets one.
+    pub fn biome_post(&self, id: &str) -> Option<&AttributeMap> {
+        self.post.get(id)
+    }
+
+    /// Whether packs added post-process biome layers (the frame then mixes them too).
+    pub fn has_biome_post(&self) -> bool {
+        !self.post.is_empty()
     }
 
     /// `EnvironmentAttributeSystem.getValue` of one attribute, or its dimension value without
@@ -138,12 +378,15 @@ impl Environment {
         let attribute = attribute(id)?;
         let biome = |_full_resolution: bool| at.biome;
         let clock = |_clock: &str| at.day_time;
+        let post_biome = |_full_resolution: bool| at.post_biome;
         let conditions = Conditions {
             rain: at.rain,
             thunder: at.thunder,
             blend: at.blend,
             biome: &biome,
             clock: &clock,
+            post_blend: at.post_blend,
+            post_biome: Some(&post_biome),
         };
         match (at.blend, at.biome) {
             (None, None) => self.system.dimension_value(attribute, &conditions),
@@ -225,5 +468,123 @@ mod tests {
         assert!(dark(6000, 1.0, 1.0), "thunderstorm at noon");
         assert!(dark(18000, 0.0, 0.0), "clear midnight");
         assert!(!dark(1000, 0.0, 0.0), "clear morning");
+    }
+
+    /// A world with one sky-lit dimension and two biomes, one of them in a tag, and a pack with
+    /// Polytone modifiers.
+    fn with_packs(pack: &[(&str, &str)]) -> Environment {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-env-packs-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let write = |path: &str, text: &str| {
+            let path = dir.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        write(
+            "world/data/minecraft/dimension_type/overworld.json",
+            r##"{"has_skylight": true, "has_ceiling": false,
+                "attributes": {"minecraft:visual/sky_color": "#808080", "minecraft:visual/fog_color": "#000000"}}"##,
+        );
+        write(
+            "world/data/minecraft/worldgen/biome/plains.json",
+            r##"{"attributes": {"minecraft:visual/sky_color": "#404040"}}"##,
+        );
+        write(
+            "world/data/minecraft/worldgen/biome/desert.json",
+            r#"{"attributes": {}}"#,
+        );
+        write(
+            "world/data/minecraft/tags/worldgen/biome/dry.json",
+            r#"{"values": ["minecraft:desert"]}"#,
+        );
+        for (path, text) in pack {
+            write(&format!("pack/{path}"), text);
+        }
+        let modifiers = PackModifiers::read(&dir.join("pack"));
+        let env =
+            Environment::load_dimension_with(&dir.join("world"), "overworld", &modifiers).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        env
+    }
+
+    fn sky_at(env: &Environment, biome: &str, rain: f32) -> Sky {
+        let map = env.biome(biome).unwrap();
+        env.sample(&Sample {
+            rain,
+            biome: Some(map),
+            post_biome: env.biome_post(biome),
+            ..Sample::default()
+        })
+    }
+
+    const GRAY_40: f32 = 64.0 / 255.0;
+
+    #[test]
+    fn pack_biome_modifiers_change_their_targets_only() {
+        let env = with_packs(&[(
+            "assets/mypack/polytone/biome_modifiers/dry_fog.json",
+            r##"{"targets": "#minecraft:dry", "attributes_modifiers": {"visual/fog_color": "ff0000"}}"##,
+        )]);
+        assert_eq!(
+            sky_at(&env, "minecraft:desert", 0.0).fog_color,
+            [1.0, 0.0, 0.0]
+        );
+        assert_eq!(sky_at(&env, "minecraft:plains", 0.0).fog_color, [0.0; 3]);
+        // Without packs the stack is vanilla's: the biome's own sky.
+        let plain = with_packs(&[]);
+        assert_eq!(
+            sky_at(&plain, "minecraft:plains", 0.0).sky_color,
+            [GRAY_40; 3]
+        );
+    }
+
+    #[test]
+    fn dimension_modifiers_remove_weather_layers_and_post_process_last() {
+        let raining = |env: &Environment| sky_at(env, "minecraft:plains", 1.0).sky_color;
+        // Vanilla's rain grays the sky toward a darker gray.
+        assert_ne!(raining(&with_packs(&[])), [GRAY_40; 3]);
+        let no_rain = with_packs(&[(
+            "assets/minecraft/polytone/dimension_modifiers/overworld.json",
+            r#"{"attributes_modifiers": {"rain": {"visual/sky_color": "REMOVE"}}}"#,
+        )]);
+        assert_eq!(raining(&no_rain), [GRAY_40; 3]);
+        let post = with_packs(&[(
+            "assets/minecraft/polytone/dimension_modifiers/overworld.json",
+            r##"{"attributes_modifiers": {"post_process": {"visual/sky_color": "#0000ff"}}}"##,
+        )]);
+        assert_eq!(raining(&post), [0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn biome_post_process_and_priority() {
+        let env = with_packs(&[
+            (
+                "assets/a/polytone/biome_modifiers/wins.json",
+                r##"{"targets": "minecraft:plains", "priority": 5,
+                    "attributes_modifiers": {"base": {"visual/fog_color": "#00ff00"},
+                                             "post_process": {"visual/sky_color": "#ffffff"}}}"##,
+            ),
+            (
+                "assets/b/polytone/biome_modifiers/loses.json",
+                r##"{"targets": "minecraft:plains", "priority": -1,
+                    "attributes_modifiers": {"visual/fog_color": "#0000ff"}}"##,
+            ),
+        ]);
+        // The higher priority's fog wins.
+        assert_eq!(
+            sky_at(&env, "minecraft:plains", 0.0).fog_color,
+            [0.0, 1.0, 0.0]
+        );
+        // The post-process sky comes after the weather, so the rain doesn't gray it.
+        assert_eq!(
+            sky_at(&env, "minecraft:plains", 1.0).sky_color,
+            [1.0, 1.0, 1.0]
+        );
+        assert!(env.biome_post("minecraft:desert").is_none());
     }
 }
