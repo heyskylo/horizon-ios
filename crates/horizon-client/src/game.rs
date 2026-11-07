@@ -2585,7 +2585,7 @@ struct Game<'a> {
     /// contacts (a boat breaking a lily pad). Vanilla runs those in each
     /// entity's own tick (`applyEffectsFromBlocks`), inside the entity pass,
     /// so they too first tick on the next tick.
-    contact_drops: std::ops::RangeInclusive<u32>,
+    contact_drops: std::ops::Range<u32>,
     particles: horizon_client::particles::ParticleEngine,
     /// `ItemPickupParticle`s: taken items, orbs and arrows flying to their collector.
     pickups: pickups::Pickups,
@@ -5123,7 +5123,7 @@ impl Game<'_> {
             }
         });
         self.process_level_events()?;
-        self.contact_drops = first_contact_drop..=self.next_entity;
+        self.contact_drops = first_contact_drop..self.next_entity + 1;
         laps.lap("tb_entity_inside");
         // ServerLevel.tick: a Debug world runs no scheduled block or fluid ticks, and
         // ServerChunkCache.tickChunks no random ticks.
@@ -16276,7 +16276,7 @@ impl<'a> Game<'a> {
             dropped: Default::default(),
             next_entity: 0,
             ticked_entities_through: u32::MAX,
-            contact_drops: 1..=0,
+            contact_drops: 0..0,
             particles,
             pickups: Default::default(),
             sign_edit: None,
