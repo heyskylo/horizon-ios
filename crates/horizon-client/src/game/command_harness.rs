@@ -726,6 +726,100 @@ impl Game<'_> {
                     );
                     out.push('\n');
                 }
+                "craft_menu_click" | "craft_menu_state" | "craft_menu_close" => {
+                    let owner = self.serving.as_ref().ok_or("no server")?.owner;
+                    let state = self.in_owner_level(|g| -> Result<Value> {
+                        let conn = g.lan.as_ref().and_then(|h| h.hub.guests.iter()
+                            .find(|p| p.uuid == owner && p.placed).map(|p| p.conn))
+                            .ok_or("craft fixture: no connected owner")?;
+                        let mut host = g.lan.take().ok_or("no hub")?;
+                        let result = (|| -> Result<Value> {
+                            let (window, revision, _, _) = host.play.get(&conn)
+                                .and_then(|p| p.crafting.table.as_ref())
+                                .ok_or("craft fixture: crafting menu not open")?;
+                            let (window, revision) = (*window, *revision);
+                            if op["op"] == "craft_menu_click" {
+                                // Revision last sent by the real table-content sync, never a fixed 0.
+                                eprintln!("craft fixture click: window={window}, revision={revision}");
+                                g.lan_guest_packet(&mut host, conn,
+                                    horizon_protocol::packets::play::Serverbound::ContainerClick(
+                                        horizon_protocol::packets::play::ContainerClick {
+                                            container: window, state: revision,
+                                            slot: op["slot"].as_i64().ok_or("click slot")? as i16,
+                                            button: op["button"].as_i64().unwrap_or(0) as i8,
+                                            input: op["input"].as_i64().unwrap_or(0) as i32,
+                                            changed: Vec::new(), carried: None,
+                                        }));
+                                return Ok(Value::Null);
+                            }
+                            if op["op"] == "craft_menu_close" {
+                                g.lan_guest_packet(&mut host, conn,
+                                    horizon_protocol::packets::play::Serverbound::ContainerClose(
+                                        horizon_protocol::packets::play::ContainerClose { container: window }));
+                                return Ok(Value::Null);
+                            }
+                            let (_, _, menu, _) = host.play.get(&conn)
+                                .and_then(|p| p.crafting.table.as_ref()).unwrap();
+                            if menu.kind() != horizon_client::menu::Kind::Crafting {
+                                return Err("craft fixture: wrong menu kind".into());
+                            }
+                            let guest = host.hub.guest(conn).ok_or("no guest")?;
+                            let stack = |s: Option<&horizon_client::items::ItemStack>| {
+                                s.map(|s| json!([&*s.item, s.count,
+                                    s.data().and_then(|d| d.map_id),
+                                    s.data().and_then(|d| d.map_post_processing)]))
+                            };
+                            // Table's ten slots plus the owner's live inventory in menu order.
+                            let slots: Vec<_> = (0..10).map(|i| stack(menu.slot(i)))
+                                .chain((9..36).chain(0..9).map(|i| stack(guest.inventory[i].as_ref())))
+                                .collect();
+                            Ok(json!({"window": window, "kind": "minecraft:crafting",
+                                "slots": slots, "carried": stack(guest.carried.as_ref()).unwrap_or_else(|| json!([]))}))
+                        })();
+                        g.lan = Some(host);
+                        result
+                    })?;
+                    if op["op"] == "craft_menu_state" {
+                        let record = json!({"cmd": format!("#craft_menu {}", op["label"].as_str().unwrap_or("")),
+                            "state": state, "messages": [], "results": []});
+                        out.push_str(&record.to_string());
+                        out.push('\n');
+                    }
+                }
+                "map_files" => {
+                    let state = self.harness_owner(|g| {
+                        use horizon_world::nbt::Tag;
+                        g.save_maps();
+                        let directory = g.world_root.join("data/minecraft/maps");
+                        let maps: Vec<_> = op["ids"].as_array().ok_or("map IDs")?.iter().map(|id| {
+                            let path = directory.join(format!("{}.dat", id.as_i64().unwrap()));
+                            horizon_client::save::read_dat(&path).map(|root| {
+                                let data = root.get("data").unwrap_or(&root);
+                                let number = |key| match data.get(key) {
+                                    Some(Tag::Int(v)) => *v, Some(Tag::Byte(v)) => i32::from(*v), _ => 0,
+                                };
+                                let colors = match data.get("colors") {
+                                    Some(Tag::ByteArray(bytes)) => Some(bytes.len()), _ => None,
+                                };
+                                json!({"scale": number("scale"), "locked": number("locked") != 0,
+                                    "center": [number("xCenter"), number("zCenter")],
+                                    "dimension": horizon_client::save::text(data.get("dimension")),
+                                    "byte_array_length": colors})
+                            })
+                        }).collect();
+                        let last = horizon_client::save::read_dat(&directory.join("last_id.dat"))
+                            .and_then(|tag| match tag.get("data").and_then(|d| d.get("map")) {
+                                Some(Tag::Int(v)) => Some(*v), _ => None,
+                            });
+                        Ok(json!({"maps": maps, "last_id": last}))
+                    })?;
+                    out.push_str(
+                        &json!({"cmd": "#map_files", "state": state,
+                        "messages": [], "results": []})
+                        .to_string(),
+                    );
+                    out.push('\n');
+                }
                 "map_state" => {
                     let id = op["id"].as_i64().ok_or("command harness: map id")? as i32;
                     let value = self.harness_owner(|g| {
