@@ -512,6 +512,42 @@ impl Game<'_> {
         });
         self.lan = Some(host);
     }
+    /// The connection of the guest whose entity id is `id`.
+    fn trident_guest_conn(&self, id: u32) -> Option<u32> {
+        self.lan
+            .as_ref()?
+            .hub
+            .guests
+            .iter()
+            .find(|g| g.entity_id as u32 == id)
+            .map(|g| g.conn)
+    }
+    /// `ThrownTrident.onHitEntity` on the guest `conn`: the hurt runs as them and
+    /// `ServerPlayer.hurtServer` refuses it when the `pvp` game rule or their
+    /// teams forbid it (`canHarmPlayer`); the trident bounces off either way.
+    fn trident_hits_guest(&mut self, t: &ThrownTrident, conn: u32, damage: f32) {
+        let Some(mut host) = self.lan.take() else {
+            return;
+        };
+        let team_of = |game: &Self, name: &str| game.score.board.players_team(name).cloned();
+        let attacker = match t.guest {
+            Some(c) => host.hub.guest(c).and_then(|g| team_of(self, &g.name)),
+            None => self.player_team().cloned(),
+        };
+        let target = host.hub.guest(conn).and_then(|g| team_of(self, &g.name));
+        let refused = !(self.ui.rules.bool("pvp")
+            && horizon_client::scoreboard::teams_allow_damage(target.as_ref(), attacker.as_ref()));
+        let shooter = self.player_attacker(&host, t.guest);
+        let from = [t.previous.x, t.previous.y, t.previous.z];
+        self.guest_hit_by(&mut host, conn, |g| {
+            g.combat.refuse_player_hit = refused;
+            g.combat.projectile_attacker = shooter;
+            g.mob_hits_player(damage, from, "minecraft:trident");
+            g.combat.refuse_player_hit = false;
+            g.combat.projectile_attacker = None;
+        });
+        self.lan = Some(host);
+    }
     /// The players tridents fly back to or land at: this game's player and the
     /// guests in this level. A server has no player of its own, so its
     /// tridents belong to guests.
@@ -690,6 +726,21 @@ impl Game<'_> {
                         }
                     }
                 }
+                // The other players of a served world are targets too (their own
+                // trident passes its thrower).
+                if !t.dealt_damage {
+                    for (who, b) in self.lan_projectile_targets() {
+                        if let Who::Mob(id) = who
+                            && self
+                                .trident_guest_conn(id)
+                                .is_some_and(|c| Some(c) != t.guest)
+                            && let Some(d) = segment_box(t.position, t.velocity, b.inflate(grow))
+                            && hit_mob.is_none_or(|(_, best)| d < best)
+                        {
+                            hit_mob = Some((id, d));
+                        }
+                    }
+                }
                 // Boats and minecarts are pickable too (`VehicleEntity.isPickable`).
                 if !t.dealt_damage {
                     for (who, b) in self.vehicle_targets() {
@@ -756,6 +807,10 @@ impl Game<'_> {
                             .find(|m| m.id == id)
                             .map(|m| m.kind.id.clone())
                             .or_else(|| {
+                                self.trident_guest_conn(id)
+                                    .map(|_| "minecraft:player".to_owned())
+                            })
+                            .or_else(|| {
                                 self.boats
                                     .iter()
                                     .find(|b| b.id == id)
@@ -810,6 +865,10 @@ impl Game<'_> {
                             self.hurt_boat(i, damage, creative);
                         } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
                             self.hurt_cart(i, damage, creative, false);
+                        }
+                        // ThrownTrident.onHitEntity on another player.
+                        if let Some(conn) = self.trident_guest_conn(id) {
+                            self.trident_hits_guest(&t, conn, damage);
                         }
                         // `minecraft:post_attack` of Channeling, on the victim.
                         if let Some(at) = hurt_at
