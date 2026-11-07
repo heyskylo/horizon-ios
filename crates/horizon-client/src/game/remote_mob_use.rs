@@ -186,6 +186,11 @@ impl Game<'_> {
             Hand::Off => self.offhand.as_ref(),
         };
         let item = stack.map_or("", |s| &*s.item);
+        // NameTagItem.interactLivingEntity: only a named tag answers (SUCCESS);
+        // an unnamed one passes on to the trader's trading (SUCCESS_SERVER).
+        if m.species() == Species::WanderingTrader && item == "minecraft:name_tag" {
+            return stack.is_some_and(|s| s.custom_name().is_some());
+        }
         mob_swings(m, item)
     }
     /// `AbstractHorse.handleEating` (`Llama`'s and `Camel`'s too) on this
@@ -283,11 +288,10 @@ fn mob_swings(m: &Mob, item: &str) -> bool {
         Species::Panda if panda::is_on_back(m) => return true,
         Species::Panda if food => return false,
         // WanderingTrader.mobInteract: trading answers SUCCESS_SERVER, and so
-        // does a spawn egg (Mob.checkAndHandleImportantInteractions); a lead
-        // or a named name tag answers before it.
-        Species::WanderingTrader if !matches!(item, "minecraft:lead" | "minecraft:name_tag") => {
-            return false;
-        }
+        // does a spawn egg (Mob.checkAndHandleImportantInteractions). A lead is
+        // CONSUME on the client (Entity.interact: a trader can't be leashed), so
+        // nothing swings; a named name tag is decided by the caller.
+        Species::WanderingTrader if item != "minecraft:name_tag" => return false,
         // Cat.mobInteract: food tames an untamed cat, and heals a hurt
         // tame one: SUCCESS before Animal.mobInteract is reached.
         Species::Cat if food && (!m.extra.tame || hurt) => return true,
