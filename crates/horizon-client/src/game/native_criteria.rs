@@ -18,7 +18,6 @@ pub struct NativeCriterion<'a> {
     world: &'a dyn adv::World,
 }
 
-#[allow(dead_code)]
 impl NativeCriterion<'_> {
     /// Whether `stack` passes the item predicate under `key` in the
     /// conditions, as the game's own triggers read an `ItemPredicate`:
@@ -41,7 +40,6 @@ fn mod_trigger(trigger: &str) -> bool {
 
 /// Helpers for server mods, kept as stable as the hook points.
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// Fires the mod's criteria trigger `trigger` (`mymod:pipe_connected`)
     /// for the player with that UUID: vanilla's

@@ -689,14 +689,14 @@ impl<K: JavaKey, V> JavaHashMap<K, V> {
         if !self.node(p).red {
             root = self.balance_delete(root, Some(replacement));
         }
-        if replacement == p {
-            if let Some(pp) = self.node(p).parent {
-                self.node_mut(p).parent = None;
-                if self.node(pp).left == Some(p) {
-                    self.node_mut(pp).left = None;
-                } else if self.node(pp).right == Some(p) {
-                    self.node_mut(pp).right = None;
-                }
+        if replacement == p
+            && let Some(pp) = self.node(p).parent
+        {
+            self.node_mut(p).parent = None;
+            if self.node(pp).left == Some(p) {
+                self.node_mut(pp).left = None;
+            } else if self.node(pp).right == Some(p) {
+                self.node_mut(pp).right = None;
             }
         }
         if movable {

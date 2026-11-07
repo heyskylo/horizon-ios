@@ -280,12 +280,27 @@ impl Game<'_> {
         }
         hurt
     }
+    /// Takes the absorbed tenths a projectile's hit left on the mobs; the shooter gets them
+    /// as `damage_dealt_absorbed` when it is the player (`LivingEntity.actuallyHurt`).
+    pub(super) fn settle_dealt_absorbed(&mut self, by_player: bool) {
+        let absorbed: i32 = self
+            .mobs
+            .iter_mut()
+            .map(|m| std::mem::take(&mut m.dealt_absorbed))
+            .fold(0, i32::saturating_add);
+        if by_player && absorbed > 0 {
+            self.award_custom_stat("damage_dealt_absorbed", absorbed);
+        }
+    }
     /// `Player.itemAttackInteraction` after the player's hit landed on the mob
     /// at `index`: the item's `hurtEnemy` (the "used" statistic of a weapon),
     /// the post-attack enchantments, then `postHurtEnemy` with the weapon's
     /// wear.
     pub(super) fn weapon_hit(&mut self, index: usize) {
         let Some(stack) = self.held().cloned() else {
+            // An empty hand still meets the victim's own post-attack
+            // enchantments (Thorns).
+            self.post_attack(index);
             return;
         };
         let weapon = self

@@ -1516,6 +1516,8 @@ pub enum Event {
     PlayMusicTrack(String, String),
     /// Open the recordings folder in the system file browser.
     OpenStudioFolder,
+    /// Start playback from the selected Studio recording.
+    OpenStudioReplay(std::path::PathBuf),
 }
 /// A row of the Music page: the track, and the pool it is played from.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -3980,6 +3982,9 @@ impl OptionsUi {
             return match self.studio.click((x, y), size) {
                 StudioAction::None => Vec::new(),
                 StudioAction::Refresh => vec![Event::ButtonClick],
+                StudioAction::OpenReplay(path) => {
+                    vec![Event::ButtonClick, Event::OpenStudioReplay(path)]
+                }
                 StudioAction::OpenFolder => vec![Event::ButtonClick, Event::OpenStudioFolder],
                 StudioAction::Back => {
                     let mut events = vec![Event::ButtonClick];
@@ -4488,6 +4493,10 @@ impl OptionsUi {
         }
         if Self::graphics_page(self.page()).is_some() {
             self.graphics.scroll(s, size, amount);
+            return;
+        }
+        if self.page() == Page::Studio {
+            self.studio.wheel(amount);
             return;
         }
         if Self::controller_page(self.page()).is_some() {

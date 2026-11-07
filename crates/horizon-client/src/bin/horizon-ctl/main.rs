@@ -361,6 +361,11 @@ fn absolute_paths(words: &mut [String]) {
                 *path = cwd.join(&*path).display().to_string();
             }
         }
+        Some("screenshot-sequence") => {
+            if let Some(path) = words.get_mut(3) {
+                *path = cwd.join(&*path).display().to_string();
+            }
+        }
         // `repro-export [NAME] [PATH]`: the second positional is the zip.
         Some("repro-export") => {
             if let Some(path) = words.get_mut(2)
@@ -831,5 +836,9 @@ mod tests {
         let mut words = vec!["screenshot".to_owned(), "a.png".to_owned()];
         absolute_paths(&mut words);
         assert!(Path::new(&words[1]).is_absolute());
+        let mut words = ["screenshot-sequence", "64", "50", "a.png"].map(str::to_owned);
+        absolute_paths(&mut words);
+        assert!(Path::new(&words[3]).is_absolute());
+        assert_eq!(words[1..3], ["64", "50"]);
     }
 }

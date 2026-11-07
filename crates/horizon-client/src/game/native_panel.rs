@@ -23,6 +23,7 @@ const SLOT: f32 = 18.0;
 const COLUMNS: (usize, usize) = (12, 2);
 /// The gap between the window and the panel, and the screen's edges.
 const MARGIN: f32 = 8.0;
+const RECIPES_SETTINGS_WIDTH: f32 = 20.0;
 
 /// Items a panel may hold.
 const ITEMS: usize = 8192;
@@ -62,13 +63,15 @@ pub(super) struct Panel {
     /// The mod's items as stacks; `None` for an item the game doesn't have.
     stacks: Vec<Option<ItemStack>>,
     page: usize,
-    search: Option<EditBox>,
+    pub(super) search: Option<EditBox>,
     /// The search text the mod last heard.
     sent: String,
     /// Only while dispatching Search: an empty reply still needs an editable field.
     searching: bool,
+    pub(super) recipes_settings_return: Option<Screen>,
     /// The recipes shown instead of the items.
     pub(super) recipes: Option<super::native_panel_recipes::Pages>,
+    pub(super) transfer_warning: Option<(&'static str, &'static str)>,
 }
 
 impl Panel {
@@ -116,6 +119,7 @@ impl Panel {
     /// nothing, except while filtering the item list with a non-empty query.
     fn native_changed(&mut self, keep_search: bool) {
         self.versions += 1;
+        self.transfer_warning = None;
         if let Some(shown) = self.native.as_mut() {
             shown.version = self.versions;
             if shown.items.is_empty() && shown.recipes.is_none() && !keep_search {
@@ -136,6 +140,7 @@ pub(super) struct Layout {
     /// The page arrows' row.
     pub(super) arrows_y: f32,
     pub(super) search: [f32; 4],
+    settings: Option<[f32; 4]>,
 }
 impl Layout {
     fn per_page(&self) -> usize {
@@ -222,7 +227,18 @@ impl Game<'_> {
         let x = (left + (right - left - columns as f32 * SLOT) / 2.0).floor();
         let arrows_y = MARGIN;
         let top = arrows_y + 17.0 + 4.0;
-        let search = [x, batch.height - MARGIN - 16.0, columns as f32 * SLOT, 16.0];
+        let mut search = [x, batch.height - MARGIN - 16.0, columns as f32 * SLOT, 16.0];
+        let settings = self.panel.of.as_ref().and_then(|(owner, _)| {
+            (owner.native_id() == "recipes").then(|| {
+                search[2] -= RECIPES_SETTINGS_WIDTH;
+                [
+                    search[0] + search[2],
+                    search[1],
+                    RECIPES_SETTINGS_WIDTH,
+                    search[3],
+                ]
+            })
+        });
         let rows = ((search[1] - 4.0 - top) / SLOT).floor().max(0.0) as usize;
         (rows > 0).then_some(Layout {
             area: [left, 0.0, right - left, batch.height],
@@ -231,6 +247,7 @@ impl Game<'_> {
             rows,
             arrows_y,
             search,
+            settings,
         })
     }
     fn browser_pages(&self, layout: &Layout) -> usize {
@@ -365,6 +382,31 @@ impl Game<'_> {
         let mut search = search.clone();
         search.draw(batch, &self.gui.atlas, None);
         self.panel.search = Some(search);
+        if let Some(rect @ [x, y, width, height]) = layout.settings {
+            let hovered = inside(cursor, rect);
+            let atlas = &self.gui.atlas;
+            let sprite = if hovered {
+                "gui/sprites/widget/button_highlighted"
+            } else {
+                "gui/sprites/widget/button"
+            };
+            horizon_client::ui::nine_slice(batch, atlas, sprite, x, y, width, height, u32::MAX);
+            batch.sprite_scaled(
+                atlas,
+                "horizon/recipes/settings",
+                x + 4.0,
+                y + 2.0,
+                12.0,
+                12.0,
+                u32::MAX,
+            );
+            let label = self.translate("options.title", "Options");
+            horizon_client::widgets::record(&label, rect, true);
+            if hovered && self.carried.is_none() {
+                self.draw_tooltip_lines(batch, &[(label, u32::MAX)], cursor.0, cursor.1);
+                return;
+            }
+        }
         if self.carried.is_some() {
             self.draw_carried(batch);
         } else if let Some(stack) = self.browser_pointed_stack(&layout) {
@@ -388,6 +430,23 @@ impl Game<'_> {
             return false;
         };
         let cursor = self.cursor;
+        if layout.settings.is_some_and(|rect| inside(cursor, rect)) {
+            if !right {
+                self.list_native_mods();
+                if let Some(index) = self
+                    .settings
+                    .mods
+                    .installed
+                    .iter()
+                    .position(|entry| entry.id == "recipes" && entry.native.is_some())
+                {
+                    self.mod_browser_closed();
+                    self.panel.recipes_settings_return = Some(self.screen);
+                    self.open_options_at(false, horizon_client::options_ui::Page::NativeMod(index));
+                }
+            }
+            return true;
+        }
         let shift = self.has_shift_down();
         let atlas = &self.gui.atlas;
         let search = self.panel.search.get_or_insert_with(|| {
@@ -499,8 +558,18 @@ impl Game<'_> {
     }
     /// The container screen closed: the search box lets go of the keys.
     pub(super) fn mod_browser_closed(&mut self) {
+        self.panel.transfer_warning = None;
         if let Some(search) = self.panel.search.as_mut() {
             search.focused = false;
+        }
+    }
+    pub(super) fn close_transferred_recipe(&mut self) {
+        if let Some(owner) = self.browser_sync()
+            && owner.native_id() == "recipes"
+            && self.panel.recipes.is_some()
+        {
+            self.mod_browser_closed();
+            self.panel_event(&owner, BrowserEvent::Back);
         }
     }
     /// The item under the pointer on a container screen, for the mods' keys
