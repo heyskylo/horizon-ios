@@ -65,7 +65,7 @@ struct View {
 pub(super) struct RecipeUi {
     book: Option<Book>,
     tab: Option<Tab>,
-    search: Option<EditBox>,
+    pub(super) search: Option<EditBox>,
     page: usize,
     /// Ticks, for the ghost and button cycling (`RecipeBookComponent.time`).
     time: f32,
@@ -873,6 +873,13 @@ impl Game<'_> {
             return out;
         }
         let (xo, yo) = self.book_origin(&batch);
+        if self.recipe_ui.overlay.is_none() {
+            // The search box is painted by hand: a field, for the pad's keyboard.
+            out.push(Target {
+                rect: [xo + 25.0, yo + 13.0, 81.0, 14.0],
+                kind: Kind::Field,
+            });
+        }
         if let Some(overlay) = &self.recipe_ui.overlay {
             // The alternatives overlay takes every click while open.
             let maxrow = if overlay.entries.len() <= 16 { 4 } else { 5 };
@@ -1019,6 +1026,100 @@ impl Game<'_> {
         self.recipe_ui.ghost.clear();
         self.place_recipe(BookType::Crafting, index, all);
     }
+    pub(super) fn transfer_viewer_recipe(&mut self, display_id: i32) {
+        self.panel.transfer_warning = None;
+        if !self.mod_recipe_screen() || (self.creative && self.craft_size != 3) {
+            self.show_transfer_result(3);
+            return;
+        }
+        if self.remote.as_ref().is_some_and(|r| !r.recipe_transfer) {
+            // Older Horizon and vanilla servers still accept book clicks.
+            if self.recipe_place(display_id, false).is_err() {
+                self.show_transfer_result(4);
+            }
+            return;
+        }
+        self.ensure_book();
+        let Some(id) = self
+            .recipe_ui
+            .book
+            .as_ref()
+            .and_then(|book| {
+                book.entries
+                    .iter()
+                    .find(|entry| entry.display_id == display_id)
+            })
+            .map(|entry| entry.id.clone())
+        else {
+            self.show_transfer_result(3);
+            return;
+        };
+        if self.remote.is_some() {
+            let mut request = horizon_protocol::buf::Writer::new();
+            request.varint(self.remote_menu_id());
+            request.string(&id);
+            self.send(horizon_protocol::packets::play::Serverbound::CustomPayload(
+                horizon_protocol::packets::configuration::CustomPayload {
+                    channel: horizon_client::lan::recipes::TRANSFER_CHANNEL.into(),
+                    data: request.data,
+                },
+            ));
+            return;
+        }
+        use horizon_client::menu::place::TransferError;
+        let mut result = Err(TransferError::Unavailable);
+        self.menu_session(|menu, env, _| {
+            result = menu.transfer_recipe(env, &id);
+            Some(result.is_ok())
+        });
+        self.show_transfer_result(match result {
+            Ok(()) => 0,
+            Err(TransferError::Missing) => 1,
+            Err(TransferError::NoRoom) => 2,
+            Err(TransferError::Unavailable) => 3,
+        });
+        if result.is_ok() {
+            self.recipe_book_changed();
+        }
+    }
+
+    pub(super) fn remote_recipe_transfer(&mut self, data: &[u8]) {
+        if data.is_empty() {
+            if let Some(remote) = &mut self.remote {
+                remote.recipe_transfer = true;
+            }
+            return;
+        }
+        let mut reader = horizon_protocol::buf::Reader::new(data);
+        if let (Ok(container), Ok(result)) = (reader.varint(), reader.u8())
+            && reader.remaining() == 0
+            && container == self.remote_menu_id()
+            && self.mod_recipe_screen()
+            && self.panel.recipes.is_some()
+        {
+            self.show_transfer_result(result);
+        }
+    }
+
+    fn show_transfer_result(&mut self, result: u8) {
+        if result == 0 {
+            self.close_transferred_recipe();
+        }
+        self.panel.transfer_warning = match result {
+            1 => Some(("horizon.recipe_transfer.missing", "Missing Items")),
+            2 => Some(("horizon.recipe_transfer.no_room", "Inventory full")),
+            3 => Some((
+                "horizon.recipe_transfer.unavailable",
+                "Recipe does not fit this menu",
+            )),
+            4 => Some((
+                "horizon.recipe_transfer.unsupported",
+                "Server requires a known recipe",
+            )),
+            _ => None,
+        };
+    }
+
     /// `ServerboundPlaceRecipePacket`: the server places the recipe
     /// (`ServerPlaceRecipe` on the menu engine) and answers with a ghost
     /// recipe when the items are missing.

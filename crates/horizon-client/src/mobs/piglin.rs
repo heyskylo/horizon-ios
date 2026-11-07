@@ -25,6 +25,17 @@ const CONVERSION: i32 = 300;
 /// `DANCING` memories last.
 const CELEBRATION: i32 = 300;
 
+/// `Piglin.holdInOffHand`: equip the item being admired, dropped when the
+/// piglin is killed; anything but the barter item keeps the piglin from
+/// despawning.
+pub fn hold_in_offhand(m: &mut Mob, item: std::sync::Arc<str>) {
+    if &*item != "minecraft:gold_ingot" {
+        m.persistent = true;
+    }
+    m.extra.off_hand = Some(item);
+    super::finalize::set_drop_chance(m, super::finalize::OFFHAND, 2.0);
+}
+
 /// `Activity`: what a piglin's or hoglin's brain is busy with. `Admire`,
 /// `Celebrate` and `Ride` are a piglin's only; the others are both.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -2262,6 +2273,46 @@ mod crossbow_tests {
         k.id = "minecraft:piglin".into();
         k.species = Species::Piglin;
         Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+
+    #[test]
+    fn admired_item_drops_when_killed_without_a_player() {
+        use crate::mobs::drops::{Death, Drop, die};
+        use crate::random_sequences::RandomSequences;
+        use horizon_world::loot::{LootData, PackOverlay};
+
+        let root =
+            std::env::temp_dir().join(format!("horizon-piglin-drop-test-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("data/minecraft/loot_table")).unwrap();
+        std::fs::write(root.join("items.json"), "{}").unwrap();
+        let loot = LootData::load(&root, &PackOverlay::default()).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        let death = Death {
+            loot: &loot,
+            damage: None,
+            player: None,
+            luck: 0.0,
+            vehicle: None,
+            mob_drops: true,
+            world_seed: 0,
+        };
+        let mut apple = piglin();
+        hold_in_offhand(&mut apple, "minecraft:golden_apple".into());
+        assert!(apple.persistent);
+        let mut m = piglin();
+        hold_in_offhand(&mut m, "minecraft:gold_ingot".into());
+        assert!(!m.persistent);
+        let (drops, _) = die(
+            &mut m,
+            &death,
+            &mut RandomSequences::default(),
+            &mut LegacyRandom::new(7),
+        );
+        assert!(
+            drops.iter().any(
+                |drop| matches!(drop, Drop::Item(item) if item.item == "minecraft:gold_ingot")
+            )
+        );
     }
 
     /// The spawn weapon is equipped after the goals are registered, so the

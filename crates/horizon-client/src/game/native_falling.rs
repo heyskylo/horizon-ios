@@ -44,7 +44,6 @@ fn start_velocity(velocity: [f64; 3]) -> Option<Vec3> {
     })
 }
 
-#[allow(dead_code)]
 impl Game<'_> {
     /// Throws a falling block of `state` from `pos` (its bottom centre) at
     /// `velocity` (blocks a tick) in the level in place, `dimension`: it

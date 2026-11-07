@@ -1,0 +1,10 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "profile_by_name", "target": "horizon_client::game::native_profiles::Game<'_>::native_profile_by_name"},
+    {"name": "profile_by_uuid", "target": "horizon_client::game::native_profiles::Game<'_>::native_profile_by_uuid"}
+  ],
+  "rust_summary": "a player the server knows, by name (`native_profile_by_name`) or id (`native_profile_by_uuid`), from who is on and the profile cache.",
+  "doc_summary": "`native_profile_by_name(name)` gives the id and name, `native_profile_by_uuid(uuid)` the name, of a player who is on or in a dedicated server's profile cache (`usercache.json`), without asking a profile service. Bundles need \"hooks\": @API:profile_cache@.",
+  "comments": ["crates/horizon-client/src/game/native_profiles.rs"]
+}

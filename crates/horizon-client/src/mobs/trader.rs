@@ -11,10 +11,16 @@ use super::{
 };
 use horizon_core::random::RandomSource;
 
-// Trader state: `point` the wander target, `home` the place it is tied to
-// with `ints[4]` the radius, `ints[5]` the despawn delay, `flag2` whether
+// Trader state: `point` the wander target, `ints[5]` the despawn delay, `flag2` whether
 // a player is trading with it and `using_item` how long it has been
 // drinking.
+
+/// `WanderingTraderSpawner.spawn`: set the trader's visit and home.
+pub fn start_visit(m: &mut Mob, reference: [i32; 3]) {
+    m.extra.ints[5] = DESPAWN_DELAY;
+    m.extra.point = Some(reference.map(f64::from));
+    m.ai.restore_home(reference, 16);
+}
 
 /// `WanderingTraderSpawner`: how long a spawned trader stays.
 pub const DESPAWN_DELAY: i32 = 48000;
@@ -251,15 +257,15 @@ impl Goal for WanderToPosition {
 }
 /// `Mob.isWithinHome`.
 pub fn within_home(m: &Mob) -> bool {
-    let Some(h) = m.extra.home else { return true };
-    let r = m.extra.ints[4];
-    if r <= 0 {
+    let Some((home, radius)) = m.ai.home else {
         return true;
-    }
-    let d = (h[0] - m.position.x.floor() as i32).pow(2)
-        + (h[1] - m.position.y.floor() as i32).pow(2)
-        + (h[2] - m.position.z.floor() as i32).pow(2);
-    d < r * r
+    };
+    let pos = [
+        m.position.x.floor() as i32,
+        m.position.y.floor() as i32,
+        m.position.z.floor() as i32,
+    ];
+    super::goals::within_home(home, radius, pos)
 }
 /// `MoveTowardsRestrictionGoal`.
 #[derive(Clone, Debug)]
@@ -284,7 +290,9 @@ impl Goal for MoveTowardsRestriction {
         if within_home(m) {
             return false;
         }
-        let Some(h) = m.extra.home else { return false };
+        let Some((h, _)) = m.ai.home else {
+            return false;
+        };
         let to = [
             f64::from(h[0]) + 0.5,
             f64::from(h[1]),

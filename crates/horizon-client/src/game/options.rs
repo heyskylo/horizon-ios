@@ -223,7 +223,8 @@ impl Game<'_> {
             (true, None) => {
                 let was = window.fullscreen().is_some();
                 if !was {
-                    window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+                    let borderless = horizon_client::window::borderless_fullscreen(window);
+                    horizon_client::window::enter_fullscreen(window, borderless);
                 }
                 self.ui.options.calibration_fullscreen = Some(was);
             }
@@ -378,7 +379,9 @@ impl Game<'_> {
                 Event::Close => {
                     self.settings.save(&Self::options_path());
                     let to_game = std::mem::take(&mut self.options_to_game);
-                    self.screen = if std::mem::take(&mut self.options_to_world_options) {
+                    self.screen = if let Some(screen) = self.panel.recipes_settings_return.take() {
+                        screen
+                    } else if std::mem::take(&mut self.options_to_world_options) {
                         Screen::WorldOptions
                     } else if self.options_from_title || to_game {
                         Screen::Playing
@@ -440,6 +443,14 @@ impl Game<'_> {
                 // The website, through ConfirmLinkScreen as other links.
                 Event::OpenModPage(url) => self.confirm_trusted_link(&url, Screen::Options),
                 Event::ListShaderPacks => {
+                    let (key, _) = horizon_client::shader_pack_list::resolve(
+                        &Self::shader_packs_dir(),
+                        &self.settings.horizon.shader_pack,
+                    );
+                    if key != self.settings.horizon.shader_pack {
+                        self.settings.horizon.shader_pack = key;
+                        self.settings.save(&Self::options_path());
+                    }
                     self.settings.shader_packs =
                         horizon_client::shader_pack_list::scan(&Self::shader_packs_dir());
                 }
@@ -467,6 +478,12 @@ impl Game<'_> {
                     self.confirm_trusted_link(ACCESSIBILITY_HELP_LINK, Screen::Options)
                 }
                 Event::Narrator => self.narrator_status_changed(),
+                Event::OpenStudioReplay(path) => {
+                    let path = path.to_string_lossy().to_string();
+                    if let Err(e) = self.open_studio_replay(&path) {
+                        log::warn!("Horizon Studio: could not open {path}: {e}");
+                    }
+                }
                 Event::OpenStudioFolder => {
                     let dir = std::path::PathBuf::from("recordings");
                     let _ = std::fs::create_dir_all(&dir);
@@ -620,8 +637,11 @@ impl Game<'_> {
             }
             if let Some(w) = &self.window {
                 let on = w.fullscreen().is_none();
-                w.set_fullscreen(on.then_some(Fullscreen::Borderless(None)));
-                if !on {
+                if on {
+                    let borderless = horizon_client::window::borderless_fullscreen(w);
+                    horizon_client::window::enter_fullscreen(w, borderless);
+                } else {
+                    w.set_fullscreen(None);
                     windowed_again(w);
                 }
             }

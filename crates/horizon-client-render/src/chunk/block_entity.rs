@@ -11,7 +11,7 @@ use horizon_world::{
 use std::{
     collections::HashMap,
     sync::{
-        Arc,
+        Arc, Mutex, OnceLock, PoisonError,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -108,6 +108,9 @@ pub enum BlockEntity {
 pub struct ModBlockEntity {
     fields: ModBlockEntityFields,
     revision: ModRevision,
+    // A client update can consume transient effects without changing saved
+    // fields. Most entities never use this; do not allocate their queue.
+    client_update_fields: OnceLock<Mutex<Compound>>,
 }
 /// What a `ModBlockEntity` holds: its type id (`mymod:machine`), its saved
 /// compound without `id`, `x`, `y`, `z` and `Items`, its item slots
@@ -138,10 +141,54 @@ impl ModBlockEntity {
                 born: MOD_BLOCK_ENTITIES_MADE.fetch_add(1, Ordering::Relaxed),
                 changes: 0,
             },
+            client_update_fields: OnceLock::new(),
         }
     }
     pub fn revision(&self) -> ModRevision {
         self.revision
+    }
+    /// Replace the owner's pending, one-shot client update fields. These
+    /// fields are not saved, cloned, compared or retained for drawing, and
+    /// changing them does not change this entity's revision. The owner must
+    /// explicitly take and merge them into its update tag. Calling this does
+    /// not schedule a block update.
+    ///
+    /// An empty batch clears a pending batch without allocating an idle queue.
+    pub fn set_client_update_fields(&mut self, fields: Compound) {
+        if fields.is_empty() {
+            self.clear_client_update_fields();
+            return;
+        }
+        *self
+            .client_update_fields
+            .get_or_init(|| Mutex::new(Compound::new()))
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = fields;
+    }
+    /// Discard the owner's pending client update fields, without changing
+    /// saved data, revision or a queue that has never been used.
+    pub fn clear_client_update_fields(&mut self) {
+        if let Some(fields) = self.client_update_fields.get() {
+            fields
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clear();
+        }
+    }
+    /// Atomically take the owner's pending fields at update-tag construction.
+    /// A loaded chunk and a block change use this same boundary. Construct a
+    /// tag once, then send that tag to every recipient; another construction
+    /// sees an empty batch. A save or a clone does not consume this batch.
+    ///
+    /// This is safe for an update-tag hook receiving only a shared reference,
+    /// including a saved chunk encoded by a worker thread. If a previous lock
+    /// holder panicked, preserve its pending data instead of dropping it.
+    pub fn take_client_update_fields(&self) -> Compound {
+        self.client_update_fields
+            .get()
+            .map_or_else(Compound::new, |fields| {
+                std::mem::take(&mut *fields.lock().unwrap_or_else(PoisonError::into_inner))
+            })
     }
     /// A client's copy loads the tag the server sent (`loadWithComponents`
     /// in `ClientPacketListener.handleBlockEntityData`): `tag`'s fields
@@ -705,6 +752,85 @@ pub struct CommandBlock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transient_client_update_fields_are_lazy_replaceable_and_drained_once() {
+        let mut machine = ModBlockEntity::new(ModBlockEntityFields {
+            id: "test:machine".into(),
+            nbt: Compound::from([("progress".into(), Tag::Int(7))]),
+            ..Default::default()
+        });
+        let revision = machine.revision();
+        let saved = machine.fields.clone();
+        let debug = format!("{machine:?}");
+        machine.clear_client_update_fields();
+        machine.set_client_update_fields(Compound::new());
+        assert!(machine.take_client_update_fields().is_empty());
+        assert!(machine.client_update_fields.get().is_none());
+
+        machine.set_client_update_fields(Compound::from([("discarded".into(), Tag::Int(1))]));
+        let expected = Compound::from([("effects".into(), Tag::List(vec![Tag::Int(2)]))]);
+        machine.set_client_update_fields(expected.clone());
+        assert_eq!(machine.take_client_update_fields(), expected);
+        assert!(machine.take_client_update_fields().is_empty());
+
+        machine.set_client_update_fields(expected.clone());
+        let copy = machine.clone();
+        assert_eq!(machine, copy, "transient fields are not retained contents");
+        assert_ne!(machine.revision(), copy.revision());
+        assert!(copy.client_update_fields.get().is_none());
+        assert!(copy.take_client_update_fields().is_empty());
+        assert_eq!(machine.take_client_update_fields(), expected);
+        machine.set_client_update_fields(expected);
+        machine.clear_client_update_fields();
+        assert!(machine.take_client_update_fields().is_empty());
+        assert_eq!(machine.fields, saved);
+        assert_eq!(machine.revision(), revision);
+        assert_eq!(format!("{machine:?}"), debug);
+    }
+
+    #[test]
+    fn concurrent_client_update_constructions_consume_one_batch() {
+        let mut machine = ModBlockEntity::default();
+        let expected = Compound::from([("effects".into(), Tag::Int(23))]);
+        machine.set_client_update_fields(expected.clone());
+        let received = std::thread::scope(|scope| {
+            let handles = (0..16)
+                .map(|_| scope.spawn(|| machine.take_client_update_fields()))
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let nonempty = received
+            .into_iter()
+            .filter(|c| !c.is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(nonempty, [expected]);
+    }
+
+    #[test]
+    fn a_poisoned_client_update_lock_preserves_its_pending_batch() {
+        let mut machine = ModBlockEntity::default();
+        let expected = Compound::from([("effects".into(), Tag::Int(23))]);
+        machine.set_client_update_fields(expected.clone());
+        std::thread::scope(|scope| {
+            assert!(
+                scope
+                    .spawn(|| {
+                        let _held = machine.client_update_fields.get().unwrap().lock().unwrap();
+                        panic!("interrupt before consuming the queued batch");
+                    })
+                    .join()
+                    .is_err()
+            );
+        });
+        assert_eq!(machine.take_client_update_fields(), expected);
+        assert!(machine.take_client_update_fields().is_empty());
+        machine.set_client_update_fields(expected.clone());
+        assert_eq!(machine.take_client_update_fields(), expected);
+    }
 
     #[test]
     fn a_mod_block_entitys_revision_moves_with_each_change_and_only_then() {

@@ -339,7 +339,7 @@ impl Game<'_> {
         }
         // `Entity.startRiding`: a passenger first gets off what it rides
         // (`stopRiding`), so a seated player moves to this cushion.
-        if !self.may_board() || !self.native_may_board(id) {
+        if !self.native_may_board(id) {
             return true;
         }
         self.stop_riding();
@@ -387,6 +387,8 @@ impl Game<'_> {
         if self.riding == Some(c.id) {
             self.dismount_removed_vehicle(p.y);
         }
+        // BlockAttachedEntity.kill, before dropItem.
+        self.entity_killed_event([p.x, p.y, p.z], by_player);
         self.audio.play(
             "minecraft:entity.cushion.break",
             Some([p.x, p.y, p.z]),
@@ -517,6 +519,31 @@ impl Game<'_> {
             p.position = at;
             p.velocity = Vec3::ZERO;
             p.fall_distance = 0.0;
+        }
+    }
+
+    /// `Entity.positionRider` for the mobs (and other players) sitting on a
+    /// cushion: its passenger attachment `(0, 0.25, 0)`, less the rider's own
+    /// vehicle attachment. A server sends no position for a passenger, so
+    /// every client seats it here.
+    pub(super) fn seat_cushion_mobs(&mut self, riding: &super::passengers::Riders) {
+        for c in &self.cushions {
+            let Some(js) = riding.get(&c.id) else {
+                continue;
+            };
+            for &j in js {
+                let m = &mut self.mobs[j];
+                // Cushion's box is 1 wide.
+                let offset = horizon_client::mobs::riders::vehicle_attachment(m, 1.0);
+                let at = Vec3::new(c.position.x, c.position.y + 0.25 - offset, c.position.z);
+                m.position = at;
+                m.previous = at;
+                m.velocity = Vec3::ZERO;
+                m.fall_distance = 0.0;
+                m.on_ground = false;
+                m.extra.passenger = true;
+                m.ai.nav.stop();
+            }
         }
     }
 

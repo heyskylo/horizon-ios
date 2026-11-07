@@ -1,0 +1,8 @@
+{
+  "hooks": [],
+  "rust_summary": "projectiles and server players' fishing bobbers for `native_remove_entity`.",
+  "doc_summary": "`native_remove_entity(dimension, id)` also removes projectiles (arrows, tridents, snowballs, eggs, pearls, fireballs, wind charges, llama spit, shulker bullets, firework rockets) as `/kill` does, and a server player's fishing bobber (`Entity.discard`): the player in place's, or outside a guest's turn any of the level's players'. Bundles need \"hooks\": @API:remove_projectiles@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_entities.rs"
+  ]
+}

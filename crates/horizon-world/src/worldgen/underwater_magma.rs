@@ -87,10 +87,10 @@ impl UnderwaterMagmaFeature {
         }
         let ceiling = self.scan(world, origin, 1)?;
         let floor = self.scan(world, origin, -1)?;
-        if let (Some(floor), Some(ceiling)) = (floor, ceiling) {
-            if ceiling.wrapping_sub(floor).wrapping_sub(1) < 0 {
-                return Err(UnderwaterMagmaError::InvalidColumn);
-            }
+        if let (Some(floor), Some(ceiling)) = (floor, ceiling)
+            && ceiling.wrapping_sub(floor).wrapping_sub(1) < 0
+        {
+            return Err(UnderwaterMagmaError::InvalidColumn);
         }
         let Some(y) = floor else {
             return Ok(false);
