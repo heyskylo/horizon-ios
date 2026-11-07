@@ -6714,6 +6714,7 @@ mod swing_echo_tests {
                 latency: Arc::new(AtomicI32::new(0)),
                 address: "127.0.0.1:25565".parse().unwrap(),
                 expected: false,
+                configured: Default::default(),
             },
             2,
             [4.5, 200.0, 4.5],

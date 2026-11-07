@@ -1139,9 +1139,14 @@ fn server_only_block_use(
     branch: horizon_world::level::UseBranch,
 ) -> bool {
     branch == horizon_world::level::UseBranch::WithoutItem
-        && ["AbstractBedBlock", "LightBlock", "RespawnAnchorBlock", "SignBlock"]
-            .iter()
-            .any(|class| block.has_class(class))
+        && [
+            "AbstractBedBlock",
+            "LightBlock",
+            "RespawnAnchorBlock",
+            "SignBlock",
+        ]
+        .iter()
+        .any(|class| block.has_class(class))
 }
 /// An entity's box (`EntityDimensions.makeBoundingBox`): `width` wide and
 /// `height` tall, standing on `feet`.
