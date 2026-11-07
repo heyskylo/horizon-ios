@@ -142,6 +142,8 @@ pub(super) struct LevelTeleport {
     pub rotation: Option<[f32; 2]>,
     /// `TeleportTransition.asPassenger`: the vehicle already moved with its tree.
     pub vehicle: Option<u32>,
+    /// What `native_player_teleport` hears as its cause; none: not heard.
+    pub cause: Option<&'static str>,
 }
 
 /// A teleport a command made inside a level: told to the mods once it has
@@ -612,6 +614,7 @@ impl Game<'_> {
             at,
             rotation: None,
             vehicle: None,
+            cause: None,
         });
         self.run_level_teleports(host);
         self.world_spawn_trip(conn);
@@ -844,10 +847,33 @@ impl Game<'_> {
     /// keeping all data and the teleport, with no portal sound. The server
     /// leaves the body alone until the level has loaded around it.
     pub(super) fn run_level_teleports(&mut self, host: &mut LanHost) {
-        for t in std::mem::take(&mut self.level_teleports) {
+        for mut t in std::mem::take(&mut self.level_teleports) {
             let Some(i) = host.hub.guests.iter().position(|g| g.conn == t.conn) else {
                 continue;
             };
+            // PlayerTeleportEvent: the mods may stop it or move its point in that level.
+            if let Some(cause) = t.cause {
+                let g = &host.hub.guests[i];
+                let (mut to, mut relative, mut cancel) = (t.at, 0, false);
+                let (from, dimension) = (g.position, g.dimension.as_str());
+                Self::native_player_teleport(
+                    g.uuid,
+                    &g.name,
+                    cause,
+                    dimension,
+                    from,
+                    t.dim.id(),
+                    &mut to,
+                    &mut relative,
+                    &mut cancel,
+                );
+                if cancel {
+                    continue;
+                }
+                if to.iter().all(|v| v.is_finite()) {
+                    t.at = to;
+                }
+            }
             let source = self.dim;
             if t.dim != source {
                 drop_hook(host, t.conn);

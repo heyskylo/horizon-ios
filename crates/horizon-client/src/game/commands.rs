@@ -906,7 +906,7 @@ impl Game<'_> {
     /// the entity lists (a kind added there joins `@e` once it names its
     /// `Target`), then the kinds that are not on the walk. An
     /// unsorted selector lists them in that order.
-    fn level_candidates(&self) -> Vec<Target> {
+    pub(in crate::game) fn level_candidates(&self) -> Vec<Target> {
         use super::entity::{Entity as _, entity_lists_of, for_each_entity};
         let mut candidates = Vec::new();
         for_each_entity!(entity_lists_of!(self), entity => {
@@ -1559,6 +1559,7 @@ impl Game<'_> {
                 // there at once: the arrival they were waiting for elsewhere
                 // in it (whose chunks lose their tickets) is abandoned.
                 if let Some(conn) = self.lan_acting {
+                    horizon_client::lan::hub::teleport_cause(Some("command"));
                     self.server_trips.retain(|trip| !trip.is(conn));
                 }
                 let from = self
@@ -1816,6 +1817,7 @@ impl Game<'_> {
                 at: pos,
                 rotation,
                 vehicle: None,
+                cause: Some("command"),
             });
         Ok(true)
     }

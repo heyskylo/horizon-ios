@@ -1154,7 +1154,7 @@ impl Title {
             rules.release();
         }
         if let Mode::Multiplayer(screen) = &mut self.mode {
-            screen.release();
+            screen.release(&self.saves);
         }
         if let Mode::CreateFlat { flat, .. } = &mut self.mode {
             flat::release(flat);
