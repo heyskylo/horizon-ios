@@ -1147,7 +1147,11 @@ mod tests {
             for name in ["a", "b"] {
                 let pack = dir.join("datapacks").join(name);
                 std::fs::create_dir_all(pack.join("data/x/recipe")).unwrap();
-                std::fs::write(pack.join("pack.mcmeta"), "{}").unwrap();
+                std::fs::write(
+                    pack.join("pack.mcmeta"),
+                    r#"{"pack":{"description":"fixture"}}"#,
+                )
+                .unwrap();
                 std::fs::write(pack.join("data/x/recipe/r.json"), name).unwrap();
             }
             let json = serde_json::json!({"enabled": order, "disabled": []});
@@ -1174,7 +1178,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let pack = dir.join("datapacks").join("pack");
         std::fs::create_dir_all(pack.join("data/pkg/tags/item")).unwrap();
-        std::fs::write(pack.join("pack.mcmeta"), "{}").unwrap();
+        std::fs::write(
+            pack.join("pack.mcmeta"),
+            r#"{"pack":{"description":"fixture"}}"#,
+        )
+        .unwrap();
         std::fs::write(
             pack.join("data/pkg/tags/item/both.json"),
             r#"{"replace": true, "values": ["pkg:from_pack"]}"#,
@@ -1350,5 +1358,128 @@ mod entity_score_tests {
         assert!(!matches(&mut game, actors[2].0));
         assert!(game.score.board.score(&actors[2].1, "pts").is_none());
         assert_eq!(game.world.game_time, time);
+    }
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn folder_metadata_rejection_reaches_actual_function_commands() {
+        use crate::game::{Audio, Options, Settings, load_resources};
+        use std::time::Instant;
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &crate::game::Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-game-folder-metadata-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cases = [
+            ("broken", Some("{"), false),
+            ("root_empty", Some("{}"), false),
+            ("root_array", Some("[]"), false),
+            ("pack_empty", Some(r#"{"pack":{}}"#), false),
+            ("pack_string", Some(r#"{"pack":"bad"}"#), false),
+            ("missing", None, false),
+            (
+                "full",
+                Some(
+                    r#"{"pack":{"description":"full","pack_format":121,"min_format":[121,0],"max_format":[121,0]}}"#,
+                ),
+                true,
+            ),
+            (
+                "description",
+                Some(r#"{"pack":{"description":"description only"}}"#),
+                true,
+            ),
+        ];
+        for (name, metadata, _) in cases {
+            let pack = dir.join("datapacks").join(name);
+            std::fs::create_dir_all(pack.join("data/h146/function")).unwrap();
+            std::fs::write(
+                pack.join(format!("data/h146/function/{name}.mcfunction")),
+                format!("scoreboard players set {name} h146 17\n"),
+            )
+            .unwrap();
+            if let Some(metadata) = metadata {
+                std::fs::write(pack.join("pack.mcmeta"), metadata).unwrap();
+            }
+        }
+        game.world_root = dir.clone();
+        let run = |game: &mut Game<'_>, line: &str| {
+            game.exec = ExecState::default();
+            let source = game.player_source();
+            game.execute_line(line, source)
+        };
+        run(&mut game, "scoreboard objectives add h146 dummy").unwrap();
+        let clock = game.world.game_time;
+        for reload in [false, true] {
+            for (name, _, _) in cases {
+                run(
+                    &mut game,
+                    &format!("scoreboard players set {name} h146 -99"),
+                )
+                .unwrap();
+            }
+            game.reload_datapacks(reload);
+            for (name, _, valid) in cases {
+                assert_eq!(game.score.board.score(name, "h146").unwrap().value, -99);
+                let result = run(&mut game, &format!("function h146:{name}"));
+                // Intended old failure: a malformed pack's valid function executes.
+                assert_eq!(result.is_ok(), valid, "{name}, reload={reload}");
+                assert_eq!(
+                    game.score.board.score(name, "h146").unwrap().value,
+                    if valid { 17 } else { -99 }
+                );
+                assert_eq!(
+                    game.fns
+                        .store
+                        .functions
+                        .contains_key(&format!("h146:{name}")),
+                    valid
+                );
+                assert_eq!(
+                    game.ui
+                        .registries
+                        .functions
+                        .contains(&format!("h146:{name}")),
+                    valid
+                );
+                assert_eq!(
+                    game.fns
+                        .packs
+                        .iter()
+                        .any(|p| p.id == format!("file/{name}")),
+                    valid
+                );
+            }
+        }
+        assert_eq!(game.world.game_time, clock);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

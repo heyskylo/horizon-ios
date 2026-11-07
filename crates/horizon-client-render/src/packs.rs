@@ -462,7 +462,7 @@ fn read_meta(source: &Source) -> Option<serde_json::Value> {
 /// The first JSON value of a `pack.mcmeta`: what follows it is ignored, as some packs sign the
 /// file with a comment after the closing brace. Gson reads past a UTF-8 byte order mark;
 /// serde_json rejects it.
-fn parse_meta(bytes: &[u8]) -> Option<serde_json::Value> {
+pub(crate) fn parse_meta(bytes: &[u8]) -> Option<serde_json::Value> {
     serde_json::Deserializer::from_slice(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes))
         .into_iter()
         .next()?
