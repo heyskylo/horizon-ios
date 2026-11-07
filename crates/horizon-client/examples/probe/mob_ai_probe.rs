@@ -204,6 +204,7 @@ fn goal_name(m: &Mob, name: &str) -> String {
         "Float" => "FloatGoal",
         "RandomFloatAround" => "RandomFloatAroundGoal",
         "GhastLook" => "GhastLookGoal",
+        "Peek" => "ShulkerPeekGoal",
         "GhastShoot" => "GhastShootFireballGoal",
         "Stroll" => "WaterAvoidingRandomStrollGoal",
         "ParrotWander" => "ParrotWanderGoal",
@@ -1068,6 +1069,13 @@ pub fn main() -> horizon_client::Result<()> {
                     // Set once the brain exists (below).
                     x if x.starts_with("cooldown=") => {}
                     "dead" => m.health = 0.0,
+                    // effect=<name>:<amplifier>, never running out.
+                    x if x.starts_with("effect=") => {
+                        let (name, amp) = x[7..].split_once(':').unwrap();
+                        let name: &'static str =
+                            Box::leak(format!("minecraft:{name}").into_boxed_str());
+                        m.add_effect(name, -1, amp.parse().unwrap());
+                    }
                     "leashed" => m.extra.leash = Some(horizon_client::mobs::leash::Holder::Player),
                     x if x.starts_with("leashto=") => {
                         let n: u32 = x[8..].parse().unwrap();
