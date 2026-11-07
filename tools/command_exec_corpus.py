@@ -661,6 +661,17 @@ def entities():
         cmd('/tp @e[type=minecraft:tnt] 4.5 215 8.5'),
         cmd('/kill @e[type=minecraft:tnt]'),
         cmd('/execute if entity @e[type=minecraft:tnt]'),
+        # A cushion is an entity too (BlockAttachedEntity): found, tagged,
+        # read and killed like a painting, with no drop.
+        cmd('/setblock 4 209 12 minecraft:oak_slab'),
+        cmd('/summon minecraft:cushion 4.5 209.5 12.5 {Tags:["k"]}'),
+        cmd('/execute if entity @e[type=minecraft:cushion]'),
+        cmd('/tag @e[type=minecraft:cushion,limit=1] list'),
+        cmd('/execute if entity @e[type=minecraft:cushion,tag=k]'),
+        cmd('/data get entity @e[type=minecraft:cushion,limit=1] color'),
+        cmd('/kill @e[type=minecraft:cushion]'),
+        cmd('/execute if entity @e[type=minecraft:cushion]'),
+        cmd('/execute if entity @e[type=minecraft:item]'),
         # So is a falling block, named after its block (`getTypeName`).
         cmd('/summon minecraft:falling_block 4.5 210 8.5 {BlockState:{Name:"minecraft:sand"},NoGravity:1b,Tags:["f"]}'),
         cmd('/execute if entity @e[type=minecraft:falling_block,tag=f]'),
