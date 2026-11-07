@@ -30,6 +30,7 @@ pub use horizon_items::firework::{DYE_FIREWORK_COLORS, FireworkExplosion, Firewo
 mod native;
 pub mod polytone;
 mod polytone_gpu;
+mod polytone_model;
 pub use native::{ParticleController, ParticleUpdate};
 
 /// `ParticleOptions` with the parameters of the option classes used here.
@@ -531,6 +532,8 @@ pub struct Particle {
     controller: Option<Box<dyn native::Controller>>,
     /// A resource pack's Polytone custom particle type, for its `limit` and `exclusion_radius`.
     polytone_type: Option<std::sync::Arc<str>>,
+    /// A Polytone model particle's faces, drawn instead of its sprite quad.
+    model: Option<std::sync::Arc<polytone_model::ParticleModel>>,
     /// How a Polytone custom particle's quad turns (`rotation_mode`).
     orientation: polytone_gpu::Orientation,
     /// Blended additively (a Polytone `additive_translucent` particle).
@@ -897,6 +900,7 @@ impl Particle {
             random: LegacyRandom::new(0),
             controller: None,
             polytone_type: None,
+            model: None,
             orientation: polytone_gpu::Orientation::Camera,
             additive: false,
         }
@@ -5053,6 +5057,28 @@ impl ParticleEngine {
             } else {
                 0
             };
+            // A Polytone model particle: its model's faces, scaled by its size and turned as
+            // its quad would be.
+            if let Some(model) = &p.model {
+                for quad in &model.quads {
+                    let Some(&(r, _)) = self.atlas.get(&quad.sprite) else {
+                        continue;
+                    };
+                    let (du, dv) = (r.u1 - r.u0, r.v1 - r.v0);
+                    for (corner, uv) in quad.corners.iter().zip(quad.uv) {
+                        target.push(Vertex {
+                            normal: [0; 4],
+                            pos: (center + rotation * (*corner * size)).to_array(),
+                            uv: [r.u0 + du * uv[0], r.v0 + dv * uv[1]],
+                            layer: overlay | u32::from(hdr_tier(p.ty)) << 16,
+                            color,
+                            light,
+                            glint_uv: [0.0, 0.0],
+                        });
+                    }
+                }
+                continue;
+            }
             for rotation in rotations.into_iter().flatten() {
                 for (n, uv) in [
                     ((1.0, -1.0), [u1, v1]),
