@@ -8477,6 +8477,28 @@ impl Game<'_> {
                 }
                 return true;
             } else if let Some(stack) = held.as_ref()
+                && &*stack.item == "minecraft:potion"
+                && stack.potion() == Some("minecraft:water")
+                && hit.face != [0, -1, 0]
+                && self.block_in_tag("minecraft:convertible_to_mud", &self.block_name(hit.pos))
+                && (self.may_build()
+                    || self.with_hand(hand, |g| g.can_place_on_in_adventure(hit.pos)))
+            {
+                // PotionItem.useOn on a client level: SUCCESS. The bottle is
+                // poured out into the hand and the block turns to mud here at
+                // once; the sounds (`playSound(null, ...)`) and the splash
+                // particles (`sendParticles`) are the server's.
+                if let Some(mud) = self.pack.assets.registry.default_state("minecraft:mud") {
+                    let pos =
+                        horizon_core::position::BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]);
+                    self.predict_blocks(&vec![(pos, mud)], seq);
+                }
+                self.with_hand(hand, |g| {
+                    g.filled_result(ItemStack::new("minecraft:glass_bottle", 1))
+                });
+                self.with_hand(hand, Game::swing_arm);
+                return true;
+            } else if let Some(stack) = held.as_ref()
                 && (self.predict_item_on_block(stack, &hit, hand)
                     || self.predict_map_on_banner(stack, &hit))
             {
