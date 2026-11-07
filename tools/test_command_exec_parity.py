@@ -141,9 +141,12 @@ def main():
     parser.add_argument('--map-decoration-patch-fixture', action='store_true')
     parser.add_argument('--map-decoration-removal-diagnostic', action='store_true')
     parser.add_argument("--selector-bounds-fixture", action="store_true")
+    parser.add_argument("--macro-source-type-fixture", action="store_true")
     parser.add_argument("--stand-fall-fixture", action="store_true")
     parser.add_argument('--orb-uuid-fixture', action='store_true')
     parser.add_argument("--mob-pickup-save-fixture", action="store_true")
+    parser.add_argument('--mob-name-presentation-diagnostic', action='store_true',
+                        help='retain all 312 mob-name records, including ten separate name/saved-text presentation observations')
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -169,6 +172,10 @@ def main():
             sys.exit(f'{name} failed ({result.returncode}):\n{tail}')
 
     groups = corpus_module.groups()
+    if args.macro_source_type_fixture or args.only == "macro source type error":
+        groups = [(name, ops) for name, ops in groups if name == "macro source type error"]
+    elif not args.only:
+        groups = [(name, ops) for name, ops in groups if name not in corpus_module.ISOLATED_MACRO_TYPE]
     if args.stand_fall_fixture or args.only == "stand saved fall distance":
         groups = [(name, ops) for name, ops in groups if name == "stand saved fall distance"]
     elif not args.only:
@@ -310,6 +317,11 @@ def main():
     if args.selector_bounds_fixture:
         from selector_bounds_corpus import selector_bounds
         groups = [("setup", corpus_module.group_setup()), ("selector entity bounds", selector_bounds())]
+    if args.mob_name_presentation_diagnostic:
+        from mob_name_predicate_corpus import cases as mob_name_predicates
+        groups = [('setup', corpus_module.group_setup()),
+                  ('mob custom name components', mob_name_predicates(
+                      corpus_module.cmd, corpus_module.setup, presentation_diagnostic=True))]
     script = []
     for _, lines in groups:
         script.extend(lines)
