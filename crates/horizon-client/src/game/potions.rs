@@ -70,6 +70,11 @@ pub(super) struct ThrownPotion {
     guest: Option<u32>,
     /// `Projectile.leftOwner`: until then it can't hit its thrower.
     left_owner: bool,
+    /// `Projectile.lastDeflectedBy`: a mob deflects it once in a row.
+    last_deflected_by: Option<u32>,
+    /// `Entity.random`: `ProjectileDeflection.REVERSE` draws from the
+    /// projectile's own source, not the level's.
+    random: LegacyRandom,
 }
 /// The player (not one of `skip`, the thrower and who rides with them before
 /// it has left them) whose box, grown by `margin` (`ProjectileUtil.computeMargin`),
@@ -413,6 +418,8 @@ impl Game<'_> {
             guest: self.lan_acting.filter(|_| owner.is_some()),
             owner,
             left_owner: false,
+            last_deflected_by: None,
+            random: LegacyRandom::new(i64::from(id)),
         });
     }
 }
@@ -497,6 +504,8 @@ impl PotionState {
             thrower: None,
             guest: None,
             left_owner: false,
+            last_deflected_by: None,
+            random: LegacyRandom::new(i64::from(id)),
         });
     }
     /// ThrowableItemProjectile.DATA_ITEM_STACK: the potion it shows.
@@ -1249,6 +1258,7 @@ impl Game<'_> {
             self.thrown_player_targets()
         };
         let mut landed = Vec::new();
+        let mut deflected: Vec<u32> = Vec::new();
         thrown.retain_mut(|t| {
             t.age += 1;
             // Projectile.tick: whether it has left its thrower's vehicle tree,
@@ -1271,6 +1281,7 @@ impl Game<'_> {
             let margin = thrown_margin(t.age);
             let steps = 4;
             let mut hit = None;
+            let mut deflect_stop = false;
             for i in 1..=steps {
                 let f = f64::from(i) / f64::from(steps);
                 let p = Vec3::new(
@@ -1293,6 +1304,30 @@ impl Game<'_> {
                 // them), the box grown by the 0.3 pick margin.
                 let player = thrown_player_at(&players, skip, p, margin);
                 if self.res.facts().get(state).full_collision || mob.is_some() || player.is_some() {
+                    // Projectile.hitTargetOrDeflectSelf: a breeze's deflection
+                    // (`Breeze.deflection`) turns the potion back at half
+                    // speed instead of `onHit`, and it flies on.
+                    if let Some(m) = mob
+                        && m.species() == horizon_client::mobs::Species::Breeze
+                    {
+                        if t.last_deflected_by != Some(m.id) {
+                            // ProjectileDeflection.REVERSE.
+                            let _ = t.random.next_float();
+                            t.velocity = Vec3::new(
+                                t.velocity.x * -0.5,
+                                t.velocity.y * -0.5,
+                                t.velocity.z * -0.5,
+                            );
+                            t.last_deflected_by = Some(m.id);
+                            deflected.push(m.id);
+                        }
+                        // ThrowableProjectile.tick: `setPos(hitResult.getLocation())`
+                        // before the deflection, so it does not step on past the
+                        // breeze this tick.
+                        t.position = p;
+                        deflect_stop = true;
+                        break;
+                    }
                     // A block hit has the face it came in by
                     // (`onHitBlock`); an entity hit has none.
                     let block = (mob.is_none() && player.is_none())
@@ -1319,6 +1354,9 @@ impl Game<'_> {
                 ));
                 return false;
             }
+            if deflect_stop {
+                return t.age < 1200 && t.position.y > -128.0;
+            }
             t.position = next;
             let bounds = Aabb::new(
                 next.add_vector(Vec3::new(-0.125, 0.0, -0.125)),
@@ -1328,6 +1366,18 @@ impl Game<'_> {
             t.age < 1200 && t.position.y > -128.0
         });
         self.potions.thrown = thrown;
+        for id in deflected {
+            if let Some(index) = self.mobs.iter().position(|m| m.id == id) {
+                self.play_mob_bound_sound(
+                    index,
+                    "minecraft:entity.breeze.deflect",
+                    5,
+                    1.0,
+                    1.0,
+                    false,
+                );
+            }
+        }
         for (stack, at, mob, block, age, owner, guest) in landed {
             // Projectile.onHit (super.onHit of AbstractThrownPotion): a block
             // is heard at its centre, an entity at the hit.
