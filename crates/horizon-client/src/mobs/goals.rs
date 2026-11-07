@@ -2262,9 +2262,12 @@ impl Goal for Breed {
         }
         let llama = super::llama::is_llama(species);
         let equine = matches!(species, Species::Horse | Species::Donkey) || llama;
+        // Camel.canMate asks AbstractHorse.canParent of both sides: not a
+        // vehicle or a passenger and at full health (a camel is always tame).
+        let camel = species == Species::Camel;
         // AbstractHorse.canParent: tame, an adult, not a vehicle or passenger
         // and at full health.
-        if equine
+        if (equine || camel)
             && (!m.extra.tame
                 || m.is_baby()
                 || m.rider.is_some()
@@ -2287,7 +2290,7 @@ impl Goal for Breed {
                     // Wolf.canMate: a sitting wolf is no partner.
                     && !(species == Species::Wolf && s.sitting)
                     // AbstractHorse.canParent of the partner.
-                    && (!equine || s.tame && !s.ridden && s.health >= s.stats[0] as f32)
+                    && (!(equine || camel) || s.tame && !s.ridden && s.health >= s.stats[0] as f32)
                     && (!sniffer || super::sniffer::can_mate_state(s.variant))
             })
             .map(|s| s.id)
