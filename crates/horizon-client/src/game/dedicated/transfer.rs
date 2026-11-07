@@ -4,10 +4,11 @@
 //! `player-export <uuid> [freeze]` (the source answers with the player's record) and
 //! `player-release <uuid> <hand-over> moved [announce] | abort` (the source lets the player go),
 //! `player-import <uuid> <json>` and `player-confirm <uuid> <hand-over>` (the target takes the
-//! record and lets the held player in). They run
+//! record and lets the held player in), and `transfer-status` (the counts a proxy reads before
+//! it sends players here). They run
 //! between two ticks, on the server thread, so the player is never caught half-way through a
 //! tick. The rules are `lan/arrivals.rs`'s. All of them are refused while `server.toml`'s
-//! `[transfer]` is off.
+//! `[transfer]` is off, and those that bring a player in once the server has begun to stop.
 use crate::game::{Dim, Game, lan::LanHost};
 use horizon_client::lan::arrivals;
 use horizon_protocol::packets::play::{self, Clientbound as C};
@@ -37,6 +38,26 @@ impl Game<'_> {
         let (level, line) = arrivals::request_log(verb, name.as_deref(), args, &reply);
         super::log(level, &line);
         reply
+    }
+
+    /// Once a stop has begun (`/stop` from the console, a player or the control endpoint, or a stop
+    /// signal), the transfers know it before the next request is answered: what would bring a player
+    /// in is refused from then on, and the ways out stay open (`arrivals::Transfers::stopping`).
+    pub(super) fn note_stopping(&mut self, stop: bool) {
+        let stopping = stop || horizon_threads::stop_requests() > 0;
+        if let Some(transfers) = self.lan.as_mut().and_then(|h| h.hub.transfers.as_mut()) {
+            transfers.stopping |= stopping;
+        }
+    }
+
+    /// `transfer-status`: the counts a proxy reads before it sends players here
+    /// (`arrivals::status_request`). A proxy asks it every few seconds, so it writes nothing to
+    /// the log.
+    pub(super) fn transfer_status(&self) -> Value {
+        match self.lan.as_ref() {
+            Some(host) => arrivals::status_request(&host.hub, Instant::now()),
+            None => json!({ "error": "the server is not open to players" }),
+        }
     }
 
     fn run_player_request(&mut self, verb: &str, args: &str) -> Value {
