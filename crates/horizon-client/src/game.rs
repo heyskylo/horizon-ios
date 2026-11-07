@@ -244,6 +244,7 @@ mod native_entity_motion;
 mod native_entity_refs;
 mod native_explosions;
 mod native_falling;
+mod native_fluid_render;
 mod native_hooks;
 mod native_host_bridge;
 mod native_inventories;
