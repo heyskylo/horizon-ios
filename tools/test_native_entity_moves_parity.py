@@ -43,16 +43,15 @@ def main():
         harness.java_run(build, classes, dependencies, 'VanillaNativeEntityMovesOracle',
                          [fixture, output], side)
         assert rows(output) == expected, f'{side}: committed outcomes differ from vanilla'
-    harness.run_logged(['cargo', 'test', '--locked', '-p', 'horizon-client', '--bin',
-                        'horizon-client', '--no-run', '--message-format=json'],
+    harness.run_logged(['cargo', 'test', '--locked', '-p', 'horizon-client', '--lib', '--no-run', '--message-format=json'],
                        build, 'compile-rust', timeout=3600)
     artifacts = [json.loads(line) for line in (build / 'compile-rust.log').read_text().splitlines()
                  if line.startswith('{')]
     executables = {record['executable'] for record in artifacts
                    if record.get('reason') == 'compiler-artifact' and record.get('executable')
                    and record.get('profile', {}).get('test')
-                   and record['target']['name'] == 'horizon-client'
-                   and 'bin' in record['target']['kind']}
+                   and record['target']['name'] == 'horizon_client'
+                   and 'lib' in record['target']['kind']}
     assert len(executables) == 1, executables
     executable = executables.pop()
     with tempfile.TemporaryDirectory(prefix='horizon-move-properties-') as scratch:
