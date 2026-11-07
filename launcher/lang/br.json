@@ -1253,5 +1253,8 @@
   "{host} has no horizon-server. Install it there first, as the hosting guide says.": "{host} has no horizon-server. Install it there first, as the hosting guide says.",
   "Couldn't connect to {host}: {reason}": "Couldn't connect to {host}: {reason}",
   "Couldn't connect to {host}.": "Couldn't connect to {host}.",
-  "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}."
+  "horizon-server on {host} failed in {dir}.": "horizon-server on {host} failed in {dir}.",
+  "Open in private window": "Digeriñ en ur prenestr prevez",
+  "Open this link in a private window to pick another account.": "Digorit al liamm-mañ en ur prenestr prevez evit dibab ur gont all.",
+  "Use a different Microsoft account": "Implijout ur gont Microsoft all"
 }
