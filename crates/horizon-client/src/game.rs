@@ -14483,12 +14483,19 @@ impl Game<'_> {
     /// `ExperienceOrb.award`: orbs of the largest sizes; each draws the id
     /// `tryMergeToExisting` compares from the level random, then moves with
     /// its own random.
-    fn spawn_orbs(&mut self, at: [f64; 3], mut value: u32) {
+    fn spawn_orbs(&mut self, at: [f64; 3], value: u32) {
+        self.spawn_orbs_toward(at, [0.0; 3], value);
+    }
+    /// `ExperienceOrb.awardWithDirection`: `award` whose fresh orbs start
+    /// `roughly` that way (`new ExperienceOrb(level, pos, roughly, value)`).
+    fn spawn_orbs_toward(&mut self, at: [f64; 3], roughly: [f64; 3], mut value: u32) {
         while value > 0 {
             let v = ExperienceOrb::split(value);
             value -= v;
             let merge_id = self.world.random.next_int_bound(40).unwrap_or(0);
-            self.award_orb(at, v, merge_id);
+            if !self.merge_new_orb(at, v, merge_id) {
+                self.add_orb_toward(at, roughly, v);
+            }
         }
     }
     /// `ExperienceOrb.tryMergeToExisting`: an orb of the same value within a
@@ -14496,6 +14503,12 @@ impl Game<'_> {
     /// the new one as one more in its count (and restarts its age); otherwise
     /// a fresh orb spawns.
     fn award_orb(&mut self, at: [f64; 3], value: u32, merge_id: i32) {
+        if !self.merge_new_orb(at, value, merge_id) {
+            self.add_orb(at, value);
+        }
+    }
+    /// `tryMergeToExisting`: true when an orb took the new one.
+    fn merge_new_orb(&mut self, at: [f64; 3], value: u32, merge_id: i32) -> bool {
         let centre = Vec3::new(at[0], at[1], at[2]);
         let half = Vec3::new(0.5, 0.5, 0.5);
         let area = Aabb::new(centre.subtract(half), centre.add_vector(half));
@@ -14517,8 +14530,9 @@ impl Game<'_> {
         if let Some(i) = target {
             self.orbs[i].count += 1;
             self.orbs[i].age = 0;
+            true
         } else {
-            self.add_orb(at, value);
+            false
         }
     }
     /// Whether orb `into` takes orb `from` (0: a spawning orb of `from_value`),
@@ -14592,10 +14606,33 @@ impl Game<'_> {
     /// `new ExperienceOrb(level, pos, Vec3.ZERO, value)`: yaw and motion from
     /// the orb's own random.
     fn add_orb(&mut self, at: [f64; 3], value: u32) {
-        let at = self.unstuck_orb(at);
+        self.add_orb_toward(at, [0.0; 3], value);
+    }
+    /// `new ExperienceOrb(level, pos, roughly, value)`: a random motion that
+    /// points against `roughly` is turned round, and the orb starts half its
+    /// size (0.25) along `roughly`, unstuck if it collides there.
+    fn add_orb_toward(&mut self, at: [f64; 3], roughly: [f64; 3], value: u32) {
+        let len_sqr = roughly.iter().map(|v| v * v).sum::<f64>();
+        // Vec3.normalize: a vector shorter than 1e-5 has no direction.
+        let len = len_sqr.sqrt();
+        let unit = if len < 1.0e-5 {
+            [0.0; 3]
+        } else {
+            roughly.map(|v| v / len)
+        };
+        let at = self.unstuck_orb([0, 1, 2].map(|a| at[a] + unit[a] * 0.25));
         let mut r = dispenser::entity_random();
         let _yaw = r.next_float();
         let p = Vec3::new(at[0], at[1], at[2]);
+        let mut velocity = Vec3::new(
+            (r.next_double() * 0.2 - 0.1) * 2.0,
+            r.next_double() * 0.2 * 2.0,
+            (r.next_double() * 0.2 - 0.1) * 2.0,
+        );
+        let dot = roughly[0] * velocity.x + roughly[1] * velocity.y + roughly[2] * velocity.z;
+        if len_sqr > 0.0 && dot < 0.0 {
+            velocity = Vec3::new(-velocity.x, -velocity.y, -velocity.z);
+        }
         self.next_entity += 1;
         self.orbs.push(ExperienceOrb {
             rotation: [0.0, 0.0],
@@ -14604,11 +14641,7 @@ impl Game<'_> {
             id: self.next_entity,
             position: p,
             previous: p,
-            velocity: Vec3::new(
-                (r.next_double() * 0.2 - 0.1) * 2.0,
-                r.next_double() * 0.2 * 2.0,
-                (r.next_double() * 0.2 - 0.1) * 2.0,
-            ),
+            velocity,
             value,
             age: 0,
             on_ground: false,
