@@ -316,8 +316,9 @@ def facts(label,build,ops,proof,messages,validate=False,packet=True,java_side=Fa
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--side',choices=['java','native'],required=True)
-    parser.add_argument('--label',required=True)
+    parser.add_argument('--side',choices=['java','native','both'],default='both',
+                        help="both (the default, as parity.py runs it): Java, then native against Java's facts")
+    parser.add_argument('--label',help="the run's name (default: the side)")
     parser.add_argument('--binary',type=Path)
     parser.add_argument('--reference',type=Path)
     parser.add_argument('--unknown-diagnostic',action='store_true')
@@ -339,15 +340,24 @@ def main():
     text=json.dumps(ops,indent=2)+'\n'
     if script.exists():assert script.read_text()==text,'declared script changed'
     else:script.write_text(text)
-    proof,messages=run(args.label,java if args.side=='java' else native,client,build,world,ops,packet,args.side=='java',model,clock_file)
-    actual=facts(args.label,build,ops,proof,messages,validate=args.side=='java',packet=packet,java_side=args.side=='java',model=model,packet_diagnostic=args.packet_diagnostic,clock_file=clock_file)
-    (build/f'{args.label}-facts.json').write_text(json.dumps(actual,indent=2,sort_keys=True)+'\n')
-    if args.reference:
-        reference=json.loads(args.reference.read_text());assert actual.keys()==reference.keys(),'canonical labels changed'
+    if args.side=='both':
+        side(args,'java','java',None,java,native,client,build,world,ops,packet,model,clock_file)
+        side(args,'native','native',build/'java-facts.json',java,native,client,build,world,ops,packet,model,clock_file)
+    else:
+        side(args,args.side,args.label or args.side,args.reference,java,native,client,build,world,ops,packet,model,clock_file)
+
+
+def side(args,name,label,reference,java,native,client,build,world,ops,packet,model,clock_file):
+    """One side's run: its facts, compared with `reference` when one is given."""
+    proof,messages=run(label,java if name=='java' else native,client,build,world,ops,packet,name=='java',model,clock_file)
+    actual=facts(label,build,ops,proof,messages,validate=name=='java',packet=packet,java_side=name=='java',model=model,packet_diagnostic=args.packet_diagnostic,clock_file=clock_file)
+    (build/f'{label}-facts.json').write_text(json.dumps(actual,indent=2,sort_keys=True)+'\n')
+    if reference:
+        reference=json.loads(Path(reference).read_text());assert actual.keys()==reference.keys(),'canonical labels changed'
         differences=[{'label':k,'expected':reference[k],'actual':actual[k]} for k in reference if reference[k]!=actual[k]]
         report={'records':len(reference),'passed':len(reference)-len(differences),'differences':differences,'qualified_h264':model and clock_file,'scope':'authoritative model / saved-clock gate; absolute clocks retained engine-specific, only explicit relative invariants compare' if model and clock_file else 'non-authoritative prerequisite diagnostic'}
-        (build/f'{args.label}-report.json').write_text(json.dumps(report,indent=2)+'\n');print(args.label,report['passed'],'/',len(reference))
+        (build/f'{label}-report.json').write_text(json.dumps(report,indent=2)+'\n');print(label,report['passed'],'/',len(reference))
         if differences:raise SystemExit(1)
-    else:print(args.label,len(actual),'canonical records captured')
+    else:print(label,len(actual),'canonical records captured')
 
 if __name__=='__main__':main()
