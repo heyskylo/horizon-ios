@@ -244,6 +244,7 @@ mod native_entity_motion;
 mod native_entity_refs;
 mod native_explosions;
 mod native_falling;
+mod native_fluid_render;
 mod native_hooks;
 mod native_host_bridge;
 mod native_inventories;
@@ -278,6 +279,8 @@ mod native_scene;
 mod native_server;
 mod native_shaders;
 mod native_structures;
+mod native_terrain_model;
+pub mod native_text_field;
 mod native_ticks;
 mod native_travel;
 mod native_view_distance;
@@ -343,6 +346,7 @@ mod saving;
 mod scoreboard;
 mod screen_info;
 mod screens;
+mod screenshot_sequence;
 mod sculk;
 mod sculk_fixture;
 mod server_links;
@@ -3168,6 +3172,8 @@ struct Game<'a> {
     perf: horizon_client::telemetry::Session,
     /// Control replies waiting for a rendered frame or a benchmark deadline.
     pending_screenshot: Option<std::sync::mpsc::Sender<String>>,
+    /// `screenshot-sequence` while it runs.
+    screenshot_sequence: Option<screenshot_sequence::Sequence>,
     /// `render-capture DIR`: replied once the renderer wrote the scene.
     pending_render_capture: Option<std::sync::mpsc::Sender<String>>,
     pending_bench: Option<(Instant, std::sync::mpsc::Sender<String>)>,
@@ -8201,6 +8207,11 @@ impl Game<'_> {
                 self.world.weather.tick_timers(&mut self.world.random);
             }
             self.world.weather.tick_levels();
+        } else if self.clock.still() {
+            // Under `HORIZON_STILL` a frozen world's rain and thunder sit at their levels, as a
+            // shader pack's smoothed values do, so `/weather rain` shows full rain without
+            // stepping the world (and its mobs) through the fade.
+            self.world.weather.settle_levels();
         }
         // ClientLevel.tick: the sky flash fades in a frozen level too.
         self.tick_weather_effects();
@@ -10568,18 +10579,27 @@ impl Game<'_> {
         if let Some((s, mob)) = session.as_mut() {
             self.merchant_sync_in(s, *mob);
         }
-        // The cartography table reads and makes the level's maps; a
+        // Crafting and cartography read and derive the level's maps; a
         // server's (the client menu's ContainerLevelAccess.NULL) doesn't.
-        let level_maps = (kind == Kind::Cartography && self.remote.is_none()).then(|| {
-            let held: Vec<ItemStack> = before
+        let level_maps = (matches!(kind, Kind::Cartography | Kind::Crafting | Kind::Inventory)
+            && self.remote.is_none())
+        .then(|| {
+            before
                 .iter()
                 .flatten()
                 .chain(self.inventory.iter().flatten())
                 .chain(self.carried.iter())
                 .cloned()
-                .collect();
-            self.level_maps(&held)
-        });
+                .collect::<Vec<_>>()
+        })
+        .filter(|held| {
+            kind == Kind::Cartography
+                || held
+                    .iter()
+                    .filter_map(maps::map_id)
+                    .any(|id| self.map(id).is_some())
+        })
+        .map(|held| self.level_maps(&held));
         let next_map = if merchant_open { self.peek_map_id() } else { 0 };
         let tag = |t: &str| self.structure_tag(t);
         let maps = trading::GameMaps {
@@ -16542,6 +16562,10 @@ impl Game<'_> {
     /// saved icon is on the screen, grab the rendered frame once a second until
     /// the save has one. The Select World list shows it as the world's preview.
     fn tick_world_icon(&mut self) {
+        // Its grab would take a sequence's frame.
+        if self.screenshot_sequence.is_some() {
+            return;
+        }
         let Some(icon) = self.world_icon.as_ref() else {
             return;
         };
@@ -16589,6 +16613,12 @@ impl Game<'_> {
         });
     }
     fn render(&mut self) -> Result<bool> {
+        if self.screenshot_sequence.is_some() {
+            return self.render_sequence_frame();
+        }
+        self.render_frame()
+    }
+    fn render_frame(&mut self) -> Result<bool> {
         let prepare = spans::guard("prepare");
         let mut pr = spans::laps();
         // The window's GPU holds the atlas: its copy in memory is kept
@@ -17122,12 +17152,16 @@ impl Game<'_> {
             self.gather_dynamic_lights(camera, alpha);
         }
         pr.lap("pr_lights");
-        let pack_inputs = if title {
+        let mut pack_inputs = if title {
             Default::default()
         } else {
             self.shader_pack_inputs(camera, alpha as f32, &sky)
         };
         pr.lap("pr_shader_inputs");
+        pack_inputs.frame_timing = self
+            .screenshot_sequence
+            .as_ref()
+            .map(screenshot_sequence::Sequence::timing);
         // Map textures and font glyphs changed while building this frame's
         // geometry (game/maps.rs, world text) upload with this batch; draining
         // map_patches any earlier leaves them a frame behind.
@@ -18807,6 +18841,19 @@ impl Game<'_> {
                     }
                 }
             }
+            // Title boxes keep their text on the key path. A field hook takes
+            // it through the same per-character editor as IME and control input.
+            if !canceled
+                && control::title_owns_text(&self.screen, self.title.is_some())
+                && self.types_text()
+                && let Some(text) = key_event.text.as_deref()
+                && let Some(result) = self.type_text_field_input(text)
+            {
+                if let Err(error) = result {
+                    log::warn!("Horizon: text input: {error}");
+                }
+                key_event.text = None;
+            }
             if canceled {
                 // charTyped is a separate callback: the characters still
                 // reach the text box, without the key's own effects. Options'
@@ -20000,6 +20047,7 @@ impl Game<'_> {
     }
     /// The loop ended: close the pads' output, save the world, write the perf report.
     pub(super) fn shut_down(&mut self) {
+        self.end_screenshot_sequence(Err("cancelled: the game is closing".into()));
         self.pad_close_output();
         if let Err(e) = self.save_for_exit() {
             log::warn!("Horizon: failed to save the world on exit: {e}");
@@ -20545,6 +20593,7 @@ impl<'a> Game<'a> {
             frame_stats: Default::default(),
             perf: Default::default(),
             pending_screenshot: None,
+            screenshot_sequence: None,
             pending_render_capture: None,
             pending_bench: None,
             flight: None,
@@ -22124,6 +22173,7 @@ fn build_renderer(
         wide_frame,
         shader_pack.draws_flat,
         shader_pack.linear,
+        shader_pack.hdr_float,
     ))?;
     renderer.hud.sprite_animations = atlas
         .sprite_animations
@@ -22194,6 +22244,7 @@ fn loading_renderer(
         // It draws no terrain.
         false,
         // An 8-bit frame, which HDR output takes as well.
+        false,
         false,
         false,
         false,

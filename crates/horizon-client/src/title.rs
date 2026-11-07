@@ -3964,6 +3964,14 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         }
         true
     }
+    /// The ordinary focused caret field for native character transactions.
+    /// Preparing screens and game-rule editors retain their specialized validators.
+    pub fn edit_focused_text_field(&mut self, f: impl FnOnce(&mut crate::ui::EditBox)) -> bool {
+        if self.preparing || self.rules.get_mut().is_some() {
+            return false;
+        }
+        self.edit_field(f)
+    }
     /// EditBox.charTyped / insertText at the cursor.
     pub fn type_text(&mut self, text: &str) {
         // `GenericMessageScreen`: no field takes input during the read.

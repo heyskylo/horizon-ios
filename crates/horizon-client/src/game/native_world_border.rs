@@ -4,7 +4,6 @@
 use super::Game;
 
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// The world border of the level `dimension` (`minecraft:the_nether`) as
     /// the server enforces it: `[min_x, min_z, max_x, max_z]` in blocks

@@ -670,14 +670,15 @@ fn serve_connection(
 }
 
 /// The older release a client's handshake states, when this server lets it join
-/// (`horizon-accept-older-clients`): 26.2 only, for now.
+/// (`horizon-accept-older-clients`): 26.2 down to 1.20.5, the releases the adapter
+/// has tables for (`ServerVersion::from_protocol`).
 fn older_client(
     shared: &Shared,
     protocol: i32,
 ) -> Option<horizon_protocol::adapter::ServerVersion> {
     use horizon_protocol::adapter::ServerVersion;
     let version = ServerVersion::from_protocol(protocol)?;
-    (shared.config.accept_older_clients && version == ServerVersion::V26_2).then_some(version)
+    (shared.config.accept_older_clients && version.at_most(ServerVersion::V26_2)).then_some(version)
 }
 
 fn serve_status(c: &mut Connection, shared: &Shared, protocol: i32) -> Result<(), String> {

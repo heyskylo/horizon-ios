@@ -1411,10 +1411,10 @@ where
                 let name = resolver
                     .sample_prepared(context, volume.as_ref(), quart)
                     .map_err(|e| e.to_string())?;
-                if let Some((pointer, id)) = last {
-                    if std::ptr::eq(pointer, name) {
-                        return Ok(id);
-                    }
+                if let Some((pointer, id)) = last
+                    && std::ptr::eq(pointer, name)
+                {
+                    return Ok(id);
                 }
                 let id = ids.get(name).copied().ok_or_else(|| name.to_owned())?;
                 last = Some((name as *const str, id));

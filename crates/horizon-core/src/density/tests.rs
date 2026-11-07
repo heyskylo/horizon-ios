@@ -230,7 +230,7 @@ fn shift_b_repeats_each_horizontal_sample_and_preserves_tail() {
     sampler
         .sample_volume(&mut context, &mut buffer, volume)
         .unwrap();
-    for column in buffer[..volume.size()].chunks_exact(3) {
+    for column in buffer[..volume.size()].as_chunks::<3>().0 {
         assert!(column.iter().all(|v| v.to_bits() == column[0].to_bits()));
     }
     assert_eq!(&buffer[volume.size()..], &[19.0, 19.0]);
