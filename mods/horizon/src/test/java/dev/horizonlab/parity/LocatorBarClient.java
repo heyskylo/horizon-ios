@@ -415,8 +415,10 @@ public final class LocatorBarClient {
                 send(net.minecraft.network.protocol.game.ServerboundClientTickEndPacket.INSTANCE);
                 long ran = nextTick();
                 // A server catching up runs a tick with no move in it: up to the jab, its copy of the player then
-                // falls a tick of gravity more, and the motion the jab sends says nothing about the jump (#5656).
-                if (ran > 1 && tick <= stabTick) {
+                // falls a tick of gravity more, and the motion the jab sends says nothing about the jump (#5656). The
+                // jab's own move isn't counted: a server may take what follows the jab a tick later, and the motion
+                // is already decided. A catch-up just before the jab still shows in that motion, which is compared.
+                if (ran > 1 && tick < stabTick) {
                     record("error the server ran " + ran + " ticks for move " + tick + " of the jump");
                 }
                 if (landed) break;
