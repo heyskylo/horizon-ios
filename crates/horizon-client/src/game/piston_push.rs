@@ -519,6 +519,118 @@ impl Game<'_> {
             return;
         }
         self.apply_push(target, resolved);
+        // `Entity.move(MoverType.PISTON, …)` restitution: blocked axes are
+        // zeroed, a downward hit on slime bounces, and the ground flag
+        // updates. Matches vanilla even when the entity's chunk does not tick
+        // entities, so a pushed primed TNT loses its velocity into walls,
+        // ceilings and slime.
+        self.restitute_piston(target, limited, resolved);
+    }
+
+    /// `Entity.move(MoverType.PISTON, …)` restitution after the collision
+    /// scan resolved the push. Compares the attempted movement (`limited`)
+    /// with the actual one (`resolved`) and, exactly as vanilla does, zeroes
+    /// blocked horizontal axes, zeroes or bounces the vertical axis, and
+    /// updates the ground flag. Runs for every pushed target so a primed TNT
+    /// in a lazy chunk loses its velocity into walls, ceilings and slime
+    /// instead of keeping it.
+    fn restitute_piston(&mut self, target: Target, limited: Vec3, resolved: Vec3) {
+        const EPS: f64 = 1.0e-5;
+        let collided_x = (limited.x - resolved.x).abs() >= EPS;
+        let collided_z = (limited.z - resolved.z).abs() >= EPS;
+        let vertical_collision = (limited.y - resolved.y).abs() >= EPS;
+        let collision_below = vertical_collision && limited.y < 0.0;
+
+        match target {
+            Target::Player => {
+                if let Some(p) = self.player.as_mut() {
+                    if collided_x {
+                        p.velocity.x = 0.0;
+                    }
+                    if collided_z {
+                        p.velocity.z = 0.0;
+                    }
+                    if vertical_collision {
+                        p.velocity.y = if collision_below {
+                            let below = self.world.block(
+                                p.position.x.floor() as i32,
+                                (p.position.y - 1.0e-5).floor() as i32,
+                                p.position.z.floor() as i32,
+                            );
+                            let slime =
+                                &*self.res.facts().get(below).name == "minecraft:slime_block";
+                            crate::entities::vertical_collision_velocity(
+                                limited.y, resolved.y, 0.04, true, slime,
+                            )
+                        } else {
+                            0.0
+                        };
+                    }
+                    p.ground.on_ground = collision_below || p.ground.on_ground;
+                }
+            }
+            Target::Guest(conn) => {
+                if let Some(host) = self.lan.as_mut()
+                    && let Some(g) = host.hub.guests.iter_mut().find(|g| g.conn == conn)
+                {
+                    if let Some(motion) = g.motion.as_deref_mut() {
+                        if collided_x {
+                            motion.velocity.x = 0.0;
+                        }
+                        if collided_z {
+                            motion.velocity.z = 0.0;
+                        }
+                        if vertical_collision {
+                            motion.velocity.y = if collision_below {
+                                let below = self.world.block(
+                                    g.position[0] as i32,
+                                    (g.position[1] - 1.0e-5).floor() as i32,
+                                    g.position[2] as i32,
+                                );
+                                let slime =
+                                    &*self.res.facts().get(below).name == "minecraft:slime_block";
+                                crate::entities::vertical_collision_velocity(
+                                    limited.y, resolved.y, 0.04, true, slime,
+                                )
+                            } else {
+                                0.0
+                            };
+                        }
+                    }
+                    g.on_ground = collision_below || g.on_ground;
+                }
+            }
+            Target::Entity(handle) => {
+                with_entity_mut!(self, handle, entity => {
+                    if collided_x {
+                        entity.velocity_mut().x = 0.0;
+                    }
+                    if collided_z {
+                        entity.velocity_mut().z = 0.0;
+                    }
+                    if vertical_collision {
+                        entity.velocity_mut().y = if collision_below {
+                            let pos = entity.position();
+                            let below = self.world.block(
+                                pos.x.floor() as i32,
+                                (pos.y - 1.0e-5).floor() as i32,
+                                pos.z.floor() as i32,
+                            );
+                            let slime = &*self.res.facts().get(below).name == "minecraft:slime_block";
+                            crate::entities::vertical_collision_velocity(
+                                limited.y,
+                                resolved.y,
+                                0.04,
+                                true,
+                                slime,
+                            )
+                        } else {
+                            0.0
+                        };
+                    }
+                });
+            }
+        }
     }
 
     /// `Entity.limitPistonMovement`: each axis may travel at most 0.51 blocks
@@ -803,5 +915,96 @@ mod order_tests {
             moved[0]
         );
         assert!(moved[1] < 0.02, "far stone still in the way: {}", moved[1]);
+    }
+
+    /// A primed TNT pushed east by a piston into a stone wall loses its
+    /// horizontal velocity, matching `Entity.move(MoverType.PISTON, …)`
+    /// restitution even in a chunk that does not tick entities (#12022).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_pushed_tnt_loses_velocity_into_a_wall() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(std::env::temp_dir().join(format!(
+            "horizon-piston-velocity-unit-{}",
+            std::process::id()
+        )));
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let registry = &game.pack.assets.registry;
+        let stone = registry.default_state("minecraft:stone").unwrap();
+        let moving = registry.default_state("minecraft:moving_piston").unwrap();
+        let mut chunk = Chunk::empty(0, 0);
+        for x in 0..16 {
+            for z in 0..16 {
+                chunk.set(x, 199, z, stone.0);
+            }
+        }
+        // Stone wall at x=6 blocks the TNT pushed east by the piston at x=5.
+        chunk.set(6, 200, 5, stone.0);
+        chunk.set(5, 200, 5, moving.0);
+        game.world.chunks.insert((0, 0), Arc::new(chunk));
+        let piston = MovingPiston {
+            moved_state: stone,
+            direction: Direction::East,
+            extending: true,
+            source: false,
+            progress: 0.0,
+            progress_o: 0.0,
+            last_ticked: 0,
+            death_ticks: 0,
+            id: 1,
+        };
+        game.block_ticks.moving_pistons = vec![(BlockPos::new(5, 200, 5), piston)];
+        game.sync_moving_pistons();
+        game.tnts.clear();
+        assert!(game.run_command("summon tnt 5.5 200 5.5 {fuse:80,Motion:[0.4d,0.0d,0.0d]}"));
+        assert!(
+            (game.tnts[0].velocity.x - 0.4).abs() < 1.0e-9,
+            "TNT starts with vx 0.4, got {:?}",
+            game.tnts[0].velocity
+        );
+        // Piston advances from progress 0 to 0.5 and pushes the TNT east.
+        let pushes: Vec<_> = game
+            .block_ticks
+            .moving_pistons
+            .iter()
+            .map(|&(pos, old)| (pos, old, old.progress + 0.5))
+            .collect();
+        for (_, piston) in &mut game.block_ticks.moving_pistons {
+            piston.progress += 0.5;
+        }
+        game.push_piston_entities(pushes);
+        // The stone wall at x=6 stops the TNT; its horizontal velocity must be zeroed.
+        assert!(
+            game.tnts[0].velocity.x.abs() < 1.0e-9,
+            "TNT velocity.x should be zeroed by the wall, got {:?}",
+            game.tnts[0].velocity
+        );
     }
 }
