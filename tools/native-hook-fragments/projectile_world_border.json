@@ -1,0 +1,15 @@
+{
+  "hooks": [
+    {
+      "name": "projectile_world_border",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_projectile_world_border",
+      "neoforge": "none (26.3's projectile world border collision, MC-310476)",
+      "side": "server",
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "a thrown projectile about to cross the world border, which a mod may move, slow or let through (`native_projectile_world_border`).",
+  "doc_summary": "a thrown projectile at the world border: `native_projectile_world_border(dimension, entity, kind, pos, velocity, collide)` is heard each tick a thrown projectile inside the border would end its next step outside it, before 26.3 stops it there (MC-310476). A mod may change its position and velocity, or set `collide` false and it flies through this tick as before 26.3. No `self`. Bundles that use it need `\"hooks\": @API:projectile_world_border@`."
+}
