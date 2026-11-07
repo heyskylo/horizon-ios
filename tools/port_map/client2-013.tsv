@@ -105,7 +105,7 @@ BanNoticeScreens	home	crates/horizon-client-render/src/ban_notice.rs,crates/hori
 ChatScreen.removed	port	crates/horizon-client/src/game/chat.rs::Game::keep_chat_draft	the text left in the box becomes the draft unless shouldDiscardDraft; blank text discards it, and a draft still shown unchanged stays as it is
 ChatScreen.shouldDiscardDraft	port	crates/horizon-client/src/game/chat.rs::should_discard_draft	kept on interruption, and on Escape only with Save Chat Drafts; sent text discards it
 ChatScreen.insertText	port	crates/horizon-client-render/src/chat.rs::ChatScreen::type_text	insert at the cursor; replace=true (setValue) is ChatScreen::suggest_command in Horizon
-ChatScreen.formatChat	missing		minor: the restored draft is typed into the box as plain text; chat_draft_shown is tracked but never colours the input grey italic
+ChatScreen.formatChat	port	crates/horizon-client-render/src/chat.rs::ChatScreen::format	the draft formatter is tried before CommandSuggestions.formatText (ChatScreen.init registers it first), so an unedited draft draws grey italic whole; its first Backspace clears the box (ChatScreen::key)
 ChatScreen.updateNarrationState	skip:other		screen-reader narration; Horizon has no narration output
 ChatScreen.handleChatInput	port	crates/horizon-client/src/game/chat.rs::Game::handle_chat_input	the message is normalized first (ChatScreen.normalizeChatMessage), then into history, then a command or a chat line
 ChatScreen.normalizeChatMessage	port	crates/horizon-client-render/src/chat.rs::normalize_chat_message	String.trim, then normalizeSpace (one space per whitespace run), then the first 256 UTF-16 units (StringUtil.trimChatMessage)

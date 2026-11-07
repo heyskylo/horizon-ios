@@ -2,6 +2,7 @@
 name = "horizon-cosmetics"
 version = "0.1.0"
 edition = "2024"
+rust-version.workspace = true
 license = "MIT"
 description = "Cosmetic items drawn on players by Horizon clients: the item format, attachment to the player model's bones, simple animations, and what other players wear (fetched and cached)"
 

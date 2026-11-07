@@ -151,6 +151,13 @@ impl Game<'_> {
             .block_entities
             .put(key, BlockEntity::Beehive(hive));
         if stored {
+            let state = self.world.block(at[0], at[1], at[2]);
+            self.post_block_game_event(
+                "minecraft:block_change",
+                at,
+                Some(Who::Mob(mob)),
+                Some(state),
+            );
             let kind = self.mobs[i].kind.id.clone();
             let block = self
                 .res
@@ -268,7 +275,9 @@ impl Game<'_> {
             } else if let Some(rest) = self.give(bottle)
                 && let Some(eye) = self.eye_position()
             {
-                self.spawn_item(rest, eye, [0.0, 0.1, 0.0], 40);
+                // `player.drop(stack, false, PREDICTED)`: thrown from below
+                // the eyes along the view, with no thrower.
+                self.throw_from_eyes(rest, eye, false);
             }
             self.post_block_game_event("minecraft:fluid_pickup", pos, self.sculk_actor(), None);
         }
@@ -366,5 +375,53 @@ impl Game<'_> {
                 };
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod honey_overflow_tests {
+    use super::*;
+
+    /// `BeehiveBlock.useItemOn`: a honey bottle that no longer fits is
+    /// `player.drop(stack, false, PREDICTED)`: from 0.3 below the eyes,
+    /// thrown along the view, with no thrower (#11377).
+    #[test]
+    #[ignore = "needs prepared resources (HORIZON_TEST_RESOURCES)"]
+    fn a_honey_bottle_that_does_not_fit_is_thrown_ahead() {
+        let mut game = super::super::native_machines::tests::server_game();
+        let registry = &game.pack.assets.registry;
+        let hive = registry.default_state("minecraft:beehive").unwrap();
+        let mut full = registry.state(hive).unwrap().clone();
+        full.properties.insert("honey_level".into(), "5".into());
+        let full = registry.id(&full).unwrap();
+        game.world.set(8, 64, 10, full).unwrap();
+        game.player = Some(
+            horizon_client::motion::PlayerMotion::new(game.motion, Vec3::new(8.5, 64.0, 8.5))
+                .unwrap(),
+        );
+        // Facing south (+z), towards the hive.
+        game.yaw = 0.0;
+        game.pitch = 0.0;
+        for slot in game.inventory.iter_mut() {
+            *slot = Some(ItemStack::new("minecraft:stone", 64));
+        }
+        game.selected = 0;
+        let bottles = ItemStack::new("minecraft:glass_bottle", 2);
+        game.inventory[0] = Some(bottles.clone());
+        game.dropped.clear();
+
+        assert!(game.use_beehive([8, 64, 10], Some(&bottles)).unwrap());
+        let eye = game.eye_position().unwrap();
+        let honey: Vec<_> = game
+            .dropped
+            .iter()
+            .filter(|e| &*e.stack.item == "minecraft:honey_bottle")
+            .collect();
+        assert_eq!(honey.len(), 1);
+        let e = honey[0];
+        assert!((e.position.y - (eye[1] - f64::from(0.3f32))).abs() < 1e-9);
+        assert!(e.velocity.z > 0.2, "thrown ahead: {:?}", e.velocity);
+        assert_eq!(e.thrower, None);
+        assert_eq!(e.pickup_delay, 40);
     }
 }

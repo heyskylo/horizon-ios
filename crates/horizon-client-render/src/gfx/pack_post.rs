@@ -32,6 +32,9 @@ const BUFFERS: usize = horizon_shaders::BUFFERS;
 mod packed;
 
 #[cfg(test)]
+mod history_reset_tests;
+
+#[cfg(test)]
 mod world_target_tests;
 
 #[cfg(test)]
@@ -399,6 +402,8 @@ struct Pass {
     layout: wgpu::BindGroupLayout,
     ubo: wgpu::Buffer,
     block: Vec<u8>,
+    /// Shader-declared defaults must survive a reset of the mutable upload block.
+    initial_block: Vec<u8>,
     /// (index into `pack_uniforms::NAMES`, declared type, offset).
     uniforms: Vec<(Option<usize>, String, u32)>,
     samplers: Vec<Binding>,
@@ -452,6 +457,16 @@ struct Pass {
 }
 
 impl Pass {
+    /// Back to the uniform values the pass was made with, and no bind groups.
+    fn reset_history(&mut self) {
+        self.block.clone_from(&self.initial_block);
+        self.groups.clear();
+        self.portal_groups.clear();
+        for compute in &mut self.compute {
+            compute.reset_history();
+        }
+    }
+
     fn render(&self) -> &wgpu::RenderPipeline {
         match &self.pipeline {
             Pipeline::Render(p) => p,
@@ -1973,6 +1988,7 @@ fn build_pass(
             mapped_at_creation: false,
         }),
         block: interface.initial_values.clone(),
+        initial_block: interface.initial_values.clone(),
         uniforms: interface
             .uniforms
             .iter()
@@ -2108,6 +2124,7 @@ fn build_compute(
             mapped_at_creation: false,
         }),
         block: interface.initial_values.clone(),
+        initial_block: interface.initial_values.clone(),
         uniforms: interface
             .uniforms
             .iter()
@@ -3124,23 +3141,7 @@ impl PackPost {
                 .create_view(&Default::default()),
             textures,
             shadow: (
-                device
-                    .create_texture(&wgpu::TextureDescriptor {
-                        label: Some("Shader pack shadow stand-in"),
-                        size: wgpu::Extent3d {
-                            width: 1,
-                            height: 1,
-                            depth_or_array_layers: 1,
-                        },
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: wgpu::TextureDimension::D2,
-                        format: wgpu::TextureFormat::Depth32Float,
-                        usage: wgpu::TextureUsages::TEXTURE_BINDING
-                            | wgpu::TextureUsages::RENDER_ATTACHMENT,
-                        view_formats: &[],
-                    })
-                    .create_view(&Default::default()),
+                super::pack_shadow::stand_in(device),
                 device.create_sampler(&wgpu::SamplerDescriptor {
                     label: Some("Shader pack shadow"),
                     compare: Some(wgpu::CompareFunction::LessEqual),
@@ -3187,6 +3188,74 @@ impl PackPost {
             },
             shadow_cache: Default::default(),
         })
+    }
+
+    /// `Renderer::finish_sequence_frame`: the centre depth the finished frame copied.
+    pub fn take_center_depth(&mut self, device: &wgpu::Device) -> Result<(), String> {
+        self.center_depth
+            .as_mut()
+            .ok_or("the shader pack copied no centre depth")?
+            .take_completed(device)
+            .map(|_| ())
+    }
+
+    /// Forgets what the pack kept from earlier frames, so the next frame draws as a freshly
+    /// loaded pack's first: buffers, images, storage buffers and shadow maps start over (made
+    /// again at their sizes when next drawn), the frame uniforms' history, the custom uniforms
+    /// and the centre depth too. Compiled programs and the pack's textures stay.
+    pub fn reset_history(&mut self, device: &wgpu::Device) {
+        self.uniforms.reset_history();
+        // A parsed pack's custom uniforms start at tick 0's seed, before any frame of the world.
+        self.custom.restart_at(0);
+        self.custom.forget_world();
+        self.center_depth = None;
+        self.targets = None;
+        self.main = 0;
+        self.mips_valid = 0;
+        self.rgb_unset = true;
+        self.final_target = None;
+        self.blit_group = None;
+        self.page_groups.clear();
+        for image in &mut self.images {
+            image.reset_history();
+        }
+        self.buffers.reset_history();
+        pack_images::reset_stand_ins(device, &mut self.stand_ins);
+        if let Some(shadow) = &mut self.shadow_targets {
+            shadow.reset_history(device, &self.uniforms.shadow);
+        }
+        self.shadow.0 = super::pack_shadow::stand_in(device);
+        self.shadow_cleared = false;
+        self.shadow_cache = Default::default();
+        self.setup_pending = true;
+        self.portal_texture = None;
+        self.portal_rect = [0.0; 4];
+        let sky = self
+            .sky
+            .iter_mut()
+            .flat_map(|s| s.basic.iter_mut().chain(&mut s.textured));
+        let entities = self
+            .entities
+            .iter_mut()
+            .flat_map(|e| e.passes.iter_mut().chain(&mut e.shadow).flatten());
+        for pass in self
+            .passes
+            .iter_mut()
+            .chain(&mut self.terrain)
+            .chain(&mut self.terrain_cutout)
+            .chain(&mut self.water)
+            .chain(sky)
+            .chain(entities)
+            .chain(&mut self.clouds)
+            .chain(&mut self.lines)
+            .chain(self.weather.iter_mut().flatten())
+            .chain(self.hand.iter_mut().map(|h| &mut h.0))
+            .chain(&mut self.shadow_terrain)
+            .chain(&mut self.shadow_water)
+            .chain(&mut self.shadow_comp)
+        {
+            pass.reset_history();
+        }
     }
 
     /// Writes `pass`'s uniforms for a target of `out` pixels; its bind group for the buffers'

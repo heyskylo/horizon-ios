@@ -31,7 +31,6 @@ pub enum NativeInventoryKind {
     Ender,
 }
 
-#[allow(dead_code)]
 impl NativeInventoryKind {
     pub(crate) fn size(self) -> usize {
         match self {
@@ -43,7 +42,6 @@ impl NativeInventoryKind {
 
 /// A player's inventory as `native_inventory` read it: its slots, and
 /// whether it is the live one (the player is on the server) or their file's.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NativeInventory {
     pub slots: Vec<Option<ItemStack>>,
@@ -137,7 +135,7 @@ enum Side {
 }
 
 /// Another player's inventories, for server mods. API 132.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "native mod API (docs/native-mods.md)")]
 impl Game<'_> {
     /// The player `uuid`'s inventory `kind`: the live one when they are on
     /// the server, else their file's. Err while they are logging in, dead,
