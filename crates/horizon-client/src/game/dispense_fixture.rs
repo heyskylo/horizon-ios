@@ -878,14 +878,19 @@ impl Game<'_> {
         Ok(Vec::new())
     }
 
-    /// A survival player three blocks south of `pos` mines it holding the
-    /// case's item (`break_block`, which every player's mining goes through):
-    /// the statistics and the held stack, as `VanillaDispenserOracle.mine`
-    /// prints them.
+    /// A player three blocks south of `pos` mines it holding the case's item
+    /// (`break_block`, which every player's mining goes through), in survival
+    /// or in creative, where the block and its contents never drop: the
+    /// statistics and the held stack, as `VanillaDispenserOracle.mine` prints
+    /// them.
     fn fixture_mine(&mut self, pos: BlockPos, op: &Value) -> Result<Vec<String>> {
         let stack = parse_stack(op["item"].as_str().unwrap_or("-"))?;
-        self.mode = GameMode::Survival;
-        self.creative = false;
+        self.mode = if op["creative"].as_bool().unwrap_or(false) {
+            GameMode::Creative
+        } else {
+            GameMode::Survival
+        };
+        self.creative = self.mode == GameMode::Creative;
         self.player = Some(PlayerMotion::new(
             self.motion,
             horizon_core::geometry::Vec3::new(

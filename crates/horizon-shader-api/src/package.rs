@@ -54,6 +54,31 @@ pub fn is_pack(path: &Path) -> bool {
 }
 
 impl Pack {
+    /// Reads only the manifest, without loading or validating shader source.
+    pub fn read_manifest(path: &Path) -> Result<Manifest, String> {
+        let file = std::fs::File::open(if path.is_dir() {
+            path.join(MANIFEST)
+        } else {
+            path.to_path_buf()
+        })
+        .map_err(|e| e.to_string())?;
+        let mut text = String::new();
+        if path.is_dir() {
+            file.take(MAX_OTHER + 1).read_to_string(&mut text)
+        } else {
+            let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+            zip.by_name(MANIFEST)
+                .map_err(|e| e.to_string())?
+                .take(MAX_OTHER + 1)
+                .read_to_string(&mut text)
+        }
+        .map_err(|e| e.to_string())?;
+        if text.len() as u64 > MAX_OTHER {
+            return Err("shader manifest is too large".into());
+        }
+        Manifest::parse(&text)
+    }
+
     /// Reads `path`: a `.hshader` file, or a folder (its hidden files and
     /// folders, such as `.git`, are skipped).
     pub fn read(path: &Path) -> Result<Pack, String> {

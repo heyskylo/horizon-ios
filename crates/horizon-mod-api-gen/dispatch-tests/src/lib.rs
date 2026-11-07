@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+    include!("block_clone_item_tests.rs");
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -47,6 +48,8 @@ mod tests {
         #[derive(Clone, Copy)]
         pub(super) struct Hand;
         pub(super) struct NativeMobRender<'a>(pub &'a ());
+        pub(super) struct LayerDefinition;
+        pub(super) struct ModelPart;
         pub(super) struct NativeShake;
         pub(super) struct WorldPrimitives;
         pub(super) struct Music;
@@ -61,9 +64,15 @@ mod tests {
         pub(super) struct ModContainer;
         pub(super) struct MerchantOffer;
         pub(super) struct ModFluidTanks;
+        #[derive(Clone, Copy)]
+        pub(super) struct NativeFluidAction;
+        pub(super) struct NativeFluidDrain;
+        pub(super) struct NativeFluidStack;
+        pub(super) struct NativeFluidTankView;
         pub(super) struct ModEnergyBuffer;
         pub(super) struct Mob;
         pub(super) struct LootStack;
+        pub(super) struct SoundPlayback<'a>(pub &'a ());
         pub(super) struct NativeLootContext<'a>(pub &'a ());
         pub(super) struct NativeDataMapType;
         pub(super) struct NativeConfig;

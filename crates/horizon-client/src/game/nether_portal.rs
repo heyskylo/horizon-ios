@@ -82,6 +82,9 @@ pub(super) struct Portals {
     pub(super) player: PortalState,
     /// `LocalPlayer.portalProcess.isInsidePortalThisTick`.
     client_inside: bool,
+    /// Whether the last tick's `handlePortalTransitionEffect` found the
+    /// player inside a nether portal: it closes any screen opened meanwhile.
+    client_was_inside: bool,
     /// Items and mobs, by entity id.
     pub(super) entities: HashMap<u32, PortalState>,
     /// Positions before this tick's moves, by entity id.
@@ -269,7 +272,17 @@ fn arrival_from_tag(a: &Tag) -> Option<Arrival> {
 impl Game<'_> {
     /// The world border's extent.
     pub(super) fn border_bounds(&self) -> BorderBounds {
-        let [min_x, min_z, max_x, max_z] = self.border.bounds();
+        self.border_bounds_of(self.dim)
+    }
+    /// The extent of `dim`'s own border (`ServerLevel.getWorldBorder`), the level in place or a
+    /// parked one.
+    fn border_bounds_of(&self, dim: Dim) -> BorderBounds {
+        let border = if dim == self.dim {
+            &self.border
+        } else {
+            self.levels.parked_border(dim).unwrap_or(&self.border)
+        };
+        let [min_x, min_z, max_x, max_z] = border.bounds();
         BorderBounds {
             min_x,
             min_z,
@@ -325,7 +338,10 @@ impl Game<'_> {
         };
         Plan {
             dim: target,
-            approximate: self.border_bounds().clamp(at.x * scale, at.y, at.z * scale),
+            // getPortalDestination clamps to the border of the level it leads to.
+            approximate: self
+                .border_bounds_of(target)
+                .clamp(at.x * scale, at.y, at.z * scale),
             entry_x_axis,
             offset,
             width,
@@ -520,6 +536,14 @@ impl Game<'_> {
 
     // ---- the player ----
 
+    /// Whether the inventory key opens nothing: vanilla opens the screen,
+    /// then `LocalPlayer.handlePortalTransitionEffect` closes it in the same
+    /// tick while the player stands in a nether portal, so it is never drawn.
+    /// The fading effect after leaving the portal closes nothing.
+    pub(super) fn in_portal_transition(&self) -> bool {
+        self.portals.client_was_inside
+    }
+
     /// The same on a server's client: `Entity.canUsePortal` (alive, not a
     /// passenger), then only the client's `setAsInsidePortal`, which drives
     /// the confusion effect (`client_portal_effect`). On a server's client
@@ -566,7 +590,9 @@ impl Game<'_> {
     /// the chat and death screens and plays `block.portal.trigger` when the
     /// effect starts from nothing.
     pub(super) fn client_portal_effect(&mut self) -> bool {
-        if !std::mem::take(&mut self.portals.client_inside) {
+        let inside = std::mem::take(&mut self.portals.client_inside);
+        self.portals.client_was_inside = inside;
+        if !inside {
             return false;
         }
         match self.screen {
@@ -954,19 +980,7 @@ impl Game<'_> {
             if !self.may_enter(plan.dim) {
                 return;
             }
-            let uuid = self.uuid_for(id);
-            let t = &self.tnts[i];
-            let tag = horizon_client::entity_nbt::tnt_to_nbt(
-                t.position,
-                t.velocity,
-                t.on_ground,
-                t.fuse,
-                t.power,
-                t.block_state_nbt(self.pack.assets.registry),
-                t.rotation,
-                uuid,
-                self.persist_raw(id),
-            );
+            let tag = self.tnt_nbt(i);
             self.tnts.remove(i);
             self.forget_entity(id);
             self.portals.arrivals.push(Arrival { plan, tag });

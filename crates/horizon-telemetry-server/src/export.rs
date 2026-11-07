@@ -115,9 +115,13 @@ pub async fn benchmarks(
         return res;
     }
     let limit = page.limit.unwrap_or(100).clamp(1, 500);
-    let listed = app
-        .store()
-        .export_benchmarks(page.after.unwrap_or(0), limit);
+    let after = page.after.unwrap_or(0);
+    // On the blocking pool, never the two async workers (crate::blocking).
+    let listed =
+        match crate::blocking(&app, move |app| app.store().export_benchmarks(after, limit)).await {
+            Ok(listed) => listed,
+            Err(response) => return *response,
+        };
     match listed {
         Ok(reports) => {
             let next = (reports.len() as u32 == limit)
@@ -152,7 +156,12 @@ pub async fn hardware(
     let days = q.days.unwrap_or(30).clamp(1, 366);
     let (offset, limit) = (q.offset.unwrap_or(0), q.limit.unwrap_or(200).clamp(1, 1000));
     let to = (app.today)();
-    let made = app.store().export_machines(to + 1 - days.min(to + 1), to);
+    let from = to + 1 - days.min(to + 1);
+    // On the blocking pool, never the two async workers (crate::blocking).
+    let made = match crate::blocking(&app, move |app| app.store().export_machines(from, to)).await {
+        Ok(made) => made,
+        Err(response) => return *response,
+    };
     match made {
         Ok(all) => {
             let total = all.len();

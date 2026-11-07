@@ -2,6 +2,7 @@
 //! events (`CriteriaTriggers`), awarding with rewards, the toast and the
 //! chat announcement, and `players/advancements/<uuid>.json`.
 use super::{Dim, Game};
+use horizon_client::actions::Action;
 use horizon_client::{
     advancements::{self as adv, EntityView, Frame, ItemView, Progress, Tree},
     hud::{HudBatch, rgba},
@@ -230,6 +231,9 @@ impl adv::World for View<'_, '_> {
             "block" => items.block_in_tag(tag, id),
             "entity_type" => self.0.res.mob_data().entity_has(tag, id),
             "worldgen/biome" => self.0.res.mob_data().biome_has(tag, id),
+            "worldgen/structure" => vanilla_structure_tags(&self.0.options.resources)
+                .get(tag)
+                .is_some_and(|t| t.contains(id)),
             "damage_type" => self
                 .0
                 .health_resources
@@ -239,6 +243,21 @@ impl adv::World for View<'_, '_> {
             _ => false,
         }
     }
+}
+type Tags = std::collections::HashMap<String, std::collections::HashSet<String>>;
+/// The game's own `worldgen/structure` tags (a world without data packs has
+/// no `WorldTables` to hold them), loaded once for the resource root first
+/// asked for, as `StructureSpawns::shared`.
+fn vanilla_structure_tags(root: &std::path::Path) -> &'static Tags {
+    static TAGS: std::sync::OnceLock<Tags> = std::sync::OnceLock::new();
+    TAGS.get_or_init(|| {
+        horizon_client::items::load_tags(
+            root,
+            "worldgen/structure",
+            &horizon_world::loot::PackOverlay::NONE,
+        )
+        .unwrap_or_default()
+    })
 }
 fn now_text() -> String {
     let secs = std::time::SystemTime::now()
@@ -578,7 +597,7 @@ impl Game<'_> {
             on_fire: p.fire_ticks > 0,
             sneaking: p.pose == horizon_client::pose::Pose::Crouching,
             // Input.shift: the held key, as `BlockItem.place`'s sneaking reads it.
-            input_sneak: self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft),
+            input_sneak: self.keys.held(Action::Sneak),
             sprinting: p.sprinting,
             swimming: p.pose == horizon_client::pose::Pose::Swimming,
             flying: p.flying,
@@ -642,6 +661,8 @@ impl Game<'_> {
             ..Default::default()
         }
     }
+    /// `Entity.get`: the mob's live custom-name component and type variants,
+    /// alongside the other state the entity predicate asks for.
     pub(super) fn mob_entity(&self, m: &horizon_client::mobs::Mob) -> EntityView {
         // mainhand, offhand, head, chest, legs, feet.
         let slot = |i: &Option<std::sync::Arc<str>>| {
@@ -673,7 +694,9 @@ impl Game<'_> {
             let uuid = self.persist.uuids.get(&m.id).copied().unwrap_or_default();
             let raw = self.persist.raw.get(&m.id);
             let registry = Some(self.pack.assets.registry);
-            let mut tag = horizon_client::entity_nbt::mob_to_nbt(m, uuid, raw, registry);
+            let mut tag = horizon_client::entity_nbt::mob_to_nbt(m, uuid, raw, registry, |other| {
+                self.persist.uuid_of(other)
+            });
             let riders = passengers.iter().filter_map(|r| r.nbt.clone()).collect();
             super::persist::add_passengers(&mut tag, riders);
             tag
@@ -699,6 +722,7 @@ impl Game<'_> {
                 .map(|(id, value)| (id.to_owned(), value))
                 .into_iter()
                 .collect(),
+            custom_name: m.custom_name_text.as_ref().map(Text::component),
             passengers,
             nbt,
             team: self.mob_team_of(m).map(|t| t.name.clone()),
@@ -2372,6 +2396,91 @@ mod tests {
 
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn mob_name_components_read_live_text_without_saved_nbt() {
+        use crate::game::{Audio, Options, Settings, commands::Target, load_resources};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &crate::game::Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        let kind = game.res.mob_types()["minecraft:pig"].clone();
+        game.mobs.push(horizon_client::mobs::Mob::new(
+            12500,
+            kind,
+            Vec3::new(4.5, 200.0, 4.5),
+            0.0,
+        ));
+        let matches = |game: &Game<'_>, key: &str, want: Value| {
+            let view = game.entity_view_of(Target::Mob(12500));
+            assert_eq!(view.kind, "minecraft:pig");
+            assert!(view.nbt.is_none());
+            let mut predicate = serde_json::Map::new();
+            predicate.insert(
+                key.into(),
+                serde_json::json!({"minecraft:custom_name": want}),
+            );
+            adv::entity(
+                &Value::Object(predicate),
+                &view,
+                &View(game),
+                [4.5, 200.0, 4.5],
+            )
+        };
+        for key in ["components", "minecraft:components"] {
+            assert!(!matches(&game, key, serde_json::json!("Bob")));
+        }
+        for (name, unequal) in [
+            (serde_json::json!("Bob"), serde_json::json!("minecraft:Bob")),
+            (serde_json::json!("minecraft:Bob"), serde_json::json!("Bob")),
+            (
+                serde_json::json!({"text": "Bob", "color": "red", "bold": true}),
+                serde_json::json!("Bob"),
+            ),
+            (
+                serde_json::json!({"text": "B", "extra": [{"text": "ob"}]}),
+                serde_json::json!("Bob"),
+            ),
+        ] {
+            let text = horizon_client::scoreboard::comp_text(&name);
+            game.mobs[0].custom_name = Some(text.plain());
+            game.mobs[0].custom_name_text = Some(text);
+            for key in ["components", "minecraft:components"] {
+                assert!(matches(&game, key, name.clone()), "{key}: {name}");
+                assert!(!matches(&game, key, unequal.clone()), "{key}: {unequal}");
+            }
+        }
+        game.mobs[0].custom_name = None;
+        game.mobs[0].custom_name_text = None;
+        for key in ["components", "minecraft:components"] {
+            assert!(!matches(&game, key, serde_json::json!("Bob")));
+        }
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn mob_predicate_view_reads_active_effect_instances() {
         use crate::game::{Audio, Options, Settings, commands::Target, load_resources};
         let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
@@ -2726,5 +2835,98 @@ mod tests {
             finished.is_some_and(|t| (9600..=9620).contains(&t)),
             "{finished:?}"
         );
+    }
+}
+#[cfg(test)]
+mod structure_tag_tests {
+    use super::View;
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_client::advancements::{World, id_matches};
+    use serde_json::json;
+
+    /// `LocationPredicate.structures` names a `#tag`: the game's own
+    /// `worldgen/structure` tags, and with a world's data packs theirs over
+    /// the game's.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn location_structure_tags_hold_their_structures() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let set = |s: &str| json!(s);
+        let holds = |game: &Game, tag: &str, id: &str| {
+            id_matches(&set(tag), "worldgen/structure", id, &View(game))
+        };
+        // A world without packs: the game's own tags.
+        assert!(game.world_tables.is_none());
+        assert!(holds(
+            &game,
+            "#minecraft:village",
+            "minecraft:village_taiga"
+        ));
+        assert!(holds(&game, "#shipwreck", "minecraft:shipwreck_beached"));
+        assert!(!holds(&game, "#minecraft:village", "minecraft:shipwreck"));
+        assert!(!View(&game).in_tag("worldgen/structure", "mypack:village", "minecraft:igloo"));
+
+        // A pack's own tag (nesting the game's) and an addition to the game's.
+        let dir =
+            std::env::temp_dir().join(format!("horizon-structure-tags-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pack = dir.join("datapacks").join("mypack");
+        let tags = pack.join("data/mypack/tags/worldgen/structure");
+        let game_tags = pack.join("data/minecraft/tags/worldgen/structure");
+        std::fs::create_dir_all(&tags).unwrap();
+        std::fs::create_dir_all(&game_tags).unwrap();
+        std::fs::write(pack.join("pack.mcmeta"), "{}").unwrap();
+        std::fs::write(
+            tags.join("village.json"),
+            r##"{"values": ["#minecraft:village", "minecraft:igloo"]}"##,
+        )
+        .unwrap();
+        std::fs::write(
+            game_tags.join("shipwreck.json"),
+            r#"{"values": ["minecraft:ocean_ruin_cold"]}"#,
+        )
+        .unwrap();
+        let settings = json!({"enabled": ["file/mypack"], "disabled": []});
+        std::fs::write(dir.join("datapacks.json"), settings.to_string()).unwrap();
+        game.world_root = dir.clone();
+        let (tables, _) = game.build_world_tables(false, &[]).unwrap();
+        game.world_tables = tables;
+        assert!(game.world_tables.is_some());
+        assert!(holds(&game, "#mypack:village", "minecraft:igloo"));
+        assert!(holds(&game, "#mypack:village", "minecraft:village_plains"));
+        assert!(!holds(&game, "#mypack:village", "minecraft:shipwreck"));
+        assert!(holds(
+            &game,
+            "#minecraft:shipwreck",
+            "minecraft:ocean_ruin_cold"
+        ));
+        assert!(holds(&game, "#minecraft:shipwreck", "minecraft:shipwreck"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

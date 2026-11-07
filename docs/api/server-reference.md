@@ -92,6 +92,7 @@ Horizon server settings (docs/server.md). The server writes them into server.pro
 | `simulation_distance` | `10` | `simulation-distance` | chunks around each player where mobs, crops and redstone tick |
 | `max_view_distance` | `0` | `horizon-max-view-distance` | past view_distance, saved chunks only, up to this (never generated; 0: off) |
 | `admin_feedback_to_ops` | `true` | `horizon-admin-feedback-to-ops` | operators see each other's commands ([name: ...], vanilla); false: only the log |
+| `accept_older_clients` | `false` | `horizon-accept-older-clients` | true: 26.2 clients join too, their packets translated (docs/hosting.md) |
 
 ### `[world]`
 
@@ -155,6 +156,7 @@ A proxy handing players over between servers (docs/server.md). Not vanilla's acc
 | `max_expect_seconds` | `60` |  | the longest the proxy may ask for |
 | `max_expected` | `64` |  | players waited for at once |
 | `max_freeze_seconds` | `30` |  | the longest a player stays frozen while it is handed over |
+| `max_hold_seconds` | `60` |  | the longest a player arriving from another server is held before it is dropped |
 
 ### `[discord]`
 

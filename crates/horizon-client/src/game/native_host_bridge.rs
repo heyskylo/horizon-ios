@@ -5,13 +5,13 @@
 //! (docs/native-mods.md, "Trait mods"). Each goes through the helper or the
 //! state the game's own code uses, so both answer alike.
 use super::Game;
+use horizon_client::actions::Action;
 use horizon_client::{
     containers::{BlockEntity, ModBlockEntity},
     items::ItemStack,
     particles::ParticleOptions,
 };
 use horizon_world::{player_inventory::EquipmentSlot, registry::BlockStateId};
-use winit::keyboard::KeyCode;
 
 // Native mods use these; nothing in Horizon does.
 #[allow(dead_code)]
@@ -117,7 +117,7 @@ impl Game<'_> {
     /// (`as_guest` holds sneak for them); on a client the player's own key.
     /// API @API:host_bridge@.
     pub(super) fn native_sneaking(&self) -> bool {
-        self.keys.contains(&KeyCode::ShiftLeft)
+        self.keys.held(Action::Sneak)
     }
 }
 
