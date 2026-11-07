@@ -5,7 +5,7 @@
 //! through whatever it hit.
 use super::{
     Game,
-    creatures::{ProjWorld, wind_charge_hit},
+    creatures::{ProjWorld, pickable_projectile_hit},
     dragon::{CRYSTAL_IDS, SPECIAL},
     lan_pvp::meets_players,
     native_hooks::mob_kind,
@@ -158,7 +158,7 @@ impl Game<'_> {
                     who: Who::Mob(id),
                     at,
                 } => {
-                    if wind_charge_hit(id).is_some() {
+                    if pickable_projectile_hit(id).is_some() {
                         canceled.push(false);
                         continue;
                     }

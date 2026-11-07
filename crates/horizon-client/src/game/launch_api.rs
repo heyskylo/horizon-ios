@@ -130,21 +130,51 @@ impl std::fmt::Display for UsageError {
 
 impl std::error::Error for UsageError {}
 
+/// What content this build loads (docs/api/content.md), from the constants it checks content
+/// against, so a launcher offers only what will work.
+fn content() -> serde_json::Value {
+    use horizon_mods::manifest;
+    serde_json::json!({
+        // 0.1 was the WebAssembly code line: no build runs it any more.
+        "mod": { "api": manifest::APIS.iter().filter(|a| **a != manifest::API).collect::<Vec<_>>() },
+        "native_mod": { "hooks": super::native_hooks::NATIVE_HOOKS_API, "rebuild": true },
+        // The lines it draws: a newer one is read and checked, not drawn yet.
+        "shader": { "schema": horizon_shader_api::SCHEMA, "api": [horizon_shader_api::API] },
+        "resourcepack": { "format": horizon_core::version::RESOURCE_PACK_FORMAT },
+        "datapack": { "format": horizon_core::version::DATA_PACK_FORMAT },
+        "modpack": { "format": horizon_mods::modpack::FORMAT },
+        "index": { "schema": horizon_mods::index::SCHEMA },
+    })
+}
+
 /// `--launch-api`'s reply for a build of this `horizon` version.
 pub fn reply(horizon: &str) -> String {
+    serde_json::to_string_pretty(&reply_value(horizon)).expect("a JSON value")
+}
+
+fn reply_value(horizon: &str) -> serde_json::Value {
     let options: Vec<_> = OPTIONS
         .iter()
         .map(|o| serde_json::json!({ "name": o.name, "value": o.value }))
         .collect();
-    serde_json::to_string_pretty(&serde_json::json!({
+    serde_json::json!({
         "launch_api": VERSION,
         "horizon": horizon,
         "minecraft": horizon_core::VANILLA_VERSION,
         "options": options,
         "exit_codes": EXIT_CODES.iter().map(|(code, _)| code).collect::<Vec<_>>(),
         "crash_report_line": horizon_client::crash::SAVED_LINE,
-    }))
-    .expect("a JSON value")
+        "content": content(),
+    })
+}
+
+/// The reply as the reference shows it: the native hooks level rises with every hook added, so
+/// it shows as a placeholder and the page doesn't go stale with each one.
+#[cfg(test)]
+fn reference_reply() -> String {
+    let mut reply = reply_value("<version>");
+    reply["content"]["native_mod"]["hooks"] = "<hooks level>".into();
+    serde_json::to_string_pretty(&reply).expect("a JSON value")
 }
 
 /// docs/api/launch-reference.md.
@@ -183,7 +213,18 @@ pub fn markdown() -> String {
         "Prints one JSON object on stdout and exits 0. `horizon` is the build's version; readers \
          ignore fields they don't know.\n"
     );
-    let _ = writeln!(w, "```json\n{}\n```\n", reply("<version>"));
+    let _ = writeln!(w, "```json\n{}\n```\n", reference_reply());
+    let _ = writeln!(
+        w,
+        "`content` is what this build loads ([content.md](content.md)), so a launcher offers only \
+         what works on it: content \
+         mods of the manifest `api` lines in `mod.api`; native mods built for hooks up to \
+         `native_mod.hooks`, which need the game rebuilt (`rebuild`); shader packs of \
+         `shader.schema` and the lines in `shader.api` (a newer line is read, not drawn); resource \
+         and data packs of `format` (`[major, minor]`; others still load, marked too old or too \
+         new as vanilla marks them); modpacks of `modpack.format`; the mod index of \
+         `index.schema`.\n"
+    );
     let _ = writeln!(w, "## Exit codes\n\n| Code | Meaning |\n| --- | --- |");
     for (code, what) in EXIT_CODES {
         let _ = writeln!(w, "| {code} | {what} |");
@@ -248,6 +289,28 @@ mod tests {
             );
         }
         assert!(parse(&["--quickPlaySingleplayer", "E2E World"]).is_ok());
+    }
+
+    /// The content a build says it loads is what its checks take: content mods of api 0.2,
+    /// never the removed 0.1, and the shader line it draws.
+    #[test]
+    fn launch_api_content_is_what_the_build_loads() {
+        let reply: serde_json::Value = serde_json::from_str(&reply("x")).unwrap();
+        let content = &reply["content"];
+        let mods = content["mod"]["api"].as_array().unwrap();
+        assert!(
+            mods.contains(&"0.2".into()) && !mods.contains(&"0.1".into()),
+            "{mods:?}"
+        );
+        assert_eq!(
+            content["shader"]["api"],
+            serde_json::json!([horizon_shader_api::API])
+        );
+        assert_eq!(content["native_mod"]["rebuild"], true);
+        assert_eq!(
+            content["resourcepack"]["format"],
+            serde_json::json!(horizon_core::version::RESOURCE_PACK_FORMAT)
+        );
     }
 
     /// docs/api/launch-reference.md is what `markdown` writes.
