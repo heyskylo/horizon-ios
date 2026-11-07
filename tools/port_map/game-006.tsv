@@ -151,3 +151,4 @@ OminousItemSpawner.tickClient	inline	crates/horizon-client/src/game/ominous_item
 OminousItemSpawner.spawnItem	port	crates/horizon-client/src/game/ominous_item_spawner.rs::Game::spawn_ominous_item	item entity or projectile, level event 3021 and entity_place game event
 OminousItemSpawner.spawnProjectile	inline	crates/horizon-client/src/game/ominous_item_spawner.rs::Game::spawn_ominous_item	gap: minor: power and uncertainty come from projectile(); the spawner is not set as the projectile's owner
 PathfinderMob.checkSpawnRules	port	crates/horizon-client/src/mobs/ai.rs::walk_target_value	natural spawning needs a walk target value of 0 or more
+LivingEntity.isBaby	port	crates/horizon-client/src/mobs/living.rs::Mob::is_baby	false for every species the table cannot make a baby (the point of can_be_a_baby); getVoicePitch's 1.5 and getAgeScale's 0.5 hang off it

@@ -410,16 +410,6 @@ The panel's later features (bans, worlds, server.properties import, logs and cra
 
 </details>
 
-#### Ely.by and other sign-in providers
-
-Sign in with other account providers, such as Ely.by or any Yggdrasil-compatible one, beside Microsoft.
-
-<details><summary>Technical</summary>
-
-Issue [#1270](https://github.com/horizon-rust/horizon/issues/1270) asks for Ely.by and Yggdrasil-compatible servers with an account selector in the launcher. It builds on the Microsoft sign-in ([docs/microsoft-account.md](docs/microsoft-account.md)).
-
-</details>
-
 #### Join servers on older versions
 
 Join servers that run older Minecraft versions, such as 1.21 or 1.8 PvP servers, from Horizon.

@@ -1039,6 +1039,27 @@ pub fn set_item_stack(m: &mut Mob, slot: usize, stack: crate::items::ItemStack) 
         gear::set_stack(m, gear_slot(slot), stack);
     }
 }
+/// `ItemStack.setDamageValue` on what `m` has in `slot` (one of the hands or
+/// the armour): its enchantments and trim stay.
+pub fn set_slot_damage(m: &mut Mob, slot: usize, damage: u32) {
+    let Some(id) = item(m, slot).filter(|_| slot <= HEAD) else {
+        return;
+    };
+    let kept = if slot == MAINHAND {
+        m.extra.main_hand_stack().cloned()
+    } else {
+        gear::gear(m).and_then(|g| g.stacks[gear_slot(slot)].clone())
+    };
+    let mut stack = kept
+        .filter(|s| s.item == id)
+        .unwrap_or_else(|| crate::items::ItemStack::new(&id, 1));
+    stack.damage = damage;
+    if slot == MAINHAND {
+        m.extra.set_main_hand_stack(Some(stack));
+    } else {
+        gear::set_stack(m, gear_slot(slot), stack);
+    }
+}
 /// `setItemSlot` with a fresh stack (enchantments cleared).
 pub fn set_item(m: &mut Mob, slot: usize, id: &str) {
     let v = Some(Arc::from(id));
@@ -2650,6 +2671,23 @@ mod tests {
         assert_eq!(villager_type("minecraft:badlands"), 1);
         assert_eq!(villager_type("minecraft:grove"), 4);
         assert_eq!(villager_type("minecraft:plains"), 0);
+    }
+    /// A worn piece that wears (Thorns' `ChangeItemDamage`) keeps its
+    /// enchantments and trim, and the next wear adds to the last.
+    #[test]
+    fn a_worn_piece_keeps_its_enchantments_and_trim_as_it_wears() {
+        let kind = crate::mobs::sensor_scan_tests::kind();
+        let mut m = crate::mobs::Mob::new(1, kind, horizon_core::geometry::Vec3::ZERO, 0.0);
+        set_item(&mut m, CHEST, "minecraft:iron_chestplate");
+        set_slot_enchantments(&mut m, CHEST, vec![(Arc::from("minecraft:thorns"), 3)]);
+        let trim: gear::Trim = (Arc::from("minecraft:gold"), Arc::from("minecraft:coast"));
+        gear::set_trim(&mut m, gear::CHEST, Some(trim.clone()));
+        set_slot_damage(&mut m, CHEST, 2);
+        set_slot_damage(&mut m, CHEST, 5);
+        let worn = item_stack(&m, CHEST).unwrap();
+        assert_eq!(worn.damage, 5);
+        assert_eq!(worn.enchantment_level("minecraft:thorns"), 3);
+        assert_eq!(worn.data().and_then(|d| d.trim.clone()), Some(trim));
     }
     #[test]
     fn october_31_is_halloween() {

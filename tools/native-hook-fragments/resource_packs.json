@@ -1,0 +1,10 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "send_resource_pack", "target": "horizon_client::game::native_packets::Game<'_>::native_send_resource_pack"},
+    {"name": "pop_resource_pack", "target": "horizon_client::game::native_packets::Game<'_>::native_pop_resource_pack"}
+  ],
+  "rust_summary": "a mod's own resource packs for one player, offered and taken away by id (`native_send_resource_pack`, `native_pop_resource_pack`).",
+  "doc_summary": "`native_send_resource_pack(player, id, url, sha1, prompt, required)` offers one player's client a resource pack under the mod's own id (Bukkit's `Player.addResourcePack`), and `native_pop_resource_pack(player, id)` takes that pack, or with None every server pack, away again (`removeResourcePack`). Bundles need \"hooks\": @API:resource_packs@.",
+  "comments": ["crates/horizon-client/src/game/native_packets.rs"]
+}
