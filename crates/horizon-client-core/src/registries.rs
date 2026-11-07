@@ -275,6 +275,21 @@ impl Registries {
                 .clone_from(&e.advancement_criteria);
         }
     }
+    /// Add the damage catalog's types ([`Self::damage_types`]: content mods'
+    /// and the world's packs' with vanilla's) to the commands'
+    /// `minecraft:damage_type` ids, which the export lists for vanilla alone.
+    /// `ResourceArgument` looks a type up in the server's registries, so
+    /// `/damage` takes every type the world has. The export's tags stay.
+    pub fn sync_damage_type_ids(&mut self) {
+        let ids = &mut self
+            .by_registry
+            .entry("minecraft:damage_type".into())
+            .or_default()
+            .ids;
+        ids.extend(self.damage_types.iter().cloned());
+        ids.sort();
+        ids.dedup();
+    }
     /// The element ids of a registry (sorted).
     pub fn ids(&self, registry: &str) -> &[String] {
         if let Some(r) = self.by_registry.get(registry) {
@@ -309,6 +324,45 @@ impl Registries {
             "minecraft:item" => &self.item_tags,
             "minecraft:block" => &self.block_tags,
             _ => EMPTY,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Registries;
+
+    /// A content mod's damage type joins vanilla's in the commands' ids, the
+    /// export's tags stay, and a second world open lists each type once.
+    #[test]
+    fn damage_type_ids_take_the_catalogs_types() {
+        let export = Registries::from_export(&serde_json::json!({
+            "by_registry": {"minecraft:damage_type": {
+                "ids": ["minecraft:fall", "minecraft:magic"],
+                "tags": ["minecraft:is_fall"],
+            }},
+        }));
+        let mut reg = Registries {
+            damage_types: vec![
+                "minecraft:magic".into(),
+                "example:test".into(),
+                "minecraft:fall".into(),
+            ],
+            ..Registries::default()
+        };
+        reg.fill_from_exported(&export);
+        assert_eq!(
+            reg.ids("minecraft:damage_type"),
+            ["minecraft:fall", "minecraft:magic"],
+            "the export alone lists vanilla's types"
+        );
+        for _ in 0..2 {
+            reg.sync_damage_type_ids();
+            assert_eq!(
+                reg.ids("minecraft:damage_type"),
+                ["example:test", "minecraft:fall", "minecraft:magic"]
+            );
+            assert_eq!(reg.tags("minecraft:damage_type"), ["minecraft:is_fall"]);
         }
     }
 }

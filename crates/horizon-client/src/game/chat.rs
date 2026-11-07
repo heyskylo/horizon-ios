@@ -685,6 +685,8 @@ impl Game<'_> {
             .map(|(k, _)| k.clone())
             .collect();
         self.sync_enchantment_registries();
+        // After the export, which keys the registry with vanilla's tags.
+        self.ui.registries.sync_damage_type_ids();
     }
     /// The block the player is looking at, for coordinate suggestions, and
     /// the entity, for entity arguments (ClientSuggestionProvider).
@@ -2267,6 +2269,87 @@ mod enchantment_snapshot_tests {
         assert_eq!(
             game.ui.registries.by_registry["minecraft:enchantment"].tags,
             tags
+        );
+    }
+}
+
+#[cfg(test)]
+mod damage_type_registry_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+
+    /// A world pack's damage type is a `/damage` type once the world opens,
+    /// beside vanilla's, and the registry keeps vanilla's tags.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_world_packs_damage_type_parses_in_damage() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+
+        let dir = std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+            .join("damage-type-ids");
+        let pack = dir.join("datapacks/model");
+        let types = pack.join("data/example/damage_type");
+        std::fs::create_dir_all(&types).unwrap();
+        std::fs::write(pack.join("pack.mcmeta"), "{}").unwrap();
+        std::fs::write(
+            types.join("test.json"),
+            r#"{"message_id":"example.test","scaling":"never","exhaustion":0.0}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("datapacks.json"),
+            r#"{"enabled":["file/model"],"disabled":[]}"#,
+        )
+        .unwrap();
+        game.world_root = dir;
+        (game.world_tables, game.health_resources) = game.build_world_tables(false, &[]).unwrap();
+        game.level.allow_commands = Some(true);
+        game.build_registries();
+
+        let reg = &game.ui.registries;
+        assert!(
+            reg.damage_types.contains(&"example:test".to_owned()),
+            "the damage catalog holds the pack's type"
+        );
+        let parse = |input: &str| {
+            horizon_client::command::vanilla::dispatcher()
+                .parse(input, reg)
+                .executable()
+                .map(|_| ())
+                .map_err(|e| format!("{e:?}"))
+        };
+        assert_eq!(parse("damage @s 1 example:test"), Ok(()));
+        assert_eq!(parse("damage @s 1 minecraft:magic"), Ok(()));
+        assert!(parse("damage @s 1 example:missing").is_err());
+        assert!(
+            reg.tags("minecraft:damage_type")
+                .contains(&"minecraft:is_fire".to_owned()),
+            "vanilla's damage type tags stay"
         );
     }
 }
