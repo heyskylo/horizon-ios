@@ -145,17 +145,20 @@ def run(label, command, client_command, build, world, spec):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--binary', type=Path, required=True)
-    parser.add_argument('--work-dir', type=Path, required=True)
+    # The parity runner passes no arguments: net.sides builds the game, and every run gets its own folder.
+    parser.add_argument('--binary', type=Path)
+    parser.add_argument('--work-dir', type=Path)
     parser.add_argument('--reference-only', action='store_true')
     parser.add_argument('--reference-dir', type=Path)
     args=parser.parse_args()
-    build=args.work_dir.resolve(); build.mkdir(parents=True,exist_ok=False)
+    build=(args.work_dir or net.lab.LOCAL/'mob-local-sound'/f'run-{time.time_ns()}').resolve()
+    build.mkdir(parents=True,exist_ok=False)
     spec=program(); (build/'program.json').write_text(json.dumps(spec,indent=2)+'\n')
     script=Path(__file__).read_bytes()
     (build/'manifest.json').write_text(json.dumps(dict(script_sha256=hashlib.sha256(script).hexdigest(),
         declared_at=sound.now(), program_sha256=hashlib.sha256((build/'program.json').read_bytes()).hexdigest()),indent=2)+'\n')
-    _,_,java,native,client=net.sides(str(build.relative_to(net.lab.LOCAL)),args.binary.resolve())
+    _,_,java,native,client=net.sides(str(build.relative_to(net.lab.LOCAL)),
+                                    args.binary.resolve() if args.binary else None)
     reference=args.reference_dir.resolve() if args.reference_dir else build
     if not args.reference_dir:
         world=sound.generate(java,build)

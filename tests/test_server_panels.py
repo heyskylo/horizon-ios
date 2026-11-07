@@ -1,5 +1,6 @@
-"""The Pterodactyl egg for horizon-server (docs/hosting.md, "Hosting panels") name only
-things the server has: its HORIZON_* variables, its start script, its ready line and the `port` key of server.toml."""
+"""The hosting panel setups for horizon-server (docs/hosting.md, "Hosting panels"), the Pterodactyl egg and the AMP
+template, name only things the server has: its HORIZON_* variables, its start script, its ready line and the `port`
+key of server.toml."""
 import json
 import re
 import shutil
@@ -12,9 +13,11 @@ ROOT = Path(__file__).resolve().parents[1]
 SERVER = ROOT / "packaging/server"
 EGG = SERVER / "pterodactyl-egg.json"
 START = SERVER / "panel-start.sh"
+AMP = SERVER / "amp"
 INIT_RS = (ROOT / "crates/horizon-server/src/init.rs").read_text()
 CONFIG_RS = (ROOT / "crates/horizon-server/src/config.rs").read_text()
 DEDICATED_RS = (ROOT / "crates/horizon-client/src/game/dedicated.rs").read_text()
+LAN_RS = (ROOT / "crates/horizon-client/src/game/lan.rs").read_text()
 
 # Read at install only, so init.rs does not know them.
 INSTALL_ONLY = {"HORIZON_VERSION"}
@@ -100,6 +103,84 @@ class EggTests(unittest.TestCase):
                 interpreter = shutil.which("bash") if name == "install.sh" else shell
                 result = subprocess.run([interpreter, "-n", str(path)], capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
+
+
+def read_kvp(path):
+    """AMP's `Key=Value` lines (the value may itself hold `=`)."""
+    pairs = {}
+    for line in path.read_text().splitlines():
+        if line.strip():
+            key, value = line.split("=", 1)
+            pairs[key] = value
+    return pairs
+
+
+class AmpTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.kvp = read_kvp(AMP / "horizon.kvp")
+        cls.config = json.loads((AMP / "horizonconfig.json").read_text())
+        cls.updates = json.loads((AMP / "horizonupdates.json").read_text())
+        cls.ports = json.loads((AMP / "horizonports.json").read_text())
+        cls.egg = json.loads(EGG.read_text())
+
+    def test_every_file_the_template_names_is_there(self):
+        kvp = self.kvp
+        self.assertEqual(kvp["Meta.ConfigRoot"], "horizon.kvp")
+        for key in ("Meta.ConfigManifest", "Meta.MetaConfigManifest"):
+            self.assertTrue((AMP / kvp[key]).is_file(), kvp[key])
+        for key in ("App.Ports", "App.UpdateSources"):
+            name = re.fullmatch(r"@IncludeJson\[(.+)\]", kvp[key]).group(1)
+            self.assertTrue((AMP / name).is_file(), name)
+        for path in AMP.glob("*.json"):
+            json.loads(path.read_text())
+
+    def test_settings_are_the_eggs_variables(self):
+        # Same names, defaults and kinds, so both panels set a server up the same way.
+        settings = {s["FieldName"]: s for s in self.config}
+        env = json.loads(self.kvp["App.EnvironmentVariables"])
+        passed = {name: re.fullmatch(r"\{\{(\w+)\}\}", value).group(1) for name, value in env.items() if name.startswith("HORIZON_")}
+        for name, field in passed.items():
+            self.assertIn(field, settings, name)
+        # HORIZON_VERSION is read at install only: the install stage passes it.
+        install = [f for f in settings if "{{%s}}" % f in json.dumps(self.updates)]
+        self.assertEqual(len(install), 1)
+        fields = dict(passed, HORIZON_VERSION=install[0])
+        self.assertEqual(len(self.config), len(fields))
+        for var in self.egg["variables"]:
+            name = var["env_variable"]
+            setting = settings[fields[name]]
+            self.assertEqual(setting["DefaultValue"], var["default_value"], name)
+            boolean = "in:true,false" in var["rules"]
+            self.assertEqual(setting["InputType"], "checkbox" if boolean else "text", name)
+            if boolean:
+                self.assertEqual(sorted(setting["EnumValues"].values()), ["false", "true"])
+        # Every answer init reads reaches the server, and the port follows AMP's.
+        self.assertEqual(set(passed), init_variables() - PANEL_OWNED)
+        self.assertEqual(env["SERVER_PORT"], "{{$%s}}" % self.kvp["App.PrimaryApplicationPortRef"])
+        self.assertIn(self.kvp["App.PrimaryApplicationPortRef"], {p["Ref"] for p in self.ports})
+
+    def test_it_installs_with_the_eggs_script_and_starts_with_the_start_script(self):
+        created = next(u for u in self.updates if u["UpdateSource"] == "CreateFile")
+        self.assertEqual(created["UpdateSourceData"], self.egg["scripts"]["installation"]["script"])
+        script = created["UpdateSourceArgs"].rsplit("}", 1)[1]
+        run = next(u for u in self.updates if u["UpdateSource"] == "Executable")
+        self.assertIn(script, run["UpdateSourceArgs"])
+        self.assertIn("HORIZON_INSTALL_DIR='{{$FullBaseDir}}'", run["UpdateSourceArgs"])
+        # The install script writes horizon-start.sh (panel-start.sh) beside the program; AMP runs it.
+        self.assertIn('cat > "$DIR/horizon-start.sh"', created["UpdateSourceData"])
+        self.assertTrue(self.kvp["App.CommandLineArgs"].endswith("horizon-start.sh"))
+        self.assertEqual(self.kvp["App.ExitString"], "stop")
+
+    def test_the_console_patterns_match_what_the_server_logs(self):
+        done = re.search(r'"(Done \(\{:\.3\}s\)! For help, type \\"help\\")"', DEDICATED_RS).group(1)
+        line = "[12:00:00] [Server thread/INFO]: " + done.replace("{:.3}", "4.217").replace('\\"', '"')
+        self.assertRegex(line, self.kvp["Console.AppReadyRegex"])
+        self.assertNotRegex("[12:00:00] [Server thread/INFO]: Preparing spawn area", self.kvp["Console.AppReadyRegex"])
+        for key, said in (("Console.UserJoinRegex", "joined"), ("Console.UserLeaveRegex", "left")):
+            self.assertIn(f'"System chat: {{}} {said} the game"', LAN_RS)
+            found = re.search(self.kvp[key].replace("(?<", "(?P<"), f"[12:00:00] [Server thread/INFO]: System chat: Steve_2 {said} the game")
+            self.assertEqual(found.group("username"), "Steve_2")
 
 
 if __name__ == "__main__":

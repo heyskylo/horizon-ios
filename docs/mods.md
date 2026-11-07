@@ -71,10 +71,10 @@ Recipes mod and a matching `horizon-ctl`. This opt-in check fails if Recipes is 
 LAN runs do not require it.
 
 The runner installs the same original `tools/fixtures/recipes_hmod` package in both scratch game
-folders. It finds the output of an original recipe (flint to two echo shards), checks unknown recipes
-and missing ingredients, fills the
-crafting grid through Recipes' `+` button, takes the result, and checks authoritative inventory counts
-before and after Save and Quit/rejoin. Logs, screenshots and `recipes-hmod.json` go under `--out`.
+folders. It finds the output of an original recipe (flint to two echo shards) in Survival and Creative.
+With the recipe book empty, it verifies that missing ingredients show a warning and preserve the
+occupied grid. It then fills the grid through Recipes' `+`, takes the result, and checks authoritative
+inventory counts before and after Save and Quit/rejoin. Logs, screenshots and `recipes-hmod.json` go under `--out`.
 As an assertion canary, changing only the fixture's result count from two to one must fail the custom
 result check; restore it before running the passing case. This is a content scenario, not general
 Java-mod compatibility or custom-item registration coverage.

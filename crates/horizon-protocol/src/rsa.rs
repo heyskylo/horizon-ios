@@ -14,12 +14,11 @@ use crate::{Error, Result};
 struct Big(Vec<u32>);
 
 impl Big {
+    /// No branch on the bytes: a private exponent goes through here on every decryption.
     fn from_be_bytes(bytes: &[u8], limbs: usize) -> Self {
         let mut v = vec![0u32; limbs];
         for (i, b) in bytes.iter().rev().enumerate() {
-            if *b != 0 {
-                v[i / 4] |= u32::from(*b) << (8 * (i % 4));
-            }
+            v[i / 4] |= u32::from(*b) << (8 * (i % 4));
         }
         Self(v)
     }
@@ -86,6 +85,26 @@ impl Big {
     }
     fn is_one(&self) -> bool {
         self.0.first() == Some(&1) && self.0[1..].iter().all(|&l| l == 0)
+    }
+    /// self − other over self's limbs (modulo 2^(32·limbs)), and the final borrow: 1 when
+    /// self < other. No branch on the values.
+    fn sub_with_borrow(&self, other: &Self) -> (Self, u32) {
+        let mut out = vec![0u32; self.0.len()];
+        let mut borrow = 0u64;
+        for (o, (a, b)) in out.iter_mut().zip(self.0.iter().zip(&other.0)) {
+            let d = u64::from(*a)
+                .wrapping_sub(u64::from(*b))
+                .wrapping_sub(borrow);
+            *o = d as u32;
+            borrow = d >> 63;
+        }
+        (Self(out), borrow as u32)
+    }
+    /// self = other where `mask` is all ones, unchanged where it is 0; no branch on `mask`.
+    fn select(&mut self, other: &Self, mask: u32) {
+        for (a, b) in self.0.iter_mut().zip(&other.0) {
+            *a ^= mask & (*a ^ *b);
+        }
     }
     fn sub_assign(&mut self, other: &Self) {
         let mut borrow = 0i64;
@@ -158,14 +177,30 @@ impl Mont {
             t[k - 1] = s as u32;
             t[k] = t[k + 1] + (s >> 32) as u32;
         }
-        let overflow = t[k] != 0;
+        // t < 2n: subtract n when t ≥ n, that is when it overflowed (t[k] = 1) or t − n doesn't
+        // borrow. Chosen by a mask rather than a branch, so a private key's operation takes the same
+        // time whatever its operands (the classic extra-reduction timing channel).
         let mut r = Big(t[..k].to_vec());
-        if overflow || r.ge(&self.n) {
-            r.sub_assign(&self.n);
-        }
+        let (reduced, borrow) = r.sub_with_borrow(&self.n);
+        r.select(&reduced, 0u32.wrapping_sub(t[k] | (borrow ^ 1)));
         r
     }
-    /// base^exp mod n, base < n.
+    /// base^exp mod n for a secret `exp`: every bit of its limbs costs a square and a multiply,
+    /// and the product is kept or not by a mask, so the time doesn't depend on the exponent.
+    fn pow_secret(&self, base: &Big, exp: &Big) -> Big {
+        let k = self.n.0.len();
+        let mut one = Big(vec![0; k]);
+        one.0[0] = 1;
+        let b = self.mul(base, &self.r2);
+        let mut x = self.mul(&one, &self.r2);
+        for i in (0..exp.0.len() * 32).rev() {
+            x = self.mul(&x, &x);
+            let y = self.mul(&x, &b);
+            x.select(&y, 0u32.wrapping_sub(u32::from(exp.bit(i))));
+        }
+        self.mul(&x, &one)
+    }
+    /// base^exp mod n, base < n. For public exponents: its time depends on `exp`.
     fn pow(&self, base: &Big, exp: &Big) -> Big {
         let k = self.n.0.len();
         let mut one = Big(vec![0; k]);
@@ -266,6 +301,19 @@ impl RsaPublicKey {
         let mont = Mont::new(Big::from_be_bytes(&self.modulus, limbs));
         let m = Big::from_be_bytes(block, limbs);
         mont.pow(
+            &m,
+            &Big::from_be_bytes(exponent, limbs.max(exponent.len().div_ceil(4))),
+        )
+        .to_be_bytes(self.size())
+    }
+    /// [`RsaPublicKey::apply`] with a private exponent: [`Mont::pow_secret`], whose time doesn't
+    /// depend on the exponent. Vanilla's JCE blinds this operation; this at least takes the same
+    /// steps for every input.
+    fn apply_secret(&self, block: &[u8], exponent: &[u8]) -> Vec<u8> {
+        let limbs = self.size().div_ceil(4);
+        let mont = Mont::new(Big::from_be_bytes(&self.modulus, limbs));
+        let m = Big::from_be_bytes(block, limbs);
+        mont.pow_secret(
             &m,
             &Big::from_be_bytes(exponent, limbs.max(exponent.len().div_ceil(4))),
         )
@@ -538,7 +586,7 @@ impl RsaPrivateKey {
         if ciphertext.len() != k || ciphertext >= self.public.modulus.as_slice() {
             return Err(bad());
         }
-        let block = self.public.apply(ciphertext, &self.exponent);
+        let block = self.public.apply_secret(ciphertext, &self.exponent);
         if block[0] != 0 || block[1] != 2 {
             return Err(bad());
         }
@@ -612,7 +660,7 @@ impl RsaPrivateKey {
         let k = self.public.size();
         let block = emsa_pkcs1(hash, message, k)
             .ok_or_else(|| Error::new("RSA key too short for the digest"))?;
-        let signature = self.public.apply(&block, &self.exponent);
+        let signature = self.public.apply_secret(&block, &self.exponent);
         if !self.public.verify(hash, message, &signature) {
             return Err(Error::new("RSA signature failed its own check"));
         }
@@ -655,6 +703,55 @@ pub(crate) mod tests {
         let expected = b * b % n * b % n;
         let r = m.pow(&Big(vec![b as u32, (b >> 32) as u32]), &Big(vec![3, 0]));
         assert_eq!(u128::from(r.0[0]) | u128::from(r.0[1]) << 32, expected);
+    }
+
+    #[test]
+    fn the_constant_time_power_matches_the_other() {
+        // pow_secret takes every bit of the exponent's limbs, leading zeros included: the same
+        // results as pow, for moduli near a limb boundary (the reduction's overflow case) too.
+        let as_u128 = |b: &Big| {
+            b.0.iter()
+                .rev()
+                .fold(0u128, |a, &l| a << 32 | u128::from(l))
+        };
+        let big = |v: u128, limbs: usize| Big((0..limbs).map(|i| (v >> (32 * i)) as u32).collect());
+        let powmod = |mut b: u128, mut e: u128, n: u128| {
+            let mut r = 1 % n;
+            b %= n;
+            while e > 0 {
+                if e & 1 == 1 {
+                    r = r * b % n;
+                }
+                b = b * b % n;
+                e >>= 1;
+            }
+            r
+        };
+        for n in [497u128, (1 << 61) - 1, (1 << 64) - 59, (1 << 63) + 29] {
+            let limbs = if n >> 32 == 0 { 1 } else { 2 };
+            let mont = Mont::new(big(n, limbs));
+            for (b, e) in [
+                (4, 13),
+                (2, 0),
+                (n - 1, 2),
+                (n / 3, (1 << 40) + 7),
+                (12345, n - 2),
+            ] {
+                let b = b % n;
+                let (base, exp) = (big(b, limbs), big(e, 2.max(limbs)));
+                let expected = powmod(b, e, n);
+                assert_eq!(
+                    as_u128(&mont.pow(&base, &exp)),
+                    expected,
+                    "pow {b}^{e} mod {n}"
+                );
+                assert_eq!(
+                    as_u128(&mont.pow_secret(&base, &exp)),
+                    expected,
+                    "secret {b}^{e} mod {n}"
+                );
+            }
+        }
     }
 
     #[test]

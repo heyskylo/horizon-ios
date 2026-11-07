@@ -512,6 +512,15 @@ impl BlockLandingWorld for MotionWorld<'_, '_, '_> {
     fn under_spawn_protection(&mut self, _: BlockPos) -> Result<bool> {
         Ok(false)
     }
+    fn trample_allowed(&mut self, position: BlockPos, distance: f64) -> Result<bool> {
+        let id = self.player.entity_id;
+        Ok(crate::block_contact::trample_allowed(
+            id,
+            "minecraft:player",
+            position,
+            distance,
+        ))
+    }
     fn mob_griefing(&mut self) -> Result<bool> {
         Ok(true)
     }
