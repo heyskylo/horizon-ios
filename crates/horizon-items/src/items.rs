@@ -1191,6 +1191,7 @@ impl Items {
             killed_by_player: false,
             explosion_radius: None,
             this_entity: false,
+            location: None,
         };
         ctx.evaluate(table, random)
     }
@@ -1224,6 +1225,61 @@ impl Items {
         let standing = standing.replacen("wall_", "", 1);
         let standing = format!("{namespace}:blocks/{standing}");
         self.loot.contains_key(&standing).then_some(standing)
+    }
+    /// `BlockPredicate` state matching shared with block loot conditions.
+    pub fn matches_block_state(
+        &self,
+        c: &Value,
+        block: &str,
+        properties: &horizon_world::chunk::BlockProperties,
+    ) -> bool {
+        let blocks_ok = match &c["blocks"].as_str().or(c["block"].as_str()) {
+            Some(spec) => self.block_matches(spec, block),
+            None => true,
+        };
+        blocks_ok
+            && c["state"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .chain(c["properties"].as_object().into_iter().flatten())
+                .all(|(k, v)| {
+                    let have = properties.get(k).map(String::as_str);
+                    match v {
+                        Value::String(s) => have == Some(s.as_str()),
+                        Value::Object(r) => {
+                            let have: i64 = have.and_then(|h| h.parse().ok()).unwrap_or(0);
+                            r.get("min")
+                                .and_then(Value::as_i64)
+                                .is_none_or(|m| have >= m)
+                                && r.get("max")
+                                    .and_then(Value::as_i64)
+                                    .is_none_or(|m| have <= m)
+                        }
+                        _ => true,
+                    }
+                })
+    }
+    /// `LootCommand.dropBlockLoot`: the same evaluator with an actual location reader.
+    pub fn block_drops_with_location<R: RandomSource>(
+        &self,
+        registry: &BlockRegistry,
+        state: BlockStateId,
+        held: Option<&ItemStack>,
+        location: &dyn Fn(&Value) -> Option<bool>,
+        random: &mut R,
+    ) -> Vec<ItemStack> {
+        self.block_drops_exploded_context(
+            registry,
+            state,
+            held,
+            &[],
+            random,
+            None,
+            None,
+            false,
+            Some(location),
+        )
     }
     /// Evaluate the block's loot table for a player break without explosions.
     pub fn block_drops<R: RandomSource>(
@@ -1301,8 +1357,26 @@ impl Items {
         explosion: Option<f32>,
         breaker: bool,
     ) -> Vec<ItemStack> {
-        let drops =
-            self.block_drops_raw(registry, state, held, random, sequences, explosion, breaker);
+        self.block_drops_exploded_context(
+            registry, state, held, dynamic, random, sequences, explosion, breaker, None,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn block_drops_exploded_context(
+        &self,
+        registry: &BlockRegistry,
+        state: BlockStateId,
+        held: Option<&ItemStack>,
+        dynamic: &[ItemStack],
+        random: &mut impl RandomSource,
+        sequences: Option<(&mut crate::random_sequences::RandomSequences, i64)>,
+        explosion: Option<f32>,
+        breaker: bool,
+        location: Option<&dyn Fn(&Value) -> Option<bool>>,
+    ) -> Vec<ItemStack> {
+        let drops = self.block_drops_raw(
+            registry, state, held, random, sequences, explosion, breaker, location,
+        );
         if !drops.iter().any(|d| d.item.starts_with(DYNAMIC)) {
             return drops;
         }
@@ -1327,6 +1401,7 @@ impl Items {
         sequences: Option<(&mut crate::random_sequences::RandomSequences, i64)>,
         explosion_radius: Option<f32>,
         breaker: bool,
+        location: Option<&dyn Fn(&Value) -> Option<bool>>,
     ) -> Vec<ItemStack> {
         let Some(block) = registry.state(state) else {
             return vec![];
@@ -1349,6 +1424,7 @@ impl Items {
                 killed_by_player: false,
                 explosion_radius,
                 this_entity: breaker,
+                location,
             };
             return ctx.evaluate(table, random);
         }
@@ -1360,6 +1436,7 @@ impl Items {
             killed_by_player: false,
             explosion_radius,
             this_entity: breaker,
+            location,
         };
         ctx.evaluate(table, random)
     }
@@ -1384,6 +1461,7 @@ impl Items {
             killed_by_player,
             explosion_radius: None,
             this_entity: false,
+            location: None,
         };
         // LootTable.getRandomItemsRaw visits the table itself first.
         NESTED_ROLLS.with(|v| v.borrow_mut().push(id.to_owned()));
@@ -1421,6 +1499,7 @@ impl Items {
             killed_by_player: false,
             explosion_radius: None,
             this_entity: false,
+            location: None,
         };
         match table.get("random_sequence").and_then(Value::as_str) {
             Some(sequence) => ctx.evaluate(table, sequences.get(sequence, seed)),
@@ -1447,6 +1526,7 @@ impl Items {
             killed_by_player,
             explosion_radius: None,
             this_entity: false,
+            location: None,
         };
         ctx.evaluate(table, random)
     }
@@ -1470,6 +1550,7 @@ impl Items {
             killed_by_player,
             explosion_radius: None,
             this_entity: false,
+            location: None,
         };
         ctx.evaluate(table, random)
     }
@@ -1515,6 +1596,8 @@ struct LootContext<'a> {
     explosion_radius: Option<f32>,
     /// `LootContextParams.THIS_ENTITY` is set (a player broke the block).
     this_entity: bool,
+    /// Bound only for the actual loot-mine location subset.
+    location: Option<&'a dyn Fn(&Value) -> Option<bool>>,
 }
 impl LootContext<'_> {
     /// Level of an enchantment on the tool / killer's weapon.
@@ -1635,34 +1718,9 @@ impl LootContext<'_> {
                     .unwrap_or(0.0) as f32;
                 random.next_float() < chance
             }
-            "minecraft:match_block" | "minecraft:block_state_property" => {
-                let blocks_ok = match &c["blocks"].as_str().or(c["block"].as_str()) {
-                    Some(spec) => self.items.block_matches(spec, self.block),
-                    None => true,
-                };
-                blocks_ok
-                    && c["state"]
-                        .as_object()
-                        .into_iter()
-                        .flatten()
-                        .chain(c["properties"].as_object().into_iter().flatten())
-                        .all(|(k, v)| {
-                            let have = self.properties.get(k).map(String::as_str);
-                            match v {
-                                Value::String(s) => have == Some(s.as_str()),
-                                Value::Object(r) => {
-                                    let have: i64 = have.and_then(|h| h.parse().ok()).unwrap_or(0);
-                                    r.get("min")
-                                        .and_then(Value::as_i64)
-                                        .is_none_or(|m| have >= m)
-                                        && r.get("max")
-                                            .and_then(Value::as_i64)
-                                            .is_none_or(|m| have <= m)
-                                }
-                                _ => true,
-                            }
-                        })
-            }
+            "minecraft:match_block" | "minecraft:block_state_property" => self
+                .items
+                .matches_block_state(c, self.block, self.properties),
             "minecraft:match_tool" => {
                 let items = &c["predicate"]["items"];
                 let items_ok = match (self.held, items) {
@@ -1720,7 +1778,10 @@ impl LootContext<'_> {
             // LocationCheck reads the world at its offset, which this engine
             // does not have: held true (a double plant's other half is taken
             // as there). Unknown types fail, as in loot.rs.
-            "minecraft:location_check" => true,
+            "minecraft:location_check" => self
+                .location
+                .and_then(|location| location(c))
+                .unwrap_or(true),
             // A mod's own kind: the condition hook answers.
             k if !c.is_null() && k.contains(':') && !k.starts_with("minecraft:") => {
                 let ctx = self.native_loot_context(random);
@@ -2711,6 +2772,64 @@ mod tests {
         );
     }
 
+    #[test]
+    fn location_context_preserves_unaffected_rolls_and_rng_continuation() {
+        let registry = BlockRegistry::from_facts_json(&br#"{"defaults":{"minecraft:stone":0},"states":[["stone",false,false,"","minecraft:stone"]]}"#[..]).unwrap();
+        let mut items = Items::for_tests(HashMap::new());
+        items.loot = Arc::new([("minecraft:blocks/stone".into(), json!({"pools":[{
+            "rolls":{"type":"minecraft:uniform","min":1,"max":3},
+            "condition":{"type":"minecraft:match_tool","predicate":{"items":"minecraft:stick"}},
+            "entries":[{"type":"minecraft:item","name":"minecraft:diamond","weight":1},
+                       {"type":"minecraft:item","name":"minecraft:emerald","weight":3}],
+            "modifier":[{"type":"minecraft:set_count","count":{"type":"minecraft:uniform","min":1,"max":4}}]
+        }]}))].into_iter().collect());
+        let unused = |_: &Value| -> Option<bool> {
+            panic!("unaffected conditions must not invoke location reader")
+        };
+        for seed in [0, 1, 79, i64::MAX] {
+            for held in [None, Some(ItemStack::new("minecraft:stick", 1))] {
+                let mut old = LegacyRandom::new(seed);
+                let mut contextual = old.clone();
+                assert_eq!(
+                    items.block_drops(&registry, BlockStateId(0), held.as_ref(), &mut old),
+                    items.block_drops_with_location(
+                        &registry,
+                        BlockStateId(0),
+                        held.as_ref(),
+                        &unused,
+                        &mut contextual
+                    )
+                );
+                assert_eq!(old.next_long(), contextual.next_long());
+                assert_eq!(old.next_int_bound(137), contextual.next_int_bound(137));
+            }
+        }
+    }
+
+    #[test]
+    fn location_context_keeps_unbound_and_unsupported_legacy_behavior() {
+        let items = Items::for_tests(HashMap::new());
+        let properties = horizon_world::chunk::BlockProperties::new();
+        let condition = json!({"type":"minecraft:location_check","predicate":{"block":{"blocks":"minecraft:stone"}}});
+        let table = json!({"pools":[{"rolls":1,"condition":condition,"entries":[{"type":"minecraft:item","name":"minecraft:diamond"}]}]});
+        let unbound = ctx(&items, None, &properties, "minecraft:stone");
+        assert_eq!(
+            unbound.evaluate(&table, &mut LegacyRandom::new(79)).len(),
+            1
+        );
+        for value in [Some(false), Some(true), None] {
+            let reader = |_: &Value| value;
+            let bound = LootContext {
+                location: Some(&reader),
+                ..ctx(&items, None, &properties, "minecraft:stone")
+            };
+            assert_eq!(
+                bound.evaluate(&table, &mut LegacyRandom::new(79)).len(),
+                usize::from(value.unwrap_or(true))
+            );
+        }
+    }
+
     fn ctx<'a>(
         items: &'a Items,
         held: Option<&'a ItemStack>,
@@ -2725,6 +2844,7 @@ mod tests {
             killed_by_player: block.is_empty(),
             explosion_radius: None,
             this_entity: false,
+            location: None,
         }
     }
 
