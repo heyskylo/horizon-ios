@@ -465,7 +465,6 @@ impl Game<'_> {
             let rideable = !sneaking
                 && boat.out_of_control < 60.0
                 && self.riding.is_none()
-                && self.may_board()
                 && room;
             return rideable.then_some(Verb::Ride);
         }
