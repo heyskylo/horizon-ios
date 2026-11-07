@@ -109,12 +109,15 @@ pub fn start_sleeping(m: &mut Mob, p: [i32; 3], w: &MobWorld, events: &mut Vec<M
         occupied: true,
     });
     m.velocity = horizon_core::geometry::Vec3::ZERO;
-    m.position = horizon_core::geometry::Vec3::new(
-        f64::from(p[0]) + 0.5,
-        f64::from(p[1]) + 0.6875,
-        f64::from(p[2]) + 0.5,
-    );
+    m.position = crate::bed_geometry::pos_to_bed(p, 0.5625);
     true
+}
+/// `LivingEntity.baseTick`: first-tick `setPosToBed` for a loaded sleeper.
+/// Reuse normal sleep positioning without its motion, memory or bed events.
+pub(super) fn refresh_sleeping_position(m: &mut Mob, w: &MobWorld) {
+    if let Some(position) = sleeping_pos(m).and_then(|p| w.sleeping_position(p)) {
+        m.position = position;
+    }
 }
 /// `LivingEntity.stopSleeping`: the bed is no longer `occupied`, and the
 /// sleeper stands at `AbstractBedBlock.findStandUpPosition` for its yaw,

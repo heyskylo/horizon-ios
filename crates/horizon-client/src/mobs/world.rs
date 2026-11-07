@@ -37,6 +37,50 @@ impl MobWorld<'_> {
     pub fn who_by_uuid(&self, uuid: [i32; 4]) -> Option<Who> {
         self.who_lookup?.who_by_uuid(uuid)
     }
+    /// `LivingEntity.setPosToBed` / `AbstractBedBlock.getSleepHeight`: the
+    /// same part selection and outline-height math as Game's bed route.
+    pub(super) fn sleeping_position(&self, head: [i32; 3]) -> Option<Vec3> {
+        use crate::bed_geometry::{SleepOn, pos_to_bed, shape_top, slept_on};
+        let state = self.world.block(head[0], head[1], head[2]);
+        let facts = self.facts.get(state);
+        if !facts.has_class("AbstractBedBlock") {
+            return None;
+        }
+        let part = self.prop(head[0], head[1], head[2], "part")?;
+        if !matches!(part, "head" | "foot") {
+            return None;
+        }
+        let facing = self.prop(head[0], head[1], head[2], "facing")?;
+        if !matches!(facing, "north" | "south" | "east" | "west") {
+            return None;
+        }
+        let forward = crate::stand_up::bed_forward(Some(facing));
+        let foot = [head[0] - forward[0], head[1], head[2] - forward[2]];
+        let on = slept_on(
+            &facts.name,
+            Some(part),
+            Some((
+                self.block_name(foot[0], foot[1], foot[2]),
+                self.prop(foot[0], foot[1], foot[2], "part"),
+            )),
+        )?;
+        let at = match on {
+            SleepOn::Head => head,
+            SleepOn::Foot => foot,
+        };
+        let outline = self.facts.get(self.world.block(at[0], at[1], at[2]));
+        // Bed outlines are static. Without an offset context, do not invent
+        // a position for a custom outline that requires one.
+        if outline.outline_offset {
+            return None;
+        }
+        let boxes: Vec<[f64; 6]> = outline
+            .outline
+            .iter()
+            .map(|b| std::array::from_fn(|i| f64::from(at[i % 3]) + b[i]))
+            .collect();
+        shape_top(&boxes, f64::from(at[1])).map(|height| pos_to_bed(head, height))
+    }
     /// The biome's base temperature at a position.
     pub fn temperature(&self, x: i32, y: i32, z: i32) -> f32 {
         self.world

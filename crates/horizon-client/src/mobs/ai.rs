@@ -1155,6 +1155,10 @@ fn extinguish_if_wet(m: &mut Mob, w: &MobWorld, was_on_fire: bool, events: &mut 
 /// Entity.baseTick + LivingEntity.baseTick + Mob.baseTick.
 /// Returns the burning state immediately before block-contact ignition.
 fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
+    // LivingEntity.baseTick refreshes a loaded sleeper before Entity.baseTick.
+    if m.first_tick {
+        super::villager::refresh_sleeping_position(m, w);
+    }
     // Entity.canSpawnSprintParticle / spawnSprintParticle (a dashing cat or
     // ocelot): a server level drops the particle, but its spot is drawn
     // from the mob's random first.
@@ -4089,6 +4093,124 @@ mod ridden_tests {
 mod bed_wake_tests {
     use super::*;
     use crate::mobs::world::with_test_world;
+
+    #[test]
+    #[ignore = "needs prepared vanilla resources"]
+    fn loaded_sleeping_position_refreshes_in_actual_mob_tick() {
+        use horizon_world::nbt::Tag;
+        let build = |world: &mut crate::world::World,
+                     registry: &horizon_world::registry::BlockRegistry| {
+            world.chunks.insert(
+                (0, 0),
+                std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+            );
+            let stone = registry.default_state("minecraft:stone").unwrap();
+            for x in 0..12 {
+                for z in 0..12 {
+                    world.set(x, 63, z, stone).unwrap();
+                }
+            }
+            let mut bed = registry
+                .state(registry.default_state("minecraft:red_bed").unwrap())
+                .unwrap()
+                .clone();
+            bed.properties.insert("facing".into(), "north".into());
+            bed.properties.insert("occupied".into(), "false".into());
+            for (part, z) in [("head", 0), ("foot", 1)] {
+                bed.properties.insert("part".into(), part.into());
+                world.set(0, 64, z, registry.id(&bed).unwrap()).unwrap();
+            }
+        };
+        let ran = crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+            assert_eq!(w.block_name(0, 64, 0), "minecraft:red_bed");
+            assert_eq!(w.prop(0, 64, 0, "part"), Some("head"));
+            assert_eq!(w.prop(0, 64, 0, "facing"), Some("north"));
+            let types = [(
+                "minecraft:villager".to_owned(),
+                std::sync::Arc::new(types.types["minecraft:villager"].clone()),
+            )]
+            .into_iter()
+            .collect();
+            let input = horizon_world::nbt::parse_snbt(r#"{id:"minecraft:villager",Pos:[0.5d,64.5625d,0.5d],Health:20f,NoAI:1b,NoGravity:1b,PersistenceRequired:1b,sleeping_pos:[I;0,64,0],Motion:[0d,0d,0d]}"#).unwrap().0;
+            let mut loaded =
+                crate::entity_nbt::mob_from_nbt(&input, &types, 233, Some(w.registry)).unwrap();
+            assert_eq!(
+                loaded.position,
+                Vec3::new(0.5, 64.5625, 0.5),
+                "loading alone must not perform the first-tick correction"
+            );
+            assert!(loaded.first_tick && loaded.no_ai && loaded.no_gravity);
+            assert!(super::super::villager::sleeping(&loaded));
+            assert_eq!(
+                super::super::villager::sleeping_pos(&loaded),
+                Some([0, 64, 0])
+            );
+            let mut awake_input = input.clone();
+            let Tag::Compound(ref mut fields) = awake_input else {
+                unreachable!()
+            };
+            fields.remove(&"sleeping_pos".into());
+            fields.insert(
+                "Pos".into(),
+                Tag::List(
+                    [5.5_f64, 64.0, 5.5]
+                        .map(|v| Tag::Double(v.to_bits()))
+                        .to_vec(),
+                ),
+            );
+            let mut awake =
+                crate::entity_nbt::mob_from_nbt(&awake_input, &types, 234, Some(w.registry))
+                    .unwrap();
+            let mut normal = awake.clone();
+            normal.id = 235;
+            let mut normal_events = Vec::new();
+            assert!(super::super::villager::start_sleeping(
+                &mut normal,
+                [0, 64, 0],
+                w,
+                &mut normal_events
+            ));
+            assert_eq!(normal.position, Vec3::new(0.5, 64.6875, 0.5));
+            assert!(normal_events.iter().any(|e| matches!(
+                e,
+                MobEvent::BedOccupied {
+                    pos: [0, 64, 0],
+                    occupied: true
+                }
+            )));
+            let mut random = LegacyRandom::new(0);
+            let mut loaded_events = Vec::new();
+            for n in 1..=2 {
+                assert!(loaded.tick(w, &mut random, &mut loaded_events));
+                assert_eq!(loaded.age, n);
+                assert!(!loaded.first_tick);
+                assert_eq!(
+                    loaded.position,
+                    Vec3::new(0.5, 64.6875, 0.5),
+                    "actual loaded sleeper at tick {n}"
+                );
+                assert_eq!(loaded.velocity, Vec3::ZERO);
+                assert_eq!(loaded.health, 20.0);
+                assert_eq!(
+                    super::super::villager::sleeping_pos(&loaded),
+                    Some([0, 64, 0])
+                );
+                assert!(awake.tick(w, &mut random, &mut Vec::new()));
+                assert_eq!(awake.position, Vec3::new(5.5, 64.0, 5.5));
+                assert!(!super::super::villager::sleeping(&awake));
+                assert!(normal.tick(w, &mut random, &mut normal_events));
+                assert_eq!(normal.position, Vec3::new(0.5, 64.6875, 0.5));
+                assert_eq!(normal.velocity, Vec3::ZERO);
+            }
+            assert!(
+                !loaded_events
+                    .iter()
+                    .any(|e| matches!(e, MobEvent::BedOccupied { .. })),
+                "refresh must not re-run startSleeping side effects"
+            );
+        });
+        assert!(ran, "prepared Mob/bed world must actually run");
+    }
 
     /// `LivingEntity.tick` wakes a sleeper whose bed is gone before
     /// `aiStep` — `Mob.no_ai` skips the step, not the check (#7875).
