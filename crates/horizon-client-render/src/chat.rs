@@ -1188,11 +1188,27 @@ impl SuggestLayout {
     };
 }
 
+/// A suggestion accepted by Tab or a click (`SuggestionsList.useSuggestion`).
+#[derive(Debug, PartialEq, Eq)]
+pub struct SuggestionCompletion {
+    /// The suggestion list's original input, also when cycling with Tab.
+    pub original: String,
+    /// The replaced range in `original`, as Java UTF-16 start/end offsets.
+    pub range: (usize, usize),
+    pub text: String,
+    /// The resulting input, after the text field's length limit.
+    pub input: String,
+}
+
 /// The open chat screen: vanilla's `ChatScreen` with its `EditBox` and
 /// `CommandSuggestions` (argument colouring, usage lines, parse errors,
 /// the suggestion list, Tab completion, history).
 pub struct ChatScreen {
     pub input: TextField,
+    /// `ChatScreen.isDraft`: the box opened with the draft saved last time and
+    /// has not been edited since. A draft draws grey italic, and the first
+    /// Backspace clears the whole box instead of one character.
+    is_draft: bool,
     width: i32,
     height: i32,
     history_buffer: String,
@@ -1207,6 +1223,7 @@ pub struct ChatScreen {
     /// the command up to the cursor.
     request: Option<(i32, String)>,
     suggestions: Option<SuggestionList>,
+    completion: Option<SuggestionCompletion>,
     usage: Vec<Text>,
     usage_position: i32,
     usage_width: i32,
@@ -1300,11 +1317,13 @@ fn truncate_utf16(s: &str, max_units: usize) -> String {
     s.to_owned()
 }
 impl ChatScreen {
-    /// `ChatScreen.init`: the input at the bottom, focused, holding `initial`.
+    /// `ChatScreen.init`: the input at the bottom, focused, holding `initial`,
+    /// which is a draft when `is_draft` (`ChatComponent.createScreen`).
     pub fn new(
         m: &Measure,
         c: &Commands,
         initial: &str,
+        is_draft: bool,
         history_len: usize,
         width: i32,
         height: i32,
@@ -1317,6 +1336,7 @@ impl ChatScreen {
         input.set_value(m, initial);
         let mut s = Self {
             input,
+            is_draft,
             width,
             height,
             history_buffer: String::new(),
@@ -1326,6 +1346,7 @@ impl ChatScreen {
             awaiting: None,
             request: None,
             suggestions: None,
+            completion: None,
             usage: Vec::new(),
             usage_position: 0,
             usage_width: 0,
@@ -1353,6 +1374,7 @@ impl ChatScreen {
         input.set_value(m, command);
         let mut s = Self {
             input,
+            is_draft: false,
             width,
             height,
             history_buffer: String::new(),
@@ -1362,6 +1384,7 @@ impl ChatScreen {
             awaiting: None,
             request: None,
             suggestions: None,
+            completion: None,
             usage: Vec::new(),
             usage_position: 0,
             usage_width: 0,
@@ -1377,12 +1400,18 @@ impl ChatScreen {
     pub fn value(&self) -> &str {
         &self.input.value
     }
+    /// Take the most recently accepted suggestion, at most once. Call after
+    /// each key or click to observe every acceptance, including Tab cycling.
+    pub fn take_suggestion_completion(&mut self) -> Option<SuggestionCompletion> {
+        self.completion.take()
+    }
     /// Replace the input for a suggest-command link and refresh completions.
     pub fn suggest_command(&mut self, m: &Measure, c: &Commands, command: &str) {
         self.input.set_value(m, command);
         self.edited(m, c);
     }
-    /// `ChatScreen.resize`: a new screen with the current text.
+    /// `ChatScreen.resize`: a new screen with the current text, still a draft
+    /// while it has not been edited (`ChatScreen.resize` keeps the field).
     pub fn resize(&mut self, m: &Measure, c: &Commands, width: i32, height: i32) {
         if (width, height) != (self.width, self.height) {
             let value = self.input.value.clone();
@@ -1390,7 +1419,16 @@ impl ChatScreen {
             let abilities = self.abilities;
             let message = std::mem::take(&mut self.input.message);
             *self = if self.layout == SuggestLayout::CHAT {
-                Self::new(m, c, &value, self.history_pos, width, height, abilities)
+                Self::new(
+                    m,
+                    c,
+                    &value,
+                    self.is_draft,
+                    self.history_pos,
+                    width,
+                    height,
+                    abilities,
+                )
             } else {
                 Self::command_block(m, c, &value, width, height)
             };
@@ -1402,6 +1440,7 @@ impl ChatScreen {
     fn edited(&mut self, m: &Measure, c: &Commands) {
         self.allow_suggestions = true;
         self.update_command_info(m, c);
+        self.is_draft = false;
     }
     /// Ctrl+A/C/V/X in the input box.
     pub fn shortcut(
@@ -1412,6 +1451,24 @@ impl ChatScreen {
         clipboard: &mut dyn crate::clipboard::Clipboard,
     ) {
         if self.input.shortcut(m, shortcut, clipboard) {
+            self.edited(m, c);
+        }
+    }
+    /// Edit the existing input and refresh its command responder when it changes.
+    pub fn edit_input(&mut self, m: &Measure, c: &Commands, f: impl FnOnce(&mut TextField)) {
+        let before = (
+            self.input.value.clone(),
+            self.input.cursor,
+            self.input.highlight,
+        );
+        f(&mut self.input);
+        if before
+            != (
+                self.input.value.clone(),
+                self.input.cursor,
+                self.input.highlight,
+            )
+        {
             self.edited(m, c);
         }
     }
@@ -1714,6 +1771,17 @@ impl ChatScreen {
         self.select(l, l.current as isize);
         self.keep_suggestions = false;
         l.tab_cycles = true;
+        let units = |byte: usize| {
+            l.original[..byte.min(l.original.len())]
+                .encode_utf16()
+                .count()
+        };
+        self.completion = Some(SuggestionCompletion {
+            original: l.original.clone(),
+            range: (units(s.range.0), units(s.range.1)),
+            text: s.text,
+            input: self.input.value.clone(),
+        });
     }
     /// `ChatScreen.keyPressed`.
     pub fn key(
@@ -1727,6 +1795,14 @@ impl ChatScreen {
     ) -> ChatAction {
         use winit::keyboard::KeyCode as K;
         if self.suggestions_key(m, c, key, shift) {
+            return ChatAction::None;
+        }
+        // ChatScreen.keyPressed: while the box holds an unedited draft, the
+        // first Backspace clears all of it rather than one character.
+        if self.is_draft && key == K::Backspace {
+            self.input.set_value(m, "");
+            self.is_draft = false;
+            self.edited(m, c);
             return ChatAction::None;
         }
         match key {
@@ -1862,8 +1938,13 @@ impl ChatScreen {
         l.offset = ((l.offset as f64 - amount.clamp(-1.0, 1.0)) as i32).clamp(0, max) as usize;
         true
     }
-    /// `CommandSuggestions.formatText`: argument colours over the input.
+    /// `CommandSuggestions.formatText`: argument colours over the input. The
+    /// draft formatter (`ChatScreen.formatChat`) is registered before this one
+    /// and wins while the draft is unedited: the whole text is grey italic.
     fn format(&self, value: &str, offset: usize) -> Text {
+        if self.is_draft {
+            return Text::literal(value).with_color(text::GRAY).italic();
+        }
         let gray = Style::color(text::GRAY);
         let Some(parse) = &self.parse else {
             return Text::literal(value);
@@ -1990,6 +2071,11 @@ impl ChatScreen {
         for i in 0..limit {
             let y = ry + 12 * i as i32;
             d::fill(out, rx, y, rx + rw, y + 12, self.layout.fill);
+            // A row for the pad: nothing else can pick a suggestion without Tab.
+            crate::widgets::target_as(
+                [rx as f32, y as f32, rw as f32, 12.0],
+                crate::widgets::Kind::Row,
+            );
             if mouse.0 > rx && mouse.0 < rx + rw && mouse.1 > y && mouse.1 < y + 12 {
                 if moved {
                     self.select(l, (i + l.offset) as isize);
