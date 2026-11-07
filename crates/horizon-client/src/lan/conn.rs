@@ -670,8 +670,8 @@ fn serve_connection(
 }
 
 /// The older release a client's handshake states, when this server lets it join
-/// (`horizon-accept-older-clients`): 26.2, 26.1, 1.21.11 and 1.21.10, the releases
-/// the adapter has tables for.
+/// (`horizon-accept-older-clients`): 26.2 down to 1.20.5, the releases the adapter
+/// has tables for (`ServerVersion::from_protocol`).
 fn older_client(
     shared: &Shared,
     protocol: i32,
