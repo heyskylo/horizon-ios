@@ -963,7 +963,7 @@ prints it, and adds a warning when a budget is exceeded.
 
 ## 11. Work pieces (for the tracker issue)
 
-One issue per piece, each under ~500 changed lines, listed under one tracker issue. Each PR carries `pr_ready.py`'s
+One issue per piece, listed under one tracker issue (#11902). PR size is not limited for this project; the line counts below are estimates only. Each PR carries `pr_ready.py`'s
 block, the attribution lines, and docs for what it ships. Labels:
 
 - `feature` where players get something new (S1a, C1, R1b);
