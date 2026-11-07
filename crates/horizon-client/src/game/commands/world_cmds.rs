@@ -1504,6 +1504,12 @@ impl Game<'_> {
             return Ok(0);
         };
         let name = self.target_name(target);
+        // A server player other than the one in place (the console's, a function's or another
+        // player's /ride): their riding state is their own, so the command runs as them, as
+        // `native_mount` does. In vanilla every ServerPlayer rides alike.
+        if let Target::Guest(_) = target {
+            return self.ride_guest(id, ctx, target, name);
+        }
         if id == "ride.dismount" {
             let Some(v) = self.ride_vehicle(target) else {
                 return Err(err("commands.ride.not_riding", &[&name.plain()]));
@@ -1533,6 +1539,45 @@ impl Game<'_> {
         Ok(1)
     }
 
+    /// `cmd_ride` for a server player not in place (`Target::Guest`): `RideCommand.dismount` and
+    /// `RideCommand.mount` run as that player, through `for_player`.
+    fn ride_guest(&mut self, id: &str, ctx: &Context, target: Target, name: Text) -> R<i32> {
+        if id == "ride.dismount" {
+            let not_riding = || err("commands.ride.not_riding", &[&name.plain()]);
+            let vehicle_name = self
+                .for_player(target, |g| {
+                    let vehicle = g.ride_vehicle(Target::Player)?;
+                    let vehicle_name = g.target_name(vehicle);
+                    g.stop_riding();
+                    Some(vehicle_name)
+                })
+                .flatten()
+                .ok_or_else(not_riding)?;
+            self.feedback(Text::translate(
+                "commands.ride.dismount.success",
+                &[name, vehicle_name],
+            ));
+            return Ok(1);
+        }
+        let vehicles = self.entities(ctx, "vehicle", false)?;
+        let Some(vehicle) = vehicles.first().copied() else {
+            return Ok(0);
+        };
+        let vehicle_name = self.target_name(vehicle);
+        self.for_player(target, |g| g.ride_mount(Target::Player, vehicle))
+            .unwrap_or_else(|| {
+                Err(err(
+                    "commands.ride.mount.failure.generic",
+                    &[&name.plain(), &vehicle_name.plain()],
+                ))
+            })?;
+        self.feedback(Text::translate(
+            "commands.ride.mount.success",
+            &[name, vehicle_name],
+        ));
+        Ok(1)
+    }
+
     /// `RideCommand.mount` once the targets are known: `target` (the player
     /// in place or a mob) rides `vehicle`, as `startRiding(vehicle, true,
     /// true)` forces it (also for `native_mount`).
@@ -1546,7 +1591,8 @@ impl Game<'_> {
                 &[&name.plain(), &current.plain()],
             ));
         }
-        if vehicle == Target::Player {
+        // RideCommand.mount: `vehicle.getType() == EntityType.PLAYER`, any server player.
+        if matches!(vehicle, Target::Player | Target::Guest(_)) {
             return Err(err("commands.ride.mount.failure.cant_ride_players", &[]));
         }
         // getSelfAndPassengers: the vehicle is the target or rides it.

@@ -13546,5 +13546,39 @@ CHECKS += ['legacy-pvp']
 CHECK_FNS['legacy-pvp'] = check_legacy_pvp
 
 
+def check_ride_guest(host, guest, out):
+    """RideCommand.mount and dismount on another server player: the host's /ride seats the guest
+    on a pig and takes them off it, as vanilla does for any ServerPlayer (the console's, a
+    function's or another player's /ride), and a player is never a vehicle."""
+    x, y, z = (int(v // 1) for v in pos_of(host))
+    host('command', command=f'summon minecraft:pig {x + 2.5} {y} {z + 0.5} {{NoAI:1b,Tags:["ride_guest"]}}')
+    pig = '@e[type=minecraft:pig,tag=ride_guest,limit=1]'
+    seen = {}
+    try:
+        seen['mount'] = host('command', command=f'ride {GUEST_NAME} mount {pig}').get('chat')
+        guest.wait(10)
+        seen['guest riding'] = guest('status').get('riding')
+        seen['host riding'] = host('status').get('riding')
+        guest.shot(out, 'ride-guest')
+        seen['on a player'] = host('command', command=f'ride @e[type=minecraft:pig,tag=ride_guest,limit=1] mount {GUEST_NAME}').get('chat')
+        seen['dismount'] = host('command', command=f'ride {GUEST_NAME} dismount').get('chat')
+        guest.wait(10)
+        seen['guest riding after'] = guest('status').get('riding')
+        seen['again'] = host('command', command=f'ride {GUEST_NAME} dismount').get('chat')
+    finally:
+        host('command', command='kill @e[type=minecraft:pig,tag=ride_guest]')
+    assert seen['guest riding'] is not None, f'the guest rides the pig: {seen}'
+    assert seen['host riding'] is None, f'the host stays on foot: {seen}'
+    assert any("can't ride" in line or 'cannot ride' in line or 'players' in line.lower() for line in seen['on a player'] or []), \
+        f'a player is not a vehicle: {seen}'
+    assert seen['guest riding after'] is None, f'the guest got off: {seen}'
+    assert any('not riding' in line for line in seen['again'] or []), f'a second dismount: not riding: {seen}'
+    return seen
+
+
+CHECKS += ['ride_guest']
+CHECK_FNS['ride_guest'] = check_ride_guest
+
+
 if __name__ == '__main__':
     main()
