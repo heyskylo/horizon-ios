@@ -28,6 +28,7 @@ address. The script then checks, from both sides, what a guest's game used to ge
              drowning and the void (then respawns);
 - pvp:       the guest and the host hit each other with a sword; with the pvp game rule off, or on one
              team without friendly fire, nothing;
+- riders:    `execute on passengers` finds the guest riding a strider, not the host beside it;
 - kills:     a pig the guest kills counts in the guest's killed statistic, not the host's (#484);
 - leave:     a guest who leaves has leave_game in their saved statistics, and again after the next leave;
 
@@ -8721,6 +8722,42 @@ def check_sprint_hit_slowdown(host, guest, out):
 
 CHECKS += ['sprint-hit-slowdown']
 CHECK_FNS['sprint-hit-slowdown'] = check_sprint_hit_slowdown
+
+
+def check_riders(host, guest, out):
+    """`execute on passengers` from a strider the guest rides finds the guest (Entity.getPassengers: the
+    server's players too, as a map's datapack sees them), and only them: the host, standing beside it, isn't
+    a passenger. Run by the host, so the guest is another player than the one in place."""
+    if dead(guest):
+        guest.raw('respawn')
+        guest.wait(40)
+    hx, hy, hz = pos_of(host)
+    x, y, z = math.floor(hx), math.floor(hy), math.floor(hz)
+    host('command', command=f'fill {x - 2} {y} {z - 2} {x + 4} {y + 3} {z + 2} minecraft:air')
+    host('command', command=f'fill {x - 2} {y - 1} {z - 2} {x + 4} {y - 1} {z + 2} minecraft:stone')
+    host('command', command='tag @a remove rode')
+    host('command', command=f'summon minecraft:strider {x + 2.5} {y} {z + 0.5} '
+         '{NoAI:1b,Tags:["e2e_ride"],equipment:{saddle:{id:"minecraft:saddle",count:1}}}')
+    guest('command', command=f'tp @s {x + 2.5} {y} {z + 0.5}')
+    guest.wait(10)
+    guest('command', command='ride @s mount @e[tag=e2e_ride,limit=1]')
+    guest.wait(20)
+    passed = lambda who: 'passed' in ' '.join(host('command', command=f'execute if entity @a[name={who},tag=rode]')
+                                              .get('chat', []))
+    try:
+        host('command', command='execute as @e[tag=e2e_ride] on passengers run tag @s add rode')
+        seen = {'guest tagged': passed(GUEST_NAME), 'host tagged': passed(host.player)}
+    finally:
+        guest('command', command='ride @s dismount')
+        host('command', command='kill @e[tag=e2e_ride]')
+        host('command', command='tag @a remove rode')
+    assert seen['guest tagged'], f'`on passengers` missed the guest riding the strider: {seen}'
+    assert not seen['host tagged'], f'`on passengers` named the host, who rides nothing: {seen}'
+    return seen
+
+
+CHECKS += ['riders']
+CHECK_FNS['riders'] = check_riders
 
 
 
