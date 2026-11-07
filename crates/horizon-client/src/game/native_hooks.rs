@@ -997,11 +997,12 @@ use super::{
 use crate::mod_api::NativeTextField;
 use horizon_assets::item_model::StackView;
 use horizon_client::mod_api::EntityDataValue;
+use horizon_client::mod_api::WorldHold;
 use horizon_client::mod_api::{
     self, HudMode, NativeBossBar, NativeCamera, NativeCommand, NativeDispensed, NativeFluidAction,
     NativeFluidDrain, NativeFluidStack, NativeFluidTankView, NativeLifecycleContext,
     NativeNoteBlockChange, NativeServerPlayer, RecipeBookCategory, ServerTickPhase, TickSpan,
-    WorldHold, WorldPhase,
+    WorldPhase,
 };
 use horizon_client::mod_api::{AttachmentResult, Attachments, Holder, LayerDefinition, Suggestion};
 pub(crate) use horizon_client::mod_api::{
