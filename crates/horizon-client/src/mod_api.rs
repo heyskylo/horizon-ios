@@ -19,6 +19,7 @@ pub use crate::crafting::{CustomRecipe, Ingredient};
 pub use crate::extras::Corner;
 pub use crate::extras_hud::Corners;
 pub use crate::first_person::Hand;
+pub use crate::fluid_render::NativeFluidRenderOptions;
 pub use crate::fog::{FogData, FogType};
 pub use crate::game::NativeChunkSnapshot;
 pub use crate::game::NativeEffect;
@@ -29,6 +30,7 @@ pub use crate::game::native_client_services::{
     NativeClientEntity, NativeClientHead, NativeClientItem, NativeClientProfile, NativeClientState,
     NativeScreenKind, NativeWorldId,
 };
+pub use crate::game::native_text_field::NativeTextField;
 pub use crate::game::{
     ItemEnergyBuffer, NativeBiomeId, NativeBlockEdit, NativeBlockReadError, NativeBlockRun,
     NativeClientBiomes, NativeClientChunks, NativeClock, NativeColumnBlocks, NativeComponentError,
@@ -38,6 +40,7 @@ pub use crate::game::{
     NativePlayer, NativePlayerRender, NativeReloadListener, NativeShake, NativeStructureBlock,
     NativeStructureTemplate, NativeWorldDraw,
 };
+pub use crate::gamerules::Value as GameRuleValue;
 pub use crate::gfx::native_render::{
     BlockSpriteArrays, RenderHooks, RenderNeeds, RenderNeedsEvent, WorldDrawn, WorldDrawnEvent,
     wgpu,
@@ -60,6 +63,9 @@ pub use crate::recipe_book::RecipeBookCategory;
 pub use crate::sound_engine::SoundPlayback;
 /// A named step of the server tick and its wall and CPU milliseconds (`native_server_tick_timed`).
 pub use crate::spans::Span as TickSpan;
+pub use crate::terrain_model::{
+    NativeModelMaterial, NativeModelRenderOptions, NativeModelShade, NativeModelUvShift,
+};
 pub use crate::text::Text;
 pub use crate::world_primitives::{PrimitiveShape, WorldPrimitive, WorldPrimitives};
 pub use horizon_assets::item_model::{DisplayContext, StackView};

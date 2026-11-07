@@ -140,8 +140,11 @@ one is selected. "Sign out" deletes the account's secrets from the keychain.
   secrets the keychain refuses go to `account-secrets.json` in the launcher's data folder instead,
   readable and writable by the player only (0600 on Unix) and never in plain text: the file is
   encrypted (ChaCha20-Poly1305) with a key derived from the computer's identity (`/etc/machine-id`,
-  `/etc/hostid`), so a copy taken off the computer (a backup, a synced home folder) can't be read
-  elsewhere. On the computer itself the file's mode is what keeps other users out. A file that
+  `/etc/hostid`) and a random secret of the install's own, `account-secrets.key` beside it (32
+  bytes, 0600, made at the first write), so a copy taken off the computer (a backup, a synced home
+  folder) can't be read elsewhere, and nobody can work the key out from what every user can read.
+  On the computer itself the files' mode is what keeps other users out. A file sealed by an older
+  launcher (machine identity only) is read once and sealed again under the new key. A file that
   doesn't open (another computer's, or changed) is never written over: remove it and sign in again. The
   launcher never picks one store for a run: every read takes the file's copy first (it was written
   while the keychain was away, so it is the newer one) and the keychain's otherwise, and every write

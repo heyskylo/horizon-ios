@@ -166,7 +166,6 @@ impl Game<'_> {
 }
 
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// Sends `data` on `channel` (`mod_id:name`, at most 30 000 bytes, at
     /// most 32 a player a tick) to `player`'s client, at the tick's end, from
@@ -295,7 +294,7 @@ impl Game<'_> {
         if self.screen != super::Screen::Playing {
             return Err("another screen is open".into());
         }
-        self.open_chat(text);
+        self.open_chat(text, false);
         Ok(())
     }
 

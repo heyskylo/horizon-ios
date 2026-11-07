@@ -35,7 +35,6 @@ fn teleportable(pos: [f64; 3]) -> bool {
 }
 
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// Whether this game is a server (its thread or a dedicated one), never a client.
     fn native_serves(&self) -> bool {
