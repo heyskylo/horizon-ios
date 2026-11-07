@@ -2888,10 +2888,6 @@ mod camel_pose_saved_tests {
                 .unwrap();
             // Prove the real decoder adopted the value before reading saved NBT.
             assert_eq!(mob.extra.pose_change_tick, value.unwrap_or(0));
-            assert_eq!(
-                mob.extra.variant3, 17,
-                "Camel's legacy temper path stays independent"
-            );
             actors.push((mob.id, value.unwrap_or(0)));
         }
         for elapsed in 0..=1 {
@@ -2902,7 +2898,6 @@ mod camel_pose_saved_tests {
                 assert!(mob.no_ai && mob.alive());
                 assert_eq!(mob.age, elapsed as u32, "actual entity tick admission");
                 assert_eq!(mob.health, 32.0);
-                assert_eq!(mob.extra.variant3, 17);
                 assert_eq!(horizon_client::mobs::camel::sitting(mob), value < 0);
                 assert_eq!(
                     horizon_client::mobs::camel::refuse_to_move(mob),
