@@ -136,24 +136,24 @@ pub(super) fn remote_text(tag: &Tag) -> horizon_client::text::Text {
     comp_text(&tag_to_json(tag))
 }
 
-/// `Player.getVoicePitch`: a constant 1.0
-/// (`javap -p -c -constants net.minecraft.world.entity.player.Player`:
-/// `0: fconst_1  1: freturn`), so a player's own hurt and death sounds are
-/// neither raised for a baby nor jittered - `LivingEntity.getVoicePitch`, which
-/// the mobs port, does both. It takes no random, so it draws nothing from the
-/// level random either.
 /// Who hurt the local player, for `native_client_hurt`: the damage event's
 /// causing entity (`sourceCauseId`) and whether `is_player` knows it as a
 /// player. An entity this client doesn't track is still named, as not a player.
 fn own_hurt_attacker(
     cause: Option<i32>,
-    mut is_player: impl FnMut(u32) -> Option<bool>,
+    is_player: impl FnMut(u32) -> Option<bool>,
 ) -> (Option<u32>, bool) {
     let attacker = cause.and_then(|id| u32::try_from(id).ok());
     let player = attacker.and_then(is_player).unwrap_or(false);
     (attacker, player)
 }
 
+/// `Player.getVoicePitch`: a constant 1.0
+/// (`javap -p -c -constants net.minecraft.world.entity.player.Player`:
+/// `0: fconst_1  1: freturn`), so a player's own hurt and death sounds are
+/// neither raised for a baby nor jittered - `LivingEntity.getVoicePitch`, which
+/// the mobs port, does both. It takes no random, so it draws nothing from the
+/// level random either.
 pub(super) fn player_voice_pitch() -> f32 {
     1.0
 }
