@@ -376,6 +376,20 @@ pub(super) fn named_mob_pickable(
 pub(super) type Skinned = Option<((usize, usize, u32), Option<(glam::Vec3, glam::Vec3)>)>;
 
 impl Game<'_> {
+    /// A sulfur cube's attribute map (`LivingEntity.attributes`), from its
+    /// type's defaults, before its first tick adopts the body's archetype
+    /// modifiers. A map already there (commands, armor) is kept.
+    fn init_sulfur_attribute_maps(&mut self) {
+        for m in &mut self.mobs {
+            if m.species() == horizon_client::mobs::Species::SulfurCube
+                && m.extra.armor_attributes.is_none()
+            {
+                m.extra.armor_attributes = self.motion.attributes.create(&m.kind.id).map(Box::new);
+            }
+        }
+    }
+}
+impl Game<'_> {
     pub(super) fn player_view(&self) -> Option<PlayerView> {
         let p = self.player.as_ref()?;
         let w = f64::from(p.dimensions.width) / 2.0;
@@ -1086,6 +1100,7 @@ impl Game<'_> {
                 i += 1;
             }
         }
+        self.init_sulfur_attribute_maps();
         let uuid = self.level.player_uuid;
         let level_id = self.dim.id();
         let mut snapshot = std::mem::take(&mut self.creatures.seen_buf);

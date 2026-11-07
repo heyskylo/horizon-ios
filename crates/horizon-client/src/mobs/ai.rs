@@ -673,6 +673,9 @@ pub fn tick(
     if m.alive() {
         super::spear_use::update_using_item(m, w, known_speed, events);
     }
+    // LivingEntity.tick: detectEquipmentUpdates, a sulfur cube's body
+    // archetype modifiers.
+    super::sulfur_cube::adopt_body(m);
     // LivingEntity.tick: a sleeper whose bed is gone stands up before
     // aiStep, with or without AI.
     if super::villager::sleeping(m)

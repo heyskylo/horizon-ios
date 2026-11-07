@@ -147,6 +147,9 @@ def main():
     parser.add_argument("--macro-source-type-fixture", action="store_true")
     parser.add_argument("--stand-fall-fixture", action="store_true")
     parser.add_argument('--orb-uuid-fixture', action='store_true')
+    parser.add_argument('--sulfur-body-attributes-fixture', action='store_true', help='a sulfur cube\'s body archetype attribute modifiers through /attribute')
+    parser.add_argument('--sulfur-body-replace-fixture', action='store_true', help='a sulfur cube\'s body replaced and removed through /data')
+    parser.add_argument('--sulfur-body-attributes-raw-diagnostic', action='store_true', help='add the whole attributes lists and entity data')
     parser.add_argument("--mob-pickup-save-fixture", action="store_true")
     parser.add_argument('--merchant-crafted-fixture', action='store_true')
     parser.add_argument('--mob-name-presentation-diagnostic', action='store_true',
@@ -329,6 +332,12 @@ def main():
     if args.selector_bounds_fixture:
         from selector_bounds_corpus import selector_bounds
         groups = [("setup", corpus_module.group_setup()), ("selector entity bounds", selector_bounds())]
+    if args.sulfur_body_attributes_fixture:
+        from sulfur_body_attributes_corpus import sulfur_body_attributes
+        groups = [('setup', corpus_module.group_setup()), ('sulfur body attributes', sulfur_body_attributes(args.sulfur_body_attributes_raw_diagnostic))]
+    if args.sulfur_body_replace_fixture:
+        from sulfur_body_attributes_corpus import sulfur_body_replace
+        groups = [('setup', corpus_module.group_setup()), ('sulfur body replace', sulfur_body_replace())]
     if args.boat_leash_view_fixture:
         from boat_leash_view_corpus import cases as boat_leash_views
         groups = [('setup', corpus_module.group_setup()),
