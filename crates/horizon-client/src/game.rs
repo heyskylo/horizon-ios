@@ -22154,6 +22154,7 @@ fn build_renderer(
         wide_frame,
         shader_pack.draws_flat,
         shader_pack.linear,
+        shader_pack.hdr_float,
     ))?;
     renderer.hud.sprite_animations = atlas
         .sprite_animations
@@ -22224,6 +22225,7 @@ fn loading_renderer(
         // It draws no terrain.
         false,
         // An 8-bit frame, which HDR output takes as well.
+        false,
         false,
         false,
         false,

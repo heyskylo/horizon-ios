@@ -3522,6 +3522,9 @@ impl Game<'_> {
     /// sent and whenever its block changes, on the server thread or, for a
     /// saved chunk sent past the view distance (`lan::far`), another one; a client's copy of the block
     /// entity (made by `native_block_entity` there) merges it into its `nbt`.
+    /// An owner can merge `entity.take_client_update_fields()` into this tag
+    /// for one-shot fields that are neither saved nor cloned. The tag is
+    /// constructed once before a block change is broadcast to its viewers.
     /// Leave it unset to send nothing. API 45.
     pub(super) fn native_block_entity_update_tag(
         pos: [i32; 3],
