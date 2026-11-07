@@ -516,13 +516,7 @@ impl StructureState {
     }
     /// A saved `minecraft:jigsaw` piece, or `None` for any other piece or one that does not decode.
     fn saved_pool_piece(&self, piece: &crate::nbt::Tag) -> Option<Piece> {
-        let crate::nbt::Tag::Compound(map) = piece else {
-            return None;
-        };
-        let id = map.get(&"id".into())?;
-        if !matches!(id, crate::nbt::Tag::String(s) if s.to_string_lossy() == "minecraft:jigsaw") {
-            return None;
-        }
+        saved_piece_id(piece)?;
         PoolPiece::from_saved(&tag_json(piece), &self.resources, &self.bindings)
             .ok()
             .map(Piece::Pool)
@@ -875,16 +869,8 @@ fn read_jigsaw_start(
     let pieces = children
         .iter()
         .map(|piece| {
-            let Tag::String(id) = piece.get("id")? else {
-                return None;
-            };
-            let id = id.to_string_lossy().to_lowercase();
-            if !matches!(
-                id.strip_prefix("minecraft:").unwrap_or(&id),
-                "jigsaw" | "nvi" | "pcp" | "bastionremnant" | "runtime"
-            ) {
-                return None;
-            }
+            // `PiecesContainer.load`'s RENAMES: only jigsaw pieces are read back.
+            saved_piece_id(piece)?;
             // Pool pieces have no orientation and depth 0. Preserve other values by falling
             // back until the representation can hold them, rather than silently losing them.
             if piece.get("O") != Some(&Tag::Int(-1)) || piece.get("GD") != Some(&Tag::Int(0)) {
@@ -898,6 +884,25 @@ fn read_jigsaw_start(
     let mut start = StructureStart::new(index, def, chunk, pieces);
     start.references = int("references");
     Some(start)
+}
+/// `PiecesContainer.load`'s piece id, after its `RENAMES`: the four ids an older
+/// save wrote for a jigsaw piece (`minecraft:nvi`, `minecraft:pcp`,
+/// `minecraft:bastionremnant`, `minecraft:runtime`) are read as `minecraft:jigsaw`,
+/// which is what vanilla's table maps them to. `None` for a piece of another type
+/// (its NBT is not a pool piece's) and for one with no id.
+fn saved_piece_id(piece: &crate::nbt::Tag) -> Option<&'static str> {
+    let crate::nbt::Tag::Compound(map) = piece else {
+        return None;
+    };
+    let crate::nbt::Tag::String(id) = map.get(&"id".into())? else {
+        return None;
+    };
+    // `Identifier.parse`: an id with no namespace is `minecraft:`'s.
+    let id = id.to_string_lossy();
+    match id.strip_prefix("minecraft:").unwrap_or(&id) {
+        "jigsaw" | "nvi" | "pcp" | "bastionremnant" | "runtime" => Some("minecraft:jigsaw"),
+        _ => None,
+    }
 }
 /// A saved piece's tag as the JSON `PoolPiece::from_saved` reads: compounds and lists as they
 /// are, numbers as numbers.
@@ -1024,7 +1029,7 @@ mod tests {
             "minecraft:pcp",
             "minecraft:bastionremnant",
             "minecraft:runtime",
-            "MINECRAFT:JIGSAW",
+            "jigsaw",
         ] {
             let mut legacy = tag.clone();
             let Tag::Compound(start) = &mut legacy else {
@@ -1062,6 +1067,50 @@ mod tests {
             );
         }
         assert!(read(&Tag::compound([("id", Tag::String("INVALID".into()))])).is_none());
+    }
+
+    /// `PiecesContainer.load` reads a piece whose id is one of the four names an
+    /// older save wrote for a jigsaw piece as a jigsaw piece (its `RENAMES`
+    /// table); any other piece id keeps the start on the generator's rebuild.
+    #[test]
+    fn an_old_saves_jigsaw_piece_ids_are_read_as_jigsaw() {
+        let piece = |id: &str| {
+            crate::nbt::Tag::compound([
+                ("id", crate::nbt::Tag::String(id.into())),
+                ("PosX", crate::nbt::Tag::Int(16)),
+            ])
+        };
+        for id in [
+            "minecraft:nvi",
+            "minecraft:pcp",
+            "minecraft:bastionremnant",
+            "minecraft:runtime",
+            "nvi",
+        ] {
+            assert_eq!(
+                saved_piece_id(&piece(id)),
+                Some("minecraft:jigsaw"),
+                "{id} is a renamed jigsaw piece"
+            );
+        }
+        assert_eq!(
+            saved_piece_id(&piece("minecraft:jigsaw")),
+            Some("minecraft:jigsaw")
+        );
+        // The monument, stronghold and jungle temple pieces are their own types: a
+        // pool piece's reader would not decode them.
+        for id in ["minecraft:OMB", "minecraft:SHCC", "minecraft:TeJP"] {
+            assert_eq!(saved_piece_id(&piece(id)), None, "{id} is not a pool piece");
+        }
+        // No id, or not a compound at all: nothing to read.
+        assert_eq!(
+            saved_piece_id(&crate::nbt::Tag::compound([(
+                "PosX",
+                crate::nbt::Tag::Int(16)
+            )])),
+            None
+        );
+        assert_eq!(saved_piece_id(&crate::nbt::Tag::Int(1)), None);
     }
 
     /// The start cache keeps the first starts built for a chunk, spreads a

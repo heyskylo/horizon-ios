@@ -146,6 +146,16 @@ fn frame(v: &Value) -> Frame {
     }
 }
 impl Tree {
+    /// `PlayerAdvancements.checkForAutomaticTriggers`: the advancements that
+    /// have no criteria at all, so nothing can ever grant them a criterion and
+    /// vanilla hands them over (and grants their rewards) as the player's
+    /// progress loads.
+    pub fn automatic(&self) -> Vec<usize> {
+        (0..self.list.len())
+            .filter(|&i| self.list[i].criteria.is_empty())
+            .collect()
+    }
+
     /// [`Tree::load`], shared while anyone holds it: a server's advancement
     /// packets (`ServerAdvancements`) and its game's criteria read the same
     /// files, and each kept its own copy (7 MB). A world whose data packs bring
@@ -2676,6 +2686,28 @@ mod tests {
         assert!(!p.done(&a));
         p.grant("minecraft:t", "b", "now");
         assert!(p.done(&a));
+    }
+    /// `AdvancementRequirements.test` answers false with no requirement groups, so an advancement
+    /// without criteria is never done by `isDone`; `PlayerAdvancements.checkForAutomaticTriggers`
+    /// still grants its rewards as progress loads, and `Tree::automatic` is the list it walks.
+    #[test]
+    fn an_advancement_without_criteria_is_not_done_but_granted_automatically() {
+        let empty = parse("minecraft:free", &serde_json::json!({"criteria": {}})).unwrap();
+        assert!(!Progress::default().done(&empty), "no groups: not done");
+        let waiting = parse(
+            "minecraft:waits",
+            &serde_json::json!({"criteria": {"a": {"trigger": "minecraft:tick"}}}),
+        )
+        .unwrap();
+        assert!(!Progress::default().done(&waiting));
+        let tree = tree_of(&[
+            (
+                "minecraft:waits",
+                serde_json::json!({"criteria": {"a": {"trigger": "minecraft:tick"}}}),
+            ),
+            ("minecraft:free", serde_json::json!({"criteria": {}})),
+        ]);
+        assert_eq!(tree.automatic(), vec![1]);
     }
     #[test]
     fn layout_spreads_children_like_tree_node_position() {
