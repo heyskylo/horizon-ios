@@ -1126,18 +1126,29 @@ impl Streaming {
     pub fn lod_source(&self) -> Arc<dyn LodSource> {
         self.saves.clone()
     }
-    /// Resource packs reloaded (`LevelRenderer.allChanged`): mesh with the new
+    /// Resource packs reloaded (`LevelExtractor.allChanged`): mesh with the new
     /// models and sprites, and rebuild every loaded section. Meshes in flight
     /// were made with the old resources; their results are dropped.
     pub fn reload_resources(&mut self, world: &mut World, context: Arc<WorkerContext>) {
         *self.shared.context.write().unwrap() = context;
+        self.reload_sections(world);
+    }
+    /// `LevelExtractor.allChanged`: discard mesh work made before the reload and
+    /// rebuild every loaded, lit section.
+    pub fn reload_sections(&mut self, world: &mut World) {
         self.meshing.clear();
         self.compile_started.clear();
+        Self::mark_loaded_sections_dirty(world, &self.lit);
+    }
+    /// The resident sections `LevelExtractor.allChanged` queues again. An
+    /// unlit column will queue itself when its light job completes.
+    fn mark_loaded_sections_dirty(world: &mut World, lit: &FxHashSet<(i32, i32)>) {
         for &(x, z) in world.chunks.keys() {
-            if self.lit.contains(&(x, z)) {
-                for sy in 0..world.layout().sections() as i32 {
-                    world.dirty_sections.insert((x, sy, z));
-                }
+            if !lit.contains(&(x, z)) {
+                continue;
+            }
+            for sy in 0..world.layout().sections() as i32 {
+                world.dirty_sections.insert((x, sy, z));
             }
         }
     }
@@ -4460,5 +4471,40 @@ mod cover_tests {
                 time(&ranges(Some(&cover))),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use super::*;
+
+    #[test]
+    fn reload_marks_every_section_of_loaded_lit_columns() {
+        let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);
+        world.chunks.insert((2, -3), Arc::new(Chunk::empty(2, -3)));
+        world.chunks.insert((4, 5), Arc::new(Chunk::empty(4, 5)));
+        let lit = FxHashSet::from_iter([(2, -3), (99, 99)]);
+
+        Streaming::mark_loaded_sections_dirty(&mut world, &lit);
+
+        let sections = world.layout().sections() as i32;
+        assert_eq!(world.dirty_sections.len(), sections as usize);
+        for sy in 0..sections {
+            assert!(world.dirty_sections.contains(&(2, sy, -3)));
+            assert!(!world.dirty_sections.contains(&(4, sy, 5)));
+        }
+    }
+
+    #[test]
+    fn reload_keeps_existing_work_and_ignores_unloaded_lit_columns() {
+        let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);
+        world.chunks.insert((4, 5), Arc::new(Chunk::empty(4, 5)));
+        world.dirty_sections.insert((4, 3, 5));
+        let lit = FxHashSet::from_iter([(99, 99)]);
+
+        Streaming::mark_loaded_sections_dirty(&mut world, &lit);
+
+        assert_eq!(world.dirty_sections.len(), 1);
+        assert!(world.dirty_sections.contains(&(4, 3, 5)));
     }
 }

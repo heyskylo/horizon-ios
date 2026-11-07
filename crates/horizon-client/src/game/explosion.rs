@@ -672,6 +672,11 @@ impl Game<'_> {
                         // its base is 0 for every mob type, so iron golems and
                         // ravagers are pushed.
                         hurt_mob(m, hurtable, cause, (amount, source));
+                        // Enderman.hurtServer teleports inside the hurt, before
+                        // the push (the mob order stays as it was).
+                        if let Err(e) = self.settle_hurt_teleports() {
+                            log::warn!("Horizon: explosion: enderman teleport: {e}");
+                        }
                     }
                     // `ItemEntity.hurtServer`: the damage comes off `Health`
                     // (5 to start) in f32 and the item is destroyed at zero, so

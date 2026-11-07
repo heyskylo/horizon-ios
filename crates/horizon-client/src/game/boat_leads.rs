@@ -507,6 +507,69 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn command_view_uses_live_and_pending_boat_leashes_not_raw_tags() {
+        use crate::game::{Audio, Options, Progress, Settings, commands::Target, load_resources};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        let (id, uuid, actual_holder, unknown) =
+            (1, [326, 1, 0, 1], [326, 2, 0, 1], [111, 222, 333, 444]);
+        game.boats
+            .push(Boat::new(id, "oak".into(), Vec3::new(6.5, 100.0, 4.5), 0.0));
+        game.persist.uuids.insert(id, uuid);
+        game.level.player_uuid = Some([326, 3, 0, 1]);
+        let read = |game: &mut Game<'_>| game.entity_nbt(Target::Boat(id)).unwrap();
+        assert!(!game.persist.raw.contains_key(&id));
+        assert_eq!(
+            read(&mut game).get("UUID"),
+            Some(&Tag::IntArray(uuid.to_vec()))
+        );
+        assert!(read(&mut game).get("leash").is_none());
+        game.boats[0].leash = Some(Holder::Player);
+        game.boats[0].leash_player = Some(actual_holder);
+        let expected = Tag::compound([("UUID", Tag::IntArray(actual_holder.to_vec()))]);
+        assert_eq!(read(&mut game).get("leash"), Some(&expected));
+        assert_eq!(read(&mut game).get("leash"), Some(&expected));
+        let delayed = Tag::compound([("UUID", Tag::IntArray(unknown.to_vec()))]);
+        game.persist
+            .raw
+            .insert(id, Tag::compound([("leash", delayed.clone())]));
+        assert_eq!(read(&mut game).get("leash"), Some(&expected));
+        game.boats[0].leash = None;
+        game.boats[0].leash_player = None;
+        game.boats[0].leash_pending = Some(Pending::Uuid(unknown));
+        assert_eq!(read(&mut game).get("leash"), Some(&delayed));
+        game.boats[0].leash_pending = None;
+        assert!(read(&mut game).get("leash").is_none());
+    }
+
+    #[test]
     fn a_boat_is_centred_half_its_height_up() {
         let b = Boat::new(1, "oak".into(), Vec3::new(1.0, 64.0, 2.0), 0.0);
         let c = center(&b);

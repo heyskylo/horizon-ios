@@ -1,0 +1,24 @@
+{
+  "hooks": [
+    {
+      "name": "entity_data_to",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_entity_data_to",
+      "neoforge": "none (NeoForge has no per-viewer entity data event; ProtocolLib's ENTITY_METADATA listener)",
+      "side": "server",
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "helpers": [
+    {
+      "name": "watch_entity_data",
+      "target": "horizon_client::game::native_packets::Game<'_>::native_watch_entity_data"
+    }
+  ],
+  "rust_summary": "the entity data one player is sent, changeable for that viewer alone (`native_entity_data_to`), once a mod switched it on (`native_watch_entity_data`).",
+  "doc_summary": "`native_entity_data_to(viewer, entity, values)` hears each `ClientboundSetEntityDataPacket` the server is about to send one player, its `(index, serializer, value)` entries changeable for that viewer alone (a glowing bit, a name only one player sees), just before `native_server_packet` hears the same packet. Nothing is decoded for it until a mod calls `native_watch_entity_data()`, and then only this packet. Bundles need \"hooks\": @API:entity_data_to@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_packets.rs"
+  ]
+}

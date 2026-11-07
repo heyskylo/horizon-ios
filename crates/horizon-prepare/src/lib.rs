@@ -44,6 +44,11 @@ pub type Progress<'a> = &'a dyn Fn(f32);
 /// The stages of `steps`, each opened by `Run::stage`: what the fraction counts.
 const STAGES: u32 = 18;
 
+/// The exporter bundle side, and the worker index that runs it (a Prism install has no server
+/// jar, so the client jar is the server side; the sides still compile and run separately).
+const SERVER_SIDE: usize = 0;
+const CLIENT_SIDE: usize = 1;
+
 /// The manifest's `schema`: the prepared files' layout, which the launcher compares.
 pub const SCHEMA: i64 = 7;
 
@@ -424,6 +429,8 @@ struct Run<'a> {
     server_classpath: String,
     /// The client jar and its libraries: the classpath of the client-side exporters.
     client_classpath: String,
+    /// No server jar was found: the client jar is the server side (Prism keeps none).
+    server_from_client: bool,
     /// The compiled exporter classes, or why they didn't compile: one attempt for all lanes.
     bundles: Mutex<Option<Result<PathBuf, String>>>,
     /// The exporter JVMs, which run at the same time: the server's, the client's, and on a
@@ -459,11 +466,6 @@ impl Run<'_> {
     /// Stops an exporter JVM once its lane needs it no more, to free its memory.
     fn close_worker(&self, worker: usize) {
         drop(self.workers[worker].lock().unwrap().take());
-    }
-
-    /// The worker of a classpath's side: 0 for the server's, 1 for the client's.
-    fn side(&self, classpath: &str) -> usize {
-        usize::from(classpath == self.client_classpath)
     }
 
     fn oracle(&self, name: &str) -> PathBuf {
@@ -503,6 +505,7 @@ impl Run<'_> {
     #[allow(clippy::too_many_arguments)]
     fn run(
         &self,
+        side: usize,
         worker: usize,
         heap: &str,
         classpath: &str,
@@ -511,10 +514,11 @@ impl Run<'_> {
         log: &fs::File,
         log_path: &Path,
     ) -> Result<(), String> {
-        let side = self.side(classpath);
-        let classes = self
-            .bundle()?
-            .join(if side == 1 { "client" } else { "server" });
+        let classes = self.bundle()?.join(if side == CLIENT_SIDE {
+            "client"
+        } else {
+            "server"
+        });
         if !matches!(
             main,
             "VanillaCommandParseOracle" | "VanillaCreativeTabsExporter"
@@ -545,6 +549,7 @@ impl Run<'_> {
     #[allow(clippy::too_many_arguments)]
     fn export(
         &self,
+        side: usize,
         what: &str,
         classpath: &str,
         classes: &Path,
@@ -553,14 +558,14 @@ impl Run<'_> {
         args: &[String],
         log: &Path,
     ) -> Result<(), String> {
-        let worker = self.side(classpath);
-        self.export_on(worker, what, classpath, classes, mains, heap, args, log)
+        self.export_on(side, side, what, classpath, classes, mains, heap, args, log)
     }
 
     /// `export`, on exporter JVM `worker`.
     #[allow(clippy::too_many_arguments)]
     fn export_on(
         &self,
+        side: usize,
         worker: usize,
         what: &str,
         classpath: &str,
@@ -578,7 +583,7 @@ impl Run<'_> {
         mkdir(classes)?;
         let file = self.log_file(log)?;
         for main in mains {
-            self.run(worker, heap, classpath, main, args, &file, log)
+            self.run(side, worker, heap, classpath, main, args, &file, log)
                 .map_err(fail)?;
         }
         (self.log)(&format!("Exported {what}{}", took(started)));
@@ -703,6 +708,7 @@ fn prepare_impl(
                 client: found.jars["client"].clone(),
                 server_classpath: classpath_join(&found.jars["server"], &found.libraries),
                 client_classpath: classpath_join(&found.jars["client"], &client_libraries),
+                server_from_client: found.server_from_client,
                 bundles: Mutex::new(None),
                 workers: [Mutex::new(None), Mutex::new(None), Mutex::new(None)],
                 previous,
@@ -843,9 +849,15 @@ fn steps(
             let main = oracles[0].strip_suffix(".java").unwrap();
             let mut args = vec![arg(&target)];
             args.extend_from_slice(extra);
+            let side = if jar == "client_sha256" {
+                CLIENT_SIDE
+            } else {
+                SERVER_SIDE
+            };
             run.export(
+                side,
                 what,
-                if jar == "client_sha256" {
+                if side == CLIENT_SIDE {
                     client_cp
                 } else {
                     server_cp
@@ -877,6 +889,7 @@ fn steps(
             && run.previous("facts_sha256") == Some(&run.file_hash("facts.json")?))
         {
             run.export(
+                SERVER_SIDE,
                 "block states",
                 server_cp,
                 &root.join("classes"),
@@ -897,6 +910,7 @@ fn steps(
             mkdir(&export)?;
             write_json(&export.join("tags.json"), tags)?;
             run.export(
+                SERVER_SIDE,
                 "movement and attributes",
                 server_cp,
                 &export.join("classes"),
@@ -936,6 +950,7 @@ fn steps(
                 write_json(&export.join(file), &resources)?;
             }
             run.export(
+                SERVER_SIDE,
                 "damage and health",
                 server_cp,
                 &export.join("classes"),
@@ -964,6 +979,7 @@ fn steps(
             let export = run.local.join("horizon-client-collision");
             mkdir(&export)?;
             run.export(
+                SERVER_SIDE,
                 "collision shapes",
                 server_cp,
                 &export.join("classes"),
@@ -985,6 +1001,7 @@ fn steps(
             mkdir(&export)?;
             write_json(&export.join("tags.json"), tags)?;
             run.export(
+                SERVER_SIDE,
                 "face visibility",
                 server_cp,
                 &export.join("classes"),
@@ -1061,6 +1078,7 @@ fn steps(
             && run.previous("model_states_sha256") == Some(&run.file_hash("model-states.json")?))
         {
             run.export(
+                CLIENT_SIDE,
                 "model bindings",
                 client_cp,
                 &root.join("client-classes"),
@@ -1108,6 +1126,7 @@ fn steps(
         {
             let export = run.local.join("command-registries");
             run.export(
+                SERVER_SIDE,
                 "command registries",
                 server_cp,
                 &export.join("classes"),
@@ -1135,19 +1154,29 @@ fn steps(
             mkdir(&datagen)?;
             let log_path = datagen.join("datagen.log");
             let log = run.log_file(&log_path)?;
+            // A server bundle names the data generator in its manifest; with the client jar as
+            // the server side (a Prism install has no server jar) the classpath names it instead.
+            let args = if run.server_from_client {
+                vec![
+                    "-cp".into(),
+                    run.server_classpath.clone(),
+                    "net.minecraft.data.Main".into(),
+                    "--reports".into(),
+                    "--output".into(),
+                    "out".into(),
+                ]
+            } else {
+                vec![
+                    "-DbundlerMainClass=net.minecraft.data.Main".into(),
+                    "-jar".into(),
+                    arg(&lock.directory.join("jars").join("server.jar")),
+                    "--reports".into(),
+                    "--output".into(),
+                    "out".into(),
+                ]
+            };
             run.jdk
-                .java(
-                    &[
-                        "-DbundlerMainClass=net.minecraft.data.Main".into(),
-                        "-jar".into(),
-                        arg(&lock.directory.join("jars").join("server.jar")),
-                        "--reports".into(),
-                        "--output".into(),
-                        "out".into(),
-                    ],
-                    Some(&datagen),
-                    &log,
-                )
+                .java(&args, Some(&datagen), &log)
                 .map_err(|e| format!("{e} in the data generator; see {}", log_path.display()))?;
             let reports = datagen.join("out").join("reports");
             install_datagen_reports(root, &reports)?;
@@ -1513,6 +1542,7 @@ fn worldgen_blocks(run: &Run, worker: usize) -> Result<(), String> {
     let stamp = structures.join("stamp.json");
     if !stamp_matches(&stamp, &inputs, std::slice::from_ref(&output)) {
         run.export_on(
+            SERVER_SIDE,
             worker,
             "structure blocks",
             &run.server_classpath,
@@ -1630,6 +1660,7 @@ fn worldgen_tables(run: &Run) -> Result<(), String> {
 /// whose blocks are checked for survival or support (trees, flowers, grass, kelp, ...).
 fn export_block_behavior(run: &Run, worker: usize, export: &Path) -> Result<(), String> {
     run.export_on(
+        SERVER_SIDE,
         worker,
         "block behavior",
         &run.server_classpath,

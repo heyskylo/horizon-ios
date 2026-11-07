@@ -66,6 +66,10 @@ fn recipes(dir: &Path, namespace: &str, out: &mut BTreeMap<String, Value>) {
     }
 }
 
+/// Horizon's optional recipe viewer transfer. An empty clientbound payload
+/// advertises support. Requests carry a menu id and resource location.
+pub const TRANSFER_CHANNEL: &str = "horizon:recipe_transfer";
+
 /// The recipes by id in vanilla's registration order (path, then namespace),
 /// the order `RecipeManager` numbers groups and lists the stonecutter's
 /// recipes in, and so the order the host's own tables keep.

@@ -46,31 +46,22 @@ impl Launcher {
     /// The theme Settings ask for, under the window's own light or dark: the player's look,
     /// under the launcher theme's sky if they picked one.
     pub(super) fn settings_theme(&self, window: &Window) -> Theme {
-        let theme = Theme::for_appearance(
-            self.settings.appearance,
-            self.settings.accent,
-            window.appearance(),
-        )
-        .with_glass(self.settings.glass_tint(), self.settings.glass_blur());
-        match themes::theme(self.settings.theme.as_deref()) {
-            Some(picked) => theme.with_sky(picked.sky),
-            None => theme,
-        }
+        crate::theme::from_settings(&self.settings, window.appearance())
     }
 
-    /// Settings' launcher theme: Horizon's own sky or First Light, free for everyone. Picking one
-    /// brings its accent too; the accent row can change it after.
+    /// Settings' launcher theme: Horizon's own sky, First Light or Nord, free for everyone.
+    /// Picking one brings its accent too; the accent row can change it after.
     pub(super) fn launcher_theme_row(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let current = themes::theme(self.settings.theme.as_deref()).map(|th| th.id);
         let mut options: Vec<(Option<&'static str>, &'static str)> = vec![(None, "Horizon")];
         options.extend(themes::THEMES.iter().map(|th| (Some(th.id), th.name)));
         let this = cx.entity().downgrade();
-        let picker = ui::segments("launcher-theme", &options, current, &t, move |id, _, cx| {
+        let picker = segments("launcher-theme", &options, current, &t, move |id, _, cx| {
             let _ = this.update(cx, |this, cx| {
                 this.settings.theme = id.map(str::to_owned);
                 this.settings.accent = match themes::theme(id) {
-                    Some(picked) => Accent::custom(picked.accent_hue),
+                    Some(picked) => picked.accent.accent(),
                     None => Accent::VIOLET,
                 };
                 this.save_settings();
@@ -78,7 +69,8 @@ impl Launcher {
                 cx.notify();
             });
         });
-        ui::setting_row(
+        index_row(
+            0,
             tr("Launcher theme"),
             Some(
                 div()
@@ -88,6 +80,7 @@ impl Launcher {
                     .into_any_element(),
             ),
             Some(picker.into_any_element()),
+            &t,
         )
     }
 
@@ -214,7 +207,7 @@ impl Launcher {
                     })),
             )
             .child(self.field(Field::AccentHex, "#6b4bff", 96., cx).ml(px(4.)));
-        let wide = self.window_width >= 1280.;
+        let wide = self.window_width >= crate::glass_home::WIDE;
         let control = div()
             .flex()
             .flex_col()
