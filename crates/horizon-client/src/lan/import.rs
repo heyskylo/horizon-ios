@@ -320,11 +320,10 @@ fn check_values(level: &Level) -> Result<(), String> {
     if !(0.0..=40.0).contains(&level.food_exhaustion) {
         return Err("the record's food exhaustion is past what a player can have".into());
     }
-    if level
-        .active_effects
-        .iter()
-        .any(|(_, _, amplifier, ..)| !(0..=255).contains(amplifier))
-    {
+    if level.active_effects.iter().any(|e| {
+        std::iter::successors(Some(e), |e| e.hidden.as_deref())
+            .any(|e| !(0..=255).contains(&e.amplifier))
+    }) {
         return Err("the record holds an effect no player can have".into());
     }
     Ok(())
