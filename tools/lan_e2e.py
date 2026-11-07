@@ -8641,6 +8641,9 @@ def check_sprint_hit_slowdown(host, guest, out):
     causeExtraKnockback: the horizontal speed times 0.6 and setSprinting(false). Ctrl is released
     before the hit (the sprint holds while W stays down), so only the hit can end it. Input and
     the click run in one control script so command latency cannot carry the guest past the host.
+    The guest builds its sprint speed with a run-up: an absolute /tp zeroes the speed, as
+    vanilla's does (TeleportCommand's relatives carry no DELTA), so a hit right after one
+    sees walking speed.
     """
     if dead(guest):
         guest.raw('respawn')
@@ -8660,18 +8663,20 @@ def check_sprint_hit_slowdown(host, guest, out):
     host('command', command=f'fill {x - 6} {y} {z - 2} {x + 14} {y + 3} {z + 2} minecraft:air')
     host('command', command=f'fill {x - 6} {y - 1} {z - 2} {x + 14} {y - 1} {z + 2} minecraft:stone')
     host('command', command=f'tp @s {x + 0.5} {y} {z + 0.5}')
-    guest('command', command=f'tp @s {x + 12.5} {y} {z + 0.5} 90 0')
+    guest('command', command=f'tp @s {x + 8.5} {y} {z + 0.5} 90 0')
     guest.wait(40)  # a full attack charge
     guest.raw('look-at', f'{x + 0.5}', f'{y + 1.6}', f'{z + 0.5}')
     try:
         replies = guest.script([
             'key w down',
             'key ctrl down',
-            'wait 1',
-            f'command tp @s {x + 3.5} {y} {z + 0.5} 90 0',
+            # 19 ticks from 8 blocks out end about 3 blocks from the host's centre, in reach.
+            *['wait 1'] * 19,
             'state',
             'key ctrl up',
             'mouse left click',
+            'state',
+            'wait 1',
             'state',
             'wait 1',
             'state',
@@ -8690,12 +8695,9 @@ def check_sprint_hit_slowdown(host, guest, out):
              if h.get('source') == 'minecraft:player_attack' and h.get('hurt')),
             None,
         )
-        before_index = next(
-            (i for i, p in enumerate(states) if p['sprinting'] and horizontal(p) > 0.1),
-            None,
-        )
-        before = states[before_index] if before_index is not None else None
-        after = states[before_index + 1 :] if before_index is not None else []
+        # The first sample is taken just before the click.
+        before = states[0] if states and states[0]['sprinting'] else None
+        after = states[1:]
     finally:
         guest.raw('key', 'ctrl', 'up')
         guest.raw('key', 'w', 'up')
@@ -8712,10 +8714,13 @@ def check_sprint_hit_slowdown(host, guest, out):
     ended = next((i for i, a in enumerate(seen['after']) if not a['sprinting']), None)
     assert ended is not None and not any(a['sprinting'] for a in seen['after'][ended:]), \
         f'the hit did not end the guest\'s sprint: {seen}'
-    # The first post-hit sample includes one local movement step after the 0.6 cut. Without the cut,
-    # it would remain at sprint speed until the server's later sprint flag update.
+    # The first post-hit sample includes one local movement step after the 0.6 cut (about 0.68 of
+    # the sprint speed), and the speed then climbs back towards walking. Without the cut the
+    # speed only eases down from sprinting once the server's sprint flag arrives (0.9, then 0.84).
     first = seen['after'][ended]
-    assert first['speed'] < 0.9 * seen['before']['speed'], f'the guest sprints on after the hit: {seen}'
+    assert first['speed'] < 0.75 * seen['before']['speed'], f'the guest sprints on after the hit: {seen}'
+    assert len(seen['after']) > ended + 1 and seen['after'][ended + 1]['speed'] > first['speed'], \
+        f'the guest\'s speed did not climb back after the cut: {seen}'
     return seen
 
 
