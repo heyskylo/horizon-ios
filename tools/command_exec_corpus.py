@@ -3246,6 +3246,7 @@ def block_predicate_nbt():
             (named, 'minecraft:chest{}'),
             (named, 'minecraft:chest{CustomName:"expected"}'),
             (named, 'minecraft:chest{CustomName:"different"}'),
+            (named, 'minecraft:chest{CustomName:"\\u0065xpected"}'),
             (named, 'minecraft:chest[type=single]{CustomName:"expected"}'),
             (named, 'minecraft:chest[type=left]{CustomName:"expected"}'),
             (named, 'minecraft:chest{id:"minecraft:chest",x:26,y:220,z:30}'),

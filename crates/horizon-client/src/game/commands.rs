@@ -2599,7 +2599,8 @@ impl Game<'_> {
             return false;
         }
         let Some(nbt) = &b.nbt else { return true };
-        let Ok((pattern, _)) = horizon_world::nbt::parse_snbt(nbt) else {
+        // (the argument's own grammar, `TagParser`, as the predicate was read)
+        let Ok(pattern) = horizon_client::command::snbt::parse_fully(nbt) else {
             return false;
         };
         horizon_client::nbt_path::compare_nbt(&pattern, self.block_entity_nbt(p).as_ref())
