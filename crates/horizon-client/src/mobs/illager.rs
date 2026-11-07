@@ -1065,7 +1065,7 @@ mod tests {
     /// `Vindicator.setCustomName` latches `isJohnny` the first time the name is
     /// `Johnny`, and nothing clears it: the Johnny goal keeps attacking every
     /// living entity after the mob is renamed, and `addAdditionalSaveData`
-    /// saves the flag so a reload keeps it. Horizon read the live name each
+    /// saves the flag (only when set) so a reload keeps it. Horizon read the live name each
     /// tick and saved no flag, so a renamed vindicator stopped, and a reloaded
     /// one that was named Johnny but is now Bob never started.
     #[test]
@@ -1120,10 +1120,12 @@ mod tests {
         ]);
         let loaded = crate::entity_nbt::mob_from_nbt(&silent, &types, 3, None).unwrap();
         assert_eq!(i8::from(loaded.extra.johnny), 0, "a save without the flag");
+        // `addAdditionalSaveData` writes nothing for a vindicator that is not
+        // Johnny, even over a compound that still carries `Johnny: 0b`.
         if let Tag::Compound(c) = &mut silent {
             c.insert("Johnny".into(), Tag::Byte(0));
         }
         let saved = crate::entity_nbt::mob_to_nbt(&loaded, [0; 4], Some(&silent), None, |_| None);
-        assert_eq!(saved.get("Johnny"), Some(&Tag::Byte(0)));
+        assert_eq!(saved.get("Johnny"), None);
     }
 }

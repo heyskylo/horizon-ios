@@ -1325,10 +1325,14 @@ pub fn mob_to_nbt(
     if matches!(m.species(), S::Evoker | S::Illusioner) {
         map.insert("SpellTicks".into(), Tag::Int(m.extra.counter));
     }
-    // Vindicator.addAdditionalSaveData: the Johnny flag, written even when it
-    // is false.
+    // Vindicator.addAdditionalSaveData: `Johnny` only while the flag is set
+    // (`if (this.isJohnny) output.putBoolean("Johnny", true)`).
     if m.species() == S::Vindicator {
-        map.insert("Johnny".into(), Tag::Byte(i8::from(m.extra.johnny)));
+        if m.extra.johnny {
+            map.insert("Johnny".into(), Tag::Byte(1));
+        } else {
+            map.remove(&"Johnny".into());
+        }
     }
     crate::mobs::raider::write_nbt(m, map);
     crate::mobs::riders::write_nbt(m, map);
