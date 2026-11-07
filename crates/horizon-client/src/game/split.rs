@@ -363,7 +363,7 @@ impl<'a> Split<'a> {
         old.release_surface();
         let api = self.host.settings.horizon.api;
         let batching = self.host.settings.horizon.translucent_batching;
-        let shader_pack = super::shader_packs::picked_pack_draws_flat(&self.host.settings);
+        let shader_pack = super::shader_packs::picked_pack_shape(&self.host.settings);
         let built = build_renderer(
             window.clone(),
             true,
@@ -399,8 +399,7 @@ impl<'a> Split<'a> {
             }
         };
         self.host.renderer = Some(renderer);
-        // The new atlas has no downloaded skins: queue them again, as after device loss.
-        self.host.skin_slots.forget();
+        self.host.forget_atlas_slots();
         self.host.split_window = !self.host.options.offscreen;
         self.host.options.offscreen = true;
         self.host.options.paced_by_split = true;
@@ -447,7 +446,7 @@ impl<'a> Split<'a> {
         old.take_back(main.compositor);
         let api = self.host.settings.horizon.api;
         let batching = self.host.settings.horizon.translucent_batching;
-        let shader_pack = super::shader_packs::picked_pack_draws_flat(&self.host.settings);
+        let shader_pack = super::shader_packs::picked_pack_shape(&self.host.settings);
         let built = build_renderer(
             window.clone(),
             false,
@@ -476,7 +475,7 @@ impl<'a> Split<'a> {
         };
         drop(old);
         self.host.renderer = Some(renderer);
-        self.host.skin_slots.forget();
+        self.host.forget_atlas_slots();
         self.host.options.offscreen = false;
         self.host.split_window = false;
         self.host.options.paced_by_split = false;
@@ -823,6 +822,11 @@ impl ApplicationHandler for Split<'_> {
                     self.move_with_bumpers(i + 1, false);
                 }
             }
+        }
+        self.pads
+            .play_rumbles(&mut self.host.pad, self.p1_pad.owner);
+        for g in &mut self.guests {
+            self.pads.play_rumbles(&mut g.game.pad, g.pad);
         }
         self.turn(0);
         let rendered = Instant::now();

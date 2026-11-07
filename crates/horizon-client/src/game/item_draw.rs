@@ -3,13 +3,14 @@
 //! dropped items (`ItemEntityRenderer`) and items posed in the world (hands,
 //! frames, armour stands). This binds the resolver's host services
 //! (`ItemEnv`) and the special renderers' registries to the game.
-use super::{Dim, Game};
+use super::{Dim, Game, entity_culling::EntityCullDecision};
 use horizon_assets::item_model::{
     Components, DisplayContext, GlobalPos, ItemEnv, LevelState, OwnerState, StackView,
 };
 use horizon_client::{
     block_entity_render::{diffuse_lights, vertex_light},
     cit::{Hand as CitHand, Kind as CitKind},
+    graphics::EntityCullingMode,
     hud::{HudBatch, Rect},
     item_render::{self, ItemRenderState, SpecialHost, WorldSink},
     items::ItemStack,
@@ -593,10 +594,12 @@ impl Game<'_> {
             // EntityRenderer.shouldRender: the item's 0.25 box, grown by 0.5,
             // in the view frustum. Checked before its model is resolved.
             if entity && let Some(view) = &self.view_frustum {
-                let feet = (glam::DVec3::new(q.x, q.y, q.z) - camera).as_vec3();
-                let half = glam::Vec3::new(0.125 + 0.5, 0.5, 0.125 + 0.5);
-                let lo = feet - half;
-                let hi = feet + glam::Vec3::new(half.x, 0.25 + 0.5, half.z);
+                let (lo, hi) = dropped_item_cull_box(
+                    glam::DVec3::new(item.previous.x, item.previous.y, item.previous.z),
+                    glam::DVec3::new(q.x, q.y, q.z),
+                    alpha,
+                    camera,
+                );
                 if !view.intersects(lo, hi) {
                     continue;
                 }
@@ -613,7 +616,7 @@ impl Game<'_> {
                 continue;
             }
             let age = item.age as f32 + partial;
-            let (lo, _) = state.bounding_box();
+            let (lo, hi) = state.bounding_box();
             let min_offset_y = -lo.y + 0.0625;
             let bob = (age / 10.0 + item.bob_offset).sin() * 0.1 + 0.1;
             let spin = item_render::item_spin(age, item.bob_offset);
@@ -640,16 +643,21 @@ impl Game<'_> {
             };
             let seed = i64::from(self.pack.item_renderer.item_id(&item.stack.item))
                 + i64::from(item.stack.damage);
-            let copies = item_render::cluster_poses(
-                &state,
+            let copies = item_render::cluster_poses_with_depth(
                 pose,
                 item_render::rendered_amount(item.stack.count),
                 seed,
+                hi.z - lo.z,
             );
             // Use the same animated, spun, clustered transforms as the draw.
             // ItemEntity's collision box is only 0.25 blocks and cannot prove
             // that this larger rendered model stays behind an occluder.
             let culling = entity.then(|| {
+                // The posed envelope walks every model point in every copy;
+                // with culling off the decision is `Bypass` whatever it holds.
+                if self.settings.horizon.entity_culling == EntityCullingMode::Off {
+                    return EntityCullDecision::Bypass;
+                }
                 state
                     .posed_bounds(&copies)
                     .map(|(lo, hi)| {
@@ -699,6 +707,25 @@ impl Game<'_> {
     }
 }
 
+/// `EntityRenderer.shouldRender`'s box for a dropped item, in camera space:
+/// `EntityRenderer.getBoundingBoxForCulling(entity, partialTick)` is
+/// `Entity.getInterpolatedBoundingBox(partialTick)` - the item's 0.25 box at
+/// the position the frame draws, `ItemEntity` overriding neither - grown by 0.5
+/// all round before the frustum test.
+fn dropped_item_cull_box(
+    previous: glam::DVec3,
+    position: glam::DVec3,
+    alpha: f64,
+    camera: glam::DVec3,
+) -> (glam::Vec3, glam::Vec3) {
+    let feet = (previous.lerp(position, alpha) - camera).as_vec3();
+    let half = glam::Vec3::new(0.125 + 0.5, 0.5, 0.125 + 0.5);
+    (
+        feet - half,
+        feet + glam::Vec3::new(half.x, 0.25 + 0.5, half.z),
+    )
+}
+
 /// The packed light of an item (sky low, block above it: `vertex_light`, entity.wgsl), its block
 /// light raised to what it glows with in HDR output.
 fn item_hdr_light(state: &ItemRenderState, light: u32) -> u32 {
@@ -710,6 +737,38 @@ fn item_hdr_light(state: &ItemRenderState, light: u32) -> u32 {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// `EntityRenderer.shouldRender` culls with `getBoundingBoxForCulling(entity,
+    /// partialTick)`, which is `Entity.getInterpolatedBoundingBox(partialTick)`:
+    /// an item's 0.25 box at the position the frame draws, grown by 0.5. The box
+    /// was built from the tick's own position, so an item crossing the frustum
+    /// edge mid-tick disappeared for the frames before it got there.
+    #[test]
+    fn a_dropped_item_is_culled_at_the_frame_s_position() {
+        let camera = glam::DVec3::ZERO;
+        let previous = glam::DVec3::new(0.0, 64.0, 0.0);
+        let position = glam::DVec3::new(1.0, 64.0, 0.0);
+        let bounds = |alpha: f64| {
+            let (lo, hi) = dropped_item_cull_box(previous, position, alpha, camera);
+            (lo.to_array(), hi.to_array())
+        };
+        // The frame's start: the box stands at the item's previous position.
+        assert_eq!(bounds(0.0), ([-0.625, 63.5, -0.625], [0.625, 64.75, 0.625]));
+        // Halfway through the tick the box has travelled half the block.
+        assert_eq!(bounds(0.5), ([-0.125, 63.5, -0.625], [1.125, 64.75, 0.625]));
+        // And at its end it is where the old code put it on every frame.
+        assert_eq!(bounds(1.0), ([0.375, 63.5, -0.625], [1.625, 64.75, 0.625]));
+        // A falling item moves in y the same way: halfway down a 66 -> 65 drop
+        // the box's floor is at 65.0, where the old code had the tick's 64.5.
+        let (lo, hi) = dropped_item_cull_box(
+            glam::DVec3::new(0.0, 66.0, 0.0),
+            glam::DVec3::new(0.0, 65.0, 0.0),
+            0.5,
+            camera,
+        );
+        assert!((lo.y - 65.0).abs() < 1e-6);
+        assert!((hi.y - 66.25).abs() < 1e-6);
+    }
 
     #[test]
     fn civil_dates_follow_the_gregorian_calendar() {

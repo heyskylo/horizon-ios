@@ -32,7 +32,7 @@ WorldOptionsScreen.DifficultyButtons.isDifficultyLocked	inline	crates/horizon-cl
 StatsScreen.onStatsUpdated	inline	crates/horizon-client/src/game/stats_screen.rs::Game::draw_stats	the lists are rebuilt from the stored values on every draw; the AwardStats arm in remote.rs only stores them
 StatsScreen.setTabActiveStateAndTooltip	port	crates/horizon-client/src/game/stats_screen.rs::stats_tab_active	the Items and Mobs tabs are selectable only with rows; hovering an empty tab draws its gui.stats.none_found tooltip (split at 170) in Game::draw_stats
 StatsScreen.repositionElements	skip:ui		layout only: tab bar placement and header height
-StatsScreen.keyPressed	missing		minor: no keyboard tab switching on the statistics screen; Escape still closes it
+StatsScreen.keyPressed	port	crates/horizon-client/src/game/stats_screen.rs::StatsUi::key	with Control held, Ctrl+Tab and Ctrl+Shift+Tab cycle the tabs (an empty Items or Mobs tab is skipped) and Ctrl+1..9 pick one, 0 being the tenth; without Control the key goes on, and Escape still closes the screen
 StatsScreen.extractRenderState	inline	crates/horizon-client/src/game/stats_screen.rs::Game::draw_stats	footer separator is drawn with the tab bar in draw_stats
 StatsScreen.extractMenuBackground	inline	crates/horizon-client/src/game/stats_screen.rs::Game::draw_stats	background drawn at the start of draw_stats
 StatsScreen.GeneralStatisticsList.Entry.getValueText	port	crates/horizon-client/src/game/stats_screen.rs::format	value text by the stat's format (time, distance, tenths, plain)
