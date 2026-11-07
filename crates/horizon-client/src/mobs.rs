@@ -1222,6 +1222,9 @@ pub struct Extra {
     /// Species scratch values (the wither's head targets and clocks).
     pub ints: [i32; 6],
     pub counter: i32,
+    /// Nautilus ATTACK_TARGET_COOLDOWN saved slot: None is absent,
+    /// Some(MAX) is permanent, otherwise the remaining lifetime. The value is `counter`.
+    pub nautilus_attack_cooldown_ttl: Option<i64>,
     pub counter2: i32,
     pub home: Option<[i32; 3]>,
     /// A copper golem's `openedChestPos`.
