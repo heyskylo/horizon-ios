@@ -7,7 +7,7 @@ use super::Game;
 use horizon_client::actions::Action;
 use horizon_client::{
     first_person::Hand,
-    mobs::{Mob, Species, armadillo, equine, llama, nautilus},
+    mobs::{Mob, Species, armadillo, equine, llama, nautilus, villager},
 };
 
 impl Game<'_> {
@@ -63,8 +63,11 @@ impl Game<'_> {
         }
         let sneaking = self.keys.held(Action::Sneak);
         match m.species() {
-            // Villager / WanderingTrader.mobInteract: trading, or a baby's head shake.
-            Species::Villager | Species::WanderingTrader => item != "minecraft:villager_spawn_egg",
+            // Villager.mobInteract: trading, or a baby's head shake. A sleeping
+            // villager falls back to super.mobInteract, which passes.
+            Species::Villager => item != "minecraft:villager_spawn_egg" && !villager::sleeping(m),
+            // WanderingTrader.mobInteract: trading.
+            Species::WanderingTrader => item != "minecraft:villager_spawn_egg",
             // AbstractHorse, Camel: ridden (or their inventory opened); a baby only eats.
             s if equine::is_equine(s)
                 || llama::is_llama(s)
