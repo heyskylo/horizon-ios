@@ -1628,6 +1628,37 @@ impl<R: RandomSource> Context<'_, R> {
                 stack.names.retain(|(k, _)| *k != id);
                 stack.names.push((id, f["name"].clone()));
             }
+            // SetBookCoverFunction: the written book's title, author and
+            // generation, kept over the component the stack already carries (an
+            // earlier function's) with its pages and resolved flag. The title is
+            // a `Filterable` (raw text, filtered when a server filtered it), so
+            // it is kept as it came; a non-book item takes the component too, as
+            // any component may sit on any stack.
+            "minecraft:set_book_cover" => {
+                let id = "minecraft:written_book_content";
+                let mut content = stack
+                    .components
+                    .iter()
+                    .find(|(k, _)| k == id)
+                    .map(|(_, v)| v.clone())
+                    .filter(Value::is_object)
+                    .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+                if let Value::Object(map) = &mut content {
+                    for field in ["title", "author"] {
+                        if let Some(value) = f.get(field) {
+                            map.insert(field.to_owned(), value.clone());
+                        }
+                    }
+                    // `WrittenBookContent`'s generation is 0 to 3; the codec
+                    // refuses the rest, so a table that asks for more is clamped
+                    // as the item's own parse does.
+                    if let Some(generation) = f["generation"].as_i64() {
+                        map.insert("generation".to_owned(), Value::from(generation.clamp(0, 3)));
+                    }
+                }
+                stack.components.retain(|(k, _)| k != id);
+                stack.components.push((id.to_owned(), content));
+            }
             // SetComponentsFunction: the patch's components, applied when the
             // stack becomes an item (trim on worn armour, see `mobs::finalize`).
             "minecraft:set_components" => {
