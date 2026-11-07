@@ -187,6 +187,7 @@
   "horizon.pages.shader_options": "Gölgelendirici Seçenekleri",
   "horizon.pages.split_profiles": "Kim oynuyor?",
   "horizon.pages.split_profiles.tooltip": "Kim oynuyor: bu oyun klasöründe tutulan bir profil.",
+  "horizon.plain.official": "Başlatıcı, modlar ve güncellemelerle resmi Horizon: playhorizon.dev",
   "horizon.shader_options.profile": "Profil",
   "Particle Culling": "Particle Culling",
   "Draws every particle.": "Draws every particle.",
