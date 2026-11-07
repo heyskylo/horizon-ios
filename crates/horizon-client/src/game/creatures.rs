@@ -2383,13 +2383,13 @@ impl Game<'_> {
                     self.post_game_event(event, at, ctx);
                 }
                 MobEvent::GameEvent {
-                    event: "minecraft:block_place",
+                    event: event @ ("minecraft:block_place" | "minecraft:block_destroy"),
                     at,
                     source,
                     state,
                 } => {
                     let ctx = self.who_context(Some(Who::Mob(source)), Some(state));
-                    self.post_game_event("minecraft:block_place", at, ctx);
+                    self.post_game_event(event, at, ctx);
                 }
                 // The sculk layer tracks steps and bee/bat flaps itself
                 // (`entity_motion_events`, `tick_mob_sculk_events`). Birds
