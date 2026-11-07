@@ -188,6 +188,8 @@ impl Default for Shadow {
 pub struct Config {
     pub buffers: [Buffer; BUFFERS],
     pub shadow: Shadow,
+    /// `noiseTextureResolution`: the side of the `noisetex` Horizon makes when the pack gives none.
+    pub noise_resolution: Option<u32>,
     /// Conflicting or unreadable settings, as `file:line: message`.
     pub notes: Vec<String>,
     /// Each setting read so far and its value, to report a later file changing it.
@@ -199,6 +201,7 @@ impl Default for Config {
         Self {
             buffers: std::array::from_fn(|_| Buffer::default()),
             shadow: Shadow::default(),
+            noise_resolution: None,
             notes: Vec::new(),
             seen: Vec::new(),
         }
@@ -291,6 +294,16 @@ impl Config {
         formats: bool,
         others: bool,
     ) {
+        // Like a colortex format, it counts from fragment shaders only, those of shadow programs
+        // with no shadow pass too: Iris 1.11.7 made `noisetex` 64 wide from a declaration in our
+        // probes' `composite.fsh`, `deferred.fsh`, `gbuffers_textured.fsh`, `final.fsh` or
+        // `shadow.fsh` (no pass), and kept 256 from one in `final.vsh`.
+        if name == "noiseTextureResolution" && ty == "int" {
+            if let Some(n) = number(value).filter(|n| *n >= 1.0 && formats) {
+                self.noise_resolution = Some(n as u32);
+            }
+            return;
+        }
         let format = ty == "int" && name.strip_suffix("Format").and_then(buffer_index).is_some();
         if !others && !format {
             return;
