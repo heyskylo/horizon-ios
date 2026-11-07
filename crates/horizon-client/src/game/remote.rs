@@ -11561,6 +11561,8 @@ mod tests {
             Audio, Game, Options, Progress, Settings, execution_role::ExecutionRole, load_resources,
         };
         use horizon_client::{motion::PlayerMotion, sprint::Keys};
+        use horizon_core::geometry::Vec3;
+        use horizon_protocol::packets::play::{self, Clientbound as C};
         let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
         let settings = Settings::default();
         let loaded = load_resources(
