@@ -573,8 +573,13 @@ impl Mob {
     pub fn height(&self) -> f32 {
         self.dims().1 as f32
     }
+    /// `AgeableMob.isBaby`: `canBeABaby() && getAge() < 0`. The age alone is
+    /// not enough — a frog, a parrot, a zombie nautilus, a camel husk, a slime,
+    /// a magma cube, a piglin brute, a tadpole, or anything that is not an
+    /// `AgeableMob` at all is an adult whatever `Age` says, so its box, voice,
+    /// breeding, growth, drops and goals stay an adult's.
     pub fn is_baby(&self) -> bool {
-        self.extra.age < 0
+        self.extra.age < 0 && super::species::can_be_a_baby(self.kind.species)
     }
     pub fn fluid_jump_threshold(&self) -> f64 {
         // Breeze.getFluidJumpThreshold: its eye height.
@@ -648,6 +653,40 @@ impl Mob {
     }
     /// Entity.move with block collisions and step-up; updates collision flags
     /// and fall distance (Entity.checkFallDamage).
+    /// `EntityGetter.getEntityCollisions(this, box.expandTowards(movement))`:
+    /// the boxes of the mobs whose `canBeCollidedWith(this)` holds (a living
+    /// shulker, a happy ghast held still), but not this mob's vehicle or a
+    /// fellow passenger (`Entity.canCollideWith`).
+    fn entity_collisions(&self, w: &MobWorld, movement: Vec3) -> Vec<Aabb> {
+        let area = self.bounds().expand_towards(movement);
+        if area.average_size() < 1.0e-7 {
+            return Vec::new();
+        }
+        let area = area.inflate(Vec3::new(1.0e-7, 1.0e-7, 1.0e-7));
+        let mover = self.species();
+        let blocks = |s: &&super::Seen| {
+            s.id != self.id
+                && s.blocks_mob(mover)
+                && s.bounds.intersects(area)
+                && !self.passenger_of_same_vehicle(s.id, s.vehicle)
+        };
+        match w.others_solid {
+            Some(slots) => slots
+                .iter()
+                .map(|&i| &w.others[i as usize])
+                .filter(blocks)
+                .map(|s| s.bounds)
+                .collect(),
+            None => w.others.iter().filter(blocks).map(|s| s.bounds).collect(),
+        }
+    }
+    /// `Entity.isPassengerOfSameVehicle` toward the entity `id` riding
+    /// `vehicle`: one rides the other, or both ride the same one.
+    fn passenger_of_same_vehicle(&self, id: u32, vehicle: Option<u32>) -> bool {
+        self.extra.mount == Some(id)
+            || vehicle == Some(self.id)
+            || (self.extra.mount.is_some() && vehicle == self.extra.mount)
+    }
     pub fn do_move(&mut self, w: &MobWorld, events: &mut Vec<MobEvent>) {
         let mut wanted = self.velocity;
         // Entity.move: a block the mob is stuck in (sweet berry bush) scales
@@ -667,10 +706,19 @@ impl Mob {
                 ..Default::default()
             }),
         };
-        // Entity.collide: the world border's walls stop the mob too.
+        // Entity.collide: the world border's walls stop the mob too, and so
+        // do the entities it may not pass through.
         let border = w.border.map(|b| (b, [self.position.x, self.position.z]));
+        let entities = self.entity_collisions(w, wanted);
         let moved = scene
-            .resolve_in_border(self.bounds(), wanted, step, self.on_ground, border)
+            .resolve_in_border_with(
+                self.bounds(),
+                wanted,
+                step,
+                self.on_ground,
+                border,
+                &entities,
+            )
             .unwrap_or(Vec3::ZERO);
         let length = moved.x * moved.x + moved.y * moved.y + moved.z * moved.z;
         let wanted_length = wanted.x * wanted.x + wanted.y * wanted.y + wanted.z * wanted.z;
@@ -1948,6 +1996,89 @@ impl RestitutionWorld for MobRestitution<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `AgeableMob.isBaby` is `canBeABaby() && getAge() < 0`, and `Age` alone
+    /// says nothing: the six ageable classes that override `canBeABaby` to
+    /// false — `Frog`, `Parrot`, `ZombieNautilus`, `CamelHusk`, `Slime` and
+    /// `MagmaCube` — stay adults, and so do the `PiglinBrute` (no `isBaby` of
+    /// its own), the `Creeper` (outside the ageable tree) and the `Tadpole`,
+    /// whose own age runs up from -24000 without it ever being a baby.
+    ///
+    /// Every one of them keeps its type's box, the plain 1.0 ± 0.2 voice and
+    /// `getAgeScale`'s 1.0, where a cow with the same age takes
+    /// `Cow.BABY_DIMENSIONS` (0.45 by 0.7, eyes at 0.69) and the 1.5 ± 0.2
+    /// that `LivingEntity.getVoicePitch` gives a baby.
+    #[test]
+    fn a_negative_age_is_a_baby_only_where_can_be_a_baby_allows_it() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("entity-types.json").exists() {
+            return;
+        }
+        let types = super::super::MobTypes::load(&root).unwrap();
+        // dims() narrows the type's box to f32 and widens it back.
+        let adult = |id: &str| {
+            let t = types.types.get(id).unwrap();
+            (
+                f64::from(t.width as f32),
+                f64::from(t.height as f32),
+                f64::from(t.eye_height as f32),
+            )
+        };
+        for id in [
+            "minecraft:parrot",
+            "minecraft:tadpole",
+            "minecraft:frog",
+            "minecraft:zombie_nautilus",
+            "minecraft:camel_husk",
+            "minecraft:slime",
+            "minecraft:magma_cube",
+            "minecraft:piglin_brute",
+            "minecraft:creeper",
+        ] {
+            let mut m = Mob::new(
+                1,
+                std::sync::Arc::new(types.types.get(id).unwrap().clone()),
+                Vec3::ZERO,
+                0.0,
+            );
+            m.extra.age = -24_000;
+            assert!(!m.is_baby(), "{id}");
+            assert_eq!(m.dims(), adult(id), "{id} keeps its type's box");
+            let pitches: Vec<f32> = (0..64).map(|_| m.voice_pitch()).collect();
+            assert!(
+                pitches.iter().all(|p| (0.8..=1.2).contains(p)),
+                "{id}: {pitches:?}"
+            );
+        }
+        // The control: a cow at the same age is a baby in vanilla's box and
+        // voice, and an adult again at age 0.
+        let mut cow = Mob::new(
+            1,
+            std::sync::Arc::new(types.types.get("minecraft:cow").unwrap().clone()),
+            Vec3::ZERO,
+            0.0,
+        );
+        cow.extra.age = -24_000;
+        assert!(cow.is_baby());
+        assert_eq!(
+            cow.dims(),
+            (f64::from(0.45_f32), f64::from(0.7_f32), f64::from(0.69_f32))
+        );
+        let pitches: Vec<f32> = (0..64).map(|_| cow.voice_pitch()).collect();
+        assert!(
+            pitches.iter().all(|p| (1.3..=1.7).contains(p)),
+            "{pitches:?}"
+        );
+        cow.extra.age = 0;
+        assert!(!cow.is_baby());
+        assert_eq!(cow.dims(), adult("minecraft:cow"));
+        let pitches: Vec<f32> = (0..64).map(|_| cow.voice_pitch()).collect();
+        assert!(
+            pitches.iter().all(|p| (0.8..=1.2).contains(p)),
+            "{pitches:?}"
+        );
+    }
 
     /// `Entity.getLightProbePosition(partialTick)` for a living entity is
     /// `getEyePosition`: `getEyeHeight()` over `Mth.lerp(partialTick, xo, x)`.
@@ -2044,6 +2175,7 @@ mod tests {
                 others_grid: None,
                 others_index: None,
                 others_villagers: None,
+                others_solid: None,
                 daylight: true,
                 monsters_burn: false,
                 game_time: 1000,
@@ -2161,6 +2293,7 @@ mod tests {
             others_grid: None,
             others_index: None,
             others_villagers: None,
+            others_solid: None,
             daylight: true,
             monsters_burn: false,
             game_time: 1000,
@@ -2217,6 +2350,123 @@ mod tests {
             (lift - f64::from(0.04_f32)).abs() < 1.0e-9,
             "a ridden horse gains 0.04 a tick, got {lift}"
         );
+    }
+
+    /// `Entity.collide` takes `getEntityCollisions` too: a zombie dropping
+    /// onto a living shulker or a happy ghast held still (a player on its
+    /// back) lands on it; a dead shulker, a happy ghast that is not held, or
+    /// a ghastling lets it through (`canBeCollidedWith`).
+    #[test]
+    fn a_falling_mob_lands_on_a_shulker_or_a_held_happy_ghast() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("entity-types.json").exists()
+            || !root.join("movement-properties.nbt").exists()
+        {
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let registry = assets.registry;
+        let facts = crate::blocks::BlockFacts::load(&root, registry).unwrap();
+        let motion = crate::motion::MotionResources::load(&root, &assets).unwrap();
+        let data = super::super::MobData::load(&root, &facts);
+        let types = super::super::MobTypes::load(&root).unwrap();
+        let biomes = crate::biome::Biomes::load(&root).unwrap();
+        let items = crate::items::Items::load(
+            &root,
+            registry,
+            &facts,
+            &horizon_world::loot::PackOverlay::NONE,
+        )
+        .unwrap();
+        let collision = std::sync::Arc::new(crate::collisions::load(&root, registry).unwrap());
+        let suffocation =
+            crate::mobs::suffocation::bind(collision.clone(), &motion.causes_suffocation).unwrap();
+        let lid_openers = std::collections::HashMap::new();
+        let air = registry.default_state("minecraft:air").unwrap();
+        let mut world = crate::world::World::new(air, 0);
+        world.chunks.insert(
+            (0, 0),
+            std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+        );
+        let mob = |id: u32, kind: &str, at: Vec3| {
+            Mob::new(id, std::sync::Arc::new(types.types[kind].clone()), at, 0.0)
+        };
+        // Where a zombie starting 3 blocks above `below`'s top ends after 20
+        // falling moves, with `below` in the mobs it sees.
+        let landing = |below: &Mob| -> f64 {
+            let others = [below.seen(None)];
+            let w = MobWorld {
+                teams: Default::default(),
+                world: &world,
+                registry,
+                facts: &facts,
+                fluid_tables: &motion.fluids,
+                movement: &motion.blocks,
+                collision: &collision,
+                suffocation: &suffocation,
+                data: &data,
+                player: None,
+                controlling_player_movement: None,
+                nearest_player: None,
+                others: &others,
+                dragon: None,
+                leash_boats: &[],
+                others_grid: None,
+                others_index: None,
+                others_villagers: None,
+                others_solid: None,
+                daylight: true,
+                monsters_burn: false,
+                game_time: 1000,
+                day_time: 6000,
+                raining: false,
+                thundering: false,
+                nether: false,
+                block_tags: &items.block_tags,
+                landing: &motion.landing,
+                biomes: &biomes,
+                universal_anger: false,
+                mob_griefing: true,
+                mob_drops: true,
+                max_entity_cramming: 24,
+                difficulty: super::super::spawning::LocalDifficulty::new(2, 6000, 0, 0.0),
+                end: false,
+                world_seed: 0,
+                sea_level: 63,
+                items: Some(&items),
+                lid_openers: &lid_openers,
+                mod_effects: None,
+                border: None,
+            };
+            let top = below.bounds().max_position().y;
+            let mut zombie = mob(1, "minecraft:zombie", Vec3::new(8.5, top + 3.0, 8.5));
+            for _ in 0..20 {
+                zombie.velocity = Vec3::new(0.0, -0.5, 0.0);
+                zombie.do_move(&w, &mut Vec::new());
+            }
+            zombie.position.y - top
+        };
+        let mut shulker = mob(2, "minecraft:shulker", Vec3::new(8.5, 64.0, 8.5));
+        assert_eq!(landing(&shulker), 0.0, "a living shulker holds it up");
+        shulker.health = 0.0;
+        assert!(landing(&shulker) < -5.0, "a dead shulker does not");
+        let mut ghast = mob(3, "minecraft:happy_ghast", Vec3::new(8.5, 64.0, 8.5));
+        assert!(
+            landing(&ghast) < -5.0,
+            "a happy ghast left alone is not solid"
+        );
+        ghast.extra.counter = 10;
+        assert_eq!(
+            landing(&ghast),
+            0.0,
+            "held still, its back holds the zombie"
+        );
+        let mut ghastling = mob(4, "minecraft:happy_ghast", Vec3::new(8.5, 64.0, 8.5));
+        super::super::finalize::set_baby(&mut ghastling, true);
+        ghastling.extra.counter = 10;
+        assert!(landing(&ghastling) < -5.0, "a ghastling never is");
     }
 
     /// `LivingEntity.aiStep` calls `travel` and only then

@@ -119,6 +119,8 @@ impl Game<'_> {
     /// What the mods sent this tick leaves; the tick's allowances start over.
     pub(super) fn flush_native_net(&mut self, host: &mut LanHost) {
         self.flush_native_profiles(host);
+        // The mods' kicks (native_packets.rs) leave with their messages.
+        self.flush_native_kicks(host);
         for (player, data) in std::mem::take(&mut self.native_net.to_players) {
             if let Some(g) = host
                 .hub
@@ -164,7 +166,6 @@ impl Game<'_> {
 }
 
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// Sends `data` on `channel` (`mod_id:name`, at most 30 000 bytes, at
     /// most 32 a player a tick) to `player`'s client, at the tick's end, from
@@ -293,7 +294,7 @@ impl Game<'_> {
         if self.screen != super::Screen::Playing {
             return Err("another screen is open".into());
         }
-        self.open_chat(text);
+        self.open_chat(text, false);
         Ok(())
     }
 

@@ -10,7 +10,10 @@ use horizon_client::{
     furnace::FurnaceCooking,
     items::ItemStack,
     lan::{guest::Guest, menu::Slots},
-    menu::{Env, Input, Kind, Menu},
+    menu::{
+        Env, Input, Kind, Menu,
+        place::{PostPlace, TransferError},
+    },
 };
 use horizon_protocol::packets::play::{self, Clientbound as C};
 
@@ -125,16 +128,27 @@ impl Game<'_> {
         menu: &mut Menu,
         op: impl FnOnce(&mut Menu, &Env) -> R,
     ) -> R {
-        // The cartography table reads and makes the host level's maps.
-        let maps = (menu.kind() == Kind::Cartography).then(|| {
+        // Crafting and cartography read and derive this level's saved maps.
+        let maps = matches!(
+            menu.kind(),
+            Kind::Cartography | Kind::Crafting | Kind::Inventory
+        )
+        .then(|| {
             let g = &host.hub.guests[gi];
-            let held: Vec<ItemStack> = (0..menu.slot_count())
+            (0..menu.slot_count())
                 .filter_map(|s| menu.slot(s).cloned())
                 .chain(g.inventory.iter().flatten().cloned())
                 .chain(g.carried.clone())
-                .collect();
-            self.level_maps(&held)
-        });
+                .collect::<Vec<_>>()
+        })
+        .filter(|held| {
+            menu.kind() == Kind::Cartography
+                || held
+                    .iter()
+                    .filter_map(super::maps::map_id)
+                    .any(|id| self.map(id).is_some())
+        })
+        .map(|held| self.level_maps(&held));
         let env = Env {
             maps: maps.as_ref().map(|m| m as &dyn horizon_client::menu::Maps),
             limited_crafting: host.hub.limited_crafting,
@@ -441,7 +455,6 @@ impl Game<'_> {
         conn: u32,
         p: &horizon_protocol::packets::recipes::PlaceRecipe,
     ) {
-        use horizon_client::menu::place::PostPlace;
         let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
             return;
         };
@@ -470,7 +483,63 @@ impl Game<'_> {
         let (player, name) = (g.uuid, g.name.clone());
         self.native_player_recipe_book_click(player, &name, &id, p.use_max);
         let creative = g.creative();
-        let placed = if p.container == 0 {
+        let placed = self.lan_apply_recipe(host, gi, p.container, |menu, env| {
+            menu.place_recipe(env, &id, p.use_max, creative, None)
+        });
+        if placed == Some(PostPlace::Ghost) {
+            host.hub.send_ghost_recipe(conn, p.container, &id);
+        }
+    }
+
+    pub(super) fn guest_recipe_transfer(&mut self, host: &mut LanHost, conn: u32, data: &[u8]) {
+        use horizon_protocol::buf::{Reader, Writer};
+        let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
+            return;
+        };
+        let g = &host.hub.guests[gi];
+        if g.brand != "horizon" || g.spectator() {
+            return;
+        }
+        let mut reader = Reader::new(data);
+        let (Ok(container), Ok(id)) = (reader.varint(), reader.string(512)) else {
+            return;
+        };
+        if reader.remaining() != 0 {
+            return;
+        }
+        let result = if container == 0 && (g.menu.is_some() || g.creative()) {
+            Err(TransferError::Unavailable)
+        } else {
+            self.lan_apply_recipe(host, gi, container, |menu, env| {
+                menu.transfer_recipe(env, &id)
+            })
+            .unwrap_or(Err(TransferError::Unavailable))
+        };
+        let mut reply = Writer::new();
+        reply.varint(container);
+        reply.u8(match result {
+            Ok(()) => 0,
+            Err(TransferError::Missing) => 1,
+            Err(TransferError::NoRoom) => 2,
+            Err(TransferError::Unavailable) => 3,
+        });
+        host.hub.guests[gi].send(&C::CustomPayload(
+            horizon_protocol::packets::configuration::CustomPayload {
+                channel: horizon_client::lan::recipes::TRANSFER_CHANNEL.into(),
+                data: reply.data,
+            },
+        ));
+    }
+
+    fn lan_apply_recipe<R>(
+        &mut self,
+        host: &mut LanHost,
+        gi: usize,
+        container: i32,
+        apply: impl FnOnce(&mut Menu, &Env) -> R,
+    ) -> Option<R> {
+        let conn = host.hub.guests[gi].conn;
+        let placed = if container == 0 {
             let crafting = host.play.entry(conn).or_default();
             let mut menu = crafting
                 .crafting
@@ -482,7 +551,7 @@ impl Game<'_> {
                 for (k, s) in grid.into_iter().enumerate() {
                     menu.set_slot(env, 1 + k, s);
                 }
-                menu.place_recipe(env, &id, p.use_max, creative, None)
+                apply(menu, env)
             });
             let g = &mut host.hub.guests[gi];
             for k in 0..4 {
@@ -493,23 +562,16 @@ impl Game<'_> {
             host.hub.send_inventory(gi);
             placed
         } else {
-            let Some((window, state, mut menu, pos)) = host
+            let (window, state, mut menu, pos) = host
                 .play
                 .get_mut(&conn)
-                .and_then(|play| play.crafting.table.take_if(|(w, ..)| *w == p.container))
-            else {
-                return;
-            };
-            let placed = self.guest_menu_op(host, gi, &mut menu, |menu, env| {
-                menu.place_recipe(env, &id, p.use_max, creative, None)
-            });
+                .and_then(|play| play.crafting.table.take_if(|(w, ..)| *w == container))?;
+            let placed = self.guest_menu_op(host, gi, &mut menu, apply);
             host.play.entry(conn).or_default().crafting.table = Some((window, state, menu, pos));
             self.lan_send_table_content(host, conn);
             placed
         };
-        if placed == PostPlace::Ghost {
-            host.hub.send_ghost_recipe(conn, p.container, &id);
-        }
+        Some(placed)
     }
 
     /// The guest opened a crafting table (`CraftingTableBlock.getMenuProvider`).

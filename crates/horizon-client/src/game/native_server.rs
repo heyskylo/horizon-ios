@@ -24,7 +24,6 @@ use std::{collections::HashMap, path::PathBuf};
 /// A sidebar a server mod shows one player (`native_sidebar`): its title and
 /// up to 15 lines, top first, each a text on the left and, where the score's
 /// number would be, an optional text on the right. API 49.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct NativeSidebar {
     pub(crate) title: Text,
@@ -307,7 +306,7 @@ fn server_player(host: &LanHost, g: &horizon_client::lan::guest::Guest) -> Nativ
 
 /// Helpers for server mods, kept as stable as the hook points.
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "native mod API (docs/native-mods.md)")]
 impl Game<'_> {
     /// The players on this server, in the order they joined. Empty on a
     /// client and in a world nobody else can join.
@@ -480,6 +479,123 @@ impl Game<'_> {
             return false;
         }
         host.hub.set_nickname(uuid, nickname.map(str::to_owned));
+        true
+    }
+    /// Hides the entity `entity` (its network id: a mob's, a display's, a
+    /// player's `NativeServerPlayer.entity_id`) from the player `viewer`
+    /// alone, or shows it again (`hidden` false), as Bukkit's
+    /// `Player.hideEntity` and `showEntity` (`hidePlayer` for a player): from
+    /// the next tick their client stops tracking it, so it disappears there,
+    /// and is paired again, as it is then, once shown. A player hidden so
+    /// also leaves that viewer's Tab list, and the viewer doesn't read them
+    /// leave. Everyone else still sees it (`native_hide_player` hides a
+    /// player from permission levels). Kept while `viewer` is on, for that
+    /// id: forgotten when they leave, and a player who rejoins comes with
+    /// another id (hide them again from `native_player_logged_in`). Only
+    /// where no player's state is swapped in, as `native_run_command`; false
+    /// there, when `viewer` isn't on and for their own entity. API
+    /// @API:hide_entity_from@.
+    pub(super) fn native_hide_entity_from(
+        &mut self,
+        viewer: u128,
+        entity: u32,
+        hidden: bool,
+    ) -> bool {
+        let Some(host) = &mut self.lan else {
+            return false;
+        };
+        let Some(g) = host
+            .hub
+            .guests
+            .iter_mut()
+            .find(|g| g.placed && g.uuid == viewer)
+        else {
+            return false;
+        };
+        let id = entity as i32;
+        if g.entity_id == id {
+            return false;
+        }
+        let changed = if hidden {
+            g.tracker.hidden.insert(id)
+        } else {
+            g.tracker.hidden.remove(&id)
+        };
+        // Its pairs are checked again on the next tick.
+        g.moved |= changed;
+        true
+    }
+    /// Shows `name` (styled text: colours, a rank prefix) for that player in
+    /// everyone's Tab list in place of their nickname or name, as Bukkit's
+    /// `Player.setPlayerListName`; None shows their nickname or name again.
+    /// Only the Tab list: chat keeps `native_set_display_name`'s or the
+    /// nickname. Sent at once, and with every entry the lists get of them
+    /// later (they join, a vanish ends), so it is kept until a mod sets it
+    /// again or the server stops, also if they leave and come back. Only
+    /// where no player's state is swapped in, as `native_run_command`; false
+    /// there and when they aren't on. API @API:set_list_name@.
+    pub(super) fn native_set_list_name(&mut self, uuid: u128, name: Option<&Text>) -> bool {
+        let Some(host) = &mut self.lan else {
+            return false;
+        };
+        if !host.hub.guests.iter().any(|g| g.placed && g.uuid == uuid) {
+            return false;
+        }
+        host.hub
+            .set_list_name(uuid, name.map(|t| component_nbt(&t.component())));
+        true
+    }
+    /// Shows `name` (styled text) for that player in chat in place of their
+    /// nickname or name, as Bukkit's `Player.setDisplayName`: their chat
+    /// messages, `/me`, `/msg` both ways, and the lines that they joined or
+    /// left; None shows their nickname or name again. Their team's prefix,
+    /// suffix and colour still go around it, and hovering it gives the real
+    /// name, which `/tell` is suggested with and which stays in the log,
+    /// commands and selectors. The Tab list keeps `native_set_list_name`'s
+    /// or the nickname. Kept until a mod sets it again or the server stops,
+    /// also if they leave and come back. Only where no player's state is
+    /// swapped in, as `native_run_command`; false there and when they aren't
+    /// on. API @API:set_display_name@.
+    pub(super) fn native_set_display_name(&mut self, uuid: u128, name: Option<&Text>) -> bool {
+        let Some(host) = &mut self.lan else {
+            return false;
+        };
+        if !host.hub.guests.iter().any(|g| g.placed && g.uuid == uuid) {
+            return false;
+        }
+        match name {
+            Some(t) => host.hub.display_names.insert(uuid, t.component()),
+            None => host.hub.display_names.remove(&uuid),
+        };
+        true
+    }
+    /// Shows `tag` over that player's head for everyone else in place of
+    /// their name (a nickname over the head); None shows their name again.
+    /// A client puts a player's profile name there, so this is the profile
+    /// name their player list entries carry: plain, 1 to 16 ASCII letters,
+    /// digits or symbols, no spaces (no colours: a team's still apply only
+    /// while the team lists the shown name). The others' clients get their
+    /// entry and entity again at once (a blink), and their Tab list shows
+    /// the tag unless a list name or nickname covers it; their own client
+    /// reads it from their next join. Everything else keeps the real name:
+    /// chat, commands, selectors, the log, the server's events. Kept until a
+    /// mod sets it again or the server stops, also if they leave and come
+    /// back. Only where no player's state is swapped in, as
+    /// `native_run_command`; false there, when they aren't on and for a tag
+    /// that isn't one. API @API:set_name_tag@.
+    pub(super) fn native_set_name_tag(&mut self, uuid: u128, tag: Option<&str>) -> bool {
+        if tag.is_some_and(|t| {
+            t.is_empty() || t.len() > 16 || !t.bytes().all(|b| b.is_ascii_graphic())
+        }) {
+            return false;
+        }
+        let Some(host) = &mut self.lan else {
+            return false;
+        };
+        if !host.hub.guests.iter().any(|g| g.placed && g.uuid == uuid) {
+            return false;
+        }
+        host.hub.set_name_tag(uuid, tag.map(str::to_owned));
         true
     }
     /// Whether the server's chat filter (`server.toml` `[chat_filter]`)
@@ -913,7 +1029,6 @@ fn add_to(
 /// state is swapped in. Only plain stacks count; the inventory's 36 slots
 /// and the off hand, never the armour. Each change reaches the player's
 /// screen as any change to their inventory does.
-#[allow(dead_code)]
 impl Game<'_> {
     /// The main hand's stack: its item, count, and whether it is plain. On a
     /// client, the player's own.
@@ -1073,7 +1188,6 @@ fn orb_meets(position: [f64; 3], min: [f64; 3], max: [f64; 3]) -> bool {
 }
 
 /// Experience for server mods. API 101.
-#[allow(dead_code)]
 impl Game<'_> {
     /// The experience orbs of the server level `dimension` whose box meets
     /// the box `min`..`max`, in the level's order: what a mod reads before it

@@ -19,12 +19,7 @@ impl Game<'_> {
     /// Whether the stack has `DataComponents.DEATH_PROTECTION`, whatever
     /// item it is: the totem of undying is only one item that carries it.
     fn has_death_protection(&self, s: &ItemStack) -> bool {
-        self.pack
-            .item_renderer
-            .models
-            .components(&horizon_client::item_render::stack_view(s))
-            .get("minecraft:death_protection")
-            .is_some()
+        death_protection_of(&self.pack.item_renderer.models, &s.item, Some(s)).is_some()
     }
     /// The `death_effects` of the stack's `minecraft:death_protection`.
     fn death_effects(&self, s: &ItemStack) -> Vec<horizon_client::items::ConsumeEffect> {
@@ -36,15 +31,9 @@ impl Game<'_> {
     pub(super) fn sync_mob_death_protection(&mut self) {
         let models = &self.pack.item_renderer.models;
         let of = |id: Option<&std::sync::Arc<str>>, stack: Option<&ItemStack>| {
-            let stack = match (stack, id) {
-                (Some(s), _) => s.clone(),
-                (None, Some(id)) => ItemStack::new(id, 1),
-                (None, None) => return None,
-            };
-            models
-                .components(&horizon_client::item_render::stack_view(&stack))
-                .get("minecraft:death_protection")
-                .map(horizon_client::items::death_effects)
+            let item = stack.map(|s| &*s.item).or(id.map(|id| &**id))?;
+            death_protection_of(models, item, stack)
+                .map(|component| horizon_client::items::death_effects(&component))
         };
         for m in self.mobs.iter_mut().filter(|m| !m.removed) {
             if m.extra.main_hand.is_none() && m.extra.off_hand.is_none() {
@@ -241,11 +230,92 @@ fn death_effects_of(
     models: &horizon_assets::item_model::ItemModels,
     s: &ItemStack,
 ) -> Vec<horizon_client::items::ConsumeEffect> {
-    models
-        .components(&horizon_client::item_render::stack_view(s))
-        .get("minecraft:death_protection")
-        .map(horizon_client::items::death_effects)
+    death_protection_of(models, &s.item, Some(s))
+        .map(|component| horizon_client::items::death_effects(&component))
         .unwrap_or_default()
+}
+
+/// The `minecraft:death_protection` component of `item` (of `stack`, when
+/// there is one): the stack's own patch when it sets or removes it, else the
+/// item's default. It runs for both of the player's hands and for every
+/// armed mob each tick, so the usual stack, which leaves the component alone,
+/// costs one map lookup instead of a component map built from its patch.
+fn death_protection_of<'m>(
+    models: &'m horizon_assets::item_model::ItemModels,
+    item: &str,
+    stack: Option<&ItemStack>,
+) -> Option<std::borrow::Cow<'m, serde_json::Value>> {
+    const KEY: &str = "minecraft:death_protection";
+    if let Some(s) = stack
+        && let Some(data) = s.data()
+        && (data.other(KEY).is_some() || data.other("!minecraft:death_protection").is_some())
+    {
+        return models
+            .components(&horizon_client::item_render::stack_view(s))
+            .get(KEY)
+            .cloned()
+            .map(std::borrow::Cow::Owned);
+    }
+    models
+        .prototypes
+        .get(item)?
+        .get(KEY)
+        .map(std::borrow::Cow::Borrowed)
+}
+
+#[cfg(test)]
+mod death_protection_tests {
+    use super::death_protection_of;
+    use horizon_assets::item_model::ItemModels;
+    use horizon_client::items::ItemStack;
+    use horizon_world::nbt::Tag;
+    use serde_json::json;
+
+    /// The lookup gives what the stack's whole component map gives, for
+    /// stacks that keep, set or remove the component.
+    #[test]
+    fn hand_lookup_matches_the_component_map() {
+        let totem = json!({"death_effects": [{"type": "minecraft:clear_all_effects"}]});
+        let mut models = ItemModels::default();
+        models.prototypes.insert(
+            "minecraft:totem_of_undying".into(),
+            [("minecraft:death_protection".to_owned(), totem.clone())].into(),
+        );
+        models
+            .prototypes
+            .insert("minecraft:diamond_sword".into(), Default::default());
+        let mut patched_sword = ItemStack::new("minecraft:diamond_sword", 1);
+        patched_sword.data_mut().set_other(
+            "minecraft:death_protection",
+            Some(Tag::Compound(Default::default())),
+        );
+        let mut stripped_totem = ItemStack::new("minecraft:totem_of_undying", 1);
+        stripped_totem.data_mut().set_other(
+            "!minecraft:death_protection",
+            Some(Tag::Compound(Default::default())),
+        );
+        for (stack, expected) in [
+            (ItemStack::new("minecraft:totem_of_undying", 1), Some(totem)),
+            (ItemStack::new("minecraft:diamond_sword", 1), None),
+            (patched_sword, Some(json!({}))),
+            (stripped_totem, None),
+            (ItemStack::new("minecraft:unknown_item", 1), None),
+        ] {
+            let full = models
+                .components(&horizon_client::item_render::stack_view(&stack))
+                .get("minecraft:death_protection")
+                .cloned();
+            let fast =
+                death_protection_of(&models, &stack.item, Some(&stack)).map(|v| v.into_owned());
+            assert_eq!(fast, expected, "{}", stack.item);
+            assert_eq!(full, expected, "{}", stack.item);
+            // A mob's off hand is an item id alone.
+            if stack.data().is_none() {
+                let by_id = death_protection_of(&models, &stack.item, None).map(|v| v.into_owned());
+                assert_eq!(by_id, expected, "{}", stack.item);
+            }
+        }
+    }
 }
 
 /// Where an entity event's entity stands and its size, and, for the event

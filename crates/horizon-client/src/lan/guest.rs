@@ -113,6 +113,12 @@ pub struct Guest {
     pub latency: Arc<AtomicI32>,
     pub info: ClientInformation,
     pub brand: String,
+    /// The plugin channels the client registered (`minecraft:register`), in configuration and
+    /// in play, in order (`super::apply_channels`).
+    pub channels: Vec<String>,
+    /// The client's answers to the server's resource pack during its configuration, not yet
+    /// told to the mods: pack id and action (`super::Configured`).
+    pub configuration_pack_answers: Vec<(u128, i32)>,
     /// The chunk radius this client is sent.
     pub view_distance: i32,
     /// A native mod's limit on `view_distance` for this player alone
@@ -221,6 +227,10 @@ pub struct Guest {
     /// The players a native mod hid from it (`Hub::hidden`) that its player
     /// list no longer has.
     pub tab_hidden: crate::fast_hash::FxHashSet<u128>,
+    /// The entities a native mod showed this client alone
+    /// (`native_client_entity_spawn`), by id, with their types: no level
+    /// holds them, and they go with the guest.
+    pub client_entities: crate::fast_hash::FxHashMap<i32, String>,
     /// The client finished loading terrain (ServerboundPlayerLoadedPacket).
     pub loaded: bool,
     /// Since it joined or respawned, the client hasn't said it loaded the level
@@ -271,6 +281,9 @@ pub struct Guest {
     /// The 36 inventory slots (hotbar first), armor (head..feet) and off hand.
     pub inventory: Vec<Option<ItemStack>>,
     pub armor: [Option<ItemStack>; 4],
+    /// Armor as of this player's last `collectEquipmentChanges` look; swapped
+    /// with `armor` so each player compares against their own snapshot.
+    pub location_armor: [Option<ItemStack>; 4],
     pub offhand: Option<ItemStack>,
     pub selected: usize,
     pub carried: Option<ItemStack>,
@@ -282,6 +295,9 @@ pub struct Guest {
     pub ender_items: Vec<Option<ItemStack>>,
     /// What a native mod's menu shows (`Slots::Native`), while one is open.
     pub native_menu: Vec<Option<ItemStack>>,
+    /// The slots of that menu that hold items clicks move, when the mod gave
+    /// it any (`menu::NativeStore`).
+    pub native_store: Option<super::menu::NativeStore>,
     pub health: f32,
     /// The saved `AbsorptionAmount`, until the player's first body on the
     /// server takes it (the body holds the live amount).
@@ -444,6 +460,8 @@ impl Guest {
             view_limit: None,
             info: j.info,
             brand: j.brand,
+            channels: j.configured.channels,
+            configuration_pack_answers: j.configured.pack_answers,
             position,
             previous_position: position,
             yaw: 0.0,
@@ -494,6 +512,7 @@ impl Guest {
             changes: Default::default(),
             moved: false,
             tab_hidden: Default::default(),
+            client_entities: Default::default(),
             loaded: false,
             loading: true,
             load_timeout: CLIENT_LOADED_TIMEOUT,
@@ -514,6 +533,7 @@ impl Guest {
             logs_kept: None,
             inventory: vec![None; 36],
             armor: [None, None, None, None],
+            location_armor: [None, None, None, None],
             offhand: None,
             selected: 0,
             carried: None,
@@ -521,6 +541,7 @@ impl Guest {
             craft_result: None,
             ender_items: vec![None; 27],
             native_menu: Vec::new(),
+            native_store: None,
             health: 20.0,
             saved_absorption: None,
             food: 20,
@@ -1589,6 +1610,7 @@ mod tests {
                 latency: Arc::new(AtomicI32::new(0)),
                 address: "127.0.0.1:1".parse().unwrap(),
                 expected: false,
+                configured: Default::default(),
             },
             1,
             position,

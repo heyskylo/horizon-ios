@@ -48,6 +48,8 @@ pub struct ConsumeEffectSpec {
     /// `MobEffectInstance`'s `ambient` (default false) and `show_particles` (default true).
     pub ambient: bool,
     pub show_particles: bool,
+    /// `show_icon`, which defaults to `show_particles`.
+    pub show_icon: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2370,6 +2372,7 @@ fn consume_effect_spec(e: &Value) -> Option<ConsumeEffectSpec> {
         amplifier: e.get("amplifier").and_then(|a| a.as_i64()).unwrap_or(0) as i32,
         ambient: flag("ambient", false),
         show_particles: flag("show_particles", true),
+        show_icon: flag("show_icon", flag("show_particles", true)),
     })
 }
 
