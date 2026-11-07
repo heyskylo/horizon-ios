@@ -750,7 +750,11 @@ impl Game<'_> {
     /// either (`chat_box_text`), and the 256-character limit holds. An error
     /// while the chat screen isn't open. API @API:chat_input@.
     #[allow(dead_code)]
-    pub(super) fn native_set_chat_input(&mut self, text: &str, cursor: usize) -> Result<(), String> {
+    pub(super) fn native_set_chat_input(
+        &mut self,
+        text: &str,
+        cursor: usize,
+    ) -> Result<(), String> {
         let m = Measure(&self.gui.atlas.font);
         let c = Commands {
             dispatcher: chat_tree(&self.remote),
@@ -1748,7 +1752,10 @@ mod tests {
     /// accents stay, control characters, DEL and the section sign go.
     #[test]
     fn a_mods_chat_text_keeps_what_typing_allows() {
-        assert_eq!(super::chat_box_text("hi :smile: → 😀 é"), "hi :smile: → 😀 é");
+        assert_eq!(
+            super::chat_box_text("hi :smile: → 😀 é"),
+            "hi :smile: → 😀 é"
+        );
         assert_eq!(super::chat_box_text("a\nb\tc\u{7f}d§6e"), "abcd6e");
     }
 
