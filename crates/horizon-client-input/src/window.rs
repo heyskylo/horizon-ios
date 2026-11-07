@@ -393,19 +393,38 @@ impl FullscreenState {
         let reapply = self.set_exclusive(exclusive);
         self.set_preferred_mode(preferred);
         let mode_change = !in_video_screen && self.take_mode_change();
-        match request {
-            Some(false) => window.set_fullscreen(None),
-            Some(true) => window.set_fullscreen(Some(fullscreen_request(
+        if wanted && window.is_maximized() {
+            window.set_maximized(false);
+            window.set_fullscreen(Some(fullscreen_request(
                 window,
                 exclusive,
                 preferred.as_ref(),
-            ))),
-            None if reapply || mode_change => window.set_fullscreen(Some(fullscreen_request(
-                window,
-                exclusive,
-                preferred.as_ref(),
-            ))),
-            None => {}
+            )));
+        } else {
+            match request {
+                Some(false) => window.set_fullscreen(None),
+                Some(true) => {
+                    if window.is_maximized() {
+                        window.set_maximized(false);
+                    }
+                    window.set_fullscreen(Some(fullscreen_request(
+                        window,
+                        exclusive,
+                        preferred.as_ref(),
+                    )));
+                }
+                None if reapply || mode_change => {
+                    if window.is_maximized() {
+                        window.set_maximized(false);
+                    }
+                    window.set_fullscreen(Some(fullscreen_request(
+                        window,
+                        exclusive,
+                        preferred.as_ref(),
+                    )));
+                }
+                None => {}
+            }
         }
     }
 
@@ -592,13 +611,13 @@ pub fn fullscreen_request(
     preferred: Option<&VideoMode>,
 ) -> winit::window::Fullscreen {
     use winit::window::Fullscreen;
-    if !exclusive {
-        return Fullscreen::Borderless(None);
-    }
-    let Some(monitor) = window
+    let monitor = window
         .current_monitor()
-        .or_else(|| window.primary_monitor())
-    else {
+        .or_else(|| window.primary_monitor());
+    if !exclusive {
+        return Fullscreen::Borderless(monitor);
+    }
+    let Some(monitor) = monitor else {
         return Fullscreen::Borderless(None);
     };
     let wanted = preferred.and_then(|p| {
@@ -608,7 +627,7 @@ pub fn fullscreen_request(
     });
     match wanted.or_else(|| monitor_current_mode(&monitor)) {
         Some(mode) => Fullscreen::Exclusive(mode),
-        None => Fullscreen::Borderless(None),
+        None => Fullscreen::Borderless(Some(monitor)),
     }
 }
 
