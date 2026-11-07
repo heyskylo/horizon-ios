@@ -87,6 +87,8 @@ impl InterpolatedSampler {
     /// increment once per Y. The X lerps at a level of corners are the top of one
     /// cell and the bottom of the next (the same lerps of the same samples), so they
     /// are computed once.
+    // The replacements Clippy suggests require Rust 1.87 and 1.88, above our 1.85 MSRV.
+    #[allow(clippy::manual_is_multiple_of, clippy::chunks_exact_to_as_chunks)]
     fn fill_whole_cells(
         &self,
         output: &mut [f32],
