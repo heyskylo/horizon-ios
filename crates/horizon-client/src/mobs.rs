@@ -2247,6 +2247,12 @@ pub enum MobEvent {
         mob: u32,
         other: u32,
     },
+    /// `Villager.customServerAiStep`: deliver the pending TRADE reputation
+    /// event for the actual player recorded by rewardTradeXp.
+    VillagerTrade {
+        mob: u32,
+        player: [i32; 4],
+    },
     /// `AbstractVillager.getOffers` for a villager whose offers are not made
     /// yet: the level rolls them (the brain has no trade data), so the
     /// behaviour that asked reads them from the next tick on.

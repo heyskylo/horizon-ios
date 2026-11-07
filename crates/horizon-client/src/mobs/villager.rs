@@ -271,6 +271,9 @@ pub struct Ext {
     pub raid_wave: bool,
     /// What the villager remembers of players (`gossips`).
     pub gossips: crate::gossip::Gossips,
+    /// `Villager.lastTradedPlayer`: the most recent trader, consumed by the
+    /// next customServerAiStep. This is runtime state, not saved gossip.
+    pub last_traded_player: Option<[i32; 4]>,
     pub last_gossip_time: i64,
     pub last_gossip_decay: i64,
     /// `foodLevel`: eaten but not yet digested, in food points.

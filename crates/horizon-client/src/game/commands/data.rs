@@ -376,6 +376,13 @@ impl Game<'_> {
                     // cooldown and previous-hit amount are not read from saved NBT.
                     slot.invulnerable = old.invulnerable;
                     slot.last_hurt = old.last_hurt;
+                    // Entity.load updates saved data on the existing entity;
+                    // lastTradedPlayer is transient and survives a live NoAI edit.
+                    if slot.species() == horizon_client::mobs::Species::Villager {
+                        horizon_client::mobs::villager::ext_mut(slot).last_traded_player =
+                            horizon_client::mobs::villager::ext(&old)
+                                .and_then(|ext| ext.last_traded_player);
+                    }
                     slot.ai = old.ai;
                     // Mob.readAdditionalSaveData updates persistent home fields,
                     // while retaining the rest of the live AI/runtime state.

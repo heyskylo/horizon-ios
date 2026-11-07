@@ -100,6 +100,7 @@ def main():
                         help='run all numeric-array edit cases, including the known wildcard/string storage side effects')
     parser.add_argument('--sulfur-power-load-diagnostic', action='store_true',
                         help='retain the immediate-load powered sulfur cube H249 diagnostic')
+    parser.add_argument('--merchant-gate-fixture', action='store_true')
     parser.add_argument('--binary', type=Path, help='use an already built Horizon game instead of building it')
     parser.add_argument('--slot-codec-diagnostic', action='store_true',
                         help='retain the separate invalid inline slot-range codec diagnostic')
@@ -341,6 +342,9 @@ def main():
         groups = [('setup', corpus_module.group_setup()),
                   ('mob custom name components', mob_name_predicates(
                       corpus_module.cmd, corpus_module.setup, presentation_diagnostic=True))]
+    if args.merchant_gate_fixture:
+        from merchant_gate_corpus import cases
+        groups = [('setup', [corpus_module.cmd('/tick freeze', False), *corpus_module.group_setup()]), ('merchant reputation AI gate', cases())]
     script = []
     for _, lines in groups:
         script.extend(lines)
@@ -377,6 +381,8 @@ def main():
     vanilla_dir.mkdir()
     install_datapack_fixtures(vanilla_dir / 'universe/harness', predicates, functions, jars['server'], advancements, loot_tables, recipes=recipes)
     java_options = ['-DMC_DEBUG_ENABLED=true', '-DMC_DEBUG_DEV_COMMANDS=true'] if args.raid_village_fixture else []
+    if args.merchant_gate_fixture:
+        java_options.append('-Dhorizon.merchantFixture=true')
     if args.merchant_crafted_fixture:
         java_options.append('-Dhorizon.merchantCraftedFixture=true')
     if args.orb_water_fixture:
@@ -462,11 +468,12 @@ def main():
         java = json.loads((build / 'client_config.json').read_text())
         if java.get('server_view') != 2 or java.get('server_simulation') != 2 or not java.get('client_loaded'):
             sys.exit(f'Java server/client-loaded prerequisite failed: {java}')
-        for name in ['java.log', 'rust.log']:
-            waits = re.findall(r'harness paced wait: (\d+) ticks, (\d+) ms', (build / name).read_text())
-            if len(waits) != 2 or any(int(n) != ticks or not ticks * 50 <= int(ms) <= upper
-                    for (n, ms), ticks, upper in zip(waits, [40, 120], [4000, 10000])):
-                sys.exit(f'bounded paced-wait prerequisite failed: {name}: {waits}')
+        if not args.merchant_gate_fixture:
+            for name in ['java.log', 'rust.log']:
+                waits = re.findall(r'harness paced wait: (\d+) ticks, (\d+) ms', (build / name).read_text())
+                if len(waits) != 2 or any(int(n) != ticks or not ticks * 50 <= int(ms) <= upper
+                        for (n, ms), ticks, upper in zip(waits, [40, 120], [4000, 10000])):
+                    sys.exit(f'bounded paced-wait prerequisite failed: {name}: {waits}')
         native = json.loads((build / 'rust-client-config.json').read_text())
         if native.get('render_setting') != 2 or native.get('simulation_setting') != 2 or not native.get('joined'):
             sys.exit(f'native settings/join prerequisite failed: {native}')
@@ -509,7 +516,7 @@ def main():
     failed_positions = set()
     for position, (v, r) in enumerate(zip(vanilla, rust)):
         assert v['cmd'] == r['cmd'], (v['cmd'], r['cmd'])
-        kind = ('strict_record' if v != r else None) if args.merchant_crafted_fixture else compare(v, r, recorded_ops[position].get('comparison'))
+        kind = ('strict_record' if v != r else None) if args.merchant_gate_fixture or args.merchant_crafted_fixture else compare(v, r, recorded_ops[position].get('comparison'))
         if kind:
             failed_positions.add(position)
             mismatches.append({'kind': kind, 'cmd': v['cmd'], 'vanilla': v, 'rust': r})
