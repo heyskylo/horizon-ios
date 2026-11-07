@@ -15481,27 +15481,30 @@ impl Game<'_> {
         // LocalPlayer.refreshChatAbilities: the chat shows what the Chat option allows.
         let abilities = self.chat_abilities();
         self.ui.chat.set_abilities(&self.gui.atlas.font, abilities);
+        let render_distance_changed = self.streaming.radius != self.settings.render_distance;
         self.streaming.radius = self.settings.render_distance;
-        // Options.biomeBlendRadius, ambientOcclusion, cutoutLeaves and the
-        // leaf-culling mode: LevelExtractor.allChanged when they change.
+        // Options.renderDistance, biomeBlendRadius, ambientOcclusion,
+        // cutoutLeaves and the leaf-culling mode: LevelExtractor.allChanged
+        // when they change.
         let leaf_culling = self.effective_leaf_culling();
         let (s, st) = (&self.settings, &self.streaming);
-        let remesh = (
-            s.biome_blend,
-            s.smooth_lighting,
-            s.cutout_leaves,
-            leaf_culling,
-        ) != (
-            st.biome_blend,
-            st.smooth_lighting,
-            st.cutout_leaves,
-            st.leaf_culling,
-        );
+        let reload = render_distance_changed
+            || (
+                s.biome_blend,
+                s.smooth_lighting,
+                s.cutout_leaves,
+                leaf_culling,
+            ) != (
+                st.biome_blend,
+                st.smooth_lighting,
+                st.cutout_leaves,
+                st.leaf_culling,
+            );
         self.streaming.biome_blend = self.settings.biome_blend;
         self.streaming.smooth_lighting = self.settings.smooth_lighting;
         self.streaming.cutout_leaves = self.settings.cutout_leaves;
         self.streaming.leaf_culling = leaf_culling;
-        if remesh {
+        if reload {
             self.all_sections_changed();
         }
         self.audio.master = self.settings.master_volume;
@@ -15522,13 +15525,15 @@ impl Game<'_> {
             self.all_sections_changed();
         }
     }
-    /// `LevelExtractor.allChanged`: every loaded section is rebuilt.
+    /// `LevelExtractor.allChanged`: displayed sections and mesh work are
+    /// discarded, then every loaded section is rebuilt.
     fn all_sections_changed(&mut self) {
-        for &(x, z) in self.world.chunks.keys() {
-            for sy in 0..self.world.layout().height() / 16 {
-                self.world.dirty_sections.insert((x, sy, z));
-            }
+        self.clear_lod();
+        self.pending_uploads.clear();
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.clear_sections(self.world.layout());
         }
+        self.streaming.reload_sections(&mut self.world);
     }
     /// Whether precipitation at a column is snow (Biome.coldEnoughToSnow:
     /// height adjusted temperature) or none (no precipitation).
