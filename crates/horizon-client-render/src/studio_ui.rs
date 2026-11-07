@@ -103,6 +103,12 @@ pub struct StudioUi {
     pub record_dir: PathBuf,
 }
 
+/// A recording's row and the gap under it, in GUI pixels.
+const ROW_STEP: f32 = 40.0;
+const ROW_GAP: f32 = 4.0;
+/// The panel's margins above and below its rows.
+const LIST_MARGINS: f32 = 10.0;
+
 impl Default for StudioUi {
     fn default() -> Self {
         let dir = PathBuf::from("recordings");
@@ -270,18 +276,19 @@ impl StudioUi {
             );
         } else {
             // Render scrollable cards
-            let card_h = 36.0;
-            let card_gap = 4.0;
-            let row_step = card_h + card_gap;
-            let visible_cards = (panel_h / row_step).floor() as usize;
+            let card_h = ROW_STEP - ROW_GAP;
+            let row_step = ROW_STEP;
+            // Rows that fit whole between the panel's margins, as the loop below draws them.
+            let visible_cards = ((panel_h - LIST_MARGINS + ROW_GAP) / row_step).floor() as usize;
             let max_scroll =
                 (self.recordings.len().saturating_sub(visible_cards) as f32 * row_step).max(0.0);
             self.scroll = self.scroll.clamp(0.0, max_scroll);
 
             let card_w = panel_w - 12.0;
             let card_x = panel_x + 6.0;
-            let mut y = panel_y + 6.0 - (self.scroll % row_step);
-            let start_idx = (self.scroll / row_step) as usize;
+            // Whole rows: nothing here clips one that's partly scrolled off.
+            let mut y = panel_y + 6.0;
+            let start_idx = (self.scroll / row_step).round() as usize;
 
             for (idx, item) in self.recordings.iter().enumerate().skip(start_idx) {
                 if y + card_h > panel_y + panel_h - 4.0 {
@@ -289,6 +296,8 @@ impl StudioUi {
                 }
 
                 let rect = [card_x, y, card_w, card_h];
+                crate::widgets::record_as(&item.title, rect, true, crate::widgets::Kind::Row);
+                crate::widgets::target_as(rect, crate::widgets::Kind::Row);
                 let is_hovered = ui::hovered(cursor, card_x, y, card_w, card_h);
                 let is_selected = self.selected == Some(idx);
 
@@ -334,6 +343,12 @@ impl StudioUi {
                 y += row_step;
             }
 
+            crate::widgets::scroll_area(
+                [panel_x, panel_y, panel_w, panel_h],
+                self.scroll,
+                max_scroll,
+            );
+
             // Scrollbar track & thumb if scrollable
             if max_scroll > 0.0 {
                 let track_x = panel_x + panel_w - 4.0;
@@ -357,35 +372,24 @@ impl StudioUi {
         // Button 1: Open Folder (Left)
         let f_btn = [panel_x, btn_y, 130.0, btn_h];
         let f_hover = ui::hovered(cursor, f_btn[0], f_btn[1], f_btn[2], f_btn[3]);
-        style::button(
-            batch,
-            atlas,
-            f_btn,
-            &Text::tr("horizon.studio.open_folder", &[]),
-            (f_hover, true, false),
-        );
+        let label = Text::tr("horizon.studio.open_folder", &[]);
+        crate::widgets::record(&label.plain(), f_btn, true);
+        style::button(batch, atlas, f_btn, &label, (f_hover, true, false));
 
         // Button 2: Refresh (Center-Left)
         let r_btn = [panel_x + 136.0, btn_y, 65.0, btn_h];
         let r_hover = ui::hovered(cursor, r_btn[0], r_btn[1], r_btn[2], r_btn[3]);
-        style::button(
-            batch,
-            atlas,
-            r_btn,
-            &Text::tr("horizon.studio.refresh", &[]),
-            (r_hover, true, false),
-        );
+        let label = Text::tr("horizon.studio.refresh", &[]);
+        crate::widgets::record(&label.plain(), r_btn, true);
+        style::button(batch, atlas, r_btn, &label, (r_hover, true, false));
 
         // Button 3: Done / Back (Right)
         let d_btn = [panel_x + panel_w - 64.0, btn_y, 64.0, btn_h];
         let d_hover = ui::hovered(cursor, d_btn[0], d_btn[1], d_btn[2], d_btn[3]);
-        style::button(
-            batch,
-            atlas,
-            d_btn,
-            &Text::tr("gui.done", &[]),
-            (d_hover, true, false),
-        );
+        let label = Text::tr("gui.done", &[]);
+        crate::widgets::record(&label.plain(), d_btn, true);
+        style::button(batch, atlas, d_btn, &label, (d_hover, true, false));
+        crate::widgets::declare_action(crate::widgets::Action::Done, d_btn, true);
     }
 
     /// Process mouse click on the Studio Browser screen.
@@ -418,13 +422,12 @@ impl StudioUi {
         }
 
         // Card clicks
-        let card_h = 36.0;
-        let card_gap = 4.0;
-        let row_step = card_h + card_gap;
+        let card_h = ROW_STEP - ROW_GAP;
+        let row_step = ROW_STEP;
         let card_w = panel_w - 12.0;
         let card_x = panel_x + 6.0;
-        let start_idx = (self.scroll / row_step) as usize;
-        let mut y = panel_y + 6.0 - (self.scroll % row_step);
+        let start_idx = (self.scroll / row_step).round() as usize;
+        let mut y = panel_y + 6.0;
 
         for (idx, _) in self.recordings.iter().enumerate().skip(start_idx) {
             if y + card_h > panel_y + panel_h - 4.0 {
@@ -444,7 +447,8 @@ impl StudioUi {
 
     /// Scroll list by mouse wheel delta.
     pub fn wheel(&mut self, amount: f32) {
-        self.scroll = (self.scroll - amount * 24.0).max(0.0);
+        // A notch is a row, as a focus step needs (`gamepad::list_step`).
+        self.scroll = (self.scroll - amount * ROW_STEP).max(0.0);
     }
 }
 
@@ -527,6 +531,6 @@ mod tests {
         assert_eq!(ui.scroll, 0.0); // clamped at 0
         ui.scroll = 100.0;
         ui.wheel(1.0);
-        assert_eq!(ui.scroll, 76.0);
+        assert_eq!(ui.scroll, 100.0 - ROW_STEP);
     }
 }
