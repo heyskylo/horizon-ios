@@ -1024,13 +1024,17 @@ impl Game<'_> {
         overlay: u32,
         out: &mut Vec<horizon_client::mesher::Vertex>,
     ) {
-        // The worn stack's own `equippable`, any slot, with an asset.
+        // The worn stack's own `equippable`, for the chest slot, with an asset
+        // (getEquipmentIfRenderable: anything else counts as nothing worn).
         let equippable = match stack {
             Some(s) => horizon_client::item_sync::equippable(s, self.items()),
             None => chest
                 .and_then(|item| horizon_client::item_sync::item_equippable(item, self.items())),
         };
-        let Some(asset) = equippable.and_then(|e| e.asset_id) else {
+        let Some(asset) = equippable
+            .filter(|e| e.slot == "chest")
+            .and_then(|e| e.asset_id)
+        else {
             return;
         };
         let assets = &self.armor_stand_assets;
@@ -1134,6 +1138,7 @@ impl Game<'_> {
             None => chest.and_then(|item| horizon_client::item_sync::item_equippable(item, items)),
         };
         let layers = equippable
+            .filter(|e| e.slot == "chest")
             .and_then(|e| e.asset_id)
             .and_then(|asset| self.armor_stand_assets.equipment.get(&asset));
         if layers.is_some_and(|k| k.contains_key("wings")) {
