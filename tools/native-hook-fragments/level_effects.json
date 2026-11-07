@@ -1,0 +1,20 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "level_play_sound",
+      "target": "horizon_client::game::native_level_effects::Game<'_>::native_level_play_sound",
+      "receiver": "level"
+    },
+    {
+      "name": "level_send_particles",
+      "target": "horizon_client::game::native_level_effects::Game<'_>::native_level_send_particles",
+      "receiver": "level"
+    }
+  ],
+  "rust_summary": "sounds and particles in a level through a `LevelRef`, sent to every player in range.",
+  "doc_summary": "`level.play_sound(host, sound, at, source, volume, pitch)` and `level.send_particles(host, options, state, at, spread, speed, count)`: every player in range hears or sees them, as `ServerLevel.playSound` and `sendParticles` send them. Bundles need \"hooks\": @API:level_effects@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_level_effects.rs"
+  ]
+}

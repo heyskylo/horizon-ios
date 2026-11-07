@@ -4,7 +4,7 @@ ServerPlayerGameMode.isInRangeOfGround	port	crates/horizon-world/src/world_movem
 ServerPlayerGameMode.incrementDestroyProgress	inline	crates/horizon-client/src/game/lan_actions.rs::Game::guest_dig_feedback	gap: minor: crack stage is the client formula (progress*10 - 1), so other players' cracks on a guest's block run one stage behind the server value
 ServerPlayerGameMode.debugLogging	skip:debug		DEBUG_BLOCK_BREAK logging
 ServerPlayerGameMode.abortDestroyBlock	inline	crates/horizon-client/src/game/lan_actions.rs::Game::lan_guest_packet	the abort action clears the guest's crack for everyone; no separate check of a mismatched destroy position
-ServerPlayerGameMode.destroyAndAck	missing		minor: guest_destroy ignores whether the break succeeded, so a refused break never sends the block back to the guest
+ServerPlayerGameMode.destroyAndAck	inline	crates/horizon-client/src/game/lan_actions.rs::Game::lan_guest_packet	the sequence ack every PlayerAction arm sends first (Hub::ack -> ClientboundBlockChangedAck in tick_level) takes a vanilla client's predicted block back, and the ABORT arm also sends the state
 SimulationChunkTracker.getLevel	port	crates/horizon-client/src/ticket_levels.rs::Map::get	simulation level per chunk, 33 where no ticket reaches
 SimulationChunkTracker.setLevel	inline	crates/horizon-client/src/ticket_levels.rs::compute	the whole level map is rebuilt from player and forced tickets instead of updated per node
 ThreadedLevelLightEngine.checkBlock	inline	crates/horizon-client-render/src/light.rs::relight	a block change relights resident chunks directly, no queued PRE_UPDATE task

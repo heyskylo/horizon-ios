@@ -189,17 +189,17 @@ def duration(seconds):
 
 
 def git(*arguments):
-    return subprocess.run(["git", *arguments], cwd=ROOT, capture_output=True, text=True, check=True).stdout
+    return subprocess.run(["git", *arguments], cwd=ROOT, capture_output=True, check=True).stdout.decode("utf-8")
 
 
 def line_counts(base, changed):
     """Lines added and removed in each changed path since base, untracked files included: {path: (added, removed)}."""
     counts = {}
-    for row in git("diff", "--numstat", base).splitlines():
+    for row in filter(None, git("diff", "--numstat", "--no-renames", "-z", base).split("\0")):
         plus, minus, path = row.split("\t", 2)
         if plus != "-":
             counts[path] = (int(plus), int(minus))
-    for path in git("ls-files", "--others", "--exclude-standard").splitlines():
+    for path in git("ls-files", "--others", "--exclude-standard", "-z").split("\0"):
         if path in changed:
             try:
                 counts[path] = (len((ROOT / path).read_text(encoding="utf-8").splitlines()), 0)
@@ -488,7 +488,7 @@ def run_windows(steps, verbose):
             command = ["cargo", "clippy", "--all-targets", "--locked", "--", "-D", "warnings"]
             cwd = ROOT / "launcher"
         elif step.name == "launcher tests":
-            command = ["cargo", "test", "--locked", "--lib"]
+            command = ["cargo", "test", "--locked", "--lib", "--bins"]
             cwd = ROOT / "launcher"
         elif step.name == "Parity":
             command = shlex.split(step.command)
