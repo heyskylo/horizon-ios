@@ -567,42 +567,77 @@ macro_rules! stored_motion {
     };
 }
 
-/// One `ItemEntity.tick`, with the fluid push and the bubble column decided by
-/// the `Entity` defaults every kind shares: fluids, move, column, settle,
-/// fluids again. Returns false when the item should be removed.
-pub(super) fn tick_item(
-    item: &mut ItemEntity,
-    world: &horizon_client::world::World,
-    registry: &horizon_world::registry::BlockRegistry,
-    facts: &horizon_client::blocks::BlockFacts,
-    collision: &horizon_world::block_collision::BlockCollisionRegistry<'_>,
-    fluids: &horizon_client::motion::FluidResources,
-    no_physics: bool,
-    entity_boxes: &[Aabb],
-    border: Option<&horizon_core::geometry::border::BorderGeometry>,
-    blocks: Option<&horizon_world::movement_properties::BoundMovementProperties>,
-    splash: &mut impl FnMut(horizon_client::entities::ItemSplash),
-) -> bool {
-    let (water, _lava) = item.push_by_fluid(world, fluids);
-    // `Entity.baseTick` splashes before the item moves. The first tick does not.
-    item.water_entry(water > 0.0, item.ticks == 0, splash);
-    let step = item.tick_move(
-        world,
-        facts,
-        collision,
-        no_physics,
-        (water, _lava),
-        entity_boxes,
-        border,
-        blocks,
-    );
-    item.push_by_bubble_column(world, registry, facts, collision);
-    let alive = item.tick_settle(world, facts, no_physics, step);
-    // `ItemEntity.tick` refreshes immersion after moving and splashes if that
-    // move is what entered the water.
-    let (water, _) = item.push_by_fluid(world, fluids);
-    item.water_entry(water > 0.0, false, splash);
-    alive
+impl Game<'_> {
+    /// Tick an item owned by the caller. The two results are ordinary survival
+    /// and explicit consumption by a block-contact handler.
+    pub(super) fn tick_item_with_block_contacts(
+        &mut self,
+        item: &mut ItemEntity,
+        no_physics: bool,
+        entity_boxes: &[Aabb],
+        client: bool,
+        splash: &mut impl FnMut(horizon_client::entities::ItemSplash),
+    ) -> (bool, bool) {
+        let heights = item.push_by_fluid(&self.world, &self.res.motion().fluids);
+        // Entity.baseTick splashes before moving, except on the first tick.
+        item.water_entry(heights.0 > 0.0, item.ticks == 0, splash);
+        let step = item.tick_move_before_block_effects(
+            &self.world,
+            self.res.facts(),
+            self.collision,
+            no_physics,
+            heights,
+            entity_boxes,
+            Some(self.border.geometry()),
+        );
+        if let Some(pos) =
+            item.vertical_contact(&self.world, self.collision, &self.res.motion().blocks, step)
+        {
+            let state = self.world.block(pos.x, pos.y, pos.z);
+            let position = item.position;
+            let mut discarded = false;
+            self.native_item_after_vertical_collision(
+                self.dim.id(),
+                client,
+                item.id,
+                state,
+                [pos.x, pos.y, pos.z],
+                [position.x, position.y, position.z],
+                &mut item.stack,
+                &mut discarded,
+            );
+            if discarded || item.stack.count == 0 {
+                return (false, true);
+            }
+        }
+        item.finish_move_block_effects(
+            &self.world,
+            self.res.facts(),
+            no_physics,
+            Some(&self.res.motion().blocks),
+            step,
+        );
+        item.push_by_bubble_column(
+            &self.world,
+            self.pack.assets.registry,
+            self.res.facts(),
+            self.collision,
+        );
+        let alive = item.tick_settle(&self.world, self.res.facts(), no_physics, step);
+        // ItemEntity.tick refreshes immersion and splashes on water entry.
+        let (water, _) = item.push_by_fluid(&self.world, &self.res.motion().fluids);
+        item.water_entry(water > 0.0, false, splash);
+        (alive, false)
+    }
+
+    /// Keep new joins after the active batch, so they tick next time.
+    pub(super) fn restore_item_batch(
+        &mut self,
+        mut items: horizon_client::join_seq::JoinList<ItemEntity>,
+    ) {
+        items.extend(std::mem::take(&mut self.dropped));
+        self.dropped = items;
+    }
 }
 
 /// The game's lists of entities, in the order systems walk them. Hands them to
@@ -964,6 +999,16 @@ impl Game<'_> {
 }
 
 impl Entity for Mob {
+    /// `Entity.move(MoverType.PISTON, ...)` ends in `setPos`, which `Shulker`
+    /// overrides to snap to the block centre.
+    fn move_by_piston(&mut self, movement: Vec3) {
+        let moved = self.position.add_vector(movement);
+        if self.species() == Species::Shulker {
+            crate::mobs::shulker::client_set_pos(self, moved.x, moved.y, moved.z);
+        } else {
+            self.position = moved;
+        }
+    }
     fn rotation(&self) -> [f32; 2] {
         [self.yaw, self.head_pitch]
     }
@@ -1008,8 +1053,10 @@ impl Entity for Mob {
     fn can_use_portal(&self, game: &Game<'_>) -> bool {
         game.mob_can_use_portal(self)
     }
+    /// `PersistentEntitySectionManager.Callback.onRemove`: discard stops
+    /// section enumeration immediately, before the entity list is swept.
     fn selector_target(&self) -> Option<Target> {
-        (self.death_time == 0).then_some(Target::Mob(self.id))
+        (!self.removed && self.death_time == 0).then_some(Target::Mob(self.id))
     }
     fn bounds(&self) -> Aabb {
         Mob::bounds(self)
@@ -1618,7 +1665,8 @@ impl Entity for Projectile {
             "minecraft:fireball"
             | "minecraft:small_fireball"
             | "minecraft:wind_charge"
-            | "minecraft:breeze_wind_charge" => game.load_fireball(tag, uuid, player_uuid),
+            | "minecraft:breeze_wind_charge"
+            | "minecraft:wither_skull" => game.load_fireball(tag, uuid, player_uuid),
             id if horizon_client::entity_nbt::throwable_kind(id).is_some() => {
                 game.load_throwable(tag, uuid, player_uuid)
             }

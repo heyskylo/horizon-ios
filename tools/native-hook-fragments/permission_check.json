@@ -1,0 +1,20 @@
+{
+  "hooks": [
+    {
+      "name": "permission_check",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_permission_check",
+      "neoforge": "PermissionGatherEvent.Handler (the handler a permissions mod installs answers PermissionAPI.getPermission)",
+      "side": "server",
+      "mod_api": {
+        "contract": "replace",
+        "out": "result"
+      }
+    }
+  ],
+  "helpers": [
+    {"name": "has_permission", "target": "horizon_client::game::native_permissions::Game<'_>::native_has_permission"}
+  ],
+  "rust_summary": "permission nodes: a permissions mod's answer (`native_permission_check`) and the question every mod asks (`native_has_permission`), falling back to the operator level.",
+  "doc_summary": "`native_permission_check(player, node, default_level, result)` lets a permissions mod answer whether a player has a permission node, and `native_has_permission(player, node, default_level)` asks it for every mod and the server, falling back to the player's operator level against `default_level` when no mod answers (Bukkit's `Permissible.hasPermission`, NeoForge's `PermissionAPI.getPermission`). Bundles need \"hooks\": @API:permission_check@.",
+  "comments": ["crates/horizon-client/src/game/native_permissions.rs"]
+}
