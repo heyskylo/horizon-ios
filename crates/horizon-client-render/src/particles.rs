@@ -3798,6 +3798,10 @@ impl ParticleEngine {
         for store in &mut self.polytone_gpu {
             store.expire(self.polytone_ticks);
         }
+        // The sounds the packs' custom particles played last tick.
+        if let Some(registry) = &self.polytone {
+            self.sounds.extend(registry.take_sounds());
+        }
         self.tick_starters();
         self.tick_explosions(level);
         for (options, feet, width, height, life) in std::mem::take(&mut self.emitters) {
