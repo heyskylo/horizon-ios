@@ -194,8 +194,9 @@ impl Game<'_> {
             Some(Arg::Coords(_)) => self.position_arg(ctx, "location"),
             _ => by.and_then(|t| self.target_position(t)),
         };
-        // A lethal item hit discards it before the success message is built.
-        let item_name = matches!(target, Target::Item(_)).then(|| self.target_name(target));
+        // Destruction can remove the target before its success message is built.
+        let discarded_name = matches!(target, Target::Item(_) | Target::Boat(_) | Target::Cart(_))
+            .then(|| self.target_name(target));
         let hurt = match target {
             // The causing mob is the one the hit is credited to and thorns
             // answer; the source position gives the knockback its direction.
@@ -264,6 +265,9 @@ impl Game<'_> {
                 }
             }
             Target::Item(id) => self.command_damage_item(id, amount, &ty, cause.or(by)),
+            Target::Boat(_) | Target::Cart(_) => {
+                self.command_damage_vehicle(target, amount, &ty, cause.or(by))
+            }
             Target::Dragon(id) => self.command_damage_dragon(
                 id,
                 amount,
@@ -283,7 +287,7 @@ impl Game<'_> {
         if !hurt {
             return Err(err("commands.damage.invulnerable", &[]));
         }
-        let name = item_name.unwrap_or_else(|| self.target_name(target));
+        let name = discarded_name.unwrap_or_else(|| self.target_name(target));
         self.feedback(Text::translate(
             "commands.damage.success",
             &[
@@ -292,6 +296,53 @@ impl Game<'_> {
             ],
         ));
         Ok(1)
+    }
+
+    /// `VehicleEntity.hurtServer`: report acceptance even when the vehicle survives.
+    fn command_damage_vehicle(
+        &mut self,
+        target: Target,
+        amount: f32,
+        damage_type: &str,
+        causing: Option<Target>,
+    ) -> bool {
+        let registry = &self.motion.health.damage;
+        let Some(kind) = registry.id(damage_type) else {
+            return false;
+        };
+        let creative = match causing {
+            Some(Target::Player) => self.creative,
+            Some(Target::Guest(conn)) => self.command_guest(conn).is_some_and(|g| g.creative()),
+            _ => false,
+        };
+        let id = match target {
+            Target::Boat(id) | Target::Cart(id) => id,
+            _ => return false,
+        };
+        let invulnerable = self
+            .persist
+            .raw
+            .get(&id)
+            .is_some_and(|tag| horizon_client::entity_nbt::flag(tag, "Invulnerable"));
+        if invulnerable && !creative && !registry.in_tag(kind, "minecraft:bypasses_invulnerability")
+        {
+            return false;
+        }
+        let ignites = registry.in_tag(kind, "minecraft:is_fire")
+            || registry.in_tag(kind, "minecraft:is_explosion");
+        match target {
+            Target::Boat(_) => self
+                .boats
+                .iter()
+                .position(|b| b.id == id)
+                .is_some_and(|i| self.hurt_boat_result(i, amount, creative).is_some()),
+            Target::Cart(_) => self
+                .carts
+                .iter()
+                .position(|c| c.id == id)
+                .is_some_and(|i| self.hurt_cart_result(i, amount, creative, ignites)),
+            _ => false,
+        }
     }
 
     /// `ItemEntity.hurtServer`: the item branch reached by `DamageCommand.damage`.
@@ -393,17 +444,21 @@ impl Game<'_> {
 
     /// `DamageCommand.damage`: retain the accepted hit's player context and run
     /// `Zombie.hurtServer`'s reinforcement requests before the command returns.
+    /// Health-changing hits also raise their damage vibration before return.
     fn command_damage_mob(&mut self, id: u32, amount: f32, damage: Damage) -> bool {
         let player_uuid = (damage.attacker == Some(Who::Player))
             .then(|| self.owner_damage_uuid())
             .flatten();
         let mut reinforcements = Vec::new();
+        let mut health_changed = false;
         let hurt = self.mobs.iter_mut().find(|m| m.id == id).is_some_and(|m| {
             let queued = m.outbox.len();
+            let old_health = m.health;
             let hurt = match player_uuid {
                 Some(uuid) => m.damage_with_player_uuid(amount, damage, uuid, None),
                 None => m.damage(amount, damage),
             };
+            health_changed = hurt && m.health != old_health;
             if hurt {
                 reinforcements = take_new_reinforcements(&mut m.outbox, queued);
             }
@@ -423,6 +478,9 @@ impl Game<'_> {
                         }
                     }
                 }
+            }
+            if health_changed {
+                self.mob_damage_event(id);
             }
         }
         for (mob, target) in reinforcements {
@@ -2138,5 +2196,140 @@ mod tests {
         assert_eq!(heard, 0.7);
         assert!((point[0] - (target[0] - 2.0)).abs() < 1e-9, "{point:?}");
         assert_eq!(point[1..], [64.0, 0.0]);
+    }
+}
+
+#[cfg(test)]
+mod vehicle_damage_command_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_client::chunk::Chunk;
+    use horizon_core::position::ChunkPos;
+    use std::sync::Arc;
+    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+                .join(format!("h050-{:?}", std::thread::current().id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("difficulty normal"));
+        assert!(game.run_command("forceload add 0 0"));
+        test(&mut game);
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn generic_commands_reach_actual_vehicle_damage_and_drop() {
+        with_game(|game| {
+            game.creative = true; // issuer creative is not an attacker
+            let clock = game.world.game_time;
+            for (kind, n) in [("oak_boat", 1), ("minecart", 2)] {
+                let uuid = format!("000001f4-0000-0000-0000-{n:012x}");
+                assert!(game.run_command(&format!(
+                    "summon {kind} 4.5 200 5.5 {{UUID:[I;500,0,0,{n}],NoGravity:1b}}"
+                )));
+                let id = game
+                    .boats
+                    .iter()
+                    .map(|b| b.id)
+                    .chain(game.carts.iter().map(|c| c.id))
+                    .find(|id| game.persist.uuid_of(*id) == Some([500, 0, 0, n]))
+                    .unwrap();
+                assert!(
+                    game.run_command(&format!("damage {uuid} 1 minecraft:generic")),
+                    "accepted small hit must reach vehicle"
+                );
+                let damage = if kind == "oak_boat" {
+                    game.boats.iter().find(|b| b.id == id).unwrap().damage
+                } else {
+                    game.carts.iter().find(|c| c.id == id).unwrap().damage
+                };
+                assert_eq!(damage, 10.0);
+                assert!(game.run_command(&format!("damage {uuid} 4 minecraft:generic")));
+                assert!(!game.boats.iter().any(|b| b.id == id));
+                assert!(!game.carts.iter().any(|c| c.id == id));
+                assert_eq!(
+                    game.dropped
+                        .iter()
+                        .filter(|d| d.stack.item.as_ref() == format!("minecraft:{kind}")
+                            && d.stack.count == 1)
+                        .count(),
+                    1
+                );
+                let n = n + 2;
+                let uuid = format!("000001f4-0000-0000-0000-{n:012x}");
+                assert!(game.run_command(&format!(
+                    "summon {kind} 8.5 200 5.5 {{UUID:[I;500,0,0,{n}],NoGravity:1b}}"
+                )));
+                let id = game
+                    .boats
+                    .iter()
+                    .map(|b| b.id)
+                    .chain(game.carts.iter().map(|c| c.id))
+                    .find(|id| game.persist.uuid_of(*id) == Some([500, 0, 0, n]))
+                    .unwrap();
+                assert!(game.run_command(&format!("damage {uuid} 4 minecraft:generic")));
+                let damage = if kind == "oak_boat" {
+                    game.boats.iter().find(|b| b.id == id).unwrap().damage
+                } else {
+                    game.carts.iter().find(|c| c.id == id).unwrap().damage
+                };
+                assert_eq!(damage, 40.0, "exact threshold survives");
+            }
+            // Fresh rejected subjects avoid relying on vehicle data adoption.
+            for (kind, n) in [("oak_boat", 5), ("minecart", 6)] {
+                let uuid = format!("000001f4-0000-0000-0000-{n:012x}");
+                assert!(game.run_command(&format!("summon {kind} 11.5 200 5.5 {{UUID:[I;500,0,0,{n}],NoGravity:1b,Invulnerable:1b}}")));
+                let id = game
+                    .boats
+                    .iter()
+                    .map(|b| b.id)
+                    .chain(game.carts.iter().map(|c| c.id))
+                    .find(|id| game.persist.uuid_of(*id) == Some([500, 0, 0, n]))
+                    .unwrap();
+                assert!(!game.run_command(&format!("damage {uuid} 4 minecraft:generic")));
+                let damage = if kind == "oak_boat" {
+                    game.boats.iter().find(|b| b.id == id).unwrap().damage
+                } else {
+                    game.carts.iter().find(|c| c.id == id).unwrap().damage
+                };
+                assert_eq!(damage, 0.0);
+            }
+            assert_eq!(game.world.game_time, clock);
+        });
     }
 }
