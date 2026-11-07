@@ -1481,6 +1481,9 @@ pub struct Renderer {
     frame_format: wgpu::TextureFormat,
     /// The no-pack float HDR lane, with independent blending and an R8 coverage target.
     hud_coverage: bool,
+    /// What `frame_format` was picked from besides the settings and the pack: whether the
+    /// surface offers HDR output, the device draws the 16-bit frame, and it draws the float one.
+    frame_device: (bool, bool, bool),
     /// Whether a pack picked or dropped since the renderer was made has been told it runs on
     /// the frame that exists (`set_native_shader_pack`).
     frame_kept_logged: bool,
@@ -5027,6 +5030,7 @@ impl Renderer {
             hdr_output,
             frame_format,
             hud_coverage,
+            frame_device: (hdr_output.is_some(), wide_ok, linear.2),
             frame_kept_logged: false,
             hdr_marker: None,
             pack_post: None,
@@ -6717,6 +6721,21 @@ impl Renderer {
         if let Some(hdr) = &mut self.hdr {
             hdr.look = on;
         }
+    }
+    /// Whether this renderer's frame is the one a renderer made now would draw in, with HDR and
+    /// Smooth Gradients (`wide_frame`) and the pack picked (`linear_pack`, `hdr_float`, as
+    /// `Renderer::new` takes them). Under `HORIZON_HDR_FRAME=float` the game makes the renderer
+    /// again when it isn't (docs/design/hdr-linear-light.md, "When it changes").
+    pub fn frame_follows(&self, wide_frame: bool, linear_pack: bool, hdr_float: bool) -> bool {
+        let (hdr_offered, wide_ok, linear_ok) = self.frame_device;
+        self.frame_format
+            == frame_format(
+                wide_frame,
+                hdr_offered,
+                wide_ok,
+                self.config.format,
+                (linear_pack, hdr_float, linear_ok),
+            )
     }
     /// HDR output (Horizon setting): HDR10 or scRGB at `paper_white` nits, the world's
     /// highlights expanded up to `peak` nits. Off where the surface can't present it.
