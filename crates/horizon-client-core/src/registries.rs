@@ -279,16 +279,20 @@ impl Registries {
     /// and the world's packs' with vanilla's) to the commands'
     /// `minecraft:damage_type` ids, which the export lists for vanilla alone.
     /// `ResourceArgument` looks a type up in the server's registries, so
-    /// `/damage` takes every type the world has. The export's tags stay.
+    /// `/damage` takes every type the world has. The export's tags stay. The
+    /// ids are replaced, not extended: `by_registry` outlives a world, and a
+    /// pack's type must not stay accepted in the next world opened.
     pub fn sync_damage_type_ids(&mut self) {
-        let ids = &mut self
-            .by_registry
-            .entry("minecraft:damage_type".into())
-            .or_default()
-            .ids;
-        ids.extend(self.damage_types.iter().cloned());
+        if self.damage_types.is_empty() {
+            return;
+        }
+        let mut ids = self.damage_types.clone();
         ids.sort();
         ids.dedup();
+        self.by_registry
+            .entry("minecraft:damage_type".into())
+            .or_default()
+            .ids = ids;
     }
     /// The element ids of a registry (sorted).
     pub fn ids(&self, registry: &str) -> &[String] {
@@ -364,5 +368,12 @@ mod tests {
             );
             assert_eq!(reg.tags("minecraft:damage_type"), ["minecraft:is_fall"]);
         }
+        // The next world, without the pack: its type is no longer accepted.
+        reg.damage_types = vec!["minecraft:fall".into(), "minecraft:magic".into()];
+        reg.sync_damage_type_ids();
+        assert_eq!(
+            reg.ids("minecraft:damage_type"),
+            ["minecraft:fall", "minecraft:magic"]
+        );
     }
 }
