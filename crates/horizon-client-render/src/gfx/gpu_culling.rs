@@ -374,6 +374,21 @@ pub(super) enum Prepared {
     OutOfMemory,
 }
 
+/// A part of a compute pass: `pipeline` over `[x, y]` workgroups, nothing when `x` is 0.
+fn step<'a>(
+    group: &'a wgpu::BindGroup,
+    pipeline: &'a wgpu::ComputePipeline,
+    [x, y]: [u32; 2],
+) -> impl FnMut(&mut wgpu::ComputePass<'_>) + 'a {
+    move |pass| {
+        if x > 0 {
+            pass.set_bind_group(0, group, &[]);
+            pass.set_pipeline(pipeline);
+            pass.dispatch_workgroups(x, y, 1);
+        }
+    }
+}
+
 /// The frame's `tables` before the regions, into `words`, and the parameters
 /// the frustum test and facing read with them; `None` when the CPU draws the
 /// frame (`Prepared::Cpu`): a sum of a plane's terms could leave i32
@@ -397,21 +412,6 @@ pub(super) enum Prepared {
 /// walk keeps, and every box of a column the walk finds entirely inside the
 /// frustum, as each box reaches its cell (`rounded_box`). A plane that is not
 /// finite rejects nothing, as in `intersects`: its terms are 0, its w 1.
-/// A part of a compute pass: `pipeline` over `[x, y]` workgroups, nothing when `x` is 0.
-fn step<'a>(
-    group: &'a wgpu::BindGroup,
-    pipeline: &'a wgpu::ComputePipeline,
-    [x, y]: [u32; 2],
-) -> impl FnMut(&mut wgpu::ComputePass<'_>) + 'a {
-    move |pass| {
-        if x > 0 {
-            pass.set_bind_group(0, group, &[]);
-            pass.set_pipeline(pipeline);
-            pass.dispatch_workgroups(x, y, 1);
-        }
-    }
-}
-
 fn tables(input: &FrameInputs<'_>, words: &mut Vec<u32>) -> Option<Params> {
     words.clear();
     // Before the origins: an infinite camera's column would take
@@ -2750,7 +2750,8 @@ mod tests {
         let timing = adapter.features()
             & (wgpu::Features::TIMESTAMP_QUERY
                 | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES
-                | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
+                | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
+                | wgpu::Features::SHADER_EARLY_DEPTH_TEST);
         if !adapter.features().contains(needed)
             || super::super::flat::is_broken_intel_vulkan(&adapter.get_info())
         {
@@ -3194,6 +3195,114 @@ mod tests {
             band[0] > 0 && band[1] > 0,
             "the sky band left out and kept {band:?}"
         );
+    }
+
+    /// A detail frame times every dispatch of both phases and the uploads, and
+    /// leaves the draws and counts as an untimed frame's.
+    #[test]
+    fn detail_times_both_phases_and_leaves_the_draws_alone() {
+        on_each_device(|device, queue| {
+            let mut rng = Rng(0x1F83_D9AB_FB41_BD6B);
+            let (frustum, _) = view(&mut rng);
+            let records: Vec<Record> = (0..400)
+                .map(|i| {
+                    let key = (rng.range(-6, 6), rng.range(0, 23), rng.range(-6, 6));
+                    Record::new(
+                        key,
+                        i % 3,
+                        u64::from(i) * 1024,
+                        1 + rng.below(500),
+                        UNBOUNDED,
+                    )
+                })
+                .collect();
+            let mut timing = PassTiming::new(device, queue);
+            let early = device
+                .features()
+                .contains(wgpu::Features::SHADER_EARLY_DEPTH_TEST);
+            let Some(t) = timing.as_mut().filter(|_| early) else {
+                eprintln!("no timestamps or early depth test: skipped");
+                return;
+            };
+            t.set_detail(true);
+            let run = |timing: &mut Option<PassTiming>| {
+                let mut gpu = GpuCulling::new(device, Some(wgpu::TextureFormat::Rgba8Unorm))
+                    .expect("the pass");
+                let mut uploads = Uploads::new(device);
+                for r in &records {
+                    gpu.records.insert(*r);
+                }
+                let mut out = Vec::new();
+                for frame in 0..12 {
+                    if let Some(t) = timing {
+                        t.begin(device, queue);
+                    }
+                    let mut encoder = device.create_command_encoder(&Default::default());
+                    let input = FrameInputs {
+                        camera: DVec3::new(0.5, 70.0, 0.5),
+                        min_y: -64,
+                        sections: 24,
+                        radius: 5,
+                        frustum: &frustum,
+                        reach: None,
+                        eye: None,
+                        view_proj: Mat4::IDENTITY,
+                        occlude: true,
+                    };
+                    let prepared = gpu.prepare(
+                        device,
+                        queue,
+                        &mut uploads,
+                        &mut encoder,
+                        &input,
+                        timing.as_mut(),
+                    );
+                    assert_eq!(prepared, Prepared::Gpu, "frame {frame}");
+                    assert!(gpu.occluding(), "frame {frame}: phase 2 runs");
+                    gpu.dispatch(&mut encoder, timing.as_mut());
+                    gpu.compact(&mut encoder, timing.as_mut());
+                    uploads.finish(&encoder);
+                    queue.submit([encoder.finish()]);
+                    if let Some(t) = timing {
+                        t.submitted(queue);
+                    }
+                    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                    let pages = u64::from(gpu.pass_pages);
+                    out.push((
+                        read(device, queue, &gpu.counts.buffer, (STATS + 2 * pages) * 4),
+                        read(device, queue, &gpu.draws.buffer, gpu.draws.bytes),
+                    ));
+                }
+                out
+            };
+            let timed = run(&mut timing);
+            let plain = run(&mut None);
+            assert_eq!(timed, plain, "detail changes what is drawn");
+            let t = timing.as_ref().expect("the timer");
+            let parts = t.part_medians();
+            let names = |pass: &str| {
+                let parts = parts.iter().find(|p| p.0 == pass)?;
+                Some(parts.1.iter().map(|p| p.0.as_str()).collect::<Vec<_>>())
+            };
+            assert_eq!(
+                names("GPU culling"),
+                Some(vec!["apply", "cull", "scan", "scatter"]),
+                "{parts:?}"
+            );
+            assert_eq!(
+                names("GPU culling phase 2"),
+                Some(vec!["count2", "scan2", "scatter2"]),
+                "{parts:?}"
+            );
+            // The uploads are a pass of their own, never a part of one.
+            assert_eq!(names("GPU culling uploads"), None, "{parts:?}");
+            let passes = t.medians();
+            assert_eq!(
+                passes.iter().any(|p| p.0 == "GPU culling uploads"),
+                t.detail_support().encoder_stamps,
+                "{passes:?}"
+            );
+        });
     }
 
     /// The statistics come back with their frame, in place and from the submit
