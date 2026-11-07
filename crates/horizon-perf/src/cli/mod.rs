@@ -1,4 +1,5 @@
 pub mod files;
+mod query;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -16,9 +17,15 @@ use crate::watch::Watcher;
 
 pub const USAGE: &str = "\
 usage:
-  horizon-perf summary [FILE|latest] [--budget TOKENS] [--side client|server] [--dir DIR]
+  horizon-perf summary [FILE|latest] [--budget TOKENS] [--side client|server] [--thread T] [--slow|--all] [--dir DIR]
+  horizon-perf query   OP [ARGS] [FILE...] [FILTERS]   JSON always
   horizon-perf list    [DIR]
   horizon-perf follow  [FILE|latest] [--every S] [--json] [--dir DIR]
+
+OPs: spans, ticks, tick, series, world, net, meta, memory, marks, warnings.
+FILTERS: --side client|server --thread T --from T --to T (seconds; negative counts from the end; mark:NAME) --limit N --dir DIR
+  spans: --slow --names a,b   ticks: --worst N --over MS   series: FIELD... --every S (h:NAME, span:NAME, x:NAME)
+  memory: --diff [LABEL_A LABEL_B] --min-mb X   world: --by dimension|entity|block_entity|cost [LABEL]
 
 FILE defaults to latest: the newest finished .hzperf in --dir, else in $HORIZON_HOME/reports, else in ./reports.
 follow's latest is the newest .hzperf, finished or not.";
@@ -69,6 +76,7 @@ pub fn run(args: &[String], env: &Env, out: &mut dyn Write) -> Result<(), CliErr
         "summary" => summary(rest, env, out),
         "list" => list(rest, env, out),
         "follow" => follow(rest, env, out),
+        "query" => query::query(rest, env, out),
         "help" | "--help" | "-h" => writeln!(out, "{USAGE}").map_err(failed),
         other => Err(CliError::Usage(format!("unknown command {other}"))),
     }
@@ -94,7 +102,13 @@ fn parse(args: &[String], valued: &[&str], switches: &[&str]) -> Result<Parsed, 
             Some((name, value)) => (name, Some(value.to_string())),
             None => (flag, None),
         };
-        if switches.contains(&name) && inline.is_none() {
+        if name == "where"
+            && valued.contains(&"where")
+            && let Some(earlier) = parsed.flags.get("where").cloned()
+        {
+            let value = inline.clone().or_else(|| args.next().cloned()).unwrap_or_default();
+            parsed.flags.insert("where".into(), format!("{earlier},{value}"));
+        } else if switches.contains(&name) && inline.is_none() {
             parsed.flags.insert(name.into(), String::new());
         } else if valued.contains(&name) {
             let value = match inline {
@@ -165,21 +179,27 @@ fn file_name(path: &Path) -> String {
         .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
 }
 
+fn side_flag(parsed: &Parsed) -> Result<Option<Side>, CliError> {
+    match parsed.flags.get("side").map(String::as_str) {
+        None => Ok(None),
+        Some("server") => Ok(Some(Side::Server)),
+        Some("client") => Ok(Some(Side::Client)),
+        Some(other) => Err(CliError::Usage(format!(
+            "--side is client or server, got {other}"
+        ))),
+    }
+}
+
 fn summary(args: &[String], env: &Env, out: &mut dyn Write) -> Result<(), CliError> {
-    let parsed = parse(args, &["budget", "side", "dir"], &[])?;
-    let side = match parsed.flags.get("side").map(String::as_str) {
-        None => None,
-        Some("server") => Some(Side::Server),
-        Some("client") => Some(Side::Client),
-        Some(other) => {
-            return Err(CliError::Usage(format!(
-                "--side is client or server, got {other}"
-            )));
-        }
-    };
+    let parsed = parse(args, &["budget", "side", "thread", "dir"], &["slow", "all"])?;
+    if parsed.flags.contains_key("slow") && parsed.flags.contains_key("all") {
+        return Err(CliError::Usage("--slow and --all exclude each other".into()));
+    }
     let options = SummaryOptions {
         budget_tokens: parsed.number("budget")?.unwrap_or(DEFAULT_BUDGET),
-        side,
+        side: side_flag(&parsed)?,
+        thread: parsed.flags.get("thread").cloned(),
+        slow: parsed.flags.contains_key("slow"),
     };
     let path = resolve(
         parsed.one_file()?,

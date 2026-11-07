@@ -2,6 +2,9 @@ use horizon_perf_format::v1::{Capture, HealthSample, Kind, Side, Start, Stop};
 
 use crate::error::{Error, side_name};
 use crate::health::{live, max, mean, trailing_mean};
+use crate::view::View;
+
+mod sections;
 
 /// Default size of a summary in tokens, measured as bytes / 4.
 pub const DEFAULT_BUDGET: usize = 1500;
@@ -13,6 +16,10 @@ const TRAILING_WINDOWS: [(&str, f64); 3] = [("1m", 60.0), ("5m", 300.0), ("15m",
 pub struct SummaryOptions {
     pub budget_tokens: usize,
     pub side: Option<Side>,
+    /// The span thread of the phase table; the side's main thread when unset.
+    pub thread: Option<String>,
+    /// Phases of the slow ticks or frames only.
+    pub slow: bool,
 }
 
 impl Default for SummaryOptions {
@@ -20,16 +27,20 @@ impl Default for SummaryOptions {
         Self {
             budget_tokens: DEFAULT_BUDGET,
             side: None,
+            thread: None,
+            slow: false,
         }
     }
 }
 
-/// The agent report with a header and the health verdict per side, server first.
+/// The agent report: a header, the health verdict and the span-based sections per side, server first.
 pub fn summarize(capture: &Capture, name: &str, options: &SummaryOptions) -> Result<String, Error> {
+    let view = View::new(capture);
     let present = |side: Side| {
         capture.start.iter().any(|s| s.side() == side)
             || capture.health.iter().any(|h| h.side() == side)
             || capture.stop.iter().any(|s| s.side() == side)
+            || view.sides().contains(&side)
     };
     if let Some(side) = options.side
         && !present(side)
@@ -43,47 +54,101 @@ pub fn summarize(capture: &Capture, name: &str, options: &SummaryOptions) -> Res
     if sides.is_empty() {
         return Err(Error::Empty);
     }
-    let sections = sides
-        .into_iter()
-        .map(|side| side_rows(capture, name, side))
-        .collect();
-    Ok(fit(sections, options.budget_tokens))
+    let mut parts: Vec<Section> = Vec::new();
+    let mut detail = false;
+    for &side in &sides {
+        detail |= side_sections(&view, name, side, options, &mut parts)?;
+    }
+    if detail {
+        parts.push(vec![Line::body(sections::NOTE.to_string())]);
+        parts.push(vec![Line::fixed(sections::next(&view, &sides, options))]);
+    }
+    Ok(fit(parts, options.budget_tokens))
 }
 
-/// Cuts rows from the bottom of the lists, never a section's first row, until the text fits.
-fn fit(mut sections: Vec<Vec<String>>, budget_tokens: usize) -> String {
-    let size = |sections: &[Vec<String>]| -> usize {
-        sections
-            .iter()
-            .flatten()
-            .map(|row| row.len() + 1)
-            .sum::<usize>()
-            / 4
+type Section = Vec<Line>;
+
+#[derive(Clone, Copy, PartialEq)]
+enum LineKind {
+    /// Never cut: headers and the last line.
+    Fixed,
+    Body,
+    /// A table's column heading; it goes with its last row.
+    Heading,
+}
+
+struct Line {
+    text: String,
+    kind: LineKind,
+}
+
+impl Line {
+    fn fixed(text: String) -> Self {
+        Self { text, kind: LineKind::Fixed }
+    }
+
+    fn body(text: String) -> Self {
+        Self { text, kind: LineKind::Body }
+    }
+
+    fn heading(text: String) -> Self {
+        Self { text, kind: LineKind::Heading }
+    }
+}
+
+/// Shrinks the report until it fits: the longest list loses its last row (the later one on a tie), never mid-row;
+/// once every list is down to its first row, whole sections go from the bottom. Fixed lines stay.
+fn fit(mut parts: Vec<Section>, budget_tokens: usize) -> String {
+    let size = |parts: &[Section]| -> usize {
+        parts.iter().flatten().map(|l| l.text.len() + 1).sum::<usize>() / 4
     };
-    while size(&sections) > budget_tokens {
-        match sections.iter_mut().rev().find(|rows| rows.len() > 1) {
-            Some(rows) => {
-                rows.pop();
+    let cuttable = |part: &Section| !part.is_empty() && part.iter().all(|l| l.kind != LineKind::Fixed);
+    let shortest = |part: &Section| part.iter().filter(|l| l.kind == LineKind::Heading).count() + 1;
+    while size(&parts) > budget_tokens {
+        let longest = parts
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| cuttable(p) && p.len() > shortest(p))
+            .max_by_key(|(i, p)| (p.len(), *i))
+            .map(|(i, _)| i);
+        if let Some(i) = longest {
+            parts[i].pop();
+            continue;
+        }
+        match parts.iter().rposition(cuttable) {
+            Some(i) => {
+                parts.remove(i);
             }
             None => break,
         }
     }
-    let mut text = sections
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join("\n");
+    let mut text = parts.into_iter().flatten().map(|l| l.text).collect::<Vec<_>>().join("\n");
     text.push('\n');
     text
 }
 
-fn side_rows(capture: &Capture, name: &str, side: Side) -> Vec<String> {
+fn side_sections(
+    view: &View,
+    name: &str,
+    side: Side,
+    options: &SummaryOptions,
+    parts: &mut Vec<Section>,
+) -> Result<bool, Error> {
+    let capture = view.capture;
     let start = capture.start.iter().find(|s| s.side() == side);
     let stop = capture.stop.iter().find(|s| s.side() == side);
     let samples = live(capture, side);
-    let mut rows = vec![header(name, side, start, stop, &samples)];
-    rows.extend(health_rows(capture, side, start, stop, &samples));
-    rows
+    parts.push(vec![Line::fixed(header(name, side, start, stop, &samples))]);
+    parts.push(
+        health_rows(view, side, start, stop, &samples)
+            .into_iter()
+            .map(Line::body)
+            .collect(),
+    );
+    let more = sections::all(view, side, options)?;
+    let detail = !more.is_empty();
+    parts.extend(more);
+    Ok(detail)
 }
 
 fn header(
@@ -139,12 +204,13 @@ fn header(
 }
 
 fn health_rows(
-    capture: &Capture,
+    view: &View,
     side: Side,
     start: Option<&Start>,
     stop: Option<&Stop>,
     samples: &[&HealthSample],
 ) -> Vec<String> {
+    let capture = view.capture;
     if samples.is_empty() {
         return vec!["health  no health samples in this capture".into()];
     }
@@ -180,6 +246,9 @@ fn health_rows(
         }
         if !mspt.is_empty() {
             first.push(format!("MSPT {} ms", mspt.join(" · ")));
+        }
+        if let Some(text) = sections::slow_share(view, side) {
+            first.push(text);
         }
     } else {
         let mut fps = Vec::new();
@@ -271,7 +340,7 @@ fn megabytes(mb: f64) -> String {
     }
 }
 
-fn thousands(n: u32) -> String {
+fn thousands(n: impl std::fmt::Display) -> String {
     let digits = n.to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {

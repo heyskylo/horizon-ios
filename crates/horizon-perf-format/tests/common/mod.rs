@@ -95,6 +95,12 @@ pub fn push(expected: &mut Capture, field: Field) {
         Field::CounterDef(m) => expected.counter_defs.push(m),
         Field::Counters(m) => expected.counters.push(m),
         Field::Slow(m) => expected.slow.push(m),
+        Field::World(m) => expected.world.push(m),
+        Field::SpanBlock(m) => expected.span_blocks.push(m),
+        Field::Memory(m) => expected.memory.push(m),
+        Field::Spans(m) => expected.spans.push(m),
+        Field::Workers(m) => expected.workers.push(m),
+        Field::Net(m) => expected.net.push(m),
         Field::Stop(m) => expected.stop.push(m),
     }
 }

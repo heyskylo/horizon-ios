@@ -4,9 +4,12 @@ pub mod cli;
 pub mod error;
 pub mod follow;
 mod health;
+pub mod ids;
 mod inflate;
+pub mod query;
 pub mod read;
 pub mod summary;
+pub mod view;
 pub mod watch;
 
 pub use error::Error;
