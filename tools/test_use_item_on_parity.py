@@ -940,6 +940,22 @@ def placement_cases(facts, count, seed):
         yield case
 
 
+def forced_respawn_cases(facts):
+    """Non-bed forced points: Block.isPossibleToRespawnInThis at feet and head.
+
+    Plants containing water are not liquid blocks; bubble columns are. Keep both
+    cases even in a small run so fluid-containing is not substituted for liquid.
+    """
+    states = d.States(facts)
+    for name in ('air', 'water', 'lava', 'bubble_column', 'kelp', 'seagrass', 'stone'):
+        for height in (0, 1):
+            cells = [[0, 0, 0, states.get('air')], [0, 1, 0, states.get('air')]]
+            cells[height][3] = states.get(name)
+            yield {**h.environment(random.Random(10044)), 'pos': [0, 0, 0],
+                   'cells': cells, 'items': [], 'mode': 'dispense',
+                   'respawn_at': {'forced': True, 'consume': False, 'yaw': 37.0}}
+
+
 def d_plain(item, count):
     return d.plain(item, count)
 
@@ -972,7 +988,7 @@ def main():
     all_cases = [*cases(facts, args.count, args.seed, not args.no_transformers),
                  *wake_cases(facts, max(args.count // 10, 1), args.seed),
                  *used_stat_cases(facts, max(args.count // 10, 1), args.seed),
-                 *placement_cases(facts, max(args.count // 10, 1), args.seed)]
+                 *placement_cases(facts, max(args.count // 10, 1), args.seed), *forced_respawn_cases(facts)]
     (work / 'cases.jsonl').write_text(''.join(json.dumps(case) + '\n' for case in all_cases))
     classes = work / 'classes'
     classes.mkdir(exist_ok=True)
