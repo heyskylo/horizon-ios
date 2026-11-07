@@ -307,7 +307,7 @@ impl Game<'_> {
         let m = &mut self.mobs[index];
         // The memory is set again, for the item it holds now.
         m.extra.piglin.seen_admire = 0;
-        m.extra.off_hand = Some(item);
+        horizon_client::mobs::piglin::hold_in_offhand(m, item);
         m.extra.using_item = ADMIRE;
         m.extra.point = None;
         m.nav_stop();
