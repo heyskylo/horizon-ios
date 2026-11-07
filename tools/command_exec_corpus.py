@@ -5892,6 +5892,10 @@ ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANG
 
 def groups():
     try:
+        from .data_literal_corpus import storage_literals
+    except ImportError:
+        from data_literal_corpus import storage_literals
+    try:
         from .craft_map_take_corpus import cases as craft_map_takes
     except ImportError:
         from craft_map_take_corpus import cases as craft_map_takes
@@ -5968,6 +5972,7 @@ def groups():
 
 
         ('decorated pot data', decorated_pot_data()),
+        ('modern data literal values', storage_literals(cmd)),
         ('comparator output data', comparator_output_data()),
         ('hopper empty slot limits', hopper_empty_slot_limits()),
         ('End clock commands', end_clock_commands()),
