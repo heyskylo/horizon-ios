@@ -35,6 +35,8 @@ AllayAi.shouldDepositItemsAtLikedNoteblock	inline	crates/horizon-client/src/mobs
 AllayAi.getLikedPlayerPositionTracker	port	crates/horizon-client/src/game/allays.rs::Game::allay_liked_player	
 Armadillo.shouldSwitchToScaredState	inline	crates/horizon-client/src/mobs/armadillo.rs::ball_up_tick	rolling past its animation length
 Armadillo.onSyncedDataUpdated	port	crates/horizon-client/src/mobs/armadillo.rs::set_state	resets in_state_ticks on a state change
+Armadillo.addAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	state is written as its ArmadilloState name, always, beside scute_time
+Armadillo.readAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	state goes through switchToState, idle when the save names none; scute_time keeps the constructor's value when absent
 Armadillo.checkArmadilloSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	
 Armadillo.brushOffScute	port	crates/horizon-client/src/game/creatures.rs::Game::interact_armadillo	brush use; dispenser.rs dispense_brush does the same for a dispenser
 ArmadilloAi.initCoreActivity	inline	crates/horizon-client/src/mobs/armadillo.rs::register	float and panic goals; rolling out is in server_ai_step
@@ -148,3 +150,4 @@ MushroomCow.applyImplicitComponent	port	crates/horizon-client/src/entity_nbt.rs:
 MushroomCow.getBreedOffspring	port	crates/horizon-client/src/game/creatures.rs::Game::breed	see getOffspringVariant
 MushroomCow.getOffspringVariant	port	crates/horizon-client/src/game/creatures.rs::breed	ticked in #3512; `MushroomCow.getOffspringVariant` is cited at crates/horizon-client/src/game/creatures.rs:2566 (in a comment, so `where` names the enclosing fn)
 Tadpole.fromBucket	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	saved FromBucket is always true
+CamelHusk.canBeABaby	port	crates/horizon-client/src/mobs/species.rs::can_be_a_baby	the false arm: a camel husk inherits Camel's age but never its baby box

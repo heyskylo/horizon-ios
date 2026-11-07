@@ -488,7 +488,7 @@ impl Launcher {
         let (tx, search) = (m.tx.clone(), m.search);
         std::thread::spawn(move || {
             let result = browser::source(source)
-                .ok_or_else(|| format!("{} isn't set up.", source.label()))
+                .ok_or_else(|| trf("{source} isn't set up.", &[("source", source.label())]))
                 .and_then(|s| s.search(&query));
             let about: HashMap<String, Vec<String>> = match (&result, source) {
                 (Ok(found), SourceId::Horizon) => {
@@ -630,7 +630,9 @@ impl Launcher {
                     s.spawn(|| {
                         while let Some(p) = queue.lock().ok().and_then(|mut q| q.next()) {
                             let result = browser::source(p.source)
-                                .ok_or_else(|| format!("{} isn't set up.", p.source.label()))
+                                .ok_or_else(|| {
+                                    trf("{source} isn't set up.", &[("source", p.source.label())])
+                                })
                                 .and_then(|source| {
                                     java::check_project(&home, &*source, &p, everything, &|_| {})
                                 });
@@ -715,7 +717,7 @@ impl Launcher {
                     ));
                 };
                 let updated = browser::source(source_id)
-                    .ok_or_else(|| format!("{} isn't set up", source_id.label()))
+                    .ok_or_else(|| trf("{source} isn't set up.", &[("source", source_id.label())]))
                     .and_then(|source| {
                         let p = source.project(&id)?;
                         match &java {
@@ -796,7 +798,7 @@ impl Launcher {
             };
             let mut modpack = false;
             let result = browser::source(source)
-                .ok_or_else(|| format!("{} isn't set up.", source.label()))
+                .ok_or_else(|| trf("{source} isn't set up.", &[("source", source.label())]))
                 .and_then(|source| {
                     let p = match known {
                         Some(p) => p,
@@ -808,24 +810,28 @@ impl Launcher {
                             .iter()
                             .map(|e| format!("{} {}", e.title, e.number))
                             .collect();
-                        return Ok(format!(
-                            "Installed {}, checksums checked.",
-                            names.join(", ")
+                        return Ok(trf(
+                            "Installed {mods}, checksums checked.",
+                            &[("mods", &names.join(", "))],
                         ));
                     }
                     if p.kind == PackKind::DataPack {
-                        let (world, name) =
-                            world.ok_or("Pick the world the data pack goes into first.")?;
+                        let (world, name) = world.ok_or_else(|| {
+                            tr("Pick the world the data pack goes into first.").to_string()
+                        })?;
                         let done =
                             installed::install_datapack(&*source, &p, everything, &world, &|f| {
                                 progress(&p.title, f)
                             })?;
-                        return Ok(format!(
-                            "Put {} {} in {name}'s data packs, checksum checked: the game turns \
-                             it on when the world opens. {}",
-                            p.title,
-                            done.number,
-                            done.coverage.summary()
+                        return Ok(trf(
+                            "Put {pack} {version} in {world}'s data packs, checksum checked: the \
+                             game turns it on when the world opens. {coverage}",
+                            &[
+                                ("pack", &p.title),
+                                ("version", &done.number),
+                                ("world", &name),
+                                ("coverage", &done.coverage.summary()),
+                            ],
                         ));
                     }
                     modpack = p.kind == PackKind::Modpack;
@@ -837,12 +843,14 @@ impl Launcher {
                                 url,
                             );
                         }
-                        return Ok(format!(
-                            "Installed {} {} as its own profile with {}, each checked. Play it \
-                             from the list above.",
-                            pack.name,
-                            pack.version,
-                            pack.mods.join(", ")
+                        return Ok(trf(
+                            "Installed {pack} {version} as its own profile with {mods}, each \
+                             checked. Play it from the list above.",
+                            &[
+                                ("pack", &pack.name),
+                                ("version", &pack.version),
+                                ("mods", &pack.mods.join(", ")),
+                            ],
                         ));
                     }
                     if modpack {
@@ -859,8 +867,9 @@ impl Launcher {
                             );
                         }
                         return Ok(format!(
-                            "{} Play it from the list above.",
-                            modpacks::outcome(&pack)
+                            "{} {}",
+                            modpacks::outcome(&pack),
+                            tr("Play it from the list above.")
                         ));
                     }
                     let done = installed::install(&*source, &p, everything, &home, &progress)?;
@@ -868,36 +877,40 @@ impl Launcher {
                         .iter()
                         .map(|e| format!("{} {}", e.title, e.number))
                         .collect();
+                    let mods = names.join(", ");
                     if done.iter().any(|e| native_status::is_native_file(&e.file)) {
-                        return Ok(format!(
-                            "Installed {} into {instance}. Build to play with it.",
-                            names.join(", ")
+                        return Ok(trf(
+                            "Installed {mods} into {instance}. Build to play with it.",
+                            &[("mods", &mods), ("instance", &instance)],
                         ));
                     }
                     if p.source == SourceId::Horizon && p.kind == PackKind::Mod {
-                        return Ok(format!(
-                            "Installed {} into horizon-mods and turned it on, checksum checked \
-                             (Options > Mods in the game).",
-                            names.join(", ")
+                        return Ok(trf(
+                            "Installed {mods} into horizon-mods and turned it on, checksum \
+                             checked (Options > Mods in the game).",
+                            &[("mods", &mods)],
                         ));
                     }
                     if p.kind == PackKind::Mod {
                         let skipped = done.last().map_or(0, |e| e.skipped.len());
-                        return Ok(format!(
-                            "Ported {} into horizon-mods and turned on (Options > Mods in the \
-                             game).{}",
-                            names.join(", "),
-                            if skipped > 0 {
-                                " What didn't port is listed under Installed."
-                            } else {
-                                ""
-                            }
-                        ));
+                        let ported = trf(
+                            "Ported {mods} into horizon-mods and turned on (Options > Mods in \
+                             the game).",
+                            &[("mods", &mods)],
+                        );
+                        return Ok(if skipped > 0 {
+                            format!(
+                                "{ported} {}",
+                                tr("What didn't port is listed under Installed.")
+                            )
+                        } else {
+                            ported
+                        });
                     }
-                    Ok(format!(
-                        "Installed {}, checksums checked. Turn it on in the game: Options > \
-                         Resource Packs.",
-                        names.join(", ")
+                    Ok(trf(
+                        "Installed {mods}, checksums checked. Turn it on in the game: Options \
+                         > Resource Packs.",
+                        &[("mods", &mods)],
                     ))
                 });
             let _ = tx.send(Event::Done(result, modpack));

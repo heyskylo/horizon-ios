@@ -1,0 +1,12 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "client_items", "target": "horizon_client::game::native_client_services::Game<'_>::native_client_items"},
+    {"name": "client_texture", "target": "horizon_client::game::native_client_services::Game<'_>::native_client_texture"}
+  ],
+  "rust_summary": "what a client mod reads of the entities the client shows (radars, name tags, spectator ESP): `NativeClientEntity`'s type, yaw, baby, spectator and body texture, and `position_at`; the dropped items the client shows (`native_client_items`); a texture's pixels, an entity's or a downloaded skin's (`native_client_texture`, as `TexturePixels`).",
+  "doc_summary": "lists of the entities and dropped items a client shows, for client mods such as radars, name tags and spectator ESP ([Entities a client sees](#entities-a-client-sees)): `native_client_entities()` also gives each entity's type, yaw, baby, spectator and the texture its body draws with, and `position_at(partial_tick)` where the frame draws it; `native_client_items()` lists the dropped items the client shows; `native_client_texture(name)` gives the pixels of an entity texture or a player's skin, downloaded ones included. Bundles need \"hooks\": @API:client_entity_list@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_client_services.rs"
+  ]
+}

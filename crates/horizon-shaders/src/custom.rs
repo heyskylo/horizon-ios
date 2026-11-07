@@ -173,7 +173,7 @@ enum Expr {
     Bin(&'static str, Box<Expr>, Box<Expr>),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Item {
     name: String,
     ty: String,
@@ -182,7 +182,7 @@ struct Item {
 }
 
 /// The pack's custom uniforms and variables, with the state `smooth` and `random` keep.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Custom {
     items: Vec<Item>,
     /// `smooth` state per call site.
@@ -258,6 +258,13 @@ impl Custom {
             self.restart_smoothing();
             self.world_seen = biome_known;
         }
+    }
+
+    /// Forgets the world's frames, as a pack just loaded has seen none: `smooth` restarts every
+    /// frame again until one knows the camera's biome (`Renderer::reset_shader_pack_history`).
+    pub fn forget_world(&mut self) {
+        self.restart_smoothing();
+        self.world_seen = false;
     }
 
     /// Restarts `smooth` and `random` for a frame of the world's tick `tick`, so a frame drawn
@@ -1299,6 +1306,10 @@ mod tests {
         let (cat, y) = (0..60).fold((0.0, 0.0), |_, _| frame(&mut c, true, 10.0, -5.38));
         assert!(cat > 9.9, "the biome's category from the start: {cat}");
         assert!(y > 290.0, "still fading from the spawn's 300: {y}");
+        // Forgotten, as by a pack history reset: it starts again from the first known frame.
+        c.forget_world();
+        frame(&mut c, false, 0.0, 100.0);
+        assert_eq!(frame(&mut c, true, 10.0, 100.0), (10.0, 300.0));
     }
 
     #[test]

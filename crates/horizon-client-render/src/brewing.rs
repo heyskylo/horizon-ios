@@ -387,14 +387,71 @@ impl BrewingStand {
         out.brewed = true;
     }
 }
-/// The `minecraft:brewing_fuel` providers of an item: (uses, speed_multiplier).
+/// `ItemStack.get(BREWING_FUEL)`: the stack's providers (uses, speed_multiplier),
+/// respecting component patches before falling back to the item's defaults.
 pub fn brewing_fuel(items: &Items, stack: &ItemStack) -> Option<(Value, Value)> {
+    if let Some(data) = stack.data() {
+        if data.other("!minecraft:brewing_fuel").is_some() {
+            return None;
+        }
+        if let Some(own) = data.other("minecraft:brewing_fuel") {
+            let component = horizon_client_core::scoreboard::tag_to_json(own);
+            return Some((
+                component["uses"].clone(),
+                component["speed_multiplier"].clone(),
+            ));
+        }
+    }
     items.get(&stack.item).and_then(|i| i.brewing_fuel.clone())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stack_fuel_controls_brew_duration_and_consumption() {
+        let items = Items::for_tests(Default::default());
+        let brewing = Brewing {
+            reagents: ["minecraft:nether_wart".to_owned()].into_iter().collect(),
+            inputs: HashSet::new(),
+            recipes: vec![BrewingRecipe {
+                id: "awkward".into(),
+                input: PotionIngredient {
+                    items: ["minecraft:potion".to_owned()].into_iter().collect(),
+                    potions: Some(["minecraft:water".to_owned()].into_iter().collect()),
+                },
+                reagent: PotionIngredient {
+                    items: ["minecraft:nether_wart".to_owned()].into_iter().collect(),
+                    potions: None,
+                },
+                output: ItemStack::new("minecraft:potion", 1).with_potion("minecraft:awkward"),
+            }],
+        };
+        let mut fuel = ItemStack::new("minecraft:stone", 2);
+        fuel.data_mut().set_loot_component(
+            "minecraft:brewing_fuel",
+            &serde_json::json!({"uses": 7, "speed_multiplier": 2.5}),
+        );
+        let mut stand = BrewingStand::new();
+        stand.items[0] = Some(ItemStack::new("minecraft:potion", 1).with_potion("minecraft:water"));
+        stand.items[3] = Some(ItemStack::new("minecraft:nether_wart", 1));
+        stand.items[4] = Some(fuel);
+        let providers = Providers::empty();
+        stand.tick(&brewing, &items, &providers);
+        assert_eq!((stand.brew_time, stand.fuel, stand.total_fuel), (160, 6, 7));
+        assert_eq!(stand.items[4].as_ref().unwrap().count, 1);
+        for _ in 1..160 {
+            assert!(!stand.tick(&brewing, &items, &providers).brewed);
+        }
+        assert!(stand.tick(&brewing, &items, &providers).brewed);
+        assert_eq!(
+            stand.items[0].as_ref().unwrap().potion(),
+            Some("minecraft:awkward")
+        );
+        assert_eq!(stand.fuel, 6);
+        assert_eq!(stand.items[4].as_ref().unwrap().count, 1);
+    }
 
     #[test]
     fn potion_colours_and_names() {

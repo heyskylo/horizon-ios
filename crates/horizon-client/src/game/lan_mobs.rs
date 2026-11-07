@@ -159,6 +159,26 @@ fn guest_view(mut v: PlayerView, uuid: u128, moved: [f64; 3]) -> PlayerView {
 }
 
 impl Game<'_> {
+    /// How mobs see the guest `conn`, as `lan_guest_views` gives each: None
+    /// for no such guest in play here, or while the hub is taken out.
+    pub(super) fn lan_guest_view(&mut self, conn: u32) -> Option<PlayerView> {
+        let mut host = self.lan.take()?;
+        let found = host
+            .hub
+            .guests
+            .iter()
+            .find(|g| g.conn == conn && host.hub.here(g) && g.loaded && !g.dead)
+            .map(|g| {
+                let moved = [0, 1, 2].map(|k| g.position[k] - g.previous_position[k]);
+                (g.uuid, moved)
+            });
+        let view = found.and_then(|(uuid, moved)| {
+            let v = self.as_guest(&mut host, conn, |g| g.player_view())??;
+            Some(guest_view(v, uuid, moved))
+        });
+        self.lan = Some(host);
+        view
+    }
     /// How mobs see each guest in play (`player_view` with the guest swapped
     /// in).
     pub(super) fn lan_guest_views(&mut self) -> GuestViews {

@@ -6,6 +6,8 @@
 //! put in an error and never sent anywhere else.
 use horizon_core::version;
 use serde::{Deserialize, Deserializer, Serialize};
+use std::io::Read;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 /// `RealmsClient.Environment.PRODUCTION`'s base URL.
@@ -367,6 +369,48 @@ fn configuration_body(
     })
 }
 
+/// `InviteCode`: one of the Realm's shareable invite codes.
+#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteCode {
+    #[serde(default, deserialize_with = "nullable")]
+    pub code: String,
+    /// Epoch milliseconds; none never expires.
+    #[serde(default, deserialize_with = "nullable")]
+    pub expiration_date: Option<i64>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Default)]
+struct InviteCodeListResponse {
+    #[serde(default, deserialize_with = "nullable")]
+    invite_codes: Vec<InviteCode>,
+}
+
+/// `Backup`: one of the Realm's automatic backups.
+#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Backup {
+    #[serde(default, deserialize_with = "nullable")]
+    pub backup_id: String,
+    /// `Backup.lastModified`: epoch milliseconds.
+    #[serde(default, deserialize_with = "nullable")]
+    pub last_modified: i64,
+    #[serde(default, deserialize_with = "nullable")]
+    pub size: i64,
+    #[serde(default, deserialize_with = "nullable")]
+    pub metadata: std::collections::HashMap<String, serde_json::Value>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub change_list: std::collections::HashMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, Default)]
+struct BackupListResponse {
+    #[serde(default, deserialize_with = "nullable")]
+    backups: Vec<Backup>,
+}
+
 /// `RealmsWorldOptions`: a slot's options. Fields the JSON lacks keep the values of its
 /// constructor (`Default`); `empty` is never in the JSON (`RealmsSlot.defaults` sets it).
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -478,6 +522,178 @@ pub struct Subscription {
     /// `Subscription.SubscriptionType`: `NORMAL` or `RECURRING`.
     #[serde(rename = "type", default, deserialize_with = "nullable")]
     pub kind: String,
+}
+
+/// `WorldTemplate`: one entry of `RealmsSelectWorldTemplateScreen`'s list.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorldTemplate {
+    #[serde(default, deserialize_with = "nullable")]
+    pub id: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub name: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub version: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub author: String,
+    /// The publisher's page and the trailer, opened in the browser.
+    #[serde(default)]
+    pub link: Option<String>,
+    #[serde(default)]
+    pub image: Option<String>,
+    #[serde(default)]
+    pub trailer: Option<String>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub recommended_players: String,
+    /// `WorldTemplate.WorldTemplateType`: `WORLD_TEMPLATE` when the answer has none.
+    #[serde(
+        rename = "type",
+        default = "world_template",
+        deserialize_with = "template_type"
+    )]
+    pub kind: String,
+}
+
+/// `WorldTemplatePaginatedList`: a page of a world type's templates.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+pub struct WorldTemplateList {
+    #[serde(default, deserialize_with = "nullable")]
+    pub templates: Vec<WorldTemplate>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub page: i32,
+    #[serde(default, deserialize_with = "nullable")]
+    pub size: i32,
+    #[serde(default, deserialize_with = "nullable")]
+    pub total: i32,
+}
+
+/// `WorldTemplate.parse` keeps vanilla's default type when the answer has none.
+fn world_template() -> String {
+    "WORLD_TEMPLATE".to_owned()
+}
+
+/// `WorldTemplate.parse` keeps vanilla's default type for a missing or unknown one.
+fn template_type<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    const TYPES: [&str; 5] = [
+        "WORLD_TEMPLATE",
+        "MINIGAME",
+        "ADVENTUREMAP",
+        "EXPERIENCE",
+        "INSPIRATION",
+    ];
+    let kind = Option::<String>::deserialize(d)?.unwrap_or_default();
+    Ok(if TYPES.contains(&kind.as_str()) {
+        kind
+    } else {
+        "WORLD_TEMPLATE".to_owned()
+    })
+}
+
+/// `UploadInfo`: where `FileUpload` posts a packed world, and the token for its cookie.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct UploadInfo {
+    /// `UploadInfo.worldClosed`: the Realm said its world is closed; an upload needs that.
+    pub world_closed: bool,
+    pub token: Option<String>,
+    /// `UploadInfo.uploadEndpoint`, as the answer names it (a scheme when it has one).
+    pub endpoint: String,
+    /// `UploadInfo.port`: the answer's `port`, `-1` when it names none.
+    pub port: i32,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct UploadInfoAnswer {
+    #[serde(default)]
+    upload_endpoint: Option<String>,
+    #[serde(default = "minus_one", deserialize_with = "port_or_minus_one")]
+    port: i32,
+    #[serde(default, deserialize_with = "nullable")]
+    world_closed: bool,
+    #[serde(default)]
+    token: Option<String>,
+}
+
+/// `JsonUtils.getIntOr("port", object, -1)`: a missing or null port is -1.
+fn minus_one() -> i32 {
+    -1
+}
+
+fn port_or_minus_one<'de, D: Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+    Ok(Option::<i32>::deserialize(d)?.unwrap_or(-1))
+}
+
+impl UploadInfo {
+    /// `UploadInfo.parse`: an answer without an endpoint is no upload target at all.
+    fn parse(json: &str) -> Option<Self> {
+        let answer = serde_json::from_str::<UploadInfoAnswer>(json).ok()?;
+        let endpoint = answer.upload_endpoint?;
+        Some(Self {
+            world_closed: answer.world_closed,
+            token: answer.token,
+            endpoint,
+            port: answer.port,
+        })
+    }
+
+    /// `UploadInfo.assembleUri` and `FileUpload`'s `resolve("/upload/{realm}/{slot}")`: a
+    /// scheme when the answer names none, `http`'s 8080 when neither it nor a port says
+    /// otherwise.
+    fn upload_url(&self, realm_id: i64, slot_id: i32) -> Option<String> {
+        let endpoint = if self.endpoint.contains("://") {
+            self.endpoint.clone()
+        } else {
+            format!("http://{}", self.endpoint)
+        };
+        let (scheme, rest) = endpoint.split_once("://")?;
+        let authority = rest.split('/').next().filter(|a| !a.is_empty())?;
+        let (host, parsed_port) = match authority.rsplit_once(':') {
+            Some((host, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => {
+                (host, port.parse::<u16>().ok())
+            }
+            _ => (authority, None),
+        };
+        if host.is_empty() {
+            return None;
+        }
+        let port = if self.port >= 0 {
+            u16::try_from(self.port).ok()?
+        } else {
+            parsed_port.unwrap_or(8080)
+        };
+        Some(format!(
+            "{scheme}://{host}:{port}/upload/{realm_id}/{slot_id}"
+        ))
+    }
+}
+
+/// Why `FileUpload`'s body request stopped: the service's `getSimplifiedErrorMessage`, or the
+/// cancel the screen asked for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UploadFailure {
+    Failed(String),
+    Cancelled,
+}
+
+/// `FileUpload.UploadCountingInputStream`: what the socket took, and a cancelled read.
+struct CountingReader<'a, R> {
+    inner: R,
+    written: &'a AtomicU64,
+    cancel: &'a AtomicBool,
+}
+
+impl<R: Read> Read for CountingReader<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.cancel.load(Ordering::Relaxed) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "upload cancelled",
+            ));
+        }
+        let read = self.inner.read(buf)?;
+        self.written.fetch_add(read as u64, Ordering::Relaxed);
+        Ok(read)
+    }
 }
 
 /// Why a Realms call failed (`RealmsServiceException` and its `RealmsError`). None of them
@@ -892,16 +1108,280 @@ impl RealmsClient {
         Self::execute(self.request("PUT", &url, READ_TIMEOUT), Some("")).map(drop)
     }
 
-    /// `RealmsClient.redeemInviteCode`: the invite-code service, with the token in
-    /// `x-mojangauth` as `frontendV2Request` sets it.
-    pub fn redeem_invite_code(&self, code: &str) -> Result<(), RealmsError> {
-        let code = path_segment(code.trim())?;
-        let url = format!("{}/api/v1.0/invite/codes/use/{code}", self.frontend_url);
+    /// `RealmsClient.fetchWorldTemplates`: `GET worlds/templates/{type}?page={page}&pageSize={size}`.
+    /// `WorldTemplatePaginatedList.parse` leaves a page it can't read empty rather than failing.
+    pub fn fetch_world_templates(
+        &self,
+        page: i32,
+        page_size: i32,
+        world_type: &str,
+    ) -> Result<WorldTemplateList, RealmsError> {
+        let world_type = path_segment(world_type)?;
+        let url = self.url(&format!(
+            "worlds/templates/{world_type}?page={page}&pageSize={page_size}"
+        ));
+        let json = Self::execute(self.request("GET", &url, READ_TIMEOUT), None)?;
+        Ok(serde_json::from_str(&json).unwrap_or_default())
+    }
+
+    /// `RealmsClient.resetWorldWithTemplate`: `POST worlds/{id}/reset` with
+    /// `RealmsWorldResetDto` as `resetWorldWithTemplate` builds it (no seed, level type -1).
+    pub fn reset_world_with_template(
+        &self,
+        realm_id: i64,
+        template_id: i64,
+    ) -> Result<bool, RealmsError> {
+        let body = serde_json::json!({
+            "seed": serde_json::Value::Null,
+            "worldTemplateId": template_id,
+            "levelType": -1,
+            "generateStructures": false,
+            "experiments": Vec::<String>::new(),
+        })
+        .to_string();
+        let url = self.url(&format!("worlds/{realm_id}/reset"));
+        // `Request.post(..., 30000, 80000)`: the reset generates the world before it answers.
+        let json = Self::execute(
+            self.request("POST", &url, Duration::from_secs(80)),
+            Some(&body),
+        )?;
+        json.trim().parse::<bool>().map_err(|_| RealmsError::Parse)
+    }
+
+    /// `RealmsClient.putIntoMinigameMode`: `PUT worlds/minigames/{minigame}/{realm}`, the
+    /// service's yes or no (`SwitchMinigameTask`).
+    pub fn put_into_minigame_mode(
+        &self,
+        realm_id: i64,
+        minigame_id: &str,
+    ) -> Result<bool, RealmsError> {
+        let minigame_id = path_segment(minigame_id)?;
+        let url = self.url(&format!("worlds/minigames/{minigame_id}/{realm_id}"));
+        let json = Self::execute(self.request("PUT", &url, READ_TIMEOUT), Some(""))?;
+        json.trim().parse::<bool>().map_err(|_| RealmsError::Parse)
+    }
+
+    /// `RealmsClient.requestUploadInfo`: `PUT worlds/{id}/backups/upload`, the token the last
+    /// answer gave as `UploadInfo.createRequest` sends it. `None` when it names no target.
+    pub fn request_upload_info(
+        &self,
+        realm_id: i64,
+        previous_token: Option<&str>,
+    ) -> Result<Option<UploadInfo>, RealmsError> {
+        let body = match previous_token {
+            Some(token) => serde_json::json!({ "token": token }).to_string(),
+            None => "{}".to_owned(),
+        };
+        let url = self.url(&format!("worlds/{realm_id}/backups/upload"));
+        let json = Self::execute(self.request("PUT", &url, READ_TIMEOUT), Some(&body))?;
+        Ok(UploadInfo::parse(&json))
+    }
+
+    /// `FileUpload.startUpload`: `POST {endpoint}/upload/{realm}/{slot}` with the packed world.
+    /// The reader counts what it hands the socket (`UploadCountingInputStream`) and fails the
+    /// read once `cancel` is set; a `Retry-After` answer sends the body again (`MAX_RETRIES`),
+    /// counting from zero as `UploadStatus.restart` does.
+    #[allow(clippy::too_many_arguments)]
+    pub fn upload_world(
+        &self,
+        realm_id: i64,
+        slot_id: i32,
+        info: &UploadInfo,
+        world_version: &str,
+        archive: &std::path::Path,
+        written: &AtomicU64,
+        cancel: &AtomicBool,
+    ) -> Result<(), UploadFailure> {
+        const MAX_RETRIES: usize = 5;
+        let url = info
+            .upload_url(realm_id, slot_id)
+            .ok_or_else(|| UploadFailure::Failed("no upload endpoint".to_owned()))?;
+        let token = info.token.as_deref().unwrap_or("null");
+        let cookie = format!(
+            "sid=token:{}:{:032x};token={token};user={};version={};worldVersion={world_version}",
+            self.access_token,
+            self.player_uuid,
+            self.player_name,
+            version::VANILLA_VERSION,
+        );
+        let mut attempt = 0usize;
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(UploadFailure::Cancelled);
+            }
+            let file =
+                std::fs::File::open(archive).map_err(|e| UploadFailure::Failed(e.to_string()))?;
+            let counted = CountingReader {
+                inner: file,
+                written,
+                cancel,
+            };
+            let agent = ureq::AgentBuilder::new()
+                .timeout_connect(Duration::from_secs(15))
+                .timeout(Duration::from_secs(600))
+                // A redirect must not carry the upload cookie to another host.
+                .redirects(0)
+                .user_agent(&user_agent())
+                .build();
+            let request = agent
+                .post(&url)
+                .set("Cookie", &cookie)
+                .set("Content-Type", "application/octet-stream")
+                .set(
+                    "Content-Length",
+                    &std::fs::metadata(archive)
+                        .map(|m| m.len())
+                        .unwrap_or(0)
+                        .to_string(),
+                );
+            let result = request.send(counted);
+            if cancel.load(Ordering::Relaxed) {
+                return Err(UploadFailure::Cancelled);
+            }
+            let response = match result {
+                Ok(response) => response,
+                Err(ureq::Error::Status(_, response)) => response,
+                Err(ureq::Error::Transport(e)) => {
+                    return Err(UploadFailure::Failed(e.to_string()));
+                }
+            };
+            let retry_after = response
+                .header("Retry-After")
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .unwrap_or(0);
+            let status = response.status();
+            let body = response.into_string().unwrap_or_default();
+            if retry_after > 0 && attempt + 1 < MAX_RETRIES {
+                attempt += 1;
+                written.store(0, Ordering::Relaxed);
+                std::thread::sleep(Duration::from_secs(retry_after.min(60)));
+                continue;
+            }
+            // `UploadResult.getSimplifiedErrorMessage`.
+            if (200..300).contains(&status) {
+                return Ok(());
+            }
+            if status == 400
+                && let Some(message) = serde_json::from_str::<serde_json::Value>(&body)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("errorMsg")
+                            .and_then(|m| m.as_str())
+                            .map(str::to_owned)
+                    })
+            {
+                return Err(UploadFailure::Failed(message));
+            }
+            return Err(UploadFailure::Failed(status.to_string()));
+        }
+    }
+
+    /// The invite-code service: `frontendV2Request`, with the token in `x-mojangauth`.
+    fn frontend(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+    ) -> Result<String, RealmsError> {
+        let url = format!("{}/{path}", self.frontend_url);
         let request = self
-            .request("POST", &url, READ_TIMEOUT)
+            .request(method, &url, READ_TIMEOUT)
             .set("x-mojangauth", &self.access_token)
             .set("Accept", "application/json");
-        Self::execute(request, Some("")).map(drop)
+        Self::execute(request, body)
+    }
+
+    /// `RealmsClient.redeemInviteCode`: `POST api/v1.0/invite/codes/use/{code}`.
+    pub fn redeem_invite_code(&self, code: &str) -> Result<(), RealmsError> {
+        let code = path_segment(code.trim())?;
+        self.frontend(
+            "POST",
+            &format!("api/v1.0/invite/codes/use/{code}"),
+            Some(""),
+        )
+        .map(drop)
+    }
+
+    /// `RealmsClient.inviteCodes`: `GET api/v1.0/invite/codes?realmId={id}`.
+    pub fn invite_codes(&self, realm_id: i64) -> Result<Vec<InviteCode>, RealmsError> {
+        let json = self.frontend(
+            "GET",
+            &format!("api/v1.0/invite/codes?realmId={realm_id}"),
+            None,
+        )?;
+        serde_json::from_str::<InviteCodeListResponse>(&json)
+            .map(|r| r.invite_codes)
+            .map_err(|_| RealmsError::Parse)
+    }
+
+    /// `RealmsClient.createInviteCode`: `POST api/v1.0/invite/codes` with
+    /// `InviteCodeRequestDto`'s JSON.
+    pub fn create_invite_code(
+        &self,
+        realm_id: i64,
+        enabled: bool,
+        expiration: Option<i64>,
+    ) -> Result<(), RealmsError> {
+        let body = serde_json::json!({
+            "code": null,
+            "realmId": realm_id,
+            "enabled": enabled,
+            "expirationDate": expiration,
+        })
+        .to_string();
+        self.frontend("POST", "api/v1.0/invite/codes", Some(&body))
+            .map(drop)
+    }
+
+    /// `RealmsClient.updateInviteCode`: `POST api/v1.0/invite/codes/update`.
+    pub fn update_invite_code(
+        &self,
+        realm_id: i64,
+        code: &str,
+        enabled: bool,
+        expiration: Option<i64>,
+    ) -> Result<(), RealmsError> {
+        let body = serde_json::json!({
+            "code": code,
+            "realmId": realm_id,
+            "enabled": enabled,
+            "expirationDate": expiration,
+        })
+        .to_string();
+        self.frontend("POST", "api/v1.0/invite/codes/update", Some(&body))
+            .map(drop)
+    }
+
+    /// `RealmsClient.deleteInviteCode`: `DELETE api/v1.0/invite/codes/delete/{code}`.
+    pub fn delete_invite_code(&self, code: &str) -> Result<(), RealmsError> {
+        self.frontend(
+            "DELETE",
+            &format!("api/v1.0/invite/codes/delete/{}", path_segment(code)?),
+            None,
+        )
+        .map(drop)
+    }
+
+    /// `RealmsClient.backupsFor`: `GET worlds/{id}/backups`.
+    pub fn backups_for(&self, realm_id: i64) -> Result<Vec<Backup>, RealmsError> {
+        let url = self.url(&format!("worlds/{realm_id}/backups"));
+        let json = Self::execute(self.request("GET", &url, READ_TIMEOUT), None)?;
+        serde_json::from_str::<BackupListResponse>(&json)
+            .map(|r| r.backups)
+            .map_err(|_| RealmsError::Parse)
+    }
+
+    /// `RealmsClient.restoreWorld`: `PUT worlds/{id}/backups?backupId={backupId}`, with
+    /// vanilla's long timeouts (`Request.put(url, "", 40000, 600000)`).
+    pub fn restore_world(&self, realm_id: i64, backup_id: &str) -> Result<(), RealmsError> {
+        let url = self.url(&format!("worlds/{realm_id}/backups"));
+        let query = format!("backupId={}", urlencoded(backup_id)?);
+        let full = format!("{url}?{query}");
+        Self::execute(
+            self.request("PUT", &full, Duration::from_secs(600)),
+            Some(""),
+        )
+        .map(drop)
     }
 }
 
@@ -923,6 +1403,23 @@ fn path_segment(s: &str) -> Result<&str, RealmsError> {
     }
 }
 
+/// A query value: percent-encoded the way `URI` encodes it, so a backup id cannot add a
+/// parameter or a fragment.
+fn urlencoded(value: &str) -> Result<String, RealmsError> {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    if out.is_empty() {
+        return Err(RealmsError::Parse);
+    }
+    Ok(out)
+}
+
 /// `UndashedUuid.toString`: a player's UUID as 32 hex digits, the op/deop/uninvite path
 /// segment. Anything else (a name with a `/`, a shortened id) would reach another path.
 fn undashed(uuid: &str) -> Result<String, RealmsError> {
@@ -942,6 +1439,15 @@ mod tests {
 
     const TOKEN: &str = "eyJsecret.token.value";
     const UUID: u128 = 0x0123_4567_89ab_cdef_0123_4567_89ab_cdef;
+
+    /// `RealmsClient.restoreWorld` puts the backup id in the query: a `&` or `/` in it
+    /// must not add parameters or paths.
+    #[test]
+    fn a_backup_id_is_a_safe_query_value() {
+        assert_eq!(urlencoded("abc-123_x.y~z").unwrap(), "abc-123_x.y~z");
+        assert_eq!(urlencoded("a b&c=d/e").unwrap(), "a%20b%26c%3Dd%2Fe");
+        assert!(urlencoded("").is_err());
+    }
 
     /// One HTTP exchange on a local port: the request as the server read it.
     fn serve_once(answer: &'static str) -> (String, std::thread::JoinHandle<String>) {
@@ -1316,5 +1822,137 @@ mod tests {
         assert_eq!(range.from_slider(1.0), 16);
         assert_eq!(range.from_slider(0.5), 9);
         assert_eq!(range.current_or_default(), 8);
+    }
+
+    /// One HTTP exchange whose whole request (the Content-Length body included) is returned.
+    fn serve_request(answer: &'static str) -> (String, std::thread::JoinHandle<String>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut seen = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = stream.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                seen.extend_from_slice(&buf[..n]);
+                if let Some(end) = seen.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&seen[..end]).into_owned();
+                    let length = header(&headers, "Content-Length")
+                        .and_then(|v| v.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if seen.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            stream.write_all(answer.as_bytes()).unwrap();
+            String::from_utf8_lossy(&seen).into_owned()
+        });
+        (base, handle)
+    }
+
+    #[test]
+    fn a_reset_posts_the_template_with_no_seed() {
+        let (base, server) =
+            serve_request("HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntrue");
+        assert!(client(&base).reset_world_with_template(7, 42).unwrap());
+        let request = server.join().unwrap();
+        assert!(
+            request.starts_with("POST /worlds/7/reset HTTP/1.1"),
+            "{request}"
+        );
+        let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+        // `RealmsWorldResetDto` as `resetWorldWithTemplate` builds it.
+        assert!(body.contains("\"worldTemplateId\":42"), "{request}");
+        assert!(body.contains("\"seed\":null"), "{request}");
+        assert!(body.contains("\"levelType\":-1"), "{request}");
+        assert!(body.contains("\"generateStructures\":false"), "{request}");
+    }
+
+    #[test]
+    fn world_templates_are_asked_for_by_page_and_world_type() {
+        let body = r#"{"templates":[{"id":"42","name":"Skyblock","version":"1.21","author":"Mojang","recommendedPlayers":"1-4","type":"MINIGAME"}],"page":2,"size":10,"total":11}"#;
+        let answer: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .into_boxed_str(),
+        );
+        let (base, server) = serve_once(answer);
+        let list = client(&base)
+            .fetch_world_templates(2, 10, "ADVENTUREMAP")
+            .unwrap();
+        let request = server.join().unwrap();
+        assert!(
+            request.starts_with("GET /worlds/templates/ADVENTUREMAP?page=2&pageSize=10 HTTP/1.1"),
+            "{request}"
+        );
+        assert_eq!((list.page, list.size, list.total), (2, 10, 11));
+        assert_eq!(list.templates[0].name, "Skyblock");
+        assert_eq!(list.templates[0].kind, "MINIGAME");
+    }
+
+    #[test]
+    fn a_template_without_a_known_type_is_a_world_template() {
+        // `WorldTemplate.parse`: a missing or unknown `type` reads as WORLD_TEMPLATE.
+        let missing: WorldTemplateList =
+            serde_json::from_str(r#"{"templates":[{"id":"1"}]}"#).unwrap();
+        assert_eq!(missing.templates[0].kind, "WORLD_TEMPLATE");
+        let unknown: WorldTemplateList =
+            serde_json::from_str(r#"{"templates":[{"type":"nonsense"}]}"#).unwrap();
+        assert_eq!(unknown.templates[0].kind, "WORLD_TEMPLATE");
+        assert_eq!((unknown.page, unknown.size, unknown.total), (0, 0, 0));
+    }
+
+    #[test]
+    fn an_upload_answer_gives_the_endpoint_and_its_port() {
+        let info = UploadInfo::parse(
+            r#"{"uploadEndpoint":"upload.example.net","port":8081,"worldClosed":true,"token":"abc"}"#,
+        )
+        .unwrap();
+        assert_eq!(info.endpoint, "upload.example.net");
+        assert_eq!(info.port, 8081);
+        assert!(info.world_closed);
+        assert_eq!(info.token.as_deref(), Some("abc"));
+        // `FileUpload`: resolve("/upload/{realm}/{slot}") against the endpoint.
+        assert_eq!(
+            info.upload_url(7, 2).unwrap(),
+            "http://upload.example.net:8081/upload/7/2"
+        );
+        // `UploadInfo.assembleUri`: a named scheme and port stay; otherwise 8080.
+        let info = UploadInfo::parse(r#"{"uploadEndpoint":"https://upload.example.net:9000/v1"}"#)
+            .unwrap();
+        assert_eq!(
+            info.upload_url(7, 2).unwrap(),
+            "https://upload.example.net:9000/upload/7/2"
+        );
+        let info = UploadInfo::parse(r#"{"uploadEndpoint":"https://upload.example.net"}"#).unwrap();
+        assert_eq!(
+            info.upload_url(7, 2).unwrap(),
+            "https://upload.example.net:8080/upload/7/2"
+        );
+        // An answer without an endpoint is no target at all.
+        assert!(UploadInfo::parse("{}").is_none());
+    }
+
+    #[test]
+    fn a_minigame_switch_puts_the_template_in_the_path() {
+        let (base, server) =
+            serve_once("HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntrue");
+        assert!(client(&base).put_into_minigame_mode(7, "12").unwrap());
+        let request = server.join().unwrap();
+        assert!(
+            request.starts_with("PUT /worlds/minigames/12/7 HTTP/1.1"),
+            "{request}"
+        );
+        // A template id is one path segment: anything else never reaches the service.
+        let error = client(&base)
+            .put_into_minigame_mode(7, "../worlds")
+            .unwrap_err();
+        assert!(matches!(error, RealmsError::Service { status: 400, .. }));
     }
 }

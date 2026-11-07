@@ -52,6 +52,20 @@ pub(in crate::game) enum Owner {
     Block([i32; 3]),
 }
 
+/// The standard equipment slots with existing whole-stack storage.
+fn mob_stack_slot(key: &str) -> Option<usize> {
+    use horizon_client::mobs::finalize;
+    Some(match key {
+        "mainhand" => finalize::MAINHAND,
+        "offhand" => finalize::OFFHAND,
+        "head" => finalize::HEAD,
+        "chest" => finalize::CHEST,
+        "legs" => finalize::LEGS,
+        "feet" => finalize::FEET,
+        _ => return None,
+    })
+}
+
 /// The player's slot names and the inventory index each addresses.
 fn player_slot_names() -> Vec<(String, usize)> {
     let mut v = Vec::new();
@@ -390,6 +404,20 @@ impl Game<'_> {
                 if *key == "saddle" {
                     return m.saddle_item();
                 }
+                if let Some(slot) = mob_stack_slot(key) {
+                    if let Some(stack) = horizon_client::mobs::finalize::stored_stack(m, slot) {
+                        return Some(stack);
+                    }
+                    let worn = ["head", "chest", "legs", "feet"]
+                        .iter()
+                        .position(|name| name == key);
+                    if let Some(stack) = worn.and_then(|i| m.extra.armor[i].clone()).filter(|s| {
+                        horizon_client::mobs::finalize::item(m, slot).as_ref() == Some(&s.item)
+                    }) {
+                        return Some(stack);
+                    }
+                    return horizon_client::mobs::finalize::item_stack(m, slot);
+                }
                 let item = match *key {
                     "mainhand" => &m.extra.main_hand,
                     "offhand" => &m.extra.off_hand,
@@ -569,9 +597,50 @@ impl Game<'_> {
                 None => false,
             },
             Slot::Mob(id, key) => {
-                let Some(m) = self.mobs.iter_mut().find(|m| m.id == *id) else {
+                let Some(index) = self.mobs.iter().position(|m| m.id == *id) else {
                     return false;
                 };
+                let m = &self.mobs[index];
+                let first_tick = m.first_tick;
+                let at = [m.position.x, m.position.y, m.position.z];
+                let old = match *key {
+                    "mainhand" => m
+                        .extra
+                        .main_hand_stack()
+                        .cloned()
+                        .or_else(|| m.extra.main_hand.as_ref().map(|i| ItemStack::new(i, 1))),
+                    "offhand" => m.extra.off_hand.as_ref().map(|i| ItemStack::new(i, 1)),
+                    "head" => m.extra.armor[0]
+                        .clone()
+                        .or_else(|| m.extra.head.as_ref().map(|i| ItemStack::new(i, 1))),
+                    "chest" => m.extra.armor[1]
+                        .clone()
+                        .or_else(|| m.extra.chest.as_ref().map(|i| ItemStack::new(i, 1))),
+                    "legs" => m.extra.armor[2]
+                        .clone()
+                        .or_else(|| m.extra.legs.as_ref().map(|i| ItemStack::new(i, 1))),
+                    "feet" => m.extra.armor[3]
+                        .clone()
+                        .or_else(|| m.extra.feet.as_ref().map(|i| ItemStack::new(i, 1))),
+                    "body" => m.extra.body.as_ref().map(|i| ItemStack::new(i, 1)),
+                    "saddle" => m.saddle_item(),
+                    _ => None,
+                };
+                let same = match (old.as_ref(), stack.as_ref()) {
+                    (None, None) => true,
+                    (Some(a), Some(b)) => a.same_item_same_components(b),
+                    _ => false,
+                };
+                let equippable = stack.as_ref().is_some_and(|s| {
+                    let data = s.data();
+                    !data.is_some_and(|d| d.other("!minecraft:equippable").is_some())
+                        && (data.is_some_and(|d| d.other("minecraft:equippable").is_some())
+                            || self
+                                .items()
+                                .get(&s.item)
+                                .is_some_and(|i| i.equip_slot.is_some()))
+                });
+                let m = &mut self.mobs[index];
                 let item = stack.as_ref().map(|s| s.item.clone());
                 // The worn armour stack goes with the id: a kept stack of the
                 // previous piece would otherwise still be what the mob wears.
@@ -585,6 +654,13 @@ impl Game<'_> {
                 if let Some(i) = worn {
                     m.extra.armor[i] = stack.clone();
                 }
+                if let Some(slot) = mob_stack_slot(key) {
+                    if let Some(stack) = stack.as_ref() {
+                        horizon_client::mobs::finalize::set_item_stack(m, slot, stack.clone());
+                    } else {
+                        horizon_client::mobs::finalize::set_slot_enchantments(m, slot, Vec::new());
+                    }
+                }
                 match *key {
                     "mainhand" => m.extra.set_main_hand_stack(stack),
                     "offhand" => m.extra.off_hand = item,
@@ -595,6 +671,9 @@ impl Game<'_> {
                     "feet" => m.extra.feet = item,
                     "saddle" => m.set_saddle(stack),
                     _ => return false,
+                }
+                if !first_tick && !same && self.remote.is_none() {
+                    self.mob_equip_event(*id, at, equippable);
                 }
                 true
             }
@@ -1711,6 +1790,193 @@ mod mob_equipment_command_tests {
                 assert!(game.run_command(&format!("item replace entity {uuid} saddle with air")));
                 assert!(game.slot_get(&Slot::Mob(id, "saddle")).is_none());
             }
+        });
+    }
+}
+
+#[cfg(test)]
+mod mob_equipment_stack_tests {
+    use crate::game::commands::{Target, data::DataRef};
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_client::{chunk::Chunk, mobs::finalize};
+    use horizon_core::position::ChunkPos;
+    use horizon_world::nbt::Tag;
+    use std::sync::Arc;
+    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+                .join(format!("h023-{:?}", std::thread::current().id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("difficulty normal"));
+        assert!(game.run_command("forceload add 0 0"));
+        test(&mut game);
+    }
+
+    fn actor(game: &mut Game<'_>, kind: &str, n: i32) -> (String, u32) {
+        let uuid = format!("00000017-0000-0000-0000-{n:012x}");
+        assert!(game.run_command(&format!("summon {kind} 4.5 200 5.5 {{UUID:[I;23,0,0,{n}],NoAI:1b,NoGravity:1b,Silent:1b,h023_raw:7,Tags:[h023]}}")), "{kind}/{n}: {:?}", game.ui.chat.recent_lines(3));
+        let mob = game
+            .mobs
+            .iter()
+            .find(|m| game.persist.uuid_of(m.id) == Some([23, 0, 0, n]))
+            .unwrap();
+        assert!(mob.no_ai);
+        (uuid, mob.id)
+    }
+
+    fn saved(game: &mut Game<'_>, id: u32) -> Tag {
+        game.data_of(&DataRef::Entity(Target::Mob(id))).unwrap()
+    }
+    fn audit(stack: &horizon_client::items::ItemStack, value: i32) {
+        assert_eq!(
+            stack.custom_data().and_then(|c| c.get(&"audit".into())),
+            Some(&Tag::Int(value))
+        );
+    }
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn offhand_commands_adopt_and_copy_the_whole_stack() {
+        use super::Slot;
+        with_game(|game| {
+            let (uuid, id) = actor(game, "husk", 1);
+            assert!(game.run_command("setblock 4 200 4 chest"));
+            assert!(game.slot_get(&Slot::Mob(id, "offhand")).is_none());
+            assert!(game.run_command(&format!(
+                "item replace entity {uuid} weapon.mainhand with stone"
+            )));
+            assert!(game.run_command(&format!(
+                "item replace entity {uuid} weapon.offhand with stick[custom_data={{audit:7}}] 3"
+            )));
+            let mob = game.mobs.iter().find(|m| m.id == id).unwrap();
+            assert_eq!(mob.extra.off_hand.as_deref(), Some("minecraft:stick"));
+            let adopted = finalize::item_stack(mob, finalize::OFFHAND).unwrap();
+            assert_eq!(
+                adopted.count, 3,
+                "actual command adoption must retain count"
+            );
+            audit(&adopted, 7);
+            let tag = saved(game, id);
+            assert_eq!(
+                tag.get("equipment")
+                    .unwrap()
+                    .get("offhand")
+                    .unwrap()
+                    .get("count"),
+                Some(&Tag::Int(3))
+            );
+            assert_eq!(
+                tag.get("equipment")
+                    .unwrap()
+                    .get("mainhand")
+                    .unwrap()
+                    .get("id"),
+                Some(&Tag::String("minecraft:stone".into()))
+            );
+            assert!(game.run_command(&format!(
+                "item replace block 4 200 4 container.0 from entity {uuid} weapon.offhand"
+            )));
+            let copied = game.slot_get(&Slot::Block([4, 200, 4], 0)).unwrap();
+            assert_eq!(copied.count, 3);
+            audit(&copied, 7);
+            assert!(game.run_command(&format!(
+                "item replace entity {uuid} weapon.offhand with air"
+            )));
+            assert!(game.slot_get(&Slot::Mob(id, "offhand")).is_none());
+            assert!(game.run_command(&format!(
+                "item replace entity {uuid} weapon.offhand with stick"
+            )));
+            let plain = game.slot_get(&Slot::Mob(id, "offhand")).unwrap();
+            assert_eq!(plain.count, 1);
+            assert!(
+                plain.custom_data().is_none(),
+                "stale components must not return for the same id"
+            );
+        });
+    }
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn armor_command_copy_keeps_the_already_adopted_stack() {
+        use super::Slot;
+        with_game(|game| {
+            let (uuid, id) = actor(game, "husk", 2);
+            assert!(game.run_command("setblock 4 200 4 chest"));
+            assert!(game.run_command(&format!("item replace entity {uuid} armor.head with iron_helmet[damage=3,custom_data={{audit:8}}]")));
+            let mob = game.mobs.iter().find(|m| m.id == id).unwrap();
+            let adopted = mob.extra.armor[0].as_ref().unwrap();
+            assert_eq!(
+                adopted.damage, 3,
+                "existing armor state already adopts the full stack"
+            );
+            audit(adopted, 8);
+            assert!(game.run_command(&format!(
+                "item replace block 4 200 4 container.0 from entity {uuid} armor.head"
+            )));
+            let copied = game.slot_get(&Slot::Block([4, 200, 4], 0)).unwrap();
+            assert_eq!(
+                copied.damage, 3,
+                "actual command copy must use the full stack"
+            );
+            audit(&copied, 8);
+            let tag = saved(game, id);
+            let components = tag
+                .get("equipment")
+                .unwrap()
+                .get("head")
+                .unwrap()
+                .get("components")
+                .unwrap();
+            assert_eq!(components.get("minecraft:damage"), Some(&Tag::Int(3)));
+            assert_eq!(
+                components
+                    .get("minecraft:custom_data")
+                    .unwrap()
+                    .get("audit"),
+                Some(&Tag::Int(8))
+            );
+            assert!(game.run_command(&format!(
+                "item replace entity {uuid} armor.head with iron_helmet"
+            )));
+            let plain = game.slot_get(&Slot::Mob(id, "head")).unwrap();
+            assert_eq!(plain.damage, 0);
+            assert!(plain.custom_data().is_none());
+            assert!(game.run_command(&format!("item replace entity {uuid} armor.head with air")));
+            assert!(game.slot_get(&Slot::Mob(id, "head")).is_none());
         });
     }
 }

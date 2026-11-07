@@ -51,6 +51,9 @@ CTL = lab.cargo_target() / ('fast/horizon-ctl' + ('.exe' if os.name == 'nt' else
 RESOURCES = ROOT / '.local/horizon-client/26.3'
 # Logical; the views are checked as fractions of what P1 gets alone, so any scale works.
 WIDTH, HEIGHT = 1000, 600
+# Where `scenario_keyboard_after_leave` looks for the keyboard's letters, from the top middle.
+KEYBOARD_ROWS, KEYBOARD_REACH = 280, 290
+KEYBOARD_LETTER_LEVEL, KEYBOARD_MIN_LETTERS = 200, 200
 VERBOSE = False
 
 failures = []
@@ -653,6 +656,36 @@ def scenario_live():
         check('on again: P1 still renders the whole window', tuple(status['renderer']['size']),
               (2 * half[0], half[1]))
         check('on again: frames keep coming', status['fps'] > 10, True)
+    finally:
+        g.quit()
+
+
+def scenario_keyboard_after_leave():
+    print('keyboard: the on-screen keyboard keeps its letters when the renderer changes')
+    from pad_menu_e2e import png_rows
+
+    def letters(g, tag):
+        """Near-white pixels in the keyboard, at the top of P1's view over chat: its letters."""
+        path = g.home / f'keyboard-{tag}.png'
+        g.ctl(1, 'screenshot', str(path))
+        rows, width, channels = png_rows(path)
+        middle = width // 2
+        return sum(all(v > KEYBOARD_LETTER_LEVEL for v in row[x * channels:x * channels + 3])
+                   for row in rows[:KEYBOARD_ROWS] for x in range(middle - KEYBOARD_REACH, middle + KEYBOARD_REACH))
+
+    g = Game(2, saved_split=True)
+    try:
+        g.ctl(1, 'pad', 'south', 'tap')
+        g.ctl(1, 'key', 't', 'tap')
+        g.wait(lambda: g.ctl(1, 'pad', 'status')['menu']['keyboard'], "P1's keyboard", seconds=10)
+        time.sleep(1)
+        before = letters(g, 'before')
+        check('the keyboard has letters', before > KEYBOARD_MIN_LETTERS, True)
+        g.ctl(2, 'quit')
+        g.wait(lambda: not g.alive(2), 'P2 gone', seconds=15)
+        g.wait(lambda: g.ctl(1, 'pad', 'status')['menu']['keyboard'], "P1's keyboard still up", seconds=10)
+        time.sleep(1)
+        check('alone on a new renderer, it still has them', letters(g, 'after') > KEYBOARD_MIN_LETTERS, True)
     finally:
         g.quit()
 
@@ -1401,6 +1434,7 @@ SCENARIOS = {
     'controls': scenario_controls,
     'three': scenario_three,
     'live': scenario_live,
+    'keyboard_after_leave': scenario_keyboard_after_leave,
     'pause': scenario_pause,
     'profile_availability': scenario_profile_availability,
     'gui_scales': scenario_gui_scales,
