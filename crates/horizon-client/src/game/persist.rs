@@ -3179,3 +3179,306 @@ mod item_display_saved_transform_tests {
         });
     }
 }
+
+#[cfg(test)]
+mod baby_modifier_mutation_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use horizon_client::mobs::finalize::{self, Attr};
+    use horizon_client::motion::PlayerMotion;
+
+    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+                .join(format!("h235-{:?}", std::thread::current().id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("difficulty normal"));
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
+        game.creative = true;
+        test(&mut game);
+    }
+    fn zombie(game: &Game<'_>, n: i32) -> usize {
+        let i: Vec<usize> = (0..game.mobs.len())
+            .filter(|&i| game.persist.uuid_of(game.mobs[i].id) == Some([235, 0, 0, n]))
+            .collect();
+        assert_eq!(i.len(), 1, "one live zombie with UUID {n}");
+        i[0]
+    }
+    /// The effective movement speed, the stored (permanent) minecraft:baby
+    /// amount, and the transient one the model reports.
+    fn state(game: &Game<'_>, n: i32) -> (f64, Option<f64>, Option<f64>) {
+        let m = &game.mobs[zombie(game, n)];
+        (
+            finalize::value(m, Attr::MovementSpeed),
+            finalize::modifier_amount(m, Attr::MovementSpeed, "minecraft:baby"),
+            finalize::transient(m, Attr::MovementSpeed).map(|t| t.0),
+        )
+    }
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-9
+    }
+
+    /// Expected values from the official 26.3 server: the baby's
+    /// minecraft:baby modifier refuses a duplicate add; a removal takes it
+    /// away (speed back to the base 0.23) and lets a permanent one be added;
+    /// setBaby (an IsBaby merge that changes it) replaces a permanent one
+    /// with the transient modifier, and an adult has none.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and a scratch HORIZON_HOME"]
+    fn the_baby_speed_modifier_answers_add_and_remove_like_any_other() {
+        with_game(|game| {
+            let attr = "minecraft:movement_speed";
+            for (n, baby) in [(1, 1), (2, 1), (3, 0)] {
+                assert!(game.run_command(&format!(
+                    "summon minecraft:zombie {}.5 200 4.5 {{UUID:[I;235,0,0,{n}],NoAI:1b,NoGravity:1b,PersistenceRequired:1b,Silent:1b,Health:20f,IsBaby:{baby}b}}",
+                    3 * n
+                )));
+            }
+            let sel =
+                |n: i32| format!("@e[type=minecraft:zombie,nbt={{UUID:[I;235,0,0,{n}]}},limit=1]");
+            let mut failures = Vec::new();
+            // Setup controls: a baby carries the transient 0.5 (0.345), an adult none.
+            let (v, p, t) = state(game, 1);
+            assert!(
+                close(v, 0.345_000_006_258_487_7) && p.is_none() && t == Some(0.5),
+                "baby setup"
+            );
+            let (v, p, t) = state(game, 3);
+            assert!(
+                close(v, 0.230_000_004_172_325_13) && p.is_none() && t.is_none(),
+                "adult setup"
+            );
+
+            if game.run_command(&format!(
+                "attribute {} {attr} modifier add minecraft:baby 0.125 add_value",
+                sel(1)
+            )) {
+                failures.push("dup: the add of a held id succeeded".into());
+            }
+            let (v, p, _) = state(game, 1);
+            if !close(v, 0.345_000_006_258_487_7) || p.is_some() {
+                failures.push(format!("dup: speed {v}, stored {p:?}"));
+            }
+
+            if !game.run_command(&format!(
+                "attribute {} {attr} modifier remove minecraft:baby",
+                sel(2)
+            )) {
+                failures.push("remove: the removal failed".into());
+            }
+            let (v, p, _) = state(game, 2);
+            if !close(v, 0.230_000_004_172_325_13) || p.is_some() {
+                failures.push(format!("remove: speed {v}, stored {p:?}"));
+            }
+            if game.run_command(&format!(
+                "attribute {} {attr} modifier remove minecraft:baby",
+                sel(2)
+            )) {
+                failures.push("remove: a second removal succeeded".into());
+            }
+            if !game.run_command(&format!(
+                "attribute {} {attr} modifier add minecraft:baby 0.125 add_value",
+                sel(2)
+            )) {
+                failures.push("remove: the add after it failed".into());
+            }
+            let (v, p, _) = state(game, 2);
+            if !close(v, 0.355_000_004_172_325_13) || p != Some(0.125) {
+                failures.push(format!("remove then add: speed {v}, stored {p:?}"));
+            }
+
+            // The adult: a permanent one, then setBaby(true) and setBaby(false).
+            assert!(game.run_command(&format!(
+                "attribute {} {attr} modifier add minecraft:baby 0.125 add_value",
+                sel(3)
+            )));
+            assert!(game.run_command(&format!("data merge entity {} {{IsBaby:1b}}", sel(3))));
+            let (v, p, _) = state(game, 3);
+            if !close(v, 0.345_000_006_258_487_7) || p.is_some() {
+                failures.push(format!("perm made a baby: speed {v}, stored {p:?}"));
+            }
+            assert!(game.run_command(&format!("data merge entity {} {{IsBaby:0b}}", sel(3))));
+            let (v, p, _) = state(game, 3);
+            if !close(v, 0.230_000_004_172_325_13) || p.is_some() {
+                failures.push(format!("perm made an adult: speed {v}, stored {p:?}"));
+            }
+            assert!(failures.is_empty(), "baby modifier: {failures:#?}");
+        });
+    }
+
+    /// Added before production, after the baseline: Zombie.setBaby in place
+    /// (no /data reload, which drops saved modifiers) removes a permanent
+    /// minecraft:baby and, for a baby, adds the transient one; an unrelated
+    /// permanent modifier stays.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and a scratch HORIZON_HOME"]
+    fn set_baby_in_place_replaces_a_permanent_baby_modifier() {
+        with_game(|game| {
+            assert!(game.run_command(
+                "summon minecraft:zombie 4.5 200 8.5 {UUID:[I;235,0,0,9],NoAI:1b,NoGravity:1b,PersistenceRequired:1b,Silent:1b,Health:20f}"
+            ));
+            let i = zombie(game, 9);
+            let m = &mut game.mobs[i];
+            finalize::add_modifier(
+                m,
+                Attr::MovementSpeed,
+                "minecraft:baby",
+                0.125,
+                finalize::Op::AddValue,
+            );
+            finalize::add_modifier(
+                m,
+                Attr::MovementSpeed,
+                "h235:other",
+                0.01,
+                finalize::Op::AddValue,
+            );
+            // Setup control: both permanent ones are held by the adult.
+            assert_eq!(
+                finalize::modifier_amount(m, Attr::MovementSpeed, "minecraft:baby"),
+                Some(0.125)
+            );
+            let mut failures = Vec::new();
+            finalize::set_baby(m, true);
+            if finalize::modifier_amount(m, Attr::MovementSpeed, "minecraft:baby").is_some() {
+                failures.push("baby: the permanent minecraft:baby stayed".to_string());
+            }
+            if finalize::transient(m, Attr::MovementSpeed).map(|t| t.0) != Some(0.5) {
+                failures.push("baby: no transient minecraft:baby".into());
+            }
+            if finalize::modifier_amount(m, Attr::MovementSpeed, "h235:other") != Some(0.01) {
+                failures.push("baby: the unrelated modifier went".into());
+            }
+            // (0.23 + 0.01) * 1.5
+            if !close(
+                finalize::value(m, Attr::MovementSpeed),
+                (0.230_000_004_172_325_13 + 0.01) * 1.5,
+            ) {
+                failures.push(format!(
+                    "baby: speed {}",
+                    finalize::value(m, Attr::MovementSpeed)
+                ));
+            }
+            finalize::set_baby(m, false);
+            if finalize::transient(m, Attr::MovementSpeed).is_some()
+                || finalize::modifier_amount(m, Attr::MovementSpeed, "minecraft:baby").is_some()
+            {
+                failures.push("adult: a minecraft:baby is left".into());
+            }
+            if !close(
+                finalize::value(m, Attr::MovementSpeed),
+                0.230_000_004_172_325_13 + 0.01,
+            ) {
+                failures.push(format!(
+                    "adult: speed {}",
+                    finalize::value(m, Attr::MovementSpeed)
+                ));
+            }
+            assert!(failures.is_empty(), "in-place setBaby: {failures:#?}");
+        });
+    }
+
+    /// Added after the baseline (needs the fix's flag): a removal of the
+    /// transient minecraft:baby lasts until setBaby; a copy keeps it; a
+    /// reload (a /data merge, whose Entity.load runs setBaby) and an
+    /// in-place setBaby bring it back; an adult made a baby gets it.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and a scratch HORIZON_HOME"]
+    fn a_removed_baby_modifier_stays_removed_until_set_baby() {
+        with_game(|game| {
+            let attr = "minecraft:movement_speed";
+            for (n, baby) in [(11, 1), (12, 0)] {
+                assert!(game.run_command(&format!(
+                    "summon minecraft:zombie {}.5 200 12.5 {{UUID:[I;235,0,0,{n}],NoAI:1b,NoGravity:1b,PersistenceRequired:1b,Silent:1b,Health:20f,IsBaby:{baby}b}}",
+                    n - 8
+                )));
+            }
+            let sel =
+                |n: i32| format!("@e[type=minecraft:zombie,nbt={{UUID:[I;235,0,0,{n}]}},limit=1]");
+            let removed = |game: &Game<'_>, n: i32| state(game, n).2.is_none();
+            let mut failures = Vec::new();
+            assert!(game.run_command(&format!(
+                "attribute {} {attr} modifier remove minecraft:baby",
+                sel(11)
+            )));
+            for _ in 0..2 {
+                if !removed(game, 11) {
+                    failures.push("the removal did not last across reads".to_string());
+                }
+            }
+            let copy = game.mobs[zombie(game, 11)].clone();
+            if finalize::transient(&copy, Attr::MovementSpeed).is_some() {
+                failures.push("a copy lost the removal".into());
+            }
+            let i = zombie(game, 11);
+            finalize::set_baby(&mut game.mobs[i], true);
+            if removed(game, 11) {
+                failures.push("in-place setBaby(true) did not bring it back".into());
+            }
+            assert!(game.run_command(&format!(
+                "attribute {} {attr} modifier remove minecraft:baby",
+                sel(11)
+            )));
+            assert!(removed(game, 11));
+            assert!(game.run_command(&format!(
+                "data merge entity {} {{CustomName:\"h235\"}}",
+                sel(11)
+            )));
+            if removed(game, 11) {
+                failures.push("a reload did not bring it back".into());
+            }
+            // The adult: nothing to remove; made a baby, it has the transient one.
+            if game.run_command(&format!(
+                "attribute {} {attr} modifier remove minecraft:baby",
+                sel(12)
+            )) {
+                failures.push("adult: a removal succeeded".into());
+            }
+            let i = zombie(game, 12);
+            finalize::set_baby(&mut game.mobs[i], true);
+            if state(game, 12).2 != Some(0.5) {
+                failures.push("adult made a baby: no transient one".into());
+            }
+            assert!(
+                failures.is_empty(),
+                "baby modifier lifecycle: {failures:#?}"
+            );
+        });
+    }
+}
