@@ -373,12 +373,10 @@ impl Game<'_> {
             self.entity_killed_event(at, true);
         }
         self.drop_frame_items(&f, with_frame, true);
-        if !with_frame {
-            // ItemFrame.hurtServer: BLOCK_CHANGE by the attacker, after the
-            // item drops.
-            let ctx = self.who_context(Some(horizon_client::mobs::Who::Player), None);
-            self.post_game_event("minecraft:block_change", at, ctx);
-        }
+        // BLOCK_CHANGE by the attacker after the drops: ItemFrame.hurtServer
+        // for the item, ItemFrame.dropItem(level, causedBy) for the frame.
+        let ctx = self.who_context(Some(horizon_client::mobs::Who::Player), None);
+        self.post_game_event("minecraft:block_change", at, ctx);
         self.world.modified.insert((f.pos[0] >> 4, f.pos[2] >> 4));
         if f.item.is_some() {
             self.frame_output_changed(f.pos);
@@ -488,6 +486,9 @@ impl Game<'_> {
             self.audio
                 .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
             self.drop_frame_items(&f, true, false);
+            // ItemFrame.dropItem(level, causedBy): BLOCK_CHANGE after the drops.
+            let ctx = self.who_context(None, None);
+            self.post_game_event("minecraft:block_change", center(&f), ctx);
             self.world.modified.insert((f.pos[0] >> 4, f.pos[2] >> 4));
             if f.item.is_some() {
                 self.frame_output_changed(f.pos);
@@ -516,6 +517,9 @@ impl Game<'_> {
                     self.audio
                         .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
                     self.drop_frame_items(&f, true, false);
+                    // ItemFrame.dropItem(level, null): BLOCK_CHANGE after the drops.
+                    let ctx = self.who_context(None, None);
+                    self.post_game_event("minecraft:block_change", center(&f), ctx);
                     if f.item.is_some() {
                         self.frame_output_changed(f.pos);
                     }
