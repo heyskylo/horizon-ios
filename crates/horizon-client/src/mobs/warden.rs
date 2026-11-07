@@ -866,13 +866,22 @@ fn heartbeat(m: &mut Mob) -> bool {
     }
     beat
 }
-/// `Warden.tick` on a client that is not the server: the heart and tendril
-/// animations and the keyframes that ended. Its sounds come from the server,
-/// but `Warden.clientDiggingParticles` is the client's own work, so the digging
+/// `Warden.tick` on a client that is not the server: the heartbeat, the heart
+/// and tendril animations and the keyframes that ended. The heartbeat is
+/// `playLocalSound`, so the server never sends it and each client plays its
+/// own; `Warden.clientDiggingParticles` is the client's own work too, so the
 /// events are handed back to the caller.
 pub fn client_tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
     m.anim.vo = m.anim.v;
-    heartbeat(m);
+    if heartbeat(m) && !m.silent {
+        let pitch = voice_pitch(m);
+        events.push(MobEvent::LocalSound(
+            "entity.warden.heartbeat",
+            at(m),
+            5.0,
+            pitch,
+        ));
+    }
     animate(m, events);
 }
 fn animate(m: &mut Mob, events: &mut Vec<MobEvent>) {
