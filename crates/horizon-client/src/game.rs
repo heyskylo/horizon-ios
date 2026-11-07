@@ -407,6 +407,7 @@ mod world_primitives;
 mod zombie_reinforcements;
 mod zombie_villagers;
 use event_loop::EventLoopCtl;
+use horizon_client::random_source;
 // `Action` here is the title screen's buttons (`title::Action`).
 use horizon_client::actions::Action as Mapping;
 use horizon_client::held::Source;
@@ -3941,7 +3942,7 @@ impl Game<'_> {
         }
         // `Util.getRandom(slotsWithGliders, this.random)`: the entity's own
         // random, which never touches the level's stream.
-        let pick = dispenser::entity_random().next_int_bound(pieces.len() as i32);
+        let pick = random_source::entity().next_int_bound(pieces.len() as i32);
         let pick = pieces[pick.unwrap_or(0) as usize];
         if let Some(stack) = self.armor[pick].clone() {
             let loss = self.wear(&stack, points);
@@ -14593,7 +14594,7 @@ impl Game<'_> {
     /// the orb's own random.
     fn add_orb(&mut self, at: [f64; 3], value: u32) {
         let at = self.unstuck_orb(at);
-        let mut r = dispenser::entity_random();
+        let mut r = random_source::entity();
         let _yaw = r.next_float();
         let p = Vec3::new(at[0], at[1], at[2]);
         self.next_entity += 1;

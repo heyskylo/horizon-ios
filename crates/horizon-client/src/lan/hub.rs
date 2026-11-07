@@ -694,7 +694,7 @@ impl Hub {
             sync,
             ticks: 0,
             seat_order: 0,
-            sound_seeds: Mutex::new(LegacyRandom::new(crate::sound_engine::unique_seed())),
+            sound_seeds: Mutex::new(crate::random_source::create()),
             sound_order: Mutex::default(),
             immediate_respawn: false,
             reduced_debug_info: false,

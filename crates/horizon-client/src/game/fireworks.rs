@@ -4,6 +4,7 @@
 //! damage with line of sight, and the client explosion (`createFireworks`).
 use super::{Game, Hit, item_draw::owner_at, view_vector};
 use horizon_assets::item_model::DisplayContext;
+use horizon_client::random_source;
 use horizon_client::{
     block_entity_render::vertex_light,
     collisions::SceneCollisions,
@@ -227,7 +228,7 @@ impl Game<'_> {
     pub(super) fn new_rocket(&mut self, at: Vec3, stack: &ItemStack, attached: bool) -> Rocket {
         let (flight, explosions) = fireworks_of(stack);
         // FireworkRocketEntity: motion and lifetime come from the rocket's own random.
-        let r = &mut super::dispenser::entity_random();
+        let r = &mut random_source::entity();
         let tri = |r: &mut horizon_core::random::LegacyRandom| r.triangle(0.0, 0.002297);
         let velocity = Vec3::new(tri(r), 0.05, tri(r));
         let lifetime = 10 * (1 + i32::from(flight))

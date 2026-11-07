@@ -2,6 +2,7 @@
 //! entities (`entities/*.mca`, per chunk like vanilla's `EntityStorage`) and
 //! scheduled block/fluid ticks (chunk `block_ticks`/`fluid_ticks`).
 use super::{FallingBlock, Game};
+use horizon_client::random_source;
 use horizon_client::{
     Result,
     chunk::Chunk,
@@ -730,7 +731,9 @@ impl Game<'_> {
 
     /// The saved ender dragon.
     pub(super) fn load_dragon(&mut self, tag: Tag, uuid: Option<[i32; 4]>) {
-        let seed = self.world.random.next_long();
+        // The loaded dragon's own random (`Entity.random`): loading draws
+        // nothing from the level's.
+        let seed = random_source::unique_seed();
         if self.dragon.is_none()
             && let Some(mut d) = super::dragon::Dragon::from_nbt(&tag, seed)
         {

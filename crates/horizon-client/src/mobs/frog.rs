@@ -837,7 +837,7 @@ fn candidates([x, y, z]: [i32; 3], width: i32, height: i32) -> Vec<Candidate> {
 /// first arc that reaches the target clear of blocks. `Collections.shuffle`
 /// without a random draws from an unseeded one, not the mob's or the level's.
 fn optimal_jump_vector(m: &Mob, w: &MobWorld, target: Vec3) -> Option<Vec3> {
-    let mut random = crate::sound_engine::SoundEngine::unseeded();
+    let mut random = crate::random_source::create();
     let mut angles = ALLOWED_ANGLES;
     for i in (2..=angles.len()).rev() {
         let j = random.next_int_bound(i as i32).unwrap_or(0) as usize;

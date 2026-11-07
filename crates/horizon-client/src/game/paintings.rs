@@ -3,6 +3,7 @@
 //! checks every 100 ticks, breaking by attack (`dropItem`), saving, and
 //! `PaintingRenderer` quads.
 use super::{Game, Hit, entity_culling::default_range};
+use horizon_client::random_source;
 use horizon_client::{
     entities::{ItemFrame, Painting},
     items::ItemStack,
@@ -242,7 +243,7 @@ impl Game<'_> {
         };
         fitting.retain(|v| v.width * v.height >= largest);
         // Util.getRandomSafe(variants, candidate.random): the painting's own random.
-        let pick = super::dispenser::entity_random()
+        let pick = random_source::entity()
             .next_int_bound(fitting.len() as i32)
             .unwrap_or(0) as usize;
         let v = &fitting[pick];

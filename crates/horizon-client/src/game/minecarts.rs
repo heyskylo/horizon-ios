@@ -15,8 +15,9 @@ use horizon_client::{
     mesher::Vertex,
     mobs::{Part, Species, Who, anim::Poses, riders},
     particles::{ParticleOptions, ParticleType},
+    random_source,
     scoreboard::pushable_by,
-    sound_engine::{CartSound, PlayResult, SoundEngine, SoundInstance, Sounds},
+    sound_engine::{CartSound, PlayResult, SoundInstance, Sounds},
 };
 use horizon_core::{
     geometry::{Aabb, Vec3, trig},
@@ -1912,7 +1913,7 @@ impl Game<'_> {
             .retain(|id| carts.iter().any(|c| c.id == *id));
         for cart in &carts {
             if !self.cart_sounds.contains(&cart.id) {
-                let instance = SoundInstance::minecart(cart, SoundEngine::unseeded());
+                let instance = SoundInstance::minecart(cart, random_source::create());
                 let (_, res) = self.audio.play_instance(instance, false);
                 if res != PlayResult::NotStarted {
                     self.cart_sounds.insert(cart.id);
@@ -1926,7 +1927,7 @@ impl Game<'_> {
             let mut started = true;
             for underwater in [true, false] {
                 let instance =
-                    SoundInstance::riding_minecart(cart, underwater, SoundEngine::unseeded());
+                    SoundInstance::riding_minecart(cart, underwater, random_source::create());
                 let (_, res) = self.audio.play_instance(instance, false);
                 if res == PlayResult::NotStarted {
                     started = false;

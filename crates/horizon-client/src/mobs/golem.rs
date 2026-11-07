@@ -523,7 +523,7 @@ fn snowball_attack(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
     let mut p = Projectile::new(ProjectileKind::Snowball, start, Some(Who::Mob(m.id)));
     // SnowGolem.rangedAttackUncertainty: 12 on every difficulty.
     p.shoot(
-        &mut crate::projectiles::own_random(m),
+        &mut crate::random_source::entity(),
         [xd, yd + yo - start.y, zd],
         1.6,
         12.0,

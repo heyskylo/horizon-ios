@@ -5,6 +5,7 @@
 //! (`ServerPlaceRecipe`). Which recipes are known comes from the advancement
 //! rewards; the open and filter settings are saved with the player.
 use super::{Game, Screen};
+use horizon_client::random_source;
 use horizon_client::{
     containers::{BlockEntity, FurnaceKind},
     hud::{HudBatch, Rect, rgba},
@@ -222,7 +223,7 @@ impl Game<'_> {
         let index = &self.stations().recipe_index;
         let book = self.recipe_ui.book.as_ref();
         // SmithingTrimDemoSlotDisplay draws from a random of its own.
-        let mut random = super::dispenser::entity_random();
+        let mut random = random_source::entity();
         let mut items = Vec::new();
         let mut first = None;
         for id in recipes {

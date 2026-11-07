@@ -2,7 +2,8 @@
 //! setInitialSpawn walks a chunk spiral around NoiseBasedChunkGenerator.
 //! getOrigin, then PlayerSpawnFinder.findSpawn picks a free column around
 //! the world spawn within the respawn radius.
-use super::{Game, dispenser::entity_random};
+use super::Game;
+use horizon_client::random_source;
 use horizon_client::{
     Result,
     assets::Properties,
@@ -308,7 +309,7 @@ impl Game<'_> {
             radius = 1;
         }
         PlayerSpawnFinder::new(suggestion, radius, |n| {
-            entity_random().next_int_bound(n).unwrap_or(0)
+            random_source::entity().next_int_bound(n).unwrap_or(0)
         })
     }
     /// ServerPlayer.adjustSpawnLocation for a server's new player: where

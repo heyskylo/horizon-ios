@@ -7,6 +7,7 @@
 //! Speed's `location_changed` and `tick` effects and the
 //! `minecraft:location_changed` disk effect (frost walker).
 use super::Game;
+use horizon_client::random_source;
 use horizon_client::{
     enchant::{EffectContext, Enchantments, level_value},
     items::ItemStack,
@@ -622,7 +623,7 @@ impl Game<'_> {
             Some("damage_entity") => {
                 let min = level_value(&effect["min_damage"], level);
                 let max = level_value(&effect["max_damage"], level);
-                let damage = super::dispenser::entity_random().next_float() * (max - min) + min;
+                let damage = random_source::entity().next_float() * (max - min) + min;
                 let Some(m) = self.mobs.iter().find(|m| m.id == wearer) else {
                     return;
                 };

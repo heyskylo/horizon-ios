@@ -10,6 +10,7 @@ use super::remote_chunks::{ChunkDecoder, ChunkFormat, Next};
 use super::{Dim, Game, Mining, Screen};
 use horizon_client::actions::Action;
 use horizon_client::first_person::{Hand, SwingAnimation};
+use horizon_client::random_source;
 use horizon_client::{
     Result,
     blocks::Fluid,
@@ -7186,7 +7187,7 @@ impl Game<'_> {
         let mut lava_random = None;
         let mut next_float = || {
             lava_random
-                .get_or_insert_with(super::dispenser::entity_random)
+                .get_or_insert_with(random_source::entity)
                 .next_float()
         };
         if running {
