@@ -3749,6 +3749,9 @@ pub struct Level {
     pub motion: [f64; 3],
     pub fall_distance: f64,
     pub on_ground: bool,
+    /// `LivingEntity.addAdditionalSaveData`'s `FallFlying`: the player was
+    /// gliding (shared flag 7), so the glide goes on after the load.
+    pub fall_flying: bool,
     pub food_exhaustion: f32,
     pub food_tick_timer: i32,
     /// Abilities.flying: whether creative/spectator flight is active.
@@ -3983,6 +3986,9 @@ impl Level {
         self.selected_slot = n("SelectedItemSlot").unwrap_or(0) as i32;
         self.fall_distance = f("fall_distance").unwrap_or(0.0);
         self.on_ground = n("OnGround").unwrap_or(0) != 0;
+        // LivingEntity.readAdditionalSaveData: `getBooleanOr("FallFlying",
+        // false)` sets shared flag 7; any numeric tag counts, as a byte.
+        self.fall_flying = n("FallFlying").unwrap_or(0) != 0;
         self.seen_credits = n("seenCredits").unwrap_or(0) != 0;
         self.post_effects = match p.get("post_effects") {
             Some(Tag::List(list)) => list
@@ -4191,6 +4197,9 @@ impl Level {
             ("Motion", doubles(&self.motion)),
             ("OnGround", Tag::Byte(i8::from(self.on_ground))),
             ("fall_distance", Tag::Double(self.fall_distance.to_bits())),
+            // LivingEntity.addAdditionalSaveData: `putBoolean("FallFlying",
+            // isFallFlying())`, always written.
+            ("FallFlying", Tag::Byte(i8::from(self.fall_flying))),
             ("Health", Tag::Float(self.health.to_bits())),
             ("AbsorptionAmount", Tag::Float(self.absorption.to_bits())),
             ("foodLevel", Tag::Int(self.food)),
@@ -4211,19 +4220,28 @@ impl Level {
                     self.active_effects
                         .iter()
                         .map(|(id, duration, amplifier, ambient, particles)| {
-                            Tag::compound([
-                                ("id", string(id)),
-                                ("duration", Tag::Int(*duration)),
+                            let mut effect =
+                                vec![("id", string(id)), ("duration", Tag::Int(*duration))];
+                            // MobEffectInstance.Details: amplifier defaults to zero.
+                            if *amplifier != 0 {
                                 // Same unsigned byte the codec writes:
                                 // `Mth.clamp` to 0..=255, then `byteValue`.
-                                (
+                                effect.push((
                                     "amplifier",
                                     Tag::Byte((*amplifier).clamp(0, 255) as u8 as i8),
-                                ),
-                                ("ambient", Tag::Byte(i8::from(*ambient))),
-                                ("show_particles", Tag::Byte(i8::from(*particles))),
-                                ("show_icon", Tag::Byte(i8::from(*particles))),
-                            ])
+                                ));
+                            }
+                            // optionalFieldOf("ambient", false) and
+                            // ("show_particles", true): defaults are not written;
+                            // show_icon is always written.
+                            if *ambient {
+                                effect.push(("ambient", Tag::Byte(1)));
+                            }
+                            if !*particles {
+                                effect.push(("show_particles", Tag::Byte(0)));
+                            }
+                            effect.push(("show_icon", Tag::Byte(i8::from(*particles))));
+                            Tag::compound(effect)
                         })
                         .collect(),
                 ),
@@ -4325,7 +4343,6 @@ impl Level {
                 ("seenCredits", Tag::Byte(0)),
                 ("HurtTime", Tag::Short(0)),
                 ("DeathTime", Tag::Short(0)),
-                ("FallFlying", Tag::Byte(0)),
             ] {
                 map.entry(key.into()).or_insert(value);
             }
@@ -7148,6 +7165,74 @@ mod tests {
         level.player_extra = Some(loaded);
         level.active_effects.clear();
         assert!(level.player_tag().get("active_effects").is_none());
+    }
+
+    #[test]
+    fn effect_amplifier_default_is_omitted_from_saved_players() {
+        let effects = vec![
+            ("minecraft:luck".into(), -1, 0, false, false),
+            ("minecraft:speed".into(), 200, 1, true, false),
+            ("minecraft:regeneration".into(), 40, 128, false, true),
+            ("minecraft:strength".into(), -1, 255, false, true),
+        ];
+        for raw in [
+            None,
+            Some(Tag::compound([
+                ("H100Keep", Tag::Int(7)),
+                (
+                    "active_effects",
+                    Tag::List(vec![Tag::compound([
+                        ("id", string("minecraft:luck")),
+                        ("amplifier", Tag::Byte(42)),
+                    ])]),
+                ),
+            ])),
+        ] {
+            let level = Level {
+                active_effects: effects.clone(),
+                player_extra: raw.clone(),
+                ..Level::default()
+            };
+            let saved = level.player_tag();
+            let Some(Tag::List(entries)) = saved.get("active_effects") else {
+                panic!("modeled live effects must be saved even without raw input")
+            };
+            assert_eq!(entries.len(), 4);
+            assert_eq!(
+                entries
+                    .iter()
+                    .map(|e| e.get("amplifier").cloned())
+                    .collect::<Vec<_>>(),
+                vec![
+                    None,
+                    Some(Tag::Byte(1)),
+                    Some(Tag::Byte(-128)),
+                    Some(Tag::Byte(-1))
+                ],
+            );
+            for (entry, (id, duration, _, ambient, particles)) in entries.iter().zip(&effects) {
+                assert_eq!(entry.get("id"), Some(&string(id)));
+                assert_eq!(entry.get("duration"), Some(&Tag::Int(*duration)));
+                // MobEffectInstance.Details.MAP_CODEC leaves out ambient false
+                // and show_particles true.
+                let ambient_tag = ambient.then_some(Tag::Byte(1));
+                assert_eq!(entry.get("ambient"), ambient_tag.as_ref());
+                let particles_tag = (!*particles).then_some(Tag::Byte(0));
+                assert_eq!(entry.get("show_particles"), particles_tag.as_ref());
+                assert_eq!(
+                    entry.get("show_icon"),
+                    Some(&Tag::Byte(i8::from(*particles)))
+                );
+            }
+            assert_eq!(
+                level.active_effects, effects,
+                "saving must not mutate live state"
+            );
+            assert_eq!(
+                saved.get("H100Keep"),
+                raw.as_ref().and_then(|t| t.get("H100Keep"))
+            );
+        }
     }
 
     #[test]

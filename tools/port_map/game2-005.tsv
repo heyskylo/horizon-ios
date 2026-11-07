@@ -19,8 +19,8 @@ CatSpawner.spawnInVillage	port	crates/horizon-client/src/game/cat_spawner.rs::Ga
 CatSpawner.spawnCat	port	crates/horizon-client/src/game/cat_spawner.rs::Game::spawn_cat	black variant inside cats_spawn_as_black structures; persistence flag from the caller
 InventoryCarrier.pickUpItem	port	crates/horizon-client/src/game/villagers.rs::Game::villager_pickups	gap: minor: villager arm only; piglins, sulfur cubes, pandas and others have their own pickup fns
 AbstractVillager.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	villager arm: type, then the baby group
-AbstractVillager.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	Offers in the villager arm; inventory via villager::write_nbt
-AbstractVillager.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::read_villager	Offers read here; inventory via villager::read_nbt
+AbstractVillager.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	Offers; Villager inventory via villager::write_nbt, WanderingTrader inventory via extra.inventory, including empty
+AbstractVillager.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	Offers via read_villager; Villager inventory via villager::read_nbt, WanderingTrader via eight-slot extra.inventory; aggregation gap retained
 AbstractVillager.getSlot	missing		minor: commands cannot address a villager inventory slot (container.N); mob slot names cover weapon, armour and saddle only
 AbstractVillager.addOffersFromItemListings	port	crates/horizon-client/src/merchant.rs::Trades::offers_from_set	the allow_duplicates path: a picked trade stays in the pool
 AbstractVillager.addOffersFromItemListingsWithoutDuplicates	port	crates/horizon-client/src/merchant.rs::Trades::offers_from_set	the no-duplicates path: a picked trade leaves the pool
