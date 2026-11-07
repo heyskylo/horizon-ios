@@ -242,7 +242,7 @@ impl Game<'_> {
                     self.world_options_text(None);
                     return Ok(());
                 }
-                Screen::Inventory if self.mod_browser_typing() => {
+                Screen::Inventory | Screen::Creative if self.mod_browser_typing() => {
                     self.mod_browser_text(None, true);
                     return Ok(());
                 }
@@ -301,7 +301,7 @@ impl Game<'_> {
             Screen::Options => self.ui.options.type_text(&self.gui.atlas, text),
             // The port, or the game rules' search and number boxes.
             Screen::WorldOptions => self.world_options_text(Some(text)),
-            Screen::Inventory if self.mod_browser_typing() => {
+            Screen::Inventory | Screen::Creative if self.mod_browser_typing() => {
                 self.mod_browser_text(Some(text), false)
             }
             Screen::Inventory if self.recipe_search_focused() => {
@@ -607,6 +607,9 @@ impl Game<'_> {
                         "key action must be down, up, tap or repeat, not {action}"
                     )
                     .into());
+                }
+                if arg(2)? != "up" {
+                    self.pad.keyboard_took_over = true;
                 }
                 // The command confirmation takes the keys; none go past it.
                 if self.command_prompt.is_some() {

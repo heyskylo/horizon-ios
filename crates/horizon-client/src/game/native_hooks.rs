@@ -998,7 +998,7 @@ use crate::mod_api::NativeTextField;
 use horizon_assets::item_model::StackView;
 use horizon_client::mod_api::EntityDataValue;
 use horizon_client::mod_api::{
-    self, NativeBossBar, NativeCamera, NativeCommand, NativeDispensed, NativeFluidAction,
+    self, HudMode, NativeBossBar, NativeCamera, NativeCommand, NativeDispensed, NativeFluidAction,
     NativeFluidDrain, NativeFluidStack, NativeFluidTankView, NativeLifecycleContext,
     NativeNoteBlockChange, NativeServerPlayer, RecipeBookCategory, ServerTickPhase, TickSpan,
     WorldPhase,
@@ -2627,7 +2627,7 @@ impl Game<'_> {
     /// debug overlays, the pad cursor and IME. Fires even with F1 or a menu open;
     /// file/world loading and resource-reload overlays do not fire it. The batch
     /// is in GUI pixels. `native_camera` is this frame's world camera (None on
-    /// the panorama). `gui_hidden` is the F1 setting; `focused` is window focus.
+    /// the panorama). `gui_hidden` is the effective HUD mode; `focused` is window focus.
     /// A mod decides whether its foreground indicator respects those flags.
     /// Client only; the host is read-only. API 410.
     pub(super) fn native_gui_render_post(
@@ -10337,6 +10337,18 @@ impl Game<'_> {
         };
         map.paint(colors);
         true
+    }
+    /// Effective HUD mode. Pending API @API:hud_mode@.
+    pub(super) fn native_hud_mode(&self) -> HudMode {
+        self.ui.hud_mode()
+    }
+    /// Set HUD and hand visibility, including from the post-handling input notice.
+    /// Client only, outside a borrowed server guest's turn. This changes no
+    /// other restrictions on first-person rendering.
+    pub(super) fn native_set_hud_mode(&mut self, mode: HudMode) {
+        if self.native_window() && self.lan_acting.is_none() {
+            self.ui.set_hud_mode(mode);
+        }
     }
     /// Access a server-owned holder's attachment map. On a client it is the
     /// copy of what the server synced: `set` and `remove` change only the copy.

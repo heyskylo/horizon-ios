@@ -515,7 +515,8 @@ impl Game<'_> {
 
     /// A saved llama spit or shulker bullet.
     pub(super) fn load_spit_or_bullet(&mut self, tag: Tag, player_uuid: Option<[i32; 4]>) {
-        if let Some(mut p) = entity_nbt::spit_or_bullet_from_nbt(&tag, player_uuid) {
+        let target = self.bullet_target(&tag);
+        if let Some(mut p) = entity_nbt::spit_or_bullet_from_nbt(&tag, player_uuid, target) {
             self.claim_owner(&mut p);
             self.next_entity += 1;
             p.id = self.next_entity;
@@ -523,6 +524,14 @@ impl Game<'_> {
             self.add_projectile(p);
             self.remember_last_projectile_tags(&tag);
         }
+    }
+    /// `ShulkerBullet.readAdditionalSaveData`'s `Target`, resolved over the UUID
+    /// bridge: the `Who` of the loaded player or mob that UUID names, or `None`
+    /// for one that is not here. Vanilla keeps the UUID and re-resolves it every
+    /// tick; a `Who` can only name an entity in the level, so a target that is
+    /// away leaves the bullet with none and it falls (`ShulkerBullet.tick`).
+    fn bullet_target(&self, tag: &Tag) -> Option<Who> {
+        self.who_by_uuid(entity_nbt::bullet_target(tag)?)
     }
     /// A saved fireball or wind charge.
     pub(super) fn load_fireball(
@@ -1187,6 +1196,28 @@ impl Game<'_> {
     pub(super) fn mob_tree_nbt(&mut self, i: usize) -> Tag {
         let id = self.mobs[i].id;
         let uuid = self.uuid_for(id);
+        // A warden's anger names each suspect by UUID. A mob that has never been
+        // loaded or saved has no UUID yet, so give it one, or the save would
+        // drop the anger at it (`who_uuid` writes nothing for a mob the map does
+        // not know).
+        let suspects: Vec<u32> = self.mobs[i]
+            .extra
+            .warden
+            .as_ref()
+            .map(|st| {
+                st.anger
+                    .suspects()
+                    .iter()
+                    .filter_map(|who| match who {
+                        Who::Mob(id) => Some(*id),
+                        Who::Player => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        for suspect in suspects {
+            self.uuid_for(suspect);
+        }
         // `NeutralMob.addPersistentAngerSaveData`: the anger ends at an
         // absolute game time, so it goes on while the chunk is unloaded, and
         // the target is the entity the mob is angry at.
@@ -1802,6 +1833,15 @@ impl Game<'_> {
         if !keys.contains(&chunk_of(p.position)) || !entity_nbt::saved_with_chunk(p) {
             return None;
         }
+        // `ShulkerBullet`'s target, over the UUID bridge: a mob the level has
+        // no UUID for writes no `Target` rather than a made-up one.
+        let target = match &p.kind {
+            horizon_client::projectiles::ProjectileKind::ShulkerBullet {
+                target: Some(who),
+                ..
+            } => self.save_who_uuid(*who),
+            _ => None,
+        };
         let owner = p.owner_uuid;
         let raw = anon_raw(&self.persist, p.kind.id(), p.position);
         let uuid = saved_uuid(&self.persist, p.id);
@@ -1813,7 +1853,7 @@ impl Game<'_> {
         let tag = entity_nbt::arrow_to_nbt(p, uuid, owner, in_block, raw.as_ref())
             .or_else(|| entity_nbt::fireball_to_nbt(p, uuid, owner, raw.as_ref()))
             .or_else(|| entity_nbt::throwable_to_nbt(p, uuid, owner, raw.as_ref()))
-            .or_else(|| entity_nbt::spit_or_bullet_to_nbt(p, uuid, owner, raw.as_ref()))?;
+            .or_else(|| entity_nbt::spit_or_bullet_to_nbt(p, uuid, owner, target, raw.as_ref()))?;
         // HasBeenShot is modeled for these projectiles. The generic raw
         // overlay also serves entity types whose shot flag is still opaque.
         let shot = tag.get("HasBeenShot").cloned();
@@ -1822,6 +1862,13 @@ impl Game<'_> {
             map.insert("HasBeenShot".into(), shot);
         }
         Some((chunk_of(p.position), tag))
+    }
+    /// The UUID a save writes for a reference to `who`, as `mob_to_nbt`'s
+    /// `angry_at` does: the bridge's `who_uuid` over `EntityMemory::uuid_of`,
+    /// which answers the UUID the entity was loaded or saved with. A mob the
+    /// level has none for writes nothing.
+    pub(in crate::game) fn save_who_uuid(&self, who: Who) -> Option<[i32; 4]> {
+        entity_nbt::who_uuid(who, &mut |id| self.persist.uuid_of(id))
     }
     pub(super) fn save_falling(
         &mut self,
@@ -1947,6 +1994,15 @@ impl Game<'_> {
             .get(&id)
             .copied()
             .unwrap_or_else(random_uuid)
+    }
+}
+
+/// The mob layer's [`horizon_client::mobs::WhoLookup`]: a warden's anger keeps
+/// the suspects that left by UUID, and resolves the ones that are back through
+/// the same map a save writes them from (`mob_to_nbt`'s `uuid_of`).
+impl horizon_client::mobs::WhoLookup for Game<'_> {
+    fn who_by_uuid(&self, uuid: [i32; 4]) -> Option<Who> {
+        Game::who_by_uuid(self, uuid)
     }
 }
 
