@@ -220,7 +220,7 @@ impl PackedStorage {
     /// 256 entries. Other widths move the shift along the run.
     #[inline]
     pub fn fixed_shift(&self, stride: usize) -> bool {
-        stride % self.per_word == 0
+        stride.is_multiple_of(self.per_word)
     }
     /// The run of entries `stride` apart starting **one stride before**
     /// `index`, which must keep one bit shift ([`fixed_shift`](Self::fixed_shift))
