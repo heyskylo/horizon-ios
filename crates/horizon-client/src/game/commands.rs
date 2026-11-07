@@ -93,6 +93,8 @@ pub(in crate::game) struct OtherEntity {
     pub position: Vec3,
     pub yaw: f32,
     pub pitch: f32,
+    /// Only explicitly loaded leash knots own this BlockAttachedEntity check counter.
+    pub knot_check: Option<u8>,
 }
 pub(super) fn err(key: &str, args: &[&dyn std::fmt::Display]) -> CommandError {
     CommandError::tr(key, args)
