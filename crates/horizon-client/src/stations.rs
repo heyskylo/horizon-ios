@@ -1239,7 +1239,7 @@ mod tests {
     fn smithing_transform_overlay_matches_optional_inputs_and_takes_template_result() {
         use crate::{banner::Banners, brewing::Brewing, crafting::Recipes, creative::Names, menu};
         let root = std::env::temp_dir().join(format!("horizon-smithing-{}", std::process::id()));
-        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(root.join("data/minecraft/recipe")).unwrap();
         fs::write(
             root.join("items.json"),
             r#"{
