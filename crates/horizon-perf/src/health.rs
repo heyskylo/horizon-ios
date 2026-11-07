@@ -20,10 +20,7 @@ pub fn max(values: impl Iterator<Item = f64>) -> Option<f64> {
 
 type Span = (f64, f64);
 
-/// The time-weighted mean of a health field over the `window_s` seconds ending at `end`, finest tier first.
-///
-/// Live samples win over history, and a finer history tier wins over a coarser one.
-/// A sample at `t` stands for `[t, t + step)`. `None` when under 90% of the window has data.
+/// Time-weighted mean over the window ending at `end`; live samples beat finer history tiers, which beat coarser ones; None under 90% coverage.
 pub fn trailing_mean(
     capture: &Capture,
     side: Side,

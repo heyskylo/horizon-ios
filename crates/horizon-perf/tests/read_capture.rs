@@ -6,7 +6,7 @@ use common::{SERVER, health, start, stop, synthetic_fields, write_capture};
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
-use horizon_perf::{Error, read_capture};
+use horizon_perf::{Error, Follower, read_capture};
 use horizon_perf_format::Field;
 use horizon_perf_format::v1::*;
 use prost::Message;
@@ -146,4 +146,55 @@ fn a_file_that_is_not_gzip_or_has_no_fields_is_refused() {
         .encode_to_vec(),
     );
     assert_eq!(read_capture(&only_format), Err(Error::Empty));
+}
+
+fn finished_file() -> Vec<u8> {
+    write_capture(&[
+        start(SERVER, Kind::Dedicated),
+        health(SERVER, 1.0, 20.0),
+        stop(SERVER, 2.0),
+    ])
+    .bytes
+}
+
+#[test]
+fn a_damaged_gzip_trailer_is_refused_whether_the_crc_or_the_size_changed() {
+    let file = finished_file();
+    for from_end in [8, 5, 4, 1] {
+        let mut damaged = file.clone();
+        let at = damaged.len() - from_end;
+        damaged[at] ^= 0x01;
+        assert_eq!(
+            read_capture(&damaged),
+            Err(Error::Corrupt("the gzip checksum does not match".into())),
+            "byte {from_end} from the end"
+        );
+    }
+}
+
+#[test]
+fn a_file_cut_between_the_last_stop_and_the_gzip_trailer_still_reads() {
+    let file = finished_file();
+    let whole = read_capture(&file).unwrap();
+    assert_eq!(read_capture(&file[..file.len() - 8]).unwrap(), whole);
+}
+
+#[test]
+fn a_gzip_header_with_extra_name_comment_and_header_crc_reads_like_a_plain_one() {
+    let file = finished_file();
+    let plain = read_capture(&file).unwrap();
+    let mut header = vec![0x1f, 0x8b, 8, 0x02 | 0x04 | 0x08 | 0x10, 1, 2, 3, 4, 0, 3];
+    header.extend_from_slice(&[5, 0, b'e', b'x', b't', b'r', b'a']);
+    header.extend_from_slice(b"name.hzperf\0");
+    header.extend_from_slice(b"a comment\0");
+    header.extend_from_slice(&[0xab, 0xcd]);
+    let extended = [&header[..], &file[10..]].concat();
+    assert_eq!(read_capture(&extended).unwrap(), plain);
+    let mut follower = Follower::new();
+    let mut seen = 0;
+    for byte in &extended {
+        seen += follower.push(std::slice::from_ref(byte)).unwrap().len();
+    }
+    assert_eq!(seen, 4);
+    assert!(follower.stream_complete());
 }

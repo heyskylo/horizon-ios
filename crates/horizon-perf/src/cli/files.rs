@@ -1,5 +1,5 @@
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -10,6 +10,8 @@ use crate::error::side_name;
 use crate::follow::{Entry, Follower};
 
 pub const EXTENSION: &str = "hzperf";
+
+const PEEK_CHUNK: usize = 64 * 1024;
 
 /// Every `.hzperf` file directly in `dir`, newest modification first.
 pub fn captures_in(dir: &Path) -> io::Result<Vec<PathBuf>> {
@@ -37,35 +39,49 @@ pub struct Peek {
 }
 
 pub fn peek(path: &Path) -> io::Result<Peek> {
-    let bytes = fs::read(path)?;
+    let mut file = fs::File::open(path)?;
     let mut follower = Follower::new();
     let mut sides: Vec<(Side, Kind, Option<f64>)> = Vec::new();
-    let error = match follower.push(&bytes) {
-        Ok(entries) => {
-            for entry in entries {
-                let Entry::Field(field) = entry else { continue };
-                let side = field.side();
-                if !sides.iter().any(|s| s.0 == side) {
-                    sides.push((side, Kind::Unspecified, None));
-                }
-                let slot = sides.iter_mut().find(|s| s.0 == side).unwrap();
-                match field {
-                    Field::Start(s) => slot.1 = s.kind(),
-                    Field::Stop(s) => slot.2 = Some(s.t),
-                    _ => {}
-                }
-            }
-            None
+    let mut chunk = vec![0u8; PEEK_CHUNK];
+    let mut size = 0u64;
+    let mut error = None;
+    loop {
+        let n = file.read(&mut chunk)?;
+        if n == 0 {
+            break;
         }
-        Err(e) => Some(e.to_string()),
-    };
+        size += n as u64;
+        match follower.push(&chunk[..n]) {
+            Ok(entries) => note_sides(&mut sides, entries),
+            Err(e) => {
+                error = Some(e.to_string());
+                break;
+            }
+        }
+    }
     sides.sort_by_key(|s| std::cmp::Reverse(s.0 as i32));
     Ok(Peek {
-        size: bytes.len() as u64,
+        size,
         finished: error.is_none() && follower.is_finished(),
         error,
         sides,
     })
+}
+
+fn note_sides(sides: &mut Vec<(Side, Kind, Option<f64>)>, entries: Vec<Entry>) {
+    for entry in entries {
+        let Entry::Field(field) = entry else { continue };
+        let side = field.side();
+        if !sides.iter().any(|s| s.0 == side) {
+            sides.push((side, Kind::Unspecified, None));
+        }
+        let slot = sides.iter_mut().find(|s| s.0 == side).unwrap();
+        match field {
+            Field::Start(s) => slot.1 = s.kind(),
+            Field::Stop(s) => slot.2 = Some(s.t),
+            _ => {}
+        }
+    }
 }
 
 /// The newest capture in `dir`; with `finished_only`, newest that every side has stopped writing.
