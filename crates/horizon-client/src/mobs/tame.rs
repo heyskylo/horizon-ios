@@ -606,13 +606,14 @@ pub fn forgive_dead_player(m: &mut Mob) {
         stop_being_angry(m);
     }
 }
-/// `NeutralMob.updatePersistentAnger(level, true)` from `Wolf.aiStep`: any
-/// target (the attacker, a pack-mate's attacker the `HurtByTargetGoal` alert
-/// gave it, prey, the owner's enemy) is the anger's target, and the 20 to 39
-/// seconds of `PERSISTENT_ANGER_TIME` start over every tick it is held.
+/// `NeutralMob.updatePersistentAnger(level, true)` from `Wolf.aiStep` and
+/// `IronGolem.aiStep`: any target (the attacker, a pack-mate's attacker the
+/// `HurtByTargetGoal` alert gave it, prey, the owner's enemy, a golem's
+/// monster) is the anger's target, and the 20 to 39 seconds of
+/// `PERSISTENT_ANGER_TIME` (the same for both) start over every tick it is held.
 /// Without a target the anger runs out (`extra.anger` counts down to the end
 /// time), and anger at a mob ends when that mob dies.
-fn update_persistent_anger(m: &mut Mob, w: &MobWorld) {
+pub(super) fn update_persistent_anger(m: &mut Mob, w: &MobWorld) {
     let angry_at = m.extra.angry_at;
     if let Some(target @ Who::Mob(id)) = m.ai.target
         && w.seen(id).is_none_or(|s| !s.alive)
