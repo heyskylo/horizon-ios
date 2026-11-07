@@ -146,6 +146,8 @@ mod extras;
 mod falling_damage;
 mod fangs;
 mod fireworks;
+#[cfg(test)]
+mod first_tick_registration_tests;
 mod fishing;
 mod fov;
 mod foxes;
@@ -14719,6 +14721,13 @@ impl Game<'_> {
             })
         {
             log::warn!("Horizon: failed to save unloaded chunks: {e}");
+        }
+        // LevelChunk.registerTickContainerInLevel: a chunk that became
+        // resident has its tick containers before a command can schedule into
+        // it, even in a frozen level that runs no world tick. The unloaded
+        // chunks above were saved with their ticks first.
+        if self.remote.is_none() {
+            self.sync_tick_chunks();
         }
         let (far_distance, far_reduced) = self.far_terrain_choice();
         // Terrain still on its way from the server (single player's integrated one
