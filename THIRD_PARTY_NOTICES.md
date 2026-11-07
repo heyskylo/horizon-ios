@@ -1,5 +1,26 @@
 # Third-party notices
 
+## Code removed for its license
+
+Horizon once shipped two pieces of code under MIT that came from projects whose licenses don't allow that. Both are
+gone from main. They are listed here for anyone who holds an older commit, tag or release: in those versions, that
+code is not covered by Horizon's MIT license. It stays under its authors' copyright and its original license.
+
+- **Shader packs written from Iris's source.** `crates/horizon-shaderpack` and the render stages that used it were
+  written from the source of [Iris](https://github.com/IrisShaders/Iris) (LGPL-3.0, copyright the Iris contributors).
+  They were added from 15 October 2026 (`b22583d057`), shipped in the game releases `v2026.10.16.02` to `v0.2.46`,
+  and were removed on 24 October 2026 ([#1561](https://github.com/horizon-rust/horizon/pull/1561)) after a developer
+  of Iris showed us. Shader packs came back in `crates/horizon-shaders`, first written from a description of the pack format.
+- **Math functions translated from OpenJDK.** In `crates/horizon-core/src/jmath.rs`, `fdlibm::{log, log10, cbrt,
+  hypot}` were translated from OpenJDK's `java/lang/FdLibm.java` and `round_f32` from its `java/lang/Math.java`
+  (GPL-2.0 with the Classpath Exception), and `aarch64::{sin, cos}` from HotSpot's `macroAssembler_aarch64_trig.cpp`
+  (GPL-2.0); copyright Oracle and/or its affiliates, and Cavium for that file. The `fdlibm` and `aarch64` functions
+  were added on 13 October 2026 (`558d140fca`, first released in `v2026.10.13`). `round_f32` was added on 14 October
+  2026 as `java_round` in `crates/horizon-client/src/mipmap.rs` (`95db0fce9d`) and moved into `jmath.rs` on 3
+  November ([#7770](https://github.com/horizon-rust/horizon/pull/7770)). All of them were replaced by code written
+  from Sun's fdlibm C sources and the Java SE API documentation in #JMATH_PR
+  ([#6741](https://github.com/horizon-rust/horizon/issues/6741)).
+
 ## Catnip / Ponder
 
 `crates/horizon-client-render/src/fluid_render.rs` translates the still-fluid face tiling and
