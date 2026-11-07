@@ -1195,6 +1195,7 @@ pub fn mob_to_nbt(
                 map.insert("listener".into(), st.vibration.to_nbt());
                 map.insert("anger".into(), warden_anger_to_nbt(&st.anger, &mut uuid_of));
             }
+            write_warden_owned_memories(m, map);
         }
         // Armadillo.addAdditionalSaveData: the time left to the next scute, and
         // the state it is in, which is always written (`idle` when it is not
@@ -2322,6 +2323,7 @@ pub fn mob_from_nbt(
                     crate::mobs::warden::AngerManagement::from_saved(warden_anger_from_nbt(anger));
             }
         }
+        restore_warden_owned_memories(&mut m, tag);
     }
     // Armadillo.readAdditionalSaveData: the saved state through `switchToState`
     // (`onSyncedDataUpdated` then restarts the time in that state), idle for a
@@ -5709,6 +5711,60 @@ fn write_guarded_piglin_anger(m: &Mob, map: &mut Compound) {
         );
     } else {
         memories.remove(&"minecraft:angry_at".into());
+    }
+}
+
+/// `Brain`'s two measured Warden Unit memories, using actual existing slots.
+fn write_warden_owned_memories(m: &Mob, map: &mut Compound) {
+    let brain = map
+        .entry("Brain".into())
+        .or_insert_with(|| Tag::Compound(Compound::new()));
+    let Tag::Compound(brain) = brain else { return };
+    let memories = brain
+        .entry("memories".into())
+        .or_insert_with(|| Tag::Compound(Compound::new()));
+    let Tag::Compound(memories) = memories else {
+        return;
+    };
+    let mem = m.extra.warden.as_ref().map(|st| &st.brain.mem);
+    for (key, slot) in [
+        ("minecraft:is_emerging", mem.map(|mem| &mem.is_emerging)),
+        ("minecraft:dig_cooldown", mem.map(|mem| &mem.dig_cooldown)),
+    ] {
+        if let Some(slot) = slot.filter(|slot| slot.present()) {
+            let mut entry = Tag::compound([("value", Tag::Compound(Compound::new()))]);
+            if slot.ttl() != i64::MAX {
+                put(&mut entry, "ttl", Tag::Long(slot.ttl()));
+            }
+            memories.insert(key.into(), entry);
+        } else {
+            memories.remove(&key.into());
+        }
+    }
+}
+/// `Brain` / `ExpirableValue`: admitted Unit values with absent or Long TTL.
+fn restore_warden_owned_memories(m: &mut Mob, tag: &Tag) {
+    let memories = tag.get("Brain").and_then(|brain| brain.get("memories"));
+    let Some(st) = m.extra.warden.as_mut() else {
+        return;
+    };
+    for (key, slot) in [
+        ("minecraft:is_emerging", &mut st.brain.mem.is_emerging),
+        ("minecraft:dig_cooldown", &mut st.brain.mem.dig_cooldown),
+    ] {
+        let Some(entry) = memories.and_then(|memories| memories.get(key)) else {
+            // Fresh Java read/load: absent entries do not retain finalize's slot.
+            slot.clear();
+            continue;
+        };
+        if !matches!(entry.get("value"), Some(Tag::Compound(value)) if value.is_empty()) {
+            continue; // Unmeasured malformed shapes retain existing initialization.
+        }
+        match entry.get("ttl") {
+            None => slot.set(()),
+            Some(Tag::Long(ttl)) => slot.set_ttl((), *ttl),
+            _ => {} // No new numeric/malformed TTL policy.
+        }
     }
 }
 
