@@ -27,7 +27,10 @@ impl Counts {
 }
 
 /// Whether the game's own allocator counts (feature `alloc-count`, implied by `alloc-census`; never with `system-allocator`).
-pub const ON: bool = cfg!(all(feature = "alloc-count", not(feature = "system-allocator")));
+pub const ON: bool = cfg!(all(
+    feature = "alloc-count",
+    not(feature = "system-allocator")
+));
 
 const SLOTS: usize = 1024;
 const UNASSIGNED: u16 = u16::MAX;
