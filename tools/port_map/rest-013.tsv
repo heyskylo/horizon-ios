@@ -72,7 +72,7 @@ MinecraftServer.constructOrExtractCrashReport	skip:debug		crash report wrapping
 MinecraftServer.haveTime	inline	crates/horizon-client/src/game/levels.rs::Game::wait_for_next_server_tick	gap: minor: no time budget for queued tasks
 MinecraftServer.waitUntilNextTick	port	crates/horizon-client/src/game/levels.rs::Game::wait_for_next_server_tick	gap: minor: queued tasks are not run before the wait
 MinecraftServer.waitForTasks	inline	crates/horizon-client/src/game/levels.rs::Game::wait_for_next_server_tick	idle sleep until the next tick
-MinecraftServer.shouldRun	missing		minor: no per-task deferral; queued tasks run in one pass
+MinecraftServer.shouldRun	skip:other		Horizon has no haveTime budget to defer against: the only queued-task pass (IntegratedServer::run_tasks) drains the window's requests once per tick with no tick stamp and no clock, so tasks are never starved; a faithful port is a server-loop redesign
 MinecraftServer.pollTaskInternal	inline	crates/horizon-client/src/game/integrated.rs::Game::run_tasks	gap: minor: only the task queue; chunk-source tasks are not polled here
 MinecraftServer.loadStatusIcon	inline	crates/horizon-client/src/game/dedicated.rs::Game::run_dedicated	gap: minor: only server-icon.png; no world icon fallback
 MinecraftServer.processPacketsAndTick	port	crates/horizon-client/src/game/levels.rs::Game::tick_server	reads the network, then ticks the levels

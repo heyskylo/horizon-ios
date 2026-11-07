@@ -382,6 +382,16 @@ fn equippable(r: &mut Reader) -> Result<()> {
     (0..5).try_for_each(|_| boolean(r))?;
     sound(r)
 }
+/// Equippable as 1.21.5 writes it: the fields up to equipOnInteract. 26.3 adds canBeSheared and
+/// shearingSound after them (1.21.6).
+pub(super) fn equippable_before_1_21_6(r: &mut Reader) -> Result<()> {
+    varint(r)?;
+    sound(r)?;
+    optional(r, ident)?;
+    optional(r, ident)?;
+    optional(r, holder_set)?;
+    (0..4).try_for_each(|_| boolean(r))
+}
 /// BlocksAttacks: blockDelaySeconds, disableCooldownScale, damageReductions (angle, type,
 /// base, factor), itemDamage (threshold, base, factor), bypassedBy, blockSound, disableSound.
 fn blocks_attacks(r: &mut Reader) -> Result<()> {
