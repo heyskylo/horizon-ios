@@ -101,6 +101,8 @@ def main():
     parser.add_argument('--sulfur-power-load-diagnostic', action='store_true',
                         help='retain the immediate-load powered sulfur cube H249 diagnostic')
     parser.add_argument('--binary', type=Path, help='use an already built Horizon game instead of building it')
+    parser.add_argument('--hurt-cooldown-incoming-fixture', action='store_true',
+                        help='a mob hurt cooldown compares the incoming damage before its reductions (H248)')
     parser.add_argument('--slot-codec-diagnostic', action='store_true',
                         help='retain the separate invalid inline slot-range codec diagnostic')
     parser.add_argument('--work-dir', type=Path, help='isolated scratch output directory')
@@ -250,6 +252,12 @@ def main():
     if args.sulfur_power_load_diagnostic:
         groups = [('setup', corpus_module.group_setup()),
                   ('sulfur powered-load diagnostic', corpus_module.sulfur_cube_fuse_ticks(True))]
+    if args.hurt_cooldown_incoming_fixture:
+        try:
+            from .hurt_cooldown_incoming_corpus import hurt_cooldown_incoming
+        except ImportError:
+            from hurt_cooldown_incoming_corpus import hurt_cooldown_incoming
+        groups = [('setup', corpus_module.group_setup()), ('hurt cooldown incoming', hurt_cooldown_incoming())]
     if args.map_decoration_namespace_fixture:
         try:
             from .map_decoration_namespace_corpus import map_decoration_namespaces
