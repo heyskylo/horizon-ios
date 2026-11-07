@@ -282,6 +282,23 @@ impl Game<'_> {
         Ok(())
     }
 
+    /// Opens the chat screen with `text` typed in and the cursor at its end,
+    /// as T and / open it (`ChatScreen` with its initial text): a command
+    /// macro can fill in `/tp ` for the player to finish. Nothing is sent; the
+    /// player edits and sends it, or presses Escape. The box keeps its limit
+    /// (256 characters) and its character filter. An error with no player in a
+    /// world, or while another screen is open. API @API:open_chat@.
+    pub(super) fn native_open_chat(&mut self, text: &str) -> Result<(), String> {
+        if self.player.is_none() {
+            return Err("no player in a world".into());
+        }
+        if self.screen != super::Screen::Playing {
+            return Err("another screen is open".into());
+        }
+        self.open_chat(text);
+        Ok(())
+    }
+
     /// Sends `packet` to the server as it is, to any server, a vanilla one
     /// included: a plugin channel's payload (`ServerboundCustomPayloadPacket`)
     /// or any other play packet. Nothing counts it, and the game doesn't apply

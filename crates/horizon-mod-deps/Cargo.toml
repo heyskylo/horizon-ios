@@ -22,6 +22,8 @@ redis = { version = "1", default-features = false, optional = true }
 tungstenite = { version = "0.30", default-features = false, optional = true }
 # Opus encoder and decoder in pure Rust (voice chat, #7759).
 rusty-opus = { version = "1", optional = true }
+# QUIC (quinn) on tokio, TLS through the rustls + ring in the lock (relays such as e4mc's, #9602).
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }
 # SQLite (e.g. a Bukkit plugin's .db file). `bundled` compiles SQLite's C source with the cc already in the
 # lock (ring needs a C compiler too), so no system libsqlite3; no default features, which would lock the wasm backend.
 rusqlite = { version = "0.41", default-features = false, features = ["bundled", "cache"], optional = true }
@@ -38,11 +40,12 @@ mysql = ["dep:mysql"]
 redis = ["dep:redis"]
 websocket = ["dep:tungstenite"]
 opus = ["dep:rusty-opus"]
+quic = ["dep:quinn"]
 sqlite = ["dep:rusqlite"]
 yaml = ["dep:yaml-rust2"]
 gif = ["dep:gif"]
 snappy = ["dep:snap"]
-all = ["mysql", "redis", "websocket", "opus", "sqlite", "yaml", "gif", "snappy"]
+all = ["mysql", "redis", "websocket", "opus", "quic", "sqlite", "yaml", "gif", "snappy"]
 
 [lints]
 workspace = true

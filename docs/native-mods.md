@@ -545,9 +545,10 @@ file in a version that matches, and builds in exactly that version. The crates t
 `crates/horizon-mod-deps/Cargo.toml` (optional dependencies, with the features mods may turn on; nothing builds them):
 `mysql` 27 (blocking MariaDB/MySQL client, `minimal-rust` + `rustls-tls-ring` + `chrono`, no default features), `redis` 1
 (blocking, no default features), `tungstenite` 0.30 (websocket over a stream the mod opens, no default features),
-`rusty-opus` 1 (Opus encoder and decoder), `rusqlite` 0.41 (SQLite, `bundled` + `cache`, no default features; builds
-SQLite's C source), `yaml-rust2` 0.13 (YAML 1.2 reader and writer, no default features, so UTF-8 input only), `gif` 0.14
-and `snap` 1 (Snappy). A feature of theirs that turns on a dependency not listed there is refused.
+`rusty-opus` 1 (Opus encoder and decoder), `quinn` 0.11 (QUIC on tokio, features `runtime-tokio` + `rustls-ring`, no
+default features), `rusqlite` 0.41 (SQLite, `bundled` + `cache`, no default features; builds SQLite's C source),
+`yaml-rust2` 0.13 (YAML 1.2 reader and writer, no default features, so UTF-8 input only), `gif` 0.14 and `snap` 1
+(Snappy). A feature of theirs that turns on a dependency not listed there is refused.
 The lock file is the allow list: horizon-mixins
 refuses a crate the lock lacks (`E_CRATE_DEPENDENCY`) and writes the mod's crates into the staged lock without
 changing any other byte, so the game still builds with `--locked`. The launcher checks it again (every downloaded
@@ -4192,6 +4193,12 @@ is trimmed first, as the chat screen trims it. It isn't added to the chat histor
 state (not connected, not joined yet or being reconfigured), when the trimmed message is empty, and when the Chat option
 blocks it: Commands Only blocks chat, Hidden blocks chat and commands. The server's own spam limits apply as they do to
 typed chat. Bundles need `"hooks": 404`.
+
+`native_open_chat(text)` (API @API:open_chat@, same file) opens the chat screen with `text` typed in and the cursor at
+its end, as T and / open it: a command macro can fill in `/tp ` for the player to finish. Nothing is sent: the player
+edits and sends it, or presses Escape, and it goes into the chat history then like anything typed. The box keeps its
+256-character limit and its character filter. It is an error with no player in a world, and while another screen
+(the chat itself included) is open. Bundles need `"hooks": @API:open_chat@`.
 
 ### Packets a client mod sends
 
