@@ -252,6 +252,21 @@ impl MapData {
             texture_dirty: true,
         }
     }
+    /// The whole picture replaced by a mod (`native_paint_map`): saved with
+    /// the maps and sent in full to everyone carrying it or seeing it framed,
+    /// as `update_color` would over every pixel (`setColorsDirty`).
+    pub(super) fn paint(&mut self, colors: &[u8]) {
+        if self.colors.as_slice() == colors {
+            return;
+        }
+        self.colors.clear();
+        self.colors.extend_from_slice(colors);
+        self.dirty = true;
+        self.texture_dirty = true;
+        for h in &mut self.holders {
+            h.dirty = Some([0, 0, 127, 127]);
+        }
+    }
     fn update_color(&mut self, x: i32, y: i32, color: u8) -> bool {
         let i = (x + y * 128) as usize;
         if self.colors[i] == color {
@@ -428,7 +443,7 @@ impl MapData {
     }
     /// `MapItemSavedData.isTrackedCountOverLimit`: more than `limit`
     /// decorations count (`MapDecorationType.trackCount`).
-    fn tracked_over_limit(&self, limit: usize) -> bool {
+    pub(super) fn tracked_over_limit(&self, limit: usize) -> bool {
         self.decorations
             .iter()
             .filter(|d| tracks_count(d.sprite))
