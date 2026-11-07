@@ -1209,6 +1209,36 @@ pub fn command_components(text: &str) -> Result<Tag, String> {
 mod tests {
     use super::*;
 
+    /// `set_book_cover` (and `set_components`) hand a written book's content
+    /// over as a component; the fields the tooltip and the reading screen read
+    /// have to come out of it, not just sit in `other` unread.
+    #[test]
+    fn a_loot_written_book_component_fills_the_book() {
+        let mut stack = ItemStack::new("minecraft:written_book", 1);
+        stack.data_mut().set_loot_component(
+            "minecraft:written_book_content",
+            &serde_json::json!({
+                "title": {"raw": "A Guide"},
+                "author": "Cartographer",
+                "generation": 2,
+                "pages": [{"raw": "page one"}, {"raw": "page two"}],
+            }),
+        );
+        let book = stack
+            .data()
+            .and_then(|d| d.written.as_ref())
+            .expect("content");
+        assert_eq!(book.title, "A Guide");
+        assert_eq!(book.author, "Cartographer");
+        assert_eq!(book.generation, 2);
+        assert_eq!(book.pages, ["page one", "page two"]);
+        // A null component is no component.
+        stack
+            .data_mut()
+            .set_loot_component("minecraft:written_book_content", &serde_json::Value::Null);
+        assert!(stack.data().is_none_or(|d| d.written.is_none()));
+    }
+
     fn check_lodestone_saved_default(decoded: bool) {
         const TRACKER: &str = "minecraft:lodestone_tracker";
         const CUSTOM: &str = "minecraft:custom_data";
