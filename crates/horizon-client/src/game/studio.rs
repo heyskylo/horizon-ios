@@ -26,6 +26,9 @@ pub const HELP: &[&str] = &[
     "studio replay seek MS          seek replay playback to timestamp in milliseconds",
     "studio replay status           query replay playback status",
     "studio replay close            close active replay session",
+    "studio freecam <on|off>        enable or disable the Studio free camera",
+    "studio keyframe <add|remove INDEX|clear> edit the replay camera path",
+    "studio path <lock|unlock>      play or stop the camera path",
 ];
 
 impl Game<'_> {
@@ -45,6 +48,110 @@ impl Game<'_> {
         }
 
         match words[0] {
+            "freecam" => match words.get(1).copied() {
+                Some("on") => {
+                    if self.studio_replay.is_none() {
+                        self.system_message(Text::translate(
+                            "horizon.studio.freecam.replay_required",
+                            &[],
+                        ));
+                    } else if let Some((position, yaw, pitch)) = self.camera_view(1.0) {
+                        self.studio_freecam.activate(
+                            position,
+                            yaw,
+                            pitch,
+                            self.settings.fov.clamp(1.0, 179.0),
+                        );
+                        self.capture(true);
+                        self.system_message(Text::translate("horizon.studio.freecam.enabled", &[]));
+                    } else {
+                        self.system_message(Text::translate(
+                            "horizon.studio.freecam.unavailable",
+                            &[],
+                        ));
+                    }
+                }
+                Some("off") => {
+                    self.studio_freecam.deactivate();
+                    self.capture(false);
+                    self.system_message(Text::translate("horizon.studio.freecam.disabled", &[]));
+                }
+                _ => self.system_message(Text::translate("horizon.studio.freecam.usage", &[])),
+            },
+            "keyframe" => {
+                let Some(driver) = self.studio_replay.as_ref() else {
+                    self.system_message(Text::translate("horizon.studio.replay.inactive", &[]));
+                    return true;
+                };
+                let time_ms = driver.position_ms();
+                match words.get(1).copied() {
+                    Some("add") => {
+                        if !self.studio_freecam.active
+                            && let Some((position, yaw, pitch)) = self.camera_view(1.0)
+                        {
+                            self.studio_freecam.activate(
+                                position,
+                                yaw,
+                                pitch,
+                                self.settings.fov.clamp(1.0, 179.0),
+                            );
+                        }
+                        self.capture(true);
+                        self.studio_freecam.add_keyframe_at_current(time_ms);
+                        self.studio_camera_track_dirty = true;
+                        self.system_message(Text::tr(
+                            "horizon.studio.keyframe.added",
+                            &[&time_ms.to_string()],
+                        ));
+                    }
+                    Some("clear") => {
+                        self.studio_freecam.track.clear();
+                        self.studio_camera_track_dirty = true;
+                        self.system_message(Text::translate(
+                            "horizon.studio.keyframe.cleared",
+                            &[],
+                        ));
+                    }
+                    Some("remove") => {
+                        let Some(index) =
+                            words.get(2).and_then(|value| value.parse::<usize>().ok())
+                        else {
+                            self.system_message(Text::translate(
+                                "horizon.studio.keyframe.remove_usage",
+                                &[],
+                            ));
+                            return true;
+                        };
+                        if index >= self.studio_freecam.track.keyframes.len() {
+                            self.system_message(Text::translate(
+                                "horizon.studio.keyframe.index_invalid",
+                                &[],
+                            ));
+                            return true;
+                        }
+                        self.studio_freecam.track.keyframes.remove(index);
+                        self.studio_camera_track_dirty = true;
+                        self.system_message(Text::tr(
+                            "horizon.studio.keyframe.removed",
+                            &[&index.to_string()],
+                        ));
+                    }
+                    _ => self.system_message(Text::translate("horizon.studio.keyframe.usage", &[])),
+                }
+            }
+            "path" => match words.get(1).copied() {
+                Some("lock") if !self.studio_freecam.track.is_empty() => {
+                    self.studio_freecam.active = true;
+                    self.studio_freecam.locked_to_path = true;
+                    self.capture(true);
+                    self.system_message(Text::translate("horizon.studio.path.locked", &[]));
+                }
+                Some("unlock") => {
+                    self.studio_freecam.locked_to_path = false;
+                    self.system_message(Text::translate("horizon.studio.path.unlocked", &[]));
+                }
+                _ => self.system_message(Text::translate("horizon.studio.path.usage", &[])),
+            },
             "record" => match words.get(1).copied() {
                 Some("start") => match self.start_studio_recording(words.get(2).copied()) {
                     Ok(v) if v["ok"].as_bool() == Some(true) => {
@@ -367,6 +474,14 @@ impl Game<'_> {
         };
 
         self.dispatch_studio_replay_packets(ready_packets);
+        if self.studio_freecam.locked_to_path
+            && let Some(position) = self
+                .studio_replay
+                .as_ref()
+                .map(|replay| replay.position_ms())
+        {
+            self.studio_freecam.update_spline_playback(position);
+        }
         let paused = self
             .studio_replay
             .as_ref()
@@ -598,6 +713,14 @@ impl Game<'_> {
     }
 
     pub(super) fn open_studio_replay(&mut self, path: &str) -> Result<Value> {
+        if self.studio_camera_track_dirty
+            && let Some(active) = self.studio_replay.as_mut()
+        {
+            if let Err(error) = active.save_camera_track(&self.studio_freecam.track) {
+                return Ok(json!({ "ok": false, "error": error.to_string() }));
+            }
+            self.studio_camera_track_dirty = false;
+        }
         // The recordings browser can be opened while the title screen is
         // available but the slower world tables are still loading. Replay
         // setup builds the normal client registries, which require `rest`.
@@ -629,6 +752,8 @@ impl Game<'_> {
 
         let duration_ms = driver.duration_ms();
         let packets = driver.packet_count();
+        self.studio_freecam.track = driver.camera_track().cloned().unwrap_or_default();
+        self.studio_camera_track_dirty = false;
         if self.studio_replay.is_none() {
             self.studio_replay_previous_camera_type = Some(self.camera_type);
             self.studio_replay_standalone = standalone;
@@ -651,6 +776,13 @@ impl Game<'_> {
         }))
     }
     pub(super) fn close_studio_replay(&mut self) -> bool {
+        if self.studio_camera_track_dirty
+            && let Some(driver) = self.studio_replay.as_mut()
+            && let Err(error) = driver.save_camera_track(&self.studio_freecam.track)
+        {
+            log::warn!("Studio: could not save camera path: {error}");
+        }
+        self.studio_camera_track_dirty = false;
         let closed = self.studio_replay.take().is_some();
         if !closed {
             return false;
@@ -669,6 +801,7 @@ impl Game<'_> {
             self.camera_type = camera_type;
         }
         self.last_replay_tick = None;
+        self.studio_freecam.deactivate();
         self.studio_virtual_tick_ms = 0.0;
         self.capture(false);
         if standalone {
