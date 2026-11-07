@@ -1,7 +1,7 @@
 //! Linux's codes for X and Y don't say where those buttons sit.
 use super::hid_layout;
 use gilrs::{Button, Gamepad, MappingSource};
-use horizon_client::gamepad::GlyphStyle;
+use horizon_client::gamepad::{BITDO_ULTIMATE2_VID_PID, GlyphStyle};
 
 /// Whether this pad's X and Y reach us crossed. The kernel defines `BTN_X` as `BTN_NORTH` and
 /// `BTN_Y` as `BTN_WEST`, so an Xbox-style pad's X, on the west, sends "north". gilrs' default
@@ -19,7 +19,10 @@ pub(super) fn crossed(pad: &Gamepad) -> bool {
                 Button::Z,
             ]
             .map(|button| pad.button_code(button).is_some()),
-            hid_layout::numbered_buttons(pad),
+            hid_layout::numbered_buttons(pad)
+                // Its row has `x:b3`, BTN_NORTH, and it lists C and Z with its right stick on RX.
+                || (pad.vendor_id(), pad.product_id())
+                    == (Some(BITDO_ULTIMATE2_VID_PID.0), Some(BITDO_ULTIMATE2_VID_PID.1)),
             GlyphStyle::of_device(pad.vendor_id(), pad.product_id()),
         )
 }

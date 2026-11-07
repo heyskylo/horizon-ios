@@ -323,4 +323,27 @@ mod tests {
         let unorm = wgpu::TextureFormat::Rgba16Unorm;
         reaches_an_8_bit_swapchain(&device, &queue, unorm, color, [0, 51, 255, 255]);
     }
+
+    /// `Rgba16Float`, the frame of a shader API 0.2 pack, or of HDR on without a pack, under
+    /// `HORIZON_HDR_FRAME=float` (`Renderer::frame_format`): what is left over 1 is clipped on
+    /// the way.
+    #[test]
+    fn a_float_frame_reaches_an_8_bit_swapchain() {
+        let instance = crate::gfx::test_gpu::instance();
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            return;
+        };
+        let Ok((device, queue)) = pollster::block_on(adapter.request_device(&Default::default()))
+        else {
+            return;
+        };
+        let color = wgpu::Color {
+            r: 1.5,
+            g: 0.2,
+            b: -0.5,
+            a: 1.0,
+        };
+        let float = wgpu::TextureFormat::Rgba16Float;
+        reaches_an_8_bit_swapchain(&device, &queue, float, color, [0, 51, 255, 255]);
+    }
 }

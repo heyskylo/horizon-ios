@@ -578,7 +578,7 @@ pub fn spawn_aabb(s: Species, x: f64, y: f64, z: f64, width: f32, height: f32) -
 /// `checkSpawnObstruction` of a freshly created mob with the given box, with
 /// the mobs already `spawned` in the way; None in a generation region, which
 /// has no entities (`WorldGenRegion.getEntities`).
-pub(crate) fn spawn_obstruction<L: NaturalLevel>(
+pub fn spawn_obstruction<L: NaturalLevel>(
     s: Species,
     l: &L,
     bounds: Aabb,

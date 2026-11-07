@@ -1,0 +1,10 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "chat_input", "target": "horizon_client::game::chat::Game<'_>::native_chat_input"},
+    {"name": "set_chat_input", "target": "horizon_client::game::chat::Game<'_>::native_set_chat_input"}
+  ],
+  "rust_summary": "a client mod reads and writes the open chat box (`native_chat_input`, `native_set_chat_input`).",
+  "doc_summary": "`native_chat_input()` gives the open chat box's text and cursor, `native_set_chat_input(text, cursor)` replaces them as an edit (completions refresh); an error while the chat is closed. Bundles need \"hooks\": @API:chat_input@.",
+  "comments": ["crates/horizon-client/src/game/chat.rs"]
+}

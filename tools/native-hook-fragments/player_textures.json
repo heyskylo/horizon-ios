@@ -1,0 +1,10 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "player_textures", "target": "horizon_client::game::native_profiles::Game<'_>::native_player_textures"},
+    {"name": "player_head", "target": "horizon_client::game::native_profiles::Game<'_>::native_player_head"}
+  ],
+  "rust_summary": "an online player's `textures` property (`native_player_textures`) and a head stack of any player (`native_player_head`).",
+  "doc_summary": "`native_player_textures(uuid)` gives the `textures` property (value and signature) of a player who is on, and `native_player_head(uuid)` a `minecraft:player_head` whose profile holds the player's id, plus their name and skin when they are on. Bundles need \"hooks\": @API:player_textures@.",
+  "comments": ["crates/horizon-client/src/game/native_profiles.rs"]
+}

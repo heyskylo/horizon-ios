@@ -57,6 +57,7 @@
  },
  "known_flaky": {
   "world_reopen": "counted 4 minecarts instead of 3 once on a loaded Mac mini runner, then passed at the same head (10-26)",
-  "lunge_motion": "a loaded Mac mini runner: the server catches up with two ticks for one of the jump's moves (Alice falls a tick of gravity more, -0.3015 vs -0.2277; the harness now names it), and vanilla's own run once sent an extra motion while sprinting; the same trees pass alone (#5656, 11-01)"
+  "lunge_motion": "a loaded Mac mini runner: the server catches up with two ticks for one of the jump's moves (Alice falls a tick of gravity more, -0.3015 vs -0.2277; the harness now names it), and vanilla's own run once sent an extra motion while sprinting; the same trees pass alone (#5656, 11-01)",
+  "server_wool_vibration": "real-time dedicated servers: the player cases send one client position per 50 ms sleep, so on a loaded machine the sensor's phase check sometimes runs before or after the landing (shrieker-jump-stone, Horizon's side, 1 of 4 runs on playhorizon at load 15-25, 11-07); the drop and corpse leaks between cow and item cases are cleared in the harness"
  }
 }
