@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "teleport_vehicle", "target": "horizon_client::game::native_travel::Game<'_>::native_teleport_vehicle"}
+  ],
+  "rust_summary": "a boat, minecart or ridden mob teleported with its riders (`native_teleport_vehicle`), as Bukkit's `Vehicle.teleport`.",
+  "doc_summary": "`native_teleport_vehicle(dimension, id, pos)` teleports a boat, minecart or mob a rider sits on with its riders, as `/tp` does a vehicle; a server player riding it is told. Only where nobody's state is swapped in. Bundles need \"hooks\": @API:teleport_vehicle@.",
+  "comments": ["crates/horizon-client/src/game/native_travel.rs"]
+}

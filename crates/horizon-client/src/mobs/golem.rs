@@ -555,6 +555,7 @@ pub fn snow_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if !w.mob_griefing {
         return;
     }
+    let mut placed = Vec::new();
     for i in 0..4 {
         let xx = (m.position.x + f64::from((i % 2 * 2 - 1) as f32 * 0.25)).floor() as i32;
         let zz = (m.position.z + f64::from((i / 2 % 2 * 2 - 1) as f32 * 0.25)).floor() as i32;
@@ -565,7 +566,12 @@ pub fn snow_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             below.name.as_ref(),
             "minecraft:ice" | "minecraft:packed_ice" | "minecraft:barrier"
         );
-        if here.name.as_ref() == "minecraft:air" && below.full_collision && !ice {
+        if here.name.as_ref() == "minecraft:air"
+            && below.full_collision
+            && !ice
+            && !placed.contains(&[xx, y, zz])
+        {
+            placed.push([xx, y, zz]);
             events.push(MobEvent::SetBlockName {
                 mob: Some(m.id),
                 pos: [xx, y, zz],
@@ -573,6 +579,14 @@ pub fn snow_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
                 effect: false,
                 flags: horizon_world::level::flags::UPDATE_ALL,
             });
+            if let Some(state) = w.registry.default_state("minecraft:snow") {
+                events.push(MobEvent::GameEvent {
+                    event: "minecraft:block_place",
+                    at: [f64::from(xx) + 0.5, f64::from(y) + 0.5, f64::from(zz) + 0.5],
+                    source: m.id,
+                    state,
+                });
+            }
         }
     }
     let _ = z;
@@ -588,6 +602,54 @@ mod tests {
         let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
         kind.species = species;
         Mob::new(id, Arc::new(kind), at, 0.0)
+    }
+
+    #[test]
+    fn snow_trail_posts_block_place_with_golem_and_snow_state() {
+        let ran = crate::mobs::world::with_built_test_world(
+            &[],
+            |world, reg| {
+                world
+                    .chunks
+                    .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+                world
+                    .set(1, 0, 1, reg.default_state("minecraft:stone").unwrap())
+                    .unwrap();
+            },
+            |w, _| {
+                let mut golem = mob(42, Species::SnowGolem, Vec3::new(1.5, 1.0, 1.5));
+                let mut events = Vec::new();
+                snow_ai_step(&mut golem, w, &mut events);
+                let snow = w.registry.default_state("minecraft:snow").unwrap();
+                let posted: Vec<_> = events
+                    .iter()
+                    .filter_map(|e| match e {
+                        MobEvent::GameEvent {
+                            event,
+                            at,
+                            source,
+                            state,
+                        } => Some((*event, *at, *source, *state)),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(
+                    posted,
+                    vec![("minecraft:block_place", [1.5, 1.5, 1.5], 42, snow)]
+                );
+                events.clear();
+                let mut denied = w.clone();
+                denied.mob_griefing = false;
+                snow_ai_step(&mut golem, &denied, &mut events);
+                assert!(
+                    events
+                        .iter()
+                        .all(|e| !matches!(e, MobEvent::GameEvent { .. }))
+                );
+            },
+        );
+        // Without the vanilla data under .local/horizon-client the world cannot be built: the test has nothing to check.
+        let _ = ran;
     }
 
     /// `MoveTowardsTargetGoal.canUse` picks a random spot within 16 blocks and

@@ -107,7 +107,6 @@ impl Game<'_> {
 const PLAYER_SLOTS: [&str; 6] = ["mainhand", "offhand", "feet", "legs", "chest", "head"];
 
 /// A mob as a native mod reads it.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NativeMob {
     pub(crate) id: u32,
@@ -123,7 +122,6 @@ pub(crate) struct NativeMob {
 }
 
 /// What a mob starts with (`native_spawn_mob`); the default is a plain mob.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct NativeSpawn {
     /// A name over it, shown to everyone.
@@ -150,7 +148,7 @@ fn spawnable(pos: [f64; 3]) -> bool {
 }
 
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "native mod API (docs/native-mods.md)")]
 impl Game<'_> {
     /// Whether this is a level that simulates (not a client's copy) and the one
     /// in place is `dimension`.
@@ -159,10 +157,13 @@ impl Game<'_> {
     }
     /// Spawns a mob of `kind` (`minecraft:zombie`) at `pos` in the level in
     /// place, `dimension`, finalized as a natural spawn is, and kept when the
-    /// chunk unloads: its id. None for a kind the game doesn't know, another
-    /// dimension, a position outside `/summon`'s bounds or in a chunk that isn't
+    /// chunk unloads: its id. None for a kind the game doesn't know, a
+    /// position outside `/summon`'s bounds or in a chunk that isn't
     /// loaded (it would never tick or be saved), or a monster on peaceful (it
-    /// would despawn at once). API 37.
+    /// would despawn at once). API 37. Since API @API:npc_any_level@,
+    /// `dimension` may be any level the server has loaded, which is put in
+    /// place for the spawn (`execute in <dimension> run summon`), so a
+    /// `native_server_tick` hook spawns too; a level not loaded is refused.
     pub(super) fn native_spawn_mob(
         &mut self,
         dimension: &str,
@@ -170,6 +171,13 @@ impl Game<'_> {
         pos: [f64; 3],
         options: &NativeSpawn,
     ) -> Option<u32> {
+        if self.remote.is_none() && dimension != self.dim.id() {
+            return self
+                .npc_in_level(dimension, |g| {
+                    g.native_spawn_mob(dimension, kind, pos, options)
+                })
+                .flatten();
+        }
         if !self.native_mob_level(dimension) || !spawnable(pos) || !self.native_chunk_loaded(pos) {
             return None;
         }

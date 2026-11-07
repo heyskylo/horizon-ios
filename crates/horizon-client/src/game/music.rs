@@ -253,7 +253,7 @@ impl Game<'_> {
         (situation.music(), situation.volume())
     }
     /// `BiomeManager.getNoiseBiomeAtPosition`: the quart cell holding a position.
-    fn biome_at(&self, p: [f64; 3]) -> &str {
+    pub(super) fn biome_at(&self, p: [f64; 3]) -> &str {
         let (x, y, z) = (
             p[0].floor() as i32,
             p[1].floor() as i32,
