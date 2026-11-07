@@ -1,8 +1,5 @@
 """Actual pot source -> loot mine -> chest, without a world observation tick."""
-if __package__:
-    from .command_exec_corpus import cmd, setup
-else:
-    from command_exec_corpus import cmd, setup
+from command_exec_corpus import cmd, setup
 
 CHEST = "12 200 4"
 RIGHT = "minecraft:angler_pottery_sherd"

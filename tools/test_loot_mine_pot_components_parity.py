@@ -1,21 +1,17 @@
 #!/usr/bin/env python3
 """Actual loot-mine pot component boundary; raw snapshots and clocks retained.
 
-The default mode validates Java before building or running native.
-Admit fresh Java with --reference-only --work-dir REF; compare each archived
-normal Game against --reference-dir REF with a fresh --work-dir OUT.
+A plain run (tools/parity.py) runs fresh Java and this checkout's game and compares them.
+To compare archived binaries: admit fresh Java with --reference-only --work-dir REF, then
+compare each normal Game against --reference-dir REF with a fresh --work-dir OUT.
 """
 import json
 from pathlib import Path
 import shutil
 import sys
 
-if __package__:
-    from . import test_command_exec_parity as runner
-    from .loot_mine_pot_components_corpus import cases
-else:
-    import test_command_exec_parity as runner
-    from loot_mine_pot_components_corpus import cases
+import test_command_exec_parity as runner
+from loot_mine_pot_components_corpus import cases
 
 def callback(row):
     values = row.get("results")
@@ -97,7 +93,7 @@ def main():
         sys.argv.append("--allow-gaps")
     folder = Path(sys.argv[sys.argv.index("--work-dir") + 1]).resolve()
     if reference is None:
-        runner.main(reference_admission=lambda rows: admit(program, rows))
+        runner.main()
     else:
         assert "--reference-only" not in sys.argv
         native_from_reference(reference, folder, program)

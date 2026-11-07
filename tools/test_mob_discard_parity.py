@@ -7,23 +7,15 @@ import os
 from pathlib import Path
 import subprocess
 import zipfile
-if __package__:
-    from . import lab
-else:
-    import lab
-
-
-def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--game-dir', type=Path, default=lab.GAME)
-    parser.add_argument('--resources', type=Path,
-                        default=Path(os.environ.get('HORIZON_TEST_RESOURCES') or lab.RESOURCES))
-    parser.add_argument('--java-home', type=Path)
-    return parser.parse_args(argv)
+import lab
 
 
 def main():
-    args = parse_args()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--game-dir', type=Path, default=lab.GAME)
+    parser.add_argument('--resources', type=Path, default=lab.RESOURCES)
+    parser.add_argument('--java-home', type=Path)
+    args = parser.parse_args()
     build = lab.LOCAL / 'rust-mob-discard-parity'
     build.mkdir(parents=True, exist_ok=True)
     report = build / 'report.json'

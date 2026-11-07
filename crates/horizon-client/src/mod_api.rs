@@ -19,6 +19,7 @@ pub use crate::crafting::{CustomRecipe, Ingredient};
 pub use crate::extras::Corner;
 pub use crate::extras_hud::Corners;
 pub use crate::first_person::Hand;
+pub use crate::fluid_render::NativeFluidRenderOptions;
 pub use crate::fog::{FogData, FogType};
 pub use crate::game::NativeChunkSnapshot;
 pub use crate::game::NativeEffect;
@@ -27,7 +28,9 @@ pub use crate::game::NativeInventoryKind;
 pub use crate::game::native_block_entity_draw::{BlockEntityDraw, CubeFace};
 pub use crate::game::native_client_services::{
     NativeClientEntity, NativeClientHead, NativeClientItem, NativeClientProfile, NativeClientState,
+    NativeScreenKind, NativeWorldId,
 };
+pub use crate::game::native_text_field::NativeTextField;
 pub use crate::game::{
     ItemEnergyBuffer, NativeBiomeId, NativeBlockEdit, NativeBlockReadError, NativeBlockRun,
     NativeClientBiomes, NativeClientChunks, NativeClock, NativeColumnBlocks, NativeComponentError,

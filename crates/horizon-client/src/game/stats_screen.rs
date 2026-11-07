@@ -3,6 +3,7 @@
 use super::{Game, Screen};
 use horizon_client::{hud::HudBatch, items::ItemStack, text::Text, ui};
 use std::fmt::Write as _;
+use winit::keyboard::KeyCode;
 
 /// `Stats.CUSTOM` in registration order with its formatter.
 const CUSTOM: &[(&str, Format)] = &[
@@ -161,6 +162,70 @@ pub(super) struct StatsUi {
     /// The list's scrolling: the wheel and the held scrollbar.
     scroll: horizon_client::ui::Scroll,
     sort: Option<(usize, i32)>,
+}
+impl StatsUi {
+    /// `TabNavigationBar.keyPressed` (`MenuTabBar.keyPressed`), which
+    /// `StatsScreen.keyPressed` runs before the screen's own keys: with
+    /// Control held, Ctrl+Tab and Ctrl+Shift+Tab cycle the tabs and
+    /// Ctrl+1..9 (Ctrl+0 is the tenth) pick one directly; a tab that cannot be
+    /// chosen is not switched to, the key is still taken. Whether the tab bar
+    /// took the key.
+    fn key(&mut self, key: KeyCode, ctrl: bool, shift: bool, active: [bool; 3]) -> bool {
+        if !ctrl {
+            return false;
+        }
+        let Some(tab) = tab_key(self.tab, &active, key, shift) else {
+            return false;
+        };
+        if active[tab] && tab != self.tab {
+            self.tab = tab;
+            self.scroll.amount = 0.0;
+        }
+        true
+    }
+}
+/// `InputConstants.Key.getNumericKeyValue`: the main row's digits and the
+/// keypad's, 1..9 and 0.
+fn numeric_key_value(key: KeyCode) -> Option<usize> {
+    Some(match key {
+        KeyCode::Digit1 | KeyCode::Numpad1 => 1,
+        KeyCode::Digit2 | KeyCode::Numpad2 => 2,
+        KeyCode::Digit3 | KeyCode::Numpad3 => 3,
+        KeyCode::Digit4 | KeyCode::Numpad4 => 4,
+        KeyCode::Digit5 | KeyCode::Numpad5 => 5,
+        KeyCode::Digit6 | KeyCode::Numpad6 => 6,
+        KeyCode::Digit7 | KeyCode::Numpad7 => 7,
+        KeyCode::Digit8 | KeyCode::Numpad8 => 8,
+        KeyCode::Digit9 | KeyCode::Numpad9 => 9,
+        KeyCode::Digit0 | KeyCode::Numpad0 => 0,
+        _ => return None,
+    })
+}
+/// `TabNavigationBar.getNextTabIndex`: the tab a key picks, or none. A digit
+/// names a tab (`Math.floorMod(digit - 1, 10)`, then clamped to the last tab);
+/// Tab moves to the next (Shift: the previous) tab that can be chosen, one
+/// full turn at most.
+fn tab_key(current: usize, active: &[bool], key: KeyCode, shift: bool) -> Option<usize> {
+    if active.is_empty() {
+        return None;
+    }
+    if let Some(digit) = numeric_key_value(key) {
+        // `Math.floorMod(digit - 1, 10)`, then `Mth.clamp` to the last tab.
+        return Some((digit + 9) % 10).map(|i| i.min(active.len() - 1));
+    }
+    if key != KeyCode::Tab {
+        return None;
+    }
+    let step: isize = if shift { -1 } else { 1 };
+    let count = active.len() as isize;
+    let mut i = (current as isize + step).rem_euclid(count);
+    for _ in 0..count {
+        if active[i as usize] {
+            return Some(i as usize);
+        }
+        i = (i + step).rem_euclid(count);
+    }
+    None
 }
 /// `MenuTabBar` geometry: three tabs over at most 400 pixels.
 fn tabs(w: f32) -> (f32, f32) {
@@ -576,6 +641,20 @@ impl Game<'_> {
             hover,
         );
     }
+    /// `StatsScreen.keyPressed`: the tab bar sees the key first
+    /// (`MenuTabBar.keyPressed`), and the rest of `Screen.keyPressed` is
+    /// Escape, which the screens' keys already handle.
+    pub(super) fn stats_key(&mut self, key: KeyCode) {
+        let active = [true, self.stats_tab_active(1), self.stats_tab_active(2)];
+        let ctrl = self.has_control_down_with_quirk();
+        let shift = self.has_shift_down();
+        let before = self.stats_ui.tab;
+        if self.stats_ui.key(key, ctrl, shift, active) && self.stats_ui.tab != before {
+            // TabManager.setCurrentTab(.., true): the click of a tab press.
+            self.audio
+                .play("minecraft:ui.button.click", None, 0.25, 1.0);
+        }
+    }
     pub(super) fn stats_click(&mut self, size: [u32; 2]) {
         // A press on the scrollbar holds it and clicks nothing else.
         if self.stats_press_scrollbar(size) {
@@ -658,5 +737,66 @@ impl Game<'_> {
     /// The button came up: the scrollbar lets go.
     pub(super) fn stats_release(&mut self) {
         self.stats_ui.scroll.release();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use winit::keyboard::KeyCode::{Digit0, Digit1, Digit2, Digit3, Numpad8, Tab};
+
+    /// `StatsScreen.keyPressed`: with Control held the tab bar takes the key -
+    /// Ctrl+Tab and Ctrl+Shift+Tab cycle the tabs, Ctrl+1..9 pick one (Ctrl+0
+    /// is the tenth, past the last tab) - and without it the key goes on.
+    #[test]
+    fn control_and_tab_switch_the_statistics_tabs() {
+        let all = [true, true, true];
+        let mut ui = StatsUi::default();
+        assert_eq!(ui.tab, 0);
+        for expected in [1, 2, 0] {
+            assert!(ui.key(Tab, true, false, all));
+            assert_eq!(ui.tab, expected, "Ctrl+Tab");
+        }
+        assert!(ui.key(Tab, true, true, all));
+        assert_eq!(ui.tab, 2, "Ctrl+Shift+Tab wraps back to the last tab");
+        assert!(ui.key(Digit1, true, false, all));
+        assert_eq!(ui.tab, 0);
+        assert!(ui.key(Digit2, true, false, all));
+        assert_eq!(ui.tab, 1);
+        assert!(ui.key(Numpad8, true, false, all));
+        assert_eq!(ui.tab, 2, "a digit past the last tab picks the last one");
+        assert!(ui.key(Digit0, true, false, all));
+        assert_eq!(ui.tab, 2, "0 is the tenth tab, clamped to the last one");
+        // Without Control the tab bar leaves the key for the rest of the screen.
+        assert!(!ui.key(Tab, false, false, all));
+        assert!(!ui.key(Digit3, false, false, all));
+        assert_eq!(ui.tab, 2, "the last tab stays");
+    }
+
+    /// `StatsScreen.setTabActiveStateAndTooltip`: the Items and Mobs tabs that
+    /// have no rows cannot be chosen, so the cycle skips them; a digit naming
+    /// one is still taken, and switches nothing.
+    #[test]
+    fn an_empty_tab_is_skipped_by_the_keyboard() {
+        let only_general_and_mobs = [true, false, true];
+        let mut ui = StatsUi::default();
+        assert!(ui.key(Tab, true, false, only_general_and_mobs));
+        assert_eq!(ui.tab, 2, "the empty Items tab is skipped");
+        assert!(ui.key(Tab, true, false, only_general_and_mobs));
+        assert_eq!(ui.tab, 0);
+        assert!(ui.key(Tab, true, true, only_general_and_mobs));
+        assert_eq!(ui.tab, 2);
+        assert!(ui.key(Digit2, true, false, only_general_and_mobs));
+        assert_eq!(ui.tab, 2, "an empty tab is not switched to");
+    }
+
+    /// Switching tabs starts the new list at the top, as a tab press does.
+    #[test]
+    fn a_tab_switch_scrolls_back_to_the_top() {
+        let mut ui = StatsUi::default();
+        ui.scroll.amount = 120.0;
+        assert!(ui.key(Tab, true, false, [true, true, true]));
+        assert_eq!(ui.tab, 1);
+        assert_eq!(ui.scroll.amount, 0.0);
     }
 }
