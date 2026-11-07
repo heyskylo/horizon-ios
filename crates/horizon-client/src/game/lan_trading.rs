@@ -301,6 +301,7 @@ impl Game<'_> {
         let made = maps.made.take();
         let session = menu.merchant.take().expect("attached");
         let dropped = std::mem::take(&mut menu.dropped);
+        let crafted_counts = std::mem::take(&mut menu.crafted_counts);
         gm.slots = [
             menu.slot(0).cloned(),
             menu.slot(1).cloned(),
@@ -315,6 +316,14 @@ impl Game<'_> {
             g.carried = menu.carried.take();
         }
         self.register_exploration_maps(made);
+        // MerchantResultSlot checks achievements before notifying the merchant.
+        if !crafted_counts.is_empty() {
+            self.as_guest(host, conn, |g| {
+                for (item, count) in crafted_counts {
+                    g.award_stat("crafted", &item, count);
+                }
+            });
+        }
         let (session, traded) = self.merchant_apply(session, gm.merchant.mob);
         gm.merchant.session = session;
         if !traded.is_empty() {

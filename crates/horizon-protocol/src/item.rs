@@ -64,6 +64,8 @@ pub mod component {
     pub const ENCHANTMENTS: i32 = 13;
     /// `AdventureModePredicate`: the blocks an adventure player may break.
     pub const CAN_BREAK: i32 = 15;
+    /// `ItemAttributeModifiers`: a list of entries, each with a display from 1.21.6 on.
+    pub const ATTRIBUTE_MODIFIERS: i32 = 16;
     pub const CUSTOM_MODEL_DATA: i32 = 17;
     pub const TOOLTIP_DISPLAY: i32 = 18;
     pub const REPAIR_COST: i32 = 19;
@@ -804,6 +806,80 @@ enum Older {
 /// `minecraft:brick` (26.3): an older pot's undecorated side.
 const BRICK: i32 = 1142;
 
+/// `minecraft:item.shears.snip` (26.3): the shearing sound an equippable before 1.21.6 gets, by its
+/// holder value (the registry id plus one).
+const SHEARS_SNIP: i32 = 1447;
+
+/// One entry of `ItemAttributeModifiers` without its display: the attribute's registry id (renumbered, -1
+/// when the side it is written for has none), the modifier and its slot group.
+struct AttributeModifier {
+    attribute: i32,
+    id: String,
+    amount: f64,
+    operation: i32,
+    slot: i32,
+}
+
+/// `ItemAttributeModifiers.STREAM_CODEC`: a count, then each entry's attribute (a holder: its id plus one),
+/// modifier id, amount, operation and slot. 26.3's entries carry a display after the slot (`display`): a
+/// default, a hidden one or an override's text, which are read past here. Entries of an attribute the
+/// renumbering has no id for are left out.
+fn read_modifiers(r: &mut Reader, display: bool) -> Result<Vec<AttributeModifier>> {
+    let n = r.count(r.remaining())?;
+    let mut modifiers = Vec::with_capacity(n.min(64));
+    for _ in 0..n {
+        let holder = r.varint()?;
+        if holder < 1 {
+            return Err(crate::Error::new(
+                "an attribute modifier of a direct attribute",
+            ));
+        }
+        let attribute = ids::attribute(holder - 1);
+        let modifier = AttributeModifier {
+            attribute,
+            id: r.string(32767)?,
+            amount: r.f64()?,
+            operation: r.varint()?,
+            slot: r.varint()?,
+        };
+        if display {
+            match r.varint()? {
+                // Default and hidden have no more to them.
+                0 | 1 => {}
+                // Override: the text shown in its place.
+                2 => {
+                    r.nbt()?;
+                }
+                other => {
+                    return Err(crate::Error::new(format!(
+                        "unknown attribute modifier display {other}"
+                    )));
+                }
+            }
+        }
+        if attribute >= 0 {
+            modifiers.push(modifier);
+        }
+    }
+    Ok(modifiers)
+}
+
+/// Writes `modifiers` as [`read_modifiers`] reads them, with a default display after each when `display` is
+/// set (26.3's layout).
+fn write_modifiers(modifiers: &[AttributeModifier], display: bool, w: &mut Writer) {
+    w.varint(modifiers.len() as i32);
+    for m in modifiers {
+        w.varint(m.attribute + 1);
+        w.string(&m.id);
+        w.f64(m.amount);
+        w.varint(m.operation);
+        w.varint(m.slot);
+        if display {
+            w.varint(0);
+        }
+    }
+}
+
 /// Reads the start of a component `kind` (a pinned id) whose layout changed since the version of the
 /// server whose packet is read on this thread ([`ids::quirks`]).
 fn older_layout(kind: i32, r: &mut Reader) -> Result<Older> {
@@ -857,6 +933,24 @@ fn older_layout(kind: i32, r: &mut Reader) -> Result<Older> {
                     None => w.bool(false),
                 }
             }
+            Older::Rewritten(w.data)
+        }
+        // Before 1.21.6 an attribute modifier has no display and an equippable no shearing fields: the
+        // pinned layout is read with those defaults filled in (ids are renumbered as the attribute is read).
+        ATTRIBUTE_MODIFIERS if quirks.components_before_1_21_6 => {
+            let modifiers = read_modifiers(r, false)?;
+            let mut w = Writer::new();
+            write_modifiers(&modifiers, true, &mut w);
+            Older::Rewritten(w.data)
+        }
+        EQUIPPABLE if quirks.components_before_1_21_6 => {
+            let start = r.position();
+            skip::equippable_before_1_21_6(r)?;
+            let mut w = Writer::new();
+            w.bytes(r.since(start));
+            // canBeSheared (false), then shearingSound: the default, a reference to the shears' sound.
+            w.bool(false);
+            w.varint(SHEARS_SNIP + 1);
             Older::Rewritten(w.data)
         }
         // A value holding item stacks is kept as its bytes and sent on as they are: written again, its
@@ -993,6 +1087,100 @@ impl Codec<Option<Stack>> for Slot {
     }
 }
 
+/// A component value as the version being written for reads it. Values kept as their pinned bytes that hold
+/// items (a pot's sides, a container's slots, a use remainder) are read again and written with that
+/// version's item ids, and a pot's sides as 26.2's item ids when it reads them so
+/// ([`ids::Quirks::pot_decorations_are_items`]). Written as they are when nothing is renumbered.
+fn write_value(kind: i32, c: &Component, w: &mut Writer) {
+    use component::*;
+    let quirks = ids::quirks_written();
+    let renumbered = matches!(ids::active(), Some((_, ids::Way::Down)));
+    let held = match kind {
+        POT_DECORATIONS => true,
+        // Before 26.1 these hold ItemStacks, written by another codec.
+        USE_REMAINDER | SULFUR_CUBE_CONTENT | CONTAINER => !quirks.stacks_in_components,
+        ATTRIBUTE_MODIFIERS | EQUIPPABLE => quirks.components_before_1_21_6,
+        _ => false,
+    };
+    if !renumbered || !held {
+        return c.write(kind, w);
+    }
+    let pinned = {
+        let _pinned = ids::pinned();
+        let mut b = Writer::new();
+        c.write(kind, &mut b);
+        b.data
+    };
+    match value_down(kind, quirks, &pinned) {
+        Ok(bytes) => w.bytes(&bytes),
+        Err(_) => w.bytes(&pinned),
+    }
+}
+
+/// A stack template as the pinned version wrote it.
+fn read_pinned(r: &mut Reader) -> Result<Stack> {
+    let _pinned = ids::pinned();
+    Template::read(r)
+}
+
+/// The pinned bytes of an item-holding component (see [`write_value`]) in the numbering written now.
+fn value_down(kind: i32, quirks: ids::Quirks, pinned: &[u8]) -> Result<Vec<u8>> {
+    use component::*;
+    let mut r = Reader::new(pinned);
+    let mut w = Writer::new();
+    match kind {
+        // Back, left, right, front: each an optional template of one item.
+        POT_DECORATIONS => {
+            let mut sides = Vec::with_capacity(4);
+            for _ in 0..4 {
+                sides.push(if r.bool()? {
+                    Some(read_pinned(&mut r)?)
+                } else {
+                    None
+                });
+            }
+            if quirks.pot_decorations_are_items {
+                // ByteBufCodecs.registry(ITEM).apply(list(4)): a brick for an undecorated side.
+                w.varint(4);
+                for side in &sides {
+                    w.varint(ids::item(side.as_ref().map_or(BRICK, |s| s.item)));
+                }
+            } else {
+                for side in &sides {
+                    w.bool(side.is_some());
+                    if let Some(s) = side {
+                        Template::write(s, &mut w);
+                    }
+                }
+            }
+        }
+        CONTAINER => {
+            let n = r.count(256)?;
+            w.varint(n as i32);
+            for _ in 0..n {
+                let slot = r.bool()?;
+                w.bool(slot);
+                if slot {
+                    Template::write(&read_pinned(&mut r)?, &mut w);
+                }
+            }
+        }
+        // Displays are left out; before 1.21.6 an entry has none.
+        ATTRIBUTE_MODIFIERS => {
+            let modifiers = read_modifiers(&mut r, true)?;
+            write_modifiers(&modifiers, false, &mut w);
+        }
+        // The fields 1.21.5 has, as they are: canBeSheared and shearingSound are left out.
+        EQUIPPABLE => {
+            let start = r.position();
+            skip::equippable_before_1_21_6(&mut r)?;
+            w.bytes(r.since(start));
+        }
+        _ => Template::write(&read_pinned(&mut r)?, &mut w),
+    }
+    Ok(w.data)
+}
+
 /// A stack's components, without those an older client being written for lacks.
 fn write_patch(s: &Stack, w: &mut Writer) {
     let has = |kind: i32| ids::component(kind) >= 0;
@@ -1000,7 +1188,7 @@ fn write_patch(s: &Stack, w: &mut Writer) {
     w.varint(s.removed.iter().filter(|k| has(**k)).count() as i32);
     for (kind, c) in s.added.iter().filter(|(k, _)| has(*k)) {
         w.varint(ids::component(*kind));
-        c.write(*kind, w);
+        write_value(*kind, c, w);
     }
     for kind in s.removed.iter().filter(|k| has(**k)) {
         w.varint(ids::component(*kind));
@@ -1089,7 +1277,7 @@ impl Codec<Option<Stack>> for DelimitedSlot {
         for (kind, c) in &s.added {
             w.varint(ids::component(*kind));
             let mut value = Writer::new();
-            c.write(*kind, &mut value);
+            write_value(*kind, c, &mut value);
             w.byte_array(&value.data);
         }
         for kind in &s.removed {

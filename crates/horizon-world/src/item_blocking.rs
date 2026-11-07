@@ -56,10 +56,11 @@ pub fn apply<W: ItemBlockingWorld>(world: &mut W, damage: f32) -> Result<f32, W:
     if world.bypasses_component(component)? {
         return Ok(0.0);
     }
-    if let Some(entity) = world.direct_entity()? {
-        if world.is_arrow(entity) && world.pierce_level(entity)? > 0 {
-            return Ok(0.0);
-        }
+    if let Some(entity) = world.direct_entity()?
+        && world.is_arrow(entity)
+        && world.pierce_level(entity)? > 0
+    {
+        return Ok(0.0);
     }
     let angle = if let Some(source) = world.source_position()? {
         let yaw = world.head_yaw()?;
@@ -72,12 +73,12 @@ pub fn apply<W: ItemBlockingWorld>(world: &mut W, damage: f32) -> Result<f32, W:
     let level = world.level()?;
     let hand = world.used_hand()?;
     world.hurt_blocking_item(component, level, item, hand, blocked)?;
-    if blocked > 0.0 && !world.source_is_projectile()? {
-        if let Some(entity) = world.direct_entity()? {
-            if world.is_living(entity) {
-                world.block_using_item(entity, damage, blocked >= damage)?;
-            }
-        }
+    if blocked > 0.0
+        && !world.source_is_projectile()?
+        && let Some(entity) = world.direct_entity()?
+        && world.is_living(entity)
+    {
+        world.block_using_item(entity, damage, blocked >= damage)?;
     }
     Ok(blocked)
 }

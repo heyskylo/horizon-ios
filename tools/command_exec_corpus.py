@@ -5856,14 +5856,19 @@ ISOLATED_REINFORCEMENTS = frozenset({'command zombie reinforcements', 'command r
 # These overlays replace built-in recipes, never beside the corpus's fixed vanilla recipe-count controls.
 ISOLATED_RECIPES = frozenset({'crafting recipe priority', 'crafting base recipe control', 'transmute result patches'})
 ISOLATED_FRAME_MAPS = frozenset({'frame live map detachment'})
+ISOLATED_MAP_CRAFTING = frozenset({'craft map takes'})
 ISOLATED_MACRO_TYPE = frozenset({'macro source type error'})
 ISOLATED_PICKUP_SAVE = frozenset({'mob saved pickup loot'})
 ISOLATED_ORB_UUID = frozenset({'orb saved UUID'})
 ISOLATED_STAND_FALL = frozenset({'stand saved fall distance'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_MACRO_TYPE | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL
 
 
 def groups():
+    try:
+        from .craft_map_take_corpus import cases as craft_map_takes
+    except ImportError:
+        from craft_map_take_corpus import cases as craft_map_takes
     try:
         from .transmute_patch_corpus import cases as transmute_patches
     except ImportError:
@@ -5908,6 +5913,7 @@ def groups():
         ('mob effect predicate view', mob_effect_predicates(cmd, setup)),
         ('mob custom name components', mob_name_predicates(cmd, setup)),
         ('frame live map detachment', frame_maps(cmd, setup)),
+        ('craft map takes', craft_map_takes(cmd, setup)),
         ('allay player damage immunity', allay_player_damage(cmd, setup)),
         *wolf_anger_groups(cmd, setup),
         ('allay passive healing', allay_healing(cmd, setup)),

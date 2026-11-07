@@ -4,6 +4,7 @@
 //! never sees or stores one. The other computer runs Linux or macOS (a POSIX shell runs the command there).
 
 use super::Status;
+use crate::i18n::{tr, trf};
 use std::ffi::OsStr;
 use std::process::{Command, Stdio};
 
@@ -32,11 +33,14 @@ const NO_SERVER: &str = "horizon-server: no server in this folder";
 pub fn check_host(host: &str) -> Result<(), String> {
     if host.is_empty() {
         return Err(
-            "Type the computer: user@address, or a Host name from your ~/.ssh/config.".into(),
+            tr("Type the computer: user@address, or a Host name from your ~/.ssh/config.").into(),
         );
     }
     if host.starts_with('-') || host.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        return Err(format!("{host:?} isn't a computer ssh can connect to."));
+        return Err(trf(
+            "{host} isn't a computer ssh can connect to.",
+            &[("host", &format!("{host:?}"))],
+        ));
     }
     Ok(())
 }
@@ -47,7 +51,7 @@ fn remote_dir(dir: &str) -> Result<&str, String> {
     let dir = dir.trim();
     let dir = dir.strip_prefix("~/").unwrap_or(dir);
     if dir.is_empty() || dir == "~" || dir.chars().any(char::is_control) {
-        return Err("Type the server's folder on that computer, like /srv/minecraft.".into());
+        return Err(tr("Type the server's folder on that computer, like /srv/minecraft.").into());
     }
     Ok(dir)
 }
@@ -105,12 +109,8 @@ fn check_with(ssh: impl AsRef<OsStr>, host: &str, dir: &str) -> Result<Status, S
         .stdin(Stdio::null())
         .output()
         .map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => {
-                "This computer has no ssh program. It comes with Windows 10 and later (Settings › \
-                 Optional features › OpenSSH Client), macOS and Linux."
-                    .to_string()
-            }
-            _ => format!("Couldn't run ssh: {e}"),
+            std::io::ErrorKind::NotFound => tr("This computer has no ssh program. It comes with Windows 10 and later (Settings › Optional features › OpenSSH Client), macOS and Linux.").to_string(),
+            _ => trf("Couldn't run ssh: {error}", &[("error", &e.to_string())]),
         })?;
     let out = String::from_utf8_lossy(&output.stdout);
     let err = String::from_utf8_lossy(&output.stderr);
@@ -121,7 +121,12 @@ fn check_with(ssh: impl AsRef<OsStr>, host: &str, dir: &str) -> Result<Status, S
         .lines()
         .rev()
         .find_map(|l| serde_json::from_str(l).ok())
-        .ok_or_else(|| format!("horizon-server on {host} answered something unexpected."))?;
+        .ok_or_else(|| {
+            trf(
+                "horizon-server on {host} answered something unexpected.",
+                &[("host", host)],
+            )
+        })?;
     Ok(Status::parse(&value))
 }
 
@@ -129,47 +134,62 @@ fn check_with(ssh: impl AsRef<OsStr>, host: &str, dir: &str) -> Result<Status, S
 pub fn explain(host: &str, dir: &str, code: Option<i32>, stderr: &str) -> String {
     let has = |s: &str| stderr.contains(s);
     if has(NO_SERVER) {
-        return format!(
-            "There's no server in {dir} on {host}. Check the folder, or set one up there with \
-             horizon-server init."
+        return trf(
+            "There's no server in {dir} on {host}. Check the folder, or set one up there with horizon-server init.",
+            &[("dir", dir), ("host", host)],
         );
     }
     if has("Permission denied") {
-        return format!(
-            "{host} didn't accept your SSH key. Set one up once with ssh-copy-id {host} (or your \
-             host's control panel), then try again."
+        return trf(
+            "{host} didn't accept your SSH key. Set one up once with ssh-copy-id {host} (or your host's control panel), then try again.",
+            &[("host", host)],
         );
     }
     if has("Host key verification failed") || has("REMOTE HOST IDENTIFICATION HAS CHANGED") {
-        return format!(
-            "ssh doesn't know {host}'s key yet, or it changed. Connect once in a terminal with \
-             ssh {host} to check and accept it."
+        return trf(
+            "ssh doesn't know {host}'s key yet, or it changed. Connect once in a terminal with ssh {host} to check and accept it.",
+            &[("host", host)],
         );
     }
     if has("Could not resolve hostname") {
-        return format!("There's no computer called {host}. Check the address.");
+        return trf(
+            "There's no computer called {host}. Check the address.",
+            &[("host", host)],
+        );
     }
     if has("timed out") || has("Connection refused") || has("No route to host") {
-        return format!("Can't reach {host}. It may be off, or its SSH port closed.");
+        return trf(
+            "Can't reach {host}. It may be off, or its SSH port closed.",
+            &[("host", host)],
+        );
     }
     if code == Some(127) || has("command not found") {
-        return format!(
-            "{host} has no horizon-server. Install it there first, as the hosting guide says."
+        return trf(
+            "{host} has no horizon-server. Install it there first, as the hosting guide says.",
+            &[("host", host)],
         );
     }
     if code == Some(255) {
         let said = stderr.lines().rev().find(|l| !l.trim().is_empty());
-        return format!(
-            "Couldn't connect to {host}{}",
-            said.map_or_else(|| ".".to_string(), |s| format!(": {}", s.trim()))
-        );
+        return match said {
+            Some(said) => trf(
+                "Couldn't connect to {host}: {reason}",
+                &[("host", host), ("reason", said.trim())],
+            ),
+            None => trf("Couldn't connect to {host}.", &[("host", host)]),
+        };
     }
     let said = stderr
         .lines()
         .rev()
         .find_map(|l| l.strip_prefix("horizon-server: "))
         .map(str::to_string)
-        .unwrap_or_else(|| format!("horizon-server on {host} failed in {dir}."));
+        .unwrap_or_else(|| {
+            trf(
+                "horizon-server on {host} failed in {dir}.",
+                &[("host", host), ("dir", dir)],
+            )
+        });
     super::capitalised(&said)
 }
 

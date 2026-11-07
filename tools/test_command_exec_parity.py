@@ -122,6 +122,7 @@ def main():
     parser.add_argument('--item-contents-provider-empty-control', action='store_true')
     parser.add_argument("--boat-item-hit-fixture", action="store_true")
     parser.add_argument("--reference-only", action="store_true")
+    parser.add_argument("--boat-leash-view-fixture", action="store_true")
     parser.add_argument("--boat-motion-diagnostic", action="store_true")
     parser.add_argument('--reinforcement-original-diagnostic', action='store_true', help='replay the original unisolated174/108 fixture, retaining its terrain prerequisite failure')
     parser.add_argument('--reinforcement-target-diagnostic', action='store_true', help='retain the separate creative-callee target relation record (full209)')
@@ -146,6 +147,7 @@ def main():
     parser.add_argument("--stand-fall-fixture", action="store_true")
     parser.add_argument('--orb-uuid-fixture', action='store_true')
     parser.add_argument("--mob-pickup-save-fixture", action="store_true")
+    parser.add_argument('--merchant-crafted-fixture', action='store_true')
     parser.add_argument('--mob-name-presentation-diagnostic', action='store_true',
                         help='retain all 312 mob-name records, including ten separate name/saved-text presentation observations')
     args = parser.parse_args()
@@ -220,7 +222,7 @@ def main():
                    if name == 'advancement world loot rewards' else ops) for name, ops in groups]
     # These overlays replace built-in recipes: run each in its own world, never
     # beside the generic corpus's fixed vanilla recipe-count controls.
-    isolated_recipes = corpus_module.ISOLATED_RECIPES
+    isolated_recipes = corpus_module.ISOLATED_RECIPES | corpus_module.ISOLATED_MAP_CRAFTING
     if not args.only:
         groups = [(name, ops) for name, ops in groups if name not in isolated_recipes]
     if args.loaded_fixture:
@@ -318,6 +320,13 @@ def main():
     if args.selector_bounds_fixture:
         from selector_bounds_corpus import selector_bounds
         groups = [("setup", corpus_module.group_setup()), ("selector entity bounds", selector_bounds())]
+    if args.boat_leash_view_fixture:
+        from boat_leash_view_corpus import cases as boat_leash_views
+        groups = [('setup', corpus_module.group_setup()),
+                  ('boat live leash view', boat_leash_views(corpus_module.cmd, corpus_module.setup))]
+    if args.merchant_crafted_fixture:
+        from merchant_crafted_corpus import cases
+        groups = [('merchant crafted statistics', cases())]
     if args.mob_name_presentation_diagnostic:
         from mob_name_predicate_corpus import cases as mob_name_predicates
         groups = [('setup', corpus_module.group_setup()),
@@ -364,6 +373,8 @@ def main():
     java_options = ['-DMC_DEBUG_ENABLED=true', '-DMC_DEBUG_DEV_COMMANDS=true'] if args.raid_village_fixture else []
     if args.merchant_gate_fixture:
         java_options.append('-Dhorizon.merchantFixture=true')
+    if args.merchant_crafted_fixture:
+        java_options.append('-Dhorizon.merchantCraftedFixture=true')
     if args.orb_water_fixture:
         (build / 'orb-water-reference.json').unlink(missing_ok=True)
         direct_input = build / 'orb-water-inputs.json'
@@ -384,15 +395,15 @@ def main():
             sys.exit('Java direct underwater reference prerequisite failed')
     if args.reference_only:
         reference = [json.loads(line) for line in (build / 'vanilla.jsonl').read_text().splitlines()]
-        recorded = [op for op in script if op['op'] in ('player_state', 'player_loop', 'map_state', 'frame_map_state', 'mob_anger', 'raid_state', 'menu_state', 'merchant_state') or
+        recorded = [op for op in script if op['op'] in ('player_state', 'player_loop', 'map_state', 'menu_state', 'craft_menu_state', 'frame_map_state', 'mob_anger', 'raid_state', 'map_files', 'merchant_state', 'merchant_saved_stats') or
                     (op['op'] == 'cmd' and op.get('record', True)) or
                     (op['op'] == 'tick' and op.get('record'))]
         if len(recorded) != len(reference):
             sys.exit('reference-only record count differs')
         for op, row in zip(recorded, reference):
-            require_anger_reference(op, row)
             if "expect_merchant" in op and row.get("state") != op["expect_merchant"]:
                 sys.exit(f"Java merchant admission failed: {op}: {row}")
+            require_anger_reference(op, row)
             if "expect_observation" in op and row.get("state") != op["expect_observation"]:
                 sys.exit(f"Java observation prerequisite failed: {op}: {row}")
             if 'expect_result' in op and row.get('results') != [[True, op['expect_result']]]:
@@ -460,15 +471,15 @@ def main():
     rust = [json.loads(l) for l in (build / 'rust.jsonl').open(encoding='utf-8')]
     if len(vanilla) != len(rust):
         sys.exit(f'record count differs: vanilla {len(vanilla)} rust {len(rust)}')
-    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'frame_map_state', 'light', 'player_state', 'player_loop', 'mob_anger', 'raid_state', 'menu_state', 'merchant_state') or
+    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'frame_map_state', 'craft_menu_state', 'map_files', 'light', 'player_state', 'player_loop', 'mob_anger', 'raid_state', 'menu_state', 'merchant_state', 'merchant_saved_stats') or
                     (op['op'] == 'cmd' and op.get('record', True)) or
                     (op['op'] == 'tick' and op.get('record'))]
     if len(recorded_ops) != len(vanilla):
         sys.exit(f'script record count differs: expected {len(recorded_ops)}, got {len(vanilla)}')
     for op, reference in zip(recorded_ops, vanilla):
-        require_anger_reference(op, reference)
         if "expect_merchant" in op and reference.get("state") != op["expect_merchant"]:
             sys.exit(f"Java merchant admission failed: {op}: {reference}")
+        require_anger_reference(op, reference)
         if "expect_observation" in op and reference.get("state") != op["expect_observation"]:
             sys.exit(f"Java observation prerequisite failed: {op}: {reference}")
         if 'expect_result' in op and reference.get('results') != [[True, op['expect_result']]]:
@@ -488,14 +499,14 @@ def main():
     commands_by_group = []
     index = 0
     for name, lines in groups:
-        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'frame_map_state', 'light', 'player_state', 'player_loop', 'mob_anger', 'raid_state', 'menu_state', 'merchant_state') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
+        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'frame_map_state', 'craft_menu_state', 'map_files', 'light', 'player_state', 'player_loop', 'mob_anger', 'raid_state', 'menu_state', 'merchant_state', 'merchant_saved_stats') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
         commands_by_group.append((name, index, index + n))
         index += n
     mismatches = []
     failed_positions = set()
     for position, (v, r) in enumerate(zip(vanilla, rust)):
         assert v['cmd'] == r['cmd'], (v['cmd'], r['cmd'])
-        kind = ('strict_record' if v != r else None) if args.merchant_gate_fixture else compare(v, r, recorded_ops[position].get('comparison'))
+        kind = ('strict_record' if v != r else None) if args.merchant_gate_fixture or args.merchant_crafted_fixture else compare(v, r, recorded_ops[position].get('comparison'))
         if kind:
             failed_positions.add(position)
             mismatches.append({'kind': kind, 'cmd': v['cmd'], 'vanilla': v, 'rust': r})

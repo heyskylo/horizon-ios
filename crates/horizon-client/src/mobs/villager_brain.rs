@@ -3605,6 +3605,12 @@ fn harvest_tick(
                 pos: p,
                 state: crop,
             });
+            cx.events.push(MobEvent::GameEvent {
+                event: "minecraft:block_place",
+                at: p.map(|v| f64::from(v) + 0.5),
+                source: m.id,
+                state: crop,
+            });
             cx.events.push(MobEvent::Sound(
                 "item.crop.plant",
                 [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])],
