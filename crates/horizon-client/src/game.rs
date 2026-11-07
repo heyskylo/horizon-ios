@@ -375,6 +375,7 @@ mod render_settings;
 mod render_tick;
 mod repro;
 mod resource_load;
+mod resource_tables;
 mod respawn_anchor;
 mod saves_control;
 mod saving;
@@ -2181,94 +2182,6 @@ impl WorldTables {
     ];
 }
 
-impl Resources {
-    fn rest(&self) -> &WorldRest {
-        self.rest
-            .get()
-            .expect("world resources joined before entry")
-    }
-    fn facts(&self) -> &BlockFacts {
-        &self.core.facts
-    }
-    fn items(&self) -> &Items {
-        &self.rest().items
-    }
-    fn recipes(&self) -> &Recipes {
-        &self.rest().recipes
-    }
-    fn transformers(&self) -> &horizon_client::block_transform::Transformers {
-        &self.rest().transformers
-    }
-    fn biomes(&self) -> &Arc<Biomes> {
-        &self.core.biomes
-    }
-    fn environment(&self) -> &Environment {
-        &self.core.environment
-    }
-    fn mob_types(&self) -> &HashMap<String, Arc<MobType>> {
-        &self.rest().mob_types
-    }
-    fn mob_data(&self) -> &horizon_client::mobs::MobData {
-        &self.rest().mob_data
-    }
-    fn providers(&self) -> &Providers {
-        &self.rest().providers
-    }
-    fn block_entity_render(&self) -> &BlockEntityRenderer {
-        &self.rest().block_entity_render
-    }
-    fn animate(&self) -> &horizon_client::animate_tick::AnimateTables {
-        &self.rest().animate
-    }
-    fn fog(&self) -> &horizon_client::fog::FogTables {
-        &self.rest().fog
-    }
-    fn music(&self) -> &horizon_client::music::MusicTables {
-        &self.rest().music
-    }
-    fn ambient(&self) -> &horizon_client::ambience::AmbientTables {
-        &self.rest().ambient
-    }
-    fn nether_environment(&self) -> &Environment {
-        &self.rest().nether_environment
-    }
-    fn end_environment(&self) -> &Environment {
-        &self.rest().end_environment
-    }
-    fn behaviours(&self) -> &Behaviours {
-        &self.rest().behaviours
-    }
-    fn collision(&self) -> &BlockCollisionRegistry<'static> {
-        &self.core.collision
-    }
-    fn suffocation(&self) -> &horizon_world::suffocation::SuffocationRegistry<'static> {
-        &self.core.suffocation
-    }
-    fn motion(&self) -> &MotionResources {
-        &self.core.motion
-    }
-    fn threads(&self) -> usize {
-        self.core.threads
-    }
-    fn player_arm(&self, slim: bool, left: bool) -> &Option<horizon_client::mobs::Part> {
-        let arms = if slim {
-            &self.rest().player_arm_slim
-        } else {
-            &self.rest().player_arm
-        };
-        &arms[usize::from(left)]
-    }
-    fn player_type(&self) -> &Option<Arc<horizon_client::mobs::MobType>> {
-        &self.rest().player_type
-    }
-    fn spin_attack(&self) -> &Option<horizon_client::mobs::Part> {
-        &self.rest().spin_attack
-    }
-    fn stations(&self) -> &horizon_client::stations::StationData {
-        &self.rest().stations
-    }
-}
-
 /// The equipment slot of `armor[index]`: head, chest, legs, feet.
 pub(super) fn armor_slot(index: usize) -> horizon_world::player_inventory::EquipmentSlot {
     use horizon_world::player_inventory::EquipmentSlot;
@@ -2289,40 +2202,6 @@ pub struct UiResources {
     /// The title screen's panorama faces.
     pub panorama: Arc<horizon_client::gfx::panorama::Faces>,
 }
-impl UiResources {
-    /// From a resource root layering packs over `defaults`, the game's own
-    /// resources (`root` itself when no pack is on).
-    pub fn load(root: &std::path::Path, defaults: &std::path::Path) -> Result<Self> {
-        // The title screen waits for both: the panorama's six faces decode
-        // beside the atlas.
-        std::thread::scope(|scope| {
-            let panorama = named_scope(scope, "panorama", || {
-                startup::time("ui.panorama", || {
-                    horizon_client::gfx::panorama::Faces::load(root, defaults)
-                })
-            });
-            let mod_image = crate::game::mods::built_with_native_mods();
-            let atlas = startup::time("ui.atlas", || {
-                HudAtlas::build_over_with_image(root, defaults, mod_image)
-            });
-            let panorama = panorama
-                .join()
-                .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-            Ok(Self {
-                atlas: atlas?,
-                panorama: Arc::new(panorama),
-            })
-        })
-    }
-    /// What a server's game holds, since it draws nothing: the font, which books
-    /// and chat measure with, and a one-pixel panorama.
-    pub fn server(root: &std::path::Path) -> Result<Self> {
-        Ok(Self {
-            atlas: HudAtlas::fonts(root)?,
-            panorama: Arc::new(horizon_client::gfx::panorama::Faces::colour([0; 4])),
-        })
-    }
-}
 /// What a resource pack reload replaces (`Minecraft.reloadResourcePacks`):
 /// block models and sprites with their meshing tables, item models,
 /// translations and the textures read on the CPU. Each game holds its own;
@@ -2342,84 +2221,6 @@ pub struct PackResources {
     forcefield: Arc<(u32, u32, Vec<u8>)>,
     /// OptiFine custom sky layers (`optifine/sky`) with their textures; empty without them.
     custom_sky: Arc<horizon_client::custom_sky::CustomSky>,
-}
-impl PackResources {
-    /// Everything a pack overlay at `root` provides, over `assets` and `render`
-    /// loaded from it.
-    fn load(
-        root: &std::path::Path,
-        assets: Arc<Assets>,
-        render: Arc<RenderAssets>,
-        facts: &BlockFacts,
-        biomes: Arc<Biomes>,
-        light: Arc<LightTables>,
-    ) -> Result<Self> {
-        let visibility = models::load_visibility(root, assets.registry)?;
-        let tables = Arc::new(MeshTables::new(&assets, &render, facts, visibility)?);
-        let item_renderer = horizon_client::item_render::ItemRenderer::load_with_library(
-            root,
-            render.model_library.clone(),
-        )?;
-        Ok(Self::assemble(
-            root,
-            assets,
-            render,
-            tables,
-            item_renderer,
-            biomes,
-            light,
-        ))
-    }
-    /// The workers' context over `biomes`: this pack's own when `biomes` is
-    /// the table it was built with, else the same parts with that table.
-    fn context_with(&self, biomes: Arc<Biomes>) -> Arc<WorkerContext> {
-        let old = &self.context;
-        if Arc::ptr_eq(&old.biomes, &biomes) {
-            return old.clone();
-        }
-        Arc::new(WorkerContext {
-            assets: old.assets.clone(),
-            render: old.render.clone(),
-            tables: old.tables.clone(),
-            biomes,
-            light: old.light.clone(),
-        })
-    }
-    /// The pack tables over their parts, which `load_resources` builds on
-    /// separate workers.
-    fn assemble(
-        root: &std::path::Path,
-        assets: Arc<Assets>,
-        render: Arc<RenderAssets>,
-        tables: Arc<MeshTables>,
-        item_renderer: horizon_client::item_render::ItemRenderer,
-        biomes: Arc<Biomes>,
-        light: Arc<LightTables>,
-    ) -> Self {
-        Self {
-            layer_names: Arc::new(
-                render
-                    .sprite_layers
-                    .iter()
-                    .map(|(name, layer)| (*layer, name.trim_start_matches("minecraft:").to_owned()))
-                    .collect(),
-            ),
-            context: Arc::new(WorkerContext {
-                assets: assets.clone(),
-                render: render.clone(),
-                tables,
-                biomes,
-                light,
-            }),
-            assets,
-            render,
-            item_renderer: Arc::new(item_renderer),
-            names: Arc::new(Names::load(root)),
-            clouds: Arc::new(load_clouds(root)),
-            forcefield: Arc::new(load_forcefield(root)),
-            custom_sky: Arc::new(horizon_client::custom_sky::CustomSky::load(root)),
-        }
-    }
 }
 /// A quick craft drag as the screen draws it: each dragged slot's count and
 /// whether the slot caps it (None: hidden), and what stays in hand.
@@ -11197,6 +10998,56 @@ impl Game<'_> {
         let _ = player.clamp_health_to_max();
         self.apply_enchantment_attributes();
     }
+    /// `LivingEntity.hurtServer` with the two equipment services performed
+    /// synchronously. Keeping the acting player installed lets durability
+    /// hooks observe and modify its real inventory before this hit continues.
+    fn hurt_player_equipment(
+        &mut self,
+        source: horizon_world::damage_source::DamageTypeId,
+        amount: f32,
+        blocking: Option<horizon_client::health::Blocking>,
+        living_cause: bool,
+        causing: i32,
+    ) -> horizon_client::Result<(horizon_client::health::BlockOutcome, f32)> {
+        let mut hit = self
+            .player
+            .as_mut()
+            .ok_or("missing damage target")?
+            .prepare_equipment_hurt(
+                &self.health_resources,
+                self.world.health_rules,
+                source,
+                amount,
+                blocking,
+                living_cause,
+                causing,
+            )?;
+        if let Some(damage) = hit.helmet_damage()
+            && self.armor[0]
+                .as_ref()
+                .is_some_and(|s| s.count > 0 && &*s.item != "minecraft:air")
+        {
+            self.hurt_equipment(source, damage, &[0]);
+            hit.helmet_worn();
+            self.refresh_armor_protection();
+        }
+        let actual = hit.damage().unwrap_or(amount);
+        let armor_damage = self
+            .player
+            .as_mut()
+            .ok_or("missing damage target")?
+            .select_equipment_hurt(&self.health_resources, &mut hit)?;
+        if let Some(damage) = armor_damage {
+            self.hurt_armor(source, damage);
+            self.refresh_armor_protection();
+        }
+        let outcome = self
+            .player
+            .as_mut()
+            .ok_or("missing damage target")?
+            .finish_equipment_hurt(&self.health_resources, hit)?;
+        Ok((outcome, actual))
+    }
     /// The armor hits among a tick's motion events (`Player.hurtArmor` from
     /// `getDamageAfterArmorAbsorb`), whatever the damage: a mob, an explosion,
     /// a cactus, lava, a campfire.
@@ -11215,10 +11066,29 @@ impl Game<'_> {
     /// wears when its wearer is hurt loses max(1, damage / 4) durability, except
     /// to a fire source when the piece resists fire (`ItemStack.canBeHurtBy`).
     fn hurt_armor(&mut self, source: horizon_world::damage_source::DamageTypeId, damage: f32) {
+        self.hurt_equipment(source, damage, &[3, 2, 1, 0]);
+    }
+    /// Vanilla visits FEET, LEGS, CHEST, HEAD, applying each break before the
+    /// next slot's durability hook and enchantment random draws.
+    fn hurt_equipment(
+        &mut self,
+        source: horizon_world::damage_source::DamageTypeId,
+        damage: f32,
+        slots: &[usize],
+    ) {
         if damage <= 0.0 {
             return;
         }
-        let amount = ((damage / 4.0) as u32).max(1);
+        // The maximum of 1.0F and damage / 4.0F, then Java's saturating float-to-int.
+        let amount = if damage.is_nan() {
+            0
+        } else {
+            (damage / 4.0).max(1.0) as i32
+        };
+        if amount <= 0 {
+            return;
+        }
+        let amount = amount as u32;
         let name = self
             .health_resources
             .damage
@@ -11229,51 +11099,49 @@ impl Game<'_> {
             .health_resources
             .damage
             .in_tag(source, "minecraft:is_fire");
-        let mut broke = false;
-        let mut broken_items = Vec::new();
-        let losses: Vec<Option<(u32, u32)>> = (0..4)
-            .map(|i| {
-                let stack = self.armor[i].clone()?;
-                let info = world_items!(self).get(&stack.item)?;
-                let component = |id| stack.data().and_then(|data| data.other(id));
-                // ItemStack.isDamageableItem: component removal and
-                // unbreakable are checked before enchantment RNG or hooks.
-                if stack.count == 0
-                    || !info.equip_damage_on_hurt
-                    || component("minecraft:unbreakable").is_some()
-                    || component("!minecraft:max_damage").is_some()
-                    || component("!minecraft:damage").is_some()
-                    || (fire && world_items!(self).resists_fire(&stack, &name))
-                {
-                    return None;
-                }
-                let max = match component("minecraft:max_damage") {
-                    Some(horizon_world::nbt::Tag::Int(value)) => u32::try_from(*value).ok()?,
-                    _ => info.max_damage,
-                };
-                if max == 0 {
-                    return None;
-                }
-                let loss = self.wear(&stack, amount);
-                (loss > 0).then_some((loss, max))
-            })
-            .collect();
-        for (index, (slot, loss)) in self.armor.iter_mut().zip(losses).enumerate() {
-            if let (Some(stack), Some((amount, max))) = (slot.as_mut(), loss) {
-                stack.damage = stack.damage.saturating_add(amount).min(max);
-                if stack.damage >= max {
-                    broken_items.push((stack.clone(), index));
-                    *slot = None;
-                    broke = true;
-                }
+        for &i in slots {
+            let Some(stack) = self.armor[i].clone() else {
+                continue;
+            };
+            let Some(info) = world_items!(self).get(&stack.item) else {
+                continue;
+            };
+            let component = |id| stack.data().and_then(|data| data.other(id));
+            // ItemStack.isDamageableItem: component removal and
+            // unbreakable are checked before enchantment RNG or hooks.
+            if stack.count == 0
+                || !info.equip_damage_on_hurt
+                || component("minecraft:unbreakable").is_some()
+                || component("!minecraft:max_damage").is_some()
+                || component("!minecraft:damage").is_some()
+                || (fire && world_items!(self).resists_fire(&stack, &name))
+            {
+                continue;
             }
-        }
-        if broke {
-            // LivingEntity.onEquippedItemBroken for each armour piece that broke.
-            for (stack, index) in &broken_items {
-                self.player_equipment_broke(armor_slot(*index), stack);
+            let max = match component("minecraft:max_damage") {
+                Some(horizon_world::nbt::Tag::Int(value)) => match u32::try_from(*value) {
+                    Ok(value) => value,
+                    Err(_) => continue,
+                },
+                _ => info.max_damage,
+            };
+            if max == 0 {
+                continue;
             }
-            self.apply_equipment();
+            let loss = self.wear(&stack, amount);
+            if loss == 0 {
+                continue;
+            }
+            let Some(worn) = self.armor[i].as_mut() else {
+                continue;
+            };
+            worn.damage = worn.damage.saturating_add(loss).min(max);
+            if worn.damage >= max {
+                let broken = worn.clone();
+                self.armor[i] = None;
+                self.player_equipment_broke(armor_slot(i), &broken);
+                self.apply_equipment();
+            }
         }
     }
     /// Voxel traversal that also stops at fluid source blocks (bucket pick).
@@ -12672,12 +12540,12 @@ impl Game<'_> {
                     partial: a,
                 },
                 _ if using => {
-                    let components = self
+                    let view = horizon_client::item_render::stack_view(&stack);
+                    let mut animation = self
                         .pack
                         .item_renderer
                         .models
-                        .components(&horizon_client::item_render::stack_view(&stack));
-                    let mut animation = components
+                        .components_view(&view)
                         .get("minecraft:consumable")
                         .map_or(horizon_world::consumable::UseAnimation::None, |c| {
                             horizon_client::first_person::consumable_animation(c)
