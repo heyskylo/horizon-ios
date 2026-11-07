@@ -18,14 +18,17 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def method(source, name):
-    start = source.index(f"    fn {name}(")
+    # A method moved out of game.rs is `pub(super)` in its own file; the fixtures paste it as a
+    # private one.
+    plain, moved = f"    fn {name}(", f"    pub(super) fn {name}("
+    start = source.index(plain if plain in source else moved)
     opening = source.index("{", start)
     depth = 1
     end = opening + 1
     while depth:
         depth += (source[end] == "{") - (source[end] == "}")
         end += 1
-    return source[start:end]
+    return source[start:end].replace("pub(super) fn", "fn", 1)
 
 
 def function(source, name):
@@ -41,7 +44,8 @@ def function(source, name):
 
 class WorldInputCaptureTests(unittest.TestCase):
     def test_loading_completion_wiring(self):
-        game = (ROOT / "crates/horizon-client/src/game.rs").read_text(encoding="utf-8")
+        game = "".join((ROOT / "crates/horizon-client/src" / path).read_text(encoding="utf-8")
+                       for path in ("game/player_spawn.rs", "game/window_handler.rs", "game.rs"))
         remote = (ROOT / "crates/horizon-client/src/game/remote.rs").read_text(encoding="utf-8")
         spawn = method(game, "spawn_player")
         self.assertLess(spawn.index("self.player = Some(player)"),
@@ -57,7 +61,8 @@ class WorldInputCaptureTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
     def test_capture_lifecycle(self):
-        source = (ROOT / "crates/horizon-client/src/game.rs").read_text(encoding="utf-8")
+        source = "".join((ROOT / "crates/horizon-client/src" / path).read_text(encoding="utf-8")
+                         for path in ("game.rs", "game/pointer_capture.rs"))
         mouse = (ROOT / "crates/horizon-client-input/src/mouse.rs").read_text(encoding="utf-8")
         fixture = r'''
 use std::cell::Cell;
@@ -359,7 +364,8 @@ fn main() {
 
     @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
     def test_native_split_mouse_turns_only_its_owner(self):
-        source = (ROOT / "crates/horizon-client/src/game.rs").read_text(encoding="utf-8")
+        source = "".join((ROOT / "crates/horizon-client/src" / path).read_text(encoding="utf-8")
+                         for path in ("game/window_handler.rs", "game.rs"))
         fixture = r'''
 use std::time::Instant;
 #[path = "MOUSE_PATH"] mod mouse;

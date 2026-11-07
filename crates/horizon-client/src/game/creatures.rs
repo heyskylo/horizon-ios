@@ -955,6 +955,13 @@ impl Game<'_> {
             } else {
                 None
             },
+            // A warden's away suspects are UUIDs: on the server side, where the
+            // entity UUIDs live, they resolve back to the mobs that are here.
+            who_lookup: if self.remote.is_none() {
+                Some(self)
+            } else {
+                None
+            },
             border: Some(self.border.geometry()),
             // The first player in the level: a server has no player of its own.
             difficulty: self.local_difficulty(
@@ -8792,6 +8799,7 @@ mod pearl_tests {
             others: &[],
             dragon: None,
             leash_boats: &[],
+            who_lookup: None,
             others_grid: None,
             others_index: None,
             others_villagers: None,

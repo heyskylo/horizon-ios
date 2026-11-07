@@ -31,6 +31,12 @@ pub struct TargetInfo {
     pub passenger: bool,
 }
 impl MobWorld<'_> {
+    /// `Level.getEntity(uuid)`: the entity a UUID a mob stored names, while it
+    /// is in the level. Nothing when this world keeps no entity UUIDs, or when
+    /// nothing loaded answers to it.
+    pub fn who_by_uuid(&self, uuid: [i32; 4]) -> Option<Who> {
+        self.who_lookup?.who_by_uuid(uuid)
+    }
     /// The biome's base temperature at a position.
     pub fn temperature(&self, x: i32, y: i32, z: i32) -> f32 {
         self.world
@@ -509,6 +515,7 @@ pub(crate) fn with_resource_test_world(
         others,
         dragon: None,
         leash_boats: &[],
+        who_lookup: None,
         others_grid: None,
         others_index: None,
         others_villagers: None,
