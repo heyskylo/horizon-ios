@@ -174,6 +174,19 @@ impl Game<'_> {
                     if self.debug && !own_lines.is_empty() {
                         d.group("Horizon passes", own_lines);
                     }
+                    let detail_lines = self.renderer.as_ref().map_or_else(Vec::new, |r| {
+                        let support = r.pass_detail_support().filter(|_| r.pass_detail());
+                        support.map_or_else(Vec::new, |support| {
+                            overlay::pass_detail_lines(
+                                &r.own_pass_parts(),
+                                &r.own_pass_counters(),
+                                support,
+                            )
+                        })
+                    });
+                    if self.debug && !detail_lines.is_empty() {
+                        d.group("Horizon pass detail", detail_lines);
+                    }
                 }
                 "tps" => self.debug_tps_line(d),
                 // DebugEntryChunkGeneration, where the world is generated

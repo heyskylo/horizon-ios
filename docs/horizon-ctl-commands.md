@@ -142,7 +142,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | `mcp` | CLI only | Serve the Model Context Protocol on stdin/stdout, one tool per command | none |
 | `bench SECONDS [raw]` | `bench` | Reset frame stats, wait, reply with the summary | `seconds` (number, required): how long to measure<br>`raw` (boolean): every frame time too (frame_ms, cpu_ms, gpu_ms) |
 | `stats [reset] [raw]` | `stats` | Frame-time summary since the last reset | `reset` (boolean): start counting again<br>`raw` (boolean): every frame time too (frame_ms, cpu_ms, gpu_ms) |
-| `gpu-passes [on\|off]` | CLI only | Time Horizon's own render passes on the GPU, shown in F3 and in stats and bench | `mode` (on, off): on or off; without it, only reports |
+| `gpu-passes [on\|off\|detail]` | CLI only | Time Horizon's own render passes on the GPU, shown in F3 and in stats and bench; detail adds dispatch times and, on Vulkan, fragment and vertex counts per world pass | `mode` (on, off, detail): on, off or detail; without it, only reports |
 | `trace [FILE [SECONDS] \| stop]` | CLI only | Write every thread's timed spans to FILE as a timeline that ui.perfetto.dev opens, for SECONDS or until stop | none |
 | `screenshot-sequence FRAMES STEP_MS PATH\|cancel` | CLI only | Draw a shader pack's first FRAMES frames on a set clock and write the last as a PNG | `frames` (string, required): frames to draw, 1 to 10000, or cancel<br>`step_ms` (number): milliseconds between frames on the pack's clock, more than 0 (16.666667 for 60 fps)<br>`path` (text): the PNG to write |
 | `render-capture on\|off\|DIR` | CLI only | Keep CPU copies of the meshes the renderer draws (on), or write the next frame's scene to DIR for the scene_replay example | none |

@@ -239,17 +239,17 @@ impl Visbuffer {
         encoder: &'e mut wgpu::CommandEncoder,
         depth: &wgpu::TextureView,
         clear: bool,
-        timing: Option<&mut PassTiming>,
-    ) -> wgpu::RenderPass<'e> {
+        mut timing: Option<&mut PassTiming>,
+    ) -> super::pack_timing::CountedPass<'e> {
         let (ids, _) = self.ids.as_ref().expect("fitted before the world pass");
         let name = if clear {
             "Visibility IDs"
         } else {
             "Visibility IDs after culling"
         };
-        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Horizon visibility buffer"),
-            timestamp_writes: timing.and_then(|t| t.writes(name)),
+            timestamp_writes: timing.as_deref_mut().and_then(|t| t.writes(name)),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: ids,
                 resolve_target: None,
@@ -272,7 +272,8 @@ impl Visbuffer {
                 stencil_ops: None,
             }),
             ..Default::default()
-        })
+        });
+        super::pack_timing::counted(timing, pass, super::pixel_count(depth), name)
     }
 
     /// Phase 1's solid calls into the IDs, as the normal passes draw them: the opaque

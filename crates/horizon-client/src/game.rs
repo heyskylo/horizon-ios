@@ -2727,6 +2727,8 @@ struct Game<'a> {
     debug: bool,
     /// `horizon-ctl gpu-passes`: time Horizon's own passes on the GPU with F3 shut.
     gpu_passes: bool,
+    /// `horizon-ctl gpu-passes detail`: also dispatch times and counters.
+    gpu_pass_detail: bool,
     screen: Screen,
     observed_screen: Option<native_hooks::ObservedScreen>,
     window: Option<Arc<Window>>,
@@ -17495,6 +17497,7 @@ impl Game<'_> {
         let result = match self.renderer.as_mut() {
             Some(renderer) => {
                 renderer.set_pass_timing(debug_passes || self.gpu_passes);
+                renderer.set_pass_detail(self.gpu_pass_detail);
                 // `gpu_passes` is a measurement: it takes every sample it can.
                 renderer.set_pass_timing_gap(if self.gpu_passes {
                     Duration::ZERO
@@ -20521,6 +20524,7 @@ impl<'a> Game<'a> {
             pause: false,
             debug: false,
             gpu_passes: false,
+            gpu_pass_detail: false,
             screen: Screen::Playing,
             observed_screen: None,
             window: None,
