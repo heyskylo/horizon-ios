@@ -9,6 +9,7 @@ use horizon_assets::{
         bind::{Properties, PropertySchema, PropertyValues, SelectedModels},
         choice::CompiledChoices,
     },
+    model::Direction,
 };
 use horizon_core::{
     position::BlockPos,
@@ -26,6 +27,65 @@ use std::{
     sync::OnceLock,
 };
 
+/// `prepareQuadShape`: the quad's bounds, whether it is partial (smaller than
+/// the block face) and whether it is cubic (flush with the block boundary, or
+/// flat on a full collision shape). A function of the quad's positions and the
+/// block's `isCollisionShapeFullBlock` only, so it is baked per face, once for
+/// each.
+#[derive(Clone, Copy)]
+pub struct QuadShape {
+    /// The quad's bounds by face index (`mesher::lighting`'s `SizeInfo`
+    /// order: down, up, north, south, west, east), and `1.0 - the bound`.
+    pub bounds: [f32; 12],
+    pub partial: bool,
+    pub cubic: bool,
+}
+impl QuadShape {
+    pub fn new(positions: &[[f32; 3]; 4], face: Direction, full: bool) -> Self {
+        // `SizeInfo` indices into the face shape.
+        const DOWN: usize = 0;
+        const UP: usize = 1;
+        const NORTH: usize = 2;
+        const SOUTH: usize = 3;
+        const WEST: usize = 4;
+        const EAST: usize = 5;
+        let (mut min, mut max) = ([32f32; 3], [-32f32; 3]);
+        for p in positions {
+            for i in 0..3 {
+                min[i] = min[i].min(p[i]);
+                max[i] = max[i].max(p[i]);
+            }
+        }
+        let mut bounds = [0f32; 12];
+        for (index, value) in [
+            (WEST, min[0]),
+            (EAST, max[0]),
+            (DOWN, min[1]),
+            (UP, max[1]),
+            (NORTH, min[2]),
+            (SOUTH, max[2]),
+        ] {
+            bounds[index] = value;
+            bounds[index + 6] = 1.0 - value;
+        }
+        let (lo, hi) = (1.0e-4f32, 0.9999f32);
+        let partial =
+            |a: usize, b: usize| min[a] >= lo || min[b] >= lo || max[a] <= hi || max[b] <= hi;
+        let (partial, cubic) = match face {
+            Direction::Down => (partial(0, 2), min[1] == max[1] && (min[1] < lo || full)),
+            Direction::Up => (partial(0, 2), min[1] == max[1] && (max[1] > hi || full)),
+            Direction::North => (partial(0, 1), min[2] == max[2] && (min[2] < lo || full)),
+            Direction::South => (partial(0, 1), min[2] == max[2] && (max[2] > hi || full)),
+            Direction::West => (partial(1, 2), min[0] == max[0] && (min[0] < lo || full)),
+            Direction::East => (partial(1, 2), min[0] == max[0] && (max[0] > hi || full)),
+        };
+        QuadShape {
+            bounds,
+            partial,
+            cubic,
+        }
+    }
+}
 pub struct BakedFace {
     pub quad: ModelQuad,
     pub layer: u32,
@@ -37,6 +97,33 @@ pub struct BakedFace {
     /// The Fusion connecting texture rule its sprite joins by ([`crate::fusion`]), plus one:
     /// two bytes, within the padding every face already has.
     pub fusion: Option<std::num::NonZeroU16>,
+    /// `prepareQuadShape` of the quad, indexed by the block's `full` flag: the
+    /// mesher would otherwise recompute it for every face of every block.
+    pub shapes: [QuadShape; 2],
+    /// The quad's own UVs in `TerrainVertex` fixed point, which the mesh
+    /// otherwise recomputes for every face of every block.
+    pub uv_fixed: [[u16; 2]; 4],
+}
+impl BakedFace {
+    pub fn new(
+        quad: ModelQuad,
+        layer: u32,
+        opaque: bool,
+        translucent: bool,
+        fusion: Option<std::num::NonZeroU16>,
+    ) -> Self {
+        let shapes = [false, true].map(|full| QuadShape::new(&quad.positions, quad.facing, full));
+        let uv_fixed = crate::mesher::baked_uv(quad.uv);
+        Self {
+            quad,
+            layer,
+            opaque,
+            translucent,
+            fusion,
+            shapes,
+            uv_fixed,
+        }
+    }
 }
 pub struct BakedModel {
     pub ambient_occlusion: bool,
@@ -97,18 +184,12 @@ fn bake_resolved(
                 Some(RenderType::Translucent | RenderType::Tripwire) => (true, false),
                 Some(RenderType::Solid) => (false, true),
                 Some(RenderType::Cutout | RenderType::CutoutMipped) => (false, false),
-                None => (
+                None | Some(RenderType::Unsupported) => (
                     quad.material.force_translucent || sprites.translucent[layer as usize],
                     sprites.region_opaque(layer, &quad.uv),
                 ),
             };
-            Ok(BakedFace {
-                translucent,
-                opaque,
-                quad,
-                layer,
-                fusion: None,
-            })
+            Ok(BakedFace::new(quad, layer, opaque, translucent, None))
         })
         .collect::<Result<_>>()?;
     let cube = super::cube::cube_styles(&faces);

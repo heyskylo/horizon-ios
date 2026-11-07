@@ -1,0 +1,16 @@
+{
+  "hooks": [
+    {
+      "name": "screen_text_field_char_typed_pre",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_screen_text_field_char_typed_pre",
+      "side": "client",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "canceled"
+      }
+    }
+  ],
+  "rust_summary": "the current focused text field, before each character is inserted, with an editable value and caret.",
+  "doc_summary": "`native_screen_text_field_char_typed_pre(screen, field, character, modifiers, canceled)` exposes NativeTextField before each surviving character is inserted. Edit value/cursor/highlight and cancel to replace the character yourself. Indices count Unicode scalar characters; max_length() and multiline() are read-only host limits. Actual text-box filters, limits and responders still apply. API104 runs exactly once before this hook for each character, including title keyboard/control input, which previously bypassed that filter. Supported: ordinary title fields, chat/command inputs, creative/recipe/mod-browser searches, anvil rename, social and debug search. Options, preparing screens, game-rule/numeric editors, books, signs and dialogs keep their existing specialized paths. Chat suggestions are separate. Bundles need \"hooks\": @API:screen_text_field@."
+}

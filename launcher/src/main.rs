@@ -27,7 +27,6 @@ mod glass_home_packs;
 mod glass_home_tabs;
 mod glass_instance;
 mod glass_instance_java;
-mod glass_notes;
 mod glass_palette;
 mod glass_settings;
 mod glass_shot_blur;
@@ -117,12 +116,11 @@ enum Page {
     /// Cosmetics to try on and buy (`wardrobe_page/shop.rs`), beside the Wardrobe and under the
     /// same rule. A plain tab: no badge, and it never opens by itself.
     Shop,
-    Notes,
     Settings,
 }
 
 impl Page {
-    /// `HORIZON_LAUNCHER_PAGE=mods` (or `modpacks`, `resourcepacks`, `shaders`, `servers`, `versions`, `notes`,
+    /// `HORIZON_LAUNCHER_PAGE=mods` (or `modpacks`, `resourcepacks`, `shaders`, `servers`, `versions`,
     /// `settings`) opens on that page, for screenshots; Home otherwise (`getting-ready`: Home
     /// preparing, `home::getting_ready_preview`; `sign-in`: the owner gate's sheet with a
     /// made-up code, `owner_page::sign_in_preview`; `new-instance`: Home with the New instance
@@ -134,7 +132,6 @@ impl Page {
             Ok("wardrobe") if horizon_cosmetics::forced() => Page::Wardrobe,
             Ok("shop") if horizon_cosmetics::forced() => Page::Shop,
             Ok("versions") => Page::Versions,
-            Ok("notes") => Page::Notes,
             Ok("settings") => Page::Settings,
             _ => Page::Play,
         };
@@ -148,14 +145,13 @@ impl Page {
 
     /// Every page, with its name and icon: the top bar shows all but Settings, which has its
     /// own button.
-    const ALL: [(Page, &'static str, &'static str); 8] = [
+    const ALL: [(Page, &'static str, &'static str); 7] = [
         (Page::Play, "Home", "home"),
         (Page::Mods, "Mods", "package"),
         (Page::Servers, "Servers", "server"),
         (Page::Wardrobe, "Wardrobe", "user"),
         (Page::Shop, "Shop", "bag"),
         (Page::Versions, "Versions", "archive"),
-        (Page::Notes, "Patch notes", "notes"),
         (Page::Settings, "Settings", "sliders"),
     ];
 
@@ -233,7 +229,7 @@ struct Launcher {
     settings_marked: usize,
     /// The Mods page's project card, kept in view beside its list.
     mods_sticky: sticky::Sticky,
-    /// The rows of the page's long list (Versions, Patch notes) last drawn.
+    /// The rows of the page's long list (Versions) last drawn.
     long_list: cull::Cull,
     opening: Option<Opening>,
     updates: Updates,
@@ -294,6 +290,8 @@ struct Launcher {
     /// The top bar's Build log panel (`native_log_page.rs`).
     native_log: native_log_page::NativeLog,
     confirm_remove: Option<String>,
+    /// The releases whose patch notes the Versions page shows open.
+    notes_open: std::collections::HashSet<String>,
     picker_open: bool,
     /// Settings' any-colour swatch shows the hue strip (the glass look).
     accent_strip: bool,
@@ -581,8 +579,7 @@ impl Launcher {
         // `window.appearance()`, so both draw the same look.
         titlebar::apply_appearance(window, settings.appearance);
         let mut this = Self {
-            theme: Theme::for_appearance(settings.appearance, settings.accent, window.appearance())
-                .with_glass(settings.glass_tint(), settings.glass_blur()),
+            theme: crate::theme::from_settings(&settings, window.appearance()),
             page: Page::from_env(),
             switches: 0,
             content_scroll: Scrollbar::default(),
@@ -631,6 +628,7 @@ impl Launcher {
             native_mismatch: None,
             native_log: Default::default(),
             confirm_remove: None,
+            notes_open: Default::default(),
             picker_open: false,
             accent_strip: false,
             look_sliders: Default::default(),
@@ -1322,6 +1320,13 @@ impl Launcher {
                     }
                     match result {
                         Ok(()) => {
+                            if as_update.is_some()
+                                && horizon_launcher::nightly::date_of(&tag).is_some()
+                            {
+                                if let Err(e) = backend::mark_auto_installed(&tag) {
+                                    eprintln!("Could not mark updated Nightly {tag}: {e}");
+                                }
+                            }
                             if self.updates.horizon.as_ref().is_some_and(|r| r.tag == tag) {
                                 self.updates.horizon = None;
                             }
@@ -3299,9 +3304,7 @@ impl Launcher {
                                 .when(latest, |d| {
                                     d.child(caps(tr("auto-update")).flex_none().text_color(t.muted))
                                 })
-                                .when(selected, |d| {
-                                    d.child(div().size(px(6.)).rounded_full().bg(t.accent))
-                                }),
+                                .when(selected, |d| d.child(div().size(px(6.)).bg(t.accent))),
                         )
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.pin_version((!latest).then(|| tag.clone()));
@@ -3784,14 +3787,7 @@ impl Launcher {
             .text_size(px(theme::UI.px))
             .line_height(px(21.))
             .text_color(t.ink)
-            .child(
-                div()
-                    .flex_none()
-                    .mt(px(11.))
-                    .size(px(6.))
-                    .rounded_full()
-                    .bg(t.danger),
-            )
+            .child(div().flex_none().mt(px(11.)).size(px(6.)).bg(t.danger))
             .child(body)
     }
 
@@ -4039,6 +4035,7 @@ impl Launcher {
                         Some(appearance.into_any_element()),
                         &t,
                     ))
+                    .child(self.launcher_theme_row(cx))
                     .child(self.accent_row(cx))
                     .child(self.home_background_row(cx))
                     .child(self.language_row(cx))
@@ -4902,11 +4899,42 @@ impl Launcher {
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.import_build(cx)))
                 .into_any_element()
         };
+        let sponsor = (!self.links.sponsor.is_empty()).then(|| {
+            plate(&t)
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(16.))
+                .p(px(24.))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .child(
+                            text(theme::HEADING)
+                                .text_color(t.ink)
+                                .child(tr("Support the work below")),
+                        )
+                        .child(text(theme::UI).text_color(t.muted).child(tr(
+                            "Horizon is built in the open. Sponsors fund the next release.",
+                        ))),
+                )
+                .child(
+                    button("sponsor", "Sponsor on GitHub", Kind::Secondary, &t)
+                        .bg(t.plate)
+                        .on_click({
+                            let url = self.links.sponsor.clone();
+                            move |_: &ClickEvent, _, cx| cx.open_url(&url)
+                        }),
+                )
+        });
         let page = div()
             .flex()
             .flex_col()
             .gap(px(32.))
             .child(header)
+            .children(sponsor)
             .child(
                 div()
                     .flex()
@@ -4975,6 +5003,7 @@ impl Launcher {
             keep,
             |i| {
                 let release = releases[i].clone();
+                let notes = self.notes_section(&release, cx);
                 let tag = release.tag.clone();
                 let installed = self.installed.contains(&tag);
                 let selected = self.selected() == Some(&tag);
@@ -5116,131 +5145,9 @@ impl Launcher {
                                     .child(right),
                             ),
                     )
-                    .children(error.map(|e| notice(e, &t)));
+                    .children(error.map(|e| notice(e, &t)))
+                    .child(notes);
                 track_hover(row, id)
-            },
-        );
-        page.child(list)
-    }
-
-    fn notes_page(&mut self, cx: &mut Context<Self>) -> Div {
-        let t = self.theme;
-        if t.glass {
-            return self.glass_notes(cx);
-        }
-        let sponsor = (!self.links.sponsor.is_empty()).then(|| {
-            plate(&t)
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap(px(16.))
-                .p(px(24.))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(4.))
-                        .child(
-                            text(theme::HEADING)
-                                .text_color(t.ink)
-                                .child(tr("Support the work below")),
-                        )
-                        .child(text(theme::UI).text_color(t.muted).child(tr(
-                            "Horizon is built in the open. Sponsors fund the next release.",
-                        ))),
-                )
-                .child(
-                    button("sponsor", "Sponsor on GitHub", Kind::Secondary, &t)
-                        .bg(t.plate)
-                        .on_click({
-                            let url = self.links.sponsor.clone();
-                            move |_: &ClickEvent, _, cx| cx.open_url(&url)
-                        }),
-                )
-        });
-        let page = div()
-            .flex()
-            .flex_col()
-            .gap(px(32.))
-            .child(page_header(
-                "Patch notes",
-                "What changed in each release, newest first.",
-                &t,
-            ))
-            .children(sponsor);
-        let releases = match &self.releases {
-            Load::Loading => return page.child(centered(tr("Loading patch notes…"), &t)),
-            Load::Failed(e) => {
-                return page.child(
-                    centered(
-                        &trf("Couldn't load patch notes. {error}", &[("error", e)]),
-                        &t,
-                    )
-                    .child(
-                        button("retry-notes", "Try again", Kind::Secondary, &t).on_click(
-                            cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.fetch_releases();
-                                cx.notify();
-                            }),
-                        ),
-                    ),
-                )
-            }
-            Load::Ready(r) => r,
-        };
-        let list = self.long_list.clone().column(
-            &self.content_scroll.handle,
-            releases.len(),
-            10.,
-            |_| false,
-            |i| {
-                let release = &releases[i];
-                let summary = release
-                    .name
-                    .split_once(": ")
-                    .map(|(_, rest)| rest.to_string())
-                    .unwrap_or_default();
-                div()
-                    .flex()
-                    .flex_col()
-                    .relative()
-                    .gap(px(16.))
-                    .p(px(20.))
-                    .bg(t.panel)
-                    .border_2()
-                    .border_color(t.outline)
-                    .children(blocks::edges(t.bevel, t.lip, theme::BEVEL))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(16.))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .gap(px(4.))
-                                    .child(version_tag(&release.tag).text_color(t.ink))
-                                    .when(!summary.is_empty(), |d| {
-                                        d.child(text(theme::UI).text_color(t.muted).child(summary))
-                                    }),
-                            )
-                            .child(caps(release.date.clone()).flex_none().text_color(t.muted)),
-                    )
-                    .child(
-                        div()
-                            .max_w(px(640.))
-                            .child(if release.body.trim().is_empty() {
-                                text(theme::UI)
-                                    .text_color(t.muted)
-                                    .child(tr("No notes for this release."))
-                                    .into_any_element()
-                            } else {
-                                markdown::render(&release.body, &t)
-                            }),
-                    )
             },
         );
         page.child(list)
@@ -5349,7 +5256,6 @@ impl Render for Launcher {
             Page::Servers => self.servers_page(cx),
             Page::Wardrobe => self.wardrobe_page(cx),
             Page::Shop => self.shop_page(cx),
-            Page::Notes => self.notes_page(cx),
             Page::Settings => self.settings_page(cx),
         };
         self.sky.free_replaced(window);
@@ -5372,10 +5278,11 @@ impl Render for Launcher {
         if self.opening.is_none() && window.focused(cx).is_none() {
             window.focus(&self.root_focus, cx);
         }
-        // Dark: the new design's scene; Light keeps the dawn sky until the design has a light
-        // look.
+        // The glass look draws the new design's scene in the dark appearance; the light look and
+        // the blocky looks keep the baked sky. The sky is tiles that don't depend on the
+        // window's size, so a resize costs no rebake.
         glass::begin_build(window);
-        let sky = if t.dark {
+        let sky = if t.glass && t.dark {
             self.scene.clone().into_any_element()
         } else {
             let (sky, next) = self.sky.render(
