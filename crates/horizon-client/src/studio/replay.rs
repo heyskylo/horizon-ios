@@ -22,8 +22,13 @@ impl ReplayDriver {
     /// Open an `.mcpr` recording archive for replay playback.
     pub fn open(path: &Path) -> io::Result<Self> {
         let mut reader = McprReader::open(path)?;
+        validate_metadata(&reader.metadata)?;
         let metadata = reader.metadata.clone();
         let next_packet_cache = reader.next_packet()?;
+        let first = next_packet_cache
+            .as_ref()
+            .ok_or_else(|| invalid_replay("recording contains no play-state packets"))?;
+        validate_play_stream_start(first)?;
 
         Ok(Self {
             metadata,
@@ -148,11 +153,143 @@ impl ReplayDriver {
     }
 }
 
+fn invalid_replay(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
+}
+
+fn validate_metadata(metadata: &Metadata) -> io::Result<()> {
+    if metadata.file_format != "MCPR" {
+        return Err(invalid_replay(format!(
+            "unsupported replay file format {:?}",
+            metadata.file_format
+        )));
+    }
+    if metadata.file_format_version != 14 {
+        return Err(invalid_replay(format!(
+            "unsupported MCPR format version {}; this build supports 14",
+            metadata.file_format_version
+        )));
+    }
+    match metadata.protocol {
+        Some(protocol) if protocol == horizon_protocol::PROTOCOL_VERSION => {}
+        Some(protocol) => {
+            return Err(invalid_replay(format!(
+                "unsupported Minecraft protocol {protocol}; this build supports {}",
+                horizon_protocol::PROTOCOL_VERSION
+            )));
+        }
+        None => {
+            return Err(invalid_replay(
+                "replay does not declare a Minecraft protocol version",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Playback uses the Play packet table, so refuse streams that do not start
+/// with the Play login snapshot before interpreting later packet IDs.
+fn validate_play_stream_start(first: &TimestampedPacket) -> io::Result<()> {
+    let packet = horizon_protocol::packets::play::Clientbound::decode(first.id, &first.payload)
+        .map_err(|error| invalid_replay(format!("invalid initial play packet: {error}")))?;
+    if !matches!(
+        packet,
+        horizon_protocol::packets::play::Clientbound::Login(_)
+    ) {
+        return Err(invalid_replay(
+            "recording does not start with the Play Login packet",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::studio::mcpr::McprWriter;
     use std::fs;
+
+    fn play_login_packet() -> (i32, Vec<u8>) {
+        use horizon_protocol::{buf::Reader, packets::play};
+
+        let encoded = play::Clientbound::Login(play::Login {
+            player_id: 1,
+            hardcore: false,
+            levels: vec!["minecraft:overworld".into()],
+            max_players: 20,
+            chunk_radius: 8,
+            simulation_distance: 8,
+            reduced_debug_info: false,
+            show_death_screen: true,
+            limited_crafting: false,
+            spawn: play::SpawnInfo {
+                dimension_type: 0,
+                dimension: "minecraft:overworld".into(),
+                seed: 0,
+                game_type: 0,
+                previous_game_type: None,
+                debug: false,
+                flat: false,
+                last_death: None,
+                portal_cooldown: 0,
+                sea_level: 63,
+            },
+            online_mode: false,
+            enforces_secure_chat: false,
+        })
+        .encode();
+        let mut reader = Reader::new(&encoded);
+        let id = reader.varint().unwrap();
+        (id, reader.rest().to_vec())
+    }
+
+    #[test]
+    fn playback_refuses_unknown_format_or_protocol_metadata() {
+        let mut metadata = Metadata::default();
+        assert!(validate_metadata(&metadata).is_ok());
+
+        metadata.file_format = "OTHER".into();
+        assert_eq!(
+            validate_metadata(&metadata).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        metadata = Metadata::default();
+        metadata.file_format_version = 13;
+        assert_eq!(
+            validate_metadata(&metadata).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        metadata = Metadata::default();
+        metadata.protocol = None;
+        assert_eq!(
+            validate_metadata(&metadata).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        metadata.protocol = Some(horizon_protocol::PROTOCOL_VERSION + 1);
+        assert_eq!(
+            validate_metadata(&metadata).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn playback_requires_a_play_login_phase_start() {
+        let (id, payload) = play_login_packet();
+        assert!(validate_play_stream_start(&TimestampedPacket::new(0, id, payload)).is_ok());
+
+        use horizon_protocol::packets::play;
+        let encoded =
+            play::Clientbound::SetChunkCacheCenter(play::SetChunkCacheCenter { x: 0, z: 0 })
+                .encode();
+        let mut reader = horizon_protocol::buf::Reader::new(&encoded);
+        let id = reader.varint().unwrap();
+        assert_eq!(
+            validate_play_stream_start(&TimestampedPacket::new(0, id, reader.rest().to_vec()))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
 
     #[test]
     fn test_replay_driver_advance_and_speed() {
@@ -166,6 +303,8 @@ mod tests {
             ..Default::default()
         };
         let mut writer = McprWriter::new(mcpr_path.clone(), meta).unwrap();
+        let (login_id, login_payload) = play_login_packet();
+        writer.write_packet(0, login_id, &login_payload).unwrap();
         writer.write_packet(0, 0x01, &[1]).unwrap();
         writer.write_packet(100, 0x02, &[2]).unwrap();
         writer.write_packet(200, 0x03, &[3]).unwrap();
@@ -178,8 +317,9 @@ mod tests {
 
         // Advance 50ms at 1.0x -> receives packet at 0ms
         let batch1 = driver.advance(Duration::from_millis(50)).unwrap();
-        assert_eq!(batch1.len(), 1);
-        assert_eq!(batch1[0].id, 0x01);
+        assert_eq!(batch1.len(), 2);
+        assert_eq!(batch1[0].id, login_id);
+        assert_eq!(batch1[1].id, 0x01);
 
         // Advance another 100ms (now 150ms) -> receives packet at 100ms
         let batch2 = driver.advance(Duration::from_millis(100)).unwrap();

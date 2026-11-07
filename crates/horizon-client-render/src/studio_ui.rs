@@ -88,7 +88,7 @@ impl SavedRecordingItem {
 #[derive(Clone, Debug, PartialEq)]
 pub enum StudioAction {
     None,
-    LoadAndEdit(PathBuf),
+    OpenReplay(PathBuf),
     OpenFolder,
     Refresh,
     Back,
@@ -377,14 +377,14 @@ impl StudioUi {
             (r_hover, true, false),
         );
 
-        // Button 3: Open the selected recording in the Studio editor.
+        // Button 3: Open the selected recording for playback.
         let e_btn = [panel_x + panel_w - 180.0, btn_y, 110.0, btn_h];
         let e_hover = ui::hovered(cursor, e_btn[0], e_btn[1], e_btn[2], e_btn[3]);
         style::button(
             batch,
             atlas,
             e_btn,
-            &Text::tr("horizon.studio.open_editor", &[]),
+            &Text::tr("horizon.studio.open_replay", &[]),
             (e_hover, true, false),
         );
 
@@ -423,16 +423,16 @@ impl StudioUi {
             return StudioAction::Refresh;
         }
 
-        // Button 3: Edit Replay
+        // Button 3: Open Replay
         let e_btn = [panel_x + panel_w - 180.0, btn_y, 110.0, btn_h];
         if ui::hovered(cursor, e_btn[0], e_btn[1], e_btn[2], e_btn[3]) {
             if let Some(idx) = self.selected
                 && let Some(item) = self.recordings.get(idx)
             {
-                return StudioAction::LoadAndEdit(item.path.clone());
+                return StudioAction::OpenReplay(item.path.clone());
             } else if let Some(item) = self.recordings.first() {
                 self.selected = Some(0);
-                return StudioAction::LoadAndEdit(item.path.clone());
+                return StudioAction::OpenReplay(item.path.clone());
             }
         }
 
@@ -541,12 +541,10 @@ mod tests {
         assert_eq!(action, StudioAction::None);
         assert_eq!(ui.selected, Some(0));
 
-        // Click ▶ Edit button directly on the card:
-        // Panel width = (427-40).clamp(280, 440) = 387. panel_x = (427-387)/2 = 20.
-        // Card x = 26, card w = 375. Card edit button x >= 26 + 375 - 48 - 6 = 347.
-        // y is panel_y + 6 = 48.
-        let card_edit_action = ui.click((360.0, 55.0), (427.0, 720.0));
-        assert!(matches!(card_edit_action, StudioAction::LoadAndEdit(_)));
+        // Click the bottom-bar Open Replay button.
+        // Panel width = 387, panel_x = 20, button x = 227..337, y = 692..712.
+        let open_replay_action = ui.click((280.0, 700.0), (427.0, 720.0));
+        assert!(matches!(open_replay_action, StudioAction::OpenReplay(_)));
 
         // Clean up
         let _ = fs::remove_dir_all(&temp_dir);

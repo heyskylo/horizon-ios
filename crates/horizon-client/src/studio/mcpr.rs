@@ -4,13 +4,13 @@
 //! - `metaData.json`: metadata about the recording session (version, duration, player UUIDs, etc.)
 //! - `recording.tmcpr`: binary stream of chronological timestamped network packets:
 //!   `[timestamp_ms: u32 big-endian][packet_length: u32 big-endian][packet_data: VarInt(packet_id) + payload]`
-//! - Optional `markers.json`: timeline markers/chapters.
+//! - Optional `recording.tmcpr.crc32`: CRC32 of the packet stream.
 
 use horizon_protocol::buf::{Reader, write_varint};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
-    io::{self, BufReader, BufWriter, Read, Write},
+    io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
@@ -19,6 +19,8 @@ const MAX_METADATA_BYTES: u64 = 1 << 20;
 /// The most `recording.tmcpr` may inflate to. The reader streams to disk, but
 /// still caps archive expansion to protect disk space from hostile archives.
 const MAX_STREAM_BYTES: u64 = 1 << 30;
+/// Keep one seek anchor for every group of this many packets.
+const STREAM_INDEX_STRIDE: usize = 1024;
 /// How much recording time a stream and its metadata may hold in memory before
 /// both reach disk. A crash costs at most this many milliseconds of packets.
 const FLUSH_INTERVAL_MS: u32 = 1_000;
@@ -119,6 +121,35 @@ fn sibling(dest: &Path, suffix: &str) -> PathBuf {
     dest.with_file_name(name)
 }
 
+fn create_private_file(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
+pub(super) fn write_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(bytes)?;
+    Ok(())
+}
+
 /// The metadata beside a stream: `<stream>.meta.json`.
 ///
 /// It is written when recording starts, long before the archive exists, so a
@@ -145,9 +176,6 @@ pub struct McprWriter {
     temp_meta_path: PathBuf,
     writer: Option<BufWriter<File>>,
     metadata: Metadata,
-    markers: Vec<Marker>,
-    mods_json: Option<Vec<u8>>,
-    resource_pack: Option<PathBuf>,
     packet_count: usize,
     /// Bytes of whole frames in the stream: what `finish` packages.
     bytes_written: u64,
@@ -198,9 +226,6 @@ impl McprWriter {
             temp_meta_path,
             writer,
             metadata,
-            markers: Vec::new(),
-            mods_json: None,
-            resource_pack: None,
             packet_count: 0,
             bytes_written: 0,
             last_timestamp_ms: 0,
@@ -266,71 +291,6 @@ impl McprWriter {
         self.bytes_written
     }
 
-    /// Add an editor bookmark to the recording. Markers are written only when
-    /// present and do not carry player identity data.
-    pub fn add_marker(&mut self, time_ms: u32, label: String) {
-        self.markers.push(Marker { time_ms, label });
-    }
-
-    /// Include an optional `mods.json` compatibility manifest.
-    pub fn set_mods_json(&mut self, json: Option<Vec<u8>>) {
-        self.mods_json = json;
-    }
-
-    /// Include one locally stored resource pack in the archive. Callers must
-    /// gate this on the explicit Studio preference; the path is read at finish.
-    pub fn set_resource_pack(&mut self, path: Option<PathBuf>) {
-        self.resource_pack = path;
-    }
-
-    /// Replace an existing archive's editor markers without changing its packet
-    /// stream or other entries. The replacement is staged beside the archive.
-    pub fn replace_markers(path: &Path, markers: &[Marker]) -> io::Result<()> {
-        let part = sibling(path, "markers.part");
-        let result = (|| {
-            let file = File::open(path)?;
-            let mut archive = zip::ZipArchive::new(file)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            let mut output = zip::ZipWriter::new(File::create_new(&part)?);
-            for index in 0..archive.len() {
-                let mut entry = archive.by_index(index).map_err(io::Error::other)?;
-                let name = entry.name().map_err(io::Error::other)?.into_owned();
-                if name == "markers.json" {
-                    continue;
-                }
-                let options = zip::write::SimpleFileOptions::default()
-                    .compression_method(zip::CompressionMethod::Deflated)
-                    .large_file(entry.size() >= u32::MAX as u64);
-                if entry.is_dir() {
-                    output
-                        .add_directory(name, options)
-                        .map_err(io::Error::other)?;
-                } else {
-                    output.start_file(name, options).map_err(io::Error::other)?;
-                    io::copy(&mut entry, &mut output)?;
-                }
-            }
-            if !markers.is_empty() {
-                output
-                    .start_file(
-                        "markers.json",
-                        zip::write::SimpleFileOptions::default()
-                            .compression_method(zip::CompressionMethod::Deflated),
-                    )
-                    .map_err(io::Error::other)?;
-                serde_json::to_writer_pretty(&mut output, markers).map_err(io::Error::other)?;
-            }
-            let file = output.finish().map_err(io::Error::other)?;
-            file.sync_all()?;
-            drop(file);
-            fs::rename(&part, path)
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&part);
-        }
-        result
-    }
-
     /// The stream file holding the packets until `finish` succeeds.
     pub fn stream_path(&self) -> &Path {
         &self.temp_tmcpr_path
@@ -364,7 +324,7 @@ impl McprWriter {
         metadata.duration = self.last_timestamp_ms;
         let json = serde_json::to_vec_pretty(&metadata)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        fs::write(&self.temp_meta_path, json)
+        write_private_file(&self.temp_meta_path, &json)
     }
 
     /// Complete recording, write `metaData.json`, package into `.mcpr` ZIP,
@@ -432,12 +392,26 @@ fn package_stream(metadata: &Metadata, stream: &Path, bytes: u64, part: &Path) -
     // Zip64, so a recording past 4 GiB still finishes.
     zip.start_file("recording.tmcpr", options.large_file(true))?;
     let mut input = BufReader::new(File::open(stream)?).take(bytes);
-    if io::copy(&mut input, &mut zip)? != bytes {
+    let mut checksum = crc32fast::Hasher::new();
+    let mut copied = 0u64;
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        let count = input.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        checksum.update(&buffer[..count]);
+        zip.write_all(&buffer[..count])?;
+        copied += count as u64;
+    }
+    if copied != bytes {
         return Err(io::Error::new(
             io::ErrorKind::UnexpectedEof,
             "the stream file is shorter than what was written",
         ));
     }
+    zip.start_file("recording.tmcpr.crc32", options)?;
+    write!(zip, "{:08x}", checksum.finalize())?;
 
     let file = zip.finish().map_err(io::Error::other)?;
     file.sync_all()?;
@@ -472,19 +446,99 @@ fn frame_head(data: &[u8], offset: usize) -> Option<(u32, usize, usize)> {
     Some((timestamp_ms, length, id_bytes.len() - reader.rest().len()))
 }
 
-/// The frame at `offset`: `(timestamp_ms, id, payload range, next offset)`, or `None` when it
-/// isn't whole (a short header, a length past the end, or an id that doesn't
-/// fit in its length). The index and `next_packet` both read frames through
-/// this, so they agree on where a damaged stream ends.
-fn frame_at(data: &[u8], offset: usize) -> Option<(u32, i32, std::ops::Range<usize>, usize)> {
-    let (timestamp_ms, length, _) = frame_head(data, offset)?;
-    let start = offset + 8;
-    let end = start.checked_add(length)?;
-    let body = data.get(start..end)?;
-    let mut reader = Reader::new(body);
-    let id = reader.varint().ok()?;
-    let payload_start = end - reader.rest().len();
-    Some((timestamp_ms, id, payload_start..end, end))
+/// Byte positions for one complete packet frame in the temporary stream.
+struct FrameLocation {
+    timestamp_ms: u32,
+    id: i32,
+    payload_start: u64,
+    payload_end: u64,
+    next: u64,
+}
+
+/// Read one whole frame from a seekable stream. A partial header/body/ID ends
+/// the readable stream, matching crash recovery's handling of truncated data.
+fn frame_at<R: Read + Seek>(
+    stream: &mut R,
+    offset: u64,
+    end: u64,
+) -> io::Result<Option<FrameLocation>> {
+    if end.saturating_sub(offset) < 8 {
+        return Ok(None);
+    }
+    stream.seek(SeekFrom::Start(offset))?;
+    let mut header = [0; 8];
+    stream.read_exact(&mut header)?;
+    let timestamp_ms = u32::from_be_bytes(header[..4].try_into().unwrap());
+    let length = u32::from_be_bytes(header[4..].try_into().unwrap()) as u64;
+    let body_start = offset + 8;
+    let Some(next) = body_start.checked_add(length) else {
+        return Ok(None);
+    };
+    if length == 0 || next > end {
+        return Ok(None);
+    }
+    let id_bytes_len = length.min(5) as usize;
+    let mut id_bytes = [0; 5];
+    stream.read_exact(&mut id_bytes[..id_bytes_len])?;
+    let mut packet = Reader::new(&id_bytes[..id_bytes_len]);
+    let Ok(id) = packet.varint() else {
+        return Ok(None);
+    };
+    let payload_start = body_start + (id_bytes_len - packet.rest().len()) as u64;
+    stream.seek(SeekFrom::Start(next))?;
+    Ok(Some(FrameLocation {
+        timestamp_ms,
+        id,
+        payload_start,
+        payload_end: next,
+        next,
+    }))
+}
+
+struct SparseIndexEntry {
+    timestamp_ms: u32,
+    frame_offset: u64,
+    group_start: u64,
+}
+
+/// Disk-backed inflated stream removed when the reader closes.
+struct TemporaryStream {
+    path: PathBuf,
+    reader: BufReader<File>,
+}
+
+impl TemporaryStream {
+    fn create() -> io::Result<Self> {
+        let mut last_error = None;
+        for attempt in 0..16 {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_nanos());
+            let path = std::env::temp_dir().join(format!(
+                "horizon-mcpr-{}-{nanos}-{attempt}.tmcpr",
+                std::process::id()
+            ));
+            match create_private_file(&path) {
+                Ok(file) => {
+                    return Ok(Self {
+                        path,
+                        reader: BufReader::with_capacity(64 * 1024, file),
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    last_error = Some(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last_error.unwrap_or_else(|| io::Error::other("could not create stream temp file")))
+    }
+}
+
+impl Drop for TemporaryStream {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
 }
 
 /// Reader for opening and streaming `.mcpr` replay files.
@@ -498,10 +552,6 @@ pub struct McprReader {
     /// Sparse frame index; timestamps are normalized to never go backwards.
     packet_index: Vec<SparseIndexEntry>,
     total_packets: usize,
-    /// Optional editor and compatibility entries.
-    pub markers: Vec<Marker>,
-    pub mods_json: Option<Vec<u8>>,
-    pub resource_pack_present: bool,
 }
 
 fn read_entry(archive: &mut zip::ZipArchive<File>, name: &str, max: u64) -> io::Result<Vec<u8>> {
@@ -583,23 +633,6 @@ impl McprReader {
                 ));
             }
         }
-        let markers =
-            read_optional_json::<Vec<Marker>>(&mut archive, "markers.json", MAX_METADATA_BYTES)?
-                .unwrap_or_default();
-        let mods_json = read_optional_entry(&mut archive, "mods.json", MAX_METADATA_BYTES)?;
-        // Bound embedded resource packs to avoid unbounded archive expansion.
-        let resource_pack_present = match archive.by_name("resourcepack/resources.zip") {
-            Ok(entry) if entry.size() <= 512 * 1024 * 1024 => true,
-            Ok(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "embedded resource pack exceeds 512 MiB",
-                ));
-            }
-            Err(zip::result::ZipError::FileNotFound) => false,
-            Err(error) => return Err(io::Error::new(io::ErrorKind::InvalidData, error)),
-        };
-
         // A recording that stopped mid-write ends in a frame that isn't whole:
         // indexing and playback both stop before it.
         let mut packet_index = Vec::new();
@@ -612,7 +645,7 @@ impl McprReader {
                 latest = frame.timestamp_ms;
                 group_start = offset;
             }
-            if total_packets % STREAM_INDEX_STRIDE == 0 {
+            if total_packets.is_multiple_of(STREAM_INDEX_STRIDE) {
                 packet_index.push(SparseIndexEntry {
                     timestamp_ms: latest,
                     frame_offset: offset,
@@ -631,9 +664,6 @@ impl McprReader {
             end: offset,
             packet_index,
             total_packets,
-            markers,
-            mods_json,
-            resource_pack_present,
         })
     }
 
@@ -954,11 +984,6 @@ mod tests {
         };
 
         let mut writer = McprWriter::new(mcpr_path.clone(), meta).unwrap();
-        let resource_pack_path = temp_dir.join("resources.zip");
-        fs::write(&resource_pack_path, b"pack contents").unwrap();
-        writer.add_marker(250, "Bookmark".into());
-        writer.set_mods_json(Some(br#"{"requiredMods":[]}"#.to_vec()));
-        writer.set_resource_pack(Some(resource_pack_path));
         writer.write_packet(0, 0x01, &[10, 20, 30]).unwrap();
         writer.write_packet(50, 0x24, &[40, 50]).unwrap();
         writer
@@ -975,18 +1000,6 @@ mod tests {
         assert_eq!(reader.metadata.duration, 550);
         assert_eq!(reader.metadata.players, vec!["Player1", "Player2"]);
         assert_eq!(reader.total_packets(), 4);
-        assert_eq!(
-            reader.markers,
-            vec![Marker {
-                time_ms: 250,
-                label: "Bookmark".into()
-            }]
-        );
-        assert_eq!(
-            reader.mods_json.as_deref(),
-            Some(br#"{"requiredMods":[]}"#.as_slice())
-        );
-        assert!(reader.resource_pack_present);
 
         let p0 = reader.next_packet().unwrap().unwrap();
         assert_eq!(p0.timestamp_ms, 0);
@@ -1005,14 +1018,6 @@ mod tests {
         assert_eq!(p3.id, 0x05);
         assert!(p3.payload.is_empty());
         assert!(reader.next_packet().unwrap().is_none());
-
-        let replacement = vec![Marker {
-            time_ms: 400,
-            label: "Edited marker".into(),
-        }];
-        McprWriter::replace_markers(&mcpr_path, &replacement).unwrap();
-        let reopened = McprReader::open(&mcpr_path).unwrap();
-        assert_eq!(reopened.markers, replacement);
 
         let found_ts = reader.seek_to_timestamp(75).unwrap().unwrap();
         assert_eq!(found_ts, 50);

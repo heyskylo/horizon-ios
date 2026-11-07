@@ -3181,6 +3181,10 @@ struct Game<'a> {
     remote: Option<remote::Remote>,
     /// Active packet replay session (game/studio.rs).
     pub(super) studio_replay: Option<horizon_client::studio::ReplayDriver>,
+    /// Camera perspective to restore after leaving replay playback.
+    studio_replay_previous_camera_type: Option<perspective::CameraType>,
+    /// Replay opened from the title screen owns the synthetic remote session.
+    studio_replay_standalone: bool,
     last_replay_tick: Option<Instant>,
     pub(super) studio_virtual_tick_ms: f32,
     /// This world is open to the network (game/lan.rs).
@@ -9062,7 +9066,7 @@ impl Game<'_> {
         // the sleep overlay, debug screen and open screens still draw.
         let spectator = self.spectator();
         let (wi, hi) = (w as i32, h as i32);
-        let in_studio = self.studio_replay.is_some() || self.studio_freecam.active;
+        let in_studio = self.studio_replay.is_some();
         let show_hud = !self.ui.hide_gui && !in_studio;
         // max(Hud.leftHeight, Hud.rightHeight) after the bars: the item name and
         // the action bar sit above it.
@@ -11583,22 +11587,20 @@ impl Game<'_> {
         self.mark_motion(out.len(), 0);
         laps.lap("eg_mobs");
         // In first person only a shader pack's shadow pass draws the player.
-        if self.studio_visuals.settings.world_players {
-            self.mark_player(out.len(), !self.own_body_in_view());
-            let player_start = out.len();
-            let player_alpha = if self.studio_replay.is_some() {
-                (self.studio_virtual_tick_ms as f64 / 50.0).clamp(0.0, 1.0)
-            } else {
-                self.clock.camera_fraction()
-            };
-            self.player_model_geometry(camera, player_alpha, &mut out);
-            // A native pack has no per-entity draws to hide it with: its shadow pass alone gets
-            // the first-person model.
-            if self.pack_ids.is_none() && !self.own_body_in_view() {
-                self.shadow_only_vertices
-                    .borrow_mut()
-                    .extend(out.drain(player_start..));
-            }
+        self.mark_player(out.len(), !self.own_body_in_view());
+        let player_start = out.len();
+        let player_alpha = if self.studio_replay.is_some() {
+            (self.studio_virtual_tick_ms as f64 / 50.0).clamp(0.0, 1.0)
+        } else {
+            self.clock.camera_fraction()
+        };
+        self.player_model_geometry(camera, player_alpha, &mut out);
+        // A native pack has no per-entity draws to hide it with: its shadow pass alone gets
+        // the first-person model.
+        if self.pack_ids.is_none() && !self.own_body_in_view() {
+            self.shadow_only_vertices
+                .borrow_mut()
+                .extend(out.drain(player_start..));
         }
         // Companions in first person, trails and auras (game/cosmetics/fx.rs).
         self.cosmetics_fx_geometry(camera, alpha, &mut out);
@@ -14826,7 +14828,6 @@ impl Game<'_> {
             || self.ui.hide_gui
             || self.sleeping.is_some()
             || !self.camera_type.first_person()
-            || self.studio_freecam.active
             || self.studio_replay.is_some()
             || self
                 .player
@@ -17340,8 +17341,7 @@ impl Game<'_> {
             KeyCode::Escape => match self.screen {
                 Screen::Options => self.options_key(KeyCode::Escape, None)?,
                 Screen::Playing => {
-                    if (self.studio_freecam.active || self.studio_replay.is_some()) && self.captured
-                    {
+                    if self.studio_replay.is_some() && self.captured {
                         self.capture(false);
                         return Ok(());
                     }
@@ -17474,7 +17474,9 @@ impl Game<'_> {
             // key.toggleGui is a KeyMapping: it clicks only with no screen open.
             KeyCode::F1 if self.screen == Screen::Playing => self.toggle_hide_gui(),
             KeyCode::F11 => self.toggle_fullscreen(),
-            KeyCode::F5 if self.screen == Screen::Playing => self.cycle_camera(),
+            KeyCode::F5 if self.screen == Screen::Playing && self.studio_replay.is_none() => {
+                self.cycle_camera()
+            }
             KeyCode::KeyE
                 if self.screen == Screen::Creative && self.creative_screen.tab().search => {}
             KeyCode::KeyE => match self.screen {
@@ -20420,6 +20422,8 @@ impl<'a> Game<'a> {
             entity_attachments: Default::default(),
             remote: None,
             studio_replay: None,
+            studio_replay_previous_camera_type: None,
+            studio_replay_standalone: false,
             last_replay_tick: None,
             studio_virtual_tick_ms: 0.0,
             lan: None,

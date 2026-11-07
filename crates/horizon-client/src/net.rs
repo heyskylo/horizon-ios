@@ -2423,12 +2423,11 @@ mod tests {
         assert_eq!(saved_path, mcpr_path);
         assert!(!session.is_recording());
 
-        // Verify replay driver decodes the motion packet
-        let mut driver = crate::studio::ReplayDriver::open(&mcpr_path).unwrap();
-        assert_eq!(driver.packet_count(), 1);
-        let packets = driver.advance(Duration::from_secs(1)).unwrap();
-        assert_eq!(packets.len(), 1);
-        let decoded = play::Clientbound::decode(packets[0].id, &packets[0].payload).unwrap();
+        // Verify the recording preserves the motion packet for replay playback.
+        let mut recording = crate::studio::McprReader::open(&mcpr_path).unwrap();
+        assert_eq!(recording.total_packets(), 1);
+        let packet = recording.next_packet().unwrap().unwrap();
+        let decoded = play::Clientbound::decode(packet.id, &packet.payload).unwrap();
         assert_eq!(decoded, pos_pkt);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -2437,8 +2436,8 @@ mod tests {
     #[test]
     fn studio_session_record_local_player_animations() {
         use crate::studio::Metadata;
+        use horizon_protocol::entity_data::{Value, serializer};
         use horizon_protocol::packets::play;
-        use horizon_protocol::entity_data::{serializer, Value};
 
         let session = Session::replay("StudioTester");
 
@@ -2474,11 +2473,13 @@ mod tests {
         assert_eq!(saved_path, mcpr_path);
         assert!(!session.is_recording());
 
-        // Verify replay driver decodes both animation packets
-        let mut driver = crate::studio::ReplayDriver::open(&mcpr_path).unwrap();
-        assert_eq!(driver.packet_count(), 2);
-        let packets = driver.advance(Duration::from_secs(1)).unwrap();
-        assert_eq!(packets.len(), 2);
+        // Verify the recording preserves both animation packets for playback.
+        let mut recording = crate::studio::McprReader::open(&mcpr_path).unwrap();
+        assert_eq!(recording.total_packets(), 2);
+        let packets = [
+            recording.next_packet().unwrap().unwrap(),
+            recording.next_packet().unwrap().unwrap(),
+        ];
         let decoded_swing = play::Clientbound::decode(packets[0].id, &packets[0].payload).unwrap();
         assert_eq!(decoded_swing, swing_pkt);
         let decoded_data = play::Clientbound::decode(packets[1].id, &packets[1].payload).unwrap();
@@ -2487,4 +2488,3 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
-

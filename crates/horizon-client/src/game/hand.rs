@@ -194,18 +194,18 @@ impl Game<'_> {
         let duration = swing_duration(animation, dig_speed, fatigue);
         if self.swing.start_if_able(hand, animation, duration) {
             self.swings_started += 1;
-            if let Some(r) = self.remote.as_ref() {
-                if r.session.is_recording() {
-                    let pkt = horizon_protocol::packets::play::Clientbound::SwingAnimation(
-                        horizon_protocol::packets::play::SwingAnimation {
-                            id: r.entity_id,
-                            hand: if hand == Hand::Off { 1 } else { 0 },
-                            kind: animation.kind as i32,
-                            duration,
-                        },
-                    );
-                    r.session.record_clientbound(&pkt);
-                }
+            if let Some(r) = self.remote.as_ref()
+                && r.session.is_recording()
+            {
+                let pkt = horizon_protocol::packets::play::Clientbound::SwingAnimation(
+                    horizon_protocol::packets::play::SwingAnimation {
+                        id: r.entity_id,
+                        hand: if hand == Hand::Off { 1 } else { 0 },
+                        kind: animation.kind as i32,
+                        duration,
+                    },
+                );
+                r.session.record_clientbound(&pkt);
             }
         }
     }

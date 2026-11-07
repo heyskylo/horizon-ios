@@ -35,113 +35,124 @@ impl Game<'_> {
         let Some(rest) = command.strip_prefix("studio") else {
             return false;
         };
+        if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+            return false;
+        }
         let words: Vec<&str> = rest.split_whitespace().collect();
         if words.is_empty() {
-            self.system_message(Text::literal("Studio commands: /studio record <start|stop|status> or /studio replay <open|pause|resume|speed|seek|status|close>"));
+            self.system_message(Text::translate("horizon.studio.replay.usage", &[]));
             return true;
         }
 
         match words[0] {
             "record" => match words.get(1).copied() {
-                Some("start") => {
-                    let name = words.get(2).copied();
-                    match self.start_studio_recording(name) {
-                        Ok(v) if v["ok"].as_bool() == Some(true) => {
-                            let path = v["path"].as_str().unwrap_or("recording");
-                            self.system_message(Text::literal(format!(
-                                "Studio: Started recording to {path}"
-                            )));
-                        }
-                        Ok(v) => {
-                            let err = v["error"].as_str().unwrap_or("failed to start");
-                            self.system_message(Text::literal(format!("Studio error: {err}")));
-                        }
-                        Err(e) => {
-                            self.system_message(Text::literal(format!("Studio error: {e}")));
-                        }
-                    }
-                }
-                Some("stop") => match self.stop_studio_recording() {
+                Some("start") => match self.start_studio_recording(words.get(2).copied()) {
                     Ok(v) if v["ok"].as_bool() == Some(true) => {
-                        let path = v["path"].as_str().unwrap_or("recording");
-                        self.system_message(Text::literal(format!(
-                            "Studio: Recording saved to {path}"
-                        )));
+                        let path = v["path"].as_str().unwrap_or_default();
+                        self.system_message(Text::tr("horizon.studio.record.started", &[&path]));
                     }
                     Ok(v) => {
-                        let err = v["error"].as_str().unwrap_or("failed to stop");
-                        self.system_message(Text::literal(format!("Studio error: {err}")));
+                        let error = v["error"].as_str().unwrap_or_default();
+                        self.system_message(Text::tr("horizon.studio.record.error", &[&error]));
                     }
-                    Err(e) => {
-                        self.system_message(Text::literal(format!("Studio error: {e}")));
+                    Err(error) => {
+                        self.system_message(Text::tr("horizon.studio.record.error", &[&error]));
+                    }
+                },
+                Some("stop") => match self.stop_studio_recording() {
+                    Ok(v) if v["ok"].as_bool() == Some(true) => {
+                        let path = v["path"].as_str().unwrap_or_default();
+                        self.system_message(Text::tr("horizon.studio.record.saved", &[&path]));
+                    }
+                    Ok(v) => {
+                        let error = v["error"].as_str().unwrap_or_default();
+                        self.system_message(Text::tr("horizon.studio.record.error", &[&error]));
+                    }
+                    Err(error) => {
+                        self.system_message(Text::tr("horizon.studio.record.error", &[&error]));
                     }
                 },
                 Some("status") => {
-                    let v = self.studio_recording_status();
-                    if v["active"].as_bool() == Some(true) {
-                        let path = v["path"].as_str().unwrap_or("recording");
-                        let elapsed_s = v["elapsed_ms"].as_u64().unwrap_or(0) / 1000;
-                        let packets = v["packet_count"].as_u64().unwrap_or(0);
-                        let bytes = v["bytes_written"].as_u64().unwrap_or(0);
-                        self.system_message(Text::literal(format!(
-                            "Studio Recording: Active, Time: {elapsed_s}s, Packets: {packets}, Size: {} KB ({path})",
-                            bytes / 1024
-                        )));
+                    let status = self.studio_recording_status();
+                    if status["active"].as_bool() == Some(true) {
+                        let elapsed =
+                            (status["elapsed_ms"].as_u64().unwrap_or(0) / 1000).to_string();
+                        let packets = status["packet_count"].as_u64().unwrap_or(0).to_string();
+                        let size =
+                            (status["bytes_written"].as_u64().unwrap_or(0) / 1024).to_string();
+                        let path = status["path"].as_str().unwrap_or_default();
+                        self.system_message(Text::tr(
+                            "horizon.studio.record.status.active",
+                            &[&elapsed, &packets, &size, &path],
+                        ));
+                    } else if let Some(error) = status["error"].as_str() {
+                        self.system_message(Text::tr("horizon.studio.record.error", &[&error]));
                     } else {
-                        self.system_message(Text::literal("Studio Recording: Inactive"));
+                        self.system_message(Text::translate(
+                            "horizon.studio.record.status.inactive",
+                            &[],
+                        ));
                     }
                 }
-                _ => {
-                    self.system_message(Text::literal(
-                        "Usage: /studio record <start [name]|stop|status>",
-                    ));
-                }
+                _ => self.system_message(Text::translate("horizon.studio.record.usage", &[])),
             },
             "replay" => match words.get(1).copied() {
                 Some("open") => {
                     let Some(path) = words.get(2) else {
-                        self.system_message(Text::literal("Usage: /studio replay open <PATH>"));
+                        self.system_message(Text::translate(
+                            "horizon.studio.replay.open.usage",
+                            &[],
+                        ));
                         return true;
                     };
                     match self.open_studio_replay(path) {
                         Ok(v) if v["ok"].as_bool() == Some(true) => {
                             let duration_s = v["duration_ms"].as_f64().unwrap_or(0.0) / 1000.0;
                             let packets = v["packet_count"].as_u64().unwrap_or(0);
-                            self.system_message(Text::literal(format!(
-                                "Studio Replay: Opened {path} (Duration: {duration_s:.1}s, Packets: {packets})"
-                            )));
+                            let duration = format!("{duration_s:.1}");
+                            let packets = packets.to_string();
+                            self.system_message(Text::tr(
+                                "horizon.studio.replay.opened",
+                                &[path, &duration, &packets],
+                            ));
                         }
                         Ok(v) => {
-                            let err = v["error"].as_str().unwrap_or("failed to open replay");
-                            self.system_message(Text::literal(format!(
-                                "Studio Replay error: {err}"
-                            )));
+                            let err = v["error"].as_str().unwrap_or_default();
+                            self.system_message(Text::tr(
+                                "horizon.studio.replay.open_error",
+                                &[&err],
+                            ));
                         }
                         Err(e) => {
-                            self.system_message(Text::literal(format!("Studio Replay error: {e}")));
+                            let error = e.to_string();
+                            self.system_message(Text::tr(
+                                "horizon.studio.replay.open_error",
+                                &[&error],
+                            ));
                         }
                     }
                 }
                 Some("pause") => {
                     if let Some(r) = self.studio_replay.as_mut() {
                         r.set_paused(true);
-                        self.system_message(Text::literal("Studio Replay: Paused"));
+                        self.system_message(Text::translate("horizon.studio.replay.paused", &[]));
                     } else {
-                        self.system_message(Text::literal("Studio Replay: No active replay"));
+                        self.system_message(Text::translate("horizon.studio.replay.inactive", &[]));
                     }
                 }
                 Some("resume") => {
                     if let Some(r) = self.studio_replay.as_mut() {
                         r.set_paused(false);
-                        self.system_message(Text::literal("Studio Replay: Resumed"));
+                        self.system_message(Text::translate("horizon.studio.replay.resumed", &[]));
                     } else {
-                        self.system_message(Text::literal("Studio Replay: No active replay"));
+                        self.system_message(Text::translate("horizon.studio.replay.inactive", &[]));
                     }
                 }
                 Some("speed") => {
                     let Some(spd_str) = words.get(2) else {
-                        self.system_message(Text::literal(
-                            "Usage: /studio replay speed <MULTIPLIER>",
+                        self.system_message(Text::translate(
+                            "horizon.studio.replay.speed.usage",
+                            &[],
                         ));
                         return true;
                     };
@@ -153,21 +164,29 @@ impl Game<'_> {
                             None
                         };
                         if let Some(speed) = new_speed {
-                            self.system_message(Text::literal(format!(
-                                "Studio Replay: Speed set to {:.2}x",
-                                speed
-                            )));
+                            let speed = format!("{speed:.2}");
+                            self.system_message(Text::tr(
+                                "horizon.studio.replay.speed.set",
+                                &[&speed],
+                            ));
                         } else {
-                            self.system_message(Text::literal("Studio Replay: No active replay"));
+                            self.system_message(Text::translate(
+                                "horizon.studio.replay.inactive",
+                                &[],
+                            ));
                         }
                     } else {
-                        self.system_message(Text::literal("Studio Replay: Invalid speed number"));
+                        self.system_message(Text::translate(
+                            "horizon.studio.replay.speed.invalid",
+                            &[],
+                        ));
                     }
                 }
                 Some("seek") => {
                     let Some(ms_str) = words.get(2) else {
-                        self.system_message(Text::literal(
-                            "Usage: /studio replay seek <MILLISECONDS>",
+                        self.system_message(Text::translate(
+                            "horizon.studio.replay.seek.usage",
+                            &[],
                         ));
                         return true;
                     };
@@ -176,57 +195,63 @@ impl Game<'_> {
                             match r.seek(ms) {
                                 Ok(()) => {
                                     self.reset_studio_playback_ticks();
-                                    self.system_message(Text::literal(format!(
-                                        "Studio Replay: Seek to {}ms ({:.1}s)",
-                                        ms,
-                                        ms as f32 / 1000.0
-                                    )));
+                                    let ms_text = ms.to_string();
+                                    let seconds = format!("{:.1}", ms as f32 / 1000.0);
+                                    self.system_message(Text::tr(
+                                        "horizon.studio.replay.seeked",
+                                        &[&ms_text, &seconds],
+                                    ));
                                 }
                                 Err(e) => {
-                                    self.system_message(Text::literal(format!(
-                                        "Studio Replay seek error: {e}"
-                                    )));
+                                    let error = e.to_string();
+                                    self.system_message(Text::tr(
+                                        "horizon.studio.replay.seek.error",
+                                        &[&error],
+                                    ));
                                 }
                             }
                         } else {
-                            self.system_message(Text::literal("Studio Replay: No active replay"));
+                            self.system_message(Text::translate(
+                                "horizon.studio.replay.inactive",
+                                &[],
+                            ));
                         }
                     } else {
-                        self.system_message(Text::literal("Studio Replay: Invalid milliseconds"));
+                        self.system_message(Text::translate(
+                            "horizon.studio.replay.seek.invalid",
+                            &[],
+                        ));
                     }
                 }
                 Some("status") => {
                     if let Some(r) = self.studio_replay.as_ref() {
-                        self.system_message(Text::literal(format!(
-                            "Studio Replay: Pos: {}ms / {}ms ({:.1}%), Speed: {:.2}x, Paused: {}, Finished: {}",
-                            r.position_ms(),
-                            r.duration_ms(),
-                            r.progress() * 100.0,
-                            r.speed(),
-                            r.is_paused(),
-                            r.is_finished()
-                        )));
+                        let position = r.position_ms().to_string();
+                        let duration = r.duration_ms().to_string();
+                        let progress = format!("{:.1}", r.progress() * 100.0);
+                        let speed = format!("{:.2}", r.speed());
+                        let paused = r.is_paused().to_string();
+                        let finished = r.is_finished().to_string();
+                        self.system_message(Text::tr(
+                            "horizon.studio.replay.status",
+                            &[&position, &duration, &progress, &speed, &paused, &finished],
+                        ));
                     } else {
-                        self.system_message(Text::literal("Studio Replay: Inactive"));
+                        self.system_message(Text::translate("horizon.studio.replay.inactive", &[]));
                     }
                 }
                 Some("close") => {
-                    if self.studio_replay.take().is_some() {
-                        self.system_message(Text::literal("Studio Replay: Closed"));
+                    if self.close_studio_replay() {
+                        self.system_message(Text::translate("horizon.studio.replay.closed", &[]));
                     } else {
-                        self.system_message(Text::literal("Studio Replay: No active replay"));
+                        self.system_message(Text::translate("horizon.studio.replay.inactive", &[]));
                     }
                 }
                 _ => {
-                    self.system_message(Text::literal(
-                        "Usage: /studio replay <open|pause|resume|speed|seek|status|close>",
-                    ));
+                    self.system_message(Text::translate("horizon.studio.replay.usage", &[]));
                 }
             },
             _ => {
-                self.system_message(Text::literal(
-                    "Unknown studio subcommand. Usage: /studio <record|replay> ...",
-                ));
+                self.system_message(Text::translate("horizon.studio.replay.usage", &[]));
             }
         }
         true
@@ -297,7 +322,11 @@ impl Game<'_> {
             self.tick_player_model();
         }
         if !paused {
-            let speed = self.studio_replay.as_ref().map_or(1.0, |r| r.speed() as f32).max(0.1);
+            let speed = self
+                .studio_replay
+                .as_ref()
+                .map_or(1.0, |r| r.speed() as f32)
+                .max(0.1);
             self.studio_virtual_tick_ms += delta.as_secs_f32() * 1000.0 * speed;
             while self.studio_virtual_tick_ms >= 50.0 {
                 self.studio_virtual_tick_ms -= 50.0;
@@ -328,7 +357,8 @@ impl Game<'_> {
                         let mut target = m.body_yaw;
                         if dx * dx + dz * dz > 0.0025 {
                             let walk = (dz.atan2(dx) as f32).to_degrees() - 90.0;
-                            let facing = ((self.yaw - walk + 180.0).rem_euclid(360.0) - 180.0).abs();
+                            let facing =
+                                ((self.yaw - walk + 180.0).rem_euclid(360.0) - 180.0).abs();
                             target = if 95.0 < facing && facing < 265.0 {
                                 walk - 180.0
                             } else {
@@ -439,7 +469,7 @@ impl Game<'_> {
                     }
                 }
                 Some("close") => {
-                    let closed = self.studio_replay.take().is_some();
+                    let closed = self.close_studio_replay();
                     Ok(Some(json!({ "ok": true, "closed": closed })))
                 }
                 _ => Ok(Some(json!({ "error": "unknown studio replay subcommand" }))),
@@ -514,57 +544,71 @@ impl Game<'_> {
     }
 
     pub(super) fn open_studio_replay(&mut self, path: &str) -> Result<Value> {
-        if self.remote.is_none()
-            && let Err(e) = self.init_remote_for_replay()
-        {
-            log::warn!("Failed to init remote for replay: {e}");
-        }
-        match ReplayDriver::open(Path::new(path)) {
-            Ok(driver) => {
-                let duration_ms = driver.duration_ms();
-                let packets = driver.packet_count();
-                self.studio_replay = Some(driver);
-                self.title = None;
-                self.screen = Screen::Playing;
-                if let Some(player) = &self.player {
-                    let eye = glam::DVec3::new(
-                        player.position.x,
-                        player.position.y + 1.62,
-                        player.position.z,
-                    );
-                    self.studio_freecam
-                        .activate(eye, self.yaw, self.pitch, self.settings.fov);
-                } else {
-                    self.studio_freecam.active = true;
-                }
-                self.capture(false);
-                self.dragging = false;
-                log::info!("Studio: Opened replay '{path}' ({duration_ms} ms, {packets} packets)");
-                Ok(json!({
-                    "ok": true,
-                    "duration_ms": duration_ms,
-                    "packet_count": packets,
-                }))
+        // Validate and index the archive before replacing the title menu or active world. A
+        // temp-file, metadata, or protocol error must leave the current screen usable.
+        let driver = match ReplayDriver::open(Path::new(path)) {
+            Ok(driver) => driver,
+            Err(error) => {
+                log::error!("Failed to open studio replay '{path}': {error}");
+                return Ok(json!({ "ok": false, "error": error.to_string() }));
             }
-            Err(e) => {
-                log::error!("Failed to open studio replay '{path}': {e}");
-                Ok(json!({ "ok": false, "error": e.to_string() }))
-            }
-        }
-    }
-    pub(super) fn close_studio_replay(&mut self) -> Result<Value> {
-        self.studio_replay = None;
-        self.studio_replay_path = None;
-        self.capture(false);
-        if self.integrated.is_none() && self.lan.is_none() {
-            let _ = self.close_world();
-            if let Some(t) = self.title.as_mut() {
-                t.mode = horizon_client::title::Mode::Main;
-            }
-        }
-        Ok(json!({ "ok": true }))
-    }
+        };
 
+        let standalone = self.studio_replay.is_none() && self.remote.is_none();
+        if self.remote.is_none()
+            && let Err(error) = self.init_remote_for_replay()
+        {
+            log::error!("Failed to initialize studio replay session: {error}");
+            return Ok(json!({ "ok": false, "error": error.to_string() }));
+        }
+
+        let duration_ms = driver.duration_ms();
+        let packets = driver.packet_count();
+        if self.studio_replay.is_none() {
+            self.studio_replay_previous_camera_type = Some(self.camera_type);
+            self.studio_replay_standalone = standalone;
+        }
+        self.studio_replay = Some(driver);
+        self.camera_type = super::perspective::CameraType::FirstPerson;
+        self.title = None;
+        self.screen = Screen::Playing;
+        self.capture(false);
+        self.dragging = false;
+        // Apply timestamp-zero login, player pose, and chunk packets before the first rendered
+        // frame so playback opens at the recorded player's viewpoint.
+        let _ = self.advance_studio_replay();
+        self.reset_studio_playback_ticks();
+        log::info!("Studio: Opened replay '{path}' ({duration_ms} ms, {packets} packets)");
+        Ok(json!({
+            "ok": true,
+            "duration_ms": duration_ms,
+            "packet_count": packets,
+        }))
+    }
+    pub(super) fn close_studio_replay(&mut self) -> bool {
+        let closed = self.studio_replay.take().is_some();
+        if let Some(camera_type) = self.studio_replay_previous_camera_type.take() {
+            self.camera_type = camera_type;
+        }
+        self.last_replay_tick = None;
+        self.capture(false);
+        if self.studio_replay_standalone {
+            self.studio_replay_standalone = false;
+            if let Some(mut remote) = self.remote.take() {
+                remote.session.disconnect();
+            }
+            let _ = self.finish_close_world();
+            if let Some(title) = self.title.as_mut() {
+                title.mode = horizon_client::title::Mode::Main;
+            }
+        } else if self.integrated.is_none() && self.lan.is_none() {
+            let _ = self.close_world();
+            if let Some(title) = self.title.as_mut() {
+                title.mode = horizon_client::title::Mode::Main;
+            }
+        }
+        closed
+    }
     /// Dump current player pose, dimension login, center chunk, and resident loaded chunks
     /// into the recording stream at timestamp 0ms so replays accurately reconstruct the world.
     pub(super) fn dump_world_snapshot_to_recorder(&self) {
@@ -591,8 +635,8 @@ impl Game<'_> {
                 hardcore: self.level.hardcore,
                 levels: vec!["minecraft:overworld".into()],
                 max_players: 20,
-                chunk_radius: self.settings.render_distance as i32,
-                simulation_distance: self.settings.simulation_distance as i32,
+                chunk_radius: self.settings.render_distance,
+                simulation_distance: self.settings.simulation_distance,
                 reduced_debug_info: false,
                 show_death_screen: true,
                 limited_crafting: false,

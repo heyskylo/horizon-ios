@@ -1238,7 +1238,7 @@ impl Game<'_> {
         let lang = Arc::new(horizon_client::net::load_language(&root));
         let info = self
             .settings
-            .client_information(client_view_distance(self.render_distance_in_use()));
+            .client_information(client_view_distance(self.settings.render_distance));
         let auth = self.auth();
         let name = auth.as_ref().map_or("ReplayPlayer", |a| a.name.as_str());
         let user = auth.as_ref().map_or_else(
@@ -1259,7 +1259,7 @@ impl Game<'_> {
             self.res.threads(),
         );
         streaming.remote = true;
-        streaming.radius = self.render_distance_in_use();
+        streaming.radius = self.settings.render_distance;
         self.streaming = streaming;
         self.world = World::new(self.res.facts().air, 0);
         self.save = Arc::new(SaveDir::new(
@@ -1324,9 +1324,11 @@ impl Game<'_> {
             status: "Playing Studio Replay".into(),
             lang,
             registries: Arc::new(Dynamic::default()),
+            enchantments: None,
             joined: false,
             reconfiguring: None,
             logged_in: true,
+            local_entity_silent: false,
             entity_id: 0,
             camera: None,
             use_item: None,
@@ -1342,6 +1344,7 @@ impl Game<'_> {
             view_distance: self.settings.render_distance,
             simulation_distance: self.settings.simulation_distance,
             sequence: 0,
+            last_teleport_sequence: -1,
             position_sender: Default::default(),
             last_input: 0,
             was_sprinting: false,
@@ -1352,6 +1355,7 @@ impl Game<'_> {
             abilities: None,
             loaded_sent: false,
             heard_level: None,
+            native_epoch: None,
             level_load: horizon_client::level_loading::LevelLoadTracker::new(0),
             sent_info: info,
             predictions: HashMap::new(),
@@ -1360,6 +1364,7 @@ impl Game<'_> {
             menu_title: None,
             state_id: 0,
             use_target: None,
+            menu_extra: None,
             entities: HashMap::new(),
             lerps: HashMap::new(),
             cart_lerps: HashMap::new(),
@@ -1367,6 +1372,7 @@ impl Game<'_> {
             head_lerps: HashMap::new(),
             ghast_dismount: None,
             first_passenger: false,
+            passenger_index: 0,
             pending_items: HashMap::new(),
             health: (20.0, 20, 5.0),
             flash_on_set_health: false,
@@ -1391,6 +1397,8 @@ impl Game<'_> {
             skin_textures: HashMap::new(),
             own_profile: OwnProfile::Idle,
             skins: HashMap::new(),
+            skins_revision: 0,
+            published_skins: None,
             listed: Default::default(),
             online_mode: false,
             level_players: HashMap::new(),
@@ -1416,6 +1424,7 @@ impl Game<'_> {
             flat: false,
             death_message: None,
             show_death_screen: true,
+            reduced_debug_info: false,
             do_limited_crafting: false,
             player_type,
             synced: vec![None; CREATIVE_SYNCED],
@@ -2618,7 +2627,7 @@ impl Game<'_> {
     /// view centre, `calculateStorageRange` (the server's radius, at least
     /// two, plus three) chunks each way.
     pub(super) fn remote_chunk_in_range(&self, x: i32, z: i32) -> bool {
-        if self.studio_replay.is_some() || self.studio_freecam.active {
+        if self.studio_replay.is_some() {
             return true;
         }
         self.remote.as_ref().is_none_or(|r| {
@@ -7733,7 +7742,7 @@ impl Game<'_> {
                 r.was_shared_flags = shared;
                 r.was_living_flags = living_flags;
                 r.last_recorded_pose = Some(p.pose);
-                use horizon_protocol::entity_data::{serializer, Value};
+                use horizon_protocol::entity_data::{Value, serializer};
                 let pkt = horizon_protocol::packets::play::Clientbound::SetEntityData(
                     horizon_protocol::packets::play::SetEntityData {
                         id: r.entity_id,
@@ -10421,7 +10430,7 @@ impl Game<'_> {
 
     /// Connecting / loading screens; true when it covered the frame.
     pub(super) fn remote_overlay(&mut self, batch: &mut HudBatch) -> bool {
-        if self.studio_replay.is_some() || self.studio_freecam.active {
+        if self.studio_replay.is_some() {
             return false;
         }
         let Some(r) = &self.remote else { return false };
@@ -10500,7 +10509,7 @@ impl Game<'_> {
     /// Connected or connecting with no player yet: `ConnectScreen`, then
     /// `LevelLoadingScreen`, over the panorama with its blur.
     pub(super) fn remote_loading(&self) -> bool {
-        if self.studio_replay.is_some() || self.studio_freecam.active {
+        if self.studio_replay.is_some() {
             return false;
         }
         use horizon_client::level_loading::Reason;
