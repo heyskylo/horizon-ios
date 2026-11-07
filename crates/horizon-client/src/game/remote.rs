@@ -6252,12 +6252,21 @@ impl Game<'_> {
             self.border.tick();
         }
         self.player_border();
-        // ClientLevel.tickEntities runs before Level.tickBlockEntities. This
-        // lets entities capture their tick-start positions before a piston
-        // moves them, matching the server's update order.
         self.tick_remote_entities(running);
-        // Level.tickBlockEntities: a frozen level ticks no block entities.
+        self.tick_random_textures();
+        // Breeze.tick's block dust: drawn by each client for the breezes it sees.
         if running {
+            self.tick_breeze_effects();
+        }
+        self.tick_remote_guardian_eyes(running);
+        // Level.tickBlockEntities: a frozen level ticks no block entities.
+        // A step advances the moving pistons created by the block event once,
+        // rather than finishing them during the frozen ticks between steps.
+        if running {
+            self.tick_block_entity_anims();
+            self.tick_remote_spawners();
+            self.client_tick_beacons();
+            self.tick_remote_potent_sulfur();
             self.with_level(|b, level, ticks| {
                 b.client_tick_block_entities(level, ticks);
             });
@@ -6265,19 +6274,6 @@ impl Game<'_> {
             self.push_piston_entities(pushes);
             self.sync_moving_pistons();
         }
-        self.tick_random_textures();
-        if running {
-            self.tick_breeze_effects();
-        }
-        self.tick_remote_guardian_eyes(running);
-        if running {
-            self.tick_block_entity_anims();
-            self.tick_remote_spawners();
-            self.client_tick_beacons();
-            self.tick_remote_potent_sulfur();
-        }
-        // A step advances the moving pistons created by the block event once,
-        // rather than finishing them during the frozen ticks between steps.
         self.tick_hand();
         if running {
             self.tick_particles();
