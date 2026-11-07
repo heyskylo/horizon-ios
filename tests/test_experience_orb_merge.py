@@ -52,6 +52,7 @@ impl Game {
     fn add_orb(&mut self, _: [f64; 3], value: u32) { self.added.push(value); }
     ORB_MERGES
     AWARD_ORB
+    MERGE_NEW_ORB
     MERGE_ORBS
 }
 fn orb(id: u32, x: f64, value: u32, ticks: u32) -> ExperienceOrb {
@@ -118,6 +119,7 @@ class ExperienceOrbMergeTests(unittest.TestCase):
         source = (ROOT / "crates/horizon-client/src/game.rs").read_text(encoding="utf-8")
         fixture = (FIXTURE.replace("ORB_MERGES", method(source, "orb_merges"))
                    .replace("AWARD_ORB", method(source, "award_orb"))
+                   .replace("MERGE_NEW_ORB", method(source, "merge_new_orb"))
                    .replace("MERGE_ORBS", method(source, "merge_orbs")))
         with tempfile.TemporaryDirectory() as folder:
             src, exe = Path(folder) / "orb.rs", Path(folder) / "orb.exe"

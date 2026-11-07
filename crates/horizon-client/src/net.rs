@@ -189,6 +189,23 @@ impl Session {
             false,
         )
     }
+    /// A lightweight session for studio replay playback without background network IO.
+    pub fn replay(name: &str) -> Self {
+        let (_send, events) = channel();
+        Self {
+            events,
+            writer: Arc::new(Mutex::new(None)),
+            configuring: Arc::new(AtomicBool::new(false)),
+            thread: None,
+            address: "studio-replay".to_owned(),
+            name: name.to_owned(),
+            counters: Arc::new(Mutex::new(None)),
+            cookies: Default::default(),
+            debug: false,
+            far: Arc::new(crate::lod_net::Inbox::default()),
+            recorder: Arc::new(Mutex::new(None)),
+        }
+    }
     fn start(
         address: &str,
         name: &str,
@@ -275,8 +292,24 @@ impl Session {
         path: impl Into<PathBuf>,
         metadata: Metadata,
     ) -> std::io::Result<()> {
+        self.start_recording_with_init(path, metadata, |_| {})
+    }
+
+    /// Start recording and initialize the stream while live packet recording is
+    /// excluded. This lets callers write the initial snapshot before packets
+    /// arriving on the network thread.
+    pub fn start_recording_with_init(
+        &self,
+        path: impl Into<PathBuf>,
+        metadata: Metadata,
+        initialize: impl FnOnce(&StudioRecorder),
+    ) -> std::io::Result<()> {
         let rec = StudioRecorder::start(path.into(), metadata)?;
-        *self.recorder.lock().unwrap() = Some(rec);
+        let mut recorder = self.recorder.lock().unwrap();
+        *recorder = Some(rec);
+        if let Some(recorder) = recorder.as_ref() {
+            initialize(recorder);
+        }
         Ok(())
     }
     /// Stop recording and finalize the `.mcpr` archive.
@@ -295,6 +328,28 @@ impl Session {
     /// Status of the active recording, if any.
     pub fn recorder_status(&self) -> Option<RecorderStatus> {
         self.recorder.lock().unwrap().as_ref().map(|r| r.status())
+    }
+    /// Record an explicit packet into the active recording session at `timestamp_ms`.
+    pub fn record_packet_at(&self, timestamp_ms: u32, id: i32, payload: &[u8]) {
+        if let Some(rec) = self.recorder.lock().unwrap().as_ref() {
+            rec.record_packet_at(timestamp_ms, id, payload);
+        }
+    }
+    /// Record a packet into the active recording session at current elapsed time.
+    pub fn record_packet(&self, id: i32, payload: &[u8]) {
+        if let Some(rec) = self.recorder.lock().unwrap().as_ref() {
+            rec.record_packet(id, payload);
+        }
+    }
+    /// Record an encoded Clientbound packet into the active recording session at current elapsed time.
+    pub fn record_clientbound(&self, packet: &horizon_protocol::packets::play::Clientbound) {
+        if self.is_recording() {
+            let encoded = packet.encode();
+            let mut reader = horizon_protocol::buf::Reader::new(&encoded);
+            if let Ok(id) = reader.varint() {
+                self.record_packet(id, reader.rest());
+            }
+        }
     }
     /// Send a play packet; silently dropped once the connection is gone,
     /// and while the server has the connection back in configuration (a
@@ -417,18 +472,42 @@ impl Drop for Session {
 /// An address of the form `friend:K7QM-3XPD` joins a friend's world through
 /// its invite code (horizon-friends): the session goes through a tunnel the
 /// client reaches on a loopback port, so everything after is a plain join.
+#[cfg(feature = "friends")]
 pub const FRIEND: &str = horizon_friends::ADDRESS_PREFIX;
+/// Without the `friends` feature such an address is refused (`join_friend`).
+#[cfg(not(feature = "friends"))]
+pub const FRIEND: &str = "friend:";
+
+/// Whether `code` is an invite code; with `full`, only a full one (a short
+/// relay code could also be a host name).
+#[cfg(feature = "friends")]
+pub fn is_invite(code: &str, full: bool) -> bool {
+    use horizon_friends::invite::{Parsed, parse};
+    match parse(code) {
+        Some(Parsed::Long(_)) => true,
+        Some(Parsed::Short(_)) => !full,
+        None => false,
+    }
+}
+/// Without the `friends` feature nothing is one.
+#[cfg(not(feature = "friends"))]
+pub fn is_invite(_code: &str, _full: bool) -> bool {
+    false
+}
 
 /// An address as players and logs see it: a friend's invite code stays
 /// out of it (its secret is in there).
 pub fn shown_address(address: &str) -> String {
     match address.strip_prefix(FRIEND) {
+        #[cfg(feature = "friends")]
         Some(code) => match horizon_friends::invite::parse(code) {
             Some(horizon_friends::invite::Parsed::Short(c)) => {
                 format!("Friend's world ({}-****)", c.nameplate)
             }
             _ => "Friend's world".to_owned(),
         },
+        #[cfg(not(feature = "friends"))]
+        Some(_) => "Friend's world".to_owned(),
         None => address.to_owned(),
     }
 }
@@ -439,7 +518,14 @@ pub fn friends_relay_setting() -> Option<String> {
     let dir = std::env::current_dir().ok()?;
     crate::ui_theme::preference(&dir, "friendsRelay")
         .filter(|r| !r.is_empty())
-        .or_else(horizon_friends::relay_url)
+        .or_else(relay_from_env)
+}
+#[cfg(feature = "friends")]
+use horizon_friends::relay_url as relay_from_env;
+/// `HORIZON_RELAY_URL` is the friends feature's: none without it.
+#[cfg(not(feature = "friends"))]
+fn relay_from_env() -> Option<String> {
+    None
 }
 /// Remember the relay typed on Join a friend (empty forgets it).
 pub fn save_friends_relay(relay: &str) {
@@ -450,6 +536,7 @@ pub fn save_friends_relay(relay: &str) {
 
 /// Reach the friend's world from the code (directly, or through a relay)
 /// and open the tunnel: the loopback address to connect to.
+#[cfg(feature = "friends")]
 fn join_friend(code: &str, lang: &Language, send: &Sender<Event>) -> Result<(String, u16), Reason> {
     use horizon_friends::{
         PathMode,
@@ -476,6 +563,16 @@ fn join_friend(code: &str, lang: &Language, send: &Sender<Event>) -> Result<(Str
         .serve_loopback()
         .map_err(|e| Reason::plain(e.to_string()))?;
     Ok(("127.0.0.1".to_owned(), port))
+}
+
+/// A build without Play with Friends: the address is refused, never retried.
+#[cfg(not(feature = "friends"))]
+fn join_friend(code: &str, lang: &Language, _: &Sender<Event>) -> Result<(String, u16), Reason> {
+    Err(Reason::keyed_arg(
+        "horizon.multiplayer.invalid_address",
+        lang,
+        &shown_address(&format!("{FRIEND}{code}")),
+    ))
 }
 
 fn status(send: &Sender<Event>, text: &str) {
@@ -2346,6 +2443,105 @@ mod tests {
 
         let decoded1 = play::Clientbound::decode(packet1.id, &packet1.payload).unwrap();
         assert_eq!(decoded1, pos_pkt);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn studio_session_record_local_player_motion() {
+        use crate::studio::Metadata;
+        use horizon_protocol::packets::play;
+
+        let session = Session::replay("StudioTester");
+
+        let temp_dir =
+            std::env::temp_dir().join(format!("horizon-studio-motion-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let mcpr_path = temp_dir.join("test_motion.mcpr");
+
+        let meta = Metadata::new("local".into(), true, "26.3".into());
+        session.start_recording(&mcpr_path, meta).unwrap();
+        assert!(session.is_recording());
+
+        // Simulate local player movement packet recorded during recording session
+        let pos_pkt = play::Clientbound::PlayerPosition(play::PlayerPosition {
+            teleport: 0,
+            position: [12.5, 64.0, -88.5],
+            delta: [0.0; 3],
+            yaw: 90.0,
+            pitch: 15.0,
+            relatives: 0,
+        });
+        let encoded = pos_pkt.encode();
+        let mut reader = horizon_protocol::buf::Reader::new(&encoded);
+        let id = reader.varint().unwrap();
+        session.record_packet(id, reader.rest());
+
+        let saved_path = session.stop_recording().unwrap().unwrap();
+        assert_eq!(saved_path, mcpr_path);
+        assert!(!session.is_recording());
+
+        // Verify the recording preserves the motion packet for replay playback.
+        let mut recording = crate::studio::McprReader::open(&mcpr_path).unwrap();
+        assert_eq!(recording.total_packets(), 1);
+        let packet = recording.next_packet().unwrap().unwrap();
+        let decoded = play::Clientbound::decode(packet.id, &packet.payload).unwrap();
+        assert_eq!(decoded, pos_pkt);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn studio_session_record_local_player_animations() {
+        use crate::studio::Metadata;
+        use horizon_protocol::entity_data::{Value, serializer};
+        use horizon_protocol::packets::play;
+
+        let session = Session::replay("StudioTester");
+
+        let temp_dir =
+            std::env::temp_dir().join(format!("horizon-studio-anim-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let mcpr_path = temp_dir.join("test_anim.mcpr");
+
+        let meta = Metadata::new("local".into(), true, "26.3".into());
+        session.start_recording(&mcpr_path, meta).unwrap();
+        assert!(session.is_recording());
+
+        // 1. Arm swing animation
+        let swing_pkt = play::Clientbound::SwingAnimation(play::SwingAnimation {
+            id: 42,
+            hand: 0,
+            kind: 1,
+            duration: 6,
+        });
+        session.record_clientbound(&swing_pkt);
+
+        // 2. Crouch and sprint entity metadata
+        let data_pkt = play::Clientbound::SetEntityData(play::SetEntityData {
+            id: 42,
+            values: vec![
+                (0, serializer::BYTE, Value::Byte(0x02)),
+                (6, serializer::POSE, Value::Id(5)),
+            ],
+        });
+        session.record_clientbound(&data_pkt);
+
+        let saved_path = session.stop_recording().unwrap().unwrap();
+        assert_eq!(saved_path, mcpr_path);
+        assert!(!session.is_recording());
+
+        // Verify the recording preserves both animation packets for playback.
+        let mut recording = crate::studio::McprReader::open(&mcpr_path).unwrap();
+        assert_eq!(recording.total_packets(), 2);
+        let packets = [
+            recording.next_packet().unwrap().unwrap(),
+            recording.next_packet().unwrap().unwrap(),
+        ];
+        let decoded_swing = play::Clientbound::decode(packets[0].id, &packets[0].payload).unwrap();
+        assert_eq!(decoded_swing, swing_pkt);
+        let decoded_data = play::Clientbound::decode(packets[1].id, &packets[1].payload).unwrap();
+        assert_eq!(decoded_data, data_pkt);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

@@ -83,6 +83,7 @@ impl Gpu {
             post,
             T::Rgba8Unorm,
             world,
+            &Default::default(),
         )
         .expect("the pack runs");
         assert!(
@@ -593,6 +594,7 @@ pub(super) fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         skybox: false,
         end_sky: false,
         end_sky_sprite: None,
+        boss_world_fog: false,
         environment_fog: None,
         water_fog: [0.0; 3],
         fog: None,
@@ -613,6 +615,7 @@ pub(super) fn fixture_frame(hud: &HudBatch) -> Frame<'_> {
         visible_static_block_entity_sections: &[],
         static_block_entity_stats: crate::block_entity_render::StaticCacheFrameStats::default(),
         entity_motion: &[],
+        entity_motion_posed: &[],
         colored_lights: &[],
         emissive_layers: &[],
         shadow_only: &[],

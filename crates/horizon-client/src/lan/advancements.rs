@@ -805,6 +805,37 @@ mod tests {
     }
 
     #[test]
+    fn an_owned_content_recipe_reaches_the_client_book() {
+        let recipe = r#"{"type":"minecraft:crafting_shapeless","ingredients":["minecraft:raw_copper"],"result":{"id":"minecraft:copper_ingot","count":2}}"#;
+        let root = resources("content_namespace", &[("control", recipe)]);
+        let dir = root.join("data/recipe_pilot/recipe");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("press.json"), recipe).unwrap();
+        for marker in [
+            horizon_items::content_namespaces::MARKER,
+            horizon_items::content_namespaces::MOD_IDS_MARKER,
+        ] {
+            std::fs::write(root.join(marker), br#"["recipe_pilot"]"#).unwrap();
+        }
+        let (sync, e) = entry(&root, "recipe_pilot:press");
+        assert_eq!(
+            e.id,
+            sync.advancements
+                .displays
+                .first_display("recipe_pilot:press")
+                .unwrap()
+        );
+        match e.display {
+            RecipeDisplay::Shapeless { result, .. } => {
+                assert_eq!(result, SlotDisplay::ItemStack(Stack::new(1, 2)));
+            }
+            other => panic!("not a shapeless content recipe: {other:?}"),
+        }
+        let _ = entry(&root, "minecraft:control");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn a_recipe_with_an_unknown_ingredient_kind_stays_out_of_the_book() {
         let root = resources(
             "mymod_kind",
