@@ -73,6 +73,10 @@ impl NativeShaders {
 impl Game<'_> {
     /// Builds the pack at `path` when its files changed since it was last read.
     pub(super) fn tick_native_shader_pack(&mut self, path: &Path) {
+        // A reload would replace the pack a `screenshot-sequence` draws: it waits for the reply.
+        if self.screenshot_sequence.is_some() {
+            return;
+        }
         let now = Instant::now();
         let state = &mut self.native_shaders;
         if state.looked.is_some_and(|t| now - t < LOOK_EVERY) {
@@ -194,7 +198,7 @@ fn not_drawn(m: &Manifest, switch: bool) -> Option<String> {
 }
 
 /// `HORIZON_HDR_FRAME=float`: shader API 0.2 packs are drawn, on a float frame where the
-/// renderer is made with one picked.
+/// renderer is made with one picked, as HDR without a pack is (`PickedPack::hdr_float`).
 pub(super) fn linear_frame_switch() -> bool {
     std::env::var("HORIZON_HDR_FRAME").is_ok_and(|v| v == "float")
 }

@@ -6,7 +6,6 @@
 use super::Game;
 
 // Native mods use these; nothing in Horizon calls the helper itself.
-#[allow(dead_code)]
 impl Game<'_> {
     /// Whether `player` has the permission node `node`: what the mods'
     /// `native_permission_check` answers, or, when none does, whether the

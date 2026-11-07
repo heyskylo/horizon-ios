@@ -15,6 +15,7 @@ pub const OPTIONS: &[(&str, Option<&str>)] = &[
     ("--prepare", None),
     ("--server-jar", Some("PATH")),
     ("--minecraft-dir", Some("PATH")),
+    ("--prism-dir", Some("PATH")),
     ("--version-json", Some("PATH")),
     ("--client-jar", Some("PATH")),
     ("--libraries-dir", Some("PATH")),

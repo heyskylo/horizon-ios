@@ -312,7 +312,21 @@ impl Game<'_> {
         );
         let state = self.world.block(origin.x, origin.y, origin.z);
         let mut used = Vec::new();
-        if let Some(op) = case.get("remove") {
+        if let Some(op) = case.get("wind_burst") {
+            let center = [
+                op["center"][0].as_f64().ok_or("wind center x")?,
+                op["center"][1].as_f64().ok_or("wind center y")?,
+                op["center"][2].as_f64().ok_or("wind center z")?,
+            ];
+            let breeze = op["breeze"].as_bool().unwrap_or(false);
+            self.wind_burst(
+                center,
+                op["radius"].as_f64().unwrap_or(3.0) as f32,
+                1.0,
+                breeze,
+                !breeze,
+            )?;
+        } else if let Some(op) = case.get("remove") {
             used = self.fixture_remove(origin, op)?;
         } else if let Some(op) = case.get("use") {
             used = self.fixture_use(origin, op)?;

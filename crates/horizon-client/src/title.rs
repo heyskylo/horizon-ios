@@ -3559,7 +3559,9 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 Action::None
             }
             (Mode::Main, Some(8)) => {
-                self.mode = Mode::Realms(crate::realms::Screen::new());
+                // The upload screen lists the game's own worlds (`saves`).
+                self.mode =
+                    Mode::Realms(crate::realms::Screen::with_saves(Some(self.saves.clone())));
                 Action::None
             }
             (Mode::Realms(screen), hit) => match screen.click(hit, x, y, (w, h)) {
@@ -3961,6 +3963,14 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             self.search_changed();
         }
         true
+    }
+    /// The ordinary focused caret field for native character transactions.
+    /// Preparing screens and game-rule editors retain their specialized validators.
+    pub fn edit_focused_text_field(&mut self, f: impl FnOnce(&mut crate::ui::EditBox)) -> bool {
+        if self.preparing || self.rules.get_mut().is_some() {
+            return false;
+        }
+        self.edit_field(f)
     }
     /// EditBox.charTyped / insertText at the cursor.
     pub fn type_text(&mut self, text: &str) {
@@ -4443,6 +4453,13 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         if let Mode::Multiplayer(crate::multiplayer::Screen::Direct { address }) = &self.mode {
             self.last_server.clone_from(address);
         }
+    }
+    /// The selected server, a row up or down, if the server list is open with one selected.
+    pub fn multiplayer_move_selected(&mut self, down: bool) -> bool {
+        let Mode::Multiplayer(screen) = &mut self.mode else {
+            return false;
+        };
+        screen.move_selected(down, &self.saves)
     }
     pub(crate) fn multiplayer_click(
         &mut self,
