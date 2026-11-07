@@ -3308,15 +3308,21 @@ impl Game<'_> {
             return;
         };
         let at = g.position;
+        let players = self.stab_players_for(host, conn);
         let sound = self
             .guest_hit_by(host, conn, |g| {
                 if g.cannot_attack_with_item(g.attack_ticks as i32, 5) {
                     None
                 } else {
-                    g.jab()
+                    let outer = std::mem::replace(&mut g.stab_players, players);
+                    let sound = g.jab();
+                    g.stab_players = outer;
+                    sound
                 }
             })
             .flatten();
+        // The players the jab stabbed, now that the hub is back.
+        self.land_player_stabs(host);
         // PiercingWeapon.makeSound: `playSound(causer, ...)`, so the guest's
         // own client plays it.
         if let Some(name) = sound {
@@ -4163,7 +4169,14 @@ impl Game<'_> {
             let using = play.using.is_some();
             let delayed = play.destroy_delay > 0 || play.use_delay > 0 || play.attack_ticks < 100;
             if digging.is_some() || using || delayed {
+                // A spear in use reaches the other players too.
+                let players = if using {
+                    self.stab_players_for(host, conn)
+                } else {
+                    Vec::new()
+                };
                 self.as_guest(host, conn, |g| {
+                    let outer = std::mem::replace(&mut g.stab_players, players);
                     g.attack_ticks = g.attack_ticks.saturating_add(1);
                     if let Some((pos, face)) = digging {
                         g.forced_hit = Some(Hit {
@@ -4180,10 +4193,12 @@ impl Game<'_> {
                     g.forced_hit = None;
                     g.right = g.using.is_some();
                     g.tick_using();
+                    g.stab_players = outer;
                     if g.use_delay > 0 {
                         g.use_delay -= 1;
                     }
                 });
+                self.land_player_stabs(host);
                 // ServerPlayerGameMode.handleBlockBreakAction: creative and
                 // instant survival STARTs finish without a STOP from the client.
                 // tick_mining clears mining on completion; forget the START too,

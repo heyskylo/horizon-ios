@@ -28,6 +28,7 @@ address. The script then checks, from both sides, what a guest's game used to ge
              drowning and the void (then respawns);
 - pvp:       the guest and the host hit each other with a sword; with the pvp game rule off, or on one
              team without friendly fire, nothing;
+- spear:     the guest's spear jab and its sprinting charge hurt the host; with the pvp game rule off, nothing;
 - kills:     a pig the guest kills counts in the guest's killed statistic, not the host's (#484);
 - leave:     a guest who leaves has leave_game in their saved statistics, and again after the next leave;
 
@@ -8721,6 +8722,67 @@ def check_sprint_hit_slowdown(host, guest, out):
 
 CHECKS += ['sprint-hit-slowdown']
 CHECK_FNS['sprint-hit-slowdown'] = check_sprint_hit_slowdown
+
+
+def check_spear(host, guest, out):
+    """A player's spear stabs another player (KineticWeapon.damageEntities, PiercingWeapon.attack): the guest's jab
+    hurts the host with the spear's damage type, and so does its charge at a sprint, whose speed relative to the host
+    passes the damage condition. With the pvp game rule off (PiercingWeapon.canHitEntity: canHarmPlayer), neither does.
+    """
+    if dead(guest):
+        guest.raw('respawn')
+        guest.wait(40)
+    host('command', command='gamemode survival')
+    # The hurts are logged through Resistance V; it keeps the host alive for every case.
+    host('command', command='effect give @s minecraft:resistance 1000 4 true')
+    guest('command', command='gamemode survival')
+    guest('command', command='effect clear @s')
+    guest('command', command='item replace entity @s weapon.mainhand with minecraft:iron_spear')
+    hx, hy, hz = pos_of(host)
+    x, y, z = math.floor(hx), math.floor(hy), math.floor(hz)
+    host('command', command=f'fill {x - 6} {y} {z - 2} {x + 18} {y + 3} {z + 2} minecraft:air')
+    host('command', command=f'fill {x - 6} {y - 1} {z - 2} {x + 18} {y - 1} {z + 2} minecraft:stone')
+    host('command', command=f'tp @s {x + 0.5} {y} {z + 0.5} -90 0')
+
+    def stabs():
+        logs = host('hurtlog').get('players', [])
+        victim = next((p for p in logs if p.get('name') == host.player), {})
+        return [h for h in victim.get('hurts', []) if h.get('source') == 'minecraft:spear' and h.get('hurt')]
+
+    seen = {}
+    try:
+        for rule in ('true', 'false'):
+            host('command', command=f'gamerule pvp {rule}')
+            # The jab: a left click at full charge (minimum_attack_charge 1) from 3 blocks.
+            guest('command', command=f'tp @s {x + 3.5} {y} {z + 0.5} 90 0')
+            guest.wait(40)
+            guest.raw('look-at', f'{x + 0.5}', f'{y + 1.6}', f'{z + 0.5}')
+            stabs()
+            guest.script(['mouse left click', 'wait 10'])
+            seen[f'jab, pvp {rule}'] = len(stabs())
+            guest.shot(out, f'spear-jab-pvp-{rule}')
+            # The charge: held use past the iron spear's 12-tick delay, then a sprint at the host.
+            guest('command', command=f'tp @s {x + 16.5} {y} {z + 0.5} 90 0')
+            guest.wait(30)
+            guest.raw('look-at', f'{x + 0.5}', f'{y + 1.6}', f'{z + 0.5}')
+            stabs()
+            guest.script(['mouse right down', 'wait 14', 'key w down', 'key ctrl down', 'wait 50', 'key w up',
+                          'key ctrl up', 'mouse right up', 'wait 10'])
+            seen[f'charge, pvp {rule}'] = len(stabs())
+            guest.shot(out, f'spear-charge-pvp-{rule}')
+    finally:
+        guest.raw('key', 'w', 'up')
+        guest.raw('key', 'ctrl', 'up')
+        host('command', command='gamerule pvp true')
+        host('command', command='effect clear @s')
+    assert seen['jab, pvp true'] >= 1, f'the guest\'s jab did not hurt the host: {seen}'
+    assert seen['charge, pvp true'] >= 1, f'the guest\'s charge did not hurt the host: {seen}'
+    assert seen['jab, pvp false'] == 0 and seen['charge, pvp false'] == 0, f'pvp off, a spear still hurts: {seen}'
+    return seen
+
+
+CHECKS += ['spear']
+CHECK_FNS['spear'] = check_spear
 
 
 
