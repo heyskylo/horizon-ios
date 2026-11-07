@@ -373,6 +373,12 @@ impl Game<'_> {
             self.entity_killed_event(at, true);
         }
         self.drop_frame_items(&f, with_frame, true);
+        if !with_frame {
+            // ItemFrame.hurtServer: BLOCK_CHANGE by the attacker, after the
+            // item drops.
+            let ctx = self.who_context(Some(horizon_client::mobs::Who::Player), None);
+            self.post_game_event("minecraft:block_change", at, ctx);
+        }
         self.world.modified.insert((f.pos[0] >> 4, f.pos[2] >> 4));
         if f.item.is_some() {
             self.frame_output_changed(f.pos);
