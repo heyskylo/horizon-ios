@@ -867,12 +867,11 @@ pub(super) fn make(
     velocity: [f64; 3],
     seed: i64,
 ) -> Option<Particle> {
-    // GPU particles (`"type": "gpu"`) are a renderer of their own, not ported yet.
-    if def.kind == horizon_polytone::particles::ParticleKind::Gpu {
-        return None;
-    }
     // `limit`: at most that many of the type alive at once.
-    if let Some(limit) = def.limit {
+    // (A GPU particle's `limit` is its ring of records instead.)
+    if let Some(limit) = def.limit
+        && def.gpu.is_none()
+    {
         let alive = engine
             .particles
             .iter()
@@ -889,8 +888,11 @@ pub(super) fn make(
     particle.gravity = 0.0;
     particle.has_physics = def.has_physics;
     let mut frames = 0;
-    // A model particle (`model`) isn't drawn yet: it still ticks and emits.
-    let hidden = def.render_type == RenderType::Invisible || def.render.contains_key("model");
+    // A model particle (`model`) isn't drawn yet: it still ticks and emits. A GPU particle is
+    // drawn from its record instead (`polytone_gpu`).
+    let hidden = def.render_type == RenderType::Invisible
+        || def.render.contains_key("model")
+        || def.gpu.is_some();
     match engine.mod_sets.get(name) {
         Some(&(set, _)) => {
             let sprites = engine.set_sprites.get(set as usize)?;
@@ -907,6 +909,8 @@ pub(super) fn make(
         None => return None,
     }
     particle.no_render = hidden;
+    particle.orientation = super::polytone_gpu::Orientation::parse(&def.rotation_mode);
+    particle.additive = def.render_type == RenderType::AdditiveTranslucent;
     particle.behaviour = Behaviour::Controlled {
         translucent: def.render_type != RenderType::Opaque,
     };
@@ -1041,6 +1045,7 @@ mod tests {
     use super::*;
     use crate::chunk::Chunk;
     use crate::world::World;
+    use glam::DVec3;
     use horizon_world::DATA_VERSION;
     use horizon_world::block_collision::BlockCollisionRegistry;
     use horizon_world::collision::CachedCollisionRegistry;
@@ -1261,6 +1266,81 @@ mod tests {
         // `limit` 1: no second one while the first lives.
         engine.polytone_entity(&level, "minecraft:player", feet);
         assert_eq!(engine.pending.len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_gpu_particle_is_a_record_drawn_until_its_life_ends() {
+        let blocks = blocks();
+        let root = pack(&[
+            (
+                "assets/test/polytone/custom_particles/rain.json",
+                serde_json::json!({
+                    "type": "gpu", "texture": "test:textures/particle/rain.png",
+                    "render_type": "translucent", "rotation_mode": "movement_aligned",
+                    "initializer": {"lifetime": "3", "size": "0.5"},
+                    "gravity": 0.1, "area": {"size": [4, 4, 4], "count": 3}
+                }),
+            ),
+            (
+                // Additive: drawn in the frame's additive pass instead.
+                "assets/test/polytone/custom_particles/glow.json",
+                serde_json::json!({
+                    "type": "gpu", "texture": "test:textures/particle/rain.png",
+                    "render_type": "additive_translucent", "initializer": {"lifetime": "3"}
+                }),
+            ),
+            (
+                "assets/minecraft/polytone/entity_modifiers/player.json",
+                serde_json::json!({"emitters": [{"particle": "test:rain"}, {"particle": "test:glow"}]}),
+            ),
+        ]);
+        let scene = scene(blocks);
+        let level = ParticleLevel {
+            world: &scene.world,
+            facts: &scene.facts,
+            collision: &scene.collision,
+            player: None,
+        };
+        let mut engine = engine(Registry::read(&root, Default::default(), blocks));
+        let rect = crate::hud::Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 16,
+            h: 16,
+        };
+        engine
+            .atlas
+            .insert("test:particle/rain".into(), (rect, true));
+        engine.polytone_entity(&level, "minecraft:player", [1.0, 64.0, 1.0]);
+        // No engine particle: a record each; the rain drawn as its area's three quads.
+        assert!(engine.pending.is_empty());
+        assert_eq!(engine.polytone_gpu_records(), 2);
+        let mut out = Vec::new();
+        engine.render(
+            DVec3::new(1.0, 70.0, 1.0),
+            0.0,
+            0.0,
+            0.0,
+            &|_| 0xF0,
+            &mut out,
+        );
+        assert_eq!(out.len(), 3 * 4);
+        assert_eq!(engine.take_additive().len(), 4);
+        assert!(
+            out.iter()
+                .all(|v| v.layer == crate::gfx::TRANSLUCENT_PARTICLE_OVERLAY)
+        );
+        for _ in 0..3 {
+            engine.tick(&level);
+        }
+        assert_eq!(
+            engine.polytone_gpu_records(),
+            0,
+            "gone once its 3 ticks are over"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }
