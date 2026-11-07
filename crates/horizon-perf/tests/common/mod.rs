@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+pub mod blocks;
 pub mod bots;
 pub mod hand;
 

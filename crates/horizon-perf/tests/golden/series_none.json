@@ -1,0 +1,1 @@
+{"error":"series needs fields: h:NAME for health, span:NAME for a span, x:NAME for a counter","ok":false,"op":"series"}
