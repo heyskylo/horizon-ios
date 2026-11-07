@@ -85,6 +85,7 @@ mod campfire;
 mod campfire_douse;
 mod cartography;
 mod cat_spawner;
+mod cauldrons;
 mod chat;
 mod chat_filter;
 mod chiseled_bookshelf;
@@ -187,6 +188,7 @@ mod item_use;
 mod jigsaw_blocks;
 mod jigsaw_edit;
 mod jukebox;
+mod key_codes;
 mod key_focus;
 mod lan;
 mod lan_actions;
@@ -338,6 +340,7 @@ mod pickups;
 mod piglins;
 mod piston_push;
 mod play_input;
+mod play_keys;
 mod player_equip;
 mod player_spawn;
 mod pointer_capture;
@@ -509,6 +512,10 @@ use horizon_world::{
         Ticks, flags as level_flags,
     },
     registry::BlockStateId,
+};
+use key_codes::{
+    container_key_clones, drop_held_behind_dialog, follow_named_keymap, gameplay_has_keyboard,
+    glfw_button, glfw_modifiers, keyboard_button,
 };
 use loading_window::{
     build_renderer, loading_frame, loading_renderer, prepare_renderer_textures, start_game,
@@ -2453,53 +2460,6 @@ fn follow_keymap(event: &mut WindowEvent) {
     }
 }
 
-fn follow_named_keymap(logical_key: &winit::keyboard::Key, physical_key: &mut PhysicalKey) {
-    use winit::keyboard::{Key, NamedKey};
-    if let Key::Named(named) = logical_key {
-        let code = match named {
-            NamedKey::Escape => KeyCode::Escape,
-            NamedKey::CapsLock => KeyCode::CapsLock,
-            NamedKey::F1 => KeyCode::F1,
-            NamedKey::F2 => KeyCode::F2,
-            NamedKey::F3 => KeyCode::F3,
-            NamedKey::F4 => KeyCode::F4,
-            NamedKey::F5 => KeyCode::F5,
-            NamedKey::F6 => KeyCode::F6,
-            NamedKey::F7 => KeyCode::F7,
-            NamedKey::F8 => KeyCode::F8,
-            NamedKey::F9 => KeyCode::F9,
-            NamedKey::F10 => KeyCode::F10,
-            NamedKey::F11 => KeyCode::F11,
-            NamedKey::F12 => KeyCode::F12,
-            NamedKey::F13 => KeyCode::F13,
-            NamedKey::F14 => KeyCode::F14,
-            NamedKey::F15 => KeyCode::F15,
-            NamedKey::F16 => KeyCode::F16,
-            NamedKey::F17 => KeyCode::F17,
-            NamedKey::F18 => KeyCode::F18,
-            NamedKey::F19 => KeyCode::F19,
-            NamedKey::F20 => KeyCode::F20,
-            NamedKey::F21 => KeyCode::F21,
-            NamedKey::F22 => KeyCode::F22,
-            NamedKey::F23 => KeyCode::F23,
-            NamedKey::F24 => KeyCode::F24,
-            NamedKey::F25 => KeyCode::F25,
-            NamedKey::F26 => KeyCode::F26,
-            NamedKey::F27 => KeyCode::F27,
-            NamedKey::F28 => KeyCode::F28,
-            NamedKey::F29 => KeyCode::F29,
-            NamedKey::F30 => KeyCode::F30,
-            NamedKey::F31 => KeyCode::F31,
-            NamedKey::F32 => KeyCode::F32,
-            NamedKey::F33 => KeyCode::F33,
-            NamedKey::F34 => KeyCode::F34,
-            NamedKey::F35 => KeyCode::F35,
-            _ => return,
-        };
-        *physical_key = PhysicalKey::Code(code);
-    }
-}
-
 #[cfg(test)]
 mod keymap_tests;
 
@@ -2507,44 +2467,6 @@ mod keymap_tests;
 /// screens read (`has_control_down`), never a latched sprint toggle.
 fn drop_whole_stack(modifiers: winit::keyboard::ModifiersState) -> bool {
     modifiers.control_key()
-}
-
-/// The modifier `modifiers` stands for, as GLFW words it in the native mods'
-/// input hooks: `GLFW_MOD_SHIFT` 1, `GLFW_MOD_CONTROL` 2, `GLFW_MOD_ALT` 4,
-/// `GLFW_MOD_SUPER` 8 — the word a NeoForge listener reads off its event
-/// (`getModifiers`). The lock keys are not modifiers there.
-fn glfw_modifiers(modifiers: winit::keyboard::ModifiersState) -> u32 {
-    let mut bits = 0;
-    if modifiers.shift_key() {
-        bits |= 1;
-    }
-    if modifiers.control_key() {
-        bits |= 2;
-    }
-    if modifiers.alt_key() {
-        bits |= 4;
-    }
-    if modifiers.super_key() {
-        bits |= 8;
-    }
-    bits
-}
-
-/// The GLFW mouse button index `button` is, as the native mods' mouse hooks
-/// hand it over: 0 left, 1 right, 2 middle, 3 back, 4 forward. `Other(n)` is
-/// winit's n, the platform's own number (X11 or evdev on Linux), so a button
-/// past 4 is not GLFW's index everywhere. Buttons 0–4 are the numbering
-/// `keybinds::mouse_name` names (`key.mouse.<index + 1>`) and vanilla's
-/// `InputConstants` reads.
-fn glfw_button(button: MouseButton) -> i32 {
-    match button {
-        MouseButton::Left => 0,
-        MouseButton::Right => 1,
-        MouseButton::Middle => 2,
-        MouseButton::Back => 3,
-        MouseButton::Forward => 4,
-        MouseButton::Other(n) => i32::from(n),
-    }
 }
 
 fn select_creative_tab(
@@ -11974,102 +11896,6 @@ impl Game<'_> {
             .is_some_and(|s| s.name == "minecraft:water");
         Some((state, under_water))
     }
-    /// What the cauldron at `pos` answers to `held` on a client, which only
-    /// asks (`CauldronInteractions` acts `if (!level.isClientSide())`). A
-    /// sneak with something in hand skips `useItemOn`
-    /// (`Player.isSecondaryUseActive`).
-    pub(super) fn cauldron_outcome(
-        &self,
-        pos: [i32; 3],
-        held: Option<&ItemStack>,
-    ) -> horizon_client::cauldron::Outcome {
-        use horizon_client::cauldron::{self, Outcome};
-        let Some(held) = held else {
-            return Outcome::Pass;
-        };
-        if self.keys.held(Mapping::Sneak) {
-            return Outcome::Pass;
-        }
-        let Some((state, under_water)) = self.cauldron_at(pos) else {
-            return Outcome::Pass;
-        };
-        let removes_dye = cauldron::removes_dye(self.items(), &held.item);
-        cauldron::outcome(&state, under_water, removes_dye, held)
-    }
-    /// `CauldronInteractions` for the held item aimed at a cauldron.
-    fn use_on_cauldron(&mut self, pos: [i32; 3]) -> Result<bool> {
-        use horizon_client::cauldron::{self, Outcome};
-        struct Hand<'g, 'a>(&'g mut Game<'a>);
-        impl cauldron::Player for Hand<'_, '_> {
-            fn creative(&self) -> bool {
-                self.0.creative
-            }
-            fn hand(&mut self) -> &mut Option<ItemStack> {
-                self.0.held_mut()
-            }
-            fn add(&mut self, stack: &mut ItemStack) -> bool {
-                let before = stack.count;
-                match self.0.give(stack.clone()) {
-                    None => stack.count = 0,
-                    Some(rest) => stack.count = rest.count,
-                }
-                stack.count < before
-            }
-            fn contains(&self, stack: &ItemStack) -> bool {
-                self.0
-                    .inventory
-                    .iter()
-                    .flatten()
-                    .any(|have| have.same_item_same_components(stack))
-            }
-            fn drop_stack(&mut self, stack: ItemStack) {
-                if let Some(eye) = self.0.eye_position() {
-                    // ItemUtils.createFilledResult: `player.drop(stack, false)`.
-                    self.0.throw_from_eyes(stack, eye, false);
-                }
-            }
-        }
-        let registry = self.pack.assets.registry;
-        let Some((state, under_water)) = self.cauldron_at(pos) else {
-            return Ok(false);
-        };
-        let Some(held) = self.held() else {
-            return Ok(false);
-        };
-        // Player.isSecondaryUseActive with an item in hand skips useItemOn.
-        if self.keys.held(Mapping::Sneak) {
-            return Ok(false);
-        }
-        let removes_dye = cauldron::removes_dye(self.items(), &held.item);
-        let result = cauldron::interact(&state, under_water, removes_dye, &mut Hand(self));
-        if result.outcome == Outcome::Pass {
-            return Ok(false);
-        }
-        if let Some(stat) = result.stat {
-            self.award_custom_stat(stat, 1);
-        }
-        if let Some(block) = result.block
-            && let Ok(new) = registry.resolve(&block)
-        {
-            self.level_set(pos, new)?;
-            if result.lower_fill_level {
-                self.post_block_game_event("minecraft:block_change", pos, None, Some(new));
-            }
-        }
-        if let Some(sound) = result.sound {
-            self.audio.play(
-                sound,
-                Some([
-                    f64::from(pos[0]) + 0.5,
-                    f64::from(pos[1]) + 0.5,
-                    f64::from(pos[2]) + 0.5,
-                ]),
-                1.0,
-                1.0,
-            );
-        }
-        Ok(true)
-    }
     /// What `BlockTransformer.transformBlock` would do with a held axe, hoe
     /// or shovel on the block at `pos`, without doing it: the new state, its
     /// sound, loot table, the durability it costs, its particle and its
@@ -14948,296 +14774,6 @@ impl Game<'_> {
         *self.skin_frame.get_mut() = skin;
         self.see_through_vertices = see_through;
         result
-    }
-    /// A key press while a world is open (keyboard or control socket). `key`
-    /// is the vanilla default the pressed mapping translates to, `raw` the
-    /// physical key as pressed (the same where the caller had no window key):
-    /// `Screen.keyPressed` hears the raw one, and only a raw key settles what
-    /// the container's hotbar keys are now (`checkHotbarKeyPressed`).
-    fn key_pressed(&mut self, key: KeyCode, raw: KeyCode) -> Result<()> {
-        // `CreativeModeInventoryScreen.keyPressed` clears `ignoreTextInput` on
-        // every key, before it decides anything.
-        self.creative_ignore_text = false;
-        if self.sleeping.is_some()
-            && self.screen == Screen::Playing
-            && !matches!(
-                key,
-                KeyCode::F1 | KeyCode::F2 | KeyCode::F11 | KeyCode::KeyT | KeyCode::Slash
-            )
-        {
-            if matches!(key, KeyCode::Escape | KeyCode::ShiftLeft) {
-                self.wake_up();
-            }
-            return Ok(());
-        }
-        if self.sort_key_press(key)
-            || self.hdr_key_press(key)
-            || horizon_client::keybinds::key_name(key)
-                .is_some_and(|name| self.hud_editor_key_press(name))
-        {
-            return Ok(());
-        }
-        if key == KeyCode::Escape && self.mod_browser_back() {
-            return Ok(());
-        }
-        if self.remote.is_some() && self.remote_key(key)? {
-            return Ok(());
-        }
-        match key {
-            KeyCode::Escape => match self.screen {
-                Screen::Options => self.options_key(KeyCode::Escape, None)?,
-                Screen::Playing => {
-                    if self.studio_replay.is_some() && self.captured {
-                        self.capture(false);
-                        return Ok(());
-                    }
-                    self.pause_focus = None;
-                    self.screen = Screen::Paused;
-                    self.pause_menu = true;
-                    self.capture(false);
-                }
-                Screen::Creative => {
-                    self.pad_clear_focus();
-                    self.mod_browser_closed();
-                    self.carried = None;
-                    self.screen = Screen::Playing;
-                    self.capture(true);
-                }
-                Screen::Paused | Screen::Inventory => {
-                    self.close_container();
-                    self.pause_focus = None;
-                    self.screen = Screen::Playing;
-                    self.pause_menu = true;
-                    self.capture(true);
-                }
-                Screen::GameModeSwitcher => self.close_gamemode_switcher(false),
-                Screen::EmoteWheel => self.close_emote_wheel(None),
-                Screen::Dead => {
-                    if self.ui.death_confirm.is_some() {
-                        self.death_confirm_answer(false)?;
-                    }
-                }
-                Screen::Stats | Screen::Friends => self.screen = Screen::Paused,
-                Screen::Social => self.close_social(),
-                Screen::ServerLinks => self.screen = Screen::Paused,
-                // ConfirmScreen.keyPressed: Escape answers no; both return to
-                // the Server Links screen they came from.
-                Screen::ConfirmLink => self.screen = self.confirm_link_back(),
-                Screen::DialogWarning => self.screen = Screen::ServerLinks,
-                Screen::Advancements => self.close_advancements(),
-                Screen::WorldOptions => self.world_options_escape(),
-                Screen::CommandBlock => self.close_command_block(),
-                Screen::BlockEditor => self.close_block_editor(),
-                Screen::Chat => self.close_chat(chat::ChatExit::Intentional),
-                Screen::Win => self.close_win_screen()?,
-                Screen::DebugOptions => self.close_debug_options(),
-                Screen::Mod => self.close_mod_screen(),
-                Screen::HudEditor => self.close_hud_editor(),
-            },
-            // `checkHotbarKeyPressed`: the keys the controls bind to the off
-            // hand and the hotbar slots, so a rebound key swaps instead of
-            // reaching the screen. The list below keeps Q and the defaults.
-            // The raw key asks what the bindings are now: the translated
-            // `key` is a vanilla default and may itself be another mapping's
-            // rebound key (the off hand on Left Alt while hotbar 7 is on F
-            // would find that F a second time and swap with slot 7).
-            _ if (self.screen == Screen::Inventory
-                || (self.screen == Screen::Creative && !self.creative_screen.tab().search))
-                && self
-                    .settings
-                    .keys
-                    .container_hotbar_key(raw)
-                    .is_some_and(|key| self.inventory_hotkey(key)) => {}
-            KeyCode::Digit1
-            | KeyCode::Digit2
-            | KeyCode::Digit3
-            | KeyCode::Digit4
-            | KeyCode::Digit5
-            | KeyCode::Digit6
-            | KeyCode::Digit7
-            | KeyCode::Digit8
-            | KeyCode::Digit9
-            | KeyCode::KeyF
-            | KeyCode::KeyQ
-                if (self.screen == Screen::Inventory
-                    || (self.screen == Screen::Creative && !self.creative_screen.tab().search))
-                    && self.inventory_hotkey(key) => {}
-            // The search tab's number keys (scripted presses; the window's
-            // keys reach search_tab_hotbar_key before the search box).
-            _ if self.screen == Screen::Creative
-                && self.creative_screen.tab().search
-                && self.search_tab_hotbar_key(key) => {}
-            KeyCode::KeyT if self.screen == Screen::Inventory => self.recipe_focus_search(),
-            KeyCode::KeyT if self.screen == Screen::Playing => self.open_chat_method(""),
-            // CreativeModeInventoryScreen.keyPressed: the chat key opens the
-            // search tab from another tab, and `ignoreTextInput` drops the
-            // letter it would have typed.
-            KeyCode::KeyT
-                if self.screen == Screen::Creative && !self.creative_screen.tab().search =>
-            {
-                if let Some(tab) = self.creative_screen.search_tab() {
-                    select_creative_tab(&mut self.creative_screen, &mut self.inv_clicks, tab);
-                    self.creative_ignore_text = true;
-                }
-            }
-            // key.advancements.
-            KeyCode::KeyL if self.screen == Screen::Playing => {
-                self.open_advancements(false);
-                // Opened from the keybinds, like the inventory: vanilla releases
-                // an active use in the same tick.
-                self.release_use_for_keybind_screen();
-            }
-            // key.socialInteractions.
-            KeyCode::KeyP if self.screen == Screen::Playing => {
-                self.open_social(false);
-                self.release_use_for_keybind_screen();
-            }
-            KeyCode::KeyL if self.screen == Screen::Advancements => self.close_advancements(),
-            // key.emote (Horizon's): the emote wheel, a tap again closes it.
-            KeyCode::KeyB if self.screen == Screen::Playing && horizon_cosmetics::enabled() => {
-                self.open_emote_wheel();
-            }
-            KeyCode::KeyB if self.screen == Screen::EmoteWheel => self.close_emote_wheel(None),
-            KeyCode::Digit1
-            | KeyCode::Digit2
-            | KeyCode::Digit3
-            | KeyCode::Digit4
-            | KeyCode::Digit5
-            | KeyCode::Digit6
-            | KeyCode::Digit7
-            | KeyCode::Digit8
-                if self.screen == Screen::EmoteWheel =>
-            {
-                let slot = (key as u32).wrapping_sub(KeyCode::Digit1 as u32) as usize;
-                self.close_emote_wheel(Some(slot));
-            }
-            // key.quickActions: only open if a datapack provides dialog actions.
-            KeyCode::KeyG if self.screen == Screen::Playing => {
-                if self.has_quick_actions() {
-                    self.open_quick_actions();
-                }
-            }
-            KeyCode::Slash if self.screen == Screen::Playing => self.open_chat_method("/"),
-            // key.toggleGui is a KeyMapping: it clicks only with no screen open.
-            KeyCode::F1 if self.screen == Screen::Playing => self.toggle_hide_gui(),
-            KeyCode::F11 => self.toggle_fullscreen(),
-            KeyCode::F5 if self.screen == Screen::Playing && self.studio_replay.is_none() => {
-                self.cycle_camera()
-            }
-            KeyCode::KeyE
-                if self.screen == Screen::Creative && self.creative_screen.tab().search => {}
-            KeyCode::KeyE => match self.screen {
-                Screen::Playing if self.spectator() || self.in_portal_transition() => {}
-                Screen::Playing => {
-                    // handleKeybinds: the number keys select before key.inventory.
-                    self.select_queued_hotbar();
-                    // key.inventory while riding a tamed mount opens its inventory.
-                    if !self.open_ridden_mount_menu() {
-                        if self.tutorial.open_inventory() {
-                            self.persist_tutorial_step();
-                        }
-                        if self.creative {
-                            self.screen = Screen::Creative;
-                            self.refresh_creative_tabs();
-                            self.creative_screen.reopen();
-                            self.refresh_saved_hotbars();
-                        } else {
-                            self.screen = Screen::Inventory;
-                        }
-                        self.capture(false);
-                    }
-                }
-                Screen::Creative => {
-                    self.pad_clear_focus();
-                    if let Some(c) = self.carried.take() {
-                        let _ = self.give(c);
-                    }
-                    self.screen = Screen::Playing;
-                    self.capture(true);
-                }
-                Screen::Inventory => {
-                    self.close_container();
-                    self.screen = Screen::Playing;
-                    self.capture(true);
-                }
-                _ => {}
-            },
-            // key.swapOffhand: on a server, ServerboundPlayerActionPacket SWAP_ITEM_WITH_OFFHAND
-            // (the server swaps the hands and sends both slots back; spectators can't).
-            KeyCode::KeyF if self.screen == Screen::Playing && self.remote.is_some() => {
-                if !self.spectator()
-                    && let Some(r) = self.remote.as_mut()
-                {
-                    r.pending_keys.push(key);
-                }
-            }
-            KeyCode::KeyF if self.screen == Screen::Playing => {
-                // handleKeybinds: the number keys select before key.swapOffhand.
-                self.select_queued_hotbar();
-                // handlePlayerAction SWAP_ITEM_WITH_OFFHAND: setItemInHand for
-                // the off hand, then the main hand.
-                std::mem::swap(&mut self.offhand, &mut self.inventory[self.selected]);
-                self.hand_stack_replaced(self.selected);
-                self.hand_stack_replaced(shield::OFFHAND_SLOT);
-                let (offhand, main) = (self.offhand.clone(), self.inventory[self.selected].clone());
-                self.player_on_equip("offhand", main.as_ref(), offhand.as_ref());
-                self.player_on_equip("mainhand", offhand.as_ref(), main.as_ref());
-                self.using = None;
-            }
-            KeyCode::KeyQ if self.screen == Screen::Playing => {
-                // handleKeybinds: the number keys select before key.drop.
-                self.select_queued_hotbar();
-                let all =
-                    drop_whole_stack(self.modifiers) || std::mem::take(&mut self.pad.drop_stack);
-                self.drop_held(all);
-            }
-            KeyCode::Digit1
-            | KeyCode::Digit2
-            | KeyCode::Digit3
-            | KeyCode::Digit4
-            | KeyCode::Digit5
-            | KeyCode::Digit6
-            | KeyCode::Digit7
-            | KeyCode::Digit8
-            | KeyCode::Digit9
-                if self.screen == Screen::Playing =>
-            {
-                let slot = match key {
-                    KeyCode::Digit1 => 0,
-                    KeyCode::Digit2 => 1,
-                    KeyCode::Digit3 => 2,
-                    KeyCode::Digit4 => 3,
-                    KeyCode::Digit5 => 4,
-                    KeyCode::Digit6 => 5,
-                    KeyCode::Digit7 => 6,
-                    KeyCode::Digit8 => 7,
-                    _ => 8,
-                };
-                // Minecraft.handleKeybinds: a spectator's number keys drive
-                // the spectator menu, not the hotbar; a creative player
-                // holding the load or save toolbar key loads or saves a
-                // toolbar instead (load first when both are held).
-                let load = self.mapped_key_down("key.loadToolbarActivator");
-                if self.spectator() {
-                    self.spectator_hotbar_key(slot as i32);
-                } else if self.creative
-                    && (load || self.mapped_key_down("key.saveToolbarActivator"))
-                {
-                    self.hotbar_load_or_save(slot, load);
-                } else {
-                    self.hotbar_presses.push(slot);
-                }
-            }
-            _ if self.screen == Screen::Paused && self.pause_menu => {
-                self.pause_key(key)?;
-            }
-            _ if self.screen == Screen::Dead => {
-                self.death_key(key)?;
-            }
-            _ if self.screen == Screen::Stats => self.stats_key(raw),
-            _ => {}
-        }
-        Ok(())
     }
     fn clear_lod(&mut self) {
         // The samplers waiting on the server stop first: dropping the far
@@ -19535,45 +19071,6 @@ fn tick_sleep_timer(timer: u32, sleeping: bool) -> u32 {
     } else {
         0
     }
-}
-
-/// `KeyboardHandler.keyPress` for a key bound to a mouse mapping (key.attack,
-/// key.use, key.pickItem): in game, a press and every repeat of the held key
-/// reach `KeyMapping.set(key, true)` and `KeyMapping.click` alike, so a held
-/// key keeps attacking; a release lets go. `None` behind a screen, which takes
-/// the key.
-fn keyboard_button(playing: bool, action: KeyAction) -> Option<bool> {
-    playing.then_some(action != KeyAction::Release)
-}
-
-/// Gameplay owns the keyboard: `Screen::Playing`, no title, and nothing open
-/// over the world (`screen_over_playing`: a server dialog, a book or lectern,
-/// a sign editor, a prompt). Each is a `Screen` in vanilla, so `Gui.setScreen`
-/// runs `KeyMapping.releaseAll` and `Minecraft.tick` skips `handleKeybinds`
-/// while it is up: a mouse button held into it is let go of (#9729).
-fn gameplay_has_keyboard(screen: Screen, title: bool, screen_over: bool) -> bool {
-    screen == Screen::Playing && !title && !screen_over
-}
-
-/// A dialog drops held keys and mouse buttons it does not see (#4974).
-fn drop_held_behind_dialog(
-    dialog: bool,
-    keys: &mut horizon_client::held::HeldKeys,
-    left: &mut bool,
-    right: &mut bool,
-) {
-    if dialog {
-        keys.clear();
-        *left = false;
-        *right = false;
-    }
-}
-
-/// `AbstractContainerScreen.keyPressed` for a key bound to a mouse mapping: a press or repeat of
-/// key.pickItem's key clones the hovered slot; keys bound to key.attack and key.use do nothing
-/// there (#5378).
-fn container_key_clones(button: MouseButton, action: KeyAction) -> bool {
-    button == MouseButton::Middle && action != KeyAction::Release
 }
 
 /// Where a ray entering `pos` first meets the block's outline boxes, if it

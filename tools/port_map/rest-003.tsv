@@ -101,7 +101,7 @@ Minecraft.allowsTelemetry	skip:service
 Minecraft.allowsMultiplayer	skip:service		
 Minecraft.allowsRealms	skip:service		
 Minecraft.friendsEnabled	skip:service		
-Minecraft.handleGlobalKeyPress	port	crates/horizon-client/src/game.rs::Game::key_pressed	F11 and F2 shortcuts; the friends key is service
+Minecraft.handleGlobalKeyPress	port	crates/horizon-client/src/game/play_keys.rs::Game::key_pressed	F11 and F2 shortcuts; the friends key is service
 Minecraft.toggleFullscreen	port	crates/horizon-client/src/game/options.rs::Game::toggle_fullscreen	
 Minecraft.toggleFriendsScreen	skip:service		
 Minecraft.allowChatOnlyWithFriend	skip:service		
