@@ -61,6 +61,7 @@ impl Browser {
     }
 
     /// The programs a Linux install puts on the PATH, most common first.
+    #[cfg(all(unix, not(target_os = "macos")))]
     fn linux_programs(self) -> &'static [&'static str] {
         match self {
             Browser::Chrome => &["google-chrome-stable", "google-chrome"],

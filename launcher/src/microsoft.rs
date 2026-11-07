@@ -104,7 +104,7 @@ pub(super) fn use_different_account(uri: &str, cx: &mut App) {
     let uri = uri.to_owned();
     cx.spawn(async move |cx| {
         cx.background_executor().timer(LOGOUT_WAIT).await;
-        let _ = cx.update(|cx| cx.open_url(&uri));
+        cx.update(|cx| cx.open_url(&uri));
     })
     .detach();
 }
