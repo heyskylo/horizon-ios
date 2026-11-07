@@ -1,0 +1,18 @@
+{
+  "hooks": [
+    {
+      "name": "lod_column",
+      "target": "horizon_world::worldgen::native_generate::native_lod_column",
+      "neoforge": "none (NeoForge has no such event; far terrain is Horizon's own)",
+      "side": "both",
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "a mod's terrain in the far terrain before its chunks generate (`native_lod_column`).",
+  "doc_summary": "`native_lod_column(dimension, column, seed, flat, column_out)` is asked for each block column the far terrain samples where no chunk is generated yet: a mod whose `native_chunk_generate` builds it answers its blocks with `column_out.replace(spans, biome)`, and the far terrain shows them instead of vanilla's noise. It runs on the far terrain's workers, many columns a tile. Bundles need \"hooks\": @API:lod_column@.",
+  "comments": [
+    "crates/horizon-world/src/worldgen/native_generate.rs"
+  ]
+}

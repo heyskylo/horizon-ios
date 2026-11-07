@@ -14,8 +14,11 @@ use super::Vertex;
 /// material at the end: the render types vanilla gives an `OitPipelineSet`
 /// (translucent, emissive, eyes and breeze wind entity models). Off, the tag is
 /// ignored and they stay in the first one, in their order.
-/// Two native world-canvas text materials follow it, NORMAL then POLYGON_OFFSET.
-const MATERIALS: usize = 12;
+/// Sorted still-fluid geometry follows, then the two native world-canvas text materials,
+/// NORMAL and POLYGON_OFFSET. Material storage order is independent of their draw stages.
+const MATERIALS: usize = 13;
+/// Sorted depth-writing still fluid, sampling terrain sprite arrays rather than the shared atlas.
+pub const FLUID_OVERLAY: u32 = 41;
 /// A bit of `Vertex::layer`, above the overlay (low 16 bits) and the HDR tier
 /// (bits 16 to 23): the quad's render type has an `OitPipelineSet`
 /// (`RenderTypes.entityTranslucent`, `entityTranslucentEmissive`, `eyes`,
@@ -60,12 +63,15 @@ pub const WORLD_TEXT_POLYGON_OFFSET_OVERLAY: u32 = 40;
 /// The material of a quad by its overlay (`MATERIALS` order): the overlay is the layer's low 16
 /// bits, as entity.wgsl reads it; HDR output's tier rides in the high ones.
 fn material(layer: u32, oit: bool) -> usize {
+    if layer & 0xffff == FLUID_OVERLAY {
+        return 10;
+    }
     if oit && layer & OIT_ENTITY != 0 {
         return 9;
     }
     match layer & 0xffff {
-        WORLD_TEXT_OVERLAY => 10,
-        WORLD_TEXT_POLYGON_OFFSET_OVERLAY => 11,
+        WORLD_TEXT_OVERLAY => 11,
+        WORLD_TEXT_POLYGON_OFFSET_OVERLAY => 12,
         TEXT_POLYGON_OFFSET_OVERLAY => 1,
         11 => 2,
         12 => 3,
@@ -148,9 +154,9 @@ impl EntityBatch {
                 }
             }
         }
-        // RenderType.text sorts alpha-blended quads from far to near. Keep
-        // both world-canvas layers after existing materials (including eyes
-        // moved out of additive); front text uses polygon offset.
+        // Fluid and RenderType.text sort their own alpha-blended quads far to
+        // near. Fluid precedes both world-canvas layers, after existing materials
+        // (including eyes moved out of additive).
         for runs in &self.runs[10..] {
             let start = self.combined.len();
             for &(first, count) in runs {
@@ -189,7 +195,7 @@ mod tests {
     use super::*;
     use std::{hint::black_box, time::Instant};
     #[test]
-    fn world_canvas_sorts_after_oit_eyes_before_frame_tails() {
+    fn fluid_and_world_canvas_sort_after_oit_eyes_before_frame_tails() {
         let quad = |layer, x| {
             [Vertex {
                 layer,
@@ -204,6 +210,8 @@ mod tests {
             (WORLD_TEXT_OVERLAY, 4.0),
             (WORLD_TEXT_OVERLAY, 5.0),
             (WORLD_TEXT_POLYGON_OFFSET_OVERLAY, 6.0),
+            (FLUID_OVERLAY, 11.0),
+            (FLUID_OVERLAY | OIT_ENTITY, 12.0),
         ]
         .into_iter()
         .flat_map(|(layer, x)| quad(layer, x))
@@ -215,12 +223,14 @@ mod tests {
         let mut batch = EntityBatch::default();
         assert_eq!(
             batch.update(&entities, &additive, &quad(0, 9.0), &quad(0, 10.0), true),
-            [1, 1, 0, 0, 0, 0, 0, 0, 0, 2, 2, 1]
+            [1, 1, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 1]
         );
         let positions: Vec<_> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
         assert_eq!(
             positions,
-            [1.0, 2.0, 3.0, 7.0, 5.0, 4.0, 6.0, 8.0, 9.0, 10.0]
+            [
+                1.0, 2.0, 3.0, 7.0, 12.0, 11.0, 5.0, 4.0, 6.0, 8.0, 9.0, 10.0
+            ]
         );
     }
 
@@ -320,12 +330,12 @@ mod tests {
         let mut batch = EntityBatch::default();
         // Off: the tag changes nothing, the quads keep their place.
         let counts = batch.update(&entities, &[], &[], &[], false);
-        assert_eq!(counts, [4, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]);
+        assert_eq!(counts, [4, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
         let xs: Vec<f32> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
         assert_eq!(xs, [0.0, 1.0, 2.0, 4.0, 3.0]);
         // On: the tagged quads come last, in order.
         let counts = batch.update(&entities, &[], &[], &[], true);
-        assert_eq!(counts, [2, 0, 0, 0, 0, 0, 1, 0, 0, 2, 0, 0]);
+        assert_eq!(counts, [2, 0, 0, 0, 0, 0, 1, 0, 0, 2, 0, 0, 0]);
         let xs: Vec<f32> = batch.combined.iter().step_by(4).map(|v| v.pos[0]).collect();
         assert_eq!(xs, [0.0, 2.0, 3.0, 1.0, 4.0]);
     }

@@ -3,9 +3,9 @@
 Generated from `crates/horizon-shader-api` (`HORIZON_WRITE_DOCS=1 cargo test -p horizon-shader-api --test reference`
 rewrites it; the test fails when it drifts). The API's design and pack format: [shaders.md](shaders.md).
 
-**Experimental** ([stability.md](stability.md)): `horizon-shader check` takes 0.2 packs, but the game refuses them
-for now and the registry doesn't list them, and anything here may change in any release. The design:
-[hdr-linear-light.md](../design/hdr-linear-light.md).
+**Experimental** ([stability.md](stability.md)): `horizon-shader check` takes 0.2 packs, the game draws them only
+with `HORIZON_HDR_FRAME=float` set, the registry doesn't list them, and anything here may change in any release.
+The design: [hdr-linear-light.md](../design/hdr-linear-light.md).
 
 ## Colour
 
