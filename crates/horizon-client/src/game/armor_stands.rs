@@ -771,9 +771,14 @@ impl Game<'_> {
         if !self.before_block(d) || self.mob_hit().is_some_and(|m| m.1 < d) {
             return false;
         }
-        let (_, scale, crit, magic) = self.melee_damage("minecraft:armor_stand", true);
+        let ((_, scale, crit, magic), admitted) =
+            self.melee_damage_with_admission("minecraft:armor_stand", true);
         let hurt = self.hit_armor_stand(i, |g, area, id| {
-            let (knockback, _) = g.extra_knockback("minecraft:armor_stand", scale);
+            let knockback = if admitted {
+                g.extra_knockback("minecraft:armor_stand", scale).0
+            } else {
+                0.0
+            };
             g.attack_effects(
                 area,
                 Some(id as i32),
@@ -787,7 +792,9 @@ impl Game<'_> {
         // not (skipAttackInteraction only asks mayInteract).
         self.attack_ticks = 0;
         if hurt {
-            self.special_attack_exhaustion();
+            if admitted {
+                self.special_attack_exhaustion();
+            }
             self.swing_arm();
         }
         hurt

@@ -808,7 +808,13 @@ public final class VanillaDispenserOracle {
      * Only attacker exhaustion, horizontal movement, sprint state and cooldown are compared.
      */
     static List<String> specialAttack(VanillaBlockUpdateOracle.World w, JsonObject op) throws Exception {
+        // Bind the inherited level field to the already allocated, inert harness
+        // server. No server constructor, world loader or main loop is invoked.
+        VanillaBlockUpdateOracle.set(ServerLevel.class, w, "server", w.server);
         Attacker player = attacker(w, op);
+        VanillaBlockUpdateOracle.set(Entity.class, player, "level", w);
+        VanillaBlockUpdateOracle.set(Entity.class, player, "levelCallback", net.minecraft.world.level.entity.EntityInLevelCallback.NULL);
+        VanillaBlockUpdateOracle.set(Entity.class, player, "passengers", com.google.common.collect.ImmutableList.of());
         VanillaBlockUpdateOracle.set(LivingEntity.class, player, "activeEffects", new HashMap<>());
         VanillaBlockUpdateOracle.set(Entity.class, player, "random", net.minecraft.util.RandomSource.create(0));
         VanillaBlockUpdateOracle.set(net.minecraft.world.entity.player.Player.class, player, "foodData", new net.minecraft.world.food.FoodData());
@@ -816,6 +822,12 @@ public final class VanillaDispenserOracle {
         player.setOnGround(true);
         player.setSprinting(op.get("sprint").getAsBoolean());
         player.setYRot(0);
+        if (op.has("attack_damage")) {
+            player.getAttribute(net.minecraft.world.entity.ai.attributes.Attributes.ATTACK_DAMAGE).setBaseValue(op.get("attack_damage").getAsDouble());
+        }
+        if (op.has("weakness") && op.get("weakness").getAsBoolean()) {
+            player.forceAddEffect(new net.minecraft.world.effect.MobEffectInstance(net.minecraft.world.effect.MobEffects.WEAKNESS, 200, 0), null);
+        }
         String kind = op.get("target").getAsString();
         Entity target = switch (kind) {
             case "boat" -> EntityTypes.OAK_BOAT.create(w, EntitySpawnReason.COMMAND);

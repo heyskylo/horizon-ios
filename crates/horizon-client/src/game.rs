@@ -69,7 +69,6 @@ mod block_items;
 mod blockctl;
 mod boarding;
 mod boat_authority_fixture;
-mod special_attack_fixture;
 mod boat_leads;
 mod boat_passengers;
 mod boat_rider_fixture;
@@ -344,6 +343,7 @@ mod sniffers;
 mod social;
 mod spawner;
 mod spear;
+mod special_attack_fixture;
 mod spectator;
 mod spill;
 mod splash_water;
@@ -12322,8 +12322,20 @@ impl Game<'_> {
         target_kind: &str,
         living: bool,
     ) -> (f32, f32, bool, bool) {
+        self.melee_damage_with_admission(target_kind, living).0
+    }
+    /// Player.attack admits its hurt/tail before the item's damage bonus. Keep
+    /// that predicate with the one damage evaluation, including its RNG draws.
+    pub(super) fn melee_damage_with_admission(
+        &mut self,
+        target_kind: &str,
+        living: bool,
+    ) -> ((f32, f32, bool, bool), bool) {
         if self.legacy_rules() {
-            return self.legacy_melee_damage(target_kind, living);
+            let hit = self.legacy_melee_damage(target_kind, living);
+            // The legacy rules use their resulting damage, including the
+            // intentionally retained modern mace bonus.
+            return (hit, hit.0 > 0.0);
         }
         let hand_damage = self.attack_damage();
         // Riptide's spin replaces the attack damage attribute.
@@ -12350,7 +12362,7 @@ impl Game<'_> {
         }
         // Enchantment damage (sharpness, smite, bane) scaled by the attack strength.
         amount += enchant_bonus * scale;
-        (amount, scale, crit, enchant_bonus * scale > 0.0)
+        ((amount, scale, crit, enchant_bonus * scale > 0.0), damaging)
     }
     /// `Player.getAttackStrengthScale(0.5)`.
     fn attack_strength_scale(&self) -> f32 {

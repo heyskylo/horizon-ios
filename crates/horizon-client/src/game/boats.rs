@@ -1454,7 +1454,9 @@ impl Game<'_> {
         let (kind, id) = (self.boats[i].entity_type(), self.boats[i].id as i32);
         let (damage, scale, _, magic) = self.melee_damage(&kind, false);
         let hurt = self.hurt_boat_result(i, damage, self.creative);
-        if damage > 0.0 && let Some(destroyed) = hurt {
+        if damage > 0.0
+            && let Some(destroyed) = hurt
+        {
             self.vehicle_attack_sounds(area, magic.then_some(id));
             let (knockback, _) = self.extra_knockback(&kind, scale);
             if knockback > 0.0 {
