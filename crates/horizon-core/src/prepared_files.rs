@@ -140,7 +140,9 @@ impl PreparedFiles {
             return Ok(None);
         };
         let entries: Box<[Entry]> = raw_entries
-            .chunks_exact(ENTRY)
+            .as_chunks::<ENTRY>()
+            .0
+            .iter()
             .map(|e| {
                 let at = |i: usize, n: usize| {
                     let mut b = [0; 8];

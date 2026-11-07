@@ -36,7 +36,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut buffer = vec![0_u8; 1 << 20];
     while remaining > 0 {
         let entries = remaining.min((buffer.len() / 4) as u64) as usize;
-        for (offset, bytes) in buffer[..entries * 4].chunks_exact_mut(4).enumerate() {
+        for (offset, bytes) in buffer[..entries * 4]
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
             let bits = (start + offset as u64) as u32;
             let value = sampler.sample_value(&mut context, [bits as i32, 0, 0])?;
             let result = if value.is_nan() {
