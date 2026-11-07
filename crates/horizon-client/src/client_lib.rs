@@ -6,6 +6,7 @@ pub mod advancements;
 pub mod ambience;
 pub mod animate_tick;
 pub mod arrows;
+pub mod bed_geometry;
 pub mod block_contact;
 pub mod powder_snow;
 pub use horizon_client_render::{
