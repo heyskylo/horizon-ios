@@ -2685,6 +2685,10 @@ pub fn arrow_to_nbt(
         fall_distance: a.fall_distance,
     };
     let mut tag = base.tag(raw);
+    // `SpectralArrow.addAdditionalSaveData` always writes its integer duration.
+    if base.id == "minecraft:spectral_arrow" {
+        put(&mut tag, "Duration", Tag::Int(a.spectral_duration));
+    }
     for (key, value) in [
         ("Fire", Tag::Short(a.fire_ticks as i16)),
         ("life", Tag::Short(a.life as i16)),
@@ -2768,6 +2772,10 @@ pub fn arrow_from_nbt(
     a.fire_ticks = number(tag.get("Fire")).unwrap_or(0) as i16 as i32;
     a.fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
     a.spectral = spectral;
+    // `SpectralArrow.readAdditionalSaveData`: absent Duration defaults to 200.
+    if spectral {
+        a.spectral_duration = number(tag.get("Duration")).unwrap_or(200) as i32;
+    }
     a.pickup_item = item;
     a.fired_from_weapon = tag.get("weapon").and_then(item_from_nbt);
     p.stuck = a.in_ground;
@@ -7805,6 +7813,54 @@ mod held_item_name_tests {
                 .custom_name()
                 .is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod spectral_duration_nbt_tests {
+    use super::*;
+
+    #[test]
+    fn spectral_duration_uses_live_identity_and_preserves_saved_values() {
+        let mut model = Projectile::new(
+            ProjectileKind::Arrow {
+                base_damage: 2.0,
+                critical: false,
+                effect: None,
+            },
+            Vec3::new(0.5, 200.0, 0.5),
+            None,
+        );
+        model.arrow.as_mut().unwrap().spectral = true;
+        let saved = arrow_to_nbt(&model, [7, 8, 9, 10], None, None, None).unwrap();
+        assert_eq!(kind(&saved).as_deref(), Some("minecraft:spectral_arrow"));
+        assert_eq!(saved.get("Duration"), Some(&Tag::Int(200)));
+        for supplied in [None, Some(77), Some(0), Some(-1), Some(200), Some(i32::MAX)] {
+            let mut source = Tag::compound([
+                ("id", string("minecraft:spectral_arrow")),
+                ("Pos", doubles(&[0.5, 200.0, 0.5])),
+                ("Motion", doubles(&[0.0; 3])),
+            ]);
+            if let Some(value) = supplied {
+                put(&mut source, "Duration", Tag::Int(value));
+            }
+            let (loaded, _) = arrow_from_nbt(&source, None, |_| None).unwrap();
+            assert!(loaded.arrow.as_ref().unwrap().spectral);
+            let saved = arrow_to_nbt(&loaded, [7, 8, 9, 10], None, None, None).unwrap();
+            assert_eq!(
+                saved.get("Duration"),
+                Some(&Tag::Int(supplied.unwrap_or(200)))
+            );
+        }
+        model.arrow.as_mut().unwrap().spectral = false;
+        for raw in [
+            None,
+            Some(Tag::compound([("id", string("minecraft:spectral_arrow"))])),
+        ] {
+            let saved = arrow_to_nbt(&model, [7, 8, 9, 10], None, None, raw.as_ref()).unwrap();
+            assert_eq!(kind(&saved).as_deref(), Some("minecraft:arrow"));
+            assert!(saved.get("Duration").is_none());
+        }
     }
 }
 
