@@ -12547,7 +12547,7 @@ impl Game<'_> {
             self.next_entity,
         );
         self.native_entity_shoot_bow(player, &name, projectile, power * 3.0);
-        self.player_projectile_shot();
+        // ArrowState posts projectile_shoot on the arrow's first tick.
         let pitch = 1.0 / (self.world.random.next_float() * 0.4 + 1.2) + power * 0.5;
         // BowItem.releaseUsing: `playSound(null, getX(), getY(), getZ(), ...)`, at
         // the feet: an eye-height source a few cm from the listener pans hard.
