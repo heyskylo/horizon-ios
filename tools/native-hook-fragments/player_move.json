@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "player_move",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_player_move",
+      "neoforge": "none (Bukkit's PlayerMoveEvent)",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "a server player's move before it is applied, which a mod may cancel or send elsewhere (`native_player_move`).",
+  "doc_summary": "a server player's move: `native_player_move(player, name, from, to, yaw, pitch, on_ground, cancel)` is heard for each position or look packet that changed either and passed the server's checks, before it is applied (Bukkit's `PlayerMoveEvent`). Cancel and the player is sent back to `from`; change `to` and they are put there and their client is told. No `self`. Bundles that use it need `\"hooks\": @API:player_move@`."
+}

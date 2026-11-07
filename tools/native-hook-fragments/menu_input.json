@@ -1,0 +1,33 @@
+{
+  "hooks": [
+    {
+      "name": "menu_input_closed",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_menu_input_closed",
+      "neoforge": "none (NeoForge has no such event; Bukkit's InventoryCloseEvent with the inventory's contents)",
+      "side": "server",
+      "mod_api": {
+        "contract": "collect",
+        "out": "slots"
+      }
+    }
+  ],
+  "helpers": [
+    {
+      "name": "open_menu_with_input",
+      "target": "horizon_client::game::native_menus::Game<'_>::native_open_menu_with_input"
+    },
+    {
+      "name": "menu_contents",
+      "target": "horizon_client::game::native_menus::Game<'_>::native_menu_contents"
+    },
+    {
+      "name": "menu_cursor",
+      "target": "horizon_client::game::native_menus::Game<'_>::native_menu_cursor"
+    }
+  ],
+  "rust_summary": "server menus with input slots the player fills as a chest's (`native_open_menu_with_input`), what such a menu holds (`native_menu_contents`), the cursor of a click (`native_menu_cursor`) and the input slots when it closes (`native_menu_input_closed`).",
+  "doc_summary": "`native_open_menu_with_input(uuid, rows, title, items, input)` opens a server menu whose slots in `input` take and give items by vanilla's click rules, the rest shown by the mod as in `native_open_menu`; `native_menu_contents(uuid)` reads what an open server menu holds, `native_menu_cursor(uuid)` the stack on the player's cursor (inside `native_menu_clicked`, the one of that click), and `native_menu_input_closed(uuid, window, slots)` hears the input slots as the menu closes: what the mods leave goes back to the player as vanilla's `clearContainer` does. Bundles need \"hooks\": @API:menu_input@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_menus.rs"
+  ]
+}

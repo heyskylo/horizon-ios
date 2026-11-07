@@ -323,7 +323,7 @@ fn check_values(level: &Level) -> Result<(), String> {
     if level
         .active_effects
         .iter()
-        .any(|(_, _, amplifier, _, _)| !(0..=255).contains(amplifier))
+        .any(|(_, _, amplifier, ..)| !(0..=255).contains(amplifier))
     {
         return Err("the record holds an effect no player can have".into());
     }
@@ -485,8 +485,12 @@ impl Kept {
 /// statistics (`Imported::advancements`, `Imported::stats`) and its attachments.
 ///
 /// Nothing changes when it refuses: the record is read and checked first, and the
-/// guest is touched only once everything is known to be well.
+/// guest is touched only once everything is known to be well. It refuses everything once
+/// the server has begun to stop.
 pub fn import_player(hub: &mut Hub, uuid: u128, request: &Value) -> Result<Imported, String> {
+    if hub.transfers.as_ref().is_some_and(|t| t.stopping) {
+        return Err(super::arrivals::STOPPING.into());
+    }
     let request = read_request(request)?;
     let (tag, handover) = read_compound(request.record, uuid)?;
     let Some(i) = hub

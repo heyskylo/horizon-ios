@@ -573,8 +573,13 @@ impl Mob {
     pub fn height(&self) -> f32 {
         self.dims().1 as f32
     }
+    /// `AgeableMob.isBaby`: `canBeABaby() && getAge() < 0`. The age alone is
+    /// not enough — a frog, a parrot, a zombie nautilus, a camel husk, a slime,
+    /// a magma cube, a piglin brute, a tadpole, or anything that is not an
+    /// `AgeableMob` at all is an adult whatever `Age` says, so its box, voice,
+    /// breeding, growth, drops and goals stay an adult's.
     pub fn is_baby(&self) -> bool {
-        self.extra.age < 0
+        self.extra.age < 0 && super::species::can_be_a_baby(self.kind.species)
     }
     pub fn fluid_jump_threshold(&self) -> f64 {
         // Breeze.getFluidJumpThreshold: its eye height.
@@ -1184,10 +1189,11 @@ impl Mob {
             self.fall_to_passengers(distance, modifier, events);
         }
         if damage > 0.0 {
-            // Llama.causeFallDamage: only a fall of six blocks or more hurts the
-            // llama and its riders.
+            // Llama.causeFallDamage: shorter damaging falls play the block
+            // sound but do not hurt the llama or its riders.
             if super::llama::is_llama(self.species()) && distance < 6.0 {
-                return false;
+                self.block_fall_sound(contact, events);
+                return true;
             }
             let at = [self.position.x, self.position.y, self.position.z];
             // Monster.getFallSounds: the hostile pair.
@@ -1201,14 +1207,38 @@ impl Mob {
             // Horses thud and llamas make no generic fall sound.
             if !horse {
                 events.push(MobEvent::Sound(sound, at, 1.0, 1.0));
+                self.block_fall_sound(contact, events);
             }
             self.damage(damage as f32, super::Damage::of(source));
             if horse {
                 self.fall_to_passengers(distance, modifier, events);
+                self.block_fall_sound(contact, events);
             }
             return true;
         }
         false
+    }
+    /// `LivingEntity.playBlockFallSound`: the block 0.2 below the feet plays
+    /// its fall sound at half its volume and three quarters of its pitch,
+    /// unless the mob is silent or the block is air.
+    fn block_fall_sound(&self, contact: Option<(&MobWorld, [i32; 3])>, events: &mut Vec<MobEvent>) {
+        if self.silent {
+            return;
+        }
+        if let Some((w, _)) = contact {
+            let pos = self.on_pos(0.2);
+            let state = w.world.block(pos[0], pos[1], pos[2]);
+            if !w.facts.is_air(state) {
+                let sounds = &w.facts.get(state).sounds;
+                let at = [self.position.x, self.position.y, self.position.z];
+                events.push(MobEvent::SoundId(
+                    sounds.fall.to_string(),
+                    at,
+                    sounds.volume * 0.5,
+                    sounds.pitch * 0.75,
+                ));
+            }
+        }
     }
     /// `Entity.propagateFallToPassengers`: the game gives the fall to each
     /// passenger (`causeFallDamage`), a mob or a player, for this mob is
@@ -1923,6 +1953,89 @@ impl RestitutionWorld for MobRestitution<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `AgeableMob.isBaby` is `canBeABaby() && getAge() < 0`, and `Age` alone
+    /// says nothing: the six ageable classes that override `canBeABaby` to
+    /// false — `Frog`, `Parrot`, `ZombieNautilus`, `CamelHusk`, `Slime` and
+    /// `MagmaCube` — stay adults, and so do the `PiglinBrute` (no `isBaby` of
+    /// its own), the `Creeper` (outside the ageable tree) and the `Tadpole`,
+    /// whose own age runs up from -24000 without it ever being a baby.
+    ///
+    /// Every one of them keeps its type's box, the plain 1.0 ± 0.2 voice and
+    /// `getAgeScale`'s 1.0, where a cow with the same age takes
+    /// `Cow.BABY_DIMENSIONS` (0.45 by 0.7, eyes at 0.69) and the 1.5 ± 0.2
+    /// that `LivingEntity.getVoicePitch` gives a baby.
+    #[test]
+    fn a_negative_age_is_a_baby_only_where_can_be_a_baby_allows_it() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("entity-types.json").exists() {
+            return;
+        }
+        let types = super::super::MobTypes::load(&root).unwrap();
+        // dims() narrows the type's box to f32 and widens it back.
+        let adult = |id: &str| {
+            let t = types.types.get(id).unwrap();
+            (
+                f64::from(t.width as f32),
+                f64::from(t.height as f32),
+                f64::from(t.eye_height as f32),
+            )
+        };
+        for id in [
+            "minecraft:parrot",
+            "minecraft:tadpole",
+            "minecraft:frog",
+            "minecraft:zombie_nautilus",
+            "minecraft:camel_husk",
+            "minecraft:slime",
+            "minecraft:magma_cube",
+            "minecraft:piglin_brute",
+            "minecraft:creeper",
+        ] {
+            let mut m = Mob::new(
+                1,
+                std::sync::Arc::new(types.types.get(id).unwrap().clone()),
+                Vec3::ZERO,
+                0.0,
+            );
+            m.extra.age = -24_000;
+            assert!(!m.is_baby(), "{id}");
+            assert_eq!(m.dims(), adult(id), "{id} keeps its type's box");
+            let pitches: Vec<f32> = (0..64).map(|_| m.voice_pitch()).collect();
+            assert!(
+                pitches.iter().all(|p| (0.8..=1.2).contains(p)),
+                "{id}: {pitches:?}"
+            );
+        }
+        // The control: a cow at the same age is a baby in vanilla's box and
+        // voice, and an adult again at age 0.
+        let mut cow = Mob::new(
+            1,
+            std::sync::Arc::new(types.types.get("minecraft:cow").unwrap().clone()),
+            Vec3::ZERO,
+            0.0,
+        );
+        cow.extra.age = -24_000;
+        assert!(cow.is_baby());
+        assert_eq!(
+            cow.dims(),
+            (f64::from(0.45_f32), f64::from(0.7_f32), f64::from(0.69_f32))
+        );
+        let pitches: Vec<f32> = (0..64).map(|_| cow.voice_pitch()).collect();
+        assert!(
+            pitches.iter().all(|p| (1.3..=1.7).contains(p)),
+            "{pitches:?}"
+        );
+        cow.extra.age = 0;
+        assert!(!cow.is_baby());
+        assert_eq!(cow.dims(), adult("minecraft:cow"));
+        let pitches: Vec<f32> = (0..64).map(|_| cow.voice_pitch()).collect();
+        assert!(
+            pitches.iter().all(|p| (0.8..=1.2).contains(p)),
+            "{pitches:?}"
+        );
+    }
 
     /// `Entity.getLightProbePosition(partialTick)` for a living entity is
     /// `getEyePosition`: `getEyeHeight()` over `Mth.lerp(partialTick, xo, x)`.
@@ -2617,6 +2730,43 @@ mod tests {
             }
         });
     }
+    #[test]
+    fn damaging_mob_fall_plays_block_fall_sound() {
+        let ran = crate::mobs::world::with_built_test_world(
+            &[],
+            |world, registry| {
+                world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                );
+                for (x, block) in [(0, "minecraft:stone"), (1, "minecraft:oak_planks")] {
+                    world
+                        .set(x, 0, 0, registry.default_state(block).unwrap())
+                        .unwrap();
+                }
+            },
+            |w, types| {
+                for (x, block_sound) in [
+                    (0.5, "minecraft:block.stone.fall"),
+                    (1.5, "minecraft:block.wood.fall"),
+                ] {
+                    let kind = std::sync::Arc::new(types.types["minecraft:zombie"].clone());
+                    let mut mob = Mob::new(1, kind, Vec3::new(x, 1.0, 0.5), 0.0);
+                    mob.fall_distance = 5.0;
+                    let mut events = Vec::new();
+                    mob.fall_on_block(w, &mut events);
+                    assert!(
+                        matches!(events.as_slice(), [MobEvent::Sound("entity.hostile.small_fall", _, 1.0, 1.0), MobEvent::SoundId(id, _, 0.5, 0.75), ..] if id == block_sound),
+                        "{events:?}"
+                    );
+                }
+            },
+        );
+        // Without the vanilla data under .local/horizon-client the world
+        // cannot be built: the test has nothing to check.
+        let _ = ran;
+    }
+
     /// `Entity.applyMovementEmissionAndPlaySound` asks `getMovementEmission`:
     /// a squid, a glow squid and a bat answer `EVENTS`, so a beached squid
     /// flopping across stone sends the `minecraft:step` game event and no
