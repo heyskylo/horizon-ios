@@ -115,6 +115,8 @@ SnowGolem.hasPumpkin	inline	crates/horizon-client/src/game/creatures.rs::Game::i
 SnowGolem.setPumpkin	inline	crates/horizon-client/src/game/creatures.rs::Game::interact_shear_mob	sets extra.sheared (shears, dispenser); nothing puts a pumpkin back, as in vanilla
 SnowGolem.getLeashOffset	port	crates/horizon-client/src/mobs/leash.rs::leash_offset	0.75 of the eye height
 HappyGhast.setServerStillTimeout	inline	crates/horizon-client/src/mobs/happy_ghast.rs::still_tick	gap: minor: the timeout is extra.counter (10 when a player stands on top, 10 on dismount, 0 on boarding); the one-off position sync to tracking players is not sent, lan.rs only marks the entity precise
+HappyGhast.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	still_timeout, the serverStillTimeout `still_tick` keeps in `counter`
+HappyGhast.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	still_timeout back into `counter`; absent is 0
 HappyGhast.registerGoals	port	crates/horizon-client/src/mobs/happy_ghast.rs::setup	adult goals: float, tempt (harness and food for a bare adult, food otherwise), float around within 16
 HappyGhast.adultGhastSetup	port	crates/horizon-client/src/mobs/happy_ghast.rs::setup	adult half: ghast move control, happy ghast look control, goals, brain stopped
 HappyGhast.babyGhastSetup	port	crates/horizon-client/src/mobs/happy_ghast.rs::setup	baby half: flying move control, baby flying navigation, no goals, timeout cleared
@@ -133,3 +135,4 @@ HappyGhast.syncStayStillFlag	port	crates/horizon-client/src/game/lan.rs::mob_met
 HappyGhast.getLeashOffset	port	crates/horizon-client/src/mobs/leash.rs::leash_offset	Vec3.ZERO, the rope at the ghast's feet rather than an eye height up
 HappyGhastAi.initCoreActivity	port	crates/horizon-client/src/mobs/animal_brain.rs::ghastling_package	swim, flying panic 2.0, look sink, move sink and the tempt cooldown countdown
 HappyGhastAi.initIdleActivity	port	crates/horizon-client/src/mobs/animal_brain.rs::ghastling_package	tempt with look in the eyes, follow a player, follow an adult, then fly stroll or walk to the look target
+Frog.canBeABaby	port	crates/horizon-client/src/mobs/species.rs::can_be_a_baby	the false arm: a frog with a negative Age is an adult

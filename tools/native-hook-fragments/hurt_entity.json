@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "hurt_entity", "target": "horizon_client::game::native_entities::Game<'_>::native_hurt_entity"}
+  ],
+  "rust_summary": "a mod hurting a mob or a player as `LivingEntity.hurtServer` with a mob attack does (`native_hurt_entity`).",
+  "doc_summary": "`native_hurt_entity(dimension, target, amount, damage_type, attacker)` hurts a mob or a player of the level as `LivingEntity.hurtServer` and `/damage ... by <attacker>` do (armour, effects, invulnerability time, knockback, death; the damage hooks hear it), the attacker as the causing and direct entity like `damageSources().mobAttack`; whether it was hurt. Bundles need \"hooks\": @API:hurt_entity@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_entities.rs"
+  ]
+}

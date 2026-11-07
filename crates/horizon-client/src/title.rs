@@ -1154,7 +1154,7 @@ impl Title {
             rules.release();
         }
         if let Mode::Multiplayer(screen) = &mut self.mode {
-            screen.release();
+            screen.release(&self.saves);
         }
         if let Mode::CreateFlat { flat, .. } = &mut self.mode {
             flat::release(flat);
@@ -3559,7 +3559,9 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 Action::None
             }
             (Mode::Main, Some(8)) => {
-                self.mode = Mode::Realms(crate::realms::Screen::new());
+                // The upload screen lists the game's own worlds (`saves`).
+                self.mode =
+                    Mode::Realms(crate::realms::Screen::with_saves(Some(self.saves.clone())));
                 Action::None
             }
             (Mode::Realms(screen), hit) => match screen.click(hit, x, y, (w, h)) {
@@ -3572,6 +3574,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     lan: false,
                 },
                 crate::realms::Outcome::OpenUri(uri) => Action::OpenUri(uri),
+                crate::realms::Outcome::Copy(text) => Action::CopyText(text),
                 crate::realms::Outcome::None => Action::None,
             },
             (Mode::MultiplayerWarning { .. }, Some(71)) => {

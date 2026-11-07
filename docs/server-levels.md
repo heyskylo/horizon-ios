@@ -96,8 +96,6 @@ the Nether, or whose host saves and quits, joins again in the Nether where it wa
 
 ## Not done yet
 
-- **End credits for server players.** The first exit from the End should show a player the credits
-  (`EndPortalBlock.entityInside`, `seenCredits`). The client's WinScreen is #338.
 - **Entities through portals between levels.** Mobs, items and minecarts that enter a portal on a
   server, and portal tickets (`TeleportTransition.PLACE_PORTAL_TICKET`), are not handled.
 - **Unlimited selectors.** `@e` without a distance or volume reads only the source's level. Vanilla's
