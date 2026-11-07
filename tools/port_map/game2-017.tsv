@@ -135,7 +135,7 @@ SignBlockEntity.tick	inline	crates/horizon-client/src/game/sign_edit.rs::Game::l
 SignBlockEntity.applyImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::place	sign_text_front, sign_text_back and waxed onto front_text, back_text and is_waxed; a client applies them to the sign it predicts through Game::apply_predicted_item (#8102)
 SignBlockEntity.collectImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::collect	front_text, back_text and is_waxed leave on the item as sign_text_front, sign_text_back and waxed
 SignBlockEntity.removeComponentsFromTag	port	crates/horizon-client/src/block_entity_item.rs::pick	front, back and waxed left out of the item data
-SignText.load	port	crates/horizon-client-render/src/signs.rs::SignData::decode	
+SignText.load	port	crates/horizon-client-render/src/signs.rs::SignData::decode	modern String messages remain literal; compound/list components keep their structured path
 SignText.<clinit>	port	crates/horizon-client/src/item_sync.rs::sign_text_tag	STREAM_CODEC read into the saved CODEC form; lan/guest.rs::sign_text_bytes writes it
 SignText.validateLineCounts	skip:java		codec check of four lines; Horizon fixes the array size
 SignText.withGlowingText	port	crates/horizon-client/src/game/sign_edit.rs::Game::use_sign_applicator	glow ink sac
