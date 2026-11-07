@@ -22,6 +22,11 @@ thread_local! {
     static NOTES: RefCell<Vec<(f32, String)>> = const { RefCell::new(Vec::new()) };
 }
 
+/// The most spans a thread holds before they are taken ([`take_raw`]): a worker thread
+/// that records spans (`lod_reduce`, `lt_*`) while they are on for every thread is never
+/// taken from, so it drops what it held instead of growing for as long as they stay on.
+const UNTAKEN_MAX: usize = 1 << 14;
+
 /// The shortest step a [`note`] keeps, in milliseconds.
 pub const NOTE_MS: f32 = 10.0;
 /// The notes a thread keeps between two [`take_notes`]: its slowest steps.
@@ -53,7 +58,7 @@ pub fn record_here(on: bool) {
 /// Whether this thread records spans: all of them on, or [`record_here`].
 #[inline]
 pub fn recording_here() -> bool {
-    ENABLED.load(Ordering::Relaxed) || HERE.with(Cell::get)
+    ENABLED.load(Ordering::Relaxed) || HERE.with(Cell::get) || trace::on()
 }
 /// The thread's CPU time when spans are on for every thread (`HORIZON_SPIKES`): only they
 /// print it.
@@ -101,15 +106,24 @@ impl Drop for Guard {
             .and_then(|start| Some((thread_cpu()?, start)))
             .map_or(ms, |(end, start)| (end - start).as_secs_f32() * 1000.0);
         DEPTH.with(|d| d.set(depth));
-        SPANS.with(|s| {
-            s.borrow_mut().push(Span {
-                name,
-                ms,
-                cpu_ms,
-                depth,
-            })
+        trace::span(name, started, ms);
+        push(Span {
+            name,
+            ms,
+            cpu_ms,
+            depth,
         });
     }
+}
+/// Keeps a finished span for the thread's next [`take_raw`].
+fn push(span: Span) {
+    SPANS.with(|s| {
+        let mut s = s.borrow_mut();
+        if s.len() >= UNTAKEN_MAX {
+            s.clear();
+        }
+        s.push(span);
+    });
 }
 /// Attach per-tick counts without interpreting them as durations.
 pub fn counters(counts: &[(&str, u64)]) {
@@ -179,13 +193,12 @@ impl Laps {
             .zip(*cpu)
             .map_or(ms, |(end, start)| (end - start).as_secs_f32() * 1000.0);
         let depth = DEPTH.with(Cell::get);
-        SPANS.with(|s| {
-            s.borrow_mut().push(Span {
-                name,
-                ms,
-                cpu_ms,
-                depth,
-            })
+        trace::span(name, *started, ms);
+        push(Span {
+            name,
+            ms,
+            cpu_ms,
+            depth,
         });
         (*started, *cpu) = (now, now_cpu);
     }
@@ -285,6 +298,159 @@ pub fn describe(spans: &[Span]) -> String {
         })
         .collect();
     list.join(", ")
+}
+
+/// The run's timeline: every span ([`time`], [`guard`], [`Laps::lap`]) on every thread, as
+/// Chrome trace events that Perfetto (ui.perfetto.dev) opens as they are. `HORIZON_TRACE=FILE`
+/// writes it from the start; [`start`](trace::start) and [`stop`](trace::stop) write one for a
+/// while (`horizon-trace` on a dedicated server's console, `trace` on the control socket). Spans
+/// show on their threads where they ran, nested by time, so what ran beside what, and what a
+/// thread waited for, can be read off. Off, a span costs one relaxed load more.
+pub mod trace {
+    use std::{
+        cell::Cell,
+        fs::File,
+        io::{BufWriter, Write as _},
+        path::Path,
+        sync::{
+            Mutex, PoisonError,
+            atomic::{AtomicBool, AtomicU32, Ordering},
+        },
+        time::Instant,
+    };
+
+    static ON: AtomicBool = AtomicBool::new(false);
+    static SINK: Mutex<Option<Sink>> = Mutex::new(None);
+    /// Counts the traces started: a thread names itself again in each one.
+    static TRACES: AtomicU32 = AtomicU32::new(0);
+    static NEXT_THREAD: AtomicU32 = AtomicU32::new(1);
+    thread_local! {
+        /// This thread's id in traces (0: none yet).
+        static THREAD: Cell<u32> = const { Cell::new(0) };
+        /// The trace this thread last named itself in.
+        static NAMED_IN: Cell<u32> = const { Cell::new(0) };
+    }
+    /// How often a trace's buffer goes to the file, at most: a run that ends without
+    /// [`stop`] loses no more than this.
+    const FLUSH_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+    struct Sink {
+        file: BufWriter<File>,
+        origin: Instant,
+        /// Until when it records ([`start`]'s `seconds`).
+        until: Option<Instant>,
+        flushed: Instant,
+        /// Events written: the next one is preceded by a comma.
+        events: u64,
+    }
+    impl Sink {
+        fn event(&mut self, event: std::fmt::Arguments) {
+            let comma = if self.events == 0 { "" } else { ",\n" };
+            let _ = write!(self.file, "{comma}{{\"pid\":1,{event}}}");
+            self.events += 1;
+        }
+    }
+
+    /// Whether a trace is being written.
+    #[inline]
+    pub fn on() -> bool {
+        ON.load(Ordering::Relaxed)
+    }
+
+    /// Starts a trace written to `path` (replacing a trace being written), for `seconds` or
+    /// until [`stop`].
+    pub fn start(path: &Path, seconds: Option<u32>) -> std::io::Result<()> {
+        let mut file = BufWriter::with_capacity(1 << 18, File::create(path)?);
+        file.write_all(b"[\n")?;
+        let now = Instant::now();
+        let sink = Sink {
+            file,
+            origin: now,
+            until: seconds.map(|s| now + std::time::Duration::from_secs(u64::from(s))),
+            flushed: now,
+            events: 0,
+        };
+        let mut slot = SINK.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(old) = slot.take() {
+            close(old);
+        }
+        *slot = Some(sink);
+        TRACES.fetch_add(1, Ordering::Relaxed);
+        ON.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Starts the trace `HORIZON_TRACE` names, if it names one.
+    pub fn start_from_env() {
+        if let Some(path) = std::env::var_os("HORIZON_TRACE")
+            && let Err(e) = start(Path::new(&path), None)
+        {
+            log::warn!("Horizon: HORIZON_TRACE: {e}");
+        }
+    }
+
+    /// Ends the trace being written: the file is complete JSON. The events written so far
+    /// and whether one was being written.
+    pub fn stop() -> Option<u64> {
+        ON.store(false, Ordering::Relaxed);
+        let sink = SINK.lock().unwrap_or_else(PoisonError::into_inner).take()?;
+        let events = sink.events;
+        close(sink);
+        Some(events)
+    }
+
+    /// Whether the trace being written has run its time ([`start`]'s `seconds`): the caller
+    /// then [`stop`]s it.
+    pub fn due() -> bool {
+        on() && SINK
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .and_then(|s| s.until)
+            .is_some_and(|until| Instant::now() >= until)
+    }
+
+    fn close(mut sink: Sink) {
+        let _ = sink.file.write_all(b"\n]\n");
+        let _ = sink.file.flush();
+    }
+
+    /// A span of this thread from `started`, `ms` long.
+    pub(super) fn span(name: &'static str, started: Instant, ms: f32) {
+        if !on() {
+            return;
+        }
+        let tid = THREAD.with(|t| {
+            if t.get() == 0 {
+                t.set(NEXT_THREAD.fetch_add(1, Ordering::Relaxed));
+            }
+            t.get()
+        });
+        let trace = TRACES.load(Ordering::Relaxed);
+        let mut slot = SINK.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(sink) = slot.as_mut() else {
+            return;
+        };
+        if NAMED_IN.with(|n| n.replace(trace)) != trace {
+            let name = std::thread::current()
+                .name()
+                .unwrap_or("unnamed")
+                .replace(['"', '\\'], "_");
+            sink.event(format_args!(
+                r#""ph":"M","name":"thread_name","tid":{tid},"args":{{"name":"{name}"}}"#
+            ));
+        }
+        let ts = started.saturating_duration_since(sink.origin).as_secs_f64() * 1e6;
+        sink.event(format_args!(
+            r#""ph":"X","name":"{name}","tid":{tid},"ts":{ts:.3},"dur":{:.3}"#,
+            f64::from(ms) * 1e3
+        ));
+        let now = Instant::now();
+        if now.duration_since(sink.flushed) >= FLUSH_EVERY {
+            let _ = sink.file.flush();
+            sink.flushed = now;
+        }
+    }
 }
 
 /// The start's timeline: `HORIZON_STARTUP_TRACE=FILE` writes every named step of

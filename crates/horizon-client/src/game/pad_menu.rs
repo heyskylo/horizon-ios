@@ -1142,19 +1142,30 @@ impl Game<'_> {
 
     /// Vanilla's arrow navigation moves a screen's focus off the widget a
     /// click focused: the screens that draw that click focus themselves drop
-    /// it, so only the pad's focus shows.
-    fn clear_screen_click_focus(&mut self) {
+    /// it, so only the pad's focus shows. The screen it clears need not be
+    /// the one in front (a screen that just opened leaves the old focus
+    /// behind it), so every menu's click focus goes.
+    pub(super) fn clear_screen_click_focus(&mut self) {
         if let Some(title) = self.title.as_mut() {
             title.focused_button = None;
         }
-        match self.screen {
-            Screen::Paused => self.pause_focus = None,
-            Screen::Dead => self.death_focus = None,
-            Screen::Options => self.ui.options.clear_click_focus(),
-            _ => {}
-        }
+        self.pause_focus = None;
+        self.death_focus = None;
+        self.ui.options.clear_click_focus();
         if let Some(options) = self.world_options.as_mut() {
             options.clear_click_focus();
+        }
+    }
+
+    /// `Gui.setScreen` clears the focus of the screen it leaves
+    /// (`Screen.clearFocus`): the screen that opens starts with none, so the
+    /// button a click focused is not still highlighted
+    /// (`AbstractWidget.isHoveredOrFocused`) when the player comes back to it.
+    /// The frame after another screen is front, `key_screen` names a new one.
+    pub(super) fn drop_left_screen_focus(&mut self) {
+        let screen = self.key_screen();
+        if another_screen_is_front(&mut self.focus_screen, screen) {
+            self.clear_screen_click_focus();
         }
     }
 
@@ -2376,6 +2387,13 @@ fn field_at(targets: &[Target], at: (f32, f32)) -> bool {
     })
 }
 
+/// Whether `front` is another screen than the one `shown` names yet, and
+/// records it: the menu focus belongs to the screen that showed it
+/// (`Gui.setScreen` clears the focus of the screen it leaves).
+pub(super) fn another_screen_is_front(shown: &mut u64, front: u64) -> bool {
+    std::mem::replace(shown, front) != front
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2432,6 +2450,15 @@ mod tests {
         let (first, second) = ([10.0, 40.0, 40.0, 20.0], [10.0, 64.0, 40.0, 20.0]);
         let labels = [labelled("Reset", first), labelled("Reset", second)];
         assert_eq!(named_target("reset", &labels, &[first, second]), None);
+    }
+
+    #[test]
+    fn a_new_screen_is_a_new_place_for_the_focus() {
+        let mut shown = 7;
+        assert!(!another_screen_is_front(&mut shown, 7), "the same screen");
+        assert!(another_screen_is_front(&mut shown, 8), "another screen");
+        assert!(!another_screen_is_front(&mut shown, 8), "still that one");
+        assert_eq!(shown, 8);
     }
 
     #[test]

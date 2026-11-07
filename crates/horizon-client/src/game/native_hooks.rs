@@ -996,8 +996,9 @@ use super::{
 };
 use horizon_assets::item_model::StackView;
 use horizon_client::mod_api::{
-    self, NativeCamera, NativeCommand, NativeDispensed, NativeLifecycleContext,
-    NativeNoteBlockChange, NativeServerPlayer, RecipeBookCategory, ServerTickPhase, WorldPhase,
+    self, NativeCamera, NativeCommand, NativeDispensed, NativeFluidAction, NativeFluidDrain,
+    NativeFluidStack, NativeFluidTankView, NativeLifecycleContext, NativeNoteBlockChange,
+    NativeServerPlayer, RecipeBookCategory, ServerTickPhase, WorldPhase,
 };
 use horizon_client::mod_api::{AttachmentResult, Attachments, Holder, LayerDefinition, Suggestion};
 pub(crate) use horizon_client::mod_api::{
@@ -2189,13 +2190,60 @@ fn chars_to_type(text: &str, canceled: impl FnMut(char) -> bool) -> Option<Strin
 
 /// The hook points. Each does nothing in Horizon.
 impl Game<'_> {
+    /// A dropped item's vertical move clipped. Collision response has run and
+    /// block effects and pickup are still ahead. The owner lends the active
+    /// stack and supplies the block from `Entity.getOnPosLegacy`.
+    /// `client` identifies prediction. `discard` consumes the current entity
+    /// without loot or pickup. A stack reduced to zero also consumes it.
+    /// @API:item_after_vertical_collision@
+    pub(super) fn native_item_after_vertical_collision(
+        &mut self,
+        dimension: &str,
+        client: bool,
+        entity: u32,
+        state: BlockStateId,
+        block_pos: [i32; 3],
+        item_pos: [f64; 3],
+        stack: &mut ItemStack,
+        discard: &mut bool,
+    ) {
+        mod_api::dispatch_item_after_vertical_collision(
+            self,
+            mod_api::mods(),
+            dimension,
+            client,
+            entity,
+            state,
+            block_pos,
+            item_pos,
+            stack,
+            discard,
+        );
+    }
+
     /// Client initialization, before any outgoing connection; a window need not exist yet.
     pub(super) fn native_client_start(&mut self) {
         mod_api::dispatch_client_start(self, mod_api::mods());
     }
     /// Before an actual connection is discarded, not on a dimension change.
+    /// NeoForge's `ClientPlayerNetworkEvent.LoggingOut`, told here after
+    /// `native_client_level_unload` and only when a connection ends.
     pub(super) fn native_client_disconnecting(&self) {
         mod_api::dispatch_client_disconnecting(self, mod_api::mods());
+    }
+    /// The window's player logs in to a server (NeoForge's
+    /// `ClientPlayerNetworkEvent.LoggingIn`, in
+    /// `ClientPacketListener.handleLogin`), single player's own server or a
+    /// remote one: once per login packet, after the new client level
+    /// (`native_client_level_load`). Respawns and dimension changes don't log
+    /// in again; a server that sends its player back through configuration
+    /// does, without a `native_client_disconnecting` between. Horizon makes
+    /// the player with the server's first position, so `native_player` is
+    /// None here. A mod may send the server its own packets
+    /// (`native_send_packet`). Client only.
+    /// API @API:client_player_network_logging_in@.
+    pub(super) fn native_client_player_network_logging_in(&mut self) {
+        mod_api::dispatch_client_player_network_logging_in(self, mod_api::mods());
     }
     /// Once before this client's final save/exit. A mod can flush and join its worker here.
     pub(super) fn native_client_stopping(&self) {
@@ -2204,6 +2252,25 @@ impl Game<'_> {
     /// The normal menu blur request, before finite/range validation. None disables it.
     pub(super) fn native_menu_background(&self, radius: &mut Option<f32>) {
         mod_api::dispatch_menu_background(self, mod_api::mods(), radius);
+    }
+    /// `Screen.renderTransparentBackground`: draws the translucent dark background
+    /// behind an in-game screen (inventory, container, creative, book, sign, editor).
+    /// Set `canceled` (or return `Flow::Cancel`) to suppress the vanilla dark gradient,
+    /// allowing a mod to draw its own background or apply menu background blur
+    /// via `Host::apply_screen_blur`. API @API:screen_transparent_background@.
+    pub(super) fn native_screen_transparent_background(
+        &self,
+        screen: &str,
+        batch: &mut HudBatch,
+        canceled: &mut bool,
+    ) {
+        mod_api::dispatch_screen_transparent_background(
+            self,
+            mod_api::mods(),
+            screen,
+            batch,
+            canceled,
+        );
     }
     /// Declare categories for custom recipe types, with registered item icons.
     /// Asked lazily once per recipe table by `native_recipe_book_category`.
@@ -2501,6 +2568,21 @@ impl Game<'_> {
     pub(super) fn native_level_tick_post(&mut self, dimension: &str) {
         mod_api::dispatch_level_tick_post(self, mod_api::mods(), dimension);
     }
+    /// A client tick of the window starts (NeoForge's `ClientTickEvent.Pre`,
+    /// at the top of `Minecraft.tick`), before any of its work. The window
+    /// ticks 20 times a second on the title screen, while paused and in a
+    /// world alike, and runs the ticks a slow frame owes back to back. Never
+    /// on a server, single player's own included: it ticks on its own thread.
+    /// Client only. API @API:client_tick@.
+    pub(super) fn native_client_tick_pre(&mut self) {
+        mod_api::dispatch_client_tick_pre(self, mod_api::mods());
+    }
+    /// The same client tick ends (`ClientTickEvent.Post`): the world's tick,
+    /// the chat queue, music and sounds are done. A tick that errors ends
+    /// before it. Client only. API @API:client_tick@.
+    pub(super) fn native_client_tick_post(&mut self) {
+        mod_api::dispatch_client_tick_post(self, mod_api::mods());
+    }
     /// The HUD (not drawn under F1), after the minimap: place a box with
     /// `corners.place` (boxes stack away from their edge) and draw it with
     /// `native_fill` and `native_text`. Skip a corner `native_corner_shown`
@@ -2555,6 +2637,36 @@ impl Game<'_> {
         mod_api::dispatch_gui_layer_post(self, mod_api::mods(), layer, batch);
     }
     /// A player right-clicks the entity `entity` (`Entity.getId`) of type
+    /// `kind` with `self.hand`, holding `stack`, at `location`: the point
+    /// clicked, measured from the entity's position (`EntityHitResult
+    /// .getLocation()` less `Entity.position()`, the interact packet's
+    /// `location`), as NeoForge's `PlayerInteractEvent.EntityInteractSpecific`.
+    /// It comes first where `Player.interactOn` starts, before
+    /// `native_interact_entity`, the entity's own `interact` (26.3's
+    /// `interactAt` and `interact` in one) and the item's
+    /// `interactLivingEntity`. Set `claimed` to take the click: the hand
+    /// swings and none of those runs. Asked once per hand, as vanilla tries
+    /// the main hand then the off hand. Server-side, for every player of the
+    /// world (the helpers read the acting one). API @API:entity_interact_specific@.
+    pub(super) fn native_entity_interact_specific(
+        &mut self,
+        entity: i32,
+        kind: &str,
+        stack: Option<&ItemStack>,
+        location: [f64; 3],
+        claimed: &mut bool,
+    ) {
+        mod_api::dispatch_entity_interact_specific(
+            self,
+            mod_api::mods(),
+            entity,
+            kind,
+            stack,
+            location,
+            claimed,
+        );
+    }
+    /// A player right-clicks the entity `entity` (`Entity.getId`) of type
     /// `kind` (`minecraft:cow`) with `self.hand`, holding `stack` (none in an
     /// empty hand): where `Player.interactOn` starts, before the entity's own
     /// `interact` and the item's `interactLivingEntity`. Set `claimed` to take
@@ -2569,6 +2681,24 @@ impl Game<'_> {
         claimed: &mut bool,
     ) {
         mod_api::dispatch_interact_entity(self, mod_api::mods(), entity, kind, stack, claimed);
+    }
+    /// An item's fallback on a living native Mob, after ordinary entity
+    /// interactions and `native_interact_entity` passed. The exact packet
+    /// target or unobstructed crosshair mob must still be alive; `stack` is
+    /// nonempty and belongs to the acting hand. First `Some` owns the turn:
+    /// true swings once, false ends it without a swing; None passes.
+    /// Server-side for every acting player. This covers native Mob entries,
+    /// not armor stands, other real players or dragon-part interaction tables.
+    /// `ItemStack.interactLivingEntity` in `Player.interactOn`.
+    /// API @API:item_interact_mob@.
+    pub(super) fn native_item_interact_mob(
+        &mut self,
+        entity: i32,
+        kind: &str,
+        stack: Option<&ItemStack>,
+        swing: &mut Option<bool>,
+    ) {
+        mod_api::dispatch_item_interact_mob(self, mod_api::mods(), entity, kind, stack, swing);
     }
     /// A player left-clicks the block `state` at `pos`, `face` the face hit
     /// (`[0, 1, 0]` is the top): where `ServerPlayerGameMode.handleBlockBreakAction`
@@ -2586,6 +2716,39 @@ impl Game<'_> {
         canceled: &mut bool,
     ) {
         mod_api::dispatch_left_click_block(self, mod_api::mods(), pos, face, state, canceled);
+    }
+    /// NeoForge's `PlayerEvent.BreakSpeed`: how fast the player digs the block
+    /// `state` at `pos`, where `Player.getDestroySpeed` ends. `speed` starts as
+    /// vanilla's, `original` (the tool, mining efficiency, Haste and Mining
+    /// Fatigue, the block break speed attribute, the slowdowns under water and
+    /// off the ground), and a mod may change it; every mod is called in turn,
+    /// and `original` stays vanilla's. `BlockBehaviour.getDestroyProgress` then
+    /// divides the speed by the block's hardness and by 30, or 100 without the
+    /// right tool, for each tick of the dig: a speed of 0 makes no progress, so
+    /// the block isn't broken, not even one that breaks at once. Not asked for
+    /// an unbreakable block (hardness -1) nor in creative mode. Fires on the
+    /// `Game` that works out the dig: single player's, a LAN or dedicated
+    /// host's for each guest (the helpers read that player), and a remote
+    /// client's own prediction, so a mod changes the speed alike on both sides
+    /// to keep the crack in step with the server. It is asked every tick of a
+    /// dig, on each side, so it should only compute. API @API:break_speed@.
+    pub(super) fn native_break_speed(
+        &self,
+        pos: [i32; 3],
+        state: BlockStateId,
+        original: f32,
+        speed: &mut f32,
+    ) {
+        mod_api::dispatch_break_speed(self, mod_api::mods(), pos, state, original, speed);
+    }
+    /// A living player's server tick starts (NeoForge's `PlayerTickEvent.Pre`,
+    /// the top of `ServerPlayer.tick`): once a tick for every player in the
+    /// world, before their digging, item use and cooldowns, and before the
+    /// `native_player_tick` that ends the same tick. The helpers read that
+    /// player. Players still tick under `/tick freeze`; a dead player
+    /// doesn't. API @API:player_tick_pre@.
+    pub(super) fn native_player_tick_pre(&mut self) {
+        mod_api::dispatch_player_tick_pre(self, mod_api::mods());
     }
     /// A living player's server tick ends (`ServerPlayer.tick`): once a tick
     /// for every player in the world, after their digging, item use,
@@ -3171,6 +3334,69 @@ impl Game<'_> {
             tank,
             fluid,
             cancel,
+        );
+    }
+    /// Opt a mod block into canonical custom fluid storage. Asked for mod block entities
+    /// when the block fluid helpers resolve their target. True takes precedence over API 54's
+    /// `fluids` storage, even when a runtime callback supplies no response.
+    /// Set custom to true for your block; never clear an earlier declaration.
+    /// @API:custom_block_fluids@
+    pub(super) fn native_custom_block_fluids(&self, block: &str, custom: &mut bool) {
+        mod_api::dispatch_custom_block_fluids(self, mod_api::mods(), block, custom);
+    }
+    /// Read the declared custom capability. None side is explicitly unsided.
+    /// The first supplied response owns the result; None never falls through
+    /// to ordinary storage. This callback must be read-only.
+    pub(super) fn native_custom_fluid_tanks(
+        &self,
+        pos: [i32; 3],
+        side: Option<Direction>,
+        out: &mut Option<Vec<NativeFluidTankView>>,
+    ) {
+        mod_api::dispatch_custom_fluid_tanks(self, mod_api::mods(), pos, side, out);
+    }
+    /// Fill the declared custom capability, returning the accepted amount.
+    /// Simulate must not mutate canonical NBT, inventory, dirty/sync state or
+    /// RNG. Execute owns those changes and notifications. Invalid responses
+    /// are refused, but validation cannot audit consumption or roll back a
+    /// provider's storage changes (including intentional source quirks).
+    pub(super) fn native_custom_fluid_fill(
+        &mut self,
+        pos: [i32; 3],
+        side: Option<Direction>,
+        resource: &NativeFluidStack,
+        action: NativeFluidAction,
+        out: &mut Option<i32>,
+    ) {
+        mod_api::dispatch_custom_fluid_fill(
+            self,
+            mod_api::mods(),
+            pos,
+            side,
+            resource,
+            action,
+            out,
+        );
+    }
+    /// Drain the declared custom capability. Exact matches fluid AND its
+    /// complete component patch; Any lets the provider choose. Simulate is
+    /// read-only. Execute owns canonical storage and notifications.
+    pub(super) fn native_custom_fluid_drain(
+        &mut self,
+        pos: [i32; 3],
+        side: Option<Direction>,
+        request: &NativeFluidDrain,
+        action: NativeFluidAction,
+        out: &mut Option<NativeFluidStack>,
+    ) {
+        mod_api::dispatch_custom_fluid_drain(
+            self,
+            mod_api::mods(),
+            pos,
+            side,
+            request,
+            action,
+            out,
         );
     }
     /// Block `block`'s block entity has an energy buffer
@@ -4022,7 +4248,8 @@ impl Game<'_> {
     /// yours. Asked once when a world opens to players (a dedicated
     /// server, a LAN host, single player's server thread); every player's
     /// chat box then completes them as vanilla's, within their level. A
-    /// name vanilla has is left out. API 8.
+    /// name vanilla has is left out. Asked again after a mod calls
+    /// `native_refresh_commands`. API 8.
     pub(super) fn native_register_commands(&mut self, commands: &mut Vec<NativeCommand>) {
         mod_api::dispatch_register_commands(self, mod_api::mods(), commands);
     }
@@ -4574,6 +4801,21 @@ impl Game<'_> {
             cancel,
         );
     }
+    /// A block's clone item before Ctrl+Pick adds block-entity components.
+    /// The first supplied stack replaces the block's normal clone item;
+    /// no response keeps vanilla behavior. Empty or unregistered replacements
+    /// produce no picked item, including for a block without a primary item.
+    /// @API:block_clone_item@
+    pub(super) fn native_block_clone_item(
+        &self,
+        block: &str,
+        pos: [i32; 3],
+        state: BlockStateId,
+        stack: &mut Option<ItemStack>,
+    ) {
+        mod_api::dispatch_block_clone_item(self, mod_api::mods(), block, pos, state, stack);
+    }
+
     /// A server player picked an item from a block or entity, before it enters
     /// the hotbar. `pos` is zero for an entity; `entity_id` is zero for a
     /// block. The player's state is swapped in, though helpers that look them
@@ -5741,6 +5983,59 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_prepare_anvil(self, mod_api::mods(), player, name, pos, cost, result);
     }
+    /// NeoForge's `AnvilUpdateEvent`: the anvil result of `player` (`name`),
+    /// where `AnvilMenu.createResult` ends, once vanilla worked it out from the
+    /// inputs `left` and `right` (none when that slot is empty) and the rename
+    /// box's `item_name` (NeoForge's `getName`: none until the client sent
+    /// one, empty to clear a custom name). `vanilla_output`, `vanilla_xp_cost`
+    /// and `vanilla_material_cost` are vanilla's result (`getVanillaResult`).
+    /// `output`, `xp_cost` (the level cost) and `material_cost` (how many of
+    /// `right` the take uses) start as vanilla's, and every mod is called in
+    /// turn and may change them. Set `canceled` to leave the anvil with no
+    /// result and both costs at 0: later mods aren't called. A negative level
+    /// cost becomes 0 (`AnvilMenu.setCost`), and a result that costs 0 levels
+    /// can't be taken. A material cost of 0 or less, or one above what `right`
+    /// holds, takes the whole stack (none when the anvil only renames). Asked
+    /// whenever the inputs or the name change while the left slot holds an
+    /// item, on the `Game` that works out the result: a host's (single
+    /// player's server thread, a LAN or dedicated host) for each player's
+    /// menu, and the window's own, so a mod answers alike on both sides to
+    /// keep the window in step with the server. The window works its result
+    /// out again after each click in the menu, so it may ask about the same
+    /// inputs again: a mod should answer from what it is told. On the host,
+    /// `native_prepare_anvil` comes after it. API @API:anvil_update@.
+    pub(super) fn native_anvil_update(
+        &mut self,
+        player: u128,
+        name: &str,
+        left: &ItemStack,
+        right: Option<&ItemStack>,
+        item_name: Option<&str>,
+        vanilla_output: Option<&ItemStack>,
+        vanilla_xp_cost: i32,
+        vanilla_material_cost: i32,
+        output: &mut Option<ItemStack>,
+        xp_cost: &mut i32,
+        material_cost: &mut i32,
+        canceled: &mut bool,
+    ) {
+        mod_api::dispatch_anvil_update(
+            self,
+            mod_api::mods(),
+            player,
+            name,
+            left,
+            right,
+            item_name,
+            vanilla_output,
+            vanilla_xp_cost,
+            vanilla_material_cost,
+            output,
+            xp_cost,
+            material_cost,
+            canceled,
+        );
+    }
     /// A player took an anvil's result at `pos` (`AnvilCraftEvent.Pre`), before the levels are charged, the inputs used up and the anvil worn. `craft` holds the inputs and the result as they were before. Set `cancel` to refuse the take: the result stays in its slot and the inputs, levels, inventory and cursor are as before the click. 328.
     pub(super) fn native_anvil_craft_pre(
         &mut self,
@@ -6281,6 +6576,36 @@ impl Game<'_> {
         mod_api::dispatch_entity_break_door(self, mod_api::mods(), entity, kind, pos);
     }
 
+    /// A mob or a player is about to change the block at `pos`: a landing's
+    /// trampling (farmland to dirt, a turtle egg breaking), before its
+    /// neighbour updates and events. `player` is the player whose landing it
+    /// was, `entity` and `kind` the mob for a mob's landing (`None` and the
+    /// player's type here). `from` and `to` are the block names. Set `cancel`
+    /// and the block stays as it was and nothing the change would have caused
+    /// happens, as Bukkit's `EntityChangeBlockEvent` (@API:entity_change_block_v2@).
+    pub(super) fn native_entity_change_block_v2(
+        &mut self,
+        player: Option<u128>,
+        entity: Option<u32>,
+        kind: &str,
+        pos: [i32; 3],
+        from: &str,
+        to: &str,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_entity_change_block_v2(
+            self,
+            mod_api::mods(),
+            player,
+            entity,
+            kind,
+            pos,
+            from,
+            to,
+            cancel,
+        );
+    }
+
     /// A mob changed a block at `pos`, after the new state was applied.
     /// 214.
     pub(super) fn native_entity_change_block(
@@ -6589,6 +6914,18 @@ impl Game<'_> {
         size: [f32; 2],
     ) {
         mod_api::dispatch_tooltip_component_draw(self, mod_api::mods(), stack, batch, origin, size);
+    }
+    /// Intercept item tooltip rendering before geometry calculation and drawing.
+    /// Setting `cancel` to true suppresses vanilla tooltip rendering.
+    pub(super) fn native_tooltip_render_pre(
+        &mut self,
+        stack: &ItemStack,
+        batch: &mut HudBatch,
+        x: f32,
+        y: f32,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_tooltip_render_pre(self, mod_api::mods(), stack, batch, x, y, cancel);
     }
 
     /// The small bar `GuiGraphicsExtractor.itemDecorations` draws under an
@@ -7867,6 +8204,63 @@ impl Game<'_> {
             canceled,
         );
     }
+    /// `LivingEntity.actuallyHurt` is about to take `amount` from entity
+    /// `entity`'s health (NeoForge's `LivingDamageEvent.Pre`), once armour
+    /// (already worn down by the hit), enchantment protection, effects
+    /// (Resistance) and absorption have taken their part. The other arguments
+    /// are `native_living_incoming_damage`'s. Change `amount` to change what
+    /// the health loses: a negative or NaN amount takes nothing, an infinite
+    /// one `Float.MAX_VALUE`. The hit can't be canceled here (that is
+    /// `native_living_incoming_damage`): its invulnerable time, hurt sound and
+    /// knockback follow whatever the amount. Not told when no hit reaches
+    /// `actuallyHurt` (refused, canceled, or within the cooldown and no
+    /// stronger than the last hit) nor when a wolf's armour takes it.
+    /// Players, mobs and the ender dragon. It runs on the thread that ticks
+    /// the world (the server thread): state shared with render thread hooks
+    /// needs synchronising. No `self`: the game is in the middle of the hit.
+    /// API @API:living_damage@.
+    pub(super) fn native_living_damage_pre(
+        entity: i32,
+        kind: &str,
+        damage_type: &str,
+        causing: i32,
+        direct: i32,
+        amount: &mut f32,
+    ) {
+        mod_api::dispatch_living_damage_pre(
+            mod_api::mods(),
+            entity,
+            kind,
+            damage_type,
+            causing,
+            direct,
+            amount,
+        );
+    }
+    /// The end of `LivingEntity.actuallyHurt` (NeoForge's
+    /// `LivingDamageEvent.Post`): `amount` came off entity `entity`'s health,
+    /// 0 when nothing did (absorption took it all, or a mod made it 0), after
+    /// the combat tracker. The arguments are
+    /// `native_living_damage_pre`'s. It only hears, on the server thread, with
+    /// no `self`. API @API:living_damage@.
+    pub(super) fn native_living_damage_post(
+        entity: i32,
+        kind: &str,
+        damage_type: &str,
+        causing: i32,
+        direct: i32,
+        amount: f32,
+    ) {
+        mod_api::dispatch_living_damage_post(
+            mod_api::mods(),
+            entity,
+            kind,
+            damage_type,
+            causing,
+            direct,
+            amount,
+        );
+    }
     /// A player's weapon hit on a mob, before `Mob::damage_with` borrows the
     /// victim: melee, sweep and spear hits, including LAN guests. Unlike v1,
     /// this has a host and snapshots of the weapon, victim position/view and
@@ -8246,7 +8640,33 @@ pub(super) fn hurt_server(hurting: Hurting<'_>, amount: &mut f32) -> bool {
     );
     canceled
 }
-/// `native_living_incoming_damage`'s entity, entity type and source for a hit.
+/// `native_living_damage_pre` for the damage code (`health::DAMAGE_PRE`). Its
+/// one caller.
+pub(super) fn damage_pre(hurting: Hurting<'_>, amount: &mut f32) {
+    let (entity, kind, source) = hurt_server_args(hurting);
+    Game::native_living_damage_pre(
+        entity,
+        kind,
+        source.damage_type,
+        source.causing,
+        source.direct,
+        amount,
+    );
+}
+/// `native_living_damage_post` for the damage code (`health::DAMAGE_POST`).
+/// Its one caller.
+pub(super) fn damage_post(hurting: Hurting<'_>, amount: f32) {
+    let (entity, kind, source) = hurt_server_args(hurting);
+    Game::native_living_damage_post(
+        entity,
+        kind,
+        source.damage_type,
+        source.causing,
+        source.direct,
+        amount,
+    );
+}
+/// The damage hooks' entity, entity type and source for a hit.
 fn hurt_server_args(hurting: Hurting<'_>) -> (i32, &str, HurtSource<'_>) {
     match hurting {
         Hurting::Player(entity, source) => (entity, "minecraft:player", source),
@@ -8686,6 +9106,13 @@ impl Game<'_> {
     pub(super) fn native_max_stack_size(&self, item: &str) -> Option<u32> {
         self.res.items().get(item).map(|i| i.max_stack)
     }
+    /// The default state of the block named `block`, `minecraft:air` or
+    /// `mymod:cable` (`Block.defaultBlockState`), what `native_set_block` takes:
+    /// a machine clearing or placing a block by name. None for an unknown
+    /// block. API @API:default_state@.
+    pub(super) fn native_default_state(&self, block: &str) -> Option<BlockStateId> {
+        self.pack.assets.registry.default_state(block)
+    }
     /// The random of the server level `dimension`: vanilla's `Level.random`
     /// (`level.getRandom()`), the one its explosions, block drops and other
     /// level draws use, so a mod's draws move vanilla's later ones as a Java
@@ -9016,6 +9443,55 @@ impl Game<'_> {
         r.u1 = r.u0 + src[2] * du;
         r.v1 = r.v0 + src[3] * dv;
         batch.rect_uv(dst[0], dst[1], dst[2], dst[3], r, u32::MAX);
+        true
+    }
+    /// Requests vanilla's menu background blur for this frame, with a per-frame guard
+    /// so blur is applied at most once per frame. Returns true if blur was newly
+    /// requested this frame, or false if it was already applied/requested this frame.
+    /// API @API:screen_transparent_background@.
+    pub(super) fn native_apply_screen_blur(&self) -> bool {
+        if self.screen_blur_requested.get() {
+            return false;
+        }
+        self.screen_blur_requested.set(true);
+        true
+    }
+    /// The user's configured menu background blur radius (`menuBackgroundBlurriness` in options.txt,
+    /// usually 0.0 to 10.0; default 5.0). 0.0 means blur is turned off. API @API:screen_transparent_background@.
+    pub(super) fn native_menu_blur_radius(&self) -> f32 {
+        self.settings.menu_blur as f32
+    }
+    /// `Screen.renderMenuBackground`: draws the tiled menu background (32x32) across `rect`
+    /// (`[x, y, w, h]` in GUI pixels). If `in_world` is true, uses the dark translucent
+    /// texture (`gui/inworld_menu_background`); otherwise uses the opaque dirt-like
+    /// texture (`gui/menu_background`). API @API:screen_transparent_background@.
+    pub(super) fn native_draw_menu_background(
+        &self,
+        batch: &mut HudBatch,
+        rect: [f32; 4],
+        in_world: bool,
+    ) {
+        let [x, y, w, h] = rect;
+        horizon_client::ui::menu_background(batch, &self.gui.atlas, x, y, w, h, in_world);
+    }
+    /// Repeats sprite `sprite` across `rect` (`[x, y, w, h]` in GUI pixels) with each tile
+    /// sized `size` GUI pixels square, tinted by `argb`. False when the sprite is not in the HUD atlas.
+    /// API @API:screen_transparent_background@.
+    pub(super) fn native_tiled_sprite(
+        &self,
+        batch: &mut HudBatch,
+        sprite: &str,
+        rect: [f32; 4],
+        size: f32,
+        argb: u32,
+    ) -> bool {
+        let atlas = &self.gui.atlas;
+        if !atlas.sprites.contains_key(sprite) {
+            return false;
+        }
+        let [x, y, w, h] = rect;
+        let [a, r, g, b] = argb.to_be_bytes();
+        horizon_client::ui::tiled(batch, atlas, sprite, x, y, w, h, size, rgba(r, g, b, a));
         true
     }
     /// Item `item`'s icon (`mymod:machine`) with its top left at `at`,
@@ -9381,7 +9857,9 @@ impl Game<'_> {
     /// 8192), as the game's own slots in pages, with a search box; the
     /// player's clicks, searches and keys over items come back as
     /// `native_panel_event`. The panel is the last mod's to show one; empty
-    /// items and no recipe page take yours away.
+    /// items and no recipe page take yours away, except that an empty reply
+    /// to a non-empty Search keeps its field editable. A clear outside that
+    /// event still removes the panel (as when a viewer closes).
     pub(super) fn native_panel_items(&mut self, mod_id: &str, items: Vec<NativeStack>) {
         self.panel.show_items(mod_id, items);
     }
@@ -10076,7 +10554,6 @@ impl Game<'_> {
         };
         // An empty id marks its place while the mod has it.
         let mut taken = std::mem::take(&mut **m);
-        let items = taken.items.clone();
         let state = self.world.block(pos.0, pos.1, pos.2).0;
         let slots = self
             .world
@@ -10087,6 +10564,7 @@ impl Game<'_> {
         if taken.items.len() < slots {
             taken.items.resize(slots, None);
         }
+        let items = taken.items.clone();
         // Without a container, an `Items` item list is the mod's own field.
         if slots == 0 && !taken.items.is_empty() {
             let items = horizon_client::save::encode_items(&std::mem::take(&mut taken.items));
@@ -10502,6 +10980,77 @@ fn mod_screen_opens(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn held_durability_retains_the_stack_hand_and_explicit_break_slot() {
+        use crate::game::{Audio, Game, Hand, Options, Progress, Settings, load_resources};
+        use horizon_client::{items::ItemStack, motion::PlayerMotion};
+        use horizon_core::geometry::Vec3;
+        use horizon_world::player_inventory::EquipmentSlot;
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources required"),
+        );
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.0, 70.0, 0.0)).unwrap());
+        game.set_mode_id(0);
+        // Stage an acting guest: break events are queued instead of rendering local crumbs.
+        game.lan_acting = Some(1);
+        game.hand = Hand::Off;
+        let main = ItemStack::new("minecraft:stick", 3);
+        game.inventory[game.selected] = Some(main.clone());
+        let max = game
+            .items()
+            .get("minecraft:flint_and_steel")
+            .unwrap()
+            .max_damage;
+        game.offhand = Some(ItemStack::new("minecraft:flint_and_steel", 1));
+        game.damage_held_in_slot(1, EquipmentSlot::OffHand);
+        assert_eq!(game.offhand.as_ref().unwrap().damage, 1);
+        assert!(game.guest_equipment_breaks.is_empty());
+        for (explicit, event) in [(true, 48), (false, 47)] {
+            let mut tool = ItemStack::new("minecraft:flint_and_steel", 1);
+            tool.damage = max - 1;
+            game.offhand = Some(tool);
+            if explicit {
+                game.damage_held_in_slot(1, EquipmentSlot::OffHand);
+            } else {
+                game.damage_held(1);
+            }
+            assert!(game.offhand.is_none());
+            assert_eq!(game.inventory[game.selected], Some(main.clone()));
+            assert_eq!(game.guest_equipment_breaks.last().unwrap().0, event);
+        }
+        game.set_mode_id(1);
+        game.offhand = Some(ItemStack::new("minecraft:flint_and_steel", 1));
+        game.damage_held_in_slot(1, EquipmentSlot::OffHand);
+        assert_eq!(game.offhand.as_ref().unwrap().damage, 0);
+    }
+
     #[test]
     fn hand_pose_rejects_invalid_components() {
         let identity = super::hand_pose_matrix([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
@@ -11100,6 +11649,7 @@ mod tests {
         let hunger_hooks = free_hooks(include_str!("../hunger.rs"));
         let landing_hooks = free_hooks(include_str!("../landing.rs"));
         let motion_hooks = free_hooks(include_str!("../motion.rs"));
+        let sound_hooks = free_hooks(include_str!("../sound_playback.rs"));
         // The chat relay's (`horizon_client_lib::lan::hub::chat`).
         let chat_hooks = free_hooks(include_str!("../lan/hub/chat.rs"));
         // The mob AI's (`horizon_client_lib::mobs::ai`).
@@ -11122,6 +11672,7 @@ mod tests {
             .chain(hunger_hooks.iter().copied())
             .chain(landing_hooks.iter().copied())
             .chain(motion_hooks.iter().copied())
+            .chain(sound_hooks.iter().copied())
             .chain(chat_hooks.iter().copied())
             .chain(mob_hooks.iter().copied())
             .collect();
@@ -11151,6 +11702,8 @@ mod tests {
                 format!("horizon_client_lib::landing::native_{name}")
             } else if motion_hooks.contains(name) {
                 format!("horizon_client_lib::motion::native_{name}")
+            } else if sound_hooks.contains(name) {
+                format!("horizon_client_lib::sound_playback::native_{name}")
             } else if chat_hooks.contains(name) {
                 format!("horizon_client_lib::lan::hub::chat::native_{name}")
             } else if menu_hooks.contains(name) {

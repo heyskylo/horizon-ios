@@ -331,6 +331,17 @@ pub struct ArrowScene<'a, 'r> {
     /// The `mob_griefing` and `tnt_explodes` game rules.
     pub mob_griefing: bool,
     pub tnt_explodes: bool,
+    pub owners: &'a dyn OwnerLookup,
+}
+/// `EntityReference.getEntity` for an owner the arrow only knows by UUID.
+pub trait OwnerLookup {
+    /// A loaded entity other than a player has this UUID.
+    fn non_player_entity(&self, uuid: [i32; 4]) -> bool;
+}
+impl OwnerLookup for () {
+    fn non_player_entity(&self, _: [i32; 4]) -> bool {
+        false
+    }
 }
 impl ArrowScene<'_, '_> {
     fn block(&self, p: BlockPos) -> BlockStateId {
@@ -370,6 +381,8 @@ impl ArrowScene<'_, '_> {
             binding: self.collision,
             subject: None,
         };
+        // CollisionContext.of(arrow): scaffolding is open from below.
+        let context = horizon_world::collision_context::CollisionContext::position(from.y);
         let hit = horizon_core::geometry::traverse_blocks(from, to, 1024, |p: BlockPos| {
             if Some(p) == ignored {
                 return None;
@@ -380,7 +393,7 @@ impl ArrowScene<'_, '_> {
             }
             let shape = self
                 .collision
-                .collision_shape(&mut scene, state, [p.x, p.y, p.z])
+                .collision_shape_with_context(&mut scene, state, p, &context)
                 .ok()?;
             shape.clip(from, to, p)
         });
@@ -447,13 +460,15 @@ pub fn clip_block_hit(
         binding: collision,
         subject: None,
     };
+    // CollisionContext.of(projectile): scaffolding is open from below.
+    let context = horizon_world::collision_context::CollisionContext::position(from.y);
     let hit = horizon_core::geometry::traverse_blocks(from, to, 1024, |p: BlockPos| {
         let state = world.block(p.x, p.y, p.z);
         if facts.is_air(state) {
             return None;
         }
         let shape = collision
-            .collision_shape(&mut scene, state, [p.x, p.y, p.z])
+            .collision_shape_with_context(&mut scene, state, p, &context)
             .ok()?;
         shape.clip(from, to, p)
     })
@@ -1061,9 +1076,17 @@ impl Ticker<'_, '_, '_, '_> {
         self.st.pierce = 0;
         self.st.pierced.clear();
     }
-    /// `Projectile.mayInteract`: a mob's arrows need `mob_griefing`.
+    /// `Projectile.mayInteract`: an arrow owned by anything but a player needs `mob_griefing`.
     fn may_interact(&self) -> bool {
-        !matches!(self.p.owner, Some(Who::Mob(_))) || self.scene.mob_griefing
+        let by_entity = match self.p.owner {
+            Some(Who::Mob(_)) => true,
+            Some(Who::Player) => false,
+            None => self
+                .p
+                .owner_uuid
+                .is_some_and(|u| self.scene.owners.non_player_entity(u)),
+        };
+        !by_entity || self.scene.mob_griefing
     }
     /// `onProjectileHit` of the blocks a burning projectile lights.
     fn block_reaction(&self, state: BlockStateId) -> Option<BlockReaction> {

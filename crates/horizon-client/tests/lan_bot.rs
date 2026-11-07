@@ -1903,14 +1903,15 @@ fn status_protocol(port: u16, protocol: i32) -> Result<i64, String> {
 /// `accept_older_clients` off (the default), a 26.2 client is turned away as vanilla turns it away and the
 /// server list shows 26.3's protocol; on, the client is told its own protocol, logs in in 26.2's packet ids
 /// and is told, before any registry data, that 26.2 isn't translated yet, while a 26.3 client is served as
-/// before. Let past that (the tests-only `older_clients_play`), it plays in 26.2's packet ids and sees the
-/// block it places.
+/// before. Let past that (the tests-only `older_clients_play`), it is sent the tags in 26.2's item ids, plays in
+/// 26.2's packet ids and sees the block it places.
 #[test]
 fn a_26_2_client_joins_only_a_server_that_accepts_older_clients() {
     let Some(resources) = resources() else {
         return;
     };
     const OLD: ServerVersion = ServerVersion::V26_2;
+    const DIAMOND_26_2: i32 = 926;
     const DIAMOND_26_3: i32 = 1012;
     let mut off = server(&resources);
     let port = off.hub.lan.port;
@@ -1964,8 +1965,8 @@ fn a_26_2_client_joins_only_a_server_that_accepts_older_clients() {
     };
     let mut play = server_with(&resources, net);
     let port = play.hub.lan.port;
-    let placed = run(&mut play, move || {
-        let (mut bot, _) = join_as(OLD, port, "Old")?.map_err(|r| format!("refused: {r}"))?;
+    let (payment, placed) = run(&mut play, move || {
+        let (mut bot, payment) = join_as(OLD, port, "Old")?.map_err(|r| format!("refused: {r}"))?;
         let (mut login, mut chunks, mut placed) = (false, 0, None);
         let deadline = Instant::now() + Duration::from_secs(15);
         while Instant::now() < deadline {
@@ -2029,8 +2030,10 @@ fn a_26_2_client_joins_only_a_server_that_accepts_older_clients() {
             }
         }
         assert!(login, "no login packet");
-        Ok(placed.flatten())
+        Ok((payment, placed.flatten()))
     });
+    assert!(payment.contains(&DIAMOND_26_2), "{payment:?}");
+    assert!(!payment.contains(&DIAMOND_26_3), "{payment:?}");
     assert_eq!(placed, Some(([9, MIN_Y + 5, 9], STONE as i32)));
     assert_eq!(play.placed.len(), 1);
 }
