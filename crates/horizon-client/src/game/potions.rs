@@ -1135,8 +1135,19 @@ impl Game<'_> {
     /// The effects' attribute modifiers, armor protection and status flags
     /// on `self.player`.
     pub(super) fn apply_effect_status(&mut self) {
+        // LivingEntity.onEffectAdded, onEffectUpdated and onEffectsRemoved
+        // change the attributes on a server only. A server's client has the
+        // modifiers its ClientboundUpdateAttributesPacket sends, which comes a
+        // tick after the effect's own packet when the effect starts or ends in
+        // the player's tick (ServerPlayer.doTick runs after the tick's
+        // sendDirtyEntityData). Its own would slow it a tick before the
+        // server's player when Speed runs out (#12040).
+        if self.remote.is_some() {
+            self.potions.applied.clear();
+        }
         let modifiers = self.potions.effects.modifiers();
-        if modifiers != self.potions.applied
+        if self.remote.is_none()
+            && modifiers != self.potions.applied
             && let Some(p) = self.player.as_mut()
         {
             for (attr, id, _, op) in &self.potions.applied {
