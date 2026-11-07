@@ -127,12 +127,10 @@ pub fn process() -> Counts {
     total
 }
 
-/// mimalloc that counts every block (see the module). A `realloc` counts as a free of the old
-/// block and an allocation of the new one: a growing `Vec` is churn.
+/// mimalloc that counts every block; a `realloc` counts as a free plus an allocation.
 pub struct CountingAllocator;
 
-// SAFETY: forwards every call to mimalloc, which upholds the contract; counting touches only
-// atomics and a const thread-local, so it never allocates.
+// SAFETY: forwards every call to mimalloc; counting never allocates.
 unsafe impl GlobalAlloc for CountingAllocator {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {

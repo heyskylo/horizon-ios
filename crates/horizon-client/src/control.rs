@@ -557,7 +557,12 @@ mod tests {
         for (i, a) in [100u64, 200, 300, 400, 1000].into_iter().enumerate() {
             // Window: 10 blocks kept; process: twice the blocks, 1 MiB per 100, 20 blocks and 1 MiB kept.
             let window = counts(a, a * 1024, a - 10, 0);
-            let all = counts(2 * a, (2 * a / 100) << 20, 2 * a - 20, ((2 * a / 100) - 1) << 20);
+            let all = counts(
+                2 * a,
+                (2 * a / 100) << 20,
+                2 * a - 20,
+                ((2 * a / 100) - 1) << 20,
+            );
             stats.record_allocs(window, all, start + Duration::from_millis(100 * i as u64));
         }
         let alloc = stats.alloc_summary();
@@ -706,7 +711,8 @@ impl FrameStats {
     /// One frame's allocations: this thread's since the last frame, all threads' since then.
     pub fn record_allocs(&mut self, window: Counts, process: Counts, now: Instant) {
         if self.allocs.len() < Self::LIMIT {
-            self.allocs.push(u32::try_from(window.allocs).unwrap_or(u32::MAX));
+            self.allocs
+                .push(u32::try_from(window.allocs).unwrap_or(u32::MAX));
             self.alloc_bytes.push(window.bytes);
             self.alloc_frees += window.frees;
         }
@@ -747,12 +753,11 @@ impl FrameStats {
                 "max": round(values[n - 1]),
             })
         };
-        let per_second = |amount: u64, seconds: f64| {
-            (seconds > 0.0).then(|| round(amount as f64 / seconds))
-        };
-        let seconds = self
-            .alloc_span
-            .map_or(0.0, |(first, last)| last.duration_since(first).as_secs_f64());
+        let per_second =
+            |amount: u64, seconds: f64| (seconds > 0.0).then(|| round(amount as f64 / seconds));
+        let seconds = self.alloc_span.map_or(0.0, |(first, last)| {
+            last.duration_since(first).as_secs_f64()
+        });
         let mib = |bytes: u64| bytes as f64 / 1048576.0;
         let process = &self.alloc_process;
         serde_json::json!({
