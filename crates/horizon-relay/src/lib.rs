@@ -93,6 +93,9 @@ impl Config {
         if let Some(v) = var("RELAY_MAX_HOSTS_PER_ADDRESS") {
             c.rates.hosts_per_address = v;
         }
+        if let Some(v) = var("RELAY_MAX_OPEN_PER_ADDRESS") {
+            c.rates.open_per_address = v;
+        }
         if let Some(v) = var("RELAY_MAX_BRIDGES") {
             c.max_bridges = v;
         }
@@ -404,11 +407,38 @@ fn unmap(peer: SocketAddr) -> SocketAddr {
     }
 }
 
+/// A connection counted against its address's cap ([`limits::Limiter::open_connection`]), given
+/// back however the connection ends.
+struct OpenSlot<'a>(&'a State, std::net::IpAddr);
+impl<'a> OpenSlot<'a> {
+    fn take(state: &'a State, ip: std::net::IpAddr) -> Option<Self> {
+        // Decided with the lock released before a slot exists: a refused one must never be built,
+        // its Drop would give back a place it never took (and lock the limiter again).
+        let open = locked(&state.limiter).open_connection(ip);
+        open.then(|| Self(state, ip))
+    }
+}
+impl Drop for OpenSlot<'_> {
+    fn drop(&mut self) {
+        locked(&self.0.limiter).close_connection(self.1);
+    }
+}
+
 fn handle(state: &Arc<State>, mut stream: TcpStream, peer: SocketAddr) -> io::Result<()> {
     if state.stop.load(Ordering::Relaxed) {
         return Ok(());
     }
     let mut peer = unmap(peer);
+    // Counted per address before anything is read: past its cap a connection is closed at once,
+    // not held for `first_line` with one of the relay's global slots. Behind the PROXY protocol the
+    // client's address is the line the load balancer sends on connect, so it's counted after it.
+    let mut _open = None;
+    if !state.config.proxy_protocol {
+        let Some(slot) = OpenSlot::take(state, peer.ip()) else {
+            return Ok(());
+        };
+        _open = Some(slot);
+    }
     // The first line (and an HTTP request) within `first_line` in all.
     let first_line = horizon_friends::deadline(&stream, state.config.first_line)?;
     stream.set_read_timeout(Some(state.config.first_line))?;
@@ -428,6 +458,10 @@ fn handle(state: &Arc<State>, mut stream: TcpStream, peer: SocketAddr) -> io::Re
         peer = proxy_line(&line)
             .map(unmap)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no PROXY line"))?;
+        let Some(slot) = OpenSlot::take(state, peer.ip()) else {
+            return Ok(());
+        };
+        _open = Some(slot);
         line = wire::read_line(&mut stream)?.ok_or(io::ErrorKind::UnexpectedEof)?;
     }
     if line.starts_with(b"GET ") {
@@ -633,10 +667,13 @@ fn join(
 ) -> io::Result<()> {
     let now = Instant::now();
     state.joins.fetch_add(1, Ordering::Relaxed);
-    // The global budget for unknown codes is checked before the lookup, so a
-    // refusal says nothing about whether the nameplate exists.
-    let allowed =
-        locked(&state.limiter).allow_join(peer.ip(), now) && locked(&state.global_unknown).has(now);
+    // The budgets for unknown codes (the site's, then the global one) are checked before the
+    // lookup, so a refusal says nothing about whether the nameplate exists. The site's comes first:
+    // emptying the global budget takes many sites, not the /64s of one home's /56.
+    let allowed = {
+        let mut limiter = locked(&state.limiter);
+        limiter.allow_join(peer.ip(), now) && limiter.site_unknown_has(peer.ip(), now)
+    } && locked(&state.global_unknown).has(now);
     if !allowed {
         state.rate_limited.fetch_add(1, Ordering::Relaxed);
         return refuse(&mut stream, ErrorCode::RateLimited);
@@ -680,7 +717,11 @@ fn join(
         Lookup::Found(tx, slot) => (tx, slot),
         Lookup::Unknown => {
             state.unknown.fetch_add(1, Ordering::Relaxed);
-            locked(&state.limiter).unknown(peer.ip(), now);
+            {
+                let mut limiter = locked(&state.limiter);
+                limiter.unknown(peer.ip(), now);
+                limiter.site_unknown_take(peer.ip(), now);
+            }
             locked(&state.global_unknown).try_take(now);
             return refuse(&mut stream, ErrorCode::UnknownCode);
         }

@@ -830,7 +830,12 @@ impl Game<'_> {
     pub(super) fn arrow_post_hurt_effects(&mut self, p: &Projectile, who: Who) {
         let from_item = p.arrow.as_ref().map(|a| &a.pickup_item);
         let mut effects: Vec<(&'static str, i32, i32)> = match from_item {
-            Some(s) if &*s.item == "minecraft:spectral_arrow" => vec![("glowing", 200, 0)],
+            // SpectralArrow.doPostHurtEffects: Glowing for the arrow's own
+            // (saved) Duration.
+            Some(s) if &*s.item == "minecraft:spectral_arrow" => {
+                let ticks = p.arrow.as_ref().map_or(200, |a| a.spectral_duration);
+                vec![("glowing", ticks, 0)]
+            }
             Some(s) => {
                 let scale = s.potion_duration_scale();
                 brewing::contents_effects(s)
@@ -1150,6 +1155,16 @@ impl Game<'_> {
         {
             let _ = p.set_health(0.0, true);
         }
+        self.refresh_armor_protection();
+        let mut status = self.potions.effects.status();
+        if let Some(p) = self.player.as_mut() {
+            status.protection = std::mem::take(&mut p.status.protection);
+            p.status = status;
+        }
+    }
+    /// `EnchantmentHelper.getDamageProtection` after equipment changes. This
+    /// does not tick effects or clear absorption while a hit is in progress.
+    pub(super) fn refresh_armor_protection(&mut self) {
         // EnchantmentHelper.getDamageProtection per damage type, recomputed on armor change.
         let armor: Vec<Option<ItemStack>> = self.armor.to_vec();
         if !self
@@ -1191,11 +1206,6 @@ impl Game<'_> {
             if let Some(p) = self.player.as_mut() {
                 p.status.protection = table;
             }
-        }
-        let mut status = self.potions.effects.status();
-        if let Some(p) = self.player.as_mut() {
-            status.protection = std::mem::take(&mut p.status.protection);
-            p.status = status;
         }
     }
     /// The players a thrown potion can hit (`Projectile.canHitEntity`): the

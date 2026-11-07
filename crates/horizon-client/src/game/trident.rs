@@ -267,7 +267,7 @@ impl Game<'_> {
         self.start_using_item();
         true
     }
-    fn in_water_or_rain(&mut self) -> bool {
+    pub(in crate::game) fn in_water_or_rain(&mut self) -> bool {
         let Some(p) = &self.player else { return false };
         let (x, y, z) = (
             p.position.x.floor() as i32,

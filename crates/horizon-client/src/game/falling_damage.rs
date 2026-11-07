@@ -27,6 +27,10 @@ impl Game<'_> {
                     impact.amount,
                     mob_kind,
                 );
+                // Enderman.hurtServer: a falling block is no living attacker.
+                if let Err(e) = self.settle_hurt_teleports() {
+                    log::warn!("Horizon: falling block: enderman teleport: {e}");
+                }
                 let kind = if stalactite {
                     "minecraft:falling_stalactite"
                 } else if anvil {
@@ -192,16 +196,15 @@ impl Game<'_> {
             return;
         }
         let original = amount;
-        let amount = if self.armor[0].is_some() {
-            amount * 0.75
-        } else {
-            amount
+        let Some(id) = self.health_resources.damage.id(kind) else {
+            return;
         };
-        let hurt = match (self.player.as_mut(), self.health_resources.damage.id(kind)) {
-            (Some(p), Some(id)) => p
-                .hurt(&self.health_resources, self.world.health_rules, id, amount)
-                .unwrap_or(false),
-            _ => false,
+        let (hurt, amount) = match self.hurt_player_equipment(id, amount, None, false, 0) {
+            Ok((outcome, actual)) => (outcome.hurt, actual),
+            Err(error) => {
+                log::warn!("falling block damage failed: {error}");
+                (false, amount)
+            }
         };
         if hurt {
             // LivingEntity.hurtServer: ENTITY_HURT_PLAYER, the falling block
@@ -224,3 +227,6 @@ impl Game<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod helmet_tests;

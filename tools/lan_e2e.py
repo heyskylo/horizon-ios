@@ -13389,6 +13389,113 @@ CHECKS += ['levelup-sounds']
 CHECK_FNS['levelup-sounds'] = check_levelup_sounds
 
 
+def check_entity_die(host, guest, out):
+    """#10046: killing an entity that is no mob is heard (`gameEvent(ENTITY_DIE)`: frequency 15) by a
+    sculk sensor about 3 blocks away, from the player's hit while sneaking (the attacker is the source
+    of `BlockAttachedEntity.kill` and `ArmorStand.kill`, and ENTITY_DIE is no event sneaking hides) and
+    from `/kill`: a cushion, a painting, an empty item frame, an armor stand, a boat and a minecart.
+    An item frame holding an item only gives the item up and does not die (`ItemFrame.hurtServer`)."""
+    hx, hy, hz = (int(v // 1) for v in pos_of(host))
+    old_modes = {g.name: g('state')['gamemode'] for g in (host, guest)}
+    seen = {}
+
+    def quiet(game, sensor):
+        state, still = None, 0
+        for _ in range(200):
+            game.wait(1)
+            state = game.raw('getblock', *sensor)['block']
+            still = still + 1 if 'sculk_sensor_phase=inactive' in state else 0
+            if still == 10:
+                return
+        raise Failed(f'sensor did not settle: {state}')
+
+    try:
+        for game, dz in ((host, -6), (guest, 6)):
+            x, z = hx + 8, hz + dz
+            sensor = (x + 3, hy, z + 2)
+            box = f'x={x - 2},y={hy - 1},z={z - 2},dx=7,dy=5,dz=7'
+            target = (x + 0.5, hy, z + 2.5)
+            hanging = (x + 0.5, hy + 1.5, z + 2.97)
+            cases = {
+                'cushion': ('creative', None, (target[0], hy + .125, target[2]), 'click'),
+                'painting': ('creative', f'summon minecraft:painting {x + .5} {hy + 1} {z + 2.97} '
+                             f'{{block_pos:[I;{x},{hy + 1},{z + 2}],facing:2b,variant:"minecraft:kebab"}}',
+                             hanging, 'click'),
+                'item_frame': ('creative', f'summon minecraft:item_frame {x + .5} {hy + 1} {z + 2.97} '
+                               f'{{block_pos:[I;{x},{hy + 1},{z + 2}],Facing:2b}}', hanging, 'click'),
+                'framed_item': ('creative', f'summon minecraft:item_frame {x + .5} {hy + 1} {z + 2.97} '
+                                f'{{block_pos:[I;{x},{hy + 1},{z + 2}],Facing:2b,'
+                                'Item:{id:"minecraft:diamond",count:1}}', hanging, 'click'),
+                'armor_stand': ('creative', f'summon minecraft:armor_stand {target[0]} {hy} {target[2]}',
+                                (target[0], hy + 1, target[2]), 'click'),
+                'boat': ('survival', f'summon minecraft:oak_boat {target[0]} {hy} {target[2]}',
+                         (target[0], hy + .3, target[2]), 'click'),
+                'minecart': ('survival', f'summon minecraft:minecart {target[0]} {hy} {target[2]}',
+                             (target[0], hy + .3, target[2]), 'click'),
+                'kill_painting': ('creative', f'summon minecraft:painting {x + .5} {hy + 1} {z + 2.97} '
+                                  f'{{block_pos:[I;{x},{hy + 1},{z + 2}],facing:2b,variant:"minecraft:kebab"}}',
+                                  None, f'kill @e[type=minecraft:painting,{box}]'),
+                'kill_boat': ('creative', f'summon minecraft:oak_boat {target[0]} {hy} {target[2]}',
+                              None, f'kill @e[type=minecraft:oak_boat,{box}]'),
+            }
+            heard = {}
+            for kind, (mode, summon, aim, act) in cases.items():
+                host('command', command=f'fill {x - 2} {hy - 1} {z - 2} {x + 4} {hy - 1} {z + 5} minecraft:stone')
+                host('command', command=f'fill {x - 2} {hy} {z - 2} {x + 4} {hy + 3} {z + 5} minecraft:air')
+                # The wall the hanging entities hang on, north of it.
+                host('command', command=f'setblock {x} {hy + 1} {z + 3} minecraft:stone')
+                host('command', command=f'setblock {sensor[0]} {sensor[1]} {sensor[2]} minecraft:sculk_sensor')
+                game('command', command=f'gamemode {mode}')
+                game('command', command=f'tp @s {x + 0.5} {hy} {z + 0.5} 0 0')
+                game('command', command='item replace entity @s weapon.mainhand with minecraft:iron_sword')
+                game.raw('key', 'shift', 'down')
+                game.wait(10)
+                if kind == 'cushion':
+                    game('command', command='item replace entity @s weapon.mainhand with minecraft:red_cushion')
+                    game.wait(5)
+                    game.raw('look-at', target[0], hy, target[2])
+                    game.raw('mouse', 'right', 'click')
+                else:
+                    host('command', command=summon)
+                game.wait(20)
+                quiet(game, sensor)
+                # A fresh sensor: whatever it heard while the entity was set up is gone.
+                host('command', command=f'setblock {sensor[0]} {sensor[1]} {sensor[2]} minecraft:air')
+                host('command', command=f'setblock {sensor[0]} {sensor[1]} {sensor[2]} minecraft:sculk_sensor')
+                game.wait(5)
+                if aim is None:
+                    game('command', command=act)
+                else:
+                    game.raw('look-at', *aim)
+                    game.wait(2)
+                    game.raw('mouse', 'left', 'click')
+                game.wait(10)
+                said = command_says(game, f'data get block {sensor[0]} {sensor[1]} {sensor[2]} last_vibration_frequency')
+                heard[kind] = said.rsplit(' ', 1)[-1]
+                game.raw('key', 'shift', 'up')
+                host('command', command=f'kill @e[type=!minecraft:player,{box}]')
+            seen[game.name] = heard
+            host('command', command=f'fill {x - 2} {hy - 1} {z - 2} {x + 4} {hy + 3} {z + 5} minecraft:air')
+    finally:
+        for game in (host, guest):
+            game.raw('key', 'shift', 'up')
+            back_to_game(game)
+            game('command', command='clear @s')
+            game('command', command='gamemode ' + old_modes[game.name])
+        face_each_other(host, guest)
+    for name, heard in seen.items():
+        for kind, frequency in heard.items():
+            if kind == 'framed_item':
+                assert frequency != '15', f'{name}: the frame holding an item died: {seen}'
+            else:
+                assert frequency == '15', f'{name}: {kind} death not heard: {seen}'
+    return seen
+
+
+CHECKS += ['entity-die']
+CHECK_FNS['entity-die'] = check_entity_die
+
+
 def check_mob_thorns(host, guest, out):
     """A mob's Thorns answers the player who hits it (#9954): `doPostAttackEffectsWithItemSource` runs the victim's
     equipment on every hit, so a husk in a Thorns 255 chestplate (the 15% per level always rolls) hurts the host's

@@ -427,8 +427,12 @@ impl Game<'_> {
                     self.break_leash_used(id, true);
                 }
                 let holder = self.acting_player_uuid();
-                self.mobs[index].extra.leash = Some(Holder::Player);
-                self.mobs[index].extra.leash_player = Some(holder);
+                // LeashData.setLeashHolder: a holder still waiting in the save
+                // is forgotten, so it can neither take over nor drop a lead.
+                let extra = &mut self.mobs[index].extra;
+                extra.leash = Some(Holder::Player);
+                extra.leash_pending = None;
+                extra.leash_player = Some(holder);
                 self.lead_sound("tied", at);
                 // `Player.interactOn` restores the count of a player with
                 // infinite materials (creative); others spend the lead.
@@ -907,6 +911,82 @@ mod rope_hold_tests {
                 |_| None,
             )
             .is_none()
+        );
+    }
+}
+
+#[cfg(test)]
+mod attach_tests {
+    /// `Entity.interact` with a lead: `setLeashedTo` → `LeashData.setLeashHolder`
+    /// forgets the holder a save named. A mob whose saved holder never loaded
+    /// keeps the player's lead past the 100-tick deadline, and no second lead
+    /// falls from the forgotten one.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_player_lead_replaces_a_saved_holder_that_never_loaded() {
+        use crate::game::{Audio, Options, Progress, Settings, load_resources};
+        use horizon_client::mobs::{
+            Mob,
+            leash::{Holder, Pending},
+        };
+        use horizon_core::geometry::Vec3;
+
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let res: &'static _ = Box::leak(Box::new(loaded.resources));
+        let mut game = super::Game::new(
+            res,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.creative = false;
+        game.player = Some(
+            horizon_client::motion::PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 0.5))
+                .unwrap(),
+        );
+        let kind = game
+            .res
+            .mob_types()
+            .get("minecraft:cow")
+            .expect("cow")
+            .clone();
+        let mut cow = Mob::new(1, kind, Vec3::new(1.5, 64.0, 0.5), 0.0);
+        cow.extra.leash_pending = Some(Pending::Uuid([9, 9, 9, 9]));
+        game.mobs.push(cow);
+        game.inventory[game.selected] = Some(super::ItemStack::new("minecraft:lead", 1));
+
+        assert!(game.interact_leash(0, "minecraft:lead"));
+        assert_eq!(game.mobs[0].extra.leash, Some(Holder::Player));
+        assert!(game.inventory[game.selected].is_none(), "the lead is spent");
+        game.mobs[0].age = 101;
+        game.tick_leads();
+        assert_eq!(game.mobs[0].extra.leash, Some(Holder::Player));
+        assert!(
+            !game
+                .dropped
+                .iter()
+                .any(|d| &*d.stack.item == "minecraft:lead"),
+            "the forgotten holder drops no second lead"
         );
     }
 }
