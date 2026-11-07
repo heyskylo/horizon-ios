@@ -177,7 +177,6 @@ pub struct Hdr {
     /// `HORIZON_HDR_DEBUG=1`: grey what isn't expanded, tint what is magenta.
     debug: bool,
     layered: Option<Layered>,
-    coverage_debug: bool,
     /// Paper white and peak brightness, in nits.
     pub paper_white: f32,
     pub peak: f32,
@@ -393,7 +392,6 @@ impl Hdr {
             targets: None,
             debug: debug == Some("1"),
             layered,
-            coverage_debug,
             paper_white: 200.0,
             peak: 1000.0,
             black: 0.0,
@@ -1155,8 +1153,7 @@ mod tests {
             let mut encoder = device.create_command_encoder(&Default::default());
             fill(&mut encoder, &frame, [world, world, world, 1.0]);
             fill(&mut encoder, t.hud.as_ref().unwrap(), [hud, hud, hud, 0.0]);
-            let c = f64::from(coverage);
-            fill(&mut encoder, t.coverage.as_ref().unwrap(), [c, c, c, c]);
+            fill(&mut encoder, t.coverage.as_ref().unwrap(), [coverage; 4]);
             hdr.begin(&queue, true);
             hdr.composite(&mut encoder, &target.create_view(&Default::default()), None);
             let got = texel(&device, &queue, encoder, &target);
