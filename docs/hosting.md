@@ -40,7 +40,7 @@ plan are in [server.md](server.md).
 
 ## 1. Install
 
-Linux (x86-64) and macOS (Apple Silicon; Intel from the next Nightly):
+Linux (x86-64) and macOS (Apple Silicon or Intel):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.sh | sh
@@ -157,6 +157,7 @@ view_distance = 10
 simulation_distance = 10
 max_view_distance = 0        # past view_distance, saved chunks only, up to this (0: off)
 admin_feedback_to_ops = true # operators see each other's commands ([name: ...]); false: only the log
+accept_older_clients = false # true: 26.2 clients join too (see below; work in progress)
 
 [world]
 name = "world"
@@ -205,6 +206,18 @@ On by default, as vanilla: when an operator runs a command that reports to admin
 the other operators read `[name: ...]` in gray, and the console logs it. Players who aren't operators never see it
 either way. `false` keeps it to the console's log (`logs/latest.log`): nobody in game sees an operator's commands,
 while each operator still reads their own command's answer.
+
+### Older clients: `accept_older_clients`
+
+Off by default, a Horizon setting with no vanilla equivalent: a vanilla server, and Horizon's, turn away a client of
+any other release. With `accept_older_clients = true` a 26.2 client may join too. Horizon renumbers its packets and
+the blocks, items, entities, particles and sounds in them both ways, with no proxy in between; what 26.3 added and
+26.2 lacks is shown as the nearest thing 26.2 has (a poplar log as a birch log, a wool slab as a stone slab), and
+what has no such thing (a cushion) isn't shown. The server list shows the server as joinable for 26.2.
+
+This is work in progress (#10404): the packets whose layout changed between 26.2 and 26.3 aren't translated yet,
+so for now a 26.2 player gets through the login and is then told that 26.2 can't be translated yet, before the
+server sends anything it would misread. 26.3 clients are served exactly as before, whatever the setting.
 
 ### Seeing further: `max_view_distance`
 
@@ -352,6 +365,10 @@ a player sends and receives, and what recording cost the tick (measured, usually
 hold no names, UUIDs or addresses, so you can attach them to an issue as they are. On the console it is
 `horizon-report [SECONDS]`; `horizon-report stop` writes the report now and `horizon-report status` says how far
 it is. Nothing restarts: the report runs beside the game.
+
+To see a slow stretch tick by tick, `horizon-trace [SECONDS]` (30 by default, up to 300) writes every thread's timed
+steps to `reports/trace-<time>.json`; [ui.perfetto.dev](https://ui.perfetto.dev) opens it as a timeline, one row per
+thread. `horizon-trace stop` ends it early. It holds step names and times only.
 
 Between reports, the log keeps the spikes: a tick slower than 250 ms writes a `Horizon: slow tick` line with
 its phases (`HORIZON_SPIKES=MS` in the engine's environment sets another threshold), and a server more than
@@ -569,6 +586,29 @@ can't be read, files in `keep_files` (keys or text like `minecraft:overworld 12 
 `x` and `z`), level.dat and player data are never touched; a `keep_files` file that exists but can't be read
 stops the prune before anything is deleted.
 
+Deletion stages each region's terrain, entities and POI together, keeping originals in the dimension's
+`.horizon-prune` folder until it commits. An interrupted region is rolled back before the next server
+start, even though `mode` is now `"off"`; committed earlier regions stay pruned. A failed prune or failed
+recovery stops startup and reports an error instead of reporting planned deletions as successful. Keep
+the recovery folder if recovery fails; do not delete it to force the server to start. Staging retains
+hard links to the originals and needs room for the compacted files of one region group. The three
+folders must support hard links on the same filesystem. Unix flushes files and directories; Windows
+flushes files and uses write-through renames. This does not replace a backup or promise recovery from
+filesystem corruption or storage hardware that ignores flushes.
+
+### 1.8 combat: `[combat]`
+
+Fights follow 26.3's rules. For 1.8.9's (no attack cooldown or sweep, 1.8 weapon damage, Strength and
+Sharpness; the list is in [pvp.md](pvp.md#18-combat-in-worlds-you-host-combatrules-default-off)), add to
+`server.toml`, then restart:
+
+```toml
+[combat]
+legacy = true
+```
+
+Players join with any vanilla 26.3 client: only the server decides the damage.
+
 ## 8. Start it with the computer
 
 ```sh
@@ -584,7 +624,7 @@ The service runs `horizon-server run` through the installed `current` release, s
 next restart. `service print` shows what it would install, `service uninstall` removes it and leaves the server
 folder alone.
 
-## Hosting panels (Pterodactyl)
+## Hosting panels (Pterodactyl, AMP)
 
 The egg installs the server build of the current Nightly (nothing of Mojang's) and runs `horizon-server`
 through `packaging/server/panel-start.sh`: the first start writes `server.toml` from the panel's settings, and the
@@ -597,6 +637,13 @@ the world first.
 Import `packaging/server/pterodactyl-egg.json` under Nests. Its Docker image is
 `ghcr.io/ptero-eggs/yolks:debian`. The `HORIZON_VERSION` variable picks the release to install (`nightly`, or a tag);
 it is read at install and reinstall.
+
+**AMP** (CubeCoders): `packaging/server/amp/` is a template for AMP's generic module, the same setup with AMP's
+words. Its update runs the egg's install script (the release named by "Horizon release", checked against its
+SHA-256) and the start runs the same `horizon-start.sh`, with the port from AMP's "Server Port". AMP reads templates
+from the root of a configuration repository: put the five files at the root of a repository of yours (a fork of
+CubeCoders/AMPTemplates, for example), add it under Configuration → Instance Deployment → Configuration Repositories,
+then Fetch latest, and "Horizon" is in the list of applications for a new instance. Linux only, x86-64.
 
 ## 9. Docker (build it yourself)
 

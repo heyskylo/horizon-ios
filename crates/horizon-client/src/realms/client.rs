@@ -228,6 +228,42 @@ struct PreferredRegionsResponse {
     region_data: Vec<RegionDataDto>,
 }
 
+/// `RealmTierConfigurationDto`: the Realm tier's two distance ranges.
+#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RealmTierConfiguration {
+    #[serde(default, deserialize_with = "nullable")]
+    pub render_distance: Option<RealmTierRange>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub sim_distance: Option<RealmTierRange>,
+}
+
+/// `RealmTierConfigurationDto.RealmTierRangeDto`: the values a slot's distance may take.
+#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RealmTierRange {
+    #[serde(default, deserialize_with = "nullable")]
+    pub min: i32,
+    #[serde(default, deserialize_with = "nullable")]
+    pub max: i32,
+    #[serde(default, deserialize_with = "nullable")]
+    pub default_value: i32,
+    #[serde(default, deserialize_with = "nullable")]
+    pub current: Option<i32>,
+}
+
+impl RealmTierRange {
+    /// `RealmsSettingsTab.currentOrDefault`.
+    pub fn current_or_default(&self) -> i32 {
+        self.current.unwrap_or(self.default_value)
+    }
+
+    /// `OptionInstance.IntRange`: a slider position to a value in the range.
+    pub fn from_slider(&self, value: f32) -> i32 {
+        self.min + (value * (self.max - self.min) as f32).round() as i32
+    }
+}
+
 /// `RealmsRegion`: each region's `nameId` and its translation key.
 pub fn region_translation_key(name_id: &str) -> Option<&'static str> {
     const REGIONS: [(&str, &str); 27] = [
@@ -331,6 +367,48 @@ fn configuration_body(
         },
         "description": { "name": name, "description": description },
     })
+}
+
+/// `InviteCode`: one of the Realm's shareable invite codes.
+#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteCode {
+    #[serde(default, deserialize_with = "nullable")]
+    pub code: String,
+    /// Epoch milliseconds; none never expires.
+    #[serde(default, deserialize_with = "nullable")]
+    pub expiration_date: Option<i64>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Default)]
+struct InviteCodeListResponse {
+    #[serde(default, deserialize_with = "nullable")]
+    invite_codes: Vec<InviteCode>,
+}
+
+/// `Backup`: one of the Realm's automatic backups.
+#[derive(Clone, Debug, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Backup {
+    #[serde(default, deserialize_with = "nullable")]
+    pub backup_id: String,
+    /// `Backup.lastModified`: epoch milliseconds.
+    #[serde(default, deserialize_with = "nullable")]
+    pub last_modified: i64,
+    #[serde(default, deserialize_with = "nullable")]
+    pub size: i64,
+    #[serde(default, deserialize_with = "nullable")]
+    pub metadata: std::collections::HashMap<String, serde_json::Value>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub change_list: std::collections::HashMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, Default)]
+struct BackupListResponse {
+    #[serde(default, deserialize_with = "nullable")]
+    backups: Vec<Backup>,
 }
 
 /// `RealmsWorldOptions`: a slot's options. Fields the JSON lacks keep the values of its
@@ -989,6 +1067,47 @@ impl RealmsClient {
         Self::execute(self.request("POST", &url, READ_TIMEOUT), Some(&body)).map(drop)
     }
 
+    /// `RealmsClient.getRealmTierConfiguration`: `GET worlds/{id}/configuration/tier`. A range
+    /// the answer lacks is a configuration error, as `getRealmTierConfiguration`'s parse makes it.
+    pub fn get_tier_configuration(
+        &self,
+        realm_id: i64,
+    ) -> Result<RealmTierConfiguration, RealmsError> {
+        let url = self.url(&format!("worlds/{realm_id}/configuration/tier"));
+        let json = Self::execute(self.request("GET", &url, READ_TIMEOUT), None)?;
+        let tier: RealmTierConfiguration =
+            serde_json::from_str(&json).map_err(|_| RealmsError::Parse)?;
+        if tier.render_distance.is_some() && tier.sim_distance.is_some() {
+            Ok(tier)
+        } else {
+            Err(RealmsError::Parse)
+        }
+    }
+
+    /// `RealmsClient.updateRenderDistance`: `PUT worlds/{id}/configuration/renderDistance/{n}`.
+    pub fn update_render_distance(
+        &self,
+        realm_id: i64,
+        render_distance: i32,
+    ) -> Result<(), RealmsError> {
+        let url = self.url(&format!(
+            "worlds/{realm_id}/configuration/renderDistance/{render_distance}"
+        ));
+        Self::execute(self.request("PUT", &url, READ_TIMEOUT), Some("")).map(drop)
+    }
+
+    /// `RealmsClient.updateSimulationDistance`: `PUT worlds/{id}/configuration/simDistance/{n}`.
+    pub fn update_simulation_distance(
+        &self,
+        realm_id: i64,
+        simulation_distance: i32,
+    ) -> Result<(), RealmsError> {
+        let url = self.url(&format!(
+            "worlds/{realm_id}/configuration/simDistance/{simulation_distance}"
+        ));
+        Self::execute(self.request("PUT", &url, READ_TIMEOUT), Some("")).map(drop)
+    }
+
     /// `RealmsClient.fetchWorldTemplates`: `GET worlds/templates/{type}?page={page}&pageSize={size}`.
     /// `WorldTemplatePaginatedList.parse` leaves a page it can't read empty rather than failing.
     pub fn fetch_world_templates(
@@ -1157,16 +1276,112 @@ impl RealmsClient {
         }
     }
 
-    /// `RealmsClient.redeemInviteCode`: the invite-code service, with the token in
-    /// `x-mojangauth` as `frontendV2Request` sets it.
-    pub fn redeem_invite_code(&self, code: &str) -> Result<(), RealmsError> {
-        let code = path_segment(code.trim())?;
-        let url = format!("{}/api/v1.0/invite/codes/use/{code}", self.frontend_url);
+    /// The invite-code service: `frontendV2Request`, with the token in `x-mojangauth`.
+    fn frontend(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+    ) -> Result<String, RealmsError> {
+        let url = format!("{}/{path}", self.frontend_url);
         let request = self
-            .request("POST", &url, READ_TIMEOUT)
+            .request(method, &url, READ_TIMEOUT)
             .set("x-mojangauth", &self.access_token)
             .set("Accept", "application/json");
-        Self::execute(request, Some("")).map(drop)
+        Self::execute(request, body)
+    }
+
+    /// `RealmsClient.redeemInviteCode`: `POST api/v1.0/invite/codes/use/{code}`.
+    pub fn redeem_invite_code(&self, code: &str) -> Result<(), RealmsError> {
+        let code = path_segment(code.trim())?;
+        self.frontend(
+            "POST",
+            &format!("api/v1.0/invite/codes/use/{code}"),
+            Some(""),
+        )
+        .map(drop)
+    }
+
+    /// `RealmsClient.inviteCodes`: `GET api/v1.0/invite/codes?realmId={id}`.
+    pub fn invite_codes(&self, realm_id: i64) -> Result<Vec<InviteCode>, RealmsError> {
+        let json = self.frontend(
+            "GET",
+            &format!("api/v1.0/invite/codes?realmId={realm_id}"),
+            None,
+        )?;
+        serde_json::from_str::<InviteCodeListResponse>(&json)
+            .map(|r| r.invite_codes)
+            .map_err(|_| RealmsError::Parse)
+    }
+
+    /// `RealmsClient.createInviteCode`: `POST api/v1.0/invite/codes` with
+    /// `InviteCodeRequestDto`'s JSON.
+    pub fn create_invite_code(
+        &self,
+        realm_id: i64,
+        enabled: bool,
+        expiration: Option<i64>,
+    ) -> Result<(), RealmsError> {
+        let body = serde_json::json!({
+            "code": null,
+            "realmId": realm_id,
+            "enabled": enabled,
+            "expirationDate": expiration,
+        })
+        .to_string();
+        self.frontend("POST", "api/v1.0/invite/codes", Some(&body))
+            .map(drop)
+    }
+
+    /// `RealmsClient.updateInviteCode`: `POST api/v1.0/invite/codes/update`.
+    pub fn update_invite_code(
+        &self,
+        realm_id: i64,
+        code: &str,
+        enabled: bool,
+        expiration: Option<i64>,
+    ) -> Result<(), RealmsError> {
+        let body = serde_json::json!({
+            "code": code,
+            "realmId": realm_id,
+            "enabled": enabled,
+            "expirationDate": expiration,
+        })
+        .to_string();
+        self.frontend("POST", "api/v1.0/invite/codes/update", Some(&body))
+            .map(drop)
+    }
+
+    /// `RealmsClient.deleteInviteCode`: `DELETE api/v1.0/invite/codes/delete/{code}`.
+    pub fn delete_invite_code(&self, code: &str) -> Result<(), RealmsError> {
+        self.frontend(
+            "DELETE",
+            &format!("api/v1.0/invite/codes/delete/{}", path_segment(code)?),
+            None,
+        )
+        .map(drop)
+    }
+
+    /// `RealmsClient.backupsFor`: `GET worlds/{id}/backups`.
+    pub fn backups_for(&self, realm_id: i64) -> Result<Vec<Backup>, RealmsError> {
+        let url = self.url(&format!("worlds/{realm_id}/backups"));
+        let json = Self::execute(self.request("GET", &url, READ_TIMEOUT), None)?;
+        serde_json::from_str::<BackupListResponse>(&json)
+            .map(|r| r.backups)
+            .map_err(|_| RealmsError::Parse)
+    }
+
+    /// `RealmsClient.restoreWorld`: `PUT worlds/{id}/backups?backupId={backupId}`, with
+    /// vanilla's long timeouts (`Request.put(url, "", 40000, 600000)`).
+    pub fn restore_world(&self, realm_id: i64, backup_id: &str) -> Result<(), RealmsError> {
+        let url = self.url(&format!("worlds/{realm_id}/backups"));
+        let query = format!("backupId={}", urlencoded(backup_id)?);
+        let full = format!("{url}?{query}");
+        Self::execute(
+            self.request("PUT", &full, Duration::from_secs(600)),
+            Some(""),
+        )
+        .map(drop)
     }
 }
 
@@ -1188,6 +1403,23 @@ fn path_segment(s: &str) -> Result<&str, RealmsError> {
     }
 }
 
+/// A query value: percent-encoded the way `URI` encodes it, so a backup id cannot add a
+/// parameter or a fragment.
+fn urlencoded(value: &str) -> Result<String, RealmsError> {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    if out.is_empty() {
+        return Err(RealmsError::Parse);
+    }
+    Ok(out)
+}
+
 /// `UndashedUuid.toString`: a player's UUID as 32 hex digits, the op/deop/uninvite path
 /// segment. Anything else (a name with a `/`, a shortened id) would reach another path.
 fn undashed(uuid: &str) -> Result<String, RealmsError> {
@@ -1207,6 +1439,15 @@ mod tests {
 
     const TOKEN: &str = "eyJsecret.token.value";
     const UUID: u128 = 0x0123_4567_89ab_cdef_0123_4567_89ab_cdef;
+
+    /// `RealmsClient.restoreWorld` puts the backup id in the query: a `&` or `/` in it
+    /// must not add parameters or paths.
+    #[test]
+    fn a_backup_id_is_a_safe_query_value() {
+        assert_eq!(urlencoded("abc-123_x.y~z").unwrap(), "abc-123_x.y~z");
+        assert_eq!(urlencoded("a b&c=d/e").unwrap(), "a%20b%26c%3Dd%2Fe");
+        assert!(urlencoded("").is_err());
+    }
 
     /// One HTTP exchange on a local port: the request as the server read it.
     fn serve_once(answer: &'static str) -> (String, std::thread::JoinHandle<String>) {
@@ -1506,6 +1747,81 @@ mod tests {
                 preferred_region: None,
             })
         );
+    }
+    #[test]
+    fn the_tier_configuration_names_both_ranges_and_their_default() {
+        let body = r#"{"renderDistance":{"min":2,"max":16,"defaultValue":8,"current":12},"simDistance":{"min":3,"max":12,"defaultValue":6,"current":null}}"#;
+        let answer: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .into_boxed_str(),
+        );
+        let (base, server) = serve_once(answer);
+        let tier = client(&base).get_tier_configuration(7).unwrap();
+        let request = server.join().unwrap();
+        assert!(
+            request.starts_with("GET /worlds/7/configuration/tier HTTP/1.1"),
+            "{request}"
+        );
+        // `currentOrDefault`: the current value, else the default.
+        assert_eq!(tier.render_distance.unwrap().current_or_default(), 12);
+        let sim = tier.sim_distance.unwrap();
+        assert_eq!(sim.current_or_default(), 6);
+        assert_eq!((sim.min, sim.max), (3, 12));
+        // `getRealmTierConfiguration`: a range it cannot read is a parse error.
+        let short: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{{\"renderDistance\":{{\"min\":2,\"max\":16}}}}",
+                "{\"renderDistance\":{\"min\":2,\"max\":16}}".len()
+            )
+            .into_boxed_str(),
+        );
+        let (base, server) = serve_once(short);
+        assert!(client(&base).get_tier_configuration(7).is_err());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_distance_update_puts_its_value_into_the_path() {
+        for (realm, distance, path) in [
+            (
+                7,
+                8,
+                "PUT /worlds/7/configuration/renderDistance/8 HTTP/1.1",
+            ),
+            (12, 3, "PUT /worlds/12/configuration/simDistance/3 HTTP/1.1"),
+        ] {
+            let (base, server) =
+                serve_once("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            if path.contains("renderDistance") {
+                client(&base)
+                    .update_render_distance(realm, distance)
+                    .unwrap();
+            } else {
+                client(&base)
+                    .update_simulation_distance(realm, distance)
+                    .unwrap();
+            }
+            let request = server.join().unwrap();
+            assert!(request.starts_with(path), "{request}");
+        }
+    }
+
+    #[test]
+    fn a_slider_position_maps_into_the_range() {
+        // `OptionInstance.IntRange` with min 2, max 16: the ends and the middle snap.
+        let range = RealmTierRange {
+            min: 2,
+            max: 16,
+            default_value: 8,
+            current: None,
+        };
+        assert_eq!(range.from_slider(0.0), 2);
+        assert_eq!(range.from_slider(1.0), 16);
+        assert_eq!(range.from_slider(0.5), 9);
+        assert_eq!(range.current_or_default(), 8);
     }
 
     /// One HTTP exchange whose whole request (the Content-Length body included) is returned.

@@ -200,6 +200,15 @@ impl Game<'_> {
     pub(super) fn swing_arm(&mut self) {
         self.swing_hand(self.hand, SwingAnimation::DEFAULT);
     }
+    /// `swing_arm` for a use whose result is `SwingSource.PREDICTED`: the
+    /// player's client swings by itself, so a server keeps it to the others.
+    pub(super) fn swing_arm_predicted(&mut self) {
+        let before = self.swings_started;
+        self.swing_arm();
+        if self.swings_started != before {
+            self.predicted_swings += 1;
+        }
+    }
     /// `Player.resetAttackStrengthTicker`.
     pub(super) fn reset_attack_strength(&mut self) {
         self.attack_ticks = 0;
@@ -383,7 +392,9 @@ impl Game<'_> {
         }
         Ok(())
     }
-    /// `BlockBehaviour.getDestroyProgress` with `Player.getDestroySpeed`.
+    /// `BlockBehaviour.getDestroyProgress` with `Player.getDestroySpeed`, whose
+    /// end asks the mods' `native_break_speed`. Every dig's progress comes from
+    /// here: single player's, a host's for each guest, a remote client's own.
     pub(super) fn destroy_progress(&mut self, pos: [i32; 3]) -> f32 {
         let block_break_speed = self.block_break_speed();
         let state = self.world.block(pos[0], pos[1], pos[2]);
@@ -414,6 +425,8 @@ impl Game<'_> {
         if self.player.as_ref().is_some_and(|p| !p.ground.on_ground) {
             speed /= 5.0;
         }
+        // NeoForge's PlayerEvent.BreakSpeed, where Player.getDestroySpeed ends.
+        self.native_break_speed(pos, state, speed, &mut speed);
         speed / hardness / if harvest { 30.0 } else { 100.0 }
     }
     /// A key for the main-hand stack (`destroyingItem`): its item and components.
@@ -439,7 +452,7 @@ impl Game<'_> {
     /// `LocalPlayer.isHandsBusy`: paddling a boat.
     pub(super) fn hands_busy(&self) -> bool {
         self.riding
-            .is_some_and(|id| self.boats.iter().any(|b| b.id == id))
+            .is_some_and(|id| self.controls_boat(id) && self.boats.iter().any(|b| b.id == id))
             && [
                 winit::keyboard::KeyCode::KeyW,
                 winit::keyboard::KeyCode::KeyS,
@@ -510,10 +523,11 @@ impl Game<'_> {
             changed[h] = !same;
         }
         let speed = self.main_hand_attack_speed();
-        let replace = self.heights.tick(
+        let replace = self.heights.tick_with(
             self.hands_busy(),
             self.hand_strength.swap_scale(1.0, speed),
             changed,
+            self.settings.extras.pvp.combat.legacy,
         );
         for h in 0..2 {
             if replace[h] {

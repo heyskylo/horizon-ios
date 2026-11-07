@@ -15,6 +15,12 @@ over the scenario, and must never fall between two packets of one tick.
 
   python3 tools/test_wire_stream_parity.py                      # every scenario
   python3 tools/test_wire_stream_parity.py --scenarios walk,bow --keep
+  python3 tools/test_wire_stream_parity.py --clients horizon,horizon-legacy   # Legacy (1.8.9) combat feel
+
+The second form plays the same scenarios with two Horizon clients, the second set to the Legacy combat feel with
+every combat extra on (horizon-extras.txt: `LEGACY_EXTRAS`), and compares their streams the same way: the feel
+changes what the player sees and hears, never what the client sends, and the 1.8 rules ("in worlds you host")
+never reach a server that isn't the player's own.
 
 Horizon runs `--headless` (no window or GPU: the ticks are what it sends from); the vanilla client runs on the
 virtual screen (`vscreen`) on Linux, from the logged-in session on macOS. Every game and server here runs in fresh temporary folders (HORIZON_HOME,
@@ -66,6 +72,11 @@ TARGET = ('summon minecraft:husk {x} {y} {z} {{NoAI:1b,Silent:1b,PersistenceRequ
 PRELUDE = 10
 # Client ticks between a reset's last teleport and the scenario: the player lands and stands still.
 SETTLE = 40
+# The Legacy client's horizon-extras.txt (crates/horizon-client-render/src/pvp.rs): the 1.8.9 feel, its
+# indicator and sounds, and the 1.8 rules, which only a world the player hosts may use.
+LEGACY_EXTRAS = 'combatFeel:legacy\ncombatIndicator:true\ncombatSounds:true\ncombatRules:true\n'
+# The clients --clients may name: the first is the reference, the second must send what it sends.
+CLIENTS = {'vanilla': 'vanilla', 'horizon': 'Horizon', 'horizon-legacy': 'Horizon Legacy'}
 
 
 def taps(key, ticks):
@@ -264,10 +275,13 @@ class HeadlessGame(Game):
     """server_pack_e2e's game, `--headless`: no display, window or GPU; the frame and the ticks run as a
     window's do (game/headless.rs), and only the ticks' packets matter here."""
 
-    def __init__(self, bins, resources, work, scripts):
+    def __init__(self, bins, resources, work, scripts, extras=None):
         self.home = work / 'home'
         for d in ('home', 'launcher', 'data', 'config'):
             (work / d).mkdir(parents=True)
+        if extras:
+            # The game folder is the home here (Game runs horizon-ctl there): extras sit next to options.txt.
+            (self.home / 'horizon-extras.txt').write_text(extras)
         self.env = lab.game_env(HORIZON_HOME=self.home, HORIZON_LAUNCHER_HOME=work / 'launcher',
                                 XDG_DATA_HOME=work / 'data', XDG_CONFIG_HOME=work / 'config',
                                 HORIZON_TELEMETRY_URL='off', HORIZON_TICK_SCRIPT=scripts / 'scenario.json')
@@ -278,9 +292,9 @@ class HeadlessGame(Game):
 
 
 class HorizonClient:
-    def __init__(self, bins, resources, work, address, scripts):
+    def __init__(self, bins, resources, work, address, scripts, extras=None):
         self.scripts = scripts
-        self.game = HeadlessGame(bins, resources, work, scripts)
+        self.game = HeadlessGame(bins, resources, work, scripts, extras)
         self.game('connect', address, PLAYER)
         self.game('wait-for', 'loaded', '--timeout', 180)
 
@@ -389,19 +403,19 @@ def run(args, out):
             stop = net_capture.start_background(listen, f'127.0.0.1:{port}', capture, full=True)
             client = None
             try:
-                if who == 'horizon':
-                    client = HorizonClient(Path(args.bin).resolve(), resources, work / 'horizon',
-                                           f'127.0.0.1:{listen}', scripts)
+                if who != 'vanilla':
+                    client = HorizonClient(Path(args.bin).resolve(), resources, work / who, f'127.0.0.1:{listen}',
+                                           scripts, LEGACY_EXTRAS if who == 'horizon-legacy' else None)
                 else:
                     client = VanillaClient(f'127.0.0.1:{listen}', work / 'vanilla', out / 'vanilla-client.log')
                     if not client.ready.wait(900):
                         raise Failed('the vanilla client never got into the world')
                 time.sleep(3)
-                play_all(client, server, args.scenarios, scripts, who == 'horizon', capture)
+                play_all(client, server, args.scenarios, scripts, who != 'vanilla', capture)
             finally:
                 if client:
-                    if who == 'horizon' and client.game.log.exists():
-                        shutil.copy(client.game.log, out / 'horizon-client.log')
+                    if who != 'vanilla' and client.game.log.exists():
+                        shutil.copy(client.game.log, out / f'{who}-client.log')
                     client.close()
                 time.sleep(2)
                 stop.set()
@@ -414,7 +428,7 @@ def run(args, out):
     return captures
 
 
-def anchored_diffs(v, h, ticks, anchor, problems):
+def anchored_diffs(v, h, ticks, anchor, problems, names=('vanilla', 'Horizon')):
     """wire_stream.compare over the scenario's ticks. With an anchor (a frame packet the server's answer brings,
     as AcceptTeleportation), the two ticks that answer arrived in compare with each other
     (wire_stream.compare_answered). Numbers are vanilla's ticks."""
@@ -422,12 +436,14 @@ def anchored_diffs(v, h, ticks, anchor, problems):
         return wire_stream.compare(v, h, ticks)
     av, ah = wire_stream.first_frame(v, anchor), wire_stream.first_frame(h, anchor)
     if av is None or ah is None:
-        problems.append(f'  no {anchor}: vanilla at tick {av}, Horizon at tick {ah}')
+        problems.append(f'  no {anchor}: {names[0]} at tick {av}, {names[1]} at tick {ah}')
         return wire_stream.compare(v, h, ticks)
     return wire_stream.compare_answered(v, h, ticks, av, ah)
 
 
 def compare(captures, scenarios):
+    """Each scenario's problems, the second client's stream against the first's (`captures` in that order)."""
+    (ref, ref_name), (new, new_name) = [(who, CLIENTS[who]) for who in captures]
     runs = {}
     for who, capture in captures.items():
         entries = [e for e in net_capture.load(capture) if e.get('conn') == 1 and 'name' in e]
@@ -437,21 +453,21 @@ def compare(captures, scenarios):
         runs[who] = dict(zip(scenarios, found))
     results = []
     for name in scenarios:
-        v, h = runs['vanilla'][name], runs['horizon'][name]
+        v, h = runs[ref][name], runs[new][name]
         ticks = SCENARIOS[name]['ticks'] + PRELUDE
         problems = []
-        for i, vt, ht in anchored_diffs(v, h, ticks, SCENARIOS[name].get('anchor'), problems):
-            problems.append(f'  tick {i}:\n  vanilla:\n{wire_stream.describe(vt)}\n  Horizon:\n'
+        for i, vt, ht in anchored_diffs(v, h, ticks, SCENARIOS[name].get('anchor'), problems, (ref_name, new_name)):
+            problems.append(f'  tick {i}:\n  {ref_name}:\n{wire_stream.describe(vt)}\n  {new_name}:\n'
                             f'{wire_stream.describe(ht)}')
-            problems += wire_stream.field_diff(vt, ht)
+            problems += wire_stream.field_diff(vt, ht, (ref_name, new_name))
         # The server decides when keep-alives and chunk batches come; the others answer what the scenario did.
         frame = lambda run: [n for t in run[:ticks + 1] for n, _ in t['frame']  # noqa: E731
                              if n not in ('keep_alive', 'chunk_batch_received')]
         if frame(v) != frame(h):
-            problems.append(f'  frame packets: vanilla {frame(v)}, Horizon {frame(h)}')
+            problems.append(f'  frame packets: {ref_name} {frame(v)}, {new_name} {frame(h)}')
         misplaced = [(i, t['misplaced']) for i, t in enumerate(h[:ticks + 1]) if t['misplaced']]
         if misplaced:
-            problems.append(f'  Horizon sent the server\'s answers inside a tick: {misplaced}')
+            problems.append(f'  {new_name} sent the server\'s answers inside a tick: {misplaced}')
         results.append((name, problems))
     return results
 
@@ -462,17 +478,24 @@ def main():
     parser.add_argument('--out', default=str(lab.LOCAL / 'wire-stream-parity'))
     parser.add_argument('--scenarios', default=','.join(SCENARIOS), type=lambda s: s.split(','))
     parser.add_argument('--clients', default='vanilla,horizon', type=lambda s: s.split(','),
-                        help='capture only these (a loaded machine whose vanilla client fails to log in: rerun '
-                             'horizon alone, copy an earlier vanilla.jsonl into --out, then --compare-only)')
+                        help='the reference client and the one compared with it, of vanilla, horizon and '
+                             'horizon-legacy; one alone is only captured (a loaded machine whose vanilla client fails '
+                             'to log in: rerun horizon alone, copy an earlier vanilla.jsonl into --out, then '
+                             '--compare-only)')
     parser.add_argument('--compare-only', action='store_true', help='compare the captures already in --out')
     parser.add_argument('--keep', action='store_true', help='keep the scratch folders')
     args = parser.parse_args()
     unknown = [s for s in args.scenarios if s not in SCENARIOS]
     if unknown:
         parser.error(f'unknown scenarios {unknown}; known: {", ".join(SCENARIOS)}')
+    if len(args.clients) not in (1, 2) or len(set(args.clients)) != len(args.clients) \
+            or not set(args.clients) <= set(CLIENTS):
+        parser.error(f'--clients takes one or two of {", ".join(CLIENTS)}')
+    if args.compare_only and len(args.clients) != 2:
+        parser.error('--compare-only compares two clients: name both in --clients')
     out = Path(args.out)
     if args.compare_only:
-        captures = {who: out / f'{who}.jsonl' for who in ('vanilla', 'horizon')}
+        captures = {who: out / f'{who}.jsonl' for who in args.clients}
     else:
         shutil.rmtree(out, ignore_errors=True)
         out.mkdir(parents=True)
@@ -487,7 +510,7 @@ def main():
         results = compare(captures, args.scenarios)
     except Failed as e:
         sys.exit(f'FAIL: {e}')
-    print(f'\nserverbound play streams, vanilla 26.3 client vs Horizon; captures in {out}')
+    print(f'\nserverbound play streams, {CLIENTS[args.clients[0]]} vs {CLIENTS[args.clients[1]]}; captures in {out}')
     for name, problems in results:
         print(f'  {"pass" if not problems else "FAIL"}  {name}')
         for p in problems:

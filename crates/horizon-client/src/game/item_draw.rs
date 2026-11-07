@@ -593,10 +593,12 @@ impl Game<'_> {
             // EntityRenderer.shouldRender: the item's 0.25 box, grown by 0.5,
             // in the view frustum. Checked before its model is resolved.
             if entity && let Some(view) = &self.view_frustum {
-                let feet = (glam::DVec3::new(q.x, q.y, q.z) - camera).as_vec3();
-                let half = glam::Vec3::new(0.125 + 0.5, 0.5, 0.125 + 0.5);
-                let lo = feet - half;
-                let hi = feet + glam::Vec3::new(half.x, 0.25 + 0.5, half.z);
+                let (lo, hi) = dropped_item_cull_box(
+                    glam::DVec3::new(item.previous.x, item.previous.y, item.previous.z),
+                    glam::DVec3::new(q.x, q.y, q.z),
+                    alpha,
+                    camera,
+                );
                 if !view.intersects(lo, hi) {
                     continue;
                 }
@@ -620,11 +622,24 @@ impl Game<'_> {
             let pose = glam::Mat4::from_translation(pos.as_vec3())
                 * glam::Mat4::from_translation(glam::Vec3::new(0.0, bob + min_offset_y, 0.0))
                 * glam::Mat4::from_rotation_y(spin);
-            let packed = self.world.light(
-                q.x.floor() as i32,
-                (q.y + 0.1).floor() as i32,
-                q.z.floor() as i32,
-            );
+            // `EntityRenderer.getPackedLightCoords`: an item entity is lit from
+            // the block its light probe (its eye, 0.2125 up) is in, at 15 block
+            // light while it burns. A pickup particle is not an entity and keeps
+            // the cell it is drawn in.
+            let packed = if entity {
+                let probe = item.light_probe(alpha);
+                item.render_light(self.world.light(
+                    probe[0].floor() as i32,
+                    probe[1].floor() as i32,
+                    probe[2].floor() as i32,
+                ))
+            } else {
+                vertex_light(self.world.light(
+                    q.x.floor() as i32,
+                    (q.y + 0.1).floor() as i32,
+                    q.z.floor() as i32,
+                ))
+            };
             let seed = i64::from(self.pack.item_renderer.item_id(&item.stack.item))
                 + i64::from(item.stack.damage);
             let copies = item_render::cluster_poses(
@@ -664,11 +679,11 @@ impl Game<'_> {
             let outline = self.thing_outline(item.id, "minecraft:item");
             // Posed on the GPU when every layer can be, its silhouette too when it glows.
             let skinned = skinning
-                .then(|| self.submit_item_skinned(&state, &copies, vertex_light(packed), lights))
+                .then(|| self.submit_item_skinned(&state, &copies, packed, lights))
                 .flatten();
             if skinned.is_none() {
                 for &copy in &copies {
-                    self.submit_item_world(&state, copy, vertex_light(packed), out);
+                    self.submit_item_world(&state, copy, packed, out);
                 }
             }
             if let Some(rgb) = outline {
@@ -686,6 +701,25 @@ impl Game<'_> {
     }
 }
 
+/// `EntityRenderer.shouldRender`'s box for a dropped item, in camera space:
+/// `EntityRenderer.getBoundingBoxForCulling(entity, partialTick)` is
+/// `Entity.getInterpolatedBoundingBox(partialTick)` - the item's 0.25 box at
+/// the position the frame draws, `ItemEntity` overriding neither - grown by 0.5
+/// all round before the frustum test.
+fn dropped_item_cull_box(
+    previous: glam::DVec3,
+    position: glam::DVec3,
+    alpha: f64,
+    camera: glam::DVec3,
+) -> (glam::Vec3, glam::Vec3) {
+    let feet = (previous.lerp(position, alpha) - camera).as_vec3();
+    let half = glam::Vec3::new(0.125 + 0.5, 0.5, 0.125 + 0.5);
+    (
+        feet - half,
+        feet + glam::Vec3::new(half.x, 0.25 + 0.5, half.z),
+    )
+}
+
 /// The packed light of an item (sky low, block above it: `vertex_light`, entity.wgsl), its block
 /// light raised to what it glows with in HDR output.
 fn item_hdr_light(state: &ItemRenderState, light: u32) -> u32 {
@@ -697,6 +731,38 @@ fn item_hdr_light(state: &ItemRenderState, light: u32) -> u32 {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// `EntityRenderer.shouldRender` culls with `getBoundingBoxForCulling(entity,
+    /// partialTick)`, which is `Entity.getInterpolatedBoundingBox(partialTick)`:
+    /// an item's 0.25 box at the position the frame draws, grown by 0.5. The box
+    /// was built from the tick's own position, so an item crossing the frustum
+    /// edge mid-tick disappeared for the frames before it got there.
+    #[test]
+    fn a_dropped_item_is_culled_at_the_frame_s_position() {
+        let camera = glam::DVec3::ZERO;
+        let previous = glam::DVec3::new(0.0, 64.0, 0.0);
+        let position = glam::DVec3::new(1.0, 64.0, 0.0);
+        let bounds = |alpha: f64| {
+            let (lo, hi) = dropped_item_cull_box(previous, position, alpha, camera);
+            (lo.to_array(), hi.to_array())
+        };
+        // The frame's start: the box stands at the item's previous position.
+        assert_eq!(bounds(0.0), ([-0.625, 63.5, -0.625], [0.625, 64.75, 0.625]));
+        // Halfway through the tick the box has travelled half the block.
+        assert_eq!(bounds(0.5), ([-0.125, 63.5, -0.625], [1.125, 64.75, 0.625]));
+        // And at its end it is where the old code put it on every frame.
+        assert_eq!(bounds(1.0), ([0.375, 63.5, -0.625], [1.625, 64.75, 0.625]));
+        // A falling item moves in y the same way: halfway down a 66 -> 65 drop
+        // the box's floor is at 65.0, where the old code had the tick's 64.5.
+        let (lo, hi) = dropped_item_cull_box(
+            glam::DVec3::new(0.0, 66.0, 0.0),
+            glam::DVec3::new(0.0, 65.0, 0.0),
+            0.5,
+            camera,
+        );
+        assert!((lo.y - 65.0).abs() < 1e-6);
+        assert!((hi.y - 66.25).abs() < 1e-6);
+    }
 
     #[test]
     fn civil_dates_follow_the_gregorian_calendar() {

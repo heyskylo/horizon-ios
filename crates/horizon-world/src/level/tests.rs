@@ -375,6 +375,65 @@ fn block_observation_follows_successful_commits_only() {
 }
 
 #[test]
+fn a_level_can_keep_a_lever_as_it_is() {
+    use std::cell::RefCell;
+
+    struct Holder {
+        inner: TestLevel,
+        hold: bool,
+        seen: RefCell<Vec<(BlockPos, i32, i32)>>,
+    }
+    impl LevelAccess for Holder {
+        fn block_state(&self, pos: BlockPos) -> BlockStateId {
+            self.inner.block_state(pos)
+        }
+        fn set_raw(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId> {
+            self.inner.set_raw(pos, state)
+        }
+        fn is_loaded(&self, pos: BlockPos) -> bool {
+            self.inner.is_loaded(pos)
+        }
+        fn random(&mut self) -> &mut LegacyRandom {
+            self.inner.random()
+        }
+        fn game_time(&self) -> i64 {
+            self.inner.game_time()
+        }
+        fn redstone_change(&self, pos: BlockPos, old: i32, new: &mut i32) {
+            self.seen.borrow_mut().push((pos, old, *new));
+            if self.hold {
+                *new = old;
+            }
+        }
+    }
+    let Some(f) = fixture() else { return };
+    let b = &f.behaviours;
+    let mut level = Holder {
+        inner: TestLevel::new(b),
+        hold: true,
+        seen: RefCell::new(Vec::new()),
+    };
+    let mut ticks = Ticks::new(0);
+    let pos = BlockPos::new(0, 80, 0);
+    let stone = f.registry.default_state("minecraft:stone").unwrap();
+    for z in [-1, 1] {
+        level.set_raw(BlockPos::new(0, 80, z), stone);
+    }
+    let lever = f.registry.default_state("minecraft:lever").unwrap();
+    level.set_raw(pos, lever);
+    // Held: the pull is heard, and the lever stays off.
+    b.sim(&mut level, &mut ticks).lever_pull(pos, lever);
+    assert_eq!(level.block_state(pos), lever);
+    assert_eq!(level.seen.borrow()[..], [(pos, 0, 15)]);
+    // Let go: the same pull turns it on.
+    level.hold = false;
+    b.sim(&mut level, &mut ticks).lever_pull(pos, lever);
+    let pulled = level.block_state(pos);
+    assert!(b.table.bool(pulled, b.props.powered));
+    assert_eq!(level.seen.borrow().len(), 2);
+}
+
+#[test]
 fn neighbor_observation_follows_dispatch_order() {
     use std::cell::RefCell;
 
@@ -2520,6 +2579,49 @@ fn dispenser_buckets_pick_up_and_empty() {
         false
     ));
     assert_eq!(w.name(at), "powder_snow[]");
+}
+
+#[test]
+fn a_bucket_replaces_a_bubble_column_and_breaks_a_flower() {
+    let mut w = world!();
+    let at = BlockPos::new(0, 10, 0);
+    let sound = "minecraft:item.bucket.empty";
+    let water = BucketContent::Fluid(crate::fluid::FluidKind::Water);
+    let pour = |w: &mut World| {
+        w.f.behaviours.bucket_empty(
+            &mut w.level,
+            &mut w.ticks,
+            at,
+            None,
+            water,
+            sound,
+            false,
+            false,
+        )
+    };
+    let broke = |w: &World| {
+        w.level.events.iter().any(|e| {
+            matches!(
+                e,
+                LevelEvent::GameEvent {
+                    event: "minecraft:block_destroy",
+                    ..
+                } | LevelEvent::LevelEvent { id: 2001, .. }
+            )
+        })
+    };
+    // `BlockState.liquid()` is true: the column is replaced, not broken.
+    w.put(at, w.id("bubble_column", &[("drag", "true")]));
+    w.level.events.clear();
+    assert_eq!(pour(&mut w), Some(at));
+    assert_eq!(w.name(at), "water[level=0]");
+    assert!(!broke(&w), "a bubble column is liquid()");
+    // A replaceable plant is not `liquid()`: the bucket breaks it first.
+    w.put(at, w.id("dandelion", &[]));
+    w.level.events.clear();
+    assert_eq!(pour(&mut w), Some(at));
+    assert_eq!(w.name(at), "water[level=0]");
+    assert!(broke(&w), "a flower is broken before the water goes in");
 }
 
 #[test]

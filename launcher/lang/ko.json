@@ -17,6 +17,7 @@
   "Pack tooling or a game feature that Horizon already has, so there is nothing to port.": "Pack tooling or a game feature that Horizon already has, so there is nothing to port.",
   "Built into Horizon already, so there is nothing to port.": "Built into Horizon already, so there is nothing to port.",
   "Nothing to port.": "Nothing to port.",
+  "Made for Minecraft 1.20 or older: Horizon ports mods made for 1.21 and later.": "Made for Minecraft 1.20 or older: Horizon ports mods made for 1.21 and later.",
   "Shader packs are not converted yet.": "Shader packs are not converted yet.",
   "Copied as a resource pack; Horizon has not checked how it renders. Turn it on in the game's Resource Packs screen.": "Copied as a resource pack; Horizon has not checked how it renders. Turn it on in the game's Resource Packs screen.",
   "Not downloaded yet; Port gets it.": "Not downloaded yet; Port gets it.",
@@ -1220,5 +1221,7 @@
   "{name} was left out: made for another Horizon version": "{name}이(가) 제외되었습니다: 다른 Horizon 버전용입니다",
   "{name} was left out: clashes with {other}": "{name}이(가) 제외되었습니다: {other}와(과) 충돌합니다",
   "{name} was left out: it needs {other}, which was left out": "{name}이(가) 제외되었습니다: 제외된 {other}이(가) 필요합니다",
-  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "플레이 중인 Horizon에서 빌드되지 않습니다 ({code}): 제작자가 업데이트할 때까지 빌드에서 제외됩니다"
+  "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "플레이 중인 Horizon에서 빌드되지 않습니다 ({code}): 제작자가 업데이트할 때까지 빌드에서 제외됩니다",
+  "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "현재 지역에서는 창립자 세트를 playhorizon.dev의 무료 결제로 받습니다. 상점에서 받으세요. 결제 화면을 열어 드립니다.",
+  "The founder set can't be claimed from your country.": "현재 국가에서는 창립자 세트를 받을 수 없습니다."
 }

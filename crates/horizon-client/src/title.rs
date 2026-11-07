@@ -1154,7 +1154,7 @@ impl Title {
             rules.release();
         }
         if let Mode::Multiplayer(screen) = &mut self.mode {
-            screen.release();
+            screen.release(&self.saves);
         }
         if let Mode::CreateFlat { flat, .. } = &mut self.mode {
             flat::release(flat);
@@ -3574,6 +3574,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     lan: false,
                 },
                 crate::realms::Outcome::OpenUri(uri) => Action::OpenUri(uri),
+                crate::realms::Outcome::Copy(text) => Action::CopyText(text),
                 crate::realms::Outcome::None => Action::None,
             },
             (Mode::MultiplayerWarning { .. }, Some(71)) => {
@@ -3591,7 +3592,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 crate::multiplayer::Outcome::None => Action::None,
             },
             (Mode::Main, Some(5)) => {
-                self.mode = Mode::Multiplayer(crate::multiplayer::Screen::friend());
+                self.mode = Mode::Multiplayer(crate::multiplayer::Screen::friend(true));
                 Action::None
             }
             (Mode::Onboarding(_), Some(onboarding::SOUNDS)) => Action::Sounds,

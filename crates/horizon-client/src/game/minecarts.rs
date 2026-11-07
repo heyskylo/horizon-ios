@@ -585,6 +585,7 @@ impl Game<'_> {
         // turns nearly all of them away: it is tested first, before a mob's
         // pushable state, and only the boxes kept are collected.
         let close = |b: &Aabb| b.intersects(near);
+        let reach = self.vehicle_mob_reach();
         let mut boxes: Vec<Aabb> = self
             .carts
             .iter()
@@ -600,10 +601,12 @@ impl Game<'_> {
             .chain(
                 self.mobs
                     .iter()
-                    .filter(|m| !m.removed && m.extra.mount != Some(c.id))
+                    .filter(|m| reach.is_none_or(|r| r.may_meet(m, near)))
                     .map(|m| (m, m.bounds()))
                     .filter(|(m, b)| {
                         close(b)
+                            && !m.removed
+                            && m.extra.mount != Some(c.id)
                             && (m.pushable()
                                 || m.species() == horizon_client::mobs::Species::Shulker
                                     && m.alive())
@@ -1752,20 +1755,22 @@ impl Game<'_> {
     }
     /// `positionRider` for the mobs in minecarts: each sits on the cart's
     /// passenger attachment, less its own vehicle attachment.
-    pub(super) fn seat_cart_mobs(&mut self) {
+    pub(super) fn seat_cart_mobs(&mut self, riding: &super::passengers::Riders) {
         for i in 0..self.carts.len() {
             let id = self.carts[i].id;
+            let Some(js) = riding.get(&id) else {
+                continue;
+            };
             let (pos, prev) = (self.carts[i].position, self.carts[i].previous);
-            let seats: Vec<(usize, f64)> = self
-                .mobs
+            let cart_box = self.carts[i].bounds();
+            let seats: Vec<(usize, f64)> = js
                 .iter()
-                .enumerate()
-                .filter(|(_, m)| m.extra.mount == Some(id))
                 // Minecart's box is 0.98 wide.
-                .map(|(j, m)| (j, riders::vehicle_attachment(m, 0.98)))
+                .map(|&j| (j, riders::vehicle_attachment(&self.mobs[j], 0.98)))
                 .collect();
             for (j, offset) in seats {
                 let m = &mut self.mobs[j];
+                m.seated(id, offset, cart_box);
                 m.position = cart_seat(pos, offset);
                 m.previous = cart_seat(prev, offset);
                 m.velocity = Vec3::ZERO;
@@ -1793,6 +1798,11 @@ impl Game<'_> {
     }
     /// Every cart but the ridden one (which ticks with its rider).
     pub(super) fn tick_carts(&mut self) {
+        self.vehicles_ticking(true);
+        self.tick_carts_now();
+        self.vehicles_ticking(false);
+    }
+    fn tick_carts_now(&mut self) {
         self.push_carts();
         // ServerLevel.tick: only entities in entity-ticking chunks tick.
         let ticking = self.entity_ticking_area();
@@ -2158,12 +2168,7 @@ impl Game<'_> {
                 let id = self.carts[i].id;
                 // isVehicle: a mob already sits in it.
                 let has_mob = self.mobs.iter().any(|m| m.extra.mount == Some(id));
-                if sneaking
-                    || self.riding.is_some()
-                    || !self.may_board()
-                    || self.ridden_by_guest(id)
-                    || has_mob
-                {
+                if sneaking || self.riding.is_some() || self.ridden_by_guest(id) || has_mob {
                     return false;
                 }
                 if !self.native_may_board(id) {
@@ -2344,12 +2349,23 @@ impl Game<'_> {
     /// `VehicleEntity.hurtServer`: shake, add the damage, break past 40 (at
     /// once for creative players); TNT minecarts prime instead when moving
     /// or hurt by fire or an explosion (`damageSourceIgnitesTnt`).
-    pub(super) fn hurt_cart(&mut self, i: usize, mut damage: f32, creative: bool, fire: bool) {
+    pub(super) fn hurt_cart(&mut self, i: usize, damage: f32, creative: bool, fire: bool) {
+        self.hurt_cart_result(i, damage, creative, fire);
+    }
+
+    /// Accepted damage is distinct from survival, destruction, or TNT priming.
+    pub(super) fn hurt_cart_result(
+        &mut self,
+        i: usize,
+        mut damage: f32,
+        creative: bool,
+        fire: bool,
+    ) -> bool {
         let kind = self.carts[i].kind.id();
         let mut cancel = false;
         self.native_vehicle_damage(kind, &mut damage, &mut cancel);
         if cancel {
-            return;
+            return false;
         }
         let destroyed = {
             let c = &mut self.carts[i];
@@ -2401,6 +2417,7 @@ impl Game<'_> {
                 }
             }
         }
+        true
     }
     /// Baked block-state faces with default block tints and terrain shade or diffuse lighting.
     pub(super) fn block_model_vertices(

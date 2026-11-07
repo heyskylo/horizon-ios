@@ -2077,7 +2077,10 @@ pub(crate) fn unpack_archive(url: &str, partial: &Path, limit: u64) -> Result<Pa
 }
 
 /// Makes `to` hold `from`'s files, writing only those that changed, so Cargo, which goes by file
-/// times, recompiles only what the mods changed.
+/// times, recompiles only what the mods changed. A file written gets the current time, not
+/// `from`'s: a copy keeps the original's time on Windows and macOS, and an unpacked source has
+/// its commit's, which can be older than the last build. Cargo would take that file for one it
+/// already compiled and link the older crate (#10421).
 fn sync(from: &Path, to: &Path) -> Result<(), String> {
     let new = files(from)?;
     let old = if to.is_dir() { files(to)? } else { Vec::new() };
@@ -2085,7 +2088,10 @@ fn sync(from: &Path, to: &Path) -> Result<(), String> {
         let target = to.join(name);
         if fs::read(&target).ok() != fs::read(path).ok() {
             fs::create_dir_all(target.parent().unwrap_or(to)).map_err(|e| e.to_string())?;
-            fs::copy(path, &target).map_err(|e| format!("{}: {e}", target.display()))?;
+            fs::copy(path, &target)
+                .and_then(|_| fs::File::options().write(true).open(&target))
+                .and_then(|file| file.set_modified(std::time::SystemTime::now()))
+                .map_err(|e| format!("{}: {e}", target.display()))?;
         }
     }
     for (name, path) in old {
@@ -2094,6 +2100,24 @@ fn sync(from: &Path, to: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Marks a `stage/` whose files all got the time they were written ([`sync`]).
+const STAGE_STAMPED: &str = "stage.stamped";
+
+/// The stage the compiler reads, in `root`. One written before #10421 can hold files with their
+/// commit's time over crates compiled from another commit: it is written again, once, so each of
+/// its files is newer than what `target/` holds.
+fn stage_dir(root: &Path) -> Result<PathBuf, String> {
+    let stage = root.join("stage");
+    let stamped = root.join(STAGE_STAMPED);
+    if !stamped.exists() {
+        if stage.exists() {
+            fs::remove_dir_all(&stage).map_err(|e| format!("{}: {e}", stage.display()))?;
+        }
+        fs::write(&stamped, "").map_err(|e| format!("{}: {e}", stamped.display()))?;
+    }
+    Ok(stage)
 }
 
 /// Copy a bundle without its API package's Cargo build output.
@@ -2438,7 +2462,7 @@ fn pipeline(
             run(metadata, "Resolving trait mod crates", |_| {})?;
         }
         // Absolute: the compiler runs from elsewhere (`compile`).
-        let stage = real.join("stage");
+        let stage = stage_dir(&real)?;
         sync(&fresh, &stage)?;
         let _ = fs::remove_dir_all(&fresh);
         if crates::any(&stage) || has_api {
@@ -4617,6 +4641,64 @@ mod tests {
         );
         assert_eq!(fs::read_to_string(to.join("src/b.rs")).unwrap(), "b2");
         assert!(!to.join("gone.rs").exists());
+    }
+
+    /// #10421: a Nightly's source carries its commit's time, older than a build made since on
+    /// another Nightly. Its changed files must reach the stage newer than that build, or Cargo
+    /// keeps the old crate.
+    #[test]
+    fn a_changed_file_is_newer_than_the_last_build_even_from_an_older_source() {
+        use std::time::{Duration, SystemTime};
+        let (from, to) = (dir("sync-old-from"), dir("sync-old-to"));
+        let commit = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+        fs::create_dir_all(from.join("crates/horizon-core/src")).unwrap();
+        let file = from.join("crates/horizon-core/src/storage.rs");
+        fs::write(&file, "pub fn unpack_into() {}").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(commit)
+            .unwrap();
+        fs::create_dir_all(to.join("crates/horizon-core/src")).unwrap();
+        fs::write(
+            to.join("crates/horizon-core/src/storage.rs"),
+            "pub fn unpack() {}",
+        )
+        .unwrap();
+        // The older Nightly's build: Cargo records when it started.
+        let built = SystemTime::now();
+        std::thread::sleep(Duration::from_millis(20));
+        sync(&from, &to).unwrap();
+        let staged = to.join("crates/horizon-core/src/storage.rs");
+        assert_eq!(
+            fs::read_to_string(&staged).unwrap(),
+            "pub fn unpack_into() {}"
+        );
+        assert!(fs::metadata(&staged).unwrap().modified().unwrap() > built);
+        // A file new to the stage too.
+        fs::remove_dir_all(&to).unwrap();
+        sync(&from, &to).unwrap();
+        assert!(fs::metadata(&staged).unwrap().modified().unwrap() > built);
+        fs::remove_dir_all(from).unwrap();
+        fs::remove_dir_all(to).unwrap();
+    }
+
+    /// A stage from before #10421 may hold old times over newer content: it is made again once,
+    /// and kept on every later build.
+    #[test]
+    fn a_stage_from_before_the_time_fix_is_written_again_once() {
+        let root = dir("stage-stamped");
+        fs::create_dir_all(root.join("stage/src")).unwrap();
+        fs::write(root.join("stage/src/lib.rs"), "old").unwrap();
+        let stage = stage_dir(&root).unwrap();
+        assert_eq!(stage, root.join("stage"));
+        assert!(!stage.exists());
+        fs::create_dir_all(stage.join("src")).unwrap();
+        fs::write(stage.join("src/lib.rs"), "new").unwrap();
+        stage_dir(&root).unwrap();
+        assert_eq!(fs::read_to_string(stage.join("src/lib.rs")).unwrap(), "new");
+        fs::remove_dir_all(root).unwrap();
     }
 
     /// levzzz5154's decision (2026-10-29): a rebuild stays on the Horizon the instance plays;

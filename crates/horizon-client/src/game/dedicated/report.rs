@@ -51,7 +51,7 @@ pub(super) struct Recording {
 impl Recording {
     pub(super) fn start(seconds: u32, wire: Vec<(u32, (u64, u64))>) -> Self {
         let spans_were_on = spans::enabled();
-        spans::enable(true);
+        tick_profile::want_spans(tick_profile::SPANS_REPORT, true);
         job_stats::enable(true);
         job_stats::take();
         tick_profile::take();
@@ -355,9 +355,8 @@ impl Game<'_> {
     pub(super) fn finish_report(&mut self, r: Recording, view: (u32, u32), max_players: usize) {
         let span_ns = span_cost_nanos();
         let mob_ns = tick_profile::sample_cost_nanos();
-        if !r.spans_were_on {
-            spans::enable(false);
-        }
+        // Off unless `HORIZON_SPIKES` or a mod (`native_spans`) still wants them.
+        tick_profile::want_spans(tick_profile::SPANS_REPORT, false);
         job_stats::enable(false);
         let window_s = r.started.elapsed().as_secs_f64();
         let (ticks, spans, worst) = tick_summary(&r, window_s);
@@ -558,6 +557,20 @@ fn process_limits() -> Value {
         "cgroup_memory_current": cgroup("memory.current"),
         "cgroup_memory_max": cgroup("memory.max"),
     })
+}
+
+/// The longest `horizon-trace` writes for.
+pub(super) const TRACE_MAX_SECONDS: u32 = 300;
+
+/// `horizon-trace SECONDS`: every thread's spans for `seconds`, to `reports/trace-<time>.json`
+/// (Perfetto opens it).
+pub(super) fn start_trace(seconds: u32) -> std::io::Result<PathBuf> {
+    let dir = Path::new("reports");
+    std::fs::create_dir_all(dir)?;
+    let stamp = chrono::Utc::now().format("%Y-%m-%d_%H-%M-%SZ");
+    let path = dir.join(format!("trace-{stamp}.json"));
+    spans::trace::start(&path, Some(seconds))?;
+    Ok(path)
 }
 
 fn write_report(dir: &Path, report: &Value, text: &str) -> std::io::Result<PathBuf> {

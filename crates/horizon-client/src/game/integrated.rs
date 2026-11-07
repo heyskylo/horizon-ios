@@ -64,6 +64,8 @@ struct Flags {
     /// `options.entityDistanceScaling` (an `f32`'s bits), which
     /// `IntegratedServer.getScaledTrackingDistance` reads on every call.
     entity_distance: AtomicU32,
+    /// The PvP page's legacy combat rules, which the server's hits follow from the next tick.
+    legacy_rules: AtomicBool,
     /// `MinecraftServer.isCurrentlySaving`: the server is autosaving.
     saving: AtomicBool,
     /// Splitscreen players joined through memory (offline uuids): let in although the world is
@@ -200,6 +202,10 @@ impl Integrated {
             .entity_distance
             .store(entity.to_bits(), Ordering::Relaxed);
     }
+    /// The window's legacy combat rules option, for the server's hits.
+    pub fn set_legacy_rules(&self, on: bool) {
+        self.flags.legacy_rules.store(on, Ordering::Relaxed);
+    }
     /// `IntegratedServer.getPort` while `isPublished`.
     pub fn published(&self) -> Option<u16> {
         Some(self.flags.published.load(Ordering::Relaxed)).filter(|&p| p != 0)
@@ -233,6 +239,11 @@ impl Integrated {
             }
             Err(RecvTimeoutError::Disconnected) => None,
         }
+    }
+    /// `execute`: run `f` on the server thread between two ticks, without
+    /// waiting for it. False once the server has stopped.
+    pub fn post(&self, f: impl FnOnce(&mut Game<'_>) + Send + 'static) -> bool {
+        self.tasks.send(Box::new(f)).is_ok()
     }
     /// `IntegratedServer.halt(true)`: returns once the world is saved and let go.
     pub fn stop(mut self) -> Result<()> {
@@ -457,6 +468,9 @@ impl Game<'_> {
         flags
             .entity_distance
             .store(settings.entity_distance.to_bits(), Ordering::Relaxed);
+        flags
+            .legacy_rules
+            .store(settings.extras.pvp.combat.rules, Ordering::Relaxed);
         let (ready_tx, ready) = channel();
         let (tasks, server_tasks) = channel();
         let server_flags = flags.clone();
@@ -547,6 +561,7 @@ impl Game<'_> {
         self.server_packs_world_pack(&folder);
         self.connect_local(pipe, &player)?;
         if let Some(r) = self.remote.as_mut() {
+            r.save_folder = Some(folder.clone());
             // `new LevelLoadTracker(newWorld ? 500L : 0L)`.
             r.level_load = horizon_client::level_loading::LevelLoadTracker::new(if new_world {
                 horizon_client::level_loading::LEVEL_LOAD_CLOSE_DELAY_MS
@@ -957,7 +972,8 @@ impl Game<'_> {
                     g.chat_capture = Some(Vec::new());
                     // A command a native mod registered goes to the mods
                     // first, as the owner's own chat does (the console is
-                    // level 4, so every registered usage is allowed).
+                    // level 4, so every registered usage is allowed; one with
+                    // a permission node asks the mods for the owner).
                     if !g.perform_native_command(conn, 4, command.trim()) {
                         g.run_command(&command);
                     }
@@ -1062,11 +1078,12 @@ impl Game<'_> {
     /// Publish or unpublish for real, once the hub is in its place (a
     /// player's `/publish` runs while it is out).
     /// IntegratedServer.tickServer: the server follows the window's render
-    /// and simulation distances when they change.
+    /// and simulation distances when they change (and Horizon's legacy combat rules).
     fn follow_distances(&mut self, flags: &Flags) {
         // IntegratedServer.getScaledTrackingDistance reads the option each time.
         self.settings.entity_distance =
             f32::from_bits(flags.entity_distance.load(Ordering::Relaxed));
+        self.settings.extras.pvp.combat.rules = flags.legacy_rules.load(Ordering::Relaxed);
         let Some(host) = self.lan.as_mut() else {
             return;
         };

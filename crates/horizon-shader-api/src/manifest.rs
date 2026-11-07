@@ -1324,9 +1324,9 @@ impl RawOption {
         let float = |v: &toml::Value| {
             v.as_float()
                 .or_else(|| v.as_integer().map(|i| i as f64))
-                .filter(|f| f.is_finite())
                 .map(|f| f as f32)
-                .ok_or_else(|| format!("{v} is not a number"))
+                .filter(|f| f.is_finite())
+                .ok_or_else(|| format!("{v} is not a finite 32-bit number"))
         };
         let need = |v: Option<toml::Value>, key: &str| v.ok_or_else(|| format!("needs {key}"));
         let unused = |present: bool, key: &str| {
@@ -1354,11 +1354,13 @@ impl RawOption {
                     float(&need(self.max, "max")?)?,
                 );
                 let default = float(&self.default)?;
-                let step = self.step.map_or((max - min) / 100.0, |s| s as f32);
+                // The endpoints may both fit f32 even when their difference does not.
+                let range = f64::from(max) - f64::from(min);
+                let step = self.step.map_or((range / 100.0) as f32, |s| s as f32);
                 if !(min < max && (min..=max).contains(&default)) {
                     return Err(format!("needs min < max and default in [{min}, {max}]"));
                 }
-                if !(step > 0.0 && step <= max - min) {
+                if !(step.is_finite() && step > 0.0 && f64::from(step) <= range) {
                     return Err(format!("step {step} is not in (0, max - min]"));
                 }
                 OptionKind::Float {
