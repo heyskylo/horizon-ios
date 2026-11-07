@@ -499,6 +499,22 @@ mod tests {
     }
 
     #[test]
+    fn the_series_cover_every_frame_the_summary_counts() {
+        let mut stats = FrameStats::default();
+        for ms in [4.0, 5.0, 6.0] {
+            stats.record(ms);
+            stats.record_cpu(ms / 2.0);
+        }
+        let mut summary = stats.summary();
+        assert!(summary.get("frame_ms").is_none());
+        stats.add_series(&mut summary);
+        assert_eq!(summary["frame_ms"], serde_json::json!([4.0, 5.0, 6.0]));
+        assert_eq!(summary["cpu_ms"], serde_json::json!([2.0, 2.5, 3.0]));
+        assert_eq!(summary["gpu_ms"], serde_json::json!([]));
+        assert_eq!(summary["frames"], 3);
+    }
+
+    #[test]
     fn frame_summary_reports_block_entity_cache_work() {
         let mut stats = FrameStats::default();
         stats.record(10.0);
@@ -613,17 +629,11 @@ impl FrameStats {
         self.static_entities_drawn += stats.static_entities_drawn;
         self.dynamic_entities_drawn += stats.dynamic_entities_drawn;
     }
-    /// Every recorded frame time, in milliseconds, in order.
-    pub fn frame_millis(&self) -> &[f32] {
-        &self.millis
-    }
-    /// CPU time of every recorded frame, in milliseconds.
-    pub fn cpu_millis(&self) -> &[f32] {
-        &self.cpu
-    }
-    /// GPU time of every frame the GPU timed, in milliseconds.
-    pub fn gpu_millis(&self) -> &[f32] {
-        &self.gpu
+    /// Adds every frame's time (`frame_ms`, `cpu_ms`, `gpu_ms`) to a summary.
+    pub fn add_series(&self, summary: &mut serde_json::Value) {
+        summary["frame_ms"] = self.millis.clone().into();
+        summary["cpu_ms"] = self.cpu.clone().into();
+        summary["gpu_ms"] = self.gpu.clone().into();
     }
     pub fn reset(&mut self) {
         self.millis.clear();

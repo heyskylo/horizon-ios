@@ -11,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+pub mod compare;
 mod hardware;
 
 pub use hardware::{cpu_seconds, load_average, power_source, rss_bytes, Display, Gpu, Hardware};
@@ -234,6 +235,9 @@ pub struct Report {
     pub metrics: BTreeMap<String, Summary>,
     #[serde(default)]
     pub frames: Vec<Frames>,
+    /// Present in A/B runs only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ab: Option<compare::Ab>,
     /// Local only: a name the person running it chose.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
@@ -261,6 +265,7 @@ impl Report {
             conditions: Conditions::default(),
             metrics: BTreeMap::new(),
             frames: Vec::new(),
+            ab: None,
             label: None,
             local: Vec::new(),
         }
