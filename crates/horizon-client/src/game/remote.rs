@@ -1335,6 +1335,7 @@ impl Game<'_> {
             session,
             save_folder: None,
             brand: "horizon-studio".into(),
+            recipe_transfer: false,
             features: vec!["minecraft:vanilla".into()],
             quiet_commands: false,
             mod_net: false,
