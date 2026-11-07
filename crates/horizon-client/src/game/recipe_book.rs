@@ -65,7 +65,7 @@ struct View {
 pub(super) struct RecipeUi {
     book: Option<Book>,
     tab: Option<Tab>,
-    search: Option<EditBox>,
+    pub(super) search: Option<EditBox>,
     page: usize,
     /// Ticks, for the ghost and button cycling (`RecipeBookComponent.time`).
     time: f32,

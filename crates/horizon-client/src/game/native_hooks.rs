@@ -994,6 +994,7 @@ use super::{
     native_reload_listeners::NativeReloadListener,
     native_world_draw::NativeWorldDraw,
 };
+use crate::mod_api::NativeTextField;
 use horizon_assets::item_model::StackView;
 use horizon_client::mod_api::EntityDataValue;
 use horizon_client::mod_api::{
@@ -3999,6 +4000,24 @@ impl Game<'_> {
             canceled,
         );
     }
+    pub(super) fn native_screen_text_field_char_typed_pre(
+        &self,
+        screen: &NativeScreenView<'_>,
+        field: &mut NativeTextField,
+        character: char,
+        modifiers: u32,
+        canceled: &mut bool,
+    ) {
+        mod_api::dispatch_screen_text_field_char_typed_pre(
+            self,
+            mod_api::mods(),
+            screen,
+            field,
+            character,
+            modifiers,
+            canceled,
+        );
+    }
     /// The open screen as a native mod sees it (`NativeScreenView`): its id,
     /// the open menu's type and title, its slot count, and its panel's
     /// rectangle, with the mouse and the partial tick. `screen` is the screen
@@ -4172,6 +4191,12 @@ impl Game<'_> {
         let Some(text) = text else {
             return;
         };
+        if self.types_text()
+            && let Some(result) = self.type_text_field_input(text)
+        {
+            Self::report_text_input_result(result);
+            return;
+        }
         let Some(screen) = self.screen_view_now() else {
             return;
         };

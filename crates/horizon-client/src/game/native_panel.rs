@@ -63,7 +63,7 @@ pub(super) struct Panel {
     /// The mod's items as stacks; `None` for an item the game doesn't have.
     stacks: Vec<Option<ItemStack>>,
     page: usize,
-    search: Option<EditBox>,
+    pub(super) search: Option<EditBox>,
     /// The search text the mod last heard.
     sent: String,
     /// Only while dispatching Search: an empty reply still needs an editable field.
