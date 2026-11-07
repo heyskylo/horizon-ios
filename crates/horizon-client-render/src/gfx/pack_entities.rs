@@ -454,9 +454,31 @@ impl PackEntities {
         let first = spans.first().map_or(entities.len(), |s| s.start as usize);
         extend_without_portals(rest, &entities[..first.min(entities.len())]);
         let (mut other, mut portal_faces, mut beam_faces) = (Vec::new(), Vec::new(), Vec::new());
+        let mut without_fluids = Vec::new();
         for (span, range) in runs(entities.len(), spans) {
             let run_start = range.start as u32;
             let whole = &entities[range];
+            // A native fluid carries sprite-array UVs, not shared-atlas UVs.
+            // Keep it in its own material even when a shader pack draws the
+            // model in the same block-entity run. Do not corrupt either UV space.
+            let whole: &[Vertex] = if whole
+                .chunks(4)
+                .any(|q| super::is_native_terrain(q[0].layer))
+            {
+                without_fluids.clear();
+                for quad in whole.chunks(4) {
+                    if super::is_native_terrain(quad[0].layer) {
+                        if !span.hidden {
+                            rest.extend_from_slice(quad);
+                        }
+                    } else {
+                        without_fluids.extend_from_slice(quad);
+                    }
+                }
+                &without_fluids
+            } else {
+                whole
+            };
             // A block entity's run can hold End portal faces and beams beside plain parts (an End
             // gateway: its cube and its beam): each goes to its own program.
             // Beacon beams come in a run of their own, at stage NONE (game.rs: no stage of 5.4
@@ -1141,6 +1163,83 @@ fn skin_runs(skin: &super::entity_skin::SkinFrame) -> Vec<(EntitySpan, Range<u32
 mod gpu_span_tests {
     use super::*;
     use crate::gfx::entity_skin::{SkinFrame, SkinJob};
+    #[test]
+    #[ignore = "requires a Vulkan/Metal/DX12 adapter"]
+    fn native_fluid_stays_native_while_model_uses_pack() {
+        let instance = crate::gfx::test_gpu::instance();
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let layout = super::super::pack_draw::DrawUniforms::new(&device);
+        let mut geometry = PackEntities::new(&device, &layout.layout);
+        for overlay in [
+            super::super::FLUID_OVERLAY,
+            super::super::TERRAIN_MODEL_SOLID_OVERLAY,
+            super::super::TERRAIN_MODEL_CUTOUT_OVERLAY,
+            super::super::TERRAIN_MODEL_CUTOUT_MIPPED_OVERLAY,
+        ] {
+            let mut mixed = vec![
+                Vertex {
+                    layer: 0,
+                    ..bytemuck::Zeroable::zeroed()
+                };
+                8
+            ];
+            for v in &mut mixed[4..] {
+                v.layer = overlay | 279 << 16;
+                v.uv = [0.25, 0.75];
+                v.glint_uv = [17.0, 0.0];
+            }
+            let mut rest = Vec::new();
+            for hidden in [false, true] {
+                geometry.prepare(
+                    &device,
+                    &queue,
+                    &layout.layout,
+                    &mixed,
+                    &[EntitySpan {
+                        start: 0,
+                        id: 77,
+                        stage: render_stage("BLOCK_ENTITIES"),
+                        hidden,
+                        ..Default::default()
+                    }],
+                    [true; PROGRAMS],
+                    ([0.; 4], [1; 2]),
+                    Casters {
+                        blocks: true,
+                        ..Default::default()
+                    },
+                    &mut rest,
+                    None,
+                    (&[], &[]),
+                );
+                assert_eq!(
+                    geometry.scratch.len(),
+                    4,
+                    "the model still uses the shader pack"
+                );
+                assert_eq!(geometry.draws.len(), 1);
+                assert_eq!(
+                    (geometry.draws[0].pack, geometry.draws[0].shadow),
+                    (!hidden, true)
+                );
+                if hidden {
+                    assert!(
+                        rest.is_empty(),
+                        "hidden native fluid must not leak into the visible pass"
+                    );
+                } else {
+                    assert_eq!(
+                        bytemuck::cast_slice::<_, u8>(&rest),
+                        bytemuck::cast_slice::<_, u8>(&mixed[4..]),
+                        "fluid UV/layer payload cannot be sampled from the entity atlas"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn posed_draws_preserve_subject_ids_overlays_and_hidden_shadow_casters() {
         let mut skin = SkinFrame {

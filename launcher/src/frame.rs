@@ -601,8 +601,8 @@ impl Launcher {
     /// Settings (`px-8 pt-3.5`).
     pub(super) fn glass_topbar(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
-        let wide = self.window_width >= 1380.;
-        let compact = self.window_width < 1180.;
+        let wide = self.window_width >= crate::glass_home::TOP_BAR_WIDE;
+        let compact = self.window_width < crate::glass_home::COMPACT;
         let mut tabs = div()
             .flex()
             .items_center()
