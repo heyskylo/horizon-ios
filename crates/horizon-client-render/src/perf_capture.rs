@@ -99,14 +99,29 @@ fn live_nodes(agg: &Aggregate) -> Vec<bool> {
     live
 }
 
-fn push_node(nodes: &mut Nodes, parent: Option<u32>, function: u32, thread: u16) -> u32 {
-    nodes.parent.push(parent.unwrap_or(0));
-    nodes.function.push(function);
-    nodes.thread_root.push(match parent {
-        None => u32::from(thread) + 1,
-        Some(_) => 0,
-    });
-    nodes.parent.len() as u32 - 1
+#[derive(Default)]
+struct NodeTable {
+    rows: Nodes,
+    index: HashMap<(Option<u32>, u32, u16), u32>,
+}
+
+impl NodeTable {
+    fn id(&mut self, parent: Option<u32>, function: u32, thread: u16) -> u32 {
+        let key = (parent, function, if parent.is_none() { thread } else { 0 });
+        if let Some(&row) = self.index.get(&key) {
+            return row;
+        }
+        let nodes = &mut self.rows;
+        nodes.parent.push(parent.unwrap_or(0));
+        nodes.function.push(function);
+        nodes.thread_root.push(match parent {
+            None => u32::from(thread) + 1,
+            Some(_) => 0,
+        });
+        let row = nodes.parent.len() as u32 - 1;
+        self.index.insert(key, row);
+        row
+    }
 }
 
 fn named(strings: &mut Interner, space: Space, id: u16) -> u32 {
@@ -138,7 +153,7 @@ pub fn sample_profile(
     let symbols = symbolize(addrs);
 
     let mut functions = FunctionTable::default();
-    let mut nodes = Nodes::default();
+    let mut nodes = NodeTable::default();
     let mut last: Vec<Option<u32>> = vec![None; agg.nodes()];
     for n in (1..agg.nodes()).filter(|&n| live[n]) {
         let inherited = last[agg.parent(n as u32) as usize];
@@ -150,11 +165,11 @@ pub fn sample_profile(
                 let mut at = inherited;
                 for sym in symbols.frames(addr).iter().rev() {
                     let f = functions.id(strings, &sym.name, sym.file.as_deref(), sym.line, offset);
-                    at = Some(push_node(&mut nodes, at, f, thread_of[n]));
+                    at = Some(nodes.id(at, f, thread_of[n]));
                 }
                 if at == inherited {
                     let f = functions.id(strings, UNKNOWN, None, 0, offset);
-                    at = Some(push_node(&mut nodes, at, f, thread_of[n]));
+                    at = Some(nodes.id(at, f, thread_of[n]));
                 }
                 at
             }
@@ -183,7 +198,7 @@ pub fn sample_profile(
             Some(node) => node,
             None => *unknown_roots.entry(thread).or_insert_with(|| {
                 let f = functions.id(strings, UNKNOWN, None, 0, 0);
-                push_node(&mut nodes, None, f, thread)
+                nodes.id(None, f, thread)
             }),
         };
         let row = [
@@ -264,7 +279,7 @@ pub fn sample_profile(
         block_s: profile.config.block_s,
         block_units,
         functions: Some(functions.rows),
-        nodes: Some(nodes),
+        nodes: Some(nodes.rows),
         contexts: Some(contexts),
         weights: Some(weights),
         slow_over_ms: profile.config.ticks_over_ms as f32,

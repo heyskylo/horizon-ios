@@ -195,6 +195,20 @@ fn addresses_of_one_function_share_one_row() {
         .map(|i| w.count[i])
         .sum();
     assert_eq!(on_alpha, 5);
+    let n = c.samples.nodes.as_ref().unwrap();
+    let alphas: Vec<usize> = (0..n.function.len())
+        .filter(|&i| short(c.function(n.function[i])) == "alpha")
+        .collect();
+    assert_eq!(alphas.len(), 1, "one node per (parent, function)");
+    assert_eq!(
+        short(c.function(n.function[n.parent[alphas[0]] as usize])),
+        "gamma"
+    );
+    let weight_on_alpha: u64 = (0..w.node.len())
+        .filter(|&i| w.node[i] as usize == alphas[0])
+        .map(|i| w.count[i])
+        .sum();
+    assert_eq!(weight_on_alpha, 5);
     let alpha_row = names.iter().position(|n| *n == "alpha").unwrap();
     assert!(f.addr[alpha_row] > 0, "a module-relative address is kept");
 }
@@ -404,9 +418,12 @@ fn overhead_counts_lost_samples_and_the_writers_share_of_a_core() {
     agg.lost = 4;
     let mut profile = profile_of(agg, Config::default());
     profile.stats.dropped = 3;
+    profile.stats.samples = 1000;
+    profile.stats.handler_ns = Some(2_000.0);
     profile.writer_cpu_ns = 50_000_000;
     let o = overhead(&profile);
     assert_eq!(o.dropped_samples, 7);
+    assert!((o.sampler_share_of_thread - 0.0002).abs() < 1e-7);
     assert!((o.writer_core_share - 0.005).abs() < 1e-6);
 }
 

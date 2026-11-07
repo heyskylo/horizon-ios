@@ -162,8 +162,7 @@ impl ServerPerf {
         }
     }
 
-    /// Opens `dir/profile-<time>Z.hzperf` and writes what the server knew before: `Start`, the health tiers and the slow ring.
-    /// Call it on the tick thread: that is the thread it samples.
+    /// Opens `dir/profile-<time>Z.hzperf` with `Start`, the health tiers and the slow ring; call it on the tick thread, which it samples.
     pub fn start_capture(
         &mut self,
         t: f64,
