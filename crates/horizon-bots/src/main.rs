@@ -694,7 +694,7 @@ fn costly(
         Behaviour::FloodUse => {
             // A block within reach: place stone there, or break what is there.
             let at = [0, 1, 2].map(|k| block[k] + (random.unit() * 7.0) as i32 - 3);
-            if i % 2 == 0 {
+            if i.is_multiple_of(2) {
                 play::Serverbound::UseItemOn(play::UseItemOn {
                     hand: 0,
                     pos: at,
@@ -723,7 +723,7 @@ fn costly(
             carried: None,
         }),
         Behaviour::FloodSuggest => {
-            let text = if i % 2 == 0 {
+            let text = if i.is_multiple_of(2) {
                 "/"
             } else {
                 LONG_COMMAND.as_str()
@@ -1555,10 +1555,10 @@ fn main() {
     });
     if o.report.as_deref() == Some("-") {
         println!("{summary:#}");
-    } else if let Some(path) = &o.report {
-        if let Err(e) = std::fs::write(path, format!("{summary:#}\n")) {
-            eprintln!("horizon-bots: {path}: {e}");
-        }
+    } else if let Some(path) = &o.report
+        && let Err(e) = std::fs::write(path, format!("{summary:#}\n"))
+    {
+        eprintln!("horizon-bots: {path}: {e}");
     }
     let errors: Vec<String> = bots
         .iter()
