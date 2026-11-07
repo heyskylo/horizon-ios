@@ -13807,6 +13807,101 @@ def check_legacy_pvp(host, guest, out):
 CHECKS += ['legacy-pvp']
 CHECK_FNS['legacy-pvp'] = check_legacy_pvp
 
+def check_ride_seats(host, guest, out):
+    """RideCommand.mount forces the ride (startRiding(vehicle, true, true)), so an item display, an
+    armor stand or a marker takes a rider: the guest sits on the vehicle's passenger point (its box
+    height, less the player's 0.6 vehicle attachment), follows it when it is moved, and gets off on top
+    of it on sneak (Entity.getDismountLocationForPassenger); a mob rides a marker the same way."""
+    x, y, z = (int(v // 1) for v in pos_of(host))
+    x, z = x + 4, z + 4
+    host('command', command=f'fill {x - 2} {y - 1} {z - 2} {x + 6} {y - 1} {z + 2} minecraft:stone')
+    host('command', command=f'fill {x - 2} {y} {z - 2} {x + 6} {y + 4} {z + 2} minecraft:air')
+    seen = {}
+
+    def seat(kind, nbt, height):
+        tag = f'ride_seat_{kind.split(":")[1]}'
+        host('command', command=f'summon {kind} {x + 0.5} {y} {z + 0.5} {{NoGravity:1b,Tags:["{tag}"]{nbt}}}')
+        sel = f'@e[tag={tag},limit=1]'
+        result = {'mount': host('command', command=f'ride {GUEST_NAME} mount {sel}').get('chat')}
+        guest.wait(10)
+        result['riding'] = guest('status').get('riding') is not None
+        result['y'] = round(pos_of(guest)[1] - y, 3)
+        host('command', command=f'tp {sel} {x + 3.5} {y} {z + 0.5}')
+        guest.wait(10)
+        result['followed'] = round(pos_of(guest)[0] - (x + 3.5), 3)
+        guest.shot(out, f'ride-seat-{kind.split(":")[1]}')
+        guest.raw('key', 'shift', 'down')
+        guest.wait(10)
+        guest.raw('key', 'shift', 'up')
+        guest.wait(10)
+        result['off'] = guest('status').get('riding') is None
+        result['off_y'] = round(pos_of(guest)[1] - y, 3)
+        host('command', command=f'kill @e[tag={tag}]')
+        host('command', command=f'tp {GUEST_NAME} {x + 0.5} {y} {z - 1.5}')
+        guest.wait(10)
+        result['expected'] = (round(height - 0.6, 3), height)
+        return result
+
+    try:
+        seen['item_display'] = seat('minecraft:item_display', '', 0.0)
+        seen['armor_stand'] = seat('minecraft:armor_stand', ',Invisible:1b', 1.975)
+        host('command', command=f'summon minecraft:marker {x + 0.5} {y + 1} {z + 0.5} {{Tags:["ride_seat_mk"]}}')
+        host('command', command=f'summon minecraft:zombie {x + 2.5} {y} {z + 0.5} {{NoAI:1b,Tags:["ride_seat_z"]}}')
+        seen['zombie on marker'] = host('command', command='ride @e[tag=ride_seat_z,limit=1] mount @e[tag=ride_seat_mk,limit=1]').get('chat')
+        host.wait(5)
+        zombie = host('command', command='data get entity @e[tag=ride_seat_z,limit=1] Pos[1]').get('chat')
+        seen['zombie y'] = zombie
+    finally:
+        host('command', command='kill @e[tag=ride_seat_z]')
+        host('command', command='kill @e[tag=ride_seat_mk]')
+    for kind in ('item_display', 'armor_stand'):
+        r = seen[kind]
+        assert r['riding'], f'the guest rides the {kind}: {seen}'
+        assert abs(r['y'] - r['expected'][0]) < 0.01, f'the guest sits on the {kind} passenger point: {seen}'
+        assert abs(r['followed']) < 0.01, f'the guest follows the moved {kind}: {seen}'
+        # Off on top of the vehicle, then falling to the floor below like any player (10 ticks later).
+        assert r['off'] and -0.01 <= r['off_y'] <= r['expected'][1] + 0.01, f'the guest gets off the {kind}: {seen}'
+    assert any('started riding' in line for line in seen['zombie on marker'] or []), f'a mob rides a marker: {seen}'
+    return seen
+
+
+CHECKS += ['ride_seats']
+CHECK_FNS['ride_seats'] = check_ride_seats
+
+
+def check_ride_guest(host, guest, out):
+    """RideCommand.mount and dismount on another server player: the host's /ride seats the guest
+    on a pig and takes them off it, as vanilla does for any ServerPlayer (the console's, a
+    function's or another player's /ride), and a player is never a vehicle."""
+    x, y, z = (int(v // 1) for v in pos_of(host))
+    host('command', command=f'summon minecraft:pig {x + 2.5} {y} {z + 0.5} {{NoAI:1b,Tags:["ride_guest"]}}')
+    pig = '@e[type=minecraft:pig,tag=ride_guest,limit=1]'
+    seen = {}
+    try:
+        seen['mount'] = host('command', command=f'ride {GUEST_NAME} mount {pig}').get('chat')
+        guest.wait(10)
+        seen['guest riding'] = guest('status').get('riding')
+        seen['host riding'] = host('status').get('riding')
+        guest.shot(out, 'ride-guest')
+        seen['on a player'] = host('command', command=f'ride @e[type=minecraft:pig,tag=ride_guest,limit=1] mount {GUEST_NAME}').get('chat')
+        seen['dismount'] = host('command', command=f'ride {GUEST_NAME} dismount').get('chat')
+        guest.wait(10)
+        seen['guest riding after'] = guest('status').get('riding')
+        seen['again'] = host('command', command=f'ride {GUEST_NAME} dismount').get('chat')
+    finally:
+        host('command', command='kill @e[type=minecraft:pig,tag=ride_guest]')
+    assert seen['guest riding'] is not None, f'the guest rides the pig: {seen}'
+    assert seen['host riding'] is None, f'the host stays on foot: {seen}'
+    assert any("can't ride" in line or 'cannot ride' in line or 'players' in line.lower() for line in seen['on a player'] or []), \
+        f'a player is not a vehicle: {seen}'
+    assert seen['guest riding after'] is None, f'the guest got off: {seen}'
+    assert any('not riding' in line for line in seen['again'] or []), f'a second dismount: not riding: {seen}'
+    return seen
+
+
+CHECKS += ['ride_guest']
+CHECK_FNS['ride_guest'] = check_ride_guest
+
 
 if __name__ == '__main__':
     main()

@@ -284,9 +284,10 @@ impl Game<'_> {
         let cart = self.carts.iter().any(|c| c.id == vehicle);
         let mount = self.mobs.iter().any(|m| m.id == vehicle);
         let cushion = self.cushions.iter().any(|c| c.id == vehicle);
+        let seat = self.seat(vehicle).is_some();
         // The vehicle is gone (broken, in another level) or the rider died:
         // its client drops it with the entity or the death screen.
-        if dead || (boat.is_none() && !cart && !mount && !cushion) {
+        if dead || (boat.is_none() && !cart && !mount && !cushion && !seat) {
             let g = &mut host.hub.guests[gi];
             (g.vehicle, g.vehicle_good) = (None, None);
             return;
@@ -327,6 +328,12 @@ impl Game<'_> {
                 }
                 let c = game.cushions.iter().find(|c| Some(c.id) == game.riding)?;
                 let p = c.seat();
+                return Some([p.x, p.y, p.z]);
+            }
+            // An armor stand, a display, a marker...: the rider keeps its seat as the vehicle is
+            // moved (/tp, a mod) until it sneaks.
+            if game.riding.is_some_and(|id| game.seat(id).is_some()) {
+                let p = game.tick_seat_riding(keys)?;
                 return Some([p.x, p.y, p.z]);
             }
             if let Some(i) = game.boats.iter().position(|b| Some(b.id) == game.riding) {
@@ -388,7 +395,8 @@ impl Game<'_> {
                     .iter()
                     .find(|c| c.id == vehicle)
                     .map(|c| (c.position, c.seat()))
-            });
+            })
+            .or_else(|| self.seat(vehicle).map(|s| (s.position, s.player_seat())));
         if let Some((p, seat)) = at {
             let g = &mut host.hub.guests[gi];
             g.vehicle_good = Some([p.x, p.y, p.z]);

@@ -161,6 +161,21 @@ with no re-release for each Nightly.
 
 Hook and helper authors use [API fragments](../tools/native-hook-fragments/README.md) to request a number.
 
+The pending `hud_mode` helper fragment adds `Host::hud_mode()` and
+`Host::set_hud_mode(HudMode)`. `HudMode::AllVisible` shows the HUD and permits
+first-person hands; `NoHud` hides the HUD while permitting hands;
+`AllHidden` hides both. Spectator, sleeping, camera and death restrictions,
+and `render_hand` cancellation, still apply. `gui_render_post`'s `gui_hidden`
+and `client_state().gui_hidden` report the effective HUD visibility.
+
+A mod can keep its own three-state cycle and call `set_hud_mode` from the
+existing post-handling `input_key` callback after an F1 press, or from a client
+tick callback. No cancellable input hook is required. Without a mod, F1 keeps
+its normal all-visible/all-hidden toggle; each F1 toggle clears the independent
+hand override. The mode is window UI state, never a saved player setting.
+Writes on a server or during a borrowed server guest's turn do nothing.
+This fragment receives an API number when stamped after merge.
+
 API 2 adds the item panel beside container screens and its recipe pages (`native_panel_items`,
 `native_panel_recipes`, and the hook `native_panel_event` for the player's clicks, searches and keys over items), and
 the game's items and recipes (`native_recipes`, `native_known_recipes`, `native_place_recipe`, `native_give`): what a
@@ -1772,6 +1787,10 @@ API 410 adds `native_gui_render_post(batch, gui_hidden, focused)` draws after th
 
 API 411 adds Client-only Host snapshots of the window, connection, entities, interpolated model heads and profile skins; visual rays and block occlusion facts; atlas GUI painting, nine-slice widgets and tooltips; persisted mod key changes and a local action bar. client_start runs before connecting (a window need not exist yet), client_disconnecting before a real connection is discarded (not dimension travel), client_stopping once before final save/exit. menu_background can change a normal menu blur request (None disables it; finite 1..64 only). Bundles need "hooks": 411.
 
+API 412 adds `native_force_chunk(owner, chunk, hold)` holds a chunk of the level in place loaded and ticking for `owner`, as NeoForge's `TicketController.forceChunk`; `native_forced_chunks(owner)` lists what it holds. Tickets aren't saved. Bundles need "hooks": 412.
+
+API 413 adds `native_force_chunk_in(owner, dimension, chunk, hold)`, `native_force_chunk` for a named level, which opens and ticks a level not open yet, so a mod can pre-generate the Nether and the End with nobody there. Bundles need "hooks": 413.
+
 ## What the launcher does
 
 **Developing a mod?** Run `horizon-launcher settings native-profile dev` once, or pick "Dev build" in the Mods page's
@@ -2634,7 +2653,7 @@ server only.
   level nobody is in, or one not open yet, opens at the next server tick and ticks while a ticket holds it, so a
   pre-generator walks the Nether and the End from any server hook (a console command, `native_level_tick_pre` of the
   Overworld) with nobody there. False for a dimension other than the Overworld, the Nether and the End. API
-  @API:chunk_tickets_in_level@.
+  413.
 - **`native_world_border(dimension)`** (`native_world_border.rs`): the level's world border as the server enforces it,
   `[min_x, min_z, max_x, max_z]` in blocks (the previous size while it moves), for a web map's border line or a
   pre-generator's `worldborder` selection. Vanilla 26.3 keeps a border per level (`ServerLevel.getWorldBorder`, each
@@ -5005,6 +5024,13 @@ The client `tooltip_color` hook changes the background and top and bottom border
 # Camera and collision reads
 
 The `native_camera()` helper returns the most recently extracted world frame's camera, or none before one exists. Its position, interpolated eye height, partial tick, angles, final FOV, near/far planes and dimension accompany column-major view and projection matrices. The view is camera-relative and includes bob and spin; projection uses reversed Z. Earlier callbacks in a frame can see the previous frame. `native_block_collision(pos)` returns block-local `[min_x, min_y, min_z, max_x, max_y, max_z]` boxes with an empty collision context; unloaded blocks and collision errors give no boxes.
+
+Entity-sensitive static shapes belong to the bundled content declarations
+([entity-context shapes](mods.md#entity-context-shape-declarations)). They compile
+at resource load and are selected by the captured entity class in normal
+movement and selection. They are not callbacks into a native mod from physics.
+Empty-context native reads retain the declared default shape. These declarations
+cannot depend on the level, neighbouring blocks, position or block-entity data.
 
 ### Wind burst block protection
 

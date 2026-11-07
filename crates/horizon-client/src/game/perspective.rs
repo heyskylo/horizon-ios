@@ -294,8 +294,12 @@ impl Game<'_> {
     pub(super) fn camera_view(&mut self, partial: f32) -> Option<(glam::DVec3, f32, f32)> {
         // Minecraft.cameraEntity: a server's spectator camera on a mob or
         // another player.
-        let (entity, descending) = match self.camera_mob() {
-            Some(m) => (super::remote_camera::mob_camera_entity(m), false),
+        let (entity, descending, entity_kind) = match self.camera_mob() {
+            Some(m) => (
+                super::remote_camera::mob_camera_entity(m),
+                false,
+                horizon_world::collision_context::EntityContextKind::Living,
+            ),
             None => {
                 let mut entity = self.player_camera_entity()?;
                 if let Some(position) = self.remote_minecart_rider_position(partial) {
@@ -304,7 +308,11 @@ impl Game<'_> {
                     entity.position = position;
                     entity.previous = position;
                 }
-                (entity, self.player.as_ref()?.shift_key_down)
+                (
+                    entity,
+                    self.player.as_ref()?.shift_key_down,
+                    horizon_world::collision_context::EntityContextKind::Player,
+                )
             }
         };
         let mut view = self.view;
@@ -318,6 +326,7 @@ impl Game<'_> {
         let context = CollisionContext::for_entity(
             CollisionEntity {
                 identity: EntityIdentity(0),
+                kind: entity_kind,
                 y: entity.position[1],
                 descending,
                 main_hand: Some(CollisionItem::EMPTY),
@@ -790,7 +799,7 @@ impl Game<'_> {
                 packed,
                 out,
             );
-            if horizon_cosmetics::enabled() {
+            if super::cosmetics::enabled() {
                 let base = horizon_client::mobs::render::base_transform(m, alpha as f32, camera);
                 self.cosmetics_geometry(
                     m,
@@ -916,7 +925,7 @@ impl Game<'_> {
             240 | 240 << 8,
             &mut verts,
         );
-        if horizon_cosmetics::enabled() {
+        if super::cosmetics::enabled() {
             let base = horizon_client::mobs::render::base_transform(&m, 1.0, camera);
             self.cosmetics_geometry(&m, true, base, None, 1.0, 240 | 240 << 8, false, &mut verts);
         }

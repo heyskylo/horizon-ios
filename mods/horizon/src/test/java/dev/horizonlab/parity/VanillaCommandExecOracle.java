@@ -114,7 +114,8 @@ public final class VanillaCommandExecOracle {
             WorldDataConfiguration config = WorldDataConfiguration.DEFAULT;
             LevelSettings settings = new LevelSettings("Harness", GameType.SURVIVAL, LevelSettings.DifficultySettings.DEFAULT, true, config);
             WorldLoader.PackConfig packConfig = new WorldLoader.PackConfig(packs, config, false, true);
-            WorldLoader.InitConfig init = new WorldLoader.InitConfig(packConfig, Commands.CommandSelection.INTEGRATED, LevelBasedPermissionSet.OWNER);
+            WorldLoader.InitConfig init = new WorldLoader.InitConfig(packConfig, Commands.CommandSelection.INTEGRATED,
+                Boolean.getBoolean("horizon.functionAdmissionFixture") ? LevelBasedPermissionSet.GAMEMASTER : LevelBasedPermissionSet.OWNER);
             boolean flat = Boolean.getBoolean("horizon.parity.flat");
             WorldOptions options = new WorldOptions(seed, !flat, false);
             WorldStem stem = Util.<WorldStem>blockUntilDone(executor -> WorldLoader.load(init, context -> {
@@ -565,7 +566,7 @@ public final class VanillaCommandExecOracle {
                     messages.add(spans(chatType.decorate(message.content())));
                 }
             };
-            if(Boolean.getBoolean("horizon.merchantCraftedFixture")) this.tickRateManager().setFrozen(true);
+            if(Boolean.getBoolean("horizon.merchantFixture")||Boolean.getBoolean("horizon.merchantCraftedFixture")) this.tickRateManager().setFrozen(true);
             Connection connection = new Connection(PacketFlow.SERVERBOUND);
             EmbeddedChannel channel = Boolean.getBoolean("horizon.merchantCraftedFixture") ? new EmbeddedChannel(
                 new io.netty.channel.ChannelInitializer<io.netty.channel.Channel>() {
@@ -619,7 +620,12 @@ public final class VanillaCommandExecOracle {
                         String command = op.get("cmd").getAsString();
                         messages.clear();
                         List<JsonArray> results = new ArrayList<>();
-                        var source = player.createCommandSourceStack().withCallback((success, value) -> {
+                        // Reuse the existing feedback receiver while retaining the actual
+                        // server stack's null entity, names, position and permissions.
+                        var baseSource = op.has("source") && op.get("source").getAsString().equals("console")
+                                ? this.createCommandSourceStack().withSource(player.commandSource())
+                                : player.createCommandSourceStack();
+                        var source = baseSource.withCallback((success, value) -> {
                             JsonArray r = new JsonArray();
                             r.add(success);
                             r.add(value);
@@ -638,6 +644,21 @@ public final class VanillaCommandExecOracle {
                             if (op.has("trace") && op.get("trace").getAsBoolean()) System.err.println("command trace: " + gson.toJson(record));
                             if (!op.has("record") || op.get("record").getAsBoolean()) out.append(gson.toJson(record)).append('\n');
                         }
+                    }
+                    case "projectile_saved_type" -> {
+                        var entity=level.getEntity(UUID.fromString(op.get("uuid").getAsString()));
+                        if (!(entity instanceof net.minecraft.world.entity.projectile.arrow.AbstractArrow) || !entity.isAlive())
+                            throw new IllegalStateException("projectile type: missing actual arrow");
+                        var uuid=entity.getUUID();
+                        int[] words={(int)(uuid.getMostSignificantBits()>>32),(int)uuid.getMostSignificantBits(),
+                            (int)(uuid.getLeastSignificantBits()>>32),(int)uuid.getLeastSignificantBits()};
+                        JsonObject state=new JsonObject();state.add("uuid",gson.toJsonTree(words));
+                        state.addProperty("kind",net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString());
+                        state.add("pos",gson.toJsonTree(new double[]{entity.getX(),entity.getY(),entity.getZ()}));
+                        state.addProperty("no_gravity",entity.isNoGravity());
+                        JsonObject record=new JsonObject();record.addProperty("cmd","#projectile_saved_type "+op.get("label").getAsString());
+                        record.add("messages",new JsonArray());record.add("results",new JsonArray());record.add("state",state);
+                        out.append(gson.toJson(record)).append('\n');
                     }
                     case "raid_state" -> {
                         var raidLevel=player.level(); int id=op.get("id").getAsInt();

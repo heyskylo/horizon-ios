@@ -65,6 +65,12 @@ def predicate_selector_fixtures(group_names):
         except ImportError:
             from mob_effect_predicate_corpus import predicates as effect_predicates
         fixtures.update(effect_predicates())
+    try:
+        from . import player_food_predicate_corpus as player_food
+    except ImportError:
+        import player_food_predicate_corpus as player_food
+    if player_food.GROUP in group_names:
+        fixtures.update(player_food.predicates())
     if 'named smoke predicates' in group_names:
         always = {'type': 'minecraft:all_of', 'terms': []}
         fixtures['command_smoke:always'] = always
@@ -655,6 +661,17 @@ def entities():
         cmd('/tp @e[type=minecraft:tnt] 4.5 215 8.5'),
         cmd('/kill @e[type=minecraft:tnt]'),
         cmd('/execute if entity @e[type=minecraft:tnt]'),
+        # A cushion is an entity too (BlockAttachedEntity): found, tagged,
+        # read and killed like a painting, with no drop.
+        cmd('/setblock 4 209 12 minecraft:oak_slab'),
+        cmd('/summon minecraft:cushion 4.5 209.5 12.5 {Tags:["k"]}'),
+        cmd('/execute if entity @e[type=minecraft:cushion]'),
+        cmd('/tag @e[type=minecraft:cushion,limit=1] list'),
+        cmd('/execute if entity @e[type=minecraft:cushion,tag=k]'),
+        cmd('/data get entity @e[type=minecraft:cushion,limit=1] color'),
+        cmd('/kill @e[type=minecraft:cushion]'),
+        cmd('/execute if entity @e[type=minecraft:cushion]'),
+        cmd('/execute if entity @e[type=minecraft:item]'),
         # So is a falling block, named after its block (`getTypeName`).
         cmd('/summon minecraft:falling_block 4.5 210 8.5 {BlockState:{Name:"minecraft:sand"},NoGravity:1b,Tags:["f"]}'),
         cmd('/execute if entity @e[type=minecraft:falling_block,tag=f]'),
@@ -5301,6 +5318,12 @@ def advancement_loot_fixtures(group_names):
                                       {'type': 'minecraft:item', 'name': 'minecraft:diamond'}]}]}
     if 'advancement empty loot reference' in group_names:
         tables['parity:empty_reward'] = {'type': 'minecraft:advancement_reward', 'pools': []}
+    try:
+        from . import player_food_predicate_corpus as player_food
+    except ImportError:
+        import player_food_predicate_corpus as player_food
+    if player_food.GROUP in group_names:
+        advancements.update(player_food.advancements())
     return advancements, tables
 
 
@@ -5948,16 +5971,33 @@ def command_zombie_reinforcements(once=False, raw=False, legacy=False):
 ISOLATED_REINFORCEMENTS = frozenset({'command zombie reinforcements', 'command reinforcement once'})
 # These overlays replace built-in recipes, never beside the corpus's fixed vanilla recipe-count controls.
 ISOLATED_RECIPES = frozenset({'crafting recipe priority', 'crafting base recipe control', 'transmute result patches'})
+ISOLATED_FRAME_MAPS = frozenset({'frame live map detachment'})
+ISOLATED_SPECTRAL_DURATION = frozenset({'spectral saved duration'})
+ISOLATED_FRAME_MAPS = frozenset({'frame live map detachment'})
+ISOLATED_ITEM_HEALTH = frozenset({'item Health short load'})
 ISOLATED_FRAME_MAPS = frozenset({'frame live map detachment', 'treasure map copies'})
 ISOLATED_MAP_CRAFTING = frozenset({'craft map takes'})
 ISOLATED_MACRO_TYPE = frozenset({'macro source type error'})
 ISOLATED_PICKUP_SAVE = frozenset({'mob saved pickup loot'})
 ISOLATED_ORB_UUID = frozenset({'orb saved UUID'})
 ISOLATED_STAND_FALL = frozenset({'stand saved fall distance'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL
+ISOLATED_POTION_ICONS = frozenset({'potion custom effect icons'})
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS
 
 
 def groups():
+    try:
+        from .spectral_duration_corpus import cases as spectral_saved_duration
+    except ImportError:
+        from spectral_duration_corpus import cases as spectral_saved_duration
+    try:
+        from .item_health_load_corpus import cases as item_health_load
+    except ImportError:
+        from item_health_load_corpus import cases as item_health_load
+    try:
+        from .vehicle_kill_corpus import vehicle_kill_contents
+    except ImportError:
+        from vehicle_kill_corpus import vehicle_kill_contents
     try:
         from .data_literal_corpus import storage_literals
     except ImportError:
@@ -5966,6 +6006,10 @@ def groups():
         from .craft_map_take_corpus import cases as craft_map_takes
     except ImportError:
         from craft_map_take_corpus import cases as craft_map_takes
+    try:
+        from .potion_effect_icon_corpus import cases as potion_effect_icons
+    except ImportError:
+        from potion_effect_icon_corpus import cases as potion_effect_icons
     try:
         from .transmute_patch_corpus import cases as transmute_patches
     except ImportError:
@@ -5979,6 +6023,10 @@ def groups():
     except ImportError:
         from mob_name_predicate_corpus import cases as mob_name_predicates
     try:
+        from . import player_food_predicate_corpus as player_food
+    except ImportError:
+        import player_food_predicate_corpus as player_food
+    try:
         from .frame_map_corpus import frame_maps, treasure_map_copies
         from .allay_damage_corpus import allay_player_damage
         from .wolf_anger_corpus import groups as wolf_anger_groups
@@ -5988,6 +6036,7 @@ def groups():
         from .carpet_farm_corpus import carpet_farms
         from .passenger_teleport_corpus import passenger_teleports
         from .gateway_passenger_corpus import gateway_passengers
+        from .gateway_item_motion_corpus import gateway_item_motion
         from .item_merge_corpus import stack_limit_merges
     except ImportError:
         from frame_map_corpus import frame_maps, treasure_map_copies
@@ -5999,10 +6048,14 @@ def groups():
         from carpet_farm_corpus import carpet_farms
         from passenger_teleport_corpus import passenger_teleports
         from gateway_passenger_corpus import gateway_passengers
+        from gateway_item_motion_corpus import gateway_item_motion
         from item_merge_corpus import stack_limit_merges
-    return [
+    result = [
         ('setup', group_setup()),
+        ('spectral saved duration', spectral_saved_duration(cmd, setup)),
+        ('item Health short load', item_health_load(cmd, setup)),
         ('macro source type error', macro_source_type_error()),
+        ('potion custom effect icons', potion_effect_icons(cmd, setup)),
         ('stand saved fall distance', stand_saved_fall()),
         ('orb saved UUID', orb_saved_uuid()),
         ('mob saved pickup loot', mob_saved_pickup_loot()),
@@ -6081,6 +6134,7 @@ def groups():
         ('mob riding', mob_riding()),
         ('trial spawner passengers', trial_spawner_passengers()),
         ('gateway passengers', gateway_passengers(cmd, setup)),
+        ('gateway item motion', gateway_item_motion(cmd, setup)),
         ('camel riders', camel_riders()),
         ('scores, teams and bossbars', scores()),
         ('bossbar list order', bossbar_list_order()),
@@ -6146,4 +6200,8 @@ def groups():
         ('experience orb stuck', experience_orb_stuck()),
         ('summoned potions', summoned_potions()),
         ('creeper cloud selectors', creeper_cloud_selectors()),
+        # Last: it leaves the player in other food than it found.
+        (player_food.GROUP, player_food.cases(cmd, setup)),
     ]
+    result.insert(1, ('vehicle kill contents', vehicle_kill_contents(cmd)))
+    return result

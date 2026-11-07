@@ -10,6 +10,7 @@ use horizon_client::{
     hud::{HudBatch, Rect, rgba},
     items::ItemStack,
     menu::place::{PostPlace, Stacked},
+    random_source,
     recipe_book::{Book, BookType, ClientBook, Collection, Entry, GhostTarget, Tab},
     recipe_book_screen::{
         self as screen, ButtonView, Call, Drawn, GhostView, ItemCall, OverlayRecipe, OverlayView,
@@ -222,7 +223,7 @@ impl Game<'_> {
         let index = &self.stations().recipe_index;
         let book = self.recipe_ui.book.as_ref();
         // SmithingTrimDemoSlotDisplay draws from a random of its own.
-        let mut random = super::dispenser::entity_random();
+        let mut random = random_source::entity();
         let mut items = Vec::new();
         let mut first = None;
         for id in recipes {
@@ -854,6 +855,59 @@ impl Game<'_> {
         self.audio
             .play("minecraft:ui.button.click", None, 0.25, 1.0);
     }
+    /// The crafting book's entry of the recipe button under the pointer, in its overlay if open.
+    pub(super) fn recipe_under_pointer(&self) -> Option<usize> {
+        let batch = self.batch_for_size()?;
+        let book_type = self.active_book()?;
+        if !self.book_open(book_type) || self.spectator() {
+            return None;
+        }
+        let cursor = self.cursor;
+        if let Some(overlay) = &self.recipe_ui.overlay {
+            let maxrow = if overlay.entries.len() <= 16 { 4 } else { 5 };
+            return overlay.entries.iter().enumerate().find_map(|(n, e)| {
+                let x = overlay.x + 4.0 + 25.0 * (n % maxrow) as f32;
+                let y = overlay.y + 5.0 + 25.0 * (n / maxrow) as f32;
+                inside(cursor, x, y, 24.0, 24.0).then_some(e.0)
+            });
+        }
+        let (xo, yo) = self.book_origin(&batch);
+        let first = self.recipe_ui.page * 20;
+        (0..20).find_map(|n| {
+            let button = self.recipe_ui.view.buttons.get(first + n)?;
+            let (x, y) = Self::button_pos(xo, yo, n);
+            inside(cursor, x, y, 25.0, 25.0)
+                .then(|| button.entries[self.swap_index() % button.entries.len()].0)
+        })
+    }
+    /// The recipe button under the pointer has others to show (`gui.recipebook.moreRecipes`).
+    pub(super) fn recipe_has_alternatives_under_pointer(&self) -> bool {
+        let Some(batch) = self.batch_for_size() else {
+            return false;
+        };
+        if self.recipe_ui.overlay.is_some() {
+            return false;
+        }
+        let (xo, yo) = self.book_origin(&batch);
+        let first = self.recipe_ui.page * 20;
+        (0..20).any(|n| {
+            let (x, y) = Self::button_pos(xo, yo, n);
+            inside(self.cursor, x, y, 25.0, 25.0)
+                && self
+                    .recipe_ui
+                    .view
+                    .buttons
+                    .get(first + n)
+                    .is_some_and(|button| button.entries.len() > 1)
+        })
+    }
+    /// The pointer is on one of the book's own controls, a recipe or not.
+    pub(super) fn recipe_book_under_pointer(&self) -> bool {
+        self.recipe_book_targets().iter().any(|t| {
+            let [x, y, w, h] = t.rect;
+            inside(self.cursor, x, y, w, h)
+        })
+    }
     /// The recipe book's buttons a controller can focus: the book button,
     /// recipes, page arrows, the craftable filter and the tabs (GUI pixels;
     /// the search box registers itself as a field).
@@ -1339,8 +1393,7 @@ impl Game<'_> {
                         .map(|e| vec![book.entries[e.0].result.clone()])
                         .collect();
                     let stack = screen::display_stack(&results, self.swap_index());
-                    let names = |id: &str| self.pack.names.display_item(id);
-                    let item = horizon_client::stations::hover_name(&names, &stack);
+                    let item = horizon_client::stations::hover_name(&self.pack.names, &stack);
                     let (x, y) = Self::button_pos(xo, yo, n);
                     in_book(
                         Narratable::recipe(item, b.entries.len() > 1, [x, y, 25.0, 25.0]),
