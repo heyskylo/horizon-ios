@@ -1,0 +1,12 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "set_player_view_distance", "target": "horizon_client::game::native_view_distance::Game<'_>::native_set_player_view_distance"},
+    {"name": "player_view_distance", "target": "horizon_client::game::native_view_distance::Game<'_>::native_player_view_distance"}
+  ],
+  "rust_summary": "one player's view distance (`native_set_player_view_distance`, `native_player_view_distance`).",
+  "doc_summary": "`native_set_player_view_distance(uuid, distance)` limits one player's view distance below the server's (that player alone is told its radius and sent chunks within it); `native_player_view_distance(uuid)` reads it. Bundles need \"hooks\": @API:player_view_distance@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_view_distance.rs"
+  ]
+}
