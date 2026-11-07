@@ -2754,6 +2754,7 @@ impl Game<'_> {
             skull: &|_| None,
             glyph: &|c| self.gui.atlas.glyph_cell(c),
             glyphs: self.gui.atlas.font.epoch(),
+            font: Some(&self.gui.atlas.font),
             dynamic_visible: None,
         };
         self.res

@@ -9674,6 +9674,7 @@ impl Game<'_> {
                 skull: &|p| self.skull_skin_at(p),
                 glyph: &|c| self.gui.atlas.glyph_cell(c),
                 glyphs: self.gui.atlas.font.epoch(),
+                font: Some(&self.gui.atlas.font),
                 dynamic_visible: Some(&dynamic_visible),
             };
             let visible = camera_list.into_iter().chain(shadow_only.iter().copied());
