@@ -2035,24 +2035,26 @@ fn draws_frame(format: wgpu::TextureFormatFeatures) -> bool {
     )
 }
 
-/// The frame of a renderer made with a shader API 0.2 pack picked under
-/// `HORIZON_HDR_FRAME=float` (docs/design/hdr-linear-light.md): float, so values over 1
-/// survive from the world to the tonemap.
+/// The frame of a renderer made under `HORIZON_HDR_FRAME=float` (docs/design/hdr-linear-light.md)
+/// with a shader API 0.2 pack picked, or with HDR on and no pack: float, so values over 1
+/// survive from the world to the tonemap and the HDR pass.
 const LINEAR_FRAME: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
-/// What a renderer's frame is drawn in: `LINEAR_FRAME` for a 0.2 pack under the switch
-/// (`linear`: `(picked, the device draws it)`); else `WIDE_FRAME` when it is made with HDR on
-/// and Smooth Gradients (`wide_frame`, `Graphics::wide_frame`), the surface offering HDR output
-/// (`hdr_offered`) and the device drawing it (`draws_wide_frame`): an 8-bit frame's steps band
-/// in dark gradients, and HDR shows them. Else the swapchain's 8-bit format, as without HDR.
+/// What a renderer's frame is drawn in: `LINEAR_FRAME` under the switch where the device draws
+/// it, for a 0.2 pack, or for HDR on without a pack where the surface offers HDR output
+/// (`linear`: `(a 0.2 pack picked, HDR on without a pack, the device draws it)`); else
+/// `WIDE_FRAME` when it is made with HDR on and Smooth Gradients (`wide_frame`,
+/// `Graphics::wide_frame`), the surface offering HDR output (`hdr_offered`) and the device
+/// drawing it (`draws_wide_frame`): an 8-bit frame's steps band in dark gradients, and HDR
+/// shows them. Else the swapchain's 8-bit format, as without HDR.
 fn frame_format(
     wide_frame: bool,
     hdr_offered: bool,
     device_draws_it: bool,
     swapchain: wgpu::TextureFormat,
-    linear: (bool, bool),
+    linear: (bool, bool, bool),
 ) -> wgpu::TextureFormat {
-    if linear.0 && linear.1 {
+    if linear.2 && (linear.0 || linear.1 && hdr_offered) {
         LINEAR_FRAME
     } else if wide_frame && hdr_offered && device_draws_it {
         WIDE_FRAME
@@ -2529,6 +2531,7 @@ impl Renderer {
         wide_frame: bool,
         shader_pack: bool,
         linear_pack: bool,
+        hdr_float: bool,
     ) -> Result<Self> {
         let Opened {
             instance,
@@ -2664,9 +2667,10 @@ impl Renderer {
         crate::graphics::offer_smooth_gradients(wide_ok);
         let linear = (
             linear_pack,
+            hdr_float,
             draws_frame(adapter.get_texture_format_features(LINEAR_FRAME)),
         );
-        if linear == (true, false) {
+        if linear.0 && !linear.2 {
             log::warn!(
                 "Horizon renderer: the device can't draw a float frame; the shader API 0.2 pack runs on the 8-bit one"
             );
@@ -3943,12 +3947,8 @@ impl Renderer {
             alpha_blend,
             false,
         );
-        let world_text_pipeline = world_text::pipeline(
-            &device,
-            Some(&entity_layout),
-            &entity_shader,
-            config.format.remove_srgb_suffix(),
-        );
+        let world_text_pipeline =
+            world_text::pipeline(&device, Some(&entity_layout), &entity_shader, frame_format);
         // RenderPipelines.ENTITY_SOLID: a surface of an entity that is coplanar with
         // terrain wins the tie in vanilla (the boat's floor over the trapdoor on the
         // ground it is stopped by, #5950). Terrain and entities are separate draw
@@ -6688,6 +6688,22 @@ impl Renderer {
         }
         Ok(report)
     }
+    /// Makes the running shader pack, of either kind, forget what it kept from earlier frames:
+    /// the next frame draws as a freshly loaded pack's first. Nothing to do without a pack.
+    pub fn reset_shader_pack_history(&mut self) {
+        // A frame still on the submit thread uses the targets and readbacks replaced
+        // here.
+        self.land_frame();
+        if let Some((_, Some(post))) = &mut self.pack_post {
+            post.reset_history(&self.device);
+        }
+        if let Some(native) = &mut self.native {
+            native.frame.reset_history();
+            if let Some(post) = &mut native.post {
+                post.reset_history();
+            }
+        }
+    }
     /// As `set_shader_pack` with a pack, but its pipelines build on a thread of their own while
     /// the game keeps drawing without one: the driver compiles a big pack's programs for seconds.
     /// `poll_shader_pack` runs it once they are built. `label` and `started` come back with it.
@@ -6859,7 +6875,7 @@ impl Renderer {
             && !std::mem::replace(&mut self.frame_kept_logged, true)
         {
             log::info!(
-                "Horizon renderer: the {:?} frame stays until the renderer is made again; a shader API 0.2 pack picked or dropped since runs on it",
+                "Horizon renderer: the {:?} frame stays until the renderer is made again; a shader pack picked or dropped since runs on it",
                 self.frame_format
             );
         }
@@ -12596,8 +12612,14 @@ mod tests {
     fn the_frame_is_16_bit_only_with_hdr_and_a_device_that_draws_it() {
         use super::frame_format;
         use wgpu::TextureFormat::{Bgra8Unorm, Bgra8UnormSrgb, Rgba8Unorm, Rgba16Unorm};
-        // No 0.2 pack (or a device without the float frame) leaves it as before.
-        for linear in [(false, false), (false, true), (true, false)] {
+        // No float frame asked for (or a device without it) leaves it as before.
+        for linear in [
+            (false, false, false),
+            (false, false, true),
+            (true, false, false),
+            (false, true, false),
+            (true, true, false),
+        ] {
             assert_eq!(
                 frame_format(true, true, true, Bgra8Unorm, linear),
                 Rgba16Unorm
@@ -12627,8 +12649,38 @@ mod tests {
         use wgpu::TextureFormat::Bgra8UnormSrgb;
         for (wide_frame, hdr_offered, draws) in [(true, true, true), (false, false, false)] {
             assert_eq!(
-                frame_format(wide_frame, hdr_offered, draws, Bgra8UnormSrgb, (true, true)),
+                frame_format(
+                    wide_frame,
+                    hdr_offered,
+                    draws,
+                    Bgra8UnormSrgb,
+                    (true, false, true)
+                ),
                 LINEAR_FRAME
+            );
+        }
+    }
+    /// HDR on without a pack under `HORIZON_HDR_FRAME=float` gets the float frame where the
+    /// surface offers HDR output, Smooth Gradients or not; where it doesn't, the frame is as
+    /// without the switch.
+    #[test]
+    fn hdr_without_a_pack_gets_the_float_frame_where_hdr_output_is_offered() {
+        use super::{LINEAR_FRAME, frame_format};
+        use wgpu::TextureFormat::{Bgra8Unorm, Bgra8UnormSrgb};
+        for (wide_frame, draws) in [(true, true), (false, false)] {
+            assert_eq!(
+                frame_format(wide_frame, true, draws, Bgra8UnormSrgb, (false, true, true)),
+                LINEAR_FRAME
+            );
+            assert_eq!(
+                frame_format(
+                    wide_frame,
+                    false,
+                    draws,
+                    Bgra8UnormSrgb,
+                    (false, true, true)
+                ),
+                Bgra8Unorm
             );
         }
     }

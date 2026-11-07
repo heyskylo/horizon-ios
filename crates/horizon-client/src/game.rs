@@ -280,6 +280,7 @@ mod native_server;
 mod native_shaders;
 mod native_structures;
 mod native_terrain_model;
+pub mod native_text_field;
 mod native_ticks;
 mod native_travel;
 mod native_view_distance;
@@ -8203,6 +8204,11 @@ impl Game<'_> {
                 self.world.weather.tick_timers(&mut self.world.random);
             }
             self.world.weather.tick_levels();
+        } else if self.clock.still() {
+            // Under `HORIZON_STILL` a frozen world's rain and thunder sit at their levels, as a
+            // shader pack's smoothed values do, so `/weather rain` shows full rain without
+            // stepping the world (and its mobs) through the fade.
+            self.world.weather.settle_levels();
         }
         // ClientLevel.tick: the sky flash fades in a frozen level too.
         self.tick_weather_effects();
@@ -18818,6 +18824,19 @@ impl Game<'_> {
                     }
                 }
             }
+            // Title boxes keep their text on the key path. A field hook takes
+            // it through the same per-character editor as IME and control input.
+            if !canceled
+                && control::title_owns_text(&self.screen, self.title.is_some())
+                && self.types_text()
+                && let Some(text) = key_event.text.as_deref()
+                && let Some(result) = self.type_text_field_input(text)
+            {
+                if let Err(error) = result {
+                    log::warn!("Horizon: text input: {error}");
+                }
+                key_event.text = None;
+            }
             if canceled {
                 // charTyped is a separate callback: the characters still
                 // reach the text box, without the key's own effects. Options'
@@ -22135,6 +22154,7 @@ fn build_renderer(
         wide_frame,
         shader_pack.draws_flat,
         shader_pack.linear,
+        shader_pack.hdr_float,
     ))?;
     renderer.hud.sprite_animations = atlas
         .sprite_animations
@@ -22205,6 +22225,7 @@ fn loading_renderer(
         // It draws no terrain.
         false,
         // An 8-bit frame, which HDR output takes as well.
+        false,
         false,
         false,
         false,

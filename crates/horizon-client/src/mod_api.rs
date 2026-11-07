@@ -30,6 +30,7 @@ pub use crate::game::native_client_services::{
     NativeClientEntity, NativeClientHead, NativeClientItem, NativeClientProfile, NativeClientState,
     NativeScreenKind, NativeWorldId,
 };
+pub use crate::game::native_text_field::NativeTextField;
 pub use crate::game::{
     ItemEnergyBuffer, NativeBiomeId, NativeBlockEdit, NativeBlockReadError, NativeBlockRun,
     NativeClientBiomes, NativeClientChunks, NativeClock, NativeColumnBlocks, NativeComponentError,

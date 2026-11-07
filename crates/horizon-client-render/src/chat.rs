@@ -1434,6 +1434,24 @@ impl ChatScreen {
             self.edited(m, c);
         }
     }
+    /// Edit the existing input and refresh its command responder when it changes.
+    pub fn edit_input(&mut self, m: &Measure, c: &Commands, f: impl FnOnce(&mut TextField)) {
+        let before = (
+            self.input.value.clone(),
+            self.input.cursor,
+            self.input.highlight,
+        );
+        f(&mut self.input);
+        if before
+            != (
+                self.input.value.clone(),
+                self.input.cursor,
+                self.input.highlight,
+            )
+        {
+            self.edited(m, c);
+        }
+    }
     /// Typed text (`charTyped` per character).
     pub fn type_text(&mut self, m: &Measure, c: &Commands, text: &str) {
         for ch in text.chars() {

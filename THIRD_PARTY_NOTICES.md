@@ -223,6 +223,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
+## Just Enough Items
+
+The Recipes settings icon is from [Just Enough Items 31.17.0.108](https://github.com/mezz/JustEnoughItems) by mezz and contributors. It is distributed under the MIT license in `crates/horizon-client-render/src/jei_recipes/LICENSE.txt`.
+
 ## Flywheel native model directional shading
 
 The two-light diffuse expression and transformed-normal policy in

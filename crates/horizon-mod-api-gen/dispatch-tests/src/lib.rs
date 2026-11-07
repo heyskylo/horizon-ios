@@ -35,6 +35,7 @@ mod tests {
         pub(super) struct NativeLootDrops<'a>(pub &'a ());
         pub(super) struct NativeNoteBlockChange<'a>(pub &'a ());
         pub(super) struct NativeScreenView<'a>(pub &'a ());
+        pub(super) struct NativeTextField;
         pub(super) struct ClientboundPlayPacket;
         pub(super) struct EntityDataValue;
         pub(super) struct NativeGenerate;
