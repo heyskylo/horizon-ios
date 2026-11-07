@@ -4494,4 +4494,17 @@ mod reload_tests {
             assert!(!world.dirty_sections.contains(&(4, sy, 5)));
         }
     }
+
+    #[test]
+    fn reload_keeps_existing_work_and_ignores_unloaded_lit_columns() {
+        let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);
+        world.chunks.insert((4, 5), Arc::new(Chunk::empty(4, 5)));
+        world.dirty_sections.insert((4, 3, 5));
+        let lit = FxHashSet::from_iter([(99, 99)]);
+
+        Streaming::mark_loaded_sections_dirty(&mut world, &lit);
+
+        assert_eq!(world.dirty_sections.len(), 1);
+        assert!(world.dirty_sections.contains(&(4, 3, 5)));
+    }
 }
