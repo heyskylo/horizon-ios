@@ -892,5 +892,9 @@
   "Editing: %s": "Editando: %s",
   "Press the button for this. %s cancels.": "Pulsa el botón para esto. %s cancela.",
   "This button also does: %s": "Este botón también hace: %s",
-  "horizon.pad.notice.connected.press": "Pulsa para usarlo"
+  "horizon.pad.notice.connected.press": "Pulsa para usarlo",
+  "horizon.recipe_transfer.missing": "Faltan objetos",
+  "horizon.recipe_transfer.no_room": "Inventario lleno",
+  "horizon.recipe_transfer.unavailable": "La receta no cabe en este menú",
+  "horizon.recipe_transfer.unsupported": "El servidor requiere una receta conocida"
 }
