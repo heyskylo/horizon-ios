@@ -12473,12 +12473,12 @@ impl Game<'_> {
                     partial: a,
                 },
                 _ if using => {
-                    let components = self
+                    let view = horizon_client::item_render::stack_view(&stack);
+                    let mut animation = self
                         .pack
                         .item_renderer
                         .models
-                        .components(&horizon_client::item_render::stack_view(&stack));
-                    let mut animation = components
+                        .components_view(&view)
                         .get("minecraft:consumable")
                         .map_or(horizon_world::consumable::UseAnimation::None, |c| {
                             horizon_client::first_person::consumable_animation(c)
