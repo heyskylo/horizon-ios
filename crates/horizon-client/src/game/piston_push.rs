@@ -140,6 +140,7 @@ impl Game<'_> {
             ) else {
                 return;
             };
+            self.set_pushed_on_ground(target, movement, moved);
             if moved.length_squared() > 0.0 {
                 self.apply_push(target, moved);
             }
@@ -507,19 +508,23 @@ impl Game<'_> {
             )
             .unwrap_or(Vec3::ZERO)
         });
-        // Entity.move sets a server entity's ground flag after every push, a
-        // sideways one and one the collision turns away included: on ground
-        // only when the push's downward part was blocked.
-        if let Target::Entity(handle) = target {
-            let on_ground = limited.y < 0.0 && limited.y != resolved.y;
-            with_entity_mut!(self, handle, entity => entity.set_piston_on_ground(on_ground));
-        }
+        self.set_pushed_on_ground(target, limited, resolved);
         if resolved.length_squared() <= 1.0e-7
             && limited.length_squared() - resolved.length_squared() >= 1.0e-7
         {
             return;
         }
         self.apply_push(target, resolved);
+    }
+
+    /// The end of a block's `Entity.move` push: a server entity's ground flag
+    /// is set after every push, a sideways one and one the collision turns
+    /// away included, on ground only when the push's downward part was blocked.
+    fn set_pushed_on_ground(&mut self, target: Target, wanted: Vec3, moved: Vec3) {
+        if let Target::Entity(handle) = target {
+            let on_ground = wanted.y < 0.0 && wanted.y != moved.y;
+            with_entity_mut!(self, handle, entity => entity.set_piston_on_ground(on_ground));
+        }
     }
 
     /// `Entity.limitPistonMovement`: each axis may travel at most 0.51 blocks

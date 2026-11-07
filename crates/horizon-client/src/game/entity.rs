@@ -271,9 +271,9 @@ pub(super) trait Entity: EntityRules {
         let position = self.position_mut();
         *position = position.add_vector(movement);
     }
-    /// `setOnGroundWithMovement` at the end of a piston's `Entity.move`, for
-    /// the kinds that keep the flag: on a server it runs for every push,
-    /// sideways ones and those the collision turned away included.
+    /// `setOnGroundWithMovement` at the end of a piston's or shulker lid's
+    /// `Entity.move`, for the kinds that keep the flag: on a server it runs
+    /// for every push, sideways ones and those the collision turned away included.
     fn set_piston_on_ground(&mut self, _on_ground: bool) {}
     /// `PistonMovingBlockEntity.causeBounce`: a slime block sets the velocity
     /// along the movement axis.
