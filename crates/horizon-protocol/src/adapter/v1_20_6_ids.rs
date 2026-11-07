@@ -243,9 +243,11 @@ pub const MOB_EFFECT_DOWN: &[(u16, u16, u16)] = &[
 /// `minecraft:attribute`: 22 in 1.20.6, 40 pinned.
 #[rustfmt::skip]
 pub const ATTRIBUTE_UP: &[(u16, u16, u16)] = &[
+    (0, 1, 5), (5, 7, 2), (7, 13, 4), (11, 18, 6), (17, 26, 1), (18, 29, 2), (20, 32, 2),
 ];
 #[rustfmt::skip]
 pub const ATTRIBUTE_DOWN: &[(u16, u16, u16)] = &[
+    (1, 0, 5), (7, 5, 2), (13, 7, 4), (18, 11, 6), (26, 17, 1), (29, 18, 2), (32, 20, 2),
 ];
 /// `minecraft:game_event`: 60 in 1.20.6, 61 pinned.
 #[rustfmt::skip]
