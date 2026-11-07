@@ -61,9 +61,10 @@ fn shows_world(c: vec3<f32>, w: vec3<f32>) -> bool {
 // A texel with its alpha as an 8-bit frame holds it. A 16-bit frame
 // (Renderer::frame_format) keeps alpha between 8-bit steps, where the marks below
 // would read differently (an alpha of 0.001 would count as the hand); its colour
-// keeps the gradients 8 bits would band. On an 8-bit frame nothing changes.
+// keeps the gradients 8 bits would band, and a float frame's (LINEAR_FRAME) the
+// light over 1 that blends added past white. On an 8-bit frame nothing changes.
 fn frame_texel(v: vec4<f32>) -> vec4<f32> {
-    return vec4(saturate(v.rgb), round(saturate(v.a) * 255.0) / 255.0);
+    return vec4(max(v.rgb, vec3(0.0)), round(saturate(v.a) * 255.0) / 255.0);
 }
 
 // Linear BT.709 to BT.2020 (ITU-R BT.2087), columns first.
@@ -161,15 +162,12 @@ fn calibration_nits(p: vec2<f32>, size: vec2<f32>) -> f32 {
         return vec4(nits / 80.0, 1.0);
     }
     let f = frame_texel(textureLoad(frame, at, 0));
-    let c = f.rgb;
     // What covers the world here (Hdr::keep_world): nothing at 0, the hand at
     // 1/255 (Hdr::mark_hand: drawn at the world's brightness), else the HUD or a
     // menu, by how much.
     let covered = f.a > 0.0;
     let hand = covered && f.a < 1.5 / 255.0;
     let ui = select(f.a, 0.0, hand);
-    // Gamma 2.2, as SDR displays and the compositors' SDR paths decode it.
-    var light = pow(max(c, vec3(0.0)), vec3(2.2));
     let w = frame_texel(textureLoad(world, at, 0));
     // The world's alpha is below 0.75 on light sources, the sun and the moon
     // (terrain.wgsl, entity.wgsl): only those shine, and only where nothing was
@@ -179,11 +177,19 @@ fn calibration_nits(p: vec2<f32>, size: vec2<f32>) -> f32 {
     // writes its own alpha there (Hdr::hand_light_view): 1, or a light source it holds.
     var lifted = false;
     let shows = params.world > 0.5 && params.peak > 1.0
-        && (hand || (!covered && shows_world(c, w.rgb)));
+        && (hand || (!covered && shows_world(f.rgb, w.rgb)));
+    // Light over 1 (a float frame's) shows only where the world does and carries
+    // no mark (alpha 1), up to the peak: light written as light. Marked pixels clip
+    // at white before their lift, as on a unorm frame, so light sources, the sun and
+    // HDR lighting look as they do there; so do the HUD, menus and HDR Lighting off.
+    let c = select(min(f.rgb, vec3(1.0)), f.rgb, shows && w.a == 1.0);
+    // Gamma 2.2, as SDR displays and the compositors' SDR paths decode it.
+    var light = pow(c, vec3(2.2));
     // HDR lighting: alpha between 0.76 and 1 is how much of it the surface gets. Vanilla's
     // light is albedo times lightmap, so this is the lightmap going past 1. It eases into the
-    // peak from 60% of it, so bright textures keep their detail.
-    if shows && w.a >= 0.75 {
+    // peak from 60% of it, so bright textures keep their detail. Unmarked light (alpha 1)
+    // gets no gain and no knee: the clamp to the peak below is all it needs here.
+    if shows && w.a >= 0.75 && w.a < 1.0 {
         let top = max(light.r, max(light.g, light.b));
         let gain = 1.0 + (params.scene - 1.0) * (1.0 - w.a) / 0.24;
         let v = top * gain;
@@ -214,6 +220,7 @@ fn calibration_nits(p: vec2<f32>, size: vec2<f32>) -> f32 {
             light = vec3(dot(light, vec3(0.2126, 0.7152, 0.0722)));
         }
     }
+    light = min(light, vec3(params.peak));
     // The HUD and menus at their own brightness, by how much they cover.
     light *= mix(1.0, params.ui, ui);
     let scrgb = light * params.paper;

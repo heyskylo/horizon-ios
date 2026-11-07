@@ -10,7 +10,10 @@ mod tests {
     }
     struct BlockEntityDraw(Vec<u32>);
     struct NativeWorldDraw(Vec<u32>);
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "stubs shaped like the game's, only some of them read"
+    )]
     mod stubs {
         #[derive(Clone, Copy, Debug, PartialEq)]
         pub(super) struct BlockStateId;
@@ -35,7 +38,13 @@ mod tests {
         pub(super) struct NativeLootDrops<'a>(pub &'a ());
         pub(super) struct NativeNoteBlockChange<'a>(pub &'a ());
         pub(super) struct NativeScreenView<'a>(pub &'a ());
+        pub(super) struct NativeTextField;
         pub(super) struct ClientboundPlayPacket;
+        pub(super) struct EntityDataValue;
+        pub(super) struct NativeGenerate;
+        pub(super) struct NativeProtoChunk<'a>(pub &'a ());
+        pub(super) struct NativeLodColumn<'a>(pub &'a ());
+        pub(super) struct TickSpan;
         pub(super) struct Corners;
         #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
         pub(super) struct ItemEnergyBuffer;
@@ -108,7 +117,10 @@ mod tests {
             pub struct KeyEvent;
         }
     }
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "stubs shaped like the game's, only some of them read"
+    )]
     mod generated {
         mod horizon_mods {
             pub mod content {
@@ -136,6 +148,18 @@ mod tests {
             pub mod hud_layout {
                 pub struct HealthInputs;
                 pub struct GuiDraw;
+            }
+        }
+        mod horizon_client_core {
+            pub mod text {
+                pub struct Text;
+            }
+        }
+        mod horizon_protocol {
+            pub mod packets {
+                pub mod login {
+                    pub struct Property;
+                }
             }
         }
         include!(concat!(env!("OUT_DIR"), "/mod_api_generated.rs"));

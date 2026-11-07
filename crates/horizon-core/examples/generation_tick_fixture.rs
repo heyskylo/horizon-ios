@@ -162,10 +162,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let key = (number(&mut input), number(&mut input));
                 let time = number(&mut input);
                 if let Some(c) = access.containers_mut().chunks.get_mut(&key) {
-                    if op == "promote" {
-                        if let Container::Proto(proto) = c {
-                            *c = Container::Level(ChunkTicks::from_saved(proto.scheduled_ticks()));
-                        }
+                    if op == "promote"
+                        && let Container::Proto(proto) = c
+                    {
+                        *c = Container::Level(ChunkTicks::from_saved(proto.scheduled_ticks()));
                     }
                     if let Container::Level(c) = c {
                         c.unpack(time);

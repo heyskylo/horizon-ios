@@ -50,10 +50,10 @@ fn dump(out: &mut dyn Write, slots: &[Effect], ids: &mut Vec<Effect>) {
             .as_ref()
             .map(|v| id(ids, v).to_string())
             .unwrap_or("none".into());
-        if let Some(v) = &d.hidden {
-            if !visit.iter().any(|e| e.same_reference(v)) {
-                visit.push(v.clone());
-            }
+        if let Some(v) = &d.hidden
+            && !visit.iter().any(|e| e.same_reference(v))
+        {
+            visit.push(v.clone());
         }
         writeln!(
             out,
