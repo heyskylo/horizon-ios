@@ -7,7 +7,7 @@ use super::Game;
 use horizon_client::actions::Action;
 use horizon_client::{
     first_person::Hand,
-    mobs::{Mob, Species, armadillo, equine, llama, nautilus, villager},
+    mobs::{Mob, Species, armadillo, equine, llama, nautilus, panda, villager},
 };
 
 impl Game<'_> {
@@ -46,6 +46,21 @@ impl Game<'_> {
         // A brush still reaches brushOffScute below.
         if m.species() == Species::Armadillo && armadillo::client_rejects_food(m, item) {
             return false;
+        }
+        // Panda.mobInteract: a scared panda passes and one lying on its back
+        // takes any item (it gets up on the server). Its bamboo is taken on a
+        // client only by a baby that ages up; an adult's breeding and eating
+        // need a ServerLevel, so the click passes to the item.
+        if m.species() == Species::Panda {
+            if panda::scared(m) {
+                return false;
+            }
+            if panda::is_on_back(m) {
+                return true;
+            }
+            if m.kind.food.iter().any(|f| f.as_str() == item) {
+                return baby && !m.extra.age_locked;
+            }
         }
         // AgeableMob.mobInteract: a golden dandelion on a baby that can be age
         // locked is SUCCESS on a client too (the server sets the lock).
@@ -263,7 +278,9 @@ fn mob_swings(m: &Mob, item: &str) -> bool {
         {
             return false;
         }
-        // Panda.mobInteract: its bamboo answers SUCCESS_SERVER.
+        // Panda.mobInteract: getting up off its back is SUCCESS, and its
+        // bamboo answers SUCCESS_SERVER.
+        Species::Panda if panda::is_on_back(m) => return true,
         Species::Panda if food => return false,
         // WanderingTrader.mobInteract: trading answers SUCCESS_SERVER, and so
         // does a spawn egg (Mob.checkAndHandleImportantInteractions); a lead
