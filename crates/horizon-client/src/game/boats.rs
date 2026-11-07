@@ -1214,6 +1214,9 @@ impl Game<'_> {
         if b.previous != b.position {
             steps.push(b.bounds());
         }
+        // `Entity.collidedWithFluid` sweeps the box along the whole move:
+        // water reaches it down to the lower of its two bottoms.
+        let low = b.previous.y.min(b.position.y);
         let (at, top) = (b.position, b.bounds().max_position().y);
         let rain = self.in_rain(at, top);
         for _ in 0..2 {
@@ -1241,7 +1244,6 @@ impl Game<'_> {
                         }
                     }
                 }
-                let low = bounds.min_position().y;
                 let water = cells.iter().any(|&p| self.water_reaches(p, low));
                 let snow: Vec<[i32; 3]> = cells
                     .iter()
@@ -1274,7 +1276,7 @@ impl Game<'_> {
         false
     }
     /// Whether the water at cell `p` reaches a box whose bottom is `low`
-    /// (`Entity.collidedWithFluid`, the box deflated by 1e-5).
+    /// (`Entity.collidedWithFluid`).
     fn water_reaches(&self, p: [i32; 3], low: f64) -> bool {
         self.fluid_height_of(p[0], p[1], p[2], Some(Fluid::Water))
             .is_some_and(|(height, _)| low + 1.0e-5 < f64::from(p[1]) + f64::from(height))
