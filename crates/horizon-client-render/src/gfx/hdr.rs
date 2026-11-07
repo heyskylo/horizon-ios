@@ -210,15 +210,19 @@ impl Hdr {
                 "hdr.wgsl's fs_hdr changed its signature"
             );
             source = source.replace(entry, "fn picture_hdr(pos: vec4<f32>) -> vec4<f32>");
-            source.push_str(r#"
+            source.push_str(
+                r#"
 @group(0) @binding(4) var coverage: texture_2d<f32>;
 @fragment fn fs_hdr(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let picture = picture_hdr(pos);
     let c = textureLoad(coverage, vec2<i32>(pos.xy), 0).r;
-    let magenta = select(vec3(params.paper, 0.0, params.paper), vec3(1.0, 0.0, 1.0), params.pq > 0.5);
+    // Magenta at paper white, in the output's own encoding.
+    let paper = vec3(params.paper, 0.0, params.paper);
+    let magenta = select(paper, pq(BT709_TO_BT2020 * paper * 80.0), params.pq > 0.5);
     return vec4(mix(picture.rgb, magenta, c), picture.a);
 }
-"#);
+"#,
+            );
         }
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon HDR"),
@@ -764,14 +768,15 @@ mod tests {
                 device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
                 let bytes = buffer.get_mapped_range(..).unwrap();
                 let pixel = u32::from_le_bytes(bytes[..4].try_into().unwrap());
-                assert_eq!(
-                    pixel,
-                    if enabled && debug.is_some() {
-                        0xfff003ff
-                    } else {
-                        0xc0000000
-                    }
-                );
+                let [r, g, b] = [0, 10, 20].map(|shift| (pixel >> shift) & 0x3ff);
+                if enabled && debug.is_some() {
+                    // Fully covered: BT.709 magenta at paper white (200 nits here) in BT.2020
+                    // PQ, not PQ's 10 000 nits (1023, 0, 1023).
+                    let near = |got: u32, want: u32| got.abs_diff(want) <= 4;
+                    assert!(near(r, 550) && near(g, 346) && near(b, 583), "{r} {g} {b}");
+                } else {
+                    assert_eq!(pixel, 0xc0000000);
+                }
                 if let Some(view) = hdr.coverage_view() {
                     let mut encoder = device.create_command_encoder(&Default::default());
                     super::super::hud_coverage::clear(&mut encoder, &view);
