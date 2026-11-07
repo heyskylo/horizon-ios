@@ -2317,10 +2317,12 @@ impl Game<'_> {
                 self.ui.death_cause = Some("death.attack.genericKill".into());
             }
             Target::Mob(id) => {
+                let mut killed = None;
                 if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                     // LivingEntity.kill: a generic_kill hit of Float.MAX_VALUE,
                     // which its death message tells.
-                    if m.alive() {
+                    let alive = m.alive();
+                    if alive {
                         m.record_damage(
                             horizon_client::mobs::Damage::of(
                                 horizon_client::mobs::DamageKind::GenericKill,
@@ -2332,6 +2334,16 @@ impl Game<'_> {
                     if m.death_time == 0 {
                         m.death_time = 1;
                     }
+                    killed = alive.then(|| m.clone());
+                }
+                // The hit runs LivingEntity.die before the command returns:
+                // its ENTITY_DIE, loot and experience come now, not in the
+                // next tick's deaths, which skip it (as a frog's bite does).
+                if let Some(m) = killed
+                    && !m.removed
+                    && self.died.insert(id)
+                {
+                    self.mob_died(&m);
                 }
             }
             Target::Item(id) => {

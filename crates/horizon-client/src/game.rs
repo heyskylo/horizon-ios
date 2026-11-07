@@ -21388,4 +21388,8 @@ fn write_level_for_role(
 }
 
 #[cfg(test)]
+mod kill_die_cancel_tests;
+#[cfg(test)]
+mod kill_die_vibration_tests;
+#[cfg(test)]
 mod vibration_tests;
