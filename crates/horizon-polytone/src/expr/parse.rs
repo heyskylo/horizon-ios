@@ -2,7 +2,7 @@
 //! the math table or the host, roots (`o`, `player`...) to [`Root`]s. An unknown name is an
 //! error here, when the pack loads, not when the expression runs.
 use super::lex::{Token, tokens};
-use super::{MATH, Root, Value};
+use super::{MATH, MathFn, Root, Value, legacy};
 use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -32,8 +32,8 @@ pub(super) enum Expr {
     And(Box<Expr>, Box<Expr>),
     Or(Box<Expr>, Box<Expr>),
     Cond(Box<Expr>, Box<Expr>, Box<Expr>),
-    /// An entry of [`MATH`].
-    Math(usize, Vec<Expr>),
+    /// A math or color function.
+    Call(MathFn, Vec<Expr>),
     /// A global function the game answers (`config`, `colormap`...).
     Host(Rc<str>, Vec<Expr>),
     /// `target.name(args)`; `p.age`, `p.age()` and `p.getAge()` all name `age`.
@@ -67,12 +67,16 @@ struct Parser {
     tokens: Vec<(Token, usize)>,
     pos: usize,
     locals: Vec<String>,
+    /// A legacy math expression: `lerp`, `smoothstep` and `color` take their old argument order.
+    legacy: bool,
 }
 
 /// The statements and how many local slots they use.
 pub(super) fn parse(src: &str) -> Result<(Vec<Stmt>, usize), String> {
+    let tokens = tokens(src)?;
     let mut p = Parser {
-        tokens: tokens(src)?,
+        legacy: legacy::is_legacy(&tokens),
+        tokens,
         pos: 0,
         locals: Vec::new(),
     };
@@ -297,17 +301,26 @@ impl Parser {
             }
             Token::Ident(name) if self.eat("(") => {
                 let args = self.arguments()?;
-                if let Some(i) = MATH.iter().position(|f| f.0 == name) {
-                    if MATH[i].1 != args.len() {
+                let legacy = legacy::FUNCTIONS.iter().filter(|_| self.legacy);
+                if let Some(&(_, fewest, most, f)) =
+                    legacy.chain(MATH).find(|entry| entry.0 == name)
+                {
+                    if !(fewest..=most).contains(&args.len()) {
+                        let takes = if fewest == most {
+                            fewest.to_string()
+                        } else {
+                            format!("{fewest} to {most}")
+                        };
                         return Err(format!(
-                            "{name} takes {} arguments, not {}",
-                            MATH[i].1,
+                            "{name} takes {takes} arguments, not {}",
                             args.len()
                         ));
                     }
-                    Expr::Math(i, args)
+                    Expr::Call(f, args)
                 } else if HOST_FUNCTIONS.contains(&name.as_str()) {
                     Expr::Host(name.into(), args)
+                } else if let Some(draw) = legacy::random(&name, args) {
+                    draw
                 } else {
                     return Err(format!("unknown function {name}"));
                 }
@@ -325,7 +338,10 @@ impl Parser {
                 ) {
                     (_, Some(slot)) => Expr::Local(slot),
                     (Some(root), None) => Expr::Root(root),
-                    (None, None) => return Err(format!("unknown name {name}")),
+                    (None, None) => match legacy::variable(&name) {
+                        Some(e) => e?,
+                        None => return Err(format!("unknown name {name}")),
+                    },
                 },
             },
             Token::Punct(_) => {
