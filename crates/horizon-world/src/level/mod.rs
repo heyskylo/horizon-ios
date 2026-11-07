@@ -410,6 +410,11 @@ pub trait LevelAccess {
         _moved: bool,
     ) {
     }
+    /// Bukkit's `BlockRedstoneEvent`: the button, lever or pressure plate at `pos` is about
+    /// to change its signal from `old` to `new` (0 to 15). The level may change `new`; the
+    /// component then takes that signal (one equal to `old` keeps it as it is). The
+    /// default leaves it.
+    fn redstone_change(&self, _pos: BlockPos, _old: i32, _new: &mut i32) {}
     /// `BlockState.randomTick` from `ServerLevel.tickChunk`, before the block
     /// handles it. The level may change the block (`Behaviours::set_block`
     /// with `ticks`); setting `handled` skips the block's own random tick. A
@@ -635,6 +640,12 @@ pub trait LevelAccess {
     /// block entity at `pos`: recounts its openers and returns the previous
     /// and new counts (the caller plays open/close effects when they change),
     /// or None when there is no such block entity.
+    /// `ContainerOpenersCounter.getEntitiesWithContainerOpen` is not empty for
+    /// the container at `pos`: someone has it open (a double chest's menu
+    /// counts for both halves).
+    fn container_open(&self, _pos: BlockPos) -> bool {
+        false
+    }
     fn recheck_container_openers(&mut self, _pos: BlockPos) -> Option<(i32, i32)> {
         None
     }

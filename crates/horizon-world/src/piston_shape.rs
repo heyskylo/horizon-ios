@@ -147,11 +147,12 @@ impl<'r> PistonBlockBindings<'r> {
     /// Its sticky/short/facing rules differ from the entity's own collision head.
     pub fn collision_related_state(&self, piston: MovingPistonState) -> io::Result<BlockStateId> {
         self.validate(piston.moved_state)?;
-        if !piston.extending && piston.source {
-            if let Some(base) = self.bases.get(&piston.moved_state) {
-                return Ok(self.heads[usize::from(base.sticky)][base.facing as usize]
-                    [usize::from(piston.progress > 0.25)]);
-            }
+        if !piston.extending
+            && piston.source
+            && let Some(base) = self.bases.get(&piston.moved_state)
+        {
+            return Ok(self.heads[usize::from(base.sticky)][base.facing as usize]
+                [usize::from(piston.progress > 0.25)]);
         }
         Ok(piston.moved_state)
     }

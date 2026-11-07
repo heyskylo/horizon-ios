@@ -34,7 +34,7 @@ const HINT: u32 = 0xAA_AAAA;
 
 /// The open screen: its search box and the list's scroll.
 pub(super) struct DebugOptionsUi {
-    search: EditBox,
+    pub(super) search: EditBox,
     scroll: Scroll,
 }
 

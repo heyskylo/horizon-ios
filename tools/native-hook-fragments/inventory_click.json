@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "inventory_click",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_inventory_click",
+      "neoforge": "none (Bukkit's InventoryClickEvent)",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "a guest's click in their own inventory or a vanilla menu, before it is applied, cancellable (`native_inventory_click`).",
+  "doc_summary": "`native_inventory_click(player, name, window, slot, button, mode, cancel)`: a guest's click in their own inventory (`window` 0) or a vanilla menu they have open, heard before it is applied (Bukkit's `InventoryClickEvent`), with the packet's slot, button and `ClickType` id. Drags are not heard here; a mod's own menus are `native_menu_clicked`'s. Set `cancel` and nothing moves: the client's predicted slots and cursor are answered with the server's. Bundles that use it need `\"hooks\": @API:inventory_click@`."
+}

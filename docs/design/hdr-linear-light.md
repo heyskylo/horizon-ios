@@ -42,7 +42,7 @@ tone curve down to SDR at the end. A pack API capped at gamma 0..1 would have to
 
 1. **HDR off and no pack: the picture is today's, bit for bit**, pinned by a screenshot test (below). Players without
    HDR or a pack run the code they run today.
-2. **0.1 packs keep working**: unchanged in SDR, through a documented shim (below).
+2. **0.1 packs keep working until 0.2 is on by default**: unchanged in SDR, through a documented shim (below).
 3. **Packs write light above white, on SDR and HDR alike.** SDR is HDR with no headroom: one pack, one tone curve,
    both displays.
 4. **No light in alpha** for HDR without a pack and for 0.2 packs: the light-source and HDR-lighting marks give way
@@ -207,9 +207,20 @@ Horizon serves both lines (`manifest.rs` `API` becomes a list). A 0.1 pack runs 
 - the marks its stages pass on (`input.color.a`), and the HDR pass lifting light sources on the pack's final colour,
   with HDR lighting off.
 
-That path stays, as a variant of the pipelines that write marks, while 0.1 is served: at least until 0.2 leaves
-experimental, and its removal goes in the changelog. Golden Hour stays at 0.1 as its test pack; a 0.2 port sits
-beside it.
+That path stays, as a variant of the pipelines that write marks, while 0.1 is served. Golden Hour stays at 0.1 as
+its test pack until then; a 0.2 port sits beside it.
+
+**0.1 ends at step 5.** The shader API is experimental: it may change in any release without notice, with no
+deprecation window ([api/stability.md](../api/stability.md)). Serving 0.1 beside 0.2 for longer would keep this shim,
+the pipeline variants that write marks and the HDR pass's lift from them, only for 0.1 packs, which can move to 0.2.
+So when step 5 turns 0.2 on by default, Horizon stops serving 0.1:
+- a 0.1 pack is refused with the message stability.md asks for (`needs API 0.1; this Horizon serves 0.2`);
+- the registry lists 0.2 packs instead of 0.1 ones;
+- Golden Hour's 0.2 port replaces it as the example and test pack;
+- the changelog says so.
+
+Later lines follow the same rule while the API is experimental: a line is served until the next one is on by default.
+From preview on, stability.md's deprecation windows apply.
 
 ## `shaders/`-format packs
 
@@ -234,8 +245,9 @@ may need a tone-weighted resolve so bright pixels don't sparkle. Frame generatio
    Minecraft's textures and can't be committed, so it is differential. A runner with a copy of Minecraft and Mesa's
    software Vulkan builds main and the change, captures fixed scenes offscreen with `HORIZON_STILL=1` (repeatable
    frames, [#9398](https://github.com/horizon-rust/horizon/pull/9398), in review), and requires identical PNGs, also
-   after turning HDR on and off, picking and dropping a 0.2 pack, and swapping it for a 0.1 one.
-2. **Golden Hour (0.1) against main**: the same capture in SDR, and the offscreen HDR capture in HDR, identical.
+   after turning HDR on and off, picking and dropping a 0.2 pack, and, while 0.1 is served, swapping it for a 0.1 one.
+2. **Golden Hour (0.1) against main**, while 0.1 is served: the same capture in SDR, and the offscreen HDR capture in
+   HDR, identical.
 3. **HDR on, HDR Lighting off, against SDR**: the offscreen HDR capture ([#8947](https://github.com/horizon-rust/horizon/pull/8947)),
    within one 8-bit step outside the spots vanilla clips.
 4. **HDR look against today**: the same captures within a tolerance, with screenshots in the pull request,
@@ -257,8 +269,8 @@ Behind `HORIZON_HDR_FRAME=float` until the last step, each a small pull request:
 4. The tone curve, camera overlays and the hand before `keep_world`, the HUD's target and coverage, the display
    pass's composite, the blur, the rebuild when the frame's case changes, and the 0.1 path split off; marks no
    longer written outside it.
-5. On by default and the switch removed. Today's HDR path (marks, the 16-bit unorm frame, Smooth Gradients) then serves
-   only 0.1 packs, and goes when 0.1 does.
+5. On by default and the switch removed, and 0.1 no longer served (see 0.1 packs). The shim goes with it: the
+   pipeline variants that write marks and the HDR pass's lift from them, in a pull request of its own.
 
 Later, each its own note or pull request: HDR's light-source lift as a built-in preset on 0.2, values for
 `shaders/` packs, and which settings stay on the HDR page and which move to the shader menu. Additions to 0.2 that

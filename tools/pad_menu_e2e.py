@@ -32,6 +32,7 @@ Cases:
 - long_label: a label too wide for its button slides, beside its glyph.
 - every_screen_has_targets: the title's submenus and every options page give the focus something to land on.
 - pause_icon: the pause menu's icons are targets, and A presses one.
+- studio_rows: the D-pad walks Replay Studio's recordings to its buttons, and B leaves.
 - erase_checkbox: the D-pad reaches Optimize World's Erase Cached Data box, and A ticks it.
 Needs built fast binaries (`cargo build --profile fast -p horizon-client -p horizon-client-lib --bins`)
 and prepared resources in .local/horizon-client/26.3. Exit status 0 when every case passes.
@@ -45,6 +46,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 import zlib
 from pathlib import Path
 
@@ -1486,14 +1488,12 @@ OPTIONS_PAGES = ('main', 'video', 'sound', 'controls', 'keybinds', 'controller',
                  'accessibility', 'language', 'font', 'packs', 'mods', 'shader-packs', 'graphics', 'graphics-advanced',
                  'graphics-hdr', 'extras', 'pvp', 'credits', 'horizon', 'agent')
 # Screens allowed to draw no target, and why. The pad falls back to the crosshair on these.
-NO_TARGETS = {'studio': 'its buttons and rows only paint, nothing registers them yet'}
 TARGETS_WAIT = 5
+STUDIO_RECORDINGS, STUDIO_BUTTONS = 12, 3
 
 
 def check_has_targets(game, check, screen):
     """A focus-mode screen draws a target soon after it opens; pointer screens (packs) use the crosshair by design."""
-    if screen in NO_TARGETS:
-        return
     end = time.time() + TARGETS_WAIT
     while True:
         menu = game.menu()
@@ -1530,6 +1530,56 @@ def every_screen_has_targets(game, check, single, options, quit_game):
     time.sleep(SETTLE)
     click_widget(game, widget(game, 'studio'))
     check_has_targets(game, check, 'studio')
+
+
+def seed_recordings(game_home):
+    """More saved recordings than the Studio page shows at once."""
+    folder = game_home / 'recordings'
+    folder.mkdir()
+    for i in range(STUDIO_RECORDINGS):
+        with zipfile.ZipFile(folder / f'run{i:02}.mcpr', 'w') as archive:
+            archive.writestr('metaData.json', json.dumps({'serverName': f'Server{i:02}', 'date': i, 'duration': 1000}))
+
+
+def studio_rows(args, name):
+    """The D-pad walks Replay Studio's recordings, scrolling the hidden ones, to its buttons."""
+    game = Game(args, name, seed=seed_recordings)
+    check = Check()
+    try:
+        game.wait_targets()
+        game.ctl('options', 'horizon')
+        time.sleep(SETTLE)
+        click_widget(game, widget(game, 'studio'))
+        time.sleep(SETTLE)
+        game.wait_targets()
+        first = game.rows()[0]['label']
+        for _ in range(4):
+            game.stick()
+        check(game.rows()[0]['label'] != first, f'the right stick did not scroll the list: {first} still on top')
+        for _ in range(8):
+            game.stick(1)
+        check(game.rows()[0]['label'] == first, f'the right stick did not scroll back: {game.rows()[0]["label"]} on top')
+        kinds = [t['kind'] for t in game.menu()['targets']]
+        check(kinds.count('row') > 0 and kinds.count('row') < STUDIO_RECORDINGS, f'recordings in view: {kinds}')
+        check(kinds.count('button') == STUDIO_BUTTONS, f'its buttons: {kinds}')
+        game.pad('down')
+        walked = set()
+        for _ in range(STUDIO_RECORDINGS + STUDIO_BUTTONS):
+            walked.add(game.focused_label())
+            before = game.focus()
+            kind = next((t['kind'] for t in game.menu()['targets'] if tuple(t['rect']) == before), None)
+            if kind == 'button':
+                break
+            game.pad('down')
+        check(kind == 'button', f'the D-pad never left the list for the buttons: on {kind}')
+        check(len(walked) >= STUDIO_RECORDINGS, f'the D-pad skipped hidden recordings: {sorted(map(str, walked))}')
+        check(game.menu()['actions'], 'Done declares no button')
+        game.pad('east')
+        time.sleep(SETTLE)
+        check(not any(w['id'] == 'open-folder' for w in game.widgets()), 'B stayed on the Studio page')
+    finally:
+        game.quit()
+    return check.failures
 
 
 def pause_icon(args, name):
@@ -1984,7 +2034,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'controller_settings_keys': controller_settings_keys,
          'controller_notices': controller_notices,
          'every_screen_has_targets': every_screen_has_targets,
-         'pause_icon': pause_icon,
+         'studio_rows': studio_rows, 'pause_icon': pause_icon,
          'erase_checkbox': erase_checkbox,
          'glyph_art': glyph_art,
          'glyph_art_world': glyph_art_world,
