@@ -12,7 +12,7 @@ use horizon_client::mobs::{
     villager,
 };
 use horizon_client::{
-    hud::{HudBatch, rgba},
+    hud::HudBatch,
     items::ItemStack,
     merchant::{self, MerchantOffer, TradeContext},
 };
@@ -624,15 +624,8 @@ impl Game<'_> {
         );
         let offers = m.session.offers.clone();
         let costs: Vec<ItemStack> = offers.iter().map(|o| o.cost_a(self.items())).collect();
+        self.render_transparent_background("merchant", batch);
         let atlas = &self.gui.atlas;
-        batch.fill(
-            atlas,
-            0.0,
-            0.0,
-            batch.width,
-            batch.height,
-            rgba(16, 16, 16, 160),
-        );
         if let Some(mut r) = atlas.sprites.get("gui/container/villager").copied() {
             let (du, dv) = ((r.u1 - r.u0) / r.w as f32, (r.v1 - r.v0) / r.h as f32);
             r.u1 = r.u0 + 276.0 * du;

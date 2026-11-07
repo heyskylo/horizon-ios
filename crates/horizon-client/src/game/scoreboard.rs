@@ -102,9 +102,39 @@ impl Game<'_> {
     fn scoreboard_path(&self) -> std::path::PathBuf {
         self.world_root.join("data/minecraft/scoreboard.dat")
     }
-    fn border_path(&self) -> std::path::PathBuf {
-        save::dimension_dir(&self.world_root, "minecraft:overworld")
-            .join("data/minecraft/world_border.dat")
+    /// `ServerLevel.getWorldBorder`'s file: each dimension's own
+    /// `data/minecraft/world_border.dat`.
+    fn border_path(&self, dim: super::Dim) -> std::path::PathBuf {
+        save::dimension_dir(&self.world_root, dim.id()).join("data/minecraft/world_border.dat")
+    }
+    /// The border `dim`'s level saved. The Overworld also reads the root file older Horizon
+    /// builds wrote for their one shared border; the other levels start from the default.
+    pub(super) fn load_border(&self, dim: super::Dim) -> horizon_client::worldborder::WorldBorder {
+        let mut root = save::read_dat(&self.border_path(dim));
+        if root.is_none() && dim == super::Dim::Overworld {
+            root = save::read_dat(&self.world_root.join("data/minecraft/world_border.dat"));
+        }
+        root.as_ref()
+            .and_then(|root| root.get("data"))
+            .map(horizon_client::worldborder::WorldBorder::unpack)
+            .unwrap_or_default()
+    }
+    /// Save the border of the level in place (`SavedData`, one per level).
+    pub(super) fn save_border(&self) {
+        if !self.score.loaded || self.remote.is_some() {
+            return;
+        }
+        if self.border != horizon_client::worldborder::WorldBorder::default()
+            && let Err(e) = save::write_dat(
+                &self.border_path(self.dim),
+                Tag::compound([
+                    ("data", self.border.pack()),
+                    ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
+                ]),
+            )
+        {
+            log::warn!("the world border of {} was not written: {e}", self.dim.id());
+        }
     }
     /// `ScoreboardSaveData` read from `data/minecraft/scoreboard.dat`.
     pub(super) fn load_scoreboard(&mut self) {
@@ -119,16 +149,9 @@ impl Game<'_> {
         }
         self.score.storage =
             horizon_client::command_storage::CommandStorage::load(&self.world_root);
-        // ServerLevel.getWorldBorder: each dimension's data/minecraft/world_border.dat. Horizon
-        // keeps one border, so the overworld's file stands for it; the root file is what
-        // older Horizon builds wrote.
-        let border_path = self.border_path();
-        if let Some(root) = save::read_dat(&border_path)
-            .or_else(|| save::read_dat(&self.world_root.join("data/minecraft/world_border.dat")))
-            && let Some(data) = root.get("data")
-        {
-            self.border = horizon_client::worldborder::WorldBorder::unpack(data);
-        }
+        // ServerLevel.getWorldBorder: the level in place reads its own file; the other levels
+        // read theirs when they are opened (`open_level`).
+        self.border = self.load_border(self.dim);
         self.score.stopwatches = horizon_client::stopwatches::Stopwatches::load(&self.world_root);
         self.sync_score_registries();
     }
@@ -138,17 +161,7 @@ impl Game<'_> {
         }
         self.score.storage.save(&self.world_root);
         self.score.stopwatches.save(&self.world_root);
-        if self.border != horizon_client::worldborder::WorldBorder::default()
-            && let Err(e) = save::write_dat(
-                &self.border_path(),
-                Tag::compound([
-                    ("data", self.border.pack()),
-                    ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
-                ]),
-            )
-        {
-            log::warn!("the world border was not written: {e}");
-        }
+        // The border is saved with its level (`save_level`).
         let path = self.scoreboard_path();
         let board = &self.score.board;
         if board == &Scoreboard::default() && !path.exists() {
@@ -378,7 +391,7 @@ impl Game<'_> {
                 }
             }
             if ok && !s.advancements.is_empty() {
-                ok = t == Target::Player && self.advancements_match(&s.advancements);
+                ok = self.advancements_match(t, &s.advancements);
             }
             if ok {
                 pass.insert(t);
@@ -387,21 +400,31 @@ impl Game<'_> {
         pass
     }
 
-    /// `advancements=` of a selector, against the player's progress.
+    /// `advancements=` of a selector, against the selected player's progress.
     fn advancements_match(
         &self,
+        target: Target,
         wanted: &[(String, horizon_client::command::args::AdvCondition)],
     ) -> bool {
         use horizon_client::command::args::AdvCondition;
+        let progress = match target {
+            Target::Player => &self.adv.progress,
+            Target::Guest(conn) => match self.command_guest(conn) {
+                Some(guest) => &guest.advancements,
+                None => return false,
+            },
+            _ => return false,
+        };
         wanted.iter().all(|(id, cond)| {
             let Some(a) = self.adv.tree.get(id) else {
                 return false;
             };
             match cond {
-                AdvCondition::Done(want) => self.adv.progress.done(a) == *want,
-                AdvCondition::Criteria(list) => list
-                    .iter()
-                    .all(|(c, want)| self.adv.progress.has(id, c) == *want),
+                AdvCondition::Done(want) => progress.done(a) == *want,
+                AdvCondition::Criteria(list) => list.iter().all(|(c, want)| {
+                    a.criteria.iter().any(|criterion| criterion.name == *c)
+                        && progress.has(id, c) == *want
+                }),
             }
         })
     }
@@ -1019,6 +1042,7 @@ mod tab_list_tests {
                 latency: Arc::new(AtomicI32::new(42)),
                 address: "127.0.0.1:25565".parse().unwrap(),
                 expected: false,
+                configured: Default::default(),
             },
             uuid as i32,
             [0.0, 64.0, 0.0],
@@ -1167,4 +1191,9 @@ mod team_tests {
 }
 
 #[cfg(test)]
+mod criterion_tests;
+
+#[cfg(test)]
 mod empty_tag_tests;
+#[cfg(test)]
+mod guest_advancement_tests;

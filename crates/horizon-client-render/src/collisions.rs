@@ -244,10 +244,23 @@ impl SceneCollisions<'_, '_> {
         on_ground: bool,
         border: Option<(&BorderGeometry, [f64; 2])>,
     ) -> Result<Vec3> {
+        self.resolve_in_border_with(bounds, movement, max_step, on_ground, border, &[])
+    }
+    /// [`Self::resolve_in_border`], also stopped by `entities`: the boxes
+    /// `EntityGetter.getEntityCollisions` gave the moving entity.
+    pub fn resolve_in_border_with(
+        self,
+        bounds: Aabb,
+        movement: Vec3,
+        max_step: f32,
+        on_ground: bool,
+        border: Option<(&BorderGeometry, [f64; 2])>,
+        entities: &[Aabb],
+    ) -> Result<Vec3> {
         let context = self.context(bounds);
         EntityCollisions {
             blocks: self,
-            entities: &[],
+            entities,
             border,
         }
         .resolve_with_context(bounds, movement, max_step, on_ground, context)
