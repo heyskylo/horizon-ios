@@ -23,9 +23,9 @@ Usage: horizon-server [--dir DIR] <command>
               Up or not, TPS, MSPT, players, RAM and CPU
   cmd COMMAND...
               Run a console command on the running server and print what it answers
-  report [SECONDS]
-              Record a performance report for SECONDS (default 60): where the ticks' time goes,
-              entities, chunks, network, memory; saved in reports/ (JSON and text, no player data)
+  report [SECONDS] [--no-samples]
+              Record a performance capture for SECONDS (default 60) into reports/profile-<time>Z.hzperf
+              (no player data); prints its path and where to open it
   logs [-f] [-n N]
               The last N lines of the log (default 50); -f follows it
   console     Attach to the running server: its log as it happens, TPS, MSPT, players and RAM at the

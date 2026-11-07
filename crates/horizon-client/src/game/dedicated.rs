@@ -21,6 +21,7 @@ use horizon_client::{
     },
     text::Text,
 };
+use horizon_perf_format::v1::StopReason;
 use horizon_protocol::text::translatable;
 use horizon_world::nbt::{JavaString, Tag};
 use std::{
@@ -808,9 +809,15 @@ struct ServerState {
     op_level: i32,
     /// `horizon-report`: the ticks being recorded.
     report: Option<report::Recording>,
+    /// The always-on health history and slow ring, and the `.hzperf` a report writes from them.
+    perf: horizon_client::server_perf::ServerPerf,
+    /// The perf clock's zero: the tick loop's start.
+    perf_epoch: Instant,
     /// View and simulation distance, and the player limit, for the report.
     view: (u32, u32),
     max_players: usize,
+    /// `network-compression-threshold`, for the capture's settings.
+    compression: i32,
     /// The mutable `gamemode` server property (`DedicatedServer.gameMode`).
     game_mode: i32,
     /// The mutable `force-gamemode` server property (`DedicatedServer.forceGameMode`).
@@ -1270,12 +1277,19 @@ impl Game<'_> {
             game_mode: props.game_mode,
             force_game_mode: props.force_game_mode,
             report: None,
+            perf: horizon_client::server_perf::ServerPerf::new(
+                0.0,
+                self.options.spikes.unwrap_or(SLOW_TICK_MS),
+            ),
+            perf_epoch: Instant::now(),
+            compression: props.network_compression_threshold,
             view: (
                 props.view_distance.clamp(2, 32) as u32,
                 props.simulation_distance.clamp(2, 32) as u32,
             ),
             max_players: props.max_players.max(0) as usize,
         };
+        horizon_client::server_perf::warm_hardware();
         let mut next = Instant::now();
         // The panic that ended the tick loop, when one did.
         let mut crashed: Option<String> = None;
@@ -1338,22 +1352,33 @@ impl Game<'_> {
             // MinecraftServer.tickServer: while paused only the connections run.
             // `MinecraftServer.runServer` catches what the tick throws, writes the crash
             // report and still stops the server (saves). A panic here does the same.
-            let ticked =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    match &mut state.report {
-                        Some(recording) => {
-                            let sampled = recording.sample_next();
-                            super::tick_profile::set_sampling(sampled);
-                            let ticked =
-                                self.tick_server_spans(paused, |wall, cpu, spans, recorded| {
-                                    recording.add(wall, cpu, spans, recorded, sampled)
-                                });
-                            super::tick_profile::set_sampling(false);
-                            ticked
-                        }
-                        None => self.tick_server_timed(paused),
+            let slow_ms = state.perf.slow_threshold_ms();
+            let mut slow_detail = None;
+            let ticked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut detail = |wall: f32, cpu, spans: &[horizon_client::spans::Span]| {
+                    if wall > slow_ms {
+                        slow_detail = Some(horizon_client::server_perf::SlowDetail {
+                            cpu_ms: cpu,
+                            spans: spans.to_vec(),
+                        });
                     }
-                }));
+                };
+                match &mut state.report {
+                    Some(recording) => {
+                        let sampled = recording.sample_next();
+                        super::tick_profile::set_sampling(sampled);
+                        let ticked =
+                            self.tick_server_spans(paused, |wall, cpu, spans, recorded| {
+                                detail(wall, cpu, &spans);
+                                recording.add(wall, cpu, spans, recorded, sampled)
+                            });
+                        super::tick_profile::set_sampling(false);
+                        ticked
+                    }
+                    None => self
+                        .tick_server_spans(paused, |wall, cpu, spans, _| detail(wall, cpu, &spans)),
+                }
+            }));
             match ticked {
                 Ok(result) => result?,
                 Err(payload) => {
@@ -1365,6 +1390,11 @@ impl Game<'_> {
                 && let Some(recording) = state.report.take()
             {
                 self.finish_report(recording, state.view, state.max_players);
+                report::finish_capture(
+                    &mut state.perf,
+                    state.perf_epoch.elapsed().as_secs_f64(),
+                    StopReason::Normal,
+                );
             }
             if horizon_client::spans::trace::due()
                 && let Some(events) = horizon_client::spans::trace::stop()
@@ -1389,6 +1419,12 @@ impl Game<'_> {
             }
             // MinecraftServer.tickServer records each tick's time, for /tick query (and the status).
             self.clock.record(tick_start.elapsed());
+            state.perf.tick(
+                state.perf_epoch.elapsed().as_secs_f64(),
+                tick_start.elapsed().as_secs_f32() * 1000.0,
+                slow_detail.take(),
+                || self.perf_world_counts(),
+            );
             // The far ring's brake, once a second on the average tick.
             if braked.elapsed() >= Duration::from_secs(1)
                 && let Some(host) = self.lan.as_mut()
@@ -1414,6 +1450,11 @@ impl Game<'_> {
         if let Some(watchdog) = &watchdog {
             watchdog.running.store(false, Ordering::Relaxed);
         }
+        report::finish_capture(
+            &mut state.perf,
+            state.perf_epoch.elapsed().as_secs_f64(),
+            StopReason::Shutdown,
+        );
         match crashed {
             Some(message) => self.stop_after_crash(&message),
             None => self.stop_dedicated(),
@@ -1648,43 +1689,42 @@ impl Game<'_> {
                 state.lists.lock().unwrap().stop = true;
             }
             // Horizon's own, on the console only: a performance report (report.rs).
-            "horizon-report" if rest.first() == Some(&"stop") => match state.report.take() {
-                Some(recording) => {
-                    log("INFO", "Stopping the performance report: writing it now");
-                    self.finish_report(recording, state.view, state.max_players);
-                }
-                None => log("INFO", "No performance report is being recorded"),
-            },
-            "horizon-report" if rest.first() == Some(&"status") => match &state.report {
-                Some(recording) => log("INFO", &recording.status()),
-                None => log("INFO", "No performance report is being recorded"),
-            },
-            "horizon-report" => {
-                let seconds = match rest.first().map(|s| s.parse::<u32>()) {
-                    None => Ok(60),
-                    Some(Ok(s)) if (1..=report::MAX_SECONDS).contains(&s) => Ok(s),
-                    Some(_) => Err(()),
-                };
-                match (seconds, &state.report) {
-                    (Err(()), _) => log(
-                        "INFO",
-                        &format!(
-                            "horizon-report [SECONDS | stop | status]: 1 to {} seconds, 60 by default",
-                            report::MAX_SECONDS
-                        ),
+            "horizon-report" => match report::parse(&rest) {
+                Err(()) => log(
+                    "INFO",
+                    &format!(
+                        "horizon-report [SECONDS | stop | status] [--no-samples]: 1 to {} seconds, 60 by default",
+                        report::MAX_SECONDS
                     ),
-                    (Ok(_), Some(_)) => {
-                        log("INFO", "A performance report is already being recorded")
-                    }
-                    (Ok(seconds), None) => {
-                        state.report = Some(report::Recording::start(seconds, self.wire_bytes()));
-                        log(
-                            "INFO",
-                            &format!("Recording a performance report for {seconds} s (reports/)"),
+                ),
+                Ok(report::Command::Stop) => match state.report.take() {
+                    Some(recording) => {
+                        log("INFO", "Stopping the performance report: writing it now");
+                        self.finish_report(recording, state.view, state.max_players);
+                        report::finish_capture(
+                            &mut state.perf,
+                            state.perf_epoch.elapsed().as_secs_f64(),
+                            StopReason::Normal,
                         );
                     }
+                    None => log("INFO", "No performance report is being recorded"),
+                },
+                Ok(report::Command::Status) => match &state.report {
+                    Some(recording) => log("INFO", &recording.status()),
+                    None => log("INFO", "No performance report is being recorded"),
+                },
+                Ok(report::Command::Record { seconds, .. }) if state.report.is_none() => {
+                    state.report = Some(report::Recording::start(seconds, self.wire_bytes()));
+                    self.start_perf_capture(state, seconds);
+                    log(
+                        "INFO",
+                        &format!("Recording a performance report for {seconds} s (reports/)"),
+                    );
                 }
-            }
+                Ok(report::Command::Record { .. }) => {
+                    log("INFO", "A performance report is already being recorded")
+                }
+            },
             // Horizon's own, on the console only: every thread's spans as a timeline (report.rs).
             "horizon-trace" if rest.first() == Some(&"stop") => {
                 match horizon_client::spans::trace::stop() {

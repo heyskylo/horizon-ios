@@ -8,9 +8,14 @@
 //! the chunks of each level, and gives the memory, the CPU and the view settings. It holds no player names,
 //! UUIDs or addresses, no seed and no world name. It runs beside the game: nothing restarts.
 use super::super::{Dim, Game, tick_profile};
+use horizon_client::server_perf::{self, CaptureOptions, ServerPerf, WorldCounts};
 use horizon_client::{
     spans::{self, Span},
     streaming::job_stats,
+};
+use horizon_perf_format::{
+    files,
+    v1::{Start, StopReason, Trigger},
 };
 use serde_json::{Value, json};
 use std::{
@@ -21,6 +26,58 @@ use std::{
 
 /// The longest window a report records.
 pub(super) const MAX_SECONDS: u32 = 600;
+
+/// What `horizon-report` was asked.
+#[derive(Debug, PartialEq)]
+pub(super) enum Command {
+    Record { seconds: u32, samples: bool },
+    Stop,
+    Status,
+}
+
+/// The words after `horizon-report`: `[SECONDS | stop | status] [--no-samples] [--profile]`, flags anywhere.
+pub(super) fn parse(words: &[&str]) -> Result<Command, ()> {
+    let mut samples = true;
+    let mut positional = Vec::new();
+    for &word in words {
+        match word {
+            "--no-samples" => samples = false,
+            // Samples are on by default now; the old switch is accepted and does nothing.
+            "--profile" => {}
+            flag if flag.starts_with("--") => return Err(()),
+            word => positional.push(word),
+        }
+    }
+    match positional[..] {
+        [] => Ok(Command::Record {
+            seconds: 60,
+            samples,
+        }),
+        ["stop"] => Ok(Command::Stop),
+        ["status"] => Ok(Command::Status),
+        [seconds] => match seconds.parse::<u32>() {
+            Ok(seconds) if (1..=MAX_SECONDS).contains(&seconds) => {
+                Ok(Command::Record { seconds, samples })
+            }
+            _ => Err(()),
+        },
+        _ => Err(()),
+    }
+}
+
+/// Ends the capture beside a report, if one runs, and logs where it went.
+pub(super) fn finish_capture(perf: &mut ServerPerf, t: f64, reason: StopReason) {
+    match perf.stop_capture(t, reason) {
+        None => {}
+        Some(Ok(saved)) => {
+            for path in &saved.deleted {
+                log::info!("Horizon: removed the oldest capture {}", path.display());
+            }
+            log::info!("Horizon: {}", files::saved_line(&saved.path));
+        }
+        Some(Err(e)) => log::error!("Horizon: could not write the performance capture: {e}"),
+    }
+}
 /// The worst ticks a report lists with their spans.
 const WORST: usize = 10;
 /// The mob types (per level) a report lists with their cost.
@@ -293,6 +350,46 @@ fn span_cost_nanos() -> f64 {
 }
 
 impl Game<'_> {
+    /// Opens the `.hzperf` that records beside a report, and logs where it goes.
+    pub(super) fn start_perf_capture(&self, state: &mut super::ServerState, seconds: u32) {
+        let start = Start {
+            build: Some(server_perf::build()),
+            machine: Some(server_perf::machine(server_perf::hardware())),
+            settings: Some(server_perf::settings(
+                state.view.0,
+                state.view.1,
+                state.max_players as u32,
+                state.compression,
+            )),
+            players: self.lan.as_ref().map_or(0, |h| h.hub.guests.len() as u32),
+            ..Start::default()
+        };
+        let options = CaptureOptions {
+            window_s: f64::from(seconds),
+            trigger: Trigger::Console,
+            start,
+        };
+        let t = state.perf_epoch.elapsed().as_secs_f64();
+        match state.perf.start_capture(t, Path::new("reports"), options) {
+            Ok(path) => log::info!("Horizon: capturing to {}", path.display()),
+            Err(e) => log::error!("Horizon: could not start the performance capture: {e}"),
+        }
+    }
+
+    /// What the health samples count: players, chunks and mobs in every level.
+    pub(super) fn perf_world_counts(&self) -> WorldCounts {
+        let (mut chunks, mut entities) = (self.world.chunks.len(), self.mobs.len());
+        for dim in self.levels.parked_dims() {
+            chunks += self.levels.parked_world(dim).map_or(0, |w| w.chunks.len());
+            entities += self.levels.parked_mobs(dim).map_or(0, <[_]>::len);
+        }
+        WorldCounts {
+            players: self.lan.as_ref().map_or(0, |h| h.hub.guests.len() as u32),
+            chunks: chunks as u32,
+            entities: entities as u32,
+        }
+    }
+
     /// The level in place and the parked ones: their chunks and their entities by type.
     fn report_levels(&self) -> Value {
         let mut levels = Vec::new();
@@ -592,6 +689,28 @@ mod tests {
             ms,
             cpu_ms: ms,
             depth: 0,
+        }
+    }
+
+    #[test]
+    fn report_words_pick_the_window_and_the_samples() {
+        let record = |seconds, samples| Ok(Command::Record { seconds, samples });
+        assert_eq!(parse(&[]), record(60, true));
+        assert_eq!(parse(&["120"]), record(120, true));
+        assert_eq!(parse(&["--no-samples", "30"]), record(30, false));
+        assert_eq!(parse(&["30", "--no-samples"]), record(30, false));
+        assert_eq!(parse(&["--profile"]), record(60, true));
+        assert_eq!(parse(&["stop"]), Ok(Command::Stop));
+        assert_eq!(parse(&["status", "--no-samples"]), Ok(Command::Status));
+        for bad in [
+            &["0"][..],
+            &["601"],
+            &["abc"],
+            &["--fast"],
+            &["30", "60"],
+            &["stop", "5"],
+        ] {
+            assert_eq!(parse(bad), Err(()), "{bad:?}");
         }
     }
 
