@@ -194,6 +194,25 @@ impl RuleTest {
         };
         Ok(Self(node))
     }
+    /// The Y ranges of its height tests (its only use of the position),
+    /// or `None` when a test draws from the random source: then the result
+    /// is not a function of the state and those ranges alone.
+    pub(crate) fn pure_heights(&self, out: &mut Vec<(i32, i32)>) -> Option<()> {
+        match &self.0 {
+            Node::True | Node::States(_) | Node::State(_) | Node::Phase(_) => Some(()),
+            Node::RandomStates(..) | Node::RandomState(..) => None,
+            Node::Height(min, max) => {
+                if !out.contains(&(*min, *max)) {
+                    out.push((*min, *max));
+                }
+                Some(())
+            }
+            Node::Not(rule) => rule.pure_heights(out),
+            Node::All(rules) | Node::Any(rules) => {
+                rules.iter().try_for_each(|rule| rule.pure_heights(out))
+            }
+        }
+    }
     pub fn test(
         &self,
         state: BlockStateId,
