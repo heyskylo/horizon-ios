@@ -354,7 +354,7 @@ impl Game<'_> {
                     self.settings.horizon.api,
                     self.settings.horizon.translucent_batching,
                     self.settings.horizon.wide_frame(),
-                    super::shader_packs::picked_pack_draws_flat(&self.settings),
+                    super::shader_packs::picked_pack_shape(&self.settings),
                     (
                         self.settings.file.int("textureFiltering"),
                         self.settings.file.int("maxAnisotropyBit"),

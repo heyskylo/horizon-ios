@@ -166,6 +166,20 @@ impl SlotDisplay {
                 w.varint(5);
                 Template::write(stack, w);
             }
+            Self::Tag(set) if crate::adapter::ids::quirks_written().tag_slot_display_is_id => {
+                match set {
+                    // TagSlotDisplay of 26.2: the tag's bare id.
+                    HolderSet::Tag(name) => {
+                        w.varint(6);
+                        w.string(name);
+                    }
+                    // A list of items has no such form: a composite of item displays shows the same.
+                    HolderSet::Items(items) => {
+                        Self::Composite(items.iter().map(|&item| Self::Item(item)).collect())
+                            .write(w)
+                    }
+                }
+            }
             Self::Tag(set) => {
                 w.varint(6);
                 set.write(w);
