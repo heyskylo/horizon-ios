@@ -1803,7 +1803,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2",
- "socket2 0.5.10",
+ "socket2",
 ]
 
 [[package]]
