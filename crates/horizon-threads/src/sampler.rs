@@ -89,6 +89,10 @@ pub fn set_chunk(x: i32, z: i32) {
     CTX.with(|c| (c.chunk.0.store(x, Relaxed), c.chunk.1.store(z, Relaxed)));
 }
 
+pub fn span() -> u16 {
+    CTX.with(|c| c.span.load(Relaxed))
+}
+
 pub fn context() -> Context {
     CTX.with(|c| Context {
         tick: c.tick.load(Relaxed),

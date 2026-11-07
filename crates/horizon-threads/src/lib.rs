@@ -10,6 +10,7 @@ pub mod process_memory;
 #[cfg(target_os = "linux")]
 pub mod sampler;
 pub mod unwind;
+pub mod work;
 
 use std::sync::{
     OnceLock,

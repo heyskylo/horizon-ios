@@ -1279,6 +1279,9 @@ impl Game<'_> {
                 };
                 w.controlling_player_movement = controlling_player_movement;
                 ticked.insert(mobs[i].id);
+                horizon_threads::work::set_entity(horizon_threads::work::entity_id(
+                    &mobs[i].kind.id,
+                ));
                 // `horizon-report`'s cost by mob type (tick_profile.rs).
                 let sampled = super::tick_profile::start().map(|t| (t, mobs[i].kind.clone()));
                 let kept =
@@ -1499,11 +1502,13 @@ impl Game<'_> {
             let bounds = m.bounds();
             self.effects_on_death(&names, bounds, false, Some(m.id), Some(&mut m.random));
         }
+        horizon_threads::work::clear_work();
         self.handle_mob_events(events)?;
         self.lan_guest_mob_events(guest_events);
         laps.lap("creature_events");
         self.ordered_before(super::ordered_tick::Batch::Projectiles)?;
         self.tick_projectiles()?;
+        horizon_threads::work::clear_work();
         self.tick_fangs();
         laps.lap("creature_projectiles");
         self.tick_allays();
@@ -4351,6 +4356,7 @@ impl Game<'_> {
                     Vec::new()
                 };
                 let p = &mut projectiles[i];
+                horizon_threads::work::set_entity(horizon_threads::work::entity_id(p.kind.id()));
                 if vanish
                     && matches!(p.kind, ProjectileKind::EnderPearl)
                     && p.owner == Some(Who::Player)
