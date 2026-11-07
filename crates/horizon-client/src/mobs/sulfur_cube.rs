@@ -295,7 +295,8 @@ pub fn attribute_modifiers(a: &Archetype) -> [(&'static str, String, f64, Operat
         (
             "minecraft:knockback_resistance",
             id("add", "knockback_resistance"),
-            a.knockback_resistance,
+            // The data's float, widened (the physics table keeps a decimal double).
+            f64::from(a.knockback_resistance as f32),
             Operation::AddValue,
         ),
         (
@@ -528,6 +529,21 @@ pub(crate) mod adopt_body_tests {
         ] {
             assert_eq!(value(&mut m, attribute), default, "{attribute}");
         }
+    }
+
+    #[test]
+    fn the_modifier_amounts_are_the_archetype_floats_widened() {
+        let by_name = |n: &str| ARCHETYPES.iter().find(|a| a.name == n).unwrap();
+        // sulfur_cube_archetype/slow_bouncy.json and high_resistance.json.
+        let slow_bouncy = attribute_modifiers(by_name("slow_bouncy"));
+        assert_eq!(
+            slow_bouncy[0].1,
+            "minecraft:slow_bouncy_add_knockback_resistance"
+        );
+        assert_eq!(slow_bouncy[0].2, 0.4000000059604645);
+        let high = attribute_modifiers(by_name("high_resistance"));
+        assert_eq!(high[0].2, 0.699999988079071);
+        assert_eq!(high[1].2, 0.699999988079071);
     }
 
     #[test]
