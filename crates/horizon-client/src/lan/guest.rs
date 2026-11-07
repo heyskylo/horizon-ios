@@ -133,8 +133,6 @@ pub struct Guest {
     pub input: u8,
     /// The boat or minecart the player rides (`Entity.getVehicle`).
     pub vehicle: Option<u32>,
-    /// `Entity.boardingCooldown`: ticks before it may board a vehicle again.
-    pub boarding_cooldown: i32,
     /// When the player last got into its vehicle, from `Hub.seat_order`:
     /// `Entity.addPassenger` seats a rider behind the players already in the
     /// vehicle, so the smallest order on a boat is its controlling rider
@@ -447,7 +445,6 @@ impl Guest {
             sneaking: false,
             input: 0,
             vehicle: None,
-            boarding_cooldown: 0,
             vehicle_order: 0,
             vehicle_good: None,
             sprinting: false,

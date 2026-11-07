@@ -1039,6 +1039,14 @@ impl Screen {
                     parts.push(names.join(", "));
                 }
             }
+            Some(Ping::Incompatible { motd, version, .. }) => {
+                parts.push(t("multiplayer.status.incompatible", &[]));
+                parts.push(t(
+                    "multiplayer.status.version.narration",
+                    &[&version.plain()],
+                ));
+                parts.push(t("multiplayer.status.motd.narration", &[&motd.plain()]));
+            }
             Some(Ping::Failed(_)) => parts.push(t("multiplayer.status.no_connection", &[])),
             _ => parts.push(t("multiplayer.status.pinging", &[])),
         }
@@ -2098,6 +2106,57 @@ mod tests {
             servers_file_of(Some(Path::new("/games/players/alex")), saves),
             Path::new("/games/players/alex/servers.dat")
         );
+    }
+
+    #[test]
+    fn incompatible_server_narration_matches_vanilla_order() {
+        struct Vanilla;
+        impl crate::lang::ResourceSource for Vanilla {
+            fn read(&self, path: &str) -> Option<Vec<u8>> {
+                (path == "assets/minecraft/lang/en_us.json").then(|| {
+                    br#"{
+                        "narrator.select": "Select %s",
+                        "multiplayer.status.incompatible": "Incompatible version",
+                        "multiplayer.status.version.narration": "Version %s",
+                        "multiplayer.status.motd.narration": "MOTD %s"
+                    }"#
+                    .to_vec()
+                })
+            }
+            fn namespaces(&self) -> Vec<String> {
+                vec!["minecraft".into()]
+            }
+        }
+
+        crate::lang::scoped(crate::lang::Language::load(&[&Vanilla], "en_us"), || {
+            let entry = ServerEntry::new("Vanilla Legacy", "127.0.0.1:25565");
+            let ping = Ping::Incompatible {
+                motd: Text::literal("A Server"),
+                players: None,
+                player_list: Vec::new(),
+                version: Text::literal("1.12.2"),
+            };
+            let narration = Screen::server_narration(&entry, Some(&ping));
+            assert!(narration.contains("Vanilla Legacy"));
+            assert!(narration.contains("1.12.2"));
+            assert!(narration.contains("A Server"));
+            assert!(narration.contains("Incompatible version"));
+            // Vanilla: name -> incompatible -> version -> motd
+            let select = crate::screen_narrator::translate("narrator.select", &["Vanilla Legacy"]);
+            let incomp = crate::screen_narrator::translate("multiplayer.status.incompatible", &[]);
+            let version = crate::screen_narrator::translate(
+                "multiplayer.status.version.narration",
+                &["1.12.2"],
+            );
+            let motd = crate::screen_narrator::translate(
+                "multiplayer.status.motd.narration",
+                &["A Server"],
+            );
+            assert_eq!(
+                narration,
+                crate::widgets::join_for_narration(&[&select, &incomp, &version, &motd])
+            );
+        });
     }
 
     #[test]
