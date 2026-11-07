@@ -193,6 +193,8 @@ pub(in crate::game) fn host(root: &std::path::Path) -> LanHost {
         quiet: Default::default(),
         far: None,
         native_commands: None,
+        native_command_nodes: Vec::new(),
+        native_usages: Vec::new(),
         sleep_ignored: Default::default(),
         states: Default::default(),
         states_next_entity: None,
