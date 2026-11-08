@@ -1389,7 +1389,7 @@ impl Game<'_> {
     /// the boxes of all of them. Until the potion has left it, none can be hit
     /// (`canHitEntity`: `isPassengerOfSameVehicle`) and any one near keeps it
     /// from leaving (`isOutsideOwnerCollisionRange`).
-    fn thrown_ridden(
+    pub(super) fn thrown_ridden(
         &self,
         owner: Option<Who>,
         players: &[(Who, Aabb)],

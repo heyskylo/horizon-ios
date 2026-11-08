@@ -460,10 +460,14 @@ pub struct Post {
     pub entities: Option<PostProgram>,
     /// What draws block entities, after terrain.
     pub block: Option<PostProgram>,
+    /// An authored translucent block variant; absent or failed keeps the ordinary block path.
+    pub block_translucent: Option<PostProgram>,
     /// What draws translucent entities (name tags, shadows), after the others.
     pub entities_translucent: Option<PostProgram>,
     /// What draws particles.
     pub particles: Option<PostProgram>,
+    /// The translucent particle variant for explicit mixed ordering, when it loads.
+    pub particles_translucent: Option<PostProgram>,
     /// What draws beacon and End gateway beams (after deferred, blended).
     pub beacon_beam: Option<PostProgram>,
     pub damaged_block: Option<PostProgram>,
@@ -536,8 +540,10 @@ impl Post {
             &self.sky_textured,
             &self.entities,
             &self.block,
+            &self.block_translucent,
             &self.entities_translucent,
             &self.particles,
+            &self.particles_translucent,
             &self.damaged_block,
             &self.clouds,
             &self.weather,
@@ -673,8 +679,10 @@ pub fn load_post(
         sky_textured: None,
         entities: None,
         block: None,
+        block_translucent: None,
         entities_translucent: None,
         particles: None,
+        particles_translucent: None,
         beacon_beam: None,
         damaged_block: None,
         clouds: None,
@@ -866,6 +874,13 @@ pub fn load_post(
     let mut gbuffers_dyn = |names: &[&str], i: &GbuffersInputs| gbuffers(names, Group::Gbuffers, i);
     let entities_translucent = translucent(&ENTITIES_TRANSLUCENT, 0.0, &mut gbuffers_dyn);
     let particles = translucent(&PARTICLES, 0.1, &mut gbuffers_dyn);
+    // Optional slots deliberately have no fallback chain: an absent, disabled or rejected
+    // variant must leave the legacy material grouping and state intact.
+    let block_translucent = translucent(&["gbuffers_block_translucent"], 0.0, &mut gbuffers_dyn);
+    let mixed = properties.get("particles.ordering").map(str::trim) == Some("mixed");
+    let particles_translucent = mixed
+        .then(|| translucent(&["gbuffers_particles_translucent"], 0.1, &mut gbuffers_dyn))
+        .flatten();
     let beacon_beam = translucent(&BEACON_BEAM, 0.0, &mut gbuffers_dyn);
     // Clouds blend, as vanilla's do (OQ-23).
     let clouds = inputs
@@ -1012,8 +1027,10 @@ pub fn load_post(
     loader.post.sky_textured = sky_textured;
     loader.post.entities = entities;
     loader.post.block = block;
+    loader.post.block_translucent = block_translucent;
     loader.post.entities_translucent = entities_translucent;
     loader.post.particles = particles;
+    loader.post.particles_translucent = particles_translucent;
     loader.post.beacon_beam = beacon_beam;
     loader.post.damaged_block = damaged_block;
     loader.post.clouds_off = properties.get("clouds").is_some_and(|v| v.trim() == "off");
@@ -1024,8 +1041,8 @@ pub fn load_post(
     loader.post.hand_water = hand_water;
     let flag = |key: &str| properties.get(key).map(|v| v.trim() == "true");
     loader.post.translucent_late = flag("separateEntityDraws").unwrap_or(false);
-    // `after` when the pack has a deferred program, else `mixed`; ours are all translucent, so
-    // `mixed` draws them after deferred too.
+    // Keep the legacy timing here. The renderer moves ordinary mixed particles earlier
+    // only after it has successfully built their translucent variant.
     loader.post.particles_late = match properties.get("particles.ordering").map(str::trim) {
         Some("before") => false,
         Some(_) => true,
@@ -1060,8 +1077,10 @@ fn load_shadow(
         &post.sky_textured,
         &post.entities,
         &post.block,
+        &post.block_translucent,
         &post.entities_translucent,
         &post.particles,
+        &post.particles_translucent,
         &post.beacon_beam,
         &post.damaged_block,
         &post.clouds,
@@ -3383,3 +3402,6 @@ mod buffer_blend_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod material_variant_tests;
