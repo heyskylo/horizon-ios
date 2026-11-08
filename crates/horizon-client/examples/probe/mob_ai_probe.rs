@@ -206,6 +206,7 @@ fn goal_name(m: &Mob, name: &str) -> String {
         "GhastLook" => "GhastLookGoal",
         "Peek" => "ShulkerPeekGoal",
         "GhastShoot" => "GhastShootFireballGoal",
+        "BlazeAttack" => "BlazeAttackGoal",
         "Stroll" => "WaterAvoidingRandomStrollGoal",
         "ParrotWander" => "ParrotWanderGoal",
         "RandomStroll" => "RandomStrollGoal",

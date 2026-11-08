@@ -99,7 +99,7 @@ pub fn describe(fit: &Fit, plays: &Plays) -> String {
             &[("pin", short(pin)), ("mods", &with.join(", "))],
         ),
         Fit::MovesTo { pin } => trf(
-            "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}",
+            "Made for Horizon {pin}: the launcher builds it on {yours}, the one you play, and on {pin} only if it doesn't compile there",
             &[("pin", short(pin)), ("yours", short(&plays.revision))],
         ),
         Fit::Broken { code } => trf(

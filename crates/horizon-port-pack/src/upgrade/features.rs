@@ -97,7 +97,7 @@ fn placement(m: &mut Value) {
 
 /// A configured feature in 26.3's form: `config` unwrapped, block state
 /// providers renamed, nested features and placements upgraded.
-pub(super) fn feature(v: &Value, report: &mut Report) -> Value {
+pub(crate) fn feature(v: &Value, report: &mut Report) -> Value {
     let Value::Object(o) = v else {
         return v.clone();
     };
@@ -123,6 +123,7 @@ pub(super) fn feature(v: &Value, report: &mut Report) -> Value {
     let mut v = Value::Object(n);
     states(&mut v);
     nested(&mut v, report);
+    crate::lithostitched::weighted_selector(&mut v);
     v
 }
 
@@ -166,7 +167,7 @@ fn nested(v: &mut Value, report: &mut Report) {
 
 /// A placed feature: its feature (an id or inline) and its placement
 /// modifiers.
-pub(super) fn placed(v: &Value, report: &mut Report) -> Value {
+pub(crate) fn placed(v: &Value, report: &mut Report) -> Value {
     let mut v = v.clone();
     states(&mut v);
     if let Some(f) = v.get("feature").cloned()
