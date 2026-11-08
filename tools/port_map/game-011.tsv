@@ -29,7 +29,7 @@ AbstractHorse.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.r
 AbstractHorse.setOffspringAttribute	port	crates/horizon-client/src/mobs/equine.rs::inherit	max health, jump strength and speed from both parents
 AbstractHorse.onPlayerJump	inline	crates/horizon-client/src/game/mounts.rs::Game::tick_mount_riding	gap: minor: the rear and the jump sound; donkeys and mules play the horse jump sound
 AbstractHorse.handleEntityEvent	port	crates/horizon-client-render/src/particles.rs::entity_event_burst	events 7 and 6: hearts and smoke around the mount
-AbstractHorse.positionRider	port	crates/horizon-client/src/game/mounts.rs::Game::position_rider	gap: minor: the rider's body yaw is not copied from the mount
+AbstractHorse.positionRider	port	crates/horizon-client/src/game/mounts.rs::Game::position_rider	gap: minor: the player's own body yaw is not copied (its model is drawn by solveBodyRot); mob riders take it in riders::takes_vehicle_body
 AbstractHorse.generateMaxHealth	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::horse_health	
 AbstractHorse.generateJumpStrength	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::horse_jump	
 AbstractHorse.generateSpeed	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::horse_speed	

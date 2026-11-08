@@ -277,8 +277,10 @@ pub trait ProjectileWorld {
     fn empty(&self, _p: [i32; 3]) -> bool {
         true
     }
-    /// `loadedAndEntityCanStandOn`: a sturdy top face.
-    fn solid(&self, _p: [i32; 3]) -> bool {
+    /// `Level.loadedAndEntityCanStandOn(p, projectile)` with the projectile's
+    /// feet at `entity_y`: the top face of the block's collision shape is
+    /// full (`Block.isFaceFull`), as on a top slab, not only a full cube.
+    fn can_stand_on(&self, _p: [i32; 3], _entity_y: f64) -> bool {
         false
     }
     /// The block at `p` is a `BaseFireBlock` (fire, soul fire) whose
@@ -772,21 +774,18 @@ impl Projectile {
         self.previous_yaw = self.yaw;
         self.previous_pitch = self.pitch;
     }
-    /// A shulker's bullet from its block toward `target`, first leaving
+    /// `ShulkerBullet.<init>(level, owner, target, invalidStartAxis)`: a
+    /// shulker's bullet at `at`, the centre of its owner's box
+    /// (`owner.getBoundingBox().getCenter()`), toward `target`, first leaving
     /// along an axis other than the one it is attached on.
     pub fn shulker_bullet(
         w: &impl ProjectileWorld,
-        owner_block: [i32; 3],
+        at: Vec3,
         owner: Who,
         target: Who,
         attach_axis: u8,
         seed: u64,
     ) -> Self {
-        let at = Vec3::new(
-            f64::from(owner_block[0]) + 0.5,
-            f64::from(owner_block[1]) + 0.5,
-            f64::from(owner_block[2]) + 0.5,
-        );
         let mut p = Self::new(
             ProjectileKind::ShulkerBullet {
                 target: Some(target),
@@ -1004,7 +1003,7 @@ impl Projectile {
                     lo.y.floor() as i32,
                     ((lo.z + hi.z) / 2.0).floor() as i32,
                 ];
-                if w.solid([p[0] + s[0], p[1] + s[1], p[2] + s[2]])
+                if w.can_stand_on([p[0] + s[0], p[1] + s[1], p[2] + s[2]], self.position.y)
                     || p[axis as usize] == t[axis as usize]
                 {
                     self.select_next_move(w, Some(axis));
@@ -1929,6 +1928,47 @@ mod tests {
             falling.position.y
         );
         assert_eq!(held.position, Vec3::new(0.5, 110.0, 0.5));
+    }
+    /// `ShulkerBullet.tick`: a bullet turns off its axis before the block
+    /// ahead when it could stand on it (`loadedAndEntityCanStandOn`, asked
+    /// at the bullet's own height), and flies on toward one it could not.
+    #[test]
+    fn a_shulker_bullet_turns_before_a_block_it_could_stand_on() {
+        struct Ahead(Vec<(Who, Aabb)>, bool);
+        impl ProjectileWorld for Ahead {
+            fn clip(&self, _: Vec3, _: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
+                None
+            }
+            fn in_water(&self, _: Aabb) -> bool {
+                false
+            }
+            fn targets(&self) -> &[(Who, Aabb)] {
+                &self.0
+            }
+            fn can_stand_on(&self, p: [i32; 3], entity_y: f64) -> bool {
+                self.1 && p == [1, 64, 0] && (64.0..65.0).contains(&entity_y)
+            }
+        }
+        // East and above: with the X axis ruled out, up is the only way on.
+        let target = Aabb::new(Vec3::new(20.0, 70.0, 0.0), Vec3::new(21.0, 71.0, 1.0));
+        for standable in [false, true] {
+            let mut p = Projectile::new(
+                ProjectileKind::ShulkerBullet {
+                    target: Some(Who::Mob(2)),
+                    dir: Some(5),
+                    steps: 30,
+                    delta: [0.15, 0.0, 0.0],
+                    seed: 1,
+                },
+                Vec3::new(0.5, 64.5, 0.5),
+                None,
+            );
+            p.tick(&Ahead(vec![(Who::Mob(2), target)], standable));
+            let ProjectileKind::ShulkerBullet { dir, .. } = p.kind else {
+                unreachable!()
+            };
+            assert_eq!(dir, Some(if standable { 1 } else { 5 }), "{standable}");
+        }
     }
     #[test]
     fn llama_spit_moves_first_then_drags_and_falls() {

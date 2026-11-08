@@ -92,10 +92,19 @@ pub fn outline_params(width: u32, height: u32) -> [f32; 4] {
 
 /// Camera-relative segment endpoints; no shape expansion in vanilla 26.3.
 pub fn outline_vertices(edges: &[[f64; 6]], camera: glam::DVec3) -> Vec<[f32; 6]> {
-    edges
-        .iter()
-        .map(|e| std::array::from_fn(|i| (e[i] - camera.to_array()[i % 3]) as f32))
-        .collect()
+    let mut out = Vec::with_capacity(edges.len());
+    outline_vertices_into(edges, camera, &mut out);
+    out
+}
+
+fn outline_vertices_into(edges: &[[f64; 6]], camera: glam::DVec3, out: &mut Vec<[f32; 6]>) {
+    let camera = camera.to_array();
+    out.clear();
+    out.extend(
+        edges
+            .iter()
+            .map(|e| std::array::from_fn(|i| (e[i] - camera[i % 3]) as f32)),
+    );
 }
 
 /// Whether the renderer should initialize its occlusion culling pass (`cull`).
@@ -1550,6 +1559,10 @@ pub struct Renderer {
     pub separate_ao: bool,
     /// Shader-pack terrain pages used by post processing, retained between frames.
     pack_pages: Vec<(u32, wgpu::Buffer)>,
+    /// Camera-relative selection outline vertices, retained between frames.
+    outline_edges_scratch: Vec<[f32; 6]>,
+    /// Selection outline line vertices, retained between frames.
+    outline_lines_scratch: Vec<[f32; 8]>,
     /// Lava's sprite layers, which a pack's solid terrain draws (`pack_atlas::terrain_parts`).
     pack_lava_layers: Vec<u16>,
     pub hud: HudRenderer,
@@ -5164,6 +5177,8 @@ impl Renderer {
             pack_terrain_flat: false,
             separate_ao: false,
             pack_pages: Vec::new(),
+            outline_edges_scratch: Vec::new(),
+            outline_lines_scratch: Vec::new(),
             pack_lava_layers: Vec::new(),
             hud,
             menu_blur: None,
@@ -9281,28 +9296,34 @@ impl Renderer {
         if outline_edges > 0 {
             // The same per-line colour and pixel width layout as the gizmo lines. A high
             // contrast outline is two strokes: the black one first, the bright one after it.
-            let edges = outline_vertices(&frame.outline[..outline_edges], camera);
+            outline_vertices_into(
+                &frame.outline[..outline_edges],
+                camera,
+                &mut self.outline_edges_scratch,
+            );
             let width = outline_width(self.config.width);
-            let stroke = |color: u32, width: f32| {
-                edges.iter().map(move |e| {
+            let edges = &self.outline_edges_scratch;
+            let lines = &mut self.outline_lines_scratch;
+            lines.clear();
+            let stroke = |color: u32, width: f32, lines: &mut Vec<[f32; 8]>| {
+                for e in edges {
                     let mut line = [0.0; 8];
                     line[..6].copy_from_slice(e);
                     line[6] = f32::from_bits(color);
                     line[7] = width;
-                    line
-                })
+                    lines.push(line);
+                }
             };
             // A custom outline (PvP & HUD) takes the bright stroke's colour, scales both widths.
             let (custom, scale) = frame.pvp.outline.map_or((None, 1.0), |(c, s)| (Some(c), s));
-            let lines: Vec<[f32; 8]> = if frame.outline_high_contrast {
-                stroke(0xff00_0000, 7.0 * scale)
-                    .chain(stroke(custom.unwrap_or(0xff57_ffe1), width * scale))
-                    .collect()
+            if frame.outline_high_contrast {
+                stroke(0xff00_0000, 7.0 * scale, lines);
+                stroke(custom.unwrap_or(0xff57_ffe1), width * scale, lines);
             } else {
-                stroke(custom.unwrap_or(0x6600_0000), width * scale).collect()
-            };
+                stroke(custom.unwrap_or(0x6600_0000), width * scale, lines);
+            }
             self.uploads
-                .buffer(&mut encoder, &self.outline, 0, bytemuck::cast_slice(&lines));
+                .buffer(&mut encoder, &self.outline, 0, bytemuck::cast_slice(lines));
             if let Some(core) = &self.core_lines {
                 let size = [self.config.width, self.config.height];
                 let block = crate::post_chain::Globals {
