@@ -282,7 +282,11 @@ pub(super) fn run_with(
     let _lock = crate::browser::lock_home(home);
     recover(home);
     let mut report = Report::default();
+    let picked = super::chosen(home);
     for entry in installed::Installed::load(home).entries {
+        if picked.contains_key(&entry.project) {
+            continue;
+        }
         let Decision::Update(v) = decide(index, &entry, ctx) else {
             continue;
         };

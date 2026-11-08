@@ -752,6 +752,39 @@ impl Launcher {
         });
     }
 
+    /// Installs version `version` of registry native mod `id` as the player picked it on its
+    /// Versions tab ([`horizon::install_chosen`]). The first native mod goes through the trust
+    /// notice and the recommended version instead.
+    pub(super) fn mods_install_version(&mut self, id: String, version: String) {
+        if self.mods.busy.is_some() {
+            return;
+        }
+        if !self.settings.native_mods_noticed {
+            self.mods_install(SourceId::Horizon, id, None);
+            return;
+        }
+        self.mods.message = None;
+        self.mods.busy = Some((id.clone(), format!("{} {version}", id), 0.));
+        self.mods.updates.remove(&(SourceId::Horizon, id.clone()));
+        let tx = self.mods.tx.clone();
+        let home = self.mods.home();
+        let instance = self
+            .selected_instance()
+            .map_or_else(|| "Horizon".to_string(), |i| i.name.clone());
+        std::thread::spawn(move || {
+            let result = horizon::install_chosen(&id, &version, &home, &|_, _| {}).map(|e| {
+                trf(
+                    "Installed {mods} into {instance}. Build to play with it.",
+                    &[
+                        ("mods", &format!("{} {}", e.title, e.number)),
+                        ("instance", &instance),
+                    ],
+                )
+            });
+            let _ = tx.send(Event::Done(result, false));
+        });
+    }
+
     /// Installs (or updates) a project on a thread: a pack into its folder, a modpack into
     /// Modpacks. `known` is the project when the page has it; else it is asked for first.
     pub(super) fn mods_install(&mut self, source: SourceId, id: String, known: Option<Project>) {
