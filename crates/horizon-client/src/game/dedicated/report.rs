@@ -391,7 +391,7 @@ mod tests {
     #[test]
     fn a_dropped_recording_turns_spans_off() {
         drop(Recording::start(1));
-        assert!(!horizon_client::spans::enabled());
+        assert!(!tick_profile::wanted(tick_profile::SPANS_REPORT));
     }
 
     /// On this machine, timing a span and a mob each cost well under a millisecond.

@@ -1073,11 +1073,26 @@ fn the_game_rules_read_back_as_set_and_a_default_world_reads_its_defaults() {
     );
     // One switch at a time, so two switches cannot be swapped unseen.
     let one = |name| rules_of(&rules(&[(name, Value::Bool(false))]));
-    assert_eq!(one("advance_time"), expect(3, 24, 128, false, true, true, true, true));
-    assert_eq!(one("mob_griefing"), expect(3, 24, 128, true, false, true, true, true));
-    assert_eq!(one("spawn_mobs"), expect(3, 24, 128, true, true, false, true, true));
-    assert_eq!(one("spawn_monsters"), expect(3, 24, 128, true, true, true, false, true));
-    assert_eq!(one("spawner_blocks_work"), expect(3, 24, 128, true, true, true, true, false));
+    assert_eq!(
+        one("advance_time"),
+        expect(3, 24, 128, false, true, true, true, true)
+    );
+    assert_eq!(
+        one("mob_griefing"),
+        expect(3, 24, 128, true, false, true, true, true)
+    );
+    assert_eq!(
+        one("spawn_mobs"),
+        expect(3, 24, 128, true, true, false, true, true)
+    );
+    assert_eq!(
+        one("spawn_monsters"),
+        expect(3, 24, 128, true, true, true, false, true)
+    );
+    assert_eq!(
+        one("spawner_blocks_work"),
+        expect(3, 24, 128, true, true, true, true, false)
+    );
 }
 
 #[test]

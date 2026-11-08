@@ -50,6 +50,11 @@ pub(super) fn want_spans(user: u8, on: bool) {
     horizon_client::spans::enable(users != 0);
 }
 
+#[cfg(test)]
+pub(super) fn wanted(user: u8) -> bool {
+    SPAN_USERS.load(Ordering::Relaxed) & user != 0
+}
+
 /// Sample (or stop sampling) the mob ticks this thread runs next, for the report.
 pub(super) fn set_sampling(on: bool) {
     set(REPORT, on);
