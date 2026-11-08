@@ -2175,10 +2175,6 @@ impl FallingBlock {
     }
 }
 
-/// `FallingBlockRenderer.shouldRender` drops a falling block whose own state is
-/// the state of the cell it is in (`level.getBlockState(entity.blockPosition())`):
-/// a `NoGravity` block, or one that has just landed, sits inside an identical
-/// block, and vanilla draws no model for it.
 /// A block entity's `mark_motion` id: its position, packed into the 32 bits beside the tag
 /// (x and z wrap at 2048 blocks and y at 1024; two block entities that far apart in one frame's
 /// view are told apart by their vertex counts, as `PackEntities` matches only equal runs).
@@ -2192,6 +2188,10 @@ fn motion_at(tag: u64, pos: [i32; 3]) -> u64 {
     tag | u64::from((x & 0x7FF) | (z & 0x7FF) << 11 | (y & 0x3FF) << 22)
 }
 
+/// `FallingBlockRenderer.shouldRender` drops a falling block whose own state is
+/// the state of the cell it is in (`level.getBlockState(entity.blockPosition())`):
+/// a `NoGravity` block, or one that has just landed, sits inside an identical
+/// block, and vanilla draws no model for it.
 fn falling_block_visible(state: BlockStateId, cell: BlockStateId) -> bool {
     state != cell
 }
