@@ -114,7 +114,7 @@ Camel.getEquipSound	port	crates/horizon-client/src/game/dispenser.rs::equip_soun
 CamelAi.initCoreActivity	inline	crates/horizon-client/src/mobs/camel.rs::register	float and CamelPanic goals
 CamelAi.initIdleActivity	inline	crates/horizon-client/src/mobs/camel.rs::register	breed, tempt, follow parent, stroll, random sitting, look
 CamelAi.CamelPanic.checkExtraStartConditions	port	crates/horizon-client/src/mobs/camel.rs::CamelPanic::can_use	
-CamelAi.RandomSitting.checkExtraStartConditions	port	crates/horizon-client/src/mobs/camel.rs::RandomSitting::can_use	gap: no leash or suffocation (canCamelChangePose) check
+CamelAi.RandomSitting.checkExtraStartConditions	port	crates/horizon-client/src/mobs/camel.rs::RandomSitting::can_use	not in water, 20 s in the pose, not leashed, on ground, no controlling passenger, and room for the other pose (`canCamelChangePose`)
 Chicken.isFlapping	port	crates/horizon-client/src/mobs/farm.rs::chicken_process_flapping	strict flyDist > nextFlap, used by air movement and live Game flap dispatch
 Chicken.onFlap	port	crates/horizon-client/src/mobs/farm.rs::chicken_process_flapping	nextFlap = flyDist + flapSpeed / 2, no sound
 Chicken.registerGoals	port	crates/horizon-client/src/mobs/farm.rs::register	
