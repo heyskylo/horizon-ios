@@ -1250,5 +1250,8 @@
   "Use a different Microsoft account": "Використати інший обліковий запис Microsoft",
   "Buy": "Купити",
   "Gift": "Подарувати",
-  "Looks": "Образи"
+  "Found on this computer": "Знайдено на цьому комп'ютері",
+  "Looks": "Образи",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Системна в'язка ключів не відповіла протягом {seconds} секунд. Переконайтеся, що вона працює і розблокована, а потім перезапустіть лаунчер.",
+  "Can't read {name}'s sign-in: {why}": "Не вдається прочитати вхід {name}: {why}"
 }
