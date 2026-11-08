@@ -333,6 +333,26 @@ cargo run -p horizon-port-pack -- events ~/.horizon/ports/pack/jars   # NeoForge
 cargo run -p horizon-port-pack -- port ~/Downloads/pack.zip ~/.horizon/ports/pack [--from <folder>] [--resources <root>]
 ```
 
+### Data packs in mod jars
+
+Some mods are a data pack in a jar: no classes, a `pack.mcmeta` and a `data/` folder (the skyblock
+packs of Skyblock Plus are). A content mod may not hold `data/minecraft`, so the carry would drop
+what they are for, such as a void world's noise settings. For a 26.2 or 26.3 pack, `port` makes
+them data packs instead: upgraded to 26.3 (`docs/datapack-upgrade.md`; a 26.3 one is copied as
+it is) into `<work>/home/new-world-datapacks/<mod>/`, with what happened in `<work>/datapacks.json`.
+A content mod an earlier port carried from the same jar is removed, and so is a pack in that folder
+whose jar is no longer a data-only one of the pack: `port` owns the folder.
+
+`home/` is the profile's game folder. The game copies its `new-world-datapacks/` into each world it
+creates there: Create New World shows them selected in its Data Packs screen, and a world made
+without that screen (`--world`, the control socket) gets them all. Worlds made before keep what
+they have. Without the folder nothing changes.
+
+Before its jar is read, a mod whose Modrinth project also ships as a data pack (`datapack` among
+the project's loaders) counts as data tier, so `fetch` gets its jar; the jar then decides. The
+report lists these jars as partial: nothing compares them with the Java pack yet, and their
+`assets/` (an advancement font, say) are not loaded.
+
 ### Resource packs from an imported modpack
 
 Import stages embedded resource packs in `<work>/resourcepacks/`: `.mrpack` common overrides and client

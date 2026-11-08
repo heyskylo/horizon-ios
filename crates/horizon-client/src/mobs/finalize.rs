@@ -749,6 +749,20 @@ pub fn zombie_attributes(m: &mut Mob, special: f32, reason: Reason) {
 pub fn max_health(m: &Mob) -> f32 {
     value(m, Attr::MaxHealth) as f32
 }
+/// `LivingEntity.onAttributeUpdated(MAX_HEALTH)` after a Health Boost
+/// change: the cached maximum follows the attribute model again, and Health
+/// above it is lowered (nothing is healed). Sulfur cubes and wolves write
+/// their maximum straight into the cache (`sulfur_cube::set_size`,
+/// `tame::set_tame`), outside the model, so they keep theirs.
+pub fn health_boost_changed(m: &mut Mob) {
+    if matches!(m.species(), Species::SulfurCube | Species::Wolf) {
+        return;
+    }
+    refresh(m, Attr::MaxHealth);
+    if m.health > m.attrs.max_health {
+        m.health = m.attrs.max_health;
+    }
+}
 
 // ---- species facts --------------------------------------------------------
 
@@ -1027,6 +1041,19 @@ pub fn item_stack(m: &Mob, slot: usize) -> Option<crate::items::ItemStack> {
         stack.set_crafting_enchantments(slot_enchantments(m, slot));
         Some(stack)
     })
+}
+/// `LivingEntity.getItemBySlot` from the stacks a mob keeps: the hands and
+/// armour from `item_stack` (`EquipmentSlot` ordinals match these slots), the
+/// body and saddle from their own fields.
+pub fn equipment_stack(
+    m: &Mob,
+    slot: horizon_world::player_inventory::EquipmentSlot,
+) -> Option<crate::items::ItemStack> {
+    use horizon_world::player_inventory::EquipmentSlot as S;
+    match slot {
+        S::Body | S::Saddle => m.item_by_slot(slot),
+        _ => item_stack(m, slot as usize),
+    }
 }
 /// `setItemSlot` with the whole `stack`: its enchantments, trim, damage, name
 /// and count stay with the mob.

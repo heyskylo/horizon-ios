@@ -863,6 +863,7 @@ pub fn spawn_nbt(id: &str, pos: [i32; 3], finalize: bool, persistent: bool) -> C
 #[derive(Debug)]
 pub struct TemplatePiece {
     pub type_name: &'static str,
+    pub gen_depth: i32,
     pub template_name: String,
     pub template: Arc<StructureTemplate>,
     pub position: [i32; 3],
@@ -912,6 +913,7 @@ impl TemplatePiece {
         Self {
             bounding_box: template.bounding_box(position, rotation, pivot, mirror),
             type_name,
+            gen_depth: 0,
             template_name: template_name.to_owned(),
             template,
             position,

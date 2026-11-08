@@ -58,6 +58,12 @@ pub struct ParticleOptions {
     /// A native mod's own particle type, by its namespaced name (`mymod:spark`):
     /// `SimpleParticleType` plus the provider `particles/<name>.json` names.
     pub mod_particle: Option<String>,
+    /// Pre-1.20.5 entity-effect providers use spawn velocity as RGB; true is the ambient provider.
+    pub legacy_entity_effect: Option<bool>,
+    /// A pre-1.21.4 server's trail, which had no duration: TrailParticle.Provider chose
+    /// `nextInt(40) + 10` after constructing the particle. Set by the client for an older
+    /// server only, never read from the wire.
+    pub legacy_trail_lifetime: bool,
 }
 impl ParticleOptions {
     pub fn simple(ty: ParticleType) -> Self {
@@ -72,6 +78,8 @@ impl ParticleOptions {
             geyser: None,
             vibration: None,
             mod_particle: None,
+            legacy_entity_effect: None,
+            legacy_trail_lifetime: false,
         }
     }
     /// A native mod's `SimpleParticleType`: the sprite set of
@@ -3167,8 +3175,16 @@ impl ParticleEngine {
                         q.set_color(b, 0.0, b);
                     }
                     T::EntityEffect => {
-                        q.set_color(o.color[0], o.color[1], o.color[2]);
-                        q.rgba[3] = o.color[3];
+                        if let Some(ambient) = o.legacy_entity_effect {
+                            q.set_color(v[0] as f32, v[1] as f32, v[2] as f32);
+                            // AmbientMobProvider overrides constructor alpha; MobProvider only sets RGB.
+                            if ambient {
+                                q.rgba[3] = 0.15;
+                            }
+                        } else {
+                            q.set_color(o.color[0], o.color[1], o.color[2]);
+                            q.rgba[3] = o.color[3];
+                        }
                     }
                     T::Effect | T::InstantEffect => {
                         q.set_color(o.color[0], o.color[1], o.color[2]);
@@ -3177,7 +3193,12 @@ impl ParticleEngine {
                     _ => {}
                 }
                 q.behaviour = Behaviour::Spell {
-                    original_alpha: q.rgba[3],
+                    // The old SpellParticle.tick always eased back to 1, including ambient effects.
+                    original_alpha: if o.legacy_entity_effect.is_some() {
+                        1.0
+                    } else {
+                        q.rgba[3]
+                    },
                 };
                 q.set = set;
                 q
@@ -3469,7 +3490,11 @@ impl ParticleEngine {
                     scaled(o.color[2], jb),
                 );
                 q.size = 0.26;
-                q.lifetime = duration;
+                q.lifetime = if o.legacy_trail_lifetime {
+                    self.level_random.next_int_bound(40).unwrap_or(0) + 10
+                } else {
+                    duration
+                };
                 q.has_physics = false;
                 q.free_move = true;
                 q.light = Light::FullBright;
@@ -4942,6 +4967,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn legacy_spell_providers_use_velocity_rgb_and_their_original_alpha_rules() {
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        let velocity = [0.25, 0.5, 0.75];
+        for scoped in [false, true] {
+            engine.set_scope_eye(scoped.then_some([0.0; 3]));
+            for ambient in [false, true] {
+                let mut options =
+                    ParticleOptions::colored(ParticleType::EntityEffect, [1.0, 0.0, 0.0, 0.8]);
+                options.legacy_entity_effect = Some(ambient);
+                let particle = engine.make(&options, [0.0; 3], velocity, 7).unwrap();
+                let alpha = if ambient {
+                    0.15
+                } else if scoped {
+                    0.0
+                } else {
+                    1.0
+                };
+                assert_eq!(particle.rgba, [0.25, 0.5, 0.75, alpha]);
+                assert_eq!(
+                    particle.behaviour,
+                    Behaviour::Spell {
+                        original_alpha: 1.0
+                    }
+                );
+            }
+            let options =
+                ParticleOptions::colored(ParticleType::EntityEffect, [1.0, 0.0, 0.0, 0.8]);
+            let current = engine.make(&options, [0.0; 3], velocity, 7).unwrap();
+            assert_eq!(current.rgba, options.color);
+            assert_eq!(
+                current.behaviour,
+                Behaviour::Spell {
+                    original_alpha: 0.8
+                }
+            );
+        }
+    }
+
+    #[test]
     fn particle_light_cache_reuses_exact_blocks_and_fails_open_on_collisions() {
         let reads = std::cell::Cell::new(0);
         let light_at = |block: [i32; 3]| {
@@ -5698,6 +5762,40 @@ mod tests {
         let s =
             (p.velocity[0].powi(2) + (p.velocity[1] - 0.1).powi(2) + p.velocity[2].powi(2)).sqrt();
         assert!((0.15 * 0.4 - 1e-6..=0.45 * 0.4 + 1e-6).contains(&s));
+    }
+    #[test]
+    fn legacy_trails_choose_a_lifetime_for_each_particle_from_the_level_random() {
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        engine.seed_randoms(1, 42, 2);
+        let legacy = ParticleOptions {
+            legacy_trail_lifetime: true,
+            ..ParticleOptions::trail([1.0, 2.0, 3.0], 0x7f3f1f, -1)
+        };
+        for _ in 0..5 {
+            engine.create(&legacy, [0.0; 3], [0.0; 3]);
+        }
+        // java.util.Random(42).nextInt(40) + 10, as vanilla 1.21.3 TrailParticle.Provider does.
+        assert_eq!(
+            engine
+                .pending
+                .iter()
+                .map(|p| p.lifetime)
+                .collect::<Vec<_>>(),
+            [20, 13, 18, 14, 20]
+        );
+        engine.create(
+            &ParticleOptions::trail([1.0, 2.0, 3.0], 0x7f3f1f, 37),
+            [0.0; 3],
+            [0.0; 3],
+        );
+        assert_eq!(engine.pending.last().unwrap().lifetime, 37);
+        // A current server's -1 is a lifetime like any other, not the old marker.
+        engine.create(
+            &ParticleOptions::trail([1.0, 2.0, 3.0], 0x7f3f1f, -1),
+            [0.0; 3],
+            [0.0; 3],
+        );
+        assert_eq!(engine.pending.last().unwrap().lifetime, -1);
     }
     #[test]
     fn sizes_follow_vanilla_curves() {
