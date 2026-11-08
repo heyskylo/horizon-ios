@@ -580,6 +580,7 @@ mod tests {
             invisible: false,
             check_interval: 0,
             custom_name: None,
+            random: horizon_client::random_source::entity(),
         };
         for glow in [false, true] {
             f.glow = glow;

@@ -731,6 +731,14 @@ fn java_max(a: f32, b: f32) -> f32 {
 #[derive(Clone, Default)]
 pub struct AttributeMap(Vec<(&'static Attribute, Entry)>);
 
+impl std::fmt::Debug for AttributeMap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(self.0.iter().map(|(a, _)| a.id))
+            .finish()
+    }
+}
+
 impl AttributeMap {
     /// `EnvironmentAttributeMap.CODEC`: a JSON object from attribute id to entry.
     pub fn parse(json: &Json) -> Result<Self, String> {
@@ -754,6 +762,21 @@ impl AttributeMap {
             map.0.push((attribute, entry));
         }
         map
+    }
+
+    /// Sets the attribute's entry, replacing the one it had.
+    pub fn set(&mut self, attribute: &'static Attribute, entry: Entry) {
+        self.0.retain(|(a, _)| a.id != attribute.id);
+        self.0.push((attribute, entry));
+    }
+
+    /// Drops the attribute's entry.
+    pub fn remove(&mut self, attribute: &Attribute) {
+        self.0.retain(|(a, _)| a.id != attribute.id);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 
     pub fn get(&self, attribute: &Attribute) -> Option<&Entry> {

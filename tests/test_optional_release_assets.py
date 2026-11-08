@@ -49,7 +49,8 @@ class OptionalReleaseAssetsTests(unittest.TestCase):
                 signed = subprocess.run(["bash", "-e", "-c", run_step("sign_release.sh nightly")],
                                         cwd=root, env=env, text=True, capture_output=True)
                 self.assertEqual(signed.returncode, 0, signed.stderr)
-                sums = {name: digest for digest, name in
+                # `name` or `*name`: sha256sum on Windows (Git Bash) marks binary mode with `*`.
+                sums = {name.removeprefix("*"): digest for digest, name in
                         (line.split() for line in (dist / "SHA256SUMS").read_text().splitlines())}
                 self.assertEqual(sums, {name: hashlib.sha256(name.encode()).hexdigest() for name in present})
                 self.assertTrue((dist / "SHA256SUMS.sig").stat().st_size)

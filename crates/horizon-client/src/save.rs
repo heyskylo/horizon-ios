@@ -3882,6 +3882,10 @@ pub struct Level {
     /// `LivingEntity.addAdditionalSaveData`'s `FallFlying`: the player was
     /// gliding (shared flag 7), so the glide goes on after the load.
     pub fall_flying: bool,
+    /// Current body's save projection. None before a live body supplies it;
+    /// retained raw data stays intact until then.
+    pub player_impulse_grace: Option<i32>,
+    pub player_fall_particles: Option<bool>,
     pub food_exhaustion: f32,
     pub food_tick_timer: i32,
     /// Abilities.flying: whether creative/spectator flight is active.
@@ -4097,6 +4101,8 @@ impl Level {
         Some(level)
     }
     pub fn read_player(&mut self, p: &Tag) {
+        self.player_impulse_grace = None;
+        self.player_fall_particles = None;
         let n = |k: &str| number(p.get(k));
         let f = |k: &str| float(p.get(k));
         self.position = read_doubles::<3>(p.get("Pos"));
@@ -4221,7 +4227,9 @@ impl Level {
             .get("RootVehicle")
             .and_then(|r| uuid_from_tag(r.get("Attach")));
     }
-    /// The player compound: the loaded one with Horizon's state written over it.
+    /// The player compound: loaded data with current state written over it.
+    /// `LivingEntity.addAdditionalSaveData` / `ServerPlayer.addAdditionalSaveData`:
+    /// the live fall fields and the player's empty brain are saved too.
     pub fn player_tag(&self) -> Tag {
         let mut p = compound_or_empty(self.player_extra.clone());
         // Keys rewritten from scratch.
@@ -4295,6 +4303,16 @@ impl Level {
                 .or_insert(Tag::Float(0.1f32.to_bits()));
             map.entry("flying".into()).or_insert(Tag::Byte(0));
         }
+        let impulse_grace = self
+            .player_impulse_grace
+            .map(Tag::Int)
+            .or_else(|| p.get("current_impulse_context_reset_grace_time").cloned())
+            .unwrap_or(Tag::Int(0));
+        let fall_particles = self
+            .player_fall_particles
+            .map(|v| Tag::Byte(i8::from(v)))
+            .or_else(|| p.get("spawn_extra_particles_on_fall").cloned())
+            .unwrap_or(Tag::Byte(0));
         let uuid = self.player_uuid.unwrap_or([0, 0, 0, 0]);
         let mut entries: Vec<(&str, Tag)> = vec![
             ("DataVersion", Tag::Int(DATA_VERSION)),
@@ -4307,6 +4325,14 @@ impl Level {
             // isFallFlying())`, always written.
             ("FallFlying", Tag::Byte(i8::from(self.fall_flying))),
             ("Health", Tag::Float(self.health.to_bits())),
+            // Player inherits LivingEntity.makeBrain: a new empty Brain;
+            // Brain.Packed's codec stores its empty memories map.
+            (
+                "Brain",
+                Tag::compound([("memories", Tag::Compound(Default::default()))]),
+            ),
+            ("current_impulse_context_reset_grace_time", impulse_grace),
+            ("spawn_extra_particles_on_fall", fall_particles),
             ("AbsorptionAmount", Tag::Float(self.absorption.to_bits())),
             ("foodLevel", Tag::Int(self.food)),
             ("foodSaturationLevel", Tag::Float(self.saturation.to_bits())),

@@ -30,6 +30,11 @@ const SNAPSHOT_BUDGET: Duration = Duration::from_millis(2);
 
 impl Game<'_> {
     pub(super) fn begin_closing_save(&mut self, quit: bool) -> Result<()> {
+        if quit {
+            // `Minecraft.close`: the friends service sends its offline presence
+            // before the game ends.
+            horizon_client::social::send_offline_presence();
+        }
         if let Some(save) = &mut self.pending_save {
             save.quit |= quit;
             return Ok(());

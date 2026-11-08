@@ -102,16 +102,41 @@ fn block_pos(m: &Mob) -> [i32; 3] {
 /// `Shulker.getProgressDeltaAabb` at scale 1: the shell's box from `pos`
 /// (the bottom centre), grown `from`..`to` along `direction`.
 fn progress_aabb(direction: u8, from: f64, to: f64, pos: Vec3) -> Aabb {
+    progress_delta_aabb(1.0, direction, from, to, pos)
+}
+/// `Shulker.getProgressDeltaAabb` for a shell of `size` (`getScale`).
+fn progress_delta_aabb(size: f64, direction: u8, from: f64, to: f64, pos: Vec3) -> Aabb {
     let s = face_step(direction).map(f64::from);
     let (max, min) = (from.max(to), from.min(to));
-    Aabb::new(Vec3::new(-0.5, 0.0, -0.5), Vec3::new(0.5, 1.0, 0.5))
-        .expand_towards(Vec3::new(s[0] * max, s[1] * max, s[2] * max))
+    let half = size * 0.5;
+    Aabb::new(Vec3::new(-half, 0.0, -half), Vec3::new(half, size, half))
+        .expand_towards(Vec3::new(
+            s[0] * max * size,
+            s[1] * max * size,
+            s[2] * max * size,
+        ))
         .contract(Vec3::new(
-            -s[0] * (1.0 + min),
-            -s[1] * (1.0 + min),
-            -s[2] * (1.0 + min),
+            -s[0] * (1.0 + min) * size,
+            -s[1] * (1.0 + min) * size,
+            -s[2] * (1.0 + min) * size,
         ))
         .move_by(pos)
+}
+/// Where `ShulkerBullet(level, shulker, ...)` starts: the centre of the
+/// shulker's box (`getBoundingBox().getCenter()`), which `Shulker.makeBoundingBox`
+/// grows toward the open side by the lid's physical peek, so an open shulker
+/// on a floor fires from the top of its block, not its middle. The attack goal
+/// runs before `Shulker.tick` eases the peek, so the box is the one the peek
+/// built last tick, as here.
+pub fn bullet_origin(m: &Mob) -> Vec3 {
+    progress_delta_aabb(
+        f64::from(m.model_scale()),
+        opposite(m.extra.variant3),
+        -1.0,
+        physical_peek(m.anim.v[PEEK]),
+        m.position,
+    )
+    .center()
 }
 /// Block queries shared by attachment and teleport candidates. Entity overlap
 /// is checked separately, using the nearby-entity index from MobWorld.
@@ -666,11 +691,13 @@ impl ProjectileWorld for Probe<'_, '_> {
     fn empty(&self, p: [i32; 3]) -> bool {
         self.w.facts.is_air(self.w.world.block(p[0], p[1], p[2]))
     }
-    fn solid(&self, p: [i32; 3]) -> bool {
-        self.w
-            .facts
-            .get(self.w.world.block(p[0], p[1], p[2]))
-            .full_collision
+    fn can_stand_on(&self, p: [i32; 3], entity_y: f64) -> bool {
+        crate::collisions::projectile_can_stand_on(
+            self.w.world,
+            self.w.collision,
+            horizon_core::position::BlockPos::new(p[0], p[1], p[2]),
+            entity_y,
+        )
     }
 }
 /// `level().getDifficulty() != Difficulty.PEACEFUL`, which the shulker's
@@ -702,6 +729,8 @@ impl Goal for ShulkerAttack {
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         set_peek(m, 0, cx.events);
     }
+    /// `Shulker.ShulkerAttackGoal.tick`: the bullet starts at the centre of
+    /// the shulker's box ([`bullet_origin`]).
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if !peaceful_off(m, cx.w) {
             return;
@@ -730,7 +759,7 @@ impl Goal for ShulkerAttack {
         };
         let seed = m.random.next_long() as u64 | 1;
         let bullet =
-            Projectile::shulker_bullet(&probe, block_pos(m), Who::Mob(m.id), who, axis, seed);
+            Projectile::shulker_bullet(&probe, bullet_origin(m), Who::Mob(m.id), who, axis, seed);
         cx.events.push(MobEvent::Projectile(bullet));
         let pitch = (m.random.next_float() - m.random.next_float()) * 0.2 + 1.0;
         cx.events.push(MobEvent::Sound(

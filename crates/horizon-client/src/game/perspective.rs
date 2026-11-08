@@ -255,18 +255,6 @@ fn shadow_pass_takes_own_model(
     shadow_draws_player && !(shader_pack && spectator)
 }
 
-/// `LivingEntityRenderer.solveBodyRot` for the rider of a living vehicle: the
-/// body faces the vehicle's body, the head turning at most 85 degrees from it,
-/// and past 50 degrees the body turns a fifth of the head's offset along.
-fn rider_body_yaw(head: f32, vehicle_body: f32) -> f32 {
-    let diff = wrap(head - vehicle_body).clamp(-85.0, 85.0);
-    let mut body = head - diff;
-    if diff.abs() > 50.0 {
-        body += diff * 0.2;
-    }
-    body
-}
-
 fn wrap(d: f32) -> f32 {
     let d = d % 360.0;
     if d >= 180.0 {
@@ -549,7 +537,8 @@ impl Game<'_> {
             // A living vehicle's rider is drawn from its body
             // (`LivingEntityRenderer.solveBodyRot`).
             Some(RiddenBody::Living(body)) => {
-                m.body_yaw += wrap(rider_body_yaw(yaw, body) - m.body_yaw);
+                m.body_yaw +=
+                    wrap(horizon_client::mobs::riders::solve_body_rot(yaw, body) - m.body_yaw);
             }
             // A minecart's, a cushion's: the body turns as on foot.
             None => {
@@ -1858,7 +1847,9 @@ mod preview_tests {
     /// fifth of the turn.
     #[test]
     fn a_living_vehicles_rider_faces_its_body_within_85_degrees() {
-        let body = |head, vehicle| (super::rider_body_yaw(head, vehicle) * 1000.0).round() / 1000.0;
+        let body = |head, vehicle| {
+            (horizon_client::mobs::riders::solve_body_rot(head, vehicle) * 1000.0).round() / 1000.0
+        };
         assert_eq!(body(60.0, 40.0), 40.0);
         assert_eq!(body(100.0, 40.0), 52.0);
         assert_eq!(body(140.0, 40.0), 72.0);
