@@ -15,6 +15,7 @@ The oracle traces every mob random draw with its call stack; --trace builds the 
 the rng-trace feature and line tables so the report shows Horizon's draws next to vanilla's.
 """
 import argparse
+import json
 import os
 import shutil
 import struct
@@ -644,9 +645,57 @@ def draws(before, after, limit=20000):
     return f'>{limit}'
 
 
-def ledger_blame(scenario_lines):
+# The setters `--writers` traces, by trace key (tools/port_ledger.py TRACE_FIELDS), with their packages.
+PACKAGES = {'Entity': 'net.minecraft.world.entity', 'LivingEntity': 'net.minecraft.world.entity',
+            'Mob': 'net.minecraft.world.entity', 'MoveControl': 'net.minecraft.world.entity.ai.control',
+            'LookControl': 'net.minecraft.world.entity.ai.control'}
+ORACLE = 'dev.horizonlab.parity.VanillaMobAiOracle'
+
+
+def writer_filter():
+    """A JFR method-trace filter: the trace keys' setters and the oracle's tick mark."""
+    try:
+        from . import port_ledger
+    except ImportError:
+        import port_ledger
+    setters = {name for _, names in port_ledger.TRACE_FIELDS.values() for name in names}
+    methods = sorted(f"{PACKAGES[c]}.{c}::{m}" for c, _, m in (n.partition('.') for n in setters) if c in PACKAGES)
+    return ';'.join(methods + [f'{ORACLE}::tickMark'])
+
+
+def read_writers(jfr, scenarios):
+    """{(scenario, tick): {setter: [[frame, ...], ...]}} from the oracle's JFR recording: the stack of every
+    setter call, in the tick it ran in (the calls after a tick mark until the next one), frames as
+    `Class.method` nearest first. `scenarios` is [(name, ticks)] in the order the oracle ran them: its tick
+    marks (one per tick, and one after the last) count through them."""
+    # The JDK the oracle ran on: `jfr` beside its `java`.
+    java = shutil.which('java')
+    tool = shutil.which('jfr') or (java and str(Path(java).resolve().parent / 'jfr')) or 'jfr'
+
+    out = subprocess.run([tool, 'print', '--json', '--events', 'jdk.MethodTrace', str(jfr)],
+                         capture_output=True, text=True, check=True).stdout
+    events = sorted((e['values'] for e in json.loads(out)['recording']['events']), key=lambda v: v['startTime'])
+
+    def name(method):
+        cls = method['type']['name'].replace('/', '.').rsplit('.', 1)[-1]
+        return cls.replace('$', '.') + '.' + method['name']
+
+    ticks = [(n, t) for n, count in scenarios for t in [*range(1, count + 1), None]]
+    writers, mark = {}, -1
+    for v in events:
+        what = name(v['method'])
+        if what.endswith('VanillaMobAiOracle.tickMark'):
+            mark += 1
+        elif 0 <= mark < len(ticks) and ticks[mark][1] is not None:
+            frames = [name(f['method']) for f in v['stackTrace']['frames']]
+            writers.setdefault(ticks[mark], {}).setdefault(what, []).append(frames)
+    return writers
+
+
+def ledger_blame(scenario_lines, writers=None):
     """Lines naming, for a mob's first differing fields, the vanilla methods of its tick that write them and their
-    Rust ports (tools/port_ledger.py blame), when a ledger has been built (`port_ledger.py build`); else nothing."""
+    Rust ports (tools/port_ledger.py blame), when a ledger has been built (`port_ledger.py build`); else nothing.
+    With `writers` (--writers), those vanilla actually ran that tick come first."""
     try:
         try:
             from . import port_ledger
@@ -658,17 +707,35 @@ def ledger_blame(scenario_lines):
     species = {name: [line.split()[1] for line in body if line.split()[:1] == ['mob']]
                for name, body in scenario_lines.items()}
 
-    def lines(name, mob, keys, vanilla_trace):
+    def lines(name, mob, keys, vanilla_trace, tick=None):
         if led is None:
             return []
         out = []
         kinds = species.get(name, [])
         kind = kinds[mob] if 0 <= mob < len(kinds) else None
         traced = [k for k in keys if k in port_ledger.TRACE_FIELDS]
+        if 'v' in traced and 'p' in traced:
+            traced.remove('p')  # the position follows the motion: what wrote the motion is the lead
         if kind and traced:
-            r = port_ledger.blame(led, kind, traced, limit=6)
+            # The frames of this tick's calls of the traced fields' setters, nearest first.
+            setters = {n for k in traced for n in port_ledger.TRACE_FIELDS[k][1]}
+
+            def ran_at(t):
+                ran = {}
+                for setter, stacks in (writers or {}).get((name, t), {}).items():
+                    if setter in setters:
+                        for frames in stacks:
+                            for depth, frame in enumerate(frames):
+                                ran[frame] = min(ran.get(frame, depth), depth)
+                return ran
+            ran = ran_at(tick) if tick else {}
+            before = ran_at(tick - 1) if tick and tick > 1 else {}
+            r = port_ledger.blame(led, kind, traced, limit=6, ran=ran or None, before=before or None)
             for c in (r or {}).get('computed_by', []):
-                out.append(f"      ledger: {','.join(traced)} is written by {c['vanilla']} -> {'; '.join(c['rust']) or 'no port'}")
+                ran_mark = (' (ran this tick, not the one before)' if c.get('new') else
+                            ' (ran this tick)' if c.get('ran') else '')
+                out.append(f"      ledger: {','.join(traced)} is written by {c['vanilla']}{ran_mark} -> "
+                           f"{'; '.join(c['rust']) or 'no port'}")
                 out.extend(f'        {g}' for g in c['gaps'][:1])
         if 'rng' in keys and vanilla_trace:
             # The first vanilla draw of the tick: its frames, nearest first, and their ports.
@@ -729,7 +796,7 @@ def compare(vanilla, rust, fields=None, blame=None):
                     if blame:
                         keys = [k for k in (a or {}) if b is None or a.get(k) != b.get(k)]
                         mine = [x for x in v.get('trace', {}).get(t, []) if x.split(' ', 1)[0] == str(mob)]
-                        report.extend(blame(name, mob, keys, mine))
+                        report.extend(blame(name, mob, keys, mine, t))
             if first is not None:
                 clean = False
         # Creaking hearts (state, block entity, level random): first differing tick.
@@ -758,6 +825,9 @@ def main():
     parser.add_argument('--java-only', action='store_true')
     parser.add_argument('--rust-only', action='store_true', help='reuse the last vanilla output')
     parser.add_argument('--report-only', action='store_true', help='print divergences without failing')
+    parser.add_argument('--writers', action='store_true',
+                        help="record which vanilla methods set each traced field each tick (JFR), to rank the "
+                             "ledger's candidates under a divergence")
     parser.add_argument('--trace', action='store_true',
                         help="also trace Horizon's mob random draws (rng-trace probe with line tables)")
     args = parser.parse_args()
@@ -776,7 +846,10 @@ def main():
         # Each scenario forces 9x9 chunks 512 blocks past the last one, so a run generates ~80 chunks per scenario;
         # 3g ran out of heap in PoiManager.tick on a busy runner (#2160's CI, 143 scenarios).
         # 4g then ran out within ~3 minutes on a fresh run once the scenarios grew (2026-10-30); 8g passes.
-        oracle_harness.run_logged(['java', '-Xmx8g', '-Djava.awt.headless=true', '-cp', str(classes) + os.pathsep + dependencies,
+        jfr = build / 'writers.jfr'
+        jfr.unlink(missing_ok=True)
+        record = [f'-XX:StartFlightRecording:method-trace={writer_filter()},filename={jfr}'] if args.writers else []
+        oracle_harness.run_logged(['java', '-Xmx8g', '-Djava.awt.headless=true', *record, '-cp', str(classes) + os.pathsep + dependencies,
                                    'dev.horizonlab.parity.VanillaMobAiOracle', inputs, build / 'vanilla.txt', world],
                                   build, 'vanilla', timeout=3600)
     if not args.java_only:
@@ -794,8 +867,11 @@ def main():
         return
     names = {s[0] for _, s in chosen}
     vanilla = {k: v for k, v in parse(build / 'vanilla.txt').items() if k in names}
+    writers = None
+    if args.writers and (build / 'writers.jfr').exists():
+        writers = read_writers(build / 'writers.jfr', [(s[0], s[1]) for _, s in chosen])
     report, totals = compare(vanilla, parse(build / 'horizon.txt'),
-                             blame=ledger_blame({s[0]: s[3] for _, s in chosen}))
+                             blame=ledger_blame({s[0]: s[3] for _, s in chosen}, writers))
     (build / 'report.txt').write_text('\n'.join(report) + '\n')
     print('\n'.join(report))
     print(f"{totals['clean']}/{totals['scenarios']} scenarios match entirely; "

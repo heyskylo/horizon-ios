@@ -2464,10 +2464,13 @@ TRACE_FIELDS = {
 }
 
 
-def blame(led, entity, keys, limit=8):
+def blame(led, entity, keys, limit=8, ran=None, before=None):
     """The vanilla methods a tick of `entity` runs that write the trace fields `keys` (directly or through their
     setters), the entity's own class first, each with its Rust port and the ledger's gaps on it: where a value
-    that differs from vanilla's at some tick is computed."""
+    that differs from vanilla's at some tick is computed. `ran` ({"Class.method": frames from the setter}, from a
+    recording of the vanilla run's setter calls that tick) puts what vanilla actually ran first, and of that what
+    it didn't run the tick before (`before`, the same for the last tick that matched) first of all: a value that
+    starts to differ at a tick most often comes from a step that tick added."""
     methods, classes = led["methods"], led["classes"]
     cps = [led.get("aliases", {}).get(entity.removeprefix("minecraft:"))] + match_classes(led, entity)
     cp = next((c for c in cps if c), None)
@@ -2549,10 +2552,28 @@ def blame(led, entity, keys, limit=8):
     found = [k for k in depth if k not in setters and methods[k]["name"] not in
              ("<init>", "<clinit>", "load", "readAdditionalSaveData", "restoreFrom", "snapTo", "copyPosition")
              and (methods[k]["class"] in lineage or not entity_class(methods[k]["class"])) and writes(k)]
-    found.sort(key=lambda k: (methods[k]["class"] not in own, depth[k], k))
+    ran = ran or {}
+
+    def ran_at(k):
+        return ran.get(short(methods[k]["class"], methods[k]["name"]))
+
+    # What vanilla ran that wrote the field counts even where the call graph doesn't reach it (a goal another
+    # goal starts, a lambda).
+    found += [k for k, m in methods.items() if k not in depth and ran_at(k) is not None and k not in setters
+              and m["name"] not in ("<init>", "<clinit>") and writes(k)]
+    before = before or {}
+
+    def new_now(k):
+        return ran_at(k) is not None and short(methods[k]["class"], methods[k]["name"]) not in before
+
+    # What ran this tick and not the tick before, then what ran, nearest the setter first; then the entity's
+    # own code, by call depth.
+    found.sort(key=lambda k: (not new_now(k), ran_at(k) is None, ran_at(k) or 0, methods[k]["class"] not in own,
+                              depth.get(k, 99), k))
     out = []
     for k in found[:limit]:
-        out.append({"vanilla": short(methods[k]["class"], methods[k]["name"]), "depth": depth[k],
+        out.append({"vanilla": short(methods[k]["class"], methods[k]["name"]), "depth": depth.get(k),
+                    "ran": ran_at(k) is not None, "new": new_now(k),
                     "status": status_of(led, k), "rust": [fn_ref(led, f) for f in port_of(led, k)[:2]],
                     "gaps": [gap_text(led, g) for g in sorted(gaps.get(k, ()), key=gap_rank)[:2]]})
     return {"entity": short(cp), "fields": sorted(keys), "candidates": len(found), "computed_by": out}
@@ -2568,7 +2589,8 @@ def cmd_blame(led, entity, keys, limit, as_json):
     print(f"{r['entity']} {','.join(r['fields'])}: {r['candidates']} vanilla methods of its tick write it; "
           "its own class first, then by call depth")
     for c in r["computed_by"]:
-        print(f"- {c['vanilla']} (depth {c['depth']}, {c['status']}): {'; '.join(c['rust']) or 'no Rust port found'}")
+        where = f"depth {c['depth']}" if c["depth"] is not None else "outside the call graph"
+        print(f"- {c['vanilla']} ({where}, {c['status']}): {'; '.join(c['rust']) or 'no Rust port found'}")
         for g in c["gaps"]:
             print(f"    gap: {g}")
 

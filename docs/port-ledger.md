@@ -138,7 +138,11 @@ python3 tools/port_ledger.py blame blaze v      # what writes a blaze's deltaMov
 ```
 
 `test_mob_ai_parity.py` prints these under each mob's first divergence when a ledger has been built (and the
-port of the vanilla frame that drew a random number, when the first difference is a draw).
+port of the vanilla frame that drew a random number, when the first difference is a draw). With `--writers` the
+oracle runs under a JFR method trace of the fields' setters (JDK 25), so the list starts with what vanilla
+actually ran: first the methods that set the field at the divergent tick and not at the tick before, then the
+rest that set it that tick. On #542 put back (FloatGoal users not marked as floaters) that puts
+`Mob.jumpInLiquid -> jump_in_liquid` second, after the `LivingEntity.jumpInLiquid` it overrides.
 
 ## Parity harness coverage
 
