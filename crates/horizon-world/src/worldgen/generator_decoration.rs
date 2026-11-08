@@ -845,7 +845,11 @@ impl DecorationWorld for World<'_> {
     /// bitset instead of sorting every quart of the column.
     fn chunk_biomes(&mut self, chunk: ChunkPos) -> Result<Vec<BiomeId>, RegionError> {
         let biomes = self.biomes.chunk(chunk).map_err(RegionError::Biome)?;
-        let mut seen: Vec<u64> = Vec::new();
+        // Ordinary registry ids fit in the stack array. Keep a spill for
+        // unusually large modded registries without changing the ascending
+        // iteration order of the bitset.
+        let mut seen = [0u64; 128];
+        let mut seen_spill = Vec::new();
         let mut last = None;
         let mut section = 0;
         while let Some(values) = biomes.section(section) {
@@ -855,15 +859,25 @@ impl DecorationWorld for World<'_> {
                 }
                 last = Some(id);
                 let word = id.0 as usize / 64;
-                if seen.len() <= word {
-                    seen.resize(word + 1, 0);
+                if let Some(bits) = seen.get_mut(word) {
+                    *bits |= 1 << (id.0 % 64);
+                } else {
+                    let spill_word = word - seen.len();
+                    if seen_spill.len() <= spill_word {
+                        seen_spill.resize(spill_word + 1, 0);
+                    }
+                    seen_spill[spill_word] |= 1 << (id.0 % 64);
                 }
-                seen[word] |= 1 << (id.0 % 64);
             }
             section += 1;
         }
-        let mut out = Vec::new();
-        for (word, &bits) in seen.iter().enumerate() {
+        let count = seen
+            .iter()
+            .chain(seen_spill.iter())
+            .map(|bits| bits.count_ones() as usize)
+            .sum();
+        let mut out = Vec::with_capacity(count);
+        for (word, &bits) in seen.iter().chain(seen_spill.iter()).enumerate() {
             let mut bits = bits;
             while bits != 0 {
                 out.push(BiomeId(word as u32 * 64 + bits.trailing_zeros()));
