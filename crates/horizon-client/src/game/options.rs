@@ -583,8 +583,9 @@ impl Game<'_> {
                 self.gpu_culling_auto.reset();
             }
             let _ = r.set_gpu_culling(gpu_culling);
+            r.watch_hdr(s.horizon.hdr);
             r.set_hdr(
-                s.horizon.hdr,
+                s.horizon.hdr_wanted(),
                 s.horizon.paper_white_nits() as f32,
                 s.horizon.peak_nits() as f32,
                 s.horizon.black_level_nits(),
