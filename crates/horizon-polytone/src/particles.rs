@@ -209,6 +209,84 @@ pub struct CustomParticle {
     /// Fields kept as JSON for the renderer: `offset`, `colormap`, `model`, a GPU particle's
     /// `texture`, `shader` and `uniforms`.
     pub render: Map<String, Json>,
+    /// A GPU particle's own fields (wiki "GPU Particles"), for `"type": "gpu"`.
+    pub gpu: Option<Gpu>,
+}
+
+/// What a GPU particle (`"type": "gpu"`) adds: its whole motion and look are a function of
+/// the spawn record and the time, so it never ticks.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Gpu {
+    /// The texture's full path (`ns:textures/particle/....png`), a vertical strip of `frames`.
+    pub texture: String,
+    pub frames: u32,
+    /// Downward acceleration (blocks per tick squared) and the velocity kept per tick.
+    pub gravity: f64,
+    pub friction: f64,
+    /// Half-width at death, and colour at death (ARGB).
+    pub size_end: Option<f64>,
+    pub color_end: Option<u32>,
+    /// Fractions of the life spent fading in and out.
+    pub fade: [f64; 2],
+    /// Horizontal wobble amplitude (blocks), roll speed (radians per tick), height over width.
+    pub sway: f64,
+    pub spin: f64,
+    pub aspect: f64,
+    /// One spawn drawn as `count` quads spread over a `size` box.
+    pub area: Option<([f64; 3], u32)>,
+    /// Quads under the world surface are hidden.
+    pub kill_below_heightmap: bool,
+}
+
+impl Gpu {
+    fn parse(o: &Map<String, Json>) -> Result<Self, String> {
+        let num = |key: &str, default: f64| o.get(key).and_then(Json::as_f64).unwrap_or(default);
+        let color_end = match o.get("color_end").and_then(Json::as_str) {
+            Some(c) => Some(
+                u32::from_str_radix(c.trim_start_matches('#'), 16)
+                    .map_err(|_| format!("color_end {c} is no #AARRGGBB colour"))?,
+            ),
+            None => None,
+        };
+        let pair =
+            |v: &Json| -> Option<Vec<f64>> { v.as_array()?.iter().map(Json::as_f64).collect() };
+        let fade = o.get("fade").and_then(pair).unwrap_or_default();
+        let area = match o.get("area") {
+            Some(a) => {
+                let size = a.get("size").and_then(pair).filter(|s| s.len() == 3);
+                let size = size.ok_or("area needs a size [x, y, z]")?;
+                let count = a
+                    .get("count")
+                    .and_then(Json::as_u64)
+                    .unwrap_or(1)
+                    .clamp(1, 1024) as u32;
+                Some(([size[0], size[1], size[2]], count))
+            }
+            None => None,
+        };
+        Ok(Self {
+            texture: o
+                .get("texture")
+                .and_then(Json::as_str)
+                .ok_or("a GPU particle needs a texture")?
+                .to_owned(),
+            frames: o.get("frames").and_then(Json::as_u64).unwrap_or(1).max(1) as u32,
+            gravity: num("gravity", 0.0),
+            friction: num("friction", 1.0),
+            size_end: o.get("size_end").and_then(Json::as_f64),
+            color_end,
+            fade: [
+                fade.first().copied().unwrap_or(0.0),
+                fade.get(1).copied().unwrap_or(0.0),
+            ],
+            sway: num("sway", 0.0),
+            spin: num("spin", 0.0),
+            aspect: num("aspect", 1.0),
+            area,
+            kill_below_heightmap: o.get("kill_below_heightmap").and_then(Json::as_bool)
+                == Some(true),
+        })
+    }
 }
 
 const INITIALIZER: [&str; 13] = [
@@ -286,6 +364,10 @@ impl CustomParticle {
         .into_iter()
         .filter_map(|k| Some((k.to_owned(), o.get(k)?.clone())))
         .collect();
+        let gpu = match kind {
+            ParticleKind::Gpu => Some(Gpu::parse(o)?),
+            _ => None,
+        };
         Ok(Self {
             kind,
             render_type,
@@ -318,6 +400,7 @@ impl CustomParticle {
             light_level: count("light_level").map_or(0, |l| l.min(15) as u8),
             rotation_mode: text("rotation_mode").unwrap_or("look_at_xyz").to_owned(),
             render,
+            gpu,
         })
     }
 }
@@ -410,7 +493,7 @@ mod tests {
             }
         );
         assert_eq!(
-            kind(json!({"type": "gpu", "render_type": "invisible"})).unwrap(),
+            kind(json!({"type": "gpu", "texture": "a:textures/particle/b.png"})).unwrap(),
             ParticleKind::Gpu
         );
         assert!(kind(json!({"type": "laser"})).is_err());
@@ -475,5 +558,29 @@ mod tests {
         .unwrap();
         assert_eq!(entity.emitters[0].max_distance, Some(32.0));
         assert!(entity.emitters[0].fields.contains_key("count"));
+    }
+
+    #[test]
+    fn a_gpu_particle_keeps_its_motion_and_look_fields() {
+        let p = CustomParticle::parse(&serde_json::json!({
+            "type": "gpu",
+            "texture": "my_pack:textures/particle/rain.png",
+            "frames": 4,
+            "gravity": 0.1,
+            "fade": [0.4, 0.2],
+            "color_end": "#80FF0000",
+            "area": {"size": [6, 6, 6], "count": 2},
+            "kill_below_heightmap": true
+        }))
+        .unwrap();
+        let gpu = p.gpu.unwrap();
+        assert_eq!(gpu.texture, "my_pack:textures/particle/rain.png");
+        assert_eq!((gpu.frames, gpu.gravity, gpu.friction), (4, 0.1, 1.0));
+        assert_eq!(gpu.fade, [0.4, 0.2]);
+        assert_eq!(gpu.color_end, Some(0x80FF_0000));
+        assert_eq!(gpu.area, Some(([6.0, 6.0, 6.0], 2)));
+        assert!(gpu.kill_below_heightmap);
+        // Without a texture a GPU particle is no particle.
+        assert!(CustomParticle::parse(&serde_json::json!({"type": "gpu"})).is_err());
     }
 }
