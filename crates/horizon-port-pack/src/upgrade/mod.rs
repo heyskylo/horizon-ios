@@ -320,7 +320,21 @@ pub fn upgrade_into(input: &Path, out: &Path) -> Result<Report, String> {
     }
     let files = read_pack(input)?;
     let (upgraded, report) = upgrade_pack(&files);
-    for (path, bytes) in upgraded {
+    write_pack(upgraded, out)?;
+    Ok(report)
+}
+
+/// The pack at `input` as it is into the folder `out`, which must not exist yet: a pack already in
+/// 26.3's formats.
+pub fn copy_into(input: &Path, out: &Path) -> Result<(), String> {
+    if out.exists() {
+        return Err(format!("{} already exists", out.display()));
+    }
+    write_pack(read_pack(input)?, out)
+}
+
+fn write_pack(files: BTreeMap<String, Vec<u8>>, out: &Path) -> Result<(), String> {
+    for (path, bytes) in files {
         if !is_inside(Path::new(&path)) {
             return Err(format!("{path}: leaves {}", out.display()));
         }
@@ -330,7 +344,7 @@ pub fn upgrade_into(input: &Path, out: &Path) -> Result<Report, String> {
         }
         fs::write(&target, bytes).map_err(|e| format!("{}: {e}", target.display()))?;
     }
-    Ok(report)
+    Ok(())
 }
 
 /// Whether `path` is a plain relative path: no root, drive, `.` or `..`.
