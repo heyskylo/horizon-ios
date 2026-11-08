@@ -2574,6 +2574,7 @@ impl Game<'_> {
                         count: 1,
                         ticks: 0,
                         health: 5,
+                        following: None,
                     });
                     // tryAddFreshEntityWithPassengers refused: ERROR_DUPLICATE_UUID.
                     if !self.native_joins_flush(false, self.next_entity) {

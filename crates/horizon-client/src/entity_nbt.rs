@@ -3033,6 +3033,9 @@ pub fn orbs_from_nbt(tag: &Tag) -> Vec<ExperienceOrb> {
         count,
         ticks: 0,
         health: number(tag.get("Health")).unwrap_or(5) as i32,
+        // ExperienceOrb's followingPlayer is transient: never saved, so a
+        // loaded orb starts without one.
+        following: None,
     };
     vec![orb]
 }
@@ -5995,6 +5998,7 @@ mod tests {
             count: 1,
             ticks: 0,
             health: 5,
+            following: None,
         };
         let tag = orb_to_nbt(&orb, [0; 4]);
         assert_eq!(tag.get("Fire"), Some(&Tag::Short(0)));
@@ -6058,6 +6062,7 @@ mod tests {
             count: 3,
             ticks: 0,
             health: 5,
+            following: None,
         };
         let tag = orb_to_nbt(&o, [0; 4]);
         let back = orbs_from_nbt(&tag);
