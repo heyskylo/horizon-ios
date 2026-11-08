@@ -556,6 +556,37 @@ mod tests {
     }
 
     #[test]
+    fn surface_rules_drop_biomes_nothing_defines() {
+        // 1.21.1 read `biome_is` as keys, so a name nothing defines (Terralith's
+        // "comment" biome) never matched; 26.3 resolves them and refuses the pack.
+        let rule = json!({"type": "minecraft:condition", "if_true": {"type": "minecraft:biome",
+            "biome_is": ["x:b", "x:comment_not_a_biome", "y:other_mods", "minecraft:plains"]},
+            "then_run": {"type": "minecraft:block", "result_state": {"Name": "minecraft:dirt"}}});
+        let settings = json!({"noise": {"min_y": -64, "height": 384, "size_horizontal": 1,
+            "size_vertical": 2}, "noise_router": {}, "surface_rule": rule});
+        let files = BTreeMap::from([
+            (
+                "data/x/worldgen/noise_settings/s.json".to_owned(),
+                serde_json::to_vec(&settings).unwrap(),
+            ),
+            ("data/x/worldgen/biome/b.json".to_owned(), b"{}".to_vec()),
+        ]);
+        let (out, r) = upgrade_pack(&files);
+        let rule: Value = serde_json::from_slice(
+            &out["data/x/worldgen/material_rule/s/upgraded/material_rule.json"],
+        )
+        .unwrap();
+        assert_eq!(
+            rule["if_true"]["biome_is"],
+            json!(["x:b", "minecraft:plains"])
+        );
+        assert_eq!(
+            r.lossy.get("surface rule: biomes nothing defines"),
+            Some(&1)
+        );
+    }
+
+    #[test]
     fn settings_move_aquifers_veins_and_spawn_target() {
         let settings = json!({"noise": {"min_y": -64, "height": 384, "size_horizontal": 1, "size_vertical": 2},
             "noise_router": {"barrier": 1.0, "fluid_level_floodedness": 2.0, "fluid_level_spread": 3.0,
@@ -661,6 +692,57 @@ mod tests {
                 "placement": [{"type": "minecraft:count", "count": 128},
                     {"type": "minecraft:offset", "x": trap(7), "y": trap(3), "z": trap(7)}]}]})
         );
+    }
+
+    #[test]
+    fn biome_effects_of_1_21_1_become_attributes_and_carvers_a_list() {
+        // A 1.21.1 biome: the air carvers by step, and sky, fog, music and
+        // sounds among its effects, colours as integers.
+        let (v, r) = up(
+            "data/x/worldgen/biome/b.json",
+            json!({"temperature": 0.7, "downfall": 0.8, "has_precipitation": true,
+                "carvers": {"air": ["minecraft:cave", "minecraft:canyon"]},
+                "effects": {"sky_color": 7972607, "fog_color": 12638463, "water_color": 9614049,
+                    "water_fog_color": 329011, "grass_color": 10400481, "foliage_color": 8177813,
+                    "grass_color_modifier": "dark_forest",
+                    "mood_sound": {"block_search_extent": 8, "offset": 2.0,
+                        "sound": "minecraft:ambient.cave", "tick_delay": 6000},
+                    "ambient_sound": "minecraft:ambient.crimson_forest.loop",
+                    "additions_sound": {"sound": "minecraft:ambient.crimson_forest.additions",
+                        "tick_chance": 0.0111},
+                    "particle": {"options": {"type": "minecraft:white_ash"}, "probability": 0.1},
+                    "music": {"sound": "minecraft:music.overworld.forest", "min_delay": 12000,
+                        "max_delay": 24000, "replace_current_music": false}},
+                "features": []}),
+        );
+        assert_eq!(v["carvers"], json!(["minecraft:cave", "minecraft:canyon"]));
+        assert_eq!(
+            v["effects"],
+            json!({"water_color": "#92b2e1", "grass_color": "#9eb2e1", "foliage_color": "#7cc895",
+                "grass_color_modifier": "dark_forest"})
+        );
+        let a = &v["attributes"];
+        assert_eq!(a["minecraft:visual/sky_color"], json!("#79a6ff"));
+        assert_eq!(a["minecraft:visual/fog_color"], json!("#c0d8ff"));
+        assert_eq!(a["minecraft:visual/water_fog_color"], json!("#050533"));
+        assert_eq!(
+            a["minecraft:audio/background_music"],
+            json!({"default": {"sound": "minecraft:music.overworld.forest", "min_delay": 12000,
+                "max_delay": 24000}})
+        );
+        assert_eq!(
+            a["minecraft:audio/ambient_sounds"],
+            json!({"mood": {"block_search_extent": 8, "offset": 2.0,
+                    "sound": "minecraft:ambient.cave", "tick_delay": 6000},
+                "loop": "minecraft:ambient.crimson_forest.loop",
+                "additions": {"sound": "minecraft:ambient.crimson_forest.additions", "tick_chance": 0.0111}})
+        );
+        assert_eq!(
+            a["minecraft:visual/ambient_particles"],
+            json!({"modifier": "append", "argument": [{"particle": {"type": "minecraft:white_ash"},
+                "probability": 0.1}]})
+        );
+        assert!(r.lossy.is_empty(), "{:?}", r.lossy);
     }
 
     #[test]

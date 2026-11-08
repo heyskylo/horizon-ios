@@ -2735,8 +2735,9 @@ mod tests {
 
     /// `test` on each device here that draws counts with first instances:
     /// Vulkan, and DirectX 12 with each of its compilers. Players' DirectX 12
-    /// compiles with FXC, part of Windows: wgpu takes DXC only where
-    /// `dxcompiler.dll` loads, and the game ships none.
+    /// compiles with FXC, part of Windows, and with DXC (`dxcompiler.dll`,
+    /// beside the game in the Windows x64 zip) on integrated GPUs
+    /// (`gfx/dx12_compiler.rs`).
     fn on_each_device(test: impl Fn(&wgpu::Device, &Queue)) {
         let mut tested = false;
         for (backends, compiler, name) in [

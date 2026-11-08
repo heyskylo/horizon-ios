@@ -257,6 +257,7 @@ impl Session {
         let thread = std::thread::Builder::new()
             .name("horizon-net".into())
             .spawn(move || {
+                horizon_threads::favour_current();
                 let result = run(
                     local,
                     &address_owned,
@@ -1274,6 +1275,21 @@ fn select_known_packs(offered: Vec<cfg::KnownPack>) -> Vec<cfg::KnownPack> {
         .collect()
 }
 
+fn valid_resource_segment(s: &str, allow_slash: bool) -> bool {
+    !s.is_empty()
+        && !s.starts_with('/')
+        && !s.ends_with('/')
+        && !s.contains("//")
+        && s.split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+        && s.bytes().all(|b| {
+            b.is_ascii_lowercase()
+                || b.is_ascii_digit()
+                || matches!(b, b'_' | b'-' | b'.')
+                || (allow_slash && b == b'/')
+        })
+}
+
 /// `RegistryDataCollector`: an entry of a pack both sides know comes without
 /// its data, which the client reads from its own copy of the pack
 /// (`data/<namespace>/<registry path>/<path>.json`, `Registries.elementsDirPath`).
@@ -1282,6 +1298,9 @@ fn fill_known_entries(r: &mut cfg::RegistryData, resources: &Path) {
         .registry
         .split_once(':')
         .unwrap_or(("minecraft", r.registry.as_str()));
+    if !valid_resource_segment(registry_ns, false) || !valid_resource_segment(registry_path, true) {
+        return;
+    }
     let dir = if registry_ns == "minecraft" {
         registry_path.to_owned()
     } else {
@@ -1292,6 +1311,9 @@ fn fill_known_entries(r: &mut cfg::RegistryData, resources: &Path) {
             .id
             .split_once(':')
             .unwrap_or(("minecraft", entry.id.as_str()));
+        if !valid_resource_segment(ns, false) || !valid_resource_segment(path, true) {
+            continue;
+        }
         let file = resources
             .join("data")
             .join(ns)
@@ -2581,6 +2603,46 @@ mod tests {
         assert_eq!(decoded_swing, swing_pkt);
         let decoded_data = play::Clientbound::decode(packets[1].id, &packets[1].payload).unwrap();
         assert_eq!(decoded_data, data_pkt);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn fill_known_entries_rejects_path_traversal_and_reads_valid_entries() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("horizon-net-reg-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let resources = temp_dir.join("res");
+        let valid_dir = resources.join("data/minecraft/worldgen/biome");
+        std::fs::create_dir_all(&valid_dir).unwrap();
+        std::fs::write(
+            valid_dir.join("plains.json"),
+            br#"{"has_precipitation":true}"#,
+        )
+        .unwrap();
+        std::fs::write(temp_dir.join("secret.json"), br#"{"leaked":true}"#).unwrap();
+
+        let mut reg = cfg::RegistryData {
+            registry: "minecraft:worldgen/biome".into(),
+            entries: vec![
+                cfg::RegistryEntry {
+                    id: "minecraft:plains".into(),
+                    data: None,
+                },
+                cfg::RegistryEntry {
+                    id: "minecraft:../../../../secret".into(),
+                    data: None,
+                },
+                cfg::RegistryEntry {
+                    id: "..:plains".into(),
+                    data: None,
+                },
+            ],
+        };
+        fill_known_entries(&mut reg, &resources);
+        assert!(reg.entries[0].data.is_some());
+        assert!(reg.entries[1].data.is_none());
+        assert!(reg.entries[2].data.is_none());
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

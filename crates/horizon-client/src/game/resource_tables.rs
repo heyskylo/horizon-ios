@@ -137,7 +137,10 @@ impl PackResources {
         light: Arc<LightTables>,
     ) -> Result<Self> {
         let visibility = models::load_visibility(root, assets.registry)?;
-        let tables = Arc::new(MeshTables::new(&assets, &render, facts, visibility)?);
+        let tables = Arc::new(
+            MeshTables::new(&assets, &render, facts, visibility)?
+                .with_polytone_colormaps(root, assets.registry),
+        );
         let item_renderer = horizon_client::item_render::ItemRenderer::load_with_library(
             root,
             render.model_library.clone(),
@@ -203,6 +206,7 @@ impl PackResources {
                     .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
             )
         });
+        let polytone_particles = pack_particles(root, assets.registry);
         Self {
             layer_names: Arc::new(
                 render
@@ -226,6 +230,7 @@ impl PackResources {
             forcefield: Arc::new(forcefield),
             custom_sky: Arc::new(custom_sky),
             environments: pack_environments(root),
+            polytone_particles,
         }
     }
 }
@@ -238,6 +243,9 @@ fn pack_environments(root: &std::path::Path) -> Option<Arc<[Environment; 3]>> {
     if modifiers.is_empty() {
         return None;
     }
+    let modifiers = modifiers.with_configs(horizon_client::packs::polytone_configs(
+        &horizon_client::packs::Source::Dir(root.to_path_buf()),
+    ));
     let load = |d: &str| Environment::load_dimension_with(root, d, &modifiers);
     match (load("overworld"), load("the_nether"), load("the_end")) {
         (Ok(o), Ok(n), Ok(e)) => Some(Arc::new([o, n, e])),
@@ -248,4 +256,17 @@ fn pack_environments(root: &std::path::Path) -> Option<Arc<[Environment; 3]>> {
             None
         }
     }
+}
+
+/// The custom particles and block emitters of the packs merged at `root` (#11486); `None` when
+/// no pack has any.
+fn pack_particles(
+    root: &std::path::Path,
+    blocks: &'static horizon_world::registry::BlockRegistry,
+) -> Option<Arc<horizon_client::particles::polytone::Registry>> {
+    let configs = horizon_client::packs::polytone_configs(&horizon_client::packs::Source::Dir(
+        root.to_path_buf(),
+    ));
+    let registry = horizon_client::particles::polytone::Registry::read(root, configs, blocks);
+    (!registry.is_empty()).then(|| Arc::new(registry))
 }

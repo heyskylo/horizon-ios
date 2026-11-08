@@ -177,6 +177,7 @@ mod growth;
 mod hand;
 mod headless;
 mod hud_editor;
+mod hud_room;
 mod ime;
 mod initial_spawn;
 mod input_trace;
@@ -2339,6 +2340,8 @@ pub struct PackResources {
     /// The overworld's, Nether's and End's attribute stacks with the packs' Polytone biome and
     /// dimension modifiers (#11486), when a pack has some: what the frame draws.
     environments: Option<Arc<[Environment; 3]>>,
+    /// The packs' Polytone custom particles and block emitters (#11486), when a pack has some.
+    polytone_particles: Option<Arc<horizon_client::particles::polytone::Registry>>,
 }
 /// A quick craft drag as the screen draws it: each dragged slot's count and
 /// whether the slot caps it (None: hidden), and what stays in hand.
@@ -3284,6 +3287,8 @@ struct Game<'a> {
     saved_for_exit: bool,
     native_client_stopped: bool,
     pending_save: Option<saving::ClosingSave>,
+    /// Scheduled end of the server tick (`MinecraftServer.haveTime`).
+    server_tick_deadline: Option<Instant>,
     /// The last world frame reached the swap chain. A window the compositor
     /// stops showing gets no frames, and the event loop must not spin on it.
     frame_drawn: bool,
@@ -5549,6 +5554,7 @@ impl Game<'_> {
         laps = horizon_client::spans::laps();
         let sent = self.lan_broadcast_changes();
         laps.lap("tb_broadcast");
+        self.save_chunks_eagerly();
         self.with_level(|b, level, ticks| {
             b.run_block_events(level, ticks);
         });
@@ -7882,6 +7888,10 @@ impl Game<'_> {
             // keep their own packet cutoff (`ordered.announced`, #10063).
             self.ticked_entities_through = self.next_entity;
         }
+        // ChunkMap still ticks while /tick freeze holds block/entity ticks.
+        if !running {
+            self.save_chunks_eagerly();
+        }
         self.begin_ordered_ticks();
         if running {
             horizon_client::spans::time("tick_paintings", || self.tick_paintings());
@@ -8041,6 +8051,10 @@ impl Game<'_> {
         self.title.is_some() && self.screen != Screen::DebugOptions
     }
     fn hud(&mut self, size: [u32; 2]) -> HudBatch {
+        // Off a world (title, options, Win, a prompt before joining) the HUD shows nothing to
+        // keep clear of; `hud_layers` fills it in once the world's HUD draws.
+        let gui = HudBatch::new(size);
+        self.ui.room = horizon_client::hud_kit::room::Room::new(gui.width, gui.height);
         // The pack prompt replaces the connecting screen (setScreen), but
         // in game it opens over the world.
         let mut batch = if (self.server_packs.prompt.is_some()
@@ -8171,6 +8185,7 @@ impl Game<'_> {
         let (wi, hi) = (w as i32, h as i32);
         let in_studio = self.studio_replay.is_some();
         let show_hud = !self.ui.hide_gui && !in_studio;
+        self.ui.room = self.hud_room(w, h, show_hud);
         // What the gameplay guide keeps off starts after the view's full overlays.
         let mut guide_from = 0;
         if show_hud {
@@ -13989,17 +14004,66 @@ impl Game<'_> {
         self.save
             .save_chunk_tickets(&self.streaming.forced, self.tickets.portal_tickets())?;
         self.streaming.save(&mut self.world, wait);
+        let now = Instant::now();
         let keys: Vec<_> = self.world.modified.drain().collect();
         let chunks = self.with_entities(keys.iter().filter_map(|k| self.world.chunks.get(k)));
         self.save
             .save_later(&chunks, self.pack.assets.registry, world_biomes!(self))?;
         // Prepare entities while the chunk writer runs, then use one barrier.
+        if !wait {
+            self.world.modified.autosaved(&keys, now);
+        }
         self.save_entities(false)?;
         self.save_raids();
         if wait {
             self.save.flush()?;
         }
         Ok(())
+    }
+    /// `ChunkMap.saveChunksEagerly`: snapshot only while the tick and writer
+    /// have room. NBT encoding, compression and durable writes stay on workers.
+    fn save_chunks_eagerly(&mut self) {
+        // No world open (`world_root` is set by `finish_open_world`): the save
+        // is `Game::new`'s placeholder under the working directory.
+        if self.remote.is_some()
+            || self.world_root.as_os_str().is_empty()
+            || self.agent.hold_server
+            || self.clock.sprinting()
+            || self
+                .server_lists
+                .as_ref()
+                .is_some_and(|lists| !lists.lock().unwrap().autosave)
+        {
+            return;
+        }
+        let deadline = self
+            .server_tick_deadline
+            .unwrap_or_else(|| Instant::now() + self.clock.tick_duration());
+        let mut modified = std::mem::take(&mut self.world.modified);
+        modified.save_eagerly(
+            Instant::now(),
+            || Instant::now() < deadline && self.save.active_chunk_writes() < 128,
+            |key| self.world.chunks.contains_key(&key),
+            |key| {
+                // `saveChunkIfNeeded` saves only a LevelChunk, so a lit one; a
+                // column still waiting for its light keeps its queue entry.
+                let Some(chunk) = self.world.chunks.get(&key).filter(|c| c.lit) else {
+                    return false;
+                };
+                let chunks = self.with_entities([chunk]);
+                match self
+                    .save
+                    .save_later(&chunks, self.pack.assets.registry, world_biomes!(self))
+                {
+                    Ok(_) => true,
+                    Err(e) => {
+                        log::warn!("Horizon: failed to save changed chunks: {e}");
+                        false
+                    }
+                }
+            },
+        );
+        self.world.modified = modified;
     }
     /// `GameRenderer.tryTakeScreenshotIfNeeded`: while a local world without a
     /// saved icon is on the screen, grab the rendered frame once a second until
@@ -14310,6 +14374,49 @@ impl Game<'_> {
             }
         }
         let (rain, thunder) = self.view_weather(alpha as f32);
+        // What the packs' attribute expressions read (only a pack's stack has any).
+        if self.pack.environments.is_some() || self.pack.polytone_particles.is_some() {
+            let light = self.world.light(block[0], block[1], block[2]);
+            let frame = horizon_client::environment::Frame {
+                rain,
+                thunder,
+                game_time: self.world.game_time,
+                day_time: self.view_day_time(),
+                render_distance: self.streaming.radius,
+                sky_type: match self.dim {
+                    Dim::Overworld => 1,
+                    Dim::End => 2,
+                    Dim::Nether => 0,
+                },
+                dimension: match self.dim {
+                    Dim::Overworld => "minecraft:overworld",
+                    Dim::Nether => "minecraft:the_nether",
+                    Dim::End => "minecraft:the_end",
+                }
+                .to_owned(),
+                player: self.player.as_ref().map_or(camera.to_array(), |p| {
+                    [p.position.x, p.position.y, p.position.z]
+                }),
+                player_velocity: self
+                    .player
+                    .as_ref()
+                    .map_or([0.0; 3], |p| [p.velocity.x, p.velocity.y, p.velocity.z]),
+                player_on_ground: self.player.as_ref().is_some_and(|p| p.ground.on_ground),
+                in_water: underwater,
+                camera: camera.to_array(),
+                sky_light: i32::from(light >> 4),
+                block_light: i32::from(light & 15),
+                biome: biomes.get(biome).name.clone(),
+                temperature: biomes.get(biome).temperature,
+                downfall: biomes.get(biome).downfall,
+            };
+            if let Some(particles) = &self.pack.polytone_particles
+                && let Ok(mut f) = particles.frame.write()
+            {
+                f.clone_from(&frame);
+            }
+            environment.set_frame(frame);
+        }
         let mut sky = environment.sample(&horizon_client::environment::Sample {
             day_time: self.view_day_time(),
             rain,
@@ -14578,7 +14685,9 @@ impl Game<'_> {
         } else {
             self.bolt_instances(camera)
         };
-        let mut additive = Vec::new();
+        // Particles blended additively (resource packs' Polytone ones, #11486), from the
+        // render that built `entities`.
+        let mut additive = self.particles.take_additive();
         // The dragon is drawn in every dimension, as any entity: a dragon
         // summoned outside the End (the server's AddEntity) is shown too.
         if !title {
@@ -15102,6 +15211,9 @@ impl Game<'_> {
                 }
             });
         }
+        for chunk in &unloaded {
+            self.world.modified.unloaded(&(chunk.x, chunk.z));
+        }
         let dirty: Vec<_> = unloaded
             .iter()
             .filter(|c| self.world.modified.remove(&(c.x, c.z)))
@@ -15210,7 +15322,15 @@ impl Game<'_> {
                     }
                 }
                 let centre = self.streaming.center;
-                let far = |k: &(i32, i32, i32)| (k.0 - centre.0).pow(2) + (k.2 - centre.1).pow(2);
+                // Section keys count from the world's bottom (`origin`'s min_y + y * 16).
+                let bottom = f64::from(self.world.bottom_y());
+                let cam_y = self
+                    .player
+                    .as_ref()
+                    .map_or(4, |p| ((p.position.y - bottom) / 16.0).floor() as i32);
+                let far = |k: &(i32, i32, i32)| {
+                    (k.0 - centre.0).pow(2) + (k.1 - cam_y).pow(2) + (k.2 - centre.1).pow(2)
+                };
                 pending.sort_unstable_by_key(|(k, _)| std::cmp::Reverse(far(k)));
                 let (limit, budget) = if budgeted {
                     (
@@ -17505,6 +17625,7 @@ impl<'a> Game<'a> {
             saved_for_exit: false,
             native_client_stopped: false,
             pending_save: None,
+            server_tick_deadline: None,
             frame_drawn: true,
             world_icon: None,
             forced_hit: None,
@@ -18181,6 +18302,10 @@ pub fn run_with() -> Result<()> {
         horizon_client::spans::record_here(true);
     }
     let vanilla_root = options.resources.clone();
+    // Saves from before 1.13 upgrade with vanilla's tables, prepared from the player's jar.
+    horizon_world::datafix::set_resources(
+        &std::path::absolute(&vanilla_root).unwrap_or_else(|_| vanilla_root.clone()),
+    );
     if let Some(error) = missing_resources(&vanilla_root) {
         // The game build started by hand (the release's zip), not by the
         // launcher: a window says where to get it. Scripts and servers get
@@ -18200,16 +18325,14 @@ pub fn run_with() -> Result<()> {
         #[cfg(feature = "heartbeat")]
         horizon_client::heartbeat::start();
         let player_dir = horizon_client::logging::player_dir();
-        // horizon-extras: the official and partner servers are Horizon's (docs/forking.md).
+        // horizon-extras: the official server is Horizon's (docs/forking.md).
         if cfg!(feature = "horizon-extras")
             && let Err(e) = horizon_client::multiplayer::add_official_server(&player_dir)
         {
             log::warn!("could not add the official server to servers.dat: {e}");
         }
-        if cfg!(feature = "horizon-extras")
-            && let Err(e) = horizon_client::multiplayer::add_partner_servers(&player_dir)
-        {
-            log::warn!("could not add the partner servers to servers.dat: {e}");
+        if let Err(e) = horizon_client::multiplayer::withdraw_partner_servers(&player_dir) {
+            log::warn!("could not take the withdrawn partner server out of servers.dat: {e}");
         }
     }
     mods::register_components(&vanilla_root)?;
@@ -18250,17 +18373,18 @@ pub fn run_with() -> Result<()> {
         return run_loading(options, early_settings, vanilla_root, None, started);
     }
     let mut pack_error = None;
-    options.resources = packs::startup_root(&vanilla_root, &early_settings.resource_packs, &[])
-        .unwrap_or_else(|e| {
-            log::warn!("Horizon: resource packs not applied: {e}");
-            pack_error = Some(e.to_string());
-            vanilla_root.clone()
-        });
-    options.resources = mods::content_root(
-        &options.resources,
+    let base = mods::content_root(
+        &vanilla_root,
         &early_settings.mods.enabled,
         &options.dev_mods,
     );
+    options.resources =
+        packs::startup_root(&vanilla_root, &base, &early_settings.resource_packs, &[])
+            .unwrap_or_else(|e| {
+                log::warn!("Horizon: resource packs not applied: {e}");
+                pack_error = Some(e.to_string());
+                base.clone()
+            });
     let loaded = load_resources(
         options.resources.clone(),
         launch_world(&options),
@@ -18768,6 +18892,103 @@ mod tests {
     }
 
     #[test]
+    fn eager_saves_keep_dirty_order_cooldowns_and_writer_budget() {
+        use horizon_client::world::ModifiedChunks;
+        use std::cell::Cell;
+        let now = Instant::now();
+        let mut dirty = ModifiedChunks::default();
+        dirty.extend((0..27).map(|x| (x, 0)));
+        dirty.autosaved(&[(0, 0), (2, 0)], now);
+        dirty.remove(&(1, 0)); // already clean
+        let writes = Cell::new(127);
+        let mut chosen = Vec::new();
+        dirty.save_eagerly(
+            now,
+            || writes.get() < 128,
+            |k| k != (3, 0),
+            |k| {
+                chosen.push(k);
+                writes.set(writes.get() + 1);
+                true
+            },
+        );
+        assert_eq!(chosen, [(4, 0)]); // cooldown, clean, absent, then budget exhausted
+        chosen.clear();
+        dirty.save_eagerly(
+            now,
+            || true,
+            |_| true,
+            |k| {
+                chosen.push(k);
+                true
+            },
+        );
+        assert_eq!(chosen, (5..25).map(|x| (x, 0)).collect::<Vec<_>>()); // exactly 20
+        dirty.insert((4, 0)); // a later edit goes AFTER the still-cooled entries
+        chosen.clear();
+        dirty.save_eagerly(
+            now + Duration::from_secs(10),
+            || true,
+            |_| true,
+            |k| {
+                chosen.push(k);
+                true
+            },
+        );
+        assert_eq!(chosen, [(0, 0), (2, 0), (25, 0), (26, 0), (4, 0)]);
+        dirty.insert((4, 0));
+        dirty.save_eagerly(
+            now + Duration::from_secs(11),
+            || false,
+            |_| true,
+            |_| panic!("no time"),
+        );
+        assert!(dirty.contains(&(4, 0)));
+        dirty.unloaded(&(4, 0)); // unloading removes the cooldown even if reloaded immediately
+        chosen.clear();
+        dirty.save_eagerly(
+            now + Duration::from_secs(11),
+            || true,
+            |_| true,
+            |k| {
+                chosen.push(k);
+                true
+            },
+        );
+        assert_eq!(chosen, [(4, 0)]);
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn eager_saves_wait_for_an_open_world_and_for_light() {
+        let mut game = super::native_machines::tests::server_game();
+        let dir = std::env::temp_dir().join(format!("horizon-eager-game-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        game.save = Arc::new(horizon_client::save::SaveDir::new(
+            dir.clone(),
+            horizon_client::save::LevelShape::OVERWORLD,
+        ));
+        Arc::make_mut(game.world.chunks.get_mut(&(0, 0)).unwrap()).lit = true;
+        game.world
+            .chunks
+            .insert((1, 0), Arc::new(horizon_client::chunk::Chunk::empty(1, 0)));
+        game.world.modified.extend([(0, 0), (1, 0)]);
+        game.save_chunks_eagerly(); // no world open: nothing to save into
+        assert!(game.world.modified.contains(&(0, 0)));
+        game.world_root = dir.clone();
+        game.save_chunks_eagerly();
+        assert!(!game.world.modified.contains(&(0, 0)));
+        assert!(game.world.modified.contains(&(1, 0))); // not lit yet
+        Arc::make_mut(game.world.chunks.get_mut(&(1, 0)).unwrap()).lit = true;
+        game.save_chunks_eagerly(); // still queued: no new dirty transition needed
+        assert!(!game.world.modified.contains(&(1, 0)));
+        game.save.flush().unwrap();
+        assert!(dir.join("region/r.0.0.mca").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn integrated_server_save_persists_owner_player_data() {
         let dir = std::env::temp_dir().join(format!(
             "horizon-integrated-player-save-{}",
@@ -18839,6 +19060,8 @@ fn write_level_for_role(
 }
 
 #[cfg(test)]
+mod golem_defense_tests;
+#[cfg(test)]
 mod inline_feature_parse_tests;
 #[cfg(test)]
 mod interaction_data_tests;
@@ -18851,13 +19074,19 @@ mod loot_kill_guest_tests;
 #[cfg(test)]
 mod mannequin_save_tests;
 #[cfg(test)]
+mod mob_landing_support_tests;
+#[cfg(test)]
 mod orb_data_tests;
+#[cfg(test)]
+mod stand_break_loot_tests;
 #[cfg(test)]
 mod stand_command_hurt_tests;
 #[cfg(test)]
 mod storage_alias_tests;
 #[cfg(test)]
 mod sulfur_bucket_tests;
+#[cfg(test)]
+mod sulfur_prime_phase_tests;
 #[cfg(test)]
 mod test_pos_guest_tests;
 #[cfg(test)]

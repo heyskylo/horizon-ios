@@ -1380,12 +1380,13 @@ pub fn carry(
             if declared.contains(full) {
                 continue;
             }
-            if item
-                .block
-                .as_ref()
-                .is_some_and(|b| facts.blocks.contains_key(b))
-                && report.blocks_unknown.contains_key(name)
-            {
+            // The block it places must be carried: a vanilla one or one of this mod's declared ones.
+            if item.block.as_ref().is_some_and(|b| {
+                !b.starts_with("minecraft:")
+                    && !b
+                        .strip_prefix(&prefix)
+                        .is_some_and(|b| report.blocks.contains_key(b))
+            }) {
                 report
                     .items_unknown
                     .insert(name.to_owned(), "its block is left out".into());
@@ -1462,8 +1463,16 @@ pub fn carry(
                 }
             }
         }
+        // Without the oracle's classes an armour piece is known by its vanilla armour tag:
+        // worn in its slot, one to a stack.
+        let armor = tagged_armor(&inside);
         for m in item_models.iter().filter(|m| !blockstates.contains_key(*m)) {
-            write_decl("item", m, &json!({"template": "minecraft:stick"}))?;
+            let mut v = json!({"template": "minecraft:stick"});
+            if let Some(slot) = armor.get(&format!("{id}:{m}")) {
+                v["max_stack_size"] = json!(1);
+                v["components"] = json!({"minecraft:equippable": {"slot": slot}});
+            }
+            write_decl("item", m, &v)?;
             report.items += 1;
         }
     }
@@ -1613,6 +1622,42 @@ fn unregistered_recipes(
     }
     report.recipes_unregistered.sort();
     Ok(())
+}
+
+/// The items the carried vanilla armour tags (`minecraft:head_armor`...) name, `#tag`s
+/// followed through the carried item tags, with the equipment slot each is worn in.
+fn tagged_armor(inside: &Path) -> BTreeMap<String, &'static str> {
+    fn members(inside: &Path, tag: &str, depth: u8, out: &mut Vec<String>) {
+        let Some((ns, path)) = tag.split_once(':') else {
+            return;
+        };
+        let v: Value = fs::read(inside.join(format!("data/{ns}/tags/item/{path}.json")))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        for e in v["values"].as_array().into_iter().flatten() {
+            let id = e.as_str().or_else(|| e["id"].as_str()).unwrap_or_default();
+            match id.strip_prefix('#') {
+                Some(t) if depth < 8 => members(inside, t, depth + 1, out),
+                Some(_) => {}
+                None => out.push(id.to_owned()),
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    for (tag, slot) in [
+        ("head_armor", "head"),
+        ("chest_armor", "chest"),
+        ("leg_armor", "legs"),
+        ("foot_armor", "feet"),
+    ] {
+        let mut ids = Vec::new();
+        members(inside, &format!("minecraft:{tag}"), 0, &mut ids);
+        for id in ids {
+            out.entry(id).or_insert(slot);
+        }
+    }
+    out
 }
 
 /// The tags a recipe's ingredients name (`#ns:path` or `{"tag": ...}`).
@@ -2530,6 +2575,50 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Without the oracle every item is a stick: the ones the vanilla armour tags name (directly
+    /// or through the mod's own tag) are worn in their slot, one to a stack.
+    #[test]
+    fn armour_the_vanilla_armour_tags_name_is_worn_in_its_slot() {
+        let dir = temp_dir("armor");
+        let jar = dir.join("armor.jar");
+        let model: &[u8] = br#"{"parent": "minecraft:item/generated"}"#;
+        write_jar(
+            &jar,
+            &[
+                ("assets/example/models/item/hat.json", model),
+                ("assets/example/models/item/robe.json", model),
+                ("assets/example/models/item/gem.json", model),
+                (
+                    "data/minecraft/tags/item/head_armor.json",
+                    br#"{"values": ["example:hat"]}"#,
+                ),
+                (
+                    "data/minecraft/tags/item/chest_armor.json",
+                    br##"{"values": ["#example:armors/chest"]}"##,
+                ),
+                (
+                    "data/example/tags/item/armors/chest.json",
+                    br#"{"values": [{"id": "example:robe", "required": false}]}"#,
+                ),
+            ],
+        );
+        let out = dir.join("work/mods/example");
+        carry_alone(&jar, &out).unwrap();
+        let decl = |m: &str| -> Value {
+            let f = out.join(format!("carry/data/example/horizon/item/{m}.json"));
+            serde_json::from_slice(&fs::read(f).unwrap()).unwrap()
+        };
+        let worn = |slot: &str| {
+            json!({"template": "minecraft:stick", "max_stack_size": 1,
+                "components": {"minecraft:equippable": {"slot": slot}}})
+        };
+        let (hat, robe, gem) = (decl("hat"), decl("robe"), decl("gem"));
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(hat, worn("head"));
+        assert_eq!(robe, worn("chest"));
+        assert_eq!(gem, json!({"template": "minecraft:stick"}));
+    }
+
     /// A mod shipping its files under other names than its id: the
     /// namespaces its own files name are its, compat files for other mods
     /// and a pack mod's namespace stay outside.
@@ -2788,6 +2877,75 @@ mod tests {
                 "data/gem/recipe/other.json"
             ]
         );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Seeds place a block of another name (`BlockItem.getBlock`): the item is carried binding that block,
+    /// and an item whose block is left out stays out.
+    #[test]
+    fn items_place_their_block_of_another_name() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-port-pack-seeds-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let jar = dir.join("gem-1.0.jar");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&jar).unwrap());
+        zip.start_file(
+            "META-INF/neoforge.mods.toml",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(b"license = \"MIT\"\n[[mods]]\nmodId = \"gem\"\nversion = \"1.0\"\n")
+            .unwrap();
+        zip.finish().unwrap();
+        let info = crate::jar::read(&jar).unwrap();
+        let block = |class: &str, item: &str| {
+            json!({"class": [class, "net.minecraft.world.level.block.Block"], "properties": {}, "default": "",
+                "item": item, "explosion_resistance": 3.0, "friction": 0.6, "speed_factor": 1.0,
+                "jump_factor": 1.0, "states": {"": {"hardness": 2.0, "emission": 0, "requires_tool": false,
+                    "map_color_id": 13, "sound": {"break": "wood"}, "outline": [[0, 0, 0, 1, 1, 1]],
+                    "collision": [[0, 0, 0, 1, 1, 1]]}}})
+        };
+        let seeds = |b: &str| {
+            json!({"class": "net.minecraft.world.item.ItemNameBlockItem", "max_stack_size": 64,
+                "rarity": "common", "block": b})
+        };
+        let facts: Facts = serde_json::from_value(json!({
+            "blocks": {
+                "minecraft:oak_planks": block("net.minecraft.world.level.block.Block", "minecraft:oak_planks"),
+                "gem:cabbages": block("gem.Cabbages", "gem:cabbage_seeds"),
+            },
+            "items": {"gem:cabbage_seeds": seeds("gem:cabbages"), "gem:lost_seeds": seeds("gem:lost")}
+        }))
+        .unwrap();
+        let pack = Pack {
+            loaded: &|_| true,
+            mods: &|_| false,
+        };
+        let out = dir.join("out");
+        let report = carry(
+            &jar,
+            &info,
+            &out,
+            Some(&facts),
+            &|_| true,
+            &pack,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            report.items_unknown.keys().collect::<Vec<_>>(),
+            ["lost_seeds"]
+        );
+        let carried = out.join("carry");
+        let package = horizon_mods::Package::read(&carried).unwrap();
+        let content = horizon_mods::Content::read(&carried, &package.manifest).unwrap();
+        let item = content
+            .items
+            .iter()
+            .find(|i| i.id == "gem:cabbage_seeds")
+            .unwrap();
+        assert_eq!(item.place_block.as_deref(), Some("gem:cabbages"));
         fs::remove_dir_all(&dir).unwrap();
     }
 

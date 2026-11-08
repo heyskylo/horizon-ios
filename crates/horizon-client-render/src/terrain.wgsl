@@ -224,6 +224,10 @@ struct TerrainOut {
     // The camera-relative height, for the water mirror's cut at the plane.
     height: f32,
     emissive_layer: u32,
+    // [world warp varyings]
+    // (a native mod's world warp adds its own here, and in `TerrainWire`, `to_wire` and
+    // `from_wire`: gfx/world_warp.rs)
+    // [end world warp varyings]
 }
 // `TerrainOut` in 5 interpolant locations instead of 12. A GPU's vertex stage pays for each
 // location it exports (AMD's parameter cache gives one a whole slot, however few of its four
@@ -242,6 +246,8 @@ struct TerrainWire {
     @location(3) d: vec4<f32>,
     // `layer`, `emission`, `fade` and `emissive_layer`.
     @location(4) @interpolate(flat) e: vec4<u32>,
+    // [world warp wire]
+    // [end world warp wire]
 }
 fn to_wire(o: TerrainOut) -> TerrainWire {
     var w: TerrainWire;
@@ -251,6 +257,8 @@ fn to_wire(o: TerrainOut) -> TerrainWire {
     w.c = vec4(o.uv, o.scene);
     w.d = vec4(o.spherical, o.cylindrical, o.height, 0.0);
     w.e = vec4(o.layer, o.emission, o.fade, o.emissive_layer);
+    // [world warp to wire]
+    // [end world warp to wire]
     return w;
 }
 fn from_wire(w: TerrainWire) -> TerrainOut {
@@ -268,6 +276,8 @@ fn from_wire(w: TerrainWire) -> TerrainOut {
     o.emission = w.e.y;
     o.fade = w.e.z;
     o.emissive_layer = w.e.w;
+    // [world warp from wire]
+    // [end world warp from wire]
     return o;
 }
 // Whether a fading tile or section leaves this pixel out (gfx/lod.rs's
@@ -662,7 +672,10 @@ fn hdr_facing() -> f32 {
 }
 fn terrain_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>,
     light: vec2<u32>, origin: vec3<f32>, w: f32) -> TerrainOut {
+    // [world warp vertex]
+    // (a world warp's pipelines put the point through the mod's `world_warp`: gfx/world_warp.rs)
     let pos = position + origin;
+    // [end world warp vertex]
     var out: TerrainOut;
     out.clip = fade_depth(globals.view_proj * vec4(pos, 1.0), w);
     out.local = position;
@@ -695,6 +708,8 @@ fn terrain_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f3
     const CHUNK_FULLY_VISIBLE_RANGE: f32 = 16.0;
     out.visibility = mix(1.0, instance_visibility(w),
         clamp((length(pos) - CHUNK_FULLY_VISIBLE_RANGE) / CHUNK_FULLY_VISIBLE_RANGE, 0.0, 1.0));
+    // [world warp out]
+    // [end world warp out]
     return out;
 }
 fn linear_fog(d: f32, start: f32, end: f32) -> f32 {
@@ -762,8 +777,8 @@ fn solid_color(in: TerrainOut) -> vec4<f32> {
 fn solid_finish(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>) -> vec4<f32> {
     return solid_light(solid_finish_at(in, texel, color, dpdx(in.uv), dpdy(in.uv)));
 }
-// A finished solid pixel as the frame keeps it: its mark in alpha, or on the written lane its
-// light, alpha 1.
+// A finished solid pixel as the frame keeps it: on the float frame its colour, alpha 1, lit by
+// HDR's gain where it applies (`hdr_light.w`); else its mark in alpha.
 fn solid_light(finished: vec4<f32>) -> vec4<f32> {
     if HDR_WRITE_LIGHT {
         if globals.hdr_light.w != 0.0 {

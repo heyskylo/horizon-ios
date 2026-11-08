@@ -1275,6 +1275,8 @@ pub fn command_components(text: &str) -> Result<Tag, String> {
                 JavaString::from(id.as_str()),
                 Tag::compound([] as [(&str, Tag); 0]),
             );
+        } else {
+            return Err("expected '='".to_string());
         }
         rest = rest.trim_start();
         rest = rest.strip_prefix(',').unwrap_or(rest).trim_start();
@@ -2277,6 +2279,18 @@ mod tests {
         );
         assert_eq!(explosions[0].colors, vec![0xFF0000]);
         assert!(explosions[0].twinkle && !explosions[0].trail);
+    }
+
+    #[test]
+    fn command_components_rejects_bare_component_without_equals() {
+        assert_eq!(
+            command_components("[custom_data]"),
+            Err("expected '='".to_string())
+        );
+        assert_eq!(
+            command_components("[!tool,custom_data]"),
+            Err("expected '='".to_string())
+        );
     }
 
     #[test]
