@@ -82,12 +82,8 @@ static ART: &[Art] = art![
     Nintendo East "nx_a",
     Nintendo West "nx_y",
     Nintendo North "nx_x",
-    Nintendo LeftBumper "nx_l",
-    Nintendo RightBumper "nx_r",
-    Nintendo LeftTrigger "nx_zl",
-    Nintendo RightTrigger "nx_zr",
-    Nintendo Select "nx_minus",
-    Nintendo Start "nx_plus",
+    // Nintendo's L, R, ZL, ZR, − and + have no picture yet: their label shows on a key. The copies
+    // of Xbox's that stood in printed LB, RB, LT, RT and Xbox's View and Menu.
     Nintendo LeftStick "nx_l3",
     Nintendo RightStick "nx_r3",
     Nintendo DPadUp "nx_up",
@@ -417,20 +413,51 @@ mod tests {
         assert_eq!(file(Button::East, style), Some("nx_a"));
         assert_eq!(file(Button::West, style), Some("nx_y"));
         assert_eq!(file(Button::North, style), Some("nx_x"));
-        assert_eq!(file(Button::LeftTrigger, style), Some("nx_zl"));
-        assert_eq!(file(Button::Start, style), Some("nx_plus"));
+        // No picture yet for the shoulders, triggers, − and +: they show their label.
+        for (button, label) in [
+            (Button::LeftBumper, "L"),
+            (Button::RightBumper, "R"),
+            (Button::LeftTrigger, "ZL"),
+            (Button::RightTrigger, "ZR"),
+            (Button::Select, "−"),
+            (Button::Start, "+"),
+        ] {
+            assert_eq!(file(button, style), None, "{button:?}");
+            assert_eq!(g(button, style).label(), label);
+        }
     }
 
     #[test]
-    fn every_family_has_its_own_file_for_every_button() {
+    fn a_family_shows_only_its_own_files() {
         for (style, prefix) in [
             (GlyphStyle::Xbox, "xb_"),
             (GlyphStyle::PlayStation, "psx_"),
             (GlyphStyle::Nintendo, "nx_"),
         ] {
-            for button in Button::ALL {
-                let name = file(button, style).unwrap();
-                assert!(name.starts_with(prefix), "{button:?} {name}");
+            for name in Button::ALL.into_iter().filter_map(|b| file(b, style)) {
+                assert!(name.starts_with(prefix), "{name}");
+            }
+        }
+        // Xbox and PlayStation have a picture for every button.
+        for style in [GlyphStyle::Xbox, GlyphStyle::PlayStation] {
+            assert!(Button::ALL.into_iter().all(|b| file(b, style).is_some()));
+        }
+    }
+
+    /// A Nintendo picture copied from Xbox's art must print what the Nintendo pad prints: Xbox's
+    /// LB standing in for Nintendo's L told a Switch player to press "LB".
+    #[test]
+    fn every_nintendo_picture_names_the_nintendo_button() {
+        let family = |style| ART.iter().filter(move |art| art.family == style);
+        for nx in family(GlyphStyle::Nintendo) {
+            for xb in family(GlyphStyle::Xbox).filter(|xb| xb.png == nx.png) {
+                assert_eq!(
+                    printed(nx.button, GlyphStyle::Nintendo),
+                    printed(xb.button, GlyphStyle::Xbox),
+                    "{} is {}",
+                    nx.sprite,
+                    xb.sprite
+                );
             }
         }
     }
@@ -472,13 +499,9 @@ mod tests {
             20.0
         );
         assert_eq!(width(&atlas, g(Button::DPadUp, GlyphStyle::Nintendo)), 12.0);
-        let mut no_art = atlas;
-        no_art
-            .sprites
-            .remove(sprite(Button::LeftTrigger, GlyphStyle::Nintendo).unwrap());
-        let label = HudBatch::text_width(&no_art, "ZL").ceil() + 4.0;
+        let label = HudBatch::text_width(&atlas, "ZL").ceil() + 4.0;
         assert_eq!(
-            width(&no_art, g(Button::LeftTrigger, GlyphStyle::Nintendo)),
+            width(&atlas, g(Button::LeftTrigger, GlyphStyle::Nintendo)),
             label
         );
     }
