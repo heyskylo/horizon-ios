@@ -1179,6 +1179,22 @@ pub(super) use horizon_world::level::flags;
 pub(crate) const NATIVE_HOOKS_API: u32 = 415;
 
 impl GameLevel<'_> {
+    /// A crop, stem, cactus, sugar cane, bamboo, mushroom or vine on an
+    /// authoritative server grows or spreads at `pos` in `dimension`: the block
+    /// there changes from `from` to `to` (block names, state properties
+    /// included). Set `cancel` to leave it as it is. Covers crop, stem, cactus,
+    /// sugar cane and bamboo growth, grass spreading onto dirt, mushroom and
+    /// vine spread. Server-side. Pending API @API:block_grow@.
+    pub(super) fn native_block_grow(
+        &self,
+        dimension: &str,
+        pos: [i32; 3],
+        from: &str,
+        to: &str,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_block_grow(self, mod_api::mods(), dimension, pos, from, to, cancel);
+    }
     /// `EntityBlock.newBlockEntity` with the actual placed state. The first
     /// entity supplied owns the result. No response means no new entity.
     /// This is a creation callback, not a validity test: an existing entity
@@ -4929,6 +4945,28 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_hanging_break(self, mod_api::mods(), player, kind, pos, cancel);
     }
+    /// A hanging entity (painting, item frame...) of `kind` at `pos` in
+    /// `dimension` is about to break. Set `cancel` to keep it. Same moment as
+    /// `native_hanging_break`, which still fires unchanged. Server-side.
+    /// Pending API @API:hanging_break_v2@.
+    pub(super) fn native_hanging_break_v2(
+        &mut self,
+        player: Option<u128>,
+        dimension: &str,
+        kind: &str,
+        pos: [i32; 3],
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_hanging_break_v2(
+            self,
+            mod_api::mods(),
+            player,
+            dimension,
+            kind,
+            pos,
+            cancel,
+        );
+    }
     /// A server player empties a bucket at `pos` (`fluid`: `minecraft:water`,
     /// `minecraft:lava`, `minecraft:powder_snow`; a fish or axolotl bucket
     /// empties `minecraft:water`): where `BucketItem.use` has found the block
@@ -4967,6 +5005,18 @@ impl Game<'_> {
         cancel: &mut bool,
     ) {
         mod_api::dispatch_tnt_primed(self, mod_api::mods(), player, pos, cancel);
+    }
+    /// A server player (or none) primes TNT at `pos` in `dimension`. Set
+    /// `cancel` to leave the block unlit. Same moment as `native_tnt_primed`,
+    /// which still fires unchanged. Server-side. Pending API @API:tnt_primed_v2@.
+    pub(super) fn native_tnt_primed_v2(
+        &mut self,
+        player: Option<u128>,
+        dimension: &str,
+        pos: [i32; 3],
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_tnt_primed_v2(self, mod_api::mods(), player, dimension, pos, cancel);
     }
     /// A server player selected a new hotbar slot. The player's state is not
     /// swapped in, and helpers that look them up through `self.lan` may find
@@ -6821,6 +6871,31 @@ impl Game<'_> {
         );
     }
 
+    /// A mob (`entity`, its `kind`) is about to change the block at `pos` from
+    /// `from` to `to` (an enderman's block, a ravager's, a snow golem's, a
+    /// wither's). Set `cancel` to leave the block as it is: nothing changes and
+    /// `native_entity_change_block` is not told. Server-side. Pending API
+    /// @API:entity_change_block_v3@.
+    pub(super) fn native_entity_change_block_v3(
+        &mut self,
+        entity: u32,
+        kind: &str,
+        pos: [i32; 3],
+        from: &str,
+        to: &str,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_entity_change_block_v3(
+            self,
+            mod_api::mods(),
+            entity,
+            kind,
+            pos,
+            from,
+            to,
+            cancel,
+        );
+    }
     /// A mob changed a block at `pos`, after the new state was applied.
     /// 214.
     pub(super) fn native_entity_change_block(
@@ -8499,14 +8574,24 @@ impl Game<'_> {
     /// about to break `blocks`: `ServerExplosion.explode` with its `toBlow`,
     /// before any block is hit. Take out the positions to spare; they keep
     /// their block and get no fire. Entities are hurt as before. Server-side.
-    /// API 22.
+    /// `source` is the entity that exploded (TNT, a minecart of TNT, a
+    /// creeper, a large fireball, an end crystal) with its kind, when the
+    /// engine knows it; `None` for the other blasts. API 22.
     pub(super) fn native_explosion_detonate(
         &mut self,
         dimension: &str,
         center: [f64; 3],
+        source: Option<(u32, &str)>,
         blocks: &mut Vec<[i32; 3]>,
     ) {
-        mod_api::dispatch_explosion_detonate(self, mod_api::mods(), dimension, center, blocks);
+        mod_api::dispatch_explosion_detonate(
+            self,
+            mod_api::mods(),
+            dimension,
+            center,
+            source,
+            blocks,
+        );
     }
     /// An explosion at `center` in `dimension`, about to break `blocks`, pushes
     /// `entity` (None for a player, whom `native_acting_player` names):
@@ -10056,7 +10141,7 @@ pub(super) fn viewer_changes(
     changes
 }
 
-fn dimension_id(dimension: LevelDimension) -> &'static str {
+pub(super) fn dimension_id(dimension: LevelDimension) -> &'static str {
     match dimension {
         LevelDimension::Overworld => "minecraft:overworld",
         LevelDimension::Nether => "minecraft:the_nether",

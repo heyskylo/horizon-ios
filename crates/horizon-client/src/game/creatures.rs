@@ -2739,7 +2739,17 @@ impl Game<'_> {
                     // Only a creeper or a wither empties the hives it blows up.
                     // The creeper is already gone from the list, so the event
                     // carries its kind. A sulfur cube's blast is TNT's.
-                    let source = super::explosion::ExplosionSource::default().with_silence(silent);
+                    let mut source =
+                        super::explosion::ExplosionSource::default().with_silence(silent);
+                    if let Some(id) = source_mob
+                        && matches!(species, Species::Creeper | Species::Wither)
+                    {
+                        let kind = match species {
+                            Species::Creeper => "minecraft:creeper",
+                            _ => "minecraft:wither",
+                        };
+                        source = source.with_entity(id, kind);
+                    }
                     let result = match species {
                         Species::Creeper | Species::Wither => {
                             self.with_hive_emptying_blast(|g| g.explode(at, radius, source))
@@ -3236,12 +3246,31 @@ impl Game<'_> {
                             .get(self.world.block(pos[0], pos[1], pos[2]))
                             .name
                             .clone();
-                        self.level_set_with_flags(pos, state, flags)?;
+                        let mut cancel = false;
                         if let Some(mob) = mob
-                            && let Some(m) = self.mobs.iter().find(|m| m.id == mob)
+                            && let Some(kind) = self
+                                .mobs
+                                .iter()
+                                .find(|m| m.id == mob)
+                                .map(|m| m.kind.id.clone())
                         {
-                            let kind = m.kind.id.clone();
-                            self.native_entity_change_block(mob, &kind, pos, &old_name, name);
+                            self.native_entity_change_block_v3(
+                                mob,
+                                &kind,
+                                pos,
+                                &old_name,
+                                name,
+                                &mut cancel,
+                            );
+                        }
+                        if !cancel {
+                            self.level_set_with_flags(pos, state, flags)?;
+                            if let Some(mob) = mob
+                                && let Some(m) = self.mobs.iter().find(|m| m.id == mob)
+                            {
+                                let kind = m.kind.id.clone();
+                                self.native_entity_change_block(mob, &kind, pos, &old_name, name);
+                            }
                         }
                     }
                 }
@@ -5966,7 +5995,8 @@ impl Game<'_> {
                     *power as f32,
                     fire,
                     super::explosion::ExplosionSource::default()
-                        .with_silence(self.entity_silent(p.id)),
+                        .with_silence(self.entity_silent(p.id))
+                        .with_entity(p.id, "minecraft:fireball"),
                 );
                 self.set_blast_by_player(false);
                 self.combat.explosion_owner = None;
