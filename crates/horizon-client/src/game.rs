@@ -14514,7 +14514,12 @@ impl Game<'_> {
         // screen does not hide it: vanilla checks the HUD and the game mode, not the screen.
         let adventure = self.mode == horizon_client::command::args::GameMode::Adventure;
         let can_build = self.may_build() || adventure;
-        let outline = if !self.ui.hide_gui && !self.entity_targeted() && can_build {
+        let outline = if block_outline_drawn(
+            self.ui.hide_gui,
+            self.entity_targeted(),
+            can_build,
+            self.shows_panorama(),
+        ) {
             self.pick()
                 .filter(|h| {
                     self.may_build()
@@ -18721,6 +18726,18 @@ fn debug_crosshair_drawn(
     panorama: bool,
 ) -> bool {
     enabled && first_person && !hide_gui && !panorama
+}
+
+/// GameRenderer.shouldRenderBlockOutline, and only over a level. A panorama frame (the title
+/// screen, LevelLoadingScreen's Reason.OTHER) replaces the level vanilla draws under it, so the
+/// player's target must not leave its outline there.
+fn block_outline_drawn(
+    hide_gui: bool,
+    entity_targeted: bool,
+    can_build: bool,
+    panorama: bool,
+) -> bool {
+    !hide_gui && !entity_targeted && can_build && !panorama
 }
 
 /// Blocks whose class implements `GameMasterBlock`: the command blocks, structure
