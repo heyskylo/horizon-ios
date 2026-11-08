@@ -724,7 +724,7 @@ impl Game<'_> {
         let mut tag = save::block_entity_data(key, e, &name, self.world.block_lock(key));
         if let (Some(custom), Tag::Compound(map)) = (self.world.block_names.get(&key), &mut tag) {
             map.entry("CustomName".into())
-                .or_insert_with(|| Tag::String(custom.as_str().into()));
+                .or_insert_with(|| custom.clone());
         }
         self.restore_loot_table(key, &mut tag);
         Some(tag)

@@ -79,8 +79,7 @@ impl Game<'_> {
     pub(super) fn container_title(&self, default: String) -> String {
         self.container_parts()
             .iter()
-            .find_map(|(key, _)| self.world.block_names.get(key))
-            .cloned()
+            .find_map(|(key, _)| self.block_name_plain(*key))
             .unwrap_or(default)
     }
     /// ShulkerBoxSlot.mayPlace: no shulker box inside a shulker box.
