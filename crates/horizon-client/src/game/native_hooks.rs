@@ -8864,6 +8864,21 @@ impl Game<'_> {
             to,
         );
     }
+    /// A player on the server had a stack change in one of their inventories:
+    /// `kind` is `Player`, `Ender`, `Cursor` or `Crafting`. Heard once per kind
+    /// that differs from what the mods last heard, after the players'
+    /// equipment in each tick, and a player's first tick counts from empty
+    /// (`native_players_inventory_changes`). Any cause is heard, vanilla's
+    /// clicks and pickups included. It only hears: change the inventory with
+    /// `native_set_inventory_slot` and its kin. A player away is not heard.
+    /// Server-side. Bundles that use it need `"hooks": @API:inventory_changed@`.
+    pub(super) fn native_inventory_changed(
+        &mut self,
+        uuid: u128,
+        kind: crate::mod_api::NativeInventoryKind,
+    ) {
+        mod_api::dispatch_inventory_changed(self, mod_api::mods(), uuid, kind);
+    }
     /// `player` died: where `ServerPlayer.die` starts, with the death
     /// message's key when the game knows it (`death.attack.lava`; none for a
     /// message it builds from the combat). It only hears. Server-side, for
