@@ -199,12 +199,13 @@ impl Game<'_> {
             })
             .collect()
     }
-    /// `ServerLevel.shouldTickBlocksAt` in a block-ticking chunk
-    /// (`LevelChunk.isTicking`, block coordinates), from every player's
-    /// tickets (`update_chunk_tickets`).
-    fn block_ticking_area(&self) -> impl Fn(i32, i32) -> bool + use<> {
+    /// `LevelChunk.isTicking` (block coordinates): a block-ticking chunk from
+    /// every player's tickets (`update_chunk_tickets`), its entities loaded
+    /// (`ServerLevel.areEntitiesLoaded`).
+    pub(super) fn block_ticking_area(&self) -> impl Fn(i32, i32) -> bool + use<> {
         let levels = self.tickets.levels();
-        move |x, z| levels.block_ticking_at(x, z)
+        let pending = self.world.entities_pending.clone();
+        move |x, z| levels.block_ticking_at(x, z) && !pending.contains(&(x >> 4, z >> 4))
     }
     /// `DaylightDetectorBlock.tickEntity` of the detector at `pos`.
     fn tick_daylight_detector(&mut self, pos: Pos) {

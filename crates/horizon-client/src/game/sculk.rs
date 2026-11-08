@@ -969,6 +969,7 @@ impl Game<'_> {
         // a sculk tick does loads, unloads or lights a chunk or moves a ticket.
         let levels = self.tickets.levels();
         let chunks = &self.world.chunks;
+        let pending = &self.world.entities_pending;
         let mut ticking = FxHashMap::<(i32, i32), bool>::default();
         let mut ticks = |cx: i32, cz: i32| {
             *ticking.entry((cx, cz)).or_insert_with(|| {
@@ -987,7 +988,9 @@ impl Game<'_> {
             .iter()
             .filter_map(|&key| {
                 let (cx, cz) = (key.0 >> 4, key.2 >> 4);
+                // `LevelChunk.isTicking`: its own chunk's entities loaded too.
                 if !ticks(cx, cz)
+                    || pending.contains(&(cx, cz))
                     || matches!(entities.get(&key), Some(BlockEntity::Sculk(e)) if e.idle())
                 {
                     return None;

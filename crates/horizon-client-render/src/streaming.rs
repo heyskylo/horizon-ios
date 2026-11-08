@@ -1295,6 +1295,7 @@ impl Streaming {
             self.meshed.remove(&(x, z));
             self.lighting.remove(&(x, z));
             world.dirty_sections.take_column(x, z);
+            world.entities_pending.remove(&(x, z));
             chunks.extend(world.chunks.remove(&(x, z)));
         }
         chunks
@@ -1435,6 +1436,7 @@ impl Streaming {
             .block_names
             .extend(std::mem::take(&mut chunk.block_names));
         let entities = std::mem::take(&mut chunk.entities);
+        world.entities_pending.insert((chunk.x, chunk.z));
         if !entities.is_empty() {
             world.loaded_entities.push(((chunk.x, chunk.z), entities));
         }
@@ -1766,6 +1768,7 @@ impl Streaming {
                 if let Some(chunk) = world.chunks.remove(key) {
                     removed.push(chunk);
                 }
+                world.entities_pending.remove(key);
                 self.lit.remove(key);
                 self.meshed.remove(key);
                 self.lighting.remove(key);
