@@ -975,6 +975,34 @@ pub enum TemplateGroup {
     Inspiration,
 }
 
+/// `RealmsCreateWorldFlow.createWorld`'s target: the reset screen's Generate New World
+/// tile asks the title for the Create New World screen, whose settings upload into
+/// `slot`.
+#[derive(Clone, Debug)]
+pub struct CreateWorldRequest {
+    pub server: RealmServer,
+    pub slot: i32,
+    pub kind: ResetKind,
+    /// `RealmCreationTask`'s name and description, for `ResetKind::NewRealm`.
+    pub creation: Option<(String, String)>,
+}
+
+/// What the Create New World screen decided, for the temporary world
+/// `RealmsCreateWorldFlow.createTemporaryWorldFolder` writes before the upload.
+#[derive(Clone, Debug)]
+pub struct CreatedWorld {
+    /// The world's level data, its name, game type, difficulty, game rules and features.
+    pub level: crate::save::Level,
+    pub world_gen: crate::save::WorldGen,
+    pub flat_settings: Option<horizon_world::nbt::Tag>,
+    pub single_biome: Option<String>,
+    /// level.dat's `DataPacks`: enabled and disabled ids.
+    pub data_packs: (Vec<String>, Vec<String>),
+    /// The Create World screen's temporary pack folder, moved into the world
+    /// (`Files.move(tempDataPackDir, worldFolder.resolve("datapacks"))`).
+    pub pack_dir: Option<PathBuf>,
+}
+
 impl TemplateGroup {
     const ALL: [Self; 4] = [
         Self::Normal,
@@ -1235,6 +1263,14 @@ pub enum SubScreen {
         /// When the screen opened: the dots' blink (`tickCount / 10` at 20 ticks a second).
         started: Instant,
     },
+    /// `RealmsCreateWorldFlow.createWorld`: the temporary world the Create New World
+    /// screen described is packed and uploaded, under `AlertScreen`
+    /// (`mco.create.world.reset.title`) with Cancel.
+    CreateWorldUpload {
+        request: CreateWorldRequest,
+        progress: Arc<upload::UploadProgress>,
+        job: Option<Job<Result<(), upload::UploadError>>>,
+    },
     /// `RealmsPdpScreen`: the product page behind Add Realm, its picture rows and scroll.
     AddRealm {
         scroll: crate::ui::Scroll,
@@ -1408,6 +1444,9 @@ pub enum Outcome {
     OpenUri(String),
     /// `KeyboardHandler.setClipboard` for the title's own clipboard.
     Copy(String),
+    /// `RealmsResetWorldScreen`'s Generate New World tile: `RealmsCreateWorldFlow`
+    /// opens Create World and uploads the world it describes.
+    CreateWorld(CreateWorldRequest),
 }
 
 impl Default for Screen {
@@ -1438,6 +1477,97 @@ fn fetch_address(
         }
     }
     Err(RealmsError::Timeout)
+}
+
+/// `RealmsCreateWorldFlow.createWorld`'s worker: `createTemporaryWorldFolder`, then
+/// `RealmCreationTask` → `SwitchSlotTask` → `packAndUpload`, as an upload's worker does.
+fn upload_created_world(
+    client: &RealmsClient,
+    server: &RealmServer,
+    slot: i32,
+    creation: Option<&(String, String)>,
+    world: &CreatedWorld,
+    progress: &upload::UploadProgress,
+) -> Result<(), upload::UploadError> {
+    let dir = create_temporary_world(world).map_err(upload::UploadError::Failed)?;
+    let result = (|| {
+        if let Some((name, description)) = creation {
+            client
+                .initialize_realm(server.id, name, description)
+                .map_err(|e| upload::UploadError::Failed(e.text()))?;
+        }
+        if slot != server.active_slot {
+            client
+                .switch_slot(server.id, slot)
+                .map_err(|e| upload::UploadError::Failed(e.text()))?;
+        }
+        // `RealmsWorldOptions.createFromSettings`: the world's own settings, the game's
+        // version as the world version.
+        let options = RealmWorldOptions {
+            spawn_protection: 0,
+            force_game_mode: false,
+            difficulty: i32::from(world.level.difficulty_id()),
+            game_mode: if world.level.creative { 1 } else { 0 },
+            slot_name: world.level.name.clone(),
+            version: crate::save::VERSION_NAME.into(),
+            compatibility: "UNVERIFIABLE".into(),
+            template_id: -1,
+            template_image: None,
+            empty: false,
+        };
+        let realm_slot = RealmSlot {
+            slot_id: slot,
+            options,
+            settings: vec![RealmSetting {
+                name: "hardcore".into(),
+                value: world.level.hardcore.to_string(),
+            }],
+        };
+        upload::upload_world(client, server.id, &realm_slot, &dir, progress)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+/// `RealmsCreateWorldFlow.createTemporaryWorldFolder`: level.dat as
+/// `WorldData.createTag(null)` writes it (no `singleplayer_uuid`), the world generation
+/// and game rules, and the Create World screen's data packs moved into the world. No
+/// chunks: the Realm generates them when the world first opens.
+fn create_temporary_world(world: &CreatedWorld) -> std::result::Result<PathBuf, String> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "horizon-realms-world-upload-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let result = (|| {
+        let mut level = world.level.clone();
+        level.data_packs = Some(world.data_packs.clone());
+        level.write_upload(&dir).map_err(|e| e.to_string())?;
+        crate::save::write_world_gen_settings_with(
+            &dir,
+            level.seed,
+            world.world_gen,
+            world.flat_settings.clone(),
+            world.single_biome.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
+        if let Some(pack_dir) = &world.pack_dir {
+            // `Files.move(tempDataPackDir, worldFolder.resolve("datapacks"))`; the
+            // Create World screen's temporary folder is gone afterwards.
+            crate::datapack::install(pack_dir, &dir, &world.data_packs.0)?;
+            let _ = std::fs::remove_dir_all(pack_dir);
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => Ok(dir),
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            Err(e)
+        }
+    }
 }
 
 /// `RealmsPdpScreen`'s list: the trial header (no picture) and the three features, each
@@ -2522,6 +2652,36 @@ impl Screen {
                     }
                 }
             }
+            SubScreen::CreateWorldUpload { request, job, .. } => {
+                if let Some(result) = job.as_ref().and_then(take) {
+                    let request = request.clone();
+                    *job = None;
+                    match result {
+                        // `RealmsCreateWorldFlow.createWorld`'s success: the return screen
+                        // (the configuration screen) — or, for a Realm just created, it is
+                        // played (`RealmsMainScreen.play(server, returnScreen, true)`).
+                        Ok(()) => {
+                            if request.creation.is_some() {
+                                return self.start_join_after_create(request.server);
+                            }
+                            self.back_to_configure_worlds(request.server);
+                        }
+                        // `RealmsUploadCanceledException`: the reset screen it started from.
+                        Err(upload::UploadError::Cancelled) => {
+                            self.subscreen = Self::reset_screen(request);
+                        }
+                        // `RealmsGenericErrorScreen(mco.create.world.failed, lastScreen)`:
+                        // the generic title over that message.
+                        Err(_) => {
+                            self.subscreen = SubScreen::Error {
+                                title: crate::lang::get("mco.errorMessage.generic"),
+                                detail: crate::lang::get("mco.create.world.failed"),
+                                next: Box::new(Self::reset_screen(request)),
+                            };
+                        }
+                    }
+                }
+            }
             SubScreen::EditCode {
                 server,
                 code,
@@ -3268,6 +3428,9 @@ impl Screen {
                     return false;
                 }
             }
+            // `AlertScreen.shouldCloseOnEsc` is false: Escape does nothing while the
+            // generated world uploads.
+            SubScreen::CreateWorldUpload { .. } => return false,
             _ => Escape::List,
         };
         match action {
@@ -4341,6 +4504,84 @@ impl Screen {
         };
     }
 
+    /// `RealmsCreateWorldFlow.createWorld`: the Create New World screen's settings become
+    /// a temporary world (`createTemporaryWorldFolder`) that is packed and uploaded into
+    /// the slot; `AlertScreen` (`mco.create.world.reset.title`) shows while it runs.
+    pub fn start_create_world_upload(&mut self, request: CreateWorldRequest, world: CreatedWorld) {
+        let progress = Arc::new(upload::UploadProgress::default());
+        let job = client().map(|client| {
+            let progress = Arc::clone(&progress);
+            let server = request.server.clone();
+            let slot = request.slot;
+            let creation = request.creation.clone();
+            spawn(move || {
+                upload_created_world(&client, &server, slot, creation.as_ref(), &world, &progress)
+            })
+        });
+        if job.is_none() {
+            // The upload cannot run without the account's session: the same failure the
+            // service's refusal would show, back to the reset screen.
+            self.subscreen = SubScreen::Error {
+                title: crate::lang::get("mco.errorMessage.generic"),
+                detail: crate::lang::get("mco.create.world.failed"),
+                next: Box::new(Self::reset_screen(request)),
+            };
+            return;
+        }
+        self.subscreen = SubScreen::CreateWorldUpload {
+            request,
+            progress,
+            job,
+        };
+    }
+
+    /// The Create New World screen's Back for the Generate New World tile
+    /// (`CreateWorldScreen.openFresh`'s cancel): the screen the reset screen was opened
+    /// from — the configuration screen, or the list for a Realm being created.
+    pub fn cancel_create_world(&mut self, request: CreateWorldRequest) {
+        match request.kind {
+            ResetKind::NewRealm => {
+                self.subscreen = SubScreen::Main;
+                self.selected = None;
+                self.refresh();
+            }
+            ResetKind::Reset | ResetKind::Empty => self.back_to_configure_worlds(request.server),
+        }
+    }
+
+    /// `RealmsResetWorldScreen` again, as the reset's own tasks return to it.
+    fn reset_screen(request: CreateWorldRequest) -> SubScreen {
+        SubScreen::ResetWorld {
+            server: request.server,
+            slot: request.slot,
+            kind: request.kind,
+            creation: request.creation,
+            templates: None,
+            job: None,
+            reset: None,
+            error: None,
+        }
+    }
+
+    /// `RealmsMainScreen.play(server, returnScreen, true)` for a Realm that was just
+    /// initialized: the address request without the list's Play gate (the list has not
+    /// reloaded the Realm yet).
+    fn start_join_after_create(&mut self, server: RealmServer) -> Outcome {
+        let Some(client) = client() else {
+            return Outcome::None;
+        };
+        let aborted = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&aborted);
+        let id = server.id;
+        let job = spawn(move || fetch_address(&client, id, &flag));
+        self.joining = Some((job, aborted));
+        self.subscreen = SubScreen::Connecting {
+            server,
+            error: None,
+        };
+        Outcome::None
+    }
+
     /// `new RealmsSelectFileToUploadScreen`: the game's own worlds (`WorldSelectionList`), as the
     /// title screen lists them.
     fn open_upload_select(
@@ -4751,10 +4992,9 @@ impl Screen {
                 self.reset_button();
                 Outcome::None
             }
-            // RealmsResetWorldScreen's tiles: Upload (71) and the four template groups (72..=75).
-            // Generate New World (70) needs the create-world flow the port does not feed into
-            // an upload yet, so the tile is drawn disabled and does nothing.
-            Some(tile @ 71..=75) => {
+            // `RealmsResetWorldScreen.init`'s tiles: Generate New World (70), Upload (71)
+            // and the four template groups (72..=75).
+            Some(tile @ 70..=75) => {
                 if let SubScreen::ResetWorld {
                     server,
                     slot,
@@ -4765,6 +5005,16 @@ impl Screen {
                 {
                     let (server, slot, kind) = (server.clone(), *slot, *kind);
                     let creation = creation.clone();
+                    if tile == 70 {
+                        // `RealmsCreateWorldFlow.createWorld`: the title opens its Create
+                        // New World screen; the settings come back for the upload.
+                        return Outcome::CreateWorld(CreateWorldRequest {
+                            server,
+                            slot,
+                            kind,
+                            creation,
+                        });
+                    }
                     if tile == 71 {
                         self.open_upload_select(server, slot, kind, creation);
                     } else if let Some(group) = TemplateGroup::ALL.get(usize::from(tile - 72)) {
@@ -4957,6 +5207,14 @@ impl Screen {
                 if let SubScreen::Uploading { server, .. } = &self.subscreen {
                     let server = server.clone();
                     self.back_to_configure_worlds(server);
+                }
+                Outcome::None
+            }
+            // `RealmsCreateWorldFlow`'s `AlertScreen` Cancel: `realmsWorldUpload.cancel()`.
+            // The worker's cancelled answer returns to the reset screen (`poll`).
+            Some(93) => {
+                if let SubScreen::CreateWorldUpload { progress, .. } = &self.subscreen {
+                    progress.cancel();
                 }
                 Outcome::None
             }
@@ -7467,6 +7725,12 @@ impl Screen {
                         None,
                     ));
                 }
+            }
+            SubScreen::CreateWorldUpload { .. } => {
+                // `AlertScreen.init`: Cancel is the 150-wide button at
+                // `clamp(90 + textHeight + 12, h / 6 + 96, h - 24)`, the message empty.
+                let y = (h / 6.0 + 96.0).max(102.0_f32.min(h - 24.0));
+                buttons.push((cx - 75.0, y, 150.0, t("gui.cancel"), true, 93, None));
             }
             SubScreen::Main => {
                 let signed_in = session().is_some();
@@ -10039,9 +10303,9 @@ impl Screen {
                             centered(batch, atlas, line, cx, h - 56.0 + i as f32 * 10.0, RED);
                         }
                     }
-                    // `RealmsResetWorldScreen.init`'s tiles: Generate New World, Upload, the four
-                    // groups. Generate New World needs the create-world flow wired to an upload
-                    // and is drawn disabled (vanilla's own tile opens CreateWorldScreen).
+                    // `RealmsResetWorldScreen.init`'s tiles: Generate New World, Upload, the
+                    // four groups. Generate New World opens Create New World
+                    // (`RealmsCreateWorldFlow.createWorld`) and uploads what it made.
                     let tiles = [
                         ("mco.reset.world.generate", "gui/realms/new_world"),
                         ("mco.upload.select.world.title", "gui/realms/upload"),
@@ -10053,14 +10317,9 @@ impl Screen {
                     let content_y = reset_content_y(h);
                     for (i, (label, image)) in tiles.iter().enumerate() {
                         let (x, y) = reset_tile(cx, content_y, i);
-                        let enabled = i != 0;
                         // The control is 60x69: the frame plus its label.
-                        let hover = enabled && crate::ui::hovered(cursor, x, y, 60.0, 69.0);
-                        let frame = if enabled {
-                            if hover { 0xFF90_9090 } else { u32::MAX }
-                        } else {
-                            0xFF60_6060
-                        };
+                        let hover = crate::ui::hovered(cursor, x, y, 60.0, 69.0);
+                        let frame = if hover { 0xFF90_9090 } else { u32::MAX };
                         batch.fill(atlas, x + 2.0, y + 2.0, 56.0, 56.0, 0xFF20_2020);
                         // `FrameButton`: the picture inside `widget/slot_frame`.
                         crate::ui::blit_sprite(
@@ -10083,13 +10342,7 @@ impl Screen {
                             60.0,
                             frame,
                         );
-                        let color = if !enabled {
-                            0xFF50_5050
-                        } else if hover {
-                            GREY
-                        } else {
-                            u32::MAX
-                        };
+                        let color = if hover { GREY } else { u32::MAX };
                         let text = t(label);
                         let width = HudBatch::text_width(atlas, &text);
                         // `FrameButton.extractContents`: `centeredText(..., x + 28, y - 14)`.
@@ -10678,6 +10931,18 @@ impl Screen {
                         RED,
                     );
                 }
+            }
+            SubScreen::CreateWorldUpload { .. } => {
+                // `AlertScreen.extractRenderState`: the title at 70 over an empty message;
+                // the Cancel button is drawn with the screen's buttons.
+                centered(
+                    batch,
+                    atlas,
+                    &t("mco.create.world.reset.title"),
+                    cx,
+                    70.0,
+                    u32::MAX,
+                );
             }
             SubScreen::Main => self.draw_main(batch, atlas, cursor, w, h, list_focused),
         }
@@ -12237,6 +12502,72 @@ mod tests {
                 "mco.reset.world.inspiration"
             ]
         );
+    }
+
+    /// `RealmsResetWorldScreen`'s Generate New World tile: `RealmsCreateWorldFlow` gets
+    /// the Realm, slot and reset kind to upload into.
+    #[test]
+    fn the_generate_tile_asks_for_the_create_world_screen() {
+        let mut screen = listed(vec![server(7, None)]);
+        screen.subscreen = SubScreen::ResetWorld {
+            server: server(7, None),
+            slot: 2,
+            kind: ResetKind::Empty,
+            creation: None,
+            templates: None,
+            job: None,
+            reset: None,
+            error: None,
+        };
+        match screen.click(Some(70), 0.0, 0.0, (854.0, 480.0)) {
+            Outcome::CreateWorld(request) => {
+                assert_eq!((request.server.id, request.slot), (7, 2));
+                assert_eq!(request.kind, ResetKind::Empty);
+                assert!(request.creation.is_none());
+            }
+            _ => panic!("the Generate New World tile asks for Create World"),
+        }
+    }
+
+    /// `RealmsCreateWorldFlow.createTemporaryWorldFolder`: level.dat without
+    /// `singleplayer_uuid`, the world generation and game rules, and no player file or
+    /// weather/clocks (the Realm's server makes those on its own).
+    #[test]
+    fn a_generated_upload_world_carries_only_what_the_realm_needs() {
+        let mut level = crate::save::Level {
+            name: "New World".into(),
+            seed: 4242,
+            day_time: 0,
+            health: 20.0,
+            food: 20,
+            saturation: 5.0,
+            ..Default::default()
+        };
+        level.difficulty = "normal".into();
+        level.enabled_features = vec!["minecraft:vanilla".into()];
+        level.data_packs = Some((vec!["vanilla".into()], Vec::new()));
+        let world = CreatedWorld {
+            level,
+            world_gen: crate::save::WorldGen::default(),
+            flat_settings: None,
+            single_biome: None,
+            data_packs: (vec!["vanilla".into()], Vec::new()),
+            pack_dir: None,
+        };
+        let dir = create_temporary_world(&world).unwrap();
+        let data = crate::save::read_dat(&dir.join("level.dat")).unwrap();
+        let level = data.get("Data").expect("the level's data");
+        assert_eq!(
+            crate::save::text(level.get("LevelName")).as_deref(),
+            Some("New World")
+        );
+        assert!(level.get("singleplayer_uuid").is_none());
+        assert!(!dir.join("players").exists());
+        assert!(dir.join("data/minecraft/world_gen_settings.dat").is_file());
+        assert!(dir.join("data/minecraft/game_rules.dat").is_file());
+        assert!(!dir.join("data/minecraft/weather.dat").exists());
+        assert!(!dir.join("data/minecraft/world_clocks.dat").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `WorldTemplatePaginatedList.isLastPage`: page*size >= total, all three set.

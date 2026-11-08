@@ -317,7 +317,7 @@ impl Game<'_> {
             }
             _ => None,
         };
-        let Some(id) = self.spawn_mob("minecraft:copper_golem", at, true) else {
+        let Some(id) = self.spawn_mob_raw("minecraft:copper_golem", at, true) else {
             return false;
         };
         if let Some(name) = name {

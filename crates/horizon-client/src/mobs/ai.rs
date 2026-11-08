@@ -3051,6 +3051,12 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
     // a totem adds its effects to it). An effect a tick appends ticks from
     // the next tick on.
     let first = m.extra.effects.len();
+    let old_boost_amp = m
+        .extra
+        .effects
+        .iter()
+        .find(|e| e.0 == "minecraft:health_boost")
+        .map(|e| e.2);
     let mut i = 0;
     while i < m.extra.effects.len() && i < first {
         let (effect, amp) = (m.extra.effects[i].0, m.extra.effects[i].2);
@@ -3138,11 +3144,6 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
         .effects
         .iter()
         .any(|e| e.0 == "minecraft:absorption" && e.1 <= 0 && e.1 != -1);
-    let boost_gone = m
-        .extra
-        .effects
-        .iter()
-        .any(|e| e.0 == "minecraft:health_boost" && e.1 <= 0 && e.1 != -1);
     m.extra.effects.retain(|e| e.1 > 0 || e.1 == -1);
     // LivingEntity.onEffectsRemoved -> refreshDirtyAttributes ->
     // onAttributeUpdated(MAX_ABSORPTION): the amount is clamped to the
@@ -3150,8 +3151,14 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
     if absorption_gone {
         m.absorption = m.absorption.min(super::armor::max_absorption(m));
     }
-    // LivingEntity.onEffectsRemoved -> refreshDirtyAttributes.
-    if boost_gone {
+    // LivingEntity.onEffectsRemoved / onEffectUpdated -> refreshDirtyAttributes.
+    let new_boost_amp = m
+        .extra
+        .effects
+        .iter()
+        .find(|e| e.0 == "minecraft:health_boost")
+        .map(|e| e.2);
+    if old_boost_amp != new_boost_amp {
         super::finalize::health_boost_changed(m);
     }
     m.extra

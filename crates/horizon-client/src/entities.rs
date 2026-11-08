@@ -1315,6 +1315,9 @@ pub struct ExperienceOrb {
     pub health: i32,
     /// `Entity.noGravity`: `ExperienceOrb.tick`'s `applyGravity` does nothing.
     pub no_gravity: bool,
+    /// `ExperienceOrb.followingPlayer`: the followed player's entity id, kept
+    /// until they are gone or further than 8 blocks. Never saved.
+    pub following: Option<u32>,
 }
 impl ExperienceOrb {
     /// `ExperienceOrb.hurtServer`: the damage comes off the health as an
@@ -1466,7 +1469,9 @@ impl ExperienceOrb {
     ) -> bool {
         self.ticks += 1;
         self.previous = self.position;
-        self.update_fluids(world, fluids);
+        // `Entity.baseTick`'s fluid step, whose `updateFluidOnEyes` answer the
+        // water branch below reads: the orb's eye, not its feet, decides.
+        let eye_in_water = self.update_fluids(world, fluids);
         let block = world.block(
             self.position.x.floor() as i32,
             self.position.y.floor() as i32,
@@ -1481,7 +1486,10 @@ impl ExperienceOrb {
         // `boolean colliding = !level.noCollision(getBoundingBox())`: an orb
         // inside blocks takes no gravity until it is pushed out below.
         let colliding = !crate::collisions::no_collision_empty(&mut scene, bounds);
-        if facts.get(block).fluid == Fluid::Water {
+        // ExperienceOrb.tick: `isEyeInFluid(FluidTags.WATER)` floats the orb,
+        // so an orb whose eye dips into the surface floats with its feet
+        // still in the air block above it.
+        if eye_in_water {
             self.set_underwater_movement();
         } else if !colliding {
             self.velocity.y -= self.get_gravity();
@@ -3338,6 +3346,7 @@ mod world_border_tests {
                 count: 1,
                 ticks: 0,
                 health: 5,
+                following: None,
             };
             orb.tick(
                 &world,
@@ -4642,6 +4651,7 @@ mod orb_underwater_tests {
                     count: 1,
                     ticks: 0,
                     health: 5,
+                    following: None,
                 };
                 orb.set_underwater_movement();
                 [
@@ -4675,6 +4685,7 @@ mod render_light_tests {
             count: 1,
             ticks: 0,
             health: 5,
+            following: None,
         }
     }
 
@@ -4871,6 +4882,7 @@ mod orb_lava_tests {
             count: 1,
             ticks: 0,
             health,
+            following: None,
         }
     }
 
