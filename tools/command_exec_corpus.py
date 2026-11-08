@@ -5655,15 +5655,11 @@ def item_block_escape():
     item = '@e[tag=escape,limit=1]'
     # The east speed is random, but for two ticks the item's middle stays in
     # the stone whatever it is: it escapes east both times, so its height and
-    # vertical motion are exact. Read scaled by 412 and floored: that hides the
-    # f32 air-drag rounding owned by #11794 / #6814 (vanilla 0.11760000228881835,
-    # Horizon 0.1176), and 412 puts every value at least 0.42 from a rounding
-    # step (round scales such as 1000 land on one). Gravity on the wrong side of
-    # the push still differs. Back to exact reads once #11794 lands.
+    # vertical motion are exact.
     for _ in range(2):
         ops.append({'op': 'tick', 'n': 1})
-        ops.append(cmd(f'/data get entity {item} Pos[1] 412'))
-        ops.append(cmd(f'/data get entity {item} Motion[1] 412'))
+        ops.append(cmd(f'/data get entity {item} Pos[1]'))
+        ops.append(cmd(f'/data get entity {item} Motion[1]'))
     ops += setup('/kill @e[type=!player]', '/fill 0 200 0 5 215 5 air')
     return ops
 
