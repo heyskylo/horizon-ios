@@ -377,7 +377,9 @@ impl Walker<'_> {
 /// Whether the block entity id is registered in the schema at `k` (before 1.14).
 pub(super) fn legacy_block_entity_known(id: &str, k: Key) -> bool {
     if k < key(704, 0) {
-        return crate::datafix::flat_tables::BLOCK_ENTITIES_V99.contains(&id);
+        return crate::datafix::tables::tables()
+            .block_entities_v99
+            .contains(&id);
     }
     match id {
         "minecraft:furnace"
@@ -420,7 +422,8 @@ pub(in crate::datafix) fn legacy_entity_known(id: &str, k: Key) -> bool {
     }
     static ERAS: OnceLock<[HashSet<String>; 5]> = OnceLock::new();
     let eras = ERAS.get_or_init(|| {
-        let mut set: HashSet<String> = crate::datafix::flat_tables::ENTITIES_V1460
+        let mut set: HashSet<String> = crate::datafix::tables::tables()
+            .entities_v1460
             .iter()
             .map(|s| (*s).to_owned())
             .collect();
@@ -503,6 +506,6 @@ fn old_entity_known(id: &str, k: Key) -> bool {
         "ZombieVillager" | "Husk" => k >= key(702, 0),
         "Horse" | "Donkey" | "Mule" | "ZombieHorse" | "SkeletonHorse" => k >= key(703, 0),
         "EntityHorse" => k < key(703, 0),
-        _ => crate::datafix::flat_tables::ENTITIES_V99.contains(&id),
+        _ => crate::datafix::tables::tables().entities_v99.contains(&id),
     }
 }
