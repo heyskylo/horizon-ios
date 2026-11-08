@@ -53,8 +53,8 @@ Cases:
 - controller_nintendo_buttons: with Nintendo glyphs, A on Device's Nintendo Buttons picks By Letter and saves it, and
   again goes back to By Position.
 - nintendo_letters: a Nintendo pad going by its letters shows the letter of the button that acts on the title's
-  declared buttons (Options is X, Quit Game's B), and by places Y and A; the gameplay guide and a connected pad's
-  notice are shot in both modes.
+  declared buttons (Options is X, Quit Game's B), and by places Y and A, and the guide's Jump is A or B; the guide
+  and a connected pad's notice are shot in both modes.
 - extras_shell: Horizon Extras on the settings shell: the D-pad walks its rows and scrolls through the hidden ones, past
   a greyed row, the right stick scrolls it, A changes and saves a toggle, the strip follows the row, B leaves.
 - graphics_shell: the Graphics screen on the settings shell: the D-pad goes from its Quality page into the rows, A
@@ -2905,6 +2905,10 @@ def nintendo_letters(args, name):
             game.pad('lb')
             left, right = guide(game)
             check(left or right, f'{mode}: no gameplay guide rows')
+            # Jump is South: the A on the right by letters, the B at the bottom by places.
+            labels = {r['caption']: r['label'] for r in game.ctl('pad', 'status')['guide']['left']}
+            jump = 'A' if letters else 'B'
+            check(labels.get('key.jump') == jump, f'{mode}: jump shows {labels.get("key.jump")}, not {jump}')
             shot(game, f'nintendo_{mode}_guide')
             game.ctl('pad', 'connection', 'connected', 'nintendo')
             time.sleep(1)

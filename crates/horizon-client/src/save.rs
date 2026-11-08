@@ -2466,6 +2466,9 @@ pub struct SaveDir {
 fn is_forced_ticket(ticket: &Tag) -> bool {
     matches!(ticket.get("type"), Some(Tag::String(t)) if *t == JavaString::from("minecraft:forced"))
 }
+fn is_portal_ticket(ticket: &Tag) -> bool {
+    matches!(ticket.get("type"), Some(Tag::String(t)) if *t == JavaString::from("minecraft:portal"))
+}
 #[derive(Default)]
 struct LodDecoded {
     chunks: crate::fast_hash::FxHashMap<(i32, i32), (std::time::Instant, LodSurfaces)>,
@@ -2574,8 +2577,53 @@ impl SaveDir {
             })
             .collect()
     }
-    pub fn save_forced_chunks(&self, forced: &HashSet<(i32, i32)>) -> Result<()> {
-        if forced.is_empty() && !saved_data_path(&self.root, "chunk_tickets").exists() {
+    /// The saved `PORTAL` tickets, for `TicketStorage.activateAllDeactivatedTickets`
+    /// (`Ticket.CODEC`: a non-negative level, `ticks_left` 0 when missing).
+    pub fn load_portal_tickets(&self) -> Vec<crate::ticket_levels::PortalTicket> {
+        let Some(Tag::List(tickets)) =
+            read_saved_data(&self.root, "chunk_tickets").and_then(|d| d.get("tickets").cloned())
+        else {
+            return Vec::new();
+        };
+        tickets
+            .iter()
+            .filter(|t| is_portal_ticket(t))
+            .filter_map(|t| {
+                let chunk = match t.get("chunk_pos")? {
+                    Tag::IntArray(pos) if pos.len() == 2 => (pos[0], pos[1]),
+                    _ => return None,
+                };
+                let level = match t.get("level")? {
+                    &Tag::Int(level) if level >= 0 => level,
+                    _ => return None,
+                };
+                let ticks_left = match t.get("ticks_left") {
+                    None => 0,
+                    Some(&Tag::Long(n)) => n,
+                    Some(&Tag::Int(n)) => n.into(),
+                    Some(&Tag::Short(n)) => n.into(),
+                    Some(&Tag::Byte(n)) => n.into(),
+                    Some(_) => return None,
+                };
+                Some(crate::ticket_levels::PortalTicket {
+                    chunk,
+                    level,
+                    ticks_left,
+                })
+            })
+            .collect()
+    }
+    /// `TicketStorage.packTickets`: the forced chunks and the `PORTAL` tickets
+    /// the level holds now, in place of the ones saved before.
+    pub fn save_chunk_tickets(
+        &self,
+        forced: &HashSet<(i32, i32)>,
+        portal: &[crate::ticket_levels::PortalTicket],
+    ) -> Result<()> {
+        if forced.is_empty()
+            && portal.is_empty()
+            && !saved_data_path(&self.root, "chunk_tickets").exists()
+        {
             return Ok(());
         }
         let mut data = compound_or_empty(read_saved_data(&self.root, "chunk_tickets"));
@@ -2583,7 +2631,7 @@ impl SaveDir {
         let mut tickets = match data.get("tickets") {
             Some(Tag::List(tickets)) => tickets
                 .iter()
-                .filter(|t| !is_forced_ticket(t))
+                .filter(|t| !is_forced_ticket(t) && !is_portal_ticket(t))
                 .cloned()
                 .collect::<Vec<_>>(),
             _ => Vec::new(),
@@ -2596,6 +2644,18 @@ impl SaveDir {
                 ("level", Tag::Int(31)), // ChunkMap.FORCED_TICKET_LEVEL: ENTITY_TICKING.
                 ("chunk_pos", Tag::IntArray(vec![x, z])),
             ])
+        }));
+        tickets.extend(portal.iter().map(|t| {
+            let mut ticket = Tag::compound([
+                ("type", Tag::String("minecraft:portal".into())),
+                ("level", Tag::Int(t.level)),
+                ("chunk_pos", Tag::IntArray(vec![t.chunk.0, t.chunk.1])),
+            ]);
+            // `optionalFieldOf("ticks_left", 0L)` leaves out its default.
+            if t.ticks_left != 0 {
+                put(&mut ticket, "ticks_left", Tag::Long(t.ticks_left));
+            }
+            ticket
         }));
         put(&mut data, "tickets", Tag::List(tickets));
         write_saved_data(&self.root, "chunk_tickets", data)
@@ -3822,6 +3882,10 @@ pub struct Level {
     /// `LivingEntity.addAdditionalSaveData`'s `FallFlying`: the player was
     /// gliding (shared flag 7), so the glide goes on after the load.
     pub fall_flying: bool,
+    /// Current body's save projection. None before a live body supplies it;
+    /// retained raw data stays intact until then.
+    pub player_impulse_grace: Option<i32>,
+    pub player_fall_particles: Option<bool>,
     pub food_exhaustion: f32,
     pub food_tick_timer: i32,
     /// Abilities.flying: whether creative/spectator flight is active.
@@ -4037,6 +4101,8 @@ impl Level {
         Some(level)
     }
     pub fn read_player(&mut self, p: &Tag) {
+        self.player_impulse_grace = None;
+        self.player_fall_particles = None;
         let n = |k: &str| number(p.get(k));
         let f = |k: &str| float(p.get(k));
         self.position = read_doubles::<3>(p.get("Pos"));
@@ -4161,7 +4227,9 @@ impl Level {
             .get("RootVehicle")
             .and_then(|r| uuid_from_tag(r.get("Attach")));
     }
-    /// The player compound: the loaded one with Horizon's state written over it.
+    /// The player compound: loaded data with current state written over it.
+    /// `LivingEntity.addAdditionalSaveData` / `ServerPlayer.addAdditionalSaveData`:
+    /// the live fall fields and the player's empty brain are saved too.
     pub fn player_tag(&self) -> Tag {
         let mut p = compound_or_empty(self.player_extra.clone());
         // Keys rewritten from scratch.
@@ -4235,6 +4303,16 @@ impl Level {
                 .or_insert(Tag::Float(0.1f32.to_bits()));
             map.entry("flying".into()).or_insert(Tag::Byte(0));
         }
+        let impulse_grace = self
+            .player_impulse_grace
+            .map(Tag::Int)
+            .or_else(|| p.get("current_impulse_context_reset_grace_time").cloned())
+            .unwrap_or(Tag::Int(0));
+        let fall_particles = self
+            .player_fall_particles
+            .map(|v| Tag::Byte(i8::from(v)))
+            .or_else(|| p.get("spawn_extra_particles_on_fall").cloned())
+            .unwrap_or(Tag::Byte(0));
         let uuid = self.player_uuid.unwrap_or([0, 0, 0, 0]);
         let mut entries: Vec<(&str, Tag)> = vec![
             ("DataVersion", Tag::Int(DATA_VERSION)),
@@ -4247,6 +4325,14 @@ impl Level {
             // isFallFlying())`, always written.
             ("FallFlying", Tag::Byte(i8::from(self.fall_flying))),
             ("Health", Tag::Float(self.health.to_bits())),
+            // Player inherits LivingEntity.makeBrain: a new empty Brain;
+            // Brain.Packed's codec stores its empty memories map.
+            (
+                "Brain",
+                Tag::compound([("memories", Tag::Compound(Default::default()))]),
+            ),
+            ("current_impulse_context_reset_grace_time", impulse_grace),
+            ("spawn_extra_particles_on_fall", fall_particles),
             ("AbsorptionAmount", Tag::Float(self.absorption.to_bits())),
             ("foodLevel", Tag::Int(self.food)),
             ("foodSaturationLevel", Tag::Float(self.saturation.to_bits())),
@@ -8086,7 +8172,7 @@ mod tests {
             let save = SaveDir::new(dimension_dir(&root, dim), LevelShape::OVERWORLD);
             assert!(save.load_forced_chunks().is_empty());
             let forced = HashSet::from([(i as i32, -17), (-23, i as i32), (-1, -1)]);
-            save.save_forced_chunks(&forced).unwrap();
+            save.save_chunk_tickets(&forced, &[]).unwrap();
         }
         for (i, dim) in dimensions.iter().enumerate() {
             let path = dimension_dir(&root, dim);
@@ -8098,7 +8184,7 @@ mod tests {
             );
             let mut data = read_saved_data(&path, "chunk_tickets").unwrap();
             let other = Tag::compound([
-                ("type", Tag::String("minecraft:portal".into())),
+                ("type", Tag::String("example:loader".into())),
                 ("level", Tag::Int(30)),
                 ("chunk_pos", Tag::IntArray(vec![7, -8])),
                 ("ticks_left", Tag::Long(42)),
@@ -8113,11 +8199,11 @@ mod tests {
             }
             write_saved_data(&path, "chunk_tickets", data).unwrap();
             forced.remove(&(-1, -1));
-            save.save_forced_chunks(&forced).unwrap();
+            save.save_chunk_tickets(&forced, &[]).unwrap();
             drop(save);
             let reopened = SaveDir::new(path.clone(), LevelShape::OVERWORLD);
             assert_eq!(reopened.load_forced_chunks(), forced);
-            reopened.save_forced_chunks(&HashSet::new()).unwrap();
+            reopened.save_chunk_tickets(&HashSet::new(), &[]).unwrap();
             assert!(
                 SaveDir::new(path.clone(), LevelShape::OVERWORLD)
                     .load_forced_chunks()

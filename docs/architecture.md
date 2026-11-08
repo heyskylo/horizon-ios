@@ -43,7 +43,7 @@ command above to inspect the selection rather than relying on historical counts.
 | 14 | Mob AI (96) | `L/mobs/ai.rs`, `goals.rs`, `brain.rs`, `*_brain.rs`, `nav.rs`, `path.rs`, `control.rs` | mob_ai (probe `examples/mob_ai_probe.rs`; known failure on main: drowned_*, #290) |
 | 15 | Items and item use (96) | `I/items.rs`, `I/item_data.rs`, `G/hand.rs`, `G/consume.rs`, `G/using_item.rs`, `G/potions.rs`, `R/effects.rs`, `G/item_actions.rs` (`fn use_item`); game.rs `fn use_hand` | use_item_on, item_use, item_use_lifecycle, consumable, consume_effect, status_effect |
 | 16 | Options and settings screens (93) | `R/options_ui.rs`, `G/options.rs`, `R/settings.rs`, `R/options_file.rs`, `R/graphics_ui.rs`, `R/graphics.rs` | options, toggle_keys |
-| 17 | HUD, chat, tab list (93) | `R/hud.rs`, `R/hud_layout.rs`, `R/hud_overlays.rs`, `R/chat.rs`, `G/chat.rs`, `R/tab_list.rs`, `L/locator_bar.rs`, `G/locator_bar.rs` | hud, tab_list, locator_bar, chat_screen, secure_chat |
+| 17 | HUD, chat, tab list (93) | `R/hud.rs`, `R/hud_layout.rs`, `R/hud_overlays.rs`, `R/chat.rs`, `G/chat.rs`, `R/tab_list.rs`, `L/locator_bar.rs`, `G/locator_bar.rs`; Horizon's overlays around them: `R/hud_kit/` + `G/hud_room.rs` ([ui-kit.md](ui-kit.md)) | hud, tab_list, locator_bar, chat_screen, secure_chat |
 | 18 | Command execution (88) | `G/commands.rs`, `G/commands/*.rs`, `L/scoreboard_cmd.rs`, `L/data_cmd.rs`, `K/scoreboard.rs`, `G/functions.rs` | command_exec (corpus `tools/command_exec_corpus.py`), scoreboard, server_ops_feedback, lan_e2e commands |
 | 19 | Chunk streaming, light, tickets (85) | `R/streaming.rs`, `R/world.rs`, `R/chunk.rs`, `R/chunk_map.rs`, `R/light.rs`, `L/ticket_levels.rs`, `L/tick_chunk_membership.rs`, `G/world_loading.rs`, `G/world_entry.rs` | light, chunk_status, random_tick_sections; `cargo test -p horizon-client --test streaming_meshes` |
 | 20 | Mob models and animation (78) | `L/mobs/render.rs`, `L/mobs/anim.rs`, `L/mobs/body_anim.rs`, `L/mobs/keyframes.rs`, `R/entity.wgsl` | entity_model |
@@ -68,5 +68,5 @@ command above to inspect the selection rather than relying on historical counts.
 | 39 | Benchmarks and telemetry (34) | `L/benchmark.rs`, `tools/perf_bench.py`, `R/telemetry.rs`, `crates/horizon-telemetry*/`, `crates/horizon-bench/` | `python3 -m unittest tests.test_perf_bench`; [benchmark.md](benchmark.md) |
 | 40 | Explosions and TNT (31) | `G/explosion.rs`, `G/tnt.rs` | lan_e2e blast; no dedicated harness yet |
 
-Horizon's own overlays (controller glyphs, the gameplay guide, notices, splitscreen prompts) draw with the
-UI kit: [ui-kit.md](ui-kit.md) says where each piece lives and how to test it.
+Controller glyphs (`R/pad_glyph.rs`, drawn by the gameplay guide, notices, splitscreen prompts and declared
+buttons) are part of the same kit: [ui-kit.md](ui-kit.md) says how to ask for one and how to test it.

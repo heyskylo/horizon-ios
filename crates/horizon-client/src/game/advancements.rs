@@ -136,6 +136,9 @@ impl AdvState {
 /// The game's world for predicates.
 struct View<'a, 'g>(&'a Game<'g>);
 impl adv::World for View<'_, '_> {
+    fn predicate(&self, id: &str) -> Option<&Value> {
+        self.0.fns.store.predicates.get(id)
+    }
     fn dimension(&self) -> &str {
         self.0.dim.id()
     }
@@ -512,6 +515,10 @@ impl Game<'_> {
             tool: None,
             block_pos: None,
         };
+        // An invalid reference anywhere fails the whole tree, even under an inversion.
+        if !adv::references_valid(v, &View(self)) {
+            return false;
+        }
         adv::conditions_with(v, &ctx, &mut |leaf, ctx| {
             adv::literal_random_chance(leaf, &mut || self.world.random.next_float())
                 .unwrap_or_else(|| adv::conditions(leaf, ctx, &View(self)))

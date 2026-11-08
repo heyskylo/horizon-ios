@@ -1255,5 +1255,7 @@
   "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "พวงกุญแจของระบบไม่ตอบสนองภายใน {seconds} วินาที ตรวจสอบให้แน่ใจว่ากำลังทำงานและปลดล็อกอยู่ แล้วรีสตาร์ทตัวเปิดเกม",
   "Can't read {name}'s sign-in: {why}": "อ่านการลงชื่อเข้าใช้ของ {name} ไม่ได้: {why}",
   "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
-  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}."
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: ใช้เวอร์ชัน {version} ที่ทำมาสำหรับ Horizon ที่คุณเล่น",
+  "Recommended": "แนะนำ"
 }

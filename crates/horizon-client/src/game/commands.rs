@@ -96,6 +96,8 @@ pub(in crate::game) struct OtherEntity {
     pub yaw: f32,
     pub pitch: f32,
     pub item_transformation: Option<super::native_entities::ItemDisplayTransformation>,
+    /// A `minecraft:interaction`'s saved settings; None for every other kind.
+    pub interaction: Option<super::interactions::InteractionState>,
     /// Only explicitly loaded leash knots own this BlockAttachedEntity check counter.
     pub knot_check: Option<u8>,
 }
@@ -1373,6 +1375,9 @@ impl Game<'_> {
         let custom = s.data().and_then(|data| data.custom_name.as_ref());
         let hover = if let Some(c) = custom {
             horizon_client::component::name_text(c)
+        } else if let Some(key) = horizon_client::brewing::contents_name_key(s) {
+            // A potion's or tipped arrow's own name, over its `item_name`.
+            Text::translate(&key, &[])
         } else if let Some(name) = s.data().and_then(|d| d.other("minecraft:item_name")) {
             // `ItemStack.getItemName`: the `item_name` component wins over the
             // item's own name (`Item.getName`), so a datapack's or a server's
@@ -1385,18 +1390,6 @@ impl Game<'_> {
             .filter(|t| !t.trim().is_empty())
         {
             Text::literal(title)
-        } else if matches!(
-            item,
-            "minecraft:potion"
-                | "minecraft:splash_potion"
-                | "minecraft:lingering_potion"
-                | "minecraft:tipped_arrow"
-        ) && s.potion().is_some()
-        {
-            Text::translate(
-                &horizon_client::brewing::potion_name_key(item, s.potion()),
-                &[],
-            )
         } else if item == "minecraft:shield"
             && let Some(color) = s.data().and_then(|d| d.base_color.as_deref())
         {
@@ -2378,10 +2371,12 @@ impl Game<'_> {
                 self.ui.death_cause = Some("death.attack.genericKill".into());
             }
             Target::Mob(id) => {
+                let mut killed = None;
                 if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                     // LivingEntity.kill: a generic_kill hit of Float.MAX_VALUE,
                     // which its death message tells.
-                    if m.alive() {
+                    let alive = m.alive();
+                    if alive {
                         m.record_damage(
                             horizon_client::mobs::Damage::of(
                                 horizon_client::mobs::DamageKind::GenericKill,
@@ -2393,6 +2388,16 @@ impl Game<'_> {
                     if m.death_time == 0 {
                         m.death_time = 1;
                     }
+                    killed = alive.then(|| m.clone());
+                }
+                // The hit runs LivingEntity.die before the command returns:
+                // its ENTITY_DIE, loot and experience come now, not in the
+                // next tick's deaths, which skip it (as a frog's bite does).
+                if let Some(m) = killed
+                    && !m.removed
+                    && self.died.insert(id)
+                {
+                    self.mob_died(&m);
                 }
             }
             Target::Item(id) => {
@@ -2422,7 +2427,9 @@ impl Game<'_> {
                 if let Some(i) = self.boats.iter().position(|b| b.id == id) {
                     self.release_vehicle_container(id);
                     let b = self.boats.remove(i);
-                    self.spill_killed_vehicle_contents(b.position, &b.items);
+                    // AbstractChestBoat.remove, after the live menu writes
+                    // back its slots.
+                    self.drop_vehicle_contents(b.position.components(), &b.items);
                     self.boat_removed(&b);
                 }
             }
@@ -2430,7 +2437,8 @@ impl Game<'_> {
                 self.release_vehicle_container(id);
                 if let Some(i) = self.carts.iter().position(|c| c.id == id) {
                     let c = self.carts.remove(i);
-                    self.spill_killed_vehicle_contents(c.position, &c.items);
+                    // AbstractMinecartContainer.remove.
+                    self.drop_vehicle_contents(c.position.components(), &c.items);
                 }
             }
             Target::Other(id) => self.others.retain(|o| o.id != id),
@@ -2451,30 +2459,6 @@ impl Game<'_> {
             self.entity_killed_event(at, false);
         }
         self.native_leaves_flush();
-    }
-    /// `AbstractChestBoat.remove` / `AbstractMinecartContainer.remove` for
-    /// destroying removal (`Entity.kill`): `Containers.dropContents`, separate
-    /// from hurt-time hull drops and after the live menu writes back its slots.
-    fn spill_killed_vehicle_contents(&mut self, pos: Vec3, slots: &[Option<ItemStack>]) {
-        for stack in slots {
-            let count = stack.as_ref().map_or(0, |s| s.count);
-            for piece in horizon_world::level::removal::drop_item_stack_at(
-                &mut self.world.random,
-                pos.components(),
-                count,
-            ) {
-                let Some(stack) = stack else { continue };
-                self.spawn_item(
-                    ItemStack {
-                        count: piece.count,
-                        ..stack.clone()
-                    },
-                    piece.pos,
-                    piece.motion,
-                    0,
-                );
-            }
-        }
     }
     fn cmd_kill(&mut self, ctx: &Context) -> R<i32> {
         let targets = if ctx.get("targets").is_some() {
@@ -3842,9 +3826,16 @@ impl Game<'_> {
             Some(Arg::Coords(c)) => c.rotation(self.source_rotation()),
             _ => [0.0, 0.0],
         };
+        // SetWorldSpawnCommand uses RespawnData.of before storing or comparing.
+        let rot = [wrap_degrees(rot[0]), rot[1].clamp(-90.0, 90.0)];
         // LevelData.setRespawnData: the world's spawn (level.dat `spawn`).
+        let previous_point = self.world_spawn_position().map(|v| v.floor() as i32);
         let old = self.level.world_spawn.replace(pos);
+        let old_angle = self.level.world_spawn_angle;
         self.level.world_spawn_angle = rot;
+        if previous_point != pos || old_angle.map(f32::to_bits) != rot.map(f32::to_bits) {
+            self.lan_broadcast_world_spawn();
+        }
         self.native_spawn_change(pos, rot);
         // A player whose fallback is the world spawn (no spawnpoint of its
         // own; a bed or an anchor that is gone falls back to it) respawns at
@@ -4000,7 +3991,9 @@ impl Game<'_> {
                         _ => false,
                     }
                 }
-                _ => present.is_some(),
+                // Count is a pseudo-component, not a catalog component.
+                _ if id == "minecraft:count" => present.is_some(),
+                _ => self.stack_component_present(stack, &id),
             };
             result != negated
         };
@@ -4008,6 +4001,23 @@ impl Game<'_> {
             .iter()
             .filter(|t| !t.trim().is_empty())
             .all(|term| split_top_level(term, '|').iter().any(|alt| test(alt)))
+    }
+    /// `ItemPredicateArgument.createComponentExistencePredicate`: the stack's
+    /// effective component presence, with its patch ahead of its prototype.
+    fn stack_component_present(&self, stack: &ItemStack, id: &str) -> bool {
+        // Read the modeled patch before saved-default elision. A removal wins
+        // even when the actual item prototype supplies the component.
+        if let Some(patch) = horizon_client::item_data::components_tag(stack.damage, stack.data()) {
+            if patch.get(&format!("!{id}")).is_some() {
+                return false;
+            }
+            if patch.get(id).is_some() {
+                return true;
+            }
+        }
+        self.items()
+            .get(&stack.item)
+            .is_some_and(|item| item.components.iter().any(|key| key == id))
     }
     fn cmd_clear(&mut self, ctx: &Context) -> R<i32> {
         let targets = if ctx.get("targets").is_some() {
@@ -5384,6 +5394,129 @@ mod forced_respawn_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod effective_presence_tests {
+    use super::super::native_machines::tests::server_game;
+    use super::*;
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn registered_presence_uses_actual_catalog_and_stack_patch() {
+        let mut game = server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let key = "minecraft:jukebox_playable";
+        assert!(
+            game.items()
+                .get("minecraft:music_disc_cat")
+                .unwrap()
+                .components
+                .iter()
+                .any(|k| k == key)
+        );
+        assert!(
+            !game
+                .items()
+                .get("minecraft:stone")
+                .unwrap()
+                .components
+                .iter()
+                .any(|k| k == key)
+        );
+        assert!(game.run_command("forceload add 0 0 15 15"));
+        assert!(game.world.loaded(4, 4));
+        assert!(game.run_command("setblock 4 199 4 stone"));
+        assert!(game.run_command("setblock 4 200 4 chest{Items:[{Slot:0b,id:\"minecraft:music_disc_cat\",count:1},{Slot:1b,id:\"minecraft:stone\",count:1},{Slot:2b,id:\"minecraft:stone\",count:1,components:{\"minecraft:jukebox_playable\":\"minecraft:cat\",\"minecraft:custom_data\":{h193:1}}},{Slot:3b,id:\"minecraft:music_disc_cat\",count:1,components:{\"!minecraft:jukebox_playable\":{},\"minecraft:custom_data\":{h193:1}}}]}"));
+        assert!(game.run_command("scoreboard objectives add h193 dummy"));
+        let clock = game.world.game_time;
+        let horizon_client::containers::BlockEntity::Chest(stacks) =
+            game.world.block_entities.get(&(4, 200, 4)).unwrap()
+        else {
+            panic!("actual chest missing")
+        };
+        let stacks = stacks.clone();
+        assert_eq!(stacks.len(), 27);
+        assert!(
+            stacks[0].as_ref().unwrap().extra.is_none(),
+            "plain modeled stack has no patch"
+        );
+        assert!(
+            stacks[2]
+                .as_ref()
+                .unwrap()
+                .extra
+                .as_ref()
+                .unwrap()
+                .other(key)
+                .is_some()
+        );
+        assert!(
+            stacks[3]
+                .as_ref()
+                .unwrap()
+                .extra
+                .as_ref()
+                .unwrap()
+                .other("!minecraft:jukebox_playable")
+                .is_some()
+        );
+        let saved = game.block_entity_nbt([4, 200, 4]).unwrap();
+        let mut failures = Vec::new();
+        for (slot, present) in [true, false, true, false].into_iter().enumerate() {
+            let stack = stacks[slot].as_ref().unwrap();
+            assert_eq!(stack.count, 1);
+            for neg in [false, true] {
+                let expected = present != neg;
+                let term = format!("{}minecraft:jukebox_playable", if neg { "!" } else { "" });
+                let predicate = ItemInput {
+                    id: String::new(),
+                    tag: false,
+                    any: true,
+                    components: Some(format!("[{term}]")),
+                };
+                if game.stack_matches(&predicate, stack) != expected {
+                    failures.push(format!("direct slot{slot} {term}"));
+                }
+                for sign in ["if", "unless"] {
+                    for (name, n) in [("r", 91), ("s", 17)] {
+                        assert!(
+                            game.run_command(&format!("scoreboard players set #{name} h193 {n}"))
+                        );
+                    }
+                    let accepted = game.run_command(&format!("execute store result score #r h193 store success score #s h193 {sign} items block 4 200 4 container.{slot} *[{term}]"));
+                    let yes = if sign == "if" { expected } else { !expected };
+                    let score = |name| game.score.board.score(name, "h193").unwrap().value;
+                    if (accepted, score("#r"), score("#s")) != (yes, i32::from(yes), i32::from(yes))
+                    {
+                        failures.push(format!("command slot{slot} {sign} {term}"));
+                    }
+                }
+            }
+        }
+        let plain = ItemStack::new("minecraft:music_disc_cat", 1);
+        assert!(plain.extra.is_none());
+        let p = ItemInput {
+            id: String::new(),
+            tag: false,
+            any: true,
+            components: Some("[minecraft:jukebox_playable]".into()),
+        };
+        if !game.stack_matches(&p, &plain) {
+            failures.push("no-raw modeled prototype".into());
+        }
+        assert_eq!(
+            game.block_entity_nbt([4, 200, 4]).unwrap(),
+            saved,
+            "read-only saved inventory"
+        );
+        assert_eq!(game.world.game_time, clock, "zero actor ticks");
+        assert!(game.world.loaded(4, 4));
+        assert!(
+            failures.is_empty(),
+            "actual effective component presence mismatches: {failures:?}"
+        );
     }
 }
 

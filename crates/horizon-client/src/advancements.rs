@@ -628,6 +628,11 @@ pub trait World {
     fn block_entity_nbt(&self, _pos: [i32; 3]) -> Option<horizon_world::nbt::Tag> {
         None
     }
+    /// Read-only contents of a loaded named predicate, when this context
+    /// supplies a predicate registry. Other contexts keep references absent.
+    fn predicate(&self, _id: &str) -> Option<&Value> {
+        None
+    }
 }
 /// An item stack as predicates see it.
 #[derive(Clone, Debug, Default)]
@@ -1402,9 +1407,63 @@ pub fn recipe_ingredients(v: &Value, used: &[ItemView], w: &dyn World) -> bool {
 }
 
 /// A `ContextAwarePredicate`: a list of loot conditions (or one condition).
-/// Existing callers have no random context and keep their leaf behavior.
+/// Invalid references are distinct from false: inversion must not accept them.
 pub fn conditions(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
-    conditions_with(v, ctx, &mut |v, ctx| condition_leaf(v, ctx, w))
+    references_valid(v, w) && conditions_with(v, ctx, &mut |v, ctx| condition_leaf(v, ctx, w))
+}
+
+/// Every named predicate `v` reaches is loaded, and none reaches itself.
+pub fn references_valid(v: &Value, w: &dyn World) -> bool {
+    predicate_references(v, w, &mut BTreeSet::new()).is_ok()
+}
+
+enum InvalidReference {
+    Missing,
+    Cycle,
+}
+
+/// `Validatable.validateHolder`'s active-name rule, as a defensive check on
+/// this evaluation context. Check every typed reference before boolean
+/// short-circuiting; this does not implement registry/startup admission.
+fn predicate_references(
+    v: &Value,
+    w: &dyn World,
+    active: &mut BTreeSet<String>,
+) -> Result<(), InvalidReference> {
+    match v {
+        Value::String(id) => {
+            let id = full(id).into_owned();
+            if !active.insert(id.clone()) {
+                return Err(InvalidReference::Cycle);
+            }
+            let result = w
+                .predicate(&id)
+                .ok_or(InvalidReference::Missing)
+                .and_then(|v| predicate_references(v, w, active));
+            active.remove(&id);
+            result
+        }
+        Value::Array(list) => list
+            .iter()
+            .try_for_each(|v| predicate_references(v, w, active)),
+        Value::Object(o) => {
+            let kind = o
+                .get("condition")
+                .or_else(|| o.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            match &*full(kind) {
+                "minecraft:inverted" => predicate_references(&v["term"], w, active),
+                "minecraft:all_of" | "minecraft:any_of" => v["terms"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .try_for_each(|v| predicate_references(v, w, active)),
+                _ => Ok(()),
+            }
+        }
+        _ => Ok(()),
+    }
 }
 
 /// The existing condition traversal with a caller-owned leaf context.
@@ -1534,6 +1593,10 @@ fn condition_leaf(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
         }
         // An inline entity predicate (old-style).
         Value::Object(_) => ctx.this.is_some_and(|e| entity(v, e, w, ctx.origin)),
+        // A named predicate reference: its loaded definition, walked like any other.
+        Value::String(id) => w
+            .predicate(&full(id))
+            .is_some_and(|v| conditions_with(v, ctx, &mut |v, ctx| condition_leaf(v, ctx, w))),
         _ => false,
     }
 }

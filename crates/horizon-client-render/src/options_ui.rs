@@ -865,9 +865,7 @@ impl Opt {
                 GlyphStyle::Auto => "horizon.options.glyphs.auto",
                 GlyphStyle::Xbox => "horizon.options.glyphs.xbox",
                 GlyphStyle::PlayStation => "horizon.options.glyphs.playstation",
-                GlyphStyle::Nintendo | GlyphStyle::NintendoLetters => {
-                    "horizon.options.glyphs.nintendo"
-                }
+                GlyphStyle::Nintendo => "horizon.options.glyphs.nintendo",
             }),
             Opt::PadNintendoButtons => tr(if s.controller.nintendo_letters {
                 "horizon.options.nintendo_buttons.letter"
@@ -1614,9 +1612,9 @@ pub struct OptionsUi {
     selected_native_key: Option<(usize, usize)>,
     /// Bindings: the action waiting for a pad button.
     pub selected_pad_action: Option<&'static str>,
-    /// The glyphs menus show (`PadSettings::glyph_style`: the setting, else the pad's family, and
-    /// a Nintendo pad's letters when it goes by them).
-    pub pad_style: GlyphStyle,
+    /// The glyphs menus show (`Glyphs::of`: the setting, else the pad's family, and a Nintendo
+    /// pad's letters when it goes by them). The game sets it each frame.
+    pub pad_glyphs: crate::pad_glyph::Glyphs,
     /// The pad's focus drives the page: its hidden pointer sits mid-widget, so a tooltip goes
     /// under the widget instead of beside the pointer.
     pub pad_driving: bool,
@@ -1716,7 +1714,7 @@ impl Default for OptionsUi {
             selected_key: None,
             selected_native_key: None,
             selected_pad_action: None,
-            pad_style: GlyphStyle::Xbox,
+            pad_glyphs: crate::pad_glyph::Glyphs::default(),
             pad_driving: false,
             languages: Vec::new(),
             language_choice: None,
@@ -3703,7 +3701,7 @@ impl OptionsUi {
         }
         if self.page() == Page::SplitProfiles {
             self.split_profiles
-                .draw(batch, atlas, cursor, self.in_world, self.pad_style);
+                .draw(batch, atlas, cursor, self.in_world, self.pad_glyphs);
             return;
         }
         if self.page() == Page::Studio {

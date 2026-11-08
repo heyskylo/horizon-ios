@@ -26,12 +26,13 @@ pub struct StationData {
 }
 impl StationData {
     pub fn load(root: &Path, items: &Items, overlay: &PackOverlay) -> Self {
+        let defaults = horizon_world::item_defaults::shared(root).ok();
         Self {
             enchantments: std::sync::Arc::clone(&items.enchantments),
-            recipes: StationRecipes::load(root, items, overlay),
+            recipes: StationRecipes::load_with_defaults(root, items, overlay, defaults.as_deref()),
             brewing: crate::brewing::Brewing::load(root, items, overlay),
             trades: crate::merchant::Trades::load(root, overlay),
-            banners: crate::banner::Banners::load(root),
+            banners: crate::banner::Banners::load_with_defaults(root, defaults.as_deref()),
             recipe_index: crate::recipe_book::RecipeIndex::load(root, overlay),
         }
     }
@@ -228,11 +229,17 @@ fn has_stored_enchantments(stack: &ItemStack) -> bool {
 pub fn increased_repair_cost(cost: u32) -> u32 {
     (u64::from(cost) * 2 + 1).min(i32::MAX as u64) as u32
 }
-/// `ItemStack.getHoverName`: the custom name, a written book's title, the
-/// `item_name` component, else the item's, potion's or head owner's name.
+/// `ItemStack.getHoverName`: the custom name, a potion's or tipped arrow's
+/// contents, a written book's title, the `item_name` component, else the
+/// item's or head owner's name.
 pub fn hover_name(names: &crate::creative::Names, stack: &ItemStack) -> String {
     if let Some(name) = stack.custom_name() {
         return name;
+    }
+    if let Some(key) = crate::brewing::contents_name_key(stack) {
+        return names
+            .display_get(&key)
+            .unwrap_or_else(|| names.display_item(&stack.item));
     }
     if let Some(title) = stack
         .data()
@@ -249,15 +256,6 @@ pub fn hover_name(names: &crate::creative::Names, stack: &ItemStack) -> String {
         return names
             .display_get("block.minecraft.ominous_banner")
             .unwrap_or_else(|| "Ominous Banner".to_owned());
-    }
-    if stack.potion().is_some()
-        || stack.item.ends_with("potion")
-        || &*stack.item == "minecraft:tipped_arrow"
-    {
-        let key = crate::brewing::potion_name_key(&stack.item, stack.potion());
-        return names
-            .display_get(&key)
-            .unwrap_or_else(|| names.display_item(&stack.item));
     }
     if let Some(head) = crate::item_tooltip::player_head_name(stack) {
         return head.title(&|key| names.display_get(key));
@@ -693,6 +691,14 @@ fn ingredient(v: &Value, items: &Items) -> Ingredient {
 }
 impl StationRecipes {
     pub fn load(root: &Path, items: &Items, overlay: &PackOverlay) -> Self {
+        Self::load_with_defaults(root, items, overlay, None)
+    }
+    pub(crate) fn load_with_defaults(
+        root: &Path,
+        items: &Items,
+        overlay: &PackOverlay,
+        defaults: Option<&horizon_world::item_defaults::Defaults>,
+    ) -> Self {
         // Vanilla's recipes, then the content mods' (docs/modpacks.md).
         let mut files = Vec::new();
         let namespaces =
@@ -742,7 +748,14 @@ impl StationRecipes {
         // Registration order, not the game's files before the packs': the
         // stonecutter lists its recipes in it and smithing takes the first match.
         sources.sort_by_cached_key(|(id, _)| crate::crafting::registration_key(id));
-        let defaults = horizon_world::item_defaults::shared(root).unwrap_or_default();
+        let owned_defaults;
+        let defaults = match defaults {
+            Some(defaults) => defaults,
+            None => {
+                owned_defaults = horizon_world::item_defaults::shared(root).unwrap_or_default();
+                &owned_defaults
+            }
+        };
         let mut smithing = Vec::new();
         let mut stonecutting = Vec::new();
         for (id, v) in sources {
@@ -758,7 +771,7 @@ impl StationRecipes {
                         parse_optional("template"),
                         Ingredient::parse(&v["base"], items),
                         parse_optional("addition"),
-                        SmithingResult::parse(&v["result"], &defaults),
+                        SmithingResult::parse(&v["result"], defaults),
                     ) {
                         smithing.push(Smithing::Transform {
                             id,
@@ -957,7 +970,7 @@ fn apply_trim(
     pattern: &str,
 ) -> Option<ItemStack> {
     let material = e.props(&material.item)?.trim_material.clone()?;
-    let trim = (Arc::from(material.as_str()), Arc::from(pattern));
+    let trim: crate::item_data::Trim = (material.as_str().into(), pattern.into());
     if base.data().and_then(|d| d.trim.as_ref()) == Some(&trim) {
         return None;
     }

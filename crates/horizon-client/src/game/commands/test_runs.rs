@@ -274,7 +274,7 @@ impl Game<'_> {
             &[Text::literal(infos.len().to_string())],
         ));
         let grid = Grid::new(self.test_around(), per_row);
-        self.track_and_start_runner(infos, false, Some(grid), true);
+        self.track_and_start_command_runner(infos, grid);
         Ok(1)
     }
 

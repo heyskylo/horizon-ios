@@ -963,6 +963,48 @@ fn builds_past_sixteen_bit_states() {
     fs::remove_dir_all(&scratch).unwrap();
 }
 
+/// A plain file reaches the overlay as a copy of the mod's own: the same bytes, not a link
+/// back into the mod's folder; one over the size limit is refused, as reading it was.
+#[test]
+fn plain_files_are_copied_and_size_checked() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-copy-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let dir = scratch.join("ruby");
+    let mut m = ruby_mod(&dir);
+    let recipe = "data/ruby/recipe/ruby_from_stew.json";
+    let out = scratch.join("out");
+    build(&base, std::slice::from_ref(&m), &out).unwrap();
+    let copied = out.join(recipe);
+    assert!(
+        !fs::symlink_metadata(&copied)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    let original = fs::read(dir.join(recipe)).unwrap();
+    assert_eq!(fs::read(&copied).unwrap(), original);
+    fs::write(dir.join(recipe), "{}").unwrap();
+    assert_eq!(
+        fs::read(&copied).unwrap(),
+        original,
+        "the built root keeps its copy"
+    );
+
+    let huge = "assets/ruby/textures/block/huge.png";
+    fs::create_dir_all(dir.join(huge).parent().unwrap()).unwrap();
+    fs::File::create(dir.join(huge))
+        .unwrap()
+        .set_len(horizon_mods::content::MAX_FILE + 1)
+        .unwrap();
+    m.content.files.push(huge.into());
+    let e = build(&base, std::slice::from_ref(&m), &scratch.join("out2")).unwrap_err();
+    assert!(e.to_string().contains("is over"), "{e}");
+    fs::remove_dir_all(&scratch).unwrap();
+}
+
 #[test]
 fn no_content_keeps_the_base_root() {
     let base = Path::new("/nonexistent/base");

@@ -2464,6 +2464,12 @@ impl PackPost {
         let textures = pack_textures::upload(device, queue, post.textures, &mut notes);
         let shadow_config = post.config.shadow.clone();
         let noise_size = post.config.noise_resolution.unwrap_or(256);
+        let half_lives = post.config.half_lives;
+        for (name, ticks) in horizon_shaders::HALF_LIVES.iter().zip(half_lives) {
+            if let Some(t) = ticks {
+                notes.push(format!("`{name}` is {t} ticks"));
+            }
+        }
         // shadowcolor2 to 7 only for a pack that names `HIGHER_SHADOWCOLOR`.
         let shadow_colors = (1u16 << post.shadow_colors) - 1;
         let mut custom = post.custom;
@@ -3443,6 +3449,7 @@ impl PackPost {
                 let mut u = FrameUniforms::default();
                 u.atlas = world.atlas.map_or([0; 2], |a| a.1);
                 u.shadow = shadow_config;
+                u.half_lives = half_lives;
                 u
             },
             shadow_cache: Default::default(),

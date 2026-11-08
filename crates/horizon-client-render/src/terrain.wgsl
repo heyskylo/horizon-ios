@@ -40,7 +40,7 @@ struct Globals {
     hdr_windows: array<vec4<f32>, 2>,
     // HDR lighting: x how strongly the sky lights the world now (`Sky::sky_light_factor`),
     // y what the sky and fog get: the same, but none under water; z 1 with HDR output on.
-    // w: this entire frame writes light, so alpha is coverage rather than a mark.
+    // w: apply the no-pack HDR gain; HDR_WRITE_LIGHT independently keeps float alpha as coverage.
     hdr_light: vec4<f32>,
     hdr_settings: vec4<f32>,
     hdr_shares: vec4<f32>,
@@ -762,11 +762,14 @@ fn solid_color(in: TerrainOut) -> vec4<f32> {
 fn solid_finish(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>) -> vec4<f32> {
     return solid_light(solid_finish_at(in, texel, color, dpdx(in.uv), dpdy(in.uv)));
 }
-// A finished solid pixel as the frame keeps it: its mark in alpha, or on the written lane its
-// light, alpha 1.
+// A finished solid pixel as the frame keeps it: on the float frame its colour, alpha 1, lit by
+// HDR's gain where it applies (`hdr_light.w`); else its mark in alpha.
 fn solid_light(finished: vec4<f32>) -> vec4<f32> {
-    if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 {
-        return vec4(hdr_written(finished.rgb, finished.a, globals.hdr_settings, globals.hdr_shares), 1.0);
+    if HDR_WRITE_LIGHT {
+        if globals.hdr_light.w != 0.0 {
+            return vec4(hdr_written(finished.rgb, finished.a, globals.hdr_settings, globals.hdr_shares), 1.0);
+        }
+        return vec4(finished.rgb, 1.0);
     }
     return finished;
 }
@@ -915,7 +918,7 @@ struct NativeModelOut {
         color = vec4(color.rgb * shade, color.a);
     }
     let finished = apply_fog(color, in.spherical, in.cylindrical);
-    return vec4(finished.rgb, select(finished.a, 1.0, HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0));
+    return vec4(finished.rgb, select(finished.a, 1.0, HDR_WRITE_LIGHT));
 }
 
 // Sky (SkyRenderer): the 10-vertex sky disc fan at y = 16 (radius 512) in
@@ -1050,8 +1053,11 @@ fn sky_along_ray_base(d: vec3<f32>) -> vec3<f32> {
 }
 fn sky_finished(color: vec3<f32>) -> vec4<f32> {
     let mark = 1.0 - 0.24 * globals.hdr_light.y;
-    if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 {
-        return vec4(hdr_written(color, mark, globals.hdr_settings, globals.hdr_shares), 1.0);
+    if HDR_WRITE_LIGHT {
+        if globals.hdr_light.w != 0.0 {
+            return vec4(hdr_written(color, mark, globals.hdr_settings, globals.hdr_shares), 1.0);
+        }
+        return vec4(color, 1.0);
     }
     return vec4(color, mark);
 }

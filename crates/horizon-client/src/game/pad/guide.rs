@@ -255,6 +255,7 @@ impl Game<'_> {
                     json!({
                         "with": s.row.with.and_then(|w| w.button(pad)).map(|b| b.name()),
                         "button": s.row.of.button(pad).map(|b| b.name()),
+                        "label": self.glyph(s.row.of).map(|g| g.label()),
                         "caption": s.row.caption,
                         "rect": s.rect,
                     })

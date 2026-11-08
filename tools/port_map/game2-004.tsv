@@ -90,7 +90,7 @@ PiglinAi.isNotHoldingLovedItemInOffHand	inline	crates/horizon-client/src/game/pi
 PiglinAi.isZombified	inline	crates/horizon-client/src/mobs/piglin.rs::register_piglin	the zombified piglin and zoglin species list of the avoid goal
 PiglinAi.findNearbyAdultPiglins	inline	crates/horizon-client/src/mobs/piglin.rs::HuntHoglin::start	gap: minor: uses the follow range, not the sensor's nearest living entities list
 AbstractSkeleton.registerGoals	port	crates/horizon-client/src/mobs/undead.rs::register	restrict sun, flee sun, wolf avoid, stroll, look, targets
-AbstractSkeleton.rideTick	port	crates/horizon-client/src/game/passengers.rs::position_riders	a rider takes its vehicle's body yaw every tick
+AbstractSkeleton.rideTick	port	crates/horizon-client/src/mobs/riders.rs::takes_vehicle_body	the body yaw of a PathfinderMob it steers (getControlledVehicle)
 AbstractSkeleton.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::skeleton	equipment, enchantments, pick-up chance, halloween pumpkin; the weapon goal is re-picked on the next tick
 AbstractSkeleton.reassessWeaponGoal	port	crates/horizon-client/src/mobs/undead.rs::SkeletonWeapon::can_use	bow goal with the hard or normal interval, else melee
 AbstractSkeleton.onEquipItem	inline	crates/horizon-client/src/mobs/undead.rs::SkeletonWeapon::can_use	gap: minor: the weapon is re-picked on the next goal check, not at the moment of equipping
@@ -138,7 +138,7 @@ Drowned.isDeepEnoughToSpawn	inline	crates/horizon-client/src/mobs/spawn_rules.rs
 Drowned.populateDefaultEquipmentSlots	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::populate	10 percent chance of a trident (10 in 16) or fishing rod
 Drowned.canReplaceCurrentItem	port	crates/horizon-client/src/game/mob_looting.rs::Game::can_replace	the mob pickup compare (armour, toughness, attack damage) with the drowned's nautilus shell guard; called before a mob swaps what it holds
 Drowned.rangedAttackUncertainty	port	crates/horizon-client/src/mobs/undead.rs::drowned_throw	gap: minor: fixed uncertainty 6 (normal difficulty), not 14 minus 4 times the difficulty
-Drowned.rideTick	port	crates/horizon-client/src/game/passengers.rs::position_riders	a rider takes its vehicle's body yaw every tick
+Drowned.rideTick	port	crates/horizon-client/src/mobs/riders.rs::takes_vehicle_body	the body yaw of a PathfinderMob it steers (getControlledVehicle)
 Drowned.wantsToPickUp	port	crates/horizon-client/src/mobs/equip.rs::wants_to_pick_up	spears are refused, then the zombie checks
 Drowned.DrownedGoToBeachGoal.isValidTarget	port	crates/horizon-client/src/mobs/undead.rs::beach_target	two empty blocks above and a standable block below
 Drowned.DrownedGoToWaterGoal.getWaterPos	port	crates/horizon-client/src/mobs/undead.rs::DrownedGoToWater::can_use	ten random spots 10 blocks around and up to 2 above, water only

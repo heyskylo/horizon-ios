@@ -7,7 +7,7 @@ use crate::{
     gamepad::{self, GlyphOf, GlyphStyle, MenuJob, PadSettings},
     lang,
     options_ui::Event,
-    pad_glyph::Glyph,
+    pad_glyph::{Glyph, Glyphs},
     settings::{Opt, Settings},
     settings_shell::{
         self as shell, Binding, Capture, Group, Output, Reset, Row, Screen, Sheet, Shown, Value,
@@ -81,7 +81,7 @@ fn choice_description(opt: Opt, pad: &PadSettings) -> Option<&'static str> {
             GlyphStyle::Auto => "Shows the buttons of the controller you're using.",
             GlyphStyle::Xbox => "Always shows Xbox buttons.",
             GlyphStyle::PlayStation => "Always shows PlayStation buttons.",
-            GlyphStyle::Nintendo | GlyphStyle::NintendoLetters => "Always shows Nintendo buttons.",
+            GlyphStyle::Nintendo => "Always shows Nintendo buttons.",
         },
         Opt::PadNintendoButtons => {
             if pad.nintendo_letters {
@@ -314,8 +314,8 @@ pub struct Context {
     pub device: Option<Device>,
     /// The glyph family of `device`, before the player's choice.
     pub detected: GlyphStyle,
-    /// The family menus show, letter mode included (`PadSettings::glyph_style`).
-    pub style: GlyphStyle,
+    /// The glyphs menus show, letter mode included.
+    pub glyphs: Glyphs,
 }
 
 fn glyphs_name(style: GlyphStyle) -> String {
@@ -323,7 +323,7 @@ fn glyphs_name(style: GlyphStyle) -> String {
         GlyphStyle::Auto => "Unknown",
         GlyphStyle::Xbox => "horizon.options.glyphs.xbox",
         GlyphStyle::PlayStation => "horizon.options.glyphs.playstation",
-        GlyphStyle::Nintendo | GlyphStyle::NintendoLetters => "horizon.options.glyphs.nintendo",
+        GlyphStyle::Nintendo => "horizon.options.glyphs.nintendo",
     })
 }
 
@@ -372,7 +372,7 @@ impl Context {
                 },
             ),
             Info::Detected => ("Detected glyphs", glyphs_name(self.detected)),
-            Info::Using => ("Glyphs in use", glyphs_name(self.style)),
+            Info::Using => ("Glyphs in use", glyphs_name(self.glyphs.family())),
         }
     }
     fn device_name(&self) -> String {
@@ -384,7 +384,7 @@ impl Context {
 
 /// An action's binding: its button in the player's glyphs, what else that button does, and a
 /// reset while it isn't the default.
-fn binding(action: &'static str, pad: &PadSettings, style: GlyphStyle) -> Binding {
+fn binding(action: &'static str, pad: &PadSettings, glyphs: Glyphs) -> Binding {
     let shared = match pad.binding(action) {
         Some(button) if pad.conflicts(action) => pad
             .actions_of(button)
@@ -397,8 +397,8 @@ fn binding(action: &'static str, pad: &PadSettings, style: GlyphStyle) -> Bindin
     Binding {
         capture: Capture::Pad(action),
         shown: Shown::Pad {
-            glyph: Glyph::of(GlyphOf::Bound(action), pad, style),
-            cancel: Glyph::menu(MenuJob::Start, style),
+            glyph: Glyph::of(GlyphOf::Bound(action), pad, glyphs),
+            cancel: Glyph::menu(MenuJob::Start, glyphs),
         },
         shared,
         reset: if pad.is_default(action) {
@@ -433,7 +433,7 @@ fn row(setting: Setting, s: &Settings, context: &Context) -> Row<Item> {
         }
         Item::Bind(action) => {
             let name = lang::get(gamepad::action_caption(action));
-            let value = Value::Binding(binding(action, &s.controller, context.style));
+            let value = Value::Binding(binding(action, &s.controller, context.glyphs));
             Row::new(item, name, value).about(about)
         }
         Item::ResetBinds => Row::new(item, lang::get(RESET_ALL), Value::Press).about(about),
@@ -718,7 +718,7 @@ mod tests {
         let waiting = Some(Capture::Pad(JUMP));
         let shown = drawn(&mut ui, &s, waiting);
         assert!(shown.ends_with("> A <"), "{shown}");
-        let start = Glyph::menu(MenuJob::Start, GlyphStyle::Auto).label();
+        let start = Glyph::menu(MenuJob::Start, Glyphs::default()).label();
         let said = strip(&mut ui, &s, waiting, jump).unwrap();
         assert!(said.contains(start) && said.contains("cancels"), "{said}");
         // Another row's wait doesn't mark this one.
@@ -781,7 +781,8 @@ mod tests {
         let mut ui = ui(Page::Bindings);
         let (_, y) = ui.point_at(&s, SIZE, Item::Bind(JUMP));
         let row = Columns::of(SIZE.0, SIZE.1).row(y - crate::graphics_style::ROW / 2.0);
-        ui.screen.context.style = GlyphStyle::Xbox;
+        s.controller.glyphs = GlyphStyle::Xbox;
+        ui.screen.context.glyphs = Glyphs::of(&s.controller, GlyphStyle::Auto);
         let batch = draw(&mut ui, &s, None);
         assert_eq!(arts(&batch, row), 1);
         s.controller.bind(JUMP, None);

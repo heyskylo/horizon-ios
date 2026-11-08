@@ -1307,8 +1307,15 @@ impl Mob {
             self.flying_speed()
         }
     }
+    /// `LivingEntity.getFlyingSpeed`: a mount its player steers
+    /// (`getControllingPassenger() instanceof Player`) keeps a tenth of its
+    /// speed in the air (a horse's jump); anything else 0.02.
     fn flying_speed(&self) -> f32 {
-        0.02
+        if super::equine::controlled(self) {
+            self.ai.speed * 0.1
+        } else {
+            0.02
+        }
     }
     /// `LivingEntity.getEffectiveGravity`: the gravity, floored to 0.01 while a
     /// Slow Falling mob is on its way down.
@@ -3120,5 +3127,20 @@ mod tests {
             );
         });
         assert!(ran, "built test world ran");
+    }
+
+    /// `LivingEntity.getFlyingSpeed`: a horse its player steers (saddled, ridden) moves
+    /// through the air at a tenth of its speed; riderless or unsaddled at 0.02.
+    #[test]
+    fn a_steered_mount_moves_through_the_air_at_a_tenth_of_its_speed() {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        std::sync::Arc::make_mut(&mut kind).species = super::super::Species::Horse;
+        let mut m = Mob::new(1, kind, Vec3::ZERO, 0.0);
+        m.ai.speed = 0.3;
+        assert_eq!(m.flying_speed(), 0.02, "no rider");
+        m.rider = Some(super::super::equine::Rider::default());
+        assert_eq!(m.flying_speed(), 0.02, "unsaddled");
+        m.extra.saddled = true;
+        assert_eq!(m.flying_speed(), 0.3_f32 * 0.1);
     }
 }

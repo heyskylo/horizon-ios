@@ -309,10 +309,10 @@ pub struct MenuFacts {
 /// An inventory's rows, by what they ask of the player: at the bottom right one face button, at the
 /// bottom left anything else (a trigger held with a button, the bumpers, View, a stick click). What
 /// the crosshair is on comes first in its column, the screen's own rows after, except Close, which
-/// stays lowest so the rest don't move it. Menu buttons aren't rebindable, so these name them.
+/// stays lowest so the rest don't move it. Menu buttons aren't rebindable, so these name menu jobs.
 pub fn resolve_menu(f: &MenuFacts) -> Guide {
-    use MenuJob::{Alternate as West, Back as East, Confirm as South, Extra as North};
-    use MenuJob::{GroupNext, GroupPrev, LeftStick, PageNext, PagePrev, View};
+    use MenuJob::{Alternate, Back, Confirm, Extra, GroupNext, GroupPrev};
+    use MenuJob::{LeftStick, PageNext, PagePrev, View};
     const TAKE: &str = "horizon.controller.guide.take";
     const MOVE: &str = "horizon.controller.guide.quick_move";
     let under = match f.under {
@@ -322,24 +322,24 @@ pub fn resolve_menu(f: &MenuFacts) -> Guide {
             result: true,
             same,
             ..
-        } if !f.carrying || same => vec![Row::new(South, TAKE), Row::new(North, MOVE)],
+        } if !f.carrying || same => vec![Row::new(Confirm, TAKE), Row::new(Extra, MOVE)],
         Under::Slot { result: true, .. } => Vec::new(),
         Under::Slot { accepts: false, .. } if f.carrying => Vec::new(),
         Under::Slot { item, same, .. } if f.carrying => vec![
             Row::new(
-                South,
+                Confirm,
                 if item && !same {
                     "horizon.controller.guide.swap_stack"
                 } else {
                     "horizon.controller.guide.put"
                 },
             ),
-            Row::new(West, "horizon.controller.guide.put_one"),
+            Row::new(Alternate, "horizon.controller.guide.put_one"),
         ],
         Under::Slot { item: true, .. } => vec![
-            Row::new(South, TAKE),
-            Row::new(West, "horizon.controller.guide.take_half"),
-            Row::new(North, MOVE),
+            Row::new(Confirm, TAKE),
+            Row::new(Alternate, "horizon.controller.guide.take_half"),
+            Row::new(Extra, MOVE),
             Row::new(View, "horizon.controller.guide.drop"),
             Row::new(LeftStick, "horizon.controller.guide.drop_stack"),
         ],
@@ -348,19 +348,19 @@ pub fn resolve_menu(f: &MenuFacts) -> Guide {
             direct_craft,
             alternatives,
         } => [
-            Some(Row::new(South, "horizon.controller.guide.place_recipe")),
+            Some(Row::new(Confirm, "horizon.controller.guide.place_recipe")),
             direct_craft.then_some(Row::pair(
                 GroupPrev,
-                South,
+                Confirm,
                 "horizon.controller.direct_craft",
             )),
-            Some(Row::new(North, "horizon.controller.guide.place_recipe_all")),
-            alternatives.then_some(Row::new(West, "horizon.controller.guide.alternatives")),
+            Some(Row::new(Extra, "horizon.controller.guide.place_recipe_all")),
+            alternatives.then_some(Row::new(Alternate, "horizon.controller.guide.alternatives")),
         ]
         .into_iter()
         .flatten()
         .collect(),
-        Under::Control => vec![Row::new(South, "horizon.controller.guide.select")],
+        Under::Control => vec![Row::new(Confirm, "horizon.controller.guide.select")],
     };
     let screen = [
         f.book.then_some(Row::pair(
@@ -379,12 +379,12 @@ pub fn resolve_menu(f: &MenuFacts) -> Guide {
             "horizon.controller.guide.tabs",
         )),
     ];
-    let close = Row::new(East, "horizon.controller.guide.close");
+    let close = Row::new(Back, "horizon.controller.guide.close");
     let rows = std::iter::once(close)
         .chain(under)
         .chain(screen.into_iter().flatten());
     let (right, left) = rows.partition(|r| {
-        r.with.is_none() && matches!(r.of, GlyphOf::Menu(South | East | West | North))
+        r.with.is_none() && matches!(r.of, GlyphOf::Menu(Confirm | Back | Alternate | Extra))
     });
     Guide { left, right }
 }
@@ -933,7 +933,7 @@ mod detail_tests {
 mod slot_tests {
     use super::*;
 
-    /// The rows for the slot: South or West, whichever column they're in.
+    /// The rows for the slot: Confirm or Alternate, whichever column they're in.
     fn rows(item: bool, same: bool, result: bool, accepts: bool, carrying: bool) -> usize {
         let guide = resolve_menu(&MenuFacts {
             under: Under::Slot {

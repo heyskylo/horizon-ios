@@ -913,7 +913,7 @@ impl Game<'_> {
                 return None;
             };
             let (value, signature) = profile.textures()?;
-            let url = skins::unpack(&value, signature, &skins::TEXTURE_URIS).skin?;
+            let url = skins::unpack(&value, signature, skins::texture_uris()).skin?;
             let location = skins::skin_location(&skins::texture_hash(&url)?);
             Some((url, location))
         });

@@ -225,6 +225,8 @@ and particles (the material stage covers terrain only).
 
 ## Changelog
 
+- 2026-11-08: API 0.2 (fix, experimental): the world a post pass reads holds coverage in its alpha, as the
+  reference says, instead of Horizon's light-source marks. API 0.1 is unchanged.
 - 2026-11-07: API 0.2 (change, experimental): with `HORIZON_HDR_FRAME=float`, a 0.2 pack picked or dropped gets its
   frame at once instead of at the next start. API 0.1 is unchanged.
 - 2026-11-05: API 0.2 (change, experimental): the game draws 0.2 packs with `HORIZON_HDR_FRAME=float` set, on a

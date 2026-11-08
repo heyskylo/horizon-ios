@@ -485,6 +485,11 @@ impl Drop for Autosaves {
 /// Put a guest's state in `level`'s player fields; `vehicle` is the
 /// RootVehicle compound of the ride (`ServerPlayer.saveParentVehicle`).
 pub fn store(guest: &Guest, level: &mut Level, vehicle: Option<Tag>) {
+    level.player_impulse_grace = guest.motion.as_ref().map(|p| p.impulse.reset_grace_time);
+    level.player_fall_particles = guest
+        .motion
+        .as_ref()
+        .map(|p| p.spawn_extra_particles_on_fall);
     level.position = Some(guest.position);
     level.dimension = guest.dimension.clone();
     level.rotation = [guest.yaw, guest.pitch];

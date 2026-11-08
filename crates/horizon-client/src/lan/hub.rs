@@ -129,6 +129,8 @@ pub struct TickCtx<'a> {
     pub next_entity: &'a mut u32,
     /// Where new players appear.
     pub spawn: [f64; 3],
+    /// Rotation of the world spawn sent by PlayerList.sendLevelInfo.
+    pub spawn_angle: [f32; 2],
     pub difficulty: i32,
     pub difficulty_locked: bool,
     /// The overworld clock's speed (0 when the day does not advance).
@@ -2106,7 +2108,7 @@ impl Hub {
     /// ClientboundSetDefaultSpawnPositionPacket for the level's respawn data
     /// (the world spawn, in the Overworld wherever the player is), or the
     /// compass target a mod set for that player (`compass_targets`).
-    pub fn default_spawn(&self, uuid: u128, spawn: [f64; 3]) -> C {
+    pub fn default_spawn(&self, uuid: u128, spawn: [f64; 3], angle: [f32; 2]) -> C {
         if let Some(target) = self.compass_targets.get(&uuid) {
             return C::SetDefaultSpawnPosition(play::SetDefaultSpawnPosition {
                 pos: target.clone(),
@@ -2123,8 +2125,8 @@ impl Hub {
                     spawn[2].floor() as i32,
                 ],
             },
-            yaw: 0.0,
-            pitch: 0.0,
+            yaw: angle[0],
+            pitch: angle[1],
         })
     }
 
@@ -2143,7 +2145,7 @@ impl Hub {
         }
         g.send(&C::InitializeBorder(super::border::initialize(ctx.border)));
         g.send(&self.time_packet(ctx.world, ctx.clock_rate));
-        g.send(&self.default_spawn(g.uuid, spawn));
+        g.send(&self.default_spawn(g.uuid, spawn, ctx.spawn_angle));
         let w = &ctx.world.weather;
         if w.raining {
             g.send(&C::GameEvent(play::GameEvent {
@@ -5002,7 +5004,7 @@ impl Hub {
         g.far_queue.clear();
         g.tracker.clear();
         self.resend_teleport(i, None);
-        let spawn = self.default_spawn(self.guests[i].uuid, ctx.spawn);
+        let spawn = self.default_spawn(self.guests[i].uuid, ctx.spawn, ctx.spawn_angle);
         let g = &mut self.guests[i];
         g.send(&spawn);
         g.send(&C::ChangeDifficulty(play::ChangeDifficulty {
@@ -5592,6 +5594,7 @@ mod tests {
             entities: &[],
             next_entity: &mut next_entity,
             spawn: [0.5, 64.0, 0.5],
+            spawn_angle: [0.0; 2],
             difficulty: 2,
             difficulty_locked: false,
             clock_rate: 1.0,
@@ -5824,6 +5827,7 @@ mod tests {
             entities: &[],
             next_entity: &mut next_entity,
             spawn: [0.5, 64.0, 0.5],
+            spawn_angle: [0.0; 2],
             difficulty: 2,
             difficulty_locked: false,
             clock_rate: 1.0,
@@ -6010,6 +6014,7 @@ mod tests {
             entities: &[],
             next_entity: &mut next_entity,
             spawn: [0.5, 64.0, 0.5],
+            spawn_angle: [0.0; 2],
             difficulty: 2,
             difficulty_locked: false,
             clock_rate: 1.0,
@@ -6075,6 +6080,7 @@ mod tests {
             entities: &[],
             next_entity: &mut next_entity,
             spawn: [0.5, 64.0, 0.5],
+            spawn_angle: [0.0; 2],
             difficulty: 2,
             difficulty_locked: false,
             clock_rate: 1.0,

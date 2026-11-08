@@ -26,7 +26,7 @@ AbstractBoat.getControllingPassenger	inline	crates/horizon-client/src/game/boat_
 AbstractBoat.setInput	inline	crates/horizon-client/src/game/lan_vehicles.rs::Game::guest_paddle_boat	the paddle packet's flags are the controller's input
 AbstractBoat.isUnderWater	port	crates/horizon-client/src/game/boats.rs::Boat::under_water	
 AbstractBoat.modifyPassengerFluidInteractionBox	inline	crates/horizon-client/src/motion/fluids.rs::MotionWorld::interaction_box	the ridden boat (RiddenBoat) is set on clients in remote.rs and for served players in lan_actions.rs; the passenger box keeps only the part above the boat's top
-AbstractChestBoat.remove	inline	crates/horizon-client/src/game/commands.rs::Game::spill_killed_vehicle_contents	explicit contents on kill removal after menu writeback; ordinary hurt and pending loot generation remain separate
+AbstractChestBoat.remove	port	crates/horizon-client/src/game/minecarts.rs::Game::drop_vehicle_contents	Containers.dropContents on every destroying removal, whatever entity_drops says: the damage path's kill or a creative player's discard, and /kill after the open menu writes its slots back; a loot table still held drops the roll made on load
 AbstractChestBoat.openCustomInventoryScreen	inline	crates/horizon-client/src/game/boats.rs::Game::interact_boat	sneaking opens the chest; gap: minor: no piglin anger
 AbstractChestBoat.createMenu	inline	crates/horizon-client/src/game/boats.rs::Game::interact_boat	the chest container is set up there; gap: minor: no spectator or loot table check
 AbstractMinecart.setInitialPos	port	crates/horizon-client/src/game/minecarts.rs::Minecart::new	spawn sets the position and its previous copy

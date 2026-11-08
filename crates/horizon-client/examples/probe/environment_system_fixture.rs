@@ -96,6 +96,8 @@ fn run(
         blend: blended.then_some(&blend),
         biome: &biome,
         clock: &|_| case["ticks"].as_i64().unwrap_or(0),
+        post_blend: None,
+        post_biome: None,
     };
     for attribute in ATTRIBUTES.iter().filter(|a| a.kind != Kind::Other) {
         let value = system.value(attribute, &conditions).ok_or("no value")?;

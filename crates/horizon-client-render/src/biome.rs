@@ -112,6 +112,9 @@ pub struct BiomeInfo {
     /// `BiomeGenerationSettings.features`: the placed feature ids of each
     /// `GenerationStep.Decoration` step, in order.
     pub features: Vec<Vec<String>>,
+    /// The biome's environment attributes (`Biome.getAttributes`): its layer in the
+    /// environment attribute stack.
+    pub attributes: horizon_world::environment_attributes::AttributeMap,
 }
 impl BiomeInfo {
     fn ambient_particles(v: &Value) -> Vec<(ParticleType, f32)> {
@@ -277,6 +280,11 @@ impl BiomeInfo {
                         .collect()
                 })
                 .collect(),
+            attributes: horizon_world::environment_attributes::AttributeMap::parse(attributes)
+                .unwrap_or_else(|e| {
+                    log::warn!("biome attributes: {e}");
+                    Default::default()
+                }),
             name,
         }
     }

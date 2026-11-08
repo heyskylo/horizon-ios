@@ -1,9 +1,9 @@
 //! A controller button as the player sees it: Horizon's own art where the pad's family has one
 //! (`assets/horizon/textures/gui/controller/`, which a resource pack can replace), else the label
 //! printed on the pad, in its colour, on a dark key. Whatever shows a button draws and measures it
-//! here, from a [`Glyph`]: what the button does (`GlyphOf`), in the player's resolved style. A Nintendo
-//! pad going by its letters is part of that style (`GlyphStyle::NintendoLetters`), so no caller
-//! handles the letters, and nothing outside this module can turn a bare button into art or a label.
+//! here, from a [`Glyph`]: what the button does (`GlyphOf`), in the player's [`Glyphs`]. A Nintendo
+//! pad going by its letters is part of `Glyphs`, which only the settings make, so no caller handles
+//! the letters, and nothing outside this module can turn a bare button into art or a label.
 use crate::gamepad::{Button, GlyphOf, GlyphStyle, MenuJob, PadSettings};
 use crate::hud::{HudAtlas, HudBatch, rgba};
 use crate::pad_cursor;
@@ -96,34 +96,79 @@ static ART: &[Art] = art![
     Nintendo DPadRight "nx_right",
 ];
 
-/// A glyph ready to draw: the part a button plays and the player's resolved style (letter mode
-/// included). It is only built from what the button does (`GlyphOf`), so a rebinding or a pad's
-/// letters reach every glyph; there is no way to draw or name a bare button.
+/// The glyphs a player sees: a pad family's art, and whether a Nintendo pad goes by its letters.
+/// Opaque: it is only made from the settings and the pad (`of`), or by the one named exception
+/// (`unheld`), so nothing can drop the letter setting. Letter mode is part of it, and callers
+/// never handle it: the game already reads such a pad as parts (`PadState::by_letter`), and a
+/// glyph shows the button that plays its part.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Glyphs {
+    family: GlyphStyle,
+    letters: bool,
+}
+
+impl Default for Glyphs {
+    /// The glyphs of the default settings for a pad of no known maker, before any pad is read.
+    fn default() -> Self {
+        Self::of(&PadSettings::default(), GlyphStyle::Auto)
+    }
+}
+
+impl Glyphs {
+    /// The glyphs for a pad of `family` under the player's settings: the family they chose, else
+    /// the pad's, going by letters when the pad does (`PadSettings::by_letter`) and the glyphs
+    /// are Nintendo's.
+    pub fn of(settings: &PadSettings, family: GlyphStyle) -> Self {
+        let shown = settings.glyphs.resolve(family);
+        Self {
+            family: shown,
+            letters: shown == GlyphStyle::Nintendo && settings.by_letter(family),
+        }
+    }
+    /// The glyphs for a pad of `family` by the buttons' places, whatever the letter setting. Only
+    /// for a question a controller nobody holds yet answers (splitscreen's join and
+    /// lost-controller prompts): it isn't playing, so its letters aren't read yet
+    /// (docs/controllers.md, Nintendo pads).
+    pub fn unheld(settings: &PadSettings, family: GlyphStyle) -> Self {
+        Self {
+            family: settings.glyphs.resolve(family),
+            letters: false,
+        }
+    }
+    /// The family the art comes from, for naming it ("Glyphs in use").
+    pub fn family(self) -> GlyphStyle {
+        self.family
+    }
+    /// The family whose print shows `part`, and the button on the pad that plays it: the one
+    /// place letter mode turns a part into a physical button (`Button::by_letter`, as input is
+    /// read).
+    fn on_pad(self, part: Button) -> (GlyphStyle, Button) {
+        let button = if self.letters { part.by_letter() } else { part };
+        (self.family, button)
+    }
+}
+
+/// A glyph ready to draw: the part a button plays, in a player's [`Glyphs`]. It is only built from
+/// what the button does (`GlyphOf`), so a rebinding or a pad's letters reach every glyph; there is
+/// no way to draw or name a bare button.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Glyph {
     part: Button,
-    style: GlyphStyle,
+    glyphs: Glyphs,
 }
 
 impl Glyph {
-    /// The glyph for `of` on these settings in `style` (the player's: `PadSettings::glyph_style`).
-    /// None while a gameplay action is unbound.
-    pub fn of(of: GlyphOf, settings: &PadSettings, style: GlyphStyle) -> Option<Self> {
+    /// The glyph for `of` on these settings, in `glyphs`. None while a gameplay action is unbound.
+    pub fn of(of: GlyphOf, settings: &PadSettings, glyphs: Glyphs) -> Option<Self> {
         let part = of.button(settings)?;
-        Some(Self { part, style })
+        Some(Self { part, glyphs })
     }
-    /// A menu job's glyph in `style`: menus aren't rebindable, so it is always there.
-    pub fn menu(job: MenuJob, style: GlyphStyle) -> Self {
+    /// A menu job's glyph: menus aren't rebindable, so it is always there.
+    pub fn menu(job: MenuJob, glyphs: Glyphs) -> Self {
         Self {
             part: job.button(),
-            style,
+            glyphs,
         }
-    }
-    /// A menu job's glyph by the buttons' places, whatever `style`'s letter mode: only for a
-    /// question a controller nobody holds yet answers (splitscreen's join and lost-controller
-    /// prompts), whose letter mode isn't known (docs/controllers.md, Nintendo pads).
-    pub fn unheld(job: MenuJob, style: GlyphStyle) -> Self {
-        Self::menu(job, style.by_position())
     }
     /// The part this glyph is for (what the pad reads, after any letters), for `pad status`.
     pub fn part(self) -> Button {
@@ -131,25 +176,30 @@ impl Glyph {
     }
     /// What is printed on the button that plays the part: in letter mode, that button's letter.
     pub fn label(self) -> &'static str {
-        printed(self.part, self.style)
+        let (family, button) = self.glyphs.on_pad(self.part);
+        printed(button, family)
     }
     /// The colour (RGB) of the button that plays the part.
     pub fn color(self) -> [u8; 3] {
-        colour(self.part, self.style)
+        let (family, button) = self.glyphs.on_pad(self.part);
+        colour(button, family)
+    }
+    /// Its art, if the family has a picture of the button.
+    fn art(self) -> Option<&'static Art> {
+        let (family, button) = self.glyphs.on_pad(self.part);
+        find(button, family)
     }
 }
 
-/// What is printed on the button for a pad family (`Auto` reads as Xbox). For
-/// `NintendoLetters` it is the print of the button that plays this part (`GlyphStyle::on_pad`).
-fn printed(part: Button, style: GlyphStyle) -> &'static str {
-    let (style, button) = style.on_pad(part);
+/// What is printed on a button of a pad family (`Auto` reads as Xbox).
+fn printed(button: Button, style: GlyphStyle) -> &'static str {
     let i = button as usize;
     match style {
         GlyphStyle::PlayStation => [
             "×", "○", "□", "△", "L1", "R1", "L2", "R2", "Create", "Options", "L3", "R3", "↑", "↓",
             "←", "→",
         ][i],
-        GlyphStyle::Nintendo | GlyphStyle::NintendoLetters => [
+        GlyphStyle::Nintendo => [
             "B", "A", "Y", "X", "L", "R", "ZL", "ZR", "−", "+", "LS", "RS", "↑", "↓", "←", "→",
         ][i],
         GlyphStyle::Xbox | GlyphStyle::Auto => [
@@ -160,8 +210,7 @@ fn printed(part: Button, style: GlyphStyle) -> &'static str {
 }
 /// The glyph's colour (RGB): face buttons in their family's colours,
 /// the rest white.
-fn colour(part: Button, style: GlyphStyle) -> [u8; 3] {
-    let (style, button) = style.on_pad(part);
+fn colour(button: Button, style: GlyphStyle) -> [u8; 3] {
     let face = match button {
         Button::South => 0,
         Button::East => 1,
@@ -176,7 +225,7 @@ fn colour(part: Button, style: GlyphStyle) -> [u8; 3] {
             [222, 145, 205],
             [92, 205, 170],
         ][face],
-        GlyphStyle::Nintendo | GlyphStyle::NintendoLetters => [255, 255, 255],
+        GlyphStyle::Nintendo => [255, 255, 255],
         GlyphStyle::Xbox | GlyphStyle::Auto => [
             [110, 200, 90],
             [235, 90, 80],
@@ -186,10 +235,9 @@ fn colour(part: Button, style: GlyphStyle) -> [u8; 3] {
     }
 }
 
-/// The art for `part`: in letter mode, the picture of the button that plays it (`on_pad`).
-fn find(part: Button, style: GlyphStyle) -> Option<&'static Art> {
-    let (family, button) = style.on_pad(part);
-    let family = match family {
+/// The picture of a button in a family.
+fn find(button: Button, style: GlyphStyle) -> Option<&'static Art> {
+    let family = match style {
         GlyphStyle::Auto => GlyphStyle::Xbox,
         family => family,
     };
@@ -197,14 +245,18 @@ fn find(part: Button, style: GlyphStyle) -> Option<&'static Art> {
         .find(|art| art.family == family && art.button == button)
 }
 
-/// The sprite of a part in a style, if it has one.
-fn sprite(part: Button, style: GlyphStyle) -> Option<&'static str> {
-    find(part, style).map(|art| art.sprite)
+/// The sprite of a button in a family, if it has one: the tests name the files by it.
+#[cfg(test)]
+fn sprite(button: Button, style: GlyphStyle) -> Option<&'static str> {
+    find(button, style).map(|art| art.sprite)
 }
 
 /// The sprite this atlas can draw for the glyph; none (the boot screen's atlas) means text.
 pub fn art(atlas: &HudAtlas, glyph: Glyph) -> Option<&'static str> {
-    sprite(glyph.part, glyph.style).filter(|name| atlas.sprites.contains_key(*name))
+    glyph
+        .art()
+        .map(|art| art.sprite)
+        .filter(|name| atlas.sprites.contains_key(*name))
 }
 
 /// How wide the art shows: half its texture (IHDR's width, in a PNG's first bytes) less its edge.
@@ -216,7 +268,7 @@ fn art_width(art: &Art) -> f32 {
 
 /// How wide the glyph shows, in GUI pixels.
 pub fn width(atlas: &HudAtlas, glyph: Glyph) -> f32 {
-    match find(glyph.part, glyph.style).filter(|a| atlas.sprites.contains_key(a.sprite)) {
+    match glyph.art().filter(|a| atlas.sprites.contains_key(a.sprite)) {
         Some(art) => art_width(art),
         None => HudBatch::text_width(atlas, glyph.label()).ceil() + 4.0,
     }
@@ -288,9 +340,18 @@ mod tests {
         HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets")).unwrap()
     }
 
-    /// A glyph for any part: the tests reach the table directly.
-    fn g(part: Button, style: GlyphStyle) -> Glyph {
-        Glyph { part, style }
+    /// Settings as `horizon-controller.txt` has them, with Nintendo Buttons set as `letters` says.
+    fn settings(letters: bool) -> PadSettings {
+        PadSettings::parse(&format!("glyphs:auto\nnintendoLetters:{letters}\n"))
+    }
+
+    /// A glyph for any part on a pad of `family` going by places: the tests reach the table
+    /// directly.
+    fn g(part: Button, family: GlyphStyle) -> Glyph {
+        Glyph {
+            part,
+            glyphs: Glyphs::of(&settings(false), family),
+        }
     }
 
     fn file(button: Button, style: GlyphStyle) -> Option<&'static str> {
@@ -479,19 +540,41 @@ mod tests {
     #[test]
     fn letter_mode_shows_the_button_that_plays_each_part() {
         let atlas = atlas();
+        let letters = Glyphs::of(&settings(true), GlyphStyle::Nintendo);
         for button in Button::ALL {
-            let part = part_read_from(button);
-            let letters = g(part, GlyphStyle::NintendoLetters);
+            let shown = Glyph {
+                part: part_read_from(button),
+                glyphs: letters,
+            };
             let printed = g(button, GlyphStyle::Nintendo);
-            assert_eq!(letters.label(), printed.label(), "{button:?}");
-            assert_eq!(art(&atlas, letters), art(&atlas, printed), "{button:?}");
+            assert_eq!(shown.label(), printed.label(), "{button:?}");
+            assert_eq!(art(&atlas, shown), art(&atlas, printed), "{button:?}");
         }
-        // As a Switch: the A on the right confirms and jumps.
-        assert_eq!(g(Button::South, GlyphStyle::NintendoLetters).label(), "A");
-        assert_eq!(
-            file(Button::South, GlyphStyle::NintendoLetters),
-            Some("nx_a")
-        );
+        // As a Switch: the A on the right confirms and jumps, B goes back, X and Y swap.
+        let label = |job| Glyph::menu(job, letters).label();
+        assert_eq!(label(MenuJob::Confirm), "A");
+        assert_eq!(label(MenuJob::Back), "B");
+        assert_eq!(label(MenuJob::Alternate), "X");
+        assert_eq!(label(MenuJob::Extra), "Y");
+        let confirm = art(&atlas, Glyph::menu(MenuJob::Confirm, letters));
+        assert_eq!(confirm, Some("horizon:gui/controller/nx_a"));
+    }
+
+    #[test]
+    fn only_a_nintendo_pad_with_nintendo_glyphs_goes_by_letters() {
+        let label = |settings: &PadSettings, family| {
+            Glyph::menu(MenuJob::Confirm, Glyphs::of(settings, family)).label()
+        };
+        // By places, a Nintendo pad's confirm is the B at the bottom.
+        assert_eq!(label(&settings(false), GlyphStyle::Nintendo), "B");
+        // An Xbox pad has no letters to swap.
+        assert_eq!(label(&settings(true), GlyphStyle::Xbox), "A");
+        // A player who chose Xbox glyphs sees them, though the Nintendo pad is read by letters.
+        let chosen = PadSettings::parse("glyphs:xbox\nnintendoLetters:true\n");
+        assert_eq!(label(&chosen, GlyphStyle::Nintendo), "A");
+        // A controller nobody holds yet is asked by places.
+        let unheld = Glyphs::unheld(&settings(true), GlyphStyle::Nintendo);
+        assert_eq!(Glyph::menu(MenuJob::Confirm, unheld).label(), "B");
     }
 
     #[test]
@@ -504,51 +587,19 @@ mod tests {
             "R2"
         );
         assert_eq!(g(Button::DPadLeft, GlyphStyle::Xbox).label(), "←");
-        // The splitscreen exception keeps places whatever the player's letters.
-        let unheld = Glyph::unheld(MenuJob::Confirm, GlyphStyle::NintendoLetters);
-        assert_eq!(unheld.label(), "B");
     }
 
     #[test]
     fn rebinding_an_action_changes_its_glyph() {
-        let mut settings = PadSettings::default();
+        let mut settings = settings(false);
+        let xbox = Glyphs::of(&settings, GlyphStyle::Xbox);
         let jump = GlyphOf::Bound("key.jump");
-        let before = Glyph::of(jump, &settings, GlyphStyle::Xbox).unwrap();
+        let before = Glyph::of(jump, &settings, xbox).unwrap();
         settings.bind("key.jump", Some(Button::North));
-        let after = Glyph::of(jump, &settings, GlyphStyle::Xbox).unwrap();
+        let after = Glyph::of(jump, &settings, xbox).unwrap();
         assert_ne!(before.label(), after.label());
         assert_eq!(after.label(), "Y");
         settings.bind("key.jump", None);
-        assert_eq!(Glyph::of(jump, &settings, GlyphStyle::Xbox), None);
-    }
-
-    /// Glyphs are asked for by what the button does. The one way round that is `Glyph::unheld`,
-    /// splitscreen's questions to a controller nobody holds yet: a new use has to be argued for
-    /// here and in docs/ui-kit.md.
-    #[test]
-    fn only_the_documented_exception_draws_by_place() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-        let mut found = Vec::new();
-        for dir in ["horizon-client/src", "horizon-client-render/src"] {
-            let mut stack = vec![root.join(dir)];
-            while let Some(path) = stack.pop() {
-                if path.is_dir() {
-                    stack.extend(std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
-                } else if path.extension().is_some_and(|e| e == "rs")
-                    && !path.ends_with("pad_glyph.rs")
-                    && std::fs::read_to_string(&path)
-                        .unwrap()
-                        .contains("Glyph::unheld(")
-                {
-                    found.push(path.strip_prefix(&root).unwrap().to_owned());
-                }
-            }
-        }
-        assert_eq!(
-            found,
-            [std::path::PathBuf::from(
-                "horizon-client/src/game/split/hud.rs"
-            )]
-        );
+        assert_eq!(Glyph::of(jump, &settings, xbox), None);
     }
 }

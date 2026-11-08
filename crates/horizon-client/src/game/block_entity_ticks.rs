@@ -38,8 +38,8 @@ impl Game<'_> {
             self.forget_gone_hoppers();
         }
         let ticking = self.block_ticking_area();
-        let mut spawners = Vec::new();
-        let mut trial_spawners = Vec::new();
+        self.spawner_tick_positions.clear();
+        self.trial_spawner_tick_positions.clear();
         self.item_columns = Some(Default::default());
         self.pass_mobs = Some(Default::default());
         for slot in self.world.block_entity_tickers().iter().copied() {
@@ -62,11 +62,11 @@ impl Game<'_> {
                 Some(BlockEntity::CreakingHeart(_)) => self.tick_creaking_heart(pos)?,
                 Some(BlockEntity::Spawner(_)) => {
                     self.tick_spawner(pos)?;
-                    spawners.push(pos);
+                    self.spawner_tick_positions.push(pos);
                 }
                 Some(BlockEntity::TrialSpawner(_)) => {
                     self.tick_trial_spawner(pos)?;
-                    trial_spawners.push(pos);
+                    self.trial_spawner_tick_positions.push(pos);
                 }
                 Some(BlockEntity::Vault(_)) => self.tick_vault(pos)?,
                 Some(BlockEntity::Beehive(_)) => self.tick_beehive(pos),
@@ -94,10 +94,14 @@ impl Game<'_> {
         // The client ticks (particles, sounds, the turning mob) are for a
         // window; a dedicated or integrated server has none.
         if self.options.dedicated.is_none() {
+            let spawners = std::mem::take(&mut self.spawner_tick_positions);
             self.client_tick_spawners(&spawners);
-            for key in trial_spawners {
+            self.spawner_tick_positions = spawners;
+            let trial_spawners = std::mem::take(&mut self.trial_spawner_tick_positions);
+            for key in trial_spawners.iter().copied() {
                 self.client_tick_trial_spawner(key);
             }
+            self.trial_spawner_tick_positions = trial_spawners;
         }
         // `ShulkerBoxBlockEntity.tick`: the lids of the boxes this level
         // animates. Their grown collision shape reaches the collision queries

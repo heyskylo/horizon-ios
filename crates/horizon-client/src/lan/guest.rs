@@ -1246,6 +1246,42 @@ fn write_matchers(
     Some(())
 }
 
+/// Project actual model holders; a direct definition never needs a registry id.
+fn trim_component(
+    trim: &crate::item_data::Trim,
+    synced_id: &dyn Fn(&str, &str) -> Option<i32>,
+) -> Option<horizon_protocol::item::Component> {
+    use crate::item_data::trim::Holder;
+    use horizon_protocol::item::{Component, TrimHolder, TrimMaterial, TrimPattern};
+    let id = |registry: &str, name: &str| {
+        if name.contains(':') {
+            synced_id(registry, name)
+        } else {
+            synced_id(registry, &format!("minecraft:{name}"))
+        }
+    };
+    let material = match &trim.0 {
+        Holder::Named(name) => TrimHolder::Id(id("minecraft:trim_material", name)?),
+        Holder::Direct(value) => TrimHolder::Direct(TrimMaterial {
+            palette_id: value.palette_id.to_string(),
+            description: value.description.clone(),
+        }),
+    };
+    let pattern = match &trim.1 {
+        Holder::Named(name) => TrimHolder::Id(id("minecraft:trim_pattern", name)?),
+        Holder::Direct(value) => TrimHolder::Direct(TrimPattern {
+            asset_id: value.asset_id.to_string(),
+            description: value.description.clone(),
+            decal: value.decal,
+        }),
+    };
+    Some(match (material, pattern) {
+        (TrimHolder::Id(material), TrimHolder::Id(pattern)) => {
+            Component::Trim { material, pattern }
+        }
+        (material, pattern) => Component::TrimDirect { material, pattern },
+    })
+}
 fn network_stack(
     item_id: &dyn Fn(&str) -> i32,
     synced_id: &dyn Fn(&str, &str) -> Option<i32>,
@@ -1350,24 +1386,12 @@ fn network_stack(
                 horizon_protocol::item::Component::Int(rgb),
             ));
         }
-        // ArmorTrim: both holders as references into the synced registries.
-        if let Some((material, pattern)) = &d.trim {
-            let id = |registry: &str, name: &str| {
-                if name.contains(':') {
-                    synced_id(registry, name)
-                } else {
-                    synced_id(registry, &format!("minecraft:{name}"))
-                }
-            };
-            if let (Some(material), Some(pattern)) = (
-                id("minecraft:trim_material", material),
-                id("minecraft:trim_pattern", pattern),
-            ) {
-                stack.added.push((
-                    horizon_protocol::item::component::TRIM,
-                    horizon_protocol::item::Component::Trim { material, pattern },
-                ));
-            }
+        if let Some(trim) = &d.trim
+            && let Some(component) = trim_component(trim, synced_id)
+        {
+            stack
+                .added
+                .push((horizon_protocol::item::component::TRIM, component));
         }
         // BannerPatternLayers: each pattern a reference into the synced registry;
         // a layer that has none leaves the stack without the component.

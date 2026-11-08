@@ -526,6 +526,7 @@ mod render_bounds_tests {
             invisible: false,
             check_interval: 0,
             custom_name: None,
+            random: horizon_core::random::LegacyRandom::new(0),
         };
         let bounds = frame.render_bounds(1.0);
         assert!(bounds.min_position().x <= -0.71875);
@@ -967,7 +968,33 @@ macro_rules! load_entity_of_any_kind {
     };
 }
 
+/// The type ids the minecart kind loads.
+fn loads_as_cart(kind: &str) -> bool {
+    super::minecarts::CartKind::from_id(kind).is_some()
+}
+/// The type id the primed TNT kind loads.
+fn loads_as_tnt(kind: &str) -> bool {
+    kind == "minecraft:tnt"
+}
+
 impl Game<'_> {
+    /// The type ids the mob kind loads.
+    fn loads_as_mob(&self, kind: &str) -> bool {
+        self.res.mob_types().contains_key(kind)
+    }
+    /// The type ids the boat kind loads.
+    fn loads_as_boat(&self, kind: &str) -> bool {
+        super::boats::any_boat_wood(kind)
+            .is_some_and(|(wood, chest)| self.boat_models.has(wood, chest))
+    }
+    /// Whether `load_listed` loads `kind` as a vehicle that takes its mob
+    /// riders (`take_mob_passengers`): a mob, boat, minecart or primed TNT.
+    pub(super) fn listed_kind_takes_riders(&self, kind: &str) -> bool {
+        self.loads_as_mob(kind)
+            || self.loads_as_boat(kind)
+            || loads_as_cart(kind)
+            || loads_as_tnt(kind)
+    }
     /// Loads a saved entity as the first kind in `entity_lists!` that claims
     /// its type id: `Err` hands the compound back when none does.
     pub(super) fn load_listed(
@@ -1054,7 +1081,7 @@ impl Entity for Mob {
         _player_uuid: Option<[i32; 4]>,
         tag: Tag,
     ) -> Result<(), Tag> {
-        if !(game.res.mob_types().contains_key(kind)) {
+        if !game.loads_as_mob(kind) {
             return Err(tag);
         }
         game.load_mob(tag, None);
@@ -1294,9 +1321,7 @@ impl Entity for Boat {
         _player_uuid: Option<[i32; 4]>,
         tag: Tag,
     ) -> Result<(), Tag> {
-        if !(super::boats::any_boat_wood(kind)
-            .is_some_and(|(wood, chest)| game.boat_models.has(wood, chest)))
-        {
+        if !game.loads_as_boat(kind) {
             return Err(tag);
         }
         game.load_boat(tag, uuid, kind);
@@ -1365,7 +1390,7 @@ impl Entity for Minecart {
         _player_uuid: Option<[i32; 4]>,
         tag: Tag,
     ) -> Result<(), Tag> {
-        if !(super::minecarts::CartKind::from_id(kind).is_some()) {
+        if !loads_as_cart(kind) {
             return Err(tag);
         }
         game.load_cart(tag, uuid, kind);
@@ -1553,16 +1578,17 @@ impl Entity for PrimedTnt {
         _player_uuid: Option<[i32; 4]>,
         tag: Tag,
     ) -> Result<(), Tag> {
-        if !(kind == "minecraft:tnt") {
+        if !loads_as_tnt(kind) {
             return Err(tag);
         }
         game.load_tnt(tag, uuid);
         Ok(())
     }
     stored_motion!();
-    /// `PrimedTnt` eye height: `0.98 * 0.85`.
+    /// `EntityTypes.TNT`'s explicit `eyeHeight(0.15F)`. Nothing vanilla reads
+    /// for TNT depends on it (only `isEyeInFluid` does), but it is the type's.
     fn fluid_eye_y(&self) -> f64 {
-        self.position.y + f64::from(0.98f32 * 0.85f32)
+        self.position.y + f64::from(0.15_f32)
     }
     /// `PrimedTnt` is 0.98 across.
     fn portal_size(&self) -> Option<(f32, f32)> {

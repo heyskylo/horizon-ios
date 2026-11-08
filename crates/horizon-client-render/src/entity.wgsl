@@ -33,7 +33,7 @@ struct Globals {
     hdr_windows: array<vec4<f32>, 2>,
     // HDR lighting: x how strongly the sky lights the world now (`Sky::sky_light_factor`),
     // y what the sky and fog get: the same, but none under water.
-    // w: this entire frame writes light, so alpha is coverage rather than a mark.
+    // w: apply the no-pack HDR gain; HDR_WRITE_LIGHT independently keeps float alpha as coverage.
     hdr_light: vec4<f32>,
     hdr_settings: vec4<f32>,
     hdr_shares: vec4<f32>,
@@ -279,10 +279,11 @@ fn crumbling_uv(uv: vec2<f32>, packed_origin: vec2<f32>, sprite_size: vec2<f32>,
 }
 // CRUMBLING_UV_END
 @fragment fn fs_entity(in: Out, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    return entity_written_color(in, front);
+    return entity_written_color(in, entity_color(in, front));
 }
-fn entity_written_color(in: Out, front: bool) -> vec4<f32> {
-    let color = entity_color(in, front);
+// Takes entity_color's result rather than calling it: FXC (DX12) fails with "argument pulled into
+// unrelated predicate" when entity_color's discards sit a function call below the entry point.
+fn entity_written_color(in: Out, color: vec4<f32>) -> vec4<f32> {
     if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 && in.overlay != 11u && in.overlay != 12u {
         var mark = hdr_entity_mark(in);
         if in.overlay == 4u { mark = hdr_scene_alpha(globals.hdr_light.y); }
@@ -455,6 +456,7 @@ fn celestial_color(in: Out) -> vec4<f32> {
     if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 {
         return vec4(hdr_written(added, select(1.0, hdr_mark(tier, y), full), globals.hdr_settings, globals.hdr_shares), color.a);
     }
+    if HDR_WRITE_LIGHT { return vec4(added, color.a); }
     if !full { return vec4(added, 0.0); }
     return vec4(added, 1.0 - hdr_mark(tier, y));
 }

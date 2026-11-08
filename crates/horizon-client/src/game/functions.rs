@@ -2486,4 +2486,261 @@ mod required_tag_tests {
             "required tag partial execution: {failures:#?}"
         );
     }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn named_predicates_resolve_loaded_references_for_actual_sources() {
+        use crate::game::{Audio, Options, Settings, load_resources};
+        use std::time::Instant;
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &crate::game::Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-predicate-reference-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pack = dir.join("datapacks/references");
+        let folder = pack.join("data/h121/predicate");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(pack.join("pack.mcmeta"), r#"{"pack":{"description":"Predicate references","pack_format":121,"min_format":[121,0],"max_format":[121,0]}}"#).unwrap();
+        let write = |name: &str, value: serde_json::Value| {
+            std::fs::write(folder.join(format!("{name}.json")), value.to_string()).unwrap();
+        };
+        write(
+            "pig",
+            serde_json::json!({"type":"minecraft:entity_properties","entity":"this","predicate":{"minecraft:entity_type":"minecraft:pig"}}),
+        );
+        write(
+            "cow",
+            serde_json::json!({"type":"minecraft:entity_properties","entity":"this","predicate":{"minecraft:entity_type":"minecraft:cow"}}),
+        );
+        write(
+            "reference",
+            serde_json::json!({"type":"minecraft:all_of","terms":["h121:pig"]}),
+        );
+        write(
+            "inverted",
+            serde_json::json!({"type":"minecraft:inverted","term":"h121:pig"}),
+        );
+        write(
+            "conjunction",
+            serde_json::json!({"type":"minecraft:all_of","terms":["h121:pig",{"type":"minecraft:inverted","term":"h121:cow"}]}),
+        );
+        write(
+            "both",
+            serde_json::json!({"type":"minecraft:all_of","terms":["h121:pig","h121:cow"]}),
+        );
+        write(
+            "either",
+            serde_json::json!({"type":"minecraft:any_of","terms":["h121:pig","h121:cow"]}),
+        );
+        write(
+            "repeated",
+            serde_json::json!({"type":"minecraft:all_of","terms":["h121:pig","h121:pig"]}),
+        );
+        for index in 0..33 {
+            let next = if index == 32 {
+                "h121:pig".to_owned()
+            } else {
+                format!("h121:chain_{}", index + 1)
+            };
+            write(
+                &format!("chain_{index}"),
+                serde_json::json!({"type":"minecraft:all_of","terms":[next]}),
+            );
+        }
+        game.world_root = dir.clone();
+        game.reload_datapacks(false);
+        assert!(game.fns.store.predicates.contains_key("h121:reference"));
+        assert!(
+            game.ui
+                .registries
+                .predicates
+                .contains(&"h121:reference".into())
+        );
+        let run = |game: &mut Game<'_>, line: &str| {
+            game.exec = ExecState::default();
+            let source = game.player_source();
+            game.execute_line(line, source).unwrap();
+        };
+        run(&mut game, "scoreboard objectives add h121 dummy");
+        let mut actors = Vec::new();
+        for (index, kind) in ["pig", "cow"].into_iter().enumerate() {
+            let uuid = [121, 20, 30, index as i32 + 1];
+            let tag = Tag::compound([
+                (
+                    "id",
+                    Tag::String(format!("minecraft:{kind}").as_str().into()),
+                ),
+                ("UUID", Tag::IntArray(uuid.to_vec())),
+                (
+                    "Pos",
+                    Tag::List(vec![
+                        Tag::Double((4.5 + index as f64 * 4.0).to_bits()),
+                        Tag::Double(200.0_f64.to_bits()),
+                        Tag::Double(4.5_f64.to_bits()),
+                    ]),
+                ),
+                ("Health", Tag::Float(10.0_f32.to_bits())),
+                ("NoAI", Tag::Byte(1)),
+                ("NoGravity", Tag::Byte(1)),
+            ]);
+            let id = game.load_mob(tag, None).unwrap();
+            assert_eq!(game.persist.uuids.get(&id), Some(&uuid));
+            assert_eq!(
+                game.entity_view_of(Target::Mob(id)).kind,
+                format!("minecraft:{kind}")
+            );
+            actors.push((id, save::uuid_text(uuid), kind));
+        }
+        let clock = game.world.game_time;
+        for (_, uuid, kind) in &actors {
+            let pig = *kind == "pig";
+            for (name, expected) in [
+                ("pig", pig),
+                ("cow", !pig),
+                ("reference", pig),
+                ("inverted", !pig),
+                ("conjunction", pig),
+                ("both", false),
+                ("either", true),
+                ("repeated", pig),
+                ("chain_0", pig),
+            ] {
+                for sign in ["if", "unless"] {
+                    run(&mut game, "scoreboard players set branch h121 -99");
+                    run(
+                        &mut game,
+                        &format!(
+                            "execute as {uuid} {sign} predicate h121:{name} run scoreboard players set branch h121 1"
+                        ),
+                    );
+                    // The intended old failure is the real loaded reference on the pig.
+                    assert_eq!(
+                        game.score.board.score("branch", "h121").unwrap().value,
+                        if expected == (sign == "if") { 1 } else { -99 },
+                        "{kind} {sign} {name}"
+                    );
+                }
+            }
+        }
+        let previous = game.command_source;
+        let server = game.server_source();
+        assert!(server.entity.is_none());
+        game.command_source = Some(server);
+        assert!(!game.check_predicate("h121:pig").unwrap());
+        assert!(!game.check_predicate("h121:reference").unwrap());
+        assert!(game.check_predicate("h121:inverted").unwrap());
+        assert!(game.check_predicate("h121:absent").is_err());
+        game.command_source = previous;
+        // Defensive evaluator controls only. Java rejects these graphs at
+        // world load, so this does not establish startup/availability parity.
+        write(
+            "missing",
+            serde_json::json!({"type":"minecraft:all_of","terms":["h121:absent"]}),
+        );
+        write(
+            "nested_missing",
+            serde_json::json!({"type":"minecraft:all_of","terms":["h121:missing"]}),
+        );
+        write(
+            "not_missing",
+            serde_json::json!({"type":"minecraft:inverted","term":"h121:absent"}),
+        );
+        write(
+            "cycle_a",
+            serde_json::json!({"type":"minecraft:all_of","terms":["h121:cycle_b"]}),
+        );
+        write(
+            "cycle_b",
+            serde_json::json!({"type":"minecraft:all_of","terms":["h121:cycle_a"]}),
+        );
+        write(
+            "not_cycle",
+            serde_json::json!({"type":"minecraft:inverted","term":"h121:cycle_a"}),
+        );
+        for invalid in ["h121:absent", "h121:cycle_a"] {
+            for (label, kind, first) in [
+                ("any_skip", "minecraft:any_of", "h121:pig"),
+                ("any_reach", "minecraft:any_of", "h121:cow"),
+                ("all_skip", "minecraft:all_of", "h121:cow"),
+                ("all_reach", "minecraft:all_of", "h121:pig"),
+            ] {
+                write(
+                    &format!("{label}_{}", invalid.split(':').next_back().unwrap()),
+                    serde_json::json!({"type":kind,"terms":[first,invalid]}),
+                );
+            }
+        }
+        let canonical = pack.join("data/minecraft/predicate/h121_canonical.json");
+        std::fs::create_dir_all(canonical.parent().unwrap()).unwrap();
+        std::fs::write(
+            canonical,
+            r#"{"type":"minecraft:all_of","terms":["h121_canonical"]}"#,
+        )
+        .unwrap();
+        game.reload_datapacks(false);
+        let mut source = game.player_source();
+        source.entity = Some(Target::Mob(actors[0].0));
+        source.pos = game.target_position(Target::Mob(actors[0].0)).unwrap();
+        game.command_source = Some(source);
+        for name in [
+            "missing",
+            "nested_missing",
+            "not_missing",
+            "cycle_a",
+            "not_cycle",
+            "any_skip_absent",
+            "any_reach_absent",
+            "all_skip_absent",
+            "all_reach_absent",
+            "any_skip_cycle_a",
+            "any_reach_cycle_a",
+            "all_skip_cycle_a",
+            "all_reach_cycle_a",
+        ] {
+            assert!(
+                game.fns
+                    .store
+                    .predicates
+                    .contains_key(&format!("h121:{name}"))
+            );
+            assert!(
+                !game.check_predicate(&format!("h121:{name}")).unwrap(),
+                "{name}"
+            );
+        }
+        assert!(!game.check_predicate("minecraft:h121_canonical").unwrap());
+        assert!(game.check_predicate("h121:reference").unwrap());
+        game.command_source = previous;
+        assert_eq!(game.world.game_time, clock);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

@@ -254,7 +254,10 @@ impl Game<'_> {
     fn level_state_now(&self, dimension: &'static str) -> LevelState {
         let sky = self
             .dim_environment()
-            .sample(self.world.day_time, None, None);
+            .sample(&horizon_client::environment::Sample {
+                day_time: self.world.day_time,
+                ..Default::default()
+            });
         LevelState {
             dimension: dimension.to_owned(),
             game_time: self.world.game_time,

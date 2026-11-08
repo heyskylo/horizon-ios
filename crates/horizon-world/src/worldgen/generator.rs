@@ -1327,15 +1327,26 @@ where
     }
     /// `Blender.of(region)` for the chunk at `pos`.
     fn blender_at(&self, pos: ChunkPos) -> Arc<super::blending::Blender> {
+        fn empty_blender() -> Arc<super::blending::Blender> {
+            static EMPTY: OnceLock<Arc<super::blending::Blender>> = OnceLock::new();
+            EMPTY
+                .get_or_init(|| Arc::new(super::blending::Blender::empty()))
+                .clone()
+        }
         // `SharedConstants.DEBUG_DISABLE_BLENDING`.
         static DISABLED: OnceLock<bool> = OnceLock::new();
         if *DISABLED.get_or_init(|| std::env::var_os("HORIZON_DISABLE_BLENDING").is_some()) {
-            return Arc::new(super::blending::Blender::empty());
+            return empty_blender();
         }
-        Arc::new(match self.old_world.get() {
-            Some(world) => super::blending::Blender::of(world.as_ref(), pos),
-            None => super::blending::Blender::empty(),
-        })
+        let Some(world) = self.old_world.get() else {
+            return empty_blender();
+        };
+        let blender = super::blending::Blender::of(world.as_ref(), pos);
+        if blender.is_empty() {
+            empty_blender()
+        } else {
+            Arc::new(blender)
+        }
     }
     fn biome_chunk(
         &self,
@@ -1528,8 +1539,11 @@ where
         );
         let mut clock = std::time::Instant::now();
         let mut neighbors = Vec::with_capacity(9);
-        // The biome ids present, as a bitset: ascending like a sorted set.
-        let mut seen: Vec<u64> = Vec::new();
+        // The biome ids present, as a bitset: ascending like a sorted set. The
+        // registry's ordinary ids fit in the stack array; retain a spill only
+        // for unusually large modded registries.
+        let mut seen = [0u64; 128];
+        let mut seen_spill = Vec::new();
         // Build the neighbours no other thread is building first, then wait
         // for the rest (each is built once, by whichever thread gets it).
         let around =
@@ -1553,26 +1567,35 @@ where
                         }
                         last = Some(id);
                         let word = id.0 as usize / 64;
-                        if seen.len() <= word {
-                            seen.resize(word + 1, 0);
+                        if let Some(bits) = seen.get_mut(word) {
+                            *bits |= 1 << (id.0 % 64);
+                        } else {
+                            let spill_word = word - seen.len();
+                            if seen_spill.len() <= spill_word {
+                                seen_spill.resize(spill_word + 1, 0);
+                            }
+                            seen_spill[spill_word] |= 1 << (id.0 % 64);
                         }
-                        seen[word] |= 1 << (id.0 % 64);
                     }
                     section += 1;
                 }
                 neighbors.push((*chunk).clone());
             }
         }
-        let possible = seen.iter().enumerate().flat_map(|(word, &bits)| {
-            let mut bits = bits;
-            std::iter::from_fn(move || {
-                (bits != 0).then(|| {
-                    let bit = bits.trailing_zeros();
-                    bits &= bits - 1;
-                    BiomeId(word as u32 * 64 + bit)
-                })
-            })
-        });
+        let possible =
+            seen.iter()
+                .chain(seen_spill.iter())
+                .enumerate()
+                .flat_map(|(word, &bits)| {
+                    let mut bits = bits;
+                    std::iter::from_fn(move || {
+                        (bits != 0).then(|| {
+                            let bit = bits.trailing_zeros();
+                            bits &= bits - 1;
+                            BiomeId(word as u32 * 64 + bit)
+                        })
+                    })
+                });
         let mut center = neighbors[4].clone();
         let biomes =
             BiomeRegion::new(neighbors, obfuscate_seed(self.seed)).map_err(stage("biomes"))?;

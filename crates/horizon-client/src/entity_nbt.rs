@@ -1476,12 +1476,20 @@ pub fn mob_to_nbt(
     // the attack damage.
     use crate::mobs::finalize::Attr;
     // Every other living entity's first tick makes the movement_speed instance
-    // (LivingEntity.removeFrost reads it through getAttribute).
-    let made = if species == crate::mobs::Species::Rabbit {
-        vec![Attr::MovementSpeed, Attr::AttackDamage]
-    } else {
-        vec![Attr::MovementSpeed]
-    };
+    // (LivingEntity.removeFrost reads it through getAttribute); before it, the
+    // mob has only the instances it was loaded with (the kept list above).
+    let speed_at_load =
+        crate::mobs::doors::is_zombie(species) || species == crate::mobs::Species::Piglin;
+    let mut made = Vec::new();
+    if speed_at_load || m.age > 0 {
+        made.push(Attr::MovementSpeed);
+    }
+    if species == crate::mobs::Species::Rabbit {
+        made.push(Attr::AttackDamage);
+    }
+    // AttributeMap.pack writes the list even when no instance exists.
+    map.entry("attributes".into())
+        .or_insert_with(|| Tag::List(Vec::new()));
     for attr in made {
         let base = crate::mobs::finalize::base_value(m, attr);
         let mut list = match map.get(&"attributes".into()) {
@@ -2224,12 +2232,9 @@ pub fn mob_from_nbt(
         if m.species() == crate::mobs::Species::Piglin
             && let Some(Tag::List(items)) = tag.get("Inventory")
         {
-            // InventoryCarrier.readInventoryFromTag (eight slots).
-            m.extra.inventory = items
-                .iter()
-                .filter_map(crate::save::item_from_nbt)
-                .take(8)
-                .collect();
+            // InventoryCarrier.readInventoryFromTag -> SimpleContainer
+            // .fromItemList (eight slots).
+            m.extra.inventory = crate::mobs::villager::load_container(&m, items, 8);
         }
     }
     if matches!(
@@ -3941,6 +3946,7 @@ pub fn item_frame_from_nbt(tag: &Tag, id: u32) -> Option<ItemFrame> {
         invisible: flag(tag, "Invisible"),
         check_interval: 0,
         custom_name: tag.get("CustomName").cloned(),
+        random: crate::random_source::entity(),
     })
 }
 /// ArmorStand.addAdditionalSaveData with LivingEntity's `equipment`.
@@ -4088,8 +4094,9 @@ pub fn armor_stand_from_nbt(tag: &Tag, id: u32) -> Option<ArmorStand> {
     }
     Some(a)
 }
-/// A boat entity (`minecraft:<wood>_boat`, `minecraft:bamboo_chest_raft`...):
-/// chest boats keep their slots in `Items` (`ContainerHelper.saveAllItems`).
+/// `AbstractBoat.addAdditionalSaveData` / `ContainerEntity.addChestVehicleSaveData`:
+/// only chest boats own container fields; a pending table replaces `Items`.
+/// Ordinary slots use `ContainerHelper.saveAllItems` through the existing item encoder.
 pub fn boat_to_nbt(
     id: &str,
     position: Vec3,
@@ -4109,8 +4116,22 @@ pub fn boat_to_nbt(
         fall_distance: 0.0,
     }
     .non_mob_tag(raw);
-    if let (Some(items), Tag::Compound(map)) = (items, &mut tag) {
-        map.insert("Items".into(), crate::save::encode_items(items));
+    if let Tag::Compound(map) = &mut tag {
+        map.remove(&"Items".into());
+        if let Some(items) = items {
+            let table = crate::save::text(map.get(&"LootTable".into()))
+                .and_then(|id| horizon_client_core::identifier::normalize_id(&id));
+            if let Some(table) = table {
+                map.insert("LootTable".into(), Tag::String(table.as_str().into()));
+            } else {
+                map.remove(&"LootTable".into());
+                map.remove(&"LootTableSeed".into());
+                map.insert("Items".into(), crate::save::encode_items(items));
+            }
+        } else {
+            map.remove(&"LootTable".into());
+            map.remove(&"LootTableSeed".into());
+        }
     }
     tag
 }

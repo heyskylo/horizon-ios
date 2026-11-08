@@ -663,6 +663,7 @@ impl Launcher {
         }
         let tx = self.mods.tx.clone();
         let java = self.mods.java.clone();
+        let home = self.mods.home();
         std::thread::spawn(move || {
             let mut found = HashMap::new();
             for e in entries {
@@ -671,7 +672,7 @@ impl Launcher {
                 };
                 let newer = match &java {
                     Some(target) => java_instance::update_for(&*source, target, &e),
-                    None => installed::update_for(&*source, &e),
+                    None => installed::update_for(&*source, &e, &home),
                 };
                 if let Ok(Some(v)) = newer {
                     found.insert((e.source, e.project.clone()), v.number);
@@ -747,6 +748,39 @@ impl Launcher {
                     .trim()
                     .to_string()),
             };
+            let _ = tx.send(Event::Done(result, false));
+        });
+    }
+
+    /// Installs version `version` of registry native mod `id` as the player picked it on its
+    /// Versions tab ([`horizon::install_chosen`]). The first native mod goes through the trust
+    /// notice and the recommended version instead.
+    pub(super) fn mods_install_version(&mut self, id: String, version: String) {
+        if self.mods.busy.is_some() {
+            return;
+        }
+        if !self.settings.native_mods_noticed {
+            self.mods_install(SourceId::Horizon, id, None);
+            return;
+        }
+        self.mods.message = None;
+        self.mods.busy = Some((id.clone(), format!("{} {version}", id), 0.));
+        self.mods.updates.remove(&(SourceId::Horizon, id.clone()));
+        let tx = self.mods.tx.clone();
+        let home = self.mods.home();
+        let instance = self
+            .selected_instance()
+            .map_or_else(|| "Horizon".to_string(), |i| i.name.clone());
+        std::thread::spawn(move || {
+            let result = horizon::install_chosen(&id, &version, &home, &|_, _| {}).map(|e| {
+                trf(
+                    "Installed {mods} into {instance}. Build to play with it.",
+                    &[
+                        ("mods", &format!("{} {}", e.title, e.number)),
+                        ("instance", &instance),
+                    ],
+                )
+            });
             let _ = tx.send(Event::Done(result, false));
         });
     }
@@ -1991,6 +2025,8 @@ pub(super) fn auto_update(targets: &[AutoTarget]) -> (Vec<String>, Vec<String>) 
             in_pack: horizon::auto::in_pack(&i.home),
             level,
             natives: t.natives,
+            fit: horizon_launcher::native_fit::plays(i)
+                .map(|plays| (plays, horizon_launcher::native_fit::pins(&i.home))),
         };
         if let Some(report) = horizon::auto::run(&i.home, &ctx, &|_, _| {}) {
             lines.extend(report.lines());

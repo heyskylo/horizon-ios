@@ -5,11 +5,11 @@
 //! game fills the list when the page opens (`filled`), takes the choice, and says why a pick
 //! can't play (`refused`). Built from vanilla's widgets.
 use crate::{
-    gamepad::{GlyphStyle, MenuJob},
+    gamepad::MenuJob,
     graphics_style,
     hud::{HudAtlas, HudBatch, rgba},
     lang,
-    pad_glyph::{self, Glyph},
+    pad_glyph::{self, Glyph, Glyphs},
     text::Text,
     ui,
 };
@@ -244,7 +244,7 @@ impl SplitProfiles {
         atlas: &HudAtlas,
         cursor: (f32, f32),
         in_world: bool,
-        style: GlyphStyle,
+        glyphs: Glyphs,
     ) {
         let (w, h) = (batch.width.ceil(), batch.height.ceil());
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, in_world);
@@ -307,7 +307,7 @@ impl SplitProfiles {
                 None => tr("horizon.pages.split_profiles", "Who's playing?"),
             };
             graphics_style::title(batch, atlas, &Text::literal(title));
-            self.draw_bumpers(batch, atlas, style);
+            self.draw_bumpers(batch, atlas, glyphs);
             // Under Cancel: where offline profiles live.
             let y = buttons.last().map_or(0.0, |b| b.0[1] + 30.0);
             line(
@@ -401,7 +401,7 @@ impl SplitProfiles {
 
     /// Under the title: the bumpers as keys, as the prompts over a player's view draw them (the
     /// controller's own symbols, in its colours), then where they put the view.
-    fn draw_bumpers(&self, batch: &mut HudBatch, atlas: &HudAtlas, style: GlyphStyle) {
+    fn draw_bumpers(&self, batch: &mut HudBatch, atlas: &HudAtlas, glyphs: Glyphs) {
         let width = |text: &str| HudBatch::text_width(atlas, text).ceil();
         let words = match &self.place {
             Some(place) => tr(
@@ -411,7 +411,7 @@ impl SplitProfiles {
             .replacen("%s", place, 1),
             None => tr("horizon.splitscreen.profiles.move", "Move where you play"),
         };
-        let keys = [MenuJob::PagePrev, MenuJob::PageNext].map(|job| Glyph::menu(job, style));
+        let keys = [MenuJob::PagePrev, MenuJob::PageNext].map(|job| Glyph::menu(job, glyphs));
         let key_width = |b: Glyph| pad_glyph::width(atlas, b);
         let total = keys.iter().map(|&b| key_width(b) + 4.0).sum::<f32>() + 2.0 + width(&words);
         let (mut x, y) = (((batch.width - total) / 2.0).floor(), 30.0);
