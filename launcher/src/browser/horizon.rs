@@ -68,6 +68,15 @@ pub fn is_native_mod(id: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The GitHub stars of the registry's project `id`, by the index already read (never the
+/// network): None when it has none, when its source isn't a GitHub repository, or when no index
+/// was read.
+pub fn github_stars(id: &str) -> Option<u64> {
+    let index = known_index()?;
+    let p = index.project(id)?;
+    (p.stars > 0 && github_repo(&p.source).is_some()).then_some(p.stars)
+}
+
 /// The index: the one fetched in the last ten minutes, else fetched again (and kept in the game
 /// folder), else the copy kept last time.
 pub fn index() -> Result<Arc<Index>, String> {

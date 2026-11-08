@@ -329,7 +329,6 @@
   "by {author}": "作者：{author}",
   "{count} downloads": "{count} 回ダウンロード",
   "{count} followers": "{count} フォロワー",
-  "{count} stars on GitHub": "GitHub のスター {count} 件",
   "updated {date}": "{date} に更新",
   "Back to results": "結果に戻る",
   "Sign in with GitHub to rate": "GitHubでサインインして評価",

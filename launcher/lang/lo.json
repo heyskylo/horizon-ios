@@ -460,7 +460,6 @@
   "Copying…": "ກຳລັງສຳເນົາ...",
   "Filters": "ການກັ່ນຕອງ",
   "{count} followers": "{count} ຜູ້ຕິດຕາມ",
-  "{count} stars on GitHub": "{count} ດາວໃນ GitHub",
   "Connect an AI agent": "ເຊື່ອມຕໍ່ຕົວແທນ AI",
   "Each switch is off unless you turn it on. What it sends is below it; the privacy page on playhorizon.dev says how long it is kept.": "ແຕ່ລະສະວິດຈະຖືກປິດໄວ້ເວັ້ນເສຍແຕ່ວ່າທ່ານເປີດມັນ. ສິ່ງທີ່ມັນສົ່ງແມ່ນຂ້າງລຸ່ມນີ້; ໜ້າຄວາມເປັນສ່ວນຕົວໃນ playhorizon.dev ບອກວ່າມັນຖືກເກັບໄວ້ດົນປານໃດ.",
   "Players": "ຜູ້ນ",

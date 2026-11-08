@@ -406,13 +406,16 @@ fn sample_probe(
         bytemuck::bytes_of(&[0., 0., 0., scale]),
         wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX,
     );
-    let ids = buffer(bytemuck::bytes_of(&[0i32; 15]), wgpu::BufferUsages::STORAGE);
+    let ids = buffer(bytemuck::bytes_of(&[0u32; 2]), wgpu::BufferUsages::STORAGE);
     let data = buffer(
         bytemuck::cast_slice(vertices),
         wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX,
     );
     let rects = buffer(
-        bytemuck::cast_slice(&atlas.rects_table()),
+        bytemuck::cast_slice(&super::super::pack_post::terrain_tables(
+            &[],
+            &atlas.rects_table(),
+        )),
         wgpu::BufferUsages::STORAGE,
     );
     let bindings = [

@@ -434,7 +434,12 @@ impl Launcher {
             };
             // The registry's rows end with downloads, the others' with how they run (`compat`).
             let right = if p.source == SourceId::Horizon {
-                ui::text(13., FontWeight::NORMAL, 0.5).child(count(p.downloads).to_uppercase())
+                ui::text(13., FontWeight::NORMAL, 0.5)
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .children(super::mods_page::github_stars(&p.id, &t))
+                    .child(count(p.downloads).to_uppercase())
             } else {
                 let support = m.support(&p);
                 let tone = match support {
