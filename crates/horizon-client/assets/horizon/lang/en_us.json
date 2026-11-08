@@ -988,5 +988,9 @@
   "horizon.debug.pass_detail.separate_passes": "separate passes, adds GPU time",
   "horizon.debug.pass_detail.part": "%s › %s: %s ms",
   "horizon.debug.pass_detail.counters": "%s: %s fragments, %s per pixel, %s vertices, %s of %s triangles kept",
-  "horizon.debug.pass_detail.no_counters": "GPU counters: Vulkan only"
+  "horizon.debug.pass_detail.no_counters": "GPU counters: Vulkan only",
+  "horizon.perf.started": "Profiling started; F3+O stops it and saves the capture.",
+  "horizon.perf.saved": "Saved %s",
+  "horizon.perf.open_in_browser": "Open it at %s (the file stays on your computer)",
+  "horizon.perf.error": "Profiling: %s"
 }

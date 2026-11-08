@@ -52,6 +52,42 @@ impl SystemProbe {
     }
 }
 
+/// A `SystemProbe` on a thread of its own, for the sides whose frame must not wait on the probes (macOS runs `ps`).
+pub(super) struct BackgroundProbe {
+    requests: std::sync::mpsc::Sender<(f64, WorldCounts)>,
+    latest: std::sync::Arc<std::sync::Mutex<Gauges>>,
+}
+
+impl BackgroundProbe {
+    pub(super) fn spawn() -> Self {
+        let (requests, wanted) = std::sync::mpsc::channel::<(f64, WorldCounts)>();
+        let latest = std::sync::Arc::new(std::sync::Mutex::new(Gauges::default()));
+        let shared = std::sync::Arc::clone(&latest);
+        let worker = std::thread::Builder::new()
+            .name("horizon-perf-gauges".into())
+            .spawn(move || {
+                let mut probe = SystemProbe::default();
+                for (t, counts) in wanted {
+                    let gauges = probe.read(t, counts);
+                    *shared.lock().unwrap_or_else(|e| e.into_inner()) = gauges;
+                }
+            });
+        if let Err(e) = worker {
+            log::warn!("Horizon: no thread for the health gauges ({e})");
+        }
+        Self { requests, latest }
+    }
+
+    /// Asks for a reading at `t`; the answer shows in [`BackgroundProbe::latest`] a moment later.
+    pub(super) fn request(&self, t: f64, counts: WorldCounts) {
+        let _ = self.requests.send((t, counts));
+    }
+
+    pub(super) fn latest(&self) -> Gauges {
+        *self.latest.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 /// `/proc/stat`'s first line as (busy, total) jiffies: everything but idle and iowait is busy.
 pub(super) fn parse_cpu_stat(text: &str) -> Option<(u64, u64)> {
     let fields: Vec<u64> = text
@@ -103,6 +139,11 @@ pub fn warm_hardware() {
     std::thread::spawn(|| {
         HARDWARE.get_or_init(horizon_bench::Hardware::detect);
     });
+}
+
+/// The hardware, described now if nothing has yet: the probes run commands, so not on a tick.
+pub fn hardware_now() -> &'static horizon_bench::Hardware {
+    HARDWARE.get_or_init(horizon_bench::Hardware::detect)
 }
 
 /// The hardware, once `warm_hardware` has described it.

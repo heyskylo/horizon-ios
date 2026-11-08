@@ -523,6 +523,11 @@ horizon-ctl profile mark NAME
   time and bytes written.
 - **F3+O** runs `profile start` / `profile stop` with no side. **`HORIZON_PROFILE=DIR`** captures the whole run and
   writes it into DIR at exit.
+- **As built (C1):** `profile client` and a bare `profile` capture the window only; `profile server` is refused until
+  C2 and R1a give it a server to reach. A client capture without `--seconds` stops at the 600 s window cap with
+  `STOP_REASON_WINDOW_CAP`, so `HORIZON_PROFILE` records the first 10 minutes of a run. The client's slow ring takes
+  frames over `HORIZON_SPIKES`, else 50 ms. The health gauges (process and machine probes) are read on a thread of their
+  own so a frame never waits on `ps`.
 - **Dedicated console:** `horizon-report [SECONDS|stop|status] [--no-samples]` and `horizon-server report` capture the
   server side.
 - The `profile` row in `horizon-ctl` stays a trigger; it has no reading subcommands.

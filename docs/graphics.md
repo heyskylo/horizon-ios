@@ -135,6 +135,8 @@ Two tools find where a slow frame goes: `HORIZON_SPIKES=MS` prints the timed spa
 
 To see what ran when, on every thread, write a trace: `horizon-ctl trace /tmp/trace.json 10` (or `HORIZON_TRACE=FILE` from the start) writes each span of every thread for ten seconds as Chrome trace events, and [ui.perfetto.dev](https://ui.perfetto.dev) opens the file as it is. The spans sit on the thread that ran them, nested by time, so a frame that waited shows what it waited beside: far terrain, lighting or meshing on their workers, saving, the server thread.
 
+To keep a performance capture of the window, run `horizon-ctl profile start` (or press **F3+O**), play, and `horizon-ctl profile stop` (or F3+O again). `--seconds S` ends it by itself (at most 600), `--hz`, `--over MS`, `--threads` and `--wall` tune the render thread's sampler and `--no-samples` leaves it out. `profile mark NAME` labels the moment you are at and `profile status` says how far the capture is. The file is `reports/profile-<time>Z.hzperf` in the game home (the folder `HORIZON_PROFILE=DIR` names instead; with it set, the first 10 minutes of the run are captured and written at exit), 30 files or 1 GiB are kept, and the chat or `stop` says where it went. It holds the frame times, the recent health history, the slow frames, the marks and the call trees of the render thread; `horizon-perf` reads it and the web UI opens it. Only the client side is captured for now. Nothing in it names a player, a world or a path.
+
 ### Render capture and replay
 
 A renderer change can be measured in seconds on a fixed scene, without starting the game, loading a world or waiting for far terrain: capture the scene once from a running game, then replay it offscreen with the real `Renderer` as often as needed.

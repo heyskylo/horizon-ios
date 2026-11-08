@@ -200,10 +200,11 @@ impl Game<'_> {
             ..Start::default()
         };
         CaptureOptions {
-            window_s: f64::from(seconds),
+            window_s: Some(f64::from(seconds)),
             trigger: Trigger::Console,
             start,
             samples,
+            sampler: Default::default(),
             block_names: self.block_names(),
             levels: self.level_counts(),
             wire: self.wire_bytes(),

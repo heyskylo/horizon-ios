@@ -352,6 +352,8 @@ A recording is one folder, a bundle is that folder plus the logs in one zip:
   stops it and writes the bundle (the chat shows the path); **F3+E** writes the bundle of the
   newest recording. The keys are off until **Recording shortcuts** is turned on (AI Agent page);
   the page also has the two buttons and a live recording/replay line.
+- **F3+O** starts a performance capture (`profile start`) and stops and saves it; it is on with no setting.
+  See [graphics.md](graphics.md) for what the capture holds.
 - `record-replay NAME [--stop] [--in-place] [--keep-world] [--timeout S]` is the best effort
   replay: it copies the recording's world into `saves/`, opens it, restores the recorded player
   position, rotation and velocity, and feeds the recorded keys, mouse, wheel, look, pad events
