@@ -757,6 +757,7 @@ impl PackAtlas {
             alpha_test: None,
             item_id_declared: false,
             far_depth: false,
+            paged_maps: false,
         }
     }
 }

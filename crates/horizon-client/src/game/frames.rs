@@ -564,6 +564,7 @@ impl Game<'_> {
                 continue;
             }
             let entity_start = out.len();
+            self.mark_motion(entity_start, Self::MOTION_OBJECT | u64::from(f.id));
             let s = f.step();
             // Pose: to the block centre, then X/Y rotation by facing.
             let (x_rot, y_rot) = if s[1] == 0 {
@@ -702,6 +703,7 @@ impl Game<'_> {
         for (stack, id, m, light, cull, kind) in items {
             let entity_start = out.len();
             self.mark_entity(entity_start, kind);
+            self.mark_motion(entity_start, Self::MOTION_FRAME_ITEM | u64::from(id));
             let owner = super::item_draw::owner_at([0.0; 3], 0.0, "minecraft:item_frame");
             let state = self.resolve_item(
                 &stack,
@@ -721,6 +723,8 @@ impl Game<'_> {
                 self.cull_skinned(out, entity_start, skinned);
             }
         }
+        // Maps: keyed by their map id, which several frames can show, so they stay unmarked.
+        self.mark_motion(out.len(), 0);
         // Nearest first: past the atlas's map slots, the far ones go without.
         maps.sort_by(|a, b| {
             let d = |m: &glam::Mat4| {

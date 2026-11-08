@@ -2691,6 +2691,7 @@ impl Game<'_> {
                 continue;
             }
             let entity_start = out.len();
+            self.mark_motion(entity_start, Self::MOTION_OBJECT | u64::from(c.id));
             // The per-entity jitter (offsetSeed) that keeps stacked carts from z-fighting.
             let seed = i64::from(c.id).wrapping_mul(493_286_711);
             let seed = seed

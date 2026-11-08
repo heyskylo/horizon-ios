@@ -1251,5 +1251,9 @@
   "Buy": "Купити",
   "Gift": "Подарувати",
   "Found on this computer": "Знайдено на цьому комп'ютері",
-  "Looks": "Образи"
+  "Looks": "Образи",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Системна в'язка ключів не відповіла протягом {seconds} секунд. Переконайтеся, що вона працює і розблокована, а потім перезапустіть лаунчер.",
+  "Can't read {name}'s sign-in: {why}": "Не вдається прочитати вхід {name}: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon виконує функції, теги функцій, предикати, модифікатори предметів, рецепти, таблиці здобичі, досягнення, обміни селян, типи шкоди, більшість тегів і більшу частину генерації світу (біоми, особливості, структури, виміри) із датапака. Інші файли, як-от пресети світу, поки не читаються.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} поки нічого не змінить у Horizon: Horizon ще не читає його {files}."
 }

@@ -1251,5 +1251,9 @@
   "Buy": "Satın al",
   "Gift": "Hediye et",
   "Found on this computer": "Bu bilgisayarda bulunanlar",
-  "Looks": "Görünümler"
+  "Looks": "Görünümler",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Sisteminizin anahtarlığı {seconds} saniye içinde yanıt vermedi. Çalıştığından ve kilidinin açık olduğundan emin olun, ardından başlatıcıyı yeniden başlatın.",
+  "Can't read {name}'s sign-in: {why}": "{name} hesabının oturum bilgisi okunamıyor: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon bir veri paketinin işlevlerini, işlev etiketlerini, koşullarını, eşya değiştiricilerini, tariflerini, ganimet tablolarını, ilerlemelerini, köylü ticaretlerini, hasar türlerini, çoğu etiketini ve dünya oluşturmanın çoğunu (biyomlar, özellikler, yapılar, boyutlar) çalıştırır. Dünya ön ayarları gibi diğer dosyalar henüz okunmuyor.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} Horizon'da henüz hiçbir şeyi değiştirmez: Horizon bunun {files} dosyalarını henüz okumuyor."
 }
