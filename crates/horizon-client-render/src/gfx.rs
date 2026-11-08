@@ -2565,7 +2565,7 @@ impl Renderer {
         let vertices: u64 = self
             .sections
             .values()
-            .chain(self.lods.values().map(|tile| &tile.mesh))
+            .chain(self.lods.values().map(|tile| &*tile.mesh))
             .map(|s| s.solid_slots + u64::from(s.translucent) * 4)
             .sum();
         let translucent = self.translucent_arena.as_ref();
