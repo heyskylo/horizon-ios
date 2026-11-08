@@ -1257,5 +1257,8 @@
   "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
   "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
   "{mod}: using version {version}, made for the Horizon you play": "{mod}: s'utilitza la versió {version}, feta per a l'Horizon que jugues",
-  "Recommended": "Recomanada"
+  "Recommended": "Recomanada",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "Una versió més antiga, {version}, es compila a l'Horizon que jugues: instal·lar la tria",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: la versió {version} no s'ha compilat, provant {older}",
+  "Use recommended (kept at {version})": "Usa la recomanada (fixada a {version})"
 }

@@ -4,6 +4,9 @@
 use super::{Dim, Game};
 
 #[cfg(test)]
+#[path = "inventory_changed_tests.rs"]
+mod inventory_changed_tests;
+#[cfg(test)]
 #[path = "mod_toast_tests.rs"]
 mod mod_toast_tests;
 use horizon_client::actions::Action;
@@ -1156,6 +1159,17 @@ impl Game<'_> {
             return;
         }
         self.adv.last_inventory = key;
+        // Native mods hear the change before any criterion is looked at, so
+        // they do with no `inventory_changed` advancement in the tree too
+        // (`native_player_inventory_changed`, API @API:player_inventory_changed@).
+        if self.remote.is_none()
+            && !self.no_player_here()
+            && !horizon_client::mod_api::mods().is_empty()
+        {
+            let stacks = inventory_slots(&self.inventory, &self.armor, &self.offhand);
+            let player = self.native_acting_id();
+            self.native_player_inventory_changed(player, &stacks);
+        }
         let stacks: Vec<ItemView> = self
             .inventory
             .iter()
@@ -3451,4 +3465,19 @@ mod movement_predicate_tests {
             "actual movement predicate mismatches: {failures:?}"
         );
     }
+}
+
+/// A player's 41 slots in `Inventory` numbering, for
+/// `native_player_inventory_changed`: the main inventory (0..36), the armour
+/// feet to head (36..40; `armor` holds it head first), the off hand (40).
+pub(super) fn inventory_slots(
+    inventory: &[Option<ItemStack>],
+    armor: &[Option<ItemStack>; 4],
+    offhand: &Option<ItemStack>,
+) -> Vec<Option<ItemStack>> {
+    let mut slots: Vec<Option<ItemStack>> = inventory.iter().take(36).cloned().collect();
+    slots.resize(36, None);
+    slots.extend(armor.iter().rev().cloned());
+    slots.push(offhand.clone());
+    slots
 }

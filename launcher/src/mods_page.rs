@@ -86,6 +86,11 @@ pub(super) struct Mods {
     more: bool,
     error: Option<String>,
     pub(super) installed: Vec<installed::Entry>,
+    /// The registry native mods' versions the player picked on their Versions tab, by id
+    /// (`horizon::chosen`), read with `installed`.
+    pub(super) chosen: std::collections::BTreeMap<String, String>,
+    /// The Horizon the selected instance played when its updates were last looked for.
+    pub(super) checked_for: Option<String>,
     loaded: bool,
     /// Whether the page searched for the instance as it is (its version and loader).
     asked: bool,
@@ -136,6 +141,13 @@ impl Mods {
     }
 
     /// The game folder installs go into: the selected instance's, once the page has read it.
+    /// Reads what the browser installed in the game folder again, with the versions picked.
+    pub(super) fn reload_installed(&mut self) {
+        let home = self.home();
+        self.installed = installed::Installed::load(&home).entries;
+        self.chosen = horizon::chosen(&home);
+    }
+
     pub(super) fn home(&self) -> PathBuf {
         self.home.clone().unwrap_or_else(backend::game_home)
     }
@@ -188,6 +200,8 @@ impl Mods {
             more: false,
             error: None,
             installed: Vec::new(),
+            chosen: Default::default(),
+            checked_for: None,
             loaded: false,
             asked: false,
             home: None,
@@ -379,7 +393,7 @@ impl Launcher {
                         crate::glass_toast::say(said.clone());
                     }
                     m.message = Some(result);
-                    m.installed = installed::Installed::load(&m.home()).entries;
+                    m.reload_installed();
                     m.installed_list.reset();
                     if modpack {
                         // The Modpacks page reads its list again.
@@ -404,13 +418,13 @@ impl Launcher {
                     m.rebuild.extend(rebuild);
                     if !lines.is_empty() {
                         m.message = Some(Ok(lines.join("\n")));
-                        m.installed = installed::Installed::load(&m.home()).entries;
+                        m.reload_installed();
                         m.installed_list.reset();
                     }
                 }
                 Event::TakenDown(lines) => {
                     m.message = Some(Ok(lines.join("\n")));
-                    m.installed = installed::Installed::load(&m.home()).entries;
+                    m.reload_installed();
                     m.installed_list.reset();
                 }
             }
@@ -1034,9 +1048,21 @@ impl Launcher {
             self.mods.asked = false;
         }
         self.mods.java = java;
+        // The instance moved to another Horizon (picked, or an update it follows): the versions
+        // that fit change, so look for updates again.
+        let plays = self
+            .selected_instance()
+            .and_then(|i| i.version.clone())
+            .or_else(|| self.installed.first().cloned());
+        if self.mods.loaded && self.mods.java.is_none() && plays != self.mods.checked_for {
+            self.mods.checked_for = plays.clone();
+            self.mods.updates.clear();
+            self.mods_check_updates();
+        }
         if !self.mods.loaded || (home.is_some() && self.mods.home != home) {
+            self.mods.checked_for = plays;
             self.mods.home = home;
-            self.mods.installed = installed::Installed::load(&self.mods.home()).entries;
+            self.mods.reload_installed();
             self.mods.installed_list.reset();
             self.mods.updates.clear();
             self.mods.confirm_remove = None;
@@ -1092,7 +1118,7 @@ impl Launcher {
             crate::glass_toast::say(said.clone());
         }
         self.mods.message = Some(removed.clone());
-        self.mods.installed = installed::Installed::load(&home).entries;
+        self.mods.reload_installed();
         self.mods.installed_list.reset();
         self.mods.confirm_remove = None;
         removed
@@ -1455,6 +1481,30 @@ impl Launcher {
                     }));
                 }
                 right = right.child(update);
+            }
+            if let Some(kept) = self
+                .mods
+                .chosen
+                .get(&e.project)
+                .filter(|_| e.source == SourceId::Horizon)
+            {
+                let mut recommended = button(
+                    SharedString::from(format!("mods-recommended-{}", e.project)),
+                    trf("Use recommended (kept at {version})", &[("version", kept)]),
+                    Kind::Ghost,
+                    &t,
+                );
+                if busy {
+                    recommended = disabled(recommended);
+                } else {
+                    let id = e.project.clone();
+                    recommended =
+                        recommended.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.mods_install(SourceId::Horizon, id.clone(), None);
+                            cx.notify();
+                        }));
+                }
+                right = right.child(recommended);
             }
             let confirming = self.mods.confirm_remove.as_deref() == Some(e.project.as_str());
             let id = e.project.clone();
