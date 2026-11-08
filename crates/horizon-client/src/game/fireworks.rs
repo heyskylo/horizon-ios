@@ -60,6 +60,9 @@ pub(super) struct Rocket {
     pub(super) angled: bool,
     /// `DATA_ID_FIREWORKS_ITEM`: the stack it was launched from.
     pub(super) item: ItemStack,
+    /// `Entity.onGround`: whether its last move was stopped going down (or
+    /// the one it was loaded with, until it moves).
+    pub(super) on_ground: bool,
 }
 impl Rocket {
     /// A rocket a server sent (`handleAddEntity`): placed and moved by it.
@@ -83,6 +86,7 @@ impl Rocket {
             attached_to: None,
             angled: false,
             item,
+            on_ground: false,
         }
     }
     /// `FireworkRocketEntity.addAdditionalSaveData`; the owner only when it is `player`.
@@ -107,6 +111,7 @@ impl Rocket {
                     None
                 },
                 left_owner: self.left_owner,
+                on_ground: self.on_ground,
             },
             uuid,
             raw,
@@ -135,6 +140,7 @@ impl Rocket {
             attached_to: None,
             angled: r.angled,
             item,
+            on_ground: r.on_ground,
         }
     }
     /// One tick of a server's client: the rocket flies on by itself between
@@ -189,6 +195,8 @@ impl Rocket {
             return;
         };
         let horizontal = (moved.x - wanted.x).abs() > 1e-7 || (moved.z - wanted.z).abs() > 1e-7;
+        // Entity.move: on the ground when a move down was stopped.
+        self.on_ground = wanted.y < 0.0 && moved.y != wanted.y;
         self.position = Vec3::new(
             self.position.x + moved.x,
             self.position.y + moved.y,
@@ -253,6 +261,7 @@ impl Game<'_> {
             attached_to: None,
             angled: false,
             item: stack.clone(),
+            on_ground: false,
         }
     }
     /// `FireworkRocketItem.useOn`: launch from the clicked point.

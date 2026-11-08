@@ -2172,6 +2172,8 @@ struct FallingBlock {
     drop_item: bool,
     /// `Entity.fallDistance` (powder snow holds a block that fell far at 0.9).
     fall_distance: f64,
+    /// `Entity.onGround`: whether its last move was stopped going down.
+    on_ground: bool,
     /// `Entity.stuckSpeedMultiplier`: a cobweb it is in scales its next move.
     stuck: Vec3,
     damage: horizon_client::falling_block::Damage,
@@ -6016,6 +6018,7 @@ impl Game<'_> {
                         portal: Default::default(),
                         drop_item: true,
                         fall_distance: 0.0,
+                        on_ground: false,
                         stuck: Vec3::ZERO,
                         damage,
                         saved: None,
@@ -6423,6 +6426,7 @@ impl Game<'_> {
             f.position.z + movement.z,
         );
         let on_ground = wanted.y < 0.0 && movement.y != wanted.y;
+        f.on_ground = on_ground;
         if next.y < f.position.y {
             f.fall_distance += f.position.y - next.y;
         }
@@ -18773,6 +18777,7 @@ mod tests {
             portal: Default::default(),
             drop_item: true,
             fall_distance: 0.0,
+            on_ground: false,
             stuck: Vec3::ZERO,
             damage: horizon_client::falling_block::Damage::default(),
             saved: None,

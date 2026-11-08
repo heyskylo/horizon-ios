@@ -3107,7 +3107,7 @@ pub fn arrow_to_nbt(
         position: p.position,
         motion: p.velocity,
         rotation: [p.yaw, p.pitch],
-        on_ground: false,
+        on_ground: p.on_ground,
         fall_distance: a.fall_distance,
     };
     let mut tag = base.tag(raw);
@@ -3194,6 +3194,7 @@ pub fn arrow_from_nbt(
     p.left_owner = flag(tag, "LeftOwner");
     p.owner_uuid = owner;
     p.no_gravity = flag(tag, "NoGravity");
+    p.on_ground = flag(tag, "OnGround");
     let a = p.arrow.as_mut()?;
     a.life = number(tag.get("life")).unwrap_or(0) as i16 as i32;
     a.shake = (number(tag.get("shake")).unwrap_or(0) as i8 as u8).into();
@@ -3249,7 +3250,7 @@ pub fn fireball_to_nbt(
         position: p.position,
         motion: p.velocity,
         rotation: [p.yaw, p.pitch],
-        on_ground: false,
+        on_ground: p.on_ground,
         fall_distance: 0.0,
     };
     let mut tag = base.tag(raw);
@@ -3382,7 +3383,7 @@ pub fn throwable_to_nbt(
         position: p.position,
         motion: p.velocity,
         rotation: [p.yaw, p.pitch],
-        on_ground: false,
+        on_ground: p.on_ground,
         fall_distance: 0.0,
     };
     let mut tag = base.tag(raw);
@@ -3423,6 +3424,7 @@ pub fn throwable_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Project
     p.has_been_shot = flag(tag, "HasBeenShot");
     p.owner_uuid = owner;
     p.no_gravity = flag(tag, "NoGravity");
+    p.on_ground = flag(tag, "OnGround");
     Some(p)
 }
 
@@ -3468,6 +3470,7 @@ pub fn spit_or_bullet_from_nbt(
     p.has_been_shot = flag(tag, "HasBeenShot");
     p.owner_uuid = owner;
     p.no_gravity = flag(tag, "NoGravity");
+    p.on_ground = flag(tag, "OnGround");
     Some(p)
 }
 
@@ -3492,7 +3495,7 @@ pub fn spit_or_bullet_to_nbt(
         position: p.position,
         motion: p.velocity,
         rotation: [p.yaw, p.pitch],
-        on_ground: false,
+        on_ground: p.on_ground,
         fall_distance: 0.0,
     };
     let mut tag = base.tag(raw);
@@ -3560,6 +3563,7 @@ pub fn fireball_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Projecti
     p.has_been_shot = flag(tag, "HasBeenShot");
     p.owner_uuid = owner;
     p.no_gravity = flag(tag, "NoGravity");
+    p.on_ground = flag(tag, "OnGround");
     p.acceleration = float(tag.get("acceleration_power")).unwrap_or(0.1);
     if let Some(item) = tag.get("Item").and_then(item_from_nbt) {
         p.set_item(item);
@@ -3579,6 +3583,7 @@ pub struct RocketNbt {
     pub angled: bool,
     pub owner: Option<Who>,
     pub left_owner: bool,
+    pub on_ground: bool,
 }
 pub fn firework_rocket_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<RocketNbt> {
     let owner = uuid_from_tag(tag.get("Owner"));
@@ -3591,6 +3596,7 @@ pub fn firework_rocket_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<R
         angled: flag(tag, "ShotAtAngle"),
         owner: (player.is_some() && owner == player).then_some(Who::Player),
         left_owner: flag(tag, "LeftOwner"),
+        on_ground: flag(tag, "OnGround"),
     })
 }
 
@@ -3606,6 +3612,8 @@ pub struct RocketSave<'a> {
     pub angled: bool,
     pub owner: Option<[i32; 4]>,
     pub left_owner: bool,
+    /// `Entity.onGround`, from the rocket's last `Entity.move`.
+    pub on_ground: bool,
 }
 pub fn firework_rocket_to_nbt(r: &RocketSave, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
     let mut tag = Base {
@@ -3614,7 +3622,7 @@ pub fn firework_rocket_to_nbt(r: &RocketSave, uuid: [i32; 4], raw: Option<&Tag>)
         position: r.position,
         motion: r.motion,
         rotation: r.rotation,
-        on_ground: false,
+        on_ground: r.on_ground,
         fall_distance: 0.0,
     }
     .tag(raw);
@@ -3651,6 +3659,8 @@ pub struct TridentSave<'a> {
     pub has_been_shot: bool,
     pub owner: Option<[i32; 4]>,
     pub no_gravity: bool,
+    /// `Entity.onGround`: a trident moves by `setPos`, so it keeps the loaded one.
+    pub on_ground: bool,
     pub fire_ticks: i32,
     pub item: &'a crate::items::ItemStack,
 }
@@ -3662,7 +3672,7 @@ pub fn trident_to_nbt(t: &TridentSave, uuid: [i32; 4], raw: Option<&Tag>) -> Tag
         position: t.position,
         motion: t.motion,
         rotation: [t.yaw, t.pitch],
-        on_ground: false,
+        on_ground: t.on_ground,
         fall_distance: 0.0,
     }
     .tag(raw);
@@ -3718,6 +3728,7 @@ pub struct TridentNbt {
     pub has_been_shot: bool,
     pub owner: Option<[i32; 4]>,
     pub no_gravity: bool,
+    pub on_ground: bool,
     pub fire_ticks: i32,
     pub item: crate::items::ItemStack,
 }
@@ -3738,6 +3749,7 @@ pub fn trident_from_nbt(tag: &Tag) -> Option<TridentNbt> {
         has_been_shot: flag(tag, "HasBeenShot"),
         owner: owner_uuid(tag),
         no_gravity: flag(tag, "NoGravity"),
+        on_ground: flag(tag, "OnGround"),
         fire_ticks: number(tag.get("Fire")).unwrap_or(0) as i32,
         item: tag
             .get("item")
@@ -3756,6 +3768,7 @@ pub fn falling_block_to_nbt(
     drop_item: bool,
     damage: crate::falling_block::Damage,
     fall_distance: f64,
+    on_ground: bool,
     rotation: [f32; 2],
     uuid: [i32; 4],
 ) -> Tag {
@@ -3765,7 +3778,7 @@ pub fn falling_block_to_nbt(
         position,
         motion,
         rotation,
-        on_ground: false,
+        on_ground,
         fall_distance,
     };
     let mut tag = base.tag(None);
@@ -5140,12 +5153,16 @@ mod tests {
                 angled: true,
                 owner: None,
                 left_owner: false,
+                on_ground: true,
             },
             [1, 2, 3, 4],
             None,
         );
         let r = firework_rocket_from_nbt(&tag, None).unwrap();
-        assert_eq!((r.life, r.lifetime, r.angled), (7, 31, true));
+        assert_eq!(
+            (r.life, r.lifetime, r.angled, r.on_ground),
+            (7, 31, true, true)
+        );
         assert_eq!(r.position, Vec3::new(1.5, 70.0, -3.25));
         let trident = ItemStack::new("minecraft:trident", 1);
         let tag = trident_to_nbt(
@@ -5163,6 +5180,7 @@ mod tests {
                 has_been_shot: true,
                 owner: Some([5, 6, 7, 8]),
                 no_gravity: true,
+                on_ground: true,
                 fire_ticks: 0,
                 item: &trident,
             },
@@ -5173,6 +5191,9 @@ mod tests {
         // `Entity.saveWithoutId` writes NoGravity only when set.
         assert!(t.no_gravity);
         assert!(matches!(tag.get("NoGravity"), Some(Tag::Byte(1))));
+        // Entity.load/saveWithoutId: OnGround as it was.
+        assert!(t.on_ground);
+        assert_eq!(tag.get("OnGround"), Some(&Tag::Byte(1)));
         assert_eq!((t.in_ground, t.life, t.shake), (true, 9, 3));
         assert_eq!((t.dealt_damage, t.pickup), (true, Pickup::CreativeOnly));
         assert!(t.left_owner && t.has_been_shot);
@@ -5341,6 +5362,7 @@ mod tests {
             false,
             crate::falling_block::Damage::default(),
             distance,
+            false,
             [0.0, 0.0],
             [96, 0, 0, 1],
         );
@@ -5400,6 +5422,7 @@ mod tests {
             false,
             damage,
             19.75,
+            true,
             [0.0, 0.0],
             [1, 2, 3, 4],
         );
@@ -6145,6 +6168,7 @@ mod tests {
                 has_been_shot: loaded.has_been_shot,
                 owner: loaded.owner,
                 no_gravity: false,
+                on_ground: false,
                 fire_ticks: 0,
                 item: &trident,
             },

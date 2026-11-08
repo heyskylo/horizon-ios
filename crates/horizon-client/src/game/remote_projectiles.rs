@@ -326,6 +326,7 @@ impl Game<'_> {
                 portal: Default::default(),
                 drop_item: false,
                 fall_distance: 0.0,
+                on_ground: false,
                 stuck: Vec3::ZERO,
                 damage: Default::default(),
                 saved: None,
