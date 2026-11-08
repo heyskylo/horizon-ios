@@ -121,6 +121,75 @@ struct Mixer {
     /// The stream reported its device gone (`Library.isCurrentDeviceDisconnected`).
     #[cfg(feature = "audio")]
     device_lost: bool,
+    /// The stream's recent backend errors, which tell a dead stream from a hiccup.
+    #[cfg(feature = "audio")]
+    stream_errors: StreamErrors,
+}
+
+/// A stream's backend errors close together (`StreamErrors::dead`).
+#[cfg(any(feature = "audio", test))]
+#[derive(Default)]
+struct StreamErrors {
+    /// When the current run of errors began, and how many it holds.
+    since: Option<std::time::Instant>,
+    count: u32,
+}
+#[cfg(any(feature = "audio", test))]
+impl StreamErrors {
+    /// Errors this close together...
+    const WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+    /// ...this many of them: the stream is dead. Under vanilla a device that fails unrecoverably
+    /// reads as disconnected (`ALC_CONNECTED`, the `ALC_EXT_disconnect` extension), and
+    /// `SoundEngine` opens the output again; cpal reports a dead ALSA stream (`alsa::poll()`
+    /// returning POLLERR, over and over) as a backend error like any other, so a run of them
+    /// stands for it. One alone is a hiccup the stream recovers from.
+    const DEAD_AFTER: u32 = 3;
+    /// One more backend error at `now`: whether the stream counts as dead.
+    fn dead(&mut self, now: std::time::Instant) -> bool {
+        match self.since {
+            Some(since) if now.duration_since(since) <= Self::WINDOW => self.count += 1,
+            _ => {
+                self.since = Some(now);
+                self.count = 1;
+            }
+        }
+        self.count >= Self::DEAD_AFTER
+    }
+}
+
+/// Opening the output again after it failed: a few more tries, a couple of seconds apart, so a
+/// device that is gone for good isn't asked forever.
+#[cfg(any(feature = "audio", test))]
+#[derive(Default, Debug, PartialEq)]
+struct Reopen {
+    /// The tries left; 0 while the output plays, or after the last try.
+    tries: u32,
+    /// Ticks since the last try.
+    ticks: u32,
+}
+#[cfg(any(feature = "audio", test))]
+impl Reopen {
+    const TRIES: u32 = 5;
+    /// Two seconds of client ticks.
+    const TICKS: u32 = 40;
+    /// The output failed to open: whether to keep trying.
+    fn failed(&mut self, retrying: bool) -> bool {
+        self.ticks = 0;
+        self.tries = if retrying {
+            self.tries.saturating_sub(1)
+        } else {
+            Self::TRIES
+        };
+        self.tries > 0
+    }
+    /// A tick while tries are left: whether to try now.
+    fn due(&mut self) -> bool {
+        if self.tries == 0 {
+            return false;
+        }
+        self.ticks += 1;
+        self.ticks >= Self::TICKS
+    }
 }
 /// A camera's forward, up and right vectors.
 type Basis = ([f64; 3], [f64; 3], [f64; 3]);
@@ -327,6 +396,9 @@ pub struct Audio {
     /// Ticks since the output devices were last looked at (`DeviceTracker.tick`).
     #[cfg(feature = "audio")]
     device_ticks: u32,
+    /// Opening the output again after it failed to (`Reopen`).
+    #[cfg(feature = "audio")]
+    reopen: Reopen,
     /// The look at the output devices running on its own thread, until a tick
     /// takes its answer: listing them can take 100 ms (#11490).
     #[cfg(feature = "audio")]
@@ -903,6 +975,7 @@ fn open_device(
     if let Ok(mut m) = mixer.lock() {
         m.device_name = device.name().unwrap_or_default();
         m.device_lost = false;
+        m.stream_errors = StreamErrors::default();
     }
     Ok((stream, config))
 }
@@ -1052,10 +1125,19 @@ fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
         },
         move |e| {
             log::warn!("Horizon: audio stream error: {e}");
-            if matches!(e, cpal::StreamError::DeviceNotAvailable)
-                && let Ok(mut m) = on_error.lock()
-            {
-                m.device_lost = true;
+            if let Ok(mut m) = on_error.lock() {
+                let dead = match e {
+                    cpal::StreamError::DeviceNotAvailable => true,
+                    cpal::StreamError::BackendSpecific { .. } => {
+                        m.stream_errors.dead(std::time::Instant::now())
+                    }
+                };
+                if dead && !m.device_lost {
+                    if !matches!(e, cpal::StreamError::DeviceNotAvailable) {
+                        log::warn!("Horizon: the audio stream stopped; opening the output again");
+                    }
+                    m.device_lost = true;
+                }
             }
         },
         None,
@@ -1176,6 +1258,8 @@ impl Audio {
             devices_seen: devices,
             #[cfg(feature = "audio")]
             device_ticks: 0,
+            #[cfg(feature = "audio")]
+            reopen: Reopen::default(),
             #[cfg(feature = "audio")]
             device_probe: None,
         }
@@ -1340,6 +1424,8 @@ impl Audio {
             #[cfg(feature = "audio")]
             device_ticks: 0,
             #[cfg(feature = "audio")]
+            reopen: Reopen::default(),
+            #[cfg(feature = "audio")]
             device_probe: None,
         }
     }
@@ -1447,6 +1533,27 @@ impl Audio {
         }
         changed
     }
+    /// Opens the output on the chosen device again; `retrying` after an earlier try failed.
+    #[cfg(feature = "audio")]
+    fn reopen_output(&mut self, retrying: bool) {
+        // The old stream lets go of the device first: a dead one may still hold it.
+        self._stream = None;
+        let device = self.device_name.clone();
+        match self.set_device(&device) {
+            Ok(()) => {
+                if retrying {
+                    log::info!("Horizon: the audio output is back");
+                }
+                self.reopen = Reopen::default();
+            }
+            Err(e) if self.reopen.failed(retrying) => {
+                log::warn!("Horizon: could not reopen the audio output ({e}); trying again soon");
+            }
+            Err(e) => {
+                log::warn!("Horizon: could not reopen the audio output ({e}); it stays off");
+            }
+        }
+    }
     /// `SoundManager.tick(paused)`, once per client tick.
     pub fn tick(&mut self, paused: bool, ctx: &TickContext) {
         #[cfg(feature = "audio")]
@@ -1454,10 +1561,9 @@ impl Audio {
             if self.should_change_device() {
                 // SoundEngine.reload: stop every sound, open the output again.
                 self.stop_all();
-                let device = self.device_name.clone();
-                if let Err(e) = self.set_device(&device) {
-                    log::warn!("Horizon: could not reopen the audio output: {e}");
-                }
+                self.reopen_output(false);
+            } else if self.backend.owner == 0 && self.reopen.due() {
+                self.reopen_output(true);
             }
         }
         self.sync_volumes();
@@ -1857,6 +1963,46 @@ impl Sounds for Audio {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A run of backend errors close together is a dead stream; one or two, or errors far apart,
+    /// are hiccups.
+    #[test]
+    fn a_run_of_stream_errors_is_a_dead_stream() {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut errors = StreamErrors::default();
+        assert!(!errors.dead(at(0)));
+        assert!(!errors.dead(at(500)));
+        assert!(errors.dead(at(900)));
+        // Spread out, they never add up.
+        let mut apart = StreamErrors::default();
+        for k in 0..10 {
+            assert!(!apart.dead(at(k * 2500)), "error {k}");
+        }
+    }
+
+    /// A failed reopening is tried again every two seconds, five more times, then given up.
+    #[test]
+    fn a_failed_reopening_retries_a_few_times_then_stops() {
+        let mut reopen = Reopen::default();
+        assert!(!reopen.due(), "nothing to retry while the output plays");
+        assert!(reopen.failed(false));
+        let mut tries = 0;
+        for _ in 0..1000 {
+            if reopen.due() {
+                tries += 1;
+                if !reopen.failed(true) {
+                    break;
+                }
+            }
+        }
+        assert_eq!(tries, Reopen::TRIES);
+        assert_eq!(reopen, Reopen::default());
+        // The next lost device starts a fresh run.
+        assert!(reopen.failed(false));
+        assert_eq!(reopen.tries, Reopen::TRIES);
+    }
 
     #[test]
     fn level_capture_keeps_order_category_entity_and_actor_exclusion() {
