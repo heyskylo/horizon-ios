@@ -8301,8 +8301,21 @@ pub(super) fn damage_type(kind: horizon_client::mobs::DamageKind, caused: bool) 
         K::WitherSkull => "minecraft:wither_skull",
     }
 }
-/// A Horizon item stack as a loot stack (id, count, damage, enchantments).
+/// A Horizon item stack as a loot stack (id, count, damage, enchantments,
+/// and its custom data as SNBT for `minecraft:custom_data` predicates).
 fn to_loot(stack: &ItemStack) -> horizon_world::loot::LootStack {
+    let components = stack
+        .custom_data()
+        .map(|data| {
+            let snbt =
+                horizon_world::snbt_text::to_snbt(&horizon_world::nbt::Tag::Compound(data.clone()));
+            (
+                "minecraft:custom_data".to_owned(),
+                serde_json::Value::String(snbt),
+            )
+        })
+        .into_iter()
+        .collect();
     horizon_world::loot::LootStack {
         item: stack.item.to_string(),
         count: stack.count as i32,
@@ -8318,7 +8331,7 @@ fn to_loot(stack: &ItemStack) -> horizon_world::loot::LootStack {
         ominous_amplifier: None,
         stew_effects: Vec::new(),
         names: Vec::new(),
-        components: Vec::new(),
+        components,
     }
 }
 /// A generated loot stack as a Horizon item stack.

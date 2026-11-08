@@ -1924,7 +1924,15 @@ impl LootContext<'_> {
                         let max = e["levels"]["max"].as_u64().map_or(u32::MAX, |m| m as u32);
                         level >= min.max(1) && level <= max
                     });
-                items_ok && enchants_ok
+                let custom_ok = c["predicate"]["predicates"]
+                    .get("minecraft:custom_data")
+                    .is_none_or(|pattern| {
+                        horizon_world::loot::custom_data_matches(
+                            pattern,
+                            self.held.and_then(ItemStack::custom_data),
+                        )
+                    });
+                items_ok && enchants_ok && custom_ok
             }
             "minecraft:killed_by_player" => self.killed_by_player,
             "minecraft:random_chance_with_enchanted_bonus" => {
