@@ -4142,6 +4142,28 @@ game.native_play_local_sound("ironfall:ear.ringing", eye, 1.0, 1.0, 0);
 
 Bundles need `"hooks": @API:muffle_sounds@`.
 
+### Fireworks a client mod draws
+
+`native_client_fireworks(at, velocity, explosions)` (client, `host.client_fireworks`) draws a firework's explosions at
+`at` in this client's world as `ClientLevel.createFireworks` does when a rocket explodes (vanilla's client-only
+`FireworkParticles.Starter`): each `FireworkExplosion` in turn, two ticks apart, with its `shape` (`SmallBall`,
+`LargeBall`, `Star`, `Creeper`, `Burst`), `colors` and `fade` (RGB, as the `firework_explosion` component's), `trail`
+and `twinkle`, the flash, and the blast (large for three or more explosions or a large ball, far past 16 blocks) and
+twinkle sounds. No explosions puffs a little smoke, as vanilla's. `velocity` is a rocket's, which the sparks carry.
+Only the picture and the sound: there is no rocket entity, no damage or knockback, nothing on the server, and other
+players see nothing. A mod that celebrates with them has its server half tell each nearby client half (mod messages)
+to draw it. `FireworkExplosion` and `FireworkShape` are in `mod_api`. True when queued; false on a server, without a
+client player or level, for non-finite numbers and for more than 64 explosions. Bundles need
+`"hooks": @API:client_fireworks@`.
+
+```rust,ignore
+use horizon_client::mod_api::{FireworkExplosion, FireworkShape};
+let star = FireworkExplosion {
+    shape: FireworkShape::Star, colors: vec![0xFFD700], fade: vec![0xFFFFFF], trail: true, twinkle: false,
+};
+host.client_fireworks([x, y + 3.0, z], [0.0, 0.0, 0.0], &[star]);
+```
+
 ### Fluid currents
 
 `native_fluid_flow(dimension, pos)` is `FluidState.getFlow(level, pos)`: the normalised current at a position, the
