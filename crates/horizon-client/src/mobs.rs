@@ -4353,6 +4353,10 @@ impl Mob {
                 .max(4.0 * (amplifier + 1) as f32)
                 .clamp(0.0, armor::max_absorption(self));
         }
+        // MobEffect.addAttributeModifiers, then refreshDirtyAttributes.
+        if effect == "minecraft:health_boost" {
+            finalize::health_boost_changed(self);
+        }
     }
     pub fn speed_bonus(&self) -> f64 {
         ai::speed_bonus(self)

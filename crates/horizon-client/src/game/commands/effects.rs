@@ -153,6 +153,13 @@ impl Game<'_> {
                                 .any(|x| x.0 == "minecraft:absorption")
                         };
                         let had_absorption = absorbing(m);
+                        let boosted = |m: &horizon_client::mobs::Mob| {
+                            m.extra
+                                .effects
+                                .iter()
+                                .any(|x| x.0 == "minecraft:health_boost")
+                        };
+                        let had_boost = boosted(m);
                         m.extra
                             .effects
                             .retain(|x| e.is_some_and(|e| x.0 != namespaced(e.id)));
@@ -161,6 +168,10 @@ impl Game<'_> {
                             m.absorption = m
                                 .absorption
                                 .min(horizon_client::mobs::armor::max_absorption(m));
+                        }
+                        // LivingEntity.onEffectsRemoved -> refreshDirtyAttributes.
+                        if had_boost && !boosted(m) {
+                            horizon_client::mobs::finalize::health_boost_changed(m);
                         }
                         let left = &m.extra.effects;
                         m.extra

@@ -3105,12 +3105,21 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
         .effects
         .iter()
         .any(|e| e.0 == "minecraft:absorption" && e.1 <= 0 && e.1 != -1);
+    let boost_gone = m
+        .extra
+        .effects
+        .iter()
+        .any(|e| e.0 == "minecraft:health_boost" && e.1 <= 0 && e.1 != -1);
     m.extra.effects.retain(|e| e.1 > 0 || e.1 == -1);
     // LivingEntity.onEffectsRemoved -> refreshDirtyAttributes ->
     // onAttributeUpdated(MAX_ABSORPTION): the amount is clamped to the
     // maximum left without the effect's modifier.
     if absorption_gone {
         m.absorption = m.absorption.min(super::armor::max_absorption(m));
+    }
+    // LivingEntity.onEffectsRemoved -> refreshDirtyAttributes.
+    if boost_gone {
+        super::finalize::health_boost_changed(m);
     }
     m.extra
         .hidden_effects
