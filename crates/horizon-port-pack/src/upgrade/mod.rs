@@ -14,7 +14,7 @@
 //! Whatever has no faithful 26.3 form is kept as it is and listed in the
 //! report.
 mod density;
-mod features;
+pub(crate) mod features;
 mod noise;
 mod registries;
 mod settings;

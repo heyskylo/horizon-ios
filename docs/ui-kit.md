@@ -10,7 +10,7 @@ inputs once a frame and the overlays draw with them. It is immediate mode, with 
 own. Vanilla's display lists (`hud_layout`, `screen_draw`) never use it: they are vanilla's, and
 parity-tested against it.
 
-The kit grows a piece at a time, each with an overlay that needs it. Today it has four:
+The kit grows a piece at a time, each with something on screen that needs it:
 
 | Piece | What it gives |
 |---|---|
@@ -18,6 +18,7 @@ The kit grows a piece at a time, each with an overlay that needs it. Today it ha
 | `hud_kit::plate` | `Plate`: the box behind a notice's text |
 | `pad_glyph`, with `GlyphOf` and `MenuJob` in `gamepad.rs` | `Glyph`: a controller button, asked for by what it does, in the player's `Glyphs` |
 | `settings_shell` | `Shell`: a searchable settings screen (Extras, Graphics, Controller Settings) a `Screen` describes; it draws and drives it, binding rows included |
+| `hud_kit::tabs` | `collapsed`: a page list in one row, `‹ Name ›` with a pip per page |
 
 All sizes are GUI px from the view's top left, and an area is `[x, y, w, h]`.
 
@@ -210,3 +211,36 @@ Row::new(Item::Bind(action), name, Value::Binding(binding))
 
 - A screen on the shell is tested through its `Shell`: `controller_ui`'s tests press a binding and read
   the row's "> A <", the strip, the art drawn in its row, and Undo putting a binding back.
+
+## Tabs
+
+`hud_kit::tabs::collapsed(atlas, names, selected, area)` lays out a page list in one row: the
+selected name between `‹ ›` arrows, cut to the room between them, with a pip per page under the
+row, the selected one white. `tabs::draw(batch, atlas, &strip)` paints it.
+
+- `has_prev` and `has_next` say whether there is a page either way; an arrow without one is drawn
+  dimmed (`ARROW_OFF`). A screen may change them, as Shaders' search does.
+- When the pips don't all fit across the area, the ones shown are a window round the selected
+  page's, so they never leave the row's width.
+- It only lays out and paints: what a click or a bumper does is the screen's.
+
+### Shaders' screens
+
+Shaders' page list (`shader_ui`) has the pack list, a line naming the picked pack, then the pack's
+screens near its main one. In a short view the column has room for only a few of them (four at
+427x240 GUI px: an 854x480 window at GUI scale 2, or 720p at its automatic scale), and the rest
+used to be left out with nothing to say so. Now, when they don't all fit, they collapse into one
+`tabs::collapsed` row. When they fit, the list is as it was.
+
+- Left of the name opens the screen before, the name the one shown, right of it the screen after.
+  While searching, before and after are the nearest screens with matches.
+- Each part is a `Tab` target for a controller (the name lit while its screen is open), so RB and
+  LB step through every screen, and past the last RB goes back to the pack list. The arrows are
+  recorded as vanilla's Previous Page and Next Page for the widget tree and the narrator.
+- The open screen's row has the list's open look (plate and accent bar), and the focus ring goes
+  round the whole row.
+
+Tests: `hud_kit::tabs` (centring, cutting, dimmed ends, the pip window), `shader_ui` (a short view
+leaves no screen out and a tall one keeps the list, the arrows walk every screen, search skips
+screens without matches, the parts are `Tab` targets), and `tools/pad_menu_e2e.py --only
+shader_screens` (RB through every screen of a twelve-screen pack in a real game).

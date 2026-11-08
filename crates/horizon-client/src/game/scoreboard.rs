@@ -231,8 +231,10 @@ impl Game<'_> {
                 .iter()
                 .find(|s| s.id == id)
                 .map(|s| uuid_text(s.uuid)),
-            // Orbs and projectiles have no UUID here.
-            Target::Orb(_) | Target::Projectile(_) => None,
+            // An orb's registered identity, as its saved UUID reads.
+            Target::Orb(id) => Some(uuid_text(self.uuid_for(id))),
+            // Projectiles have no UUID here.
+            Target::Projectile(_) => None,
         }
     }
     fn holder_for(&mut self, t: Target) -> Option<Holder> {
