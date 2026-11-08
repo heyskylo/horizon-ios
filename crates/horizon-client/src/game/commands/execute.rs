@@ -811,14 +811,7 @@ impl Game<'_> {
             },
             Some("vehicle") => self.ride_vehicle(entity).into_iter().collect(),
             Some("passengers") => {
-                let mut passengers = match entity {
-                    Target::Mob(id)
-                        if self.mobs.iter().any(|m| m.id == id && m.rider.is_some()) =>
-                    {
-                        vec![Target::Player]
-                    }
-                    _ => Vec::new(),
-                };
+                let mut passengers = self.player_passengers(entity);
                 // Direct runtime children only. Complete mount insertion order is
                 // not modeled; retain the existing mob collection order here.
                 if let Target::Mob(id) | Target::Boat(id) = entity {
@@ -880,6 +873,34 @@ impl Game<'_> {
                 entity: Some(t),
                 ..s
             })
+            .collect()
+    }
+    /// The players among `Entity.getPassengers` of `vehicle`: the player in
+    /// place when it rides it, then the other players of the server riding it.
+    /// A server's players are its guests, so a datapack running with no player
+    /// in place still finds them.
+    fn player_passengers(&self, vehicle: Target) -> Vec<Target> {
+        let id = match vehicle {
+            Target::Mob(id) | Target::Boat(id) | Target::Cart(id) => id,
+            _ => return Vec::new(),
+        };
+        let in_place = self.player.is_some() && self.riding == Some(id);
+        let guests = self.lan.iter().flat_map(|host| {
+            host.hub
+                .guests
+                .iter()
+                .filter(move |g| {
+                    g.placed
+                        && Some(g.conn) != self.lan_acting
+                        && host.hub.here(g)
+                        && g.vehicle == Some(id)
+                })
+                .map(|g| Target::Guest(g.conn))
+        });
+        in_place
+            .then_some(Target::Player)
+            .into_iter()
+            .chain(guests)
             .collect()
     }
     /// `ServerLevel.getEntity(UUID)`: any entity of the level in place, not

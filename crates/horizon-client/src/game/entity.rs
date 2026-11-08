@@ -572,15 +572,18 @@ macro_rules! stored_motion {
 
 impl Game<'_> {
     /// Tick an item owned by the caller. The two results are ordinary survival
-    /// and explicit consumption by a block-contact handler.
+    /// and explicit consumption by a block-contact handler. `escape_speed`:
+    /// the item is inside a block and moves without physics this tick, pushed
+    /// out at this speed.
     pub(super) fn tick_item_with_block_contacts(
         &mut self,
         item: &mut ItemEntity,
-        no_physics: bool,
+        escape_speed: Option<f32>,
         entity_boxes: &[Aabb],
         client: bool,
         splash: &mut impl FnMut(horizon_client::entities::ItemSplash),
     ) -> (bool, bool) {
+        let no_physics = escape_speed.is_some();
         let heights = item.push_by_fluid(&self.world, &self.res.motion().fluids);
         // Entity.baseTick splashes before moving, except on the first tick.
         item.water_entry(heights.0 > 0.0, item.ticks == 0, splash);
@@ -589,6 +592,7 @@ impl Game<'_> {
             self.res.facts(),
             self.collision,
             no_physics,
+            escape_speed,
             heights,
             entity_boxes,
             Some(self.border.geometry()),

@@ -4,6 +4,14 @@
 //! (`GameRenderer.renderLevel`) and the spyglass (`SpyglassItem`,
 //! `Hud.extractSpyglassOverlay`). The arithmetic is `horizon_client::camera`.
 use super::Game;
+
+pub(super) fn camera_effects_enabled(title: bool, studio_freecam: bool) -> bool {
+    !title && !studio_freecam
+}
+
+pub(super) fn studio_draws_hand(studio_freecam: bool, ordinary_hand_visible: bool) -> bool {
+    !studio_freecam && ordinary_hand_visible
+}
 use horizon_client::{
     camera::{
         BobState, CameraFluid, FovPlayer, HurtBob, UseItem, bob_matrix, field_of_view_modifier,
@@ -269,12 +277,22 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::valid_fov_modifier;
+    use super::{camera_effects_enabled, studio_draws_hand, valid_fov_modifier};
     #[test]
     fn modifier_validation() {
         assert_eq!(valid_fov_modifier(0.5, 1.0), 0.5);
         for value in [f32::NAN, f32::INFINITY, 0.0, 10.1] {
             assert_eq!(valid_fov_modifier(value, 1.0), 1.0);
         }
+    }
+
+    #[test]
+    fn freecam_uses_unshaken_camera_and_player_view_keeps_hands() {
+        assert!(!camera_effects_enabled(false, true));
+        assert!(camera_effects_enabled(false, false));
+        assert!(!camera_effects_enabled(true, false));
+        assert!(studio_draws_hand(false, true));
+        assert!(!studio_draws_hand(true, true));
+        assert!(!studio_draws_hand(false, false));
     }
 }
