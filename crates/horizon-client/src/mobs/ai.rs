@@ -1763,6 +1763,10 @@ fn ai_step(m: &mut Mob, w: &MobWorld, level_random: &mut LegacyRandom, events: &
     if m.species() == Species::Fox {
         super::fox::pre_ai_step(m);
     }
+    // Blaze.aiStep slows the fall before super.aiStep(), so before travel.
+    if m.species() == Species::Blaze {
+        super::nether::blaze_ai_step(m);
+    }
     // AbstractHorse.aiStep: the tail swishes now and then (moveTail).
     if super::equine::is_equine(m.species()) {
         super::equine::tail_tick(m);
@@ -2208,7 +2212,6 @@ fn species_ai_step(
         Species::Endermite => endermite_lifetime(m),
         Species::Wolf => super::tame::ai_step(m, w, events),
         Species::Cat => super::tame::cat_ai_step(m, events),
-        Species::Blaze => super::nether::blaze_ai_step(m, events),
         Species::IronGolem => super::golem::iron_ai_step(m, w),
         Species::Piglin | Species::PiglinBrute | Species::Hoglin => {
             super::piglin::ai_step(m, w, level_random, events)

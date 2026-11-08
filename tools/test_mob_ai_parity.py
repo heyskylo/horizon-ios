@@ -445,6 +445,11 @@ def scenarios():
         add(f'{species}_deep_water', 160, ['fill -4 -64 -4 4 -61 4 minecraft:water',
                                            f'mob minecraft:{species} 0.5 -62 0.5 0 {seed} persistent'])
     # A ghast floating near a player (RandomFloatAroundGoal, GhastMoveControl, GhastLookGoal) and shooting it.
+    # Blazes: hovering (Blaze.aiStep's slow fall; the burn and smoke are the client's and draw nothing here),
+    # rising toward a player above them (customServerAiStep's 0.3F), and BlazeAttackGoal's volleys.
+    add('blaze_alone', 200, ['mob minecraft:blaze 0.5 -60 0.5 0 274 persistent'])
+    add('blaze_player_above', 160, ['player 4.5 -52 0.5', 'mob minecraft:blaze 0.5 -60 0.5 0 275 persistent'])
+    add('blaze_player', 200, ['player 8.5 -60 0.5', 'mob minecraft:blaze 0.5 -60 0.5 0 276 persistent'])
     add('ghast_player', 120, ['player 7.5 -56 0.5', 'mob minecraft:ghast 0.5 -56 0.5 0 273 persistent'])
     # AbstractHorse.hurtServer (#3432): every hurt draws nextInt(3), and a 0 rears the horse
     # (standIfPossible). A llama makes the draw too but never rears (canPerformRearing). A horse
