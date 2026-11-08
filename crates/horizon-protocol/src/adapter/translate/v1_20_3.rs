@@ -1,5 +1,6 @@
 //! Packet and entity data layouts before 1.20.5, from vanilla's readers and writers.
 use super::*;
+use crate::adapter::pinned_ids::{entity_type as entity, particle_type as particle};
 use crate::entity_data::{
     LEGACY_AMBIENT_ENTITY_EFFECT_PARTICLE_ID, LEGACY_ENTITY_EFFECT_PARTICLE_ID, Particle,
     ParticleData, Value, serializer,
@@ -287,7 +288,7 @@ pub(super) fn equipment(session: &Session, payload: &[u8]) -> Result<Vec<u8>> {
         play::SetEquipment::read(&mut r)?
     };
     finish(&r)?;
-    if session.kinds.lock().unwrap().get(&packet.id) == Some(&67) {
+    if session.kinds.lock().unwrap().get(&packet.id) == Some(&entity::HORSE) {
         for (slot, _) in &mut packet.slots {
             if *slot == 4 {
                 *slot = 6;
@@ -327,11 +328,24 @@ impl Metadata {
 
 // Positive classification from vanilla 1.20.4's EntityType generic classes and
 // LivingEntity.isAssignableFrom, matched by registry name to the pinned entity ids.
+#[rustfmt::skip]
 const LIVING: &[i32] = &[
-    2, 5, 7, 10, 11, 14, 17, 19, 21, 22, 26, 27, 30, 32, 36, 37, 39, 41, 42, 43, 44, 47, 55, 56,
-    58, 60, 62, 63, 64, 65, 67, 68, 69, 71, 79, 81, 87, 88, 92, 97, 99, 100, 101, 102, 103, 104,
-    105, 110, 111, 112, 113, 114, 115, 117, 118, 119, 120, 122, 124, 127, 130, 131, 132, 134, 138,
-    140, 141, 142, 143, 144, 145, 146, 148, 149, 150, 152, 153, 154, 155, 157, 158, 159,
+    entity::ALLAY, entity::ARMOR_STAND, entity::AXOLOTL, entity::BAT, entity::BEE, entity::BLAZE,
+    entity::BREEZE, entity::CAMEL, entity::CAT, entity::CAVE_SPIDER, entity::CHICKEN, entity::COD,
+    entity::COW, entity::CREEPER, entity::DOLPHIN, entity::DONKEY, entity::DROWNED,
+    entity::ELDER_GUARDIAN, entity::ENDERMAN, entity::ENDERMITE, entity::ENDER_DRAGON,
+    entity::EVOKER, entity::FOX, entity::FROG, entity::GHAST, entity::GIANT, entity::GLOW_SQUID,
+    entity::GOAT, entity::GUARDIAN, entity::HOGLIN, entity::HORSE, entity::HUSK, entity::ILLUSIONER,
+    entity::IRON_GOLEM, entity::LLAMA, entity::MAGMA_CUBE, entity::MOOSHROOM, entity::MULE,
+    entity::OCELOT, entity::PANDA, entity::PARROT, entity::PHANTOM, entity::PIG, entity::PIGLIN,
+    entity::PIGLIN_BRUTE, entity::PILLAGER, entity::POLAR_BEAR, entity::PUFFERFISH, entity::RABBIT,
+    entity::RAVAGER, entity::SALMON, entity::SHEEP, entity::SHULKER, entity::SILVERFISH,
+    entity::SKELETON, entity::SKELETON_HORSE, entity::SLIME, entity::SNIFFER, entity::SNOW_GOLEM,
+    entity::SPIDER, entity::SQUID, entity::STRAY, entity::STRIDER, entity::TADPOLE,
+    entity::TRADER_LLAMA, entity::TROPICAL_FISH, entity::TURTLE, entity::VEX, entity::VILLAGER,
+    entity::VINDICATOR, entity::WANDERING_TRADER, entity::WARDEN, entity::WITCH, entity::WITHER,
+    entity::WITHER_SKELETON, entity::WOLF, entity::ZOGLIN, entity::ZOMBIE, entity::ZOMBIE_HORSE,
+    entity::ZOMBIE_VILLAGER, entity::ZOMBIFIED_PIGLIN, entity::PLAYER,
 ];
 
 pub(super) fn entity_data(session: &Session, data: &mut play::SetEntityData) {
@@ -363,7 +377,7 @@ pub(super) fn entity_data(session: &Session, data: &mut play::SetEntityData) {
                 Vec::new()
             } else {
                 vec![Particle {
-                    id: 28, // minecraft:entity_effect
+                    id: particle::ENTITY_EFFECT,
                     data: Some(ParticleData::Color(
                         (if *ambient { 38_i32 } else { 255_i32 } << 24) | (*color & 0xffffff),
                     )),
@@ -373,14 +387,14 @@ pub(super) fn entity_data(session: &Session, data: &mut play::SetEntityData) {
                 .push((10, serializer::PARTICLES, Value::Particles(particles)));
         }
     }
-    if kind == 3 {
+    if kind == entity::AREA_EFFECT_CLOUD {
         let mut cache = session.legacy_metadata.lock().unwrap();
         let first = !cache.clouds.contains_key(&data.id);
         let (color, particle) = cache.clouds.entry(data.id).or_insert_with(|| {
             (
                 0,
                 Particle {
-                    id: 28,
+                    id: particle::ENTITY_EFFECT,
                     data: Some(ParticleData::Color(-1)),
                 },
             )
@@ -407,7 +421,9 @@ pub(super) fn entity_data(session: &Session, data: &mut play::SetEntityData) {
             let mut particle = particle.clone();
             if matches!(
                 particle.id,
-                28 | LEGACY_ENTITY_EFFECT_PARTICLE_ID | LEGACY_AMBIENT_ENTITY_EFFECT_PARTICLE_ID
+                particle::ENTITY_EFFECT
+                    | LEGACY_ENTITY_EFFECT_PARTICLE_ID
+                    | LEGACY_AMBIENT_ENTITY_EFFECT_PARTICLE_ID
             ) {
                 let alpha = if particle.id == LEGACY_AMBIENT_ENTITY_EFFECT_PARTICLE_ID {
                     38_i32 << 24
@@ -416,14 +432,14 @@ pub(super) fn entity_data(session: &Session, data: &mut play::SetEntityData) {
                 } else {
                     -0x1000000
                 };
-                particle.id = 28;
+                particle.id = particle::ENTITY_EFFECT;
                 particle.data = Some(ParticleData::Color(alpha | (*color & 0xffffff)));
             }
             data.values
                 .push((10, serializer::PARTICLE, Value::Particle(particle)));
         }
     }
-    if matches!(kind, 79 | 138) {
+    if matches!(kind, entity::LLAMA | entity::TRADER_LLAMA) {
         let mut carpet = None;
         data.values.retain_mut(|(index, _, value)| {
             if *index == 20
