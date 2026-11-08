@@ -50,17 +50,21 @@ pub fn open_uri(uri: &str) {
     #[cfg(not(windows))]
     open_folder(Path::new(uri));
 }
-/// The resource root to load from, given the vanilla root, the selection and
-/// a server's packs, which go on top (`Pack.Position.TOP`, fixed).
+/// The resource root to load from: the selection and a server's packs, which go on top
+/// (`Pack.Position.TOP`, fixed), laid over `base`. `base` is the mods' content root
+/// ([`super::mods::content_root`] of `vanilla`), so mod resources sit below the player's packs
+/// as in vanilla, and a pack change leaves the content root's cache alone (#12403). Built-in
+/// packs are found in `vanilla`.
 pub fn startup_root(
     vanilla: &Path,
+    base: &Path,
     selected: &[String],
     server: &[Pack],
 ) -> std::io::Result<PathBuf> {
     let all = packs::discover(vanilla, &packs_dir());
     let mut enabled = packs::enabled(&all, selected);
     enabled.extend_from_slice(server);
-    packs::resource_root(vanilla, &enabled, &cache_dir())
+    packs::resource_root(base, &enabled, &cache_dir())
 }
 fn info(p: &Pack) -> PackInfo {
     let built_in = !p.id.starts_with("file/");
@@ -496,8 +500,8 @@ pub(super) fn stage_pack(
     japanese: bool,
     progress: &super::Progress,
 ) -> horizon_client::Result<StagedPack> {
-    let root = startup_root(vanilla_root, selected, server)?;
-    let root = super::mods::content_root(&root, mods_enabled, dev_mods);
+    let base = super::mods::content_root(vanilla_root, mods_enabled, dev_mods);
+    let root = startup_root(vanilla_root, &base, selected, server)?;
     progress.set(1);
     // The world's models and sprites and the GUI atlas read the same root and nothing of
     // each other: about a second each, side by side.
