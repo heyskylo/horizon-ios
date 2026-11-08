@@ -751,14 +751,17 @@ impl Game<'_> {
         if literals.iter().any(|l| l == "give") {
             for d in &drops {
                 for &t in &self.entities(ctx, "players", true)? {
-                    if t != Target::Player {
-                        continue;
+                    // LootCommand.playerGive gives to every target player: a
+                    // guest gets it with their state in place, as with /give.
+                    let given = self.for_player(t, |g| {
+                        if let Some(rest) = g.give(d.clone()) {
+                            let p = g.source_position();
+                            g.spawn_item(rest, [p[0], p[1] + 1.32, p[2]], [0.0; 3], 0);
+                        }
+                    });
+                    if given.is_some() {
+                        used.push(d.clone());
                     }
-                    if let Some(rest) = self.give(d.clone()) {
-                        let p = self.source_position();
-                        self.spawn_item(rest, [p[0], p[1] + 1.32, p[2]], [0.0; 3], 0);
-                    }
-                    used.push(d.clone());
                 }
             }
         } else if literals.iter().any(|l| l == "spawn") {
@@ -883,7 +886,8 @@ impl Game<'_> {
         }
         let mut tracker = Tracker::default();
         for u in &used {
-            let name = self.item_display_name(&u.item);
+            // LootCommand's feedback names each drop by `getDisplayName`.
+            let name = self.stack_display_name(u);
             // CommandResponseTracker.track(drop): one per stack, so the
             // command returns how many stacks it used, not how many items.
             tracker.track(&holder(name), 1);

@@ -354,6 +354,10 @@ impl Menu {
         for stack in self.containers[PLAYER][..36].iter().flatten() {
             stacked.account_simple(stack, Self::max_stack(env, stack));
         }
+        // The mods' extra sources, after the inventory.
+        for stack in self.sources.iter().flatten().flatten() {
+            stacked.account_simple(stack, Self::max_stack(env, stack));
+        }
         match self.kind {
             // A furnace's SimpleContainer counts all three slots, unfiltered.
             Kind::Furnace(_) => {
@@ -441,11 +445,13 @@ impl Menu {
         // A viewer transfer must keep the original slots if it cannot move
         // every input without dropping anything.
         let previous = self.containers.clone();
+        let sources = self.sources.clone();
         let (drops, dropped) = (self.drops.len(), self.dropped.len());
         self.place(env, &grid, &placement, &mut stacked, false, false);
         let no_room = self.dropped.len() != dropped;
         if no_room || !self.recipe_in_grid(env, id) {
             self.containers = previous;
+            self.sources = sources;
             self.drops.truncate(drops);
             self.dropped.truncate(dropped);
             return Err(if no_room {
@@ -548,21 +554,33 @@ impl Menu {
     }
 
     /// `moveItemToGrid`: the rest still to move, or -1 when nothing matches.
+    /// The inventory first, then the mods' extra sources in order.
     fn move_item_to_grid(&mut self, target: usize, item: &str, count: i32) -> i32 {
         let existing = self.slot(target).cloned();
-        let found = (0..36).find(|&i| {
-            self.containers[PLAYER][i].as_ref().is_some_and(|s| {
+        let fits = |s: &Option<ItemStack>| {
+            s.as_ref().is_some_and(|s| {
                 &*s.item == item
                     && usable_for_crafting(s)
                     && existing
                         .as_ref()
                         .is_none_or(|e| e.same_item_same_components(s))
             })
-        });
-        let Some(i) = found else {
+        };
+        let found = match (0..36).find(|&i| fits(&self.containers[PLAYER][i])) {
+            Some(i) => Some((None, i)),
+            None => self
+                .sources
+                .iter()
+                .enumerate()
+                .find_map(|(k, source)| source.iter().position(fits).map(|i| (Some(k), i))),
+        };
+        let Some((source, i)) = found else {
             return -1;
         };
-        let cell = &mut self.containers[PLAYER][i];
+        let cell = match source {
+            None => &mut self.containers[PLAYER][i],
+            Some(k) => &mut self.sources[k][i],
+        };
         let taken = match cell.as_mut() {
             Some(have) if (count as u32) < have.count => split(have, count as u32),
             _ => cell.take().expect("found"),

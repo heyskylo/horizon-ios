@@ -5,7 +5,7 @@
 mod pufferfish_player;
 
 use super::{
-    Dim, Game, Hand, InteractTarget, dispenser, entity_culling::EntityCullDecision,
+    Dim, Game, Hand, InteractTarget, entity_culling::EntityCullDecision,
     native_mob_draw::NativePlayerRender, native_projectiles::Impact, view_vector,
 };
 use horizon_assets::item_model::DisplayContext;
@@ -1722,7 +1722,9 @@ impl Game<'_> {
                 self.credit_kill(m);
             }
         }
-        self.score_entity_removed(m.id);
+        // The body keeps its scores until it is removed (`ServerLevel.
+        // EntityCallbacks.onDestroyed` → `Scoreboard.entityRemoved`, run by
+        // `score_destroyed_entities`): LivingEntity.die does not reset them.
         // Raider.die's hero and Villager.tellWitnessesThatIWasMurdered go to
         // the causing entity, not the credited player: a tame wolf's kill is
         // neither its owner's heroism nor a murder by them.
@@ -2040,7 +2042,7 @@ impl Game<'_> {
             // the drops land stacked at the mob's centre, without disturbing
             // the level random that the orbs' merge ids and block ticks read
             // next).
-            self.spawn_item(item, pos, dispenser::new_item_motion(), 10);
+            self.spawn_item_own(item, pos, 10);
         }
         for d in rest {
             match d {
@@ -2055,7 +2057,7 @@ impl Game<'_> {
                         Some((&mut self.rand_sequences, self.level.seed)),
                     );
                     for item in stacks {
-                        self.spawn_item(item, pos, dispenser::new_item_motion(), 10);
+                        self.spawn_item_own(item, pos, 10);
                     }
                 }
                 drops::Drop::Orb(value) if !consumed => self.spawn_orbs(pos, value as u32),
@@ -2210,7 +2212,7 @@ impl Game<'_> {
         for d in stacks {
             // The ItemEntity constructor's motion, from the entity's own
             // random (not the level's).
-            self.spawn_item(d, at, dispenser::new_item_motion(), 10);
+            self.spawn_item_own(d, at, 10);
         }
         dropped
     }
@@ -2995,7 +2997,7 @@ impl Game<'_> {
                 }
                 MobEvent::DropStack { mob, stack, at } => {
                     self.native_entity_drop_item(mob, &stack.item, stack.count as i32, at);
-                    self.spawn_item(stack, at, dispenser::new_item_motion(), 10);
+                    self.spawn_item_own(stack, at, 10);
                 }
                 MobEvent::DropItem {
                     mob,
@@ -3004,7 +3006,11 @@ impl Game<'_> {
                     at,
                 } => {
                     self.native_entity_drop_item(mob, &item, count as i32, at);
-                    self.spawn_item(
+                    // The ItemEntity constructor's motion, from the entity's
+                    // own random (not the level's), so spawnAtLocation drops
+                    // (a fox's berries, a panda's held food, a goat's horn)
+                    // land apart.
+                    self.spawn_item_own(
                         ItemStack {
                             item,
                             count,
@@ -3012,11 +3018,6 @@ impl Game<'_> {
                             extra: None,
                         },
                         at,
-                        // The ItemEntity constructor's motion, from the entity's
-                        // own random (not the level's), so spawnAtLocation drops
-                        // (a fox's berries, a panda's held food, a goat's horn)
-                        // land apart.
-                        dispenser::new_item_motion(),
                         10,
                     );
                 }
@@ -3045,7 +3046,7 @@ impl Game<'_> {
                     for stack in stacks {
                         // The ItemEntity constructor's motion, from the
                         // entity's own random (not the level's).
-                        self.spawn_item(stack, at, dispenser::new_item_motion(), 10);
+                        self.spawn_item_own(stack, at, 10);
                     }
                 }
                 // `Level.setBlockAndUpdate`: neighbour and shape updates, so a crop
@@ -7035,25 +7036,29 @@ impl Game<'_> {
                 // `setDefaultPickUpDelay`. Sheep.shear adds its spread on top;
                 // MushroomCow.shear builds the entity by hand instead, so its
                 // mushrooms keep the constructor's motion and no pickup delay.
-                let mut v = dispenser::new_item_motion();
+                let mut spread = [0.0; 3];
                 if wool {
-                    v[0] += (self.world.random.next_float() - self.world.random.next_float())
+                    spread[0] = (self.world.random.next_float() - self.world.random.next_float())
                         as f64
                         * 0.1;
-                    v[1] += self.world.random.next_float() as f64 * 0.05;
-                    v[2] += (self.world.random.next_float() - self.world.random.next_float())
+                    spread[1] = self.world.random.next_float() as f64 * 0.05;
+                    spread[2] = (self.world.random.next_float() - self.world.random.next_float())
                         as f64
                         * 0.1;
                 }
-                self.spawn_item(
+                self.spawn_item_own(
                     ItemStack {
                         count: 1,
                         ..stack.clone()
                     },
                     [feet[0], feet[1] + 1.0, feet[2]],
-                    v,
                     if wool { 10 } else { 0 },
                 );
+                if let Some(e) = self.just_spawned_item() {
+                    e.velocity = e
+                        .velocity
+                        .add_vector(Vec3::new(spread[0], spread[1], spread[2]));
+                }
             }
         }
         Ok(true)
@@ -8319,8 +8324,21 @@ pub(super) fn damage_type(kind: horizon_client::mobs::DamageKind, caused: bool) 
         K::WitherSkull => "minecraft:wither_skull",
     }
 }
-/// A Horizon item stack as a loot stack (id, count, damage, enchantments).
+/// A Horizon item stack as a loot stack (id, count, damage, enchantments,
+/// and its custom data as SNBT for `minecraft:custom_data` predicates).
 fn to_loot(stack: &ItemStack) -> horizon_world::loot::LootStack {
+    let components = stack
+        .custom_data()
+        .map(|data| {
+            let snbt =
+                horizon_world::snbt_text::to_snbt(&horizon_world::nbt::Tag::Compound(data.clone()));
+            (
+                "minecraft:custom_data".to_owned(),
+                serde_json::Value::String(snbt),
+            )
+        })
+        .into_iter()
+        .collect();
     horizon_world::loot::LootStack {
         item: stack.item.to_string(),
         count: stack.count as i32,
@@ -8336,7 +8354,7 @@ fn to_loot(stack: &ItemStack) -> horizon_world::loot::LootStack {
         ominous_amplifier: None,
         stew_effects: Vec::new(),
         names: Vec::new(),
-        components: Vec::new(),
+        components,
     }
 }
 /// A generated loot stack as a Horizon item stack.

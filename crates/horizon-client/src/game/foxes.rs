@@ -159,14 +159,14 @@ impl Game<'_> {
             let mut rest = stack.clone();
             rest.count = count - 1;
             stack.count = 1;
-            self.spawn_item(rest, at, super::dispenser::new_item_motion(), 10);
+            self.spawn_item_own(rest, at, 10);
         }
         // `spitOutItem(getItemBySlot(MAINHAND))`.
         let held = finalize::item_stack(&self.mobs[fox_index], Slot::MainHand.index());
         if let Some(held) = held {
             let look = self.mobs[fox_index].view_vector();
             let from = [at[0] + look[0], at[1] + 1.0, at[2] + look[2]];
-            self.spawn_item(held, from, super::dispenser::new_item_motion(), 40);
+            self.spawn_item_own(held, from, 40);
             let id = self.mob_uuid(self.mobs[fox_index].id);
             if let Some(thrown) = self.just_spawned_item() {
                 thrown.thrower = Some(id);

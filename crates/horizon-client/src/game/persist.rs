@@ -569,9 +569,14 @@ impl Game<'_> {
     /// A saved dropped item.
     pub(super) fn load_item(&mut self, tag: Tag, uuid: Option<[i32; 4]>) {
         self.next_entity += 1;
-        let bob = self.world.random.next_float() * std::f32::consts::PI * 2.0;
+        // `ItemEntity(EntityType, Level)` before the load: the item's own random
+        // makes its UUID (kept unless the tag has one) and bobOffs, not the level's.
+        // Its yaw, the next draw, is always replaced by the saved rotation.
+        let mut own = random_source::entity();
+        let fresh = horizon_client::save::insecure_uuid(&mut own);
+        let bob = own.next_float() * std::f32::consts::PI * 2.0;
         if let Some(e) = entity_nbt::item_entity_from_nbt(&tag, self.next_entity, bob) {
-            self.remember(e.id, uuid, tag);
+            self.remember(e.id, Some(uuid.unwrap_or(fresh)), tag);
             self.dropped.push(e);
         }
     }
@@ -1842,9 +1847,9 @@ impl Game<'_> {
         alive
     }
     /// `ServerLevel.EntityCallbacks.onDestroyed` → `Scoreboard.entityRemoved`
-    /// for every kind of entity, not only the mobs `score_entity_removed`
-    /// covers as they die: an item picked up or killed, an expired cloud, a
-    /// discarded projectile leaves the board and its team. Unloaded and
+    /// for every kind of entity: a mob's body once it is removed, an item
+    /// picked up or killed, an expired cloud, a discarded projectile leaves
+    /// the board and its team. Unloaded and
     /// travelling entities leave `persist.uuids` first (`forget_entity`,
     /// `detach_entity`), so they keep their scores, as vanilla's do. Once a
     /// tick, so a command in the same tick still sees them; nothing to do
