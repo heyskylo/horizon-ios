@@ -1156,8 +1156,17 @@ impl Game<'_> {
     /// breaks a stand: its equipment pops above its block, the stand item does
     /// not drop.
     pub(super) fn break_armor_stand_by_anything(&mut self, i: usize) {
+        self.break_armor_stand_with_source(i, None);
+    }
+    /// `ArmorStand.brokenByAnything`, then `ArmorStand.kill` with attribution.
+    pub(super) fn break_armor_stand_with_source(
+        &mut self,
+        i: usize,
+        source: Option<super::commands::Target>,
+    ) {
         let a = self.armor_stands.remove(i);
         let at = [a.position.x, a.position.y, a.position.z];
+        let a_id = a.id;
         // brokenByAnything's dropAllDeathLoot, before the equipment.
         if !a.small && self.ui.rules.bool("mob_drops") {
             self.armor_stand_death_loot(at, a.fire_ticks > 0);
@@ -1168,7 +1177,7 @@ impl Game<'_> {
         }
         self.audio
             .play("minecraft:entity.armor_stand.break", Some(at), 1.0, 1.0);
-        self.entity_killed_event(at, false);
+        self.entity_killed_event_by(at, source.or(Some(super::commands::Target::Stand(a_id))));
         self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
     }
     /// `LivingEntity.dropFromLootTable` for a stand that is not small, with

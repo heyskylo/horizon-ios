@@ -168,6 +168,12 @@ pub struct Settings {
     pub button_visibility: [u8; CONTROLS],
     /// One row of placements per [`Mode`], indexed by [`Control`].
     pub layouts: [[Placement; CONTROLS]; 3],
+    /// Camera turn speed for look drags; scales both axes.
+    pub sensitivity: f32,
+    /// Extra scale on the yaw (left and right) turn.
+    pub sensitivity_horizontal: f32,
+    /// Extra scale on the pitch (up and down) turn.
+    pub sensitivity_vertical: f32,
 }
 
 impl Default for Settings {
@@ -203,6 +209,9 @@ impl Default for Settings {
             shield_button: true,
             button_visibility: [FOLLOW_SCHEME; CONTROLS],
             layouts,
+            sensitivity: 1.0,
+            sensitivity_horizontal: 1.0,
+            sensitivity_vertical: 1.0,
         }
     }
 }
@@ -237,6 +246,13 @@ impl Settings {
         }
         for p in self.layouts.iter_mut().flatten() {
             p.sanitize();
+        }
+        for v in [
+            &mut self.sensitivity,
+            &mut self.sensitivity_horizontal,
+            &mut self.sensitivity_vertical,
+        ] {
+            *v = finite_or(*v, 1.0).clamp(0.1, 3.0);
         }
     }
 
@@ -383,6 +399,28 @@ mod tests {
         assert_eq!(p.center, [0.5, 0.975]);
         assert_eq!(p.size, 0.045);
         assert_eq!(p.opacity, 0.65);
+    }
+
+    #[test]
+    fn sensitivity_stays_finite_and_in_range() {
+        let mut s = Settings {
+            sensitivity: f32::INFINITY,
+            sensitivity_horizontal: 9.0,
+            sensitivity_vertical: 0.0,
+            ..Settings::default()
+        };
+        s.sanitize();
+        assert_eq!(
+            [
+                s.sensitivity,
+                s.sensitivity_horizontal,
+                s.sensitivity_vertical
+            ],
+            [1.0, 3.0, 0.1]
+        );
+        // Files saved before these options existed keep the defaults.
+        let read: Settings = serde_json::from_str(r#"{"mode":"tap"}"#).unwrap();
+        assert_eq!(read.sensitivity, 1.0);
     }
 
     #[test]

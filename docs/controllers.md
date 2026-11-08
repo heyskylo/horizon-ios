@@ -135,7 +135,7 @@ for it, or running off a split view, goes without it and keeps its pad button. W
 stops counting as soon as another screen is drawn over it (`widgets::begin_screen`: a popup's buried
 buttons can't be pressed) or takes its place. While a key row waits for its key nothing is declared and only B and Start act:
 they are Escape, which unbinds. A row on Controller Settings > Bindings takes the next button pressed
-as its binding, and Start cancels.
+as its binding, and Start, a click or a key cancels; the keyboard's Escape unbinds it, as on Key Binds.
 
 Don't declare a button Escape deliberately ignores: Optimize World's and a connection's Cancel have
 no pad button, only A on them, and show in `undeclared` for that reason.
@@ -486,13 +486,25 @@ and everything else are Xbox.
 
 Controller settings are Horizon's own: **Options → Controls → Controller
 Settings...** (or **Options → Horizon Settings... → Controller Settings...**),
-a screen in the graphics settings' style with a search field and General, Bindings and Device pages. Bindings
-is a list like the key binds screen (pick an action, press a button; conflicts marked as vanilla does), and
-Reset. General's Play group has the **Gameplay Guide** setting (Full, Basic or Off) and **Trigger Threshold**, how far a trigger is pulled before it counts as pressed:
+a screen on the settings shell (`controller_ui.rs` on `settings_shell.rs`, [ui-kit.md](ui-kit.md)), like
+Extras and Graphics, with a search field and General, Bindings and Device pages. The strip under the list
+describes the pointed or focused row, and what a choice's value does. Left and Right step a choice both
+ways, as its `<` `>` show. The search gives the keys back as soon as the focus leaves it.
+
+Bindings is a list like the key binds screen. Each action's row shows its button's art in the player's
+glyphs. Press the row and then a button; Start, a click or a key cancels, and the keyboard's Escape
+unbinds. Meanwhile the row reads "> A <" and the strip names the button that cancels. A button that does
+more than one action is marked "[ ]" in yellow, as vanilla marks conflicts, and the strip lists what else
+it does; an unbound action says so in the strip. A changed binding has a reset at its row's end (Right
+reaches it), and Reset All puts every action back.
+
+General's Play group has the **Gameplay Guide** setting (Full, Basic or Off) and **Trigger Threshold**, how far a trigger is pulled before it counts as pressed:
 0.1 to 0.9, by default 0.4, which also places a DualSense's catch (see "Adaptive triggers"). The screen
 names the player whose profile it edits and the controller the game sees; Device also shows its vendor and
-product ids, the detected glyph family and the override. Changes apply at once; **Undo** (X) is there only
-while something differs from when the screen opened, and **Done** (B) leaves. They live in
+product ids, the detected glyph family and the override, as lines the focus reaches so the strip can say
+what each one is. Changes apply at once; **Undo** (X) is there only while something differs from when the
+screen opened, a binding included, and puts back every value and binding as they were. **Done** (B)
+leaves. They live in
 `horizon-controller.txt` next to `options.txt`, like `horizon-graphics.txt`: `options.txt` stays
 exactly vanilla's, so a vanilla client can share the game folder.
 
