@@ -1608,7 +1608,8 @@ mod tests {
     /// a snowball is shot in pushes it by the column it spawned in, before its
     /// gravity and the air drag, and only on that first tick. The client path
     /// (`tick_remote`) had it and the host's did not, so a throwable in a bubble
-    /// column rose for a guest and sank for the host.
+    /// column rose for a guest and sank for the host. Every tick then ends with
+    /// `applyEffectsFromBlocks`, whose columns push it again after the move.
     #[test]
     fn a_throwable_spawned_in_a_bubble_column_is_pushed_on_its_first_tick() {
         let air = f64::from(0.99_f32);
@@ -1639,7 +1640,7 @@ mod tests {
             p.tick(&column);
             assert_eq!(
                 p.velocity.y,
-                (push - 0.03) * air,
+                (push - 0.03) * air + push,
                 "drag {} surface {}",
                 column.drag,
                 column.surface
@@ -1647,17 +1648,20 @@ mod tests {
             p.velocity = Vec3::ZERO;
             p.tick(&column);
             // The box is in the column's water after the first move, so the
-            // drag is `getWaterDrag`'s 0.8F; the push was the first tick's only.
+            // drag is `getWaterDrag`'s 0.8F; the first tick's own scan is not
+            // run again, only the push of the blocks the move went through.
             assert_eq!(
                 p.velocity.y,
-                -0.03 * f64::from(0.8_f32),
+                -0.03 * f64::from(0.8_f32) + push,
                 "drag {} surface {}",
                 column.drag,
                 column.surface
             );
         }
-        // A kind that is no `ThrowableProjectile` is not pushed by a column its
-        // box is in: the hurting projectiles apply their own inertia only.
+        // A kind that is no `ThrowableProjectile` has no first-tick scan: a
+        // hurting projectile is pushed only by the blocks its move went through
+        // (`AbstractHurtingProjectile.tick`'s `applyEffectsFromBlocks`): its
+        // 1-block box spans two column blocks.
         let mut p = Projectile::new(
             ProjectileKind::LargeFireball { power: 1 },
             Vec3::new(0.5, 100.5, 0.5),
@@ -1667,7 +1671,7 @@ mod tests {
             drag: false,
             surface: false,
         });
-        assert_eq!(p.velocity.y, 0.0);
+        assert_eq!(p.velocity.y, 0.12);
     }
     #[test]
     fn a_pearl_outside_any_bubble_column_only_falls() {
