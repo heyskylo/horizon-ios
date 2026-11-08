@@ -262,10 +262,8 @@ pub(super) struct LanHost {
     /// Native mods' commands and the level each needs, once asked
     /// (game/native_server.rs).
     pub native_commands: Option<HashMap<String, u8>>,
-    /// The permission node of each native mod's command that has one
-    /// (`NativeCommand::permission`), in registration order.
-    pub native_command_nodes: Vec<(String, String)>,
-    /// The usages behind them, as the mods registered them.
+    /// The usages behind them, as the mods registered them (each with its own
+    /// permission node, `NativeCommand::permission`).
     pub native_usages: Vec<horizon_client::mod_api::NativeCommand>,
     /// The players a native mod leaves out of the sleep count when they
     /// aren't in bed (`native_sleep_ignored`).
@@ -1477,7 +1475,6 @@ impl Game<'_> {
             quiet: std::collections::VecDeque::new(),
             far,
             native_commands: None,
-            native_command_nodes: Vec::new(),
             native_usages: Vec::new(),
             sleep_ignored: Default::default(),
             states: Default::default(),
@@ -3757,7 +3754,6 @@ mod tests {
             quiet: Default::default(),
             far: None,
             native_commands: None,
-            native_command_nodes: Vec::new(),
             native_usages: Vec::new(),
             sleep_ignored: Default::default(),
             states: Default::default(),

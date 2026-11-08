@@ -647,6 +647,9 @@ pub struct NativeCommand {
     /// The permission node that decides instead, when set
     /// ([`NativeCommand::permission`]). API @API:command_permission@.
     pub permission: Option<String>,
+    /// Whether the usage replaces vanilla's command of its name
+    /// ([`NativeCommand::replace_vanilla`]).
+    pub replace_vanilla: bool,
 }
 
 impl NativeCommand {
@@ -656,6 +659,7 @@ impl NativeCommand {
             usage: usage.to_owned(),
             level: 0,
             permission: None,
+            replace_vanilla: false,
         }
     }
     /// The same, for operators of `level` and above.
@@ -664,17 +668,28 @@ impl NativeCommand {
             usage: usage.to_owned(),
             level: level.min(4),
             permission: None,
+            replace_vanilla: false,
         }
     }
     /// The same, for the players who have the permission node `node`
     /// (Bukkit's `plugin.yml` `permission:`): the server asks
     /// `native_has_permission(player, node, level)` before it shows or runs
-    /// the command, so a permissions mod grants or refuses it whatever the
-    /// player's level, and without one the level decides as before. A
-    /// command's node is the first one its usages give.
+    /// the usage, so a permissions mod grants or refuses it whatever the
+    /// player's level, and without one the level decides as before. Each
+    /// usage has its own node: a command's root is shown when any of its
+    /// usages is allowed, and a line runs as the usage its words match.
     /// API @API:command_permission@.
     pub fn permission(mut self, node: &str) -> Self {
         self.permission = Some(node.to_owned());
+        self
+    }
+    /// The same, replacing vanilla's command of this name (Bukkit's plugin
+    /// command over a vanilla one, as Tab's `/bossbar`): vanilla's tree of
+    /// the name is left out of the players' trees, and their lines of it go
+    /// to the mods, which then answer every usage of it. Without it, a usage
+    /// of a vanilla name is left out.
+    pub fn replace_vanilla(mut self, on: bool) -> Self {
+        self.replace_vanilla = on;
         self
     }
 }

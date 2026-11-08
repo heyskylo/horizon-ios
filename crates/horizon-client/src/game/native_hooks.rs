@@ -2547,6 +2547,15 @@ impl Game<'_> {
     pub(super) fn native_server_stopping(&mut self, dedicated: bool) {
         mod_api::dispatch_server_stopping(self, mod_api::mods(), dedicated);
     }
+    /// The server has stopped: its players are disconnected and its worlds
+    /// saved and closed (the end of a dedicated server's stop, after
+    /// `native_server_stopping`). Nothing reaches a player now; the last
+    /// place for a mod's own shutdown work that needs no player. Server-side;
+    /// `dedicated` tells a dedicated server from the single player one.
+    /// API @API:server_stopped@.
+    pub(super) fn native_server_stopped(&mut self, dedicated: bool) {
+        mod_api::dispatch_server_stopped(self, mod_api::mods(), dedicated);
+    }
     /// The config files native mods keep (NeoForge's `registerConfig`):
     /// push yours, each of a kind, with the text written to `config/` when
     /// the file is missing. Asked by the window when the game starts (its
@@ -7240,6 +7249,15 @@ impl Game<'_> {
             default_level,
             result,
         );
+    }
+    /// The permission groups a player belongs to (LuckPerms' groups, the ranks a permissions
+    /// mod keeps), as the mods name them: each mod adds names to `groups` in turn, sharing the
+    /// list, and nothing is named for a player with no groups. Asked through `&self`, like
+    /// `native_permission_check`; a provider reads what it knows and changes nothing. The first
+    /// name is the player's primary group (`native_primary_group`). Server-side.
+    /// API @API:permission_groups@.
+    pub(super) fn native_permission_groups(&self, player: u128, groups: &mut Vec<String>) {
+        mod_api::dispatch_permission_groups(self, mod_api::mods(), player, groups);
     }
     /// `native_player_commands_sent` with what the player's level leaves
     /// out: heard right after v1, at the same times, with `names` as v1 left
