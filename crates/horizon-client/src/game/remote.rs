@@ -904,7 +904,7 @@ impl Game<'_> {
         name: &str,
         cookies: Option<horizon_client::net::Cookies>,
     ) -> Result<()> {
-        self.connect_server_with_options(address, name, cookies, false)
+        self.connect_server_with_options(address, name, cookies, false, false)
     }
     /// `ConnectScreen.startConnecting`: keep LAN discovery's server kind through loading.
     pub(super) fn connect_server_with_options(
@@ -913,6 +913,7 @@ impl Game<'_> {
         name: &str,
         cookies: Option<horizon_client::net::Cookies>,
         lan: bool,
+        realm: bool,
     ) -> Result<()> {
         super::world_loading::preload_server_loot(&self.options.resources);
         if self.defer_world_entry(super::PendingWorldEntry::Server {
@@ -920,11 +921,12 @@ impl Game<'_> {
             name: name.to_owned(),
             cookies: cookies.clone(),
             lan,
+            realm,
         })? {
             return Ok(());
         }
         self.join_world_rest()?;
-        if let Err(error) = self.join_server(address, name, None, cookies, lan) {
+        if let Err(error) = self.join_server(address, name, None, cookies, lan, realm) {
             log::warn!("Horizon: could not join server: {error}");
             if self.title.is_none() {
                 self.title = Some(
@@ -950,7 +952,11 @@ impl Game<'_> {
         pipe: horizon_protocol::connection::Pipe,
         name: &str,
     ) -> Result<()> {
-        self.join_server("local", name, Some(pipe), None, false)
+        self.join_server("local", name, Some(pipe), None, false, false)?;
+        // `Minecraft.startIntegratedServer`: the local world is in, so presence reads
+        // the world's status at once.
+        horizon_client::social::try_update_presence();
+        Ok(())
     }
     fn join_server(
         &mut self,
@@ -959,7 +965,9 @@ impl Game<'_> {
         local: Option<horizon_protocol::connection::Pipe>,
         cookies: Option<horizon_client::net::Cookies>,
         lan: bool,
+        realm: bool,
     ) -> Result<()> {
+        self.realm_session = realm;
         self.reset_tutorial();
         self.perf.world_opening();
         // A server's own biomes come over the connection; the last local

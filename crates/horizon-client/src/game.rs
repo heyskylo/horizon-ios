@@ -3156,6 +3156,9 @@ struct Game<'a> {
     entity_attachments: HashMap<[i32; 4], horizon_world::attachments::Attachments>,
     /// Connected to a server: the world comes from the network (game/remote.rs).
     remote: Option<remote::Remote>,
+    /// The open connection joined from Realms: `ServerData.isRealm` for the friends
+    /// service's presence status.
+    realm_session: bool,
     /// Active packet replay session (game/studio.rs).
     pub(super) studio_replay: Option<horizon_client::studio::ReplayDriver>,
     pub(super) studio_freecam: horizon_client::studio::StudioFreecam,
@@ -7685,6 +7688,29 @@ impl Game<'_> {
             self.visual_ticks() as i64 * 50
         } else {
             self.started.elapsed().as_millis() as i64
+        }
+    }
+    /// `PresenceHandler.getPresenceStatus`: what an all-sharing player is doing, for
+    /// the friends service's `updatePresence`.
+    fn presence_status(&self) -> horizon_client::social::PresenceStatus {
+        use horizon_client::social::PresenceStatus;
+        if self.integrated.is_some() {
+            // `getSingleplayerServer().getMultiplayerScope()`: LAN while the world is
+            // opened to LAN (a pause-menu Open to LAN or an invite code).
+            if self.lan.is_some() {
+                PresenceStatus::PlayingHostedServer
+            } else {
+                PresenceStatus::PlayingOffline
+            }
+        } else if self.remote.is_some() {
+            // `getCurrentServer().isRealm()`: the connection came from Realms.
+            if self.realm_session {
+                PresenceStatus::PlayingRealms
+            } else {
+                PresenceStatus::PlayingServer
+            }
+        } else {
+            PresenceStatus::Online
         }
     }
     fn tick(&mut self) -> Result<()> {
@@ -16611,6 +16637,10 @@ impl Game<'_> {
                     let steps = self.clock.advance(elapsed);
                     for _ in 0..steps {
                         let started = Instant::now();
+                        // Minecraft.runTick: the friends presence handler ticks before
+                        // the world's own ticks.
+                        horizon_client::social::set_presence_status(self.presence_status());
+                        horizon_client::social::tick();
                         // Minecraft.tick: ClientTickEvent.Pre before any of it.
                         self.native_client_tick_pre();
                         if self.title.is_none() && !self.pause {
@@ -17347,6 +17377,7 @@ impl<'a> Game<'a> {
             persist: Default::default(),
             entity_attachments: Default::default(),
             remote: None,
+            realm_session: false,
             studio_replay: None,
             studio_freecam: Default::default(),
             studio_timeline: Default::default(),
@@ -17616,6 +17647,8 @@ enum PendingWorldEntry {
         address: String,
         name: String,
         lan: bool,
+        /// The Realms screen asked for it (`ServerData.isRealm`).
+        realm: bool,
         /// A transfer's carried-over server cookies (`TransferState`).
         cookies: Option<horizon_client::net::Cookies>,
     },
