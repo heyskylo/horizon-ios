@@ -37,6 +37,50 @@ impl MobWorld<'_> {
     pub fn who_by_uuid(&self, uuid: [i32; 4]) -> Option<Who> {
         self.who_lookup?.who_by_uuid(uuid)
     }
+    /// `LivingEntity.setPosToBed` / `AbstractBedBlock.getSleepHeight`: the
+    /// same part selection and outline-height math as Game's bed route.
+    pub(super) fn sleeping_position(&self, head: [i32; 3]) -> Option<Vec3> {
+        use crate::bed_geometry::{SleepOn, pos_to_bed, shape_top, slept_on};
+        let state = self.world.block(head[0], head[1], head[2]);
+        let facts = self.facts.get(state);
+        if !facts.has_class("AbstractBedBlock") {
+            return None;
+        }
+        let part = self.prop(head[0], head[1], head[2], "part")?;
+        if !matches!(part, "head" | "foot") {
+            return None;
+        }
+        let facing = self.prop(head[0], head[1], head[2], "facing")?;
+        if !matches!(facing, "north" | "south" | "east" | "west") {
+            return None;
+        }
+        let forward = crate::stand_up::bed_forward(Some(facing));
+        let foot = [head[0] - forward[0], head[1], head[2] - forward[2]];
+        let on = slept_on(
+            &facts.name,
+            Some(part),
+            Some((
+                self.block_name(foot[0], foot[1], foot[2]),
+                self.prop(foot[0], foot[1], foot[2], "part"),
+            )),
+        )?;
+        let at = match on {
+            SleepOn::Head => head,
+            SleepOn::Foot => foot,
+        };
+        let outline = self.facts.get(self.world.block(at[0], at[1], at[2]));
+        // Bed outlines are static. Without an offset context, do not invent
+        // a position for a custom outline that requires one.
+        if outline.outline_offset {
+            return None;
+        }
+        let boxes: Vec<[f64; 6]> = outline
+            .outline
+            .iter()
+            .map(|b| std::array::from_fn(|i| f64::from(at[i % 3]) + b[i]))
+            .collect();
+        shape_top(&boxes, f64::from(at[1])).map(|height| pos_to_bed(head, height))
+    }
     /// The biome's base temperature at a position.
     pub fn temperature(&self, x: i32, y: i32, z: i32) -> f32 {
         self.world
@@ -258,7 +302,7 @@ impl MobWorld<'_> {
     }
     /// Level.canSeeSky: sky light 15 at the position (no roof above).
     pub fn can_see_sky(&self, x: i32, y: i32, z: i32) -> bool {
-        if self.nether {
+        if !self.dimension_type.height.has_skylight {
             return false;
         }
         self.world.light(x, y, z) >> 4 == 15
@@ -291,7 +335,12 @@ impl MobWorld<'_> {
         // DimensionType.getBrightness with ambient light 0 (overworld) / 0.1 (nether).
         let f = level / 15.0;
         let base = f / (4.0 - 3.0 * f);
-        if self.nether { 0.1 + base * 0.9 } else { base }
+        // The End's ambient light (0.25) is not applied here, as before.
+        if self.level == horizon_core::LevelKey::NETHER {
+            0.1 + base * 0.9
+        } else {
+            base
+        }
     }
     pub fn sky_darken(&self) -> i32 {
         if self.daylight { 0 } else { 11 }
@@ -526,7 +575,7 @@ pub(crate) fn with_resource_test_world(
         day_time: 18000,
         raining: false,
         thundering: false,
-        nether: false,
+        level: horizon_core::LevelKey::OVERWORLD,
         block_tags: &items.block_tags,
         landing: &motion.landing,
         biomes: &biomes,
@@ -535,7 +584,7 @@ pub(crate) fn with_resource_test_world(
         mob_drops,
         max_entity_cramming: 24,
         difficulty: super::spawning::LocalDifficulty::new(2, 18000, 0, 0.0),
-        end: false,
+        dimension_type: horizon_world::dimension_type::DimensionFacts::overworld(),
         world_seed: 0,
         sea_level: 63,
         items: Some(&items),

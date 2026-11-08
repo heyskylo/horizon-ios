@@ -577,3 +577,41 @@ Horizon's own mods are native. They live in
 The game keeps the parts that must be fast, such as drawing the minimap's map, and a native mod picks the options
 ([extras.md](extras.md)). Far View is not a mod any more: its distance and detail are Graphics > LOD Distance and Far
 Detail ([graphics.md](graphics.md)).
+
+### Entity-context shape declarations
+
+`outline_context_shapes` and `collision_context_shapes` independently override
+`shapes` and `collision_shapes` for a captured entity class. Their keys are
+`item`, `player`, `living` (a non-player living entity) and `other`; each value
+is a `BlockShapes` table with the same properties, tuples, defaults and box
+validation as `shapes`. There is no inheritance between classes or channels.
+An omitted class keeps that channel's ordinary shape. Empty and position-only
+queries always keep the ordinary shape. A selector is not inferred from a
+runtime entity ID.
+
+```json
+{
+  "template": "minecraft:stone",
+  "shapes": { "default": [[0, 0, 0, 1, 0.125, 1]] },
+  "outline_context_shapes": {
+    "player": { "default": [[0, 0.125, 0, 1, 1, 1]] }
+  },
+  "collision_context_shapes": {
+    "item": { "default": [[0, 0, 0, 1, 0.3125, 1]] }
+  },
+  "interaction_shapes": { "default": [[0, 0, 0, 1, 1, 1]] }
+}
+```
+
+`interaction_shapes` uses the same state-table format. It supplies
+`BlockGetter.clipWithInteractionOverride`: an earlier interaction-shape entry
+changes the face of an existing outline hit while keeping its point. It cannot
+create a hit through an empty outline or extend the ray's reach.
+
+Tables compile once per resource snapshot. Collision scan emptiness and
+out-of-cell metadata account for every collision variant. The real dropped-item
+move and overlap check carry `item`, player movement/placement carry `player`,
+and player selection uses its own outline channel. Callers that have not
+captured an entity class retain ordinary shapes; this is not a claim that all
+mob or living-entity call sites have been converted. These declarations select
+state/class-only geometry, not arbitrary world-dependent block behavior.

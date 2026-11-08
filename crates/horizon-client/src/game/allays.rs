@@ -377,9 +377,8 @@ impl Game<'_> {
             // `Allay.mobInteract` hands over one item, its components and all.
             given.count = 1;
             m.extra.set_main_hand_stack(Some(given));
-            m.extra.tame = true;
             // `Allay.mobInteract` remembers LIKED_PLAYER by UUID.
-            m.extra.owner = Some(acting);
+            allay::like_player(m, acting);
             self.play_mob_bound_sound(
                 index,
                 "minecraft:entity.allay.item_given",
@@ -402,8 +401,7 @@ impl Game<'_> {
                 .unwrap_or_else(|| ItemStack::new("minecraft:air", 1));
             m.extra.set_main_hand(None);
             let carried = m.extra.allay.as_mut().and_then(|st| st.inventory.take());
-            m.extra.tame = false;
-            m.extra.owner = None;
+            allay::forget_liked_player(m);
             self.play_mob_bound_sound(
                 index,
                 "minecraft:entity.allay.item_taken",

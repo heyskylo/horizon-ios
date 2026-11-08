@@ -256,14 +256,17 @@ impl Coordinates {
         match self {
             Coordinates::World(c) => [c[0].get(pos[0]), c[1].get(pos[1]), c[2].get(pos[2])],
             Coordinates::Local([left, up, forwards]) => {
-                let d = std::f32::consts::PI / 180.0;
+                use horizon_core::geometry::trig;
+                // `LocalCoordinates.apply`: widen the f32 angle for Mth's table,
+                // keep basis products f32, then sum the f64 offset before the origin.
+                let d = trig::DEG_TO_RAD;
                 let (yaw, pitch) = (rot[0], rot[1]);
-                let cos_y = ((yaw + 90.0) * d).cos();
-                let sin_y = ((yaw + 90.0) * d).sin();
-                let cos_p = (-pitch * d).cos();
-                let sin_p = (-pitch * d).sin();
-                let cos_p2 = ((-pitch + 90.0) * d).cos();
-                let sin_p2 = ((-pitch + 90.0) * d).sin();
+                let cos_y = trig::cos(f64::from((yaw + 90.0) * d));
+                let sin_y = trig::sin(f64::from((yaw + 90.0) * d));
+                let cos_p = trig::cos(f64::from(-pitch * d));
+                let sin_p = trig::sin(f64::from(-pitch * d));
+                let cos_p2 = trig::cos(f64::from((-pitch + 90.0) * d));
+                let sin_p2 = trig::sin(f64::from((-pitch + 90.0) * d));
                 let f = [
                     f64::from(cos_y * cos_p),
                     f64::from(sin_p),
@@ -281,9 +284,9 @@ impl Coordinates {
                     -(f[0] * u[1] - f[1] * u[0]),
                 ];
                 [
-                    pos[0] + f[0] * forwards + u[0] * up + l[0] * left,
-                    pos[1] + f[1] * forwards + u[1] * up + l[1] * left,
-                    pos[2] + f[2] * forwards + u[2] * up + l[2] * left,
+                    pos[0] + (f[0] * forwards + u[0] * up + l[0] * left),
+                    pos[1] + (f[1] * forwards + u[1] * up + l[1] * left),
+                    pos[2] + (f[2] * forwards + u[2] * up + l[2] * left),
                 ]
             }
         }

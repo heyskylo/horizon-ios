@@ -110,7 +110,7 @@ impl Goal for DrinkItem {
         // Level.isDarkOutside / isBrightOutside: a dimension with a fixed
         // time (the Nether and the End) is neither dark nor bright outside,
         // so neither potion is drunk.
-        if cx.w.nether || cx.w.end {
+        if cx.w.dimension_type.has_fixed_time {
             return false;
         }
         if self.dark {
@@ -325,6 +325,7 @@ pub fn ai_step(m: &mut Mob, _w: &MobWorld) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horizon_world::dimension_type::DimensionFacts;
 
     #[test]
     fn despawn_delay_is_two_days() {
@@ -367,14 +368,13 @@ mod tests {
                 };
             let mut night = w.clone();
             night.daylight = false;
-            night.end = false;
-            night.nether = false;
+            night.dimension_type = DimensionFacts::overworld();
             assert_eq!(
                 decide(&night, &mut m, &mut potion, &mut milk),
                 (true, false)
             );
             let mut end_dark = night.clone();
-            end_dark.end = true;
+            end_dark.dimension_type = DimensionFacts::vanilla("minecraft:the_end").unwrap();
             assert_eq!(
                 decide(&end_dark, &mut m, &mut potion, &mut milk),
                 (false, false)
@@ -382,11 +382,10 @@ mod tests {
             m.extra.effects.push((INVISIBILITY, 3600, 0));
             let mut day = w.clone();
             day.daylight = true;
-            day.end = false;
-            day.nether = false;
+            day.dimension_type = DimensionFacts::overworld();
             assert_eq!(decide(&day, &mut m, &mut potion, &mut milk), (false, true));
             let mut end_bright = day.clone();
-            end_bright.end = true;
+            end_bright.dimension_type = DimensionFacts::vanilla("minecraft:the_end").unwrap();
             assert_eq!(
                 decide(&end_bright, &mut m, &mut potion, &mut milk),
                 (false, false)
