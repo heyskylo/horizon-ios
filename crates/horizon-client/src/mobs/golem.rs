@@ -523,7 +523,7 @@ fn snowball_attack(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
     let mut p = Projectile::new(ProjectileKind::Snowball, start, Some(Who::Mob(m.id)));
     // SnowGolem.rangedAttackUncertainty: 12 on every difficulty.
     p.shoot(
-        &mut crate::projectiles::own_random(m),
+        &mut crate::random_source::entity(),
         [xd, yd + yo - start.y, zd],
         1.6,
         12.0,
@@ -545,7 +545,7 @@ pub fn snow_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         m.position.z.floor() as i32,
     );
     // EnvironmentAttributes.SNOW_GOLEM_MELTS: the hot biomes and the Nether.
-    if w.nether || w.temperature(x, y, z) > 1.0 {
+    if w.dimension_type.snow_golem_melts || w.temperature(x, y, z) > 1.0 {
         events.push(MobEvent::HurtSelf {
             mob: m.id,
             kind: super::DamageKind::OnFire,

@@ -171,6 +171,8 @@ impl Game<'_> {
         }
         self.reload_datapacks(false);
     }
+    /// `ServerFunctionLibrary.reload`: validate the candidate functions with
+    /// the current content before exposing them to execution.
     pub(super) fn reload_datapacks(&mut self, run_load: bool) {
         let stack = pack_stack(
             &self.world_root,
@@ -180,7 +182,7 @@ impl Game<'_> {
         );
         self.fns.packs = stack.packs;
         self.fns.enabled = stack.enabled;
-        self.rebuild_store();
+        let store = self.load_store();
         self.fns.loaded = true;
         self.fns.load_pending = true;
         // An explicit reload (`/reload`, `/datapack`) reloads the content
@@ -189,12 +191,12 @@ impl Game<'_> {
         if run_load {
             self.reload_world_tables();
         }
-        let _ = run_load;
+        self.admit_store(store);
         if self.fns.schedule.is_empty() {
             self.load_schedule();
         }
     }
-    fn rebuild_store(&mut self) {
+    fn load_store(&self) -> DataStore {
         // The built-in pack first (lowest priority), unless disabled.
         let stack = pack_stack(
             &self.world_root,
@@ -203,7 +205,52 @@ impl Game<'_> {
             &self.level.enabled_features,
         );
         let packs: Vec<&DataPack> = stack.builtin.iter().chain(stack.enabled_packs()).collect();
-        let store = DataStore::load(&packs);
+        DataStore::load(&packs)
+    }
+    /// `CommandFunction.parseCommand`: compile ordinary lines without running them.
+    /// Macro lines are parsed
+    /// only after substitution, but ordinary lines in a macro file still
+    /// have to compile (`CommandFunction.fromLines`).
+    fn admit_store(&mut self, mut store: DataStore) {
+        // On explicit reload the actual content tables have already refreshed.
+        // The candidate's named predicates/modifiers must also be available to
+        // argument codecs before any of its functions can be exposed.
+        self.sync_enchantment_registries();
+        let mut registries = self.ui.registries.clone();
+        registries.permission = self.fns.command_level();
+        registries.functions = store.functions.keys().cloned().collect();
+        registries.function_tags = store.function_tags.keys().cloned().collect();
+        registries.predicates = store.predicates.keys().cloned().collect();
+        registries.item_modifiers = store.item_modifiers.keys().cloned().collect();
+        for (id, ids) in [
+            ("minecraft:predicate", &registries.predicates),
+            ("minecraft:item_modifier", &registries.item_modifiers),
+        ] {
+            if let Some(entry) = registries.by_registry.get_mut(id) {
+                entry.ids.clone_from(ids);
+            }
+        }
+        let dispatcher = horizon_client::command::vanilla::game_dispatcher_with_features(
+            &self.level.enabled_features,
+        );
+        store.functions.retain(|id, function| {
+            for line in &function.lines {
+                if let datapack::FunctionLine::Command(line) = line
+                    && let Err(error) = dispatcher.parse(line, &registries).executable()
+                {
+                    store.errors.push((
+                        id.clone(),
+                        format!(
+                            "Invalid command {line:?}: {} at position {}",
+                            error.message.plain(),
+                            error.cursor
+                        ),
+                    ));
+                    return false;
+                }
+            }
+            true
+        });
         for (id, e) in &store.errors {
             log::warn!("Horizon: failed to load function {id}: {e}");
         }
@@ -989,9 +1036,10 @@ impl Game<'_> {
     /// tables with the functions.
     fn apply_pack_change(&mut self) {
         self.save_datapack_settings();
-        self.rebuild_store();
+        let store = self.load_store();
         self.fns.load_pending = true;
         self.reload_world_tables();
+        self.admit_store(store);
     }
 
     // ---- predicates -------------------------------------------------------------------
@@ -1043,6 +1091,169 @@ const FEATURE_PACKS: &[(&str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn function_pack_rejects_invalid_ordinary_lines_before_execution() {
+        use crate::game::{Audio, Options, Settings, load_resources};
+        use std::time::Instant;
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &crate::game::Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let dir =
+            std::env::temp_dir().join(format!("horizon-function-admission-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pack = dir.join("datapacks/admission");
+        let functions = pack.join("data/h144/function");
+        let predicates = pack.join("data/h144/predicate");
+        std::fs::create_dir_all(&functions).unwrap();
+        std::fs::create_dir_all(&predicates).unwrap();
+        std::fs::write(pack.join("pack.mcmeta"), r#"{"pack":{"description":"Function admission","pack_format":121,"min_format":[121,0],"max_format":[121,0]}}"#).unwrap();
+        std::fs::write(
+            predicates.join("ready.json"),
+            r#"{"type":"minecraft:all_of","terms":[]}"#,
+        )
+        .unwrap();
+        for (name, text) in [
+            (
+                "good",
+                "execute if predicate h144:ready run scoreboard players add good h144 1\n",
+            ),
+            (
+                "bad",
+                "scoreboard players set bad h144 1\nh144_unknown_command\nscoreboard players set bad h144 2\n",
+            ),
+            (
+                "forbidden",
+                "scoreboard players set forbidden h144 1\ntick freeze\nscoreboard players set forbidden h144 2\n",
+            ),
+            (
+                "macro",
+                "$h144_unknown_$(name)\nscoreboard players set macro h144 1\n",
+            ),
+            ("macro_bad", "$say $(name)\nh144_unknown_command\n"),
+            (
+                "sequence",
+                "scoreboard players \\\nset sequence h144 17\nreturn 5\n",
+            ),
+            ("slash", "/say invalid\n"),
+        ] {
+            std::fs::write(functions.join(format!("{name}.mcfunction")), text).unwrap();
+        }
+        game.world_root = dir.clone();
+        let run = |game: &mut Game<'_>, line: &str| {
+            game.exec = ExecState::default();
+            let source = game.player_source();
+            game.execute_line(line, source)
+        };
+        run(&mut game, "scoreboard objectives add h144 dummy").unwrap();
+        for name in ["good", "bad", "forbidden", "macro", "sequence"] {
+            run(
+                &mut game,
+                &format!("scoreboard players set {name} h144 -99"),
+            )
+            .unwrap();
+        }
+        let clock = game.world.game_time;
+        // This is the actual pack loader. Admission must not run any line.
+        game.reload_datapacks(false);
+        for name in ["good", "bad", "forbidden", "macro", "sequence"] {
+            assert_eq!(game.score.board.score(name, "h144").unwrap().value, -99);
+        }
+        // Intended old failure: the invalid file previously ran both valid lines.
+        assert!(run(&mut game, "function h144:bad").is_err());
+        assert_eq!(game.score.board.score("bad", "h144").unwrap().value, -99);
+        for name in ["bad", "forbidden", "macro_bad", "slash"] {
+            assert!(
+                !game
+                    .fns
+                    .store
+                    .functions
+                    .contains_key(&format!("h144:{name}"))
+            );
+            assert!(
+                !game
+                    .ui
+                    .registries
+                    .functions
+                    .contains(&format!("h144:{name}"))
+            );
+            assert!(
+                game.fns
+                    .store
+                    .errors
+                    .iter()
+                    .any(|(id, _)| id == &format!("h144:{name}"))
+            );
+        }
+        assert!(run(&mut game, "function h144:forbidden").is_err());
+        assert!(game.fns.store.functions.contains_key("h144:macro"));
+        assert!(game.fns.store.functions["h144:macro"].is_macro());
+        run(&mut game, "function h144:good").unwrap();
+        assert_eq!(game.score.board.score("good", "h144").unwrap().value, -98);
+        run(&mut game, "function h144:sequence").unwrap();
+        assert_eq!(
+            game.score.board.score("sequence", "h144").unwrap().value,
+            17
+        );
+        assert_eq!(game.ui.registries.permission, 4);
+        // A fresh same-pack predicate must be in the compilation snapshot on reload.
+        std::fs::write(
+            predicates.join("reloaded.json"),
+            r#"{"type":"minecraft:all_of","terms":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            functions.join("good.mcfunction"),
+            "execute if predicate h144:reloaded run scoreboard players add good h144 1\n",
+        )
+        .unwrap();
+        game.reload_datapacks(true);
+        assert!(game.fns.store.functions.contains_key("h144:good"));
+        assert!(!game.fns.store.functions.contains_key("h144:forbidden"));
+        assert!(
+            !game
+                .ui
+                .registries
+                .functions
+                .contains(&"h144:forbidden".into())
+        );
+        assert_eq!(game.score.board.score("good", "h144").unwrap().value, -98);
+        run(&mut game, "function h144:good").unwrap();
+        assert_eq!(game.score.board.score("good", "h144").unwrap().value, -97);
+        assert_eq!(
+            game.score.board.score("forbidden", "h144").unwrap().value,
+            -99
+        );
+        assert_eq!(game.world.game_time, clock);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
@@ -1147,7 +1358,11 @@ mod tests {
             for name in ["a", "b"] {
                 let pack = dir.join("datapacks").join(name);
                 std::fs::create_dir_all(pack.join("data/x/recipe")).unwrap();
-                std::fs::write(pack.join("pack.mcmeta"), "{}").unwrap();
+                std::fs::write(
+                    pack.join("pack.mcmeta"),
+                    r#"{"pack":{"description":"fixture"}}"#,
+                )
+                .unwrap();
                 std::fs::write(pack.join("data/x/recipe/r.json"), name).unwrap();
             }
             let json = serde_json::json!({"enabled": order, "disabled": []});
@@ -1174,7 +1389,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let pack = dir.join("datapacks").join("pack");
         std::fs::create_dir_all(pack.join("data/pkg/tags/item")).unwrap();
-        std::fs::write(pack.join("pack.mcmeta"), "{}").unwrap();
+        std::fs::write(
+            pack.join("pack.mcmeta"),
+            r#"{"pack":{"description":"fixture"}}"#,
+        )
+        .unwrap();
         std::fs::write(
             pack.join("data/pkg/tags/item/both.json"),
             r#"{"replace": true, "values": ["pkg:from_pack"]}"#,
@@ -1350,5 +1569,345 @@ mod entity_score_tests {
         assert!(!matches(&mut game, actors[2].0));
         assert!(game.score.board.score(&actors[2].1, "pts").is_none());
         assert_eq!(game.world.game_time, time);
+    }
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn folder_metadata_rejection_reaches_actual_function_commands() {
+        use crate::game::{Audio, Options, Settings, load_resources};
+        use std::time::Instant;
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &crate::game::Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-game-folder-metadata-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cases = [
+            ("broken", Some("{"), false),
+            ("root_empty", Some("{}"), false),
+            ("root_array", Some("[]"), false),
+            ("pack_empty", Some(r#"{"pack":{}}"#), false),
+            ("pack_string", Some(r#"{"pack":"bad"}"#), false),
+            ("missing", None, false),
+            (
+                "full",
+                Some(
+                    r#"{"pack":{"description":"full","pack_format":121,"min_format":[121,0],"max_format":[121,0]}}"#,
+                ),
+                true,
+            ),
+            (
+                "description",
+                Some(r#"{"pack":{"description":"description only"}}"#),
+                true,
+            ),
+        ];
+        for (name, metadata, _) in cases {
+            let pack = dir.join("datapacks").join(name);
+            std::fs::create_dir_all(pack.join("data/h146/function")).unwrap();
+            std::fs::write(
+                pack.join(format!("data/h146/function/{name}.mcfunction")),
+                format!("scoreboard players set {name} h146 17\n"),
+            )
+            .unwrap();
+            if let Some(metadata) = metadata {
+                std::fs::write(pack.join("pack.mcmeta"), metadata).unwrap();
+            }
+        }
+        game.world_root = dir.clone();
+        let run = |game: &mut Game<'_>, line: &str| {
+            game.exec = ExecState::default();
+            let source = game.player_source();
+            game.execute_line(line, source)
+        };
+        run(&mut game, "scoreboard objectives add h146 dummy").unwrap();
+        let clock = game.world.game_time;
+        for reload in [false, true] {
+            for (name, _, _) in cases {
+                run(
+                    &mut game,
+                    &format!("scoreboard players set {name} h146 -99"),
+                )
+                .unwrap();
+            }
+            game.reload_datapacks(reload);
+            for (name, _, valid) in cases {
+                assert_eq!(game.score.board.score(name, "h146").unwrap().value, -99);
+                let result = run(&mut game, &format!("function h146:{name}"));
+                // Intended old failure: a malformed pack's valid function executes.
+                assert_eq!(result.is_ok(), valid, "{name}, reload={reload}");
+                assert_eq!(
+                    game.score.board.score(name, "h146").unwrap().value,
+                    if valid { 17 } else { -99 }
+                );
+                assert_eq!(
+                    game.fns
+                        .store
+                        .functions
+                        .contains_key(&format!("h146:{name}")),
+                    valid
+                );
+                assert_eq!(
+                    game.ui
+                        .registries
+                        .functions
+                        .contains(&format!("h146:{name}")),
+                    valid
+                );
+                assert_eq!(
+                    game.fns
+                        .packs
+                        .iter()
+                        .any(|p| p.id == format!("file/{name}")),
+                    valid
+                );
+            }
+        }
+        assert_eq!(game.world.game_time, clock);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod required_tag_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn real_pack_required_tag_failures_execute_no_partial_functions() {
+        use crate::game::{Audio, Options, Settings, load_resources};
+        use std::time::{Instant, SystemTime, UNIX_EPOCH};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &crate::game::Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-required-tags-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let pack = dir.join("datapacks/h145");
+        let write = |path: &str, body: &str| {
+            let path = pack.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        };
+        let (major, minor) = horizon_core::version::DATA_PACK_FORMAT;
+        write(
+            "pack.mcmeta",
+            &serde_json::json!({"pack": {
+                "description": "Required dependency test", "pack_format": major,
+                "min_format": [major, minor], "max_format": [major, minor],
+            }})
+            .to_string(),
+        );
+        for (i, name) in ["a", "b", "c"].iter().enumerate() {
+            write(
+                &format!("data/h145/function/{name}.mcfunction"),
+                &format!(
+                    "scoreboard players add {name} h145 1\nscoreboard players operation order h145 *= ten h145\nscoreboard players add order h145 {}\n",
+                    i + 1,
+                ),
+            );
+        }
+        let tags = serde_json::json!({
+            "empty": [], "ordered": ["h145:a", "h145:b", "h145:a"],
+            "nested": ["#h145:empty", "#h145:ordered", "h145:a"],
+            "optional_member": ["h145:a", {"id":"h145:missing","required":false}, "h145:b"],
+            "optional_child": ["h145:a", {"id":"#h145:missing","required":false}, "h145:b"],
+            "missing_first": ["h145:missing", "h145:a"],
+            "missing_last": ["h145:a", "h145:missing"],
+            "missing_child": ["h145:a", "#h145:missing"],
+            "invalid_child": ["h145:c", "h145:missing"],
+            "required_invalid_child": ["h145:a", "#h145:invalid_child", "h145:b"],
+            "optional_invalid_child": ["h145:a", {"id":"#h145:invalid_child","required":false}, "h145:b"],
+        });
+        for (name, values) in tags.as_object().unwrap() {
+            write(
+                &format!("data/h145/tags/function/{name}.json"),
+                &serde_json::json!({"values": values}).to_string(),
+            );
+        }
+        game.world_root = dir.clone();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let run = |game: &mut Game<'_>, line: &str| {
+            game.exec = ExecState::default();
+            let source = game.player_source();
+            if let Err(error) = game.execute_line(line, source) {
+                assert!(line.contains("function #h145:"), "{line}: {error:?}");
+                assert_eq!(error.key, "commands.function.scheduled.no_functions");
+            }
+        };
+        run(&mut game, "scoreboard objectives add h145 dummy");
+        run(&mut game, "scoreboard players set ten h145 10");
+        run(&mut game, "scoreboard players set sentinel h145 73");
+        let clock = game.world.game_time;
+        run(&mut game, "reload");
+        assert_eq!(
+            game.score.board.score("sentinel", "h145").unwrap().value,
+            73
+        );
+        assert!(game.fns.enabled.contains(&"file/h145".to_owned()));
+        assert!(
+            game.fns.store.errors.is_empty(),
+            "{:?}",
+            game.fns.store.errors
+        );
+        for name in ["a", "b", "c"] {
+            assert!(
+                game.fns
+                    .store
+                    .functions
+                    .contains_key(&format!("h145:{name}"))
+            );
+        }
+        for name in tags.as_object().unwrap().keys() {
+            assert!(
+                game.fns
+                    .store
+                    .function_tags
+                    .contains_key(&format!("h145:{name}"))
+            );
+        }
+        let score = |game: &Game<'_>, key: &str| game.score.board.score(key, "h145").unwrap().value;
+        let reset = |game: &mut Game<'_>| {
+            for key in ["a", "b", "c", "order"] {
+                run(game, &format!("scoreboard players set {key} h145 0"));
+                assert_eq!(score(game, key), 0);
+            }
+        };
+        // Independent actual functions and valid tag controls run before the defect assertions.
+        for (target, expected) in [
+            ("h145:a", [1, 0, 0, 1]),
+            ("h145:b", [0, 1, 0, 2]),
+            ("h145:c", [0, 0, 1, 3]),
+            ("#h145:empty", [0, 0, 0, 0]),
+            ("#h145:ordered", [1, 1, 0, 12]),
+            ("#h145:nested", [1, 1, 0, 12]),
+            ("#h145:optional_member", [1, 1, 0, 12]),
+            ("#h145:optional_child", [1, 1, 0, 12]),
+        ] {
+            reset(&mut game);
+            run(&mut game, &format!("function {target}"));
+            assert_eq!(
+                [
+                    score(&game, "a"),
+                    score(&game, "b"),
+                    score(&game, "c"),
+                    score(&game, "order")
+                ],
+                expected,
+                "{target}"
+            );
+        }
+        println!(
+            "H145 actual pack metadata, functions, empty/nested/dedup, optional-missing and reload controls admitted"
+        );
+        let mut failures = Vec::new();
+        for name in [
+            "missing_first",
+            "missing_last",
+            "missing_child",
+            "invalid_child",
+            "required_invalid_child",
+            "optional_invalid_child",
+        ] {
+            reset(&mut game);
+            run(&mut game, "scoreboard players set result h145 31");
+            run(&mut game, "scoreboard players set success h145 17");
+            assert_eq!((score(&game, "result"), score(&game, "success")), (31, 17));
+            run(
+                &mut game,
+                &format!(
+                    "execute store result score result h145 store success score success h145 run function #h145:{name}"
+                ),
+            );
+            let actual = [
+                score(&game, "a"),
+                score(&game, "b"),
+                score(&game, "c"),
+                score(&game, "order"),
+            ];
+            let expected = if name == "optional_invalid_child" {
+                [1, 1, 0, 12]
+            } else {
+                [0, 0, 0, 0]
+            };
+            if actual != expected {
+                failures.push(format!("{name}: {actual:?} expected {expected:?}"));
+            }
+            let ids = game.fns.store.tag_functions(&format!("h145:{name}"));
+            let expected_ids: Vec<String> = if name == "optional_invalid_child" {
+                vec!["h145:a".into(), "h145:b".into()]
+            } else {
+                Vec::new()
+            };
+            if ids != expected_ids {
+                failures.push(format!(
+                    "{name}: DataStore {ids:?} expected {expected_ids:?}"
+                ));
+            }
+        }
+        assert_eq!(game.world.game_time, clock);
+        drop(game);
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(
+            failures.is_empty(),
+            "required tag partial execution: {failures:#?}"
+        );
     }
 }
