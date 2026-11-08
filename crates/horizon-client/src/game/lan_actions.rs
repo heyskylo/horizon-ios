@@ -227,6 +227,7 @@ pub(super) struct GuestSwap {
         Option<u128>,
         Option<u8>,
         Option<u32>,
+        Option<i32>,
     ),
     /// That turn's other-player building boxes.
     building_boxes: BuildingPlayers,
@@ -424,6 +425,7 @@ impl Game<'_> {
             return None;
         }
         let i = host.hub.guests.iter().position(|g| g.conn == conn)?;
+        let spawn_protection = self.spawn_protection_for(host, host.hub.guests[i].uuid);
         // EntityGetter.isUnobstructed must still see other players while
         // the hub is taken out of self.lan. The outer body is live here;
         // its saved hub position (if any) belongs to a different turn.
@@ -646,6 +648,7 @@ impl Game<'_> {
             self.lan_acting_uuid.replace(g.uuid),
             self.lan_acting_permission.replace(g.permission),
             self.lan_acting_entity.replace(g.entity_id as u32),
+            std::mem::replace(&mut self.lan_acting_spawn_protection, spawn_protection),
         );
         // The damage hooks name the guest by UUID from here on.
         super::native_damage::note_player(g.entity_id, g.uuid);
@@ -934,6 +937,7 @@ impl Game<'_> {
             self.lan_acting_uuid,
             self.lan_acting_permission,
             self.lan_acting_entity,
+            self.lan_acting_spawn_protection,
         ) = acting;
         self.known_movement = known_movement;
         self.lan_building_boxes = building_boxes;
@@ -1376,12 +1380,13 @@ impl Game<'_> {
         };
         // The menu provider's getDisplayName: a container's custom name
         // (BaseContainerBlockEntity.getName) or its default name.
-        let custom = |k: (i32, i32, i32)| self.world.block_names.get(&k).map(String::as_str);
+        let custom = |k: (i32, i32, i32)| self.block_name_plain(k);
         let title = match slots {
             Slots::Ender => horizon_protocol::text::translatable("container.enderchest", &[]),
-            Slots::Double(first, second) => {
-                horizon_client::containers::double_chest_name(custom(first), custom(second))
-            }
+            Slots::Double(first, second) => horizon_client::containers::double_chest_name(
+                custom(first).as_deref(),
+                custom(second).as_deref(),
+            ),
             Slots::Block(k) => {
                 // A mod block's container is named after its block
                 // (`Block.getDescriptionId`).
@@ -1392,7 +1397,7 @@ impl Game<'_> {
                     }
                     None => return false,
                 };
-                horizon_client::containers::display_name(custom(k), &key)
+                horizon_client::containers::display_name(custom(k).as_deref(), &key)
             }
             // Opened by a mod (`native_open_menu`), never here.
             Slots::Native => return false,
@@ -1962,19 +1967,31 @@ impl Game<'_> {
     /// of the world spawn (square, in the Overworld) is.
     fn under_spawn_protection(&self, host: &LanHost, gi: usize, pos: [i32; 3]) -> bool {
         let g = &host.hub.guests[gi];
+        self.spawn_protection_for(host, g.uuid)
+            .is_some_and(|radius| self.spawn_protects(radius, &g.dimension, pos))
+    }
+
+    /// The part of `DedicatedServer.isUnderSpawnProtection` that depends on
+    /// the player: the radius that holds them back, None for an operator,
+    /// with no operators, a radius of 0 or less, or off a dedicated server.
+    fn spawn_protection_for(&self, host: &LanHost, uuid: u128) -> Option<i32> {
         let radius = host.hub.spawn_protection;
-        if self.options.dedicated.is_none() || radius <= 0 || g.dimension != "minecraft:overworld" {
-            return false;
-        }
+        (self.options.dedicated.is_some()
+            && radius > 0
+            && !host.hub.ops.is_empty()
+            && !host.hub.ops.contains_key(&uuid))
+        .then_some(radius)
+    }
+
+    /// The rest of it: a block in `dimension` within `radius` of the world
+    /// spawn (square, in the Overworld only).
+    pub(super) fn spawn_protects(&self, radius: i32, dimension: &str, pos: [i32; 3]) -> bool {
         let Some(spawn) = self.level.world_spawn else {
             return false;
         };
-        if host.hub.ops.is_empty() || host.hub.ops.contains_key(&g.uuid) {
-            return false;
-        }
         let dx = pos[0].abs_diff(spawn[0]);
         let dz = pos[2].abs_diff(spawn[2]);
-        dx.max(dz) <= radius as u32
+        dimension == "minecraft:overworld" && dx.max(dz) <= radius as u32
     }
 
     /// ServerPlayer.sendSpawnProtectionMessage.
@@ -3917,12 +3934,7 @@ impl Game<'_> {
             return;
         };
         // The guest's own bed, else the world spawn: never the host's bed.
-        let world = self
-            .level
-            .world_spawn
-            .map(|[x, y, z]| [f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5])
-            .or(self.spawn.map(|s| [s.x, s.y, s.z]))
-            .unwrap_or([0.5, 80.0, 0.5]);
+        let world = self.world_spawn_position();
         let spawn = host.hub.guests[i].spawn.unwrap_or(world);
         if !host.hub.guests[i].dead {
             return;
@@ -4041,6 +4053,7 @@ impl Game<'_> {
             // PlayerList.respawn / sendLevelInfo send level respawn data,
             // independently of the personal destination passed to Hub::respawn.
             spawn: world,
+            spawn_angle: self.level.world_spawn_angle,
             difficulty: i32::from(self.ui.difficulty),
             difficulty_locked: self.level.difficulty_locked,
             clock_rate,
@@ -4126,6 +4139,8 @@ impl Game<'_> {
         self.lan_merchant_tick(host);
         self.lan_stations_tick(host);
         self.lan_tables_tick(host);
+        self.lan_mod_crafting_tick(host);
+        self.lan_menu_links_tick(host);
         self.lan_containers_tick(host);
         self.tick_lan_mount_menus(host);
         self.tick_player_menus(host);
@@ -5761,14 +5776,20 @@ impl Game<'_> {
     }
 
     /// `Player.tick`'s takeXpDelay and `Player.aiStep`'s touch of the
-    /// experience orbs in the guest's box grown by 1, 0.5, 1: one of them at
+    /// experience orbs in the guest's pickup area (its box grown by 1, 0.5, 1,
+    /// or the union with its vehicle's, grown by 1, 0, 1): one of them at
     /// random, at most every 2 ticks (`ExperienceOrb.playerTouch`), repairs
     /// with Mending and gives the rest as points. Everyone near hears it.
     fn guest_orbs(&mut self, host: &mut LanHost, gi: usize) {
         let g = &host.hub.guests[gi];
-        let height = f64::from(g.dimensions().height);
-        let (conn, id, at, player, name) =
-            (g.conn, g.entity_id, g.position, g.uuid, g.name.clone());
+        let (conn, id, at, player, name, vehicle) = (
+            g.conn,
+            g.entity_id,
+            g.position,
+            g.uuid,
+            g.name.clone(),
+            g.vehicle,
+        );
         let unable = g.spectator() || g.dead || g.health <= 0.0;
         let play = host.play.entry(conn).or_default();
         if play.xp_delay > 0 {
@@ -5778,9 +5799,25 @@ impl Game<'_> {
         if unable || play.xp_delay > 0 {
             return;
         }
+        // Player.aiStep: standing, the pickup area is the guest's box
+        // inflated by (1, 0.5, 1); riding, the union with the vehicle's box
+        // inflated by (1, 0, 1), the vehicle resolved as any target entity is.
+        let own = host.hub.guests[gi].bounds();
+        let area = match vehicle.and_then(|v| self.guest_target_box(host, gi, v as i32)) {
+            Some(vehicle) => own.union_bounds(vehicle).inflate(Vec3::new(1.0, 0.0, 1.0)),
+            None => own.inflate(Vec3::new(1.0, 0.5, 1.0)),
+        };
         let (min, max) = (
-            [at[0] - 1.3, at[1] - 0.5, at[2] - 1.3],
-            [at[0] + 1.3, at[1] + height + 0.5, at[2] + 1.3],
+            [
+                area.min_position().x,
+                area.min_position().y,
+                area.min_position().z,
+            ],
+            [
+                area.max_position().x,
+                area.max_position().y,
+                area.max_position().z,
+            ],
         );
         let touching: Vec<usize> = self
             .orbs

@@ -116,7 +116,7 @@ fn sprite(name: &str) -> String {
 
 impl Game<'_> {
     /// The book the open screen has, if any.
-    fn active_book(&self) -> Option<BookType> {
+    pub(super) fn active_book(&self) -> Option<BookType> {
         if self.screen != Screen::Inventory || self.station.is_some() {
             return None;
         }
@@ -908,6 +908,55 @@ impl Game<'_> {
             inside(self.cursor, x, y, w, h)
         })
     }
+    /// Whether the crafting book's entry can be crafted from what the menu holds now.
+    pub(super) fn recipe_craftable(&mut self, entry_index: usize) -> bool {
+        let available = self.book_available(BookType::Crafting);
+        self.recipe_ui.book.as_ref().is_some_and(|book| {
+            book.entries
+                .get(entry_index)
+                .is_some_and(|entry| book.can_craft(entry, &available))
+        })
+    }
+    /// The crafting book's entry by what a rebuilt book keeps of it (`pad_craft::RecipeKey`).
+    pub(super) fn recipe_stable_key(
+        &self,
+        entry_index: usize,
+    ) -> Option<super::pad_craft::RecipeKey> {
+        let entry = self.recipe_ui.book.as_ref()?.entries.get(entry_index)?;
+        Some(super::pad_craft::RecipeKey {
+            id: entry.id.clone(),
+            display: entry.display_id,
+        })
+    }
+    /// Where the crafting book holds the recipe now: none once the book has it no more.
+    pub(super) fn recipe_entry_index(&self, key: &super::pad_craft::RecipeKey) -> Option<usize> {
+        self.recipe_ui
+            .book
+            .as_ref()?
+            .entries
+            .iter()
+            .position(|e| e.id == key.id && e.display_id == key.display)
+    }
+    /// What the crafting book's entry makes: none when the book has no such entry.
+    pub(super) fn recipe_results(&self, entry_index: usize) -> &[ItemStack] {
+        self.recipe_ui
+            .book
+            .as_ref()
+            .and_then(|book| book.entries.get(entry_index))
+            .map_or(&[], Entry::results)
+    }
+    /// Places one set of the crafting book's entry, as a click on its button places it.
+    pub(super) fn recipe_place_once(&mut self, entry_index: usize) {
+        self.recipe_ui.last_placed = self
+            .recipe_ui
+            .book
+            .as_ref()
+            .and_then(|b| b.entries.get(entry_index))
+            .map(|e| e.id.clone());
+        self.recipe_ui.ghost.clear();
+        self.recipe_ui.overlay = None;
+        self.place_recipe(BookType::Crafting, entry_index, false);
+    }
     /// The recipe book's buttons a controller can focus: the book button,
     /// recipes, page arrows, the craftable filter and the tabs (GUI pixels;
     /// the search box registers itself as a field).
@@ -1055,11 +1104,20 @@ impl Game<'_> {
         true
     }
     /// Whether the open screen takes `native_place_recipe`: a crafting grid's
-    /// book (the inventory's or a crafting table's).
+    /// book (the inventory's or a crafting table's), or a mod menu type's
+    /// crafting grid.
     pub(super) fn mod_recipe_screen(&self) -> bool {
         self.screen == Screen::Inventory
-            && self.active_book() == Some(BookType::Crafting)
+            && (self.active_book() == Some(BookType::Crafting) || self.mod_crafting_open())
             && !self.spectator()
+    }
+    /// Whether the open menu is a mod menu type with a crafting grid.
+    fn mod_crafting_open(&self) -> bool {
+        self.remote
+            .as_ref()
+            .and_then(|r| r.menu.as_ref())
+            .and_then(|(_, menu)| horizon_client::containers::mod_menu_type(menu))
+            .is_some_and(|t| t.crafting.is_some())
     }
     /// `native_place_recipe`: the book's click on the recipe with this display
     /// id, refused as `handlePlaceRecipe` refuses it (no crafting screen,
@@ -1082,7 +1140,9 @@ impl Game<'_> {
     }
     pub(super) fn transfer_viewer_recipe(&mut self, display_id: i32) {
         self.panel.transfer_warning = None;
-        if !self.mod_recipe_screen() || (self.creative && self.craft_size != 3) {
+        if !self.mod_recipe_screen()
+            || (self.creative && self.craft_size != 3 && !self.mod_crafting_open())
+        {
             self.show_transfer_result(3);
             return;
         }
@@ -1299,6 +1359,8 @@ impl Game<'_> {
             self.recipe_ui.ghost.clear();
             self.fill_ghost(book_type, &entry);
         }
+        // The server is missing an item the client counted: nothing was placed.
+        self.direct_craft_refused();
     }
 
     // ---- ghost recipe ----

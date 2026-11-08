@@ -129,6 +129,8 @@ pub struct TickCtx<'a> {
     pub next_entity: &'a mut u32,
     /// Where new players appear.
     pub spawn: [f64; 3],
+    /// Rotation of the world spawn sent by PlayerList.sendLevelInfo.
+    pub spawn_angle: [f32; 2],
     pub difficulty: i32,
     pub difficulty_locked: bool,
     /// The overworld clock's speed (0 when the day does not advance).
@@ -378,6 +380,9 @@ pub struct Hub {
     /// The names a server mod shows over players' heads
     /// (`native_set_name_tag`), by UUID: their list entries' profile name.
     pub name_tags: std::collections::HashMap<u128, String>,
+    /// The name the server's user cache knew a joining player by, by UUID, looked up before the
+    /// cache learns the new one (PlayerList.placeNewPlayer's `oldName`); taken by the join line.
+    pub former_names: std::collections::HashMap<u128, String>,
     last_clock: i64,
     last_rate: f32,
     ticking: (f32, bool),
@@ -548,6 +553,26 @@ impl Hub {
             "uuid": horizon_protocol::crypto::uuid_string(uuid), "name": name});
         c["insertion"] = name.into();
         crate::scoreboard::component_tag(&c)
+    }
+}
+
+impl Hub {
+    /// PlayerList.placeNewPlayer's join line: `multiplayer.player.joined`, or
+    /// `multiplayer.player.joined.renamed` with the cached old name when the
+    /// player's name changed (ignoring case) since the user cache last saw it.
+    fn joined_line(&mut self, uuid: u128, name: &str) -> Tag {
+        let display = self.player_display_name(uuid, name);
+        match self
+            .former_names
+            .remove(&uuid)
+            .filter(|old| !old.eq_ignore_ascii_case(name))
+        {
+            Some(old) => yellow_names(
+                "multiplayer.player.joined.renamed",
+                vec![display, string(&old)],
+            ),
+            None => yellow_names("multiplayer.player.joined", vec![display]),
+        }
     }
 }
 
@@ -747,6 +772,7 @@ impl Hub {
             list_names: std::collections::HashMap::new(),
             display_names: std::collections::HashMap::new(),
             name_tags: std::collections::HashMap::new(),
+            former_names: std::collections::HashMap::new(),
         }
     }
 
@@ -1025,7 +1051,8 @@ impl Hub {
         }));
     }
     /// ListPlayersCommand's reply: the players in join order (the host of a
-    /// LAN world first), as display names or names with ids, joined by
+    /// LAN world first), as display names (Player.getDisplayName, with the
+    /// team's colour and affixes) or names with ids, joined by
     /// gray commas (ComponentUtils.formatList).
     pub fn list_reply(&self, uuids: bool) -> Tag {
         let players: Vec<(u128, &str)> = self
@@ -1047,7 +1074,7 @@ impl Hub {
                     ),
                 ])
             } else {
-                display_name(uuid, name)
+                self.player_display_name(uuid, name)
             }
         };
         let names = match players.len() {
@@ -1453,10 +1480,7 @@ impl Hub {
         // not placed.
         if !held {
             let joined = C::SystemChat(play::SystemChat {
-                content: yellow_names(
-                    "multiplayer.player.joined",
-                    vec![self.player_display_name(self.guests[i].uuid, &name)],
-                ),
+                content: self.joined_line(uuid, &name),
                 overlay: false,
             })
             .encode();
@@ -1624,10 +1648,7 @@ impl Hub {
         };
         if announce {
             let joined = C::SystemChat(play::SystemChat {
-                content: yellow_names(
-                    "multiplayer.player.joined",
-                    vec![self.player_display_name(uuid, &name)],
-                ),
+                content: self.joined_line(uuid, &name),
                 overlay: false,
             })
             .encode();
@@ -2087,7 +2108,7 @@ impl Hub {
     /// ClientboundSetDefaultSpawnPositionPacket for the level's respawn data
     /// (the world spawn, in the Overworld wherever the player is), or the
     /// compass target a mod set for that player (`compass_targets`).
-    pub fn default_spawn(&self, uuid: u128, spawn: [f64; 3]) -> C {
+    pub fn default_spawn(&self, uuid: u128, spawn: [f64; 3], angle: [f32; 2]) -> C {
         if let Some(target) = self.compass_targets.get(&uuid) {
             return C::SetDefaultSpawnPosition(play::SetDefaultSpawnPosition {
                 pos: target.clone(),
@@ -2104,8 +2125,8 @@ impl Hub {
                     spawn[2].floor() as i32,
                 ],
             },
-            yaw: 0.0,
-            pitch: 0.0,
+            yaw: angle[0],
+            pitch: angle[1],
         })
     }
 
@@ -2124,7 +2145,7 @@ impl Hub {
         }
         g.send(&C::InitializeBorder(super::border::initialize(ctx.border)));
         g.send(&self.time_packet(ctx.world, ctx.clock_rate));
-        g.send(&self.default_spawn(g.uuid, spawn));
+        g.send(&self.default_spawn(g.uuid, spawn, ctx.spawn_angle));
         let w = &ctx.world.weather;
         if w.raining {
             g.send(&C::GameEvent(play::GameEvent {
@@ -3304,6 +3325,8 @@ impl Hub {
             vertical_collision: false,
             horizontal_collision: false,
             needs_sync: false,
+            sync_position: false,
+            stepped: false,
             idle: false,
             bare: false,
             minecart_steps: None,
@@ -4981,7 +5004,7 @@ impl Hub {
         g.far_queue.clear();
         g.tracker.clear();
         self.resend_teleport(i, None);
-        let spawn = self.default_spawn(self.guests[i].uuid, ctx.spawn);
+        let spawn = self.default_spawn(self.guests[i].uuid, ctx.spawn, ctx.spawn_angle);
         let g = &mut self.guests[i];
         g.send(&spawn);
         g.send(&C::ChangeDifficulty(play::ChangeDifficulty {
@@ -5571,6 +5594,7 @@ mod tests {
             entities: &[],
             next_entity: &mut next_entity,
             spawn: [0.5, 64.0, 0.5],
+            spawn_angle: [0.0; 2],
             difficulty: 2,
             difficulty_locked: false,
             clock_rate: 1.0,
@@ -5803,6 +5827,7 @@ mod tests {
             entities: &[],
             next_entity: &mut next_entity,
             spawn: [0.5, 64.0, 0.5],
+            spawn_angle: [0.0; 2],
             difficulty: 2,
             difficulty_locked: false,
             clock_rate: 1.0,
@@ -5989,6 +6014,7 @@ mod tests {
             entities: &[],
             next_entity: &mut next_entity,
             spawn: [0.5, 64.0, 0.5],
+            spawn_angle: [0.0; 2],
             difficulty: 2,
             difficulty_locked: false,
             clock_rate: 1.0,
@@ -6054,6 +6080,7 @@ mod tests {
             entities: &[],
             next_entity: &mut next_entity,
             spawn: [0.5, 64.0, 0.5],
+            spawn_angle: [0.0; 2],
             difficulty: 2,
             difficulty_locked: false,
             clock_rate: 1.0,

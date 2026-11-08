@@ -62,7 +62,7 @@ mod loot_tests;
 pub fn chunks_with_block_entities<'a, N: std::hash::BuildHasher>(
     chunks: impl IntoIterator<Item = &'a Arc<Chunk>>,
     entities: &HashMap<(i32, i32, i32), crate::containers::BlockEntity>,
-    names: &HashMap<(i32, i32, i32), String, N>,
+    names: &HashMap<(i32, i32, i32), Tag, N>,
 ) -> Vec<Chunk> {
     let chunks: Vec<_> = chunks.into_iter().collect();
     if chunks.is_empty() {
@@ -695,7 +695,9 @@ pub fn encode_block_entity(
             if let Some(record) = j.record() {
                 entries.push(("RecordItem", item_to_nbt(record)));
             }
-            entries.push(("ticks_since_song_started", Tag::Long(j.ticks)));
+            if j.song_clock_present {
+                entries.push(("ticks_since_song_started", Tag::Long(j.ticks)));
+            }
         }
         BlockEntity::Beacon(b) => {
             if let Some(p) = &b.primary {
@@ -799,8 +801,10 @@ pub fn encode_block_entity(
             }
         }
         // Encoded above.
-        BlockEntity::DaylightDetector | BlockEntity::CopperGolemStatue(_) | BlockEntity::Mod(_) => {
-        }
+        BlockEntity::DaylightDetector
+        | BlockEntity::Bell
+        | BlockEntity::CopperGolemStatue(_)
+        | BlockEntity::Mod(_) => {}
         // PotentSulfurBlockEntity.saveAdditional.
         BlockEntity::PotentSulfur(sulfur) => {
             entries.push(("countdown", Tag::Int(sulfur.waiting_countdown)))
@@ -938,13 +942,18 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
     }
     if id == "minecraft:jukebox" {
         let record = tag.get("RecordItem").and_then(item_from_nbt);
-        let ticks = number(tag.get("ticks_since_song_started")).unwrap_or(0);
+        let clock = number(tag.get("ticks_since_song_started"));
+        let ticks = clock.unwrap_or(0);
+        // JukeboxBlockEntity.loadAdditional adopts a saved clock separately
+        // from a record-only load. Catalog-dependent load validation is separate.
+        let song_clock_present = record.is_some() && clock.is_some();
         let playing = record.is_some();
         return Some((
             pos,
             BlockEntity::Jukebox(crate::containers::Jukebox {
                 items: [record],
                 ticks,
+                song_clock_present,
                 playing,
             }),
         ));
@@ -1124,6 +1133,7 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
         | BlockEntity::EndGateway(_)
         | BlockEntity::Skull(_)
         | BlockEntity::DaylightDetector
+        | BlockEntity::Bell
         | BlockEntity::Mod(_) => {}
         // `BlockEntity.loadAdditional`: the components the block entity keeps.
         BlockEntity::CopperGolemStatue(components) => {
@@ -1472,7 +1482,7 @@ pub fn encode_with(
             if let Some((_, name)) = chunk.block_names.iter().find(|(q, _)| q == p)
                 && let Tag::Compound(map) = &mut current
             {
-                map.insert("CustomName".into(), string(name));
+                map.insert("CustomName".into(), name.clone());
             }
             let source = extras
                 .and_then(|x| x.block_entity_sources.iter().find(|(q, _)| q == p))
@@ -1484,7 +1494,25 @@ pub fn encode_with(
                 Some(original) => {
                     let loaded = decode_block_entity(original).map_or_else(
                         || current.clone(),
-                        |(q, e)| encode_block_entity(q, &e, &block),
+                        |(q, e)| {
+                            let mut loaded = encode_block_entity(q, &e, &block);
+                            if !matches!(
+                                e,
+                                crate::containers::BlockEntity::Banner(_)
+                                    | crate::containers::BlockEntity::Sign(_)
+                                    | crate::containers::BlockEntity::Mod(_)
+                            ) && let Some(name) = original
+                                .get("CustomName")
+                                .and_then(crate::block_entity_nbt::component)
+                                && let Tag::Compound(map) = &mut loaded
+                            {
+                                // BaseContainerBlockEntity.loadAdditional: the
+                                // external name is also part of the loaded model.
+                                // Its removal must win over the source overlay.
+                                map.insert("CustomName".into(), name);
+                            }
+                            loaded
+                        },
                     );
                     merge_block_entity(original, &loaded, &current)
                 }
@@ -1693,7 +1721,6 @@ fn decode_column(
         }
     }
     let air = registry.default_state("minecraft:air")?.0;
-    let mut cache: HashMap<String, u32> = HashMap::new();
     let Some(Tag::List(sections)) = tag.get("sections") else {
         return Some(chunk);
     };
@@ -1709,30 +1736,7 @@ fn decode_column(
         {
             let palette: Vec<u32> = palette
                 .iter()
-                .map(|p| {
-                    let state = BlockState::from_nbt(p).ok();
-                    let key = state
-                        .as_ref()
-                        .map(|s| format!("{}{:?}", s.name, s.properties))
-                        .unwrap_or_default();
-                    *cache.entry(key).or_insert_with(|| {
-                        state
-                            .and_then(|s| {
-                                registry.id(&s).or_else(|| {
-                                    // Missing properties take the block's defaults.
-                                    let default = registry.default_state(&s.name)?;
-                                    let mut full = registry.state(default)?.clone();
-                                    for (k, v) in &s.properties {
-                                        if full.properties.contains_key(k) {
-                                            full.properties.insert(k.clone(), v.clone());
-                                        }
-                                    }
-                                    registry.id(&full).or(Some(default))
-                                })
-                            })
-                            .map_or(air, |id| id.0)
-                    })
-                })
+                .map(|p| registry.saved_state_id(p).map_or(air, |id| id.0))
                 .collect();
             let target = Arc::make_mut(&mut chunk.sections[si]);
             let data = match states.get("data") {
@@ -1792,7 +1796,18 @@ fn decode_column(
                             horizon_world::attachments::Attachments::from_nbt(data.clone()),
                         ));
                     }
-                    if let Some(name) = text(e.get("CustomName")) {
+                    let name = if matches!(
+                        be.1,
+                        crate::containers::BlockEntity::Banner(_)
+                            | crate::containers::BlockEntity::Sign(_)
+                            | crate::containers::BlockEntity::Mod(_)
+                    ) {
+                        text(e.get("CustomName")).map(|name| string(&name))
+                    } else {
+                        e.get("CustomName")
+                            .and_then(crate::block_entity_nbt::component)
+                    };
+                    if let Some(name) = name {
                         chunk.block_names.push((be.0, name));
                     }
                     if let Some(rolled) = roll_loaded_loot(&chunk, biomes, e, &mut be) {
@@ -3306,6 +3321,18 @@ pub fn random_uuid() -> [i32; 4] {
     let b = (b & !(0xC000_0000_0000_0000)) | 0x8000_0000_0000_0000;
     [(a >> 32) as i32, a as i32, (b >> 32) as i32, b as i32]
 }
+/// `Mth.createInsecureUUID`: a new entity's UUID is its own random's first two
+/// draws (`Entity.uuid`).
+pub fn insecure_uuid(random: &mut impl horizon_core::random::RandomSource) -> [i32; 4] {
+    let most = random.next_long() & -61441 | 16384;
+    let least = random.next_long() & 4_611_686_018_427_387_903 | i64::MIN;
+    [
+        (most >> 32) as i32,
+        most as i32,
+        (least >> 32) as i32,
+        least as i32,
+    ]
+}
 pub(crate) fn uuid_tag(u: [i32; 4]) -> Tag {
     Tag::IntArray(u.to_vec())
 }
@@ -3316,11 +3343,23 @@ pub(crate) fn uuid_from_tag(tag: Option<&Tag>) -> Option<[i32; 4]> {
         _ => None,
     }
 }
+// `DoubleTag.valueOf` / `FloatTag.valueOf` store -0.0 as the shared +0.0
+// `ZERO`, so a resting entity's `Motion` reads `0.0d`, never `-0.0d`.
 pub(crate) fn doubles(values: &[f64]) -> Tag {
-    Tag::List(values.iter().map(|v| Tag::Double(v.to_bits())).collect())
+    Tag::List(
+        values
+            .iter()
+            .map(|&v| Tag::Double(if v == 0.0 { 0 } else { v.to_bits() }))
+            .collect(),
+    )
 }
 pub(crate) fn floats(values: &[f32]) -> Tag {
-    Tag::List(values.iter().map(|v| Tag::Float(v.to_bits())).collect())
+    Tag::List(
+        values
+            .iter()
+            .map(|&v| Tag::Float(if v == 0.0 { 0 } else { v.to_bits() }))
+            .collect(),
+    )
 }
 pub(crate) fn read_doubles<const N: usize>(tag: Option<&Tag>) -> Option<[f64; N]> {
     match tag? {
@@ -4351,12 +4390,21 @@ impl Level {
     }
     /// Write every file; a world without a player UUID gets a random one.
     pub fn write(&mut self, dir: &Path) -> Result<()> {
-        self.write_internal(dir, true)
+        self.write_internal(dir, true, false)
     }
 
     /// Dedicated servers save connected players separately.
     pub fn write_without_player(&mut self, dir: &Path) -> Result<()> {
-        self.write_internal(dir, false)
+        self.write_internal(dir, false, false)
+    }
+
+    /// The temporary world a Realms upload packs
+    /// (`RealmsCreateWorldFlow.createTemporaryWorldFolder`): level.dat as
+    /// `WorldData.createTag(null)` writes it — no `singleplayer_uuid` — with the world
+    /// generation and game rules, and no player file or weather/clocks the server makes
+    /// on its own. The caller writes the data packs and removes the folder.
+    pub fn write_upload(&mut self, dir: &Path) -> Result<()> {
+        self.write_internal(dir, false, true)
     }
 
     /// The player's file alone, `players/data/<singleplayer_uuid>.dat`
@@ -4371,7 +4419,7 @@ impl Level {
         write_dat(&player_file, self.player_tag())
     }
 
-    fn write_internal(&mut self, dir: &Path, write_player: bool) -> Result<()> {
+    fn write_internal(&mut self, dir: &Path, write_player: bool, upload: bool) -> Result<()> {
         fs::create_dir_all(dir)?;
         restore_level_dat(dir);
         let existing = read_dat(&dir.join("level.dat")).and_then(|r| r.get("Data").cloned());
@@ -4418,7 +4466,9 @@ impl Level {
                 map.remove(&JavaString::from(key));
             }
         }
-        let uuid = self.ensure_player_uuid();
+        // An upload's level.dat names no player (`createTag(null)`); every other file
+        // names this world's own.
+        let uuid = (!upload).then(|| self.ensure_player_uuid());
         // A new world's first spawn point is its world spawn.
         if self.world_spawn.is_none() {
             self.world_spawn = self.spawn.map(|s| {
@@ -4495,10 +4545,12 @@ impl Level {
             ),
             ("difficulty_settings", difficulty),
             ("initialized", Tag::Byte(1)),
-            ("singleplayer_uuid", uuid_tag(uuid)),
             ("ServerBrands", Tag::List(brands)),
         ] {
             put(&mut data, key, value);
+        }
+        if let Some(uuid) = uuid {
+            put(&mut data, "singleplayer_uuid", uuid_tag(uuid));
         }
         if let Tag::Compound(map) = &mut data {
             map.entry("allowCommands".into()).or_insert(Tag::Byte(0));
@@ -4535,27 +4587,30 @@ impl Level {
             });
         }
         // Saved data: weather, clocks, and (when missing or legacy) world
-        // generation settings and game rules.
-        write_saved_data(
-            dir,
-            "weather",
-            Tag::compound([
-                ("clear_weather_time", Tag::Int(self.weather.clear_time)),
-                ("rain_time", Tag::Int(self.weather.rain_time)),
-                ("thunder_time", Tag::Int(self.weather.thunder_time)),
-                ("raining", Tag::Byte(i8::from(self.weather.raining))),
-                ("thundering", Tag::Byte(i8::from(self.weather.thundering))),
-            ]),
-        )?;
-        let mut clocks = compound_or_empty(read_saved_data(dir, "world_clocks"));
-        let mut overworld = compound_or_empty(clocks.get("minecraft:overworld").cloned());
-        put(&mut overworld, "total_ticks", Tag::Long(self.day_time));
-        put(&mut clocks, "minecraft:overworld", overworld);
-        if let Tag::Compound(map) = &mut clocks {
-            map.entry("minecraft:the_end".into())
-                .or_insert_with(|| Tag::compound([("total_ticks", Tag::Long(self.time))]));
+        // generation settings and game rules. An upload's temporary world carries only
+        // what the server needs before its first tick.
+        if !upload {
+            write_saved_data(
+                dir,
+                "weather",
+                Tag::compound([
+                    ("clear_weather_time", Tag::Int(self.weather.clear_time)),
+                    ("rain_time", Tag::Int(self.weather.rain_time)),
+                    ("thunder_time", Tag::Int(self.weather.thunder_time)),
+                    ("raining", Tag::Byte(i8::from(self.weather.raining))),
+                    ("thundering", Tag::Byte(i8::from(self.weather.thundering))),
+                ]),
+            )?;
+            let mut clocks = compound_or_empty(read_saved_data(dir, "world_clocks"));
+            let mut overworld = compound_or_empty(clocks.get("minecraft:overworld").cloned());
+            put(&mut overworld, "total_ticks", Tag::Long(self.day_time));
+            put(&mut clocks, "minecraft:overworld", overworld);
+            if let Tag::Compound(map) = &mut clocks {
+                map.entry("minecraft:the_end".into())
+                    .or_insert_with(|| Tag::compound([("total_ticks", Tag::Long(self.time))]));
+            }
+            write_saved_data(dir, "world_clocks", clocks)?;
         }
-        write_saved_data(dir, "world_clocks", clocks)?;
         if legacy || !saved_data_path(dir, "world_gen_settings").exists() {
             write_world_gen_settings(dir, self.seed, WorldGen::default())?;
         }
@@ -6056,16 +6111,16 @@ mod tests {
             for z in [-17, -16, -1, 0, 15, 16] {
                 let p = (x, 64, z);
                 entities.insert(p, BlockEntity::Chest(vec![None; 27]));
-                names.insert(p, format!("container {x},{z}"));
+                names.insert(p, string(&format!("container {x},{z}")));
             }
         }
         // Names without a modelled entity must also survive the snapshot.
-        names.insert((-2, 80, -3), "orphan name".into());
+        names.insert((-2, 80, -3), string("orphan name"));
         let mut source = Chunk::empty(-1, -1);
         source
             .block_entities
             .push(((99, 0, 99), BlockEntity::Chest(vec![])));
-        source.block_names.push(((99, 0, 99), "stale".into()));
+        source.block_names.push(((99, 0, 99), string("stale")));
         source.saved = Some(Arc::new(ChunkExtras::default()));
         let source = Arc::new(source);
         let batch = vec![
@@ -6111,7 +6166,7 @@ mod tests {
         names.clear();
         assert!(!snapshot[0].block_entities.is_empty());
         assert!(!snapshot[0].block_names.is_empty());
-        assert_eq!(source.block_names[0].1, "stale");
+        assert_eq!(source.block_names[0].1, string("stale"));
         assert_eq!(source.block_entities[0].0, (99, 0, 99));
     }
 
@@ -8775,5 +8830,124 @@ mod far_census {
                 started.elapsed().as_secs_f32()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod jukebox_song_clock_tests {
+    use super::*;
+    use crate::containers::{BlockEntity, Jukebox};
+
+    fn input(clock: Option<i64>, with_record: bool) -> Tag {
+        let record = if with_record {
+            "RecordItem:{id:\"minecraft:music_disc_cat\",count:1,components:{\"minecraft:custom_data\":{h032:1}}},"
+        } else {
+            ""
+        };
+        let clock = clock.map_or(String::new(), |n| format!("ticks_since_song_started:{n}L,"));
+        nbt::parse_snbt(&format!(
+            "{{id:\"minecraft:jukebox\",x:4,y:200,z:4,{record}{clock}}}"
+        ))
+        .unwrap()
+        .0
+    }
+    fn record_kept(tag: &Tag) {
+        let record = tag.get("RecordItem").expect("actual modeled record");
+        assert_eq!(
+            record.get("id"),
+            Some(&Tag::String("minecraft:music_disc_cat".into()))
+        );
+        assert_eq!(record.get("count"), Some(&Tag::Int(1)));
+        assert_eq!(
+            record
+                .get("components")
+                .and_then(|c| c.get("minecraft:custom_data"))
+                .and_then(|c| c.get("h032")),
+            Some(&Tag::Int(1))
+        );
+    }
+    #[test]
+    fn model_save_preserves_song_clock_presence_without_raw() {
+        let mut failures = Vec::new();
+        let mut check = |label: &str, tag: &Tag, expected: Option<i64>| {
+            let got = tag.get("ticks_since_song_started").cloned();
+            let want = expected.map(Tag::Long);
+            if got != want {
+                failures.push(format!("{label}: {got:?}, expected {want:?}"));
+            }
+        };
+        for (label, clock, with_record) in [
+            ("empty", None, false),
+            ("record-only", None, true),
+            ("loaded-zero", Some(0), true),
+            ("loaded-41", Some(41), true),
+        ] {
+            let (pos, model) =
+                decode_block_entity(&input(clock, with_record)).expect("actual load path");
+            let BlockEntity::Jukebox(j) = &model else {
+                panic!("wrong modeled type")
+            };
+            assert_eq!(j.record().is_some(), with_record);
+            assert_eq!(j.ticks, clock.unwrap_or(0));
+            // H032 must preserve the separate legacy record-only adoption policy.
+            assert_eq!(j.playing, with_record);
+            let saved = encode_block_entity(pos, &model, "minecraft:jukebox");
+            let command = block_entity_data(pos, &model, "minecraft:jukebox", None);
+            check(label, &saved, clock);
+            check(label, &command, clock);
+            if with_record {
+                record_kept(&saved);
+                record_kept(&command);
+            } else {
+                assert!(saved.get("RecordItem").is_none());
+            }
+            if clock.is_some() {
+                let mut detached = model.clone();
+                let BlockEntity::Jukebox(j) = &mut detached else {
+                    unreachable!()
+                };
+                j.playing = false;
+                // Decoded clock state, not this separate legacy flag, owns saving.
+                let saved = encode_block_entity(pos, &detached, "minecraft:jukebox");
+                check("clock independent of legacy playing", &saved, clock);
+                record_kept(&saved);
+            }
+        }
+        let empty = BlockEntity::Jukebox(Jukebox::default());
+        check(
+            "default modeled/no raw",
+            &encode_block_entity((4, 200, 4), &empty, "minecraft:jukebox"),
+            None,
+        );
+        let raw = input(Some(41), true);
+        let (pos, loaded_model) = decode_block_entity(&raw).unwrap();
+        let loaded = encode_block_entity(pos, &loaded_model, "minecraft:jukebox");
+        let BlockEntity::Jukebox(j) = loaded_model else {
+            unreachable!()
+        };
+        let current = BlockEntity::Jukebox(Jukebox {
+            items: j.items,
+            playing: true,
+            ..Default::default()
+        });
+        let current = encode_block_entity(pos, &current, "minecraft:jukebox");
+        check("modeled record-only/no raw", &current, None);
+        record_kept(&current);
+        // The chunk writer uses this real overlay after encoding its model.
+        // A stale input clock must not resurrect the removed modeled field.
+        let merged = merge_block_entity(&raw, &loaded, &current);
+        check("contradictory raw clock", &merged, None);
+        record_kept(&merged);
+        let canonical = crate::block_entity_nbt::canonical(&merged).unwrap();
+        check(
+            "chunk canonical after actual model overlay",
+            &canonical,
+            None,
+        );
+        record_kept(&canonical);
+        assert!(
+            failures.is_empty(),
+            "modeled song clock presence mismatches: {failures:?}"
+        );
     }
 }

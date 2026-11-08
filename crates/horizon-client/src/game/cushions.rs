@@ -534,6 +534,23 @@ impl Game<'_> {
         }
     }
 
+    /// `LivingEntity.dismountVehicle` from a live vehicle at `vehicle` whose
+    /// block (`blockPosition`) is in `#minecraft:portals`: the rider leaves by
+    /// the same free-position branch as from a removed vehicle, not beside it.
+    /// True when it did.
+    pub(super) fn dismount_in_portal(&mut self, vehicle: Vec3) -> bool {
+        let pos = [
+            vehicle.x.floor() as i32,
+            vehicle.y.floor() as i32,
+            vehicle.z.floor() as i32,
+        ];
+        if !self.block_in_tag("minecraft:portals", &self.block_name(pos)) {
+            return false;
+        }
+        self.dismount_removed_vehicle(vehicle.y);
+        true
+    }
+
     /// `Entity.positionRider` for the mobs (and other players) sitting on a
     /// cushion: its passenger attachment `(0, 0.25, 0)`, less the rider's own
     /// vehicle attachment. A server sends no position for a passenger, so

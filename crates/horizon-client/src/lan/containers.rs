@@ -356,6 +356,8 @@ impl Hub {
             sent_data: Vec::new(),
             hidden: Vec::new(),
             mod_type,
+            craft: None,
+            links: Vec::new(),
         });
         self.send_menu_content(i, items);
     }
@@ -415,6 +417,8 @@ impl Hub {
             sent_data: Vec::new(),
             hidden: Vec::new(),
             mod_type: None,
+            craft: None,
+            links: Vec::new(),
         });
         self.send_menu_content(i, items);
         Some(window)

@@ -11,13 +11,27 @@ use std::{
     collections::BTreeMap,
     fs, io,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, Weak},
+    sync::{Arc, Condvar, Mutex, OnceLock, Weak},
 };
 
 /// An immutable default-component snapshot. Kept only while a resource load
 /// holds it: a later load reads the files and applies native hooks afresh.
 pub type Defaults = BTreeMap<String, Value>;
 static SHARED: Mutex<Vec<(PathBuf, Weak<Defaults>)>> = Mutex::new(Vec::new());
+
+/// A resource load already reading and applying hooks to `items.json` for a
+/// root. Several startup tables ask for defaults in parallel; without this
+/// gate they can all miss `SHARED` and rerun the native hook for every item.
+struct InFlight {
+    result: Mutex<Option<Result<Arc<Defaults>, (io::ErrorKind, String)>>>,
+    ready: Condvar,
+}
+static IN_FLIGHT: OnceLock<Mutex<std::collections::HashMap<PathBuf, Arc<InFlight>>>> =
+    OnceLock::new();
+
+fn in_flight() -> &'static Mutex<std::collections::HashMap<PathBuf, Arc<InFlight>>> {
+    IN_FLIGHT.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
 
 /// Share parsed defaults with the other tables built during this load. Callers
 /// that need a fresh read regardless of other loads can still use [`read`].
@@ -33,19 +47,67 @@ pub fn shared(root: &Path) -> io::Result<Arc<Defaults>> {
     if let Some(value) = held() {
         return Ok(value);
     }
-    // Native hooks run without the cache lock, so they can read other data.
-    let value = Arc::new(read(root)?);
-    let mut cache = SHARED.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(other) = cache
-        .iter()
-        .find(|(path, _)| path == root)
-        .and_then(|(_, v)| v.upgrade())
-    {
-        return Ok(other);
+
+    let (flight, leader) = {
+        let mut flights = in_flight().lock().unwrap_or_else(|e| e.into_inner());
+        match flights.entry(root.to_owned()) {
+            std::collections::hash_map::Entry::Occupied(entry) => (entry.get().clone(), false),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let flight = Arc::new(InFlight {
+                    result: Mutex::new(None),
+                    ready: Condvar::new(),
+                });
+                entry.insert(flight.clone());
+                (flight, true)
+            }
+        }
+    };
+    if !leader {
+        let mut result = flight.result.lock().unwrap_or_else(|e| e.into_inner());
+        while result.is_none() {
+            result = flight.ready.wait(result).unwrap_or_else(|e| e.into_inner());
+        }
+        return result
+            .clone()
+            .expect("item defaults flight result")
+            .map_err(|(kind, message)| io::Error::new(kind, message));
     }
-    cache.retain(|(_, value)| value.strong_count() > 0);
-    cache.push((root.to_owned(), Arc::downgrade(&value)));
-    Ok(value)
+
+    // Native hooks run without either cache lock, so they can read other data.
+    let result = read(root)
+        .map(Arc::new)
+        .map_err(|e| (e.kind(), e.to_string()));
+    if let Ok(value) = &result {
+        let mut cache = SHARED.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(other) = cache
+            .iter()
+            .find(|(path, _)| path == root)
+            .and_then(|(_, v)| v.upgrade())
+        {
+            drop(cache);
+            let result = Ok(other);
+            let mut published = flight.result.lock().unwrap_or_else(|e| e.into_inner());
+            *published = Some(result.clone());
+            flight.ready.notify_all();
+            in_flight()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(root);
+            return result.map_err(|(kind, message)| io::Error::new(kind, message));
+        }
+        cache.retain(|(_, value)| value.strong_count() > 0);
+        cache.push((root.to_owned(), Arc::downgrade(value)));
+    }
+    {
+        let mut published = flight.result.lock().unwrap_or_else(|e| e.into_inner());
+        *published = Some(result.clone());
+        flight.ready.notify_all();
+    }
+    in_flight()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(root);
+    result.map_err(|(kind, message)| io::Error::new(kind, message))
 }
 
 /// The largest stack size a native mod may set: `ItemStack.count` is a `u32`,

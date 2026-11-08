@@ -490,6 +490,10 @@ pub struct Modifier {
 pub struct Attributes {
     pub bases: Vec<(Attr, f64)>,
     pub modifiers: Vec<Modifier>,
+    /// The transient minecraft:baby speed modifier was taken away
+    /// (`/attribute ... modifier remove`) until the next setBaby. Not
+    /// saved: a load runs setBaby again.
+    pub baby_speed_removed: bool,
 }
 /// The attribute `/attribute` names (`follow_range`, not
 /// `minecraft:follow_range`) when gameplay reads it from this store. Armor
@@ -523,7 +527,13 @@ pub fn base_value_with(m: &Mob, a: Attr, default: impl FnOnce() -> Option<f64>) 
 }
 /// The transient modifiers of the mob's state (`SPEED_MODIFIER_BABY`).
 pub fn transient(m: &Mob, a: Attr) -> Option<(f64, Op)> {
-    if a != Attr::MovementSpeed || !m.is_baby() {
+    if a != Attr::MovementSpeed
+        || !m.is_baby()
+        || m.extra
+            .attributes
+            .as_ref()
+            .is_some_and(|s| s.baby_speed_removed)
+    {
         return None;
     }
     match m.species() {
@@ -749,6 +759,20 @@ pub fn zombie_attributes(m: &mut Mob, special: f32, reason: Reason) {
 pub fn max_health(m: &Mob) -> f32 {
     value(m, Attr::MaxHealth) as f32
 }
+/// `LivingEntity.onAttributeUpdated(MAX_HEALTH)` after a Health Boost
+/// change: the cached maximum follows the attribute model again, and Health
+/// above it is lowered (nothing is healed). Sulfur cubes and wolves write
+/// their maximum straight into the cache (`sulfur_cube::set_size`,
+/// `tame::set_tame`), outside the model, so they keep theirs.
+pub fn health_boost_changed(m: &mut Mob) {
+    if matches!(m.species(), Species::SulfurCube | Species::Wolf) {
+        return;
+    }
+    refresh(m, Attr::MaxHealth);
+    if m.health > m.attrs.max_health {
+        m.health = m.attrs.max_health;
+    }
+}
 
 // ---- species facts --------------------------------------------------------
 
@@ -952,6 +976,14 @@ pub fn set_baby(m: &mut Mob, baby: bool) {
     match s {
         _ if zombie(s) || s == Species::Piglin => {
             m.extra.age = if baby { NON_AGEABLE_BABY } else { 0 };
+            // Zombie/Piglin.setBaby: removeModifier(minecraft:baby), then the
+            // transient one again for a baby.
+            if let Some(a) = m.extra.attributes.as_mut() {
+                a.baby_speed_removed = false;
+            }
+            if has_modifier(m, Attr::MovementSpeed, "minecraft:baby") {
+                remove_modifier(m, Attr::MovementSpeed, "minecraft:baby");
+            }
         }
         Species::Zoglin => {
             m.extra.age = if baby { NON_AGEABLE_BABY } else { 0 };

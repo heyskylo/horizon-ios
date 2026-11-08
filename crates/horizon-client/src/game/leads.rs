@@ -9,6 +9,7 @@ use horizon_client::{
     mesher::Vertex,
     mobs::leash::{self, Holder, Pending},
     mod_api::NativeLootDrops,
+    pose::Pose,
 };
 use horizon_world::nbt::Tag;
 
@@ -119,6 +120,39 @@ fn write_mob_leash_tag(
 }
 
 impl Game<'_> {
+    /// BlockAttachedEntity.tick / LeashFenceKnotEntity.survives for explicitly loaded knots.
+    pub(super) fn tick_explicit_knots(&mut self) {
+        let ticking = self.entity_ticking_area();
+        let world = &self.world;
+        let facts = self.res.facts();
+        let fences = self.res.items().block_tags.get("minecraft:fences");
+        let mut untied = Vec::new();
+        self.others.retain_mut(|knot| {
+            let Some(check) = knot.knot_check.as_mut() else {
+                return true;
+            };
+            let at = horizon_core::position::BlockPos::containing(knot.position);
+            if !ticking(at.x, at.z) || !world.chunks.contains_key(&(at.x >> 4, at.z >> 4)) {
+                return true;
+            }
+            // Vanilla compares the old postincrement value: first check is tick 101.
+            if *check >= 100 {
+                *check = 0;
+                let state = facts.get(world.block(at.x, at.y, at.z));
+                if !fences.is_some_and(|f| f.contains(&*state.name)) {
+                    untied.push(knot.position.components());
+                    return false;
+                }
+            } else {
+                *check += 1;
+            }
+            true
+        });
+        // LeashFenceKnotEntity.dropItem plays LEAD_UNTIED; it drops no lead item.
+        for at in untied {
+            self.lead_sound("untied", at);
+        }
+    }
     pub(super) fn lead_sound(&mut self, sound: &str, at: [f64; 3]) {
         self.audio
             .play(&format!("minecraft:item.lead.{sound}"), Some(at), 1.0, 1.0);
@@ -191,8 +225,7 @@ impl Game<'_> {
     /// `Entity.spawnAtLocation(level, Items.LEAD)`: the item entity draws its
     /// motion from its own random, not the level's.
     pub(super) fn drop_lead_item(&mut self, at: [f64; 3]) {
-        let v = super::dispenser::new_item_motion();
-        self.spawn_item(ItemStack::new("minecraft:lead", 1), at, v, 10);
+        self.spawn_item_own(ItemStack::new("minecraft:lead", 1), at, 10);
     }
     /// `Leashable.dropLeash` / `removeLeash`: the lead falls as an item.
     pub(super) fn break_leash(&mut self, id: u32, drop: bool, sound: bool) {
@@ -286,8 +319,7 @@ impl Game<'_> {
         self.native_loot_drops(&context, &mut drops);
         for stack in drops {
             if stack.count > 0 && &*stack.item != "minecraft:air" {
-                let v = super::dispenser::new_item_motion();
-                self.spawn_item(stack, at, v, 10);
+                self.spawn_item_own(stack, at, 10);
             }
         }
     }
@@ -752,7 +784,6 @@ impl Game<'_> {
         p: &horizon_client::motion::PlayerMotion,
         alpha: f64,
     ) -> glam::DVec3 {
-        let pos = glam::DVec3::new(p.position.x, p.position.y, p.position.z);
         // Player.getRopeHoldPosition: `0.22 * (RIGHT ? -1 : 1)`.
         let hand_dir = if self.settings.main_hand_left {
             1.0
@@ -771,14 +802,70 @@ impl Game<'_> {
             let eye = glam::DVec3::new(feet.x, feet.y + f64::from(p.dimensions.eye_height), feet.z);
             return rot_y(v, -yaw) + eye;
         }
-        let yaw = f64::from(self.yaw.to_radians());
+        // Player.getRopeHoldPosition: the view's pitch eased toward `xRotO`,
+        // the body's yaw between `yBodyRotO` and `yBodyRot`, from
+        // `getPosition(partialTick)`.
+        let (_, x_rot) = rope_hold_angles((self.yaw, self.pitch), self.rope_rot_old, alpha as f32);
+        let t = alpha as f32;
+        let y_rot = self.player_model.as_ref().map_or(
+            f64::from(self.yaw * (std::f32::consts::PI / 180.0)),
+            |m| {
+                f64::from(
+                    (m.previous_body_yaw + t * (m.body_yaw - m.previous_body_yaw))
+                        * (std::f32::consts::PI / 180.0),
+                )
+            },
+        );
+        let feet = self.previous_position.lerp(p.position, alpha);
+        let pos = glam::DVec3::new(feet.x, feet.y, feet.z);
+        let x_rotated = |v: glam::DVec3| {
+            // Vec3.xRot(-xRot).
+            let (s, c) = ((-x_rot).sin(), (-x_rot).cos());
+            glam::DVec3::new(v.x, v.y * c + v.z * s, v.z * c - v.y * s)
+        };
+        if p.fall_flying || p.auto_spin_attack_ticks > 0 {
+            // getViewVector(partialTick) against getDeltaMovement, flat.
+            let look = horizon_world::view_direction::view_vector(
+                self.rope_rot_old.1 + t * (self.pitch - self.rope_rot_old.1),
+                self.rope_rot_old.0 + t * (self.yaw - self.rope_rot_old.0),
+            );
+            let movement = p.velocity;
+            let speed_len = movement.x * movement.x + movement.z * movement.z;
+            let look_len = look.x * look.x + look.z * look.z;
+            let z_rot = if speed_len > 0.0 && look_len > 0.0 {
+                let dot =
+                    (movement.x * look.x + movement.z * look.z) / (speed_len * look_len).sqrt();
+                let sign = movement.x * look.z - movement.z * look.x;
+                // Math.signum: 0 for 0.
+                let signum = if sign > 0.0 {
+                    1.0
+                } else if sign < 0.0 {
+                    -1.0
+                } else {
+                    0.0
+                };
+                f64::from((signum * horizon_core::jmath::acos(dot)) as f32)
+            } else {
+                0.0
+            };
+            // Vec3(xOff, -0.11, 0.85).zRot(-zRot).xRot(-xRot).yRot(-yRot).
+            let v = glam::DVec3::new(0.22 * hand_dir, -0.11, 0.85);
+            let (s, c) = ((-z_rot).sin(), (-z_rot).cos());
+            let v = glam::DVec3::new(v.x * c + v.y * s, v.y * c - v.x * s, v.z);
+            return pos + rot_y(x_rotated(v), -y_rot);
+        }
+        // LivingEntity.isVisuallySwimming.
+        if p.pose == Pose::Swimming || (!p.fall_flying && p.pose == Pose::FallFlying) {
+            let v = glam::DVec3::new(0.22 * hand_dir, 0.2, -0.15);
+            return pos + rot_y(x_rotated(v), -y_rot);
+        }
         let crouching = self.keys.held(Action::Sneak);
         let v = glam::DVec3::new(
             0.22 * hand_dir,
             f64::from(p.dimensions.height) - 1.0,
             if crouching { -0.2 } else { 0.07 },
         );
-        pos + rot_y(v, -yaw)
+        pos + rot_y(v, -y_rot)
     }
 }
 

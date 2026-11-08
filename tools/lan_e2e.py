@@ -28,9 +28,12 @@ address. The script then checks, from both sides, what a guest's game used to ge
              drowning and the void (then respawns);
 - pvp:       the guest and the host hit each other with a sword; with the pvp game rule off, or on one
              team without friendly fire, nothing;
+- riders:    `execute on passengers` finds the guest riding a strider, not the host beside it;
 - spear:     the guest's spear jab and its sprinting charge hurt the host; with the pvp game rule off, nothing;
 - kills:     a pig the guest kills counts in the guest's killed statistic, not the host's (#484);
 - leave:     a guest who leaves has leave_game in their saved statistics, and again after the next leave;
+- vehicle-teleport: a strider the guest rides, teleported by a command, is where the server has it in the guest's game;
+- rider-look: a tick function teleporting the strider the guest rides doesn't turn the guest's view;
 
 - arrows:    the guest and the host shoot each other with a bow; with the pvp game rule off, nothing (#484);
 - flame-arrows: an arrow the host or the guest shoots from a Flame bow burns in flight on both sides
@@ -8737,6 +8740,42 @@ CHECKS += ['sprint-hit-slowdown']
 CHECK_FNS['sprint-hit-slowdown'] = check_sprint_hit_slowdown
 
 
+def check_riders(host, guest, out):
+    """`execute on passengers` from a strider the guest rides finds the guest (Entity.getPassengers: the
+    server's players too, as a map's datapack sees them), and only them: the host, standing beside it, isn't
+    a passenger. Run by the host, so the guest is another player than the one in place."""
+    if dead(guest):
+        guest.raw('respawn')
+        guest.wait(40)
+    hx, hy, hz = pos_of(host)
+    x, y, z = math.floor(hx), math.floor(hy), math.floor(hz)
+    host('command', command=f'fill {x - 2} {y} {z - 2} {x + 4} {y + 3} {z + 2} minecraft:air')
+    host('command', command=f'fill {x - 2} {y - 1} {z - 2} {x + 4} {y - 1} {z + 2} minecraft:stone')
+    host('command', command='tag @a remove rode')
+    host('command', command=f'summon minecraft:strider {x + 2.5} {y} {z + 0.5} '
+         '{NoAI:1b,Tags:["e2e_ride"],equipment:{saddle:{id:"minecraft:saddle",count:1}}}')
+    guest('command', command=f'tp @s {x + 2.5} {y} {z + 0.5}')
+    guest.wait(10)
+    guest('command', command='ride @s mount @e[tag=e2e_ride,limit=1]')
+    guest.wait(20)
+    passed = lambda who: 'passed' in ' '.join(host('command', command=f'execute if entity @a[name={who},tag=rode]')
+                                              .get('chat', []))
+    try:
+        host('command', command='execute as @e[tag=e2e_ride] on passengers run tag @s add rode')
+        seen = {'guest tagged': passed(GUEST_NAME), 'host tagged': passed(host.player)}
+    finally:
+        guest('command', command='ride @s dismount')
+        host('command', command='kill @e[tag=e2e_ride]')
+        host('command', command='tag @a remove rode')
+    assert seen['guest tagged'], f'`on passengers` missed the guest riding the strider: {seen}'
+    assert not seen['host tagged'], f'`on passengers` named the host, who rides nothing: {seen}'
+    return seen
+
+
+CHECKS += ['riders']
+CHECK_FNS['riders'] = check_riders
+
+
 def check_spear(host, guest, out):
     """A player's spear stabs another player (KineticWeapon.damageEntities, PiercingWeapon.attack): the guest's jab
     hurts the host with the spear's damage type, and so does its charge at a sprint, whose speed relative to the host
@@ -8796,6 +8835,7 @@ def check_spear(host, guest, out):
 
 CHECKS += ['spear']
 CHECK_FNS['spear'] = check_spear
+
 
 
 
@@ -9009,6 +9049,47 @@ def check_boat_input_latch(host, guest, out):
 
 CHECKS += ['boat_input_latch']
 CHECK_FNS['boat_input_latch'] = check_boat_input_latch
+
+
+def check_vehicle_teleport(host, guest, out):
+    """A strider the guest rides, teleported 3 blocks by a command, is where the server has it in the guest's game.
+
+    The server tells its riders the teleport at once (Entity.sendTeleportTransitionToRidingPlayers) and its
+    tracker then sends everyone the move as a delta from the position it last reported. A client counts a move's
+    delta from its position codec's base, which a teleport leaves alone (ClientPacketListener.handleMoveEntity,
+    handleTeleportEntity): counted from the teleported position instead, the rider saw the strider 6 blocks on.
+    """
+    if dead(guest):
+        guest.raw('respawn')
+        guest.wait(40)
+    hx, hy, hz = pos_of(host)
+    x, y, z = math.floor(hx), math.floor(hy), math.floor(hz)
+    host('command', command=f'fill {x - 2} {y} {z - 2} {x + 9} {y + 3} {z + 2} minecraft:air')
+    host('command', command=f'fill {x - 2} {y - 1} {z - 2} {x + 9} {y - 1} {z + 2} minecraft:stone')
+    host('command', command=f'summon minecraft:strider {x + 2.5} {y} {z + 0.5} '
+         '{NoAI:1b,Tags:["e2e_tp"],equipment:{saddle:{id:"minecraft:saddle",count:1}}}')
+    guest('command', command=f'tp @s {x + 2.5} {y} {z + 0.5}')
+    guest.wait(10)
+    guest('command', command='ride @s mount @e[tag=e2e_tp,limit=1]')
+    guest.wait(20)
+    try:
+        host('command', command='execute as @e[tag=e2e_tp] at @s run tp @s ~3 ~ ~')
+        guest.wait(20)
+        reply = ' '.join(host('command', command='data get entity @e[tag=e2e_tp,limit=1] Pos').get('chat', []))
+        server = [float(v) for v in re.findall(r'(-?[\d.]+)d', reply)]
+        seen = guest.raw('entities', '16', 'minecraft:strider').get('entities', [])
+        guest.shot(out, 'vehicle-teleport')
+    finally:
+        guest('command', command='ride @s dismount')
+        host('command', command='kill @e[tag=e2e_tp]')
+    assert len(server) == 3 and seen, f'no strider: server {server}, guest {seen}'
+    off = math.dist(server, seen[0]['pos'])
+    assert off < 0.1, f'the rider sees its strider {off:.2f} blocks from the server\'s: {server} vs {seen[0]["pos"]}'
+    return {'server': server, 'guest sees': seen[0]['pos']}
+
+
+CHECKS += ['vehicle-teleport']
+CHECK_FNS['vehicle-teleport'] = check_vehicle_teleport
 
 
 def check_hook_smooth(host, guest, out):
@@ -10697,6 +10778,59 @@ def check_boat_dismount_pose(host, guest, out):
 
 CHECKS += ['boat-dismount-pose']
 CHECK_FNS['boat-dismount-pose'] = check_boat_dismount_pose
+
+
+def check_rider_look(host, guest, out):
+    """A tick function teleporting the strider the guest rides, every tick and to a rotation of its own (as a map's
+    datapack does), leaves the guest's look where they turned it: vanilla's client applies no position packet to a
+    passenger (ClientPacketListener.handleMovePlayer), so the view doesn't snap to the vehicle 20 times a second."""
+    if dead(guest):
+        guest.raw('respawn')
+        guest.wait(40)
+    hx, hy, hz = pos_of(host)
+    x, y, z = math.floor(hx), math.floor(hy), math.floor(hz)
+    host('command', command=f'fill {x - 2} {y} {z - 2} {x + 4} {y + 3} {z + 2} minecraft:air')
+    host('command', command=f'fill {x - 2} {y - 1} {z - 2} {x + 4} {y - 1} {z + 2} minecraft:stone')
+    host('command', command=f'summon minecraft:strider {x + 2.5} {y} {z + 0.5} '
+         '{NoAI:1b,Tags:["e2e_look"],equipment:{saddle:{id:"minecraft:saddle",count:1}}}')
+    guest('command', command=f'tp @s {x + 2.5} {y} {z + 0.5}')
+    guest.wait(10)
+    guest('command', command='ride @s mount @e[tag=e2e_look,limit=1]')
+    guest.wait(20)
+    pack = host.work / 'saves' / 'Lan' / 'datapacks' / 'e2e_look'
+    tick = pack / 'data/minecraft/tags/function/tick.json'
+    look = lambda: [round(guest('state')['player'][k], 1) for k in ('yaw', 'pitch')]
+    # The same direction: a yaw of -150 is one of 210.
+    same = lambda a, b: abs((a[0] - b[0] + 180) % 360 - 180) < 1 and abs(a[1] - b[1]) < 1
+    seen = {}
+    try:
+        (pack / 'data/e2e/function').mkdir(parents=True, exist_ok=True)
+        tick.parent.mkdir(parents=True, exist_ok=True)
+        (pack / 'pack.mcmeta').write_text('{"pack":{"description":"look","min_format":[121,0],"max_format":[121,0]}}')
+        (pack / 'data/e2e/function/hold.mcfunction').write_text(
+            'execute as @e[tag=e2e_look] at @s run tp @s ~ ~ ~ 0 0\n')
+        tick.write_text('{"values":["e2e:hold"]}')
+        host('command', command='reload')
+        host.wait(20)
+        start = look()
+        guest.raw('turn', '120', '30')
+        seen['turned to'] = [start[0] + 120, start[1] + 30]
+        seen['looks'] = []
+        for _ in range(5):
+            guest.wait(2)
+            seen['looks'].append(look())
+        guest.shot(out, 'rider-look')
+    finally:
+        tick.unlink(missing_ok=True)
+        host('command', command='reload')
+        guest('command', command='ride @s dismount')
+        host('command', command='kill @e[tag=e2e_look]')
+    assert all(same(v, seen['turned to']) for v in seen['looks']), f'the strider\'s teleports turned its rider: {seen}'
+    return seen
+
+
+CHECKS += ['rider-look']
+CHECK_FNS['rider-look'] = check_rider_look
 
 
 def check_sprint_fov(host, guest, out):
@@ -14040,6 +14174,28 @@ def check_ride_guest(host, guest, out):
 
 CHECKS += ['ride_guest']
 CHECK_FNS['ride_guest'] = check_ride_guest
+
+
+def check_loot_give_guest(host, guest, out):
+    """LootCommand.playerGive on another server player: the host's /loot give puts the drop in the
+    guest's inventory, as vanilla does for any ServerPlayer (the console's, a function's or another
+    player's /loot give), and @a gives each player one."""
+    host('command', command=f'clear {GUEST_NAME}')
+    host('command', command='clear @s')
+    seen = {'guest': host('command', command=f'loot give {GUEST_NAME} loot minecraft:blocks/dirt').get('chat'),
+            'all': host('command', command='loot give @a loot minecraft:blocks/dirt').get('chat')}
+    guest.wait(10)
+    seen['guest holds'] = host('command', command=f'clear {GUEST_NAME} minecraft:dirt 0').get('chat')
+    seen['host holds'] = host('command', command='clear @s minecraft:dirt 0').get('chat')
+    guest.shot(out, 'loot-give-guest')
+    assert any('Dropped 1 [Dirt]' in line for line in seen['guest'] or []), f'one dirt for the guest: {seen}'
+    assert any('Found 2 matching' in line for line in seen['guest holds'] or []), f'the guest holds two: {seen}'
+    assert any('Found 1 matching' in line for line in seen['host holds'] or []), f'the host holds one: {seen}'
+    return seen
+
+
+CHECKS += ['loot_give_guest']
+CHECK_FNS['loot_give_guest'] = check_loot_give_guest
 
 
 if __name__ == '__main__':

@@ -48,6 +48,8 @@ mod entity_particles_probe;
 mod entity_sound_packet_fixture;
 mod environment_attribute_modifier_fixture;
 mod environment_fixture;
+mod environment_system_fixture;
+mod environment_timeline_fixture;
 mod falling_block_fixture;
 mod finalize_spawn_fixture;
 mod fire_starter_sound_probe;
@@ -66,6 +68,7 @@ mod input_probe;
 mod interaction_input_fixture;
 mod lan_probe;
 mod late_entity_pair_fixture;
+mod lava_cauldron_item_fixture;
 mod light_parity;
 mod lore_tooltip_fixture;
 mod marker_particles_probe;
@@ -144,6 +147,7 @@ probes! {
     stack_mining_probe,
     cushion_placement_probe,
     cauldron_fixture,
+    lava_cauldron_item_fixture,
     chat_screen_fixture,
     chest_pair_fixture,
     chest_load_fixture,
@@ -163,6 +167,8 @@ probes! {
     entity_particles_probe,
     environment_attribute_modifier_fixture,
     environment_fixture,
+    environment_system_fixture,
+    environment_timeline_fixture,
     finalize_spawn_fixture,
     fire_starter_sound_probe,
     zombie_cure_sound_probe,
