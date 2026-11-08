@@ -382,6 +382,13 @@ impl Game<'_> {
         if s.damage > 0 {
             v["damage"] = json!(s.damage);
         }
+        // How worn a tool or armour piece is: its durability and what is left.
+        let items = self.res.items();
+        if horizon_client::stations::is_damageable(items, s) {
+            let max = horizon_client::stations::max_damage(items, s);
+            v["max_damage"] = json!(max);
+            v["durability_left"] = json!((i64::from(max) - i64::from(s.damage)).max(0));
+        }
         if let Some(c) = horizon_client::item_data::encode_components(s) {
             v["components"] = json!(horizon_client::snbt::to_snbt(&c));
         }
