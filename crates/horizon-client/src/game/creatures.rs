@@ -354,7 +354,9 @@ fn hits_target(e: &MobEvent, want: Who) -> bool {
             Who::Player,
         ) => true,
         (
-            MobEvent::AttackMob { target, .. } | MobEvent::AttackMobWithEffect { target, .. },
+            MobEvent::AttackMob { target, .. }
+            | MobEvent::DamageMob { target, .. }
+            | MobEvent::AttackMobWithEffect { target, .. },
             Who::Mob(id),
         ) => *target == id,
         (MobEvent::SonicBoom { target, .. }, _) => *target == want,
@@ -2080,8 +2082,21 @@ impl Game<'_> {
             }
         }
     }
+    /// `Mob.doHurtTarget` and the other melee callers of post-attack effects.
+    fn mob_attacks_mob(&mut self, target: u32, amount: f32, source: Damage) -> bool {
+        let hurt = self.mob_hits_mob(target, amount, source);
+        if hurt {
+            self.mob_post_attack(
+                target,
+                source.attacker,
+                None,
+                Some(damage_type(source.kind, false)),
+            );
+        }
+        hurt
+    }
     /// Melee or ranged damage to another mob; whether the hit landed.
-    fn mob_hits_mob(&mut self, target: u32, amount: f32, mut source: Damage) -> bool {
+    pub(super) fn mob_hits_mob(&mut self, target: u32, amount: f32, mut source: Damage) -> bool {
         if source.attacker_species.is_none()
             && let Some(Who::Mob(id)) = source.attacker
         {
@@ -2719,6 +2734,13 @@ impl Game<'_> {
                     amount,
                     source,
                 } => {
+                    self.mob_attacks_mob(target, amount, source);
+                }
+                MobEvent::DamageMob {
+                    target,
+                    amount,
+                    source,
+                } => {
                     self.mob_hits_mob(target, amount, source);
                 }
                 MobEvent::AttackMobWithEffect {
@@ -2732,7 +2754,7 @@ impl Game<'_> {
                     // CaveSpider, Husk and WitherSkeleton.doHurtTarget: the
                     // effect sits inside the branch where the hit landed, and
                     // `LivingEntity.addEffect` takes a mob as well as a player.
-                    if self.mob_hits_mob(target, amount, source)
+                    if self.mob_attacks_mob(target, amount, source)
                         && let Some(t) = self.mobs.iter_mut().find(|m| m.id == target)
                     {
                         t.add_effect(effect, ticks, amplifier);
@@ -2785,6 +2807,12 @@ impl Game<'_> {
                                 pitch,
                             )])?;
                         }
+                        self.mob_post_attack(
+                            target,
+                            source.attacker,
+                            None,
+                            Some(super::creatures::damage_type(source.kind, false)),
+                        );
                     }
                 }
                 MobEvent::SonicBoom {
@@ -2881,6 +2909,14 @@ impl Game<'_> {
                                     m.velocity.y += up;
                                 }
                             }
+                        }
+                        if let Who::Mob(id) = target {
+                            self.mob_post_attack(
+                                id,
+                                source.attacker,
+                                None,
+                                Some("minecraft:mob_attack"),
+                            );
                         }
                     }
                 }
@@ -4821,11 +4857,8 @@ impl Game<'_> {
         direct: &str,
         damage_type: &str,
     ) {
-        if p.owner == Some(Who::Player)
-            && let Who::Mob(id) = who
-            && let Some(index) = self.mobs.iter().position(|m| m.id == id)
-        {
-            self.victim_post_attack(index, direct, Some(damage_type));
+        if let Who::Mob(id) = who {
+            self.mob_post_attack(id, p.owner, Some(direct), Some(damage_type));
         }
     }
     /// What an arrow or a thrown trident hits an entity of type `victim`
@@ -5833,6 +5866,12 @@ impl Game<'_> {
                         });
                         if hurt {
                             self.player_hurt_mob(p, id);
+                            self.shot_post_attack(
+                                p,
+                                who,
+                                "minecraft:small_fireball",
+                                "minecraft:fireball",
+                            );
                         } else if !self.mobs.iter().any(|m| m.id == id) {
                             // SmallFireball.onHitEntity: 5 damage to a boat or minecart.
                             self.hurt_vehicle(p, id, 5.0);
@@ -5882,6 +5921,12 @@ impl Game<'_> {
                             }) {
                                 self.player_hurt_mob(p, id);
                             }
+                            self.shot_post_attack(
+                                p,
+                                who,
+                                "minecraft:fireball",
+                                "minecraft:fireball",
+                            );
                         }
                     }
                 }
@@ -5966,8 +6011,10 @@ impl Game<'_> {
                     );
                 }
                 Who::Mob(id) => {
-                    if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-                        m.damage_projectile(1.0, source, aim, [p.velocity.x, p.velocity.z]);
+                    if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
+                        && m.damage_projectile(1.0, source, aim, [p.velocity.x, p.velocity.z])
+                    {
+                        self.shot_post_attack(p, who, "minecraft:llama_spit", "minecraft:spit");
                     }
                 }
             },
@@ -5999,6 +6046,12 @@ impl Game<'_> {
                         // The hurt's teleport (`teleportSomewhere`,
                         // `hitByShulkerBullet`) comes before the levitation.
                         self.settle_hurt_teleports()?;
+                        self.shot_post_attack(
+                            p,
+                            who,
+                            "minecraft:shulker_bullet",
+                            "minecraft:mob_projectile",
+                        );
                         if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                             m.add_effect("minecraft:levitation", 200, 0);
                         }
