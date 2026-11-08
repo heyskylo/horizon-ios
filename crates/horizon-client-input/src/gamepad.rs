@@ -466,7 +466,14 @@ impl GlyphOf {
     /// The part that does it under these settings; none while the action is unbound.
     pub fn button(self, settings: &PadSettings) -> Option<Button> {
         match self {
-            GlyphOf::Bound(action) => settings.binding(action),
+            GlyphOf::Bound(action) => {
+                // A misspelt action would quietly have no glyph.
+                debug_assert!(
+                    ACTIONS.iter().any(|a| a.0 == action),
+                    "no pad action {action}"
+                );
+                settings.binding(action)
+            }
             GlyphOf::Menu(job) => Some(job.button()),
         }
     }
@@ -481,11 +488,6 @@ pub enum GlyphStyle {
     Xbox,
     PlayStation,
     Nintendo,
-    /// Nintendo's glyphs on a Nintendo pad going by its letters (`PadSettings::nintendo_letters`).
-    /// Never a setting: only `PadSettings::glyph_style` resolves to it, and it is saved and
-    /// shown as Nintendo. Input is already read by letters, so a part's glyph is the print of
-    /// the button that plays it (`on_pad`); callers never handle the letters themselves.
-    NintendoLetters,
 }
 impl GlyphStyle {
     pub fn name(self) -> &'static str {
@@ -493,7 +495,7 @@ impl GlyphStyle {
             GlyphStyle::Auto => "auto",
             GlyphStyle::Xbox => "xbox",
             GlyphStyle::PlayStation => "playstation",
-            GlyphStyle::Nintendo | GlyphStyle::NintendoLetters => "nintendo",
+            GlyphStyle::Nintendo => "nintendo",
         }
     }
     pub fn parse(name: &str) -> Self {
@@ -502,22 +504,6 @@ impl GlyphStyle {
             "playstation" => GlyphStyle::PlayStation,
             "nintendo" => GlyphStyle::Nintendo,
             _ => GlyphStyle::Auto,
-        }
-    }
-    /// The family whose art shows `part`, and the button on the pad that plays it: the one place
-    /// letter mode turns a part into a physical button (`Button::by_letter`, as input is read).
-    pub fn on_pad(self, part: Button) -> (GlyphStyle, Button) {
-        match self {
-            GlyphStyle::NintendoLetters => (GlyphStyle::Nintendo, part.by_letter()),
-            style => (style, part),
-        }
-    }
-    /// These glyphs by the buttons' places: for a question a controller nobody holds yet
-    /// answers, whose letter mode isn't known (splitscreen's join and lost-controller prompts).
-    pub fn by_position(self) -> GlyphStyle {
-        match self {
-            GlyphStyle::NintendoLetters => GlyphStyle::Nintendo,
-            style => style,
         }
     }
     /// The style the player chose, else the connected pad's.
@@ -704,14 +690,6 @@ impl PadSettings {
     /// A pad of `family` goes by its letters: only a Nintendo pad has letters to go by.
     pub fn by_letter(&self, family: GlyphStyle) -> bool {
         self.nintendo_letters && family == GlyphStyle::Nintendo
-    }
-    /// The glyphs everything shows for a pad of `family`: the player's choice, else the pad's,
-    /// and `NintendoLetters` when those are Nintendo's on a pad going by its letters.
-    pub fn glyph_style(&self, family: GlyphStyle) -> GlyphStyle {
-        match self.glyphs.resolve(family) {
-            GlyphStyle::Nintendo if self.by_letter(family) => GlyphStyle::NintendoLetters,
-            style => style,
-        }
     }
     pub fn load(dir: &Path) -> Self {
         fs::read_to_string(dir.join(FILE))
@@ -1983,42 +1961,6 @@ bind_key.hotbar.2:north
             false,
         );
         assert_eq!(other, ([0.0, 0.0], [1.0, 0.0]));
-    }
-
-    #[test]
-    fn letter_mode_is_resolved_from_the_settings_and_never_saved() {
-        let s = PadSettings {
-            glyphs: GlyphStyle::Auto,
-            nintendo_letters: true,
-            ..PadSettings::default()
-        };
-        let text = s.serialize();
-        assert!(
-            text.contains("glyphs:auto\nnintendoLetters:true\n"),
-            "{text}"
-        );
-        let back = PadSettings::parse(&text);
-        assert_eq!(back.serialize(), text);
-        assert_eq!(
-            back.glyph_style(GlyphStyle::Nintendo),
-            GlyphStyle::NintendoLetters
-        );
-        // Only a Nintendo pad has letters to go by, and a player who chose another family's
-        // glyphs sees those.
-        assert_eq!(back.glyph_style(GlyphStyle::Xbox), GlyphStyle::Xbox);
-        let mut xbox = back;
-        xbox.glyphs = GlyphStyle::Xbox;
-        assert_eq!(xbox.glyph_style(GlyphStyle::Nintendo), GlyphStyle::Xbox);
-        // By places, a Nintendo pad shows Nintendo's glyphs at their places.
-        let mut places = PadSettings::parse(&text);
-        places.nintendo_letters = false;
-        assert_eq!(
-            places.glyph_style(GlyphStyle::Nintendo),
-            GlyphStyle::Nintendo
-        );
-        // The settings screen never offers it, and it saves as Nintendo.
-        assert!(!GlyphStyle::ALL.contains(&GlyphStyle::NintendoLetters));
-        assert_eq!(GlyphStyle::NintendoLetters.name(), "nintendo");
     }
 
     #[test]

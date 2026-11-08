@@ -8,7 +8,7 @@ use crate::{
     graphics_style as style,
     hud::{HudAtlas, HudBatch},
     lang,
-    pad_glyph::Glyph,
+    pad_glyph::{Glyph, Glyphs},
     settings::{Opt, Settings},
     settings_shell::{self as shell, Columns},
     text::Text,
@@ -82,7 +82,7 @@ fn choice_description(opt: Opt, pad: &PadSettings) -> Option<&'static str> {
             GlyphStyle::Auto => "Shows the buttons of the controller you're using.",
             GlyphStyle::Xbox => "Always shows Xbox buttons.",
             GlyphStyle::PlayStation => "Always shows PlayStation buttons.",
-            GlyphStyle::Nintendo | GlyphStyle::NintendoLetters => "Always shows Nintendo buttons.",
+            GlyphStyle::Nintendo => "Always shows Nintendo buttons.",
         },
         Opt::PadNintendoButtons => {
             if pad.nintendo_letters {
@@ -315,8 +315,8 @@ pub struct Context {
     pub device: Option<Device>,
     /// The glyph family of `device`, before the player's choice.
     pub detected: GlyphStyle,
-    /// The family menus show, letter mode included (`PadSettings::glyph_style`).
-    pub style: GlyphStyle,
+    /// The glyphs menus show, letter mode included.
+    pub glyphs: Glyphs,
 }
 
 fn glyphs_name(style: GlyphStyle) -> String {
@@ -324,7 +324,7 @@ fn glyphs_name(style: GlyphStyle) -> String {
         GlyphStyle::Auto => "Unknown",
         GlyphStyle::Xbox => "horizon.options.glyphs.xbox",
         GlyphStyle::PlayStation => "horizon.options.glyphs.playstation",
-        GlyphStyle::Nintendo | GlyphStyle::NintendoLetters => "horizon.options.glyphs.nintendo",
+        GlyphStyle::Nintendo => "horizon.options.glyphs.nintendo",
     })
 }
 
@@ -460,7 +460,7 @@ impl ControllerUi {
     }
     /// The glyph of the button bound to `action`, in this pad's glyphs.
     fn bound(&self, action: &'static str, s: &Settings) -> Option<Glyph> {
-        Glyph::of(GlyphOf::Bound(action), &s.controller, self.context.style)
+        Glyph::of(GlyphOf::Bound(action), &s.controller, self.context.glyphs)
     }
     /// A row as its name and its value.
     fn parts(&self, item: Item, s: &Settings) -> (String, Option<String>) {
@@ -502,7 +502,7 @@ impl ControllerUi {
                         },
                     ),
                     Info::Detected => ("Detected glyphs", glyphs_name(c.detected)),
-                    Info::Using => ("Glyphs in use", glyphs_name(c.style)),
+                    Info::Using => ("Glyphs in use", glyphs_name(c.glyphs.family())),
                 };
                 (lang::get(name), Some(value))
             }
@@ -889,7 +889,7 @@ impl ControllerUi {
         };
         let pad = &s.controller;
         if self.binding == Some(action) {
-            let cancel = Glyph::menu(MenuJob::Start, self.context.style);
+            let cancel = Glyph::menu(MenuJob::Start, self.context.glyphs);
             return lang::tr("Press the button for this. %s cancels.", &[&cancel.label()]);
         }
         if pad.conflicts(action)

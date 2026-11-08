@@ -15,7 +15,7 @@ use horizon_client::{
         self, Button, Edges, GlyphOf, GlyphStyle, HealthWatch, MenuJob, PadState, Route, Rumble,
     },
     keymapping::SNEAK,
-    pad_glyph::Glyph,
+    pad_glyph::{Glyph, Glyphs},
 };
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
@@ -270,20 +270,20 @@ impl Pads {
 }
 
 impl Game<'_> {
-    /// The glyph for what a button does, in this player's glyphs (`ui.options.pad_style`, a
+    /// The glyph for what a button does, in this player's glyphs (`ui.options.pad_glyphs`, a
     /// Nintendo pad's letters included): the way gameplay asks for one. None while an action is
     /// unbound.
     pub(super) fn glyph(&self, of: impl Into<GlyphOf>) -> Option<Glyph> {
         Glyph::of(
             of.into(),
             &self.settings.controller,
-            self.ui.options.pad_style,
+            self.ui.options.pad_glyphs,
         )
     }
 
     /// A menu job's glyph in this player's glyphs.
     pub(super) fn menu_glyph(&self, job: MenuJob) -> Glyph {
-        Glyph::menu(job, self.ui.options.pad_style)
+        Glyph::menu(job, self.ui.options.pad_glyphs)
     }
 
     fn pad_context(&self) -> Context {
@@ -343,7 +343,7 @@ impl Game<'_> {
         for change in std::mem::take(&mut self.pad.connections) {
             self.pad_connection_notice(change);
         }
-        self.ui.options.pad_style = self.settings.controller.glyph_style(self.pad.style);
+        self.ui.options.pad_glyphs = Glyphs::of(&self.settings.controller, self.pad.style);
         self.ui.options.pad_driving = self.pad.in_use && self.pad_focus_mode();
         let mut state = hardware.merge(&self.pad.injected);
         let activity = self.pad.activity.observe(&state, &self.settings.controller);
@@ -751,7 +751,7 @@ impl Game<'_> {
             // In the new pad's own glyphs, its letters included: pressed, it plays.
             .with_glyph(Glyph::menu(
                 MenuJob::Confirm,
-                self.settings.controller.glyph_style(family),
+                Glyphs::of(&self.settings.controller, family),
             )),
             Connection::Disconnected { active } => Notice::new(
                 NoticeId::Connection,

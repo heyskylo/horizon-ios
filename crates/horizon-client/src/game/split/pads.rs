@@ -430,10 +430,13 @@ impl Split<'_> {
             choices.push((MenuJob::Extra, tr("join.as_p1", &[])));
         }
         choices.push((MenuJob::Back, tr("join.no", &[])));
+        // Answered on the asking controller: the first one's family when several ask.
+        let family = self.offers.first().map(|(id, _)| self.pads.style(*id));
         self.prompt_join(Some(Prompt {
             ask: Ask::Join,
             title,
             choices,
+            family,
         }));
     }
 }

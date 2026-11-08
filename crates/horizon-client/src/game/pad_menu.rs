@@ -2542,7 +2542,7 @@ impl Game<'_> {
                 || self.screen == Screen::Chat;
             let mut ui = horizon_client::ui_theme::Ui::new(&self.gui.atlas, batch, self.cursor);
             let options = &self.ui.options;
-            keyboard.draw(&mut ui, at_top, options.pad_style);
+            keyboard.draw(&mut ui, at_top, options.pad_glyphs);
             ui.finish();
             return;
         }

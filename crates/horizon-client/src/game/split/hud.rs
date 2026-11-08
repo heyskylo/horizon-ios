@@ -2,9 +2,10 @@
 //! notices.
 use super::*;
 use horizon_client::controller_notice::{NoticeSlot, panel};
-use horizon_client::gamepad::MenuJob;
+use horizon_client::gamepad::{GlyphStyle, MenuJob};
 use horizon_client::hud::{HudBatch, rgba};
 use horizon_client::pad_glyph;
+use horizon_client::pad_glyph::Glyphs;
 use std::time::Duration;
 
 /// What splitscreen draws over a player's view (`Game::split_hud`): its corner badge (who, for a
@@ -27,6 +28,9 @@ pub(super) struct Prompt {
     pub(super) title: String,
     /// Each answer: the menu job whose button gives it, and its words.
     pub(super) choices: Vec<(MenuJob, String)>,
+    /// The family of the controller asked (a joining one), whose glyphs answer it; none when any
+    /// controller may answer (one lost), shown in this player's family.
+    pub(super) family: Option<GlyphStyle>,
 }
 
 /// What a prompt asks: a controller may join (every view, a strip at the top: nobody stops
@@ -52,6 +56,7 @@ pub(super) fn lost_prompt(name: &str) -> Prompt {
             (MenuJob::Confirm, tr("lost.use_another", &[])),
             (MenuJob::Back, tr("lost.leave", &[])),
         ],
+        family: None,
     }
 }
 
@@ -88,8 +93,9 @@ impl Game<'_> {
         // A question: centred over the view dimmed, or a strip at the top (a controller joining).
         if let Some(prompt) = &self.split_hud.prompt {
             // Join and lost-controller questions are answered by a controller nobody holds yet,
-            // whose letter mode isn't known: by places (`Glyph::unheld`; docs/controllers.md).
-            let style = self.ui.options.pad_style;
+            // whose letters aren't read yet: by places (docs/controllers.md, Nintendo pads).
+            let family = prompt.family.unwrap_or(self.pad.style);
+            let places = Glyphs::unheld(&self.settings.controller, family);
             let dim = prompt.ask != Ask::Join;
             if dim {
                 batch.fill(atlas, 0.0, 0.0, w, h, rgba(0, 0, 0, 120));
@@ -98,7 +104,7 @@ impl Game<'_> {
                 .choices
                 .iter()
                 .map(|(job, what)| {
-                    let glyph = pad_glyph::Glyph::unheld(*job, style);
+                    let glyph = pad_glyph::Glyph::menu(*job, places);
                     (glyph, pad_glyph::width(atlas, glyph), what.as_str())
                 })
                 .collect();
