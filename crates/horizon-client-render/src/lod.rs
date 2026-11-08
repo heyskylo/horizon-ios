@@ -205,6 +205,12 @@ const DETAIL_LEVEL: u8 = 2;
 /// Kept tiles come back a level at a time (`Lod::bring_back`) while at most
 /// this many drawn tiles wait for their meshes.
 const RETURN_BACKLOG: usize = 32;
+/// Kept tiles of cells a chunk wide or less (levels up to this) come back once
+/// the near terrain is in and the seam with it sampled, or this long after the
+/// return: their thousands of meshes held up the near chunks' and the seam's,
+/// showing caves through unmeshed ground meanwhile.
+const RETURN_FINE_LEVEL: u8 = 4;
+const RETURN_SEAM_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// The most chunks one detail request asks for, one request each 250 ms:
 /// generated ones arrive at the decoration threads' pace, cached ones at once.
 const DETAIL_REQUEST: usize = 512;
@@ -1328,6 +1334,8 @@ pub struct Lod {
     kept: kept::KeptTiles,
     /// Kept tiles the plan wants again, not taken back yet (`bring_back`).
     returning: Vec<TileKey>,
+    /// When the plan last asked kept tiles back (`RETURN_SEAM_WAIT`).
+    returned_at: std::time::Instant,
     /// `LodSource::keeps_observed`: tiles sampled without an observed chunk
     /// are sampled again (`resample_over`).
     keeps_observed: bool,
@@ -1697,6 +1705,7 @@ impl Lod {
             saved_order: VecDeque::new(),
             kept: kept::KeptTiles::new(kept::KEPT_FOR, kept::KEPT_BYTES),
             returning: Vec::new(),
+            returned_at: std::time::Instant::now(),
             keeps_observed,
         }
     }
@@ -2565,14 +2574,21 @@ impl Lod {
         }
         self.kept.trim();
         // Those the plan wants again come back (`bring_back`) instead of being
-        // sampled: a level at a time, coarsest first.
-        self.returning = self
+        // sampled: a level at a time, coarsest first. Not at the seam with the
+        // near chunks (`Plan::stands_in`), sampled first and fresh there: kept
+        // ones drew grey ground and the near chunks' caves until they loaded.
+        let (returning, seam): (Vec<_>, Vec<_>) = self
             .plan
             .nodes
             .iter()
             .filter(|key| self.kept.contains(key) && !self.ready.contains_key(key))
             .copied()
-            .collect();
+            .partition(|key| self.plan.stands_in(*key));
+        for key in seam {
+            self.kept.take(&key);
+        }
+        self.returning = returning;
+        self.returned_at = std::time::Instant::now();
         let nodes = &self.plan.nodes;
         self.mesh_samples.retain(|key| nodes.contains(key));
         // Queued tiles the view left are not sampled (a running one is
@@ -2621,6 +2637,15 @@ impl Lod {
             ))
         })
     }
+    /// Whether a tile at the seam with the near chunks (`Plan::stands_in`)
+    /// still waits for its samples.
+    fn seam_open(&self) -> bool {
+        self.plan.nodes.iter().any(|key| {
+            !self.plan.stands_in(*key)
+                && !self.plan.split.contains(key)
+                && !self.ready.contains_key(key)
+        })
+    }
     /// Takes kept tiles back into the plan, the coarsest level first, the next
     /// once the meshes are in: all of them at once left the sky showing
     /// through every tile not meshed yet, where sampling fills a view coarse
@@ -2635,6 +2660,12 @@ impl Lod {
             .map(|key| key.level)
             .max()
             .unwrap_or(0);
+        if level <= RETURN_FINE_LEVEL
+            && self.returned_at.elapsed() < RETURN_SEAM_WAIT
+            && (self.near_loading || self.seam_open())
+        {
+            return;
+        }
         let (now, later): (Vec<_>, Vec<_>) =
             self.returning.drain(..).partition(|key| key.level == level);
         self.returning = later;
@@ -4080,15 +4111,18 @@ mod tests {
             .collect();
         assert!(!left.is_empty() && left.iter().all(|key| !lod.ready.contains_key(key)));
         lod.replan([0, 0], 2, 64, 0, None);
-        let wanted: Vec<_> = left
+        // Those at the seam with the near chunks are sampled fresh instead.
+        let (wanted, seam): (Vec<_>, Vec<_>) = left
             .iter()
             .copied()
             .filter(|key| lod.plan.nodes.contains(key))
-            .collect();
-        assert!(!wanted.is_empty());
-        // Nothing to sample: they are on their way back.
+            .partition(|key| lod.plan.stands_in(*key));
+        assert!(!wanted.is_empty() && !seam.is_empty());
+        assert!(seam.iter().all(|key| !lod.kept.contains(key)));
+        // Nothing else to sample: they are on their way back.
         lod.request_samples([0, 0]);
         assert!(wanted.iter().all(|key| !lod.pending.contains(key)));
+        assert!(seam.iter().any(|key| lod.pending.contains(key)));
         let coarsest = wanted.iter().map(|key| key.level).max().unwrap();
         // Meshes outstanding: nothing comes back yet.
         lod.unmeshed
@@ -4108,6 +4142,21 @@ mod tests {
                 "{key:?}"
             );
         }
+        // Finer ones wait for the seam's samples.
+        for _ in 0..64 {
+            lod.bring_back();
+        }
+        assert!(
+            !lod.returning.is_empty()
+                && lod
+                    .returning
+                    .iter()
+                    .all(|key| key.level <= RETURN_FINE_LEVEL)
+        );
+        for key in &seam {
+            lod.ready.insert(*key, filled.clone());
+        }
+        assert!(!lod.seam_open());
         while !lod.returning.is_empty() {
             lod.unmeshed.clear();
             lod.bring_back();
@@ -4117,7 +4166,7 @@ mod tests {
                 .iter()
                 .all(|key| lod.ready.get(key).is_some_and(|s| Arc::ptr_eq(s, &filled)))
         );
-        assert!(lod.pending.is_empty());
+        assert!(lod.pending.iter().all(|key| seam.contains(key)));
     }
     #[test]
     fn only_detail_a_later_refresh_covers_is_dropped() {
