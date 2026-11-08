@@ -1222,6 +1222,12 @@ API 144 adds a player's or mob's breathing, on the single player server thread a
 
 API 145 adds blocks and items a native mod declares in code, as NeoForge's `DeferredRegister.Blocks` and `.Items` drained by `RegisterEvent`, instead of one content file each: `native_blocks(blocks)` and `native_items(items)`, asked once at start on every side, take `horizon_mods::content::Block` and `Item`, the declarations a content mod's `data/<id>/horizon/block/` and `item/` files hold (a vanilla template and what differs; `item: true` gives a block its item). Ids are in the mod's namespace. They join the content mods' blocks and items, inside the content mod whose id is that namespace when it is on (its models, textures, loot and recipes), else on their own with the template's look, so their network ids, saves and the joining client's content check are the files' (docs/mods.md). They pass the files' checks; a namespace whose declarations don't is logged and left out. Bundles that use them need `"hooks": 145`.
 
+`Block.state_light` optionally takes a `content::StateLight` (`StateValues<u8>`), selecting emission
+from 0 to 15 by state-property tuples, exactly as the [content declaration](mods.md) does. It overrides
+the scalar `BlockProperties.light` only when present. The content compiler validates and resolves
+every state once; native, content-only, dedicated-server and client declarations use the same emitted
+state facts and ordinary light propagation, without a runtime callback.
+
 `Item.place_block: Option<String>` binds an item to an ordinary `BlockItem` placement of a vanilla
 block or a block in the item's namespace, including blocks with `item: false`. It uses the same
 [content field](mods.md) on clients and servers. Components still come from the item template;
