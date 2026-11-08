@@ -1198,4 +1198,66 @@ mod tests {
         }
         assert!(failures.is_empty(), "reopened borders: {failures:#?}");
     }
+
+    /// `ImposterProtoChunk(…, false)`: a new chunk's features read a full
+    /// neighbour but their ordinary `setBlockState` writes do not change it,
+    /// while `BulkSectionAccess` (ores) writes its sections. Expected values
+    /// from the official 26.3 server on the constructed 1.20.4 world
+    /// (`H077_OLD_WORLD`: full old chunks, their partial ring removed), where
+    /// chunks 13..14 at z 0 generate next to the full chunk (12, -1).
+    #[test]
+    #[ignore = "needs HORIZON_TEST_RESOURCES, a scratch HORIZON_HOME and the constructed H077_OLD_WORLD"]
+    fn features_write_a_full_neighbour_only_through_its_sections() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let home = std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap()).join("h078");
+        let world = home.join("saves/h078");
+        let source = std::path::PathBuf::from(std::env::var_os("H077_OLD_WORLD").unwrap());
+        fn copy(from: &std::path::Path, to: &std::path::Path) {
+            std::fs::create_dir_all(to).unwrap();
+            for entry in std::fs::read_dir(from).unwrap().flatten() {
+                let target = to.join(entry.file_name());
+                if entry.file_type().unwrap().is_dir() {
+                    copy(&entry.path(), &target);
+                } else if entry.file_name() != "session.lock" {
+                    std::fs::copy(entry.path(), target).unwrap();
+                }
+            }
+        }
+        copy(&source, &world);
+        let mut game = open_game(&root, &home, &world);
+        // The world's level.dat has cheats off: the open read it after open_game's setting.
+        game.set_allow_commands(true);
+        assert!(game.run_command("forceload add 208 0 239 15"));
+        let mut loaded = false;
+        // As the dedicated server's loop: a tick, then the chunk streaming.
+        for _ in 0..2000 {
+            game.tick_world(true).unwrap();
+            game.update_world();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            if game.run_command_quietly("execute if loaded 215 64 8") {
+                loaded = true;
+                break;
+            }
+        }
+        assert!(loaded, "the new chunk (13, 0) was not generated");
+        game.save_game().unwrap();
+        let mut failures = Vec::new();
+        for (p, want) in [
+            // A spruce tree and a mushroom of the new chunks: ordinary writes.
+            ([207, 68, -10], "minecraft:air"),
+            ([207, 69, -6], "minecraft:air"),
+            ([202, 69, -5], "minecraft:air"),
+            // A gold ore blob: section writes.
+            ([207, -32, -12], "minecraft:deepslate_gold_ore"),
+        ] {
+            let got = game.block_name(p);
+            if &*got != want {
+                failures.push(format!("{p:?}: {got}, expected {want}"));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "the full chunk (12, -1): {failures:#?}"
+        );
+    }
 }
