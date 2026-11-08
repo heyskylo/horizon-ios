@@ -348,6 +348,14 @@ SESSIONS = {
     'golden_hour_hdr': ('hdr:true\n', {'HORIZON_SHADER_PACK': 'golden_hour', 'HORIZON_HDR_OUTPUT': 'pq'},
                         ['day_water', 'night_lights'], False),
     'hdr_toggle': ('hdr:true\n', {'HORIZON_HDR_OUTPUT': 'pq'}, ['day_water', 'night_lights'], True),
+    'golden_hour_0_2': ('', {'HORIZON_SHADER_PACK': 'golden_hour_0_2', 'HORIZON_HDR_FRAME': 'float'},
+                        ['day_water', 'night_lights'], False),
+    'golden_hour_0_2_hdr': ('hdr:true\n', {'HORIZON_SHADER_PACK': 'golden_hour_0_2',
+                        'HORIZON_HDR_FRAME': 'float', 'HORIZON_HDR_OUTPUT': 'pq'}, ['day_water', 'night_lights'], False),
+    'float_oit': ('hdr:true\n', {'HORIZON_HDR_OUTPUT': 'pq', 'HORIZON_HDR_FRAME': 'float'},
+                        ['day_water', 'night_lights'], False),
+    'float_visbuffer': ('hdr:true\n', {'HORIZON_HDR_OUTPUT': 'pq', 'HORIZON_HDR_FRAME': 'float', 'HORIZON_VISBUFFER': '1'},
+                        ['day_water', 'night_lights'], False),
 }
 # 🤖 Agent: Auto paper white and peak are 203 and 1000 offscreen; written out so a change of Auto doesn't move the
 # pictures. TAA and frame generation build on earlier frames, which HORIZON_STILL doesn't cover: off, as by default.
@@ -361,15 +369,24 @@ def run_session(name, label, bin_dir, out, env_base, args):
     folder.mkdir(parents=True)
     (folder / 'horizon-graphics.txt').write_text(GRAPHICS + graphics)
     # 🤖 Agent: No chat, no tutorial toasts, no pause when the offscreen window has no focus.
-    (folder / 'options.txt').write_text('chatVisibility:2\ntutorialStep:none\npauseOnLostFocus:false\n')
+    options = 'chatVisibility:2\ntutorialStep:none\npauseOnLostFocus:false\n'
+    (folder / 'options.txt').write_text(options)
     if 'HORIZON_SHADER_PACK' in extra:
-        shutil.copytree(ROOT / 'crates/horizon-shader-api/packs/golden_hour', folder / 'shaderpacks/golden_hour')
+        pack = extra['HORIZON_SHADER_PACK']
+        shutil.copytree(ROOT / 'crates/horizon-shader-api/packs' / pack, folder / 'shaderpacks' / pack)
     env = lab.game_env(env_base, HORIZON_STILL='1', **extra)
     out.mkdir(parents=True, exist_ok=True)
     game = Game(bin_dir, folder, env, args)
     started = time.monotonic()
     try:
         game.launch()
+        if name == 'float_oit':
+            # 🤖 Agent: Old unversioned options run through the graphics-mode migration, which resets this switch.
+            game.ctl('options-set', 'improvedTransparency', 'true')
+            option = game.ctl('options-get', 'improvedTransparency')
+            if option.get('options', {}).get('improvedTransparency', {}).get('value') is not True:
+                raise RuntimeError(f'Improved Transparency was not requested: {option}')
+            lab.write_json(out / f'{name}.option.json', option)
         prepare(game)
         for scene in scenes:
             shoot_named(game, out, name, scene)

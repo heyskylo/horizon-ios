@@ -446,7 +446,7 @@ mod tests {
 
     #[test]
     fn coverage_wraps_the_debug_crosshair_without_changing_world_entry_points() {
-        let mut module = naga::front::wgsl::parse_str(include_str!("../terrain.wgsl")).unwrap();
+        let mut module = naga::front::wgsl::parse_str(&crate::gfx::terrain_shader()).unwrap();
         wrap(
             &mut module,
             "fs_debug_line",

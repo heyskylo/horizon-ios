@@ -8,6 +8,10 @@ struct Layer {
     brightness: f32,
     // horizon_optifine::sky::Blend, in gfx/custom_sky.rs's MODES order.
     mode: u32,
+    pad: vec2<u32>,
+    hdr_settings: vec4<f32>,
+    hdr_shares: vec4<f32>,
+    hdr_light: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> layer: Layer;
 @group(0) @binding(1) var sky_texture: texture_2d<f32>;
@@ -42,20 +46,34 @@ const REPLACE: u32 = 6u;
 const OVERLAY: u32 = 7u;
 const ALPHA: u32 = 8u;
 
-@fragment fn fs_custom_sky(in: Out) -> @location(0) vec4<f32> {
+fn custom_sky_color(in: Out) -> vec4<f32> {
     let half = 0.5 / vec2<f32>(textureDimensions(sky_texture));
     let uv = clamp(in.uv, in.cell.xy + half, in.cell.zw - half);
     let t = textureSample(sky_texture, sky_sampler, uv);
     let k = t.a * layer.brightness;
+    var color = t.rgb;
+    if HDR_WRITE_LIGHT && layer.hdr_light.w != 0.0 &&
+        (layer.mode == ADD || layer.mode == SUBTRACT || layer.mode == REPLACE || layer.mode == ALPHA) {
+        color = hdr_written(color, 1.0 - 0.24 * layer.hdr_light.y, layer.hdr_settings, layer.hdr_shares);
+    }
     switch layer.mode {
         // dst * src: white leaves the sky alone.
         case MULTIPLY: { return vec4(mix(vec3(1.0), t.rgb, k), 1.0); }
         // 2 * dst * src: grey leaves it alone.
         case OVERLAY: { return vec4(mix(vec3(0.5), t.rgb, k), 1.0); }
-        case REPLACE: { return vec4(t.rgb, 1.0); }
+        case REPLACE: { return vec4(color, 1.0); }
         // mix(dst, src, alpha).
-        case ALPHA: { return vec4(t.rgb, k); }
+        case ALPHA: { return vec4(color, k); }
         // add, subtract, dodge, burn, screen: the layer premultiplied, black leaves it alone.
-        default: { return vec4(t.rgb * k, 1.0); }
+        default: { return vec4(color * k, 1.0); }
     }
+}
+
+@fragment fn fs_custom_sky(in: Out) -> @location(0) vec4<f32> {
+    return custom_sky_color(in);
+}
+
+@fragment fn fs_custom_sky_screen_light(in: Out) -> @location(0) vec4<f32> {
+    let color = custom_sky_color(in);
+    return vec4(hdr_written(color.rgb, 1.0 - 0.24 * layer.hdr_light.y, layer.hdr_settings, layer.hdr_shares), color.a);
 }
