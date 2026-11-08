@@ -24,6 +24,7 @@ use std::{
 };
 
 struct Cells {
+    border: Option<horizon_world::level::portal_travel::BorderBounds>,
     cells: HashMap<BlockPos, BlockStateId>,
     air: BlockStateId,
     random: LegacyRandom,
@@ -39,6 +40,9 @@ struct Cells {
     removals: std::rc::Rc<Vec<PreRemove>>,
 }
 impl LevelAccess for Cells {
+    fn within_world_border(&self, pos: BlockPos) -> bool {
+        self.border.is_none_or(|border| border.contains_block(pos))
+    }
     fn block_state(&self, pos: BlockPos) -> BlockStateId {
         self.cells.get(&pos).copied().unwrap_or(self.air)
     }
@@ -245,6 +249,20 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let before = cells.clone();
         let light = case.get("light").and_then(|v| v.as_array());
         let mut level = Cells {
+            border: case.get("border").map(|v| {
+                let c = v.as_array().unwrap();
+                let (x, z, size) = (
+                    c[0].as_f64().unwrap(),
+                    c[1].as_f64().unwrap(),
+                    c[2].as_f64().unwrap(),
+                );
+                horizon_world::level::portal_travel::BorderBounds {
+                    min_x: x - size / 2.0,
+                    min_z: z - size / 2.0,
+                    max_x: x + size / 2.0,
+                    max_z: z + size / 2.0,
+                }
+            }),
             cells,
             air,
             random: LegacyRandom::new(case["seed"].as_i64().unwrap()),
@@ -273,6 +291,15 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut result = format!("case {index}\n");
         let origin = pos_of(&case["pos"]);
         match case["mode"].as_str().unwrap() {
+            "piston_event" => {
+                behaviours.client_block_event(
+                    &mut level,
+                    &mut ticks,
+                    origin,
+                    case["event"].as_i64().unwrap() as i32,
+                    case["dir"].as_i64().unwrap() as i32,
+                );
+            }
             "shape" => {
                 let dir = Direction::ALL[case["dir"].as_u64().unwrap() as usize];
                 let neighbour = BlockStateId(case["neighbor"].as_i64().unwrap() as u32);

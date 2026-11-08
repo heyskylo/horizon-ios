@@ -108,12 +108,21 @@ impl Game<'_> {
         } else {
             [0.0; 3]
         };
-        let box_shape = self.context_outline(pos, state);
+        let custom = self
+            .collision
+            .cached_shapes()
+            .context_outline_edges(state, self.outline_context_kind());
+        let box_shape = custom
+            .is_none()
+            .then(|| self.context_outline(pos, state))
+            .flatten();
         Some(RimShape {
             origin: pos.map(f64::from),
             offset,
             box_shape,
-            segments: if box_shape.is_some() {
+            segments: if let Some(edges) = custom {
+                edges
+            } else if box_shape.is_some() {
                 cube
             } else {
                 &facts.outline_edges

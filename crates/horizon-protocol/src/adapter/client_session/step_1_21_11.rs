@@ -393,7 +393,12 @@ mod tests {
         let mut w = Writer::new();
         play::Attack::write(&play::Attack { id: 9 }, &mut w);
         // translate writes the 1.21.11 interact of action 1 for an attack.
-        let (_, sent) = translate::v1_21_11::attack(&w.data).unwrap().unwrap();
+        let (_, sent) = translate::v1_21_11::attack(
+            &crate::adapter::session::Session::new(crate::adapter::ServerVersion::V1_21_11),
+            &w.data,
+        )
+        .unwrap()
+        .unwrap();
         let body = attack(&sent).unwrap();
         assert_eq!(play::Attack::read(&mut Reader::new(&body)).unwrap().id, 9);
     }

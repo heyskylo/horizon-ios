@@ -12,6 +12,74 @@ use super::{
 use horizon_core::geometry::Vec3;
 use horizon_world::nbt::{Compound, Tag};
 
+/// The modeled four-part transformation of an item display; durations stay in their existing route.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct ItemDisplayTransformation {
+    translation: [f32; 3],
+    left_rotation: [f32; 4],
+    scale: [f32; 3],
+    right_rotation: [f32; 4],
+}
+
+impl From<&NativeDisplay> for ItemDisplayTransformation {
+    fn from(display: &NativeDisplay) -> Self {
+        Self {
+            translation: display.translation,
+            left_rotation: display.left_rotation,
+            scale: display.scale,
+            right_rotation: display.right_rotation,
+        }
+    }
+}
+
+impl ItemDisplayTransformation {
+    pub(super) fn from_tag(tag: Option<&Tag>) -> Option<Self> {
+        match tag {
+            None => Some((&NativeDisplay::default()).into()),
+            Some(tag @ Tag::Compound(_)) => {
+                let (translation, left_rotation, scale, right_rotation) =
+                    horizon_client::text_display::transformation(tag)?;
+                let value = NativeDisplay {
+                    translation,
+                    left_rotation,
+                    scale,
+                    right_rotation,
+                    ..NativeDisplay::default()
+                };
+                // Keep unsupported numerical forms on the existing raw path, too.
+                value.valid().then(|| (&value).into())
+            }
+            // Matrix and invalid shapes keep their previous unprojected/raw path.
+            Some(_) => None,
+        }
+    }
+
+    pub(super) fn to_tag(self) -> Tag {
+        transformation_tag(
+            self.translation,
+            self.left_rotation,
+            self.scale,
+            self.right_rotation,
+        )
+    }
+}
+
+/// The transformation-only portion of Display.addAdditionalSaveData and the native writer.
+fn transformation_tag(
+    translation: [f32; 3],
+    left_rotation: [f32; 4],
+    scale: [f32; 3],
+    right_rotation: [f32; 4],
+) -> Tag {
+    let floats = |v: &[f32]| Tag::List(v.iter().map(|x| Tag::Float(x.to_bits())).collect());
+    let mut t = Compound::new();
+    t.insert("translation".into(), floats(&translation));
+    t.insert("left_rotation".into(), floats(&left_rotation));
+    t.insert("scale".into(), floats(&scale));
+    t.insert("right_rotation".into(), floats(&right_rotation));
+    Tag::Compound(t)
+}
+
 /// A display's transformation and interpolation (`Display`'s
 /// `transformation`, `interpolation_duration` and `teleport_duration`):
 /// a translation, a left rotation (a quaternion `[x, y, z, w]`), a scale and a
@@ -61,13 +129,15 @@ impl NativeDisplay {
     /// interpolation only when the start comes, so each write flips it
     /// between 0 and -1.
     fn write(&self, tag: &mut Compound) {
-        let floats = |v: &[f32]| Tag::List(v.iter().map(|x| Tag::Float(x.to_bits())).collect());
-        let mut t = Compound::new();
-        t.insert("translation".into(), floats(&self.translation));
-        t.insert("left_rotation".into(), floats(&self.left_rotation));
-        t.insert("scale".into(), floats(&self.scale));
-        t.insert("right_rotation".into(), floats(&self.right_rotation));
-        tag.insert("transformation".into(), Tag::Compound(t));
+        tag.insert(
+            "transformation".into(),
+            transformation_tag(
+                self.translation,
+                self.left_rotation,
+                self.scale,
+                self.right_rotation,
+            ),
+        );
         tag.insert(
             "interpolation_duration".into(),
             Tag::Int(self.interpolation),
@@ -116,6 +186,7 @@ pub(super) fn target_id(t: Target) -> Option<u32> {
         | Target::Crystal(id)
         | Target::Dragon(id)
         | Target::Tnt(id)
+        | Target::Cushion(id)
         | Target::Falling(id)
         | Target::Rocket(id)
         | Target::Trident(id)
@@ -254,6 +325,13 @@ impl Game<'_> {
             return false;
         };
         display.write(c);
+        if let Some(item) = self
+            .others
+            .iter_mut()
+            .find(|o| o.id == id && o.kind == "minecraft:item_display")
+        {
+            item.item_transformation = Some(display.into());
+        }
         true
     }
     /// Removes entity `id`, one Horizon keeps without simulating, as `/kill`

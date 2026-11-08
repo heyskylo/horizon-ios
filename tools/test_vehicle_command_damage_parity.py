@@ -43,6 +43,8 @@ def program():
     cmd(f'/execute unless entity {u}',label+'-removed',admission=False)
     cmd(f'/execute if entity @e[type=item,nbt={{Item:{{id:"minecraft:{kind}",count:1}}}}]',label+'-hull',admission=False)
     cmd(f'/data get entity @e[type=item,nbt={{Item:{{id:"minecraft:{kind}"}}}},limit=1] Item',label+'-hull-stack',admission=False)
+    # VehicleEntity.destroy's spawnAtLocation: the ItemEntity's own motion, 0.2 up (X/Z are random).
+    if kind=='oak_boat':cmd(f'/data get entity @e[type=item,nbt={{Item:{{id:"minecraft:{kind}"}}}},limit=1] Motion[1] 1000',label+'-hull-motion-y',admission=False)
     cmd(f'/data get entity @e[type=item,nbt={{Item:{{id:"minecraft:{kind}"}}}},limit=1]',label+'-hull-full',admission=False,diagnostic=True)
  cmd('/summon pig 13.5 200 6.5 {UUID:[I;500,0,0,7],Health:10f,NoAI:1b,NoGravity:1b}','pig-summon',1)
  pig=str(uuid.UUID(int=(500<<96)|7))
