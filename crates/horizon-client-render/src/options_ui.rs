@@ -1662,7 +1662,8 @@ pub struct OptionsUi {
     controller: shell::Shell<crate::controller_ui::ControllerScreen>,
     /// Horizon Extras, on the settings shell.
     extras: shell::Shell<crate::extras_ui::ExtrasScreen>,
-    pub shader: crate::shader_ui::ShaderUi,
+    /// Shaders: the shader packs and the picked one's options, on the settings shell.
+    shader: shell::Shell<crate::shader_ui::ShaderScreen>,
     pub split_profiles: crate::split_profiles::SplitProfiles,
     /// HDR calibration while its page is open.
     pub calibration: Option<crate::hdr_calibration::Calibration>,
@@ -2098,7 +2099,6 @@ impl OptionsUi {
                     .pack_screen
                     .as_ref()
                     .is_some_and(|p| p.search_focused()),
-                _ if Self::shader_page(self.page()).is_some() => self.shader.typing(),
                 _ => match self.shell() {
                     Some(shell) => shell.typing(),
                     None => self.settings_search_active(),
@@ -2209,11 +2209,11 @@ impl OptionsUi {
         if page == Page::Packs {
             self.pack_screen = None;
         }
-        if let Some(at) = Self::shader_page(page) {
-            self.shader.open(at);
-        }
         if let Some(shell) = self.shell_mut() {
             shell.open();
+        }
+        if let Some(at) = Self::shader_page(page) {
+            self.shader.show(at);
         }
         if let Some(at) = Self::graphics_page(page) {
             self.graphics.show(at);
@@ -2239,6 +2239,7 @@ impl OptionsUi {
             Page::Extras => Some(&self.extras),
             page if Self::graphics_page(page).is_some() => Some(&self.graphics),
             page if Self::controller_page(page).is_some() => Some(&self.controller),
+            page if Self::shader_page(page).is_some() => Some(&self.shader),
             _ => None,
         }
     }
@@ -2247,6 +2248,7 @@ impl OptionsUi {
             Page::Extras => Some(&mut self.extras),
             page if Self::graphics_page(page).is_some() => Some(&mut self.graphics),
             page if Self::controller_page(page).is_some() => Some(&mut self.controller),
+            page if Self::shader_page(page).is_some() => Some(&mut self.shader),
             _ => None,
         }
     }
@@ -2287,38 +2289,6 @@ impl OptionsUi {
                     self.push(page);
                 }
                 shell::Output::Done => events.extend(self.back(s)),
-            }
-        }
-        events
-    }
-    /// What the shader screen's actions do to these options.
-    fn shader_events(
-        &mut self,
-        s: &mut Settings,
-        actions: Vec<crate::shader_ui::Action>,
-    ) -> Vec<Event> {
-        use crate::shader_ui::Action;
-        let mut events = Vec::new();
-        for action in actions {
-            match action {
-                Action::ButtonClick => events.push(Event::ButtonClick),
-                Action::Changed => events.push(Event::Changed),
-                Action::SliderDrag => events.push(Event::SliderDrag),
-                Action::Picked => {
-                    // The last pack's changed options are kept before the next one's are read.
-                    if s.shader_options.as_ref().is_some_and(|o| o.changed) {
-                        events.push(Event::ShaderOptions);
-                    }
-                    events.push(Event::ShaderPack);
-                    events.push(Event::OpenShaderOptions);
-                }
-                Action::OpenFolder => events.push(Event::OpenShaderPackFolder),
-                Action::Apply => {
-                    events.push(Event::ShaderOptions);
-                    events.push(Event::OpenShaderOptions);
-                }
-                Action::NativeChanged(pack) => events.push(Event::NativePackOptions(pack)),
-                Action::Done => events.extend(self.back(s)),
             }
         }
         events
@@ -3680,10 +3650,6 @@ impl OptionsUi {
             c.draw(batch, atlas, cursor);
             return;
         }
-        if Self::shader_page(self.page()).is_some() {
-            self.shader.draw(s, batch, atlas, cursor, self.in_world);
-            return;
-        }
         let waiting = self.waiting();
         let in_world = self.in_world;
         if let Some(shell) = self.shell_mut() {
@@ -4059,12 +4025,6 @@ impl OptionsUi {
             });
             return self.shell_events(s, outputs);
         }
-        if Self::shader_page(self.page()).is_some() {
-            let actions = self
-                .shader
-                .click(s, atlas, (x, y), size, drag, right, self.shift);
-            return self.shader_events(s, actions);
-        }
         if self.page() == Page::Packs {
             let mut events = Vec::new();
             if drag {
@@ -4331,15 +4291,18 @@ impl OptionsUi {
         // AbstractSliderButton suppresses the press sound and plays once on
         // release, even if the pointer has left the widget or its value stayed.
         let slider = self.dragging.take().is_some();
-        let (shader_slider, shader_pack) = self.shader.release();
-        let shell_slider = self.shell_mut().is_some_and(|shell| shell.release());
-        let graphics_slider = shader_slider | shell_slider;
+        let shell_slider = self.shell_mut().and_then(|shell| shell.release());
         let calibration_slider = self.calibration.as_mut().is_some_and(|c| c.release());
         let split_drop = self.split_setup.release();
-        if slider || graphics_slider || calibration_slider {
+        if slider || shell_slider.is_some() || calibration_slider {
             let mut events = vec![Event::ButtonClick, Event::Changed];
-            // A pack's option is saved, and the pack rebuilt, once per drag.
-            events.extend(shader_pack.map(Event::NativePackOptions));
+            // What the screen does once a drag ends: a shader pack's option is saved, and the
+            // pack rebuilt, once per drag.
+            let done = shell_slider.into_iter().flatten();
+            events.extend(done.filter_map(|output| match output {
+                shell::Output::Event(event) => Some(event),
+                _ => None,
+            }));
             events
         } else if split_drop {
             vec![Event::ButtonClick]
@@ -4420,10 +4383,6 @@ impl OptionsUi {
         }
         if self.page() == Page::Studio {
             self.studio.wheel(amount);
-            return Vec::new();
-        }
-        if Self::shader_page(self.page()).is_some() {
-            self.shader.scroll(s, size, amount);
             return Vec::new();
         }
         let plain = self.resource_error.is_none()
@@ -4507,10 +4466,6 @@ impl OptionsUi {
         }
         if self.page() == Page::Studio {
             self.studio.wheel(amount);
-            return;
-        }
-        if Self::shader_page(self.page()).is_some() {
-            self.shader.scroll(s, size, amount);
             return;
         }
         match &mut self.pack_screen {
@@ -4697,8 +4652,6 @@ impl OptionsUi {
             if shell.typing() {
                 shell.type_text(text);
             }
-        } else if Self::shader_page(self.page()).is_some() && self.shader.typing() {
-            self.shader.type_text(text);
         } else if self.settings_search_active() {
             self.settings_search.insert_text(text);
             self.scroll = 0.0;
@@ -4732,9 +4685,6 @@ impl OptionsUi {
         }
         if let Some(shell) = self.shell_mut() {
             return shell.shortcut(shortcut, clipboard);
-        }
-        if Self::shader_page(self.page()).is_some() {
-            return self.shader.shortcut(shortcut, clipboard);
         }
         if self.settings_search_active() {
             if self.settings_search.shortcut(shortcut, clipboard) {
@@ -4856,16 +4806,6 @@ impl OptionsUi {
         if let Some(shell) = self.shell_mut() {
             let outputs = shell.key(s, key, text, shift, gui);
             return self.shell_events(s, outputs);
-        }
-        if Self::shader_page(self.page()).is_some() {
-            let size = (self.size.0.max(480.0), self.size.1.max(240.0));
-            let (actions, handled) = self.shader.key_modifiers(s, atlas, key, text, shift, size);
-            let mut events = self.shader_events(s, actions);
-            // Escape leaves a screen a link opened first, then the shader screen.
-            if key == K::Escape && !handled {
-                events.extend(self.back(s));
-            }
-            return events;
         }
 
         if key == K::Escape {
@@ -5527,8 +5467,20 @@ mod tests {
     /// read, and leaving the shader screen applies them.
     #[test]
     fn the_shader_screen_saves_changed_options_before_reading_the_next_packs() {
-        use crate::shader_ui::Action;
-        let mut s = Settings::default();
+        use crate::shader_pack_list::{Entry, Kind};
+        let entry = |file: &str| Entry {
+            file: file.into(),
+            key: file.into(),
+            title: file.into(),
+            kind: Kind::Classic,
+            options: Vec::new(),
+            values: Vec::new(),
+            pages: Vec::new(),
+        };
+        let mut s = Settings {
+            shader_packs: vec![entry("A.zip"), entry("B.zip")],
+            ..Settings::default()
+        };
         s.horizon.shader_pack = "A.zip".into();
         let mut options = crate::shader_options::ShaderOptions::new(
             "A.zip".into(),
@@ -5542,15 +5494,21 @@ mod tests {
         let mut ui = OptionsUi::default();
         ui.open(false);
         ui.push(Page::ShaderPacks);
-        let events = ui.shader_events(&mut s, vec![Action::Picked]);
+        let size = (854.0, 480.0);
+        let (x, y) = ui
+            .shader
+            .point_at(&s, size, crate::shader_ui::Item::Pack(1));
+        let events = ui.click(&mut s, &atlas(), x, y, size, [1708, 960], false, false);
         assert!(matches!(
             events[..],
             [
+                Event::ButtonClick,
                 Event::ShaderOptions,
                 Event::ShaderPack,
                 Event::OpenShaderOptions
             ]
         ));
+        assert_eq!(s.horizon.shader_pack, "B.zip");
         let events = ui.back(&mut s);
         assert!(matches!(events[0], Event::ShaderOptions));
     }
