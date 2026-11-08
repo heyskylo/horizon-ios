@@ -670,6 +670,8 @@ pub fn encode_block_entity(
         ("components", Tag::Compound(components)),
     ];
     match e {
+        // EnderChestBlockEntity saves nothing of its own: the items are the player's.
+        BlockEntity::Chest(_) if block == "minecraft:ender_chest" => {}
         BlockEntity::Chest(items) => entries.push(("Items", encode_items(items))),
         BlockEntity::Furnace(f) => {
             entries.push(("Items", encode_items(&f.items)));
@@ -5466,6 +5468,17 @@ fn effect_details(e: &crate::effects::SavedEffect) -> Vec<(&'static str, Tag)> {
 mod tests {
     use crate::mobs::spawner::SpawnDataExt;
 
+    #[test]
+    fn an_ender_chest_saves_none_of_the_players_items() {
+        use crate::containers::BlockEntity;
+        let mut slots = vec![None; 27];
+        slots[0] = Some(crate::items::ItemStack::new("minecraft:diamond", 3));
+        let chest = encode_block_entity((1, 2, 3), &BlockEntity::Chest(slots.clone()), "minecraft:chest");
+        assert!(chest.get("Items").is_some(), "control: a chest saves its items");
+        let ender = encode_block_entity((1, 2, 3), &BlockEntity::Chest(slots), "minecraft:ender_chest");
+        assert_eq!(ender.get("id"), Some(&string("minecraft:ender_chest")));
+        assert!(ender.get("Items").is_none(), "{ender:?}");
+    }
     #[test]
     fn a_server_falls_back_to_level_dat_old_and_restores_it() {
         let world = std::env::temp_dir().join(format!("horizon-dat-old-{}", std::process::id()));

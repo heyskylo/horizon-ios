@@ -154,8 +154,10 @@ impl Game<'_> {
         let Some(key) = self.ender_open.take() else {
             return;
         };
+        // The items go back to the player: an `EnderChestBlockEntity` holds none, so
+        // nothing of theirs stays in the chunk or in `/data get block`.
         if let Some(BlockEntity::Chest(items)) = self.world.block_entities.get_mut(&key) {
-            self.ender_items = items.clone();
+            self.ender_items = std::mem::replace(items, vec![None; 27]);
         }
     }
 }
