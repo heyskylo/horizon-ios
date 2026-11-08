@@ -1251,5 +1251,9 @@
   "Buy": "Crompà",
   "Gift": "Regalà",
   "Found on this computer": "Trovaa in su quell computer chì",
-  "Looks": "Stil"
+  "Looks": "Stil",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "El portaciav del tò sistema l'ha minga rispondüü in {seconds} segond. Contrôla che 'l funziona e che 'l sia sblocaa, poeu fà ripartì el launcher.",
+  "Can't read {name}'s sign-in: {why}": "Se riess minga a leg l'acess de {name}: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}."
 }

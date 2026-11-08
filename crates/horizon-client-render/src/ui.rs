@@ -217,6 +217,25 @@ pub fn blit_sprite(
         draw_sprite(batch, *r, nine_slice_metadata(sprite), [x, y, w, h], color);
     }
 }
+/// `GuiGraphicsExtractor.blit(location, x, y, u, v, width, height, textureWidth,
+/// textureHeight)`: a `src` region of a sprite — in its own texture's units, as the
+/// u/v/width/height arguments are — stretched over `w` × `h`.
+pub fn blit_sprite_region(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    sprite: &str,
+    src: [f32; 4],
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    color: u32,
+) {
+    if let Some(r) = atlas.sprites.get(sprite) {
+        let size = [r.w as f32, r.h as f32];
+        batch.rect_uv(x, y, w, h, sub(*r, size, src), color);
+    }
+}
 fn draw_sprite(
     batch: &mut HudBatch,
     r: Rect,
@@ -1259,6 +1278,29 @@ impl Caret {
         focused: bool,
         focused_at: Instant,
     ) {
+        self.draw_color(
+            batch,
+            atlas,
+            (id, value, max),
+            rect,
+            focused,
+            focused_at,
+            rgba(224, 224, 224, 255),
+        );
+    }
+    /// [`Self::draw`] with the text in `color` (`EditBox.setTextColor`): the
+    /// settings tab turns an invalid Realm name red.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_color(
+        &mut self,
+        batch: &mut HudBatch,
+        atlas: &HudAtlas,
+        (id, value, max): (crate::clipboard::FieldId, &str, usize),
+        rect: [f32; 4],
+        focused: bool,
+        focused_at: Instant,
+        color: u32,
+    ) {
         let mut idle;
         let edit = if focused {
             self.sync(id, value, max)
@@ -1270,6 +1312,7 @@ impl Caret {
         };
         [edit.x, edit.y, edit.width, edit.height] = rect;
         edit.focused = focused;
+        edit.text_color = color;
         if edit.focused_at < focused_at {
             edit.focused_at = focused_at;
         }
