@@ -832,7 +832,8 @@ mod tests {
     fn a_short_page_list_collapses_a_packs_screens_and_leaves_none_out() {
         let s = many_screens(12);
         let mut shell = shell_at(Tab::Screen(4));
-        let mut batch = HudBatch::new([1708, 960]);
+        // 427x480 GUI px: tall enough for the pack list, the pack's line and its 13 screens.
+        let mut batch = HudBatch::new([854, 960]);
         shell.draw(&s, &mut batch, &atlas(), (0.0, 0.0), false, None);
         assert_eq!(shell.page_places().len(), 1 + 13);
         let mut batch = HudBatch::new([854, 480]);
@@ -1040,8 +1041,11 @@ mod tests {
         );
         // The game reads the next pack's options: a Horizon pack has none of these.
         s.shader_options = None;
+        // Its slider, a step on from the keyboard.
         shell.show(Tab::Screen(0));
-        press(&mut shell, &mut s, Item::Option(0));
+        shell.set_focus(Some(Target::Row(Item::Option(0))));
+        shell.key(&mut s, K::Enter, None, false, SIZE);
+        shell.key(&mut s, K::ArrowRight, None, false, SIZE);
         assert_ne!(s.shader_packs[2].values[0], 0.5);
         let undo = shell
             .foot_at(&s, SIZE)
@@ -1074,7 +1078,7 @@ mod tests {
     #[test]
     fn every_text_is_in_the_language_table() {
         let mut s = settings();
-        let (_, missed) = lang::scoped(lang::Language::load(&[], "de_de"), || {
+        let (_, mut missed) = lang::scoped(lang::Language::load(&[], "de_de"), || {
             let screen = ShaderScreen::default();
             screen.sheets(&s);
             s.shader_packs[0].kind = Kind::Horizon;
@@ -1085,6 +1089,9 @@ mod tests {
                 lang::get(text);
             }
         });
+        // The folder's name and how a value is joined to its name are vanilla's.
+        missed.retain(|key| !VANILLA_KEYS.contains(&key.as_str()));
         assert_eq!(missed, Vec::<String>::new());
     }
+    const VANILLA_KEYS: [&str; 3] = ["pack.openFolder", "options.generic_value", "options.off"];
 }

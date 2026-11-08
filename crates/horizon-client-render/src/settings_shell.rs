@@ -3360,9 +3360,9 @@ mod tests {
         }
     }
 
-    /// A window of 1708x960 (854x480 GUI px) and one of 854x480 (427x240: the page list has room
-    /// for six places).
-    const TALL: [u32; 2] = [1708, 960];
+    /// A window of 854x960 (427x480 GUI px at its automatic scale) and one of 854x480 (427x240:
+    /// the page list has room for six places).
+    const TALL: [u32; 2] = [854, 960];
     const SHORT_WINDOW: [u32; 2] = [854, 480];
 
     /// One frame of `shell` in a window of `window`; the GUI size it was drawn at.
@@ -3373,7 +3373,7 @@ mod tests {
     ) -> (f32, f32) {
         let mut batch = HudBatch::new(window);
         shell.draw(s, &mut batch, &atlas(), (0.0, 0.0), false, None);
-        crate::widgets::end_frame(u64::MAX);
+        crate::widgets::end_frame(crate::widgets::generation() + 1);
         (batch.width, batch.height)
     }
 
@@ -3485,7 +3485,7 @@ mod tests {
         assert_eq!(pages(&shell), [HOME, 1, 10]);
         assert_eq!(shell.strip_ends(), Some((false, true)));
         // Its arrow goes to the next match, which has the first one before it and the last after.
-        let next = shell.page_places()[1].1;
+        let next = shell.page_places()[2].1;
         shell.click(&mut s, middle(next), size, false, false, false);
         drawn(&mut shell, &s, SHORT_WINDOW);
         assert_eq!(pages(&shell), [HOME, 1, 10, 11]);
