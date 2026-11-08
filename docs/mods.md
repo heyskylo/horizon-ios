@@ -409,6 +409,27 @@ result are the menu's other slots. The grid's slots follow `native_menu_slot_rul
 on the server, so single player, LAN and dedicated servers craft alike; the result a player is shown is made again
 each tick its grid changed, whoever changed it. The grid and result may not be listed in `results`.
 
+Recipe placement works there as in a crafting table: a recipe viewer's `native_place_recipe` (the recipe book's click,
+`ServerboundPlaceRecipePacket`) and `native_transfer_recipe` fill the grid from the player's inventory, giving what was
+in it back, so JEI ports and the Recipes mod fill it unchanged. A native mod can let the placement take ingredients
+from containers beside the block too ([native-mods.md](native-mods.md#recipe-sources)). Not yet: the ghost recipe the server sends for missing
+items is not drawn on a mod's screen.
+
+`links` gives the menu slots that show other containers' slots instead of the block entity's, as Tinkers' Construct's
+crafting station shows the chest beside it: `count` slots from `from` on, which a native mod links to block containers
+each tick the menu is open ([native-mods.md](native-mods.md#menu-links)):
+
+```json
+{ "slots": 64, "crafting": { "grid": 1, "size": 3, "result": 0 }, "links": { "from": 10, "count": 54 } }
+```
+
+They are real slots of the menu: a click, a shift-click, a drag, a double click or another mod's inventory tool moves
+the linked containers' own items, on the server, and a changed container is saved and its comparators update. A
+shift-click from the inventory fills the other container slots first, in order, so a crafting grid before its links.
+The block entity never holds them, so a broken block drops none of them; leave them out of the container's `faces`.
+Linked slots past the containers' slots hold nothing and take nothing. They may not overlap the crafting grid, its
+result or `results`.
+
 #### Namespaces and limits
 
 The fence: files go in the mod's own namespaces (`assets/<id>/`,

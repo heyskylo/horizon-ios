@@ -302,6 +302,7 @@ mod native_packets;
 mod native_panel;
 mod native_panel_recipes;
 mod native_permissions;
+mod native_player_break;
 mod native_player_fx;
 mod native_player_reads;
 mod native_player_state;
@@ -2406,6 +2407,9 @@ struct Game<'a> {
     /// again only when the feet block (or the dimension) changes.
     debug_density: RefCell<debug_keys::DensityCache>,
     pending_pack_reload: bool,
+    /// HDR, Smooth Gradients and the pack picked when the frame was last checked against them
+    /// (`follow_frame`).
+    frame_followed: Option<(bool, bool, String)>,
     /// When `resourcepacks/` was last looked at for the open pack screen, and what it held
     /// (`watch_pack_folder`).
     pack_folder: Option<(
@@ -3303,6 +3307,9 @@ struct Game<'a> {
     /// event, and the ones before it, are the player's own (`Level.levelEvent`
     /// with the player excluded); the events after it are not.
     lan_break_pos: Option<[i32; 3]>,
+    /// Where a player's break puts the block's own drops instead of popping
+    /// them (`native_player_break_block` with `into_inventory`).
+    break_collect: Option<Vec<ItemStack>>,
     /// The name of the guest `lan_acting` acts for (`Player.getName`).
     lan_acting_name: Option<String>,
     /// Their UUID (`Player.getUUID`).
@@ -3315,6 +3322,10 @@ struct Game<'a> {
     tnt_refused: Option<BlockPos>,
     /// Their permission level: an op's above 0 (`PlayerList.isOp`).
     lan_acting_permission: Option<u8>,
+    /// The spawn protection radius that holds the acting guest back
+    /// (`DedicatedServer.isUnderSpawnProtection` before the position test):
+    /// None for an operator, without operators, or off a dedicated server.
+    lan_acting_spawn_protection: Option<i32>,
     /// Their entity id, which the hub (often taken out of `lan` while they
     /// act) would otherwise have to be asked for.
     lan_acting_entity: Option<u32>,
@@ -6472,27 +6483,33 @@ impl Game<'_> {
         self.award_stat("used", &stack.item, 1);
     }
     fn break_block(&mut self, pos: [i32; 3]) -> Result<()> {
-        self.lan_break_pos = Some(pos);
+        self.player_break_block(pos).map(|_| ())
+    }
+    /// `ServerPlayerGameMode.destroyBlock`: whether the block was removed.
+    /// A break inside another (a mod breaking more blocks from its
+    /// `native_destroy_block`) keeps the outer break's own events.
+    pub(super) fn player_break_block(&mut self, pos: [i32; 3]) -> Result<bool> {
+        let outer = self.lan_break_pos.replace(pos);
         let broken = self.with_player_actor(|game| game.break_block_as_player(pos));
-        self.lan_break_pos = None;
+        self.lan_break_pos = outer;
         broken
     }
-    fn break_block_as_player(&mut self, pos: [i32; 3]) -> Result<()> {
+    fn break_block_as_player(&mut self, pos: [i32; 3]) -> Result<bool> {
         // DebugStickItem.canDestroyBlock: a left click selects a property and
         // never destroys the block.
         if !self.debug_stick_can_destroy(pos)? {
-            return Ok(());
+            return Ok(false);
         }
         // ServerPlayerGameMode.destroyBlock.
         if self.block_action_restricted(pos) {
-            return Ok(());
+            return Ok(false);
         }
         if !self
             .res
             .items()
             .can_destroy_block(self.held(), self.creative)
         {
-            return Ok(());
+            return Ok(false);
         }
         // ServerPlayerGameMode.destroyBlock (and MultiPlayerGameMode.destroyBlock
         // on the client): a GameMasterBlock stays when the player cannot use
@@ -6501,14 +6518,14 @@ impl Game<'_> {
         if !self.can_use_game_master_blocks()
             && is_game_master_block(&self.res.facts().get(state).name)
         {
-            return Ok(());
+            return Ok(false);
         }
         // Native mods, once the game allowed the break: a canceled one keeps
         // the block, and a guest's acknowledgement puts it back in its world.
         let mut canceled = false;
         self.native_destroy_block(pos, state, &mut canceled);
         if canceled {
-            return Ok(());
+            return Ok(false);
         }
         self.pad_rumble(horizon_client::gamepad::Rumble::BlockBroken);
         let broken = state;
@@ -6595,7 +6612,7 @@ impl Game<'_> {
                     .is_some_and(|h| h.enchantment_level("minecraft:silk_touch") > 0);
                 for d in drops {
                     if &*d.item != "minecraft:air" {
-                        self.pop_resource(pos, d);
+                        self.pop_break_drop(pos, d);
                     }
                 }
                 // BeehiveBlock.playerDestroy: silk touch keeps the bees in, so
@@ -6669,7 +6686,22 @@ impl Game<'_> {
         }
         self.pending.clear(pos);
         self.process_level_events()?;
-        Ok(())
+        Ok(removed)
+    }
+    /// `Block.popResource` for a player's break, or into `break_collect`
+    /// when a mod takes the drops to the player's inventory: the stack still
+    /// gets what the block entity copies into it, and nothing is kept where
+    /// blocks don't drop.
+    fn pop_break_drop(&mut self, pos: [i32; 3], mut stack: ItemStack) {
+        if self.break_collect.is_none() {
+            return self.pop_resource(pos, stack);
+        }
+        self.pending.attach(pos, &mut stack);
+        if self.ui.rules.bool("block_drops")
+            && let Some(kept) = self.break_collect.as_mut()
+        {
+            kept.push(stack);
+        }
     }
     /// The `ItemStack.interactLivingEntity` fallback in `Player.interactOn`,
     /// currently for native Mob entries after the entity's own action passed.
@@ -13124,6 +13156,17 @@ impl Game<'_> {
         )?;
         renderer.screenshot = screenshot;
         renderer.screenshot_result = screenshot_result;
+        self.adopt_renderer(renderer);
+        log::info!("Horizon: graphics device recovered; rebuilding world meshes");
+        Ok(())
+    }
+    /// A renderer made again from the resources loaded takes over: what named the old one's
+    /// atlas slots is forgotten, the world is meshed again, and the shader pack and the
+    /// settings are applied again.
+    pub(super) fn adopt_renderer(&mut self, mut renderer: Renderer) {
+        // A new renderer starts with the vanilla column and without the world border's wall.
+        renderer.clear_sections(self.world.layout());
+        self.border_renderer.invalidate();
         self.renderer = Some(renderer);
         self.forget_atlas_slots();
         self.clear_lod();
@@ -13134,8 +13177,6 @@ impl Game<'_> {
             &mut self.native_shaders.picked,
         ));
         self.apply_ui_settings();
-        log::info!("Horizon: graphics device recovered; rebuilding world meshes");
-        Ok(())
     }
     /// `LevelExtractor.allChanged`: displayed sections and mesh work are
     /// discarded, then every loaded section is rebuilt.
@@ -13827,6 +13868,7 @@ impl Game<'_> {
         if self.renderer.as_mut().is_some_and(|r| r.display_changed()) {
             self.apply_ui_settings();
         }
+        self.follow_frame();
         self.observe_screen();
         // `Gui.setScreen` clears the focus of the screen it leaves: a menu
         // that comes back starts with no widget highlighted.
@@ -16741,6 +16783,7 @@ impl<'a> Game<'a> {
             pending_entry: None,
             debug_density: RefCell::default(),
             pending_pack_reload: false,
+            frame_followed: None,
             pack_folder: None,
             pack_reload: None,
             server_packs: Default::default(),
@@ -17235,6 +17278,7 @@ impl<'a> Game<'a> {
             player_attachments: Default::default(),
             guest_attachments: HashMap::new(),
             lan_break_pos: None,
+            break_collect: None,
             guest_packets: Vec::new(),
             guest_cooldowns: Vec::new(),
             native_resend_trees: Vec::new(),
@@ -17247,6 +17291,7 @@ impl<'a> Game<'a> {
             native_click_cursor: None,
             tnt_refused: None,
             lan_acting_permission: None,
+            lan_acting_spawn_protection: None,
             lan_acting_entity: None,
             native_login_permission: None,
             chat_capture: None,

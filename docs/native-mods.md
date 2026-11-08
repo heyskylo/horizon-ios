@@ -4199,6 +4199,26 @@ These are what Create's drill, saw, harvester and deployer need.
   afterwards. Call it from a block entity's tick, not from inside a player's hook: while a player acts, it answers
   `None`.
 
+### Breaking as a player
+
+`crates/horizon-client/src/game/native_player_break.rs`: `native_player_break_block(uuid, pos, into_inventory)`
+(`Host::player_break_block`) breaks a block as the player `uuid` breaks it, for vein miners and area tools such as
+FTB Ultimine, which calls `ServerPlayerGameMode.destroyBlock` from NeoForge's `BlockEvent.BreakEvent`.
+
+- It runs the game's own player break, so the player's checks hold (spectator, adventure `can_break`, an item that
+  can't break blocks, game master blocks, a dedicated server's spawn protection), `native_destroy_block` hears it
+  and can cancel it, and the drops are rolled for the player's held item and its enchantments. The item wears as it
+  would, the mined statistic, exhaustion and experience count, and the other players see the particles and hear
+  the sound. The player's own client is left out of the break event (`Block.playerWillDestroy`), as in vanilla.
+- With `into_inventory`, the block's own drops go to the player's inventory and what doesn't fit is dropped from
+  them. What else the break sets loose (a torch losing its support, a container's contents) drops in the world.
+- The answer is whether the block was removed. False, with nothing broken, for air, an unloaded block, a block a
+  survival player can't break (bedrock), a player who isn't online or is dead, another player than the one whose
+  action is running, and off a server. Reach and line of sight are not checked: that is the mod's choice.
+- Call it from the player's `native_destroy_block` (they act there), or with any online player's UUID from a hook
+  where no player acts, such as `native_server_tick`. Inside `native_destroy_block`, each block the mod breaks is
+  heard by that hook too: keep a guard (an `AtomicBool`) so those breaks don't start more veins.
+
 ### Column reads
 
 `crates/horizon-client/src/game/native_world_columns.rs`: helpers for server mods, for the level in place, on a server
@@ -4605,6 +4625,57 @@ only for a server's players (single player's server thread, LAN guests, a dedica
 never ask it. As in vanilla (`AbstractContainerMenu.moveItemStackTo`), a
 shift-click tops up a slot (not a `results` one) that already holds the same item without asking `may_place`, only `max_stack`: to keep a
 slot from filling that way, lower `max_stack`.
+
+### Recipe sources
+
+`native_recipe_sources(player, menu, pos, sources)` is asked on the server when the recipe book or a recipe viewer
+(`native_place_recipe`, `native_transfer_recipe`) fills the crafting grid of a mod menu type (`crafting`,
+[mods.md](mods.md#menu-types)) open at `pos`. Push block positions onto `sources` and the placement may also take
+ingredients from the containers there, as Tinkers' Construct's crafting station takes them from the chests beside it:
+
+```rust
+fn recipe_sources(&self, _host: &mut dyn Host, event: &mut RecipeSourcesEvent<'_>) {
+    if event.menu == "mystation:station" {
+        let [x, y, z] = event.pos;
+        for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            event.sources.push([x + dx, y, z + dz]);
+        }
+    }
+}
+```
+
+Chests, barrels, shulker boxes, hoppers, dispensers, droppers and mod containers (their container slots) in the
+player's level count. Anything else, the menu's own block and repeats are passed by, and at most 64 are used. The
+placement counts and takes from the player's inventory first, then the sources in the order given, with vanilla's
+`ServerPlaceRecipe` matching. What the grid held goes back to the player as vanilla's does. A changed source is saved
+and its comparators update. Every mod adds to the same list. With no answer the placement is vanilla's, from the
+inventory alone. A recipe viewer's craftable marks are still worked out on the client from the player's inventory.
+
+### Menu links
+
+`native_menu_links(player, menu, pos, links)` is asked on the server each tick while `player` has a mod menu type with
+`links` ([mods.md](mods.md#menu-types)) open at `pos`. Push block positions onto `links` and the menu's linked slots
+show the containers there, their slots in order, as real slots of the menu: a crafting station's side panel showing
+the chest beside it, with a tab per neighbour, is a button (`native_screen_click`, `native_menu_button`) that changes
+what the mod answers for that player:
+
+```rust
+fn menu_links(&self, _host: &mut dyn Host, event: &mut MenuLinksEvent<'_>) {
+    if event.menu == "mystation:station" {
+        let [x, y, z] = event.pos;
+        event.links.push([x + 1, y, z]);
+    }
+}
+```
+
+Chests, barrels, shulker boxes, hoppers, dispensers, droppers and mod containers (their container slots) in the
+player's level count; anything else, the menu's own block and repeats are passed by, and at most 64 are used. A
+double chest is its two halves: push both, the first half first, as its own menu orders them. Linked slots past the
+containers' slots hold nothing and are left out of clicks, as a hidden slot is. Every mod adds to the same list, and
+with no answer the linked slots are empty. Clicks run on the server's menu engine as on the block's own slots, so
+nothing is copied: what a player takes out of a linked slot leaves the chest in the same step. The menu does not check
+the player's reach to a linked container: keep links to the blocks beside the menu's own. Guests, single player's
+server thread and dedicated servers work alike; the deprecated in-frame mode does not show links.
 
 ### What a mod's container takes
 

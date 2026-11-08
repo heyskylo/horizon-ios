@@ -1388,6 +1388,39 @@ def loot_set_damage():
     return ops + setup('/setblock 2 220 2 minecraft:air')
 
 
+def loot_set_name_and_components():
+    """SetNameFunction and SetComponentsFunction in /loot's items engine."""
+    import json
+    cases = [
+        ('minecraft:stone', {'type': 'minecraft:set_name', 'name': 'Rock'}),
+        ('minecraft:stone', {'type': 'minecraft:set_name', 'target': 'item_name',
+                             'name': {'text': 'Old Rock', 'italic': False, 'color': 'gold'}}),
+        # No name: the stack stays as it was.
+        ('minecraft:stone', {'type': 'minecraft:set_name'}),
+        ('minecraft:paper', {'type': 'minecraft:set_components', 'components': {
+            'minecraft:lore': [{'text': 'A torn page', 'color': 'gray'}],
+            'minecraft:custom_data': {'page': 3}}}),
+        # The contents make it a potion of swiftness: the feedback names it so.
+        ('minecraft:potion', {'type': 'minecraft:set_components', 'components': {
+            'minecraft:potion_contents': {'potion': 'minecraft:swiftness'}}}),
+        ('minecraft:potion', [
+            {'type': 'minecraft:set_components', 'components': {'minecraft:potion_contents': {
+                'custom_effects': [{'id': 'minecraft:speed', 'duration': 600}]}}},
+            {'type': 'minecraft:set_name', 'name': {'text': 'Potion of Escape', 'italic': False}}]),
+        # A removal patch drops a component the item has by default.
+        ('minecraft:apple', {'type': 'minecraft:set_components', 'components': {'!minecraft:food': {}}}),
+    ]
+    ops = setup('/setblock 2 220 2 minecraft:chest')
+    for item, modifier in cases:
+        table = {'pools': [{'rolls': 1, 'entries': [
+            {'type': 'minecraft:item', 'name': item, 'modifier': modifier}]}]}
+        ops += [
+            cmd('/loot replace block 2 220 2 container.0 loot ' + json.dumps(table)),
+            cmd('/data get block 2 220 2 Items'),
+        ]
+    return ops + setup('/setblock 2 220 2 minecraft:air')
+
+
 def items_and_loot():
     return [
         *setup('/clear @s', '/gamemode survival'),
@@ -1473,6 +1506,22 @@ def items_and_loot():
         cmd('/clear @s'),
         *setup('/kill @e[tag=c]', '/kill @e[tag=h]'),
         *setup('/setblock 3 206 3 minecraft:air', '/setblock 2 205 2 minecraft:air', '/kill @e[type=minecraft:item]', '/gamemode creative'),
+    ]
+
+
+def loot_world_pack_tables():
+    """ResourceOrIdArgument looks loot tables up in the server's registries: a world pack's
+    table (advancement_loot_fixtures) is named by /loot and by a function of the pack."""
+    return [
+        *setup('/clear @s', '/setblock 2 220 2 minecraft:chest'),
+        cmd('/loot give @s loot parity:pack_loot'),
+        cmd('/clear @s minecraft:emerald 0'),
+        cmd('/loot replace block 2 220 2 container.0 loot parity:pack_loot'),
+        cmd('/data get block 2 220 2 Items'),
+        cmd('/function parity:pack_loot_give'),
+        cmd('/clear @s minecraft:emerald 0'),
+        cmd('/loot give @s loot parity:missing'),
+        *setup('/clear @s', '/setblock 2 220 2 minecraft:air'),
     ]
 
 
@@ -2048,6 +2097,8 @@ def function_return_fixtures(group_names):
                           'command_macro:admit': 'scoreboard players add #admit macro_error 1\n',
                           'command_macro:fail': 'return fail\n',
                           'command_macro:zero': 'return 0\n'})
+    if 'loot world pack tables' in group_names:
+        functions['parity:pack_loot_give'] = 'loot give @s loot parity:pack_loot\n'
     if 'function return feedback' in group_names:
         functions.update({'parity:fail': 'return fail\n', 'parity:zero': 'return 0\n',
                           'parity:value': 'return 7\n', 'parity:empty': '# no commands\n',
@@ -5391,6 +5442,10 @@ def advancement_loot_fixtures(group_names):
                                       {'type': 'minecraft:item', 'name': 'minecraft:diamond'}]}]}
     if 'advancement empty loot reference' in group_names:
         tables['parity:empty_reward'] = {'type': 'minecraft:advancement_reward', 'pools': []}
+    if 'loot world pack tables' in group_names:
+        tables['parity:pack_loot'] = {'type': 'minecraft:chest', 'pools': [{'rolls': 1, 'entries': [
+            {'type': 'minecraft:item', 'name': 'minecraft:emerald',
+             'modifier': {'type': 'minecraft:set_count', 'count': 3}}]}]}
     try:
         from . import player_food_predicate_corpus as player_food
     except ImportError:
@@ -6323,6 +6378,7 @@ def groups():
         ('levels', levels()),
         ('end portal entities', end_portal_entities()),
         ('items and loot', items_and_loot()),
+        ('loot world pack tables', loot_world_pack_tables()),
         ('numeric array edits', numeric_array_edits()),
         ('projectile saved UUID', projectile_saved_uuid()),
         ('awake villager saved position', awake_villager_saved_position()),
@@ -6340,6 +6396,7 @@ def groups():
         ('bird flap sensors', bird_flap_sensors()),
         ('entity landing sensors', entity_landing_sensors()),
         ('loot set damage', loot_set_damage()),
+        ('loot set name and components', loot_set_name_and_components()),
         ('item NBT count bounds', item_nbt_count_bounds()),
         ('item block containers', item_block_containers()),
         ('world', world_misc()),

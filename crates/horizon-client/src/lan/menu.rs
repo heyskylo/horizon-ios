@@ -63,6 +63,9 @@ pub struct Menu {
     /// A mod menu type's crafting result as the guest is shown it: the block
     /// entity holds the grid, never what it crafts. None until the game made it.
     pub craft: Option<ModCraft>,
+    /// A mod menu type's linked slots (`links`): the containers a native mod
+    /// links them to (`native_menu_links`), in order, asked again each tick.
+    pub links: Vec<(i32, i32, i32)>,
 }
 
 /// What a mod menu type's crafting grid makes (`ResultContainer`), and the
@@ -75,6 +78,23 @@ pub struct ModCraft {
 }
 
 impl Menu {
+    /// A mod menu type's linked slots and the containers behind them.
+    fn linked(&self) -> Option<(std::ops::Range<usize>, &[(i32, i32, i32)])> {
+        let l = self.mod_type?.links?;
+        Some((l.slots(), &self.links))
+    }
+
+    /// The linked slots (`links`) no container stands behind, which hold
+    /// nothing and take nothing: they are left out of clicks as a hidden
+    /// slot is.
+    pub fn unlinked_slots(&self, world: &World) -> Vec<usize> {
+        let Some((range, links)) = self.linked() else {
+            return Vec::new();
+        };
+        let bound = linked_slot_count(world, links);
+        range.skip(bound).collect()
+    }
+
     /// The container slot of a mod menu type's crafting result, and what it shows.
     fn craft_result(&self) -> Option<(usize, Option<ItemStack>)> {
         let c = self.mod_type?.crafting?;
@@ -243,6 +263,12 @@ pub enum Slots {
 }
 
 impl Slots {
+    /// The guest's open mod menu's linked slots and their containers, when
+    /// these are its slots.
+    fn links_of(self, guest: &Guest) -> Option<(std::ops::Range<usize>, &[(i32, i32, i32)])> {
+        let m = guest.menu.as_ref().filter(|m| m.slots == self)?;
+        m.linked()
+    }
     fn halves(self) -> Vec<(i32, i32, i32)> {
         match self {
             Slots::Block(k) => vec![k],
@@ -286,6 +312,14 @@ impl Slots {
         {
             return result;
         }
+        if let Some((range, links)) = self.links_of(guest)
+            && range.contains(&n)
+        {
+            return read_links(world, links, range.len())
+                .into_iter()
+                .nth(n - range.start)
+                .flatten();
+        }
         for k in self.halves() {
             let slots = shown(world, k)?;
             if n < slots.len() {
@@ -311,6 +345,13 @@ impl Slots {
             && let Some(item) = items.get_mut(slot)
         {
             *item = result;
+        }
+        if let Some((range, links)) = self.links_of(guest) {
+            for (k, stack) in range.zip(read_links(world, links, usize::MAX)) {
+                if let Some(item) = items.get_mut(k) {
+                    *item = stack;
+                }
+            }
         }
         Some(items)
     }
@@ -341,6 +382,14 @@ impl Slots {
         {
             *item = None;
         }
+        // Linked slots are their containers', never the block entity's.
+        if let Some((range, links)) = self.links_of(guest) {
+            let linked: Vec<_> = range
+                .filter_map(|k| items.get_mut(k).map(Option::take))
+                .collect();
+            let links = links.to_vec();
+            write_links(world, &links, linked);
+        }
         let mut rest = items.into_iter();
         for k in self.halves() {
             let n = shown(world, k).map_or(0, <[_]>::len);
@@ -367,6 +416,60 @@ fn shown(world: &World, k: (i32, i32, i32)) -> Option<&[Option<ItemStack>]> {
         .mod_container(state)
         .map_or(0, |c| c.slots);
     Some(&slots[..count.min(slots.len())])
+}
+
+/// How many slots the linked containers `links` have between them.
+pub fn linked_slot_count(world: &World, links: &[(i32, i32, i32)]) -> usize {
+    links
+        .iter()
+        .map(|&k| shown(world, k).map_or(0, <[_]>::len))
+        .sum()
+}
+
+/// The stacks of the linked containers `links`, their slots in order, at
+/// most `count`. A container no longer there has no slots.
+pub fn read_links(
+    world: &World,
+    links: &[(i32, i32, i32)],
+    count: usize,
+) -> Vec<Option<ItemStack>> {
+    links
+        .iter()
+        .flat_map(|&k| shown(world, k).unwrap_or_default().iter().cloned())
+        .take(count)
+        .collect()
+}
+
+/// Stores `stacks` in the linked containers `links`, their slots in order
+/// (what [`read_links`] gave, changed). The containers whose items changed,
+/// for the game's `setChanged`.
+pub fn write_links(
+    world: &mut World,
+    links: &[(i32, i32, i32)],
+    stacks: Vec<Option<ItemStack>>,
+) -> Vec<(i32, i32, i32)> {
+    let mut rest = stacks.into_iter();
+    let mut changed = Vec::new();
+    for &k in links {
+        let n = shown(world, k).map_or(0, <[_]>::len);
+        let Some(e) = world.block_entities.get_mut(&k) else {
+            continue;
+        };
+        let mut moved = false;
+        for slot in e.slots_mut().iter_mut().take(n) {
+            let Some(stack) = rest.next() else {
+                break;
+            };
+            if *slot != stack {
+                *slot = stack;
+                moved = true;
+            }
+        }
+        if moved {
+            changed.push(k);
+        }
+    }
+    changed
 }
 
 /// Slots of a menu seen as one list.
@@ -1294,6 +1397,7 @@ mod tests {
             slots: 5,
             data_slots: 0,
             results: vec![],
+            links: None,
             crafting: Some(ModCrafting {
                 grid: 1,
                 size: 2,
@@ -1316,6 +1420,7 @@ mod tests {
             hidden: Vec::new(),
             mod_type: Some(t),
             craft: None,
+            links: Vec::new(),
         });
         // Nothing made yet: nothing shown.
         assert_eq!(slots.get(&world, &g, 0), None);
@@ -1334,6 +1439,104 @@ mod tests {
         };
         assert_eq!(m.items[0], None);
         assert!(m.items[1].is_some());
+    }
+
+    /// A mod menu type's linked slots show the containers a mod links them
+    /// to, in order: reads come from those containers, writes go back to
+    /// them and never into the block entity, and slots past them are left
+    /// out of clicks.
+    #[test]
+    fn mod_menu_linked_slots_are_their_containers() {
+        use crate::containers::{ModBlockEntityFields, ModContainer, ModLinks, ModMenuType};
+        let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);
+        let container = ModContainer {
+            slots: 6,
+            ..Default::default()
+        };
+        world
+            .block_entities
+            .set_mod_containers([(0, Arc::new(container))].into_iter().collect());
+        let k = (0, 64, 0);
+        let mut own = vec![None; 6];
+        own[0] = Some(ItemStack::new("minecraft:oak_log", 1));
+        world.block_entities.insert(
+            k,
+            BlockEntity::Mod(Box::new(
+                ModBlockEntityFields {
+                    id: "test:station".into(),
+                    items: own,
+                    ..Default::default()
+                }
+                .into(),
+            )),
+        );
+        let chest = (1, 64, 0);
+        let stick = Some(ItemStack::new("minecraft:stick", 8));
+        let stone = Some(ItemStack::new("minecraft:stone", 3));
+        world.block_entities.insert(
+            chest,
+            BlockEntity::Chest(vec![stick.clone(), None, stone.clone()]),
+        );
+        let t: &'static ModMenuType = Box::leak(Box::new(ModMenuType {
+            id: "test:station",
+            slots: 6,
+            data_slots: 0,
+            results: vec![],
+            crafting: None,
+            links: Some(ModLinks { from: 2, count: 4 }),
+        }));
+        let mut g = guest();
+        let slots = Slots::Block(k);
+        g.menu = Some(Menu {
+            window: 1,
+            kind: 0,
+            pos: Some(k),
+            slots,
+            size: 6,
+            state: 0,
+            sent: Vec::new(),
+            drag: None,
+            sent_data: Vec::new(),
+            hidden: Vec::new(),
+            mod_type: Some(t),
+            craft: None,
+            links: Vec::new(),
+        });
+        // Nothing linked yet: the linked slots are empty and all left out.
+        let read = slots.read(&world, &g).unwrap();
+        assert_eq!(read[2..], [None, None, None, None]);
+        let m = g.menu.as_ref().unwrap();
+        assert_eq!(m.unlinked_slots(&world), [2, 3, 4, 5]);
+        // Linked to the chest: its three slots, then one slot past them.
+        g.menu.as_mut().unwrap().links = vec![chest];
+        assert_eq!(slots.get(&world, &g, 2), stick);
+        assert_eq!(slots.get(&world, &g, 4), stone);
+        assert_eq!(slots.get(&world, &g, 5), None);
+        assert_eq!(g.menu.as_ref().unwrap().unlinked_slots(&world), [5]);
+        let mut read = slots.read(&world, &g).unwrap();
+        assert_eq!(read[0], Some(ItemStack::new("minecraft:oak_log", 1)));
+        assert_eq!(read[2..], [stick.clone(), None, stone.clone(), None]);
+        // Move the stone to the chest's middle slot and the stick out.
+        read[3] = read[4].take();
+        read[2] = None;
+        slots.write(&mut world, &mut g, read);
+        let Some(BlockEntity::Chest(items)) = world.block_entities.get(&chest) else {
+            panic!("not a chest");
+        };
+        assert_eq!(items[..], [None, stone.clone(), None]);
+        let Some(BlockEntity::Mod(m)) = world.block_entities.get(&k) else {
+            panic!("not a mod's");
+        };
+        assert_eq!(m.items[2..], [None, None, None, None]);
+        assert!(m.items[0].is_some());
+        // A link to a container that is gone shows nothing and takes nothing.
+        world.block_entities.remove(&chest);
+        assert_eq!(slots.get(&world, &g, 3), None);
+        assert_eq!(
+            g.menu.as_ref().unwrap().unlinked_slots(&world),
+            [2, 3, 4, 5]
+        );
+        assert_eq!(write_links(&mut world, &[chest], vec![stick]), []);
     }
 
     /// A mod container saved with more items than its menu has slots: the

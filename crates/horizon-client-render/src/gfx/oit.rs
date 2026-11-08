@@ -192,7 +192,7 @@ impl Oit {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon improved transparency"),
             source: wgpu::ShaderSource::Wgsl(
-                (include_str!("../terrain.wgsl").to_owned()
+                (super::terrain_shader()
                     + include_str!("../oit.wgsl")
                     + include_str!("../oit_world.wgsl"))
                 .into(),
@@ -912,7 +912,7 @@ mod tests {
     #[test]
     fn the_terrain_shader_validates() {
         validate(
-            &(include_str!("../terrain.wgsl").to_owned()
+            &(crate::gfx::terrain_shader()
                 + include_str!("../oit.wgsl")
                 + include_str!("../oit_world.wgsl")),
             &[
