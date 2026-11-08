@@ -4584,7 +4584,8 @@ impl Game<'_> {
         let mut cells = horizon_client::entities::ItemCells::new(&items);
         // A LAN or server guest only shows the host's items.
         let merging = self.remote.is_none();
-        let obstacles = horizon_client::entities::ObstacleGrid::new(self.item_entity_collisions());
+        let mut obstacles =
+            horizon_client::entities::ObstacleGrid::new(self.item_entity_collisions());
         let mut nearby = Vec::new();
         let mut bubble_tops = Vec::new();
         // `ItemUtils.onContainerDestroyed`: what a destroyed item held, and

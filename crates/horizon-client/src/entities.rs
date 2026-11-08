@@ -1101,6 +1101,7 @@ fn lava_cauldron_contacts(
 pub struct ObstacleGrid {
     cells: crate::fast_hash::FxHashMap<(i32, i32, i32), Vec<u32>>,
     boxes: Vec<Aabb>,
+    found: Vec<u32>,
 }
 impl ObstacleGrid {
     const CELL: f64 = 8.0;
@@ -1116,7 +1117,11 @@ impl ObstacleGrid {
                 }
             }
         }
-        Self { cells, boxes }
+        Self {
+            cells,
+            boxes,
+            found: Vec::new(),
+        }
     }
     fn span(b: Aabb) -> ((i32, i32, i32), (i32, i32, i32)) {
         let cell = |v: Vec3| {
@@ -1132,30 +1137,30 @@ impl ObstacleGrid {
         self.boxes.is_empty()
     }
     /// The boxes meeting `area` (`getEntityCollisions`'s query box), in the order they were given.
-    pub fn near(&self, area: Aabb, out: &mut Vec<Aabb>) {
+    pub fn near(&mut self, area: Aabb, out: &mut Vec<Aabb>) {
         out.clear();
         if self.boxes.is_empty() {
             return;
         }
         let (lo, hi) = Self::span(area);
-        let mut found: Vec<u32> = Vec::new();
+        self.found.clear();
         for x in lo.0..=hi.0 {
             for y in lo.1..=hi.1 {
                 for z in lo.2..=hi.2 {
                     if let Some(list) = self.cells.get(&(x, y, z)) {
-                        found.extend(list);
+                        self.found.extend(list);
                     }
                 }
             }
         }
-        found.sort_unstable();
-        found.dedup();
-        out.extend(
-            found
-                .into_iter()
-                .map(|i| self.boxes[i as usize])
-                .filter(|b| b.intersects(area)),
-        );
+        self.found.sort_unstable();
+        self.found.dedup();
+        for &i in &self.found {
+            let b = self.boxes[i as usize];
+            if b.intersects(area) {
+                out.push(b);
+            }
+        }
     }
 }
 
@@ -4020,7 +4025,7 @@ mod entity_collision_tests {
                 Vec3::new(x + 1.375, 64.5625, 1.375),
             )
         };
-        let grid = ObstacleGrid::new((0..1000).map(|i| boat(f64::from(i) * 100.0)).collect());
+        let mut grid = ObstacleGrid::new((0..1000).map(|i| boat(f64::from(i) * 100.0)).collect());
         let mut out = Vec::new();
         // Around the 7th boat: only it.
         let area = Aabb::new(Vec3::new(699.0, 63.0, -1.0), Vec3::new(701.0, 66.0, 1.0));
@@ -4032,7 +4037,7 @@ mod entity_collision_tests {
         assert!(out.is_empty());
         // A box spanning cells is found from any of them, once.
         let wide = Aabb::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(20.0, 1.0, 1.0));
-        let grid = ObstacleGrid::new(vec![wide]);
+        let mut grid = ObstacleGrid::new(vec![wide]);
         let area = Aabb::new(Vec3::new(17.0, 0.0, 0.0), Vec3::new(18.0, 1.0, 1.0));
         grid.near(area, &mut out);
         assert_eq!(out, vec![wide]);
@@ -4063,7 +4068,7 @@ mod entity_collision_tests {
             hits += boxes.iter().filter(|b| b.intersects(area)).count();
         }
         let scan = start.elapsed();
-        let grid = ObstacleGrid::new(boxes);
+        let mut grid = ObstacleGrid::new(boxes);
         let start = std::time::Instant::now();
         let (mut out, mut found) = (Vec::new(), 0);
         for item in &items {
