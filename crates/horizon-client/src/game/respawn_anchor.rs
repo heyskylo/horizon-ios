@@ -18,7 +18,9 @@ use horizon_core::{
     geometry::{Aabb, Axis, Vec3, VoxelShape},
     position::BlockPos,
 };
-use horizon_world::{collision_context::CollisionContext, registry::BlockStateId};
+use horizon_world::{
+    collision_context::CollisionContext, level::data::state_flags, registry::BlockStateId,
+};
 
 /// `ServerPlayer.RespawnConfig`: a respawn point other than the world spawn
 /// that the game resolves through its block (a respawn anchor).
@@ -69,14 +71,6 @@ const HORIZONTAL: [[i32; 3]; 8] = [
     [-1, 0, 1],
     [1, 0, 1],
 ];
-/// Blocks vanilla defines with `.liquid()`: water, lava and the bubble column.
-fn is_liquid_block_name(name: &str) -> bool {
-    matches!(
-        name,
-        "minecraft:water" | "minecraft:lava" | "minecraft:bubble_column"
-    )
-}
-
 fn respawn_offsets() -> impl Iterator<Item = [i32; 3]> {
     HORIZONTAL
         .into_iter()
@@ -116,7 +110,7 @@ impl Game<'_> {
     /// `RespawnAnchorBlock.canSetSpawn`: the `respawn_anchor_works` attribute
     /// (only the Nether's dimension type sets it).
     pub(super) fn anchor_works(&self) -> bool {
-        self.dim == Dim::Nether
+        self.dimension_type().respawn_anchor_works
     }
     /// `RespawnAnchorBlock.charge`: one more charge, the block change and the sound.
     fn charge_anchor(
@@ -291,7 +285,7 @@ impl Game<'_> {
     /// `BedRule.destroyOnUse` of the dimension's `bed_rule` and
     /// `straw_bed_rule`: true in the Nether and the End.
     pub(super) fn beds_destroy_on_use(&self) -> bool {
-        self.dim != Dim::Overworld
+        self.dimension_type().bed_rule.destroy_on_use
     }
     /// `AbstractBedBlock.useWithoutItem` where the bed rule destroys on use
     /// (the bed's head at `head`): `BedBlock.destroyOnUse` removes both
@@ -418,10 +412,11 @@ impl Game<'_> {
     fn possible_to_respawn_in(&self, state: BlockStateId) -> bool {
         let f = self.res.facts().get(state);
         let name = &*f.name;
+        let liquid = self.res.behaviours().facts(state).flags & state_flags::LIQUID != 0;
         name.ends_with("_banner")
             || f.sign_form().is_some()
             || name.ends_with("_pressure_plate")
-            || !(f.legacy_solid || is_liquid_block_name(name))
+            || !(f.legacy_solid || liquid)
     }
     /// `RespawnAnchorBlock.findStandUpPosition`: a safe spot around the
     /// anchor, else any spot.
@@ -473,7 +468,14 @@ impl Game<'_> {
     /// `straw_bed_rule`): only the Overworld's beds set the spawn, straw
     /// beds never.
     pub(super) fn bed_sets_spawn(&self, state: BlockStateId) -> bool {
-        self.dim == Dim::Overworld && &*self.res.facts().get(state).name != "minecraft:straw_bed"
+        let straw = &*self.res.facts().get(state).name == "minecraft:straw_bed";
+        let facts = self.dimension_type();
+        let rule = if straw {
+            facts.straw_bed_rule
+        } else {
+            facts.bed_rule
+        };
+        rule.can_set_spawn.test(self.dark_outside())
     }
     /// `ServerPlayer.findRespawnAndUseSpawnBlock` for a config in the loaded
     /// dimension: the position and yaw, using an anchor's charge; a bed's
@@ -546,14 +548,6 @@ fn wrap_degrees(degrees: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn bubble_column_counts_as_liquid_for_respawn() {
-        assert!(is_liquid_block_name("minecraft:bubble_column"));
-        assert!(is_liquid_block_name("minecraft:water"));
-        assert!(is_liquid_block_name("minecraft:lava"));
-        assert!(!is_liquid_block_name("minecraft:kelp"));
-    }
 
     #[test]
     fn waking_up_next_to_a_bed_looks_toward_the_bed_head() {

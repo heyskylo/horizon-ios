@@ -1,0 +1,18 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "tick_times",
+      "target": "horizon_client::game::native_diagnostics::Game<'_>::native_tick_times"
+    },
+    {
+      "name": "tps",
+      "target": "horizon_client::game::native_diagnostics::Game<'_>::native_tps"
+    }
+  ],
+  "rust_summary": "the server's last 100 tick times as vanilla's `getTickTimesNanos` lays them out (`native_tick_times`) and its ticks a second over one, five and fifteen minutes (`native_tps`).",
+  "doc_summary": "`native_tick_times()`, the last 100 tick durations in nanoseconds at vanilla's `getTickTimesNanos` indices, and `native_tps()`, the ticks a second over the last one, five and fifteen minutes (Bukkit's `getTPS`). Bundles need \"hooks\": @API:tick_times@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_diagnostics.rs"
+  ]
+}

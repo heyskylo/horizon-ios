@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "living_change_target",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_living_change_target",
+      "neoforge": "LivingChangeTargetEvent",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "a mob's target changing, cancellable (`native_living_change_target`).",
+  "doc_summary": "`native_living_change_target(dimension, entity, kind, target, target_mob, cancel)`: a mob's target changed (NeoForge's `LivingChangeTargetEvent`, Bukkit's `EntityTargetEvent`) to the player `target` (a UUID), the mob `target_mob`, or none. Set `cancel` and it keeps its old target, and its tick's hit on the new one is not dealt. No `self`. Bundles that use it need `\"hooks\": @API:living_change_target@`."
+}

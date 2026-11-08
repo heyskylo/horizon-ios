@@ -32,7 +32,7 @@ pub(super) struct ThrownTrident {
     pub(super) yaw: f32,
     pub(super) pitch: f32,
     pub(super) in_ground: bool,
-    in_ground_time: u32,
+    pub(super) in_ground_time: u32,
     /// `AbstractArrow.shakeTime`: seven ticks after sticking, no pickup.
     shake: u32,
     dealt_damage: bool,
@@ -301,7 +301,7 @@ impl Game<'_> {
         self.start_using_item();
         true
     }
-    fn in_water_or_rain(&mut self) -> bool {
+    pub(in crate::game) fn in_water_or_rain(&mut self) -> bool {
         let Some(p) = &self.player else { return false };
         let (x, y, z) = (
             p.position.x.floor() as i32,
@@ -525,6 +525,24 @@ impl Game<'_> {
             horizon_client::sound_engine::SoundEntity::new(id, [start.x, start.y, start.z], false),
             None,
         );
+    }
+    /// `settle_dealt_absorbed` for the player who threw a trident: a LAN guest's own
+    /// statistics are only reachable inside `as_guest`, so the host is not credited.
+    fn thrower_dealt_absorbed(&mut self, guest: Option<u32>) {
+        let Some(conn) = guest.filter(|c| self.lan_acting != Some(*c)) else {
+            self.settle_dealt_absorbed(true);
+            return;
+        };
+        let Some(mut host) = self.lan.take() else {
+            // No host to enter: still drain the mobs so nothing leaks to a later hit.
+            self.settle_dealt_absorbed(false);
+            return;
+        };
+        let entered = self.as_guest(&mut host, conn, |g| g.settle_dealt_absorbed(true));
+        self.lan = Some(host);
+        if entered.is_none() {
+            self.settle_dealt_absorbed(false);
+        }
     }
     /// The thrower's `PLAYER_HURT_ENTITY` for a trident hit: run as the
     /// guest that threw it, and not at all once they have left.
@@ -893,6 +911,7 @@ impl Game<'_> {
                                 hurt_at = Some([m.position.x, m.position.y, m.position.z]);
                             }
                         }
+                        self.thrower_dealt_absorbed(t.guest);
                         // ThrownTrident.onHitEntity on a boat or minecart:
                         // VehicleEntity.hurtServer takes the damage.
                         let creative = t.guest.is_none() && self.creative;

@@ -7,6 +7,7 @@ use horizon_client::{
     entities::{ItemFrame, Painting},
     items::ItemStack,
     mesher::Vertex,
+    random_source,
 };
 use horizon_core::{
     geometry::{Aabb, Vec3},
@@ -242,7 +243,7 @@ impl Game<'_> {
         };
         fitting.retain(|v| v.width * v.height >= largest);
         // Util.getRandomSafe(variants, candidate.random): the painting's own random.
-        let pick = super::dispenser::entity_random()
+        let pick = random_source::entity()
             .next_int_bound(fitting.len() as i32)
             .unwrap_or(0) as usize;
         let v = &fitting[pick];
@@ -350,6 +351,8 @@ impl Game<'_> {
             (lo[2] + hi[2]) / 2.0,
         ];
         self.world.modified.insert((p.pos[0] >> 4, p.pos[2] >> 4));
+        // BlockAttachedEntity.kill, before dropItem.
+        self.entity_killed_event(at, by_player);
         if !self.ui.rules.bool("entity_drops") {
             return true;
         }
