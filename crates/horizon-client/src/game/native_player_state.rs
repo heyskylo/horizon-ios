@@ -120,6 +120,29 @@ impl Game<'_> {
             .map(Place::Guest)
     }
 
+    /// Sets a player's game mode (0 survival, 1 creative, 2 adventure, 3
+    /// spectator, as `native_player_game_mode_changed` names them), as
+    /// `/gamemode` does: a guest's change runs in their own turn, and the
+    /// mods hear it. True when the mode changed; false for an unknown mode,
+    /// a player who is not on, or a change a mod cancelled. API
+    /// @API:set_game_mode@.
+    pub(super) fn native_set_game_mode(&mut self, player: u128, mode: i32) -> bool {
+        if !(0..=3).contains(&mode) {
+            return false;
+        }
+        let target = match self.native_place(player) {
+            Some(Place::Acting) => Target::Player,
+            Some(Place::Guest(i)) => match self.lan.as_ref() {
+                Some(host) => Target::Guest(host.hub.guests[i].conn),
+                None => return false,
+            },
+            None => return false,
+        };
+        let mode = super::game_mode::mode_from_id(mode);
+        self.for_player(target, |g| g.set_game_mode(mode))
+            .unwrap_or(false)
+    }
+
     /// The player `uuid`'s compound as the server would save it now
     /// (`players/data/<uuid>.dat`, vanilla's `ServerPlayer.saveWithoutId`):
     /// inventory, health, food, experience, effects, attributes, position,
