@@ -70,6 +70,19 @@ fn prism_and_multimc_instances() {
         ]
     );
     assert_eq!(in_folder(&fabric, None)[0].name, "My Fabric");
+    // The launcher's folder and its instances folder find the same instances, never taken for
+    // the CurseForge app's Instances (one name where case is ignored).
+    let games = |found: &[Found]| -> Vec<(String, PathBuf)> {
+        found
+            .iter()
+            .map(|f| (f.name.clone(), f.game.clone()))
+            .collect()
+    };
+    assert_eq!(games(&in_folder(&root, None)), games(&found));
+    assert_eq!(
+        games(&in_folder(&root.join("instances"), None)),
+        games(&found)
+    );
     // The loader comes along at the same version.
     assert_eq!(
         loader(&found[0]),
@@ -234,6 +247,15 @@ fn curseforge_and_modrinth_app_instances_are_their_game_folders() {
     let pack = curseforge.join("Instances/All the Mods");
     assert_eq!(in_folder(&curseforge, None), [found[1].clone()]);
     assert_eq!(in_folder(&pack, None), [found[1].clone()]);
+    // The app's Instances folder itself, the one it shows the player, finds the same.
+    assert_eq!(
+        in_folder(&curseforge.join("Instances"), None),
+        [found[1].clone()]
+    );
+    // A folder of game folders with none of the app's files is not taken for it.
+    let plain = root.join("plain");
+    write(&plain.join("world/options.txt"), "");
+    assert_eq!(in_folder(&plain, None), []);
     assert_eq!(in_folder(&modrinth, None), [found[0].clone()]);
 
     // The app's own files stay behind.
@@ -388,6 +410,9 @@ fn curseforge_instances_read_their_version_and_loader() {
     assert!(import(by("neither"), "x", None)
         .unwrap_err()
         .contains("--minecraft"));
+    // The Instances folder itself reads all of them the same way.
+    let all = in_folder(&root.join("Instances"), None);
+    assert_eq!(all, found);
     // A folder pointing at one instance reads it the same way.
     let one = in_folder(&root.join("Instances/neo"), None);
     assert_eq!(one.len(), 1);

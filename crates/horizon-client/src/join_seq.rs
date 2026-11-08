@@ -13,6 +13,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
+static NEXT_LIST: AtomicU64 = AtomicU64::new(1);
 
 /// When an entity joined: a number above every earlier join's. Zero means it
 /// has not joined a list yet. One counter for the process, so entities of
@@ -63,16 +64,47 @@ macro_rules! impl_joined {
     )*};
 }
 
-/// One kind's entity list. It is a `Vec` in every way but one: an entity that
+/// Which list and how many writes it has seen: two equal stamps mean the same
+/// list with nothing written in between, so what was read from it still holds.
+/// No list shares its first half with another, so one taken out and put back,
+/// or a level swapped in, cannot pass for the old one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ListStamp {
+    list: u64,
+    writes: u64,
+}
+
+impl ListStamp {
+    fn new() -> Self {
+        Self {
+            list: NEXT_LIST.fetch_add(1, Ordering::Relaxed),
+            writes: 0,
+        }
+    }
+}
+
+/// One kind's entity list. It is a `Vec` in every way but two: an entity that
 /// is put in without a join number (`push`, `insert`, `extend`) gets the next
 /// one, so a join cannot be missed by a spawn site. One already numbered (taken
-/// out and put back, or a list rebuilt) keeps its number.
-#[derive(Clone, Debug)]
-pub struct JoinList<T>(Vec<T>);
+/// out and put back, or a list rebuilt) keeps its number. And every way to
+/// reach it mutably counts as a write ([`JoinList::stamp`]), whether or not it
+/// changes anything, so a scan of the list can be kept until the next write.
+#[derive(Debug)]
+pub struct JoinList<T> {
+    list: Vec<T>,
+    stamp: ListStamp,
+}
 
 impl<T> Default for JoinList<T> {
     fn default() -> Self {
-        Self(Vec::new())
+        Self::from(Vec::new())
+    }
+}
+
+impl<T: Clone> Clone for JoinList<T> {
+    /// A list of its own from here on: the two change apart.
+    fn clone(&self) -> Self {
+        Self::from(self.list.clone())
     }
 }
 
@@ -81,25 +113,36 @@ impl<T> From<Vec<T>> for JoinList<T> {
     /// and nothing renumbered. An entity in it that never joined stays
     /// unnumbered, which the join-order walk reports.
     fn from(list: Vec<T>) -> Self {
-        Self(list)
+        Self {
+            list,
+            stamp: ListStamp::new(),
+        }
     }
 }
 
 impl<T> From<JoinList<T>> for Vec<T> {
     fn from(list: JoinList<T>) -> Self {
-        list.0
+        list.list
     }
 }
 
 impl<T> Deref for JoinList<T> {
     type Target = Vec<T>;
     fn deref(&self) -> &Vec<T> {
-        &self.0
+        &self.list
     }
 }
 impl<T> DerefMut for JoinList<T> {
     fn deref_mut(&mut self) -> &mut Vec<T> {
-        &mut self.0
+        self.stamp.writes += 1;
+        &mut self.list
+    }
+}
+
+impl<T> JoinList<T> {
+    /// This list as it stands now: see [`ListStamp`].
+    pub fn stamp(&self) -> ListStamp {
+        self.stamp
     }
 }
 
@@ -111,11 +154,11 @@ impl<T: Joined> JoinList<T> {
     }
     pub fn push(&mut self, mut entity: T) {
         Self::number(&mut entity);
-        self.0.push(entity);
+        self.deref_mut().push(entity);
     }
     pub fn insert(&mut self, index: usize, mut entity: T) {
         Self::number(&mut entity);
-        self.0.insert(index, entity);
+        self.deref_mut().insert(index, entity);
     }
     pub fn extend(&mut self, entities: impl IntoIterator<Item = T>) {
         for entity in entities {
@@ -128,20 +171,70 @@ impl<'a, T> IntoIterator for &'a JoinList<T> {
     type Item = &'a T;
     type IntoIter = std::slice::Iter<'a, T>;
     fn into_iter(self) -> Self::IntoIter {
-        self.0.iter()
+        self.list.iter()
     }
 }
 impl<'a, T> IntoIterator for &'a mut JoinList<T> {
     type Item = &'a mut T;
     type IntoIter = std::slice::IterMut<'a, T>;
     fn into_iter(self) -> Self::IntoIter {
-        self.0.iter_mut()
+        self.deref_mut().iter_mut()
     }
 }
 impl<T> IntoIterator for JoinList<T> {
     type Item = T;
     type IntoIter = std::vec::IntoIter<T>;
     fn into_iter(self) -> Self::IntoIter {
-        self.0.into_iter()
+        self.list.into_iter()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Whatever can change a list changes its stamp; only reading leaves it.
+    #[test]
+    fn a_stamp_holds_until_the_list_can_have_changed() {
+        let mut list = JoinList::from(vec![1, 2, 3]);
+        let stamp = list.stamp();
+        let _ = (list.len(), list.iter().sum::<i32>(), list[0]);
+        for _ in &list {}
+        assert_eq!(list.stamp(), stamp, "reading is no write");
+
+        let writes: [fn(&mut JoinList<i32>); 5] = [
+            |l| l[0] = 9,
+            |l| l.retain(|&v| v != 2),
+            |l| l.iter_mut().for_each(|v| *v += 1),
+            |l| {
+                for v in &mut *l {
+                    *v += 1;
+                }
+            },
+            |l| l.clear(),
+        ];
+        let mut last = list.stamp();
+        for write in writes {
+            write(&mut list);
+            assert_ne!(list.stamp(), last);
+            last = list.stamp();
+        }
+    }
+
+    /// A list that is not this one never passes for it, however many writes
+    /// each has seen: a copy, a level swapped in, one taken out and put back.
+    #[test]
+    fn a_stamp_belongs_to_one_list() {
+        let list = JoinList::from(vec![1]);
+        let copy = list.clone();
+        assert_ne!(copy.stamp(), list.stamp());
+        assert_ne!(JoinList::<i32>::default().stamp(), list.stamp());
+
+        let mut level = list;
+        let stamp = level.stamp();
+        let taken = std::mem::take(&mut level);
+        assert_ne!(level.stamp(), stamp);
+        let back = JoinList::from(Vec::from(taken));
+        assert_ne!(back.stamp(), stamp);
     }
 }

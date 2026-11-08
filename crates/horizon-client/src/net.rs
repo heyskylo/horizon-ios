@@ -120,6 +120,23 @@ pub struct Session {
     pub recorder: Arc<Mutex<Option<StudioRecorder>>>,
 }
 impl Session {
+    /// The negotiated wire release, once the connection has been established.
+    pub fn server_version(&self) -> horizon_protocol::adapter::ServerVersion {
+        self.writer.lock().unwrap().as_ref().map_or(
+            horizon_protocol::adapter::ServerVersion::Current,
+            ConnWriter::server_version,
+        )
+    }
+
+    /// Secure-chat enforcement synchronized later than login on older servers.
+    pub fn legacy_secure_chat_enforcement(&self) -> Option<bool> {
+        self.writer
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(ConnWriter::legacy_secure_chat_enforcement)
+    }
+
     /// Start connecting in the background, as `auth`'s account when there is one.
     pub fn connect(
         address: &str,
@@ -169,10 +186,14 @@ impl Session {
             false,
         )
     }
-    /// Join an integrated server through memory (`Connection.connectToLocalServer`).
+    /// Join an integrated server through memory (`Connection.connectToLocalServer`). The
+    /// hello still names the signed-in account (`Minecraft.handleClientLogin`'s
+    /// `ServerboundHelloPacket(getUser().getName(), getUser().getProfileId())`), so the
+    /// world's `players/data/<uuid>.dat` and `singleplayer_uuid` are the account's.
     pub fn connect_local(
         pipe: horizon_protocol::connection::Pipe,
         name: &str,
+        auth: Option<Arc<AuthSession>>,
         info: cfg::ClientInformation,
         lang: Arc<Language>,
         resources: PathBuf,
@@ -180,7 +201,7 @@ impl Session {
         Self::start(
             "local",
             name,
-            None,
+            auth,
             info,
             lang,
             Some(pipe),
@@ -236,6 +257,7 @@ impl Session {
         let thread = std::thread::Builder::new()
             .name("horizon-net".into())
             .spawn(move || {
+                horizon_threads::favour_current();
                 let result = run(
                     local,
                     &address_owned,
@@ -472,18 +494,42 @@ impl Drop for Session {
 /// An address of the form `friend:K7QM-3XPD` joins a friend's world through
 /// its invite code (horizon-friends): the session goes through a tunnel the
 /// client reaches on a loopback port, so everything after is a plain join.
+#[cfg(feature = "friends")]
 pub const FRIEND: &str = horizon_friends::ADDRESS_PREFIX;
+/// Without the `friends` feature such an address is refused (`join_friend`).
+#[cfg(not(feature = "friends"))]
+pub const FRIEND: &str = "friend:";
+
+/// Whether `code` is an invite code; with `full`, only a full one (a short
+/// relay code could also be a host name).
+#[cfg(feature = "friends")]
+pub fn is_invite(code: &str, full: bool) -> bool {
+    use horizon_friends::invite::{Parsed, parse};
+    match parse(code) {
+        Some(Parsed::Long(_)) => true,
+        Some(Parsed::Short(_)) => !full,
+        None => false,
+    }
+}
+/// Without the `friends` feature nothing is one.
+#[cfg(not(feature = "friends"))]
+pub fn is_invite(_code: &str, _full: bool) -> bool {
+    false
+}
 
 /// An address as players and logs see it: a friend's invite code stays
 /// out of it (its secret is in there).
 pub fn shown_address(address: &str) -> String {
     match address.strip_prefix(FRIEND) {
+        #[cfg(feature = "friends")]
         Some(code) => match horizon_friends::invite::parse(code) {
             Some(horizon_friends::invite::Parsed::Short(c)) => {
                 format!("Friend's world ({}-****)", c.nameplate)
             }
             _ => "Friend's world".to_owned(),
         },
+        #[cfg(not(feature = "friends"))]
+        Some(_) => "Friend's world".to_owned(),
         None => address.to_owned(),
     }
 }
@@ -494,7 +540,14 @@ pub fn friends_relay_setting() -> Option<String> {
     let dir = std::env::current_dir().ok()?;
     crate::ui_theme::preference(&dir, "friendsRelay")
         .filter(|r| !r.is_empty())
-        .or_else(horizon_friends::relay_url)
+        .or_else(relay_from_env)
+}
+#[cfg(feature = "friends")]
+use horizon_friends::relay_url as relay_from_env;
+/// `HORIZON_RELAY_URL` is the friends feature's: none without it.
+#[cfg(not(feature = "friends"))]
+fn relay_from_env() -> Option<String> {
+    None
 }
 /// Remember the relay typed on Join a friend (empty forgets it).
 pub fn save_friends_relay(relay: &str) {
@@ -504,8 +557,13 @@ pub fn save_friends_relay(relay: &str) {
 }
 
 /// Reach the friend's world from the code (directly, or through a relay)
-/// and open the tunnel: the loopback address to connect to.
-fn join_friend(code: &str, lang: &Language, send: &Sender<Event>) -> Result<(String, u16), Reason> {
+/// and open the tunnel: the loopback address to connect to, and the token to send on it first.
+#[cfg(feature = "friends")]
+fn join_friend(
+    code: &str,
+    lang: &Language,
+    send: &Sender<Event>,
+) -> Result<(String, u16, Vec<u8>), Reason> {
     use horizon_friends::{
         PathMode,
         guest::{self, GuestConfig},
@@ -527,10 +585,28 @@ fn join_friend(code: &str, lang: &Language, send: &Sender<Event>) -> Result<(Str
             tr(lang, "horizon.multiplayer.connected_friend_relay")
         },
     );
-    let (port, _) = tunnel
+    let loopback = tunnel
         .serve_loopback()
         .map_err(|e| Reason::plain(e.to_string()))?;
-    Ok(("127.0.0.1".to_owned(), port))
+    Ok((
+        "127.0.0.1".to_owned(),
+        loopback.port,
+        loopback.token.to_vec(),
+    ))
+}
+
+/// A build without Play with Friends: the address is refused, never retried.
+#[cfg(not(feature = "friends"))]
+fn join_friend(
+    code: &str,
+    lang: &Language,
+    _: &Sender<Event>,
+) -> Result<(String, u16, Vec<u8>), Reason> {
+    Err(Reason::keyed_arg(
+        "horizon.multiplayer.invalid_address",
+        lang,
+        &shown_address(&format!("{FRIEND}{code}")),
+    ))
 }
 
 fn status(send: &Sender<Event>, text: &str) {
@@ -711,7 +787,7 @@ fn run(
     let (host, port, mut c) = if let Some(pipe) = local {
         (address.to_owned(), 0, Connection::local(pipe))
     } else {
-        let (host, port) = match address.strip_prefix(FRIEND) {
+        let (host, port, token) = match address.strip_prefix(FRIEND) {
             Some(code) => join_friend(code, lang, send)?,
             None => {
                 let Some(target) = parse_address(address) else {
@@ -725,12 +801,18 @@ fn run(
                 };
                 status(send, &tr(lang, "connect.connecting"));
                 log_connecting(&target.0, target.1);
-                target
+                (target.0, target.1, Vec::new())
             }
         };
         let (mut c, host, port) =
             connect_tcp(&host, port, address.starts_with(FRIEND), READ_TIMEOUT)
                 .map_err(Reason::plain)?;
+        // The tunnel's port takes only the client that sends its token first.
+        if !token.is_empty() {
+            c.writer
+                .write_raw(&token)
+                .map_err(|e| Reason::plain(e.to_string()))?;
+        }
         if !address.starts_with(FRIEND)
             && let Some(version) = older_server(address)
         {
@@ -1193,6 +1275,21 @@ fn select_known_packs(offered: Vec<cfg::KnownPack>) -> Vec<cfg::KnownPack> {
         .collect()
 }
 
+fn valid_resource_segment(s: &str, allow_slash: bool) -> bool {
+    !s.is_empty()
+        && !s.starts_with('/')
+        && !s.ends_with('/')
+        && !s.contains("//")
+        && s.split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+        && s.bytes().all(|b| {
+            b.is_ascii_lowercase()
+                || b.is_ascii_digit()
+                || matches!(b, b'_' | b'-' | b'.')
+                || (allow_slash && b == b'/')
+        })
+}
+
 /// `RegistryDataCollector`: an entry of a pack both sides know comes without
 /// its data, which the client reads from its own copy of the pack
 /// (`data/<namespace>/<registry path>/<path>.json`, `Registries.elementsDirPath`).
@@ -1201,6 +1298,9 @@ fn fill_known_entries(r: &mut cfg::RegistryData, resources: &Path) {
         .registry
         .split_once(':')
         .unwrap_or(("minecraft", r.registry.as_str()));
+    if !valid_resource_segment(registry_ns, false) || !valid_resource_segment(registry_path, true) {
+        return;
+    }
     let dir = if registry_ns == "minecraft" {
         registry_path.to_owned()
     } else {
@@ -1211,6 +1311,9 @@ fn fill_known_entries(r: &mut cfg::RegistryData, resources: &Path) {
             .id
             .split_once(':')
             .unwrap_or(("minecraft", entry.id.as_str()));
+        if !valid_resource_segment(ns, false) || !valid_resource_segment(path, true) {
+            continue;
+        }
         let file = resources
             .join("data")
             .join(ns)
@@ -2500,6 +2603,46 @@ mod tests {
         assert_eq!(decoded_swing, swing_pkt);
         let decoded_data = play::Clientbound::decode(packets[1].id, &packets[1].payload).unwrap();
         assert_eq!(decoded_data, data_pkt);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn fill_known_entries_rejects_path_traversal_and_reads_valid_entries() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("horizon-net-reg-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let resources = temp_dir.join("res");
+        let valid_dir = resources.join("data/minecraft/worldgen/biome");
+        std::fs::create_dir_all(&valid_dir).unwrap();
+        std::fs::write(
+            valid_dir.join("plains.json"),
+            br#"{"has_precipitation":true}"#,
+        )
+        .unwrap();
+        std::fs::write(temp_dir.join("secret.json"), br#"{"leaked":true}"#).unwrap();
+
+        let mut reg = cfg::RegistryData {
+            registry: "minecraft:worldgen/biome".into(),
+            entries: vec![
+                cfg::RegistryEntry {
+                    id: "minecraft:plains".into(),
+                    data: None,
+                },
+                cfg::RegistryEntry {
+                    id: "minecraft:../../../../secret".into(),
+                    data: None,
+                },
+                cfg::RegistryEntry {
+                    id: "..:plains".into(),
+                    data: None,
+                },
+            ],
+        };
+        fill_known_entries(&mut reg, &resources);
+        assert!(reg.entries[0].data.is_some());
+        assert!(reg.entries[1].data.is_none());
+        assert!(reg.entries[2].data.is_none());
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

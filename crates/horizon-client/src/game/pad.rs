@@ -44,7 +44,7 @@ pub(super) struct Pads {
     virtual_input: bool,
     /// Buttons a `pad ... tap` releases at the next poll.
     taps: Vec<Button>,
-    edges: Edges,
+    pub(super) edges: Edges,
     activity: gamepad::Activity,
     context: Option<Context>,
     blocked_sticks: [bool; 2],
@@ -62,6 +62,9 @@ pub(super) struct Pads {
     last_hardware: PadState,
     /// The pad drove the game last (the mouse and keyboard hand control back).
     pub(super) in_use: bool,
+    /// A key or mouse button was pressed in play since the pad was last touched: the keyboard and
+    /// mouse have it, though only moving the mouse takes the pad out of use.
+    pub(super) keyboard_took_over: bool,
     pub(super) style: GlyphStyle,
     /// The controller driving this player, or else the first one its own reader sees.
     pub(super) device: Option<Device>,
@@ -78,6 +81,10 @@ pub(super) struct Pads {
     pub(super) drop_stack: bool,
     /// The player's health between polls (a drop is damage taken).
     health: HealthWatch,
+    /// The gameplay guide's facts and the tick they were read in.
+    guide_facts: Option<(u64, horizon_client::gameplay_guide::Facts)>,
+    /// The guide's rows as last drawn.
+    pub(super) guide_shown: Vec<guide::Shown>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -90,6 +97,7 @@ struct Context {
     enabled: bool,
 }
 
+mod guide;
 #[cfg(feature = "controllers")]
 mod hardware;
 #[cfg(test)]
@@ -207,6 +215,7 @@ impl Pads {
         if self.feed_source != source {
             self.feed_source = source;
             self.menu.armed = None;
+            self.menu.stop_craft();
         }
         self.feed = Some(state);
     }
@@ -223,6 +232,7 @@ impl Pads {
     /// A replay ended: let go of everything it held.
     pub(super) fn clear_injected(&mut self) {
         self.menu.armed = None;
+        self.menu.stop_craft();
         self.injected = PadState::default();
     }
 
@@ -333,6 +343,7 @@ impl Game<'_> {
         if activity && self.pad_focused() {
             self.last_input = Instant::now();
             self.pad.in_use = true;
+            self.pad.keyboard_took_over = false;
         }
         self.pad.state = state;
         self.pad_drop_frame();
@@ -388,8 +399,11 @@ impl Game<'_> {
 
     /// End held actions and captures before another context receives input.
     fn pad_cancel_inputs(&mut self, event_loop: &dyn EventLoopCtl) {
-        // Before the releases below: a cancelled press must not click.
+        // Before the releases below: a cancelled press must not click, nor a cancelled trigger
+        // change the recipe book's category as it comes up.
         self.pad.menu.armed = None;
+        self.pad.menu.trigger = None;
+        self.direct_craft_stop();
         let held_sticks = [
             gamepad::radial(self.pad.state.left, self.settings.controller.move_deadzone)
                 != [0.0; 2],
@@ -760,6 +774,7 @@ impl Game<'_> {
                         json!({ "title": title, "body": body })
                     }),
                     "menu": self.pad_menu_status(),
+                    "guide": self.pad_guide_status(),
                     "held": held,
                     "left": s.left,
                     "right": s.right,
@@ -788,6 +803,7 @@ impl Game<'_> {
             }
             "release" => {
                 self.pad.menu.armed = None;
+                self.direct_craft_stop();
                 self.pad.injected = PadState::default();
                 self.pad.taps.clear();
                 Ok(json!({ "ok": true }))

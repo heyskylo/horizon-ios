@@ -429,7 +429,8 @@ fn hive_near_fire(m: &Mob, w: &MobWorld) -> bool {
 }
 /// `EnvironmentAttributes.BEES_STAY_IN_HIVE`: the overworld's night, or rain.
 pub fn bees_stay_in_hive(w: &MobWorld) -> bool {
-    let night = !w.nether && !w.end && (12542..23460).contains(&w.day_time.rem_euclid(24000));
+    let night = w.dimension_type.has_timeline("minecraft:day")
+        && (12542..23460).contains(&w.day_time.rem_euclid(24000));
     night || w.raining
 }
 fn tired_of_looking_for_nectar(m: &Mob) -> bool {

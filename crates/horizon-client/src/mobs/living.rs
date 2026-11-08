@@ -865,7 +865,7 @@ impl Mob {
         // EntityFluidInteraction.applyCurrentTo: the flow pushes the mob.
         if (self.fluids.in_water || self.fluids.in_lava) && self.pushed_by_fluid() {
             let (water, lava) = w.fluid_currents(self.bounds());
-            let lava_scale = if w.nether {
+            let lava_scale = if w.dimension_type.fast_lava {
                 0.007
             } else {
                 0.0023333333333333335
@@ -1307,8 +1307,15 @@ impl Mob {
             self.flying_speed()
         }
     }
+    /// `LivingEntity.getFlyingSpeed`: a mount its player steers
+    /// (`getControllingPassenger() instanceof Player`) keeps a tenth of its
+    /// speed in the air (a horse's jump); anything else 0.02.
     fn flying_speed(&self) -> f32 {
-        0.02
+        if super::equine::controlled(self) {
+            self.ai.speed * 0.1
+        } else {
+            0.02
+        }
     }
     /// `LivingEntity.getEffectiveGravity`: the gravity, floored to 0.01 while a
     /// Slow Falling mob is on its way down.
@@ -1984,9 +1991,11 @@ impl RestitutionWorld for MobRestitution<'_, '_> {
     fn bounce_event(&mut self) -> Result<(), ()> {
         Ok(())
     }
-    /// Nothing to mark: the bounce is already the velocity of this tick, and
-    /// the mob tracker sends the position and velocity it reads.
-    fn mark_position_for_sync(&mut self) {}
+    /// `Entity.syncPosition`: the tracker keeps where the mob bounced as a
+    /// step of its next move (`SteppedInterpolationTracker.updateTracking`).
+    fn mark_position_for_sync(&mut self) {
+        self.mob.sync_position = true;
+    }
     fn set_velocity(&mut self, velocity: Vec3) -> Result<(), ()> {
         self.mob.velocity = velocity;
         Ok(())
@@ -2172,6 +2181,7 @@ mod tests {
                 others: &[],
                 dragon: None,
                 leash_boats: &[],
+                who_lookup: None,
                 others_grid: None,
                 others_index: None,
                 others_villagers: None,
@@ -2182,7 +2192,7 @@ mod tests {
                 day_time: 18000,
                 raining: false,
                 thundering: false,
-                nether: false,
+                level: horizon_core::LevelKey::OVERWORLD,
                 block_tags: &items.block_tags,
                 landing: &motion.landing,
                 biomes: &biomes,
@@ -2191,7 +2201,7 @@ mod tests {
                 mob_drops: true,
                 max_entity_cramming: 24,
                 difficulty: super::super::spawning::LocalDifficulty::new(2, 18000, 0, 0.0),
-                end: false,
+                dimension_type: horizon_world::dimension_type::DimensionFacts::overworld(),
                 world_seed: 0,
                 sea_level: 63,
                 items: Some(&items),
@@ -2290,6 +2300,7 @@ mod tests {
             others: &[],
             dragon: None,
             leash_boats: &[],
+            who_lookup: None,
             others_grid: None,
             others_index: None,
             others_villagers: None,
@@ -2300,7 +2311,7 @@ mod tests {
             day_time: 18000,
             raining: false,
             thundering: false,
-            nether: false,
+            level: horizon_core::LevelKey::OVERWORLD,
             block_tags: &items.block_tags,
             landing: &motion.landing,
             biomes: &biomes,
@@ -2309,7 +2320,7 @@ mod tests {
             mob_drops: true,
             max_entity_cramming: 24,
             difficulty: super::super::spawning::LocalDifficulty::new(2, 18000, 0, 0.0),
-            end: false,
+            dimension_type: horizon_world::dimension_type::DimensionFacts::overworld(),
             world_seed: 0,
             sea_level: 63,
             items: Some(&items),
@@ -2411,6 +2422,7 @@ mod tests {
                 controlling_player_movement: None,
                 nearest_player: None,
                 others: &others,
+                who_lookup: None,
                 dragon: None,
                 leash_boats: &[],
                 others_grid: None,
@@ -2423,7 +2435,7 @@ mod tests {
                 day_time: 6000,
                 raining: false,
                 thundering: false,
-                nether: false,
+                level: horizon_core::LevelKey::OVERWORLD,
                 block_tags: &items.block_tags,
                 landing: &motion.landing,
                 biomes: &biomes,
@@ -2432,7 +2444,7 @@ mod tests {
                 mob_drops: true,
                 max_entity_cramming: 24,
                 difficulty: super::super::spawning::LocalDifficulty::new(2, 6000, 0, 0.0),
-                end: false,
+                dimension_type: horizon_world::dimension_type::DimensionFacts::overworld(),
                 world_seed: 0,
                 sea_level: 63,
                 items: Some(&items),
@@ -3115,5 +3127,20 @@ mod tests {
             );
         });
         assert!(ran, "built test world ran");
+    }
+
+    /// `LivingEntity.getFlyingSpeed`: a horse its player steers (saddled, ridden) moves
+    /// through the air at a tenth of its speed; riderless or unsaddled at 0.02.
+    #[test]
+    fn a_steered_mount_moves_through_the_air_at_a_tenth_of_its_speed() {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        std::sync::Arc::make_mut(&mut kind).species = super::super::Species::Horse;
+        let mut m = Mob::new(1, kind, Vec3::ZERO, 0.0);
+        m.ai.speed = 0.3;
+        assert_eq!(m.flying_speed(), 0.02, "no rider");
+        m.rider = Some(super::super::equine::Rider::default());
+        assert_eq!(m.flying_speed(), 0.02, "unsaddled");
+        m.extra.saddled = true;
+        assert_eq!(m.flying_speed(), 0.3_f32 * 0.1);
     }
 }

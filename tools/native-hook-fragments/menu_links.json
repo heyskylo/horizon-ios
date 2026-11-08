@@ -1,0 +1,16 @@
+{
+  "hooks": [
+    {
+      "name": "menu_links",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_menu_links",
+      "neoforge": "none (a Java menu adds Slots over another block's IItemHandler, as Tinkers' Construct's crafting station shows the chest beside it)",
+      "side": "server",
+      "mod_api": {
+        "contract": "collect",
+        "out": "links"
+      }
+    }
+  ],
+  "rust_summary": "the containers a mod menu type's linked slots show (`native_menu_links`).",
+  "doc_summary": "`native_menu_links(player, menu, pos, links)` is asked on the server each tick while a mod menu type with `links` ([mods.md](mods.md#menu-types)) is open at `pos`: push the positions of block containers (chests, barrels, shulker boxes, hoppers, dispensers, droppers, mod containers) onto `links`, and the menu's linked slots show their slots, in order, as real slots: clicks, shift-clicks, drags and other mods' inventory tools move the containers' own items. Linked slots with nothing behind them hold nothing and take nothing. Bundles need \"hooks\": @API:menu_links@."
+}

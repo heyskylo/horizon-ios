@@ -136,6 +136,9 @@ impl AdvState {
 /// The game's world for predicates.
 struct View<'a, 'g>(&'a Game<'g>);
 impl adv::World for View<'_, '_> {
+    fn predicate(&self, id: &str) -> Option<&Value> {
+        self.0.fns.store.predicates.get(id)
+    }
     fn dimension(&self) -> &str {
         self.0.dim.id()
     }
@@ -286,6 +289,20 @@ impl Game<'_> {
         !adv::can_unlock(&lock, spectator, hand.as_ref(), &View(self))
     }
 }
+/// `MinMaxBounds.Doubles.matchesSqr`: `sqr` against the bounds squared
+/// (a missing one matches anything).
+fn matches_sqr(v: &Value, sqr: f64) -> bool {
+    let (min, max) = match v {
+        Value::Null => (None, None),
+        Value::Number(n) => (n.as_f64(), n.as_f64()),
+        Value::Object(o) => (
+            o.get("min").and_then(Value::as_f64),
+            o.get("max").and_then(Value::as_f64),
+        ),
+        _ => return false,
+    };
+    !min.is_some_and(|m| m * m > sqr) && !max.is_some_and(|m| m * m < sqr)
+}
 pub(super) fn item_view(s: &ItemStack) -> ItemView {
     ItemView {
         id: s.item.to_string(),
@@ -298,6 +315,7 @@ pub(super) fn item_view(s: &ItemStack) -> ItemView {
             .collect(),
         potion: s.potion().map(str::to_owned),
         custom_name: s.custom_name().is_some(),
+        custom_data: None,
     }
 }
 impl Game<'_> {
@@ -483,6 +501,29 @@ impl Game<'_> {
             &View(self),
         )
     }
+    /// `ExecuteCommand.checkCustomPredicate`: no seed/sequence override;
+    /// reached literal chance leaves use this active level's random source.
+    pub(super) fn command_conditions_hold(
+        &mut self,
+        v: &Value,
+        this: Option<&EntityView>,
+        origin: [f64; 3],
+    ) -> bool {
+        let ctx = adv::Entities {
+            this,
+            origin,
+            tool: None,
+            block_pos: None,
+        };
+        // An invalid reference anywhere fails the whole tree, even under an inversion.
+        if !adv::references_valid(v, &View(self)) {
+            return false;
+        }
+        adv::conditions_with(v, &ctx, &mut |leaf, ctx| {
+            adv::literal_random_chance(leaf, &mut || self.world.random.next_float())
+                .unwrap_or_else(|| adv::conditions(leaf, ctx, &View(self)))
+        })
+    }
     /// The player as a command's predicates see it: with what it looks at.
     pub(super) fn player_entity(&self) -> EntityView {
         self.player_entity_looking(true)
@@ -530,6 +571,8 @@ impl Game<'_> {
         let stats = (host.play.get(&conn).map(|p| &p.stats)).filter(|s| s.loaded);
         adv::PlayerFacts {
             level: asked.level.then_some(g.xp_level),
+            // The guest's food as last written back from its body.
+            food: Some((g.food, g.saturation)),
             stats: stats.filter(|_| asked.stats).map(|s| s.values.clone()),
             advancements: asked
                 .advancements
@@ -561,13 +604,17 @@ impl Game<'_> {
         me
     }
     /// The player's level, statistics, advancements and recipes that
-    /// `asked` names, for `PlayerPredicate`; records not loaded stay `None`.
+    /// `asked` names, and its food, for `PlayerPredicate`; records not
+    /// loaded stay `None`.
     fn player_facts(&self, asked: adv::FactsAsked) -> adv::PlayerFacts {
-        if self.player.is_none() {
+        let Some(p) = self.player.as_ref() else {
             return adv::PlayerFacts::default();
-        }
+        };
         adv::PlayerFacts {
             level: asked.level.then_some(self.experience.level),
+            // `ServerPlayer.getFoodData`, read by every player predicate:
+            // two numbers, so always filled.
+            food: Some((p.health.food.food, p.health.food.saturation)),
             stats: (asked.stats && self.stats.loaded).then(|| self.stats.values.clone()),
             advancements: (asked.advancements && self.adv.loaded)
                 .then(|| (self.adv.tree.clone(), self.adv.progress.clone())),
@@ -690,6 +737,24 @@ impl Game<'_> {
             armor.damage = m.extra.body_damage.max(0) as u32;
             item_view(&armor)
         });
+        // Only the new snapshot is adopted; the existing view fields stay as
+        // constructed above. Body and other view consumers stay unprojected.
+        use horizon_client::mobs::finalize;
+        for (view, slot) in equipment[..6].iter_mut().zip([
+            finalize::MAINHAND,
+            finalize::OFFHAND,
+            finalize::HEAD,
+            finalize::CHEST,
+            finalize::LEGS,
+            finalize::FEET,
+        ]) {
+            if let Some(view) = view {
+                let data = finalize::item_stack(m, slot)
+                    .and_then(|stack| stack.custom_data().cloned())
+                    .unwrap_or_default();
+                view.custom_data = Some(horizon_world::nbt::Tag::Compound(data));
+            }
+        }
         let passengers: Vec<EntityView> = self
             .mobs
             .iter()
@@ -710,7 +775,21 @@ impl Game<'_> {
             super::persist::add_passengers(&mut tag, riders);
             tag
         });
+        let movement = (m.extra.mount.is_none()
+            && m.rider.is_none()
+            && self.riding != Some(m.id)
+            && self.lan.as_ref().is_none_or(|host| {
+                host.hub
+                    .guests
+                    .iter()
+                    .all(|guest| guest.vehicle != Some(m.id))
+            }))
+        .then_some(adv::MovementView {
+            per_tick: [m.velocity.x, m.velocity.y, m.velocity.z],
+            fall_distance: m.fall_distance,
+        });
         EntityView {
+            movement,
             kind: m.kind.id.clone(),
             position: [m.position.x, m.position.y, m.position.z],
             on_fire: m.fire_ticks > 0,
@@ -1443,6 +1522,23 @@ impl Game<'_> {
                 block_pos: None,
             };
             adv::conditions(&c["player"], &pctx, w) && adv::item(&c["item"], &it, w)
+        });
+    }
+    /// `UsedEnderEyeTrigger.trigger`: the player threw an eye of ender toward
+    /// a structure `sqr_distance` (squared, horizontal) away.
+    pub(super) fn trigger_used_ender_eye(&mut self, sqr_distance: f64) {
+        if self.remote.is_some() || self.no_player_here() {
+            return;
+        }
+        let me = self.player_entity_for("minecraft:used_ender_eye");
+        self.trigger("minecraft:used_ender_eye", move |c, w| {
+            let pctx = adv::Entities {
+                this: Some(&me),
+                origin: me.position,
+                tool: None,
+                block_pos: None,
+            };
+            adv::conditions(&c["player"], &pctx, w) && matches_sqr(&c["distance"], sqr_distance)
         });
     }
     /// The entity a 100 block ray from the eyes meets first, if no block is
@@ -2920,7 +3016,11 @@ mod structure_tag_tests {
         let game_tags = pack.join("data/minecraft/tags/worldgen/structure");
         std::fs::create_dir_all(&tags).unwrap();
         std::fs::create_dir_all(&game_tags).unwrap();
-        std::fs::write(pack.join("pack.mcmeta"), "{}").unwrap();
+        std::fs::write(
+            pack.join("pack.mcmeta"),
+            r#"{"pack":{"description":"fixture"}}"#,
+        )
+        .unwrap();
         std::fs::write(
             tags.join("village.json"),
             r##"{"values": ["#minecraft:village", "minecraft:igloo"]}"##,
@@ -2947,5 +3047,377 @@ mod structure_tag_tests {
         ));
         assert!(holds(&game, "#minecraft:shipwreck", "minecraft:shipwreck"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod random_chance_command_tests {
+    use super::*;
+    use crate::game::commands::Target;
+    use horizon_world::nbt::Tag;
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn registered_named_random_chance_uses_real_source_and_world_draws() {
+        use crate::game::{Audio, Options, Settings, load_resources};
+        use std::time::Instant;
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &crate::game::Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+
+        let dir = std::env::temp_dir().join(format!("horizon-h122-unit-{}", std::process::id()));
+        assert!(!dir.exists());
+        let pack = dir.join("datapacks/chance");
+        let folder = pack.join("data/h122/predicate");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(pack.join("pack.mcmeta"),r#"{"pack":{"description":"Chance","pack_format":121,"min_format":[121,0],"max_format":[121,0]}}"#).unwrap();
+        let function = pack.join("data/h122/function");
+        std::fs::create_dir_all(&function).unwrap();
+        std::fs::write(
+            function.join("admit.mcfunction"),
+            "scoreboard players set pack h122 17\n",
+        )
+        .unwrap();
+        let rows: Vec<Value> = include_str!("../../../../docs/parity/random-chance-seeded.jsonl")
+            .lines()
+            .map(|s| serde_json::from_str(s).unwrap())
+            .collect();
+        for row in &rows {
+            std::fs::write(
+                folder.join(format!("case_{}.json", row["case"])),
+                row["input"].to_string(),
+            )
+            .unwrap();
+        }
+        std::fs::write(folder.join("pig.json"),r#"{"type":"minecraft:entity_properties","entity":"this","predicate":{"minecraft:entity_type":"minecraft:pig"}}"#).unwrap();
+        game.world_root = dir.clone();
+        game.reload_datapacks(false);
+        assert!(game.run_command("scoreboard objectives add h122 dummy"));
+        assert!(game.run_command("function h122:admit"));
+        assert_eq!(game.score.board.score("pack", "h122").unwrap().value, 17);
+        let tag = Tag::compound([
+            ("id", Tag::String("minecraft:pig".into())),
+            ("UUID", Tag::IntArray(vec![122, 0, 0, 1])),
+            (
+                "Pos",
+                Tag::List(vec![
+                    Tag::Double(4.5_f64.to_bits()),
+                    Tag::Double(200.0_f64.to_bits()),
+                    Tag::Double(4.5_f64.to_bits()),
+                ]),
+            ),
+            ("Health", Tag::Float(10_f32.to_bits())),
+            ("NoAI", Tag::Byte(1)),
+            ("NoGravity", Tag::Byte(1)),
+        ]);
+        let id = game.load_mob(tag, None).unwrap();
+        assert_eq!(game.persist.uuids.get(&id), Some(&[122, 0, 0, 1]));
+        assert_eq!(game.entity_view_of(Target::Mob(id)).kind, "minecraft:pig");
+        let clock = game.world.game_time;
+        assert!(game.run_command("execute as 0000007a-0000-0000-0000-000000000001 if predicate h122:pig run scoreboard players set identity h122 1"));
+        assert_eq!(game.score.board.score("identity", "h122").unwrap().value, 1);
+        for row in &rows {
+            let seed = row["seed"].as_i64().unwrap();
+            let name = format!("h122:case_{}", row["case"]);
+            assert!(game.fns.store.predicates.contains_key(&name));
+            game.world.random.set_seed(seed);
+            game.run_command("scoreboard players set branch h122 -99");
+            game.exec = Default::default();
+            let source = game.player_source();
+            game.execute_line(&format!("execute as 0000007a-0000-0000-0000-000000000001 if predicate {name} run scoreboard players set branch h122 1"),source).unwrap();
+            assert_eq!(
+                game.score.board.score("branch", "h122").unwrap().value,
+                if row["result"].as_bool().unwrap() {
+                    1
+                } else {
+                    -99
+                },
+                "{row}"
+            );
+            let continuation: Vec<i64> = (0..4).map(|_| game.world.random.next_long()).collect();
+            let expected: Vec<i64> = row["continuation"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_i64().unwrap())
+                .collect();
+            assert_eq!(continuation, expected, "actual world RNG {row}");
+        }
+        assert_eq!(game.world.game_time, clock);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod custom_data_equipment_tests {
+    use super::*;
+    use crate::game::native_machines::tests::server_game;
+    use horizon_client::{mobs::finalize, save};
+    use horizon_core::position::BlockPos;
+    use horizon_world::nbt::{Tag, parse_snbt};
+
+    fn item_predicate(pattern: &str) -> Value {
+        serde_json::json!({"items":"minecraft:stick","count":1,
+            "predicates":{"minecraft:custom_data":pattern}})
+    }
+    fn condition(pattern: &str) -> Value {
+        serde_json::json!({"type":"minecraft:entity_properties","entity":"this",
+            "predicate":{"minecraft:entity_type":"minecraft:pig",
+                "minecraft:equipment":{"mainhand":item_predicate(pattern)}}})
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn actual_mob_equipment_projects_typed_custom_data_into_named_predicate_evaluation() {
+        let mut game = server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.block_ticks
+            .add_empty_chunk(BlockPos::new(0, 0, 0).chunk())
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        let clock = game.world.game_time;
+        let rich = r#"{h289:1b,nested:{k:7,extra:9},entries:[{k:1b,extra:2b},{k:2b}],wide:9007199254740993L,spare:"keep"}"#;
+        let mut failures = Vec::new();
+        for (i, data) in [(1, Some(rich)), (2, None)] {
+            let uuid = [289, 1, 0, i];
+            let actor = format!("00000121-0000-0001-0000-{i:012x}");
+            let components = data.map_or(String::new(), |d| {
+                format!(",components:{{\"minecraft:custom_data\":{d}}}")
+            });
+            let x = f64::from(i) + 0.5;
+            assert!(game.run_command(&format!(
+                "summon minecraft:pig {x} 200 4.5 {{UUID:[I;289,1,0,{i}],NoAI:1b,NoGravity:1b,Silent:1b,PersistenceRequired:1b,Health:10f,equipment:{{mainhand:{{id:\"minecraft:stick\",count:1{components}}}}}}}"
+            )));
+            assert!(game.world.loaded(i, 4));
+            assert_eq!(
+                &*game.res.facts().get(game.world.block(i, 199, 4)).name,
+                "minecraft:stone"
+            );
+            assert!(game.run_command(&format!("execute as {actor} if entity @s[type=pig,nbt={{UUID:[I;289,1,0,{i}],NoAI:1b,Health:10f,Pos:[{x}d,200d,4.5d]}}]")));
+            let id = *game
+                .persist
+                .uuids
+                .iter()
+                .find(|(_, value)| **value == uuid)
+                .expect("actual admitted UUID")
+                .0;
+            let mob = game.mobs.iter().find(|m| m.id == id).unwrap();
+            assert!(mob.no_ai);
+            let stack = finalize::item_stack(mob, finalize::MAINHAND)
+                .expect("actual loaded equipment stack");
+            assert_eq!((&*stack.item, stack.count), ("minecraft:stick", 1));
+            let saved = save::item_to_nbt(&stack);
+            if let Some(data) = data {
+                let (expected, used) = parse_snbt(data).unwrap();
+                assert_eq!(used, data.len());
+                assert_eq!(
+                    saved
+                        .get("components")
+                        .and_then(|t| t.get("minecraft:custom_data")),
+                    Some(&expected)
+                );
+                assert_eq!(
+                    stack.custom_data().unwrap().get(&"h289".into()),
+                    Some(&Tag::Byte(1))
+                );
+                assert_eq!(
+                    stack.custom_data().unwrap().get(&"wide".into()),
+                    Some(&Tag::Long(9_007_199_254_740_993))
+                );
+                // Contradictory retained raw equipment must not replace actual stack state.
+                let (wrong, _) = parse_snbt(r#"{equipment:{mainhand:{id:"minecraft:stick",count:1,components:{"minecraft:custom_data":{h289:2b}}}}}"#).unwrap();
+                let raw = game
+                    .persist
+                    .raw
+                    .entry(id)
+                    .or_insert_with(|| Tag::Compound(Default::default()));
+                let Tag::Compound(raw) = raw else {
+                    panic!("actual raw compound")
+                };
+                raw.insert("equipment".into(), wrong.get("equipment").unwrap().clone());
+                assert!(game.run_command(&format!("execute if data entity {actor} equipment.mainhand.components{{\"minecraft:custom_data\":{{h289:1b}}}}")));
+            } else {
+                assert!(stack.custom_data().is_none());
+                assert!(game.run_command(&format!("execute unless data entity {actor} equipment.mainhand.components.\"minecraft:custom_data\"")));
+            }
+            let mob = game.mobs.iter().find(|m| m.id == id).unwrap();
+            let view = game.mob_entity(mob);
+            assert_eq!(
+                (
+                    &*view.equipment[0].as_ref().unwrap().id,
+                    view.equipment[0].as_ref().unwrap().count
+                ),
+                ("minecraft:stick", 1)
+            );
+            let probes: Vec<(&str, bool)> = if data.is_some() {
+                vec![
+                    ("{h289:1b}", true),
+                    ("{nested:{k:7}}", true),
+                    ("{entries:[{k:2b}]}", true),
+                    ("{entries:[{k:2b},{k:1b}]}", true),
+                    ("{wide:9007199254740993L}", true),
+                    ("{}", true),
+                    ("{h289:2b}", false),
+                    ("{h289:1}", false),
+                    ("{missing:1b}", false),
+                    ("{entries:[]}", false),
+                    ("{wide:9007199254740992L}", false),
+                ]
+            } else {
+                vec![("{}", true), ("{h289:1b}", false)]
+            };
+            for (pattern, want) in probes {
+                let actual =
+                    game.conditions_hold(&condition(pattern), Some(&view), [x, 200.0, 4.5]);
+                if actual != want {
+                    failures.push((i, pattern, actual, want));
+                }
+            }
+            // Existing non-equipment views are unprojected and retain unsupported legacy behavior.
+            assert!(game.loot_item_filter(&item_predicate("{h289:99b}"), &stack));
+            assert_eq!(game.world.game_time, clock, "zero observation ticks");
+        }
+        assert!(
+            failures.is_empty(),
+            "actual mob-equipment custom_data mismatch: {failures:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod movement_predicate_tests {
+    use super::super::native_machines::tests::server_game;
+    use horizon_core::geometry::Vec3;
+    use horizon_core::position::BlockPos;
+    use serde_json::json;
+
+    #[test]
+    #[ignore = "requires prepared resources and scratch cwd/homes"]
+    fn actual_registered_movement_predicate_uses_admitted_mob() {
+        let mut game = server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.block_ticks
+            .add_empty_chunk(BlockPos::new(0, 0, 0).chunk())
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        assert!(game.world.loaded(4, 4));
+        let root = std::env::current_dir().unwrap().join("movement-world");
+        let pack = root.join("datapacks/movement");
+        let folder = pack.join("data/motion/predicate");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(pack.join("pack.mcmeta"), r#"{"pack":{"description":"Movement fixture","min_format":[121,0],"max_format":[121,0]}}"#).unwrap();
+        let entity =
+            |p| json!({"type":"minecraft:entity_properties","entity":"this","predicate":p});
+        let movement =
+            |p| entity(json!({"minecraft:entity_type":"minecraft:pig","minecraft:movement":p}));
+        let high = movement(json!({"x":{"min":100}}));
+        let zero = movement(json!({"x":{"min":0,"max":0}}));
+        let probes = [
+            ("high", high.clone(), false),
+            ("zero", zero.clone(), true),
+            ("empty", movement(json!({})), true),
+            (
+                "not_high",
+                json!({"type":"minecraft:inverted","term":high}),
+                true,
+            ),
+            (
+                "not_zero",
+                json!({"type":"minecraft:inverted","term":zero}),
+                false,
+            ),
+        ];
+        for (name, p, _) in &probes {
+            std::fs::write(folder.join(format!("{name}.json")), p.to_string()).unwrap();
+        }
+        std::fs::write(
+            folder.join("identity.json"),
+            entity(json!({"minecraft:entity_type":"minecraft:pig"})).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            folder.join("always.json"),
+            r#"{"type":"minecraft:all_of","terms":[]}"#,
+        )
+        .unwrap();
+        game.world_root = root;
+        game.reload_datapacks(false);
+        assert!(game.run_command("scoreboard objectives add motion dummy"));
+        assert!(game.run_command("execute if predicate motion:always"));
+        let clock = game.world.game_time;
+        let actor = "000002a1-0000-0000-0000-000000000001";
+        assert!(game.run_command("summon pig 4.5 200 4.5 {UUID:[I;673,0,0,1],NoAI:1b,NoGravity:1b,Health:10f,Motion:[0d,0d,0d]}"));
+        assert!(game.run_command(&format!("execute as {actor} if entity @s[type=pig,nbt={{UUID:[I;673,0,0,1],Health:10f,Pos:[4.5d,200d,4.5d],Motion:[0d,0d,0d],NoAI:1b,NoGravity:1b}}]")));
+        assert!(game.run_command(&format!("execute as {actor} if predicate motion:identity")));
+        let id = *game
+            .persist
+            .uuids
+            .iter()
+            .find(|(_, u)| **u == [673, 0, 0, 1])
+            .unwrap()
+            .0;
+        let mob = game.mobs.iter().find(|m| m.id == id).unwrap();
+        assert_eq!(mob.velocity, Vec3::ZERO);
+        assert_eq!(mob.fall_distance, 0.0);
+        assert!(mob.no_ai && mob.no_gravity);
+        assert!(mob.extra.mount.is_none());
+        let view = game.entity_view_of(super::super::commands::Target::Mob(id));
+        assert_eq!(view.kind, "minecraft:pig");
+        let mut failures = Vec::new();
+        for (name, p, want) in probes {
+            assert!(
+                game.fns
+                    .store
+                    .predicates
+                    .contains_key(&format!("motion:{name}"))
+            );
+            let direct = game.conditions_hold(&p, Some(&view), [4.5, 200.0, 4.5]);
+            if direct != want {
+                failures.push(format!("direct {name}: {direct} != {want}"));
+            }
+            assert!(game.run_command("scoreboard players set result motion 91"));
+            assert!(game.run_command("scoreboard players set success motion 17"));
+            game.run_command(&format!("execute store result score result motion store success score success motion as {actor} if predicate motion:{name}"));
+            for key in ["result", "success"] {
+                let value = game.score.board.score(key, "motion").unwrap().value;
+                if value != i32::from(want) {
+                    failures.push(format!("registered {name} {key}: {value}"));
+                }
+            }
+        }
+        assert_eq!(game.world.game_time, clock, "zero observation ticks");
+        assert!(
+            failures.is_empty(),
+            "actual movement predicate mismatches: {failures:?}"
+        );
     }
 }

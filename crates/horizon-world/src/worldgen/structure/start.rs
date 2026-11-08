@@ -838,6 +838,7 @@ pub struct StructureStart {
     pub structure: usize,
     pub name: String,
     pub chunk: ChunkPos,
+    pub references: i32,
     pub pieces: Vec<Piece>,
     /// Piece union, inflated by 12 for terrain-adapting structures.
     pub bounding_box: BoundingBox,
@@ -857,7 +858,7 @@ impl StructureStart {
             ("id", Tag::String(self.name.as_str().into())),
             ("ChunkX", Tag::Int(self.chunk.x)),
             ("ChunkZ", Tag::Int(self.chunk.z)),
-            ("references", Tag::Int(0)),
+            ("references", Tag::Int(self.references)),
             ("Children", Tag::List(children?)),
         ]))
     }
@@ -948,10 +949,43 @@ pub fn create_starts(
     rings: &Rings,
     chunk: ChunkPos,
 ) -> Vec<StructureStart> {
+    create_starts_with_saved(
+        registry,
+        resources,
+        bindings,
+        context,
+        possible_sets,
+        rings,
+        chunk,
+        Vec::new(),
+    )
+}
+/// Saved starts replace generation of their placement set; all other sets retain their
+/// usual placement checks, weighted choices and generation fallback.
+pub(crate) fn create_starts_with_saved(
+    registry: &StructureRegistry,
+    resources: &StructureResources,
+    bindings: &FeatureBlockBindings<'_>,
+    context: &mut impl StartContext,
+    possible_sets: &[usize],
+    rings: &Rings,
+    chunk: ChunkPos,
+    mut saved: Vec<StructureStart>,
+) -> Vec<StructureStart> {
     let seed = context.seed();
     let mut starts = Vec::new();
     for &set_index in possible_sets {
         let set = &registry.sets[set_index];
+        let before = starts.len();
+        while let Some(i) = saved
+            .iter()
+            .position(|start| set.structures.iter().any(|(s, _)| *s == start.structure))
+        {
+            starts.push(saved.remove(i));
+        }
+        if starts.len() != before {
+            continue;
+        }
         if !registry.is_structure_chunk(set, seed, chunk.x, chunk.z, rings) {
             continue;
         }
@@ -1004,6 +1038,7 @@ pub fn create_starts(
             total -= selected.1;
         }
     }
+    starts.extend(saved);
     starts
 }
 /// `Structure.generate` of one structure for one chunk: what the chunk's
@@ -1423,6 +1458,7 @@ impl StructureStart {
             structure,
             name: def.name.clone(),
             chunk,
+            references: 0,
             pieces,
             bounding_box,
         }

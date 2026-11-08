@@ -164,9 +164,9 @@ names an exact filesystem path; `shaders/` packs still use filenames.
 
 0.2 is the line for linear light and HDR ([hdr-linear-light.md](../design/hdr-linear-light.md)). A pack opts in with
 `api = "0.2"`. `horizon-shader check` and `pack` take it; **the game draws 0.2 packs only with
-`HORIZON_HDR_FRAME=float` set, and the registry doesn't list them**. With the switch, a renderer made with a 0.2 pack
-picked draws the world into a float frame where the device can (else the 8-bit one), and a 0.2 pack picked or
-dropped later runs on the frame there is. What it changes from 0.1:
+`HORIZON_HDR_FRAME=float` set, and the registry doesn't list them**. With the switch, a 0.2 pack draws the world
+into a float frame where the device can (else the 8-bit one): picking or dropping one makes the renderer again for its
+frame before the next frame draws, and the world is meshed again. What it changes from 0.1:
 
 - **Linear light.** Every colour a stage reads or returns is linear light, 1.0 at paper white and more brighter. Horizon
   decodes vanilla's values with a 2.2 power and encodes the results the frame stores. Depth, normals, light levels,
@@ -225,6 +225,10 @@ and particles (the material stage covers terrain only).
 
 ## Changelog
 
+- 2026-11-08: API 0.2 (fix, experimental): the world a post pass reads holds coverage in its alpha, as the
+  reference says, instead of Horizon's light-source marks. API 0.1 is unchanged.
+- 2026-11-07: API 0.2 (change, experimental): with `HORIZON_HDR_FRAME=float`, a 0.2 pack picked or dropped gets its
+  frame at once instead of at the next start. API 0.1 is unchanged.
 - 2026-11-05: API 0.2 (change, experimental): the game draws 0.2 packs with `HORIZON_HDR_FRAME=float` set, on a
   float frame where the device can; `[frame] blend = "linear"` is still refused. API 0.1 is unchanged.
 - 2026-11-05: API 0.2 (new line, experimental): linear light, `Frame`'s display fields, `[tonemap]` and

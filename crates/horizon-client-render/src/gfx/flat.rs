@@ -106,6 +106,8 @@ pub struct Flat {
     phase2_calls: wgpu::Buffer,
     phase2_call_capacity: u64,
     phase2_call_data: Vec<[u32; 5]>,
+    /// GPU culling's phase 2 uses indirect draws; flat draws without culling do not.
+    indirect_execution: bool,
     /// The copy of phase 2's draws, and its ranges.
     phase2_group: Option<(wgpu::BindGroup, u32)>,
     /// The layout of a page's bind group 1 (shader packs' terrain pipelines share it).
@@ -365,6 +367,7 @@ impl Flat {
         terrain_layout: &wgpu::BindGroupLayout,
         page_vertices: u64,
         min_sections: usize,
+        indirect_execution: bool,
         pipeline: impl Fn(
             &wgpu::PipelineLayout,
             &str,
@@ -489,10 +492,16 @@ impl Flat {
                 device,
                 "Flat section draw calls, phase 2",
                 20,
-                wgpu::BufferUsages::INDIRECT | storage_usage,
+                storage_usage
+                    | if indirect_execution {
+                        wgpu::BufferUsages::INDIRECT
+                    } else {
+                        wgpu::BufferUsages::empty()
+                    },
             ),
             phase2_call_capacity: 1,
             phase2_call_data: Vec::new(),
+            indirect_execution,
             phase2_group: None,
             draw_layout,
             blocks_per_page: page_vertices.div_ceil(GRAIN),
@@ -645,6 +654,7 @@ impl Flat {
         timing: Option<&mut super::pack_timing::PassTiming>,
     ) -> bool {
         self.phase2_group = None;
+        let phase2 = phase2.filter(|_| self.indirect_execution);
         let phase1_draws = if phase2.is_some() {
             phase1_draws
         } else {
@@ -753,7 +763,12 @@ impl Flat {
                 device,
                 "Flat section draw calls, phase 2",
                 self.phase2_call_capacity * 20,
-                wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::STORAGE,
+                wgpu::BufferUsages::STORAGE
+                    | if self.indirect_execution {
+                        wgpu::BufferUsages::INDIRECT
+                    } else {
+                        wgpu::BufferUsages::empty()
+                    },
             );
         }
         if phase2_calls > 0 {

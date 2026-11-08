@@ -67,6 +67,7 @@ fn copy(mesh: &SectionMesh) -> SectionMesh {
         sides: mesh.sides,
         translucent: mesh.translucent.clone(),
         packed: mesh.packed.clone(),
+        packed_far: mesh.packed_far,
         solid_tints: Vec::new(),
         visibility: mesh.visibility,
         block_entities: mesh.block_entities.clone(),

@@ -47,6 +47,13 @@ All requests use HTTPS and JSON except the two OAuth calls (form-encoded):
 1. **Device code**: `POST https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode`
    (`client_id`, `scope=XboxLive.signin offline_access`). The launcher shows the `user_code` and
    `verification_uri` (https://www.microsoft.com/link) with a copy button and opens the browser.
+   The device code page takes whatever Microsoft account the browser is signed in to, and the flow has
+   no option for an account picker (no `prompt`, no `login_hint`). To add a different account without any
+   change to the Azure app (#3786), the sign-in panel offers **Open in private window**: the default
+   browser's private window (`launcher/src/private_window.rs`: the `https` ProgId on Windows, LaunchServices
+   on macOS, `xdg-settings` on Linux; `--incognito`, `--inprivate`, `--private`, `--private-window`) has no
+   Microsoft session. Safari and unknown browsers get **Copy link** and a hint instead. **Use a different
+   Microsoft account** opens `login.live.com/logout.srf` and then the code page.
 2. **Poll** `POST …/consumers/oauth2/v2.0/token` (`grant_type=urn:ietf:params:oauth:grant-type:device_code`)
    every `interval` seconds; `authorization_pending` waits, `slow_down` adds 5 s, `authorization_declined`,
    `expired_token` and `bad_verification_code` end the sign-in with a message. Result: the Microsoft

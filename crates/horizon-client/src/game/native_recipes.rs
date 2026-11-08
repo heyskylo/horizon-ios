@@ -296,10 +296,15 @@ impl Game<'_> {
                     result,
                 } => (
                     id,
-                    template,
+                    template.as_ref(),
                     base,
-                    addition,
-                    index.stack(result, 1, String::new()).into_iter().collect(),
+                    addition.as_ref(),
+                    result
+                        .create()
+                        .as_ref()
+                        .and_then(|s| index.of(s))
+                        .into_iter()
+                        .collect(),
                 ),
                 Smithing::Trim {
                     id,
@@ -307,10 +312,14 @@ impl Game<'_> {
                     base,
                     addition,
                     ..
-                } => (id, template, base, addition, index.any(base)),
+                } => (id, Some(template), base, Some(addition), index.any(base)),
             };
             let mut r = recipe(id.clone(), RecipeKind::Smithing);
-            r.slots = vec![index.any(template), index.any(base), index.any(addition)];
+            r.slots = vec![
+                template.map(|i| index.any(i)).unwrap_or_default(),
+                index.any(base),
+                addition.map(|i| index.any(i)).unwrap_or_default(),
+            ];
             r.results = results;
             out.push(r);
         }

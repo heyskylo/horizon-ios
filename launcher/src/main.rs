@@ -469,6 +469,10 @@ struct Launcher {
     pack_busy: bool,
     pack_log: VecDeque<String>,
     pack_error: Option<String>,
+    /// Other launchers' modpacks on this computer, offered above the imported ones, and whether
+    /// the scan for them runs now.
+    found_packs: Vec<horizon_launcher::other_launchers::Found>,
+    found_scanning: bool,
     /// The game starting now plays this pack's profile (its work folder).
     starting_pack: Option<std::path::PathBuf>,
     /// The Mods page: the browser's search, installs and updates (`mods_page.rs`).
@@ -736,6 +740,8 @@ impl Launcher {
             pack_busy: false,
             pack_log: VecDeque::new(),
             pack_error: None,
+            found_packs: Vec::new(),
+            found_scanning: false,
             starting_pack: None,
             mods: mods_page::Mods::new(cx),
             github: github_mods_page::Github::new(cx),
@@ -1051,6 +1057,10 @@ impl Launcher {
         let profile = native_mods::Profile::chosen(&self.settings);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
+            let swapped = horizon_launcher::browser::horizon::fit_versions(&instance);
+            for line in &swapped {
+                let _ = tx.send(Msg::NativeProgress(line.clone()));
+            }
             let result = native_mods::build(
                 &base,
                 &folder,
@@ -1062,6 +1072,13 @@ impl Launcher {
                     let _ = tx.send(Msg::NativeProgress(step.label()));
                 },
             );
+            // The build's last line is what the player reads: it says which versions were swapped.
+            if result.is_ok() && !swapped.is_empty() {
+                let _ = tx.send(Msg::NativeProgress(swapped.join(
+                    "
+",
+                )));
+            }
             let _ = tx.send(Msg::Native(result));
         });
     }
@@ -1195,10 +1212,10 @@ impl Launcher {
                             self.step_aside(cx);
                         }
                         Err(e) => {
-                            if e == account::NoOwner.to_string() {
+                            if e == account::NoOwner::default().to_string() {
                                 self.owner = Some(false);
                                 self.owner_screen_open = true;
-                                self.client_error = Some(account::NoOwner::in_window());
+                                self.client_error = Some(account::NoOwner::default().in_window());
                             } else {
                                 self.client_error = Some(e);
                             }
@@ -1211,10 +1228,13 @@ impl Launcher {
                         let mut cmd = backend::client_command(&tag);
                         let account::GameSession { file, offline, env } = match session {
                             Ok(pass) => pass,
-                            Err(account::NoOwner) => {
-                                self.owner = Some(false);
-                                self.owner_screen_open = true;
-                                self.client_error = Some(account::NoOwner::in_window());
+                            Err(refused) => {
+                                // A keyring that didn't answer isn't a missing owner (#12179).
+                                if refused.keyring.is_none() {
+                                    self.owner = Some(false);
+                                    self.owner_screen_open = true;
+                                }
+                                self.client_error = Some(refused.in_window());
                                 self.starting_pack = None;
                                 self.joining = None;
                                 self.quick_play = None;
@@ -1437,6 +1457,10 @@ impl Launcher {
                     }
                 }
                 Msg::PackDone(result) => self.pack_done(result),
+                Msg::FoundPacks(found) => {
+                    self.found_scanning = false;
+                    self.found_packs = found;
+                }
                 // Old versions log their session; it never reaches the window.
                 Msg::Line(_, line) if line.contains("Session ID is") => {}
                 Msg::Line(job, line) => {
@@ -1899,14 +1923,19 @@ impl Launcher {
             });
         let mods_tx = self.mods.tx.clone();
         std::thread::spawn(move || {
+            // One line per step: a terminal run shows where Play stops (#12179).
+            backend::play_step("checking the game's assets");
             backend::complete_assets(&tag);
             if let Some(auto) = auto {
+                backend::play_step("updating registry mods");
                 let (lines, _) = mods_page::auto_update(&[auto]);
                 if !lines.is_empty() {
                     let _ = mods_tx.send(mods_page::Event::AutoUpdated(lines, Vec::new()));
                 }
             }
+            backend::play_step("reading the sign-in");
             let session = account::session_for_game(&backend::game_home(), offline_without_owner);
+            backend::play_step("starting the game");
             let _ = tx.send(Msg::Session(session));
         });
     }
@@ -2008,6 +2037,10 @@ impl Launcher {
 
     fn begin_sign_in(&mut self, target: Option<account::Account>) {
         self.cancel_sign_in();
+        // The code page offers a private window: find the default browser meanwhile.
+        std::thread::spawn(|| {
+            horizon_launcher::private_window::detected();
+        });
         self.sign_in = Some(match &target {
             Some(account) => SignIn::start_for(account.clone()),
             None => SignIn::start(),
@@ -4561,7 +4594,22 @@ impl Launcher {
                         .font_family(theme::MONO)
                         .text_color(t.ink)
                         .child(code.user_code.clone()),
-                ),
+                )
+                .when(!microsoft::has_private_window(), |col| {
+                    col.child(tr("Open this link in a private window to pick another account."))
+                })
+                .child({
+                    let uri = code.verification_uri.clone();
+                    div().flex().child(
+                        button(
+                            "sign-in-other",
+                            "Use a different Microsoft account",
+                            Kind::Ghost,
+                            &t,
+                        )
+                        .on_click(move |_, _, cx| microsoft::use_different_account(&uri, cx)),
+                    )
+                }),
             Some(SignInState::Done(Ok(a))) => {
                 div().child(trf("Signed in as {name}.", &[("name", &a.name)]))
             }
@@ -4597,6 +4645,23 @@ impl Launcher {
             None
         } else if let Some(SignInState::Code(code)) = &self.sign_in_state {
             let (uri, user_code) = (code.verification_uri.clone(), code.user_code.clone());
+            let (private_uri, link_uri) = (uri.clone(), uri.clone());
+            // A private window picks the account; without one the link is for the player to carry over.
+            let private = if microsoft::has_private_window() {
+                button(
+                    "sign-in-private",
+                    "Open in private window",
+                    Kind::Secondary,
+                    &t,
+                )
+                .on_click(move |_, _, cx| microsoft::open_private(&private_uri, cx))
+            } else {
+                button("sign-in-copy-link", "Copy link", Kind::Secondary, &t).on_click(
+                    move |_, _, cx| {
+                        copy_to_clipboard(cx, gpui::ClipboardItem::new_string(link_uri.clone()))
+                    },
+                )
+            };
             Some(
                 div()
                     .flex()
@@ -4611,6 +4676,7 @@ impl Launcher {
                             },
                         ),
                     )
+                    .child(private)
                     .child(
                         button("sign-in-open", "Open link", Kind::Secondary, &t)
                             .on_click(move |_, _, cx| cx.open_url(&uri)),
@@ -5261,6 +5327,7 @@ impl Render for Launcher {
         self.sky.free_replaced(window);
         self.pictures.free_retired(window);
         self.wardrobe_marks.free_replaced(window);
+        self.shop.free_replaced(window);
         // The new page fades in and rises a few pixels, as the website's tabs do (`hzl-pop`).
         let content = div()
             .relative()

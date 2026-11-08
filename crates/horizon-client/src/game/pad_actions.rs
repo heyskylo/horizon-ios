@@ -117,9 +117,12 @@ impl Game<'_> {
         let (atlas, style) = (&self.gui.atlas, self.ui.options.pad_style);
         let width = |button: Button| pad_glyph::width(atlas, button, style);
         let mut glyphs = Vec::new();
-        // A on a text field opens the keyboard: at its right end, its text stays in view.
-        if let Some(focus) = focus.filter(|f| f.kind == Kind::Field)
-            && let Some((x, y)) = glyph_at(focus.rect, width(Button::South), view, true)
+        // A on a text field opens the keyboard, and on a slider takes hold of it: at the right end,
+        // the text stays in view.
+        if let Some(focus) = focus.filter(|f| {
+            f.kind == Kind::Field
+                || matches!(f.kind, Kind::Slider { .. }) && self.pad.menu.slider_hold.is_none()
+        }) && let Some((x, y)) = glyph_at(focus.rect, width(Button::South), view, true)
         {
             glyphs.push((Button::South, x, y));
         }

@@ -7,6 +7,8 @@ use std::sync::Arc;
 
 /// Enchantment id and level, in insertion order.
 pub type Levels = Vec<(Arc<str>, u32)>;
+pub mod trim;
+pub use trim::Trim;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StackData {
@@ -25,7 +27,7 @@ pub struct StackData {
     /// `custom_name`), kept as saved.
     pub potion_extra: Vec<(String, Tag)>,
     /// `minecraft:trim`: (material, pattern).
-    pub trim: Option<(Arc<str>, Arc<str>)>,
+    pub trim: Option<Trim>,
     /// `minecraft:container` (shulker boxes): the non-empty slots.
     pub container: Vec<(u8, ItemStack)>,
     /// `minecraft:charged_projectiles` (a loaded crossbow).
@@ -145,18 +147,44 @@ impl StackData {
         self.set_other(id, Some(tag));
     }
     /// `SetComponentsFunction`: one component of a loot patch, in its JSON
-    /// form. Trim is modelled; the rest keep their saved components.
-    /// A null value removes the component.
+    /// form. A component Horizon models is read into its field as a saved
+    /// stack's is, so a rolled potion's contents are the effects it gives;
+    /// the rest keep their saved components. A null value removes the
+    /// component.
     pub fn set_loot_component(&mut self, id: &str, value: &serde_json::Value) {
         let tag = (!value.is_null()).then(|| horizon_client_core::scoreboard::json_to_tag(value));
         match id {
+            // `set_banner_pattern` (and `set_components`) write the layers a
+            // banner or shield wears; the renderer and the tooltip read them
+            // from `banner_patterns`, not from a tag in `other`.
+            "minecraft:banner_patterns" => {
+                self.banner_patterns = crate::banner_layer::layers_from_nbt(tag.as_ref());
+            }
+            // `set_book_cover` (and `set_components`) write the book's title,
+            // author, generation and pages as one component: the fields the
+            // tooltip and the reading screen use come back out of it.
+            "minecraft:written_book_content" => {
+                self.written = tag.as_ref().map(written_book_from_tag);
+            }
             "minecraft:trim" => {
-                self.trim = match (value["material"].as_str(), value["pattern"].as_str()) {
-                    (Some(material), Some(pattern)) => {
-                        Some((Arc::from(material), Arc::from(pattern)))
-                    }
-                    _ => None,
+                self.trim = tag.as_ref().and_then(trim::from_nbt);
+            }
+            // The stack's damage is outside its data; a name keeps its own reading.
+            "minecraft:damage" | "minecraft:custom_name" => self.set_other(id, tag),
+            _ if MODELLED.contains(&id) => {
+                let mut saved = match components_tag(0, Some(self)) {
+                    Some(Tag::Compound(c)) => c,
+                    _ => Default::default(),
                 };
+                saved.remove(&JavaString::from(id));
+                if let Some(tag) = tag {
+                    saved.insert(JavaString::from(id), tag);
+                }
+                // A damage set before stays where it was: reading would take it.
+                let damage = self.other("minecraft:damage").cloned();
+                let (_, read) = decode_components(Some(&Tag::Compound(saved)));
+                *self = read.map_or_else(Default::default, |data| *data);
+                self.set_other("minecraft:damage", damage);
             }
             _ => self.set_other(id, tag),
         }
@@ -532,6 +560,28 @@ fn plain_component(t: &Tag) -> Tag {
     }
     t.clone()
 }
+/// `WrittenBookContent` from its component: the title and author (a
+/// `Filterable`'s raw text), the generation and the pages, whose component
+/// tags are kept apart from their plain text for click events.
+fn written_book_from_tag(b: &Tag) -> WrittenBook {
+    WrittenBook {
+        title: b.get("title").and_then(filterable_text).unwrap_or_default(),
+        author: b.get("author").and_then(string).unwrap_or_default(),
+        generation: b.get("generation").and_then(int).unwrap_or(0).clamp(0, 3) as u8,
+        pages: match b.get("pages") {
+            Some(Tag::List(pages)) => pages.iter().filter_map(filterable_text).collect(),
+            _ => Vec::new(),
+        },
+        page_tags: match b.get("pages") {
+            Some(Tag::List(pages)) => pages
+                .iter()
+                .map(|p| plain_component(p.get("raw").unwrap_or(p)))
+                .collect(),
+            _ => Vec::new(),
+        },
+    }
+}
+
 fn filterable_text(t: &Tag) -> Option<String> {
     match t.get("raw") {
         Some(raw) => read_text(raw),
@@ -747,6 +797,21 @@ fn canonical_other_component(id: &str, tag: &Tag) -> Tag {
 /// A filled map's empty decorations equal its prototype (`Items.mapProperties`).
 pub fn encode_components(stack: &ItemStack) -> Option<Tag> {
     let mut components = components_tag(stack.damage, stack.data())?;
+    // MobEffectInstance.Details' codec always saves the resolved icon flag.
+    // An omitted icon follows show_particles, whose default is true.
+    if let Some(Tag::List(effects)) = components
+        .get_mut("minecraft:potion_contents")
+        .and_then(|potion| potion.get_mut("custom_effects"))
+    {
+        for effect in effects {
+            let shown = effect.get("show_particles").and_then(int).unwrap_or(1) != 0;
+            if let Tag::Compound(fields) = effect {
+                fields
+                    .entry(JavaString::from("show_icon"))
+                    .or_insert(Tag::Byte(i8::from(shown)));
+            }
+        }
+    }
     // LodestoneTracker.CODEC: optionalFieldOf("tracked", true).
     if let Some(Tag::Compound(tracker)) = components.get_mut("minecraft:lodestone_tracker")
         && tracker.get(&JavaString::from("tracked")) == Some(&Tag::Byte(1))
@@ -758,6 +823,17 @@ pub fn encode_components(stack: &ItemStack) -> Option<Tag> {
         && let Tag::Compound(entries) = &mut components
     {
         entries.remove(&JavaString::from("minecraft:map_decorations"));
+        if entries.is_empty() {
+            return None;
+        }
+    }
+    // Items.ENCHANTED_BOOK has empty stored enchantments in its prototype.
+    // Keep the live presence marker; only the saved component patch elides it.
+    if &*stack.item == "minecraft:enchanted_book"
+        && matches!(components.get("minecraft:stored_enchantments"), Some(Tag::Compound(entries)) if entries.is_empty())
+        && let Tag::Compound(entries) = &mut components
+    {
+        entries.remove(&JavaString::from("minecraft:stored_enchantments"));
         if entries.is_empty() {
             return None;
         }
@@ -832,14 +908,8 @@ pub fn components_tag(damage: u32, data: Option<&StackData>) -> Option<Tag> {
                 Tag::compound(potion.into_iter().chain(extra)),
             ));
         }
-        if let Some((material, pattern)) = &d.trim {
-            entries.push((
-                "minecraft:trim",
-                Tag::compound([
-                    ("material", Tag::String((&**material).into())),
-                    ("pattern", Tag::String((&**pattern).into())),
-                ]),
-            ));
+        if let Some(trim) = &d.trim {
+            entries.push(("minecraft:trim", trim::to_nbt(trim)));
         }
         if let Some(id) = d.map_id {
             entries.push(("minecraft:map_id", Tag::Int(id)));
@@ -1062,22 +1132,7 @@ pub fn decode_components(components: Option<&Tag>) -> (u32, Option<Box<StackData
         },
         written: c
             .get("minecraft:written_book_content")
-            .map(|b| WrittenBook {
-                title: b.get("title").and_then(filterable_text).unwrap_or_default(),
-                author: b.get("author").and_then(string).unwrap_or_default(),
-                generation: b.get("generation").and_then(int).unwrap_or(0).clamp(0, 3) as u8,
-                pages: match b.get("pages") {
-                    Some(Tag::List(pages)) => pages.iter().filter_map(filterable_text).collect(),
-                    _ => Vec::new(),
-                },
-                page_tags: match b.get("pages") {
-                    Some(Tag::List(pages)) => pages
-                        .iter()
-                        .map(|p| plain_component(p.get("raw").unwrap_or(p)))
-                        .collect(),
-                    _ => Vec::new(),
-                },
-            }),
+            .map(written_book_from_tag),
         fireworks: c
             .get("minecraft:fireworks")
             .map(|f| {
@@ -1158,12 +1213,7 @@ pub fn decode_components(components: Option<&Tag>) -> (u32, Option<Box<StackData
             .get("minecraft:ominous_bottle_amplifier")
             .and_then(int)
             .map(|v| v.clamp(0, 4) as u8),
-        trim: c.get("minecraft:trim").and_then(|t| {
-            Some((
-                Arc::from(t.get("material").and_then(string)?.as_str()),
-                Arc::from(t.get("pattern").and_then(string)?.as_str()),
-            ))
-        }),
+        trim: c.get("minecraft:trim").and_then(trim::from_nbt),
         bundle_selected: BundleSelected::default(),
         other: Vec::new(),
         wire: Wire::default(),
@@ -1175,7 +1225,15 @@ pub fn decode_components(components: Option<&Tag>) -> (u32, Option<Box<StackData
             let ominous_part = data.ominous_banner
                 && (matches!(key.as_str(), "minecraft:item_name" | "minecraft:rarity")
                     || (key == "minecraft:tooltip_display" && v == &ominous_tooltip_display()));
-            if !MODELLED.contains(&key.as_str()) && !ominous_part {
+            // An explicitly empty stored_enchantments still counts as present
+            // (`ItemStack.has`); the list is modelled, so keep a marker.
+            if key == "minecraft:stored_enchantments"
+                && data.stored_enchantments.is_empty()
+                && matches!(v, Tag::Compound(_))
+            {
+                data.other
+                    .push((key, Tag::compound(Vec::<(&str, Tag)>::new())));
+            } else if !MODELLED.contains(&key.as_str()) && !ominous_part {
                 let value = canonical_other_component(&key, v);
                 data.other.push((key, value));
             }
@@ -1186,7 +1244,7 @@ pub fn decode_components(components: Option<&Tag>) -> (u32, Option<Box<StackData
 }
 
 /// The `[id=value,...]` component list of an item argument (`ItemParser`)
-/// as a `components` compound; `!id` removals are skipped.
+/// as a `components` compound, retaining `!id` removal patches.
 pub fn command_components(text: &str) -> Result<Tag, String> {
     let inner = text
         .strip_prefix('[')
@@ -1207,6 +1265,18 @@ pub fn command_components(text: &str) -> Result<Tag, String> {
             };
             entries.insert(JavaString::from(id.as_str()), tag);
             rest = &value[used..];
+        } else if let Some(key) = key.strip_prefix('!') {
+            let id = if key.contains(':') {
+                format!("!{key}")
+            } else {
+                format!("!minecraft:{key}")
+            };
+            entries.insert(
+                JavaString::from(id.as_str()),
+                Tag::compound([] as [(&str, Tag); 0]),
+            );
+        } else {
+            return Err("expected '='".to_string());
         }
         rest = rest.trim_start();
         rest = rest.strip_prefix(',').unwrap_or(rest).trim_start();
@@ -1216,6 +1286,145 @@ pub fn command_components(text: &str) -> Result<Tag, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::banner_layer::BannerLayer;
+
+    /// `set_banner_pattern` (and `set_components`) hand a banner's layers over
+    /// as a component; the renderer and the tooltip read `banner_patterns`, so
+    /// they have to come out of it.
+    #[test]
+    fn a_loot_banner_patterns_component_dresses_the_banner() {
+        let mut stack = ItemStack::new("minecraft:white_banner", 1);
+        stack.data_mut().set_loot_component(
+            "minecraft:banner_patterns",
+            &serde_json::json!([
+                {"pattern": "minecraft:stripe_bottom", "color": "red"},
+                {"pattern": "minecraft:border", "color": "blue"},
+            ]),
+        );
+        let layers = &stack.data().expect("a component box").banner_patterns;
+        assert_eq!(
+            layers,
+            &[
+                BannerLayer::new("minecraft:stripe_bottom", "red"),
+                BannerLayer::new("minecraft:border", "blue"),
+            ]
+        );
+        // A null component takes them off again.
+        stack
+            .data_mut()
+            .set_loot_component("minecraft:banner_patterns", &serde_json::Value::Null);
+        assert!(stack.data().is_none_or(|d| d.banner_patterns.is_empty()));
+    }
+
+    /// `set_book_cover` (and `set_components`) hand a written book's content
+    /// over as a component; the fields the tooltip and the reading screen read
+    /// have to come out of it, not just sit in `other` unread.
+    #[test]
+    fn a_loot_written_book_component_fills_the_book() {
+        let mut stack = ItemStack::new("minecraft:written_book", 1);
+        stack.data_mut().set_loot_component(
+            "minecraft:written_book_content",
+            &serde_json::json!({
+                "title": {"raw": "A Guide"},
+                "author": "Cartographer",
+                "generation": 2,
+                "pages": [{"raw": "page one"}, {"raw": "page two"}],
+            }),
+        );
+        let book = stack
+            .data()
+            .and_then(|d| d.written.as_ref())
+            .expect("content");
+        assert_eq!(book.title, "A Guide");
+        assert_eq!(book.author, "Cartographer");
+        assert_eq!(book.generation, 2);
+        assert_eq!(book.pages, ["page one", "page two"]);
+        // A null component is no component.
+        stack
+            .data_mut()
+            .set_loot_component("minecraft:written_book_content", &serde_json::Value::Null);
+        assert!(stack.data().is_none_or(|d| d.written.is_none()));
+    }
+
+    #[test]
+    fn an_empty_enchanted_book_patch_is_elided_only_when_saved() {
+        let stack = parse_stack(r#"{id:"minecraft:enchanted_book",count:1,components:{"minecraft:stored_enchantments":{}}}"#)
+            .unwrap().unwrap();
+        let live = components_tag(stack.damage, stack.data());
+        assert!(
+            live.as_ref()
+                .unwrap()
+                .get("minecraft:stored_enchantments")
+                .is_some()
+        );
+        assert_eq!(
+            crate::item_nbt::item_to_nbt(&stack),
+            horizon_world::nbt::parse_snbt(r#"{id:"minecraft:enchanted_book",count:1}"#)
+                .unwrap()
+                .0,
+        );
+        assert_eq!(
+            components_tag(stack.damage, stack.data()),
+            live,
+            "saving must not remove live presence"
+        );
+    }
+
+    #[test]
+    fn nondefault_stored_enchantment_patches_are_preserved() {
+        for (item, patch) in [
+            ("minecraft:book", r#"{"minecraft:stored_enchantments":{}}"#),
+            ("minecraft:stone", r#"{"minecraft:stored_enchantments":{}}"#),
+            (
+                "minecraft:enchanted_book",
+                r#"{"minecraft:stored_enchantments":{"minecraft:sharpness":1}}"#,
+            ),
+            (
+                "minecraft:enchanted_book",
+                r#"{"!minecraft:stored_enchantments":{}}"#,
+            ),
+        ] {
+            let expected = horizon_world::nbt::parse_snbt(patch).unwrap().0;
+            let stack = parse_stack(&format!("{{id:'{item}',count:1,components:{patch}}}"))
+                .unwrap()
+                .unwrap();
+            assert_eq!(encode_components(&stack), Some(expected), "{item}: {patch}");
+        }
+    }
+
+    #[test]
+    fn an_empty_book_patch_keeps_unrelated_components() {
+        let stack = parse_stack(r#"{id:"minecraft:enchanted_book",count:1,components:{"minecraft:stored_enchantments":{},"minecraft:custom_data":{keep:7}}}"#).unwrap().unwrap();
+        let expected = horizon_world::nbt::parse_snbt(r#"{"minecraft:custom_data":{keep:7}}"#)
+            .unwrap()
+            .0;
+        assert_eq!(encode_components(&stack), Some(expected));
+    }
+
+    #[test]
+    fn inline_trim_is_modeled_and_saved_without_raw_fallback() {
+        let source = horizon_world::nbt::parse_snbt(r#"{id:"minecraft:diamond_chestplate",count:1,components:{"minecraft:custom_data":{keep:284},"minecraft:trim":{material:{palette_id:"minecraft:gold",description:"Inline material"},pattern:{asset_id:"minecraft:coast",description:"Inline pattern",decal:0b}}}}"#).unwrap().0;
+        let decoded = crate::item_nbt::item_from_nbt(&source).unwrap();
+        let data = decoded.data().unwrap();
+        assert!(
+            data.trim.is_some(),
+            "inline trim must be adopted into the actual model"
+        );
+        assert!(data.other("minecraft:trim").is_none(), "not a raw fallback");
+        let mut fresh = ItemStack::new("minecraft:diamond_chestplate", 1);
+        fresh.data_mut().trim = data.trim.clone();
+        fresh.data_mut().set_other(
+            "minecraft:custom_data",
+            Some(Tag::compound([("keep", Tag::Int(284))])),
+        );
+        for stack in [&decoded, &fresh] {
+            assert_eq!(
+                components_tag(0, stack.data()),
+                source.get("components").cloned()
+            );
+            assert_eq!(crate::item_nbt::item_to_nbt(stack), source);
+        }
+    }
 
     fn check_lodestone_saved_default(decoded: bool) {
         const TRACKER: &str = "minecraft:lodestone_tracker";
@@ -1383,6 +1592,68 @@ mod tests {
                 .set_other("minecraft:custom_data", Some(keep.clone()));
             assert_eq!(crate::item_nbt::item_to_nbt(&fresh), saved);
         }
+    }
+
+    #[test]
+    fn potion_custom_effect_icons_save_the_codec_default() {
+        let parse = |text: &str| horizon_world::nbt::parse_snbt(text).unwrap().0;
+        for (flags, icon) in [
+            ("", 1),
+            (",show_icon:0b", 0),
+            (",show_icon:1b", 1),
+            (",show_particles:0b", 0),
+            (",show_particles:0b,show_icon:0b", 0),
+            (",show_particles:0b,show_icon:1b,ambient:1b", 1),
+        ] {
+            let contents = |suffix: &str| {
+                format!(
+                    r#"{{potion:"minecraft:water",custom_color:123456,custom_effects:[{{id:"minecraft:speed",duration:100,amplifier:2{suffix}}}]}}"#
+                )
+            };
+            let input = parse(&format!(
+                r#"{{"minecraft:potion_contents":{},"minecraft:custom_data":{{keep:7}}}}"#,
+                contents(flags)
+            ));
+            let expected = parse(&format!(
+                r#"{{"minecraft:potion_contents":{},"minecraft:custom_data":{{keep:7}}}}"#,
+                contents(&format!("{flags},show_icon:{icon}b"))
+            ));
+            let (damage, extra) = decode_components(Some(&input));
+            let decoded = ItemStack {
+                damage,
+                extra,
+                ..ItemStack::new("minecraft:potion", 1)
+            };
+            assert_eq!(
+                encode_components(&decoded),
+                Some(expected.clone()),
+                "decoded {flags}"
+            );
+            // Build a model directly, without decoded input or a retained raw patch.
+            let mut fresh = ItemStack::new("minecraft:potion", 1);
+            fresh.data_mut().potion = Some(Arc::from("minecraft:water"));
+            let potion = input.get("minecraft:potion_contents").unwrap();
+            for name in ["custom_color", "custom_effects"] {
+                fresh
+                    .data_mut()
+                    .potion_extra
+                    .push((name.into(), potion.get(name).unwrap().clone()));
+            }
+            fresh.data_mut().set_other(
+                "minecraft:custom_data",
+                input.get("minecraft:custom_data").cloned(),
+            );
+            assert_eq!(encode_components(&fresh), Some(expected), "modeled {flags}");
+        }
+        assert!(encode_components(&ItemStack::new("minecraft:potion", 1)).is_none());
+        let mut base = ItemStack::new("minecraft:potion", 1);
+        base.data_mut().potion = Some(Arc::from("minecraft:water"));
+        assert_eq!(
+            encode_components(&base),
+            Some(parse(
+                r#"{"minecraft:potion_contents":{potion:"minecraft:water"}}"#
+            ))
+        );
     }
 
     #[test]
@@ -1853,6 +2124,49 @@ mod tests {
         assert!(stack.custom_name().is_none());
     }
 
+    /// A chest's `set_components` patch: a potion's contents land where
+    /// drinking and splashing read them, not only in its saved form, and the
+    /// components Horizon keeps as saved stay so.
+    #[test]
+    fn a_loot_component_horizon_models_lands_in_its_field() {
+        use serde_json::json;
+        let mut swift = ItemStack::new("minecraft:splash_potion", 1);
+        swift.data_mut().set_loot_component(
+            "minecraft:potion_contents",
+            &json!({"potion": "minecraft:swiftness"}),
+        );
+        assert_eq!(swift.potion(), Some("minecraft:swiftness"));
+        let mut custom = ItemStack::new("minecraft:potion", 1);
+        let data = custom.data_mut();
+        data.set_loot_component("minecraft:custom_data", &json!({"page": 3}));
+        data.set_loot_component("minecraft:damage", &json!(5));
+        let effects = json!({"custom_effects": [{"id": "minecraft:resistance", "amplifier": 1, "duration": 1800}]});
+        data.set_loot_component("minecraft:potion_contents", &effects);
+        assert_eq!(
+            custom.custom_potion_effects(),
+            [("minecraft:resistance".to_owned(), 1800, 1)]
+        );
+        let data = custom.data().unwrap();
+        assert!(data.other("minecraft:custom_data").is_some());
+        assert!(
+            data.other("minecraft:damage").is_some(),
+            "a damage set before stays"
+        );
+        // Saved as before: the patch's contents, with the codec's icon flag.
+        let saved = encode_components(&custom).unwrap();
+        assert_eq!(
+            horizon_client_core::scoreboard::tag_to_json(
+                saved.get("minecraft:potion_contents").unwrap()
+            ),
+            json!({"custom_effects": [{"id": "minecraft:resistance", "amplifier": 1, "duration": 1800, "show_icon": true}]})
+        );
+        // A null value takes the potion away again.
+        swift
+            .data_mut()
+            .set_loot_component("minecraft:potion_contents", &serde_json::Value::Null);
+        assert_eq!(swift.potion(), None);
+    }
+
     #[test]
     fn written_book_pages_may_be_component_lists() {
         // A page as Hypixel sends it through ViaVersion: a list, not a compound.
@@ -1965,6 +2279,18 @@ mod tests {
         );
         assert_eq!(explosions[0].colors, vec![0xFF0000]);
         assert!(explosions[0].twinkle && !explosions[0].trail);
+    }
+
+    #[test]
+    fn command_components_rejects_bare_component_without_equals() {
+        assert_eq!(
+            command_components("[custom_data]"),
+            Err("expected '='".to_string())
+        );
+        assert_eq!(
+            command_components("[!tool,custom_data]"),
+            Err("expected '='".to_string())
+        );
     }
 
     #[test]

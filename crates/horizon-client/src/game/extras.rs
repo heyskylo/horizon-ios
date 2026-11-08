@@ -85,6 +85,10 @@ impl Game<'_> {
     pub(super) fn server_address(&self) -> Option<&str> {
         self.extras.reconnect.address()
     }
+    /// The server this game connected to last was found on the local network.
+    pub(super) fn server_is_lan(&self) -> bool {
+        self.extras.reconnect.lan()
+    }
     /// Auto-reconnect: the server let the player in.
     pub(super) fn extras_joined(&mut self) {
         self.extras.reconnect.joined(std::time::Instant::now());
@@ -131,7 +135,13 @@ impl Game<'_> {
     /// (the launcher's session file is gone after the first read).
     pub(super) fn extras_retry(&mut self) -> horizon_client::Result<()> {
         if let Some(retry) = self.title.as_mut().and_then(|t| t.due_retry()) {
-            self.connect_server_with_options(&retry.address, &retry.name, None, retry.lan)?;
+            self.connect_server_with_options(
+                &retry.address,
+                &retry.name,
+                None,
+                retry.lan,
+                self.realm_session,
+            )?;
         }
         Ok(())
     }

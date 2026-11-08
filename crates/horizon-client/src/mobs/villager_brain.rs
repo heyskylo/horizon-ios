@@ -459,7 +459,7 @@ pub struct Bx<'a, 'w> {
     refresh: bool,
 }
 
-/// `Brain.tick` (from `Villager.customServerAiStep`).
+/// `Brain.tick`, called from the villager's server AI phase.
 pub fn tick(m: &mut Mob, w: &MobWorld, lr: &mut LegacyRandom, events: &mut Vec<MobEvent>) {
     if brain(m).is_none() {
         let seed = i64::from(m.id);

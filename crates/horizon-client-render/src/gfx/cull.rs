@@ -10,8 +10,8 @@
 //! second pass, draws the sections whose box was seen; the others' draws have
 //! an instance count of 0.
 //!
-//! The picture stays the one without culling: the boxes (grown by a block,
-//! the farthest a block model reaches out of its cell) are drawn front faces
+//! The picture stays the one without culling: the boxes around the mesh's
+//! geometry (padded by a block) are drawn front faces
 //! only, so a fragment is the box's nearest point on its pixel, and the
 //! fragment shader runs only where the depth test passes (forced early), so a
 //! section is left out only where all of its fragments would fail the depth
@@ -45,6 +45,15 @@ use std::sync::{
 const WORDS: u64 = 5 * 4;
 /// A tested section's box, around its origin: its cell grown by a block.
 pub const SECTION_BOX: [[f32; 3]; 2] = [[-1.0; 3], [17.0; 3]];
+/// Mesh bounds already contain `BOUNDS_PAD`; grow them to a block of padding
+/// in total, keeping the box's faces off the geometry. Without mesh bounds,
+/// keep the section cell grown by a block, as before.
+pub fn section_box(bounds: Option<[glam::Vec3; 2]>) -> [[f32; 3]; 2] {
+    bounds.map_or(SECTION_BOX, |[low, high]| {
+        let pad = glam::Vec3::splat(1.0 - crate::mesher::SectionMesh::BOUNDS_PAD);
+        [(low - pad).to_array(), (high + pad).to_array()]
+    })
+}
 /// The bit that marks a far tile's slot (`Renderer::tile_cull_slot`): tiles
 /// count their slots apart from the sections' resident ones.
 pub const TILE: u32 = 1 << 31;

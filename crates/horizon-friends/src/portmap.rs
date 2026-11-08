@@ -207,6 +207,9 @@ fn upnp_map(igd: Igd, client: Ipv4Addr, internal: u16, lease: Duration) -> io::R
     Err(last)
 }
 
+/// The shortest time between two renewals of a mapping.
+const MIN_RENEWAL: Duration = Duration::from_secs(30);
+
 impl Mapping {
     /// A mapping as a router would have granted it (tests elsewhere).
     #[cfg(test)]
@@ -222,9 +225,10 @@ impl Mapping {
             },
         }
     }
-    /// Whether the lease is past half-time.
+    /// Whether the lease is past half-time, and never sooner than 30 s after the last renewal:
+    /// a router that grants seconds isn't asked again on every wake-up of the host's loop.
     pub fn due(&self) -> bool {
-        self.renewed.elapsed() >= self.lifetime / 2
+        self.renewed.elapsed() >= (self.lifetime / 2).max(MIN_RENEWAL)
     }
     pub fn renew(&mut self) -> io::Result<()> {
         let internal = self.internal;
@@ -343,6 +347,7 @@ pub fn pcp_map(
         return Err(io::Error::other(format!("result {}", r[3])));
     }
     let life = Duration::from_secs(u64::from(u32::from_be_bytes(r[4..8].try_into().unwrap())));
+    no_lifetime(lease, life)?;
     let port = u16::from_be_bytes([r[42], r[43]]);
     let o: [u8; 16] = r[44..60].try_into().unwrap();
     let v6 = Ipv6Addr::from(o);
@@ -387,10 +392,19 @@ pub fn natpmp_map(
             u16::from_be_bytes([r[2], r[3]])
         )));
     }
-    Ok((
-        u16::from_be_bytes([r[10], r[11]]),
-        Duration::from_secs(u64::from(u32::from_be_bytes(r[12..16].try_into().unwrap()))),
-    ))
+    let life = Duration::from_secs(u64::from(u32::from_be_bytes(r[12..16].try_into().unwrap())));
+    no_lifetime(lease, life)?;
+    Ok((u16::from_be_bytes([r[10], r[11]]), life))
+}
+
+/// A success that grants a zero lifetime to a mapping asked for with one: in PCP and NAT-PMP
+/// zero means the mapping is gone, and taking it as granted renewed it ten times a second while
+/// advertising an address that doesn't exist. Asking for zero (a delete) expects zero.
+fn no_lifetime(lease: Duration, life: Duration) -> io::Result<()> {
+    if life.is_zero() && !lease.is_zero() {
+        return Err(io::Error::other("the router granted no lifetime"));
+    }
+    Ok(())
 }
 
 // ----- UPnP IGD ---------------------------------------------------------------------------------
@@ -811,6 +825,58 @@ mod tests {
         m.renew().unwrap();
         m.remove();
         assert!(table.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_router_that_grants_no_lifetime_maps_nothing() {
+        // Success, the nonce and a port, but a lifetime of 0, for PCP and NAT-PMP alike.
+        let s = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let gw = s.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 1100];
+            while let Ok((n, from)) = s.recv_from(&mut buf) {
+                let r = &buf[..n];
+                let reply = match (r[0], r.get(1)) {
+                    (2, Some(1)) => {
+                        let mut out = r.to_vec();
+                        out[1] = 0x81;
+                        out[2..8].fill(0);
+                        out[42..44].copy_from_slice(&26580u16.to_be_bytes());
+                        out
+                    }
+                    (0, Some(2)) => {
+                        vec![0, 130, 0, 0, 0, 0, 0, 1, 0x63, 0xec, 0x67, 0xd4, 0, 0, 0, 0]
+                    }
+                    (0, Some(0)) => vec![0, 128, 0, 0, 0, 0, 0, 1, 198, 51, 100, 7],
+                    _ => continue,
+                };
+                let _ = s.send_to(&reply, from);
+            }
+        });
+        let targets = Targets {
+            pmp: vec![gw],
+            upnp: vec![],
+        };
+        let why = map(&targets, Ipv4Addr::new(192, 168, 1, 20), 25580, LEASE).unwrap_err();
+        assert!(why.contains("PCP: the router granted no lifetime"), "{why}");
+        assert!(
+            why.contains("NAT-PMP: the router granted no lifetime"),
+            "{why}"
+        );
+    }
+
+    #[test]
+    fn a_short_lease_is_renewed_no_more_than_every_30_seconds() {
+        let mut m = Mapping::granted(Method::Pcp, "198.51.100.7:26580".parse().unwrap());
+        m.lifetime = Duration::from_secs(10);
+        m.renewed = Instant::now() - Duration::from_secs(20);
+        assert!(!m.due(), "half of 10 s has passed, 30 s hasn't");
+        m.renewed = Instant::now() - Duration::from_secs(31);
+        assert!(m.due());
+        // A long lease still renews at half-time.
+        m.lifetime = LEASE;
+        m.renewed = Instant::now() - LEASE / 2;
+        assert!(m.due());
     }
 
     #[test]

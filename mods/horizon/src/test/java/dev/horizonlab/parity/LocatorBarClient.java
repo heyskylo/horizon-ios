@@ -125,6 +125,7 @@ public final class LocatorBarClient {
     private static volatile boolean events;
     private static volatile boolean spawns;
     private static volatile boolean menus;
+    private static volatile boolean components;
     private static com.google.gson.JsonArray spans(net.minecraft.network.chat.Component message) {
         com.google.gson.JsonArray out = new com.google.gson.JsonArray();
         message.visit((style, text) -> {
@@ -223,9 +224,16 @@ public final class LocatorBarClient {
                             net.minecraft.world.inventory.ContainerInput.PICKUP,
                             new it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap<>(), net.minecraft.network.HashedStack.EMPTY));
                     }
+                    case "place-recipe" -> {
+                        String[] a = w[2].split(" ");
+                        players.get(w[1]).send(new net.minecraft.network.protocol.game.ServerboundPlaceRecipePacket(
+                            Integer.parseInt(a[0]), new net.minecraft.world.item.crafting.display.RecipeDisplayId(Integer.parseInt(a[1])),
+                            Boolean.parseBoolean(a[2])));
+                    }
                     case "close-menu" -> players.get(w[1]).send(
                         new net.minecraft.network.protocol.game.ServerboundContainerClosePacket(Integer.parseInt(w[2])));
                     case "menus" -> menus = w[1].equals("on");
+                    case "components" -> components = w[1].equals("on");
                     case "dump" -> {
                         writeSessions(output, sessions);
                         stdout.println("dumped " + w[1]);
@@ -692,6 +700,24 @@ public final class LocatorBarClient {
                 j.addProperty("kind", "open");
                 j.addProperty("window", c.getContainerId());
                 j.addProperty("type", net.minecraft.core.registries.BuiltInRegistries.MENU.getKey(c.getType()).toString());
+            } else if (p instanceof net.minecraft.network.protocol.game.ClientboundRecipeBookAddPacket c) {
+                j.addProperty("kind", "recipes");
+                j.addProperty("replace", c.replace());
+                var entries = new com.google.gson.JsonArray();
+                for (var entry : c.entries()) {
+                    var value = new com.google.gson.JsonObject();
+                    value.addProperty("id", entry.contents().id().index());
+                    value.addProperty("flags", entry.flags());
+                    value.add("display", net.minecraft.world.item.crafting.display.RecipeDisplay.CODEC.encodeStart(
+                        ParityData.access.createSerializationContext(com.mojang.serialization.JsonOps.INSTANCE), entry.contents().display()).getOrThrow());
+                    entries.add(value);
+                }
+                j.add("entries", entries);
+            } else if (p instanceof net.minecraft.network.protocol.game.ClientboundPlaceGhostRecipePacket c) {
+                j.addProperty("kind", "ghost");
+                j.addProperty("window", c.containerId());
+                j.add("display", net.minecraft.world.item.crafting.display.RecipeDisplay.CODEC.encodeStart(
+                    ParityData.access.createSerializationContext(com.mojang.serialization.JsonOps.INSTANCE), c.recipeDisplay()).getOrThrow());
             } else if (p instanceof net.minecraft.network.protocol.game.ClientboundLoginPacket c) {
                 j.addProperty("kind", "login");
                 j.addProperty("mode", c.commonPlayerSpawnInfo().gameType().getId());
@@ -739,6 +765,10 @@ public final class LocatorBarClient {
                     }
                     if (state) recordState(p);
                     if (menus) recordMenu(p, r.payload);
+                    if (components) {
+                        var evidence = ComponentWireCapture.inspect(p, r.payload);
+                        if (evidence != null) record("component-wire " + evidence);
+                    }
                     if (hooks && p instanceof net.minecraft.network.protocol.game.ClientboundAddEntityPacket a) {
                         entityTypes.put(a.getId(), net.minecraft.world.entity.EntityType.getKey(a.getType()).toString());
                     }

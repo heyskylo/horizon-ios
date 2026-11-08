@@ -1421,7 +1421,17 @@ impl Goal for MeleeAttack {
         if !self.follow_unseen {
             return !m.ai.nav.is_done();
         }
-        !(t.is_player && t.creative)
+        // `MeleeAttackGoal.canContinueToUse`'s follow branch re-checks
+        // `isWithinHome(target.blockPosition())` and refuses a spectator or
+        // creative player.
+        let target_block = [
+            t.position.x.floor() as i32,
+            t.position.y.floor() as i32,
+            t.position.z.floor() as i32,
+        ];
+        m.ai.home
+            .is_none_or(|(center, radius)| within_home(center, radius, target_block))
+            && !(t.is_player && (t.creative || cx.w.player.as_ref().is_some_and(|p| p.spectator)))
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         let path = m.ai.pending_path.take();
@@ -1866,6 +1876,11 @@ impl Goal for HurtByTarget {
         if m.ai.last_hurt_by_time == self.timestamp {
             return false;
         }
+        // `HurtByTargetGoal.canUse`: with universal anger on, a player's hit
+        // is left to the anger goals, never a direct retaliation.
+        if by == Who::Player && cx.w.universal_anger {
+            return false;
+        }
         if let Who::Mob(id) = by
             && cx
                 .w
@@ -2262,9 +2277,12 @@ impl Goal for Breed {
         }
         let llama = super::llama::is_llama(species);
         let equine = matches!(species, Species::Horse | Species::Donkey) || llama;
+        // Camel.canMate asks AbstractHorse.canParent of both sides: not a
+        // vehicle or a passenger and at full health (a camel is always tame).
+        let camel = species == Species::Camel;
         // AbstractHorse.canParent: tame, an adult, not a vehicle or passenger
         // and at full health.
-        if equine
+        if (equine || camel)
             && (!m.extra.tame
                 || m.is_baby()
                 || m.rider.is_some()
@@ -2287,7 +2305,7 @@ impl Goal for Breed {
                     // Wolf.canMate: a sitting wolf is no partner.
                     && !(species == Species::Wolf && s.sitting)
                     // AbstractHorse.canParent of the partner.
-                    && (!equine || s.tame && !s.ridden && s.health >= s.stats[0] as f32)
+                    && (!(equine || camel) || s.tame && !s.ridden && s.health >= s.stats[0] as f32)
                     && (!sniffer || super::sniffer::can_mate_state(s.variant))
             })
             .map(|s| s.id)
@@ -2715,24 +2733,35 @@ impl Goal for EatBlock {
 #[derive(Clone, Debug, Default)]
 pub struct BreathAir;
 impl BreathAir {
+    /// `BreathAirGoal.findAirPosition`: `BlockPos.neighborColumn` walks the
+    /// center, north, east, south and west columns, each bottom to top.
+    fn air_position(
+        [x, y, z]: [i32; 3],
+        mut gives_air: impl FnMut([i32; 3]) -> bool,
+    ) -> Option<[i32; 3]> {
+        for (dx, dz) in [(0, 0), (0, -1), (1, 0), (0, 1), (-1, 0)] {
+            for yy in y..=y + 8 {
+                let pos = [x + dx, yy, z + dz];
+                if gives_air(pos) {
+                    return Some(pos);
+                }
+            }
+        }
+        None
+    }
     fn find_air(m: &mut Mob, cx: &mut Cx) {
         let (x, y, z) = (
             m.position.x.floor() as i32,
             m.position.y.floor() as i32,
             m.position.z.floor() as i32,
         );
-        let mut dest = None;
-        for yy in y..=y + 8 {
-            let s = cx.w.world.block(x, yy, z);
+        let d = Self::air_position([x, y, z], |[x, y, z]| {
+            let s = cx.w.world.block(x, y, z);
             let f = cx.w.facts.get(s);
-            if (f.fluid == crate::blocks::Fluid::None || &*f.name == "minecraft:bubble_column")
+            (f.fluid == crate::blocks::Fluid::None || &*f.name == "minecraft:bubble_column")
                 && cx.w.data.state(s).flags & super::data::LAND != 0
-            {
-                dest = Some([x, yy, z]);
-                break;
-            }
-        }
-        let d = dest.unwrap_or([x, (m.position.y + 8.0).floor() as i32, z]);
+        })
+        .unwrap_or([x, (m.position.y + 8.0).floor() as i32, z]);
         m.nav_move_to(
             cx.w,
             [f64::from(d[0]), f64::from(d[1] + 1), f64::from(d[2])],
@@ -3475,5 +3504,154 @@ mod melee_range_tests {
         assert_eq!(rider.hitbox().min_position().y, at.y);
         rider.extra.mount = None;
         assert_eq!(rider.hitbox().min_position().y, at.y);
+    }
+}
+
+#[cfg(test)]
+mod melee_continue_tests {
+    use super::*;
+    use crate::mobs::world::{test_player, with_test_world};
+    use horizon_core::geometry::Vec3;
+    use std::sync::Arc;
+
+    /// Tick one `<MeleeAttack>` goal through the real selector.
+    fn tick(goals: &mut GoalSelector, m: &mut Mob, world: &MobWorld) {
+        let mut lr = LegacyRandom::new(0);
+        let mut events = Vec::new();
+        let mut cx = Cx {
+            w: world,
+            lr: &mut lr,
+            events: &mut events,
+        };
+        goals.tick(m, &mut cx);
+    }
+
+    /// `MeleeAttackGoal.canContinueToUse`'s follow branch refuses a target
+    /// outside the mob's home (`isWithinHome(target.blockPosition())`).
+    #[test]
+    fn a_chase_stops_outside_the_mobs_home() {
+        let mut outcomes = None;
+        let ran = with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:iron_golem"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            m.ai.home = Some(([0, 64, 0], 8));
+            m.ai.target = Some(Who::Player);
+            let mut world = w.clone();
+            world.player = Some(test_player(Vec3::new(0.5, 64.0, 0.5)));
+            let mut goals = GoalSelector::default();
+            goals.add(1, MeleeAttack::new(1.0, true));
+            tick(&mut goals, &mut m, &world);
+            let started = goals.is_running("MeleeAttack");
+            world.player.as_mut().unwrap().position = Vec3::new(100.5, 64.0, 0.5);
+            tick(&mut goals, &mut m, &world);
+            outcomes = Some((started, goals.is_running("MeleeAttack")));
+        });
+        if !ran {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            Some((true, false)),
+            "the chase starts at home and stops when the target leaves its radius"
+        );
+    }
+
+    /// The same branch refuses a spectator (`!(player.isSpectator() || player.isCreative())`).
+    #[test]
+    fn a_chase_stops_when_the_target_is_a_spectator() {
+        let mut outcomes = None;
+        let ran = with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:iron_golem"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            m.ai.target = Some(Who::Player);
+            let mut world = w.clone();
+            world.player = Some(test_player(Vec3::new(0.5, 64.0, 0.5)));
+            let mut goals = GoalSelector::default();
+            goals.add(1, MeleeAttack::new(1.0, true));
+            tick(&mut goals, &mut m, &world);
+            let started = goals.is_running("MeleeAttack");
+            world.player.as_mut().unwrap().spectator = true;
+            tick(&mut goals, &mut m, &world);
+            outcomes = Some((started, goals.is_running("MeleeAttack")));
+        });
+        if !ran {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            Some((true, false)),
+            "a mob chases a survival player and stops when they become a spectator"
+        );
+    }
+}
+
+#[cfg(test)]
+mod breath_air_tests {
+    use super::BreathAir;
+
+    #[test]
+    fn searches_neighbor_columns_in_vanilla_order() {
+        let origin = [10, 20, 30];
+        let air = [[10, 27, 29], [11, 21, 30], [10, 22, 31], [9, 23, 30]];
+        assert_eq!(
+            BreathAir::air_position(origin, |p| air.contains(&p)),
+            Some([10, 27, 29])
+        );
+        assert_eq!(
+            BreathAir::air_position(origin, |p| p == [10, 28, 30] || air.contains(&p)),
+            Some([10, 28, 30])
+        );
+        for p in air {
+            assert_eq!(BreathAir::air_position(origin, |q| q == p), Some(p));
+        }
+        // One block above the 9-block columns: not searched.
+        assert_eq!(BreathAir::air_position(origin, |p| p == [10, 29, 30]), None);
+    }
+}
+
+#[cfg(test)]
+mod hurt_by_anger_tests {
+    use super::*;
+    use crate::mobs::world::{test_player, with_test_world};
+    use horizon_core::geometry::Vec3;
+    use std::sync::Arc;
+
+    /// `HurtByTargetGoal.canUse` refuses a player when the `universal_anger`
+    /// game rule is on: the anger target goals handle that hit instead.
+    #[test]
+    fn universal_anger_leaves_the_players_hit_to_the_anger_goals() {
+        let mut outcomes = None;
+        if !with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:cow"].clone());
+            let mut truth = Vec::new();
+            for rule in [false, true] {
+                let mut world = w.clone();
+                world.player = Some(test_player(Vec3::new(2.5, 64.0, 0.5)));
+                world.universal_anger = rule;
+                let mut m = Mob::new(1, kind.clone(), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                m.ai.last_hurt_by = Some(Who::Player);
+                m.ai.last_hurt_by_time = 1;
+                m.ai.goals.add(1, HurtByTarget::new());
+                let mut lr = LegacyRandom::new(0);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w: &world,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                let mut goals = std::mem::take(&mut m.ai.goals);
+                goals.tick(&mut m, &mut cx);
+                truth.push(goals.is_running("HurtByTarget"));
+                m.ai.goals = goals;
+            }
+            outcomes = Some(truth);
+        }) {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            Some(vec![true, false]),
+            "a hit is retaliated with the rule off and left to the anger goals with it on"
+        );
     }
 }

@@ -654,9 +654,21 @@ impl Game<'_> {
             before.clear();
         }
         let mut ids: Vec<(u32, bool)> = Vec::new();
+        // ServerLevel.tick ticks only the entities in entity-ticking chunks,
+        // and handlePortal runs in their tick: past the simulation distance an
+        // entity's portal time and cooldown wait, kept as they are.
+        let entity_ticking = self.entity_ticking_area();
+        let mut waiting: Vec<u32> = Vec::new();
         let tracked = &self.portals.entities;
         for_each_entity!(entity_lists_of!(self), entity => {
             if entity.portal_size().is_some() && entity.is_vehicle() == vehicles {
+                let at = entity.position();
+                if !entity_ticking(at.x.floor() as i32, at.z.floor() as i32) {
+                    if tracked.contains_key(&entity.id()) {
+                        waiting.push(entity.id());
+                    }
+                    continue;
+                }
                 if entity.portal_from().is_none() {
                     before.insert(entity.id(), entity.position());
                 }
@@ -666,7 +678,11 @@ impl Game<'_> {
             }
         });
         self.portals.before = before;
-        let present: std::collections::HashSet<u32> = ids.iter().map(|(id, _)| *id).collect();
+        let present: std::collections::HashSet<u32> = ids
+            .iter()
+            .map(|(id, _)| *id)
+            .chain(waiting.iter().copied())
+            .collect();
         // Each pass keeps the other group's states.
         let (boats, carts) = (&self.boats, &self.carts);
         self.portals.entities.retain(|id, _| {
@@ -840,16 +856,22 @@ impl Game<'_> {
         }
         let mut inside: Vec<(u32, BlockPos)> = Vec::new();
         let mut portal_sections = std::mem::take(&mut self.portals.sections);
+        // Only the entities that tick (in entity-ticking chunks) move, so only
+        // they can have swept into a portal.
+        let entity_ticking = self.entity_ticking_area();
         // The first portal block each entity's box swept through since the
         // start of its tick (a stuck arrow that did not move enters none).
         for_each_entity!(entity_lists_of!(self), entity => {
             let Some((width, height)) = entity.portal_size() else {
                 continue;
             };
+            let (id, to) = (entity.id(), entity.position());
+            if !entity_ticking(to.x.floor() as i32, to.z.floor() as i32) {
+                continue;
+            }
             if !entity.portal_sweeps() || !entity.can_use_portal(self) {
                 continue;
             }
-            let (id, to) = (entity.id(), entity.position());
             let swept_later = match only {
                 Some(ids) => !ids.contains(&id),
                 None => ridden.contains(&id),
@@ -1056,15 +1078,7 @@ impl Game<'_> {
             self.release_vehicle_container(id);
             let uuid = self.uuid_for(id);
             let b = &self.boats[i];
-            let mut tag = horizon_client::entity_nbt::boat_to_nbt(
-                &b.entity_type(),
-                b.position,
-                b.velocity,
-                [b.yaw, b.pitch],
-                uuid,
-                self.persist_raw(id),
-                b.chest.then_some(&b.items[..]),
-            );
+            let mut tag = b.to_nbt(uuid, self.persist_raw(id));
             // The mobs riding it cross with it and mount it again.
             self.put_mob_passengers(&mut tag, id);
             for rider in self.remove_mob_riders(id) {

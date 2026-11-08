@@ -84,7 +84,13 @@ def walk(x, ground):
 
 
 def arena(floor):
-    return ['step setup', 'cmd Alice time set 1000', 'cmd Alice kill @e[type=!player]',
+    # The previous case's cow drops its loot as /kill runs, after the selector picked the cow, and its corpse stays
+    # for 20 ticks (LivingEntity.tickDeath), still moving: the items, or the corpse once the fill below removes the
+    # carpet or slab under it, hit the ground while the next case measures, at a wall-clock moment (item-stone,
+    # item-carpet and item-slab flaked on vanilla's side, 2026-11-07). The second /kill removes the items, and 25
+    # server ticks let the corpse go before the arena changes.
+    return ['step setup', 'cmd Alice time set 1000', 'cmd Alice kill @e[type=!player]', 'cmd Alice kill @e[type=item]',
+            'ticks 25',
             'cmd Alice fill -3 -61 -3 8 -61 5 minecraft:stone', 'cmd Alice fill -3 -60 -3 8 -57 5 minecraft:air',
             *[f'cmd Alice {command}' for command in FLOORS[floor][1]]]
 

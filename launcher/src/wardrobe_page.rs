@@ -109,17 +109,7 @@ fn skin(account: &account::Account) -> Option<(Arc<Texture>, bool)> {
     let (url, model) = account.skin.as_ref()?;
     let png =
         horizon_launcher::heads::cached_skin(url, &backend::data_dir().join("profile-heads"))?;
-    let image = image::load_from_memory(&png).ok()?.to_rgba8();
-    (image.dimensions() == (64, 64)).then(|| {
-        (
-            Arc::new(Texture {
-                width: 64,
-                height: 64,
-                rgba: image.into_raw(),
-            }),
-            model == "slim",
-        )
-    })
+    Some((skin_texture(&png)?, model == "slim"))
 }
 
 /// A plain figure's texture, for an account without a skin the preview can read: head and arms,
@@ -142,6 +132,152 @@ fn plain() -> Texture {
         height: 64,
         rgba,
     }
+}
+
+/// Horizon's stand-in player, the website shop's own (`standInSkin` in horizon-site's
+/// `components/shop/model.ts`): original art painted from rows, not Mojang's. The Shop dresses it
+/// when the account has no skin the preview can read, so its pictures match the website's.
+fn stand_in() -> Texture {
+    const PALETTE: [(char, u32); 12] = [
+        ('H', 0x3a2a4f),
+        ('S', 0xe0a98a),
+        ('W', 0xffffff),
+        ('E', 0x4b3bb8),
+        ('N', 0xc98f72),
+        ('M', 0x9a5a4a),
+        ('T', 0x5b3fd6),
+        ('t', 0x4a32b8),
+        ('L', 0xa08cff),
+        ('P', 0x23305a),
+        ('p', 0x1c2648),
+        ('B', 0x1a1a22),
+    ];
+    // One letter per row of a face (each spread across it), or the face's rows; a lone letter
+    // fills the face.
+    let rows = |spec: &str, w: usize| -> Vec<String> {
+        spec.chars().map(|c| c.to_string().repeat(w)).collect()
+    };
+    let lit = |r: &[&str]| -> Vec<String> { r.iter().map(|s| s.to_string()).collect() };
+    let mirror =
+        |r: &[String]| -> Vec<String> { r.iter().map(|s| s.chars().rev().collect()).collect() };
+    let one = |c: &str| vec![c.to_owned()];
+    let head_side = lit(&[
+        "HHHHHHHH", "HHHHHHHH", "HHHHHHSS", "HHHHSSSS", "HHHSSSSS", "HHSSSSSS", "HSSSSSSS",
+        "SSSSSSSS",
+    ]);
+    // top, bottom, right, front, left, back.
+    let limb = |spec: &str| -> [Vec<String>; 6] {
+        let first = &spec[..1];
+        let last = &spec[spec.len() - 1..];
+        [
+            one(first),
+            one(last),
+            rows(spec, 4),
+            rows(spec, 4),
+            rows(spec, 4),
+            rows(spec, 4),
+        ]
+    };
+    let leg = || {
+        let mut l = limb("PPPPPPPPPPBB");
+        l[3] = [rows("PPPPPPP", 4), lit(&["pPPp"]), rows("PPBB", 4)].concat();
+        l
+    };
+    let body_front = [
+        lit(&["TTTSSTTT", "TTTTTTTT", "TTLTTTTT", "TTLTTTTT"]),
+        rows("TTTTTtPP", 8),
+    ]
+    .concat();
+    // Each box: where its faces start on the skin, its size (w, h, d), its six faces.
+    let boxes = [
+        (
+            (0, 0),
+            (8, 8, 8),
+            [
+                one("H"),
+                one("S"),
+                head_side.clone(),
+                lit(&[
+                    "HHHHHHHH", "HHHHHHHH", "HSSSSSSH", "SSSSSSSS", "SWESSEWS", "SSSNNSSS",
+                    "SSMMMMSS", "SSSSSSSS",
+                ]),
+                mirror(&head_side),
+                one("H"),
+            ],
+        ),
+        (
+            (16, 16),
+            (8, 12, 4),
+            [
+                one("T"),
+                one("P"),
+                rows("TTTTTTTTTtPP", 4),
+                body_front,
+                rows("TTTTTTTTTtPP", 4),
+                rows("TTTTTTTTTtPP", 8),
+            ],
+        ),
+        ((40, 16), (4, 12, 4), limb("TTTtSSSSSSSS")),
+        ((32, 48), (4, 12, 4), limb("TTTtSSSSSSSS")),
+        ((0, 16), (4, 12, 4), leg()),
+        ((16, 48), (4, 12, 4), leg()),
+    ];
+    let mut rgba = vec![0u8; 64 * 64 * 4];
+    let mut fill = |x: usize, y: usize, w: usize, h: usize, face: &[String]| {
+        let widest = face[0].chars().count();
+        for j in 0..h {
+            let row = &face[j.min(face.len() - 1)];
+            for i in 0..w {
+                let Some(c) = row.chars().nth(i.min(widest - 1)) else {
+                    continue;
+                };
+                let Some((_, colour)) = PALETTE.iter().find(|(k, _)| *k == c) else {
+                    continue;
+                };
+                let [_, r, g, b] = colour.to_be_bytes();
+                rgba[((y + j) * 64 + x + i) * 4..][..4].copy_from_slice(&[r, g, b, 255]);
+            }
+        }
+    };
+    for ((u, v), (w, h, d), [top, bottom, right, front, left, back]) in boxes {
+        fill(u + d, v, w, d, &top);
+        fill(u + d + w, v, w, d, &bottom);
+        fill(u, v + d, d, h, &right);
+        fill(u + d, v + d, w, h, &front);
+        fill(u + d + w, v + d, d, h, &left);
+        fill(u + 2 * d + w, v + d, w, h, &back);
+    }
+    Texture {
+        width: 64,
+        height: 64,
+        rgba,
+    }
+}
+
+/// `stand_in()`, made once.
+fn stand_in_skin() -> Arc<Texture> {
+    static STAND_IN: std::sync::LazyLock<Arc<Texture>> =
+        std::sync::LazyLock::new(|| Arc::new(stand_in()));
+    STAND_IN.clone()
+}
+
+/// `plain()`, made once: the views compare skins by their file.
+fn plain_skin() -> Arc<Texture> {
+    static PLAIN: std::sync::LazyLock<Arc<Texture>> =
+        std::sync::LazyLock::new(|| Arc::new(plain()));
+    PLAIN.clone()
+}
+
+/// A 64×64 skin's PNG as the preview takes it.
+fn skin_texture(png: &[u8]) -> Option<Arc<Texture>> {
+    let image = image::load_from_memory(png).ok()?.to_rgba8();
+    (image.dimensions() == (64, 64)).then(|| {
+        Arc::new(Texture {
+            width: 64,
+            height: 64,
+            rgba: image.into_raw(),
+        })
+    })
 }
 
 /// What the view shows: each slot's item, the hovered card's choice in its own slot.
@@ -558,7 +694,8 @@ impl Launcher {
     /// `HORIZON_LAUNCHER_PAGE=wardrobe` (or `shop`) in a development build: the page for a made-up account
     /// that owns the items of `HORIZON_COSMETICS_LOCAL` and wears the first of each slot, for
     /// screenshots. Nothing is asked of Mojang or the service, and nothing is saved.
-    /// `HORIZON_WARDROBE_STATE=offline|failed|empty|no_paddle` shows that state instead.
+    /// `HORIZON_WARDROBE_STATE=offline|failed|empty|no_paddle` shows that state instead, and
+    /// `HORIZON_COSMETICS_CATALOGUE=<file>` the shop of a saved `GET /v1/catalogue`.
     pub(super) fn wardrobe_preview(&mut self) {
         use horizon_launcher::wardrobe::{Claim, Entry, Me, Purchase};
         let Some(dir) = std::env::var_os("HORIZON_COSMETICS_LOCAL") else {
@@ -596,7 +733,15 @@ impl Launcher {
                 .entry(slot(i).to_owned())
                 .or_insert_with(|| i.id.clone());
         }
-        let ids: Vec<String> = items.iter().map(|i| i.id.clone()).collect();
+        // `HORIZON_COSMETICS_CATALOGUE=<file>`: a catalogue as the service answers it (prices,
+        // sets, collections), the account owning only its founder set.
+        let sold: Option<Catalogue> = std::env::var_os("HORIZON_COSMETICS_CATALOGUE")
+            .and_then(|f| serde_json::from_slice(&std::fs::read(f).ok()?).ok());
+        let mut ids: Vec<String> = items.iter().map(|i| i.id.clone()).collect();
+        if let Some(c) = &sold {
+            ids.retain(|id| c.claim.items.contains(id));
+            equipped.retain(|_, id| ids.contains(id));
+        }
         let claim = Claim {
             state: ClaimState::Open,
             items: ids.clone(),
@@ -644,6 +789,13 @@ impl Launcher {
             collections: Vec::new(),
             supporter: None,
         };
+        let catalogue = match sold {
+            Some(c) => Catalogue {
+                claim: claim.clone(),
+                ..c
+            },
+            None => catalogue,
+        };
         let account = account::Account {
             uuid: "00000000000000000000000000000001".into(),
             name: "Preview".into(),
@@ -687,7 +839,10 @@ impl Launcher {
                 .collect(),
             session: (state != "empty")
                 .then(|| Arc::new(Session::preview(&account.uuid, &account.name))),
-            skin: None,
+            // `HORIZON_COSMETICS_SKIN=<png>`: a skin to wear.
+            skin: std::env::var_os("HORIZON_COSMETICS_SKIN")
+                .and_then(|f| skin_texture(&std::fs::read(f).ok()?))
+                .map(|s| (s, false)),
             status: match state.as_str() {
                 "offline" => Status::Offline,
                 "failed" => {
@@ -710,15 +865,13 @@ impl Launcher {
     /// The player in 3D, handed what it wears now (with the hovered card's item tried on) when
     /// that changed: after this frame, so that the page never reads the view while it renders.
     fn wardrobe_dress(&mut self, cx: &mut Context<Self>) -> Option<gpui::Entity<Viewer>> {
-        static PLAIN: std::sync::LazyLock<Arc<Texture>> =
-            std::sync::LazyLock::new(|| Arc::new(plain()));
         let w = self.wardrobe.as_mut()?;
         let me = w.saved.me.as_ref()?;
         let viewer = w
             .viewer
             .get_or_insert_with(|| cx.new(|_| Viewer::new()))
             .clone();
-        let (skin, slim) = w.skin.clone().unwrap_or_else(|| (PLAIN.clone(), false));
+        let (skin, slim) = w.skin.clone().unwrap_or_else(|| (plain_skin(), false));
         let outfit = Outfit {
             skin,
             slim,
@@ -931,21 +1084,30 @@ impl Launcher {
                     .child(tr("Drag to turn, scroll to zoom.")),
             )
             .child(reset);
-        let player =
-            glass::plate(radius::PANEL)
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap(px(10.))
-                .flex_1()
-                .min_w(px(240.))
-                .p(px(20.))
-                .child(name_tag)
-                .child(div().w(px(viewer::W)).h(px(viewer::H)).children(
-                    viewer.map(|v| viewer::frame(v, w.dragging, Self::wardrobe_drag(cx))),
-                ))
-                .child(controls);
+        let player = glass::plate(radius::PANEL)
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(10.))
+            .flex_1()
+            .min_w(px(240.))
+            .p(px(20.))
+            .child(name_tag)
+            .child(
+                div()
+                    .w(px(viewer::W))
+                    .h(px(viewer::H))
+                    .children(viewer.map(|v| {
+                        viewer::frame(
+                            v,
+                            (viewer::W, viewer::H),
+                            w.dragging,
+                            Self::wardrobe_drag(cx),
+                        )
+                    })),
+            )
+            .child(controls);
         // What the account owns for the chosen slot, "Nothing" first.
         let slot = w.slot;
         let label = SLOTS.iter().find(|(s, _)| *s == slot).map_or("", |s| s.1);
@@ -1320,6 +1482,23 @@ impl Launcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_stand_in_wears_the_websites_face_and_no_outer_layers() {
+        let t = stand_in();
+        let at = |x: usize, y: usize| &t.rgba[(y * 64 + x) * 4..][..4];
+        // The face's fifth row, "SWESSEWS": skin, then the left eye's white and iris.
+        assert_eq!(at(8, 12), &[0xe0, 0xa9, 0x8a, 255]);
+        assert_eq!(at(9, 12), &[0xff, 0xff, 0xff, 255]);
+        assert_eq!(at(10, 12), &[0x4b, 0x3b, 0xb8, 255]);
+        // Hair on top, the shirt's front, a leg's shoe at its foot.
+        assert_eq!(at(10, 2), &[0x3a, 0x2a, 0x4f, 255]);
+        assert_eq!(at(22, 26), &[0x5b, 0x3f, 0xd6, 255]);
+        assert_eq!(at(5, 31), &[0x1a, 0x1a, 0x22, 255]);
+        // The hat and jacket layers stay see-through.
+        assert_eq!(at(40, 10)[3], 0);
+        assert_eq!(at(20, 36)[3], 0);
+    }
 
     #[test]
     fn a_hovered_card_tries_its_item_on_in_its_slot_only() {

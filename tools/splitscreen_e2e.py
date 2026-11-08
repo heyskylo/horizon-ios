@@ -247,6 +247,31 @@ def scenario_four():
         g.quit()
 
 
+def scenario_guide():
+    print('guide: the gameplay guide fits every split view, overlapping nothing of its own')
+    for players in (2, 3, 4):
+        g = Game(players, args=('--offscreen',))
+        try:
+            for n in range(1, players + 1):
+                g.ctl(n, 'pad', 'rb', 'tap')
+                g.ctl(n, 'turn', '0', '30', '--over', '0.2')
+            time.sleep(1.5)
+            for n in range(1, players + 1):
+                shown = g.ctl(n, 'pad', 'status')['guide']
+                w, h = shown['view']
+                rects = [r['rect'] for side in ('left', 'right') for r in shown[side]]
+                check(f'{players} players: P{n} has rows', bool(rects), True)
+                inside = all(x >= 0 and y >= 0 and x + rw <= w and y + rh <= h for x, y, rw, rh in rects)
+                check(f'{players} players: P{n} inside its view', inside, True)
+                apart = all(a[0] + a[2] <= b[0] or b[0] + b[2] <= a[0] or a[1] + a[3] <= b[1] or b[1] + b[3] <= a[1]
+                            for i, a in enumerate(rects) for b in rects[i + 1:])
+                check(f'{players} players: P{n} rows apart', apart, True)
+                if os.environ.get('GUIDE_SHOTS'):
+                    g.ctl(n, 'screenshot', str(Path(os.environ['GUIDE_SHOTS']) / f'guide-{players}-P{n}.png'))
+        finally:
+            g.quit()
+
+
 def scenario_alone():
     print('alone: watching the controllers, nobody joins, P1 plays as without splitscreen')
     g = Game(1)
@@ -1419,6 +1444,7 @@ def scenario_custom_skin():
 
 SCENARIOS = {
     'alone': scenario_alone,
+    'guide': scenario_guide,
     'join': scenario_join,
     'controller_profiles': scenario_controller_profiles,
     'custom_skin': scenario_custom_skin,

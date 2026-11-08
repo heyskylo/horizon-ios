@@ -495,10 +495,9 @@ impl Game<'_> {
         }
         let views: Vec<Option<ItemStack>> = slots.iter().map(|&s| self.slot_view(s)).collect();
         let clicks = {
-            let names = |id: &str| self.pack.names.display_item(id);
             let rank = |s: &ItemStack| {
                 let order = self.creative_screen.order_of(s).unwrap_or(usize::MAX);
-                (order, hover_name(&names, s))
+                (order, hover_name(&self.pack.names, s))
             };
             let max = |s: &ItemStack| self.max_stack(s);
             inv_sort::plan(&views, &rank, &max)

@@ -98,8 +98,24 @@ fn interfaces(source: &str) -> Vec<Interface> {
 
 /// The shaders as the renderer assembles them, by the `.wgsl` files each is made of.
 fn composed() -> Vec<(&'static str, Vec<&'static str>, String)> {
-    let entity = crate::overlay::wgsl_constants() + include_str!("../entity.wgsl");
+    let entity = super::entity_shader();
     vec![
+        (
+            "HDR",
+            vec!["hdr.wgsl", "hdr_light.wgsl"],
+            super::hdr::shader(),
+        ),
+        ("terrain", vec!["terrain.wgsl"], super::terrain_shader()),
+        (
+            "stars",
+            vec!["stars.wgsl"],
+            include_str!("../hdr_light.wgsl").to_owned() + include_str!("stars.wgsl"),
+        ),
+        (
+            "custom sky",
+            vec!["custom_sky.wgsl"],
+            include_str!("../hdr_light.wgsl").to_owned() + include_str!("custom_sky.wgsl"),
+        ),
         ("entity", vec!["entity.wgsl"], entity.clone()),
         (
             "GPU culling occlusion test",
@@ -124,14 +140,14 @@ fn composed() -> Vec<(&'static str, Vec<&'static str>, String)> {
         (
             "improved transparency world",
             vec!["terrain.wgsl", "oit.wgsl", "oit_world.wgsl"],
-            include_str!("../terrain.wgsl").to_owned()
+            super::terrain_shader()
                 + include_str!("../oit.wgsl")
                 + include_str!("../oit_world.wgsl"),
         ),
         (
             "visibility buffer",
             vec!["terrain.wgsl", "visbuffer.wgsl"],
-            include_str!("../terrain.wgsl").to_owned() + include_str!("../visbuffer.wgsl"),
+            super::terrain_shader() + include_str!("../visbuffer.wgsl"),
         ),
         (
             "improved transparency world border",

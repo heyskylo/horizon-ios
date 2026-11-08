@@ -391,7 +391,7 @@ impl MusicLayers {
             if w.sound.is_empty() || self.playing.iter().any(|l| l.sound == w.sound) {
                 continue;
             }
-            let instance = SoundInstance::for_music_layer(&w.sound, SoundEngine::unseeded());
+            let instance = SoundInstance::for_music_layer(&w.sound, crate::random_source::create());
             let (id, _) = sounds.play_instance(instance, true);
             self.playing.push(PlayingLayer {
                 sound: w.sound.clone(),
@@ -452,7 +452,7 @@ pub struct MusicManager {
 impl Default for MusicManager {
     fn default() -> Self {
         // RandomSource.create(): seeded from the clock, not the world.
-        Self::new(crate::sound_engine::unique_seed())
+        Self::new(crate::random_source::unique_seed())
     }
 }
 impl MusicManager {
@@ -573,7 +573,7 @@ impl MusicManager {
         only: Option<&str>,
         sounds: &mut impl Sounds,
     ) -> bool {
-        let mut instance = SoundInstance::for_music(&music.sound, SoundEngine::unseeded());
+        let mut instance = SoundInstance::for_music(&music.sound, crate::random_source::create());
         // No track off and no row to play: vanilla's startPlaying as it is.
         // `resolve` picks the track, and an event with nothing to play (or no
         // event) is still the current music, with the delay at its maximum.
