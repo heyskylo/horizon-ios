@@ -1414,7 +1414,11 @@ mod tests {
         }
         let mesh = mesh(&columns);
         let quads = mesh.solid.as_chunks::<4>().0;
-        assert!(quads.len() > 50, "{} quads is too few to say much", quads.len());
+        assert!(
+            quads.len() > 50,
+            "{} quads is too few to say much",
+            quads.len()
+        );
         for (i, quad) in quads.iter().enumerate() {
             let words = crate::lod::packed::pack(quad)
                 .unwrap_or_else(|| panic!("quad {i} of {} did not pack", quads.len()));

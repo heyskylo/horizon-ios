@@ -414,10 +414,7 @@ mod tests {
         assert_eq!(out.len(), solid.len() / 4, "a slot a quad, none spilled");
         for (quad, record) in solid.as_chunks::<4>().0.iter().zip(&out) {
             let face = Face::from_words(*record).expect("a record names a face");
-            assert_eq!(
-                words_of(face.vertices()),
-                words_of(*quad),
-            );
+            assert_eq!(words_of(face.vertices()), words_of(*quad),);
         }
     }
 
