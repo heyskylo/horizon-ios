@@ -1,7 +1,7 @@
 TextureAtlas.createTexture	inline	crates/horizon-client-render/src/sprites.rs::Sprites::finish	gap: minor: no GPU texture objects or mip views; array size and mip count are set in finish
 TextureAtlas.upload	inline	crates/horizon-client-render/src/sprites.rs::Sprites::finish	gap: minor: no GPU upload or animated UBOs; sprites are inserted before finish
 TextureAtlas.uploadInitialContents	inline	crates/horizon-client-render/src/sprites.rs::Sprites::finish	static frames copied into the array pixels
-TextureAtlas.dumpContents	skip:debug		DEBUG_DUMP_TEXTURE_ATLAS PNG dump
+TextureAtlas.dumpContents	port	crates/horizon-client-render/src/hud.rs::HudAtlas::dump_contents	F3's dump-dynamic-textures shortcut: writes the GUI atlas PNG and its sprite rectangles to screenshots/debug (TextureUtil.getDebugTexturePath), which the chat names
 TextureAtlas.dumpSpriteNames	skip:debug		DEBUG_DUMP_TEXTURE_ATLAS name list
 TextureAtlas.cycleAnimationFrames	port	crates/horizon-client-render/src/gfx/animate.rs::SpriteAnimator::animate	advances every animated layer to the frame for the tick
 TextureAtlas.uploadAnimationFrames	port	crates/horizon-client-render/src/gfx/animate.rs::mix_level	per mip level frame mix (drawToAtlas)

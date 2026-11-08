@@ -1,0 +1,12 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "add_toast",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_add_toast"
+    }
+  ],
+  "rust_summary": "a toast of a mod's own in the advancement toasts' slots (`native_add_toast`).",
+  "doc_summary": "`native_add_toast(id, icon, title, description, challenge)` (client, `host.add_toast`) queues a toast of the mod's own in the slots the advancement toasts use, drawn as an `AdvancementToast`: the item `icon`, `title` in the frame label's place (yellow, or pink with the challenge sound when `challenge`) and `description` as its white line. `native_toast_add` hears it first as kind `mod` with the mod's `id`. False on a server, without a window and when cancelled. Bundles need \"hooks\": @API:add_toast@.",
+  "comments": ["crates/horizon-client/src/game/advancements.rs"]
+}
