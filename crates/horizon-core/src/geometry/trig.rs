@@ -101,6 +101,16 @@ impl Mth for f32 {
     }
 }
 
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunSoft, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+//
+// The notice above covers `fdlibm_asin`, `fdlibm_atan` and `fdlibm_atan2` below, Rust ports
+// of fdlibm 5.3's e_asin.c, s_atan.c and e_atan2.c (https://www.netlib.org/fdlibm/).
+
 /// fdlibm `__ieee754_asin`, as `StrictMath.asin` (and so `Math.asin`) computes it.
 #[allow(clippy::excessive_precision, clippy::approx_constant, clippy::eq_op)] // fdlibm's constants and NaN, verbatim.
 pub fn fdlibm_asin(x: f64) -> f64 {

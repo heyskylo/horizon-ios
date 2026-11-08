@@ -750,6 +750,45 @@ struct NativeFluidOut {
     return apply_fog(color, in.spherical, in.cylindrical);
 }
 
+// Native terrain models retain floating-point transformed normals. Fullbright still receives
+// entity directional shading; the material's alpha test and mip policy are independent.
+// Diffuse/normal policy: Flywheel 1.0.6, copyright2021-2024 Jozufozu (MIT);
+// full permission/warranty notice in THIRD_PARTY_NOTICES.md.
+override NATIVE_MODEL_ALPHA_CUTOFF: f32 = 0.0;
+struct NativeModelOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) color: vec4<f32>,
+    @location(2) @interpolate(flat) sprite: u32,
+    @location(3) spherical: f32,
+    @location(4) cylindrical: f32,
+    @location(5) normal: vec3<f32>,
+}
+@vertex fn vs_native_model(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>,
+    @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec4<u32>,
+    @location(5) normal_z: u32, @location(6) normal_xy: vec2<f32>) -> NativeModelOut {
+    let block = max(f32(light.y), dynamic_block_light(position));
+    var lit = color * sample_lightmap(f32(light.x) / 16.0, block / 16.0);
+    if globals.colored_count.x > 0u {
+        lit = vec4(min(lit.rgb + color.rgb * native_colored_light(position), vec3(1.0)), lit.a);
+    }
+    return NativeModelOut(globals.view_proj * vec4(position, 1.0), uv, lit, layer >> 16u,
+        length(position), max(length(position.xz), abs(position.y)),
+        vec3(normal_xy, bitcast<f32>(normal_z)));
+}
+@fragment fn fs_native_model(in: NativeModelOut) -> @location(0) vec4<f32> {
+    var color = sprite_grad(in.uv, in.sprite, dpdx(in.uv), dpdy(in.uv)) * in.color;
+    if NATIVE_MODEL_ALPHA_CUTOFF > 0.0 && color.a < NATIVE_MODEL_ALPHA_CUTOFF { discard; }
+    if any(in.normal != vec3(0.0)) {
+        let light0 = normalize(vec3(0.2, 1.0, -0.7));
+        let light1 = normalize(vec3(-0.2, select(1.0, -1.0, globals.time.y > 0.5), 0.7));
+        let shade = min(1.0, (max(0.0, dot(light0, in.normal))
+            + max(0.0, dot(light1, in.normal))) * 0.6 + 0.4);
+        color = vec4(color.rgb * shade, color.a);
+    }
+    return apply_fog(color, in.spherical, in.cylindrical);
+}
+
 // Sky (SkyRenderer): the 10-vertex sky disc fan at y = 16 (radius 512) in
 // the sky colour with sky fog (sky.fsh: fog 0..FogSkyEnd on the spherical
 // distance, a step at FogSkyEnd on the cylindrical one), evaluated per pixel

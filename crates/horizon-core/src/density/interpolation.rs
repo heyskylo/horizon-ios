@@ -87,6 +87,8 @@ impl InterpolatedSampler {
     /// increment once per Y. The X lerps at a level of corners are the top of one
     /// cell and the bottom of the next (the same lerps of the same samples), so they
     /// are computed once.
+    // The replacements Clippy suggests require Rust 1.87 and 1.88, above our 1.85 MSRV.
+    #[allow(clippy::manual_is_multiple_of, clippy::chunks_exact_to_as_chunks)]
     fn fill_whole_cells(
         &self,
         output: &mut [f32],
@@ -99,7 +101,7 @@ impl InterpolatedSampler {
         // Every cell has its own level of corners above it: none is clamped.
         let whole = (0..3).all(|i| {
             volume.minimum()[i].rem_euclid(self.cell_size[i]) == 0
-                && (i == 1 || sizes[i] % cell[i] == 0)
+                && (i == 1 || sizes[i].is_multiple_of(cell[i]))
                 && coarse.sizes()[i] == sizes[i].div_ceil(cell[i]) + 1
         });
         // Lanes run four Xs of one cell; each column stores four Ys at a time.
@@ -141,8 +143,17 @@ impl InterpolatedSampler {
                     // `low + increment * start[1]`, the cell starting at its Y 0.
                     let mut value: [f32; 4] =
                         std::array::from_fn(|lane| bottom[lane] + increment[lane] * 0.0);
-                    let quads = a.chunks_exact_mut(4).zip(b.chunks_exact_mut(4));
-                    let quads = quads.zip(c.chunks_exact_mut(4).zip(d.chunks_exact_mut(4)));
+                    let quads = a
+                        .as_chunks_mut::<4>()
+                        .0
+                        .iter_mut()
+                        .zip(b.as_chunks_mut::<4>().0);
+                    let quads = quads.zip(
+                        c.as_chunks_mut::<4>()
+                            .0
+                            .iter_mut()
+                            .zip(d.as_chunks_mut::<4>().0),
+                    );
                     for ((a, b), (c, d)) in quads {
                         let mut rows = [[0.0; 4]; 4];
                         for row in &mut rows {
@@ -405,7 +416,7 @@ mod tests {
                 3e38,
             ];
             const SCALE: [f32; 4] = [1.0, 1e-3, 1e30, 3e-39];
-            if hash % 23 == 0 {
+            if hash.is_multiple_of(23) {
                 SPECIAL[(hash >> 5) as usize % 8]
             } else {
                 ((hash >> 8) as f32 / (1 << 24) as f32 - 0.5) * SCALE[(hash >> 3) as usize % 4]

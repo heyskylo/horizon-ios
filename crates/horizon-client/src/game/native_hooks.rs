@@ -6,6 +6,10 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 413 adds chunk tickets in a level nobody is in (`native_force_chunk_in`).
+//!
+//! API 412 adds chunks a mod keeps loaded and ticking (`native_force_chunk`, `native_forced_chunks`).
+//!
 //! API 411 adds client Host services, GUI painting, model-head snapshots and client lifecycle notifications.
 //!
 //! API 410 adds a final foreground GUI overlay (`native_gui_render_post`) and the current frame's camera during GUI rendering.
@@ -997,11 +1001,12 @@ use super::{
 use crate::mod_api::NativeTextField;
 use horizon_assets::item_model::StackView;
 use horizon_client::mod_api::EntityDataValue;
+use horizon_client::mod_api::WorldHold;
 use horizon_client::mod_api::{
-    self, NativeBossBar, NativeCamera, NativeCommand, NativeDispensed, NativeFluidAction,
-    NativeFluidDrain, NativeFluidStack, NativeFluidTankView, NativeLifecycleContext,
-    NativeNoteBlockChange, NativeServerPlayer, RecipeBookCategory, ServerTickPhase, TickSpan,
-    WorldPhase,
+    self, BlockProperties, HudMode, NativeBossBar, NativeCamera, NativeCommand, NativeDispensed,
+    NativeFluidAction, NativeFluidDrain, NativeFluidStack, NativeFluidTankView,
+    NativeLifecycleContext, NativeNoteBlockChange, NativeServerPlayer, RecipeBookCategory,
+    ServerTickPhase, TickSpan, WorldPhase,
 };
 use horizon_client::mod_api::{AttachmentResult, Attachments, Holder, LayerDefinition, Suggestion};
 pub(crate) use horizon_client::mod_api::{
@@ -1167,10 +1172,23 @@ pub(super) use horizon_world::level::flags;
 
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
-#[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 411;
+pub(crate) const NATIVE_HOOKS_API: u32 = 413;
 
 impl GameLevel<'_> {
+    /// `EntityBlock.newBlockEntity` with the actual placed state. The first
+    /// entity supplied owns the result. No response means no new entity.
+    /// This is a creation callback, not a validity test: an existing entity
+    /// survives property changes within the same block, even if a fresh
+    /// instance of that state would have no entity. The actual block name and
+    /// property map are borrowed from the registry. No world, RNG or Host is
+    /// attached to a constructor; no context is allocated for this callback.
+    pub(super) fn native_block_entity_from_state(
+        block: &str,
+        properties: &BlockProperties,
+        entity: &mut Option<(String, Compound)>,
+    ) {
+        mod_api::dispatch_block_entity_from_state(mod_api::mods(), block, properties, entity);
+    }
     /// A hopper at `pos` is about to pick up `count` of `item`. Set `cancel` to leave the dropped stack in the world. Server-side. 232.
     #[inline(always)]
     pub(super) fn native_hopper_pickup_item(
@@ -2027,7 +2045,6 @@ impl OpenNativeScreen {
 }
 
 /// The player as a native mod reads it.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub struct NativePlayer {
     pub x: f64,
@@ -2052,7 +2069,7 @@ pub struct NativeClock {
 }
 
 /// How the panel lays out a recipe of `native_panel_recipes`.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "native mod API (docs/native-mods.md)")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NativeRecipeLayout {
     /// A crafting grid of `width` x `height` slots, an arrow and the result.
@@ -2089,7 +2106,6 @@ pub(crate) struct NativeRecipeView {
 /// and the components it has beyond the item's own, in vanilla's item
 /// syntax (`[minecraft:potion_contents={potion:"minecraft:swiftness"}]`),
 /// or "".
-#[allow(dead_code)]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct NativeRecipeStack {
     pub(crate) item: u32,
@@ -2098,7 +2114,6 @@ pub(crate) struct NativeRecipeStack {
 }
 
 /// The station a recipe is made at.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NativeRecipeKind {
     CraftingShaped,
@@ -2113,7 +2128,6 @@ pub(crate) enum NativeRecipeKind {
 }
 
 /// A recipe of [`NativeRecipes`].
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NativeRecipe {
     /// `minecraft:oak_planks`.
@@ -2144,7 +2158,6 @@ pub(crate) struct NativeRecipe {
 }
 
 /// An item of [`NativeRecipes::items`].
-#[allow(dead_code)]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct NativeItem {
     /// `minecraft:diamond`, `<mod>:<path>`.
@@ -2159,7 +2172,6 @@ pub(crate) struct NativeItem {
 /// registry's order, which each [`NativeRecipeStack::item`] indexes; the
 /// recipes are the book's in its order, then campfire, stonecutting,
 /// smithing and brewing.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct NativeRecipes {
     pub(crate) items: Vec<NativeItem>,
@@ -2168,7 +2180,6 @@ pub(crate) struct NativeRecipes {
 
 /// The mappings `native_mapping` answers for, with the key their default
 /// binding is (none: a mouse button, attack or use).
-#[allow(dead_code)]
 const MAPPINGS: [(&str, Option<KeyCode>); 9] = [
     ("key.forward", Some(KeyCode::KeyW)),
     ("key.left", Some(KeyCode::KeyA)),
@@ -2635,7 +2646,7 @@ impl Game<'_> {
     /// debug overlays, the pad cursor and IME. Fires even with F1 or a menu open;
     /// file/world loading and resource-reload overlays do not fire it. The batch
     /// is in GUI pixels. `native_camera` is this frame's world camera (None on
-    /// the panorama). `gui_hidden` is the F1 setting; `focused` is window focus.
+    /// the panorama). `gui_hidden` is the effective HUD mode; `focused` is window focus.
     /// A mod decides whether its foreground indicator respects those flags.
     /// Client only; the host is read-only. API 410.
     pub(super) fn native_gui_render_post(
@@ -3189,6 +3200,15 @@ impl Game<'_> {
     pub(super) fn native_shader_params(&self, partial: f32, params: &mut [[f32; 4]; 8]) {
         mod_api::dispatch_shader_params(self, mod_api::mods(), partial, params);
     }
+    /// Whether native mods hold the terrain's picture this frame: call `hold.hold()` to keep
+    /// every section drawn as it is while the world changes under it, or `hold.hold_within(x, z,
+    /// radius)` for only the sections inside circles. Not asking lets go, and every change
+    /// shows on that frame. Asked once a frame while a world is shown, before the frame's
+    /// section uploads, by each player's game (splitscreen: each its own). Client only.
+    /// API @API:world_hold@.
+    pub(super) fn native_world_hold(&self, hold: &mut WorldHold) {
+        mod_api::dispatch_world_hold(self, mod_api::mods(), hold);
+    }
     /// The minimap a native mod shows: set `minimap` when it is none yet.
     pub(super) fn native_minimap(&self, minimap: &mut Option<NativeMinimap>) {
         mod_api::dispatch_minimap(self, mod_api::mods(), minimap);
@@ -3283,6 +3303,14 @@ impl Game<'_> {
         entity: &mut Option<(String, Compound)>,
     ) {
         mod_api::dispatch_block_entity(self, mod_api::mods(), block, entity);
+    }
+    /// Opt a non-vanilla block into a state-aware block entity factory.
+    /// Set true for your block and never clear an earlier declaration. Asked
+    /// once per block when this level's immutable ownership table is built.
+    /// A declared block never falls back to API15, including when its state
+    /// factory returns no entity. @API:state_block_entity_factory@
+    pub(super) fn native_stateful_block_entity(&self, block: &str, stateful: &mut bool) {
+        mod_api::dispatch_stateful_block_entity(self, mod_api::mods(), block, stateful);
     }
     /// Whether block `block`'s block entity ticks (`EntityBlock.getTicker`):
     /// set `ticks` when it is yours. Asked for each of the block's states
@@ -6488,6 +6516,32 @@ impl Game<'_> {
         );
     }
 
+    /// `CommandSuggestions.SuggestionsList.useSuggestion`: a suggestion was
+    /// applied in the chat by Tab or a click, after updating the input and caret.
+    /// `start..end` is a Java UTF-16 range in `original`, the list's original
+    /// input even when cycling. `suggestion` is the selected replacement;
+    /// `input` is the resulting field value after its length limit. Client-only,
+    /// read-only; previews, navigation and command-block editors do not fire it.
+    /// API @API:chat_suggestion_applied@.
+    pub(super) fn native_chat_suggestion_applied(
+        &self,
+        original: &str,
+        start: usize,
+        end: usize,
+        suggestion: &str,
+        input: &str,
+    ) {
+        mod_api::dispatch_chat_suggestion_applied(
+            self,
+            mod_api::mods(),
+            original,
+            start,
+            end,
+            suggestion,
+            input,
+        );
+    }
+
     /// NeoForge's `ToastAddEvent`: a new toast is about to be queued. `kind`
     /// is `advancement`, `recipe`, `tutorial`, `system` or `now_playing`;
     /// `id` is the advancement id, the first recipe id, the tutorial hint
@@ -8258,6 +8312,18 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_right_click_block(self, mod_api::mods(), pos, face, canceled);
     }
+    /// A wind burst is about to interact with its shuffled block positions.
+    /// Remove positions to protect their blocks. Knockback and the vanilla
+    /// shuffle have already run; this does not change either. Server-side.
+    /// Pending API @API:wind_burst@.
+    pub(super) fn native_wind_burst(
+        &mut self,
+        dimension: &str,
+        center: [f64; 3],
+        blocks: &mut Vec<[i32; 3]>,
+    ) {
+        mod_api::dispatch_wind_burst(self, mod_api::mods(), dimension, center, blocks);
+    }
     /// An explosion at `center` in `dimension` (`minecraft:overworld`) is
     /// about to break `blocks`: `ServerExplosion.explode` with its `toBlow`,
     /// before any block is hit. Take out the positions to spare; they keep
@@ -9714,6 +9780,70 @@ fn mob_source(damage: &Damage) -> HurtSource<'static> {
 
 /// Whether `id` is a sound event's id, `namespace:path` as `Identifier`
 /// allows: the namespace of `[a-z0-9_.-]`, the path also with `/`.
+/// Whether a native mod's sound can be sent: a namespaced event, a sound
+/// source, a position inside the world's range and a finite, non-negative
+/// volume and pitch.
+pub(super) fn mod_sound_ok(
+    sound: &str,
+    at: [f64; 3],
+    source: usize,
+    volume: f32,
+    pitch: f32,
+) -> bool {
+    let position_ok = at
+        .into_iter()
+        .all(|v| v.is_finite() && v.abs() <= f64::from(i32::MAX) / 8.0);
+    let gain_ok = volume.is_finite() && volume >= 0.0 && pitch.is_finite() && pitch >= 0.0;
+    sound_id(sound)
+        && source < horizon_client::settings::SOUND_SOURCES.len()
+        && position_ok
+        && gain_ok
+}
+
+/// Whether a native mod's particles can be sent. Block particle types need
+/// a known state (`state_ok`); item, trail and vibration particles aren't
+/// supported by the network dispatch; a mod's own type must be namespaced.
+pub(super) fn mod_particles_ok(
+    options: &ParticleOptions,
+    state: Option<BlockStateId>,
+    state_ok: impl Fn(BlockStateId) -> bool,
+    at: [f64; 3],
+    spread: [f64; 3],
+    speed: f64,
+) -> bool {
+    use ParticleType as T;
+    // A native mod's own type: the name has to be namespaced, and a client
+    // draws it only when its pack has the sprite set.
+    if let Some(name) = &options.mod_particle {
+        let namespaced = name
+            .split_once(':')
+            .is_some_and(|(ns, path)| !ns.is_empty() && !path.is_empty());
+        if !namespaced {
+            return false;
+        }
+    }
+    let supported = match options.ty {
+        T::Block | T::BlockMarker | T::FallingDust | T::DustPillar | T::BlockCrumble => {
+            state.is_some_and(state_ok)
+        }
+        T::Item | T::Trail | T::Vibration => false,
+        T::Geyser | T::GeyserPlume | T::GeyserBase | T::GeyserPoof => options
+            .geyser
+            .is_some_and(|(_, impulse)| impulse.is_finite()),
+        _ => true,
+    };
+    supported
+        && at.into_iter().all(f64::is_finite)
+        && spread
+            .into_iter()
+            .all(|v| v.is_finite() && v.abs() <= f32::MAX as f64)
+        && speed.is_finite()
+        && speed.abs() <= f32::MAX as f64
+        && options.color.into_iter().all(f32::is_finite)
+        && options.to_color.into_iter().all(f32::is_finite)
+        && options.scale.is_finite()
+}
+
 fn sound_id(id: &str) -> bool {
     let Some((namespace, path)) = id.split_once(':') else {
         return false;
@@ -9764,7 +9894,7 @@ fn dimension_id(dimension: LevelDimension) -> &'static str {
 }
 
 /// Server-level helpers for native mods.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "native mod API (docs/native-mods.md)")]
 impl GameLevel<'_> {
     /// Play a sound event for nearby players in this server level. The return
     /// value means queued, not heard. A `minecraft:` event must be registered:
@@ -9781,17 +9911,7 @@ impl GameLevel<'_> {
         volume: f32,
         pitch: f32,
     ) -> bool {
-        if !self.native_authoritative || !sound_id(sound) {
-            return false;
-        }
-        if source >= horizon_client::settings::SOUND_SOURCES.len() {
-            return false;
-        }
-        let position_ok = at
-            .into_iter()
-            .all(|v| v.is_finite() && v.abs() <= f64::from(i32::MAX) / 8.0);
-        let gain_ok = volume.is_finite() && volume >= 0.0 && pitch.is_finite() && pitch >= 0.0;
-        if !position_ok || !gain_ok {
+        if !self.native_authoritative || !mod_sound_ok(sound, at, source, volume, pitch) {
             return false;
         }
         self.native_sounds.push(super::creatures::NativeSound {
@@ -9822,38 +9942,9 @@ impl GameLevel<'_> {
         speed: f64,
         count: i32,
     ) -> bool {
-        use ParticleType as T;
-        // A native mod's own type: the name has to be namespaced, and a client
-        // draws it only when its pack has the sprite set.
-        if let Some(name) = &options.mod_particle {
-            let namespaced = name
-                .split_once(':')
-                .is_some_and(|(ns, path)| !ns.is_empty() && !path.is_empty());
-            if !self.native_authoritative || !namespaced {
-                return false;
-            }
-        }
-        let supported = match options.ty {
-            T::Block | T::BlockMarker | T::FallingDust | T::DustPillar | T::BlockCrumble => {
-                state.is_some_and(|id| self.registry.state(id).is_some())
-            }
-            T::Item | T::Trail | T::Vibration => false,
-            T::Geyser | T::GeyserPlume | T::GeyserBase | T::GeyserPoof => options
-                .geyser
-                .is_some_and(|(_, impulse)| impulse.is_finite()),
-            _ => true,
-        };
+        let state_ok = |id| self.registry.state(id).is_some();
         if !self.native_authoritative
-            || !supported
-            || !at.into_iter().all(f64::is_finite)
-            || !spread
-                .into_iter()
-                .all(|v| v.is_finite() && v.abs() <= f32::MAX as f64)
-            || !speed.is_finite()
-            || speed.abs() > f32::MAX as f64
-            || !options.color.into_iter().all(f32::is_finite)
-            || !options.to_color.into_iter().all(f32::is_finite)
-            || !options.scale.is_finite()
+            || !mod_particles_ok(options, state, state_ok, at, spread, speed)
         {
             return false;
         }
@@ -9982,7 +10073,7 @@ impl GameLevel<'_> {
 
 /// Helpers for native mods, kept as stable as the hook points.
 // Native mods use these; nothing in Horizon does.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "native mod API (docs/native-mods.md)")]
 impl Game<'_> {
     /// Plays `sound` to that player alone, as Bukkit's `Player.playSound`:
     /// at `at` in their level, or where they stand when it leaves (None),
@@ -10283,6 +10374,18 @@ impl Game<'_> {
         map.paint(colors);
         true
     }
+    /// Effective HUD mode. Pending API @API:hud_mode@.
+    pub(super) fn native_hud_mode(&self) -> HudMode {
+        self.ui.hud_mode()
+    }
+    /// Set HUD and hand visibility, including from the post-handling input notice.
+    /// Client only, outside a borrowed server guest's turn. This changes no
+    /// other restrictions on first-person rendering.
+    pub(super) fn native_set_hud_mode(&mut self, mode: HudMode) {
+        if self.native_window() && self.lan_acting.is_none() {
+            self.ui.set_hud_mode(mode);
+        }
+    }
     /// Access a server-owned holder's attachment map. On a client it is the
     /// copy of what the server synced: `set` and `remove` change only the copy.
     pub(super) fn native_attachments(
@@ -10356,16 +10459,19 @@ impl Game<'_> {
         {
             return false;
         }
+        self.ensure_stateful_entity_table();
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
         let previous = self.world.block(pos[0], pos[1], pos[2]);
         let changed =
             self.with_level(|b, level, ticks| b.set_block(level, ticks, at, state, flags));
         let new = self.res.facts().get(state).name.clone();
         let landed = self.world.block(pos[0], pos[1], pos[2]);
+        let needs_entity = !self.world.block_entities.stateful_entity(landed.0)
+            && self.res.facts().get(previous).name != new;
         if changed
-            && self.res.facts().get(previous).name != new
+            && needs_entity
             && self.res.facts().get(landed).name == new
-            && let Some(entity) = self.new_block_entity(&new)
+            && let Some(entity) = self.new_block_entity_for_state(landed)
         {
             self.world
                 .block_entities
@@ -10681,6 +10787,30 @@ impl Game<'_> {
         }
         self.audio.play_after(sound, at, volume, pitch, delay);
         true
+    }
+    /// Muffles the game's sounds for a while, as ears ringing after a close
+    /// blast hear them: `amount` (0 to 1) of every sound's volume is taken
+    /// away and `lowpass` (0 to 1) dulls it, from untouched to a 300 Hz
+    /// low-pass. Both start in full and fade back in a straight line over
+    /// `ticks` client ticks, held while the game is paused. The sound events in
+    /// `exempt` (`mymod:ear.ringing`) play clearly through it, those already
+    /// playing too, so the mod's own ringing stays sharp. Everything else is
+    /// muffled, music and the interface's clicks included. A new call replaces
+    /// the muffle in place; `ticks` 0 ends it at once. Nothing changes while no
+    /// mod calls it. False, with nothing changed, on a server, for an amount or
+    /// strength outside 0 to 1, or for an exempt event that isn't
+    /// `namespace:path` or more than 64 of them. API @API:muffle_sounds@.
+    pub(super) fn native_muffle_sounds(
+        &mut self,
+        amount: f32,
+        lowpass: f32,
+        ticks: u32,
+        exempt: &[&str],
+    ) -> bool {
+        if !self.native_window() || exempt.len() > 64 || !exempt.iter().all(|e| sound_id(e)) {
+            return false;
+        }
+        self.audio.muffle(amount, lowpass, ticks, exempt)
     }
     /// Draws one vanilla HUD layer between the mods' hooks: `native_gui_layer_pre`
     /// (which may hide it), the layer, then `native_gui_layer_post`. `None` when
@@ -11534,6 +11664,55 @@ impl Game<'_> {
             .into(),
         )))
     }
+    /// Compile static factory ownership lazily: creation can precede the
+    /// first block-entity tick (commands, chunk sync or a harness).
+    pub(super) fn ensure_stateful_entity_table(&mut self) {
+        if self.world.block_entities.has_stateful_entity_table() {
+            return;
+        }
+        let registry = self.pack.assets.registry;
+        let mut blocks = FxHashMap::default();
+        let states = (0..registry.len() as u32)
+            .map(|id| {
+                let Some(state) = registry.state(BlockStateId(id)) else {
+                    return false;
+                };
+                if state.name.starts_with("minecraft:") {
+                    return false;
+                }
+                *blocks.entry(state.name.as_str()).or_insert_with(|| {
+                    let mut stateful = false;
+                    self.native_stateful_block_entity(&state.name, &mut stateful);
+                    stateful
+                })
+            })
+            .collect();
+        self.world.block_entities.set_stateful_entities(states);
+    }
+    /// Actual-state creation for all placement/synchronization callers.
+    /// Undeclared blocks retain the existing API15/vanilla factory exactly.
+    pub(super) fn new_block_entity_for_state(
+        &mut self,
+        state: BlockStateId,
+    ) -> Option<BlockEntity> {
+        self.ensure_stateful_entity_table();
+        if self.world.block_entities.stateful_entity(state.0) {
+            let mut entity = None;
+            let state = self.pack.assets.registry.state(state)?;
+            GameLevel::native_block_entity_from_state(&state.name, &state.properties, &mut entity);
+            let (id, nbt) = entity?;
+            return Some(BlockEntity::Mod(Box::new(
+                ModBlockEntityFields {
+                    id,
+                    nbt,
+                    ..Default::default()
+                }
+                .into(),
+            )));
+        }
+        let name = self.pack.assets.registry.state(state)?.name.clone();
+        self.new_block_entity(&name)
+    }
     /// The containers of the mod blocks' block entities, by block state
     /// (`native_block_entity_container`), checked.
     pub(super) fn native_containers(&self) -> FxHashMap<u32, Arc<ModContainer>> {
@@ -12172,6 +12351,12 @@ impl Game<'_> {
         self.native_shader_params(partial, &mut params);
         finite_params(params)
     }
+    /// What native mods ask of the terrain's picture this frame (`native_world_hold`).
+    pub(super) fn native_world_hold_now(&self) -> WorldHold {
+        let mut hold = WorldHold::default();
+        self.native_world_hold(&mut hold);
+        hold
+    }
     /// The minimap a native mod shows.
     pub(super) fn native_minimap_now(&self) -> Option<NativeMinimap> {
         let mut minimap = None;
@@ -12279,7 +12464,6 @@ fn finite(v: f32, lo: f32, hi: f32) -> f32 {
 
 /// An item entity as `native_item_entities` lists it. API 42.
 /// Read by mods only.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct NativeItemEntity {
     /// The entity's ID, for `native_set_item_entity`.

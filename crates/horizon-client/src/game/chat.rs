@@ -1,12 +1,15 @@
 //! Chat, the command registries and the per-world state behind commands
 //! (game rules, the world clock, difficulty), bound to the game.
+#[cfg(test)]
+mod suggestion_completion_tests;
+
 use super::{Game, Screen};
 use horizon_client::{
     chat::{
         Chat, ChatAbilities, ChatAction, ChatScreen, ChatSource, ChatVisibility, Commands,
         SYSTEM_INDICATOR, normalize_chat_message,
     },
-    command::Registries,
+    command::{ArgType, Dispatcher, MOD_COMMAND, Registries},
     gamerules::GameRules,
     hud::HudBatch,
     screen_draw::Measure,
@@ -52,6 +55,91 @@ pub(super) fn with_native_commands(
     )
 }
 
+/// Add Studio's local command grammar to the suggestion tree. Commands are
+/// still dispatched by `studio_command`; this tree supplies coloring,
+/// completion, and Tab acceptance in chat.
+fn with_studio_commands(base: &Dispatcher) -> Dispatcher {
+    fn literal(d: &mut Dispatcher, parent: usize, name: &str) -> usize {
+        let node = d.literal(parent, name);
+        d.executes(node, MOD_COMMAND);
+        node
+    }
+    fn argument(d: &mut Dispatcher, parent: usize, name: &str, ty: ArgType) -> usize {
+        let node = d.argument(parent, name, ty);
+        d.executes(node, MOD_COMMAND);
+        node
+    }
+
+    let mut d = base.clone();
+    let root = d.find("studio").unwrap_or_else(|| d.literal(0, "studio"));
+    d.executes(root, MOD_COMMAND);
+
+    let record = literal(&mut d, root, "record");
+    let start = literal(&mut d, record, "start");
+    argument(&mut d, start, "name", ArgType::Word);
+    literal(&mut d, record, "stop");
+    literal(&mut d, record, "status");
+
+    let replay = literal(&mut d, root, "replay");
+    let open = literal(&mut d, replay, "open");
+    argument(&mut d, open, "path", ArgType::Greedy);
+    literal(&mut d, replay, "pause");
+    literal(&mut d, replay, "resume");
+    let speed = literal(&mut d, replay, "speed");
+    argument(
+        &mut d,
+        speed,
+        "multiplier",
+        ArgType::Double {
+            min: 0.01,
+            max: 20.0,
+        },
+    );
+    let seek = literal(&mut d, replay, "seek");
+    argument(
+        &mut d,
+        seek,
+        "milliseconds",
+        ArgType::Integer {
+            min: 0,
+            max: i32::MAX,
+        },
+    );
+    literal(&mut d, replay, "status");
+    literal(&mut d, replay, "close");
+
+    let freecam = literal(&mut d, root, "freecam");
+    argument(
+        &mut d,
+        freecam,
+        "state",
+        ArgType::StrEnum(&["on", "off"], "argument.enum.invalid"),
+    );
+
+    let keyframe = literal(&mut d, root, "keyframe");
+    literal(&mut d, keyframe, "add");
+    let remove = literal(&mut d, keyframe, "remove");
+    argument(
+        &mut d,
+        remove,
+        "index",
+        ArgType::Integer {
+            min: 0,
+            max: i32::MAX,
+        },
+    );
+    literal(&mut d, keyframe, "clear");
+
+    let path = literal(&mut d, root, "path");
+    argument(
+        &mut d,
+        path,
+        "state",
+        ArgType::StrEnum(&["lock", "unlock"], "argument.enum.invalid"),
+    );
+    d
+}
+
 impl Game<'_> {
     /// The tree the chat box colours, completes and parses with for the
     /// world's connection: `base`, the tree the server sent, or the game's own
@@ -63,12 +151,11 @@ impl Game<'_> {
     ) -> horizon_client::command::Dispatcher {
         let mut names = Vec::new();
         self.native_commands(&mut names);
-        names.push("studio");
         let base = match base {
             Some(tree) => tree,
             None => horizon_client::command::vanilla::game_dispatcher(),
         };
-        with_native_commands(base, &names)
+        with_studio_commands(&with_native_commands(base, &names))
     }
 }
 
@@ -161,6 +248,8 @@ pub struct UiState {
     pub difficulty: u8,
     /// F1: hide the HUD.
     pub hide_gui: bool,
+    /// Native HUD mode: keep hands visible while the HUD is hidden.
+    pub show_hand_when_hidden: bool,
     /// Death message key set by the cause of death (e.g. /kill).
     pub death_cause: Option<String>,
     /// Path of an F2 screenshot waiting for its frame.
@@ -180,6 +269,46 @@ pub struct UiState {
 }
 
 impl UiState {
+    pub fn hud_mode(&self) -> super::native_client_services::HudMode {
+        use super::native_client_services::HudMode;
+        match (self.hide_gui, self.show_hand_when_hidden) {
+            (false, _) => HudMode::AllVisible,
+            (true, true) => HudMode::NoHud,
+            (true, false) => HudMode::AllHidden,
+        }
+    }
+
+    pub fn set_hud_mode(&mut self, mode: super::native_client_services::HudMode) {
+        use super::native_client_services::HudMode;
+        self.hide_gui = mode != HudMode::AllVisible;
+        self.show_hand_when_hidden = mode == HudMode::NoHud;
+    }
+
+    pub fn hand_hidden(&self) -> bool {
+        self.hide_gui && !self.show_hand_when_hidden
+    }
+
+    /// The effective first-person hand gate, before per-hand mod cancellation.
+    pub fn hands_drawn(
+        &self,
+        spectator: bool,
+        sleeping: bool,
+        first_person: bool,
+        alive: bool,
+        dead_screen: bool,
+    ) -> bool {
+        !spectator && !self.hand_hidden() && !sleeping && first_person && alive && !dead_screen
+    }
+
+    fn toggle_hide_gui(&mut self) {
+        use super::native_client_services::HudMode;
+        self.set_hud_mode(if self.hide_gui {
+            HudMode::AllVisible
+        } else {
+            HudMode::AllHidden
+        });
+    }
+
     /// The state a window starts with: the chat remembers the commands kept
     /// in the game folder (`ChatComponent`'s constructor).
     pub fn new() -> Self {
@@ -188,6 +317,138 @@ impl UiState {
             ui.chat.load_history(&dir);
         }
         ui
+    }
+}
+
+#[cfg(test)]
+mod hud_mode_tests {
+    use super::UiState;
+    use crate::mod_api::{self, ClientTickPreEvent, Hooks, Host, HudMode};
+
+    #[test]
+    fn hud_modes_drive_the_effective_hud_and_hand_gate() {
+        let mut ui = UiState::default();
+        for (mode, hidden, hand) in [
+            (HudMode::AllVisible, false, true),
+            (HudMode::NoHud, true, true),
+            (HudMode::AllHidden, true, false),
+        ] {
+            ui.set_hud_mode(mode);
+            assert_eq!(ui.hud_mode(), mode);
+            // This is the same flag that every HUD gate and API 410 read.
+            assert_eq!(ui.hide_gui, hidden);
+            assert_eq!(ui.hands_drawn(false, false, true, true, false), hand);
+            // No mode can bypass the other first-person hand restrictions.
+            assert!(!ui.hands_drawn(true, false, true, true, false));
+            assert!(!ui.hands_drawn(false, true, true, true, false));
+            assert!(!ui.hands_drawn(false, false, false, true, false));
+            assert!(!ui.hands_drawn(false, false, true, false, false));
+            assert!(!ui.hands_drawn(false, false, true, true, true));
+        }
+    }
+
+    #[test]
+    fn vanilla_f1_remains_two_state_and_clears_the_hand_override() {
+        let mut ui = UiState::default();
+        assert_eq!(ui.hud_mode(), HudMode::AllVisible);
+        ui.toggle_hide_gui();
+        assert_eq!(ui.hud_mode(), HudMode::AllHidden);
+        assert!(ui.hand_hidden());
+        ui.toggle_hide_gui();
+        assert_eq!(ui.hud_mode(), HudMode::AllVisible);
+        ui.set_hud_mode(HudMode::NoHud);
+        ui.toggle_hide_gui();
+        assert_eq!(ui.hud_mode(), HudMode::AllVisible);
+        ui.toggle_hide_gui();
+        assert_eq!(ui.hud_mode(), HudMode::AllHidden);
+        // Existing hidden state also hides hands without a separate setting.
+        let ui = UiState {
+            hide_gui: true,
+            ..Default::default()
+        };
+        assert_eq!(ui.hud_mode(), HudMode::AllHidden);
+        assert!(ui.hand_hidden());
+    }
+
+    struct Client(UiState);
+    impl Host for Client {
+        fn hud_mode(&self) -> HudMode {
+            self.0.hud_mode()
+        }
+        fn set_hud_mode(&mut self, mode: HudMode) {
+            self.0.set_hud_mode(mode);
+        }
+    }
+    struct ThreeState;
+    impl Hooks for ThreeState {
+        fn client_tick_pre(&self, host: &mut dyn Host, _: &mut ClientTickPreEvent) {
+            host.set_hud_mode(match host.hud_mode() {
+                HudMode::AllVisible => HudMode::NoHud,
+                HudMode::NoHud => HudMode::AllHidden,
+                HudMode::AllHidden => HudMode::AllVisible,
+            });
+        }
+    }
+
+    #[test]
+    fn generated_dispatch_exposes_hud_mode_helpers_to_existing_callbacks() {
+        let mods: Vec<Box<dyn Hooks>> = vec![Box::new(ThreeState)];
+        let mut client = Client(UiState::default());
+        for (mode, hidden, hand) in [
+            (HudMode::NoHud, true, true),
+            (HudMode::AllHidden, true, false),
+            (HudMode::AllVisible, false, true),
+        ] {
+            mod_api::dispatch_client_tick_pre(&mut client, &mods);
+            assert_eq!(client.hud_mode(), mode);
+            assert_eq!(client.0.hide_gui, hidden);
+            assert_eq!(client.0.hands_drawn(false, false, true, true, false), hand);
+        }
+        mod_api::dispatch_client_tick_pre(&mut client, &[]);
+        assert_eq!(client.hud_mode(), HudMode::AllVisible);
+    }
+
+    /// Exercise the generated Host bridge against a real Game with silent audio
+    /// and no window, renderer, server loop or network connection.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn native_hud_mode_game_bridge_respects_client_and_guest_guards() {
+        use crate::game::{execution_role::ExecutionRole, native_machines::tests::server_game};
+        let mut game = server_game();
+        assert!(game.window.is_none());
+        assert!(game.renderer.is_none());
+        let mods: Vec<Box<dyn Hooks>> = vec![Box::new(ThreeState)];
+        for role in [
+            ExecutionRole::IntegratedServer,
+            ExecutionRole::DedicatedServer,
+        ] {
+            game.options.execution_role = role;
+            mod_api::dispatch_client_tick_pre(&mut game, &mods);
+            assert_eq!(Host::hud_mode(&game), HudMode::AllVisible);
+        }
+        game.options.execution_role = ExecutionRole::Client;
+        mod_api::dispatch_client_tick_pre(&mut game, &mods);
+        assert_eq!(Host::hud_mode(&game), HudMode::NoHud);
+        assert!(game.ui.hide_gui);
+        assert!(game.ui.hands_drawn(false, false, true, true, false));
+
+        // A server callback borrowing another actor cannot change the window's mode.
+        game.lan_acting = Some(17);
+        mod_api::dispatch_client_tick_pre(&mut game, &mods);
+        assert_eq!(Host::hud_mode(&game), HudMode::NoHud);
+        game.lan_acting = None;
+        mod_api::dispatch_client_tick_pre(&mut game, &mods);
+        assert_eq!(Host::hud_mode(&game), HudMode::AllHidden);
+        assert!(!game.ui.hands_drawn(false, false, true, true, false));
+
+        game.toggle_hide_gui();
+        assert_eq!(Host::hud_mode(&game), HudMode::AllVisible);
+        Host::set_hud_mode(&mut game, HudMode::NoHud);
+        game.toggle_hide_gui();
+        assert_eq!(Host::hud_mode(&game), HudMode::AllVisible);
+        game.toggle_hide_gui();
+        assert_eq!(Host::hud_mode(&game), HudMode::AllHidden);
+        assert!(game.ui.hand_hidden());
     }
 }
 
@@ -286,7 +547,8 @@ fn resource_ids(root: &Path) -> Arc<ResourceIds> {
     entity_types.sort();
     let (timelines, markers) = overworld_timelines(root);
     let ids = Arc::new(ResourceIds {
-        recipes: ids_under(&data.join("recipe"), "json"),
+        // `/recipe <id>` must suggest a content mod's recipes too.
+        recipes: json_ids_of_every_namespace(root, "recipe"),
         // `/loot ... loot <id>` must find a content mod's tables too.
         loot_tables: json_ids_of_every_namespace(root, "loot_table"),
         templates: templates_under(&root.join("worldgen/structure")),
@@ -358,11 +620,6 @@ fn command_export(dir: &Path, keep: bool) -> Option<Arc<Registries>> {
         cache.push((dir.to_owned(), export.clone()));
     }
     export
-}
-
-/// The `minecraft:` ids of the `extension` files under `root`, sorted.
-fn ids_under(root: &Path, extension: &str) -> Vec<String> {
-    ids_in(root, extension, "minecraft")
 }
 
 /// The ids of the `.json` files in `data/<namespace>/<kind>` of every
@@ -685,6 +942,8 @@ impl Game<'_> {
             .map(|(k, _)| k.clone())
             .collect();
         self.sync_enchantment_registries();
+        // After the export, which keys the registry with vanilla's tags.
+        self.ui.registries.sync_damage_type_ids();
     }
     /// The block the player is looking at, for coordinate suggestions, and
     /// the entity, for entity arguments (ClientSuggestionProvider).
@@ -1063,6 +1322,23 @@ impl Game<'_> {
                 self.ui.chat_screen = Some(screen);
             }
         }
+        self.notify_chat_suggestion_completion();
+    }
+    fn notify_chat_suggestion_completion(&mut self) {
+        if let Some(completion) = self
+            .ui
+            .chat_screen
+            .as_mut()
+            .and_then(ChatScreen::take_suggestion_completion)
+        {
+            self.native_chat_suggestion_applied(
+                &completion.original,
+                completion.range.0,
+                completion.range.1,
+                &completion.text,
+                &completion.input,
+            );
+        }
     }
     /// The server's completions for an `ask_server` request
     /// (ClientPacketListener.handleCommandSuggestions).
@@ -1174,6 +1450,7 @@ impl Game<'_> {
         }
         if let Some(screen) = self.ui.chat_screen.as_mut() {
             if screen.click(&m, &c, cursor.0 as f64, cursor.1 as f64) {
+                self.notify_chat_suggestion_completion();
                 return;
             }
         } else {
@@ -1606,6 +1883,8 @@ impl Game<'_> {
         }
         self.ui.chat.clear();
         self.build_registries();
+        // The world opens with its test instances (`Registries.TEST_INSTANCE`).
+        self.snapshot_test_defs();
         self.sync_rules();
     }
     /// Save the clock beside level.dat (Level.write saves the game rules: a
@@ -1661,11 +1940,15 @@ impl Game<'_> {
     }
     /// F1 hides the HUD (see `hud`); the screenshot key still works.
     pub(super) fn toggle_hide_gui(&mut self) {
-        self.ui.hide_gui = !self.ui.hide_gui;
+        self.ui.toggle_hide_gui();
     }
     /// F2: ScreenShot.grab into `screenshots/` with vanilla's file name. The
     /// file it will write, `None` without a window to draw.
     pub(super) fn take_screenshot(&mut self) -> Option<std::path::PathBuf> {
+        // Its grab would take a sequence's frame.
+        if self.screenshot_sequence.is_some() {
+            return None;
+        }
         let dir = horizon_client::logging::player_dir().join("screenshots");
         if std::fs::create_dir_all(&dir).is_err() {
             return None;
@@ -1832,6 +2115,23 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A content mod's recipes are suggested with vanilla's, so `/recipe`
+    /// offers the ids the recipe index knows.
+    #[test]
+    fn recipes_of_every_namespace_are_listed() {
+        let root = std::env::temp_dir().join(format!("horizon-recipe-ids-{}", std::process::id()));
+        for dir in ["data/minecraft/recipe", "data/mymod/recipe/press"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join("data/minecraft/recipe/stick.json"), "{}").unwrap();
+        std::fs::write(root.join("data/mymod/recipe/press/iron.json"), "{}").unwrap();
+        assert_eq!(
+            resource_ids(&root).recipes,
+            ["minecraft:stick", "mymod:press/iron"]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Only the overworld clock's timelines count; a marker is a bare tick
     /// count (hidden from commands) or an object that may show itself.
     #[test]
@@ -1928,6 +2228,43 @@ mod tests {
             vanilla.parse("help", &reg).executable().map(|e| e.1)
         );
         assert_eq!(shared.nodes.len(), vanilla.nodes.len());
+    }
+
+    #[test]
+    fn studio_command_tree_suggests_subcommands_and_arguments() {
+        let reg = Registries::default();
+        let base = horizon_client::command::vanilla::game_dispatcher();
+        let tree = with_studio_commands(base);
+        let suggestions = |input: &str| {
+            let parse = tree.parse(input, &reg);
+            tree.client_suggestions(&parse, input.len(), &reg)
+                .1
+                .into_iter()
+                .map(|suggestion| suggestion.text)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            suggestions("studio "),
+            ["freecam", "keyframe", "path", "record", "replay"]
+        );
+        assert_eq!(suggestions("studio record "), ["start", "status", "stop"]);
+        assert_eq!(
+            suggestions("studio replay "),
+            [
+                "close", "open", "pause", "resume", "seek", "speed", "status"
+            ]
+        );
+        assert_eq!(suggestions("studio freecam "), ["off", "on"]);
+        assert_eq!(suggestions("studio keyframe "), ["add", "clear", "remove"]);
+        assert_eq!(suggestions("studio path "), ["lock", "unlock"]);
+        assert_eq!(
+            tree.parse("studio replay open some-recording.mcpr", &reg)
+                .executable()
+                .unwrap()
+                .1,
+            MOD_COMMAND
+        );
     }
 
     /// When `entity_types` is empty (no `entity-types.json`), fallback includes
@@ -2185,7 +2522,11 @@ mod enchantment_snapshot_tests {
         let pack = dir.join("datapacks/model");
         let tags = pack.join("data/h024/tags/enchantment");
         std::fs::create_dir_all(&tags).unwrap();
-        std::fs::write(pack.join("pack.mcmeta"), "{}").unwrap();
+        std::fs::write(
+            pack.join("pack.mcmeta"),
+            r#"{"pack":{"description":"fixture"}}"#,
+        )
+        .unwrap();
         std::fs::write(tags.join("empty.json"), r#"{"values":[]}"#).unwrap();
         std::fs::write(
             dir.join("datapacks.json"),
@@ -2267,6 +2608,87 @@ mod enchantment_snapshot_tests {
         assert_eq!(
             game.ui.registries.by_registry["minecraft:enchantment"].tags,
             tags
+        );
+    }
+}
+
+#[cfg(test)]
+mod damage_type_registry_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+
+    /// A world pack's damage type is a `/damage` type once the world opens,
+    /// beside vanilla's, and the registry keeps vanilla's tags.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_world_packs_damage_type_parses_in_damage() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+
+        let dir = std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+            .join("damage-type-ids");
+        let pack = dir.join("datapacks/model");
+        let types = pack.join("data/example/damage_type");
+        std::fs::create_dir_all(&types).unwrap();
+        std::fs::write(pack.join("pack.mcmeta"), "{}").unwrap();
+        std::fs::write(
+            types.join("test.json"),
+            r#"{"message_id":"example.test","scaling":"never","exhaustion":0.0}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("datapacks.json"),
+            r#"{"enabled":["file/model"],"disabled":[]}"#,
+        )
+        .unwrap();
+        game.world_root = dir;
+        (game.world_tables, game.health_resources) = game.build_world_tables(false, &[]).unwrap();
+        game.level.allow_commands = Some(true);
+        game.build_registries();
+
+        let reg = &game.ui.registries;
+        assert!(
+            reg.damage_types.contains(&"example:test".to_owned()),
+            "the damage catalog holds the pack's type"
+        );
+        let parse = |input: &str| {
+            horizon_client::command::vanilla::dispatcher()
+                .parse(input, reg)
+                .executable()
+                .map(|_| ())
+                .map_err(|e| format!("{e:?}"))
+        };
+        assert_eq!(parse("damage @s 1 example:test"), Ok(()));
+        assert_eq!(parse("damage @s 1 minecraft:magic"), Ok(()));
+        assert!(parse("damage @s 1 example:missing").is_err());
+        assert!(
+            reg.tags("minecraft:damage_type")
+                .contains(&"minecraft:is_fire".to_owned()),
+            "vanilla's damage type tags stay"
         );
     }
 }

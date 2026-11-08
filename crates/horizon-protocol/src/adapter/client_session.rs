@@ -12,13 +12,23 @@
 //! server read itself: `login_acknowledged` and `login_finished` move each direction to configuration,
 //! `finish_configuration` to play, and `configuration_acknowledged` / `start_configuration` back.
 use std::{
-    collections::VecDeque,
+    cell::Cell,
+    collections::{HashMap, VecDeque},
     sync::{
         Mutex,
         atomic::{AtomicU8, Ordering},
     },
 };
 
+mod step_1_20_6;
+mod step_1_21_1;
+mod step_1_21_10;
+mod step_1_21_11;
+mod step_1_21_4;
+mod step_1_21_5;
+mod step_1_21_6;
+mod step_1_21_8;
+mod step_26_1;
 mod world;
 
 use super::{
@@ -66,6 +76,9 @@ pub struct ClientSession {
     place: Mutex<Place>,
     /// Teleports (`player_position`) sent and not yet accepted, oldest first.
     teleports: Mutex<VecDeque<Teleport>>,
+    /// The entities the client was sent, by network id: their pinned type and UUID, for the older
+    /// releases' entity data and 26.1's spectating by UUID.
+    entities: Mutex<HashMap<i32, (i32, u128)>>,
 }
 
 /// A position, yaw and pitch.
@@ -115,6 +128,34 @@ impl Teleport {
     }
 }
 
+thread_local! {
+    /// The client's ids while [`ClientSession::older_layout_down`] runs: its steps re-read payloads already in them.
+    static CLIENT_IDS: Cell<Option<&'static Ids>> = const { Cell::new(None) };
+}
+
+/// Restores the previous client ids when dropped.
+struct ClientIds(Option<&'static Ids>);
+impl Drop for ClientIds {
+    fn drop(&mut self) {
+        CLIENT_IDS.set(self.0);
+    }
+}
+
+/// Runs `read` on a payload the renumbering already wrote in the client's ids, reading them as the pinned ones
+/// (a particle's data, say, is chosen by its pinned id).
+pub(super) fn read_in_client_ids<T>(read: impl FnOnce() -> Result<T>) -> Result<T> {
+    let _guard = CLIENT_IDS.get().map(|ids| ids::renumbering(ids, Way::Up));
+    read()
+}
+
+/// Runs `write`, writing pinned ids as the client's again (the other half of [`read_in_client_ids`]).
+pub(super) fn write_in_client_ids(write: impl FnOnce(&mut Writer)) -> Vec<u8> {
+    let _guard = CLIENT_IDS.get().map(|ids| ids::renumbering(ids, Way::Down));
+    let mut w = Writer::new();
+    write(&mut w);
+    w.data
+}
+
 impl ClientSession {
     /// A client whose login handshake stated `version`'s protocol: both directions are in login.
     pub fn new(version: ServerVersion) -> Self {
@@ -124,6 +165,7 @@ impl ClientSession {
             writing: AtomicU8::new(to_u8(State::Login)),
             place: Mutex::new(Place::default()),
             teleports: Mutex::new(VecDeque::new()),
+            entities: Mutex::new(HashMap::new()),
         }
     }
     pub fn reading(&self) -> State {
@@ -155,6 +197,9 @@ impl ClientSession {
             _ => state,
         };
         self.reading.store(to_u8(next), Ordering::Release);
+        let Some((pinned, payload)) = self.older_layout_up(state, pinned, payload)? else {
+            return Ok(None);
+        };
         use packet_ids::play::serverbound as sb;
         let payload = match (state, pinned) {
             (State::Play, sb::ACCEPT_TELEPORTATION) => self.accept_teleport(&payload)?,
@@ -207,6 +252,16 @@ impl ClientSession {
             _ => state,
         };
         self.writing.store(to_u8(next), Ordering::Release);
+        // 1.21.1 has no entity_position_sync: the teleport it stands in for is sent under teleport_entity's id.
+        let synced = if self.version.at_most(ServerVersion::V1_21_1) {
+            step_1_21_1::entity_position_sync(state, id, payload)?
+        } else {
+            None
+        };
+        let (id, payload) = match &synced {
+            Some(p) => (packet_ids::play::clientbound::TELEPORT_ENTITY, &p[..]),
+            None => (id, payload),
+        };
         // 26.2 has no swing_animation: its hands swing through animate (world.rs).
         if state == State::Play
             && id == packet_ids::play::clientbound::SWING_ANIMATION
@@ -224,6 +279,14 @@ impl ClientSession {
         if (state, id) == (State::Play, packet_ids::play::clientbound::PLAYER_POSITION) {
             self.teleporting(payload)?;
         }
+        let tracked;
+        let payload = match self.track_entities(state, id, payload)? {
+            Some(p) => {
+                tracked = p;
+                &tracked[..]
+            }
+            None => payload,
+        };
         let Some(mapped) = self.version.clientbound_id_down(state, id) else {
             return Ok(None);
         };
@@ -244,10 +307,234 @@ impl ClientSession {
                 None
             }
         };
+        let out = rewritten.unwrap_or_else(|| payload.to_vec());
+        let Some(out) = self.older_layout_down(state, id, out)? else {
+            return Ok(None);
+        };
         let mut w = Writer::new();
         w.varint(mapped);
-        w.bytes(rewritten.as_deref().unwrap_or(payload));
+        w.bytes(&out);
         Ok(Some(w.data))
+    }
+
+    /// Keeps the entities the client is sent (`add_entity`, `remove_entities`), and writes a pinned
+    /// `set_entity_data` in 1.21.11's or 1.21.10's entity data (still in pinned ids, which [`down`]
+    /// renumbers): `Some` when it changed.
+    fn track_entities(&self, state: State, id: i32, payload: &[u8]) -> Result<Option<Vec<u8>>> {
+        use packet_ids::play::clientbound as cb;
+        if state != State::Play
+            || !matches!(
+                id,
+                cb::ADD_ENTITY | cb::REMOVE_ENTITIES | cb::SET_ENTITY_DATA
+            )
+        {
+            return Ok(None);
+        }
+        let mut p = play::Clientbound::decode(id, payload)?;
+        let mut entities = self.entities.lock().unwrap();
+        match &mut p {
+            play::Clientbound::AddEntity(e) => {
+                entities.insert(e.id, (e.kind, e.uuid));
+            }
+            play::Clientbound::RemoveEntities(r) => {
+                for id in &r.ids {
+                    entities.remove(id);
+                }
+            }
+            play::Clientbound::SetEntityData(d)
+                if self.version.at_most(ServerVersion::V1_21_11) =>
+            {
+                let kind = entities.get(&d.id).map(|&(kind, _)| kind);
+                step_1_21_11::entity_data(kind, d);
+                if self.version.at_most(ServerVersion::V1_21_10) {
+                    step_1_21_10::entity_data(kind, d);
+                }
+                if self.version.at_most(ServerVersion::V1_21_8) {
+                    step_1_21_8::entity_data(kind, d);
+                }
+                // 1.21.5's indexes go back to 1.21.4's last.
+                if self.version.at_most(ServerVersion::V1_21_4) {
+                    step_1_21_4::entity_data(kind, d);
+                }
+                return Ok(Some(strip_id(p.encode())));
+            }
+            _ => {}
+        }
+        Ok(None)
+    }
+
+    /// A packet in 26.2's layout (and the client's ids) brought down to the client's own release, a step at a
+    /// time: `None` when that release has no such packet.
+    fn older_layout_down(
+        &self,
+        state: State,
+        id: i32,
+        mut payload: Vec<u8>,
+    ) -> Result<Option<Vec<u8>>> {
+        let v = self.version;
+        let _client_ids = ClientIds(CLIENT_IDS.replace(v.ids()));
+        // 1.21.2 reworked the recipe book (recipe displays, no ids a 1.21.1 client knows): a 1.21.1 client gets no
+        // recipe book, so its update_recipes and place_ghost_recipe are not sent. Its recipe_book_add, _remove and
+        // _settings have no 1.21.1 id at all (the id tables drop them).
+        if v.at_most(ServerVersion::V1_21_1)
+            && state == State::Play
+            && matches!(
+                id,
+                packet_ids::play::clientbound::UPDATE_RECIPES
+                    | packet_ids::play::clientbound::PLACE_GHOST_RECIPE
+            )
+        {
+            return Ok(None);
+        }
+        // 1.21.11 has world clocks in no registry (26.1 synced them): its client is not sent that one.
+        if v.at_most(ServerVersion::V1_21_11)
+            && (state, id)
+                == (
+                    State::Configuration,
+                    packet_ids::configuration::clientbound::REGISTRY_DATA,
+                )
+            && Reader::new(&payload).string(32767)? == "minecraft:world_clock"
+        {
+            return Ok(None);
+        }
+        // 26.3's explode carries the radius right after the centre; 1.21.8 dropped it, so it is kept here for
+        // 1.21.1's strength (written at the same place, after the centre).
+        let explode_radius = (v.at_most(ServerVersion::V1_21_1)
+            && (state, id) == (State::Play, packet_ids::play::clientbound::EXPLODE))
+            .then(|| payload.get(24..28).map(|b| [b[0], b[1], b[2], b[3]]))
+            .flatten();
+        type Step = fn(State, i32, &[u8]) -> Result<Option<Vec<u8>>>;
+        let steps: [(ServerVersion, Step); 4] = [
+            (ServerVersion::V26_1, step_26_1::clientbound),
+            (ServerVersion::V1_21_11, step_1_21_11::clientbound),
+            (ServerVersion::V1_21_10, step_1_21_10::clientbound),
+            (ServerVersion::V1_21_8, step_1_21_8::clientbound),
+        ];
+        for (to, step) in steps {
+            if v.at_most(to)
+                && let Some(next) = step(state, id, &payload)?
+            {
+                payload = next;
+            }
+        }
+        // 1.21.8 is newer than 1.21.6: its packets are brought down after the steps above.
+        if v.at_most(ServerVersion::V1_21_6) {
+            match step_1_21_6::clientbound(state, id, &payload)? {
+                step_1_21_6::Out::Untouched => {}
+                step_1_21_6::Out::Rewritten(p) => payload = p,
+                step_1_21_6::Out::Dropped => return Ok(None),
+            }
+        }
+        // 1.21.5 is older than 1.21.6 (and than every step above): its packets are brought down last.
+        if v.at_most(ServerVersion::V1_21_5)
+            && let Some(next) = step_1_21_5::clientbound(state, id, &payload)?
+        {
+            payload = next;
+        }
+        // 1.21.4 is older than 1.21.5 too: after its step, the last one.
+        if v.at_most(ServerVersion::V1_21_4)
+            && let Some(next) = step_1_21_4::clientbound(state, id, &payload)?
+        {
+            payload = next;
+        }
+        // 1.21.1 is older than 1.21.2 and than 1.21.4: its packets are brought down after those, and before 1.20.6's.
+        if v.at_most(ServerVersion::V1_21_1)
+            && let Some(next) = step_1_21_1::clientbound(state, id, &payload)?
+        {
+            payload = next;
+        }
+        if let Some(radius) = explode_radius
+            && let Some(strength) = payload.get_mut(24..28)
+        {
+            strength.copy_from_slice(&radius);
+        }
+        // 1.20.6 is the oldest release: its packets are brought down after every step above.
+        if v.at_most(ServerVersion::V1_20_6)
+            && let Some(ids) = v.ids()
+            && let Some(next) = step_1_20_6::clientbound(state, id, &payload, ids)?
+        {
+            payload = next;
+        }
+        Ok(Some(payload))
+    }
+
+    /// A packet an older client sent (already under its pinned id) in 26.2's layout, oldest step first:
+    /// `None` drops it.
+    fn older_layout_up(
+        &self,
+        state: State,
+        pinned: i32,
+        mut payload: Vec<u8>,
+    ) -> Result<Option<(i32, Vec<u8>)>> {
+        use packet_ids::play::serverbound as sb;
+        let v = self.version;
+        // 1.20.6 is the oldest release: its use_item is read first, with the client's last rotation.
+        if v.at_most(ServerVersion::V1_20_6) {
+            let (yaw, pitch) = {
+                let place = self.place.lock().unwrap();
+                (place.yaw, place.pitch)
+            };
+            if let Some(next) = step_1_20_6::serverbound(state, pinned, &payload, (yaw, pitch))? {
+                payload = next;
+            }
+        }
+        // 1.21.1 is older than 1.21.2 and 1.21.4: its movement and steering are read before theirs (step_1_21_1).
+        if v.at_most(ServerVersion::V1_21_1)
+            && let Some(p) = step_1_21_1::serverbound(state, pinned, &payload)?
+        {
+            payload = p;
+        }
+        // 1.21.4 is the oldest step: its packets are read before 1.21.5's.
+        if v.at_most(ServerVersion::V1_21_4) {
+            match step_1_21_4::serverbound(state, pinned, &payload, v.ids())? {
+                step_1_21_4::Out::Untouched => {}
+                step_1_21_4::Out::Rewritten(p) => payload = p,
+            }
+        }
+        // 1.21.5 is the next oldest: its packets are read before 1.21.6's.
+        if v.at_most(ServerVersion::V1_21_5) {
+            match step_1_21_5::serverbound(state, pinned, &payload)? {
+                step_1_21_5::Out::Untouched => {}
+                step_1_21_5::Out::Rewritten(p) => payload = p,
+                step_1_21_5::Out::Dropped => return Ok(None),
+            }
+        }
+        // 1.21.6 is the oldest of these: its packets are read first.
+        if v.at_most(ServerVersion::V1_21_6) {
+            match step_1_21_6::serverbound(state, pinned, &payload)? {
+                step_1_21_6::Out::Untouched => {}
+                step_1_21_6::Out::Rewritten(p) => payload = p,
+                step_1_21_6::Out::Dropped => return Ok(None),
+            }
+        }
+        if v.at_most(ServerVersion::V1_21_11) && (state, pinned) == (State::Play, sb::INTERACT) {
+            let mut r = Reader::new(&payload);
+            let _entity = r.varint()?;
+            return Ok(match r.varint()? {
+                // INTERACT follows each INTERACT_AT; 26.3's interact is the latter alone.
+                0 => None,
+                1 => Some((sb::ATTACK, step_1_21_11::attack(&payload)?)),
+                _ => {
+                    let p = step_1_21_11::serverbound(state, pinned, &payload)?;
+                    Some((pinned, p.unwrap_or(payload)))
+                }
+            });
+        }
+        if v.at_most(ServerVersion::V26_1) {
+            let entities = self.entities.lock().unwrap();
+            let entity_of = |uuid: u128| {
+                entities
+                    .iter()
+                    .find(|(_, (_, u))| *u == uuid)
+                    .map(|(&id, _)| id)
+            };
+            match step_26_1::serverbound(state, pinned, &payload, entity_of)? {
+                step_26_1::Out::Untouched => {}
+                step_26_1::Out::Rewritten(p) => return Ok(Some((pinned, p))),
+                step_26_1::Out::Dropped => return Ok(None),
+            }
+        }
+        Ok(Some((pinned, payload)))
     }
 }
 
@@ -260,7 +547,7 @@ fn layout_then_ids(
     id: i32,
     payload: &[u8],
 ) -> Result<Sent> {
-    if version == ServerVersion::V26_2 && layout_26_2::enabled() {
+    if version.at_most(ServerVersion::V26_2) && layout_26_2::enabled() {
         match layout_26_2::clientbound(ids, state, id, payload)? {
             layout_26_2::Out::Untouched => {}
             layout_26_2::Out::Rewritten(p) => return Ok(Sent::Rewritten(p)),
@@ -534,6 +821,39 @@ mod tests {
 
     // Expected ids are read off the 26.2 and 26.3 packets and registries reports by hand, not from the
     // generated tables.
+
+    #[test]
+    fn a_1_21_1_client_is_sent_the_real_explosion_radius() {
+        let s = ClientSession::new(ServerVersion::V1_21_1);
+        s.reading.store(to_u8(State::Play), Ordering::Release);
+        s.writing.store(to_u8(State::Play), Ordering::Release);
+        let body = play::Clientbound::Explode(play::Explode {
+            center: [1.0, 2.0, 3.0],
+            radius: 6.5,
+            block_count: 12,
+            knockback: Some([0.5, 0.1, 0.0]),
+            particle: crate::entity_data::Particle { id: 29, data: None },
+            sound: (-1, Some(("minecraft:entity.generic.explode".into(), None))),
+            block_particles: Vec::new(),
+            play_sound: true,
+        })
+        .encode();
+        // Every older client is sent it (1.21.8 and older used to fail on reading it back).
+        for v in ServerVersion::ALL {
+            let t = ClientSession::new(v);
+            t.writing.store(to_u8(State::Play), Ordering::Release);
+            assert!(t.clientbound(&body).unwrap().is_some(), "{v:?}");
+        }
+        let sent = s.clientbound(&body).unwrap().unwrap();
+        let mut r = Reader::new(&sent);
+        r.varint().unwrap();
+        assert_eq!(
+            [r.f64().unwrap(), r.f64().unwrap(), r.f64().unwrap()],
+            [1.0, 2.0, 3.0]
+        );
+        // 1.21.1's strength, after the centre: 26.3's radius, not a guess.
+        assert_eq!(r.f32().unwrap(), 6.5);
+    }
 
     #[test]
     fn each_direction_follows_its_own_switches() {
