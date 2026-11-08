@@ -671,9 +671,7 @@ const LEGACY_PRESET_NAMES: [(&str, horizon_client::save::WorldPreset); 2] = [
 
 /// server.properties' line for `server.toml`'s `max_view_distance` (horizon-server writes it).
 const FAR_PROPERTY: &str = "horizon-max-view-distance";
-/// A dedicated server logs a tick slower than this, in milliseconds, with
-/// its spans, unless `HORIZON_SPIKES` names another threshold: five ticks'
-/// worth, a stall players feel as rubber-banding.
+/// A tick slower than this, in milliseconds, enters the slow ring (five ticks' worth, a stall players feel) unless `HORIZON_SPIKES` names another.
 pub(super) const SLOW_TICK_MS: f32 = 250.0;
 /// `MinecraftServer.OVERLOADED_WARNING_INTERVAL_NANOS` plus 100 ticks: the
 /// "Can't keep up!" warning comes at most this often.

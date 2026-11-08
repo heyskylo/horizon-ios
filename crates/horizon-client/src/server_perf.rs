@@ -227,6 +227,11 @@ impl ServerPerf {
         self.slow.threshold_ms()
     }
 
+    /// The slow ring's ticks or frames, oldest first.
+    pub fn slow_records(&self) -> impl Iterator<Item = &SlowRecord> {
+        self.slow.records()
+    }
+
     pub fn capturing(&self) -> bool {
         self.session.is_some()
     }

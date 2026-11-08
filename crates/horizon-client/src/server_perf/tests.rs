@@ -81,6 +81,38 @@ fn read(path: &Path) -> Capture {
 }
 
 #[test]
+fn three_hundred_slow_ticks_in_ten_seconds_leave_the_last_256_in_the_capture() {
+    let scratch = Scratch::new("ring");
+    let mut perf = ServerPerf::new(0.0, 250.0);
+    // Tick k (1-based) takes 299 + k ms, so every one is slow.
+    let slow: Vec<_> = (0..300)
+        .map(|i| (i, 300.0 + i as f32, "tick_mobs"))
+        .collect();
+    run(&mut perf, 0, 10, 30, &slow);
+    let ring: Vec<_> = perf.slow_records().map(|r| r.counter).collect();
+    assert_eq!(ring, (45..=300).collect::<Vec<u64>>());
+    perf.start_capture(10.0, &scratch.0, options(1.0)).unwrap();
+    run(&mut perf, 10, 11, 10, &[]);
+    let saved = stop(&mut perf, 11.0, R::Normal).unwrap().unwrap();
+    let c = read(&saved.path);
+    let history: Vec<_> = c
+        .slow_history
+        .iter()
+        .map(|e| (e.counter, e.wall_ms))
+        .collect();
+    let expected: Vec<_> = (45..=300u64).map(|k| (k, 299.0 + k as f32)).collect();
+    assert_eq!(history, expected);
+    let newest = &c.slow_history[255];
+    let top: Vec<_> = newest
+        .top
+        .iter()
+        .map(|s| (text(&c, s.name), s.wall_ms))
+        .collect();
+    assert_eq!(top, [("tick_mobs", 579.0), ("tick_lan", 4.0)]);
+    assert!(c.slow.is_empty(), "no tick of the capture itself was slow");
+}
+
+#[test]
 fn a_forced_server_reads_back_with_its_tick_count_and_tps() {
     let scratch = Scratch::new("forced");
     let mut perf = ServerPerf::new(0.0, 250.0);

@@ -1,10 +1,4 @@
-//! Named timings within a frame, for finding what makes a frame slow:
-//! `HORIZON_SPIKES=MS` prints the spans of every frame whose CPU time
-//! exceeds MS milliseconds, and of every server tick (dedicated or
-//! integrated) longer than MS. Each span keeps its wall time and the
-//! thread's CPU time inside it, so a span that waited (for a lock, the GPU
-//! or a core on a busy machine) shows apart from one that worked. Costs two
-//! clock reads per span when enabled and a relaxed load otherwise.
+//! Named timings (wall and thread CPU) of a frame or tick, on with `HORIZON_SPIKES` or while a capture records; the slow ones go to the slow ring, not as span lists to the log.
 use std::{
     cell::{Cell, RefCell},
     sync::atomic::{AtomicBool, Ordering},
@@ -60,8 +54,8 @@ pub fn record_here(on: bool) {
 pub fn recording_here() -> bool {
     ENABLED.load(Ordering::Relaxed) || HERE.with(Cell::get) || timeline::on()
 }
-/// The thread's CPU time when spans are on for every thread (`HORIZON_SPIKES`): only they
-/// print it.
+/// The thread's CPU time when spans are on for every thread (`HORIZON_SPIKES`): spans recorded
+/// by `record_here` alone keep wall time only.
 #[inline]
 fn cpu_if_enabled() -> Option<Duration> {
     if ENABLED.load(Ordering::Relaxed) {
@@ -133,22 +127,6 @@ fn push(span: Span) {
             s.clear();
         }
         s.push(span);
-    });
-}
-/// Attach per-tick counts without interpreting them as durations.
-pub fn counters(counts: &[(&str, u64)]) {
-    if !enabled() {
-        return;
-    }
-    NOTES.with(|n| {
-        n.borrow_mut().push((
-            0.0,
-            counts
-                .iter()
-                .map(|(name, count)| format!("{name}={count}"))
-                .collect::<Vec<_>>()
-                .join(", "),
-        ))
     });
 }
 /// Notes that one step inside a span took `ms` milliseconds doing `what` (one player's
@@ -294,23 +272,6 @@ pub fn merge(spans: &[Span]) -> Vec<Span> {
     sums.sort_by(|a, b| b.ms.total_cmp(&a.ms));
     sums
 }
-/// `name wall` for spans of at least 0.5 ms, with `/cpu` when the thread
-/// worked for less than nine tenths of it: the slow-frame and slow-tick lines.
-pub fn describe(spans: &[Span]) -> String {
-    let list: Vec<String> = spans
-        .iter()
-        .filter(|s| s.ms >= 0.5)
-        .map(|s| {
-            if s.cpu_ms < s.ms * 0.9 {
-                format!("{} {:.1}/{:.1}", s.name, s.ms, s.cpu_ms)
-            } else {
-                format!("{} {:.1}", s.name, s.ms)
-            }
-        })
-        .collect();
-    list.join(", ")
-}
-
 /// The run's timeline: every span on every thread, kept in per-thread buffers until a capture drains them as `timeline` chunks.
 pub mod timeline {
     use std::{
@@ -751,8 +712,7 @@ mod tests {
         assert!(super::take_notes().is_empty(), "taking them clears them");
     }
 
-    /// Spans of one name add up; a span the thread spent mostly waiting
-    /// shows its CPU time after the wall time, short ones are left out.
+    /// Spans of one name add up, the slowest first; a span that waited keeps its small CPU time.
     #[test]
     fn spans_sum_by_name_and_show_waits() {
         super::SPANS.with(|s| {
@@ -794,7 +754,6 @@ mod tests {
             }
         );
         assert_eq!((spans[1].name, spans[1].ms), ("tick", 5.0));
-        assert_eq!(super::describe(&spans), "submit 30.0/0.2, tick 5.0");
         assert!(super::take().is_empty());
     }
 

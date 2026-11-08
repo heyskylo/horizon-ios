@@ -605,8 +605,7 @@ impl Game<'_> {
         Ok(())
     }
 
-    /// `tick_server` as a server thread runs it. With `HORIZON_SPIKES=MS`, a
-    /// tick longer than MS is logged with its thread CPU time and spans.
+    /// `tick_server` as a server thread runs it, timed whenever spans are on.
     pub(super) fn tick_server_timed(&mut self, paused: bool) -> Result<()> {
         self.tick_server_spans(paused, |_| {})
     }
@@ -648,15 +647,14 @@ impl Game<'_> {
         } else {
             horizon_client::spans::merge(&[&between[..], &raw[..]].concat())
         };
+        // The spans go to the slow ring; whose packets or events took the tick stays in the owner's log.
         let notes = horizon_client::spans::take_notes();
         if let Some(threshold) = self.options.spikes
             && wall > threshold
+            && !notes.is_empty()
         {
-            let cpu = cpu.map_or_else(String::new, |c| format!(", cpu {c:.1} ms"));
             log::info!(
-                "Horizon: slow tick {wall:.1} ms{cpu} ({} mobs): {}{}",
-                self.mobs.len(),
-                horizon_client::spans::describe(&spans),
+                "Horizon: {wall:.1} ms tick was busy with: {}",
                 slowest_steps(&notes)
             );
         }
@@ -861,17 +859,13 @@ impl Game<'_> {
     }
 }
 
-/// A slow tick's line's end: the steps it noted as its slowest (`spans::note`), whose packets
-/// or which player's event, or nothing.
+/// The steps a slow tick noted as its slowest (`spans::note`), whose packets or which player's event.
 fn slowest_steps(notes: &[(f32, String)]) -> String {
-    if notes.is_empty() {
-        return String::new();
-    }
     let list: Vec<String> = notes
         .iter()
         .map(|(ms, what)| format!("{what} {ms:.1}"))
         .collect();
-    format!("; slowest: {}", list.join(", "))
+    list.join(", ")
 }
 
 #[cfg(test)]
@@ -928,5 +922,84 @@ mod tests {
         assert_eq!(game.border.size(), 1000.0);
         let nether = game.levels.parked_border(Dim::Nether).unwrap();
         assert_eq!(nether.size(), 100.0);
+    }
+
+    struct LogCapture;
+    static LOGGED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    impl log::Log for LogCapture {
+        fn enabled(&self, _: &log::Metadata) -> bool {
+            true
+        }
+        fn log(&self, record: &log::Record) {
+            LOGGED.lock().unwrap().push(record.args().to_string());
+        }
+        fn flush(&self) {}
+    }
+
+    /// 300 slow ticks in ten seconds log no Horizon slow-tick line, and the ring holds the last 256.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn slow_ticks_enter_the_ring_and_not_the_log() {
+        use crate::game::{Audio, Options, Progress, Settings, load_resources};
+        use horizon_client::server_perf::{ServerPerf, TickDetail, WorldCounts};
+        log::set_logger(&LogCapture).expect("no other logger in this test run");
+        log::set_max_level(log::LevelFilter::Info);
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        options.spikes = Some(0.0);
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        let mut perf = ServerPerf::new(0.0, 0.0);
+        for i in 0..300 {
+            let mut detail = None;
+            let started = Instant::now();
+            game.tick_server_spans(false, |timing| {
+                detail = Some(TickDetail {
+                    cpu_ms: timing.cpu_ms,
+                    spans: timing.raw,
+                });
+            })
+            .unwrap();
+            let wall_ms = started.elapsed().as_secs_f32() * 1000.0;
+            perf.tick(
+                f64::from(i) / 30.0,
+                wall_ms,
+                detail,
+                WorldCounts::default,
+                Vec::new,
+            );
+        }
+        let kept: Vec<u64> = perf.slow_records().map(|r| r.counter).collect();
+        assert_eq!(kept, (45..=300).collect::<Vec<u64>>());
+        let logged = LOGGED.lock().unwrap();
+        assert!(
+            logged.iter().all(|line| !line.contains("slow tick")),
+            "{logged:?}"
+        );
     }
 }
