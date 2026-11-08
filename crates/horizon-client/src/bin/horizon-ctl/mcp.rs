@@ -69,9 +69,56 @@ pub fn base64(bytes: &[u8]) -> String {
     out
 }
 
+/// Under `--paced`, whether a tool runs without the world moving: it only reads, or it
+/// manages the session or the pause itself.
+fn still(cmd: &commands::Cmd) -> bool {
+    matches!(cmd.group, commands::Group::Observe)
+        || matches!(
+            cmd.name,
+            "hello"
+                | "status"
+                | "worlds"
+                | "logs"
+                | "save"
+                | "launch"
+                | "quit"
+                | "pause"
+                | "resume"
+                | "inventory"
+                | "ui"
+        )
+}
+
 impl Session {
-    /// One tool call: (content blocks, is_error).
+    /// The screen the game shows, if it answers.
+    fn screen_now(&mut self) -> Option<String> {
+        let reply = self.run(&["screen".to_owned()]).ok()?;
+        reply["screen"].as_str().map(str::to_owned)
+    }
+
+    /// `--paced`: an agent thinks between tool calls, often for many seconds, and in single
+    /// player the world went on without it (a mob kept hitting). The pause menu stops a
+    /// single-player world as vanilla's does; it is opened after an action and closed before
+    /// the next, only when the game is playing (not over another menu, nor a pause a person
+    /// opened). Reading tools leave it open. A LAN or server world does not stop.
     fn call(&mut self, name: &str, args: &Value) -> (Vec<Value>, bool) {
+        let cmd = commands::COMMANDS
+            .iter()
+            .find(|c| c.mcp && commands::tool_name(c) == name);
+        let pace = self.paced && cmd.is_some_and(|c| !still(c));
+        if pace && std::mem::take(&mut self.held) && self.screen_now().as_deref() == Some("paused")
+        {
+            let _ = self.run(&["resume".to_owned()]);
+        }
+        let out = self.call_tool(name, args);
+        if pace && self.screen_now().as_deref() == Some("playing") {
+            self.held = self.run(&["pause".to_owned()]).is_ok();
+        }
+        out
+    }
+
+    /// One tool call: (content blocks, is_error).
+    fn call_tool(&mut self, name: &str, args: &Value) -> (Vec<Value>, bool) {
         let text = |v: &Value| json!({ "type": "text", "text": serde_json::to_string_pretty(v).unwrap_or_default() });
         let Some(cmd) = commands::COMMANDS
             .iter()
@@ -181,8 +228,36 @@ pub fn serve(session: &mut Session) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
+
+    #[test]
+    fn paced_reading_tools_keep_the_world_still() {
+        let find = |n: &str| commands::COMMANDS.iter().find(|c| c.name == n).unwrap();
+        for n in [
+            "state",
+            "inventory",
+            "entities",
+            "events",
+            "find-block",
+            "pause",
+            "save",
+        ] {
+            assert!(still(find(n)), "{n} should not let time pass");
+        }
+        let moving = [
+            "goto",
+            "break",
+            "place",
+            "attack",
+            "wait",
+            "wait-for",
+            "screenshot",
+            "click-slot",
+        ];
+        for n in moving {
+            assert!(!still(find(n)), "{n} needs the world running");
+        }
+    }
 
     #[test]
     fn base64_matches_rfc_4648() {

@@ -687,32 +687,37 @@ impl Launcher {
             Support::Partial(_) => t.warn,
             Support::No(_) => t.muted,
         };
-        let back = button("mods-back", "Back to results", Kind::Ghost, &t).on_click(cx.listener(
-            |this, _: &ClickEvent, _, cx| {
-                this.mods.browse.open = None;
-                cx.notify();
-            },
-        ));
+        let back = button(
+            "mods-back",
+            format!("← {}", tr("Back to results")),
+            Kind::Secondary,
+            &t,
+        )
+        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+            this.mods.browse.open = None;
+            cx.notify();
+        }));
         let details = o.details.clone();
         let versions = o.versions.clone();
         let version_list = o.version_list.clone();
         let installed_version = self.mods.entry(&p).map(|e| e.version.clone());
+        let works_on = self.mods.browse.filters.works_on;
+        let instance_name = self
+            .selected_instance()
+            .map(|i| i.name.clone())
+            .unwrap_or_default();
         let mut meta = vec![trf(
             "{count} downloads",
             &[("count", &thousands(p.downloads))],
         )];
         if let Some(Ok(d)) = &details {
-            // A registry project has no followers: its source repository's stars stand there.
-            match &d.github {
-                Some(g) => meta.push(trf(
-                    "{count} stars on GitHub",
-                    &[("count", &thousands(g.stars))],
-                )),
-                None if p.source != SourceId::Horizon => meta.push(trf(
+            // A registry project has no followers: its source repository's stars stand beside its
+            // rating instead, as a star and a number (`mods_page::stars`).
+            if p.source != SourceId::Horizon {
+                meta.push(trf(
                     "{count} followers",
                     &[("count", &thousands(d.followers))],
-                )),
-                None => {}
+                ));
             }
             if let Some(day) = d.updated.get(..10) {
                 meta.push(trf("updated {date}", &[("date", day)]));
@@ -921,51 +926,71 @@ impl Launcher {
             Tab::Versions => match &versions {
                 None => centered(tr("Loading…"), &t),
                 Some(Err(e)) => notice(e.clone(), &t),
-                Some(Ok(list)) => version_list.column(
-                    &self.content_scroll.handle,
-                    list.len().min(50),
-                    8.,
-                    |_| false,
-                    |i| {
-                        let v = &list[i].version;
-                        if let Some(fitted) = &list[i].fitted {
-                            return self.mods_native_version_row(
-                                &p,
-                                v,
-                                fitted,
-                                installed_version.as_deref() == Some(v.id.as_str()),
-                                cx,
-                            );
-                        }
-                        let file = v.file();
-                        let mut detail = vec![
-                            v.published.get(..10).unwrap_or_default().to_string(),
-                            v.loaders.join(", "),
-                        ];
-                        let games: Vec<&str> = v
-                            .game_versions
-                            .iter()
-                            .rev()
-                            .take(4)
-                            .map(String::as_str)
-                            .collect();
-                        detail.push(games.join(", "));
-                        if let Some(f) = file {
-                            detail.push(format!("{} · {:.1} MB", f.name, f.size as f64 / 1e6));
-                        }
-                        index_row(
-                            i + 1,
-                            v.number.clone(),
-                            Some(detail.join(" · ").into_any_element()),
-                            list[i].verdict.as_ref().map(|verdict| {
-                                caps(tr(verdict.label()))
-                                    .text_color(t.muted)
-                                    .into_any_element()
-                            }),
-                            &t,
-                        )
-                    },
-                ),
+                Some(Ok(list)) => {
+                    // Only what works on the instance: a native mod's versions that don't stay
+                    // out, said in a line.
+                    let shown: Vec<usize> = (0..list.len())
+                        .filter(|&i| !works_on || list[i].fitted.as_ref().is_none_or(|f| f.works))
+                        .collect();
+                    let hidden = list.len() - shown.len();
+                    let rows = version_list.column(
+                        &self.content_scroll.handle,
+                        shown.len().min(50),
+                        8.,
+                        |_| false,
+                        |i| {
+                            let i = shown[i];
+                            let v = &list[i].version;
+                            if let Some(fitted) = &list[i].fitted {
+                                return self.mods_native_version_row(
+                                    &p,
+                                    v,
+                                    fitted,
+                                    installed_version.as_deref() == Some(v.id.as_str()),
+                                    cx,
+                                );
+                            }
+                            let file = v.file();
+                            let mut detail = vec![
+                                v.published.get(..10).unwrap_or_default().to_string(),
+                                v.loaders.join(", "),
+                            ];
+                            let games: Vec<&str> = v
+                                .game_versions
+                                .iter()
+                                .rev()
+                                .take(4)
+                                .map(String::as_str)
+                                .collect();
+                            detail.push(games.join(", "));
+                            if let Some(f) = file {
+                                detail.push(format!("{} · {:.1} MB", f.name, f.size as f64 / 1e6));
+                            }
+                            index_row(
+                                i + 1,
+                                v.number.clone(),
+                                Some(detail.join(" · ").into_any_element()),
+                                list[i].verdict.as_ref().map(|verdict| {
+                                    caps(tr(verdict.label()))
+                                        .text_color(t.muted)
+                                        .into_any_element()
+                                }),
+                                &t,
+                            )
+                        },
+                    );
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.))
+                        .children((hidden > 0).then(|| {
+                            text(theme::CAPTION).text_color(t.muted).child(trf(
+                                "{count} versions that don't work on {instance} are hidden",
+                                &[("count", &hidden.to_string()), ("instance", &instance_name)],
+                            ))
+                        }))
+                        .child(rows)
+                }
             },
         };
         Some(page.child(body))

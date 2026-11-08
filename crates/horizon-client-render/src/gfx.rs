@@ -67,11 +67,12 @@ mod weather;
 mod world_text;
 use entity_batch::EntityBatch;
 pub use entity_batch::{
-    DISSOLVE_OVERLAY, DRAGON_RAYS_OVERLAY, ENERGY_SWIRL_OVERLAY, FLUID_OVERLAY, OIT_ENTITY,
-    SHADOW_OVERLAY, TERRAIN_MODEL_CUTOUT_MIPPED_OVERLAY, TERRAIN_MODEL_CUTOUT_OVERLAY,
-    TERRAIN_MODEL_SOLID_OVERLAY, TEXT_POLYGON_OFFSET_OVERLAY, TRANSLUCENT_GLINT_ITEM_OVERLAY,
-    TRANSLUCENT_ITEM_OVERLAY, TRANSLUCENT_PARTICLE_OVERLAY, WATER_MASK_OVERLAY, WORLD_TEXT_OVERLAY,
-    WORLD_TEXT_POLYGON_OFFSET_OVERLAY, is_native_terrain, mark_oit,
+    ADDITIVE_PARTICLE_OVERLAY, DISSOLVE_OVERLAY, DRAGON_RAYS_OVERLAY, ENERGY_SWIRL_OVERLAY,
+    FLUID_OVERLAY, OIT_ENTITY, SHADOW_OVERLAY, TERRAIN_MODEL_CUTOUT_MIPPED_OVERLAY,
+    TERRAIN_MODEL_CUTOUT_OVERLAY, TERRAIN_MODEL_SOLID_OVERLAY, TEXT_POLYGON_OFFSET_OVERLAY,
+    TRANSLUCENT_GLINT_ITEM_OVERLAY, TRANSLUCENT_ITEM_OVERLAY, TRANSLUCENT_PARTICLE_OVERLAY,
+    WATER_MASK_OVERLAY, WORLD_TEXT_OVERLAY, WORLD_TEXT_POLYGON_OFFSET_OVERLAY, is_native_terrain,
+    mark_oit,
 };
 pub use view::{View, ViewSet};
 
@@ -185,6 +186,7 @@ pub mod compositor;
 pub(crate) mod core_lines;
 pub(crate) mod core_sky;
 mod cull;
+mod dx12_compiler;
 mod end_sky;
 pub mod entity_skin;
 mod flat;
@@ -1568,11 +1570,23 @@ pub struct Renderer {
     /// OptiFine/Iris separate ambient occlusion: pass vertex alpha to hz_Color.a.
     pub separate_ao: bool,
     /// Shader-pack terrain pages used by post processing, retained between frames.
-    pack_pages: Vec<(u32, wgpu::Buffer)>,
+    pack_pages: Vec<pack_post::TerrainPage>,
     /// Camera-relative selection outline vertices, retained between frames.
     outline_edges_scratch: Vec<[f32; 6]>,
     /// Selection outline line vertices, retained between frames.
     outline_lines_scratch: Vec<[f32; 8]>,
+    /// Debug line vertices, retained between frames.
+    debug_lines_scratch: Vec<[f32; 8]>,
+    /// Screen effect vertices, retained between frames.
+    screen_vertices_scratch: Vec<crate::screen_effects::ScreenVertex>,
+    /// LOD leaving chunk columns, retained between frames.
+    lod_leaving_scratch: crate::fast_hash::FxHashSet<(i32, i32)>,
+    /// Shadow visible boxed sections, retained between frames.
+    shadow_boxed_scratch: Vec<resident::Visible>,
+    /// Shadow visible seen section keys, retained between frames.
+    shadow_seen_scratch: crate::fast_hash::FxHashSet<SectionKey>,
+    /// Shadow translucent section draws, retained between frames.
+    shadow_translucent_scratch: Vec<(u64, [u32; 5], (u32, Option<u32>))>,
     /// Lava's sprite layers, which a pack's solid terrain draws (`pack_atlas::terrain_parts`).
     pack_lava_layers: Vec<u16>,
     pub hud: HudRenderer,
@@ -1966,11 +1980,14 @@ fn mip_chain(
 /// `allow_nonconformant` offers the adapters wgpu hides for reporting no Vulkan
 /// conformance version: Mesa's hasvk, which drives Ivy Bridge and Haswell,
 /// reports 0.0.0.0 while it works. `open_device` asks for them only on a second
-/// try at a backend that had no adapter at all.
+/// try at a backend that had no adapter at all. On DirectX 12, `dx12_compiler`
+/// compiles the shaders (`gfx/dx12_compiler.rs`), unless `WGPU_DX12_COMPILER`
+/// names another.
 fn instance_descriptor(
     backends: wgpu::Backends,
     window: Option<&Arc<Window>>,
     allow_nonconformant: bool,
+    dx12_compiler: wgpu::Dx12Compiler,
 ) -> wgpu::InstanceDescriptor {
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
     if let Some(window) = window {
@@ -1990,6 +2007,7 @@ fn instance_descriptor(
             .flags
             .remove(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL);
     }
+    descriptor.backend_options.dx12.shader_compiler = dx12_compiler;
     let mut descriptor = descriptor.with_env();
     if allow_nonconformant {
         descriptor
@@ -2422,30 +2440,19 @@ async fn open_backend(
     allow_cpu: bool,
 ) -> std::result::Result<Opened, NoDevice> {
     let name = backends_name(backends);
-    let instance = wgpu::Instance::new(instance_descriptor(
-        backends,
-        Some(window),
-        allow_nonconformant,
-    ));
-    let surface = if offscreen {
-        None
-    } else {
-        match instance.create_surface(window.clone()) {
-            Ok(surface) => Some(surface),
-            Err(e) => return Err(NoDevice::Failed(format!("{name} surface: {e}"))),
-        }
+    let open = |dx12_compiler| {
+        wgpu::Instance::new(instance_descriptor(
+            backends,
+            Some(window),
+            allow_nonconformant,
+            dx12_compiler,
+        ))
     };
-    let adapter = match instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: surface.as_ref(),
-            force_fallback_adapter: false,
-            ..Default::default()
-        })
-        .await
-    {
-        Ok(adapter) => adapter,
-        Err(e) => return Err(NoDevice::NoAdapter(format!("{name}: {e}"))),
+    let instance = open(wgpu::Dx12Compiler::Fxc);
+    let (surface, adapter) = match surface_and_adapter(&instance, window, offscreen).await {
+        Ok(found) => found,
+        Err(NoDevice::Failed(e)) => return Err(NoDevice::Failed(format!("{name} surface: {e}"))),
+        Err(NoDevice::NoAdapter(e)) => return Err(NoDevice::NoAdapter(format!("{name}: {e}"))),
     };
     // NoAdapter, so `open_with_retry` asks again: with the non-conformant
     // adapters shown, wgpu ranks a real GPU (hasvk on Ivy Bridge or Haswell)
@@ -2455,6 +2462,27 @@ async fn open_backend(
             "{name}: only a software adapter ({})",
             adapter.get_info().name
         )));
+    }
+    // An integrated GPU on DirectX 12 compiles with DXC: the same request
+    // again, on an instance that loads the DLL beside the game. Anything that
+    // goes wrong keeps the FXC instance.
+    let forced = dx12_compiler::forced();
+    let dxc = if dx12_compiler::wants_dxc(&adapter.get_info(), forced) {
+        open_dxc(&adapter.get_info(), window, offscreen, open).await
+    } else {
+        None
+    };
+    let dxc_found = dxc.is_some();
+    let (instance, surface, adapter) = dxc.unwrap_or((instance, surface, adapter));
+    if adapter.get_info().backend == wgpu::Backend::Dx12 {
+        crate::crash::set_detail(
+            "DirectX 12 shader compiler",
+            match (forced, dxc_found) {
+                (true, _) => "WGPU_DX12_COMPILER",
+                (false, true) => "DXC",
+                (false, false) => "FXC",
+            },
+        );
     }
     describe_adapter(&adapter);
     let info = adapter.get_info();
@@ -2542,6 +2570,73 @@ async fn open_backend(
         }
         Err(e) => Err(NoDevice::Failed(format!("{name} device: {e}"))),
     }
+}
+/// A surface for `window` (none `offscreen`) and the adapter `open_backend`
+/// asks `instance` for. `Failed` is the surface's error, `NoAdapter` the
+/// request's.
+async fn surface_and_adapter(
+    instance: &wgpu::Instance,
+    window: &Arc<Window>,
+    offscreen: bool,
+) -> std::result::Result<(Option<wgpu::Surface<'static>>, wgpu::Adapter), NoDevice> {
+    let surface = if offscreen {
+        None
+    } else {
+        Some(
+            instance
+                .create_surface(window.clone())
+                .map_err(|e| NoDevice::Failed(e.to_string()))?,
+        )
+    };
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: surface.as_ref(),
+            force_fallback_adapter: false,
+            ..Default::default()
+        })
+        .await
+        .map_err(|e| NoDevice::NoAdapter(e.to_string()))?;
+    Ok((surface, adapter))
+}
+/// The DirectX 12 instance, surface and adapter with DXC for the integrated
+/// GPU `fxc` (`gfx/dx12_compiler.rs`), `open` making the instance; `None`, with
+/// one line in the log, when the DLL is missing, doesn't load, or the instance
+/// offers another GPU: the FXC instance stays.
+async fn open_dxc(
+    fxc: &wgpu::AdapterInfo,
+    window: &Arc<Window>,
+    offscreen: bool,
+    open: impl FnOnce(wgpu::Dx12Compiler) -> wgpu::Instance,
+) -> Option<(
+    wgpu::Instance,
+    Option<wgpu::Surface<'static>>,
+    wgpu::Adapter,
+)> {
+    let Some(dll) = dx12_compiler::bundled_dll() else {
+        log::info!(
+            "Horizon renderer: no {} beside the game; DirectX 12 compiles shaders with FXC",
+            dx12_compiler::DLL
+        );
+        return None;
+    };
+    let instance = open(dx12_compiler::dxc(&dll));
+    let why = match surface_and_adapter(&instance, window, offscreen).await {
+        Ok((surface, adapter)) if dx12_compiler::same_adapter(fxc, &adapter.get_info()) => {
+            log::info!(
+                "Horizon renderer: DirectX 12 compiles shaders with DXC ({}) on this integrated GPU",
+                dll.display()
+            );
+            return Some((instance, surface, adapter));
+        }
+        Ok((_, adapter)) => format!("it offered another GPU, {}", adapter.get_info().name),
+        Err(NoDevice::Failed(e) | NoDevice::NoAdapter(e)) => e,
+    };
+    log::warn!(
+        "Horizon renderer: DXC from {} didn't load ({why}); DirectX 12 compiles shaders with FXC",
+        dll.display()
+    );
+    None
 }
 /// What to tell a player whose system offers no usable graphics adapter.
 /// Vulkan is loaded at run time (the game links no graphics library), so a
@@ -5280,6 +5375,12 @@ impl Renderer {
             pack_pages: Vec::new(),
             outline_edges_scratch: Vec::new(),
             outline_lines_scratch: Vec::new(),
+            debug_lines_scratch: Vec::new(),
+            screen_vertices_scratch: Vec::new(),
+            lod_leaving_scratch: crate::fast_hash::FxHashSet::default(),
+            shadow_boxed_scratch: Vec::new(),
+            shadow_seen_scratch: crate::fast_hash::FxHashSet::default(),
+            shadow_translucent_scratch: Vec::new(),
             pack_lava_layers: Vec::new(),
             hud,
             menu_blur: None,
@@ -6150,6 +6251,31 @@ impl Renderer {
             id
         });
         let stride = std::mem::size_of::<TerrainVertex>() as u64;
+        if solid_slots > 0 {
+            self.arena.write_sources(
+                &self.device,
+                encoder,
+                &mut self.section_uploads,
+                page,
+                start,
+                solid_slots,
+                if packed { &[] } else { &mesh.solid_sources },
+            );
+        }
+        if translucent_vertices > 0 {
+            self.translucent_arena
+                .as_mut()
+                .unwrap_or(&mut self.arena)
+                .write_sources(
+                    &self.device,
+                    encoder,
+                    &mut self.section_uploads,
+                    translucent_at.0,
+                    translucent_at.1,
+                    translucent_vertices,
+                    &mesh.translucent_sources,
+                );
+        }
         let translucent_arena = self.translucent_arena.as_ref().unwrap_or(&self.arena);
         let solid_bytes: &[u8] = if packed {
             bytemuck::cast_slice(&mesh.packed)
@@ -7203,8 +7329,8 @@ impl Renderer {
         self.world_post.upscale = if taa { upscale.clamp(1.0, 4.0) } else { 1.0 };
     }
     /// Runs `post` over the world from now on (`None`: no pack), for the dimension `dimension`;
-    /// `block_ids` gives each block sprite layer's `mc_Entity` (id, fluid) and `at_midBlock.w`
-    /// (its block's light), three values a layer.
+    /// `block_ids` gives each source state its model and fluid material ids (two values
+    /// per state); emission and ownership come from the mesher's quad records.
     /// Returns the programs that run and the notes of loading them, or why the pack can't run:
     /// the dimension then runs without a pack.
     pub fn set_shader_pack(
@@ -8731,11 +8857,10 @@ impl Renderer {
         let cutout = &self.lod_cutout;
         // Sections fading out (`leave_section`) are past the render distance:
         // drawn there until they have, or they popped out at once.
-        let leaving: crate::fast_hash::FxHashSet<(i32, i32)> = self
-            .lod_leaving
-            .iter()
-            .map(|&((x, _, z), _)| (x, z))
-            .collect();
+        self.lod_leaving_scratch.clear();
+        self.lod_leaving_scratch
+            .extend(self.lod_leaving.iter().map(|&((x, _, z), _)| (x, z)));
+        let leaving = &self.lod_leaving_scratch;
         let mut visible = std::mem::take(&mut self.visible);
         visible.clear();
         crate::spans::time("visibility", || {
@@ -8782,6 +8907,8 @@ impl Renderer {
                 casters: v.view_casters.then(|| shadow_casters(cull_proj, v.light)),
                 reach: v.distance,
             };
+            let mut boxed = std::mem::take(&mut self.shadow_boxed_scratch);
+            let mut seen = std::mem::take(&mut self.shadow_seen_scratch);
             crate::spans::time("shadow visibility", || {
                 // Within the unculled distance every section, then those in the light's box.
                 if let Some(d) = v.unculled {
@@ -8802,13 +8929,15 @@ impl Renderer {
                         &mut shadow_visible,
                     );
                 }
-                let mut boxed = Vec::new();
+                boxed.clear();
                 self.sections
                     .visible(camera, radius, &light, |_| true, |_, _| false, &mut boxed);
-                let seen: crate::fast_hash::FxHashSet<_> =
-                    shadow_visible.iter().map(|s| s.key).collect();
-                shadow_visible.extend(boxed.into_iter().filter(|s| !seen.contains(&s.key)));
+                seen.clear();
+                seen.extend(shadow_visible.iter().map(|s| s.key));
+                shadow_visible.extend(boxed.drain(..).filter(|s| !seen.contains(&s.key)));
             });
+            self.shadow_boxed_scratch = boxed;
+            self.shadow_seen_scratch = seen;
             // Nearest the light first, so the depth test rejects what lies under it.
             let light = v.light;
             shadow_visible.sort_unstable_by(|a, b| {
@@ -9280,7 +9409,8 @@ impl Renderer {
         // them for `every_face`), then translucent ones (in their last sorted order; depth
         // decides there).
         let shadow_first = self.draws.len() as u32;
-        let mut shadow_translucent = Vec::new();
+        let mut shadow_translucent = std::mem::take(&mut self.shadow_translucent_scratch);
+        shadow_translucent.clear();
         self.shadow_runs.clear();
         if let Some(view) = &shadow_view {
             let base = listed;
@@ -9342,12 +9472,13 @@ impl Renderer {
         self.shadow_runs
             .regroup(&mut self.draws, &mut self.draw_pages, shadow_first as usize);
         self.shadow_runs.clear();
-        for (distance, draw, pages) in shadow_translucent {
+        for (distance, draw, pages) in shadow_translucent.drain(..) {
             self.shadow_runs
                 .push(distance, pages.0, self.draws.len(), 1, [0; 3]);
             self.draws.push(draw);
             self.draw_pages.push(pages);
         }
+        self.shadow_translucent_scratch = shadow_translucent;
         self.shadow_runs.regroup(
             &mut self.draws,
             &mut self.draw_pages,
@@ -9393,16 +9524,19 @@ impl Renderer {
                     mapped_at_creation: false,
                 });
             }
-            let all: Vec<[f32; 8]> = debug_lines_opaque_first(frame.debug_lines)
-                .chain(frame.debug_lines_on_top)
-                .chain(frame.debug_crosshair)
-                .copied()
-                .collect();
+            let lines = &mut self.debug_lines_scratch;
+            lines.clear();
+            lines.extend(
+                debug_lines_opaque_first(frame.debug_lines)
+                    .chain(frame.debug_lines_on_top)
+                    .chain(frame.debug_crosshair)
+                    .copied(),
+            );
             self.uploads.buffer(
                 &mut encoder,
                 &self.debug_line_buffer,
                 0,
-                bytemuck::cast_slice(&all),
+                bytemuck::cast_slice(lines),
             );
         }
         self.weather.prepare(
@@ -9916,8 +10050,9 @@ impl Renderer {
         // Every upload before the frame's first pass: a pass ends wgpu-core's
         // command buffer, so copies between passes would need one more.
         if !frame.screen.is_empty() {
-            let vertices: Vec<crate::screen_effects::ScreenVertex> =
-                frame.screen.iter().flat_map(|q| q.vertices).collect();
+            let vertices = &mut self.screen_vertices_scratch;
+            vertices.clear();
+            vertices.extend(frame.screen.iter().flat_map(|q| q.vertices));
             if vertices.len() as u64 > self.screen_capacity {
                 self.screen_capacity = (vertices.len() as u64).next_power_of_two();
                 self.screen_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -9932,7 +10067,7 @@ impl Renderer {
                 &mut encoder,
                 &self.screen_buffer,
                 0,
-                bytemuck::cast_slice(&vertices),
+                bytemuck::cast_slice(vertices),
             );
         }
         self.hud.prepare(
@@ -11647,8 +11782,11 @@ impl Renderer {
             let flat = self.flat.as_ref().filter(|_| flat_frame);
             self.pack_pages.clear();
             if flat.is_some() && (pack_draws_terrain || pack_draws_shadow) {
-                self.pack_pages
-                    .extend(self.arena.page_buffers().map(|(p, b)| (p, b.clone())));
+                self.pack_pages.extend(
+                    self.arena
+                        .page_buffers()
+                        .map(|(p, b)| (p, b.clone(), self.arena.sources(p).cloned())),
+                );
             }
             let pages = &self.pack_pages;
             let mut terrain =
@@ -14132,7 +14270,7 @@ mod tests {
     #[test]
     fn the_second_try_at_a_backend_shows_nonconformant_adapters() {
         let shown = |allow| {
-            super::instance_descriptor(wgpu::Backends::VULKAN, None, allow)
+            super::instance_descriptor(wgpu::Backends::VULKAN, None, allow, wgpu::Dx12Compiler::Fxc)
                 .flags
                 .contains(wgpu::InstanceFlags::ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER)
         };
@@ -14969,7 +15107,7 @@ mod tests {
     #[test]
     fn indirect_draws_are_validated_only_in_debug_builds_and_on_directx_12() {
         let validated = |backends| {
-            super::instance_descriptor(backends, None, false)
+            super::instance_descriptor(backends, None, false, wgpu::Dx12Compiler::Fxc)
                 .flags
                 .contains(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL)
         };

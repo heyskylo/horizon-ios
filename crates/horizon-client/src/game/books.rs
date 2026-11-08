@@ -1584,8 +1584,82 @@ pub(super) fn lectern_signal(world: &horizon_client::world::World, pos: BlockPos
             } else {
                 1.0
             };
-            (f * 14.0).floor() as i32 + 1
+            // `LecternBlockEntity.hasBook`: a `written_book_content` or
+            // `writable_book_content` component, not just any stack. A book
+            // item carries its content by default, so its id counts too.
+            let has_book = matches!(
+                &*b.item,
+                "minecraft:writable_book" | "minecraft:written_book"
+            ) || data
+                .is_some_and(|d| d.written.is_some() || !d.writable_pages.is_empty());
+            (f * 14.0).floor() as i32 + i32::from(has_book)
         })),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod lectern_signal_tests {
+    use super::super::native_machines::tests::server_game;
+    use super::lectern_signal;
+    use horizon_client::{
+        containers::{BlockEntity, Lectern},
+        item_data::{StackData, WrittenBook},
+        items::ItemStack,
+    };
+    use horizon_core::position::BlockPos;
+    use horizon_world::registry::BlockStateId;
+
+    fn signal(game: &mut super::Game<'_>, book: Option<ItemStack>, page: i32) -> i32 {
+        let key = (8, 64, 8);
+        let state: BlockStateId = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:lectern")
+            .unwrap();
+        game.world.set(key.0, key.1, key.2, state).unwrap();
+        game.world
+            .block_entities
+            .insert(key, BlockEntity::Lectern(Lectern { book, page }));
+        lectern_signal(&game.world, BlockPos::new(key.0, key.1, key.2)).unwrap()
+    }
+
+    /// `LecternBlockEntity.getRedstoneSignal`: `floor(page / (pageCount - 1)
+    /// * 14) + (hasBook() ? 1 : 0)`. `hasBook()` asks for a book-content
+    /// component, so a stack that only sits in the lectern (a non-book item a
+    /// command left in `Book`) reads 14, not the book's 15.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_lecterns_signal_adds_one_only_for_a_book() {
+        let mut game = server_game();
+        assert_eq!(signal(&mut game, None, 0), 0, "no book");
+        assert_eq!(
+            signal(&mut game, Some(ItemStack::new("minecraft:stone", 1)), 0),
+            14,
+            "a non-book stack has no book content"
+        );
+        // `writable_book_content` is a writable book's default component.
+        assert_eq!(
+            signal(
+                &mut game,
+                Some(ItemStack::new("minecraft:writable_book", 1)),
+                0
+            ),
+            15,
+            "a writable book is a book"
+        );
+        let mut written = ItemStack::new("minecraft:written_book", 1);
+        written.extra = Some(Box::new(StackData {
+            written: Some(WrittenBook {
+                title: "T".into(),
+                author: "A".into(),
+                pages: vec!["one".into(), "two".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
+        assert_eq!(signal(&mut game, Some(written.clone()), 0), 1, "page 0");
+        assert_eq!(signal(&mut game, Some(written), 1), 15, "last page");
     }
 }

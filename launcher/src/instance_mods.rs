@@ -35,6 +35,8 @@ pub(super) struct ModRow {
     /// The icon its jar names, scaled to the row (`images::ROW`) and decoded once by the UI.
     pub(super) icon: Option<Arc<gpui::Image>>,
     pub(super) native: Option<native_status::Installed>,
+    /// A native mod turned on: where it stands in the instance's build ([`horizon::standings`]).
+    pub(super) standing: Option<horizon::Standing>,
 }
 
 /// Modrinth projects' icon URLs by project id, kept on disk beside the image cache so the icons
@@ -132,6 +134,7 @@ fn read(home: &Path, java_instance: bool) -> Vec<ModRow> {
                         entry,
                         icon,
                         native: None,
+                        standing: None,
                     }
                 })
             })
@@ -147,6 +150,7 @@ fn read(home: &Path, java_instance: bool) -> Vec<ModRow> {
                 entry: Some(e),
                 icon: None,
                 native: None,
+                standing: None,
             })
             .collect()
     };
@@ -162,8 +166,26 @@ fn read(home: &Path, java_instance: bool) -> Vec<ModRow> {
                     entry: None,
                     icon: None,
                     native: Some(native),
+                    standing: None,
                 }),
         );
+        let native_id = |r: &ModRow| match (&r.native, &r.entry) {
+            (Some(native), _) => Some(native.id.clone()),
+            (None, Some(e)) if native_status::is_native_file(&e.file) => {
+                horizon::mod_id(e).map(str::to_owned)
+            }
+            _ => None,
+        };
+        let ids: Vec<String> = rows.iter().filter(|r| r.on).filter_map(native_id).collect();
+        let instance = horizon_launcher::instances::list()
+            .into_iter()
+            .find(|i| i.home == home);
+        if let (false, Some(instance)) = (ids.is_empty(), instance) {
+            let mut standings = horizon::standings(&instance, &ids);
+            for row in rows.iter_mut().filter(|r| r.on) {
+                row.standing = native_id(row).and_then(|id| standings.remove(&id));
+            }
+        }
     }
     rows.sort_by_key(|r| r.name.to_lowercase());
     rows
