@@ -288,6 +288,14 @@ fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag>
                 };
                 text
             }
+            // AdventureModePredicate: the blocks an adventure player may break
+            // or place on, which this client matches as the server does.
+            Component::Raw(bytes) if matches!(*kind, component::CAN_BREAK | CAN_PLACE_ON) => {
+                let Some(predicate) = adventure_predicate_tag(bytes, builtin) else {
+                    continue;
+                };
+                predicate
+            }
             // Read past, not decoded: the item keeps its prototype's value.
             Component::Raw(_) => continue,
             // Trim materials and patterns are synced registries, as enchantments are.
@@ -520,6 +528,90 @@ fn block_entity_data_tag(bytes: &[u8], builtin: &Builtin) -> Option<Tag> {
     };
     data.insert("id".into(), Tag::String(kind.into()));
     Some(Tag::Compound(data))
+}
+
+/// `DataComponents.CAN_PLACE_ON`'s registry id (26.3); `CAN_BREAK` follows it.
+const CAN_PLACE_ON: i32 = 14;
+
+/// `AdventureModePredicate.STREAM_CODEC` (a list of `BlockPredicate`s) as
+/// `AdventureModePredicate.CODEC` saves it: one predicate, or a list of them
+/// (`ExtraCodecs.compactListCodec`). Each keeps its `blocks` (a `#tag`, one
+/// block id or a list), `state` and `nbt`; `DataComponentMatchers` are read
+/// past (`BlockPredicate.matches(BlockInWorld)` does not test them), and a
+/// predicate with exact components, whose values this side cannot read, gives
+/// up on the whole component.
+fn adventure_predicate_tag(bytes: &[u8], builtin: &Builtin) -> Option<Tag> {
+    let blocks = builtin.get("minecraft:block")?;
+    let mut r = Reader::new(bytes);
+    let n = r.count(r.remaining()).ok()?;
+    let mut predicates = Vec::with_capacity(n.min(64));
+    for _ in 0..n {
+        let mut p: Vec<(&str, Tag)> = Vec::new();
+        // ByteBufCodecs.holderSet: 0 and a tag id, or the size plus one and the ids.
+        if r.bool().ok()? {
+            let set = match r.varint().ok()? {
+                0 => Tag::String(format!("#{}", r.string(32767).ok()?).as_str().into()),
+                size => {
+                    let size = usize::try_from(size).ok()?.checked_sub(1)?;
+                    if size > r.remaining() {
+                        return None;
+                    }
+                    let mut ids = (0..size)
+                        .map(|_| Some(Tag::String(blocks.name(r.varint().ok()?)?.into())))
+                        .collect::<Option<Vec<_>>>()?;
+                    if ids.len() == 1 {
+                        ids.pop()?
+                    } else {
+                        Tag::List(ids)
+                    }
+                }
+            };
+            p.push(("blocks", set));
+        }
+        // StatePropertiesPredicate: each property an exact value, or a range.
+        if r.bool().ok()? {
+            let mut state: Vec<(String, Tag)> = Vec::new();
+            for _ in 0..r.count(r.remaining()).ok()? {
+                let name = r.string(32767).ok()?;
+                let matcher = if r.bool().ok()? {
+                    Tag::String(r.string(32767).ok()?.as_str().into())
+                } else {
+                    let mut range = Vec::new();
+                    for bound in ["min", "max"] {
+                        if r.bool().ok()? {
+                            range.push((bound, Tag::String(r.string(32767).ok()?.as_str().into())));
+                        }
+                    }
+                    Tag::compound(range)
+                };
+                state.push((name, matcher));
+            }
+            p.push((
+                "state",
+                Tag::compound(state.iter().map(|(k, v)| (k.as_str(), v.clone()))),
+            ));
+        }
+        // NbtPredicate.STREAM_CODEC: a compound.
+        if r.bool().ok()? {
+            p.push(("nbt", r.nbt().ok()?));
+        }
+        // DataComponentExactPredicate: typed component values.
+        if r.count(r.remaining()).ok()? != 0 {
+            return None;
+        }
+        // DataComponentPredicate: a type id and the predicate as NBT.
+        for _ in 0..r.count(r.remaining()).ok()? {
+            r.bool().ok()?;
+            r.varint().ok()?;
+            r.nbt().ok()?;
+        }
+        predicates.push(Tag::compound(p));
+    }
+    if predicates.len() == 1 {
+        predicates.pop()
+    } else {
+        Some(Tag::List(predicates))
+    }
 }
 
 /// `SignText.STREAM_CODEC` as `SignText.CODEC` saves it: the four messages,

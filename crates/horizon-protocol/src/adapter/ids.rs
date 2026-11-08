@@ -394,6 +394,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_attribute_of_1_21_1_and_1_20_6_has_its_pinned_counterpart() {
+        // 1.21.2 dropped the generic./player./zombie. prefixes; matched by name alone, none mapped and every
+        // update_attributes value was left out for these clients. 31 attributes in 1.21.1's report, 22 in 1.20.6's.
+        for (ids, count) in [
+            (&super::super::v1_21_1_ids::IDS, 31),
+            (&super::super::v1_20_6_ids::IDS, 22),
+        ] {
+            for old in 0..count {
+                let pinned = ids.attribute.up(old).unwrap();
+                assert_eq!(ids.attribute.down(pinned), Some(old));
+            }
+        }
+    }
+
+    #[test]
     fn runs_map_inside_and_nothing_outside() {
         let runs = Remap::Runs {
             up: &[(0, 0, 3), (3, 5, 2)],
