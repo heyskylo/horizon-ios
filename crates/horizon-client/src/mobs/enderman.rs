@@ -228,7 +228,8 @@ pub fn attacking_speed(m: &Mob) -> f64 {
 /// Enderman.customServerAiStep: in daylight, flee by teleporting. The End has a
 /// fixed time, so `Level.isBrightOutside` is never true there.
 pub fn custom_server_ai_step(m: &mut Mob, cx: &mut Cx) {
-    if cx.w.daylight && !cx.w.end && m.age as i32 >= m.extra.counter + 600 {
+    if cx.w.daylight && !cx.w.dimension_type.has_fixed_time && m.age as i32 >= m.extra.counter + 600
+    {
         let br = super::hostile::mob_brightness(m, cx.w);
         let (x, y, z) = (
             m.position.x.floor() as i32,

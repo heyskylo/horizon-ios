@@ -1077,22 +1077,13 @@ impl PlacementContext for World<'_> {
         position: [i32; 3],
         entity: &str,
     ) -> Result<(), PlacementQueryError> {
-        use crate::nbt::Tag;
         let chunk = self.region.chunk(position[0] >> 4, position[2] >> 4)?;
         let state = chunk.block(position[0], position[1], position[2]);
         let registry = self.decoration.bindings.registry();
         if registry.state(state).map(|s| s.name.as_str()) != Some("minecraft:spawner") {
             return Ok(());
         }
-        let mut mob = crate::nbt::Compound::new();
-        mob.insert("id".into(), Tag::String(entity.into()));
-        let mut data = crate::nbt::Compound::new();
-        data.insert("entity".into(), Tag::Compound(mob));
-        let mut nbt = crate::nbt::Compound::new();
-        nbt.insert("id".into(), Tag::String("minecraft:mob_spawner".into()));
-        nbt.insert("SpawnData".into(), Tag::Compound(data));
-        nbt.insert("SpawnPotentials".into(), Tag::List(Vec::new()));
-        self.set_block_entity(position, nbt)
+        self.set_block_entity(position, super::cave::dungeon_spawner_nbt(entity))
     }
     fn attachment_at(
         &mut self,
