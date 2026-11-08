@@ -8640,6 +8640,7 @@ impl Game<'_> {
                 | BlockEntity::DaylightDetector
                 | BlockEntity::Bell
                 | BlockEntity::Conduit(_)
+                | BlockEntity::EndPortal
                 | BlockEntity::EnchantingTable
                 | BlockEntity::Campfire(_)
                 | BlockEntity::ChiseledBookshelf(_)
@@ -8706,6 +8707,7 @@ impl Game<'_> {
                 | BlockEntity::DaylightDetector
                 | BlockEntity::Bell
                 | BlockEntity::Conduit(_)
+                | BlockEntity::EndPortal
                 | BlockEntity::EnchantingTable
                 | BlockEntity::Campfire(_)
                 | BlockEntity::ChiseledBookshelf(_)
@@ -8843,6 +8845,7 @@ impl Game<'_> {
                     | BlockEntity::DaylightDetector
                     | BlockEntity::Bell
                     | BlockEntity::Conduit(_)
+                    | BlockEntity::EndPortal
                     | BlockEntity::EnchantingTable
                     | BlockEntity::Campfire(_)
                     | BlockEntity::ChiseledBookshelf(_)
