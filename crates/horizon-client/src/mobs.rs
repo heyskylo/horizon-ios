@@ -1493,7 +1493,12 @@ pub struct Mob {
     pub gear_knockback_resistance: Option<f64>,
     pub health: f32,
     pub hurt_time: i32,
+    /// `LivingEntity.damageCooldownTime`: the hurt cooldown, 20 after a hit;
+    /// transient, never saved.
     pub invulnerable: i32,
+    /// `Entity.invulnerableTime`, saved as `invulnerable_time`: while above 0
+    /// the mob is invulnerable as with `Invulnerable` (`isTemporarilyInvulnerable`).
+    pub invulnerable_time: i32,
     pub death_time: i32,
     pub age: u32,
     pub limb_position: f32,
@@ -3317,6 +3322,7 @@ impl Mob {
             gear_knockback_resistance: None,
             hurt_time: 0,
             invulnerable: 0,
+            invulnerable_time: 0,
             death_time: 0,
             age: 0,
             limb_position: 0.0,
@@ -3585,7 +3591,11 @@ impl Mob {
     pub fn refuses_damage(&self, source: &Damage) -> bool {
         !self.alive()
             || self.removed
-            || (self.invulnerable_flag && !source.kind.bypasses_invulnerability())
+            || (self.is_invulnerable() && !source.kind.bypasses_invulnerability())
+    }
+    /// `Entity.isInvulnerable`: `Invulnerable`, or `invulnerable_time` left.
+    pub fn is_invulnerable(&self) -> bool {
+        self.invulnerable_flag || self.invulnerable_time > 0
     }
     /// `LivingEntity.hurtServer`'s partial mob adapter, with health reductions inline.
     /// `damage` by a source with a weapon: `armor_effectiveness` runs the
@@ -3623,7 +3633,7 @@ impl Mob {
         // dead enderman), its hurt sound's pitch included.
         let enderman = self.species() == Species::Enderman
             && !self.removed
-            && !(self.invulnerable_flag && !source.kind.bypasses_invulnerability());
+            && !(self.is_invulnerable() && !source.kind.bypasses_invulnerability());
         let hurt = self.hurt_server(amount, source, armor_effectiveness, player_uuid);
         if enderman {
             enderman::after_hurt(self, &source);
@@ -3952,7 +3962,7 @@ impl Mob {
         let cloud = self.species() == Species::Enderman
             && direct == "minecraft:area_effect_cloud"
             && !self.removed
-            && !(self.invulnerable_flag && !source.kind.bypasses_invulnerability());
+            && !(self.is_invulnerable() && !source.kind.bypasses_invulnerability());
         let hurt = self.damage(amount, source);
         if cloud {
             enderman::teleport_chance(self, &source);
