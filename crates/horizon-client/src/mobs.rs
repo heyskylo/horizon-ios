@@ -4406,7 +4406,7 @@ impl Mob {
         if self.species() == Species::Wither || !self.can_be_affected(effect) {
             return None;
         }
-        if let Some(i) = self.extra.effects.iter().position(|e| e.0 == effect) {
+        let added = if let Some(i) = self.extra.effects.iter().position(|e| e.0 == effect) {
             let mut active = self.effect_instance(i);
             let (ambient, visible) = flags.unwrap_or((false, true));
             // A struct literal preserves this caller's numeric behavior.
@@ -4427,7 +4427,7 @@ impl Mob {
             self.set_effect_fallback(effect, None);
             self.extra.effects.push((effect, ticks, amplifier));
             Some(true)
-        }
+        };
         // AbsorptionMobEffect.onEffectStarted, which addEffect runs for every
         // effect it accepts, new, stronger or not, after onEffectAdded or
         // onEffectUpdated put its modifier on: at least 4 hearts-halves per
@@ -4443,6 +4443,7 @@ impl Mob {
         if effect == "minecraft:health_boost" {
             finalize::health_boost_changed(self);
         }
+        added
     }
     pub fn speed_bonus(&self) -> f64 {
         ai::speed_bonus(self)
