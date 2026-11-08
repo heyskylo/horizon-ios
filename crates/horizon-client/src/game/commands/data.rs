@@ -986,20 +986,23 @@ impl Game<'_> {
         }
     }
     fn query_text(&self, r: &DataRef, data: &Tag, path: Option<&NbtPath>) -> Text {
-        // Only the live piston writer supplies this provenance. The same
-        // compound in storage, an entity, or another block keeps default order.
+        // Only a block's writer supplies this provenance: the live piston's
+        // fields, or any other block entity's saveWithFullMetadata. The same
+        // compound in storage or an entity keeps default order.
+        let root = path.is_none_or(|p| p.is_field_path(&[]));
         let piston = if let DataRef::Block(p) = r
             && self.moving_piston_data(*p).is_some()
         {
             match path {
-                None => Some(snbt::PistonPart::Entity),
-                Some(p) if p.is_field_path(&[]) => Some(snbt::PistonPart::Entity),
+                _ if root => Some(snbt::PistonPart::Entity),
                 Some(p) if p.is_field_path(&["blockState"]) => Some(snbt::PistonPart::State),
                 Some(p) if p.is_field_path(&["blockState", "properties"]) => {
                     Some(snbt::PistonPart::Properties)
                 }
                 _ => None,
             }
+        } else if matches!(r, DataRef::Block(_)) && root {
+            Some(snbt::PistonPart::BlockEntity)
         } else {
             None
         };
