@@ -702,17 +702,13 @@ impl Launcher {
             &[("count", &thousands(p.downloads))],
         )];
         if let Some(Ok(d)) = &details {
-            // A registry project has no followers: its source repository's stars stand there.
-            match &d.github {
-                Some(g) => meta.push(trf(
-                    "{count} stars on GitHub",
-                    &[("count", &thousands(g.stars))],
-                )),
-                None if p.source != SourceId::Horizon => meta.push(trf(
+            // A registry project has no followers: its source repository's stars stand beside its
+            // rating instead, as a star and a number (`mods_page::stars`).
+            if p.source != SourceId::Horizon {
+                meta.push(trf(
                     "{count} followers",
                     &[("count", &thousands(d.followers))],
-                )),
-                None => {}
+                ));
             }
             if let Some(day) = d.updated.get(..10) {
                 meta.push(trf("updated {date}", &[("date", day)]));
