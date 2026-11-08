@@ -37,6 +37,7 @@ method-by-method reading misses:
     python3 tools/port_ledger.py what crates/horizon-client/src/game/spear.rs:150
     python3 tools/port_ledger.py class Shulker                 # every method: ported where, or not
     python3 tools/port_ledger.py issue 3123                    # the classes, code and gaps a report points at
+    python3 tools/port_ledger.py blame blaze v                 # what computes a field a parity trace shows differ
     python3 tools/port_ledger.py check [--base origin/main]    # what a branch touches, gaps it opens and closes
     python3 tools/port_ledger.py coverage [--package world/entity] [--depth 3]
     python3 tools/port_ledger.py gaps [--kind seam] [--package world/entity] [--limit 50]
@@ -614,7 +615,8 @@ def parse_class_bytes(item):
         if access & 0x1000 and not owner.startswith("lambda$") or mname in ("$values", "values", "valueOf"):
             continue  # synthetic, and an enum's generated members
         m = cls["methods"].setdefault(target, {"name": target, "lines": [], "calls": set(), "tokens": set(),
-                                               "client": False, "size": 0, "touches": set(), "promoted": set()})
+                                               "client": False, "size": 0, "touches": set(), "promoted": set(),
+                                               "sets": set()})
         if code is None:
             m["abstract"] = not m["size"]
             continue
@@ -632,6 +634,11 @@ def parse_class_bytes(item):
             m["accessor"] = False
         for t in toks:
             op, _, rest = t.partition(" ")
+            if op in ("179", "181"):
+                # putstatic, putfield: the state it writes (`blame`).
+                fm = re.match(r"m:([\w/$]+)\.([\w$]+?)(?:L[\w/$]+;|\[.*|[BCDFIJSZ])$", rest)
+                if fm:
+                    m["sets"].add(fm.group(1).rsplit("/", 1)[-1] + "." + fm.group(2))
             if op in INVOKES and rest.startswith("m:"):
                 ref = rest[2:]
                 owner_cls, _, member = ref.partition(".")
@@ -701,6 +708,7 @@ def parse_class_bytes(item):
         m["tokens"] = sorted(m["tokens"])
         m["touches"] = sorted(m["touches"])
         m["promoted"] = sorted(m["promoted"])
+        m["sets"] = sorted(m["sets"])
     return cls
 
 
@@ -1191,7 +1199,7 @@ def build(sources, jars, jobs):
                 "size": m.get("size") or sum((b or a) - a + 1 for a, b in m["lines"]),
                 "bytecode": bool(c.get("bytecode")), "anonymous": bool(c.get("anonymous")),
                 "touches": [snake_case(f) for f in m.get("touches", ())],
-                "promoted": m.get("promoted", []),
+                "promoted": m.get("promoted", []), "sets": m.get("sets", []),
             }
     defined = defaultdict(set)
     for k, m in methods.items():
@@ -2436,6 +2444,135 @@ def cmd_issue(led, ref, as_json):
     emit(out, as_json, "The report names no vanilla class the ledger knows; try the class or item name.")
 
 
+# What a parity trace's fields are in vanilla: the fields that hold them and the setters that write them
+# (tools/test_mob_ai_parity.py prints p, v, r, ...). `blame` takes these or any field or setter name.
+TRACE_FIELDS = {
+    "p": (["position"], ["Entity.setPosRaw"]),
+    "v": (["deltaMovement"], ["Entity.setDeltaMovement", "Entity.addDeltaMovement"]),
+    "r": (["yRot", "xRot", "yHeadRot", "yBodyRot"], ["Entity.setYRot", "Entity.setXRot", "LivingEntity.setYHeadRot",
+                                                     "LivingEntity.setYBodyRot"]),
+    "g": (["onGround", "horizontalCollision"], ["Entity.setOnGround", "Entity.setOnGroundWithMovement"]),
+    "hp": ([], ["LivingEntity.setHealth"]),
+    "target": (["target"], ["Mob.setTarget"]),
+    "in": (["xxa", "yya", "zza", "speed", "jumping"], ["LivingEntity.setSpeed", "LivingEntity.setJumping",
+                                                      "Mob.setXxa", "Mob.setYya", "Mob.setZza"]),
+    "move": (["MoveControl.operation", "MoveControl.wantedX", "MoveControl.wantedY", "MoveControl.wantedZ",
+              "MoveControl.speedModifier", "MoveControl.strafeForwards", "MoveControl.strafeRight"],
+             ["MoveControl.setWantedPosition", "MoveControl.strafe"]),
+    "look": (["LookControl.lookAtCooldown", "LookControl.wantedX", "LookControl.wantedY", "LookControl.wantedZ"],
+             ["LookControl.setLookAt"]),
+}
+
+
+def blame(led, entity, keys, limit=8):
+    """The vanilla methods a tick of `entity` runs that write the trace fields `keys` (directly or through their
+    setters), the entity's own class first, each with its Rust port and the ledger's gaps on it: where a value
+    that differs from vanilla's at some tick is computed."""
+    methods, classes = led["methods"], led["classes"]
+    cps = [led.get("aliases", {}).get(entity.removeprefix("minecraft:"))] + match_classes(led, entity)
+    cp = next((c for c in cps if c), None)
+    if not cp:
+        return None
+    lineage, c = [], cp
+    while c in classes and c not in lineage:
+        lineage.append(c)
+        c = next((x for x in classes[c]["extends"] if x in classes and classes[x]["kind"] == "class"), None)
+    declared = defaultdict(set)
+    for k, m in methods.items():
+        declared[m["class"]].add(m["name"])
+
+    def dispatch(k, caller=None):
+        """A call of X.n on this entity runs the override nearest to its class (but `super.n()` from n runs X.n)."""
+        m = methods[k]
+        up = methods[caller]["class"] if caller else None
+        if up in lineage and methods[caller]["name"] == m["name"] and m["class"] in lineage[lineage.index(up) + 1:]:
+            return k
+        if m["class"] in lineage:
+            for c in lineage[:lineage.index(m["class"])]:
+                if m["name"] in declared[c]:
+                    return key(c, m["name"])
+        return k
+
+    roots = [dispatch(key(lineage[-1], "tick"))] if key(lineage[-1], "tick") in methods else []
+    # The entity's own code (below Mob and LivingEntity) and the goals it registers come first.
+    shared = next((i for i, c in enumerate(lineage) if c.rsplit("/", 1)[-1] in ("Mob", "LivingEntity", "Entity")),
+                  len(lineage))
+    own = set(lineage[:shared])
+    # Goals run by registration, which no call graph shows: the goals the entity's registerGoals builds.
+    for c in lineage:
+        for callee in methods.get(key(c, "registerGoals"), {}).get("callees", ()):
+            if callee.endswith("#<init>"):
+                gc = methods[callee]["class"]
+                own.add(gc)
+                roots += [k for k in (key(gc, n) for n in ("canUse", "canContinueToUse", "start", "stop", "tick"))
+                          if k in methods]
+    depth = {}
+    frontier = [dispatch(r) for r in roots if r in methods]
+    for d in range(12):
+        nxt = []
+        for k in frontier:
+            if k in depth:
+                continue
+            depth[k] = d
+            nxt += [dispatch(c, k) for c in methods[k]["callees"] if c in methods]
+        frontier = nxt
+    fields, setters = set(), set()
+    for k in keys:
+        f, st = TRACE_FIELDS.get(k, ([k], []))
+        fields |= set(f)
+        for name in st or ([k] if k[:1].islower() else []):
+            cls, _, meth = name.rpartition(".")
+            setters |= {key(c, meth) for c in (match_classes(led, cls) if cls else []) if key(c, meth) in methods}
+    gaps = defaultdict(list)
+    for g in led["gaps"]:
+        if g.get("vanilla"):
+            gaps[g["vanilla"]].append(g)
+
+    def writes(k):
+        for owner_field in methods[k].get("sets", ()):
+            owner, _, field = owner_field.partition(".")
+            if field in fields or owner.split("$")[-1] + "." + field in fields:
+                return True
+        return any(c in setters for c in methods[k]["callees"])
+
+    def entity_class(c):
+        seen = set()
+        while c in classes and c not in seen:
+            seen.add(c)
+            if c.endswith("/Entity"):
+                return True
+            c = next((x for x in classes[c]["extends"] if x in classes and classes[x]["kind"] == "class"), None)
+        return False
+
+    # A method of another entity class writes that entity's fields, not this one's; a constructor, the setter
+    # itself and loading saved data (a conversion copies it) aren't what a tick computes.
+    found = [k for k in depth if k not in setters and methods[k]["name"] not in
+             ("<init>", "<clinit>", "load", "readAdditionalSaveData", "restoreFrom", "snapTo", "copyPosition")
+             and (methods[k]["class"] in lineage or not entity_class(methods[k]["class"])) and writes(k)]
+    found.sort(key=lambda k: (methods[k]["class"] not in own, depth[k], k))
+    out = []
+    for k in found[:limit]:
+        out.append({"vanilla": short(methods[k]["class"], methods[k]["name"]), "depth": depth[k],
+                    "status": status_of(led, k), "rust": [fn_ref(led, f) for f in port_of(led, k)[:2]],
+                    "gaps": [gap_text(led, g) for g in sorted(gaps.get(k, ()), key=gap_rank)[:2]]})
+    return {"entity": short(cp), "fields": sorted(keys), "candidates": len(found), "computed_by": out}
+
+
+def cmd_blame(led, entity, keys, limit, as_json):
+    r = blame(led, entity, keys, limit)
+    if r is None:
+        sys.exit(f"No vanilla class or registry name {entity}.")
+    if as_json:
+        print(json.dumps(r, indent=1))
+        return
+    print(f"{r['entity']} {','.join(r['fields'])}: {r['candidates']} vanilla methods of its tick write it; "
+          "its own class first, then by call depth")
+    for c in r["computed_by"]:
+        print(f"- {c['vanilla']} (depth {c['depth']}, {c['status']}): {'; '.join(c['rust']) or 'no Rust port found'}")
+        for g in c["gaps"]:
+            print(f"    gap: {g}")
+
+
 def gap_identity(led, g):
     """A gap as the same gap in another build of the ledger: by what it is about, not by line numbers."""
     f = led["fns"][g["fn"]] if "fn" in g else {}
@@ -2865,6 +3002,10 @@ def main():
     ck = sub.add_parser("check", help="what a branch's changes touch: ports, their open gaps, citations to add")
     ck.add_argument("--base", default="origin/main")
     ck.add_argument("--no-compare", action="store_true", help="skip building the base to list gaps opened and closed")
+    bl = sub.add_parser("blame", help="which vanilla methods compute a traced field of an entity, and their ports")
+    bl.add_argument("entity", help="a class (Blaze) or registry name (blaze)")
+    bl.add_argument("fields", nargs="+", help="trace keys (p v r g hp target in move look) or field/setter names")
+    bl.add_argument("--limit", type=int, default=8)
     sub.add_parser("issue", help="the vanilla classes, Rust code and gaps a bug report points at").add_argument(
         "ref", help=f"an issue number on {ISSUE_REPO}, the report's text, or - to read it from stdin")
     args = parser.parse_args()
@@ -2895,6 +3036,8 @@ def main():
         cmd_gaps(led, args.kind, args.package, args.limit, args.json)
     elif args.cmd == "report":
         cmd_report(led)
+    elif args.cmd == "blame":
+        cmd_blame(led, args.entity, args.fields, args.limit, args.json)
     elif args.cmd == "issue":
         cmd_issue(led, args.ref, args.json)
     elif args.cmd == "diff":

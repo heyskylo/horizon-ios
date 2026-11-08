@@ -644,7 +644,46 @@ def draws(before, after, limit=20000):
     return f'>{limit}'
 
 
-def compare(vanilla, rust, fields=None):
+def ledger_blame(scenario_lines):
+    """Lines naming, for a mob's first differing fields, the vanilla methods of its tick that write them and their
+    Rust ports (tools/port_ledger.py blame), when a ledger has been built (`port_ledger.py build`); else nothing."""
+    try:
+        try:
+            from . import port_ledger
+        except ImportError:
+            import port_ledger
+        led = port_ledger.load() if port_ledger.LEDGER.exists() else None
+    except (OSError, ValueError, SystemExit):
+        led = None
+    species = {name: [line.split()[1] for line in body if line.split()[:1] == ['mob']]
+               for name, body in scenario_lines.items()}
+
+    def lines(name, mob, keys, vanilla_trace):
+        if led is None:
+            return []
+        out = []
+        kinds = species.get(name, [])
+        kind = kinds[mob] if 0 <= mob < len(kinds) else None
+        traced = [k for k in keys if k in port_ledger.TRACE_FIELDS]
+        if kind and traced:
+            r = port_ledger.blame(led, kind, traced, limit=6)
+            for c in (r or {}).get('computed_by', []):
+                out.append(f"      ledger: {','.join(traced)} is written by {c['vanilla']} -> {'; '.join(c['rust']) or 'no port'}")
+                out.extend(f'        {g}' for g in c['gaps'][:1])
+        if 'rng' in keys and vanilla_trace:
+            # The first vanilla draw of the tick: its frames, nearest first, and their ports.
+            for frame in vanilla_trace[0].split(':', 1)[-1].split()[:3]:
+                cls, _, meth = frame.rsplit(':', 1)[0].rpartition('.')
+                for cp in port_ledger.match_classes(led, cls.replace('$', '.'))[:1]:
+                    k = port_ledger.key(cp, meth)
+                    if k in led['methods']:
+                        ports = [port_ledger.fn_ref(led, f) for f in port_ledger.port_of(led, k)[:1]]
+                        out.append(f"      ledger: draw in {cls}.{meth} -> {'; '.join(ports) or 'no port'}")
+        return out
+    return lines
+
+
+def compare(vanilla, rust, fields=None, blame=None):
     """Returns (report lines, totals)."""
     report, totals = [], {'mob_ticks': 0, 'matched': 0, 'scenarios': 0, 'clean': 0}
     for name, v in vanilla.items():
@@ -687,6 +726,10 @@ def compare(vanilla, rust, fields=None):
                     for line in [x for x in r.get('trace', {}).get(t, []) if x.split(' ', 1)[0] == str(mob)][:40]:
                         report.append('      horizon ' + line)
                     report.extend('    ' + d for d in diffs[:12])
+                    if blame:
+                        keys = [k for k in (a or {}) if b is None or a.get(k) != b.get(k)]
+                        mine = [x for x in v.get('trace', {}).get(t, []) if x.split(' ', 1)[0] == str(mob)]
+                        report.extend(blame(name, mob, keys, mine))
             if first is not None:
                 clean = False
         # Creaking hearts (state, block entity, level random): first differing tick.
@@ -751,7 +794,8 @@ def main():
         return
     names = {s[0] for _, s in chosen}
     vanilla = {k: v for k, v in parse(build / 'vanilla.txt').items() if k in names}
-    report, totals = compare(vanilla, parse(build / 'horizon.txt'))
+    report, totals = compare(vanilla, parse(build / 'horizon.txt'),
+                             blame=ledger_blame({s[0]: s[3] for _, s in chosen}))
     (build / 'report.txt').write_text('\n'.join(report) + '\n')
     print('\n'.join(report))
     print(f"{totals['clean']}/{totals['scenarios']} scenarios match entirely; "

@@ -124,6 +124,22 @@ at a time, with each class's Java source, home files, and Rust functions in them
 for whoever (or whichever agent) writes the next batch file. Set `PORT_LEDGER_OUT` to build into another
 directory, so several people can check their own rows at once.
 
+## From a parity trace to the code: `blame`
+
+A parity harness that traces an entity tick by tick (`test_mob_ai_parity.py`: position `p`, motion `v`,
+rotations `r`, `g`, `hp`, `target`, `in`, `move`, `look`) tells where a run first differs from vanilla, not which
+code computed the differing value. `blame ENTITY FIELD...` answers that from the bytecode: the vanilla methods
+an entity's tick runs (its class's `tick` with overrides resolved, and the goals its `registerGoals` builds)
+that write the field, directly or through its setter, the entity's own class first, each with its Rust port and
+the ledger's gaps on it:
+
+```sh
+python3 tools/port_ledger.py blame blaze v      # what writes a blaze's deltaMovement, and where Horizon does it
+```
+
+`test_mob_ai_parity.py` prints these under each mob's first divergence when a ledger has been built (and the
+port of the vanilla frame that drew a random number, when the first difference is a draw).
+
 ## Parity harness coverage
 
 A mapped method says where the port is, not that it behaves like vanilla; the parity harnesses check that
