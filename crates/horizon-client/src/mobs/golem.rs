@@ -245,10 +245,14 @@ impl Goal for DefendVillage {
         // A position inside `b` puts the box's bottom face there (one block
         // wider, as the box test is strict).
         let near = b.inflate(Vec3::new(1.0, 1.0, 1.0));
+        // Villager.getPlayerReputation of the player this golem sees: the
+        // villager's gossips about that player's own UUID.
         let bad = cx.w.others_near(near).any(|s| {
             s.species == Species::Villager
                 && s.alive
-                && s.player_rep <= -100
+                && s.villager
+                    .as_ref()
+                    .is_some_and(|v| v.gossips.reputation(p.uuid) <= -100)
                 && b.contains(s.position)
                 && s.position.distance_squared(m.position) <= 64.0 * 64.0
         });

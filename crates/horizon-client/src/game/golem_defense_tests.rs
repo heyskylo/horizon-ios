@@ -196,3 +196,50 @@ fn control_with_the_guest_as_the_level_player_the_golem_targets_it() {
     scene(&mut game, 20);
     assert!(targets_guest(&mut game, 40));
 }
+
+// Added after the baseline: the converse identities. The level's player (the
+// host, UUID 1) is hated and the selected guest is not: no defence. Then the
+// host is the nearest player: its own gossip makes it the target.
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn control_a_hated_host_does_not_turn_the_golem_on_the_selected_guest() {
+    let mut game = game();
+    game.level.player_uuid = Some([0, 0, 0, 1]);
+    for command in [
+        "summon iron_golem 10.5 100 10.5 {PersistenceRequired:1b,PlayerCreated:0b,UUID:[I;2305,0,0,1]}"
+            .to_owned(),
+        "summon villager 14.5 100 12.5 {NoAI:1b,PersistenceRequired:1b,UUID:[I;2305,0,0,2],\
+         Gossips:[{Type:\"major_negative\",Value:20,Target:[I;0,0,0,1]},\
+         {Type:\"minor_positive\",Value:1,Target:[I;0,0,0,2]}]}"
+            .to_owned(),
+        format!("gamemode survival {GUEST}"),
+        "tick freeze".to_owned(),
+    ] {
+        let (ok, said) = run(&mut game, &command);
+        assert!(ok, "{command}: {said:?}");
+    }
+    assert!(
+        !targets_guest(&mut game, 40),
+        "the selected guest is not hated"
+    );
+    // The guest leaves; the host, hated, is the player the golem now sees.
+    assert!(game.run_command(&format!("tp {GUEST} 28.5 100 3.5")));
+    if let Some(p) = game.player.as_mut() {
+        p.position = Vec3::new(12.5, 100.0, 10.5);
+    }
+    for _ in 0..40 {
+        assert!(game.run_command("tick step 1"));
+        game.tick_server(false).unwrap();
+    }
+    let golem = game
+        .mobs
+        .iter()
+        .find(|m| m.species() == horizon_client::mobs::Species::IronGolem)
+        .unwrap();
+    assert_eq!(golem.ai.target, Some(horizon_client::mobs::Who::Player));
+    assert_ne!(
+        game.lan.as_ref().unwrap().mob_players.get(&golem.id),
+        Some(&2),
+        "the target is the host, not the guest"
+    );
+}
