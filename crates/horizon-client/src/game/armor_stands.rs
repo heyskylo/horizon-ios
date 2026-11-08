@@ -336,9 +336,8 @@ impl Game<'_> {
     /// `PalettedTextureManager.getOrPrepare` for the trims drawn this frame
     /// (the player's armour and the armour stands'): each generated texture
     /// goes into an atlas trim slot, a free one, else the least recently
-    /// drawn.
+    /// drawn. Reuse the completed preparation while the requests and atlas stay the same.
     pub(super) fn prepare_trims(&mut self) {
-        use horizon_client::hud::TRIM_SLOTS;
         let assets = &self.armor_stand_assets;
         let items = self.items();
         let mut wanted: Vec<TrimTexture> = Vec::new();
@@ -398,60 +397,12 @@ impl Game<'_> {
                 wanted.push(t);
             }
         }
-        for t in wanted {
-            let name = t.sprite();
-            // Entries the atlas no longer has (rebuilt by a resource reload) are free.
-            let sprites = &self.gui.atlas.sprites;
-            self.trim_slots.retain(|(n, _)| sprites.contains_key(n));
-            if let Some(i) = self.trim_slots.iter().position(|e| e.0 == name) {
-                let e = self.trim_slots.remove(i);
-                self.trim_slots.push(e);
-                continue;
-            }
-            let Some((w, h, rgba)) = t.generate(&self.armor_stand_assets.root) else {
-                continue;
-            };
-            let used: Vec<usize> = self.trim_slots.iter().map(|e| e.1).collect();
-            let slot = match (0..TRIM_SLOTS).find(|i| !used.contains(i)) {
-                Some(free) => free,
-                None => {
-                    let (old, slot) = self.trim_slots.remove(0);
-                    self.gui.atlas.sprites.remove(&old);
-                    slot
-                }
-            };
-            let Some(area) = self
-                .gui
-                .atlas
-                .sprites
-                .get(&format!("horizon/trim{slot}"))
-                .copied()
-            else {
-                continue;
-            };
-            if w > area.w || h > area.h {
-                continue;
-            }
-            let (aw, ah) = (self.gui.atlas.width as f32, self.gui.atlas.height as f32);
-            let (x, y) = ((area.u0 * aw).round(), (area.v0 * ah).round());
-            self.map_patches.push(horizon_client::font::Patch {
-                x: x as u32,
-                y: y as u32,
-                width: w,
-                height: h,
-                rgba,
-            });
-            let rect = horizon_client::hud::Rect {
-                u0: area.u0,
-                v0: area.v0,
-                u1: (x + w as f32) / aw,
-                v1: (y + h as f32) / ah,
-                w,
-                h,
-            };
-            self.gui.atlas.sprites.insert(name.clone(), rect);
-            self.trim_slots.push((name, slot));
-        }
+        self.trim_slots.prepare(
+            wanted,
+            &assets.root,
+            &mut self.gui.atlas,
+            &mut self.map_patches,
+        );
     }
     /// `ArmorStandItem.useOn`.
     /// `ArmorStandItem.useOn` up to its `FAIL`s, which a client checks too:
@@ -1527,14 +1478,55 @@ impl Game<'_> {
         let Some(info) = self.items().get(&stack.item) else {
             return false;
         };
-        let (index, slot) = match info.equip_slot.as_deref() {
+        let components = self
+            .pack
+            .item_renderer
+            .models
+            .components(&horizon_client::item_render::stack_view(stack));
+        let Some(equippable) = components.get("minecraft:equippable") else {
+            return false;
+        };
+        let actual = stack
+            .data()
+            .and_then(|data| data.other("minecraft:equippable"));
+        // Only adopt the default-allowed shape here. Restricted or otherwise
+        // shaped overrides keep their existing admission until supported.
+        let supported = actual.is_none_or(|tag| {
+            matches!(tag, horizon_world::nbt::Tag::Compound(map)
+                if map.keys().all(|key| matches!(key.to_string_lossy().as_str(), "slot" | "swappable")))
+                && matches!(tag.get("slot"), Some(horizon_world::nbt::Tag::String(_)))
+                && tag.get("swappable").is_none_or(|flag| {
+                    horizon_client::item_data::component_bool(flag).is_some()
+                })
+        });
+        let slot = if supported {
+            equippable.get("slot").and_then(serde_json::Value::as_str)
+        } else {
+            info.equip_slot.as_deref()
+        };
+        let (index, slot) = match slot {
             Some("head") => (0, "head"),
             Some("chest") => (1, "chest"),
             Some("legs") => (2, "legs"),
             Some("feet") => (3, "feet"),
             _ => return false,
         };
-        if !info.swappable {
+        // The component codec replaces the whole value: an override which
+        // omits swappable uses true, rather than its item's prototype flag.
+        let swappable = if !supported {
+            info.swappable
+        } else if let Some(actual) = actual {
+            actual
+                .get("swappable")
+                .and_then(horizon_client::item_data::component_bool)
+                .unwrap_or(true)
+        } else {
+            equippable
+                .get("swappable")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true)
+        };
+        if !swappable {
             return false;
         }
         let current = self.armor[index].clone();
@@ -1959,5 +1951,142 @@ mod layer_color_tests {
         assert_eq!(layer_color(None, Some(&plain)), 0xFFFF_FFFF);
         // A layer that isn't dyeable stays white even on a dyed stack.
         assert_eq!(layer_color(None, Some(&dyed)), 0xFFFF_FFFF);
+    }
+}
+
+#[cfg(test)]
+mod pumpkin_equippable_use_tests {
+    use super::*;
+    use horizon_client::lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig};
+    use horizon_core::position::ChunkPos;
+    use horizon_protocol::packets::{
+        configuration::ClientInformation,
+        play::{Serverbound, UseItem},
+    };
+    use std::sync::{atomic::AtomicI32, mpsc};
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn h207_connected_use_item_adopts_actual_pumpkin_equippable_and_preserves_controls() {
+        let mut game = crate::game::native_machines::tests::server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        assert!(game.world.loaded(8, 8));
+        game.lan_host(
+            crate::game::lan::LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            NetConfig {
+                announce: false,
+                ..NetConfig::loopback(0, "pumpkin-use-test".into(), 2)
+            },
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: "minecraft:overworld".into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 2,
+                integrated: false,
+                levels: Default::default(),
+            },
+        )
+        .unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut guest = Guest::new(
+            Joined {
+                conn: 2,
+                uuid: 207,
+                name: "PumpkinGuest".into(),
+                properties: Vec::new(),
+                info: ClientInformation::new(2),
+                brand: "test".into(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
+            },
+            2,
+            [8.5, 200.0, 8.5],
+            2,
+        );
+        guest.dimension = "minecraft:overworld".into();
+        guest.placed = true;
+        guest.loaded = true;
+        guest.selected = 0;
+        guest.permission = 2;
+        let mut host = game.lan.take().unwrap();
+        host.hub.guests.push(guest);
+        let clock = game.world.game_time;
+        let eq = "minecraft:equippable={slot:\"head\"}";
+        let marker = "minecraft:custom_data={h207:207}";
+        let helmet = "minecraft:diamond_helmet[minecraft:custom_data={old:1}]";
+        let mut failures = Vec::new();
+        for (i, (label, mode, component, count, old, changed)) in [
+            ("empty", "survival", Some(eq), 3, None, true),
+            ("swap", "survival", Some(eq), 1, Some(helmet), true),
+            ("creative", "creative", Some(eq), 3, None, true),
+            ("prototype", "survival", None, 3, None, false),
+            ("false", "survival", Some("minecraft:equippable={slot:\"head\",swappable:0b}"), 3, None, false),
+            ("binding", "survival", Some(eq), 3, Some("minecraft:diamond_helmet[minecraft:enchantments={\"minecraft:binding_curse\":1},minecraft:custom_data={old:1}]"), false),
+            ("same", "survival", Some(eq), 3, Some("minecraft:carved_pumpkin[minecraft:equippable={slot:\"head\"},minecraft:custom_data={h207:207}]"), false),
+        ].into_iter().enumerate() {
+            let held = format!("minecraft:carved_pumpkin[{}{}{}]", component.unwrap_or(""), if component.is_some() { "," } else { "" }, marker);
+            let before = game.as_guest(&mut host, 2, |g| {
+                assert_eq!(g.ui.registries.permission, 2);
+                assert!(g.run_command("clear @s") || g.inventory.iter().all(Option::is_none));
+                g.run_command("item replace entity @s armor.head with air");
+                g.run_command(&format!("gamemode {mode}"));
+                assert!(g.run_command(&format!("item replace entity @s weapon.mainhand with {held} {count}")));
+                if let Some(old) = old { assert!(g.run_command(&format!("item replace entity @s armor.head with {old}"))); }
+                assert_eq!(g.player.as_ref().unwrap().position, Vec3::new(8.5, 200.0, 8.5));
+                let hand = g.held().unwrap().clone();
+                assert_eq!(hand.item.as_ref(), "minecraft:carved_pumpkin");
+                assert_eq!(hand.count, count);
+                assert!(hand.data().unwrap().other("minecraft:custom_data").is_some());
+                let actual = hand.data().unwrap().other("minecraft:equippable");
+                assert_eq!(actual.is_some(), component.is_some());
+                if let Some(actual) = actual {
+                    assert_eq!(actual.get("slot"), Some(&horizon_world::nbt::Tag::String("head".into())));
+                    assert_eq!(actual.get("swappable").and_then(horizon_client::item_data::component_bool), if label == "false" { Some(false) } else { None });
+                }
+                if label == "binding" { assert_eq!(g.armor[0].as_ref().unwrap().enchantment_level("minecraft:binding_curse"), 1); }
+                if label == "same" { assert!(g.armor[0].as_ref().unwrap().same_item_same_components(&hand)); }
+                (g.inventory.clone(), g.armor.clone(), hand)
+            }).unwrap();
+            let sequence = 207 + i as i32;
+            game.lan_guest_packet(&mut host, 2, Serverbound::UseItem(UseItem { hand: 0, yaw: 0.0, pitch: 0.0, sequence }));
+            assert!(host.hub.guest(2).unwrap().ack_up_to.get() >= sequence);
+            game.as_guest(&mut host, 2, |g| {
+                let mut expected_inventory = before.0.clone();
+                let mut expected_armor = before.1.clone();
+                if changed {
+                    let mut worn = before.2.clone();
+                    worn.count = 1;
+                    expected_armor[0] = Some(worn);
+                    if label == "swap" { expected_inventory[0] = before.1[0].clone(); }
+                    else if label == "empty" { expected_inventory[0].as_mut().unwrap().count = 2; }
+                }
+                if g.inventory != expected_inventory || g.armor != expected_armor {
+                    failures.push((label, g.inventory.clone(), g.armor.clone()));
+                }
+                assert_eq!(g.world.game_time, clock);
+            }).unwrap();
+        }
+        assert!(
+            failures.is_empty(),
+            "actual connected UseItem Equippable adoption failures: {failures:?}"
+        );
     }
 }
