@@ -198,6 +198,11 @@ fn agent() -> ureq::Agent {
         .build()
 }
 
+/// Whether `HORIZON_API_DISCOVERY` names another services environment.
+pub fn discovery_overridden() -> bool {
+    discovery_url() != DEFAULT_DISCOVERY
+}
+
 /// The discovery document, fetched once per game (a failure is retried next time).
 pub(crate) fn discovery() -> Result<Arc<serde_json::Value>, JoinError> {
     static CACHE: Mutex<Option<Arc<serde_json::Value>>> = Mutex::new(None);
