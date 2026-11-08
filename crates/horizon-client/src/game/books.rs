@@ -832,11 +832,13 @@ impl Game<'_> {
             return false;
         }
         let has_book = matches!(self.world.block_entities.get(&key), Some(BlockEntity::Lectern(l)) if l.book.is_some());
+        // `LecternBlock.useItemOn`: `ItemTags.LECTERN_BOOKS`, which a data
+        // pack can add its own books to, not only the two vanilla items.
         let Some(book) = held.filter(|h| {
-            matches!(
-                &*h.item,
-                "minecraft:writable_book" | "minecraft:written_book"
-            )
+            world_items!(self)
+                .item_tags
+                .get("minecraft:lectern_books")
+                .is_some_and(|books| books.contains(&*h.item))
         }) else {
             return false;
         };
@@ -1587,5 +1589,66 @@ pub(super) fn lectern_signal(world: &horizon_client::world::World, pos: BlockPos
             (f * 14.0).floor() as i32 + 1
         })),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod lectern_books_tag_tests {
+    use super::super::native_machines::tests::server_game;
+    use horizon_client::{containers::BlockEntity, items::ItemStack};
+
+    /// `LecternBlock.useItemOn` checks `ItemTags.LECTERN_BOOKS`; a world's
+    /// data pack adds its own book to that tag, and the lectern takes it.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_packs_lectern_books_entry_goes_onto_the_lectern() {
+        let mut game = server_game();
+        let dir =
+            std::env::temp_dir().join(format!("horizon-lectern-books-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let tags = dir.join("datapacks/books/data/minecraft/tags/item");
+        std::fs::create_dir_all(&tags).unwrap();
+        std::fs::write(
+            dir.join("datapacks/books/pack.mcmeta"),
+            r#"{"pack":{"description":"fixture"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            tags.join("lectern_books.json"),
+            r#"{"values":["minecraft:written_book","minecraft:writable_book","minecraft:book"]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("datapacks.json"),
+            r#"{"enabled":["file/books"],"disabled":[]}"#,
+        )
+        .unwrap();
+        game.world_root = dir;
+        game.world_tables = game.build_world_tables(false, &[]).unwrap().0;
+
+        let state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:lectern")
+            .unwrap();
+        let key = (8, 64, 8);
+        game.world.set(key.0, key.1, key.2, state).unwrap();
+
+        // A book the pack put in the tag is placed; one it did not is not.
+        let stone = ItemStack::new("minecraft:stone", 1);
+        assert!(!game.use_lectern([8, 64, 8], Some(&stone)));
+        let book = ItemStack::new("minecraft:book", 1);
+        assert!(
+            game.use_lectern([8, 64, 8], Some(&book)),
+            "the pack's `#minecraft:lectern_books` entry was refused"
+        );
+        let Some(BlockEntity::Lectern(lectern)) = game.world.block_entities.get(&key) else {
+            panic!("no lectern block entity");
+        };
+        assert_eq!(
+            lectern.book.as_ref().map(|b| &*b.item),
+            Some("minecraft:book")
+        );
     }
 }
