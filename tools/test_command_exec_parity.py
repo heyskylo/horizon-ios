@@ -153,6 +153,9 @@ def main():
     parser.add_argument('--orb-uuid-fixture', action='store_true')
     parser.add_argument('--summon-passengers-fixture', action='store_true', help='summon trees with Passengers entries vanilla cannot load')
     parser.add_argument('--summon-passengers-raw-diagnostic', action='store_true', help='add each parent\'s whole entity data')
+    parser.add_argument('--summon-uuid-fixture', action='store_true', help='summon trees whose UUIDs a live entity holds')
+    parser.add_argument('--summon-uuid-internal-diagnostic', action='store_true', help='add the trees with duplicate UUIDs inside them (known gap)')
+    parser.add_argument('--summon-uuid-raw-diagnostic', action='store_true', help='add each member\'s whole entity data')
     parser.add_argument('--mob-absorption-fixture', action='store_true', help='a mob\'s Absorption effect once the absorption is used up')
     parser.add_argument('--mob-absorption-infinite-fixture', action='store_true', help='infinite Absorption used up, kept, and beside another infinite effect')
     parser.add_argument('--mob-absorption-raw-diagnostic', action='store_true', help='add each mob\'s whole entity data')
@@ -350,6 +353,9 @@ def main():
     if args.summon_passengers_fixture:
         from summon_passengers_corpus import summon_passengers
         groups = [('setup', corpus_module.group_setup()), ('summon invalid passengers', summon_passengers(args.summon_passengers_raw_diagnostic))]
+    if args.summon_uuid_fixture:
+        from summon_uuid_corpus import summon_uuid
+        groups = [('setup', corpus_module.group_setup()), ('summon UUID conflicts', summon_uuid(args.summon_uuid_raw_diagnostic, args.summon_uuid_internal_diagnostic))]
     if args.mob_absorption_fixture:
         from mob_absorption_corpus import mob_absorption
         groups = [('setup', corpus_module.group_setup()), ('mob depleted absorption', mob_absorption(args.mob_absorption_raw_diagnostic))]

@@ -69,6 +69,19 @@ impl EntityMemory {
 /// is kept or saved.
 const FRESH_ADD: &str = "horizon:fresh_add";
 
+/// The kinds `load_unlisted` loads, before `load_listed` sees them.
+const UNLISTED_KINDS: &[&str] = &[
+    "minecraft:area_effect_cloud",
+    "minecraft:evoker_fangs",
+    "minecraft:ominous_item_spawner",
+    "minecraft:ender_dragon",
+    "minecraft:end_crystal",
+    "minecraft:item_frame",
+    "minecraft:glow_item_frame",
+    "minecraft:cushion",
+    "minecraft:painting",
+];
+
 /// Queue `tag` with the chunk loads as a fresh add.
 pub(super) fn mark_fresh(tag: &mut Tag) {
     if let Tag::Compound(c) = tag {
@@ -534,6 +547,9 @@ impl Game<'_> {
         uuid: Option<[i32; 4]>,
         tag: Tag,
     ) -> std::result::Result<(), Tag> {
+        if !UNLISTED_KINDS.contains(&kind) {
+            return Err(tag);
+        }
         match kind {
             "minecraft:area_effect_cloud" => {
                 if let Some(id) = self.load_potion_cloud(&tag) {
@@ -1023,11 +1039,9 @@ impl Game<'_> {
         {
             let mut unknown = Vec::new();
             for p in list {
-                let known =
-                    entity_nbt::kind(&p).is_some_and(|k| self.res.mob_types().contains_key(&k));
                 let loads = matches!(p, Tag::Compound(_))
                     && entity_nbt::kind(&p).is_some_and(|k| self.entity_type_exists(&k));
-                if known {
+                if self.loads_as_rider(&p) {
                     riders.push(p);
                 } else if loads || !registry {
                     unknown.push(p);
@@ -1038,6 +1052,30 @@ impl Game<'_> {
             }
         }
         riders
+    }
+    /// A passenger `take_mob_passengers` takes to load as a mob rider.
+    fn loads_as_rider(&self, passenger: &Tag) -> bool {
+        entity_nbt::kind(passenger).is_some_and(|k| self.res.mob_types().contains_key(&k))
+    }
+    /// The UUIDs `spawn_entity_from_nbt` would add for `tag`, in
+    /// `Entity.getSelfAndPassengers` order: the root's, then those of the
+    /// riders its loader takes, read as the loaders read them (a malformed
+    /// UUID is none). Passengers the loaders keep unloaded have none here.
+    pub(in crate::game) fn summon_tree_uuids(&self, tag: &Tag) -> Vec<[i32; 4]> {
+        let mut uuids: Vec<[i32; 4]> = entity_nbt::uuid(tag).into_iter().collect();
+        let kind = entity_nbt::kind(tag).unwrap_or_default();
+        if !UNLISTED_KINDS.contains(&kind.as_str()) && self.listed_kind_takes_riders(&kind) {
+            self.rider_uuids(tag, &mut uuids);
+        }
+        uuids
+    }
+    fn rider_uuids(&self, tag: &Tag, uuids: &mut Vec<[i32; 4]>) {
+        if let Some(Tag::List(list)) = tag.get("Passengers") {
+            for p in list.iter().filter(|p| self.loads_as_rider(p)) {
+                uuids.extend(entity_nbt::uuid(p));
+                self.rider_uuids(p, uuids);
+            }
+        }
     }
     /// `Entity.shouldBeSaved`: the mobs riding entity `id` under `tag`'s
     /// `Passengers`, after the passengers it kept from loading. Discarded
@@ -3802,6 +3840,349 @@ mod invalid_passenger_tests {
                 }
             }
             assert!(failures.is_empty(), "invalid passengers: {failures:#?}");
+        });
+    }
+}
+
+#[cfg(test)]
+mod summon_uuid_conflict_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, commands::Target, load_resources};
+    use horizon_client::motion::PlayerMotion;
+
+    const PIG: &str = "NoAI:1b,NoGravity:1b,PersistenceRequired:1b,Silent:1b";
+
+    fn pig(tag: &str, n: i32, riders: &str) -> String {
+        format!("{{id:\"minecraft:pig\",UUID:[I;160,0,0,{n}],Tags:[\"{tag}\"],{PIG}{riders}}}")
+    }
+    fn riders(list: &[String]) -> String {
+        format!(",Passengers:[{}]", list.join(","))
+    }
+    fn summon(game: &mut Game<'_>, tag: &str, n: i32, children: &str) -> bool {
+        let body = pig(tag, n, children);
+        let body = body.trim_start_matches("{id:\"minecraft:pig\",");
+        game.run_command(&format!("summon minecraft:pig 4.5 200 4.5 {{{body}"))
+    }
+    /// The entities in the level that carry `uuid`.
+    fn live(game: &Game<'_>, n: i32) -> Vec<u32> {
+        let mut ids: Vec<u32> = game
+            .persist
+            .uuids
+            .iter()
+            .filter(|(_, u)| **u == [160, 0, 0, n])
+            .filter(|(id, _)| game.level_entity(**id as i32).is_some())
+            .map(|(id, _)| *id)
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+    fn mob_tagged(game: &Game<'_>, tag: &str) -> Vec<u32> {
+        game.mobs
+            .iter()
+            .filter(|m| game.tags_of(Target::Mob(m.id)).iter().any(|t| t == tag))
+            .map(|m| m.id)
+            .collect()
+    }
+    fn mount(game: &Game<'_>, id: u32) -> Option<u32> {
+        game.mobs.iter().find(|m| m.id == id).unwrap().extra.mount
+    }
+    /// The first tag and the UUID of each saved passenger of mob `id`, in order.
+    fn saved_riders(game: &mut Game<'_>, id: u32) -> Vec<(String, Option<Tag>)> {
+        let saved = game.entity_nbt(Target::Mob(id)).expect("saved mob");
+        let Some(Tag::List(list)) = saved.get("Passengers") else {
+            return Vec::new();
+        };
+        list.iter()
+            .map(|p| {
+                let tag = match p.get("Tags") {
+                    Some(Tag::List(t)) => match t.first() {
+                        Some(Tag::String(s)) => s.to_string().unwrap_or_default(),
+                        _ => String::new(),
+                    },
+                    _ => String::new(),
+                };
+                (tag, p.get("UUID").cloned())
+            })
+            .collect()
+    }
+    fn uuid(n: i32) -> Option<Tag> {
+        Some(Tag::IntArray(vec![160, 0, 0, n]))
+    }
+
+    /// A game with a loaded, force-loaded chunk 0 0, a live pig holding UUID
+    /// 100 and a live armor stand holding UUID 150.
+    fn with_game(test: impl FnOnce(&mut Game<'_>, u32)) {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+                .join(format!("h160-{:?}", std::thread::current().id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
+        game.creative = true;
+        // Setup controls: the live actors the later trees name.
+        assert!(summon(&mut game, "h160_existing", 100, ""));
+        assert!(game.run_command(
+            "summon minecraft:armor_stand 1.5 200 3.5 {UUID:[I;160,0,0,150],Tags:[\"h160_stand\"],NoGravity:1b}"
+        ));
+        let existing = live(&game, 100);
+        assert_eq!(existing.len(), 1);
+        assert_eq!(live(&game, 150).len(), 1);
+        test(&mut game, existing[0]);
+    }
+
+    /// Expected values from the official 26.3 server:
+    /// ServerLevel.tryAddFreshEntityWithPassengers refuses the whole tree
+    /// when any of its UUIDs is loaded, before anything joins.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and a scratch HORIZON_HOME"]
+    fn summon_refuses_a_tree_holding_a_live_uuid() {
+        with_game(|game, existing| {
+            let stand = live(game, 150);
+            let existing_at = game
+                .mobs
+                .iter()
+                .find(|m| m.id == existing)
+                .unwrap()
+                .position;
+            let time = game.world.game_time;
+
+            // A unique tree is admitted whole, each member riding its parent.
+            let leaf = pig("h160_unique_leaf", 122, "");
+            let child = pig("h160_unique_child", 121, &riders(&[leaf]));
+            assert!(summon(game, "h160_unique", 120, &riders(&[child])));
+            let [r, c, l] = [120, 121, 122].map(|n| live(game, n));
+            assert_eq!([r.len(), c.len(), l.len()], [1, 1, 1]);
+            assert_eq!(mount(game, c[0]), Some(r[0]));
+            assert_eq!(mount(game, l[0]), Some(c[0]));
+
+            let mut failures = Vec::new();
+            let conflicts = [
+                ("h160_existing_root", 100, String::new(), vec![]),
+                ("h160_existing_stand_root", 150, String::new(), vec![]),
+                (
+                    "h160_existing_child",
+                    101,
+                    riders(&[pig("h160_existing_child_child", 100, "")]),
+                    vec![101],
+                ),
+                (
+                    "h160_existing_leaf",
+                    110,
+                    riders(&[pig(
+                        "h160_existing_leaf_child",
+                        111,
+                        &riders(&[pig("h160_existing_leaf_leaf", 100, "")]),
+                    )]),
+                    vec![110, 111],
+                ),
+            ];
+            for (tag, n, children, fresh) in conflicts {
+                let mobs = game.mobs.len();
+                let next = game.next_entity;
+                let hooks = (game.persist.joins_canceled, game.persist.joined_mark);
+                let draw = game.world.random.clone().next_long();
+                if summon(game, tag, n, &children) {
+                    failures.push(format!("{tag}: summon succeeded"));
+                }
+                if game.mobs.len() != mobs {
+                    failures.push(format!(
+                        "{tag}: mob count {} expected {mobs}",
+                        game.mobs.len()
+                    ));
+                }
+                if game.next_entity != next {
+                    failures.push(format!(
+                        "{tag}: entity id {} expected {next}",
+                        game.next_entity
+                    ));
+                }
+                if (game.persist.joins_canceled, game.persist.joined_mark) != hooks {
+                    failures.push(format!("{tag}: join hook counts changed"));
+                }
+                if game.world.random.clone().next_long() != draw {
+                    failures.push(format!("{tag}: level random advanced"));
+                }
+                if !mob_tagged(game, tag).is_empty() {
+                    failures.push(format!("{tag}: root joined"));
+                }
+                for n in fresh {
+                    if !live(game, n).is_empty() {
+                        failures.push(format!("{tag}: UUID {n} joined"));
+                    }
+                }
+            }
+            if live(game, 100) != vec![existing] || live(game, 150) != stand {
+                failures.push(format!(
+                    "existing actors: UUID 100 {:?}, UUID 150 {:?}",
+                    live(game, 100),
+                    live(game, 150)
+                ));
+            }
+
+            // A later unique tree and a malformed UUID (not read: a fresh one) are admitted.
+            let child = riders(&[pig("h160_unique_after_child", 141, "")]);
+            if !summon(game, "h160_unique_after", 140, &child)
+                || live(game, 140).len() != 1
+                || live(game, 141).len() != 1
+            {
+                failures.push("unique_after: not admitted whole".into());
+            }
+            for (n, value) in ["[I;1,2,3]", "[I;1,2,3,4,5]", "\"not-a-uuid\"", "[L;1L,2L]"]
+                .iter()
+                .enumerate()
+            {
+                let tag = format!("h160_malformed_{n}");
+                if !game.run_command(&format!(
+                    "summon minecraft:pig 4.5 200 4.5 {{UUID:{value},Tags:[\"{tag}\"],{PIG}}}"
+                )) || mob_tagged(game, &tag).len() != 1
+                {
+                    failures.push(format!("{tag}: not admitted"));
+                }
+            }
+
+            let after = game
+                .mobs
+                .iter()
+                .find(|m| m.id == existing)
+                .unwrap()
+                .position;
+            assert_eq!(after, existing_at);
+            assert_eq!(game.world.game_time, time);
+            assert!(
+                failures.is_empty(),
+                "summon live UUID admission: {failures:#?}"
+            );
+        });
+    }
+
+    /// Known unfixed (#11807 is a partial repair): vanilla adds a tree's
+    /// members in order and skips one whose UUID an earlier member took; that
+    /// one still rides its vehicle and saves under its Passengers. Horizon has
+    /// no passenger outside the level, and admits each duplicate. Expected to
+    /// fail until that exists; run explicitly, never counted as a pass.
+    #[test]
+    #[ignore = "known unfixed: duplicate UUIDs inside a summoned tree still join (#11807); expected to fail"]
+    fn summon_skips_a_uuid_taken_earlier_in_the_same_tree() {
+        with_game(|game, _| {
+            let mut failures = Vec::new();
+            let pigs = game.mobs.len();
+            if !summon(
+                game,
+                "h160_same_uuid",
+                102,
+                &riders(&[pig("h160_same_uuid_child", 102, "")]),
+            ) {
+                failures.push("same_uuid: summon failed".into());
+            }
+            let same = mob_tagged(game, "h160_same_uuid");
+            if live(game, 102) != same || same.len() != 1 {
+                failures.push(format!(
+                    "same_uuid: live 102 {:?} root {same:?}",
+                    live(game, 102)
+                ));
+            }
+            if !mob_tagged(game, "h160_same_uuid_child").is_empty() {
+                failures.push("same_uuid: child joined".into());
+            }
+            if let [root] = same[..]
+                && saved_riders(game, root) != vec![("h160_same_uuid_child".into(), uuid(102))]
+            {
+                failures.push(format!(
+                    "same_uuid: saved riders {:?}",
+                    saved_riders(game, root)
+                ));
+            }
+
+            let siblings = riders(&[
+                pig("h160_sibling_a", 104, ""),
+                pig("h160_sibling_b", 104, ""),
+            ]);
+            if !summon(game, "h160_sibling", 103, &siblings) {
+                failures.push("sibling: summon failed".into());
+            }
+            let root = mob_tagged(game, "h160_sibling");
+            let a = mob_tagged(game, "h160_sibling_a");
+            if live(game, 104) != a || a.len() != 1 || root.len() != 1 {
+                failures.push(format!("sibling: live 104 {:?} a {a:?}", live(game, 104)));
+            } else if mount(game, a[0]) != Some(root[0]) {
+                failures.push("sibling: a does not ride the root".into());
+            }
+            if !mob_tagged(game, "h160_sibling_b").is_empty() {
+                failures.push("sibling: b joined".into());
+            }
+            if let [root] = root[..] {
+                let saved = saved_riders(game, root);
+                let expected = vec![
+                    ("h160_sibling_a".to_string(), uuid(104)),
+                    ("h160_sibling_b".to_string(), uuid(104)),
+                ];
+                if saved != expected {
+                    failures.push(format!("sibling: saved riders {saved:?}"));
+                }
+            }
+
+            let leaf = riders(&[pig("h160_leaf_root_leaf", 130, "")]);
+            let child = riders(&[pig("h160_leaf_root_child", 131, &leaf)]);
+            if !summon(game, "h160_leaf_root", 130, &child) {
+                failures.push("leaf_root: summon failed".into());
+            }
+            let child = mob_tagged(game, "h160_leaf_root_child");
+            if !mob_tagged(game, "h160_leaf_root_leaf").is_empty() || child.len() != 1 {
+                failures.push("leaf_root: leaf joined or child missing".into());
+            } else if saved_riders(game, child[0])
+                != vec![("h160_leaf_root_leaf".into(), uuid(130))]
+            {
+                failures.push(format!(
+                    "leaf_root: saved riders {:?}",
+                    saved_riders(game, child[0])
+                ));
+            }
+            if game.mobs.len() != pigs + 5 {
+                failures.push(format!(
+                    "internal: mob count {} expected {}",
+                    game.mobs.len(),
+                    pigs + 5
+                ));
+            }
+            assert!(
+                failures.is_empty(),
+                "summon in-tree UUID admission: {failures:#?}"
+            );
         });
     }
 }
