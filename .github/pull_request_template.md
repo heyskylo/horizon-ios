@@ -16,6 +16,15 @@
 - [ ] tooling: tools, CI, tests, harnesses
 - [ ] docs
 
+## Layer
+
+<!-- engine, platform or Horizon (docs/layers.md, "Where a new feature goes"). Reviewers check:
+     - the new code sits in a crate or module of that layer;
+     - no new upward dependency (CI's layer check), and no engine module calling up into platform or Horizon code;
+     - Horizon features in the game are behind `horizon-extras`, and platform features that change the vanilla
+       look are off by default;
+     - no new built-in server address outside the Horizon layer. -->
+
 ## Vanilla reference
 
 <!-- The vanilla classes and methods this follows (tools/rea_vanilla.py), and the harness that checks it.
