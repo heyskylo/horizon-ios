@@ -2100,44 +2100,9 @@ impl MotionWorld<'_, '_, '_> {
     /// LivingEntity.travelFallFlying with updateFallFlyingMovement.
     fn travel_fall_flying(&mut self) -> Result<()> {
         let v = self.player.velocity;
-        // getLookAngle and the lean use Mth's sine table and float degrees,
-        // the lift Math.cos of the widened lean.
-        let look = horizon_world::view_direction::view_vector(self.player.pitch, self.player.yaw);
-        let lean = self.player.pitch * trig::DEG_TO_RAD;
-        let look_h = (look.x * look.x + look.z * look.z).sqrt();
         let move_h = (v.x * v.x + v.z * v.z).sqrt();
         let gravity = living_motion::effective_gravity(self)?;
-        let lift = horizon_core::jmath::cos(f64::from(lean)).powi(2);
-        let mut m = Vec3::new(v.x, v.y + gravity * (-1.0 + lift * 0.75), v.z);
-        if m.y < 0.0 && look_h > 0.0 {
-            let convert = m.y * -0.1 * lift;
-            m = Vec3::new(
-                m.x + look.x * convert / look_h,
-                m.y + convert,
-                m.z + look.z * convert / look_h,
-            );
-        }
-        if lean < 0.0 && look_h > 0.0 {
-            let convert = move_h * f64::from(-trig::sin(f64::from(lean))) * 0.04;
-            m = Vec3::new(
-                m.x - look.x * convert / look_h,
-                m.y + convert * 3.2,
-                m.z - look.z * convert / look_h,
-            );
-        }
-        if look_h > 0.0 {
-            m = Vec3::new(
-                m.x + (look.x / look_h * move_h - m.x) * 0.1,
-                m.y,
-                m.z + (look.z / look_h * move_h - m.z) * 0.1,
-            );
-        }
-        // multiply(0.99F, 0.98F, 0.99F): the float factors widened.
-        self.player.velocity = Vec3::new(
-            m.x * f64::from(0.99_f32),
-            m.y * f64::from(0.98_f32),
-            m.z * f64::from(0.99_f32),
-        );
+        self.player.velocity = fall_flying_movement(v, self.player.pitch, self.player.yaw, gravity);
         let movement = self.player.velocity;
         let before = self.player.position;
         self.move_self(movement)?;
@@ -3019,6 +2984,48 @@ fn horizontal_collision_minor(yaw: f32, input: [f32; 2], movement: Vec3) -> bool
     }
     let dot = global_x * movement.x + global_z * movement.z;
     horizon_core::jmath::acos(dot / (a_len * m_len).sqrt()) < f64::from(0.13962634_f32)
+}
+
+/// `LivingEntity.updateFallFlyingMovement`: pure glide velocity shared by
+/// player travel and authoritative Mob travel. No collision, state or RNG work.
+pub(crate) fn fall_flying_movement(v: Vec3, pitch: f32, yaw: f32, gravity: f64) -> Vec3 {
+    // getLookAngle and the lean use Mth's sine table and float degrees,
+    // the lift Math.cos of the widened lean.
+    let look = horizon_world::view_direction::view_vector(pitch, yaw);
+    let lean = pitch * trig::DEG_TO_RAD;
+    let look_h = (look.x * look.x + look.z * look.z).sqrt();
+    let move_h = (v.x * v.x + v.z * v.z).sqrt();
+    let lift = horizon_core::jmath::cos(f64::from(lean)).powi(2);
+    let mut m = Vec3::new(v.x, v.y + gravity * (-1.0 + lift * 0.75), v.z);
+    if m.y < 0.0 && look_h > 0.0 {
+        let convert = m.y * -0.1 * lift;
+        m = Vec3::new(
+            m.x + look.x * convert / look_h,
+            m.y + convert,
+            m.z + look.z * convert / look_h,
+        );
+    }
+    if lean < 0.0 && look_h > 0.0 {
+        let convert = move_h * f64::from(-trig::sin(f64::from(lean))) * 0.04;
+        m = Vec3::new(
+            m.x - look.x * convert / look_h,
+            m.y + convert * 3.2,
+            m.z - look.z * convert / look_h,
+        );
+    }
+    if look_h > 0.0 {
+        m = Vec3::new(
+            m.x + (look.x / look_h * move_h - m.x) * 0.1,
+            m.y,
+            m.z + (look.z / look_h * move_h - m.z) * 0.1,
+        );
+    }
+    // multiply(0.99F, 0.98F, 0.99F): the float factors widened.
+    Vec3::new(
+        m.x * f64::from(0.99_f32),
+        m.y * f64::from(0.98_f32),
+        m.z * f64::from(0.99_f32),
+    )
 }
 
 /// `LivingEntity.handleFallFlyingCollisions`: a glide a block stopped takes

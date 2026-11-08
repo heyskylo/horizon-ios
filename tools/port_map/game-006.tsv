@@ -76,7 +76,7 @@ LivingEntity.setItemInHand	inline	crates/horizon-client/src/game.rs::Game::held_
 LivingEntity.getArmorCoverPercentage	port	crates/horizon-client/src/game/creatures.rs::Game::player_view	armor_cover is worn pieces over 4; a LAN guest's is 0
 LivingEntity.shouldTravelInFluid	inline	crates/horizon-client/src/mobs/living.rs::Mob::travel	in liquid, affected by fluids and not standing on a fluid it walks on (lava walkers)
 LivingEntity.isInShallowFluid	inline	crates/horizon-client/src/mobs/living.rs::Mob::travel_in_fluid	lava depth against fluid_jump_threshold
-LivingEntity.updateFallFlyingMovement	port	crates/horizon-client/src/motion.rs::MotionWorld::travel_fall_flying	gap: minor: the player only; a mob with a glider never fall-flies
+LivingEntity.updateFallFlyingMovement	port	crates/horizon-client/src/motion.rs::fall_flying_movement	shared pure arithmetic for existing player travel and common Mob glide travel; dry-air Husk runtime proof
 LivingEntity.travelRidden	inline	crates/horizon-client/src/mobs/living.rs::Mob::travel	the rider's input is applied in equine.rs ridden_step, nautilus.rs ridden and happy_ghast.rs ridden
 LivingEntity.calculateEntityAnimation	port	crates/horizon-client/src/mobs/living.rs::Mob::update_walk_animation	a passenger's legs are held still at draw time (anim.rs)
 LivingEntity.causeExtraKnockback	port	crates/horizon-client/src/game/enchant_effects.rs::Game::extra_knockback_direction	target pushed along the attacker's yaw; the attacker stops sprinting
