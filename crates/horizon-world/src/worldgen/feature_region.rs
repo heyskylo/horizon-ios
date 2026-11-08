@@ -67,6 +67,9 @@ pub struct TerrainRegion<'r, B: TerrainBlockStates> {
     next_tick_order: i64,
     block_queries: Option<RegionBlockQueries>,
     world_seed: Option<i64>,
+    /// `schedule_block_tick`'s recent states and their blocks' default states
+    /// (the registry resolves those by name).
+    tick_defaults: Vec<(BlockStateId, BlockStateId)>,
 }
 /// Where each chunk of a region sits in its list: a grid over the chunks'
 /// bounding box while it is small (the usual square of neighbours), else a
@@ -170,6 +173,7 @@ impl<'r, B: TerrainBlockStates> TerrainRegion<'r, B> {
             next_tick_order: 0,
             block_queries: None,
             world_seed: None,
+            tick_defaults: Vec::new(),
             min_y,
             height,
             generation: WorldGenerationContext::with_generator(
@@ -375,14 +379,25 @@ impl<B: TerrainBlockStates> PlacementContext for TerrainRegion<'_, B> {
         block: BlockStateId,
         delay: i32,
     ) -> Result<(), PlacementQueryError> {
-        let registry = self.chunks[0].registry();
-        let state = registry
-            .state(block)
-            .ok_or(RegionError::InvalidTickState(block))?;
-        // Default state IDs provide one identity per block, separate from fluids.
-        let block = registry
-            .default_state(&state.name)
-            .ok_or(RegionError::InvalidTickState(block))?;
+        let known = self.tick_defaults.iter().find(|(s, _)| *s == block);
+        let block = match known {
+            Some(&(_, default)) => default,
+            None => {
+                let registry = self.chunks[0].registry();
+                let state = registry
+                    .state(block)
+                    .ok_or(RegionError::InvalidTickState(block))?;
+                // Default state IDs provide one identity per block, separate from fluids.
+                let default = registry
+                    .default_state(&state.name)
+                    .ok_or(RegionError::InvalidTickState(block))?;
+                if self.tick_defaults.len() >= 16 {
+                    self.tick_defaults.clear();
+                }
+                self.tick_defaults.push((block, default));
+                default
+            }
+        };
         self.request_tick(TickKind::Block, position, TickTypeId(block.0), delay)
             .map_err(Into::into)
     }
