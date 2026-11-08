@@ -212,17 +212,23 @@ fn a_shulker_bullets_hit_teleports_an_open_shulker_before_it_returns() {
             Vec3::new(at.x, at.y + 0.5, at.z - 1.0),
             None,
         );
-        game.projectile_hit(&bullet, Hit::Entity {
-            who: horizon_client::mobs::Who::Mob(id),
-            at: Vec3::new(at.x, at.y + 0.5, at.z),
-        })
+        game.projectile_hit(
+            &bullet,
+            Hit::Entity {
+                who: horizon_client::mobs::Who::Mob(id),
+                at: Vec3::new(at.x, at.y + 0.5, at.z),
+            },
+        )
         .unwrap();
         let m = game.mobs.iter().find(|m| m.id == id).unwrap();
         assert!(
             !m.extra.flag && !m.extra.flag2,
             "seed {seed}: a teleport left for the AI step"
         );
-        assert!(m.has_effect("minecraft:levitation"), "seed {seed}: no levitation");
+        assert!(
+            m.has_effect("minecraft:levitation"),
+            "seed {seed}: no levitation"
+        );
         if m.position.distance(at) > 0.5 {
             moved += 1;
         }
@@ -269,7 +275,11 @@ fn a_teleporting_shulker_leaves_its_rider_behind() {
                 z.position
             );
         } else {
-            assert_eq!(z.extra.mount, Some(id), "seed {seed}: thrown off without a teleport");
+            assert_eq!(
+                z.extra.mount,
+                Some(id),
+                "seed {seed}: thrown off without a teleport"
+            );
         }
         game.mobs.clear();
     }

@@ -2756,9 +2756,7 @@ impl Game<'_> {
                 MobEvent::Tamed { .. }
                 | MobEvent::Buck { .. }
                 | MobEvent::StabDismount { .. }
-                | MobEvent::EjectPassengers { .. } => {
-                    self.mount_event(&e)
-                }
+                | MobEvent::EjectPassengers { .. } => self.mount_event(&e),
                 MobEvent::IronGolemHit {
                     target,
                     amount,
