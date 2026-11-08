@@ -661,6 +661,7 @@ fn remesh(
                         blend_radius,
                         smooth_lighting,
                         cutout_leaves,
+                        opaque_ice: false,
                         translucent_layers: &[],
                         leaf_culling,
                     };
