@@ -305,6 +305,40 @@ impl WorldgenOverrides {
             .flatten()
             .map(|(id, json)| (id.as_str(), json.as_str()))
     }
+    /// Partial startup validation of winning fill-layer leaves through their existing codec.
+    /// Other feature types keep their existing lazy path; this never expands feature holders.
+    pub fn validate_fill_layers(
+        &self,
+        registry: &crate::registry::BlockRegistry,
+    ) -> Result<(), super::DecodeError> {
+        use super::block_feature::{FeatureBlockBindings, FillLayerFeature, integer_properties};
+        let entries: Vec<_> = self
+            .entries("features")
+            .filter(|(_, json)| {
+                let Ok(object) = serde_json::from_str::<super::Object>(json) else {
+                    return false;
+                };
+                let Some(kind) = object.get("type") else {
+                    return false;
+                };
+                let Ok(kind) = serde_json::from_str::<String>(kind.get()) else {
+                    return false;
+                };
+                super::density::identifier(&kind).ok().as_deref() == Some("minecraft:fill_layer")
+            })
+            .collect();
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let bindings = FeatureBlockBindings::new(registry, integer_properties(registry))?;
+        for (id, json) in entries {
+            FillLayerFeature::from_json(json, &bindings).map_err(|error| {
+                super::DecodeError::Registry(format!("configured feature {id}: {error}"))
+            })?;
+        }
+        Ok(())
+    }
+
     /// The tag files packs give the tag bundle `bundle`, in pack order.
     pub fn tags(&self, bundle: &str) -> impl Iterator<Item = (&str, &str, &str)> {
         self.tags
