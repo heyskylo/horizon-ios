@@ -6,7 +6,8 @@ tools/layers.json gives every crate its layer and lists today's exceptions in `a
 - a workspace crate with no layer;
 - a normal, build or optional dependency on a higher layer that `allowed` doesn't list;
 - with --base, an `allowed` entry the branch added from a crate that already had a layer on the base;
-- a shipped crate depending on a tool.
+- a shipped crate depending on a tool;
+- a portable crate depending on a crate of the repository that isn't portable, or on a `forbidden` library.
 An `allowed` entry with no dependency left is reported, not failed. Dev-dependencies are not checked.
 
     python3 tools/check_layers.py                     # the check
@@ -114,12 +115,31 @@ def check(config, graph, base=None):
     return problems, notes
 
 
-def workspace_graph(config):
-    graph = {}
-    for manifest in config["workspaces"]:
-        for crate, deps in edges(metadata(ROOT / manifest)).items():
-            graph.setdefault(crate, set()).update(deps)
-    return graph
+def portable(config, packages):
+    """Problems of the portable crates (docs/layers.md#engine): a path dependency on a crate that isn't portable,
+    or a normal or build dependency on a library they never take (window, GPU, sound, gamepad, clipboard, HTTP)."""
+    spec = config.get("portable", {})
+    crates, forbidden = set(spec.get("crates", [])), set(spec.get("forbidden", []))
+    problems = {f"{crate}: listed as portable in {CONFIG_PATH}, but not an engine crate there"
+                for crate in crates if config["crates"].get(crate) != "engine"}
+    for package in packages:
+        if package["name"] not in crates:
+            continue
+        for dep in package["dependencies"]:
+            if dep.get("kind") == "dev":
+                continue
+            edge = f"{package['name']} -> {dep['name']}"
+            if dep.get("path") and dep["name"] not in crates:
+                problems.add(f"{edge}: a portable crate depends only on the other portable crates "
+                             f"({DOC}{SECTION['engine']})")
+            elif not dep.get("path") and dep["name"] in forbidden:
+                problems.add(f"{edge}: a portable crate takes no window, GPU, sound, gamepad, clipboard or HTTP "
+                             f"library ({DOC}{SECTION['engine']})")
+    return sorted(problems)
+
+
+def workspace_packages(config):
+    return [package for manifest in config["workspaces"] for package in metadata(ROOT / manifest)]
 
 
 def main(argv=None):
@@ -128,7 +148,8 @@ def main(argv=None):
     parser.add_argument("--list", action="store_true", help="print each crate's layer and the upward dependencies")
     args = parser.parse_args(argv)
     config = load_config()
-    graph = workspace_graph(config)
+    packages = workspace_packages(config)
+    graph = edges(packages)
     if args.list:
         for crate in sorted(graph):
             print(f"{config['crates'].get(crate, '?'):<9} {crate}")
@@ -138,6 +159,7 @@ def main(argv=None):
             print(f"  {edge}")
         return 0
     problems, notes = check(config, graph, base_config(args.base) if args.base else None)
+    problems += portable(config, packages)
     for note in notes:
         print(f"note: {note}")
     if problems:
