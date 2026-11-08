@@ -530,10 +530,14 @@ fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag>
                 let hidden = hidden
                     .iter()
                     .filter_map(|id| Some(Tag::String(name(*id)?.into())));
-                Tag::compound([
-                    ("hide_tooltip", Tag::Byte(i8::from(*hide))),
-                    ("hidden_components", Tag::List(hidden.collect())),
-                ])
+                // As `OptionalFieldCodec`, the saved form leaves `hide_tooltip`
+                // out when it is false; `decode_components` compares the raid
+                // captain banner's tooltip against that form exactly.
+                let mut entries = vec![("hidden_components", Tag::List(hidden.collect()))];
+                if *hide {
+                    entries.push(("hide_tooltip", Tag::Byte(1)));
+                }
+                Tag::compound(entries)
             }
         };
         entries.push((key, value));
@@ -1310,6 +1314,75 @@ mod tests {
             back.data().map(|d| d.stew_effects.clone()),
             Some(vec![(Arc::from("minecraft:fire_resistance"), 60)])
         );
+    }
+
+    /// The raid captain's banner keeps the name, rarity and hidden pattern
+    /// layers `Raid.getBannerComponentPatch` gives it, so a guest's copy reads
+    /// as the ominous banner rather than a white one (#12530).
+    #[test]
+    fn an_ominous_banner_keeps_its_name_across_the_wire() {
+        use horizon_protocol::buf::{Codec, Reader, Writer};
+        use horizon_protocol::item::Slot;
+        let mut components = vec![String::new(); component::BANNER_PATTERNS as usize + 1];
+        for (id, name) in [
+            (component::ITEM_NAME, "minecraft:item_name"),
+            (component::RARITY, "minecraft:rarity"),
+            (component::TOOLTIP_DISPLAY, "minecraft:tooltip_display"),
+            (component::BANNER_PATTERNS, "minecraft:banner_patterns"),
+        ] {
+            components[id as usize] = name.to_owned();
+        }
+        let items = ["minecraft:air", "minecraft:white_banner"];
+        let builtin = Builtin {
+            registries: [
+                (
+                    "minecraft:item".to_owned(),
+                    Ids::from_names(items.iter().map(|s| s.to_string()).collect()),
+                ),
+                (
+                    "minecraft:data_component_type".to_owned(),
+                    Ids::from_names(components),
+                ),
+            ]
+            .into(),
+        };
+        let layers = crate::item_data::OMINOUS_LAYERS;
+        let dynamic = Dynamic {
+            registries: [(
+                "minecraft:banner_pattern".to_owned(),
+                layers
+                    .iter()
+                    .map(|(pattern, _)| (format!("minecraft:{pattern}"), None))
+                    .collect(),
+            )]
+            .into(),
+            ..Default::default()
+        };
+        let id = |registry: &str, name: &str| {
+            builtin
+                .get(registry)
+                .and_then(|ids| ids.id(name))
+                .or_else(|| dynamic.id(registry, name))
+        };
+        let wire = crate::lan::guest::stack_to_network(
+            |name| id("minecraft:item", name).unwrap_or(0),
+            id,
+            &Some(crate::mobs::raider::ominous_banner()),
+        );
+        // Read it as a peer does: the slot codec, then the components.
+        let mut w = Writer::new();
+        Slot::write(&wire, &mut w);
+        let mut r = Reader::new(&w.data);
+        let read = Slot::read(&mut r).unwrap().unwrap();
+        assert_eq!(r.remaining(), 0);
+        let back = from_network(&read, &builtin, &dynamic);
+        let d = back.data().expect("components");
+        assert!(d.ominous_banner, "the name reads as the ominous banner");
+        assert_eq!(d.banner_patterns.len(), layers.len());
+        // The modelled parts are not duplicated into `other`.
+        assert_eq!(d.other("minecraft:item_name"), None);
+        assert_eq!(d.other("minecraft:rarity"), None);
+        assert_eq!(d.other("minecraft:tooltip_display"), None);
     }
 
     /// A painting's `painting/variant` (a `painting_variant` holder, id 109)
