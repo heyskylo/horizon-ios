@@ -11,6 +11,7 @@
 
 use super::{Game, Result};
 use horizon_client::join_seq::{JoinSeq, Joined};
+use horizon_client::random_source;
 use horizon_core::geometry::Vec3;
 use horizon_core::random::RandomSource as _;
 
@@ -218,7 +219,7 @@ impl Game<'_> {
                     let random = &mut self.ordered.lava_random;
                     let mut next_float = || {
                         random
-                            .get_or_insert_with(super::dispenser::entity_random)
+                            .get_or_insert_with(random_source::entity)
                             .next_float()
                     };
                     let stays = {

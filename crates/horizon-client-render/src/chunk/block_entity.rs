@@ -59,6 +59,9 @@ pub enum BlockEntity {
     CreakingHeart(Box<CreakingHeart>),
     /// `BannerBlockEntity`: the pattern layers.
     Banner(Banner),
+    /// `CopperGolemStatueBlockEntity`: its own components, which hold the
+    /// custom name of the golem it was (`createStatue`).
+    CopperGolemStatue(Compound),
     /// `CrafterBlockEntity`.
     Crafter(Crafter),
     /// `SpawnerBlockEntity` (`crate::mobs::spawner`).

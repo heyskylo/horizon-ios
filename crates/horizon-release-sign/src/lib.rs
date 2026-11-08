@@ -16,6 +16,8 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
 
+pub mod native_build;
+
 /// The checksum list's asset name.
 pub const SUMS: &str = "SHA256SUMS";
 /// Its signatures' asset name.
@@ -386,7 +388,13 @@ impl SigningKey {
 
     /// A signature line for SHA256SUMS.sig.
     pub fn sign(&self, tag: &str, sums: &[u8]) -> String {
-        STANDARD.encode(self.0.sign(&message(tag, sums)).as_ref())
+        self.sign_bytes(&message(tag, sums))
+    }
+
+    /// A base64 signature line over `message` as it is (a prebuilt native build's
+    /// [`native_build::message`]).
+    pub fn sign_bytes(&self, message: &[u8]) -> String {
+        STANDARD.encode(self.0.sign(message).as_ref())
     }
 }
 
