@@ -1896,6 +1896,131 @@ mod modern_literal_tests {
 }
 
 #[cfg(test)]
+mod bell_command_identity_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use horizon_client::{chunk::Chunk, motion::PlayerMotion};
+    use horizon_core::{geometry::Vec3, position::ChunkPos};
+    use std::sync::Arc;
+    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+                .join(format!("h174-{:?}", std::thread::current().id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
+        game.creative = true;
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("tick freeze"));
+        assert!(game.run_command("fill 0 198 0 15 199 15 stone"));
+        test(&mut game);
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn placed_bell_is_a_real_stored_entity_with_command_metadata() {
+        with_game(|game| {
+            let clock = game.world.game_time;
+            assert!(game.run_command("setblock 8 200 4 chest[facing=north] strict"));
+            assert!(game.world.block_entities.contains_key(&(8, 200, 4)));
+            assert!(game.run_command("setblock 10 200 4 stone strict"));
+            assert!(game.block_entity_nbt([10, 200, 4]).is_none());
+            assert!(game.run_command(
+                "setblock 4 200 4 bell[facing=north,attachment=floor,powered=false] strict"
+            ));
+            assert!(game.run_command(
+                "execute if block 4 200 4 bell[facing=north,attachment=floor,powered=false]"
+            ));
+            assert!(game.world.chunks.contains_key(&(0, 0)));
+            let entity = game
+                .world
+                .block_entities
+                .get(&(4, 200, 4))
+                .expect("actual placed bell stored in collection");
+            assert_eq!(entity.id(), "minecraft:bell");
+            assert!(entity.fits("minecraft:bell"));
+            assert!(!entity.fits("minecraft:chest"));
+            for _ in 0..2 {
+                let tag = game.block_entity_nbt([4, 200, 4]).unwrap();
+                for (key, value) in [
+                    ("id", Tag::String("minecraft:bell".into())),
+                    ("x", Tag::Int(4)),
+                    ("y", Tag::Int(200)),
+                    ("z", Tag::Int(4)),
+                ] {
+                    assert_eq!(tag.get(key), Some(&value));
+                }
+                assert!(game.run_command(
+                    "execute if data block 4 200 4 {id:\"minecraft:bell\",x:4,y:200,z:4}"
+                ));
+            }
+            // No raw input: factory/model and the real common writer supply metadata.
+            let fresh = BlockEntity::for_block("minecraft:bell").unwrap();
+            let tag = save::block_entity_data((-3, 204, 11), &fresh, "minecraft:bell", None);
+            assert_eq!(tag.get("x"), Some(&Tag::Int(-3)));
+            assert_eq!(tag.get("y"), Some(&Tag::Int(204)));
+            assert_eq!(tag.get("z"), Some(&Tag::Int(11)));
+            let (pos, back) = save::decode_block_entity(&tag).unwrap();
+            assert_eq!(pos, (-3, 204, 11));
+            assert_eq!(back.id(), "minecraft:bell");
+            assert!(game.run_command(
+                "setblock 4 200 4 bell[facing=east,attachment=floor,powered=false] strict"
+            ));
+            assert_eq!(
+                game.world.block_entities.get(&(4, 200, 4)).unwrap().id(),
+                "minecraft:bell"
+            );
+            assert!(game.run_command("setblock 4 200 4 air strict"));
+            assert!(!game.world.block_entities.contains_key(&(4, 200, 4)));
+            assert!(game.world.block_entities.contains_key(&(8, 200, 4)));
+            assert!(game.run_command(
+                "setblock 4 200 4 bell[facing=south,attachment=floor,powered=false] strict"
+            ));
+            assert_eq!(
+                game.world.block_entities.get(&(4, 200, 4)).unwrap().id(),
+                "minecraft:bell"
+            );
+            assert_eq!(game.world.game_time, clock);
+        });
+    }
+}
+
+#[cfg(test)]
 mod falling_live_adoption_tests {
     use crate::game::{Audio, Game, Options, Progress, Settings, commands::Target, load_resources};
     use horizon_client::chunk::Chunk;
