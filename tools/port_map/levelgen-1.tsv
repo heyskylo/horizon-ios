@@ -65,7 +65,7 @@ WorldDimensions.replaceOverworldGenerator	inline	crates/horizon-client/src/save.
 WorldDimensions.withOverworld	inline	crates/horizon-client/src/save.rs::write_world_gen_settings_with	same as replaceOverworldGenerator
 WorldDimensions.overworld	inline	crates/horizon-client/src/flatgen.rs::FlatTerrain::from_settings	reads the overworld generator from world_gen_settings; a normal one is OverworldGenerator::for_world
 WorldDimensions.specialWorldProperty	inline	crates/horizon-client/src/save.rs::WorldGen::read	the preset from the overworld generator: Flat for minecraft:flat, Debug for minecraft:debug, else Normal
-WorldDimensions.isVanillaLike	skip:other		stability only picks the experimental-settings warning; Horizon's preset dimensions are stable
+WorldDimensions.isVanillaLike	port	crates/horizon-client/src/save.rs::dimension_is_vanilla_like	whether a saved dimension is the stable Overworld, Nether or End (isStableOverworld, isStableNether, isStableEnd); any other key never is, and `world_gen_unstable` turns the check into the experimental-settings warning in title.rs
 WorldDimensions.isStableOverworld	skip:other		same as isVanillaLike
 WorldDimensions.isStableNether	skip:other		same as isVanillaLike
 WorldDimensions.isStableEnd	skip:other		same as isVanillaLike
