@@ -1,6 +1,8 @@
+import random
 import unittest
 
 from tools import parity_fuzz as fuzz
+from tools import parity_fuzz_scenarios as families
 
 
 def record(text):
@@ -62,6 +64,19 @@ class ShrinkTests(unittest.TestCase):
         self.assertIn('UUID:[I;1179998810,2,0,1]', summon)
         read = next(op for op in ops if op.get('read'))
         self.assertEqual(read['cmd'], '/data get entity 46555a5a-0000-0002-0000-000000000001')
+
+
+class FamilyTests(unittest.TestCase):
+    def test_a_seed_gives_one_runnable_scenario(self):
+        families.KNOWN.update({'entity': {'pig': {'PersistenceRequired': '0b', 'Air': '300s', 'Motion': ['0.0d'] * 3},
+                                          'arrow': {'life': '0s', 'crit': '0b'}},
+                               'block': {'chest': {'Items': []}, 'furnace': {'cooking_time_spent': '0s'}}})
+        for name, family in families.FAMILIES.items():
+            for seed in range(200):
+                scenario = family(random.Random(seed), seed)
+                self.assertEqual(scenario, family(random.Random(seed), seed))
+                self.assertTrue(fuzz.runnable(scenario), (name, seed))
+                self.assertTrue(any(op.get('read') for op in fuzz.render(scenario, 1)), (name, seed))
 
 
 if __name__ == '__main__':
