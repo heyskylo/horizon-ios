@@ -206,7 +206,13 @@ impl Game<'_> {
         // DecoratedPotBlock.getCloneItemStack: createDecoratedPotInstance, the
         // sherds only; the pot's item comes with include_data.
         let pot = &*facts.name == "minecraft:decorated_pot";
-        if (include_data || banner || pot)
+        // CopperGolemStatueBlockEntity.getItem: collectComponents (the golem's
+        // custom name), data or not.
+        let statue = matches!(
+            self.world.block_entities.get(&key),
+            Some(BlockEntity::CopperGolemStatue(_))
+        );
+        if (include_data || banner || pot || statue)
             && let Some(saved) = self.saved_block_entity(key)
         {
             let mut picked = block_entity_item::pick(&saved);

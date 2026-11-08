@@ -399,8 +399,11 @@ pub fn apply_weather(sky: &mut Sky, rain: f32, thunder: f32) {
 pub fn sky_darken(environment: &Environment, day_time: i64, rain: f32, thunder: f32) -> i32 {
     let mut sky = environment.sample(day_time, None, None);
     apply_weather(&mut sky, rain, thunder);
-    // Level.updateSkyBrightness: darkening from the sky light level.
-    (15.0 - 15.0 * sky.sky_light_level).round() as i32
+    // Level.updateSkyBrightness: `(int)(15.0F - skyLightLevel)`, the float
+    // truncated, not rounded (#11323): the darkening steps up only once the
+    // light has fallen a whole level. `sky_light_level` is the attribute as a
+    // fraction of 15, so the product is its raw value in `f32`.
+    (15.0 - 15.0 * sky.sky_light_level) as i32
 }
 
 #[cfg(test)]
