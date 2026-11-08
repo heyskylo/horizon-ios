@@ -3,7 +3,6 @@
 //! sky. The dragon fight itself lives in game/dragon.rs: the podium is
 //! inactive until the dragon dies.
 use super::{Dim, Game};
-use horizon_client::nether_portal::ENTITY_DELAY;
 use horizon_client::{
     Result,
     containers::BlockEntity,
@@ -21,14 +20,8 @@ use horizon_core::{
     position::BlockPos,
     random::{LegacyRandom, RandomSource},
 };
-use horizon_world::nbt::Tag;
 
 use std::{collections::HashMap, sync::Arc};
-
-/// A list of doubles, as an NBT list of them.
-fn doubles(values: [f64; 3]) -> Tag {
-    Tag::List(values.iter().map(|v| Tag::Double(v.to_bits())).collect())
-}
 
 /// `TicketType.PORTAL`'s timeout, in ticks.
 const PORTAL_TICKET: u32 = 300;
@@ -64,12 +57,10 @@ struct GatewayArrival {
 /// What waits at a gateway's exit.
 #[derive(Clone, Debug)]
 enum Arriving {
-    /// An item or a mob, as its saved compound.
-    Saved(Tag),
     /// A thrown ender pearl (projectiles are not saved).
     Pearl(Box<Projectile>),
-    /// A vehicle remains in this level while its destination loads.
-    Vehicle(u32),
+    /// An ordinary entity remains live in this level while its destination loads.
+    Live(u32),
 }
 
 impl GatewayJob {
@@ -362,7 +353,7 @@ impl Game<'_> {
     /// Iris's `endFlashIntensity` and the flash's direction (camera-relative, length 100: the
     /// sprite's centre), for shader packs; no flash outside the End.
     pub(super) fn end_flash_for_pack(&self, partial: f32) -> (f32, glam::Vec3) {
-        if self.dim != Dim::End {
+        if self.dimension_type().skybox != horizon_world::dimension_type::Skybox::End {
             return (0.0, glam::Vec3::ZERO);
         }
         let flash = &self.end.flash;
@@ -378,7 +369,9 @@ impl Game<'_> {
     /// unless Hide Lightning Flashes is on (the sky sprite is not gated), a
     /// third of it under a boss bar's world fog.
     pub(super) fn end_flash_sky(&self, sky: &mut horizon_client::environment::Sky, partial: f64) {
-        if self.dim == Dim::End && !self.settings.file.bool("hideLightningFlashes") {
+        if self.dimension_type().skybox == horizon_world::dimension_type::Skybox::End
+            && !self.settings.file.bool("hideLightningFlashes")
+        {
             let intensity = self.end.flash.intensity(partial as f32);
             sky.sky_light_factor += if self.boss_overlay.should_create_world_fog() {
                 intensity / 3.0
@@ -519,7 +512,7 @@ impl Game<'_> {
     /// End portals, End gateways and the exit portal, once per tick.
     pub(super) fn tick_end(&mut self) -> Result<()> {
         self.end.gateway_cooldown = self.end.gateway_cooldown.saturating_sub(1);
-        if self.dim == Dim::End {
+        if self.dimension_type().has_ender_dragon_fight {
             self.tick_fight();
             self.tick_dragon_fireballs();
         } else {
@@ -531,7 +524,7 @@ impl Game<'_> {
         self.native_joins_flush(false, 0);
         self.tick_crystals();
         self.tick_eyes();
-        if self.dim == Dim::End {
+        if self.dimension_type().skybox == horizon_world::dimension_type::Skybox::End {
             self.end.flash.tick(self.world.game_time);
             if let Some(n) = self.end.flash.sound_in.as_mut() {
                 *n = n.saturating_sub(1);
@@ -542,7 +535,7 @@ impl Game<'_> {
                 }
             }
         }
-        if self.dim == Dim::End {
+        if self.dimension_type().has_ender_dragon_fight {
             self.ensure_exit_portal()?;
         }
         Ok(())
@@ -1486,10 +1479,9 @@ impl Game<'_> {
             .collect();
         let mut present: std::collections::HashSet<u32> = ids.iter().map(|(id, _)| *id).collect();
         // A pearl waiting for its exit keeps its portal cooldown.
-        present.extend(self.end.arrivals.iter().filter_map(|a| match &a.traveller {
-            Arriving::Pearl(p) => Some(p.id),
-            Arriving::Vehicle(id) => Some(*id),
-            Arriving::Saved(_) => None,
+        present.extend(self.end.arrivals.iter().map(|a| match &a.traveller {
+            Arriving::Pearl(p) => p.id,
+            Arriving::Live(id) => *id,
         }));
         self.end.gateways.retain(|id, _| present.contains(id));
         let mut leaving: Vec<(u32, BlockPos)> = Vec::new();
@@ -1511,19 +1503,20 @@ impl Game<'_> {
     }
 
     /// `Entity.teleportToPortalDestination` for an entity that goes through an
-    /// End gateway: a same-level vehicle stays live while the exit loads.
+    /// End gateway: an ordinary same-level entity stays live while the exit loads.
     fn send_through_gateway(&mut self, id: u32, gateway: BlockPos) {
         if matches!(
             self.level_entity(id as i32),
             Some(
-                super::commands::Target::Mob(_)
+                super::commands::Target::Item(_)
+                    | super::commands::Target::Mob(_)
                     | super::commands::Target::Boat(_)
                     | super::commands::Target::Cart(_)
             )
         ) {
             let (job, target) = self.gateway_job([gateway.x, gateway.y, gateway.z]);
             let arrival = GatewayArrival {
-                traveller: Arriving::Vehicle(id),
+                traveller: Arriving::Live(id),
                 job,
                 target,
             };
@@ -1532,21 +1525,7 @@ impl Game<'_> {
             }
             return;
         }
-        let tag = if let Some(i) = self.dropped.iter().position(|e| e.id == id) {
-            let uuid = self.uuid_for(id);
-            let tag = horizon_client::entity_nbt::item_entity_to_nbt_with_items(
-                &self.dropped[i],
-                uuid,
-                self.persist_raw(id),
-                self.items(),
-            );
-            // A gateway keeps the item in its level (teleportSameDimension
-            // moves it): it doesn't leave, so no native_entity_leave_level.
-            self.dropped.remove(i);
-            self.native_leave_skip(id);
-            self.detach_entity(id);
-            tag
-        } else if let Some(i) = self.creatures.projectiles.iter().position(|p| p.id == id) {
+        if let Some(i) = self.creatures.projectiles.iter().position(|p| p.id == id) {
             let pearl = Box::new(self.creatures.projectiles.remove(i));
             self.native_leave_skip(id);
             let (job, target) = self.gateway_job([gateway.x, gateway.y, gateway.z]);
@@ -1559,16 +1538,7 @@ impl Game<'_> {
             if let Some(waiting) = self.arrive_through_gateway(arrival) {
                 self.end.arrivals.push(waiting);
             }
-            return;
-        } else {
-            return;
-        };
-        let (job, target) = self.gateway_job([gateway.x, gateway.y, gateway.z]);
-        self.end.arrivals.push(GatewayArrival {
-            traveller: Arriving::Saved(tag),
-            job,
-            target,
-        });
+        }
     }
 
     /// The entities that reached a gateway's exit: they land where the
@@ -1586,8 +1556,8 @@ impl Game<'_> {
     }
 
     /// `Entity.teleport` of a gateway traveller once its exit's chunk has
-    /// loaded: an item or a mob joins the chunk it lands in, a pearl flies
-    /// on from there. The traveller comes back while it still waits.
+    /// loaded: the ordinary entity moves live and a pearl flies on from there.
+    /// The traveller comes back while it still waits.
     fn arrive_through_gateway(&mut self, arrival: GatewayArrival) -> Option<GatewayArrival> {
         let chunk = |at: Vec3| ((at.x.floor() as i32) >> 4, (at.z.floor() as i32) >> 4);
         if !self.world.chunks.contains_key(&chunk(arrival.target))
@@ -1608,33 +1578,13 @@ impl Game<'_> {
         };
         let key = chunk(at);
         match arrival.traveller {
-            Arriving::Vehicle(id) => {
+            Arriving::Live(id) => {
                 if let Some(target) = self.level_entity(id as i32) {
                     // Entity.teleportSameDimension keeps the live entity and
                     // its motion, and moves every passenger in the same operation.
                     self.teleport_to_in_level(target, [at.x, at.y, at.z], None, false);
                     self.set_portal_cooldown(id);
                     self.place_portal_ticket(key);
-                }
-            }
-            Arriving::Saved(mut tag) => {
-                if let Tag::Compound(c) = &mut tag {
-                    c.insert("Pos".into(), doubles([at.x, at.y, at.z]));
-                    c.insert("Motion".into(), doubles([0.0, 0.0, 0.0]));
-                    // setPortalCooldown before the teleport.
-                    c.insert("PortalCooldown".into(), Tag::Int(ENTITY_DELAY));
-                }
-                // A gateway keeps the entity in its level (teleportSameDimension
-                // moves it, no addDuringTeleport): it doesn't join again.
-                super::persist::mark_moved(&mut tag);
-                match self
-                    .world
-                    .loaded_entities
-                    .iter_mut()
-                    .find(|(k, _)| *k == key)
-                {
-                    Some((_, tags)) => tags.push(tag),
-                    None => self.world.loaded_entities.push((key, vec![tag])),
                 }
             }
             Arriving::Pearl(mut pearl) => {

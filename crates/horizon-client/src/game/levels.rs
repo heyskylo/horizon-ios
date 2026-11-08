@@ -248,7 +248,7 @@ impl Game<'_> {
         let mut world = World::new(self.res.facts().air, self.level.seed);
         world.attachments = save.load_attachments();
         world.shape = self.level_shapes.get(dim.id());
-        world.fast_lava = dim == Dim::Nether;
+        world.fast_lava = self.dimension_type_of(dim).fast_lava;
         let tickets = ChunkTickets::with_saved_portal(save.load_portal_tickets());
         Ok(Parked {
             world,

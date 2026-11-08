@@ -1690,7 +1690,7 @@ impl Game<'_> {
         let slot = match self.maps.slots.show(&id) {
             Some(slot) => slot,
             None => {
-                let (slot, _) = self.maps.slots.claim(id);
+                let (slot, _) = self.maps.slots.claim(id)?;
                 if let Some(m) = self.maps.data.get_mut(&id) {
                     m.texture_dirty = true;
                 }

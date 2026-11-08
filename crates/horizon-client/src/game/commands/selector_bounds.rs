@@ -60,6 +60,11 @@ impl Game<'_> {
                 .iter()
                 .find(|e| e.id == id)
                 .map(|e| extents(e.bounds())),
+            Target::Cushion(id) => self
+                .cushions
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| extents(e.bounds())),
             Target::Crystal(id) => self
                 .crystals
                 .iter()
