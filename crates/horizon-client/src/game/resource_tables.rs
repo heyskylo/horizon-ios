@@ -178,6 +178,31 @@ impl PackResources {
         biomes: Arc<Biomes>,
         light: Arc<LightTables>,
     ) -> Self {
+        // These pack-local resources do not depend on one another. Decode the
+        // images and language map together so a custom-sky pack cannot put all
+        // of the pack assembly on the critical path behind its own files.
+        let (names, clouds, forcefield, custom_sky) = std::thread::scope(|scope| {
+            let names = named_scope(scope, "pack.names", || Names::load(root));
+            let clouds = named_scope(scope, "pack.clouds", || load_clouds(root));
+            let forcefield = named_scope(scope, "pack.forcefield", || load_forcefield(root));
+            let custom_sky = named_scope(scope, "pack.custom_sky", || {
+                horizon_client::custom_sky::CustomSky::load(root)
+            });
+            (
+                names
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                clouds
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                forcefield
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                custom_sky
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+            )
+        });
         Self {
             layer_names: Arc::new(
                 render
@@ -196,10 +221,31 @@ impl PackResources {
             assets,
             render,
             item_renderer: Arc::new(item_renderer),
-            names: Arc::new(Names::load(root)),
-            clouds: Arc::new(load_clouds(root)),
-            forcefield: Arc::new(load_forcefield(root)),
-            custom_sky: Arc::new(horizon_client::custom_sky::CustomSky::load(root)),
+            names: Arc::new(names),
+            clouds: Arc::new(clouds),
+            forcefield: Arc::new(forcefield),
+            custom_sky: Arc::new(custom_sky),
+            environments: pack_environments(root),
+        }
+    }
+}
+
+/// The overworld's, Nether's and End's attribute stacks with the Polytone biome and dimension
+/// modifiers of the packs merged at `root` (#11486); `None` when no pack has any. The overlay
+/// root links the vanilla data the stacks start from.
+fn pack_environments(root: &std::path::Path) -> Option<Arc<[Environment; 3]>> {
+    let modifiers = horizon_client::environment::PackModifiers::read(root);
+    if modifiers.is_empty() {
+        return None;
+    }
+    let load = |d: &str| Environment::load_dimension_with(root, d, &modifiers);
+    match (load("overworld"), load("the_nether"), load("the_end")) {
+        (Ok(o), Ok(n), Ok(e)) => Some(Arc::new([o, n, e])),
+        (o, n, e) => {
+            for error in [o.err(), n.err(), e.err()].into_iter().flatten() {
+                log::warn!("pack environment: {error}");
+            }
+            None
         }
     }
 }

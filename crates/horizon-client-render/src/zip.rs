@@ -17,6 +17,9 @@ use zip::{CompressionMethod, ZipArchive};
 /// The most one entry inflates to: far above any real pack file, but a zip
 /// bomb stops here.
 const MAX_ENTRY: usize = 1 << 30;
+/// The most every entry inflates to together, once per archive: per-entry
+/// limits still let a bomb spend its budget one 1 GiB entry at a time.
+const MAX_TOTAL: usize = 4 << 30;
 
 /// One archive with its entries indexed by name (`\` read as `/`), files
 /// and folders apart.
@@ -27,6 +30,8 @@ pub struct Zip {
     folders: BTreeMap<String, usize>,
     /// The archive's length: no size an entry claims can be bigger.
     len: usize,
+    /// The bytes left for every entry together, drawn down as they are read.
+    budget: AtomicU64,
 }
 fn invalid(e: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, e.to_string())
@@ -147,6 +152,7 @@ impl Zip {
             entries,
             folders,
             len,
+            budget: AtomicU64::new(MAX_TOTAL as u64),
         })
     }
     /// The central directory on, as read at opening: every entry's name, sizes
@@ -172,9 +178,15 @@ impl Zip {
         self.index(name).is_some()
     }
     pub fn read(&self, name: &str) -> io::Result<Vec<u8>> {
+        self.read_within(name, &self.budget)
+    }
+    /// `read`, drawing `budget` down as entries are returned: a per-entry cap
+    /// is not a total one, and a bomb spends its budget one 1 GiB entry at a
+    /// time otherwise.
+    fn read_within(&self, name: &str, budget: &AtomicU64) -> io::Result<Vec<u8>> {
         let (method, raw) = self.raw(name)?;
-        match method {
-            CompressionMethod::Stored => Ok(raw),
+        let bytes = match method {
+            CompressionMethod::Stored => raw,
             CompressionMethod::Deflated => {
                 let mut decoded = Vec::with_capacity(raw.len().min(MAX_ENTRY));
                 inflate(&raw)
@@ -184,10 +196,12 @@ impl Zip {
                 if decoded.len() > MAX_ENTRY {
                     return Err(invalid("entry inflates past the size limit"));
                 }
-                Ok(decoded)
+                decoded
             }
-            _ => Err(invalid("unsupported zip compression")),
-        }
+            _ => return Err(invalid("unsupported zip compression")),
+        };
+        take(budget, bytes.len() as u64)?;
+        Ok(bytes)
     }
     /// What [`Self::read`] reads, written to `out` a piece at a time as it inflates, each piece
     /// taken from `budget`: the bytes left for everything sharing it. Past the budget it stops
@@ -448,6 +462,22 @@ mod tests {
         assert_eq!(zip.read("pack.mcmeta").unwrap(), b"{\"pack\":{}}");
         assert_eq!(zip.read("a/b.txt").unwrap(), b"hello hello hello hello");
         assert!(zip.read("missing").is_err());
+    }
+
+    /// A per-entry cap is not a total one: an archive whose entries together
+    /// inflate past the budget is refused, whatever each entry alone says.
+    #[test]
+    fn entries_share_one_total_inflated_budget() {
+        let zip = Zip::from_bytes(archive()).unwrap();
+        let tight = AtomicU64::new(16);
+        assert!(zip.read_within("a/b.txt", &tight).is_err());
+        let zip = Zip::from_bytes(archive()).unwrap();
+        let tight = AtomicU64::new(12);
+        assert_eq!(
+            zip.read_within("pack.mcmeta", &tight).unwrap(),
+            b"{\"pack\":{}}"
+        );
+        assert!(zip.read_within("a/b.txt", &tight).is_err());
     }
 
     /// The offset of the central-directory header of `name`.

@@ -39,12 +39,15 @@ pub enum Decision<'a> {
     Skip,
 }
 
-/// The game folder's place: inside a modpack's profile, the mod API level of the game, and
-/// whether its native mods may update (no Nightly pin, and a build can follow).
+/// The game folder's place: inside a modpack's profile, the mod API level of the game, whether
+/// its native mods may update (no Nightly pin, and a build can follow), and the Horizon it plays
+/// with the commits its mods turned on pin, when known: a native mod then updates only to a
+/// version that builds there ([`crate::native_fit::best`]).
 pub struct Context {
     pub in_pack: bool,
     pub level: u32,
     pub natives: bool,
+    pub fit: Option<(crate::native_fit::Plays, Vec<(String, String)>)>,
 }
 
 /// What an automatic update did: `Title version` updated, what waits for the player and why,
@@ -93,7 +96,18 @@ pub fn decide<'a>(index: &'a Index, entry: &installed::Entry, ctx: &Context) -> 
     let Some(p) = index.project(&entry.project) else {
         return Decision::Skip;
     };
-    let Some(target) = index.installable(p, GAME, ctx.level) else {
+    let fitting = ctx
+        .fit
+        .as_ref()
+        .filter(|_| p.kind == index::Kind::NativeMod)
+        .and_then(|(plays, pins)| {
+            crate::native_fit::best(p, plays, pins, |v| {
+                v.game == GAME
+                    && v.api_level.is_none_or(|l| l <= ctx.level)
+                    && index.revoked(&p.id, &v.file.sha256).is_none()
+            })
+        });
+    let Some(target) = fitting.or_else(|| index.installable(p, GAME, ctx.level)) else {
         return Decision::Skip;
     };
     // Versions are newest first: only forward, from a version the index still lists.
@@ -268,7 +282,11 @@ pub(super) fn run_with(
     let _lock = crate::browser::lock_home(home);
     recover(home);
     let mut report = Report::default();
+    let picked = super::chosen(home);
     for entry in installed::Installed::load(home).entries {
+        if picked.contains_key(&entry.project) {
+            continue;
+        }
         let Decision::Update(v) = decide(index, &entry, ctx) else {
             continue;
         };

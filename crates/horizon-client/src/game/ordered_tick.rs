@@ -198,7 +198,40 @@ impl Game<'_> {
                     let Some(i) = find_join(&self.orbs, join) else {
                         continue;
                     };
+                    // ExperienceOrb.tick runs scanForMerges before it moves.
+                    // An orb absorbed here is gone before its own turn's
+                    // find_join finds it.
+                    if self.remote.is_none() {
+                        self.merge_orb(i);
+                    }
+                    let Some(i) = find_join(&self.orbs, join) else {
+                        continue;
+                    };
                     let followed = followed.get_or_insert_with(|| self.orb_followed());
+                    let (target, following) = {
+                        let o = &self.orbs[i];
+                        let distance = |feet: &[f64; 3]| -> f64 {
+                            (feet[0] - o.position.x).powi(2)
+                                + (feet[1] - o.position.y).powi(2)
+                                + (feet[2] - o.position.z).powi(2)
+                        };
+                        // ExperienceOrb.tick keeps followingPlayer while they
+                        // stay alive and within 8 blocks (`distanceToSqr`'s
+                        // 64); only a player gone or past that re-picks the
+                        // nearest.
+                        let kept = o
+                            .following
+                            .and_then(|id| followed.iter().find(|c| c.0 == id))
+                            .filter(|c| distance(&c.1) <= 64.0);
+                        let best = kept.or_else(|| {
+                            followed
+                                .iter()
+                                .filter(|c| distance(&c.1) < 64.0)
+                                .min_by(|a, b| distance(&a.1).total_cmp(&distance(&b.1)))
+                        });
+                        (best.map(|c| c.2), best.map(|c| c.0))
+                    };
+                    self.orbs[i].following = following;
                     // A block of slack around the move: gravity and the pull
                     // towards a player change it before it is made.
                     let o = &self.orbs[i];
@@ -211,16 +244,6 @@ impl Game<'_> {
                         })
                         .near(area.inflate(Vec3::new(1.0, 1.0, 1.0)), &mut nearby);
                     let o = &mut self.orbs[i];
-                    let distance = |feet: &[f64; 3]| -> f64 {
-                        (feet[0] - o.position.x).powi(2)
-                            + (feet[1] - o.position.y).powi(2)
-                            + (feet[2] - o.position.z).powi(2)
-                    };
-                    let target = followed
-                        .iter()
-                        .filter(|(feet, _)| distance(feet) < 64.0)
-                        .min_by(|a, b| distance(&a.0).total_cmp(&distance(&b.0)))
-                        .map(|(_, target)| *target);
                     // An orb has no random of its own here: lava draws from one
                     // made on first use, apart from the level stream.
                     let random = &mut self.ordered.lava_random;

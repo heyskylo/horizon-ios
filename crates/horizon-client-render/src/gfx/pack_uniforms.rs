@@ -405,6 +405,8 @@ pub struct FrameUniforms {
     center_depth: Option<f32>,
     /// The pack's shadow settings (7.1).
     pub shadow: Shadow,
+    /// The pack's smoothing half-lives in ticks (`horizon_shaders::HALF_LIVES`).
+    pub half_lives: [Option<f32>; 4],
 }
 
 impl Default for FrameUniforms {
@@ -422,6 +424,7 @@ impl Default for FrameUniforms {
             center_depth_raw: None,
             center_depth: None,
             shadow: Shadow::default(),
+            half_lives: [None; 4],
         }
     }
 }
@@ -734,6 +737,7 @@ impl FrameUniforms {
         *self = Self {
             atlas: self.atlas,
             shadow: std::mem::take(&mut self.shadow),
+            half_lives: self.half_lives,
             ..Self::default()
         };
     }
@@ -798,10 +802,13 @@ impl FrameUniforms {
         // a tenth of a second a tick: Iris 1.11.7 smooths that slowly (measured frame by frame
         // with a probe pack: wetness 60 s rising, 20 s falling; eyeBrightnessSmooth 1 s;
         // centerDepthSmooth 0.1 s).
+        // The pack's `wetnessHalflife`/`drynessHalflife` when it sets them (OptiFine's defaults
+        // otherwise), as for `eyeBrightnessHalflife` and `centerDepthHalflife` below.
+        let [wet, dry, eye_half, depth_half] = self.half_lives;
         let half_life = if inputs.rain > self.wetness {
-            600.0
+            wet.unwrap_or(600.0)
         } else {
-            200.0
+            dry.unwrap_or(200.0)
         };
         self.wetness = smooth(self.wetness, inputs.rain, half_life * SECONDS_A_TICK, dt);
         let eye = inputs.eye_light.map(|l| (l * 16) as f32);
@@ -810,13 +817,18 @@ impl FrameUniforms {
             self.eye_smooth = eye;
         }
         for (smoothed, target) in self.eye_smooth.iter_mut().zip(eye) {
-            *smoothed = smooth(*smoothed, target, 10.0 * SECONDS_A_TICK, dt);
+            *smoothed = smooth(
+                *smoothed,
+                target,
+                eye_half.unwrap_or(10.0) * SECONDS_A_TICK,
+                dt,
+            );
         }
         // `centerDepthHalflife`'s default, 1 tick (OptiFine's shaders.txt); the first value
         // read back is taken as it is.
         if let Some(raw) = self.center_depth_raw {
             self.center_depth = Some(match self.center_depth {
-                Some(v) => smooth(v, raw, SECONDS_A_TICK, dt),
+                Some(v) => smooth(v, raw, depth_half.unwrap_or(1.0) * SECONDS_A_TICK, dt),
                 None => raw,
             });
         }
@@ -1260,10 +1272,12 @@ mod tests {
             format!(r#"{{"attributes": {attributes}}}"#),
         )
         .unwrap();
-        let environment =
-            crate::environment::Environment::load_dimension(&root, name, false).unwrap();
+        let environment = crate::environment::Environment::load_dimension(&root, name).unwrap();
         std::fs::remove_dir_all(&root).unwrap();
-        environment.sample(6000, None, None)
+        environment.sample(&crate::environment::Sample {
+            day_time: 6000,
+            ..Default::default()
+        })
     }
 
     #[test]
@@ -2218,22 +2232,33 @@ pub(super) mod initial_history_tests {
         let hud = HudBatch::new([800, 450]);
         let f = frame(&hud);
         let mut u = FrameUniforms::default();
-        // The next frame comes `seconds` after the last (and a few microseconds of the test).
-        let after = |u: &mut FrameUniforms, seconds: f32| {
-            u.last = Some(std::time::Instant::now() - std::time::Duration::from_secs_f32(seconds));
+        // A scripted clock: the next frame comes exactly `seconds` after the last, however long
+        // the test itself takes (a wall-clock gap of a millisecond moved centerDepthSmooth by
+        // more than the tolerance on a busy CI runner).
+        let mut counter = 1;
+        let mut elapsed = 0.0;
+        let mut after = |input: &mut PackInputs, seconds: f32| {
+            counter += 1;
+            elapsed += seconds;
+            input.frame_timing = Some(FrameTiming {
+                counter,
+                elapsed,
+                delta: seconds,
+            });
         };
         let mut input = PackInputs {
             eye_light: [0, 15],
+            frame_timing: Some(FrameTiming::nth(1, 0.0)),
             ..Default::default()
         };
         u.center_depth_raw = Some(1.0);
         u.update(&f, &input, [800, 450]);
         input.eye_light = [0, 0];
         u.center_depth_raw = Some(0.0);
-        after(&mut u, 0.1);
+        after(&mut input, 0.1);
         u.update(&f, &input, [800, 450]);
         assert!((float(&u, "centerDepthSmooth")[0] - 0.5).abs() < 1e-3);
-        after(&mut u, 0.6);
+        after(&mut input, 0.6);
         u.update(&f, &input, [800, 450]);
         // 240 falling toward 0 for 0.7 s: 147.8, read as 147.
         match u.values[index("eyeBrightnessSmooth").unwrap()] {
@@ -2241,11 +2266,46 @@ pub(super) mod initial_history_tests {
             _ => panic!("integer uniform expected"),
         }
         input.rain = 1.0;
-        after(&mut u, 60.0);
+        after(&mut input, 60.0);
         u.update(&f, &input, [800, 450]);
         assert!((float(&u, "wetness")[0] - 0.5).abs() < 1e-3);
         input.rain = 0.0;
-        after(&mut u, 20.0);
+        after(&mut input, 20.0);
+        u.update(&f, &input, [800, 450]);
+        assert!((float(&u, "wetness")[0] - 0.25).abs() < 1e-3);
+    }
+
+    /// A pack's `const float wetnessHalflife = 30.0;` (and its dryness) replace the defaults:
+    /// wetness reaches half the rain in 3 s instead of 60 s.
+    #[test]
+    fn a_pack_s_half_lives_replace_the_defaults() {
+        let hud = HudBatch::new([800, 450]);
+        let f = frame(&hud);
+        let mut u = FrameUniforms {
+            half_lives: [Some(30.0), Some(10.0), None, None],
+            ..Default::default()
+        };
+        // A scripted clock, as in `smoothed_uniforms_take_iris_half_lives`: the wall clock's gap
+        // between two updates is not exact on a busy runner.
+        let mut input = PackInputs {
+            frame_timing: Some(FrameTiming::nth(1, 0.0)),
+            ..Default::default()
+        };
+        u.update(&f, &input, [800, 450]);
+        input.rain = 1.0;
+        input.frame_timing = Some(FrameTiming {
+            counter: 2,
+            elapsed: 3.0,
+            delta: 3.0,
+        });
+        u.update(&f, &input, [800, 450]);
+        assert!((float(&u, "wetness")[0] - 0.5).abs() < 1e-3);
+        input.rain = 0.0;
+        input.frame_timing = Some(FrameTiming {
+            counter: 3,
+            elapsed: 4.0,
+            delta: 1.0,
+        });
         u.update(&f, &input, [800, 450]);
         assert!((float(&u, "wetness")[0] - 0.25).abs() < 1e-3);
     }

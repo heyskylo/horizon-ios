@@ -11,6 +11,7 @@
 mod attributes;
 pub mod expr;
 mod modifiers;
+pub mod pack;
 mod target;
 
 pub use attributes::{Argument, Attributes, Layer, Modifier, normalize_attribute};

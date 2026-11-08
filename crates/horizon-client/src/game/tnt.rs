@@ -56,7 +56,8 @@ impl PrimedTnt {
         )
     }
 
-    pub(super) const SIZE: f64 = 0.98;
+    /// `EntityTypes.TNT`'s `sized(0.98F, 0.98F)`, widened from the float.
+    pub(super) const SIZE: f64 = 0.98_f32 as f64;
     pub(super) fn bounds(&self) -> Aabb {
         let h = Self::SIZE / 2.0;
         Aabb::new(
@@ -860,10 +861,11 @@ mod tests {
 
     #[test]
     fn a_rider_sits_on_top_of_the_tnt_less_its_own_attachment() {
-        // 64 + 0.98 (the box's top) - 0.14 (a rider's vehicle attachment).
+        // 64 + 0.98F (the box's top, `EntityAttachment.PASSENGER` at its
+        // height) - 0.14 (a rider's vehicle attachment).
         let seat = tnt_seat(Vec3::new(1.5, 64.0, -2.5), 0.14);
         assert_eq!((seat.x, seat.z), (1.5, -2.5));
-        assert!((seat.y - 64.84).abs() < 1e-9);
+        assert!((seat.y - (64.0 + f64::from(0.98_f32) - 0.14)).abs() < 1e-9);
     }
 
     #[test]

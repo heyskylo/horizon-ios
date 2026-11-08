@@ -101,12 +101,16 @@ def main():
     parser.add_argument('--vehicle-kill-diagnostic', action='store_true',
                         help='retain random drop UUID/motion and whole vehicle bodies outside the explicit-content gate')
     parser.add_argument('--only', help='run only corpus groups whose name contains this')
+    parser.add_argument('--vehicle-container-diagnostic', action='store_true',
+                        help='retain all vehicle Tags-list and whole-body observations outside the saved-field gate')
     parser.add_argument('--array-storage-diagnostic', action='store_true',
                         help='run all numeric-array edit cases, including the known wildcard/string storage side effects')
     parser.add_argument('--sulfur-power-load-diagnostic', action='store_true',
                         help='retain the immediate-load powered sulfur cube H249 diagnostic')
     parser.add_argument('--merchant-gate-fixture', action='store_true')
     parser.add_argument('--binary', type=Path, help='use an already built Horizon game instead of building it')
+    parser.add_argument('--hurt-cooldown-incoming-fixture', action='store_true',
+                        help='a mob hurt cooldown compares the incoming damage before its reductions (H248)')
     parser.add_argument('--level-world-border-fixture', action='store_true',
                         help='each builtin level keeps its own world border (H260)')
     parser.add_argument('--slot-codec-diagnostic', action='store_true',
@@ -155,6 +159,17 @@ def main():
     parser.add_argument("--macro-source-type-fixture", action="store_true")
     parser.add_argument("--stand-fall-fixture", action="store_true")
     parser.add_argument('--orb-uuid-fixture', action='store_true')
+    parser.add_argument('--baby-modifier-fixture', action='store_true', help='/attribute add and remove of a zombie\'s transient minecraft:baby modifier')
+    parser.add_argument('--baby-modifier-raw-diagnostic', action='store_true', help='add the whole attributes lists and entity data')
+    parser.add_argument('--mob-attribute-save-fixture', action='store_true', help='which attribute instances a pig, allay and armor stand save before and after a tick')
+    parser.add_argument('--mob-attribute-save-raw-diagnostic', action='store_true', help='add the whole attributes lists and entity data')
+    parser.add_argument('--mob-inventory-merge-fixture', action='store_true', help='Piglin and Villager saved inventories loaded as SimpleContainer.addItem does')
+    parser.add_argument('--mob-inventory-merge-raw-diagnostic', action='store_true', help='add each mob\'s whole entity data')
+    parser.add_argument('--summon-passengers-fixture', action='store_true', help='summon trees with Passengers entries vanilla cannot load')
+    parser.add_argument('--summon-passengers-raw-diagnostic', action='store_true', help='add each parent\'s whole entity data')
+    parser.add_argument('--summon-uuid-fixture', action='store_true', help='summon trees whose UUIDs a live entity holds')
+    parser.add_argument('--summon-uuid-internal-diagnostic', action='store_true', help='add the trees with duplicate UUIDs inside them (known gap)')
+    parser.add_argument('--summon-uuid-raw-diagnostic', action='store_true', help='add each member\'s whole entity data')
     parser.add_argument('--mob-absorption-max-fixture', action='store_true', help='a mob\'s max_absorption with Absorption added, upgraded, cleared and run out')
     parser.add_argument('--mob-absorption-max-ops-fixture', action='store_true', help='the Absorption modifier among other max_absorption operations and the range clamp')
     parser.add_argument('--mob-absorption-max-raw-diagnostic', action='store_true', help='add each mob\'s whole entity data')
@@ -199,9 +214,20 @@ def main():
 
     groups = corpus_module.groups()
     if not args.only:
+        groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_BOAT_TREE]
+    if not args.only:
+        groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_EFFECTIVE_PRESENCE]
+    if not args.only:
         groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_FUNCTION_FEEDBACK]
     if not args.only:
         groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_JUKEBOX_CLOCK]
+    if args.vehicle_container_diagnostic:
+        try:
+            from .vehicle_container_corpus import vehicle_containers
+        except ImportError:
+            from vehicle_container_corpus import vehicle_containers
+        groups = [(name, vehicle_containers(corpus_module.cmd, diagnostic=True)
+                   if name == 'vehicle container saved fields' else ops) for name, ops in groups]
     if args.macro_source_type_fixture or args.only == "macro source type error":
         groups = [(name, ops) for name, ops in groups if name == "macro source type error"]
     elif not args.only:
@@ -283,6 +309,12 @@ def main():
     if args.sulfur_power_load_diagnostic:
         groups = [('setup', corpus_module.group_setup()),
                   ('sulfur powered-load diagnostic', corpus_module.sulfur_cube_fuse_ticks(True))]
+    if args.hurt_cooldown_incoming_fixture:
+        try:
+            from .hurt_cooldown_incoming_corpus import hurt_cooldown_incoming
+        except ImportError:
+            from hurt_cooldown_incoming_corpus import hurt_cooldown_incoming
+        groups = [('setup', corpus_module.group_setup()), ('hurt cooldown incoming', hurt_cooldown_incoming())]
     if args.level_world_border_fixture:
         try:
             from .level_world_border_corpus import level_world_border
@@ -352,6 +384,14 @@ def main():
         groups = [("pufferfish player contact", contact_fixture(args.pufferfish_body_diagnostic))]
     if args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
+    if args.only in corpus_module.ISOLATED_BOAT_TREE:
+        groups = [g for g in groups if g[0] == args.only]
+    if any(n in corpus_module.ISOLATED_BOAT_TREE for n,_ in groups) and len(groups) != 1:
+        parser.error('boat tree fixture requires exact --only group')
+    if args.only in corpus_module.ISOLATED_EFFECTIVE_PRESENCE:
+        groups = [g for g in groups if g[0] == args.only]
+    if any(n in corpus_module.ISOLATED_EFFECTIVE_PRESENCE for n, _ in groups) and len(groups) != 1:
+        parser.error('effective presence fixture requires exact --only group')
     if args.only in corpus_module.ISOLATED_FUNCTION_FEEDBACK:
         groups = [g for g in groups if g[0] == args.only]
     if args.only in corpus_module.ISOLATED_JUKEBOX_CLOCK:
@@ -377,6 +417,21 @@ def main():
     if args.selector_bounds_fixture:
         from selector_bounds_corpus import selector_bounds
         groups = [("setup", corpus_module.group_setup()), ("selector entity bounds", selector_bounds())]
+    if args.baby_modifier_fixture:
+        from baby_modifier_corpus import baby_modifier
+        groups = [('setup', corpus_module.group_setup()), ('baby modifier mutation', baby_modifier(args.baby_modifier_raw_diagnostic))]
+    if args.mob_attribute_save_fixture:
+        from mob_attribute_save_corpus import mob_attribute_save
+        groups = [('setup', corpus_module.group_setup()), ('mob attribute save', mob_attribute_save(args.mob_attribute_save_raw_diagnostic))]
+    if args.mob_inventory_merge_fixture:
+        from mob_inventory_merge_corpus import mob_inventory_merge
+        groups = [('setup', corpus_module.group_setup()), ('mob inventory merge', mob_inventory_merge(args.mob_inventory_merge_raw_diagnostic))]
+    if args.summon_passengers_fixture:
+        from summon_passengers_corpus import summon_passengers
+        groups = [('setup', corpus_module.group_setup()), ('summon invalid passengers', summon_passengers(args.summon_passengers_raw_diagnostic))]
+    if args.summon_uuid_fixture:
+        from summon_uuid_corpus import summon_uuid
+        groups = [('setup', corpus_module.group_setup()), ('summon UUID conflicts', summon_uuid(args.summon_uuid_raw_diagnostic, args.summon_uuid_internal_diagnostic))]
     if args.mob_absorption_max_fixture:
         from mob_absorption_max_corpus import mob_absorption_max
         groups = [('setup', corpus_module.group_setup()), ('mob absorption maximum', mob_absorption_max(args.mob_absorption_max_raw_diagnostic))]
