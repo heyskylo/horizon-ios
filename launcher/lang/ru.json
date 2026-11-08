@@ -1257,5 +1257,8 @@
   "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon выполняет функции, теги функций, предикаты, модификаторы предметов, рецепты, таблицы добычи, достижения, обмены жителей, типы урона, большинство тегов и большую часть генерации мира (биомы, особенности, структуры, измерения) из датапака. Остальные файлы, например пресеты мира, пока не читаются.",
   "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} пока ничего не изменит в Horizon: Horizon ещё не читает его {files}.",
   "{mod}: using version {version}, made for the Horizon you play": "{mod}: используется версия {version}, сделанная для Horizon, в который ты играешь",
-  "Recommended": "Рекомендуется"
+  "Recommended": "Рекомендуется",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "Более старая версия, {version}, собирается на Horizon, в который ты играешь: установка выбирает её",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: версия {version} не собралась, пробуем {older}",
+  "Use recommended (kept at {version})": "Использовать рекомендуемую (закреплена {version})"
 }

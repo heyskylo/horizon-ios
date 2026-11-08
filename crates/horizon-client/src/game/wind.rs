@@ -175,8 +175,7 @@ impl Game<'_> {
                     self.last_hurt_by_player.insert(id, self.lan_acting);
                 }
                 if hurt {
-                    let charge = "minecraft:wind_charge";
-                    self.shot_post_attack(p, who, charge, charge);
+                    self.shot_post_attack(p, who, p.kind.id(), "minecraft:wind_charge");
                 }
             }
         }

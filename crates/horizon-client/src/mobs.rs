@@ -1417,22 +1417,31 @@ fn totem_death_effects() -> Vec<crate::items::ConsumeEffect> {
     ]
 }
 
-/// How far the boxes of a set of mobs reach from their positions: the widest half width and the
-/// tallest height among them. A box query over many mobs (a vehicle's, against every mob of the
-/// level) tests each mob's position against this first, and works out the box ([`Mob::bounds`],
-/// which reads the mob's whole size) only for the mobs whose position comes close.
+/// How far the boxes of a set of mobs reach from their positions: the widest reach sideways, below
+/// and above among them, worked out from each mob's real box ([`Mob::bounds`]: a shulker's grows
+/// toward its open lid, sideways or below its position). A box query over many mobs (a vehicle's,
+/// against every mob of the level) tests each mob's position against this first, and works out the
+/// box only for the mobs whose position comes close.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BoxReach {
     half_width: f64,
+    below: f64,
     height: f64,
 }
 impl BoxReach {
     pub fn of(mobs: &[Mob]) -> Self {
         mobs.iter().fold(Self::default(), |r, m| {
-            let (width, height, _) = m.dims();
+            let (b, p) = (m.bounds(), m.position);
+            let (lo, hi) = (b.min_position(), b.max_position());
             Self {
-                half_width: r.half_width.max(width / 2.0),
-                height: r.height.max(height),
+                half_width: r
+                    .half_width
+                    .max(p.x - lo.x)
+                    .max(hi.x - p.x)
+                    .max(p.z - lo.z)
+                    .max(hi.z - p.z),
+                below: r.below.max(p.y - lo.y),
+                height: r.height.max(hi.y - p.y),
             }
         })
     }
@@ -1445,7 +1454,7 @@ impl BoxReach {
             && p.x + self.half_width >= lo.x
             && p.z - self.half_width <= hi.z
             && p.z + self.half_width >= lo.z
-            && p.y <= hi.y
+            && p.y - self.below <= hi.y
             && p.y + self.height >= lo.y
     }
 }
@@ -1904,6 +1913,14 @@ pub enum MobEvent {
         target: Who,
         delta: [f64; 3],
     },
+    /// `Shulker.onPeekAmountChange` for the entities kept outside the mob
+    /// list: the opening lid of `shulker` moves every armor stand with
+    /// physics whose box meets `area` (the box the lid swept) by `delta`.
+    LidPush {
+        shulker: u32,
+        area: Aabb,
+        delta: [f64; 3],
+    },
     /// `EvokerWololoSpellGoal`: a blue sheep turns red.
     Wololo {
         mob: u32,
@@ -1945,7 +1962,14 @@ pub enum MobEvent {
         ambient: Vec<&'static str>,
         color: u32,
     },
-    /// Melee or ranged damage to another mob.
+    /// Damage that bypasses `EnchantmentHelper.doPostAttackEffects` (roars,
+    /// beams, retaliation and hot-cube contact).
+    DamageMob {
+        target: u32,
+        amount: f32,
+        source: Damage,
+    },
+    /// An attack that runs post-attack effects when the hit lands.
     AttackMob {
         target: u32,
         amount: f32,
@@ -3433,6 +3457,10 @@ impl Mob {
     }
     /// `Entity.makeBoundingBox(position)`.
     pub fn bounds_at(&self, position: Vec3) -> Aabb {
+        // Shulker.makeBoundingBox: the lid's lift, not the dimensions.
+        if self.kind.species == Species::Shulker {
+            return shulker::bounds_at(self, position);
+        }
         // `width()` and `height()` in one `dims()`: every box asked for (each
         // collision, push and cart test) read the whole size twice.
         let (width, height, _) = self.dims();

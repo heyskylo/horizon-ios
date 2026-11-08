@@ -260,6 +260,15 @@ impl WorldRequest {
             level.dimension = d.clone();
             level.position = None;
         }
+        // The bounded registry-loader leaf slice: fail world preparation before streaming,
+        // rather than letting the flat-generator fallback swallow a selected pack's codec error.
+        let (overrides, _) = worldgen_overrides_of(
+            &save_root,
+            &options.resources,
+            res.biomes(),
+            &level.enabled_features,
+        );
+        overrides.validate_fill_layers(pack.assets.registry)?;
         let dim = Dim::from_id(&level.dimension);
         let shapes = level_shapes(&save_root, res.biomes());
         let shape = shapes.get(dim.id());
@@ -943,5 +952,213 @@ mod tests {
     fn prepared_world_can_cross_threads() {
         fn send<T: Send>() {}
         send::<PreparedWorld>();
+    }
+}
+
+#[cfg(test)]
+mod unused_feature_startup_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires prepared resources and scratch homes/cwd"]
+    fn actual_world_prepare_rejects_unused_invalid_feature() {
+        let resources = PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            resources.clone(),
+            None,
+            &resources,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = resources;
+        options.execution_role = execution_role::ExecutionRole::IntegratedServer;
+        for (case, height) in [("valid", 0), ("invalid", -1)] {
+            let root = std::env::current_dir().unwrap().join(case);
+            let pack = root.join("datapacks/h259");
+            std::fs::create_dir_all(pack.join("data/h259/worldgen/feature")).unwrap();
+            std::fs::write(pack.join("pack.mcmeta"), r#"{"pack":{"description":"H259 unused feature","min_format":[121,0],"max_format":[121,0]}}"#).unwrap();
+            let json = format!(
+                r#"{{"type":"minecraft:fill_layer","height":{height},"state":"minecraft:stone"}}"#
+            );
+            std::fs::write(
+                pack.join("data/h259/worldgen/feature/unused_probe.json"),
+                &json,
+            )
+            .unwrap();
+            let mut level = Level {
+                seed: 259,
+                data_packs: Some((vec!["vanilla".into(), "file/h259".into()], vec![])),
+                ..Level::default()
+            };
+            level.write(&root).unwrap();
+            horizon_client::save::write_world_gen_settings(
+                &root,
+                259,
+                horizon_client::save::WorldGen {
+                    preset: horizon_client::save::WorldPreset::Flat,
+                    structures: false,
+                    bonus_chest: false,
+                },
+            )
+            .unwrap();
+            let (overrides, _) = worldgen_overrides_of(
+                &root,
+                &options.resources,
+                loaded.resources.biomes(),
+                &level.enabled_features,
+            );
+            assert_eq!(
+                overrides
+                    .entries("features")
+                    .find(|(id, _)| *id == "h259:unused_probe")
+                    .unwrap()
+                    .1,
+                json
+            );
+            assert!(overrides.entries("placed_features").next().is_none());
+            assert_eq!(
+                horizon_client::save::WorldGen::read(&root).unwrap().preset,
+                horizon_client::save::WorldPreset::Flat
+            );
+            let request = WorldRequest {
+                save_root: root,
+                folder: case.into(),
+                name: None,
+                seed: Some(259),
+                creative: false,
+                create: None,
+                owner: None,
+            };
+            let result = request.prepare(
+                &loaded.resources,
+                &loaded.pack,
+                &options,
+                &settings,
+                &horizon_world::datafix::progress::UpgradeProgress::new(),
+            );
+            if height == 0 {
+                assert!(result.is_ok(), "valid unused registry entry must prepare");
+                drop(result);
+            } else {
+                let error = match result {
+                    Ok(_) => panic!(
+                        "unused invalid h259:unused_probe was accepted by actual world preparation"
+                    ),
+                    Err(error) => error.to_string(),
+                };
+                assert!(error.contains("h259:unused_probe"), "{error}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod unused_feature_preservation_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires prepared resources and scratch homes/cwd"]
+    fn startup_leaf_preservation_other_id_and_unrelated_feature() {
+        let resources = PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            resources.clone(),
+            None,
+            &resources,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = resources;
+        options.execution_role = execution_role::ExecutionRole::IntegratedServer;
+        let root = std::env::current_dir().unwrap().join("preservation");
+        let pack = root.join("datapacks/h259");
+        let entries = pack.join("data/controls/worldgen/feature");
+        std::fs::create_dir_all(&entries).unwrap();
+        std::fs::write(pack.join("pack.mcmeta"), r#"{"pack":{"description":"H259 preservation controls","min_format":[121,0],"max_format":[121,0]}}"#).unwrap();
+        let leaf = r#"{"type":"minecraft:fill_layer","height":1,"state":"minecraft:stone"}"#;
+        let unrelated = r#"{"type":"minecraft:no_op"}"#;
+        std::fs::write(entries.join("another_id.json"), leaf).unwrap();
+        std::fs::write(entries.join("unrelated.json"), unrelated).unwrap();
+        let mut level = Level {
+            seed: 259,
+            data_packs: Some((vec!["vanilla".into(), "file/h259".into()], vec![])),
+            ..Level::default()
+        };
+        level.write(&root).unwrap();
+        horizon_client::save::write_world_gen_settings(
+            &root,
+            259,
+            horizon_client::save::WorldGen {
+                preset: horizon_client::save::WorldPreset::Flat,
+                structures: false,
+                bonus_chest: false,
+            },
+        )
+        .unwrap();
+        let (mut overrides, _) = worldgen_overrides_of(
+            &root,
+            &options.resources,
+            loaded.resources.biomes(),
+            &level.enabled_features,
+        );
+        assert_eq!(
+            overrides.entries("features").collect::<Vec<_>>(),
+            vec![
+                ("controls:another_id", leaf),
+                ("controls:unrelated", unrelated),
+            ]
+        );
+        // Labeled native preservation controls, not additional Java runtime coverage.
+        overrides
+            .validate_fill_layers(loaded.pack.assets.registry)
+            .unwrap();
+        // The existing winning-entry map still owns precedence, not the validation phase.
+        overrides.set(
+            "features",
+            "controls:another_id",
+            r#"{"type":"minecraft:fill_layer","height":-1,"state":"minecraft:stone"}"#.into(),
+        );
+        let error = overrides
+            .validate_fill_layers(loaded.pack.assets.registry)
+            .unwrap_err();
+        assert!(error.to_string().contains("controls:another_id"));
+        overrides.set("features", "controls:another_id", leaf.into());
+        overrides
+            .validate_fill_layers(loaded.pack.assets.registry)
+            .unwrap();
+        let request = WorldRequest {
+            save_root: root,
+            folder: "preservation".into(),
+            name: None,
+            seed: Some(259),
+            creative: false,
+            create: None,
+            owner: None,
+        };
+        assert!(
+            request
+                .prepare(
+                    &loaded.resources,
+                    &loaded.pack,
+                    &options,
+                    &settings,
+                    &horizon_world::datafix::progress::UpgradeProgress::new(),
+                )
+                .is_ok(),
+            "preservation: other-id leaf and unrelated no_op must still prepare"
+        );
     }
 }

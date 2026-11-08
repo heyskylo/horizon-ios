@@ -450,12 +450,13 @@ impl Game<'_> {
         }
         if let Some(a) = self.armor_stands.iter().find(|a| a.id == vehicle) {
             // ArmorStand.getDefaultDimensions: a marker has no box to sit on.
+            // The passenger point is the float height widened to double.
             let height = if a.marker {
                 0.0
             } else if a.small {
-                0.9875
+                f64::from(0.9875_f32)
             } else {
-                1.975
+                f64::from(1.975_f32)
             };
             let at = if let Some(parent) = a.vehicle {
                 self.passenger_riding_position_inner(parent, me, own_seat, index, path)?
