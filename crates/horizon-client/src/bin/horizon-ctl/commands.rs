@@ -465,7 +465,7 @@ pub const COMMANDS: &[Cmd] = &[
         ["horizon-ctl hunt 90", "horizon-ctl hunt 90 --timeout 60"],
         &[p("id", Ty::Int, "entity id from entities"), flag("timeout", Ty::Num, "give up after this many seconds (default 30)")], mcp: true, local: true),
     cmd!("collect", Act, "collect [RADIUS]", "walk over every dropped item within RADIUS blocks (default 8) to pick it up",
-        "Drops from break, hunt or a death often land out of pickup range, in a hole or behind a corner. collect walks to each item nearest first, trying each once, and replies with inventory_change and left: the items it could not reach.",
+        "Drops from break, hunt or a death often land out of pickup range, in a hole or behind a corner. collect walks to each item nearest first, trying each once, and replies with inventory_change and left: the items it could not reach (with why, the walk's error, when it had one). It stops with kind hurt, listing the hurt events, as soon as the player takes damage.",
         ["horizon-ctl collect", "horizon-ctl collect 16"],
         &[opt("radius", Ty::Num, "search radius in blocks (default 8)")], mcp: true, local: true),
     cmd!("hold", Act, "hold KEY SECONDS", "press a key, wait, release it", "Keys as for key.", ["horizon-ctl hold w 2"],

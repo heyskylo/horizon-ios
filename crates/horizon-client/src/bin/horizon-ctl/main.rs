@@ -259,6 +259,10 @@ impl Session {
     /// `collect [RADIUS]`: walk over every dropped item within RADIUS, nearest first.
     fn collect(&mut self, radius: f64) -> Result<Value, Failure> {
         let before = self.game("inventory")?;
+        // Only the newest sequence number: events after it are this walk's.
+        let mut seq = self.game("events --since 18446744073709551615")?["last"]
+            .as_u64()
+            .unwrap_or_default();
         let mut tried = Vec::new();
         let mut left = Vec::new();
         // Each item is tried once; one that stays put after a walk is out of reach.
@@ -266,14 +270,35 @@ impl Session {
             let id = item["id"].as_i64().unwrap_or_default();
             tried.push(id);
             let pos = &item["pos"];
-            let _ = self.game(&format!(
+            let walk = self.game(&format!(
                 "goto {} {} {} --near 0.4 --timeout 4",
                 pos[0], pos[1], pos[2]
             ));
             self.game("wait 4")?;
             let near = self.game(&format!("entities {radius}"))?;
-            if let Some(still) = find_entity(&near, id) {
+            if let Some(mut still) = find_entity(&near, id) {
+                if let Err(e) = walk {
+                    still["why"] = e.reply["error"].clone();
+                }
                 left.push(still);
+            }
+            // Stop when something hurts the player: walking on into a mob,
+            // a creeper or lava kills an agent that only reads the reply.
+            let events = self.game(&format!("events --since {seq}"))?;
+            seq = events["last"].as_u64().unwrap_or(seq);
+            let hurt = hurts(&events);
+            if !hurt.is_empty() {
+                let after = self.game("inventory")?;
+                return Err(Failure {
+                    reply: json!({
+                        "error": "stopped: the player was hurt",
+                        "kind": "hurt",
+                        "hurt": hurt,
+                        "inventory_change": count_change(&before["counts"], &after["counts"]),
+                        "left": left,
+                    }),
+                    status: GAME_ERROR,
+                });
             }
         }
         let after = self.game("inventory")?;
@@ -466,6 +491,12 @@ fn nearest_item(reply: &Value, skip: &[i64]) -> Option<Value> {
         .iter()
         .find(|e| e["kind"] == "item" && !e["id"].as_i64().is_some_and(|id| skip.contains(&id)))
         .cloned()
+}
+
+/// The `hurt` events in an `events` reply.
+fn hurts(reply: &Value) -> Vec<Value> {
+    let events = reply["events"].as_array().map(Vec::as_slice).unwrap_or_default();
+    events.iter().filter(|e| e["event"] == "hurt").cloned().collect()
 }
 
 /// Item counts that changed from `before` to `after` (`inventory` replies' `counts`).
@@ -829,6 +860,17 @@ mod tests {
         assert_eq!(find_entity(&near, 90).unwrap()["type"], "minecraft:chicken");
         assert!(find_entity(&near, 7).is_none());
         assert!(find_entity(&json!({}), 90).is_none());
+    }
+
+    #[test]
+    fn hurts_keeps_only_hurt_events() {
+        let reply = json!({ "events": [
+            { "event": "item", "seq": 1 },
+            { "event": "hurt", "amount": 3.0, "seq": 2 },
+            { "event": "heal", "seq": 3 },
+        ], "last": 3 });
+        assert_eq!(hurts(&reply), vec![json!({ "event": "hurt", "amount": 3.0, "seq": 2 })]);
+        assert!(hurts(&json!({})).is_empty());
     }
 
     #[test]
