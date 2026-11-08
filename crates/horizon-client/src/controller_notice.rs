@@ -127,7 +127,7 @@ impl NoticeSlot {
         let max = (w - 24.0).min(260.0);
         let glyph = notice.glyph.map(|g| (g, pad_glyph::width(atlas, g) + 4.0));
         let indent = glyph.map_or(0.0, |g| g.1);
-        let lines = crate::split_profiles::wrap(&notice.body, max - indent, width);
+        let lines = crate::hud_kit::fit::wrap(&notice.body, max - indent, width);
         let inner = lines
             .iter()
             .map(|l| width(l) + indent)

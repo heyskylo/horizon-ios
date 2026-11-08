@@ -70,7 +70,7 @@ pub fn collapsed(atlas: &HudAtlas, names: &[String], selected: usize, area: [f32
     let arrow_w = atlas.font.width("‹").max(atlas.font.width("›"));
     let room = (w - 2.0 * (arrow_w + ARROW_GAP)).max(0.0);
     let name = names.get(selected).map_or("", String::as_str);
-    let label = crate::graphics_style::fit(atlas, name, room);
+    let label = crate::graphics_style::fit(atlas, name, room).into_owned();
     let label_w = atlas.font.width(&label).ceil();
     let left = (centre - label_w / 2.0).floor();
     let arrows = [

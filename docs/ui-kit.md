@@ -17,6 +17,7 @@ The kit grows a piece at a time, each with something on screen that needs it:
 | `hud_kit::room` | `Room`: what of a view an overlay may use, clear of vanilla's boss bars |
 | `hud_kit::plate` | `Plate`: the box behind a notice's text |
 | `pad_glyph`, with `GlyphOf` and `MenuJob` in `gamepad.rs` | `Glyph`: a controller button, asked for by what it does, in the player's `Glyphs` |
+| `hud_kit::fit` | `ellipsize`, `wrap`, `chord` and `fit_in_circle`: text cut or wrapped to the room it has |
 | `settings_shell` | `Shell`: a searchable settings screen (Extras, Graphics, Controller Settings) a `Screen` describes; it draws and drives it, binding rows included |
 | `hud_kit::tabs` | `collapsed`: a page list in one row, `‹ Name ›` with a pip per page |
 
@@ -135,6 +136,35 @@ family.
   `pad connection connected nintendo` raises a Nintendo pad's notice. With `nintendoLetters:true` in
   the seeded `horizon-controller.txt`, that is letter mode with no real pad (`tools/pad_menu_e2e.py`,
   `nintendo_letters`). `pad status` lists each declared glyph's part (`button`), `label` and `sprite`.
+
+## Fitting text
+
+`hud_kit::fit` cuts, wraps and fits text for Horizon's own overlays and settings. Widths are GUI px
+in the HUD atlas's font (`Font::width`), so what fits is what draws. Vanilla's screens keep their
+own cutting (`screen_draw::clip`) and sliding labels (`scrolling_text`).
+
+| Function | What it does |
+|---|---|
+| `ellipsize(atlas, text, width) -> Cow<str>` | `text` itself when it fits; else its longest start that fits with `...` after it, trailing spaces dropped. One walk over the characters for plain text; text with `§` codes or right-to-left characters is measured whole at each length |
+| `wrap(text, max, width_fn) -> Vec<String>` | lines no wider than `max`, broken between words; a word wider than `max` keeps a line of its own |
+| `chord(r, dy)` | how wide a circle of radius `r` is `dy` from its centre: `2 * sqrt(r² - dy²)`, 0 past its edge |
+| `room_in_circle(r, top, height)` | the room a line from `top` to `top + height` (from the centre, negative above) has: the chord at its edge farther from the centre |
+| `fit_in_circle(atlas, text, r, top, height, inset)` | `text` ellipsized to that room, less `inset` at each end |
+
+```rust
+use horizon_client::hud_kit::fit;
+
+// A name in a control's room; a short one comes back borrowed, not copied.
+let name = fit::ellipsize(atlas, &row.name, room);
+// A label on a dial's hub of radius 24, its 9 px line across the centre, 2 px clear of the rim.
+let label = fit::fit_in_circle(atlas, "Courtly Bow", 24.0, -4.5, 9.0, 2.0);
+let x = cx - atlas.font.width(&label) / 2.0;
+```
+
+`graphics_style::fit`, which the settings shell, Controller and Shaders use for names and values, is
+`ellipsize` under its old name. It used to rebuild and measure the whole string once per character;
+a test cuts every Horizon string in seven languages, at widths from 0 to 240 px, both ways and
+expects the same text.
 
 ## The settings shell
 

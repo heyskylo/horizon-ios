@@ -4,10 +4,12 @@
 //!
 //! - `room`: what of a view an overlay may use, clear of the boss bars.
 //! - `plate`: the box behind a notice's text.
+//! - `fit`: text cut, wrapped or fitted in a circle to the room it has.
 //! - `tabs`: a collapsed page strip, the name between arrows with a pip per page.
 //!
 //! Vanilla's own display lists (`hud_layout`, `screen_draw`) never use the kit: they stay
 //! exactly vanilla's.
+pub mod fit;
 pub mod plate;
 pub mod room;
 pub mod tabs;

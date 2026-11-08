@@ -136,20 +136,9 @@ pub fn scroller(batch: &mut HudBatch, atlas: &HudAtlas, track: [f32; 4], thumb: 
     fill(batch, atlas, track, ROW_RULE);
     fill(batch, atlas, thumb, TRACK);
 }
-/// `text` cut to `width` with an ellipsis, as a long name gives way to its control.
-pub fn fit(atlas: &HudAtlas, text: &str, width: f32) -> String {
-    if atlas.font.width(text) <= width {
-        return text.to_owned();
-    }
-    let mut out = String::new();
-    for c in text.chars() {
-        if atlas.font.width(&format!("{out}{c}...")) > width {
-            break;
-        }
-        out.push(c);
-    }
-    format!("{}...", out.trim_end())
-}
+/// `text` cut to `width` with an ellipsis, as a long name gives way to its control: the HUD
+/// kit's `fit::ellipsize`.
+pub use crate::hud_kit::fit::ellipsize as fit;
 /// A 12 px tick box ending at `right`, centred in the row at `y`: its edge in the accent when on.
 pub fn checkbox(batch: &mut HudBatch, atlas: &HudAtlas, right: f32, y: f32, on: bool, live: bool) {
     let rect = [right - 12.0, y + 4.0, 12.0, 12.0];
