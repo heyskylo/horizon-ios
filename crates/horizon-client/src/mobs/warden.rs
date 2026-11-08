@@ -619,6 +619,8 @@ pub fn listen(
                 pos,
                 source: ctx.source,
                 owner: ctx.owner,
+                source_uuid: ctx.source_uuid,
+                owner_uuid: ctx.owner_uuid,
             },
             now,
         );
@@ -839,18 +841,13 @@ pub(super) fn tick_sonic_boom(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEve
         direction: normal,
     });
 }
-/// `Warden.tick` on the client: the heartbeat (pitched by the client's copy
-/// of the warden: a level event sound here), the tendril and heart
-/// animations, digging crumbs, and keyframes that ended.
+/// `Warden.tick` off the window's client: the heart's clock, the tendril and
+/// heart animations, digging crumbs, and keyframes that ended. The heartbeat
+/// sound is `playLocalSound` in the client branch, which a server never runs
+/// or sends, so nothing is played or drawn from the random here: the window's
+/// own `client_tick` plays it.
 pub fn ai_step(m: &mut Mob, events: &mut Vec<MobEvent>) {
-    if heartbeat(m) {
-        events.push(MobEvent::LevelEventSound {
-            sound: "entity.warden.heartbeat",
-            at: at(m),
-            volume: 5.0,
-            spread: 0.2,
-        });
-    }
+    heartbeat(m);
     animate(m, events);
 }
 /// The heart's beat on its clock, from the client's anger level: whether
@@ -866,13 +863,22 @@ fn heartbeat(m: &mut Mob) -> bool {
     }
     beat
 }
-/// `Warden.tick` on a client that is not the server: the heart and tendril
-/// animations and the keyframes that ended. Its sounds come from the server,
-/// but `Warden.clientDiggingParticles` is the client's own work, so the digging
+/// `Warden.tick` on a client that is not the server: the heartbeat, the heart
+/// and tendril animations and the keyframes that ended. The heartbeat is
+/// `playLocalSound`, so the server never sends it and each client plays its
+/// own; `Warden.clientDiggingParticles` is the client's own work too, so the
 /// events are handed back to the caller.
 pub fn client_tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
     m.anim.vo = m.anim.v;
-    heartbeat(m);
+    if heartbeat(m) && !m.silent {
+        let pitch = voice_pitch(m);
+        events.push(MobEvent::LocalSound(
+            "entity.warden.heartbeat",
+            at(m),
+            5.0,
+            pitch,
+        ));
+    }
     animate(m, events);
 }
 fn animate(m: &mut Mob, events: &mut Vec<MobEvent>) {
@@ -1205,6 +1211,9 @@ mod digging_tests {
             return;
         };
         let mut out = Vec::new();
+        // The client moves the age on before it ticks (`tickCount++`), so a
+        // warden's first client tick is never at age 0, a heartbeat tick.
+        m.age += 1;
         client_tick(&mut m, &mut out);
         assert!(out.is_empty(), "a standing warden digs nothing: {out:?}");
 

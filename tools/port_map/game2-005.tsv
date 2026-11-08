@@ -37,7 +37,8 @@ Villager.createDefaultVillagerData	skip:data		default type, profession and level
 Villager.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	villager arm: data, xp, restocks, offers; food, gossip and decay via villager::write_nbt
 Villager.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::read_villager	data and offers here; food, gossip, decay and inventory via villager::read_nbt
 Villager.getAmbientSound	port	crates/horizon-client/src/mobs/ai.rs::play_ambient	gap: minor: the trade ambient sound is not played while trading
-Villager.rewardTradeXp	port	crates/horizon-client/src/merchant.rs::Session::notify_trade	gap: minor: no 10 second Regeneration on the villager at level-up
+Villager.rewardTradeXp	port	crates/horizon-client/src/merchant.rs::Session::notify_trade	gap: minor: no 10 second Regeneration on the villager at level-up; accepted Game::merchant_traded records the actual trader for the next eligible mob AI phase
+Villager.customServerAiStep	port	crates/horizon-client/src/mobs/ai.rs::server_ai_step	Villager branch: Brain tick, then the retained trader event; Game::villager_traded_by applies reputation and current prices; existing NoAI gate
 Villager.die	port	crates/horizon-client/src/game/villagers.rs::Game::villager_murdered	gap: minor: releaseAllPois is not done on death
 Villager.releaseAllPois	missing		claims are per-mob fields (`extra.bed`, `extra.home` for the job site, `extra.meeting`) with no world-side point-of-interest store to release from; freeing a claim for another villager while this one lives has no counterpart
 Villager.releasePoi	missing		same as `releaseAllPois`: a single claim is that mob's field, dropped with the mob

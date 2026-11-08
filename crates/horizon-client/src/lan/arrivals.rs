@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// `server.toml`'s `[transfer]`, as horizon-server passes it: `--transfers
-/// expect_seconds=10,max_expect_seconds=60,max_expected=64,max_freeze_seconds=30,max_hold_seconds=60`.
+/// expect_seconds=10,max_expect_seconds=60,max_expected=64,max_freeze_seconds=30,max_hold_seconds=60,stop_wait_seconds=10`.
 /// A key left out keeps its default.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
@@ -42,6 +42,8 @@ pub struct Settings {
     /// Server ticks a held player may wait for its hand-over before the server
     /// drops it.
     pub max_hold_ticks: u64,
+    /// How long a stop waits for a proxy to move the players out ([`StopWait`]); zero stops at once.
+    pub stop_wait: Duration,
 }
 
 impl Default for Settings {
@@ -52,13 +54,14 @@ impl Default for Settings {
             max_expected: 64,
             max_freeze_ticks: 20 * 30,
             max_hold_ticks: 20 * 60,
+            stop_wait: Duration::from_secs(10),
         }
     }
 }
 
 impl Settings {
     /// Reads `--transfers`' value: `key=value` pairs separated by commas, each a
-    /// whole number above zero.
+    /// whole number above zero, but `stop_wait_seconds`, which is zero to [`MAX_STOP_WAIT`].
     pub fn parse(text: &str) -> Result<Self, String> {
         let mut s = Self::default();
         for pair in text.split(',').map(str::trim).filter(|p| !p.is_empty()) {
@@ -70,9 +73,16 @@ impl Settings {
                 .trim()
                 .parse()
                 .ok()
-                .filter(|n| *n > 0)
+                .filter(|n| *n > 0 || key == "stop_wait_seconds")
                 .ok_or_else(|| format!("{key} must be a whole number above zero"))?;
             match key {
+                "stop_wait_seconds" if n > MAX_STOP_WAIT.as_secs() => {
+                    return Err(format!(
+                        "stop_wait_seconds is above {}",
+                        MAX_STOP_WAIT.as_secs()
+                    ));
+                }
+                "stop_wait_seconds" => s.stop_wait = Duration::from_secs(n),
                 "expect_seconds" => s.expect = Duration::from_secs(n),
                 "max_expect_seconds" => s.max_expect = Duration::from_secs(n),
                 "max_expected" => {
@@ -91,6 +101,15 @@ impl Settings {
         if s.expect > s.max_expect {
             return Err("expect_seconds is above max_expect_seconds".into());
         }
+        // A stop's wait is cut at STOP_WAIT_LIMIT: past it, no hand-over could start during the wait.
+        if !s.stop_wait.is_zero()
+            && s.stop_wait.as_secs() + s.max_freeze_ticks / 20 > STOP_WAIT_LIMIT.as_secs()
+        {
+            return Err(format!(
+                "stop_wait_seconds and max_freeze_seconds add up to more than {}",
+                STOP_WAIT_LIMIT.as_secs()
+            ));
+        }
         Ok(s)
     }
 }
@@ -106,6 +125,8 @@ pub struct Transfers {
     /// taken back): no player is expected, imported or placed any more, but the players here can
     /// still be exported and released, which is their way out.
     pub stopping: bool,
+    /// The wait of that stop, while it lasts.
+    pub stop_wait: Option<StopWait>,
 }
 
 impl Transfers {
@@ -118,6 +139,7 @@ impl Transfers {
             settings,
             expected,
             stopping: false,
+            stop_wait: None,
         }
     }
 
@@ -126,6 +148,95 @@ impl Transfers {
     pub fn table(&self) -> std::sync::MutexGuard<'_, Expectations> {
         self.expected.lock().unwrap_or_else(|e| e.into_inner())
     }
+}
+
+/// The longest `stop_wait_seconds` may be.
+pub const MAX_STOP_WAIT: Duration = Duration::from_secs(60);
+
+/// The longest a stop waits, a hand-over's freeze included: horizon-server kills a game that has not
+/// stopped within 120 s (its `STOP_TIMEOUT`), and the saves need the rest.
+pub const STOP_WAIT_LIMIT: Duration = Duration::from_secs(90);
+
+/// A stop with `[transfer]` on and players here waits, so a proxy told the server is stopping
+/// (`server/stopping`) can move them out first: no login comes in, the server ticks on and answers the
+/// proxy's requests. The wait ends as soon as no player is left, at `until` when no hand-over is frozen,
+/// and at `limit` whatever is under way: `until` and a freeze's longest time, so a hand-over started in
+/// time can finish, within [`STOP_WAIT_LIMIT`]. No freeze starts that the limit would cut: a player whose
+/// source saved it after the target placed it would be on both servers.
+///
+/// A freeze lasts `max_freeze_ticks` ticks, not seconds: its length in time is reckoned at the tick
+/// length the server has now (`period`, [`tick_period`]), which the game sets again at every tick, so a
+/// slow server or `/tick rate 10` refuses a freeze sooner. A server that slows down after a freeze began
+/// can still reach the limit with it: that is the warning of the stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StopWait {
+    pub until: Instant,
+    pub limit: Instant,
+    freeze_ticks: u64,
+    /// The length of a tick now.
+    pub period: Duration,
+}
+
+impl StopWait {
+    /// The wait of a stop at `now`, if the settings make one, with ticks of `period`.
+    pub fn start(settings: &Settings, now: Instant, period: Duration) -> Option<Self> {
+        let freeze = freeze_time(settings.max_freeze_ticks, period);
+        (!settings.stop_wait.is_zero()).then(|| Self {
+            until: now + settings.stop_wait,
+            limit: now
+                + settings
+                    .stop_wait
+                    .saturating_add(freeze)
+                    .min(STOP_WAIT_LIMIT),
+            freeze_ticks: settings.max_freeze_ticks,
+            period,
+        })
+    }
+
+    /// Whether the stop goes on now, with these players placed and frozen here.
+    pub fn over(&self, now: Instant, placed: usize, frozen: usize) -> bool {
+        placed == 0 || (now >= self.until && frozen == 0) || now >= self.limit
+    }
+
+    /// Whether a hand-over that starts now would end before the limit, at the tick length of now.
+    pub fn may_freeze(&self, now: Instant) -> bool {
+        now.checked_add(freeze_time(self.freeze_ticks, self.period))
+            .is_some_and(|end| end <= self.limit)
+    }
+}
+
+/// How long `ticks` ticks of `period` take.
+fn freeze_time(ticks: u64, period: Duration) -> Duration {
+    period.saturating_mul(u32::try_from(ticks).unwrap_or(u32::MAX))
+}
+
+/// The length of a tick: the rate's (`target`, which `/tick rate` sets), or longer when the server
+/// is slower than that (`tps`, the ticks it made a second lately; 0 when unknown).
+pub fn tick_period(target: Duration, tps: f64) -> Duration {
+    let measured = if tps > 0.0 {
+        Duration::try_from_secs_f64(1.0 / tps).unwrap_or(Duration::MAX)
+    } else {
+        Duration::ZERO
+    };
+    measured.max(target)
+}
+
+/// The players placed here (a player a `moved` release took out is not counted) and those of them
+/// frozen for a hand-over.
+pub fn placed_and_frozen(hub: &Hub) -> (usize, usize) {
+    let here = || hub.guests.iter().filter(|g| g.placed && !g.released);
+    (
+        here().count(),
+        here().filter(|g| g.handover.is_some()).count(),
+    )
+}
+
+/// The log line of a stop that waits.
+pub fn stop_wait_line(wait: Duration) -> String {
+    format!(
+        "Stopping in {} s: a proxy may move the players out first",
+        wait.as_secs()
+    )
 }
 
 /// Why an expectation could not be recorded.
@@ -288,6 +399,16 @@ pub fn held_too_long(since: u64, now: u64, max: u64) -> bool {
 /// `now`, for a freeze of at most `max` ticks.
 pub fn frozen_too_long(since: u64, now: u64, max: u64) -> bool {
     now.saturating_sub(since) >= max
+}
+
+/// `player-export <uuid> freeze` during a stop's wait: refused once a hand-over that starts now could
+/// not finish before the stop's limit ([`StopWait`]). A player already frozen is answered as before.
+pub fn check_freeze(hub: &Hub, i: usize, now: Instant) -> Result<(), &'static str> {
+    let wait = hub.transfers.as_ref().and_then(|t| t.stop_wait);
+    if hub.guests[i].handover.is_none() && wait.is_some_and(|w| !w.may_freeze(now)) {
+        return Err("the server is stopping: no hand-over starts this late");
+    }
+    Ok(())
 }
 
 /// Why the connected player `uuid` cannot be exported now, or the index of its
@@ -597,15 +718,14 @@ pub fn status_request(hub: &Hub, now: Instant) -> serde_json::Value {
     let Some(transfers) = &hub.transfers else {
         return error(OFF);
     };
-    let count =
-        |keep: fn(&super::guest::Guest) -> bool| hub.guests.iter().filter(|g| keep(g)).count();
     let (online, max_players) = (hub.lan.shared.online(), hub.lan.shared.max_players());
+    let (placed, frozen) = placed_and_frozen(hub);
     serde_json::json!({
         "ok": true,
-        "players": count(|g| g.placed && !g.released),
-        "held": count(|g| g.held),
+        "players": placed,
+        "held": hub.guests.iter().filter(|g| g.held).count(),
         "expected": transfers.table().alive(now),
-        "frozen": count(|g| g.handover.is_some() && !g.released),
+        "frozen": frozen,
         "online": online,
         "max_players": max_players,
         "full": online >= max_players,
@@ -852,9 +972,97 @@ mod tests {
             "expect_seconds",
             "colour=blue",
             "expect_seconds=90",
+            "stop_wait_seconds=61",
+            "max_freeze_seconds=81",
+            "stop_wait_seconds=60,max_freeze_seconds=31",
         ] {
             assert!(Settings::parse(bad).is_err(), "{bad:?} was taken");
         }
+        // A stop that does not wait is zero seconds.
+        assert_eq!(Settings::default().stop_wait, secs(10));
+        assert_eq!(
+            Settings::parse("stop_wait_seconds=0").unwrap().stop_wait,
+            secs(0)
+        );
+        assert_eq!(
+            Settings::parse("stop_wait_seconds=60").unwrap().stop_wait,
+            secs(60)
+        );
+        // The two fit in the stop's limit, or the stop does not wait.
+        assert!(Settings::parse("stop_wait_seconds=60,max_freeze_seconds=30").is_ok());
+        assert!(Settings::parse("stop_wait_seconds=0,max_freeze_seconds=300").is_ok());
+    }
+
+    /// A stop's wait ends when nobody is left, at its time when no hand-over is frozen, and at its
+    /// limit (its time and a freeze's) whatever is under way; no freeze starts that the limit would
+    /// cut. Zero seconds is no wait.
+    #[test]
+    fn a_stop_waits_for_the_players_to_be_moved_out_but_not_for_ever() {
+        let now = Instant::now();
+        let settings = Settings::default();
+        let tick = Duration::from_millis(50);
+        let wait = StopWait::start(&settings, now, tick).unwrap();
+        assert_eq!((wait.until, wait.limit), (now + secs(10), now + secs(40)));
+        assert!(!wait.over(now, 2, 0));
+        assert!(wait.over(now, 0, 0), "nobody is left");
+        assert!(!wait.over(now + secs(9), 2, 0));
+        assert!(
+            wait.over(now + secs(10), 2, 0),
+            "its time, and no hand-over"
+        );
+        assert!(!wait.over(now + secs(39), 2, 1), "a hand-over may finish");
+        assert!(wait.over(now + secs(40), 2, 1), "the limit");
+        assert!(wait.may_freeze(now + secs(10)));
+        assert!(!wait.may_freeze(now + secs(11)));
+        // However long the settings, the whole wait fits in the supervisor's time for a stop.
+        let long = Settings {
+            stop_wait: secs(60),
+            max_freeze_ticks: 20 * 300,
+            ..Settings::default()
+        };
+        let wait = StopWait::start(&long, now, tick).unwrap();
+        assert_eq!(wait.limit, now + STOP_WAIT_LIMIT);
+        assert!(!wait.may_freeze(now), "a freeze of 300 s would be cut");
+        let none = Settings {
+            stop_wait: secs(0),
+            ..Settings::default()
+        };
+        assert_eq!(StopWait::start(&none, now, tick), None);
+    }
+
+    /// A freeze lasts ticks: at 10 ticks a second it lasts twice as long, the limit with it, and a
+    /// server that slows down during the wait refuses a freeze it would have let start at 20.
+    #[test]
+    fn a_stop_reckons_a_freeze_at_the_tick_length_of_now() {
+        let now = Instant::now();
+        let slow = Duration::from_millis(100);
+        let wait = StopWait::start(&Settings::default(), now, slow).unwrap();
+        assert_eq!((wait.until, wait.limit), (now + secs(10), now + secs(70)));
+        assert!(wait.may_freeze(now + secs(10)));
+        assert!(!wait.may_freeze(now + secs(11)));
+        let mut wait =
+            StopWait::start(&Settings::default(), now, Duration::from_millis(50)).unwrap();
+        assert!(wait.may_freeze(now));
+        wait.period = slow;
+        assert!(
+            !wait.may_freeze(now),
+            "60 s of freeze would pass the limit at 40 s"
+        );
+        // The tick length: the rate's, or longer when the server is slower than its rate.
+        let rate = Duration::from_millis(50);
+        assert_eq!(tick_period(rate, 20.0), rate);
+        assert_eq!(
+            tick_period(rate, 40.0),
+            rate,
+            "sprinting is not a shorter freeze"
+        );
+        assert_eq!(tick_period(rate, 10.0), Duration::from_millis(100));
+        assert_eq!(tick_period(rate, 0.0), rate, "no measure yet");
+        assert_eq!(
+            tick_period(Duration::from_millis(100), 20.0),
+            slow,
+            "/tick rate 10"
+        );
     }
 
     #[test]
@@ -1026,6 +1234,7 @@ mod hub_tests {
             entities: &[],
             next_entity: &mut next,
             spawn: [0.5, 64.0, 0.5],
+            spawn_angle: [0.0; 2],
             difficulty: 2,
             difficulty_locked: false,
             clock_rate: 1.0,
@@ -1049,6 +1258,7 @@ mod hub_tests {
             entities: &[],
             next_entity: next,
             spawn: [0.5, 64.0, 0.5],
+            spawn_angle: [0.0; 2],
             difficulty: 2,
             difficulty_locked: false,
             clock_rate: 1.0,
@@ -1576,6 +1786,25 @@ mod hub_tests {
         assert!(hub.guests[1].held && !hub.guests[1].placed);
         assert_eq!(super::drop_request(&mut hub, UUID)["held"], true);
         assert_eq!(ids(&seen), Vec::<i32>::new());
+    }
+
+    /// During a stop's wait a player is exported, and frozen while a hand-over can still finish in
+    /// time; later only an export already frozen is answered.
+    #[test]
+    fn a_stop_lets_a_hand_over_start_only_while_it_can_finish() {
+        let (mut hub, _seen, _mine, _h) = frozen_with_a_watcher();
+        let now = Instant::now();
+        let transfers = hub.transfers.as_mut().unwrap();
+        transfers.stop_wait =
+            super::StopWait::start(&transfers.settings, now, Duration::from_millis(50));
+        assert_eq!(super::placed_and_frozen(&hub), (2, 1));
+        assert_eq!(
+            super::check_freeze(&hub, 0, now + Duration::from_secs(10)),
+            Ok(())
+        );
+        let late = now + Duration::from_secs(11);
+        assert!(super::check_freeze(&hub, 0, late).is_err());
+        assert_eq!(super::check_freeze(&hub, 1, late), Ok(()), "already frozen");
     }
 
     /// After the commit, a retry finds the player placed from that hand-over whatever came since:

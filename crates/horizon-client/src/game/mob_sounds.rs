@@ -6,7 +6,8 @@
 use super::Game;
 use horizon_client::{
     mobs::{Species, bee, guardian, sniffer},
-    sound_engine::{MobSound, RiddenSound, SoundEngine, SoundInstance, Sounds},
+    random_source,
+    sound_engine::{MobSound, RiddenSound, SoundInstance, Sounds},
 };
 
 impl Game<'_> {
@@ -46,9 +47,9 @@ impl Game<'_> {
                 Some(Species::Nautilus | Species::ZombieNautilus)
             );
             let instance = if nautilus {
-                SoundInstance::riding_nautilus(&sound, SoundEngine::unseeded())
+                SoundInstance::riding_nautilus(&sound, random_source::create())
             } else {
-                SoundInstance::riding_happy_ghast(&sound, SoundEngine::unseeded())
+                SoundInstance::riding_happy_ghast(&sound, random_source::create())
             };
             self.audio.play_instance(instance, false);
         }
@@ -101,7 +102,7 @@ impl Game<'_> {
                 .any(|m| m.id == sound.id && m.species() == Species::Bee);
             if is_bee && self.bee_sounds.get(&sound.id) != Some(&sound.angry) {
                 self.bee_sounds.insert(sound.id, sound.angry);
-                let instance = SoundInstance::bee(sound, sound.angry, SoundEngine::unseeded());
+                let instance = SoundInstance::bee(sound, sound.angry, random_source::create());
                 self.audio.play_instance(instance, false);
             }
         }
@@ -130,7 +131,7 @@ impl Game<'_> {
             attack_scale: guardian::attack_scale(m),
             sniffer_digging: false,
         };
-        let instance = SoundInstance::guardian_attack(&sound, SoundEngine::unseeded());
+        let instance = SoundInstance::guardian_attack(&sound, random_source::create());
         self.audio.play_instance(instance, false);
     }
 
@@ -147,7 +148,7 @@ impl Game<'_> {
         if m.silent {
             return;
         }
-        let instance = SoundInstance::sniffer(id, SoundEngine::unseeded());
+        let instance = SoundInstance::sniffer(id, random_source::create());
         self.audio.play_instance(instance, false);
     }
 }

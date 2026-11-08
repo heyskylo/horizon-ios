@@ -81,7 +81,7 @@ fn dev_pack() -> Option<&'static str> {
         .as_deref()
 }
 
-fn picked_pack(settings: &horizon_client::settings::Settings) -> &str {
+pub(super) fn picked_pack(settings: &horizon_client::settings::Settings) -> &str {
     active_pack(
         dev_pack().unwrap_or(&settings.horizon.shader_pack),
         &settings.mods,

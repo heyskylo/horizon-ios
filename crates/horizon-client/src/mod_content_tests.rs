@@ -15,6 +15,8 @@ fn state_light_compiles_in_final_order_and_relights_across_a_chunk_boundary() {
     use std::collections::HashMap;
     let declaration = r#"{"template":"minecraft:test","item":false,"properties":{"light":3},
       "state_properties":{"mode":{"type":"enum","values":["off","dim","bright"]}},
+      "outline_context_shapes":{"item":{"property":"mode","values":{
+        "dim":[[0,0,0,0.5,1,1]]},"default":[]}},
       "state_light":{"properties":["mode","axis"],"values":{
         "dim,x":8,"dim,y":9,"bright,x":15,"bright,y":12},"default":0}}"#;
     let (base, mods) = block_base_of(
@@ -90,6 +92,11 @@ fn state_light_compiles_in_final_order_and_relights_across_a_chunk_boundary() {
             u64::from(expected)
         );
         assert_eq!(tables.emission(i), expected);
+        let item_outline = &plan.blocks[0].context_shapes["outline_item"][(i - 3) as usize];
+        assert_eq!(
+            item_outline.bounds().map(|bounds| bounds.max(Axis::X)),
+            (key.1 == "dim").then_some(0.5)
+        );
         by_state.insert(key, i);
     }
     let off = by_state[&("x", "off")];
@@ -1157,6 +1164,48 @@ fn builds_past_sixteen_bit_states() {
         m.content.blocks.push(b);
     }
     build(&base, std::slice::from_ref(&m), &scratch.join("out")).unwrap();
+    fs::remove_dir_all(&scratch).unwrap();
+}
+
+/// A plain file reaches the overlay as a copy of the mod's own: the same bytes, not a link
+/// back into the mod's folder; one over the size limit is refused, as reading it was.
+#[test]
+fn plain_files_are_copied_and_size_checked() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-copy-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let dir = scratch.join("ruby");
+    let mut m = ruby_mod(&dir);
+    let recipe = "data/ruby/recipe/ruby_from_stew.json";
+    let out = scratch.join("out");
+    build(&base, std::slice::from_ref(&m), &out).unwrap();
+    let copied = out.join(recipe);
+    assert!(
+        !fs::symlink_metadata(&copied)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    let original = fs::read(dir.join(recipe)).unwrap();
+    assert_eq!(fs::read(&copied).unwrap(), original);
+    fs::write(dir.join(recipe), "{}").unwrap();
+    assert_eq!(
+        fs::read(&copied).unwrap(),
+        original,
+        "the built root keeps its copy"
+    );
+
+    let huge = "assets/ruby/textures/block/huge.png";
+    fs::create_dir_all(dir.join(huge).parent().unwrap()).unwrap();
+    fs::File::create(dir.join(huge))
+        .unwrap()
+        .set_len(horizon_mods::content::MAX_FILE + 1)
+        .unwrap();
+    m.content.files.push(huge.into());
+    let e = build(&base, std::slice::from_ref(&m), &scratch.join("out2")).unwrap_err();
+    assert!(e.to_string().contains("is over"), "{e}");
     fs::remove_dir_all(&scratch).unwrap();
 }
 

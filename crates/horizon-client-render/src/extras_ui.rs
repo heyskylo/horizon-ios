@@ -5,7 +5,7 @@ use crate::{
     lang,
     options_ui::{Event, Page},
     settings::Settings,
-    settings_shell::{Group, Output, Row, Screen, Sheet, Value},
+    settings_shell::{self as shell, Group, Output, Row, Screen, Sheet, Value},
 };
 
 const TITLE: &str = "horizon.pages.extras";
@@ -84,6 +84,10 @@ impl Screen for ExtrasScreen {
     }
     fn note_lines(&self) -> usize {
         NOTE_LINES
+    }
+    /// The rows read the extras, the mods and whether cosmetics are offered.
+    fn stamp(&self, s: &Settings) -> u64 {
+        shell::stamp_of(&(&s.extras, &s.mods, horizon_cosmetics::enabled()))
     }
     fn sheets(&self, s: &Settings) -> Vec<Sheet<(), ExtraRow>> {
         let mut groups = vec![Group {
@@ -227,5 +231,67 @@ mod tests {
         );
         assert!(s.extras.sort);
         assert_eq!(screen.wheel_step(&mut s, ExtraRow::Zoom(0), true), None);
+    }
+
+    /// Extras has no Undo: a change leaves none to press or reach.
+    #[test]
+    fn a_change_on_extras_leaves_no_undo() {
+        use crate::settings_shell::{Columns, Target};
+        use winit::keyboard::KeyCode as K;
+        let mut s = Settings::default();
+        let mut shell = Shell::<ExtrasScreen>::default();
+        let at = shell.point_at(&s, SIZE, ExtraRow::Item(Item::Sort));
+        assert!(
+            !shell
+                .click(&mut s, at, SIZE, false, false, false)
+                .is_empty()
+        );
+        assert!(s.extras.sort && !shell.changed());
+        let cols = Columns::of(SIZE.0, SIZE.1).with_note_lines(NOTE_LINES);
+        let [x, y, ..] = cols.button(1);
+        assert!(
+            shell
+                .click(&mut s, (x + 2.0, y + 2.0), SIZE, false, false, false)
+                .is_empty()
+        );
+        assert!(s.extras.sort);
+        let reached = (0..100).any(|_| {
+            shell.key(&mut s, K::Tab, None, false, SIZE);
+            shell.focused() == Some(Target::Undo)
+        });
+        assert!(!reached);
+    }
+
+    /// A page with no page list has Done under the search field: Down goes to the first row
+    /// instead, from the keys and, as the frame declares it, from a controller's focus.
+    #[test]
+    fn down_from_the_search_field_lands_on_the_first_row() {
+        use crate::{hud::HudBatch, settings_shell::Columns, ui};
+        use winit::keyboard::KeyCode as K;
+        let atlas = crate::hud::HudAtlas::build(std::path::Path::new("/nonexistent")).unwrap();
+        let mut s = Settings::default();
+        let mut shell = Shell::<ExtrasScreen>::default();
+        let mut batch = HudBatch::new([1708, 960]);
+        shell.draw(&s, &mut batch, &atlas, (0.0, 0.0), false, None);
+        crate::widgets::end_frame(1);
+        let size = (batch.width, batch.height);
+        let cols = Columns::of(size.0, size.1).with_note_lines(NOTE_LINES);
+        // The Mods group's note can't take the focus: the first item can.
+        let first = ExtraRow::Item(Item::OwnNameTag);
+        let at = shell.point_at(&s, size, first);
+        let [x, y, w, h] = crate::widgets::linked_step(cols.search(), true).unwrap();
+        assert!(ui::hovered(at, x, y, w, h));
+        assert_eq!(crate::widgets::linked_step(cols.search(), false), None);
+        let [x, y, w, h] = cols.search();
+        shell.click(
+            &mut s,
+            (x + w / 2.0, y + h / 2.0),
+            size,
+            false,
+            false,
+            false,
+        );
+        shell.key(&mut s, K::ArrowDown, None, false, size);
+        assert_eq!(shell.focused_row(), Some(first));
     }
 }

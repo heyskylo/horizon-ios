@@ -12,6 +12,10 @@
     return oit_transmittance_fragment(entity_color(in, front).a, in.clip);
 }
 @fragment fn fs_oit_entity_accumulate(in: Out, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    return oit_accumulate_fragment(entity_written_color(in, entity_color(in, front)), in.clip);
+}
+// Text keeps its source gain, as fs_entity_unmarked does in the forward pass.
+@fragment fn fs_oit_text_accumulate(in: Out, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     return oit_accumulate_fragment(entity_color(in, front), in.clip);
 }
 // `OIT_ENTITY_SHADOW`.
@@ -56,6 +60,9 @@
     return OitCoefficients(vec4(0.0), vec4(0.0));
 }
 @fragment fn fs_oit_lightning_accumulate(in: Out) -> @location(0) vec4<f32> {
-    let color = celestial_color(in);
+    var color = celestial_color(in);
+    if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 {
+        color = vec4(hdr_written(color.rgb, hdr_entity_mark(in), globals.hdr_settings, globals.hdr_shares), color.a);
+    }
     return oit_accumulate_additive(vec4(color.rgb, min(0.99, color.a)), 0.0, in.clip);
 }

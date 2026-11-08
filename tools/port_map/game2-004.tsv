@@ -15,10 +15,11 @@ SpellcasterIllager.getCurrentSpell	skip:other		getter; Horizon reads extra.varia
 SpellcasterIllager.SpellcasterUseSpellGoal.canContinueToUse	port	crates/horizon-client/src/mobs/illager.rs::UseSpell::can_continue	target alive and warm-up left
 Vindicator.registerGoals	port	crates/horizon-client/src/mobs/illager.rs::register_vindicator	break door, open door, hold ground, melee, Johnny goal
 Vindicator.createAttributes	skip:data		attribute defaults (speed 0.35, follow 12, health 24, attack 5) live in data tables
-Vindicator.addAdditionalSaveData	missing		no `Johnny` flag is written: `mobs/illager.rs:78` tests the custom name itself, so only a vindicator renamed after being named Johnny differs
+Vindicator.addAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	Johnny: 1b is written while the latched flag is set, nothing otherwise
+Vindicator.readAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	Johnny, false when absent; a name that is Johnny latches it again on the next AI step
 Vindicator.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	raider spawn, then equipment and enchantments; the door flag it sets each tick comes from vindicator_server_ai_step
 Vindicator.populateDefaultEquipmentSlots	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::populate	iron axe unless the mob is in a raid
-Vindicator.setCustomName	inline	crates/horizon-client/src/mobs/illager.rs::register_vindicator	gap: minor: the Johnny goal reads the current custom name each tick; vanilla latches the flag once a name is Johnny
+Vindicator.setCustomName	inline	crates/horizon-client/src/mobs/illager.rs::vindicator_server_ai_step	the latch, taken from the live name each AI step: once it is Johnny it stays, which is what adds `extra.johnny`
 Vindicator.VindicatorBreakDoorGoal.canContinueToUse	port	crates/horizon-client/src/mobs/doors.rs::BreakDoor::can_continue	still in a raid, plus the base break checks
 AbstractPiglin.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	writes IsImmuneToZombification and TimeInOverworld
 AbstractPiglin.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	reads immunity, time in overworld and the pick-up flag
@@ -89,7 +90,7 @@ PiglinAi.isNotHoldingLovedItemInOffHand	inline	crates/horizon-client/src/game/pi
 PiglinAi.isZombified	inline	crates/horizon-client/src/mobs/piglin.rs::register_piglin	the zombified piglin and zoglin species list of the avoid goal
 PiglinAi.findNearbyAdultPiglins	inline	crates/horizon-client/src/mobs/piglin.rs::HuntHoglin::start	gap: minor: uses the follow range, not the sensor's nearest living entities list
 AbstractSkeleton.registerGoals	port	crates/horizon-client/src/mobs/undead.rs::register	restrict sun, flee sun, wolf avoid, stroll, look, targets
-AbstractSkeleton.rideTick	port	crates/horizon-client/src/game/passengers.rs::position_riders	a rider takes its vehicle's body yaw every tick
+AbstractSkeleton.rideTick	port	crates/horizon-client/src/mobs/riders.rs::takes_vehicle_body	the body yaw of a PathfinderMob it steers (getControlledVehicle)
 AbstractSkeleton.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::skeleton	equipment, enchantments, pick-up chance, halloween pumpkin; the weapon goal is re-picked on the next tick
 AbstractSkeleton.reassessWeaponGoal	port	crates/horizon-client/src/mobs/undead.rs::SkeletonWeapon::can_use	bow goal with the hard or normal interval, else melee
 AbstractSkeleton.onEquipItem	inline	crates/horizon-client/src/mobs/undead.rs::SkeletonWeapon::can_use	gap: minor: the weapon is re-picked on the next goal check, not at the moment of equipping
@@ -137,7 +138,7 @@ Drowned.isDeepEnoughToSpawn	inline	crates/horizon-client/src/mobs/spawn_rules.rs
 Drowned.populateDefaultEquipmentSlots	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::populate	10 percent chance of a trident (10 in 16) or fishing rod
 Drowned.canReplaceCurrentItem	port	crates/horizon-client/src/game/mob_looting.rs::Game::can_replace	the mob pickup compare (armour, toughness, attack damage) with the drowned's nautilus shell guard; called before a mob swaps what it holds
 Drowned.rangedAttackUncertainty	port	crates/horizon-client/src/mobs/undead.rs::drowned_throw	gap: minor: fixed uncertainty 6 (normal difficulty), not 14 minus 4 times the difficulty
-Drowned.rideTick	port	crates/horizon-client/src/game/passengers.rs::position_riders	a rider takes its vehicle's body yaw every tick
+Drowned.rideTick	port	crates/horizon-client/src/mobs/riders.rs::takes_vehicle_body	the body yaw of a PathfinderMob it steers (getControlledVehicle)
 Drowned.wantsToPickUp	port	crates/horizon-client/src/mobs/equip.rs::wants_to_pick_up	spears are refused, then the zombie checks
 Drowned.DrownedGoToBeachGoal.isValidTarget	port	crates/horizon-client/src/mobs/undead.rs::beach_target	two empty blocks above and a standable block below
 Drowned.DrownedGoToWaterGoal.getWaterPos	port	crates/horizon-client/src/mobs/undead.rs::DrownedGoToWater::can_use	ten random spots 10 blocks around and up to 2 above, water only

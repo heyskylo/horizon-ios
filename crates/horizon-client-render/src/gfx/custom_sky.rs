@@ -33,6 +33,9 @@ struct Uniform {
     brightness: f32,
     mode: u32,
     pad: [u32; 2],
+    hdr_settings: [f32; 4],
+    hdr_shares: [f32; 4],
+    hdr_light: [f32; 4],
 }
 
 #[repr(C)]
@@ -45,6 +48,8 @@ struct Vertex {
 
 pub(super) struct CustomSky {
     pipelines: Vec<wgpu::RenderPipeline>,
+    written_gain: Option<f32>,
+    written_debug: bool,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     uniform: wgpu::Buffer,
@@ -136,7 +141,10 @@ impl CustomSky {
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Custom sky shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("custom_sky.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                (include_str!("../hdr_light.wgsl").to_owned() + include_str!("custom_sky.wgsl"))
+                    .into(),
+            ),
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Custom sky layout"),
@@ -146,7 +154,11 @@ impl CustomSky {
         let attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x4];
         let pipelines = MODES
             .iter()
-            .map(|&mode| {
+            .copied()
+            .map(|mode| (mode, false, false))
+            .chain((format == super::LINEAR_FRAME).then_some((Blend::Screen, true, false)))
+            .chain((format == super::LINEAR_FRAME).then_some((Blend::Add, false, true)))
+            .map(|(mode, written_screen, debug_add)| {
                 device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: Some("Custom sky layer"),
                     layout: Some(&pipeline_layout),
@@ -174,14 +186,31 @@ impl CustomSky {
                     multisample: Default::default(),
                     fragment: Some(wgpu::FragmentState {
                         module: &shader,
-                        entry_point: Some("fs_custom_sky"),
-                        compilation_options: Default::default(),
+                        entry_point: Some(if debug_add {
+                            "fs_custom_sky_screen_light"
+                        } else {
+                            "fs_custom_sky"
+                        }),
+                        compilation_options: wgpu::PipelineCompilationOptions {
+                            constants: &[(
+                                "HDR_WRITE_LIGHT",
+                                f64::from(u8::from(format == super::LINEAR_FRAME)),
+                            )],
+                            ..Default::default()
+                        },
                         targets: &[Some(wgpu::ColorTargetState {
                             format,
                             // The frame's alpha is HDR output's mark (hdr.wgsl): the sky
                             // under the layers keeps its own.
                             blend: Some(wgpu::BlendState {
-                                color: blend(mode),
+                                color: if written_screen {
+                                    wgpu::BlendComponent {
+                                        src_factor: wgpu::BlendFactor::Constant,
+                                        ..blend(mode)
+                                    }
+                                } else {
+                                    blend(mode)
+                                },
                                 alpha: wgpu::BlendComponent {
                                     src_factor: wgpu::BlendFactor::Zero,
                                     dst_factor: wgpu::BlendFactor::One,
@@ -215,6 +244,8 @@ impl CustomSky {
         });
         Self {
             pipelines,
+            written_gain: None,
+            written_debug: false,
             layout,
             sampler,
             uniform,
@@ -295,7 +326,20 @@ impl CustomSky {
         encoder: &mut wgpu::CommandEncoder,
         clip: Mat4,
         draws: &[Draw],
+        globals: &super::Globals,
     ) {
+        self.written_gain = (globals.hdr_light[3] != 0.0).then(|| {
+            let mark =
+                ((1.0 - 0.24 * globals.hdr_light[1]).clamp(0.0, 1.0) * 255.0).round() / 255.0;
+            if globals.hdr_settings[2] > 0.5 && globals.hdr_settings[0] > 1.0 {
+                (1.0 + (globals.hdr_settings[1] - 1.0) * (1.0 - mark) / 0.24).powf(1.0 / 2.2)
+            } else {
+                1.0
+            }
+        });
+        self.written_debug = self.written_gain.is_some()
+            && globals.hdr_settings[3] > 0.5
+            && globals.hdr_settings[2] > 0.5;
         self.frame.clear();
         for draw in draws.iter().take(MAX_DRAWS) {
             if usize::from(draw.image) >= self.groups.len() {
@@ -307,6 +351,9 @@ impl CustomSky {
                 brightness: draw.brightness.clamp(0.0, 1.0),
                 mode: mode as u32,
                 pad: [0; 2],
+                hdr_settings: globals.hdr_settings,
+                hdr_shares: globals.hdr_shares,
+                hdr_light: globals.hdr_light,
             };
             let offset = STRIDE * self.frame.len() as u64;
             uploads.buffer(encoder, &self.uniform, offset, bytemuck::bytes_of(&uniform));
@@ -323,7 +370,35 @@ impl CustomSky {
     pub(super) fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
         pass.set_vertex_buffer(0, self.vertices.slice(..));
         for (i, &(image, mode)) in self.frame.iter().enumerate() {
-            pass.set_pipeline(&self.pipelines[usize::from(mode)]);
+            let screen_debug = usize::from(mode) == 5 && self.written_debug;
+            if screen_debug {
+                // Greyscale debug is not a uniform RGB gain. Attenuate with the original
+                // source first, then add its converted light, without changing the factor.
+                pass.set_pipeline(&self.pipelines[4]);
+                pass.set_bind_group(
+                    0,
+                    &self.groups[usize::from(image)],
+                    &[(STRIDE * i as u64) as u32],
+                );
+                pass.draw(0..36, 0..1);
+            }
+            let index = if screen_debug {
+                10
+            } else if usize::from(mode) == 5 && self.written_gain.is_some() {
+                9
+            } else {
+                usize::from(mode)
+            };
+            if let Some(gain) = self.written_gain {
+                let gain = f64::from(gain);
+                pass.set_blend_constant(wgpu::Color {
+                    r: gain,
+                    g: gain,
+                    b: gain,
+                    a: 1.0,
+                });
+            }
+            pass.set_pipeline(&self.pipelines[index]);
             pass.set_bind_group(
                 0,
                 &self.groups[usize::from(image)],
@@ -394,7 +469,10 @@ mod tests {
 
     #[test]
     fn the_shader_validates() {
-        let module = naga::front::wgsl::parse_str(include_str!("custom_sky.wgsl")).unwrap();
+        let module = naga::front::wgsl::parse_str(
+            &(include_str!("../hdr_light.wgsl").to_owned() + include_str!("custom_sky.wgsl")),
+        )
+        .unwrap();
         naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),
@@ -412,5 +490,260 @@ mod tests {
             assert!((u0..=u1).contains(&v.uv[0]) && (v0..=v1).contains(&v.uv[1]));
             assert_eq!(v.position.iter().filter(|c| c.abs() == 1.0).count(), 3);
         }
+    }
+    #[test]
+    fn written_custom_sky_modes_keep_factors_and_scale_only_screen_source() {
+        let instance = crate::gfx::test_gpu::instance();
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            return;
+        };
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let source = include_str!("../hdr_light.wgsl").to_owned()
+            + include_str!("custom_sky.wgsl")
+            + r#"
+@vertex fn test_vertex(@builtin(vertex_index) i: u32) -> Out {
+    let p = vec2(f32((i << 1u) & 2u), f32(i & 2u));
+    return Out(vec4(p * 2.0 - 1.0, 0.0, 1.0), vec2(0.5), vec4(0.0, 0.0, 1.0, 1.0));
+}
+"#;
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        let sky = CustomSky::new(&device, wgpu::TextureFormat::Rgba16Float);
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[Some(&sky.layout)],
+            ..Default::default()
+        });
+        let image = device.create_texture_with_data(
+            &queue,
+            &wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            &[204, 102, 51, 128],
+        );
+        let image = image.create_view(&Default::default());
+        let sampler = device.create_sampler(&Default::default());
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&Default::default());
+        // Independent scalar expectation: a sky mark of 206/255 gives this gamma gain.
+        let hdr_gain = (1.0f32 + 3.0 * (1.0 - 206.0 / 255.0) / 0.24).powf(1.0 / 2.2);
+        for (mode_index, mode, debug, written) in MODES
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(i, m)| (i, m, false, true))
+            .chain([(5, Blend::Screen, true, true)])
+            .chain(
+                MODES
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(i, m)| (i, m, false, false)),
+            )
+        {
+            let gain = if written { hdr_gain } else { 1.0 };
+            let uniform = Uniform {
+                clip_from_sky: Mat4::IDENTITY.to_cols_array_2d(),
+                brightness: 0.7,
+                mode: mode_index as u32,
+                pad: [0; 2],
+                hdr_settings: [5.0, 4.0, 1.0, f32::from(u8::from(debug))],
+                hdr_shares: [0.2, 0.5, 0.6, 1.0],
+                hdr_light: [0.8, 0.8, 1.0, f32::from(u8::from(written))],
+            };
+            let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: bytemuck::bytes_of(&uniform),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let color = if debug {
+                blend(Blend::Add)
+            } else if mode == Blend::Screen {
+                wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::Constant,
+                    ..blend(mode)
+                }
+            } else {
+                blend(mode)
+            };
+            let pipeline_for = |entry, color| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: None,
+                    layout: Some(&layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("test_vertex"),
+                        compilation_options: Default::default(),
+                        buffers: &[],
+                    },
+                    primitive: Default::default(),
+                    depth_stencil: None,
+                    multisample: Default::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some(entry),
+                        compilation_options: wgpu::PipelineCompilationOptions {
+                            constants: &[("HDR_WRITE_LIGHT", 1.0)],
+                            ..Default::default()
+                        },
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: wgpu::TextureFormat::Rgba16Float,
+                            blend: Some(wgpu::BlendState {
+                                color,
+                                alpha: wgpu::BlendComponent::REPLACE,
+                            }),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            };
+            let pipeline = pipeline_for(
+                if debug {
+                    "fs_custom_sky_screen_light"
+                } else {
+                    "fs_custom_sky"
+                },
+                color,
+            );
+            let attenuate = debug.then(|| pipeline_for("fs_custom_sky", blend(Blend::Burn)));
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &sky.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&image),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                ],
+            });
+            let mut encoder = device.create_command_encoder(&Default::default());
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: 2.0,
+                                g: 2.0,
+                                b: 2.0,
+                                a: 1.0,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+                let g = f64::from(gain);
+                pass.set_blend_constant(wgpu::Color {
+                    r: g,
+                    g,
+                    b: g,
+                    a: 1.0,
+                });
+                pass.set_bind_group(0, &group, &[0]);
+                if let Some(attenuate) = &attenuate {
+                    pass.set_pipeline(attenuate);
+                    pass.draw(0..3, 0..1);
+                }
+                pass.set_pipeline(&pipeline);
+                pass.draw(0..3, 0..1);
+            }
+            let readback = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: 256,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            encoder.copy_texture_to_buffer(
+                target.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &readback,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(256),
+                        rows_per_image: None,
+                    },
+                },
+                target.size(),
+            );
+            queue.submit([encoder.finish()]);
+            readback.map_async(wgpu::MapMode::Read, .., |r| r.unwrap());
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let data = readback.get_mapped_range(..).unwrap();
+            let got = half::f16::from_le_bytes([data[0], data[1]]).to_f32();
+            let (d, t, k) = (2.0, 0.8, 128.0 / 255.0 * 0.7);
+            let alpha = half::f16::from_le_bytes([data[6], data[7]]).to_f32();
+            let coverage = if mode == Blend::Alpha { k } else { 1.0 };
+            assert!(
+                (alpha - coverage).abs() < 0.001,
+                "{mode:?}: alpha {alpha}, expected {coverage}"
+            );
+            let expected = if debug {
+                let grey = (0.2126f32 * 0.8f32.powf(2.2)
+                    + 0.7152 * 0.4f32.powf(2.2)
+                    + 0.0722 * 0.2f32.powf(2.2))
+                .powf(1.0 / 2.2);
+                gain * grey * k + d * (1.0 - t * k)
+            } else {
+                match mode {
+                    Blend::Add => d + gain * t * k,
+                    Blend::Subtract => d - gain * t * k,
+                    Blend::Multiply => d * (1.0 + (t - 1.0) * k),
+                    Blend::Dodge => d + d * t * k,
+                    Blend::Burn => d * (1.0 - t * k),
+                    Blend::Screen => gain * t * k + d * (1.0 - t * k),
+                    Blend::Replace => gain * t,
+                    Blend::Overlay => 2.0 * d * (0.5 + (t - 0.5) * k),
+                    Blend::Alpha => gain * t * k + d * (1.0 - k),
+                }
+            };
+            assert!(
+                (got - expected).abs() < 0.004,
+                "{mode:?} debug {debug}: {got} expected {expected}"
+            );
+        }
+        eprintln!(
+            "HDR custom sky GPU ran all nine modes with and without gain, plus debug Screen, checking RGB and coverage"
+        );
     }
 }

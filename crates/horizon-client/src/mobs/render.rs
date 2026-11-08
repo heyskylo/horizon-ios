@@ -1112,7 +1112,7 @@ fn enderman_render_offset(m: &Mob, alpha: f32) -> glam::DVec3 {
 /// `base_transform` from a pose of the entity's origin (`EntityRenderDispatcher.submit`
 /// under a pose stack, as `SpawnerRenderer` draws the mob inside a spawner).
 pub fn base_transform_at(m: &Mob, alpha: f32, origin: glam::Mat4) -> glam::Mat4 {
-    let mut body = m.previous_body_yaw + wrap(m.body_yaw - m.previous_body_yaw) * alpha;
+    let mut body = anim::body_rot(m, alpha);
     if shaking(m) {
         // LivingEntityRenderer.setupRotations: a rapid wobble.
         let ticks = (m.age as f32 + alpha).floor();
@@ -1604,7 +1604,7 @@ pub fn cape(
         m.previous.y + (m.position.y - m.previous.y) * a,
         m.previous.z + (m.position.z - m.previous.z) * a,
     ];
-    let body = m.previous_body_yaw + wrap(m.body_yaw - m.previous_body_yaw) * alpha;
+    let body = anim::body_rot(m, alpha);
     // LivingEntityRenderState.fallFlyingScale.
     let ticks = m.extra.fall_fly_ticks as f32 + alpha;
     let gliding = (ticks * ticks / 100.0).clamp(0.0, 1.0);

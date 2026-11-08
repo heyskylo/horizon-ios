@@ -688,6 +688,26 @@ pub fn write_network(tag: &Tag, limits: Limits) -> Result<Vec<u8>, Error> {
     Ok(writer.bytes)
 }
 
+/// `NbtUtils.compareNbt(expected, actual, true)`.
+pub fn compare_nbt(expected: &Tag, actual: Option<&Tag>) -> bool {
+    let Some(actual) = actual else { return false };
+    if std::mem::discriminant(expected) != std::mem::discriminant(actual) {
+        return false;
+    }
+    match (expected, actual) {
+        (Tag::Compound(e), Tag::Compound(a)) => {
+            a.len() >= e.len() && e.iter().all(|(k, v)| compare_nbt(v, a.get(k)))
+        }
+        (Tag::List(e), Tag::List(a)) => {
+            if e.is_empty() {
+                return a.is_empty();
+            }
+            a.len() >= e.len() && e.iter().all(|x| a.iter().any(|y| compare_nbt(x, Some(y))))
+        }
+        _ => expected == actual,
+    }
+}
+
 /// SNBT (`TagParser`): compounds, lists, typed arrays, quoted and bare
 /// strings, booleans and suffixed numbers. Returns the tag and the bytes read.
 pub fn parse_snbt(text: &str) -> Result<(Tag, usize), String> {

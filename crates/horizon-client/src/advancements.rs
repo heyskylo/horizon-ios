@@ -628,6 +628,11 @@ pub trait World {
     fn block_entity_nbt(&self, _pos: [i32; 3]) -> Option<horizon_world::nbt::Tag> {
         None
     }
+    /// Read-only contents of a loaded named predicate, when this context
+    /// supplies a predicate registry. Other contexts keep references absent.
+    fn predicate(&self, _id: &str) -> Option<&Value> {
+        None
+    }
 }
 /// An item stack as predicates see it.
 #[derive(Clone, Debug, Default)]
@@ -638,6 +643,9 @@ pub struct ItemView {
     pub enchantments: Vec<(String, u32)>,
     pub potion: Option<String>,
     pub custom_name: bool,
+    /// Typed snapshot for supported mob equipment views. `None` leaves this
+    /// family unprojected and unsupported; an empty compound is actual absence.
+    pub custom_data: Option<horizon_world::nbt::Tag>,
 }
 /// An entity as predicates see it.
 #[derive(Clone, Debug, Default)]
@@ -689,13 +697,17 @@ pub struct EntityView {
     /// real holder without scores. Named predicates snapshot current values.
     pub scores: Option<BTreeMap<String, i32>>,
 }
-/// What `PlayerPredicate` reads of a player beyond its entity. Each part is
-/// filled only when a criterion may ask for it (`Tree::player_facts_asked`);
-/// a predicate that asks for a part left `None` fails.
+/// What `PlayerPredicate` reads of a player beyond its entity. Each record
+/// is filled only when a criterion may ask for it (`Tree::player_facts_asked`),
+/// the food always (two numbers); a predicate that asks for a part left
+/// `None` fails.
 #[derive(Clone, Default)]
 pub struct PlayerFacts {
     /// `Player.experienceLevel`.
     pub level: Option<i32>,
+    /// `Player.getFoodData`: `FoodData.getFoodLevel` and
+    /// `FoodData.getSaturationLevel`.
+    pub food: Option<(i32, f32)>,
     /// `ServerStatsCounter`: stat type -> stat id -> value, both namespaced.
     pub stats: Option<BTreeMap<String, BTreeMap<String, i32>>>,
     /// `PlayerAdvancements`: the loaded advancements and the player's
@@ -708,6 +720,7 @@ impl std::fmt::Debug for PlayerFacts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PlayerFacts")
             .field("level", &self.level)
+            .field("food", &self.food)
             .field("stats", &self.stats)
             .field(
                 "advancements",
@@ -844,6 +857,20 @@ pub fn item(v: &Value, it: &ItemView, w: &dyn World) -> bool {
     if let Some(d) = keyed(preds, "minecraft:damage").and_then(Value::as_object) {
         let damage = Value::Object(d.clone());
         if !range_i(&damage["damage"], i64::from(it.damage)) {
+            return false;
+        }
+    }
+    // `CustomDataPredicate.matches`: typed subset matching of a projected
+    // stack snapshot. Unprojected consumers keep their unsupported behavior.
+    if let Some(pattern) = keyed(preds, "minecraft:custom_data").and_then(Value::as_str)
+        && let Some(actual) = it.custom_data.as_ref()
+    {
+        let Ok(pattern @ horizon_world::nbt::Tag::Compound(_)) =
+            crate::command::snbt::parse_fully(pattern)
+        else {
+            return false;
+        };
+        if !crate::nbt_path::compare_nbt(&pattern, Some(actual)) {
             return false;
         }
     }
@@ -1093,14 +1120,28 @@ pub fn entity(v: &Value, e: &EntityView, w: &dyn World, origin: [f64; 3]) -> boo
     true
 }
 /// The rest of `PlayerPredicate.matches` (expected from it): the experience
-/// level in the `level` bounds; each `stats` entry's value (0 when never
-/// counted) in its bounds; each listed recipe known or not as asked; each
-/// listed advancement loaded, and done or not, or each named criterion of it
-/// granted or not. A field asked of facts that weren't filled fails.
+/// level in the `level` bounds; the food (`FoodPredicate.matches`); each
+/// `stats` entry's value (0 when never counted) in its bounds; each listed
+/// recipe known or not as asked; each listed advancement loaded, and done or
+/// not, or each named criterion of it granted or not. A field asked of facts
+/// that weren't filled fails.
 fn player_facts(p: &Value, f: &PlayerFacts) -> bool {
     let level = &p["level"];
     if !level.is_null() && !f.level.is_some_and(|l| range_i(level, i64::from(l))) {
         return false;
+    }
+    // `FoodPredicate.matches`: the food level in `level`, then the
+    // saturation (a float, compared as a double) in `saturation`.
+    let food = &p["food"];
+    if !food.is_null() {
+        let Some((level, saturation)) = f.food else {
+            return false;
+        };
+        if !range_i(&food["level"], i64::from(level))
+            || !range_f(&food["saturation"], f64::from(saturation))
+        {
+            return false;
+        }
     }
     let stats = &p["stats"];
     if !stats.is_null() {
@@ -1366,10 +1407,118 @@ pub fn recipe_ingredients(v: &Value, used: &[ItemView], w: &dyn World) -> bool {
 }
 
 /// A `ContextAwarePredicate`: a list of loot conditions (or one condition).
+/// Invalid references are distinct from false: inversion must not accept them.
 pub fn conditions(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
+    references_valid(v, w) && conditions_with(v, ctx, &mut |v, ctx| condition_leaf(v, ctx, w))
+}
+
+/// Every named predicate `v` reaches is loaded, and none reaches itself.
+pub fn references_valid(v: &Value, w: &dyn World) -> bool {
+    predicate_references(v, w, &mut BTreeSet::new()).is_ok()
+}
+
+enum InvalidReference {
+    Missing,
+    Cycle,
+}
+
+/// `Validatable.validateHolder`'s active-name rule, as a defensive check on
+/// this evaluation context. Check every typed reference before boolean
+/// short-circuiting; this does not implement registry/startup admission.
+fn predicate_references(
+    v: &Value,
+    w: &dyn World,
+    active: &mut BTreeSet<String>,
+) -> Result<(), InvalidReference> {
+    match v {
+        Value::String(id) => {
+            let id = full(id).into_owned();
+            if !active.insert(id.clone()) {
+                return Err(InvalidReference::Cycle);
+            }
+            let result = w
+                .predicate(&id)
+                .ok_or(InvalidReference::Missing)
+                .and_then(|v| predicate_references(v, w, active));
+            active.remove(&id);
+            result
+        }
+        Value::Array(list) => list
+            .iter()
+            .try_for_each(|v| predicate_references(v, w, active)),
+        Value::Object(o) => {
+            let kind = o
+                .get("condition")
+                .or_else(|| o.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            match &*full(kind) {
+                "minecraft:inverted" => predicate_references(&v["term"], w, active),
+                "minecraft:all_of" | "minecraft:any_of" => v["terms"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .try_for_each(|v| predicate_references(v, w, active)),
+                _ => Ok(()),
+            }
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The existing condition traversal with a caller-owned leaf context.
+/// Leaves run synchronously, in order, with normal boolean short-circuiting.
+pub fn conditions_with(
+    v: &Value,
+    ctx: &Entities,
+    test: &mut dyn FnMut(&Value, &Entities) -> bool,
+) -> bool {
     match v {
         Value::Null => true,
-        Value::Array(list) => list.iter().all(|c| conditions(c, ctx, w)),
+        Value::Array(list) => list.iter().all(|c| conditions_with(c, ctx, test)),
+        Value::Object(o) if o.contains_key("condition") || o.contains_key("type") => {
+            let ty = o
+                .get("condition")
+                .or_else(|| o.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            match &*full(ty) {
+                "minecraft:inverted" => !conditions_with(&v["term"], ctx, test),
+                "minecraft:all_of" => v["terms"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .all(|t| conditions_with(t, ctx, test)),
+                "minecraft:any_of" => v["terms"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|t| conditions_with(t, ctx, test)),
+                _ => test(v, ctx),
+            }
+        }
+        _ => test(v, ctx),
+    }
+}
+
+/// `LootItemRandomChanceCondition.test`: evaluate a literal float chance,
+/// then always draw once, including at zero and one. Other provider forms
+/// and additional fields are not supported by this bounded context.
+pub fn literal_random_chance(v: &Value, draw: &mut dyn FnMut() -> f32) -> Option<bool> {
+    let o = v.as_object()?;
+    let ty = o.get("condition").or_else(|| o.get("type"))?.as_str()?;
+    if full(ty) != "minecraft:random_chance"
+        || o.keys()
+            .any(|k| !matches!(k.as_str(), "condition" | "type" | "chance"))
+    {
+        return None;
+    }
+    let chance = o.get("chance")?.as_f64()? as f32;
+    Some(draw() < chance)
+}
+
+fn condition_leaf(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
+    match v {
         Value::Object(o) if o.contains_key("condition") || o.contains_key("type") => {
             let ty = o
                 .get("condition")
@@ -1439,22 +1588,15 @@ pub fn conditions(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
                     v["raining"].as_bool().is_none_or(|r| r == rain)
                         && v["thundering"].as_bool().is_none_or(|t| t == thunder)
                 }
-                "minecraft:inverted" => !conditions(&v["term"], ctx, w),
-                "minecraft:all_of" => v["terms"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .all(|t| conditions(t, ctx, w)),
-                "minecraft:any_of" => v["terms"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .any(|t| conditions(t, ctx, w)),
                 _ => false,
             }
         }
         // An inline entity predicate (old-style).
         Value::Object(_) => ctx.this.is_some_and(|e| entity(v, e, w, ctx.origin)),
+        // A named predicate reference: its loaded definition, walked like any other.
+        Value::String(id) => w
+            .predicate(&full(id))
+            .is_some_and(|v| conditions_with(v, ctx, &mut |v, ctx| condition_leaf(v, ctx, w))),
         _ => false,
     }
 }
@@ -2811,6 +2953,59 @@ mod tests {
         assert!(player_matches(json!({}), &PlayerFacts::default()));
     }
     #[test]
+    fn player_food_tests_level_and_saturation_in_their_bounds() {
+        let fed = PlayerFacts {
+            food: Some((17, 3.0)),
+            ..PlayerFacts::default()
+        };
+        for (food, expected) in [
+            (json!({}), true),
+            (json!({"level": {"min": 17}}), true),
+            (json!({"level": {"min": 18}}), false),
+            (json!({"level": {"max": 16}}), false),
+            (json!({"level": 17}), true),
+            (json!({"saturation": {"min": 3.0}}), true),
+            (json!({"saturation": {"min": 3.5}}), false),
+            (json!({"saturation": {"max": 2.9}}), false),
+            (
+                json!({"level": {"min": 17}, "saturation": {"max": 3.0}}),
+                true,
+            ),
+            (
+                json!({"level": {"min": 17}, "saturation": {"min": 3.5}}),
+                false,
+            ),
+            (
+                json!({"level": {"min": 18}, "saturation": {"min": 3.0}}),
+                false,
+            ),
+        ] {
+            assert_eq!(
+                player_matches(json!({"food": food}), &fed),
+                expected,
+                "{food}"
+            );
+        }
+        // The saturation float widens to a double: 1.2f is 1.2000000476837158.
+        let widened = PlayerFacts {
+            food: Some((20, 1.2)),
+            ..PlayerFacts::default()
+        };
+        assert!(player_matches(
+            json!({"food": {"saturation": {"min": 1.2}}}),
+            &widened
+        ));
+        assert!(!player_matches(
+            json!({"food": {"saturation": {"max": 1.2}}}),
+            &widened
+        ));
+        // No food known: food asked fails, even unbounded.
+        assert!(!player_matches(
+            json!({"food": {}}),
+            &PlayerFacts::default()
+        ));
+    }
+    #[test]
     fn player_stats_match_each_counter_by_type_and_id() {
         let mut counts: BTreeMap<String, BTreeMap<String, i32>> = BTreeMap::new();
         (counts.entry("minecraft:custom".into()).or_default())
@@ -3270,5 +3465,95 @@ mod tests {
         let all = get_list(&tree, None, "everything");
         let granted_everything = grant(&tree, &mut p, &all);
         assert_eq!(granted_everything, 116);
+    }
+    #[test]
+    fn random_chance_literal_matches_official_seeded_float_and_continuation() {
+        use horizon_core::random::{LegacyRandom, RandomSource};
+        let ctx = Entities {
+            this: None,
+            origin: [0.0; 3],
+            tool: None,
+            block_pos: None,
+        };
+        for line in include_str!("../../../docs/parity/random-chance-seeded.jsonl").lines() {
+            let row: Value = serde_json::from_str(line).unwrap();
+            let mut random = LegacyRandom::new(row["seed"].as_i64().unwrap());
+            let result = conditions_with(&row["input"], &ctx, &mut |v, ctx| {
+                literal_random_chance(v, &mut || random.next_float())
+                    .unwrap_or_else(|| conditions(v, ctx, &Flat))
+            });
+            assert_eq!(result, row["result"].as_bool().unwrap(), "{row}");
+            let next: Vec<i64> = (0..4).map(|_| random.next_long()).collect();
+            let expected: Vec<i64> = row["continuation"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x.as_i64().unwrap())
+                .collect();
+            assert_eq!(next, expected, "{row}");
+        }
+    }
+    #[test]
+    fn existing_no_random_context_and_traversal_keep_their_behavior() {
+        let ctx = Entities {
+            this: None,
+            origin: [0.0; 3],
+            tool: None,
+            block_pos: None,
+        };
+        let z = json!({"type":"minecraft:random_chance","chance":0});
+        let o = json!({"type":"minecraft:random_chance","chance":1});
+        for (v, expected) in [
+            (Value::Null, true),
+            (json!([]), true),
+            (z.clone(), false),
+            (o.clone(), false),
+            (json!({"type":"inverted","term":o}), true),
+            (
+                json!({"type":"all_of","terms":[z.clone(),Value::Null]}),
+                false,
+            ),
+            (
+                json!({"type":"any_of","terms":[z.clone(),Value::Null]}),
+                true,
+            ),
+            (json!("h122:unsupported_reference"), false),
+        ] {
+            assert_eq!(conditions(&v, &ctx, &Flat), expected, "{v}");
+        }
+        let mut seen = vec![];
+        let v =
+            json!({"type":"any_of","terms":[{"type":"all_of","terms":[false,true]},true,false]});
+        assert!(conditions_with(&v, &ctx, &mut |v, _| {
+            seen.push(v.as_bool().unwrap());
+            v.as_bool().unwrap()
+        }));
+        assert_eq!(seen, vec![false, true]);
+    }
+    #[test]
+    fn unsupported_chance_shapes_keep_prior_false_without_a_draw() {
+        let ctx = Entities {
+            this: None,
+            origin: [0.0; 3],
+            tool: None,
+            block_pos: None,
+        };
+        let mut draws = 0;
+        for v in [
+            json!({"type":"random_chance","chance":{"type":"minecraft:uniform","min":0,"max":1}}),
+            json!({"type":"random_chance"}),
+            json!({"type":"random_chance","chance":"1"}),
+            json!({"type":"random_chance","chance":1,"unsupported":true}),
+        ] {
+            assert_eq!(
+                literal_random_chance(&v, &mut || {
+                    draws += 1;
+                    0.0
+                }),
+                None
+            );
+            assert!(!conditions(&v, &ctx, &Flat));
+        }
+        assert_eq!(draws, 0);
     }
 }
