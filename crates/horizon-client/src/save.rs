@@ -5473,9 +5473,20 @@ mod tests {
         use crate::containers::BlockEntity;
         let mut slots = vec![None; 27];
         slots[0] = Some(crate::items::ItemStack::new("minecraft:diamond", 3));
-        let chest = encode_block_entity((1, 2, 3), &BlockEntity::Chest(slots.clone()), "minecraft:chest");
-        assert!(chest.get("Items").is_some(), "control: a chest saves its items");
-        let ender = encode_block_entity((1, 2, 3), &BlockEntity::Chest(slots), "minecraft:ender_chest");
+        let chest = encode_block_entity(
+            (1, 2, 3),
+            &BlockEntity::Chest(slots.clone()),
+            "minecraft:chest",
+        );
+        assert!(
+            chest.get("Items").is_some(),
+            "control: a chest saves its items"
+        );
+        let ender = encode_block_entity(
+            (1, 2, 3),
+            &BlockEntity::Chest(slots),
+            "minecraft:ender_chest",
+        );
         assert_eq!(ender.get("id"), Some(&string("minecraft:ender_chest")));
         assert!(ender.get("Items").is_none(), "{ender:?}");
     }
