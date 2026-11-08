@@ -11498,7 +11498,7 @@ impl Renderer {
                 &frame.pack,
                 size,
                 [self.config.width, self.config.height],
-                &pages,
+                pages,
                 &mut terrain,
             );
             self.pack_post = Some((dimension, Some(post)));
