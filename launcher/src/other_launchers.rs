@@ -102,6 +102,16 @@ const CURSEFORGE: &str = "the CurseForge app";
 const MODRINTH_APP: &str = "the Modrinth App";
 const ATLAUNCHER: &str = "ATLauncher";
 
+/// The name a launcher goes by on its own window, for a list: `launcher` as [`Found`] names it.
+pub fn app_name(launcher: &'static str) -> &'static str {
+    match launcher {
+        OFFICIAL => "Minecraft Launcher",
+        CURSEFORGE => "CurseForge",
+        MODRINTH_APP => "Modrinth App",
+        other => other,
+    }
+}
+
 fn loader_of_name(name: &str) -> Option<&'static str> {
     match name.to_ascii_lowercase().as_str() {
         "fabric" => Some("fabric"),

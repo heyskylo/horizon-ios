@@ -694,7 +694,7 @@ impl Hub {
             sync,
             ticks: 0,
             seat_order: 0,
-            sound_seeds: Mutex::new(LegacyRandom::new(crate::sound_engine::unique_seed())),
+            sound_seeds: Mutex::new(crate::random_source::create()),
             sound_order: Mutex::default(),
             immediate_respawn: false,
             reduced_debug_info: false,
@@ -2255,6 +2255,8 @@ impl Hub {
                     let Some(g) = self.guest_mut(conn) else {
                         continue;
                     };
+                    // Out of the channel: the network thread may hand this player more.
+                    g.sender.undrained.taken(bytes);
                     // A kicked player's packets wait for nothing.
                     if !g.left_reason.is_empty() {
                         continue;
@@ -5164,10 +5166,10 @@ fn wrap_degrees(degrees: f32) -> f32 {
 const PACKETS_PER_TICK: usize = 400;
 /// The packets a player may have waiting (a second of its budget) before it is
 /// disconnected, as vanilla's rate-limit does: no real client gets near it.
-const INBOX_LIMIT: usize = 20 * PACKETS_PER_TICK;
+pub(crate) const INBOX_LIMIT: usize = 20 * PACKETS_PER_TICK;
 /// The same in bytes on the wire: 8000 full books would hold gigabytes. A
 /// real client's largest packets (a 100-page book) are a few hundred kB.
-const INBOX_BYTES: usize = 16 << 20;
+pub(crate) const INBOX_BYTES: usize = 16 << 20;
 
 /// The `minecraft:gravity` attribute of a player.
 const PLAYER_GRAVITY: f64 = 0.08;
