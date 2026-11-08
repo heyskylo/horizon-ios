@@ -1128,6 +1128,7 @@ impl Game<'_> {
                     "keybinds" => Page::KeyBinds,
                     "controller" => Page::Controller,
                     "controller-binds" => Page::PadBinds,
+                    "controller-radial" => Page::ControllerRadial,
                     "mouse" => Page::Mouse,
                     "chat" => Page::Chat,
                     "accessibility" => Page::Accessibility,

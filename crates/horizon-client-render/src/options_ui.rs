@@ -1374,6 +1374,11 @@ pub enum Page {
     /// Horizon's controller settings and button binds.
     Controller,
     PadBinds,
+    /// The radial menu's pages (`radial_editor`), on the settings shell, and a page's name.
+    ControllerRadial,
+    ControllerRadialName,
+    /// The list of every action for one of its slots.
+    ControllerRadialPick,
     Extras,
     /// PvP & HUD (`pvp`): the extras a PvP player sets, on their own page.
     Pvp,
@@ -1699,6 +1704,10 @@ pub struct OptionsUi {
     controller: shell::Shell<crate::controller_ui::ControllerScreen>,
     /// Horizon Extras, on the settings shell.
     extras: shell::Shell<crate::extras_ui::ExtrasScreen>,
+    /// The radial menu's pages, on the settings shell.
+    radial: shell::Shell<crate::radial_editor::RadialScreen>,
+    /// The list of actions for one of the radial menu's slots.
+    radial_pick: shell::Shell<crate::radial_editor::PickScreen>,
     pub shader: crate::shader_ui::ShaderUi,
     /// The Pack Options page, and the packs' Polytone config entries by pack id (the game
     /// fills them beside `pack_infos`).
@@ -1781,6 +1790,8 @@ impl Default for OptionsUi {
             graphics: Default::default(),
             controller: Default::default(),
             extras: Default::default(),
+            radial: Default::default(),
+            radial_pick: Default::default(),
             shader: Default::default(),
             pack_options: Default::default(),
             pack_configs: Default::default(),
@@ -2141,6 +2152,12 @@ impl OptionsUi {
                     .pack_screen
                     .as_ref()
                     .is_some_and(|p| p.search_focused()),
+                Page::ControllerRadialName => self
+                    .radial
+                    .screen
+                    .naming
+                    .as_ref()
+                    .is_some_and(|n| n.typing()),
                 _ if Self::shader_page(self.page()).is_some() => self.shader.typing(),
                 _ => match self.shell() {
                     Some(shell) => shell.typing(),
@@ -2281,6 +2298,8 @@ impl OptionsUi {
         match self.page() {
             Page::Extras => Some(&self.extras),
             page if Self::graphics_page(page).is_some() => Some(&self.graphics),
+            Page::ControllerRadial => Some(&self.radial),
+            Page::ControllerRadialPick => Some(&self.radial_pick),
             page if Self::controller_page(page).is_some() => Some(&self.controller),
             _ => None,
         }
@@ -2289,8 +2308,42 @@ impl OptionsUi {
         match self.page() {
             Page::Extras => Some(&mut self.extras),
             page if Self::graphics_page(page).is_some() => Some(&mut self.graphics),
+            Page::ControllerRadial => Some(&mut self.radial),
+            Page::ControllerRadialPick => Some(&mut self.radial_pick),
             page if Self::controller_page(page).is_some() => Some(&mut self.controller),
             _ => None,
+        }
+    }
+    /// Where the open shell screen asked the focus to open (a radial slot's list, on the slot's
+    /// action), for a controller's focus to land there.
+    pub fn shell_opened_focus(&self) -> Option<[f32; 4]> {
+        self.shell()?.opened_focus()
+    }
+    /// The clicks until it is set back are a controller's Left or Right on a row: a choice of a
+    /// settings shell steps, rather than opens.
+    pub fn pad_clicks_step(&mut self, on: bool) {
+        if on {
+            if let Some(shell) = self.shell_mut() {
+                shell.clicks_step(true);
+            }
+            return;
+        }
+        // Every shell: the click may have changed the page.
+        let shells: [&mut dyn shell::Hosted; 5] = [
+            &mut self.extras,
+            &mut self.graphics,
+            &mut self.controller,
+            &mut self.radial,
+            &mut self.radial_pick,
+        ];
+        for shell in shells {
+            shell.clicks_step(false);
+        }
+    }
+    /// The controller's focus landed there.
+    pub fn clear_shell_opened_focus(&mut self) {
+        if let Some(shell) = self.shell_mut() {
+            shell.clear_opened_focus();
         }
     }
     /// A controller's or the keyboard's focus landed on `rect`: a row of a shell screen's list
@@ -2328,9 +2381,51 @@ impl OptionsUi {
                         self.calibration = Some(crate::hdr_calibration::Calibration::new(s));
                     }
                     self.push(page);
+                    // A slot's list, for the slot, opening on what it holds.
+                    if page == Page::ControllerRadialPick
+                        && let Some(at) = self.radial.screen.picking.take()
+                    {
+                        let row = self.radial_pick.screen.open_on(at, &s.controller.radial);
+                        self.radial_pick.focus_soon(row);
+                    }
                 }
-                shell::Output::Done => events.extend(self.back(s)),
+                shell::Output::Done => {
+                    // Back from a slot's list, the focus is on the slot.
+                    let slot = (self.page() == Page::ControllerRadialPick)
+                        .then(|| self.radial_pick.screen.at());
+                    events.extend(self.back(s));
+                    if let Some((page, slot)) = slot {
+                        self.radial
+                            .focus_soon(crate::radial_editor::RadialRow::Slot(page, slot));
+                    }
+                }
             }
+        }
+        // A pick on a slot's list is a change of the radial page's, which its Undo takes back.
+        if self.radial_pick.screen.take_picked() {
+            self.radial.changed_elsewhere();
+        }
+        // A radial page added or deleted: the one to show now.
+        if let Some(page) = self.radial.screen.take_shown() {
+            self.radial.show(page);
+        }
+        events
+    }
+    /// What a press on a radial page's name does here.
+    fn name_events(&mut self, named: crate::radial_editor::Named, s: &mut Settings) -> Vec<Event> {
+        use crate::radial_editor::Named;
+        let mut events = vec![Event::ButtonClick];
+        match named {
+            Named::Nothing => return Vec::new(),
+            Named::Done => {
+                let entry = self.radial.screen.naming.take();
+                if entry.is_some_and(|entry| entry.apply(&mut s.controller.radial)) {
+                    self.radial.changed_elsewhere();
+                }
+                events.push(Event::Changed);
+                events.extend(self.back(s));
+            }
+            Named::Back => events.extend(self.back(s)),
         }
         events
     }
@@ -2426,6 +2521,9 @@ impl OptionsUi {
                 "options.videoTitle"
             }
             Page::Controller | Page::PadBinds => "horizon.pages.controller",
+            Page::ControllerRadial => "horizon.pages.controller_radial",
+            Page::ControllerRadialName => "horizon.radial.name_title",
+            Page::ControllerRadialPick => "horizon.radial.pick_title",
             Page::Extras => "horizon.pages.extras",
             Page::Pvp => "horizon.pages.pvp",
             Page::Credits => "credits_and_attribution.screen.title",
@@ -3734,6 +3832,13 @@ impl OptionsUi {
         }
         let waiting = self.waiting();
         let in_world = self.in_world;
+        self.radial.screen.glyphs = self.pad_glyphs;
+        if self.page() == Page::ControllerRadialName
+            && let Some(entry) = &mut self.radial.screen.naming
+        {
+            entry.draw(batch, atlas, cursor, in_world);
+            return;
+        }
         if let Some(shell) = self.shell_mut() {
             shell.draw(s, batch, atlas, cursor, in_world, waiting);
             // The keys lay the screen out at the size it was drawn at.
@@ -4084,6 +4189,14 @@ impl OptionsUi {
             }
             let outcome = c.click((x, y), size, drag);
             return self.calibration_outcome(s, outcome);
+        }
+        if self.page() == Page::ControllerRadialName {
+            let entry = self.radial.screen.naming.as_mut();
+            let named = match entry.filter(|_| !drag && !right) {
+                Some(entry) => entry.click(atlas, (x, y), size),
+                None => crate::radial_editor::Named::Nothing,
+            };
+            return self.name_events(named, s);
         }
         if self.shell().is_some() {
             // Waiting on a controller button: a click cancels the wait.
@@ -4794,6 +4907,10 @@ impl OptionsUi {
             self.scroll = 0.0;
         } else if self.page() == Page::SplitProfiles {
             self.split_profiles.type_text(text);
+        } else if self.page() == Page::ControllerRadialName {
+            if let Some(entry) = &mut self.radial.screen.naming {
+                entry.type_text(text);
+            }
         } else if let Some(shell) = self.shell_mut() {
             if shell.typing() {
                 shell.type_text(text);
@@ -4830,6 +4947,10 @@ impl OptionsUi {
         }
         if self.page() == Page::SplitProfiles {
             return self.split_profiles.shortcut(shortcut, clipboard);
+        }
+        if self.page() == Page::ControllerRadialName {
+            let entry = self.radial.screen.naming.as_mut();
+            return entry.is_some_and(|entry| entry.shortcut(shortcut, clipboard));
         }
         if let Some(shell) = self.shell_mut() {
             return shell.shortcut(shortcut, clipboard);
@@ -4945,6 +5066,15 @@ impl OptionsUi {
         }
         if self.page() == Page::SplitProfiles && self.split_profiles.key(key, text) {
             return Vec::new();
+        }
+        if self.page() == Page::ControllerRadialName {
+            let named = match &mut self.radial.screen.naming {
+                Some(entry) => entry.key(key, text),
+                // Nothing to name: Escape still leaves.
+                None if key == K::Escape => crate::radial_editor::Named::Back,
+                None => crate::radial_editor::Named::Nothing,
+            };
+            return self.name_events(named, s);
         }
 
         // The size it was drawn at; before the first draw, one its keys can lay out at.

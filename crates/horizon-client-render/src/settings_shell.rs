@@ -1235,6 +1235,11 @@ pub(crate) trait Screen {
     fn stamp(&self, s: &Settings) -> u64;
     /// A row was pressed (`back`: Shift held); the shell has played the click.
     fn press(&mut self, s: &mut Settings, row: Self::Row, back: bool) -> Vec<Output>;
+    /// A press (A, Enter, a click, not Left or Right nor a Shift press) on a choice row: `None`
+    /// steps it as Right does; a screen with a list of its values opens it here.
+    fn choose(&mut self, _s: &mut Settings, _row: Self::Row) -> Option<Vec<Output>> {
+        None
+    }
     /// A slider row moved to `position`.
     fn slide(&mut self, _s: &mut Settings, _row: Self::Row, _position: f32) {}
     /// The wheel over a row, with the "Scroll wheel changes settings" extra on: `None` leaves it
@@ -1307,6 +1312,13 @@ pub(crate) fn stamp_of(parts: &impl std::fmt::Debug) -> u64 {
 pub(crate) trait Hosted {
     /// The screen opens, afresh.
     fn open(&mut self);
+    /// Where the screen asked the focus to open (`Shell::focus_soon`), for a controller's focus
+    /// to land there too.
+    fn opened_focus(&self) -> Option<[f32; 4]>;
+    fn clear_opened_focus(&mut self);
+    /// The clicks until it is set back are a controller's Left or Right: on a choice they step
+    /// it, as the arrow keys do, rather than press it.
+    fn clicks_step(&mut self, on: bool);
     /// `waiting`: the binding the host waits on.
     fn draw(
         &mut self,
@@ -1431,6 +1443,11 @@ pub(crate) struct Shell<S: Screen> {
     /// changed them since.
     before: Option<Box<Settings>>,
     changed: bool,
+    /// A row to put the focus on, scrolled into view, at the next draw, and where it went.
+    focus_next: Option<S::Row>,
+    focus_opened: Option<(S::Row, [f32; 4])>,
+    /// Clicks are a controller's Left or Right (`Hosted::clicks_step`).
+    clicks_step: bool,
 }
 impl<S: Screen + Default> Default for Shell<S> {
     fn default() -> Self {
@@ -1452,10 +1469,17 @@ impl<S: Screen + Default> Default for Shell<S> {
             built: None,
             before: None,
             changed: false,
+            focus_next: None,
+            focus_opened: None,
+            clicks_step: false,
         }
     }
 }
 impl<S: Screen> Shell<S> {
+    /// Put the focus on `row` as the keyboard would, scrolled into view, once it is drawn.
+    pub(crate) fn focus_soon(&mut self, row: S::Row) {
+        self.focus_next = Some(row);
+    }
     fn query(&self) -> String {
         self.search.value.trim().to_lowercase()
     }
@@ -1524,6 +1548,10 @@ impl<S: Screen> Shell<S> {
         self.rebuild();
         vec![CLICK, Output::Event(crate::options_ui::Event::Changed)]
     }
+    /// A page the screen pushed over itself changed what Undo puts back.
+    pub(crate) fn changed_elsewhere(&mut self) {
+        self.did(&[Output::Event(crate::options_ui::Event::Changed)]);
+    }
     /// Open at `page`.
     pub(crate) fn show(&mut self, page: S::Page) {
         self.page = Some(page);
@@ -1535,7 +1563,10 @@ impl<S: Screen> Shell<S> {
         let cols = Columns::of(w, h).with_note_lines(self.screen.note_lines());
         let query = self.query();
         let sheets = self.screen.sheets(s);
-        let open = self.page.or(sheets.first().map(|sheet| sheet.id));
+        let open = self
+            .page
+            .filter(|page| sheets.iter().any(|sheet| sheet.id == *page));
+        let open = open.or(sheets.first().map(|sheet| sheet.id));
         let mut pages = Vec::new();
         let mut rows = Vec::new();
         let mut lines = Lines::new();
@@ -1591,7 +1622,11 @@ impl<S: Screen> Shell<S> {
     /// topmost line's.
     fn current(&self, view: &View<S::Page, S::Row>) -> Option<S::Page> {
         if self.query().is_empty() {
-            return self.page.or(view.pages.first().map(|p| p.0));
+            // A page that went (a screen whose pages are the player's) leaves the first.
+            let open = self
+                .page
+                .filter(|page| view.pages.iter().any(|p| p.0 == *page));
+            return open.or(view.pages.first().map(|p| p.0));
         }
         self.picked.or_else(|| {
             let line = view.lines.iter().find(|l| l.y + l.h() > self.scroll.amount);
@@ -1637,13 +1672,15 @@ impl<S: Screen> Shell<S> {
             ui::hovered((x, y), rx, ry, rw, rh)
         })
     }
-    /// Press `row`: `track` is where on its slider's track (`None` from the keyboard, or off it).
+    /// Press `row`, or (`stepped`) Left or Right on it: `track` is where on its slider's track
+    /// (`None` from the keyboard, or off it).
     fn activate(
         &mut self,
         s: &mut Settings,
         row: &Row<S::Row>,
         back: bool,
         track: Option<f32>,
+        stepped: bool,
     ) -> Vec<Output> {
         match row.value {
             Value::Note | Value::Read(_) => Vec::new(),
@@ -1667,7 +1704,11 @@ impl<S: Screen> Shell<S> {
             _ => {
                 self.can_change_value = false;
                 let mut outputs = vec![CLICK];
-                outputs.extend(self.screen.press(s, row.id, back));
+                let chosen = matches!(row.value, Value::Choice(_)) && !stepped && !back;
+                match chosen.then(|| self.screen.choose(s, row.id)).flatten() {
+                    Some(opened) => outputs.extend(opened),
+                    None => outputs.extend(self.screen.press(s, row.id, back)),
+                }
                 self.did(&outputs);
                 outputs
             }
@@ -1752,9 +1793,14 @@ impl<S: Screen> Shell<S> {
         self.picked = None;
     }
     /// What the strip and the narrator say about `row`: a binding's wait, its missing button or
-    /// its shared one, else what the row does.
+    /// its shared one, else what the row does. A row's own `chosen` outranks the binding's note
+    /// except while it waits, so a binding can say why it has no button (the radial opener).
     fn strip_text(&self, row: &Row<S::Row>) -> String {
-        let note = row.binding().and_then(|b| b.note(self.waits(row)));
+        let waits = self.waits(row);
+        if let (Some(chosen), false) = (&row.chosen, waits) {
+            return chosen.clone();
+        }
+        let note = row.binding().and_then(|b| b.note(waits));
         note.unwrap_or_else(|| row.described().to_owned())
     }
     /// Whether the host waits on `row`'s binding.
@@ -1906,7 +1952,28 @@ impl<S: Screen + Default> Hosted for Shell<S> {
     ) {
         self.waiting = waiting;
         self.keep(s);
-        let view = self.view(s, (batch.width, batch.height));
+        let size = (batch.width, batch.height);
+        let opened = self.focus_next.take();
+        if let Some(row) = opened {
+            let view = self.view(s, size);
+            let target = self
+                .focusables(&view, false)
+                .into_iter()
+                .find(|(target, _)| *target == Target::Row(row));
+            if let Some(target) = target {
+                self.keyed = true;
+                self.focus_on(target, &view);
+            }
+        }
+        let view = self.view(s, size);
+        // Where it is now the list has scrolled to it.
+        if let Some(row) = opened {
+            self.focus_opened = self
+                .focusables(&view, false)
+                .into_iter()
+                .find(|(target, _)| *target == Target::Row(row))
+                .map(|(_, rect)| (row, rect));
+        }
         let cols = view.cols;
         backdrop(batch, atlas, in_world);
         let current = self.current(&view);
@@ -1987,6 +2054,10 @@ impl<S: Screen + Default> Hosted for Shell<S> {
         shift: bool,
     ) -> Vec<Output> {
         self.keep(s);
+        // A click of its own: the focus a page opened on is the mouse's now.
+        if !drag {
+            self.focus_opened = None;
+        }
         let view = self.view(s, size);
         let cols = view.cols;
         let at = |[rx, ry, rw, rh]: [f32; 4]| ui::hovered((x, y), rx, ry, rw, rh);
@@ -2059,7 +2130,16 @@ impl<S: Screen + Default> Hosted for Shell<S> {
         }
         // A press on the track sets the value there; on the name, only focuses.
         let track = (x >= cols.track().0).then(|| cols.slider_at(x));
-        self.activate(s, row, shift, track)
+        self.activate(s, row, shift, track, self.clicks_step)
+    }
+    fn opened_focus(&self) -> Option<[f32; 4]> {
+        self.focus_opened.map(|(_, rect)| rect)
+    }
+    fn clear_opened_focus(&mut self) {
+        self.focus_opened = None;
+    }
+    fn clicks_step(&mut self, on: bool) {
+        self.clicks_step = on;
     }
     fn release(&mut self) -> bool {
         self.scroll.release();
@@ -2177,7 +2257,7 @@ impl<S: Screen + Default> Hosted for Shell<S> {
             && row.live
             && matches!(row.value, Value::Choice(_))
         {
-            return self.activate(s, row, key == K::ArrowLeft, None);
+            return self.activate(s, row, key == K::ArrowLeft, None, true);
         }
         if matches!(
             key,
@@ -2209,7 +2289,7 @@ impl<S: Screen + Default> Hosted for Shell<S> {
                     self.can_change_value = !self.can_change_value;
                     Vec::new()
                 }
-                Some(row) => self.activate(s, row, shift, None),
+                Some(row) => self.activate(s, row, shift, None, false),
                 None => Vec::new(),
             },
             Some(Target::Reset(row)) => self.reset(s, row),
