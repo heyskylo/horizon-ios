@@ -1251,5 +1251,9 @@
   "Buy": "Iibso",
   "Gift": "Hadiyad sii",
   "Found on this computer": "Laga helay kombiyuutarkan",
-  "Looks": "Muuqaalo"
+  "Looks": "Muuqaalo",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Furaha-hayaha nidaamkaagu kama jawaabin {seconds} ilbiriqsi gudahood. Hubi inuu shaqeynayo oo uu furan yahay, kadibna dib u bilow furaha ciyaarta.",
+  "Can't read {name}'s sign-in: {why}": "Lama akhrin karo galitaanka {name}: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}."
 }

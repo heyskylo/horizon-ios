@@ -2,6 +2,35 @@
 //! across screens, the hotbar's wheel and bumper steps, and mouse buttons while playing.
 use super::*;
 
+fn studio_replay_shortcut(key: KeyCode) -> bool {
+    matches!(
+        key,
+        KeyCode::Escape
+            | KeyCode::KeyP
+            | KeyCode::KeyF
+            | KeyCode::KeyT
+            | KeyCode::KeyM
+            | KeyCode::Home
+            | KeyCode::KeyL
+            | KeyCode::KeyK
+            | KeyCode::Delete
+    )
+}
+
+fn studio_freecam_movement_key(key: KeyCode) -> bool {
+    matches!(
+        key,
+        KeyCode::KeyW
+            | KeyCode::KeyA
+            | KeyCode::KeyS
+            | KeyCode::KeyD
+            | KeyCode::KeyE
+            | KeyCode::KeyQ
+            | KeyCode::Space
+            | KeyCode::ControlRight
+    )
+}
+
 impl Game<'_> {
     /// Keep the held-key state of toggled sneak and sprint in step with their mapping.
     /// `KeyMapping.resetToggleKeys`: every toggle mapping up, and the latched sneak and sprint
@@ -151,6 +180,21 @@ impl Game<'_> {
         raw: KeyCode,
         source: Source,
     ) -> Result<()> {
+        if self.screen == Screen::Playing && self.studio_replay.is_some() {
+            if !pressed {
+                self.keys.release(&key, source);
+                return Ok(());
+            }
+            if studio_replay_shortcut(key) {
+                if !repeat {
+                    self.key_pressed(key, raw)?;
+                }
+                return Ok(());
+            }
+            if !studio_freecam_movement_key(key) || !self.studio_freecam.active {
+                return Ok(());
+            }
+        }
         // Sneak and sprint are ToggleKeyMappings: a press (or a key
         // repeat) flips them when toggling; only releases reach them
         // behind a screen (KeyboardHandler.keyPress).
@@ -403,5 +447,40 @@ impl Game<'_> {
             _ => {}
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{studio_freecam_movement_key, studio_replay_shortcut};
+    use winit::keyboard::KeyCode;
+
+    #[test]
+    fn replay_shortcuts_are_distinct_from_freecam_movement() {
+        for key in [
+            KeyCode::Escape,
+            KeyCode::KeyP,
+            KeyCode::KeyF,
+            KeyCode::KeyT,
+            KeyCode::KeyM,
+            KeyCode::Home,
+            KeyCode::KeyL,
+            KeyCode::KeyK,
+            KeyCode::Delete,
+        ] {
+            assert!(studio_replay_shortcut(key));
+        }
+        for key in [
+            KeyCode::KeyW,
+            KeyCode::KeyA,
+            KeyCode::KeyS,
+            KeyCode::KeyD,
+            KeyCode::KeyE,
+            KeyCode::KeyQ,
+        ] {
+            assert!(studio_freecam_movement_key(key));
+            assert!(!studio_replay_shortcut(key));
+        }
+        assert!(!studio_freecam_movement_key(KeyCode::KeyI));
     }
 }

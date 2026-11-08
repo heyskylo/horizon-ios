@@ -321,7 +321,7 @@ pub struct AnimateTables {
     pale_oak_logs: Vec<bool>,
     /// `FireBlock.canBurn`: states with ignite odds above zero (none waterlogged).
     burnable: Vec<bool>,
-    /// Biome id -> ambient particles and probabilities (`minecraft:visual/ambient_particles`).
+    /// Biome id -> ambient particles and probabilities from the prepared pack.
     ambient: Vec<Vec<(T, f32)>>,
     /// Per state: 1 for a pointed dripstone, 2 for one whose tip points down.
     dripstone: Vec<u8>,
@@ -632,7 +632,16 @@ fn do_animate_tick(
             .chunks
             .get(&(x >> 4, z >> 4))
             .map_or(0, |c| c.biome(x, y, z));
-        for &(ty, probability) in tables.ambient.get(biome as usize).into_iter().flatten() {
+        let info = ctx.biomes.get(biome);
+        let particles: &[(T, f32)] = if ctx.biomes.pack_file(&info.name).is_some() {
+            &info.ambient_particles
+        } else {
+            tables
+                .ambient
+                .get(biome as usize)
+                .map_or(&[][..], Vec::as_slice)
+        };
+        for &(ty, probability) in particles {
             // AmbientParticle.canSpawn: random.nextFloat() <= probability.
             let random = engine.random();
             if random.next_float() <= probability {

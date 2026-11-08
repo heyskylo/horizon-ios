@@ -48,6 +48,8 @@ Cases:
   again goes back to By Position.
 - extras_shell: Horizon Extras on the settings shell: the D-pad walks its rows and scrolls through the hidden ones, past
   a greyed row, the right stick scrolls it, A changes and saves a toggle, the strip follows the row, B leaves.
+- graphics_shell: the Graphics screen on the settings shell: the D-pad goes from its Quality page into the rows, A
+  turns Fog off and saves it, X presses the Undo that appears, which puts it back, and B leaves.
 - extras_shell_edges: on Extras, which has no page list, down from the search field lands on the first row, not Done;
   a row the right stick leaves mostly hidden scrolls back into view when A presses it, and A changes it.
 Needs built fast binaries (`cargo build --profile fast -p horizon-client -p horizon-client-lib --bins`)
@@ -1621,12 +1623,62 @@ def extras_shell(args, name):
         label = game.focused_label()
         check(label and label.endswith('On'), f'A left {AUTO_RECONNECT} as {label}')
         check('autoReconnect:true' in extras_saved(game), 'the toggle was not saved to horizon-extras.txt')
+        check('Apply' not in declared(game), f'Extras has no Undo, yet a change declared {declared(game)}')
         shot(game, 'extras-toggled')
 
         # B presses Done.
         game.pad('east')
         game.wait_targets()
         check(not has_label(game, AUTO_RECONNECT), f'B did not leave Extras: {labels(game)}')
+    finally:
+        game.quit()
+    return check.failures
+
+
+FOG = 'Fog'
+GRAPHICS_PAGES = ('General', 'Quality', 'Performance', 'Shaders', 'Advanced', 'HDR')
+
+
+def graphics_saved(game):
+    path = game.game_home / 'horizon-graphics.txt'
+    return path.read_text() if path.exists() else ''
+
+
+def graphics_shell(args, name):
+    game = Game(args, name)
+    check = Check()
+    try:
+        game.press_through('west')
+        game.ctl('options', 'graphics')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        check(declared(game).get('Done') is True, f'Graphics declares {declared(game)}')
+        check('Apply' not in declared(game), f'Undo shows with nothing changed: {declared(game)}')
+        # Down the page list from the search field to Quality, which opens it, and right into its rows.
+        for _ in range(len(GRAPHICS_PAGES)):
+            game.pad('down')
+            if game.focused_label() == 'Quality':
+                break
+        game.pad('south')
+        check(label_of(game, FOG) is not None, f'the Quality page has no {FOG} row: {labels(game)}')
+        game.pad('right')
+        for _ in range(ROW_WALK):
+            if (game.focused_label() or '').startswith(FOG):
+                break
+            game.pad('down')
+        label = game.focused_label() or ''
+        check(label.startswith(FOG) and label.endswith('On'), f'the D-pad never reached {FOG} On: {label}')
+        game.pad('south')
+        label = game.focused_label() or ''
+        check(label.endswith('Off'), f'A left {FOG} as {label}')
+        check('fog:false' in graphics_saved(game), 'Fog off was not saved to horizon-graphics.txt')
+        check(declared(game).get('Apply') is True, f'Undo did not appear: {declared(game)}')
+        game.pad('west')
+        check(label_of(game, FOG) and label_of(game, FOG)['label'].endswith('On'), f'X did not undo: {labels(game)}')
+        check('Apply' not in declared(game), f'Undo stayed after undoing: {declared(game)}')
+        game.pad('east')
+        game.wait_targets()
+        check(label_of(game, FOG) is None, f'B did not leave Graphics: {labels(game)}')
     finally:
         game.quit()
     return check.failures
@@ -3063,6 +3115,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'erase_checkbox': erase_checkbox,
          'extras_shell': extras_shell,
          'extras_shell_edges': extras_shell_edges,
+         'graphics_shell': graphics_shell,
          'glyph_art': glyph_art,
          'glyph_art_world': glyph_art_world,
          'key_row_a_x': key_row_a_x,

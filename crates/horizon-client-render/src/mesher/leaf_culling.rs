@@ -343,6 +343,7 @@ mod tests {
             opaque_cube: opaque,
             blocks_flow: false,
             ice: false,
+            opaque_ice: false,
             sturdy: 0,
             face: [0; 6],
             cover: [0.0; 6],

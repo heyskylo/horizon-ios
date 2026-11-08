@@ -376,6 +376,20 @@ pub(super) fn named_mob_pickable(
 pub(super) type Skinned = Option<((usize, usize, u32), Option<(glam::Vec3, glam::Vec3)>)>;
 
 impl Game<'_> {
+    /// A sulfur cube's attribute map (`LivingEntity.attributes`), from its
+    /// type's defaults, before its first tick adopts the body's archetype
+    /// modifiers. A map already there (commands, armor) is kept.
+    fn init_sulfur_attribute_maps(&mut self) {
+        for m in &mut self.mobs {
+            if m.species() == horizon_client::mobs::Species::SulfurCube
+                && m.extra.armor_attributes.is_none()
+            {
+                m.extra.armor_attributes = self.motion.attributes.create(&m.kind.id).map(Box::new);
+            }
+        }
+    }
+}
+impl Game<'_> {
     pub(super) fn player_view(&self) -> Option<PlayerView> {
         let p = self.player.as_ref()?;
         let w = f64::from(p.dimensions.width) / 2.0;
@@ -1122,6 +1136,7 @@ impl Game<'_> {
                 i += 1;
             }
         }
+        self.init_sulfur_attribute_maps();
         let uuid = self.level.player_uuid;
         let level_id = self.dim.id();
         let mut snapshot = std::mem::take(&mut self.creatures.seen_buf);
@@ -1410,7 +1425,7 @@ impl Game<'_> {
                     let mut k = from;
                     while k < events.len() {
                         if super::lan_mobs::acts_on_player(&events[k]) {
-                            guest_events.push((conn, events.remove(k)));
+                            guest_events.push((conn, m.id, events.remove(k)));
                         } else {
                             k += 1;
                         }
@@ -2300,6 +2315,18 @@ impl Game<'_> {
                 MobEvent::ArmorHurt { mob, amount, kind } => self.hurt_mob_armor(mob, amount, kind),
                 MobEvent::GliderWear { mob, slot } => self.wear_mob_glider(mob, slot),
                 MobEvent::EntityEvent { mob, event, at } => {
+                    // Ravager.roar (event 69 ends it): with mob_griefing on,
+                    // ROAR_TARGET_WITH_GRIEFING also takes the armor stands.
+                    if event == 69
+                        && self.ui.rules.bool("mob_griefing")
+                        && let Some(area) = self
+                            .mobs
+                            .iter()
+                            .find(|m| m.id == mob && m.species() == Species::Ravager)
+                            .map(|m| m.bounds().inflate(Vec3::new(4.0, 4.0, 4.0)))
+                    {
+                        self.roar_pushes_armor_stands(area, at);
+                    }
                     self.lan_entity_event(mob as i32, event, at)
                 }
                 MobEvent::LevelParticles {
@@ -2762,9 +2789,10 @@ impl Game<'_> {
                             .play(&format!("minecraft:{sound}"), Some(at), 1.0, 1.0);
                     }
                 }
-                MobEvent::Tamed { .. } | MobEvent::Buck { .. } | MobEvent::StabDismount { .. } => {
-                    self.mount_event(&e)
-                }
+                MobEvent::Tamed { .. }
+                | MobEvent::Buck { .. }
+                | MobEvent::StabDismount { .. }
+                | MobEvent::EjectPassengers { .. } => self.mount_event(&e),
                 MobEvent::IronGolemHit {
                     target,
                     amount,
@@ -4001,6 +4029,7 @@ impl Game<'_> {
     ) -> bool {
         let post_attack_if_alive = std::mem::take(&mut self.combat.post_attack_if_alive);
         let rocket = std::mem::take(&mut self.combat.rocket_hit);
+        let melee = self.combat.melee_mob.take();
         // ServerPlayer.canHarmPlayer refused another player's projectile.
         if self.creative || self.combat.refuse_player_hit {
             self.combat.forget_noted(false);
@@ -4019,6 +4048,7 @@ impl Game<'_> {
         // Melee: the attacker stands at `from` (another player's hit has no mob behind it).
         let attacker = match known {
             Some(known) => known,
+            None if melee.is_some() => melee,
             None => from
                 .filter(|_| !projectile && damage_type != "minecraft:player_attack")
                 .and_then(|from| {
@@ -4155,7 +4185,7 @@ impl Game<'_> {
         if outcome.hurt || outcome.sound {
             let source = attacker
                 .or(owner)
-                .and_then(|id| self.mobs.iter().find(|m| m.id == id))
+                .and_then(|id| self.mob_index.get(&self.mobs, id))
                 .map(|m| self.mob_entity(m));
             self.trigger_entity_hurt_player(&horizon_client::advancements::DamageView {
                 kind: damage_type.to_owned(),
@@ -4817,8 +4847,9 @@ impl Game<'_> {
     /// (`#impact_projectiles`) breaks the block when `Projectile.mayInteract`
     /// and `Projectile.mayBreak` allow it, which takes the
     /// `projectiles_can_break_blocks` rule and a shooter that may break blocks
-    /// (`canBreakBlockInAdventureMode`: never a mob, never an
-    /// adventure player). A pot is cracked first (flags 260), so it shatters.
+    /// (`canBreakBlockInAdventureMode`: a resolved mob's arrow needs its
+    /// actual projectile predicate and mob_griefing). Other owner/kind paths
+    /// retain their existing policy. A pot is cracked first (flags 260).
     fn projectile_breaks_block(&mut self, p: &Projectile, pos: [i32; 3]) {
         use horizon_client::command::args::GameMode;
         let impact = matches!(
@@ -4837,7 +4868,17 @@ impl Game<'_> {
         use horizon_client::arrows::OwnerLookup;
         let shooter_may_break = match p.owner {
             Some(Who::Player) => self.mode != GameMode::Adventure,
-            Some(Who::Mob(_)) => false,
+            Some(Who::Mob(_)) => {
+                matches!(p.kind, ProjectileKind::Arrow { .. })
+                    && self.ui.rules.bool("mob_griefing")
+                    && p.arrow
+                        .as_ref()
+                        .and_then(|a| a.can_break.as_ref())
+                        .is_some_and(|predicate| {
+                            super::game_mode::projectile_predicate_supported(predicate)
+                                && self.adventure_predicate_at(predicate, pos)
+                        })
+            }
             None => !p.owner_uuid.is_some_and(|u| self.non_player_entity(u)),
         };
         if !impact || !shooter_may_break || !self.ui.rules.bool("projectiles_can_break_blocks") {
@@ -4846,6 +4887,17 @@ impl Game<'_> {
         let state = self.world.block(pos[0], pos[1], pos[2]);
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
         match &*self.res.facts().get(state).name {
+            "minecraft:chorus_flower"
+                if matches!(
+                    p.kind,
+                    ProjectileKind::Arrow { .. } | ProjectileKind::Snowball
+                ) =>
+            {
+                // `ChorusFlowerBlock.onProjectileHit` supplies the projectile,
+                // even when it has no owner, as the direct block's loot entity.
+                let _ = self.destroy_block_dropping_with_breaker(pos, true);
+                return;
+            }
             "minecraft:chorus_flower" => {}
             // SpeleothemBlock.onProjectileHit (pointed dripstone and sulfur spikes): a
             // thrown trident faster than 0.6 breaks it.
@@ -5073,7 +5125,9 @@ impl Game<'_> {
         let result = self.projectile_hit_inner(p, hit);
         // LivingEntity.actuallyHurt credits the shooter (a ServerPlayer) with the absorbed damage.
         self.settle_dealt_absorbed(p.owner == Some(Who::Player));
-        result
+        result?;
+        // The hit's hurt teleports an enderman or a shulker now (`hurtServer`).
+        self.settle_hurt_teleports()
     }
     fn projectile_hit_inner(&mut self, p: &Projectile, hit: Hit) -> Result<()> {
         let _attacker = self.knockback_scope_for(p.owner);
@@ -5875,12 +5929,22 @@ impl Game<'_> {
                     }
                 }
                 Who::Mob(id) => {
-                    if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
-                        && m.damage_projectile(4.0, source, aim, [p.velocity.x, p.velocity.z])
-                    {
-                        m.add_effect("minecraft:levitation", 200, 0);
-                        // Shulker.hurtServer: a shulker hit by a bullet.
-                        horizon_client::mobs::shulker::hit_by_bullet(m);
+                    let hurt = self.mobs.iter_mut().find(|m| m.id == id).is_some_and(|m| {
+                        let hurt =
+                            m.damage_projectile(4.0, source, aim, [p.velocity.x, p.velocity.z]);
+                        if hurt {
+                            // Shulker.hurtServer: a shulker hit by a bullet.
+                            horizon_client::mobs::shulker::hit_by_bullet(m);
+                        }
+                        hurt
+                    });
+                    if hurt {
+                        // The hurt's teleport (`teleportSomewhere`,
+                        // `hitByShulkerBullet`) comes before the levitation.
+                        self.settle_hurt_teleports()?;
+                        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+                            m.add_effect("minecraft:levitation", 200, 0);
+                        }
                     }
                 }
             },
@@ -9343,6 +9407,297 @@ mod breeding_orb_tests {
 }
 
 #[cfg(test)]
+mod chorus_projectile_drop_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use horizon_client::{chunk::Chunk, motion::PlayerMotion};
+    use horizon_core::position::ChunkPos;
+    use std::sync::Arc;
+    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+                .join(format!("h116-{:?}", std::thread::current().id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
+        game.creative = true;
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("tick freeze"));
+        assert!(game.run_command("fill 0 198 0 15 199 15 stone"));
+        test(&mut game);
+    }
+
+    fn source(game: &mut Game<'_>, x: i32, z: i32, block: &str) {
+        assert!(game.world.chunks.contains_key(&(0, 0)));
+        assert!(game.run_command(&format!("setblock {x} 199 {z} end_stone strict")));
+        assert!(game.run_command(&format!("setblock {x} 200 {z} {block} strict")));
+        assert!(game.run_command(&format!("execute if block {x} 199 {z} end_stone")));
+    }
+    fn launch(game: &mut Game<'_>, kind: &str, n: i32, x: i32, z: i32, owner: bool) -> u32 {
+        let own = if owner { ",Owner:[I;116,0,0,99]" } else { "" };
+        assert!(game.run_command(&format!("summon {kind} {x}.5 202.5 {z}.5 {{UUID:[I;116,0,0,{n}],NoGravity:1b,Motion:[0d,-2d,0d]{own}}}")));
+        let p = game
+            .creatures
+            .projectiles
+            .iter()
+            .find(|p| game.persist.uuid_of(p.id) == Some([116, 0, 0, n]))
+            .unwrap();
+        assert_eq!(p.kind.id(), format!("minecraft:{kind}"));
+        assert_eq!(p.position, Vec3::new(x as f64 + 0.5, 202.5, z as f64 + 0.5));
+        assert_eq!(p.velocity, Vec3::new(0.0, -2.0, 0.0));
+        assert!(p.no_gravity);
+        assert_eq!(p.owner_uuid, owner.then_some([116, 0, 0, 99]));
+        if owner {
+            assert!(matches!(p.owner, Some(Who::Mob(_))));
+        }
+        p.id
+    }
+    fn dropped(game: &Game<'_>, item: &str) {
+        assert_eq!(game.dropped.len(), 1, "actual unfiltered item collection");
+        assert_eq!(&*game.dropped[0].stack.item, item);
+        assert_eq!(game.dropped[0].stack.count, 1);
+    }
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_registered_arrow_collision_keeps_the_actual_projectile_for_chorus_loot() {
+        with_game(|game| {
+            source(game, 4, 4, "chorus_flower");
+            assert!(game.dropped.is_empty());
+            let id = launch(game, "arrow", 1, 4, 4, false);
+            game.tick_projectiles().unwrap();
+            assert!(
+                game.run_command("execute if block 4 200 4 air"),
+                "actual collision broke the source"
+            );
+            assert!(
+                game.creatures
+                    .projectiles
+                    .iter()
+                    .find(|p| p.id == id)
+                    .unwrap()
+                    .arrow
+                    .as_ref()
+                    .unwrap()
+                    .in_ground
+            );
+            dropped(game, "minecraft:chorus_flower");
+        });
+    }
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_registered_snowball_collision_keeps_the_actual_projectile_for_chorus_loot() {
+        with_game(|game| {
+            source(game, 4, 4, "chorus_flower");
+            let id = launch(game, "snowball", 2, 4, 4, false);
+            game.tick_projectiles().unwrap();
+            assert!(game.run_command("execute if block 4 200 4 air"));
+            assert!(!game.creatures.projectiles.iter().any(|p| p.id == id));
+            dropped(game, "minecraft:chorus_flower");
+        });
+    }
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn denied_hits_other_blocks_and_direct_destroy_keep_their_drop_contracts() {
+        with_game(|game| {
+            source(game, 4, 4, "chorus_flower");
+            assert!(game.run_command("gamerule projectiles_can_break_blocks false"));
+            launch(game, "arrow", 3, 4, 4, false);
+            game.tick_projectiles().unwrap();
+            assert!(game.run_command("execute if block 4 200 4 chorus_flower"));
+            assert!(game.dropped.is_empty());
+            assert!(game.run_command("gamerule projectiles_can_break_blocks true"));
+            assert!(game.ui.rules.bool("mob_griefing"));
+            assert!(game.run_command("gamerule mob_griefing"));
+            assert!(game.run_command(
+                "summon pig 12.5 200 12.5 {UUID:[I;116,0,0,99],NoAI:1b,NoGravity:1b,Health:10f}"
+            ));
+            source(game, 8, 4, "chorus_flower");
+            launch(game, "arrow", 4, 8, 4, true);
+            game.tick_projectiles().unwrap();
+            assert!(game.run_command("execute if block 8 200 4 chorus_flower"));
+            assert!(game.dropped.is_empty());
+            source(game, 12, 4, "chorus_flower");
+            launch(game, "ender_pearl", 5, 12, 4, false);
+            game.tick_projectiles().unwrap();
+            assert!(game.run_command("execute if block 12 200 4 chorus_flower"));
+            assert!(game.dropped.is_empty());
+            source(game, 4, 8, "stone");
+            launch(game, "arrow", 6, 4, 8, false);
+            game.tick_projectiles().unwrap();
+            assert!(game.run_command("execute if block 4 200 8 stone"));
+            assert!(game.dropped.is_empty());
+            assert!(game.run_command("gamerule block_drops false"));
+            source(game, 8, 8, "chorus_flower");
+            launch(game, "snowball", 7, 8, 8, false);
+            game.tick_projectiles().unwrap();
+            assert!(game.run_command("execute if block 8 200 8 air"));
+            assert!(game.dropped.is_empty());
+            assert!(game.run_command("gamerule block_drops true"));
+            source(game, 4, 12, "chorus_flower");
+            assert!(game.run_command("setblock 4 200 12 air destroy"));
+            assert!(game.dropped.is_empty());
+            source(game, 8, 12, "dirt");
+            assert!(game.run_command("setblock 8 200 12 air destroy"));
+            dropped(game, "minecraft:dirt");
+        });
+    }
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn default_drop_rng_continues_identically_with_table_sequence_or_level_fallback() {
+        for named in [false, true] {
+            with_game(|game| {
+                let root =
+                    std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+                let mut table: serde_json::Value = serde_json::from_slice(
+                    &std::fs::read(root.join("data/minecraft/loot_table/blocks/gravel.json"))
+                        .unwrap(),
+                )
+                .unwrap();
+                if !named {
+                    table.as_object_mut().unwrap().remove("random_sequence");
+                }
+                let files = vec![(
+                    "loot_table/minecraft:blocks/gravel".to_owned(),
+                    vec![serde_json::to_vec(&table).unwrap()],
+                )];
+                let registry = game.pack.assets.registry;
+                // The level callback requires its catalog for the world lifetime.
+                // These two fixture catalogs live only for this test process.
+                let items: &'static horizon_client::items::Items = Box::leak(Box::new(
+                    horizon_client::items::Items::load(
+                        &root,
+                        registry,
+                        game.res.facts(),
+                        &horizon_world::loot::PackOverlay { files: &files },
+                    )
+                    .unwrap(),
+                ));
+                let state = registry.default_state("minecraft:gravel").unwrap();
+                assert_eq!(items.block_loot_sequence(registry, state).is_some(), named);
+                source(game, 4, 4, "gravel");
+                game.level.seed = 116;
+                game.world.random = horizon_core::random::LegacyRandom::new(116);
+                game.rand_sequences = Default::default();
+                game.with_level(|b, level, ticks| {
+                    level.items = items;
+                    assert!(b.destroy_block(level, ticks, BlockPos::new(4, 200, 4), true));
+                });
+                game.process_level_events().unwrap();
+                assert_eq!(game.dropped.len(), 1);
+                let pool = game.rand_sequences.to_nbt();
+                let sequence_words = match pool
+                    .get("sequences")
+                    .and_then(|v| v.get("minecraft:blocks/gravel"))
+                    .and_then(|v| v.get("source"))
+                {
+                    Some(horizon_world::nbt::Tag::LongArray(v)) => v.clone(),
+                    _ => vec![],
+                };
+                assert_eq!(
+                    !sequence_words.is_empty(),
+                    named,
+                    "actual selected random source"
+                );
+                let mut random = game.world.random.clone();
+                let continuation: Vec<i64> = (0..4).map(|_| random.next_long()).collect();
+                let drops: Vec<_> = game
+                    .dropped
+                    .iter()
+                    .map(|d| (d.stack.item.to_string(), d.stack.count))
+                    .collect();
+                println!(
+                    "h116-continuation {}",
+                    serde_json::json!({"named":named,"level_continuation":continuation,"sequence_words":sequence_words,"drops":drops})
+                );
+            });
+        }
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn breaker_context_is_target_only_and_does_not_escape_its_level_call() {
+        with_game(|game| {
+            source(game, 4, 4, "chorus_flower");
+            source(game, 8, 4, "chorus_flower");
+            source(game, 12, 4, "chorus_flower");
+            let target = BlockPos::new(4, 200, 4);
+            let neighbor = BlockPos::new(8, 200, 4);
+            let state = game.world.block(4, 200, 4);
+            // Actual loaded states and callback/evaluator; this is an isolation
+            // unit, beside the registered projectile collision regressions.
+            game.with_level(|_, level, _| {
+                assert!(level.drop_breaker_at.is_none());
+                level.drop_breaker_at = Some(target);
+                level.drop_resources_now(neighbor, state);
+                level.drop_resources_now(target, state);
+            });
+            dropped(game, "minecraft:chorus_flower");
+            game.with_level(|_, level, _| assert!(level.drop_breaker_at.is_none()));
+            for fail in [false, true] {
+                let outcome: std::result::Result<(), ()> = game.with_level(|_, level, _| {
+                    level.drop_breaker_at = Some(target);
+                    if fail {
+                        return Err(());
+                    }
+                    Ok(())
+                });
+                assert_eq!(outcome.is_err(), fail);
+                game.with_level(|_, level, _| assert!(level.drop_breaker_at.is_none()));
+            }
+            // The same position on a later no-entity destruction cannot reuse
+            // the former callback's presence. Nor can its neighbor.
+            game.destroy_block_dropping([4, 200, 4]).unwrap();
+            game.destroy_block_dropping([8, 200, 4]).unwrap();
+            dropped(game, "minecraft:chorus_flower");
+            let kept = game.with_level(|b, level, ticks| {
+                assert!(level.drop_breaker_at.is_none());
+                level.drop_tool = Some(((12, 200, 4), None));
+                level.drop_into = Some(Vec::new());
+                assert!(b.destroy_block(level, ticks, BlockPos::new(12, 200, 4), true));
+                level.drop_into.take().unwrap()
+            });
+            assert!(kept.is_empty(), "machine's no-entity loot stays empty");
+            dropped(game, "minecraft:chorus_flower");
+        });
+    }
+}
+
+#[cfg(test)]
 mod loaded_arrow_shot_tests {
     use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
     use horizon_client::{
@@ -9766,5 +10121,165 @@ mod loaded_arrow_shot_tests {
                 vec![("minecraft:projectile_shoot", at, Some(Who::Player))]
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod loaded_mob_arrow_permission_tests {
+    use super::*;
+    use crate::game::native_machines::tests::server_game;
+    use horizon_client::{entity_nbt, save};
+    use horizon_core::position::BlockPos;
+    use horizon_world::nbt::Tag;
+
+    fn parse(text: &str) -> Tag {
+        let (tag, used) = horizon_world::nbt::parse_snbt(text).unwrap();
+        assert_eq!(used, text.len());
+        tag
+    }
+
+    #[test]
+    #[ignore = "prepared resources; actual registered summon, collision, permission and drops"]
+    fn loaded_mob_arrow_predicate_survives_model_and_controls_actual_block_hit() {
+        let mut game = server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.block_ticks
+            .add_empty_chunk(BlockPos::new(0, 0, 0).chunk())
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        assert!(game.world.loaded(3, 1));
+        assert!(game.ui.rules.bool("projectiles_can_break_blocks"));
+        assert!(game.ui.rules.bool("block_drops"));
+        assert!(game.run_command(
+            "summon pig 14.5 200 14.5 {UUID:[I;197,0,0,1],NoAI:1b,NoGravity:1b,Health:10f}"
+        ));
+        let owner = game
+            .mobs
+            .iter()
+            .find(|m| game.persist.uuid_of(m.id) == Some([197, 0, 0, 1]))
+            .unwrap()
+            .id;
+        assert_eq!(
+            game.mobs.iter().find(|m| m.id == owner).unwrap().health,
+            10.0
+        );
+        let clock = game.world.game_time;
+        let expected = parse("{blocks:\"minecraft:chorus_flower\"}");
+        let stale = parse("{can_break:{blocks:\"minecraft:stone\"},marker:37}");
+        let mut missing = Vec::new();
+        for (n, predicate, griefing, breaks) in [
+            (1, Some("chorus_flower"), true, true),
+            (2, Some("stone"), true, false),
+            (3, None, true, false),
+            (4, Some("chorus_flower"), false, false),
+            (5, Some("stone"), false, false),
+            (6, None, false, false),
+        ] {
+            let x = if n <= 3 { 3 } else { 11 };
+            let z = 1 + 4 * ((n - 1) % 3);
+            if game.ui.rules.bool("mob_griefing") != griefing {
+                assert!(game.run_command(&format!("gamerule mob_griefing {griefing}")));
+            }
+            assert_eq!(game.ui.rules.bool("mob_griefing"), griefing);
+            assert!(game.run_command(&format!("setblock {x} 199 {z} end_stone")));
+            assert!(game.run_command(&format!("setblock {x} 200 {z} chorus_flower[age=0]")));
+            let field = predicate.map_or(String::new(), |p| {
+                format!(",can_break:{{blocks:\"minecraft:{p}\"}}")
+            });
+            assert!(game.run_command(&format!("summon arrow {} 200.5 {} {{UUID:[I;197,0,{n},2],NoGravity:1b,HasBeenShot:1b,Motion:[2d,0d,0d],Owner:[I;197,0,0,1],item:{{id:\"minecraft:arrow\",count:1}}{field}}}", f64::from(x)-1.5, f64::from(z)+0.5)));
+            let p = game
+                .creatures
+                .projectiles
+                .iter()
+                .find(|p| game.persist.uuid_of(p.id) == Some([197, 0, n, 2]))
+                .unwrap()
+                .clone();
+            assert_eq!(p.owner_uuid, Some([197, 0, 0, 1]));
+            assert_eq!(
+                p.owner,
+                Some(Who::Mob(owner)),
+                "actual resolved loaded Mob, not raw Owner alone"
+            );
+            assert!(matches!(p.kind, ProjectileKind::Arrow { .. }));
+            assert!(p.no_gravity);
+            assert_eq!(p.velocity, Vec3::new(2.0, 0.0, 0.0));
+            assert!(!p.arrow.as_ref().unwrap().in_ground);
+            game.persist.raw.remove(&p.id);
+            for (route, raw) in [("no-raw", None), ("stale-raw", Some(&stale))] {
+                let saved =
+                    entity_nbt::arrow_to_nbt(&p, [197, 0, n, 2], p.owner_uuid, None, raw).unwrap();
+                let want = predicate.map(|id| parse(&format!("{{blocks:\"minecraft:{id}\"}}")));
+                if saved.get("can_break") != want.as_ref() {
+                    missing.push(format!(
+                        "{n} cloned loaded model {route}: {:?} != {want:?}",
+                        saved.get("can_break")
+                    ));
+                }
+                if raw.is_some() {
+                    assert_eq!(save::number(saved.get("marker")), Some(37));
+                }
+            }
+            if n == 1 {
+                assert_eq!(game.persist.uuid_of(p.id), Some([197, 0, n, 2]));
+                // The expected value is the actual admitted input, never an injected model field.
+                assert_eq!(expected, parse("{blocks:\"minecraft:chorus_flower\"}"));
+            }
+            let drops_before = game.dropped.len();
+            game.tick_projectiles().unwrap();
+            let after = game
+                .creatures
+                .projectiles
+                .iter()
+                .find(|a| a.id == p.id)
+                .unwrap();
+            assert!(
+                after.arrow.as_ref().unwrap().in_ground,
+                "actual air-to-ground block collision"
+            );
+            let block = &*game.res.facts().get(game.world.block(x, 200, z)).name;
+            let want = if breaks {
+                "minecraft:air"
+            } else {
+                "minecraft:chorus_flower"
+            };
+            if block != want {
+                missing.push(format!("{n} actual hit block {block} != {want}"));
+            }
+            let dropped: Vec<_> = game
+                .dropped
+                .iter()
+                .skip(drops_before)
+                .map(|e| (&*e.stack.item, e.stack.count, e.position, e.velocity))
+                .collect();
+            println!("actual collision {n}: block={block}, unfiltered new drops={dropped:?}");
+            if !breaks {
+                assert!(dropped.is_empty(), "denied hits cannot create drops");
+            }
+        }
+        assert!(game.run_command("setblock 13 200 12 dirt"));
+        let before = game.dropped.len();
+        game.destroy_block_dropping([13, 200, 12]).unwrap();
+        assert_eq!(
+            &*game.res.facts().get(game.world.block(13, 200, 12)).name,
+            "minecraft:air"
+        );
+        let direct: Vec<_> = game.dropped.iter().skip(before).collect();
+        assert_eq!(
+            direct.len(),
+            1,
+            "independent actual destruction/drop callback"
+        );
+        assert_eq!(&*direct[0].stack.item, "minecraft:dirt");
+        assert_eq!(direct[0].stack.count, 1);
+        assert_eq!(
+            game.world.game_time, clock,
+            "one projectile step per scene; no fabricated world ticks"
+        );
+        assert!(
+            missing.is_empty(),
+            "actual loaded Mob arrow model/permission mismatches: {missing:?}"
+        );
     }
 }

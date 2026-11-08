@@ -628,6 +628,7 @@ impl ItemEntity {
             facts,
             collision,
             no_physics,
+            None,
             heights,
             entity_boxes,
             border,
@@ -637,13 +638,16 @@ impl ItemEntity {
     }
 
     /// Resolve the item's move before the owner handles block contact and
-    /// resumes the normal block effects.
+    /// resumes the normal block effects. `escape_speed`: with `no_physics` on
+    /// a server, the speed of `Entity.moveTowardsClosestSpace`
+    /// (`nextFloat() * 0.2 + 0.1`).
     pub fn tick_move_before_block_effects(
         &mut self,
         world: &World,
         facts: &BlockFacts,
         collision: &BlockCollisionRegistry<'_>,
         no_physics: bool,
+        escape_speed: Option<f32>,
         (water_height, lava_height): (f64, f64),
         entity_boxes: &[Aabb],
         border: Option<&BorderGeometry>,
@@ -663,6 +667,11 @@ impl ItemEntity {
             self.set_fluid_movement(0.95_f32);
         } else {
             self.velocity.y -= self.get_gravity();
+        }
+        // ItemEntity.tick: out of a block placed on it after gravity, so the
+        // escape's 0.75 scales the fallen vertical speed (#12018).
+        if let Some(speed) = escape_speed {
+            self.move_towards_closest_space(world, facts, speed);
         }
         let horizontal = self.velocity.x * self.velocity.x + self.velocity.z * self.velocity.z;
         // ItemEntity.tick: skip move 3 of 4 ticks while grounded with no

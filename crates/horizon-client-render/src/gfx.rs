@@ -162,6 +162,7 @@ mod arena;
 pub mod capture;
 pub mod compositor;
 pub(crate) mod core_lines;
+pub(crate) mod core_sky;
 mod cull;
 mod end_sky;
 pub mod entity_skin;
@@ -515,6 +516,9 @@ struct SectionGpu {
     /// (`packed`, `mesher::packed`) a record each and the vertices of those without one.
     solid_slots: u64,
     packed: bool,
+    /// Its records are a far tile's (`lod::packed`), not a section's: the two
+    /// layouts are told apart by the base vertex its draws use.
+    packed_far: bool,
     /// Where the solid quads' buckets by facing side end (`mesher::Sides`).
     sides: Sides,
     translucent: u32,
@@ -588,14 +592,19 @@ impl SectionGpu {
         self.solid > 0 && (0..sections as i32).contains(&key.1)
     }
     /// The base vertex of its solid draws: quad `q`'s corners are `base + 4 * q` on (the
-    /// quad indices). In the compact layout they name its record's slot past
-    /// `PACKED_BASE` (terrain.wgsl's `section_corner`).
+    /// quad indices). In a compact layout they name its record's slot past
+    /// `PACKED_BASE`, or past `FAR_BASE` for a far tile's records, which is how
+    /// terrain.wgsl's `section_corner` tells the two apart.
     fn solid_base(&self) -> u32 {
-        if self.packed {
-            packed::PACKED_BASE + 4 * self.start as u32
-        } else {
-            self.start as u32
+        if !self.packed {
+            return self.start as u32;
         }
+        let base = if self.packed_far {
+            crate::lod::packed::FAR_BASE
+        } else {
+            packed::PACKED_BASE
+        };
+        base + 4 * self.start as u32
     }
     /// GPU culling's record of it at `key`, its quads within `bounds`
     /// (`SectionMesh::bounds`) and in their buckets by facing side (`sides`),
@@ -1214,6 +1223,8 @@ pub struct Renderer {
     lines_secondary: wgpu::RenderPipeline,
     /// A resource pack's `core/rendertype_lines`, which draws the block outline in their place.
     core_lines: Option<core_lines::CoreLines>,
+    /// The packs' `core/sky` and `core/stars`, drawn in place of the native sky and stars.
+    core_sky: Option<core_sky::CoreSky>,
     /// Gizmo lines: opaque ones (`RenderTypes.lines`, which writes depth),
     /// translucent ones (`RenderTypes.linesTranslucentNoDepthWrite`) and the
     /// always-on-top ones.
@@ -1510,6 +1521,9 @@ pub struct Renderer {
     /// The block sprites as one atlas, while a shader pack is loaded.
     pack_atlas: Option<pack_atlas::PackAtlas>,
     pack_material_atlases: Option<[pack_atlas::PackAtlas; 2]>,
+    /// The shared atlas's LabPBR normal and specular paged maps (`set_shared_material_maps`),
+    /// which shader packs read for entities, items and the hand.
+    shared_material_maps: [Option<wgpu::Texture>; 2],
     /// The pack's terrain program reads flat draws' vertices (`pack_terrain_inputs`).
     pack_terrain_flat: bool,
     /// OptiFine/Iris separate ambient occlusion: pass vertex alpha to hz_Color.a.
@@ -2472,6 +2486,23 @@ impl Renderer {
             levels[level][1] += u64::from(tile.mesh.solid + tile.mesh.translucent);
         }
         levels
+    }
+    /// Whether solid quads go to the arena in the compact layout
+    /// (`packed_quads`), and whether far tiles' own records are on
+    /// (`lod::packed::far_packing`).
+    pub fn packed_layout(&self) -> [bool; 2] {
+        [self.packed_quads, crate::lod::packed::far_packing()]
+    }
+    /// Bytes of the arena the resident chunk sections hold, and of the one far
+    /// tiles hold: the same split `gpu_census` reports, for `status`, so the
+    /// compact layouts can be seen working.
+    pub fn vertex_bytes_split(&self) -> [u64; 2] {
+        let stride = std::mem::size_of::<TerrainVertex>() as u64;
+        let used = |s: &SectionGpu| (s.solid_slots + u64::from(s.translucent) * 4) * stride;
+        [
+            self.sections.values().map(used).sum(),
+            self.lods.values().map(|tile| used(&tile.mesh)).sum(),
+        ]
     }
     /// Bytes of the section vertex arenas' buffers, and of the vertices
     /// resident sections hold in them.
@@ -4605,6 +4636,10 @@ impl Renderer {
         });
         let static_entity_index_quads = 1 << 14;
         let static_entity_indices = Self::quad_indices(&device, static_entity_index_quads);
+        let indirect_execution = adapter
+            .get_downlevel_capabilities()
+            .flags
+            .contains(wgpu::DownlevelFlags::INDIRECT_EXECUTION);
         let flat_wanted = flat::wanted(&adapter, &device);
         // Metal draws solid terrain in two passes (`split_solid`): meshes put all
         // their opaque quads first, so each pass draws its part in a run or two.
@@ -4643,6 +4678,7 @@ impl Renderer {
                 &bindings,
                 arena.page_vertices(),
                 min_sections,
+                indirect_execution,
                 |layout, label, vertex, fragment, blend, cull, pulled| {
                     let buffers: &[Option<wgpu::VertexBufferLayout<'_>>] =
                         if pulled { &[] } else { &buffers };
@@ -4703,10 +4739,7 @@ impl Renderer {
         let multi_draw = device
             .features()
             .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE)
-            && adapter
-                .get_downlevel_capabilities()
-                .flags
-                .contains(wgpu::DownlevelFlags::INDIRECT_EXECUTION);
+            && indirect_execution;
         let batchable = translucent_batchable(&adapter.get_info(), multi_draw);
         crate::graphics::offer_translucent_batching(batchable);
         let translucent_batching = batchable && translucent_batching;
@@ -4865,6 +4898,7 @@ impl Renderer {
             lines,
             lines_secondary,
             core_lines: None,
+            core_sky: None,
             debug_lines_opaque,
             debug_lines,
             debug_lines_on_top,
@@ -5044,6 +5078,7 @@ impl Renderer {
             pack_weather: None,
             pack_atlas: None,
             pack_material_atlases: None,
+            shared_material_maps: [None, None],
             pack_terrain_flat: false,
             separate_ao: false,
             pack_lava_layers: Vec::new(),
@@ -5135,6 +5170,47 @@ impl Renderer {
         }
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
     }
+    /// The shared atlas's LabPBR maps (`HudAtlas::material_maps`), uploaded for the shader packs
+    /// loaded from now on; a map too large for this GPU is left out.
+    pub fn set_shared_material_maps(&mut self, maps: &[Option<crate::paged_maps::PagedMap>; 2]) {
+        let limit = self.device.limits().max_texture_dimension_2d;
+        let sizes: Vec<String> = (maps.iter().zip(["normals", "specular"]))
+            .filter_map(|(m, name)| {
+                m.as_ref()
+                    .map(|m| format!("{name} {}x{}", m.width, m.height))
+            })
+            .collect();
+        if !sizes.is_empty() {
+            let bytes: usize = maps.iter().flatten().map(|m| m.pixels.len()).sum();
+            log::info!(
+                "shared atlas LabPBR maps: {} ({:.1} MiB)",
+                sizes.join(", "),
+                bytes as f64 / f64::from(1 << 20)
+            );
+        }
+        self.shared_material_maps = maps.each_ref().map(|map| {
+            let map = map.as_ref().filter(|m| m.width.max(m.height) <= limit)?;
+            Some(self.device.create_texture_with_data(
+                &self.queue,
+                &wgpu::TextureDescriptor {
+                    label: Some("Shared atlas material map"),
+                    size: wgpu::Extent3d {
+                        width: map.width,
+                        height: map.height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                },
+                wgpu::util::TextureDataOrder::LayerMajor,
+                &map.pixels,
+            ))
+        });
+    }
     /// The pack's OptiFine custom sky layer textures (`crate::custom_sky::CustomSky::load`).
     pub fn set_custom_sky(&mut self, pack: &crate::custom_sky::CustomSky) {
         self.custom_sky.set_pack(&self.device, &self.queue, pack);
@@ -5150,6 +5226,15 @@ impl Renderer {
         let format = self.frame_format;
         self.core_lines =
             program.and_then(|program| core_lines::CoreLines::new(&self.device, format, program));
+    }
+    /// The resource packs' `core/sky` and `core/stars` (`HudAtlas::sky_shader`,
+    /// `stars_shader`), or the built-in sky and stars.
+    pub fn set_sky_shaders(
+        &mut self,
+        disc: Option<&horizon_shaders::CoreProgram>,
+        stars: Option<&horizon_shaders::CoreProgram>,
+    ) {
+        self.core_sky = core_sky::CoreSky::new(&self.device, self.frame_format, disc, stars);
     }
     /// LevelRenderer.submitBlockOutline: the buffer holds `edges` per stroke, the black
     /// secondary stroke first when high contrast is on.
@@ -5901,6 +5986,7 @@ impl Renderer {
             solid,
             solid_slots,
             packed,
+            packed_far: packed && mesh.packed_far,
             sides: if mesh.sides.quads() == solid {
                 mesh.sides
             } else {
@@ -6402,7 +6488,9 @@ impl Renderer {
         }
         self.packed_quads = want;
         packed::pack_quads(want);
-        if !want && self.sections.values().any(|s| s.packed) {
+        let laid_out = self.sections.values().any(|s| s.packed)
+            || self.lods.values().any(|t| t.drawn().packed);
+        if !want && laid_out {
             self.sections_dropped = true;
             self.clear_sections(self.layout);
         }
@@ -6959,7 +7047,7 @@ impl Renderer {
         dimension: i32,
         post: std::result::Result<Option<pack_post::PackPost>, pack_post::Refused>,
     ) -> std::result::Result<Option<(Vec<String>, Vec<String>)>, pack_post::Refused> {
-        let post = match post {
+        let mut post = match post {
             Ok(post) => post,
             Err(e) => {
                 self.pack_post = Some((dimension, None));
@@ -6968,6 +7056,12 @@ impl Renderer {
                 return Err(e);
             }
         };
+        if let Some(post) = post.as_mut() {
+            post.set_paged_maps(
+                (self.shared_material_maps.each_ref())
+                    .map(|t| t.as_ref().map(|t| t.create_view(&Default::default()))),
+            );
+        }
         let report = post.as_ref().map(|p| {
             let programs = p.programs().into_iter().map(str::to_owned).collect();
             (programs, p.notes.clone())
@@ -9076,6 +9170,39 @@ impl Renderer {
                 self.uploads.buffer(&mut encoder, core.uniform(), 0, &data);
             }
         }
+        // A pack's core/sky and core/stars: the disc with the sky colour, the stars with their
+        // brightness, both turned with the camera only (SkyRenderer's model view).
+        if let Some(core) = &self.core_sky
+            && !frame.title
+        {
+            let size = [self.config.width, self.config.height];
+            let block = crate::post_chain::Globals {
+                glint_alpha: frame.glint_alpha,
+                ..frame.post_effects.globals
+            }
+            .bytes(size, frame.post_effects.menu_blur_radius as i32);
+            let [sky_end, clouds_end, ..] = globals.fog_ends;
+            let fog = [fog[0], fog[1], fog[2], fog[3], sky_end, clouds_end];
+            let view = views.primary();
+            // Far enough for the disc's rim, 512 out: the sky draws without a depth test.
+            let fov = (2.0 * view.tan_half_fov.atan()).to_degrees();
+            let projection = jitter * world_projection(fov, view.aspect, 2048.0) * pose;
+            let [r, g, b, ..] = frame.sky.sky_color;
+            let sky =
+                core_sky::uniforms(block, projection, view.view, [r, g, b, 1.0], fog_color, fog);
+            let stars = frame.stars.map(|(rotation, brightness)| {
+                let b = brightness.clamp(0.0, 1.0);
+                core_sky::uniforms(
+                    block,
+                    projection,
+                    view.view * rotation,
+                    [b; 4],
+                    fog_color,
+                    fog,
+                )
+            });
+            core.prepare(&mut self.uploads, &mut encoder, &sky, stars.as_deref());
+        }
         let skin = frame.skin.filter(|skin| match &mut self.entity_skin {
             Some(skinner) => skinner.register(&self.device, &mut self.uploads, &mut encoder, skin),
             None => false,
@@ -10165,8 +10292,16 @@ impl Renderer {
                     {
                         Some((sky, native)) => sky.draw(&mut pass, native),
                         None => {
-                            pass.set_pipeline(&self.sky_base);
-                            pass.draw(0..3, 0..1);
+                            match self.core_sky.as_ref().filter(|c| c.draws_disc()) {
+                                Some(core) => {
+                                    core.draw_disc(&mut pass);
+                                    pass.set_bind_group(0, &self.group, &[]);
+                                }
+                                None => {
+                                    pass.set_pipeline(&self.sky_base);
+                                    pass.draw(0..3, 0..1);
+                                }
+                            }
                             if frame.sky.sunrise_color[3] > 0.001 {
                                 pass.set_pipeline(&self.sunrise_pipeline);
                                 pass.set_vertex_buffer(0, self.sunrise_buffer.slice(..));
@@ -10217,7 +10352,10 @@ impl Renderer {
                     .as_ref()
                     .is_some_and(|n| n.sky.is_some() && !n.vanilla_stars);
                 if !frame.title && frame.stars.is_some() && !pack_draws_sky && !own_stars {
-                    self.stars.draw(&mut pass);
+                    match self.core_sky.as_ref().filter(|c| c.draws_stars()) {
+                        Some(core) => core.draw_stars(&mut pass),
+                        None => self.stars.draw(&mut pass),
+                    }
                     pass.set_bind_group(0, &self.group, &[]);
                 }
                 if !frame.title && frame.dark_disc && !pack_draws_sky {
@@ -11779,6 +11917,13 @@ impl Renderer {
                 timing.as_mut(),
             );
         }
+        // The layered frame's light eases into the peak, before the camera overlays draw on it.
+        if layered
+            && !frame.title
+            && let Some(hdr) = &self.hdr
+        {
+            hdr.tonemap(encoder, timing.as_mut());
+        }
         if !frame.screen.is_empty() {
             let attachments = [Some(wgpu::RenderPassColorAttachment {
                 view: view_target,
@@ -12498,7 +12643,7 @@ struct Overlay {
     hand_view_proj: Mat4,
 }
 
-fn world_projection(fov_degrees: f32, aspect: f32, far: f32) -> Mat4 {
+pub(crate) fn world_projection(fov_degrees: f32, aspect: f32, far: f32) -> Mat4 {
     Mat4::perspective_rh(fov_degrees.to_radians(), aspect, far, NEAR_PLANE)
 }
 
@@ -13718,6 +13863,7 @@ mod tests {
             translucent_at: (0, u64::from(solid) * 4),
             solid,
             solid_slots: u64::from(solid) * 4,
+            packed_far: false,
             packed: false,
             sides: crate::mesher::Sides::unsorted(solid),
             translucent,

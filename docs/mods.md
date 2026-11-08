@@ -392,6 +392,23 @@ A native mod can hand the screen bytes of its own when the block opens it
 ([native-mods.md](native-mods.md#menu-extra-data)). Not yet: declared per-slot rules beyond `results`, hooks for
 shift-click routing and `stillValid`, and client prediction of its clicks.
 
+`crafting` gives the menu a crafting grid that crafts as vanilla's crafting table does (`CraftingMenu`): `size`x`size`
+slots (2 or 3, 3 by default) from `grid` on, row by row, and the slot that shows their result:
+
+```json
+{ "slots": 12, "crafting": { "grid": 1, "size": 3, "result": 0 } }
+```
+
+The result follows the grid with the world's crafting recipes, data packs' and mods' included (and
+`limitedCrafting`). Taking it uses up one of each ingredient and leaves its remainders (a milk bucket's bucket) in the
+grid, a shift-click on it crafts as many as fit in the inventory, a shift-click from the inventory fills the grid
+first, and the mods' `native_prepare_item_craft` and `native_item_crafted` hear it as on a crafting table (with the
+block's position). The block entity keeps the grid, so what is in it stays when the menu closes, as in a crafting
+station, but never the result: hoppers, comparators and a broken block see only the grid. Slots outside the grid and
+result are the menu's other slots. The grid's slots follow `native_menu_slot_rules`; the result takes nothing. It runs
+on the server, so single player, LAN and dedicated servers craft alike; the result a player is shown is made again
+each tick its grid changed, whoever changed it. The grid and result may not be listed in `results`.
+
 #### Namespaces and limits
 
 The fence: files go in the mod's own namespaces (`assets/<id>/`,

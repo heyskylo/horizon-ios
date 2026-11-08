@@ -1012,6 +1012,34 @@ def enderman_command_damage():
     return ops
 
 
+def shulker_command_damage():
+    """DamageCommand -> Shulker.hurtServer: below half health, random.nextInt(4) == 0 teleports
+    the shulker then and there (teleportSomewhere()). The world is frozen, so no AI step does it
+    later. 32 shulkers cling to stone walls between two-block air gaps, where a shell has room
+    to open (canStayAt), so nearly every teleportSomewhere finds a place: one shulker in four
+    moves, and none of the 32 does one time in 10^4."""
+    ops = setup('/forceload add 144 144 207 207', '/fill 159 203 159 192 221 183 minecraft:stone')
+    ops += setup(*[f'/fill {x} 204 160 {x + 1} 220 182 minecraft:air' for x in range(160, 192, 3)])
+    ops += [{'op': 'settle', 'required_chunks': [[x, z] for x in range(9, 13) for z in range(9, 12)]}]
+    ops += setup('/tick freeze', *[f'/scoreboard objectives add sd_{k} dummy' for k in ('x', 'y', 'z', 'x2', 'y2', 'z2')])
+    # Each on the west wall of its gap (AttachFace west), its shell opening east into the gap.
+    ops += setup(*[f'/summon shulker {x}.5 212 {z}.5 {{Tags:["sd"],AttachFace:4b,PersistenceRequired:1b}}'
+                   for x in range(163, 185, 3) for z in (168, 170, 172, 174)])
+    ops += [cmd('/execute if entity @e[tag=sd]', expect_result=32)]
+    def store(suffix):
+        return [f'/execute as @e[tag=sd] store result score @s sd_{k}{suffix} run data get entity @s Pos[{i}] 10'
+                for i, k in enumerate('xyz')]
+    ops += setup(*store(''))
+    ops += setup('/execute as @e[tag=sd] run damage @s 20')
+    ops += setup(*store('2'), *[f'/execute as @e[tag=sd] unless score @s sd_{k} = @s sd_{k}2 run tag @s add sd_moved'
+                                 for k in 'xyz'])
+    ops += [cmd('/execute if entity @e[tag=sd]', expect_result=32),
+            cmd('/execute if entity @e[tag=sd_moved,limit=1]', expect_result=1)]
+    ops += setup('/kill @e[tag=sd]', *[f'/scoreboard objectives remove sd_{k}' for k in ('x', 'y', 'z', 'x2', 'y2', 'z2')],
+                 '/fill 159 203 159 192 221 183 minecraft:air', '/forceload remove 144 144 207 207', '/tick unfreeze')
+    return ops
+
+
 def snbt_trailing_commas():
     """SnbtGrammar: a compound, a list and a typed array may end with a comma; an empty one
     may not hold only a comma, and two commas in a row are an error."""
@@ -1997,6 +2025,12 @@ def advancement_reward_fixtures(group_names):
 
 def function_return_fixtures(group_names):
     functions = {}
+    if 'fork function feedback' in group_names:
+        try:
+            from .fork_function_feedback_corpus import functions as fork_functions
+        except ImportError:
+            from fork_function_feedback_corpus import functions as fork_functions
+        functions.update(fork_functions())
     if 'function condition fallthrough' in group_names:
         try:
             from .function_condition_corpus import functions as condition_functions
@@ -2104,6 +2138,14 @@ def function_return_feedback():
                   cmd('/execute if score #clock audit = #after audit', expect_result=1),
                   cmd('/scoreboard objectives remove audit')])
     return lines
+
+
+def fork_function_feedback_cases():
+    try:
+        from .fork_function_feedback_corpus import cases
+    except ImportError:
+        from fork_function_feedback_corpus import cases
+    return cases(cmd)
 
 
 def function_condition_fallthrough():
@@ -4997,6 +5039,14 @@ def zombie_nautilus_ignored_age():
 
 
 
+def jukebox_saved_clock_cases():
+    try:
+        from .jukebox_saved_clock_corpus import cases
+    except ImportError:
+        from jukebox_saved_clock_corpus import cases
+    return cases(cmd)
+
+
 def structured_item_slots():
     range3 = '{type:"minecraft:slot_range",slots:"container.3"}'
     range5 = '{type:"minecraft:slot_range",slots:"container.5"}'
@@ -5697,16 +5747,66 @@ def piston_entity_tick_order():
     return ops
 
 
+def item_block_escape():
+    """#12018: an item inside a block falls before it is pushed towards the open side."""
+    ops = setup('/kill @e[type=!player]', '/fill 0 200 0 5 215 5 air',
+                '/fill 0 200 1 2 200 1 stone', '/fill 1 200 0 1 200 2 stone',
+                '/setblock 1 201 1 stone', '/setblock 0 200 1 stone',
+                '/setblock 2 200 1 air',
+                '/summon item 1.5 200.25 1.5 {Item:{id:"minecraft:diamond",count:1},'
+                'PickupDelay:32767s,Tags:["escape"],Motion:[0.0d,0.2d,0.0d]}')
+    item = '@e[tag=escape,limit=1]'
+    # The east speed is random, but for two ticks the item's middle stays in
+    # the stone whatever it is: it escapes east both times, so its height and
+    # vertical motion are exact.
+    for _ in range(2):
+        ops.append({'op': 'tick', 'n': 1})
+        ops.append(cmd(f'/data get entity {item} Pos[1]'))
+        ops.append(cmd(f'/data get entity {item} Motion[1]'))
+    ops += setup('/kill @e[type=!player]', '/fill 0 200 0 5 215 5 air')
+    return ops
+
+
+def scheduled_item_birth():
+    """#12017: an item a scheduled block tick drops ticks in that tick's entity pass;
+    one an entity's block contact drops does not."""
+    ops = []
+    for front in ('air', 'powder_snow'):
+        ops += setup('/kill @e[type=!player]', '/fill 0 200 0 5 215 5 air',
+                     '/setblock 1 200 1 dropper[facing=up]{Items:[{Slot:0b,id:"minecraft:stone",count:1}]}',
+                     f'/setblock 1 201 1 {front}',
+                     '/setblock 2 200 1 redstone_block')
+        item = '@e[type=item,x=1.5,y=201.5,z=1.5,distance=..3,limit=1]'
+        # The dropper's tick is due 4 ticks after it was powered.
+        for _ in range(6):
+            ops.append({'op': 'tick', 'n': 1})
+            ops.append(cmd(f'/execute if entity {item}'))
+            ops.append(cmd(f'/data get entity {item} Age'))
+    # A boat breaks a lily pad in its own tick (`applyEffectsFromBlocks`), inside
+    # the entity pass: that drop waits for the next tick.
+    ops += setup('/kill @e[type=!player]', '/fill 0 200 0 5 215 5 air',
+                 '/fill 0 200 0 2 200 2 water', '/setblock 1 201 1 lily_pad',
+                 '/summon oak_boat 1.5 201 1.5 {NoGravity:1b}')
+    item = '@e[type=item,x=1.5,y=201.5,z=1.5,distance=..3,limit=1]'
+    for _ in range(3):
+        ops.append({'op': 'tick', 'n': 1})
+        ops.append(cmd('/execute if block 1 201 1 lily_pad'))
+        ops.append(cmd(f'/execute if entity {item}'))
+        ops.append(cmd(f'/data get entity {item} Age'))
+    ops += setup('/kill @e[type=!player]', '/fill 0 200 0 5 215 5 air')
+    return ops
+
+
 def piston_push_ground():
-    """#12029: `Entity.move(MoverType.PISTON)` ends in `setOnGroundWithMovement`
-    on the server, so a push sets an item's or primed TNT's OnGround to whether
+    """#12029, #12100: `Entity.move(MoverType.PISTON)` ends in `setOnGroundWithMovement`
+    on the server, so a push sets an item's, primed TNT's or experience orb's OnGround to whether
     its downward part was blocked: a sideways push off the stone it rests on
     clears it, and so does a free push down. The entity ticks before the piston
     moves it (#9337), so the reading after each tick is the push's. Only
     OnGround is compared: the float air drags (#11794) shift Motion."""
     ops = []
     for kind, fields in (('item', 'Item:{id:"minecraft:diamond",count:1},PickupDelay:32767s'),
-                         ('tnt', 'fuse:200s')):
+                         ('tnt', 'fuse:200s'), ('experience_orb', 'Value:1s')):
         selector = f'@e[type=minecraft:{kind},tag=piston_ground,limit=1]'
         for case in ('sideways', 'down'):
             ops += setup('/kill @e[type=!player]', '/fill 28 208 28 36 218 34 air',
@@ -6039,9 +6139,11 @@ ISOLATED_PICKUP_SAVE = frozenset({'mob saved pickup loot'})
 ISOLATED_ORB_UUID = frozenset({'orb saved UUID'})
 ISOLATED_STAND_FALL = frozenset({'stand saved fall distance'})
 ISOLATED_POTION_ICONS = frozenset({'potion custom effect icons'})
+ISOLATED_JUKEBOX_CLOCK = frozenset({'jukebox saved clock'})
+ISOLATED_FUNCTION_FEEDBACK = frozenset({'fork function feedback'})
 # Its sync turns on fixed seeds for the whole script: the groups after it would draw from them (tools/test_seed_sync_parity.py).
 ISOLATED_SEED_SYNC = frozenset({'seed sync proof'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_SEED_SYNC
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK | ISOLATED_SEED_SYNC
 
 
 def groups():
@@ -6149,6 +6251,7 @@ def groups():
         ('named smoke predicates', named_smoke_predicates()),
         ('mining_efficiency_9021', mining_efficiency_9021()),
         ('structured item slots', structured_item_slots()),
+        ('jukebox saved clock', jukebox_saved_clock_cases()),
         ('loaded potion clouds', loaded_clouds(cmd, setup)),
         ('server clock', server_clock()),
         ('inline execute predicates', inline_execute_predicates()),
@@ -6194,6 +6297,8 @@ def groups():
         ('wither spawn', wither_spawn()),
         ('riding teleport', riding_teleport()),
         ('piston entity tick order', piston_entity_tick_order()),
+        ('item block escape', item_block_escape()),
+        ('scheduled block item birth', scheduled_item_birth()),
         ('piston push ground', piston_push_ground()),
         ('carpet farms', carpet_farms(cmd, setup)),
         ('passenger teleports', passenger_teleports(cmd, setup)),
@@ -6210,6 +6315,7 @@ def groups():
         ('dragon command damage', dragon_command_damage()),
         ('minecart numeric fields', minecart_numeric_fields()),
         ('enderman command damage', enderman_command_damage()),
+        ('shulker command damage', shulker_command_damage()),
         ('SNBT trailing commas', snbt_trailing_commas()),
         ('execute', execute()),
         ('projectile origin', projectile_origin()),
@@ -6244,6 +6350,7 @@ def groups():
         ('mob full resistance hits', mob_full_resistance_hits()),
         ('sulfur cube loaded health', sulfur_cube_loaded_health()),
         ('function return feedback', function_return_feedback()),
+        ('fork function feedback', fork_function_feedback_cases()),
         ('function condition fallthrough', function_condition_fallthrough()),
         ('ticking and random', ticking()),
         ('compute', compute()),

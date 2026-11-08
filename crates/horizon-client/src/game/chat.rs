@@ -831,6 +831,23 @@ impl Game<'_> {
             .map(|(_, d)| d.name.clone())
             .collect();
         self.ui.registries.loot_tables = ids.loot_tables.clone();
+        // ResourceOrIdArgument decodes an inline feature while the command is
+        // parsed, with the codec and blocks placement uses (the live features
+        // never change once installed).
+        self.ui.registries.inline_feature =
+            self.res
+                .behaviours()
+                .live_features()
+                .cloned()
+                .map(|features| {
+                    horizon_client_core::registries::InlineFeatureCheck::new(move |tag| {
+                        let json = horizon_client::scoreboard::tag_to_json(tag).to_string();
+                        features
+                            .decode_inline(&json)
+                            .map(drop)
+                            .map_err(|e| e.to_string())
+                    })
+                });
         self.ui.registries.templates = ids.templates.clone();
         self.ui.registries.sounds = self.audio.event_names();
         self.ui.registries.attributes = [

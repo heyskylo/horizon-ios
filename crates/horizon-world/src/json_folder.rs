@@ -8,7 +8,7 @@
 use std::{
     fs, io,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, Weak},
+    sync::{Arc, Condvar, Mutex, OnceLock, Weak},
 };
 
 /// One file: its path inside the folder without `.json` (`a/b`, as an id has
@@ -33,6 +33,21 @@ pub struct Folder {
 
 static OPEN: Mutex<Vec<(PathBuf, Weak<Folder>)>> = Mutex::new(Vec::new());
 
+/// A loader already reading a folder. Resource tables start on several
+/// threads; without this small single-flight gate, two of them can both miss
+/// `OPEN` and walk/read the same tag or recipe directory before either has a
+/// chance to publish its bytes.
+struct InFlight {
+    result: Mutex<Option<Result<Arc<Folder>, (io::ErrorKind, String)>>>,
+    ready: Condvar,
+}
+static IN_FLIGHT: OnceLock<Mutex<std::collections::HashMap<PathBuf, Arc<InFlight>>>> =
+    OnceLock::new();
+
+fn in_flight() -> &'static Mutex<std::collections::HashMap<PathBuf, Arc<InFlight>>> {
+    IN_FLIGHT.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
 fn find(open: &[(PathBuf, Weak<Folder>)], dir: &Path) -> Option<Arc<Folder>> {
     open.iter()
         .find(|(d, _)| d == dir)
@@ -46,10 +61,7 @@ pub fn held(dir: &Path) -> Option<Arc<Folder>> {
 
 /// The `.json` files under `dir`: shared with any other reader holding them,
 /// else listed and read now. An error when `dir` itself can't be listed.
-pub fn read(dir: &Path) -> io::Result<Arc<Folder>> {
-    if let Some(folder) = held(dir) {
-        return Ok(folder);
-    }
+fn read_uncached(dir: &Path) -> io::Result<Arc<Folder>> {
     let files = match prepared(dir) {
         Some(files) => files,
         None => list(dir)?
@@ -71,6 +83,48 @@ pub fn read(dir: &Path) -> io::Result<Arc<Folder>> {
     open.retain(|(_, f)| f.strong_count() > 0);
     open.push((dir.to_owned(), Arc::downgrade(&folder)));
     Ok(folder)
+}
+
+pub fn read(dir: &Path) -> io::Result<Arc<Folder>> {
+    if let Some(folder) = held(dir) {
+        return Ok(folder);
+    }
+    let (flight, leader) = {
+        let mut flights = in_flight().lock().unwrap_or_else(|e| e.into_inner());
+        match flights.entry(dir.to_owned()) {
+            std::collections::hash_map::Entry::Occupied(entry) => (entry.get().clone(), false),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let flight = Arc::new(InFlight {
+                    result: Mutex::new(None),
+                    ready: Condvar::new(),
+                });
+                entry.insert(flight.clone());
+                (flight, true)
+            }
+        }
+    };
+    if !leader {
+        let mut result = flight.result.lock().unwrap_or_else(|e| e.into_inner());
+        while result.is_none() {
+            result = flight.ready.wait(result).unwrap_or_else(|e| e.into_inner());
+        }
+        return result
+            .clone()
+            .expect("json folder flight result")
+            .map_err(|(kind, message)| io::Error::new(kind, message));
+    }
+
+    let result = read_uncached(dir).map_err(|e| (e.kind(), e.to_string()));
+    {
+        let mut published = flight.result.lock().unwrap_or_else(|e| e.into_inner());
+        *published = Some(result.clone());
+        flight.ready.notify_all();
+    }
+    in_flight()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(dir);
+    result.map_err(|(kind, message)| io::Error::new(kind, message))
 }
 
 /// `dir`'s `.json` files from its prepared root's `horizon-data.bin`, when
