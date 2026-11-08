@@ -42,8 +42,6 @@ GENERATORS = [
      lambda d: bool(d["commands"]["added"] or d["commands"]["removed"])),
     ("crates/horizon-command/src/vanilla_order.rs", "python3 tools/generate_command_order.py",
      lambda d: bool(d["commands"]["added"] or d["commands"]["removed"])),
-    ("crates/horizon-world/src/datafix/block_state_data.txt", "python3 tools/gen_block_state_data.py",
-     lambda d: "net/minecraft/util/datafix/fixes/BlockStateData" in d["classes"]["changed"]),
 ]
 # Registries whose new entries are new things to port.
 CONTENT = ["minecraft:block", "minecraft:item", "minecraft:entity_type", "minecraft:block_entity_type",

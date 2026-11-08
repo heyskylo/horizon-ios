@@ -89,6 +89,17 @@ fn unpack<'a>(id: &'a str, c: &'a Catalogue, me: &'a Me) -> Vec<&'a str> {
     }
 }
 
+/// The hash of a picture of `ids` worn by `skin` (its file's pointer, plus one when slim): each
+/// item file's hash, "-" for one not loaded yet. The catalogue is read from disk at once and the
+/// files come a moment later; a picture drawn without them must not stand once they are here.
+fn drawn_from(ids: &[&str], c: &Catalogue, skin: usize, loaded: impl Fn(&str) -> bool) -> String {
+    let hashes: Vec<&str> = (ids.iter())
+        .filter_map(|i| c.items.iter().find(|e| e.id == *i))
+        .map(|e| if loaded(&e.id) { e.hash.as_str() } else { "-" })
+        .collect();
+    format!("{}|{skin:x}", hashes.join(","))
+}
+
 /// An id's name and line: a set's, the founder set's or an item's.
 fn about(id: &str, c: &Catalogue, lang: &str) -> (String, Option<String>) {
     if id == FOUNDER_SET {
@@ -288,17 +299,14 @@ impl Launcher {
             .collect()
     }
 
-    /// What `id`'s picture shows, and the hash of what it is drawn from (the item files', and the
-    /// skin's when the player is in it).
+    /// What `id`'s picture shows, and the hash of what it is drawn from (`drawn_from`).
     fn shop_subject(&self, id: &str, c: &Catalogue, me: &Me) -> Option<(Subject, String)> {
         let items = self.shop_items(id, c, me);
-        let hashes: Vec<&str> = (unpack(id, c, me).into_iter())
-            .filter_map(|i| c.items.iter().find(|e| e.id == i))
-            .map(|e| e.hash.as_str())
-            .collect();
         let skin = (self.wardrobe.as_ref().and_then(|w| w.skin.as_ref()))
             .map_or(0, |(s, slim)| Arc::as_ptr(s) as usize + usize::from(*slim));
-        let hash = format!("{}|{skin:x}", hashes.join(","));
+        let hash = drawn_from(&unpack(id, c, me), c, skin, |i| {
+            (self.wardrobe.as_ref()).is_some_and(|w| w.items.contains_key(i))
+        });
         if let Some(set) = c.sets.iter().find(|s| s.id == id) {
             // The pack: its looks side by side, else its items worn together.
             let looks: Vec<Vec<Arc<Item>>> = (c.sets.iter())
@@ -440,21 +448,15 @@ impl Launcher {
         if id == FOUNDER_SET {
             return String::new();
         }
+        if rules::owns(id, c, owned) {
+            return tr("Owned").into();
+        }
         if let Some(s) = c.supporter.as_ref().filter(|s| s.item == id) {
-            if owned.contains(id) {
-                return tr("Owned").into();
-            }
             let min = s.min.get(currency).copied().unwrap_or(0);
             return format!("{}+", rules::format_price(min, currency));
         }
         if let Some(s) = c.sets.iter().find(|s| s.id == id) {
-            return match rules::set_price(s, c, owned, currency) {
-                (_, mine) if mine == s.items.len() => tr("Owned").into(),
-                (amount, _) => rules::format_price(amount, currency),
-            };
-        }
-        if owned.contains(id) {
-            return tr("Owned").into();
+            return rules::format_price(rules::set_price(s, c, owned, currency).0, currency);
         }
         (c.items.iter().find(|e| e.id == id))
             .and_then(|e| e.prices.get(currency))
@@ -725,13 +727,16 @@ impl Launcher {
         let warm = ui::color(tint("head"));
         let open = id.to_owned();
         let opened = id.to_owned();
-        let buy = button("shop-hero-buy", "Buy", Kind::Primary, &t).on_click(cx.listener(
-            move |this, _: &ClickEvent, _, cx| {
-                this.shop.selected = Some(open.clone());
-                this.shop.said = None;
-                cx.notify();
-            },
-        ));
+        // What the account owns already has nothing to buy: "Owned" alone.
+        let buy = (!rules::owns(id, c, owned)).then(|| {
+            button("shop-hero-buy", "Buy", Kind::Primary, &t).on_click(cx.listener(
+                move |this, _: &ClickEvent, _, cx| {
+                    this.shop.selected = Some(open.clone());
+                    this.shop.said = None;
+                    cx.notify();
+                },
+            ))
+        });
         div()
             .id("shop-hero")
             .relative()
@@ -792,7 +797,7 @@ impl Launcher {
                             .gap(px(18.))
                             .pt(px(10.))
                             .child(ui::text(26., FontWeight::SEMIBOLD, ink::FULL).child(price))
-                            .child(buy),
+                            .children(buy),
                     ),
             )
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -1079,6 +1084,26 @@ mod tests {
             ..Default::default()
         }];
         c
+    }
+
+    #[test]
+    fn a_picture_is_drawn_again_once_its_item_files_arrive() {
+        let c: Catalogue = serde_json::from_str(
+            r#"{"items": [{"id": "hat", "hash": "h1", "slot": "head", "names": {}},
+                          {"id": "tee", "hash": "t1", "slot": "torso", "names": {}}],
+                "claim": {"state": "closed", "items": [], "open": false}}"#,
+        )
+        .unwrap();
+        let look = ["hat", "tee"];
+        let before = drawn_from(&look, &c, 7, |_| false);
+        let one = drawn_from(&look, &c, 7, |i| i == "hat");
+        let both = drawn_from(&look, &c, 7, |_| true);
+        assert_ne!(before, one);
+        assert_ne!(one, both);
+        // Same files, same skin: the picture stands.
+        assert_eq!(both, drawn_from(&look, &c, 7, |_| true));
+        // Another skin: drawn again.
+        assert_ne!(both, drawn_from(&look, &c, 8, |_| true));
     }
 
     #[test]

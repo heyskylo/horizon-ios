@@ -473,6 +473,7 @@ pub(super) fn preload_launch_world(
         .name("World data preload".into())
         .spawn(move || {
             // Not behind the server: the world's opening waits for it.
+            let _step = startup::step("world.preload");
             let started = std::time::Instant::now();
             let sync = spawn_sync_preload(&resources, false);
             // Errors are left for the world opening to report. The world's

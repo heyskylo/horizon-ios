@@ -1257,5 +1257,8 @@
   "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
   "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
   "{mod}: using version {version}, made for the Horizon you play": "{mod}: நீங்கள் விளையாடும் Horizon-க்காக செய்யப்பட்ட பதிப்பு {version} பயன்படுத்தப்படுகிறது",
-  "Recommended": "பரிந்துரைக்கப்பட்டது"
+  "Recommended": "பரிந்துரைக்கப்பட்டது",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "பழைய பதிப்பு {version} நீங்கள் விளையாடும் Horizon இல் உருவாகிறது: நிறுவினால் அதுவே தேர்ந்தெடுக்கப்படும்",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: பதிப்பு {version} உருவாகவில்லை, {older} முயற்சிக்கப்படுகிறது",
+  "Use recommended (kept at {version})": "பரிந்துரைத்ததைப் பயன்படுத்து ({version} இல் வைக்கப்பட்டது)"
 }
