@@ -223,7 +223,7 @@ fn check_feature(tag: &Tag, reg: &Registries) -> Result<(), String> {
         return Err(not_map(tag));
     };
     let Some(ty) = get(c, "type") else {
-        return Err(no_key("type", t_or(tag)));
+        return Err(no_key("type", tag));
     };
     let Some(name) = as_string(ty) else {
         return Err("Not a string".into());
@@ -252,10 +252,6 @@ fn check_feature(tag: &Tag, reg: &Registries) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-fn t_or(t: &Tag) -> &Tag {
-    t
 }
 
 fn dfu_feature_error(tag: &Tag, msg: &str) -> String {
