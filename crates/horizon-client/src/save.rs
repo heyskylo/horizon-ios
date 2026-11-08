@@ -3282,6 +3282,18 @@ pub fn random_uuid() -> [i32; 4] {
     let b = (b & !(0xC000_0000_0000_0000)) | 0x8000_0000_0000_0000;
     [(a >> 32) as i32, a as i32, (b >> 32) as i32, b as i32]
 }
+/// `Mth.createInsecureUUID`: a new entity's UUID is its own random's first two
+/// draws (`Entity.uuid`).
+pub fn insecure_uuid(random: &mut impl horizon_core::random::RandomSource) -> [i32; 4] {
+    let most = random.next_long() & -61441 | 16384;
+    let least = random.next_long() & 4_611_686_018_427_387_903 | i64::MIN;
+    [
+        (most >> 32) as i32,
+        most as i32,
+        (least >> 32) as i32,
+        least as i32,
+    ]
+}
 pub(crate) fn uuid_tag(u: [i32; 4]) -> Tag {
     Tag::IntArray(u.to_vec())
 }
