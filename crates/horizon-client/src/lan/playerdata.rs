@@ -99,15 +99,11 @@ pub fn load_owner(guest: &mut Guest, world: &Path, saved: Option<&Level>) -> boo
 /// then to the file level.dat names, which it loads ([`load_owner`]), and to
 /// its own file, so that the one it loads is never the older of the two.
 pub fn save_owner(guest: &Guest, level: &mut Level, world: &Path) {
-    // `MinecraftServer.saveAllChunks`: `saveDataTag(worldData, getSingleplayerProfile().id())`
-    // — the server's own profile on every save, never the stale `singleplayer_uuid` a
-    // world arrived with (a Realms download, a server world). The player file written is
-    // then the owner's own, not another player's the world happened to name.
-    level.player_uuid = Some(uuid_ints(guest.uuid));
+    // `MinecraftServer.saveAllChunks`: `singleplayer_uuid` is the integrated server's own profile,
+    // never another player's file the world happened to hold.
+    level.player_uuid.get_or_insert(uuid_ints(guest.uuid));
     store(guest, level, None);
-    // `saveDataTag`: level.dat carries the profile the player file is named after, so the
-    // file the owner loads next is the one just written.
-    if let Err(e) = level.write(world) {
+    if let Err(e) = level.write_player(world) {
         log::warn!("Horizon: the owner's playerdata is not saved: {e}");
     }
     save(guest, world);

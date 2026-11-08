@@ -431,6 +431,10 @@ fn under_world(name: &str) -> Option<PathBuf> {
             ".." => {
                 parts.pop()?;
             }
+            // On Windows `PathBuf::push` of a part with a drive prefix (`C:`) replaces the
+            // path, and `name:stream` names an alternate data stream: neither stays in the
+            // world folder, so the entry is skipped.
+            part if part.contains(':') => return None,
             part => parts.push(part),
         }
     }
@@ -778,6 +782,17 @@ mod tests {
         assert!(!saves.join("evil.txt").exists());
         assert!(!world.join("evil.txt").exists());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A part with a drive prefix or a stream name would leave the world folder on Windows.
+    #[test]
+    fn an_entry_with_a_drive_or_stream_part_is_skipped() {
+        assert_eq!(under_world("world/C:/evil.txt"), None);
+        assert_eq!(under_world("world\\region\\r.0.0.mca:hidden"), None);
+        assert_eq!(
+            under_world("world/region/r.0.0.mca"),
+            Some(PathBuf::from("region").join("r.0.0.mca"))
+        );
     }
 
     /// `RealmsUploadWorldPacker.setLongFileMode(LONGFILE_POSIX)`: a long name arrives in a

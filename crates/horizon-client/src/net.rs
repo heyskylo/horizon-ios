@@ -186,14 +186,10 @@ impl Session {
             false,
         )
     }
-    /// Join an integrated server through memory (`Connection.connectToLocalServer`). The
-    /// hello still names the signed-in account (`Minecraft.handleClientLogin`'s
-    /// `ServerboundHelloPacket(getUser().getName(), getUser().getProfileId())`), so the
-    /// world's `players/data/<uuid>.dat` and `singleplayer_uuid` are the account's.
+    /// Join an integrated server through memory (`Connection.connectToLocalServer`).
     pub fn connect_local(
         pipe: horizon_protocol::connection::Pipe,
         name: &str,
-        auth: Option<Arc<AuthSession>>,
         info: cfg::ClientInformation,
         lang: Arc<Language>,
         resources: PathBuf,
@@ -201,7 +197,7 @@ impl Session {
         Self::start(
             "local",
             name,
-            auth,
+            None,
             info,
             lang,
             Some(pipe),
