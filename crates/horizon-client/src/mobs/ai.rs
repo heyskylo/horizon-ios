@@ -743,6 +743,11 @@ pub fn tick(
         if m.species() == Species::GlowSquid {
             aquatic::glow_squid_dark_tick(m);
         }
+        // Shulker.tick after its living tick: a NoAI shell still keeps a
+        // face and eases its lid, pushing what the lid opens into.
+        if m.species() == Species::Shulker {
+            super::shulker::shell_tick(m, w, events);
+        }
         // TraderLlama.aiStep still calls maybeDespawn after its super step.
         // Keep unrelated llama healing and its random draw in the AI path.
         if m.species() == Species::TraderLlama {
@@ -800,7 +805,9 @@ pub fn tick(
     if m.no_ai && m.species() == Species::Dolphin {
         m.air = m.max_air_supply();
     }
-    true
+    // TraderLlama.maybeDespawn discards the llama in its aiStep: it leaves the
+    // level's entity list in this tick, after the rest of its tick ran.
+    !(m.removed && m.species() == Species::TraderLlama)
 }
 /// `LivingEntity.aiStep` -> `Entity.applyEffectsFromBlocks` for the blocks
 /// that hurt, hold or slide a mob: the cactus (`CactusBlock.entityInside`, 1),
@@ -1373,6 +1380,7 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
 /// fast, and a fully frozen mob takes one freeze damage every 40 ticks.
 fn freeze_tick(m: &mut Mob, w: &MobWorld) {
     let in_snow = in_powder_snow(m, w);
+    m.in_powder_snow = in_snow;
     if !in_snow && m.ticks_frozen == 0 {
         return;
     }

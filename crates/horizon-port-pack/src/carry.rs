@@ -407,7 +407,20 @@ pub fn renamed_assets(v: &mut Value) -> bool {
                     t.entry("bottom").or_insert(dirt);
                 }
             }
-            o.values_mut().fold(farmland, |c, x| renamed_assets(x) | c)
+            // A block state variant: 1.21.1's Gson read `"true"` and `"90"`, 26.3's codec does not.
+            let mut typed = false;
+            if o.contains_key("model") {
+                for (key, v) in o.iter_mut() {
+                    let new = match (key.as_str(), v.as_str()) {
+                        ("uvlock", Some(s)) => s.parse::<bool>().ok().map(Value::from),
+                        ("x" | "y" | "weight", Some(s)) => s.parse::<i64>().ok().map(Value::from),
+                        _ => None,
+                    };
+                    typed |= new.map(|new| *v = new).is_some();
+                }
+            }
+            o.values_mut()
+                .fold(farmland | typed, |c, x| renamed_assets(x) | c)
         }
         _ => false,
     }
@@ -1151,9 +1164,15 @@ pub fn carry(
                 // Additions to other sets and pools, as files the game merges.
                 let modifier = serde_json::from_slice::<Value>(&bytes).ok();
                 let types = &mut report.worldgen_types;
-                if let Some((kind, mut added)) =
-                    modifier.and_then(|v| crate::lithostitched::modifier(&v, loaded, types))
-                {
+                let modifier =
+                    modifier.and_then(|v| crate::lithostitched::modifier(&v, loaded, types));
+                if let Some(("biome_modifier", file)) = &modifier {
+                    let to = format!("data/{id}/neoforge/biome_modifier/lithostitched/{path}");
+                    write(
+                        &inside.join(to),
+                        &serde_json::to_vec_pretty(file).unwrap_or_default(),
+                    )?;
+                } else if let Some((kind, mut added)) = modifier {
                     crate::processors::carry(
                         kind,
                         &mut added,
@@ -1463,8 +1482,16 @@ pub fn carry(
                 }
             }
         }
+        // Without the oracle's classes an armour piece is known by its vanilla armour tag:
+        // worn in its slot, one to a stack.
+        let armor = tagged_armor(&inside);
         for m in item_models.iter().filter(|m| !blockstates.contains_key(*m)) {
-            write_decl("item", m, &json!({"template": "minecraft:stick"}))?;
+            let mut v = json!({"template": "minecraft:stick"});
+            if let Some(slot) = armor.get(&format!("{id}:{m}")) {
+                v["max_stack_size"] = json!(1);
+                v["components"] = json!({"minecraft:equippable": {"slot": slot}});
+            }
+            write_decl("item", m, &v)?;
             report.items += 1;
         }
     }
@@ -1614,6 +1641,42 @@ fn unregistered_recipes(
     }
     report.recipes_unregistered.sort();
     Ok(())
+}
+
+/// The items the carried vanilla armour tags (`minecraft:head_armor`...) name, `#tag`s
+/// followed through the carried item tags, with the equipment slot each is worn in.
+fn tagged_armor(inside: &Path) -> BTreeMap<String, &'static str> {
+    fn members(inside: &Path, tag: &str, depth: u8, out: &mut Vec<String>) {
+        let Some((ns, path)) = tag.split_once(':') else {
+            return;
+        };
+        let v: Value = fs::read(inside.join(format!("data/{ns}/tags/item/{path}.json")))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        for e in v["values"].as_array().into_iter().flatten() {
+            let id = e.as_str().or_else(|| e["id"].as_str()).unwrap_or_default();
+            match id.strip_prefix('#') {
+                Some(t) if depth < 8 => members(inside, t, depth + 1, out),
+                Some(_) => {}
+                None => out.push(id.to_owned()),
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    for (tag, slot) in [
+        ("head_armor", "head"),
+        ("chest_armor", "chest"),
+        ("leg_armor", "legs"),
+        ("foot_armor", "feet"),
+    ] {
+        let mut ids = Vec::new();
+        members(inside, &format!("minecraft:{tag}"), 0, &mut ids);
+        for id in ids {
+            out.entry(id).or_insert(slot);
+        }
+    }
+    out
 }
 
 /// The tags a recipe's ingredients name (`#ns:path` or `{"tag": ...}`).
@@ -2531,6 +2594,50 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Without the oracle every item is a stick: the ones the vanilla armour tags name (directly
+    /// or through the mod's own tag) are worn in their slot, one to a stack.
+    #[test]
+    fn armour_the_vanilla_armour_tags_name_is_worn_in_its_slot() {
+        let dir = temp_dir("armor");
+        let jar = dir.join("armor.jar");
+        let model: &[u8] = br#"{"parent": "minecraft:item/generated"}"#;
+        write_jar(
+            &jar,
+            &[
+                ("assets/example/models/item/hat.json", model),
+                ("assets/example/models/item/robe.json", model),
+                ("assets/example/models/item/gem.json", model),
+                (
+                    "data/minecraft/tags/item/head_armor.json",
+                    br#"{"values": ["example:hat"]}"#,
+                ),
+                (
+                    "data/minecraft/tags/item/chest_armor.json",
+                    br##"{"values": ["#example:armors/chest"]}"##,
+                ),
+                (
+                    "data/example/tags/item/armors/chest.json",
+                    br#"{"values": [{"id": "example:robe", "required": false}]}"#,
+                ),
+            ],
+        );
+        let out = dir.join("work/mods/example");
+        carry_alone(&jar, &out).unwrap();
+        let decl = |m: &str| -> Value {
+            let f = out.join(format!("carry/data/example/horizon/item/{m}.json"));
+            serde_json::from_slice(&fs::read(f).unwrap()).unwrap()
+        };
+        let worn = |slot: &str| {
+            json!({"template": "minecraft:stick", "max_stack_size": 1,
+                "components": {"minecraft:equippable": {"slot": slot}}})
+        };
+        let (hat, robe, gem) = (decl("hat"), decl("robe"), decl("gem"));
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(hat, worn("head"));
+        assert_eq!(robe, worn("chest"));
+        assert_eq!(gem, json!({"template": "minecraft:stick"}));
+    }
+
     /// A mod shipping its files under other names than its id: the
     /// namespaces its own files name are its, compat files for other mods
     /// and a pack mod's namespace stay outside.
@@ -2941,6 +3048,22 @@ mod tests {
                 "2": "pulley:block/chain", "3": "minecraft:block/chain_command_block_back"}})
         );
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Tom's Simple Storage writes `"uvlock": "true"`: 1.21.1 read a block state variant with Gson, which
+    /// took strings for booleans and numbers; 26.3's codec does not, and the whole block state failed.
+    #[test]
+    fn block_state_variants_take_strings_as_their_booleans_and_numbers() {
+        let mut state = json!({"multipart": [{"apply": {"uvlock": "true", "x": "90",
+            "model": "t:block/cable"}, "when": {"x": "1", "down": "false"}}],
+            "variants": {"": [{"model": "t:a", "y": 180, "weight": "3"}]}});
+        assert!(renamed_assets(&mut state));
+        assert_eq!(
+            state,
+            json!({"multipart": [{"apply": {"uvlock": true, "x": 90, "model": "t:block/cable"},
+                "when": {"x": "1", "down": "false"}}],
+                "variants": {"": [{"model": "t:a", "y": 180, "weight": 3}]}})
+        );
     }
 
     /// 1.21.1's farmland template (`dirt` and `top`) is 26.3's `template_cube_bottom_top_indented`, whose

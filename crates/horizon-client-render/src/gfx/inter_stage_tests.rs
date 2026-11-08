@@ -149,6 +149,21 @@ fn composed() -> Vec<(&'static str, Vec<&'static str>, String)> {
             vec!["terrain.wgsl", "visbuffer.wgsl"],
             super::terrain_shader() + include_str!("../visbuffer.wgsl"),
         ),
+        // A native mod's world warp (gfx/world_warp.rs): its copies with the plainest warp.
+        (
+            "world warp terrain",
+            vec![
+                "terrain.wgsl",
+                "world_warp.wgsl",
+                "world_warp_fragment.wgsl",
+            ],
+            super::world_warp::terrain_shader(super::world_warp::IDENTITY).unwrap(),
+        ),
+        (
+            "world warp entities",
+            vec!["entity.wgsl", "static_entity.wgsl", "world_warp.wgsl"],
+            super::world_warp::entity_shader(super::world_warp::IDENTITY).unwrap(),
+        ),
         (
             "improved transparency world border",
             vec!["border.wgsl", "oit.wgsl", "oit_border.wgsl"],

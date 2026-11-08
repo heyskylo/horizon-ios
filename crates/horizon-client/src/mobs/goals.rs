@@ -764,8 +764,10 @@ impl Mob {
         match who {
             Who::Player => self.spares_players(w),
             Who::Mob(id) => {
-                self.species() == Species::IronGolem
-                    && w.seen(id).is_some_and(|s| s.species == Species::Creeper)
+                // `Mob.canAttack` refuses a Ghast for every mob.
+                w.seen(id).is_some_and(|s| s.species == Species::Ghast)
+                    || (self.species() == Species::IronGolem
+                        && w.seen(id).is_some_and(|s| s.species == Species::Creeper))
             }
         }
     }
@@ -1876,6 +1878,11 @@ impl Goal for HurtByTarget {
         if m.ai.last_hurt_by_time == self.timestamp {
             return false;
         }
+        // `HurtByTargetGoal.canUse`: with universal anger on, a player's hit
+        // is left to the anger goals, never a direct retaliation.
+        if by == Who::Player && cx.w.universal_anger {
+            return false;
+        }
         if let Who::Mob(id) = by
             && cx
                 .w
@@ -2164,8 +2171,10 @@ impl Goal for Tempt {
             return false;
         }
         let Some(p) = &cx.w.player else { return false };
-        // Attributes.TEMPT_RANGE default 10.
+        // Attributes.TEMPT_RANGE default 10; `TargetingConditions.forNonCombat`
+        // never picks a spectator.
         p.alive
+            && !p.spectator
             && (self.wants(&p.main_hand) || self.wants(&p.off_hand))
             && m.distance_sqr(p.position) <= 100.0
     }
@@ -3137,7 +3146,7 @@ mod built_by_player_tests {
 mod avoid_entity_targeting_tests {
     use super::*;
     use crate::mobs::world::test_player;
-    use crate::mobs::world::with_built_test_world;
+    use crate::mobs::world::{with_built_test_world, with_test_world};
     use std::sync::Arc;
 
     /// `(the player is inside the plain distance range, the goal picks them)`.
@@ -3225,6 +3234,47 @@ mod avoid_entity_targeting_tests {
             assert!(picked, "the rabbit ignored a player in the open");
         }
     }
+
+    /// `TemptGoal` finds its player with `TargetingConditions.forNonCombat()`,
+    /// which never picks a spectator: a spectator holding wheat does not tempt
+    /// an animal.
+    #[test]
+    fn a_spectator_does_not_tempt_an_animal() {
+        let mut outcomes = Vec::new();
+        if !with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:cow"].clone());
+            for spectator in [false, true] {
+                let mut world = w.clone();
+                let mut p = test_player(Vec3::new(2.5, 64.0, 0.5));
+                p.main_hand = Some("minecraft:wheat".into());
+                p.spectator = spectator;
+                world.player = Some(p);
+                let mut m = Mob::new(1, kind.clone(), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                m.ai.goals.add(
+                    3,
+                    Tempt::new(1.25, Arc::from(vec!["minecraft:wheat".to_string()]), false),
+                );
+                let mut lr = LegacyRandom::new(0);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w: &world,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                let mut goals = std::mem::take(&mut m.ai.goals);
+                goals.tick(&mut m, &mut cx);
+                outcomes.push(goals.is_running("Tempt"));
+                m.ai.goals = goals;
+            }
+        }) {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            vec![true, false],
+            "a survival player tempts; a spectator does not"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -3270,6 +3320,45 @@ mod peaceful_targets_tests {
             );
             assert!(!wolf.can_target_player(&peaceful, 16.0, false), "peaceful");
             assert!(!wolf.can_keep_target_player(&peaceful, 16.0), "peaceful");
+        });
+    }
+
+    /// `Mob.canAttack` refuses a Ghast, and `HurtByTargetGoal.canUse` ends
+    /// with `canAttack(lastHurtByMob)`: a ghast's fireball is not retaliated.
+    #[test]
+    fn a_hurt_mob_does_not_retaliate_against_a_ghast() {
+        let mut seen = None;
+        with_test_world(&[], |_, types| {
+            let mob = |id: u32, name: &str, at: Vec3| {
+                Mob::new(id, Arc::new(types.types[name].clone()), at, 0.0)
+            };
+            let ghast = mob(2, "minecraft:ghast", Vec3::new(2.5, 64.0, 0.5));
+            let zombie = mob(3, "minecraft:zombie", Vec3::new(3.5, 64.0, 0.5));
+            seen = Some([ghast.seen(None), zombie.seen(None)]);
+        });
+        let Some(seen) = seen else { return };
+        with_test_world(&seen, |w, types| {
+            let kind = Arc::new(types.types["minecraft:cow"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            let mut lr = LegacyRandom::new(0);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w,
+                lr: &mut lr,
+                events: &mut events,
+            };
+            m.ai.last_hurt_by = Some(Who::Mob(2));
+            m.ai.last_hurt_by_time = 5;
+            assert!(
+                !HurtByTarget::default().can_use(&mut m, &mut cx),
+                "a ghast is not a valid attacker to retaliate against"
+            );
+            m.ai.last_hurt_by = Some(Who::Mob(3));
+            m.ai.last_hurt_by_time = 6;
+            assert!(
+                HurtByTarget::default().can_use(&mut m, &mut cx),
+                "a zombie attacker is retaliated against"
+            );
         });
     }
 }
@@ -3601,5 +3690,52 @@ mod breath_air_tests {
         }
         // One block above the 9-block columns: not searched.
         assert_eq!(BreathAir::air_position(origin, |p| p == [10, 29, 30]), None);
+    }
+}
+
+#[cfg(test)]
+mod hurt_by_anger_tests {
+    use super::*;
+    use crate::mobs::world::{test_player, with_test_world};
+    use horizon_core::geometry::Vec3;
+    use std::sync::Arc;
+
+    /// `HurtByTargetGoal.canUse` refuses a player when the `universal_anger`
+    /// game rule is on: the anger target goals handle that hit instead.
+    #[test]
+    fn universal_anger_leaves_the_players_hit_to_the_anger_goals() {
+        let mut outcomes = None;
+        if !with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:cow"].clone());
+            let mut truth = Vec::new();
+            for rule in [false, true] {
+                let mut world = w.clone();
+                world.player = Some(test_player(Vec3::new(2.5, 64.0, 0.5)));
+                world.universal_anger = rule;
+                let mut m = Mob::new(1, kind.clone(), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                m.ai.last_hurt_by = Some(Who::Player);
+                m.ai.last_hurt_by_time = 1;
+                m.ai.goals.add(1, HurtByTarget::new());
+                let mut lr = LegacyRandom::new(0);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w: &world,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                let mut goals = std::mem::take(&mut m.ai.goals);
+                goals.tick(&mut m, &mut cx);
+                truth.push(goals.is_running("HurtByTarget"));
+                m.ai.goals = goals;
+            }
+            outcomes = Some(truth);
+        }) {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            Some(vec![true, false]),
+            "a hit is retaliated with the rule off and left to the anger goals with it on"
+        );
     }
 }

@@ -84,6 +84,7 @@ fn info(solid: bool) -> Info {
         block_entity: false,
         tints: [Tint::None; 2],
         tint_count: 0,
+        colormap: None,
         offset: None,
         legacy_solid: false,
         overlay: false,
