@@ -1209,6 +1209,8 @@ impl Game<'_> {
             _ => None,
         });
         for (t, at) in live.chain(taken) {
+            // Frame generation and temporal upscaling follow its own flight and spin.
+            self.mark_motion(out.len(), Self::MOTION_OBJECT | u64::from(t.id));
             let p = glam::DVec3::from_array(at) - camera;
             let base = glam::Mat4::from_translation(p.as_vec3())
                 * glam::Mat4::from_rotation_y((t.yaw - 90.0).to_radians())
@@ -1263,6 +1265,7 @@ impl Game<'_> {
                 );
             }
         }
+        self.mark_motion(out.len(), 0);
     }
 }
 horizon_client::impl_joined!(ThrownTrident);

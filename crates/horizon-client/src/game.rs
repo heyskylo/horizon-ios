@@ -9809,7 +9809,8 @@ impl Game<'_> {
         }
     }
     /// `mark_motion` ids of entities that aren't mobs or dropped items (boats, minecarts, armor
-    /// stands, item frames, paintings, primed TNT, falling blocks): their entity id under this tag.
+    /// stands, item frames, paintings, primed TNT, falling blocks, rockets, tridents, thrown
+    /// potions): their entity id under this tag.
     pub(super) const MOTION_OBJECT: u64 = 3 << 32;
     /// An item frame's held item, apart from the frame (one id may mark one run).
     pub(super) const MOTION_FRAME_ITEM: u64 = 4 << 32;
