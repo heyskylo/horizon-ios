@@ -1267,13 +1267,16 @@ impl Projectile {
                 .is_none_or(|b| !b.inflate(Vec3::new(1.0, 1.0, 1.0)).contains(self.position));
         }
         // DragonFireball.onHit does nothing for its own owner (`ownedBy`): the
-        // selected hit is ignored, not replaced by what lies behind it, and the
-        // fireball moves on as if nothing was hit.
+        // selected hit is not replaced by what lies behind it, nothing happens,
+        // and the fireball keeps its motion. AbstractHurtingProjectile.tick
+        // still moves it to the hit's location, as for any hit that is not a
+        // MISS, so it stops there this tick.
         if impact
             && self.kind == ProjectileKind::DragonFireball
-            && best.is_some_and(|(who, _, _)| self.owner == Some(who))
+            && let Some((who, at, _)) = best
+            && self.owner == Some(who)
         {
-            self.position = to;
+            self.position = at;
             self.touching_water = w.in_water(self.bounds());
             let alive = self.position.y > -128.0 && self.age < 1200;
             return (alive, Hit::None);
@@ -1708,14 +1711,16 @@ mod tests {
     }
 
     #[test]
-    fn control_a_dragon_fireball_flies_on_through_its_owner() {
+    fn control_a_dragon_fireball_stops_at_its_owner_and_flies_on() {
         let (p, (keep, hit)) = dragon_fireball_through(Who::Mob(7));
         assert!(keep, "no discard");
         assert_eq!(hit, Hit::None, "no impact");
-        // The ordinary move: (0.5 + 0.1) × 0.95F, not stopped by the mob or
-        // the wall behind the owner.
-        let step = 0.6 * f64::from(0.95_f32);
-        assert_eq!(p.position, Vec3::new(step, 100.5, 0.5));
+        // AbstractHurtingProjectile.tick: the position is the owner hit's
+        // location (the owner's box, at x = 0.4, less the margin), not the free
+        // step of (0.5 + 0.1) × 0.95F; the motion is kept for the next tick.
+        assert!(p.position.x > 0.0 && p.position.x <= 0.4, "{:?}", p.position);
+        assert_eq!((p.position.y, p.position.z), (100.5, 0.5));
+        assert!(p.velocity.x > 0.5, "{:?}", p.velocity);
     }
 
     #[test]
