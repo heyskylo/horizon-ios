@@ -51,7 +51,7 @@ const fn hex(c: u32, a: u8) -> u32 {
 /// The plate and the strip: the page's dark, see-through, so the world shows behind them.
 const GLASS: u32 = hex(B.page, 118);
 /// Their 1 px edge.
-const EDGE: u32 = hex(B.ink, 26);
+pub const EDGE: u32 = hex(B.ink, 26);
 /// A group's panel, a little lighter than the plate it sits on.
 const GROUP: u32 = hex(B.ink, 11);
 /// A hovered or focused row, lit on its group's panel.
@@ -69,7 +69,7 @@ const BUTTON_HOVER: u32 = hex(B.ink, 41);
 const TRACK: u32 = hex(B.ink, 64);
 const HANDLE: u32 = hex(B.ink, 255);
 /// The one main button.
-const FACE: u32 = hex(B.face, 255);
+pub const FACE: u32 = hex(B.face, 255);
 const FACE_HOVER: u32 = hex(0x6a50e6, 255);
 /// A tick box's edge when off.
 const BOX_EDGE: u32 = hex(B.ink_soft, 89);

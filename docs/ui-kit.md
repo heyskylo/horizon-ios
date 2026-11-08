@@ -32,11 +32,12 @@ All sizes are GUI px from the view's top left, and an area is `[x, y, w, h]`.
 ### Room
 
 A `Room` is a view's size plus the keep-outs its HUD shows this frame. Each keep-out is a `Keep`
-and an area. Today there is one kind:
+and an area. There are two kinds:
 
 | `Keep` | Where it comes from |
 |---|---|
 | `BossBars` | `hud_overlays::boss_bars_bottom(h, n)`: vanilla's `BossHealthOverlay` layout, y from 12 in steps of 19 until a third of the view's height; as wide as the 182 px bar or its widest name |
+| `StatusRows` | the survival rows above the hotbar (health with its absorption rows, armour, food or the mount's hearts, air), from the highest row's top to the view's bottom, as `hud_layout::draws_top` reports them; `room.bottom()` is the lowest y an overlay may reach |
 
 `Game::hud_room` (`crates/horizon-client/src/game/hud_room.rs`) gathers what is showing.
 Nothing shows while F1 or Replay Studio hides the HUD, or off a world. `hud` empties `ui.room` at
