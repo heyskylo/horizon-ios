@@ -840,7 +840,13 @@ impl Game<'_> {
                 .any(|m| !m.removed && m.extra.mount == Some(id))
     }
     /// `OldMinecartBehavior.moveAlongTrack`.
-    fn move_along_track(&mut self, c: &mut Minecart, pos: [i32; 3], rail: &Rail, intent: [f64; 2]) {
+    fn move_along_track(
+        &mut self,
+        c: &mut Minecart,
+        pos: [i32; 3],
+        rail: &Rail,
+        intent: [f64; 2],
+    ) -> (Vec3, Vec3) {
         c.fall_distance = 0.0;
         let ridden = self.cart_is_vehicle(c.id);
         let (x, z) = (c.position.x, c.position.z);
@@ -911,7 +917,11 @@ impl Game<'_> {
             0.0,
             (scale * c.velocity.z).clamp(-max, max),
         );
+        // Entity.move records this step at the rail's top height; the tick's
+        // applyEffectsFromBlocks sweeps it, whatever the cart does after.
+        let step_from = c.position;
         self.move_cart(c, delta);
+        let step = (step_from, c.position);
         let at = |e: [i32; 3], c: &Minecart| {
             c.position.x.floor() as i32 - pos[0] == e[0]
                 && c.position.z.floor() as i32 - pos[2] == e[2]
@@ -961,6 +971,51 @@ impl Game<'_> {
                 }
             }
         }
+        step
+    }
+    /// `Entity.checkInsideBlocks` for a recorded move of the cart from `from`
+    /// to `to`: the entity-sensing blocks (plates, buttons, tripwires, detector
+    /// rails) on the path run `entityInside` now, with the cart where the tick
+    /// left it. `slot` is where the cart is stored.
+    fn cart_inside_blocks(&mut self, c: &mut Minecart, slot: usize, from: Vec3, to: Vec3) {
+        let shrink = f64::from(1.0e-5f32);
+        let half = WIDTH / 2.0;
+        let bounds = Aabb::new(
+            Vec3::new(to.x - half, to.y, to.z - half),
+            Vec3::new(to.x + half, to.y + HEIGHT, to.z + half),
+        )
+        .deflate(Vec3::new(shrink, shrink, shrink));
+        let mut hits = Vec::new();
+        let behaviours = self.res.behaviours();
+        let world = &self.world;
+        let _ = horizon_core::geometry::sweep_intersected_blocks(
+            from,
+            to,
+            bounds,
+            1_000_000,
+            |p, _| {
+                if behaviours.senses_entities(world.block(p.x, p.y, p.z)) {
+                    hits.push(p);
+                }
+                true
+            },
+        );
+        if hits.is_empty() {
+            return;
+        }
+        let Some(i) = cart_at(&self.carts, c.id, slot) else {
+            return;
+        };
+        // The stored cart is the one a plate counts: it takes the moved cart
+        // for the walk and hands back what the walk left.
+        std::mem::swap(&mut self.carts[i], c);
+        self.with_level(|b, level, ticks| {
+            for p in hits {
+                b.entity_inside(level, ticks, p);
+            }
+        });
+        std::mem::swap(&mut self.carts[i], c);
+        let _ = self.process_level_events();
     }
     /// `AbstractMinecart`: `minecart_improvements` picks the smoother
     /// physics.
@@ -1429,10 +1484,11 @@ impl Game<'_> {
         // applyGravity
         c.velocity.y -= c.get_gravity();
         let pos = self.rail_block(c.position);
+        let mut step = None;
         if self.minecart_improvements() {
             self.move_along_track_new(c, intent);
         } else if let Some(rail) = self.rail(pos[0], pos[1], pos[2]) {
-            self.move_along_track(c, pos, &rail, intent);
+            step = Some(self.move_along_track(c, pos, &rail, intent));
             if &*rail.name == "minecraft:activator_rail" {
                 self.activate_cart(c, rail.powered);
             }
@@ -1459,6 +1515,10 @@ impl Game<'_> {
         }
         if !self.minecart_improvements() {
             self.cart_block_effects(c);
+            // applyEffectsFromBlocks over the step moveAlongTrack recorded.
+            if let Some((from, to)) = step {
+                self.cart_inside_blocks(c, slot, from, to);
+            }
         }
         // OldMinecartBehavior.tick ends with pushAndPickupEntities, before
         // AbstractMinecart.tick's updateFluidInteraction. The experiment still
@@ -3742,6 +3802,50 @@ mod tnt_impact_tests {
             Vec3::new(8.3, 64.0, 4.5),
             Vec3::new(0.4, 0.0, 0.4)
         ));
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_cart_on_a_slope_presses_a_plate_at_its_temporary_position() {
+        // OldMinecartBehavior.moveAlongTrack places the cart at the rail's top
+        // height, moves it horizontally (Entity.move records the step) and settles
+        // it on the slope; the tick's applyEffectsFromBlocks still sweeps the step.
+        let mut game = server_game();
+        let registry = game.pack.assets.registry;
+        let stone = registry.default_state("minecraft:stone").unwrap();
+        let plate = registry
+            .default_state("minecraft:oak_pressure_plate")
+            .unwrap();
+        let rail = registry.default_state("minecraft:rail").unwrap();
+        let mut slope = registry.state(rail).unwrap().clone();
+        slope
+            .properties
+            .insert("shape".into(), "ascending_east".into());
+        let rail = registry.id(&slope).unwrap();
+        for x in 0..16 {
+            for z in 0..16 {
+                game.world.set(x, 63, z, stone).unwrap();
+            }
+        }
+        game.world.set(5, 64, 8, rail).unwrap();
+        game.world.set(6, 64, 8, stone).unwrap();
+        game.world.set(6, 65, 8, plate).unwrap();
+        let mut cart = Minecart::new(1, CartKind::Rideable, Vec3::new(5.5, 64.5, 8.5));
+        cart.velocity = Vec3::new(0.4, 0.0, 0.0);
+        game.carts.push(cart.clone());
+        assert!(game.tick_cart(&mut cart, [0.0; 2], 0, &mut super::CartIndex::default()));
+        let powered = registry
+            .state(game.world.block(6, 65, 8))
+            .unwrap()
+            .properties
+            .get("powered")
+            .cloned();
+        assert_eq!(
+            powered.as_deref(),
+            Some("true"),
+            "{:?}",
+            registry.state(game.world.block(6, 65, 8))
+        );
     }
 }
 
