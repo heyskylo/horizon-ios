@@ -1251,5 +1251,7 @@
   "Buy": "購入",
   "Gift": "ギフト",
   "Found on this computer": "このコンピューターで見つかったもの",
-  "Looks": "コーデ"
+  "Looks": "コーデ",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "システムのキーリングが{seconds}秒以内に応答しませんでした。動作中でロックが解除されていることを確認してから、ランチャーを再起動してください。",
+  "Can't read {name}'s sign-in: {why}": "{name}のサインイン情報を読み取れません: {why}"
 }

@@ -1251,5 +1251,7 @@
   "Buy": "ซื้อ",
   "Gift": "ซื้อเป็นของขวัญ",
   "Found on this computer": "พบในคอมพิวเตอร์เครื่องนี้",
-  "Looks": "ลุค"
+  "Looks": "ลุค",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "พวงกุญแจของระบบไม่ตอบสนองภายใน {seconds} วินาที ตรวจสอบให้แน่ใจว่ากำลังทำงานและปลดล็อกอยู่ แล้วรีสตาร์ทตัวเปิดเกม",
+  "Can't read {name}'s sign-in: {why}": "อ่านการลงชื่อเข้าใช้ของ {name} ไม่ได้: {why}"
 }
