@@ -701,10 +701,11 @@ mod tests {
 
     #[test]
     fn a_rider_sits_on_top_of_the_tnt_less_its_own_attachment() {
-        // 64 + 0.98 (the box's top) - 0.14 (a rider's vehicle attachment).
+        // 64 + 0.98F (the box's top, `EntityAttachment.PASSENGER` at its
+        // height) - 0.14 (a rider's vehicle attachment).
         let seat = tnt_seat(Vec3::new(1.5, 64.0, -2.5), 0.14);
         assert_eq!((seat.x, seat.z), (1.5, -2.5));
-        assert!((seat.y - 64.84).abs() < 1e-9);
+        assert!((seat.y - (64.0 + f64::from(0.98_f32) - 0.14)).abs() < 1e-9);
     }
 
     #[test]
