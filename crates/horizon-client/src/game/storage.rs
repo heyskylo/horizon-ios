@@ -82,6 +82,68 @@ impl Game<'_> {
             .find_map(|(key, _)| self.block_name_plain(*key))
             .unwrap_or(default)
     }
+    /// `BaseContainerBlockEntity.createMenu` (and `ChestBlock`'s provider for
+    /// a double chest, which asks both halves' `canOpen`): a `lock` the opener
+    /// cannot unlock refuses the menu with `sendChestLockedNotifications` -
+    /// the action bar names the container and one chest-locked sound plays.
+    /// True when the open is refused.
+    pub(super) fn refuse_locked_container(&mut self, key: (i32, i32, i32), name: &str) -> bool {
+        let Some(default_key) = horizon_client::containers::default_name_key(name) else {
+            return false;
+        };
+        // `LockCode.canUnlock` reads `Player.getMainHandItem`, whichever
+        // hand the click came from.
+        let hand = self.stack_in(self.selected).cloned();
+        let spectator = self.spectator();
+        // The halves in `DoubleBlockCombiner` order: the right half first.
+        let halves = match self.chest_partner(key) {
+            Some((other, true)) => [Some(key), Some(other)],
+            Some((other, false)) => [Some(other), Some(key)],
+            None => [Some(key), None],
+        };
+        if !halves
+            .iter()
+            .flatten()
+            .any(|&half| self.container_locked_for(half, spectator, hand.as_ref()))
+        {
+            return false;
+        }
+        // The display name of the provider the player tried to open: a double
+        // chest is named by its right half, else its left, else
+        // `container.chestDouble`; any other container by its custom name or
+        // its own default key.
+        let title = match (halves[0], halves[1]) {
+            (Some(first), Some(second)) => horizon_client::containers::double_chest_name(
+                self.block_name_plain(first).as_deref(),
+                self.block_name_plain(second).as_deref(),
+            ),
+            (Some(one), None) => horizon_client::containers::display_name(
+                self.block_name_plain(one).as_deref(),
+                default_key,
+            ),
+            _ => horizon_client::containers::display_name(None, default_key),
+        };
+        let title = horizon_client::component::name_text(&title);
+        self.send_overlay_message(Text::translate("container.isLocked", &[title]));
+        // `Level.playSound(null, pos, SoundEvents.CHEST_LOCKED, BLOCKS, 1, 1)`:
+        // the block's centre, or between the halves of a double chest.
+        let at = match (halves[0], halves[1]) {
+            (Some(first), Some(second)) => [
+                f64::from(first.0 + second.0) / 2.0 + 0.5,
+                f64::from(first.1) + 0.5,
+                f64::from(first.2 + second.2) / 2.0 + 0.5,
+            ],
+            (Some(one), None) => [
+                f64::from(one.0) + 0.5,
+                f64::from(one.1) + 0.5,
+                f64::from(one.2) + 0.5,
+            ],
+            _ => [0.0; 3],
+        };
+        self.audio
+            .play("minecraft:block.chest.locked", Some(at), 1.0, 1.0);
+        true
+    }
     /// ShulkerBoxSlot.mayPlace: no shulker box inside a shulker box.
     pub(super) fn refuses(&self, slot: usize, stack: &ItemStack) -> bool {
         (300..400).contains(&slot)
@@ -550,5 +612,110 @@ mod tests {
         assert!(is_shulker_box("minecraft:red_shulker_box"));
         assert!(is_shulker_box("minecraft:shulker_box"));
         assert!(!is_shulker_box("minecraft:chest"));
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::super::native_machines::tests::server_game;
+    use horizon_client::{containers::BlockEntity, items::ItemStack};
+    use horizon_world::nbt::Tag;
+
+    /// `BaseContainerBlockEntity.canOpen` (`LockCode`): a `lock` whose item
+    /// predicate the opener's main hand does not match refuses the menu at
+    /// `createMenu`, so the block is never set as the open container. A hand
+    /// holding the lock's item opens it.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_locked_container_refuses_the_local_players_open() {
+        let mut game = server_game();
+        game.options.dedicated = None;
+        let state = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:chest")
+            .unwrap();
+        let key = (8, 64, 8);
+        game.world.set(key.0, key.1, key.2, state).unwrap();
+        game.world
+            .block_entities
+            .insert(key, BlockEntity::Chest(vec![None; 27]));
+        let lock = Tag::compound([(
+            "lock",
+            Tag::compound([("items", Tag::String("minecraft:gold_ingot".into()))]),
+        )]);
+        game.world.set_block_lock(key, &lock);
+
+        // An empty hand does not match `lock:{items:"minecraft:gold_ingot"}`.
+        game.open_menu([8, 64, 8]);
+        assert_eq!(game.container, None, "a locked chest opened");
+        assert!(
+            game.titles.overlay.is_some(),
+            "no `container.isLocked` action bar"
+        );
+
+        // `LockCode.canUnlock` reads the main hand: the key in the off hand
+        // does not open it.
+        game.inventory[0] = None;
+        game.offhand = Some(ItemStack::new("minecraft:gold_ingot", 1));
+        game.titles.overlay = None;
+        game.open_menu([8, 64, 8]);
+        assert_eq!(
+            game.container, None,
+            "an off-hand key opened a locked chest"
+        );
+
+        // The lock's own item in the main hand opens it.
+        game.inventory[0] = Some(ItemStack::new("minecraft:gold_ingot", 1));
+        game.offhand = None;
+        game.selected = 0;
+        game.titles.overlay = None;
+        game.open_menu([8, 64, 8]);
+        assert_eq!(game.container, Some(key), "the lock's item did not open it");
+        assert!(game.titles.overlay.is_none());
+    }
+
+    /// `ChestBlock.MENU_PROVIDER_COMBINER.createMenu`: a double chest asks
+    /// `canOpen` of both halves, so a lock on the half the player did not
+    /// click still refuses the six-row menu.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_lock_on_either_half_refuses_a_double_chest() {
+        let mut game = server_game();
+        game.options.dedicated = None;
+        let registry = game.pack.assets.registry;
+        let half = |kind: &str| {
+            let mut state = registry
+                .state(registry.default_state("minecraft:chest").unwrap())
+                .unwrap()
+                .clone();
+            state.properties.insert("type".into(), kind.into());
+            state.properties.insert("facing".into(), "north".into());
+            registry.id(&state).unwrap()
+        };
+        let left_key = (8, 64, 8);
+        let right_key = (9, 64, 8);
+        game.world
+            .set(left_key.0, left_key.1, left_key.2, half("left"))
+            .unwrap();
+        game.world
+            .set(right_key.0, right_key.1, right_key.2, half("right"))
+            .unwrap();
+        for key in [left_key, right_key] {
+            game.world
+                .block_entities
+                .insert(key, BlockEntity::Chest(vec![None; 27]));
+        }
+        // The right half holds the lock; the player clicks the left one.
+        let lock = Tag::compound([(
+            "lock",
+            Tag::compound([("items", Tag::String("minecraft:gold_ingot".into()))]),
+        )]);
+        game.world.set_block_lock(right_key, &lock);
+
+        game.open_menu([8, 64, 8]);
+        assert_eq!(game.container, None, "a half-locked double chest opened");
+        assert!(game.titles.overlay.is_some());
     }
 }
