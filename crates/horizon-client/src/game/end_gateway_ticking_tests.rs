@@ -3,8 +3,8 @@
 //! entities in entity-ticking chunks: past the simulation distance an item in
 //! an End gateway stays where it is, and only the ticking one goes in.
 
-use super::Dim;
-use super::native_machines::tests::server_game;
+use super::super::Dim;
+use super::super::native_machines::tests::server_game;
 use horizon_client::chunk::Chunk;
 use horizon_client::entities::ItemEntity;
 use horizon_client::items::ItemStack;

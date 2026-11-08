@@ -1726,6 +1726,10 @@ fn eye_quad(
 }
 
 #[cfg(test)]
+#[path = "end_gateway_ticking_tests.rs"]
+mod ticking_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use horizon_client::containers::EndGateway;
