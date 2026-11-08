@@ -5905,6 +5905,24 @@ def piston_push_ground():
     return ops
 
 
+def primed_tnt_box():
+    """#12020: `EntityTypes.TNT` is sized 0.98F, so its box is half 0.49F wide
+    and 0.98F tall, both widened from float: TNT stopped by a wall ends 0.49F
+    short of it and TNT stopped by a ceiling 0.98F below it, not at 0.49 and
+    0.98. NoGravity keeps the stops independent of gravity and drag."""
+    ops = []
+    for case, motion, blocks in (('wall', '0.6d,0.0d,0.0d', '/fill 33 209 30 33 213 33 stone'),
+                                 ('ceiling', '0.0d,0.6d,0.0d', '/fill 30 212 30 33 212 33 stone')):
+        ops += setup('/kill @e[type=!player]', '/fill 28 208 28 36 218 36 air', blocks,
+                     '/summon minecraft:tnt 31.5 210 31.5 '
+                     f'{{fuse:200s,NoGravity:1b,Motion:[{motion}],Tags:["tnt_box"]}}')
+        for _ in range(3):
+            ops.append({'op': 'tick', 'n': 1})
+            ops.append(cmd('/data get entity @e[type=minecraft:tnt,tag=tnt_box,limit=1] Pos'))
+    ops += setup('/kill @e[type=!player]', '/fill 28 208 28 36 218 36 air')
+    return ops
+
+
 def piston_tnt_effects():
     """#12023: `Entity.move(MoverType.PISTON)` uses up primed TNT's pending
     stuck multiplier without scaling the push, adds to its fall and resets it
@@ -6469,6 +6487,7 @@ def groups():
         ('wither spawn', wither_spawn()),
         ('riding teleport', riding_teleport()),
         ('piston entity tick order', piston_entity_tick_order()),
+        ('primed tnt box', primed_tnt_box()),
         ('primed tnt fall', primed_tnt_fall()),
         ('item block escape', item_block_escape()),
         ('scheduled block item birth', scheduled_item_birth()),

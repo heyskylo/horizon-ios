@@ -1584,9 +1584,10 @@ impl Entity for PrimedTnt {
         Ok(())
     }
     stored_motion!();
-    /// `PrimedTnt` eye height: `0.98 * 0.85`.
+    /// `EntityTypes.TNT`'s explicit `eyeHeight(0.15F)`. Nothing vanilla reads
+    /// for TNT depends on it (only `isEyeInFluid` does), but it is the type's.
     fn fluid_eye_y(&self) -> f64 {
-        self.position.y + f64::from(0.98f32 * 0.85f32)
+        self.position.y + f64::from(0.15_f32)
     }
     /// `PrimedTnt` is 0.98 across.
     fn portal_size(&self) -> Option<(f32, f32)> {
