@@ -342,6 +342,7 @@ mod ordered_tick;
 mod packs;
 mod pad;
 mod pad_actions;
+mod pad_capture;
 mod pad_craft;
 mod pad_menu;
 mod paintings;

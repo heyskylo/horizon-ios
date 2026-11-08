@@ -217,6 +217,21 @@ leaves no screen out and a tall one keeps the list, the arrows walk every screen
 screens without matches, the parts are `Tab` targets), and `tools/pad_menu_e2e.py --only
 shader_screens` (RB through every screen of a twelve-screen pack in a real game).
 
+## Pad capture
+
+Several overlays over play take the controller for themselves. `Game::pad_capture`
+(`crates/horizon-client/src/game/pad_capture.rs`) is the one place that says which owns it now,
+in one priority order:
+
+| `PadCapture` | Owns the pad while |
+|---|---|
+| `Keyboard` | the on-screen keyboard is up |
+| `Prompt` | a prompt is over the world (a server dialog, the code of conduct, a link, command or resource pack prompt) |
+
+Code that routes the pad's presses and sticks, and HUD pieces that give way (the crosshair, the
+controller guide), ask `pad_keyboard_captures()` rather than the overlays themselves. A new overlay that takes the pad adds its variant here, in its place in the
+order. Screens are not overlays: `pad_in_menu` says when one has the pad.
+
 ## Glyphs
 
 Code asks for a glyph by what the button does, never by a button. The chain runs from the job to the art:

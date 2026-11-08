@@ -291,7 +291,7 @@ impl Game<'_> {
             screen: self.key_screen(),
             focus_navigation: self.pad_navigation_mode(),
             focused: self.focused,
-            osk: self.pad.menu.osk.is_some(),
+            osk: self.pad_keyboard_captures(),
             dialog: self.dialog_open() || self.code_of_conduct.is_some(),
             enabled: self.settings.controller.enabled,
         }

@@ -2017,7 +2017,7 @@ impl Game<'_> {
     /// button being bound, the credits, the on-screen keyboard.
     fn key_focus_blocked(&self) -> bool {
         let playing_screen = |screen| self.title.is_none() && self.screen == screen;
-        self.pad.menu.osk.is_some()
+        self.pad_keyboard_captures()
             || playing_screen(Screen::Chat)
             || self.sign_edit.is_some()
             || matches!(self.book, Some(super::books::BookScreen::Edit { .. }))

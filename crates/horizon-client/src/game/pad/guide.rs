@@ -118,7 +118,7 @@ impl Game<'_> {
             || self.pad.keyboard_took_over
             || self.prompt_open()
             || self.title.is_some()
-            || self.pad.menu.osk.is_some()
+            || self.pad_keyboard_captures()
         {
             return;
         }
