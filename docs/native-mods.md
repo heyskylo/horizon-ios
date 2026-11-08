@@ -161,6 +161,21 @@ with no re-release for each Nightly.
 
 Hook and helper authors use [API fragments](../tools/native-hook-fragments/README.md) to request a number.
 
+The pending `hud_mode` helper fragment adds `Host::hud_mode()` and
+`Host::set_hud_mode(HudMode)`. `HudMode::AllVisible` shows the HUD and permits
+first-person hands; `NoHud` hides the HUD while permitting hands;
+`AllHidden` hides both. Spectator, sleeping, camera and death restrictions,
+and `render_hand` cancellation, still apply. `gui_render_post`'s `gui_hidden`
+and `client_state().gui_hidden` report the effective HUD visibility.
+
+A mod can keep its own three-state cycle and call `set_hud_mode` from the
+existing post-handling `input_key` callback after an F1 press, or from a client
+tick callback. No cancellable input hook is required. Without a mod, F1 keeps
+its normal all-visible/all-hidden toggle; each F1 toggle clears the independent
+hand override. The mode is window UI state, never a saved player setting.
+Writes on a server or during a borrowed server guest's turn do nothing.
+This fragment receives an API number when stamped after merge.
+
 API 2 adds the item panel beside container screens and its recipe pages (`native_panel_items`,
 `native_panel_recipes`, and the hook `native_panel_event` for the player's clicks, searches and keys over items), and
 the game's items and recipes (`native_recipes`, `native_known_recipes`, `native_place_recipe`, `native_give`): what a
@@ -1656,7 +1671,7 @@ API 353 adds A vault is about to eject a loot item: `native_vault_loot(pos, item
 
 API 354 adds A timed world border size change finished: `native_world_border_bounds_change_finish()` fires after the border reaches its final size. Bundles need "hooks": 354.
 
-API 355 adds `Game::native_mod_image(width, height, rgba)`: a mod's own RGBA image, uploaded into the HUD atlas slot `horizon/modimage` (1024 by 1024) and drawn with `native_sprite`, whose source rectangle crops and stretches it, so a map or a schematic view needs no texture of its own. The slot is reserved only while a native mod is loaded, so a game without mods pays none of its 4 MiB. False for an image that is not `width * height` pixels of four bytes, is larger than the slot, or when there is no slot. Each upload is a texture patch of the image, so send one when the image changed, not every frame.
+API 355 adds `Game::native_mod_image(width, height, rgba)`: a mod's own RGBA image, uploaded into the HUD atlas slot `horizon/modimage` (1024 by 1024) and drawn with `native_sprite`, whose source rectangle crops and stretches it, so a map or a schematic view needs no texture of its own. The slot is reserved only in a game built with native mods, so a game without mods pays none of its 4 MiB: one whose source horizon-mixins changed (its `.horizon-mixins-stage.json` names a mod; the launcher's builds and a bundle applied by hand or by a mod's own script alike), one with trait mods installed, or one whose `native-mods.json` lists mods. False for an image that is not `width * height` pixels of four bytes, is larger than the slot, or when there is no slot. Each upload is a texture patch of the image, so send one when the image changed, not every frame.
 API 356 adds a living entity drowning (`native_living_drown`), with changeable drowning and damage, a read-only bubble count and cancellation. Bundles need "hooks": 356.
 
 API 357 adds a living entity's fall (`native_living_fall`), with changeable distance and multiplier and cancellation. Bundles need "hooks": 357.
@@ -1771,6 +1786,10 @@ API 409 adds `native_send_packet(packet)` sends any serverbound play packet (`Se
 API 410 adds `native_gui_render_post(batch, gui_hidden, focused)` draws after the complete normal GUI batch: screens, prompts, toasts, debug overlays, pad cursor and IME included. It fires during gameplay, menus and the title, even with F1; loading/file-upgrade and resource-reload overlays do not fire it. The read-only host's `camera()` is the current frame's world camera (None on the panorama), including bob/spin, FOV and projection. `batch` uses GUI pixels; `gui_hidden` reports F1 and `focused` reports window focus so the mod can choose when its indicator is visible. The existing `hud` and `screen_render_post` hooks retain their drawing order and visibility rules. Bundles need "hooks": 410.
 
 API 411 adds Client-only Host snapshots of the window, connection, entities, interpolated model heads and profile skins; visual rays and block occlusion facts; atlas GUI painting, nine-slice widgets and tooltips; persisted mod key changes and a local action bar. client_start runs before connecting (a window need not exist yet), client_disconnecting before a real connection is discarded (not dimension travel), client_stopping once before final save/exit. menu_background can change a normal menu blur request (None disables it; finite 1..64 only). Bundles need "hooks": 411.
+
+API 412 adds `native_force_chunk(owner, chunk, hold)` holds a chunk of the level in place loaded and ticking for `owner`, as NeoForge's `TicketController.forceChunk`; `native_forced_chunks(owner)` lists what it holds. Tickets aren't saved. Bundles need "hooks": 412.
+
+API 413 adds `native_force_chunk_in(owner, dimension, chunk, hold)`, `native_force_chunk` for a named level, which opens and ticks a level not open yet, so a mod can pre-generate the Nether and the End with nobody there. Bundles need "hooks": 413.
 
 ## What the launcher does
 
@@ -2634,7 +2653,7 @@ server only.
   level nobody is in, or one not open yet, opens at the next server tick and ticks while a ticket holds it, so a
   pre-generator walks the Nether and the End from any server hook (a console command, `native_level_tick_pre` of the
   Overworld) with nobody there. False for a dimension other than the Overworld, the Nether and the End. API
-  @API:chunk_tickets_in_level@.
+  413.
 - **`native_world_border(dimension)`** (`native_world_border.rs`): the level's world border as the server enforces it,
   `[min_x, min_z, max_x, max_z]` in blocks (the previous size while it moves), for a web map's border line or a
   pre-generator's `worldborder` selection. Vanilla 26.3 keeps a border per level (`ServerLevel.getWorldBorder`, each
@@ -3264,6 +3283,26 @@ place, so a mod that powers the button or plate it rests on can also take it awa
 bobber in water, one hooked to an entity and a LAN host's own bobber are not heard. It only hears: the bobber moves as
 it would. The player's state is swapped in, the other players are out of reach. Bundles need "hooks":
 @API:fishing_hook_landed@.
+
+`native_fishing_medium(dimension, hook, position, owner, medium)` lets a bobber fish outside water: lava, the void
+below a skyblock island, a cloud. Each tick a bobber that is flying or floating, not in water and not hooked to an
+entity asks the mods whether its spot (`position`, its feet) is a fishing medium; `owner` is where the player who cast
+it stands. The first mod to answer `Some(NativeFishingMedium)` makes it one, for this tick:
+
+- `surface`: the height it floats at. In the block of the surface or below, the bobber is in the medium as it would
+  be in a water block: a flying bobber stops there, then bobs on the surface, waits for a fish, bites and is reeled in
+  as in still water. Above it, it falls as usual.
+- `loot_table`: what a catch from there rolls, with the fishing context vanilla's table gets (luck, the open-water
+  flag, which is true in a medium). None rolls `minecraft:gameplay/fishing`. The bobber keeps the last medium's table
+  until it lands in water.
+- `lure_ticks`: the wait before a fish comes, drawn from `min..=max` and less the rod's Lure (vanilla draws 100 to 600
+  ticks). None keeps vanilla's.
+
+It is asked on the server, with the owner's state swapped in, and on every client that draws the bobber (`owner` None
+for another player's whom the client doesn't see), so that both move it alike, as vanilla ticks the hook on both
+sides: answer from the world and `owner` alone, the same on both. A mod that isn't on a client leaves it predicting a
+fall that the server's updates pull back. `horizon-ctl status` shows the hook's `loot_table`. Water is never asked
+about, and no answer keeps vanilla. Bundles need "hooks": @API:fishing_medium@.
 
 `native_remove_entity(dimension, id)` also removes projectiles (arrows, tridents, snowballs, eggs, ender pearls,
 fireballs, wind charges, llama spit, shulker bullets, firework rockets) as `/kill` does, and a server player's fishing
@@ -4071,6 +4110,24 @@ something happened can time the sound to the distance, such as a blast heard whe
 `delay = distance / speed`. It answers false on a server and for a value out of range; an event the resources lack
 plays nothing.
 
+`native_muffle_sounds(amount, lowpass, ticks, exempt)` (client, `host.muffle_sounds`) muffles the game's sounds for a
+while, as ears ringing after a close blast hear them: `amount` (0 to 1) of every sound's volume is taken away and
+`lowpass` (0 to 1) dulls it, from untouched to a 300 Hz low-pass. Both start in full and fade back in a straight line
+over `ticks` client ticks, held while the game is paused. The sound events in `exempt` (`mymod:ear.ringing`, at most
+64) play clearly through it, those already playing too, so the mod's own ringing stays sharp; everything else is
+muffled, sounds that were already playing, music and the interface's clicks included. A new call replaces the muffle
+in place, and `ticks` 0 ends it at once. The muffle belongs to the sound output, so in splitscreen every player hears
+it. Nothing changes while no mod calls it. It answers false, changing nothing, on a server, for an amount or strength
+outside 0 to 1, and for an exempt event that isn't `namespace:path`.
+
+```rust,ignore
+// A close blast: half the volume gone and the world dulled, back to normal over 4 seconds.
+game.native_muffle_sounds(0.5, 0.9, 80, &["ironfall:ear.ringing"]);
+game.native_play_local_sound("ironfall:ear.ringing", eye, 1.0, 1.0, 0);
+```
+
+Bundles need `"hooks": @API:muffle_sounds@`.
+
 ### Fluid currents
 
 `native_fluid_flow(dimension, pos)` is `FluidState.getFlow(level, pos)`: the normalised current at a position, the
@@ -4161,6 +4218,26 @@ These are what Create's drill, saw, harvester and deployer need.
   The answer (`NativeFakeUse`) says whether the use did something, and what the fake player holds and carries
   afterwards. Call it from a block entity's tick, not from inside a player's hook: while a player acts, it answers
   `None`.
+
+### Breaking as a player
+
+`crates/horizon-client/src/game/native_player_break.rs`: `native_player_break_block(uuid, pos, into_inventory)`
+(`Host::player_break_block`) breaks a block as the player `uuid` breaks it, for vein miners and area tools such as
+FTB Ultimine, which calls `ServerPlayerGameMode.destroyBlock` from NeoForge's `BlockEvent.BreakEvent`.
+
+- It runs the game's own player break, so the player's checks hold (spectator, adventure `can_break`, an item that
+  can't break blocks, game master blocks, a dedicated server's spawn protection), `native_destroy_block` hears it
+  and can cancel it, and the drops are rolled for the player's held item and its enchantments. The item wears as it
+  would, the mined statistic, exhaustion and experience count, and the other players see the particles and hear
+  the sound. The player's own client is left out of the break event (`Block.playerWillDestroy`), as in vanilla.
+- With `into_inventory`, the block's own drops go to the player's inventory and what doesn't fit is dropped from
+  them. What else the break sets loose (a torch losing its support, a container's contents) drops in the world.
+- The answer is whether the block was removed. False, with nothing broken, for air, an unloaded block, a block a
+  survival player can't break (bedrock), a player who isn't online or is dead, another player than the one whose
+  action is running, and off a server. Reach and line of sight are not checked: that is the mod's choice.
+- Call it from the player's `native_destroy_block` (they act there), or with any online player's UUID from a hook
+  where no player acts, such as `native_server_tick`. Inside `native_destroy_block`, each block the mod breaks is
+  heard by that hook too: keep a guard (an `AtomicBool`) so those breaks don't start more veins.
 
 ### Column reads
 
@@ -4425,6 +4502,45 @@ fn world_primitives(&self, _host: &dyn Host, event: &mut WorldPrimitivesEvent<'_
 }
 ```
 
+### Holding the world's picture
+
+`native_world_hold(hold)` (the trait's `Hooks::world_hold`) is asked once a frame while a world is shown, on the
+client, just before the frame's terrain uploads. A mod that calls `hold.hold()` keeps the terrain drawn as it stands
+while the world changes under it; one that stops asking lets go, and every change shows on that frame. Use it to make a
+change too big to go in at a stroke (thousands of sections) appear at once: the edits go in over seconds at whatever
+pace suits them, the game lights, meshes and uploads their sections as ever, and letting go only swaps which meshes are
+drawn, with nothing left to upload.
+
+`hold.hold_within(x, z, radius)` holds only the sections whose middle lies in that circle (block coordinates; call it
+again for more, at most 64 a frame). Smaller circles than last frame's let go of what they leave on that frame, and
+changes outside them show as ever from then on: shrink them over a few frames to let a change spread across the land.
+Several mods add up: `hold()` from any of them holds everything, and circles join. A circle that isn't finite or has a
+negative radius is left out.
+
+```rust,ignore
+fn world_hold(&self, _host: &dyn Host, event: &mut WorldHoldEvent<'_>) {
+    if self.crater_going_in() {
+        event.hold.hold_within(120.0, -40.0, 300.0);
+    }
+}
+```
+
+- Only the terrain's sections are held, and only those already on screen: terrain streaming in during a hold shows as
+  ever. In single player, far terrain waits too for the columns the server changes beyond the view inside the hold,
+  and takes them in when it lets go of them, so they show a moment after the sections (far terrain summarizes them
+  again). Far terrain a multiplayer server sends, entities, block entities drawn as entities, particles, light,
+  collisions and the blocks themselves change at once, so the land a player sees may not be the land they stand on.
+- Both the old and the new mesh of each waiting section are in memory. A hold is meant for seconds and is bounded: it
+  lets go by itself after 30 seconds, past 1 GiB of waiting meshes and when memory for meshes runs out, showing what
+  waited early rather than losing it; ended so, it stays off until no mod has asked for a frame. Leaving the world,
+  another dimension, a shader pack that lays terrain out again and chunks unloading drop what waits with the sections.
+- A section still being meshed when the hold lets go shows a frame or so later: give the game a moment between the
+  last edit and letting go.
+- Each player's game is asked for itself (splitscreen: one hold per player). The debug census lists
+  `held_section_vertices`.
+
+Bundles need `"hooks": @API:world_hold@`.
+
 ### Block textures
 
 `crates/horizon-client/src/game/native_block_sprites.rs` and `WorldDrawn::block_sprites`: for a client mod drawing
@@ -4529,6 +4645,57 @@ only for a server's players (single player's server thread, LAN guests, a dedica
 never ask it. As in vanilla (`AbstractContainerMenu.moveItemStackTo`), a
 shift-click tops up a slot (not a `results` one) that already holds the same item without asking `may_place`, only `max_stack`: to keep a
 slot from filling that way, lower `max_stack`.
+
+### Recipe sources
+
+`native_recipe_sources(player, menu, pos, sources)` is asked on the server when the recipe book or a recipe viewer
+(`native_place_recipe`, `native_transfer_recipe`) fills the crafting grid of a mod menu type (`crafting`,
+[mods.md](mods.md#menu-types)) open at `pos`. Push block positions onto `sources` and the placement may also take
+ingredients from the containers there, as Tinkers' Construct's crafting station takes them from the chests beside it:
+
+```rust
+fn recipe_sources(&self, _host: &mut dyn Host, event: &mut RecipeSourcesEvent<'_>) {
+    if event.menu == "mystation:station" {
+        let [x, y, z] = event.pos;
+        for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            event.sources.push([x + dx, y, z + dz]);
+        }
+    }
+}
+```
+
+Chests, barrels, shulker boxes, hoppers, dispensers, droppers and mod containers (their container slots) in the
+player's level count. Anything else, the menu's own block and repeats are passed by, and at most 64 are used. The
+placement counts and takes from the player's inventory first, then the sources in the order given, with vanilla's
+`ServerPlaceRecipe` matching. What the grid held goes back to the player as vanilla's does. A changed source is saved
+and its comparators update. Every mod adds to the same list. With no answer the placement is vanilla's, from the
+inventory alone. A recipe viewer's craftable marks are still worked out on the client from the player's inventory.
+
+### Menu links
+
+`native_menu_links(player, menu, pos, links)` is asked on the server each tick while `player` has a mod menu type with
+`links` ([mods.md](mods.md#menu-types)) open at `pos`. Push block positions onto `links` and the menu's linked slots
+show the containers there, their slots in order, as real slots of the menu: a crafting station's side panel showing
+the chest beside it, with a tab per neighbour, is a button (`native_screen_click`, `native_menu_button`) that changes
+what the mod answers for that player:
+
+```rust
+fn menu_links(&self, _host: &mut dyn Host, event: &mut MenuLinksEvent<'_>) {
+    if event.menu == "mystation:station" {
+        let [x, y, z] = event.pos;
+        event.links.push([x + 1, y, z]);
+    }
+}
+```
+
+Chests, barrels, shulker boxes, hoppers, dispensers, droppers and mod containers (their container slots) in the
+player's level count; anything else, the menu's own block and repeats are passed by, and at most 64 are used. A
+double chest is its two halves: push both, the first half first, as its own menu orders them. Linked slots past the
+containers' slots hold nothing and are left out of clicks, as a hidden slot is. Every mod adds to the same list, and
+with no answer the linked slots are empty. Clicks run on the server's menu engine as on the block's own slots, so
+nothing is copied: what a player takes out of a linked slot leaves the chest in the same step. The menu does not check
+the player's reach to a linked container: keep links to the blocks beside the menu's own. Guests, single player's
+server thread and dedicated servers work alike; the deprecated in-frame mode does not show links.
 
 ### What a mod's container takes
 
@@ -5005,6 +5172,13 @@ The client `tooltip_color` hook changes the background and top and bottom border
 # Camera and collision reads
 
 The `native_camera()` helper returns the most recently extracted world frame's camera, or none before one exists. Its position, interpolated eye height, partial tick, angles, final FOV, near/far planes and dimension accompany column-major view and projection matrices. The view is camera-relative and includes bob and spin; projection uses reversed Z. Earlier callbacks in a frame can see the previous frame. `native_block_collision(pos)` returns block-local `[min_x, min_y, min_z, max_x, max_y, max_z]` boxes with an empty collision context; unloaded blocks and collision errors give no boxes.
+
+Entity-sensitive static shapes belong to the bundled content declarations
+([entity-context shapes](mods.md#entity-context-shape-declarations)). They compile
+at resource load and are selected by the captured entity class in normal
+movement and selection. They are not callbacks into a native mod from physics.
+Empty-context native reads retain the declared default shape. These declarations
+cannot depend on the level, neighbouring blocks, position or block-entity data.
 
 ### Wind burst block protection
 

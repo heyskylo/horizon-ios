@@ -22,6 +22,10 @@ use horizon_world::{
     synced_floats::{FloatValue, Observer, SyncedFloats},
 };
 use std::{cell::Cell, fs, io, path::Path, sync::OnceLock};
+mod equipment;
+#[doc(hidden)]
+pub use equipment::EquipmentHurt;
+
 pub(crate) type Attributes = LiveAttributes<Box<dyn horizon_world::attributes::live::Identities>>;
 pub(crate) type State = HurtState<DamageTypeId>;
 
