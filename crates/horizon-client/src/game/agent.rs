@@ -133,6 +133,12 @@ impl Args<'_> {
         v.parse()
             .map_err(|_| format!("{what} must be a number, not {v}").into())
     }
+    /// X or Z of a goto target: a whole number names a block, so aim at its
+    /// center the way the player stands in it; a decimal is an exact position.
+    fn column(&self, i: usize, what: &str) -> Result<f64> {
+        let v = self.f64(i, what)?;
+        Ok(if whole(self.get(i, what)?) { v + 0.5 } else { v })
+    }
     fn i32(&self, i: usize, what: &str) -> Result<i32> {
         let v = self.get(i, what)?;
         v.parse()
@@ -178,6 +184,9 @@ fn face_dir(name: &str) -> Result<[i32; 3]> {
 }
 fn add(a: [i32; 3], b: [i32; 3]) -> [i32; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+fn whole(v: &str) -> bool {
+    !v.contains(['.', 'e', 'E'])
 }
 fn dist(a: [f64; 3], b: [f64; 3]) -> f64 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
@@ -1278,7 +1287,7 @@ impl Game<'_> {
             }
             "goto" => {
                 self.playing()?;
-                let target = [a.f64(0, "X")?, a.f64(1, "Y")?, a.f64(2, "Z")?];
+                let target = [a.column(0, "X")?, a.f64(1, "Y")?, a.column(2, "Z")?];
                 let near = a.num("near", 0.6)?.max(0.3);
                 let timeout = a.num("timeout", 60.0)?;
                 let p = self.player.as_ref().ok_or("no player")?.position;
@@ -2356,6 +2365,12 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn whole_goto_coordinates_name_a_block() {
+        assert!(whole("8") && whole("-12"));
+        assert!(!whole("8.0") && !whole("8.25") && !whole("1e2"));
+    }
 
     #[test]
     fn only_wait_keeps_held_input() {
