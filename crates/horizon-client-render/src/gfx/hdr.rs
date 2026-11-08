@@ -94,7 +94,7 @@ struct Layered {
     keep: (wgpu::BindGroupLayout, wgpu::RenderPipeline),
     composite: (wgpu::BindGroupLayout, wgpu::RenderPipeline),
     /// Compiled only when a screenshot needs it, for its readback format and HUD mode.
-    screenshot: Option<(wgpu::TextureFormat, bool, wgpu::RenderPipeline)>,
+    screenshot: Option<(wgpu::TextureFormat, bool, bool, wgpu::RenderPipeline)>,
     /// What `tonemap` and `composite` read, written before they run (`begin`).
     params: wgpu::Buffer,
 }
@@ -527,7 +527,8 @@ impl Hdr {
     }
 
     /// The layered frame's SDR screenshot, directly in the readback's texture; the icon
-    /// maps only the world. Neither the display's targets nor its parameters are changed.
+    /// maps only the world, and with HDR Lighting off nothing is mapped. Neither the
+    /// display's targets nor its parameters are changed.
     pub fn sdr_screenshot(
         &mut self,
         device: &wgpu::Device,
@@ -535,10 +536,11 @@ impl Hdr {
         format: wgpu::TextureFormat,
         world_only: bool,
     ) -> Option<wgpu::Texture> {
+        let shoulder = self.look;
         let (l, t) = (self.layered.as_mut()?, self.targets.as_ref()?);
         if l.screenshot
             .as_ref()
-            .is_none_or(|(f, w, _)| (*f, *w) != (format, world_only))
+            .is_none_or(|(f, w, s, _)| (*f, *w, *s) != (format, world_only, shoulder))
         {
             let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("HDR SDR screenshot"),
@@ -560,7 +562,10 @@ impl Hdr {
                     module: &shader,
                     entry_point: Some("fs_sdr_screenshot"),
                     compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: &[("screenshot_world_only", if world_only { 1.0 } else { 0.0 })],
+                        constants: &[
+                            ("screenshot_world_only", f64::from(u8::from(world_only))),
+                            ("screenshot_shoulder", f64::from(u8::from(shoulder))),
+                        ],
                         ..Default::default()
                     },
                     targets: &[Some(format.into())],
@@ -568,9 +573,9 @@ impl Hdr {
                 multiview_mask: None,
                 cache: None,
             });
-            l.screenshot = Some((format, world_only, pipeline));
+            l.screenshot = Some((format, world_only, shoulder, pipeline));
         }
-        let pipeline = &l.screenshot.as_ref()?.2;
+        let pipeline = &l.screenshot.as_ref()?.3;
         let views = [
             (0, &t.frame),
             (4, t.coverage.as_ref()?),
@@ -1594,6 +1599,27 @@ struct ReferenceParams { peak: f32, scene: f32, world: f32, debug: f32, share: v
                 want.map(|v| half::f16::from_f32(v).to_f32())
             );
         }
+        // With HDR Lighting off nothing is lifted: the screenshot is the SDR picture, clipped at white.
+        hdr.look = false;
+        for gamma in [0.5f32, 0.9, 1.0] {
+            let w = [gamma, gamma / 2.0, 0.0];
+            // Uncovered, the HUD's target holds the world as drawn; the icon ignores the HUD.
+            let got = shoot(&mut hdr, w.map(f64::from), w.map(f64::from), 0.0, false);
+            assert_eq!(got[..3], w.map(|v| half::f16::from_f32(v).to_f32()));
+            let got = shoot(&mut hdr, w.map(f64::from), [0.25; 3], 1.0, true);
+            assert_eq!(got[..3], w.map(|v| half::f16::from_f32(v).to_f32()));
+        }
+        let got = shoot(
+            &mut hdr,
+            [1.0, 0.5, 0.0],
+            [0.75, 0.875, 0.4375],
+            128.0 / 255.0,
+            false,
+        );
+        assert_eq!(
+            got,
+            [0.75, 0.875, 0.4375, 1.0].map(|v| half::f16::from_f32(v).to_f32())
+        );
     }
 
     #[test]

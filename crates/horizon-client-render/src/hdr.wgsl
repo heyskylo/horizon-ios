@@ -298,13 +298,15 @@ fn screenshot_world(w: vec3<f32>) -> vec3<f32> {
 }
 
 override screenshot_world_only: bool = false;
+// Off with HDR Lighting off: Horizon lifts nothing, so the world is clipped at white as SDR draws it.
+override screenshot_shoulder: bool = true;
 
 // The ordinary PNG, or the world's icon before the HUD: H as drawn, at 100%, over
 // the SDR world's light. This never changes the targets used by HDR output or its copy.
 @fragment fn fs_sdr_screenshot(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let at = vec2<i32>(pos.xy);
     let w = max(textureLoad(frame, at, 0).rgb, vec3(0.0));
-    let mapped = screenshot_world(w);
+    let mapped = select(min(w, vec3(1.0)), screenshot_world(w), screenshot_shoulder);
     if screenshot_world_only {
         return vec4(mapped, 1.0);
     }
