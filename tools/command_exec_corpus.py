@@ -5093,6 +5093,22 @@ def zombie_nautilus_ignored_age():
 
 
 
+def boat_passenger_tree_cases(original_full=False):
+    try:
+        from .boat_passenger_tree_corpus import cases
+    except ImportError:
+        from boat_passenger_tree_corpus import cases
+    return cases(cmd, original_full)
+
+
+def effective_component_presence_cases():
+    try:
+        from .effective_component_presence_corpus import cases
+    except ImportError:
+        from effective_component_presence_corpus import cases
+    return cases(cmd)
+
+
 def jukebox_saved_clock_cases():
     try:
         from .jukebox_saved_clock_corpus import cases
@@ -6291,9 +6307,13 @@ ISOLATED_STAND_FALL = frozenset({'stand saved fall distance'})
 ISOLATED_POTION_ICONS = frozenset({'potion custom effect icons'})
 ISOLATED_JUKEBOX_CLOCK = frozenset({'jukebox saved clock'})
 ISOLATED_FUNCTION_FEEDBACK = frozenset({'fork function feedback'})
+ISOLATED_EFFECTIVE_PRESENCE = frozenset({'effective component presence'})
+ISOLATED_BOAT_TREE = frozenset({'boat passenger tree'})
 # Its sync turns on fixed seeds for the whole script: the groups after it would draw from them (tools/test_seed_sync_parity.py).
 ISOLATED_SEED_SYNC = frozenset({'seed sync proof'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK | ISOLATED_SEED_SYNC
+ISOLATED_EFFECTIVE_PRESENCE = frozenset({'effective component presence'})
+ISOLATED_BOAT_TREE = frozenset({'boat passenger tree'})
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK | ISOLATED_SEED_SYNC | ISOLATED_EFFECTIVE_PRESENCE | ISOLATED_BOAT_TREE
 
 
 def groups():
@@ -6401,6 +6421,8 @@ def groups():
         ('named smoke predicates', named_smoke_predicates()),
         ('mining_efficiency_9021', mining_efficiency_9021()),
         ('structured item slots', structured_item_slots()),
+        ('boat passenger tree', boat_passenger_tree_cases()),
+        ('effective component presence', effective_component_presence_cases()),
         ('jukebox saved clock', jukebox_saved_clock_cases()),
         ('loaded potion clouds', loaded_clouds(cmd, setup)),
         ('server clock', server_clock()),

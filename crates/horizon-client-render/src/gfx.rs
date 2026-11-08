@@ -39,6 +39,10 @@ fn written_lane(layered: bool, format: wgpu::TextureFormat, pack: bool, world: b
     layered && format == LINEAR_FRAME && !pack && world
 }
 
+fn light_marks(format: wgpu::TextureFormat, hdr: bool) -> bool {
+    hdr && format != LINEAR_FRAME
+}
+
 fn terrain_shader() -> String {
     include_str!("hdr_light.wgsl").to_owned() + include_str!("terrain.wgsl")
 }
@@ -1544,6 +1548,8 @@ pub struct Renderer {
     pack_terrain_flat: bool,
     /// OptiFine/Iris separate ambient occlusion: pass vertex alpha to hz_Color.a.
     pub separate_ao: bool,
+    /// Shader-pack terrain pages used by post processing, retained between frames.
+    pack_pages: Vec<(u32, wgpu::Buffer)>,
     /// Lava's sprite layers, which a pack's solid terrain draws (`pack_atlas::terrain_parts`).
     pack_lava_layers: Vec<u16>,
     pub hud: HudRenderer,
@@ -2996,12 +3002,9 @@ impl Renderer {
                              blend: Option<wgpu::BlendState>,
                              coverage: bool| {
             let mut constants = constants.to_vec();
-            let plain = constants
-                .iter()
-                .any(|&(k, v)| k == "HDR_LIGHTING" && v == 0.0);
             constants.push((
                 "HDR_WRITE_LIGHT",
-                f64::from(u8::from(frame_format == LINEAR_FRAME && !plain)),
+                f64::from(u8::from(frame_format == LINEAR_FRAME)),
             ));
             let desc = wgpu::RenderPipelineDescriptor {
                 label: Some(label),
@@ -5160,6 +5163,7 @@ impl Renderer {
             shared_material_maps: [None, None],
             pack_terrain_flat: false,
             separate_ao: false,
+            pack_pages: Vec::new(),
             pack_lava_layers: Vec::new(),
             hud,
             menu_blur: None,
@@ -5201,7 +5205,7 @@ impl Renderer {
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
         pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
         pass.draw_indexed(0..quads * 6, (first * 4) as i32, 0..1);
-        if self.hdr.is_some() && !self.hdr_written {
+        if light_marks(self.frame_format, self.hdr.is_some()) {
             // Drawn into the world: the light sources it holds are marked as the world's are.
             pass.set_pipeline(&self.hdr_entity_mark_pipeline);
             pass.draw_indexed(0..quads * 6, (first * 4) as i32, 0..1);
@@ -5209,7 +5213,9 @@ impl Renderer {
     }
     /// HDR lighting on the clouds just drawn: the sky's value (`fs_hdr_cloud_mark`).
     fn mark_clouds(&self, pass: &mut wgpu::RenderPass<'_>, quads: u32) {
-        if self.hdr_written || self.hdr.as_ref().is_none_or(|h| !h.lighting) {
+        if !light_marks(self.frame_format, self.hdr.is_some())
+            || self.hdr.as_ref().is_none_or(|h| !h.lighting)
+        {
             return;
         }
         pass.set_pipeline(&self.hdr_cloud_mark_pipeline);
@@ -5228,7 +5234,9 @@ impl Renderer {
         solid_draws: u32,
         translucent_draws: u32,
     ) {
-        if self.hdr_written || self.hdr.as_ref().is_none_or(|h| !h.lighting) {
+        if !light_marks(self.frame_format, self.hdr.is_some())
+            || self.hdr.as_ref().is_none_or(|h| !h.lighting)
+        {
             return;
         }
         match flat {
@@ -8200,6 +8208,8 @@ impl Renderer {
                 "Horizon HDR frame: {}",
                 if hdr_written {
                     "written light"
+                } else if self.frame_format == LINEAR_FRAME {
+                    "plain colour"
                 } else {
                     "marked"
                 }
@@ -10843,7 +10853,7 @@ impl Renderer {
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
                 pass.draw_indexed(0..entity_quads * 6, 0, 0..1);
-                if self.hdr.is_some() && !self.hdr_written {
+                if light_marks(self.frame_format, self.hdr.is_some()) {
                     pass.set_pipeline(&self.hdr_entity_mark_pipeline);
                     pass.draw_indexed(0..entity_quads * 6, 0, 0..1);
                 }
@@ -10882,7 +10892,7 @@ impl Renderer {
                     ((base_quads - translucent_item_quads) * 4) as i32,
                     0..1,
                 );
-                if self.hdr.is_some() && !self.hdr_written {
+                if light_marks(self.frame_format, self.hdr.is_some()) {
                     // A glowing item in the world (Item sheet quads), as entities are.
                     pass.set_pipeline(&self.hdr_mark_pipeline);
                     pass.draw_indexed(
@@ -10967,7 +10977,7 @@ impl Renderer {
                 pass.set_pipeline(&self.lightning_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 self.lightning.draw(&mut pass, &frame.lightning);
-                if self.hdr.is_some() && !self.hdr_written {
+                if light_marks(self.frame_format, self.hdr.is_some()) {
                     pass.set_pipeline(&self.hdr_mark_lightning_pipeline);
                     self.lightning.draw(&mut pass, &frame.lightning);
                 }
@@ -11007,7 +11017,7 @@ impl Renderer {
                     pass.draw_indexed(first * 6..end * 6, (world_quads * 4) as i32, 0..1);
                     first = end;
                 }
-                if self.hdr.is_some() && !self.hdr_written {
+                if light_marks(self.frame_format, self.hdr.is_some()) {
                     // The dragon's eyes and death rays, marked as entities are.
                     pass.set_pipeline(&self.hdr_mark_pipeline);
                     pass.draw_indexed(0..additive_quads * 6, (world_quads * 4) as i32, 0..1);
@@ -11238,7 +11248,7 @@ impl Renderer {
                     // HDR output's mark on what shines in the stages, as the classic
                     // pass marks it after drawing it: eyes, the dragon's eyes and rays,
                     // firework sparks and lightning.
-                    if self.hdr.is_some() && !self.hdr_written {
+                    if light_marks(self.frame_format, self.hdr.is_some()) {
                         pass.set_pipeline(&self.hdr_mark_pipeline);
                         pass.set_bind_group(0, &self.entity_group, &[]);
                         pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
@@ -11307,7 +11317,7 @@ impl Renderer {
                     ((base_quads - translucent_item_quads - translucent_particle_quads) * 4) as i32,
                     0..1,
                 );
-                if self.hdr.is_some() && !self.hdr_written {
+                if light_marks(self.frame_format, self.hdr.is_some()) {
                     // Fireworks: their sparks are translucent-layer particles.
                     pass.set_pipeline(&self.hdr_entity_mark_pipeline);
                     pass.draw_indexed(
@@ -11435,14 +11445,12 @@ impl Renderer {
             };
             post.set_weather(weather);
             let flat = self.flat.as_ref().filter(|_| flat_frame);
-            let pages: Vec<(u32, wgpu::Buffer)> = match flat {
-                Some(_) if pack_draws_terrain || pack_draws_shadow => self
-                    .arena
-                    .page_buffers()
-                    .map(|(p, b)| (p, b.clone()))
-                    .collect(),
-                _ => Vec::new(),
-            };
+            self.pack_pages.clear();
+            if flat.is_some() && (pack_draws_terrain || pack_draws_shadow) {
+                self.pack_pages
+                    .extend(self.arena.page_buffers().map(|(p, b)| (p, b.clone())));
+            }
+            let pages = &self.pack_pages;
             let mut terrain =
                 |rp: &mut wgpu::RenderPass<'_>,
                  list: pack_post::TerrainList,
@@ -11529,9 +11537,12 @@ impl Renderer {
                 &frame.pack,
                 size,
                 [self.config.width, self.config.height],
-                &pages,
+                pages,
                 &mut terrain,
             );
+            // Keep the capacity, not the buffers: a page the arena frees must not stay alive
+            // here until the next shader-pack frame (or forever once the pack is off).
+            self.pack_pages.clear();
             self.pack_post = Some((dimension, Some(post)));
         } else if let Some((color, depth)) = &scaled
             && native_post
@@ -11691,6 +11702,7 @@ impl Renderer {
         }
         // A 0.2 pack is shown at paper white: HDR output lifts nothing of its world.
         let lifts_world = !frame.title
+            && self.frame_format != LINEAR_FRAME
             && self
                 .native
                 .as_ref()
@@ -11948,14 +11960,10 @@ impl Renderer {
                 && !self.hdr_written
             {
                 hdr.mark_hand(encoder, timing.as_mut());
-                // On the layered frame the hand's marks go to the frame, before they become
-                // light with the world's.
-                let marks = if layered {
-                    Some(view_target.clone())
-                } else {
-                    hdr.hand_light_view()
-                };
-                if let Some(view) = marks {
+                // The non-layered 0.2 hand keeps its UI-brightness sentinel, not light marks.
+                if light_marks(self.frame_format, true)
+                    && let Some(view) = hdr.hand_light_view()
+                {
                     // The light sources in the hand may shine, the rest of it stays at the
                     // world's brightness: nothing the world kept here shows through it.
                     let attachments = [Some(wgpu::RenderPassColorAttachment {
@@ -11991,15 +11999,6 @@ impl Renderer {
                     pass.draw_indexed(quads, overlay.first_hand_vertex, 0..1);
                 }
             }
-        }
-        // The layered frame's marks become light: what draws from here draws on light, and
-        // nothing is lifted after.
-        if layered
-            && !self.hdr_written
-            && !frame.title
-            && let Some(hdr) = &self.hdr
-        {
-            hdr.resolve(encoder, timing.as_mut());
         }
         // A native mod's turn after the hand, on the real frame only.
         if overlay.real && !frame.title {
@@ -12961,6 +12960,18 @@ fn frustum(m: Mat4) -> [Vec4; 6] {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn float_frames_never_schedule_light_mark_passes() {
+        use super::{LINEAR_FRAME, WIDE_FRAME, light_marks};
+        use wgpu::TextureFormat::{Bgra8Unorm, Rgb10a2Unorm, Rgba8Unorm};
+        for hdr in [false, true] {
+            assert!(!light_marks(LINEAR_FRAME, hdr));
+            for format in [WIDE_FRAME, Bgra8Unorm, Rgba8Unorm, Rgb10a2Unorm] {
+                assert_eq!(light_marks(format, hdr), hdr);
+            }
+        }
+    }
+
     #[test]
     fn frame_policy_keeps_compatibility_frames_and_requires_layering_for_float_hdr() {
         use super::{LINEAR_FRAME, WIDE_FRAME, frame_configuration};
