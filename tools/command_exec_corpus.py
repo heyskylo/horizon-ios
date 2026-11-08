@@ -5989,6 +5989,10 @@ def groups():
     except ImportError:
         from mob_effect_predicate_corpus import cases as mob_effect_predicates
     try:
+        from .seed_sync_corpus import cases as seed_sync_proof
+    except ImportError:
+        from seed_sync_corpus import cases as seed_sync_proof
+    try:
         from .mob_name_predicate_corpus import cases as mob_name_predicates
     except ImportError:
         from mob_name_predicate_corpus import cases as mob_name_predicates
@@ -6088,6 +6092,7 @@ def groups():
         ('aquatic FromBucket', aquatic_from_bucket()),
         ('villager command names', villager_command_names()),
         ('item lifetime counters', item_lifetime_counters()),
+        ('seed sync proof', seed_sync_proof(cmd, setup)),
         ('animal signed InLove', animal_signed_in_love()),
         ('mob fire resistance damage', mob_fire_resistance_damage()),
         ('armor stand climbing', armor_stand_climbing()),
