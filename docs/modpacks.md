@@ -916,8 +916,11 @@ not read) is carried with its data files moved to 1.21's folder names (`recipe/`
 `tags/block/`..., counted as `folders_renamed`); a file the jar also holds under the new name
 keeps that copy. Their JSON stays 1.20's: a recipe result naming its item as `item` (before
 1.20.5), which 26.3 skips, is kept as it is and counted as `recipes_old_result`, and NBT in loot
-functions, ingredients and predicates is not upgraded yet (#10262). Such a mod is partial
-whatever its harness says, with that in its reason. `check` still says it doesn't run.
+functions, ingredients and predicates is not upgraded yet (#10262). In the game each such file
+fails alone and the rest load: those recipes are skipped, `set_nbt` and `copy_nbt` drop their item
+without the NBT, an advancement's NBT predicate matches any item, a template's block renamed since
+1.20 is air, and a 1.20 command in a function fails. Such a mod is partial whatever its harness
+says, with that in its reason. `check` still says it doesn't run.
 
 Both files open with a plain headline for players, counted from the rows' own status, class and
 tier: how many of the mods that need porting came over (ported or partial, as content: blocks,

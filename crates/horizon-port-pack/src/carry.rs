@@ -1918,12 +1918,25 @@ mod tests {
         assert!(row.reason.contains("1.20 or older"), "{}", row.reason);
         assert!(!row.reason.contains("  "), "{}", row.reason);
         assert!(
-            row.reason.contains("1 recipe results name `item`"),
+            row.reason
+                .contains("(1 recipe result names `item`, which 26.3 skips; NBT"),
             "{}",
             row.reason
         );
         let s = report::summary(&rows);
         assert_eq!((s.needing, s.carried, s.partial, s.later), (1, 1, 1, 0));
+
+        // The recipe count is left out when no result names `item`, and plural past one.
+        let report_file = out.join("carry-report.json");
+        let carried_report: Value =
+            serde_json::from_slice(&fs::read(&report_file).unwrap()).unwrap();
+        for (n, says) in [(0, "(NBT in loot"), (2, "(2 recipe results name `item`")] {
+            let mut c = carried_report.clone();
+            c["recipes_old_result"] = json!(n);
+            fs::write(&report_file, serde_json::to_vec(&c).unwrap()).unwrap();
+            let reason = &report::build(&records, &work)[0].reason;
+            assert!(reason.contains(says), "{reason}");
+        }
 
         // An older build's report of the same jar carried nothing: not one Port can carry.
         fs::write(
