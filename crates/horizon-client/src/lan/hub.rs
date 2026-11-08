@@ -2175,8 +2175,8 @@ impl Hub {
     }
 
     /// ServerClockManager.createFullSyncPacket: every clock. Horizon keeps the
-    /// overworld clock (the day time); the End's clock runs with the game
-    /// time. Clocks do not advance without the advance_time rule.
+    /// overworld clock (the day time) and the End's (`end_clock`). Clocks do not
+    /// advance without the advance_time rule.
     fn time_packet(&self, world: &World, rate: f32) -> C {
         let overworld = self
             .sync
@@ -2198,7 +2198,7 @@ impl Hub {
                     } else {
                         play::ClockState {
                             clock: id,
-                            total_ticks: world.game_time,
+                            total_ticks: world.end_clock,
                             partial_tick: 0.0,
                             rate: if rate > 0.0 { 1.0 } else { 0.0 },
                         }

@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "log", "target": "horizon_client::game::native_server::Game<'_>::native_log"}
+  ],
+  "rust_summary": "a line in the server's log at a level (`native_log`), in the console's format on a dedicated server.",
+  "doc_summary": "`native_log(level, line)` writes a line to the server's log at `INFO`, `WARN` or `ERROR`, in the console's format on a dedicated server, as the server writes its own lines. Bundles need no hook; the helper is `Host::log`. API @API:server_log@.",
+  "comments": ["crates/horizon-client/src/game/native_server.rs"]
+}
