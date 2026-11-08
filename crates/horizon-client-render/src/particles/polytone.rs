@@ -1608,6 +1608,61 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// An `additive_translucent` custom particle takes the fog in Java, as vanilla's particle
+    /// shader gives it: its quads say so to the additive pass.
+    #[test]
+    fn an_additive_custom_particle_takes_the_particle_shader_overlay() {
+        let blocks = blocks();
+        let root = pack(&[
+            (
+                "assets/test/polytone/custom_particles/spark.json",
+                serde_json::json!({"has_physics": false, "render_type": "additive_translucent",
+                    "initializer": {"lifetime": "100", "size": "1"}}),
+            ),
+            (
+                "assets/minecraft/polytone/entity_modifiers/player.json",
+                serde_json::json!({"emitters": [{"particle": "test:spark", "chance": "1"}]}),
+            ),
+        ]);
+        let scene = scene(blocks);
+        let level = ParticleLevel {
+            world: &scene.world,
+            facts: &scene.facts,
+            collision: &scene.collision,
+            player: None,
+        };
+        let mut engine = engine(Registry::read(&root, Default::default(), blocks));
+        let rect = crate::hud::Rect {
+            u0: 0.0,
+            v0: 0.0,
+            u1: 1.0,
+            v1: 1.0,
+            w: 16,
+            h: 16,
+        };
+        engine.rects = vec![Some(rect); 13];
+        engine.polytone_entity(&level, "minecraft:player", [1.0, 64.0, 1.0]);
+        engine.tick(&level);
+        let mut out = Vec::new();
+        engine.render(
+            DVec3::new(1.0, 64.0, 6.0),
+            0.0,
+            0.0,
+            0.0,
+            &|_| 0xF0,
+            &mut out,
+        );
+        assert!(out.is_empty());
+        let additive = engine.take_additive();
+        assert_eq!(additive.len(), 4);
+        assert!(
+            additive
+                .iter()
+                .all(|v| v.layer & 0xffff == crate::gfx::ADDITIVE_PARTICLE_OVERLAY)
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn a_gpu_particle_is_a_record_drawn_until_its_life_ends() {
         let blocks = blocks();

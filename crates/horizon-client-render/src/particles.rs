@@ -4961,6 +4961,13 @@ impl ParticleEngine {
                 r.v0 + dv * p.uv[3],
             );
             let target: &mut Vec<Vertex> = if p.additive { &mut additive } else { &mut *out };
+            let overlay = if p.additive {
+                crate::gfx::ADDITIVE_PARTICLE_OVERLAY
+            } else if layer {
+                crate::gfx::TRANSLUCENT_PARTICLE_OVERLAY
+            } else {
+                0
+            };
             for rotation in rotations.into_iter().flatten() {
                 for (n, uv) in [
                     ((1.0, -1.0), [u1, v1]),
@@ -4973,11 +4980,7 @@ impl ParticleEngine {
                         normal: [0; 4],
                         pos: v.to_array(),
                         uv,
-                        layer: if layer {
-                            crate::gfx::TRANSLUCENT_PARTICLE_OVERLAY
-                        } else {
-                            0
-                        } | u32::from(hdr_tier(p.ty)) << 16,
+                        layer: overlay | u32::from(hdr_tier(p.ty)) << 16,
                         color,
                         light,
 
