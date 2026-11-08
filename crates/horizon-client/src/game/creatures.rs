@@ -1628,7 +1628,7 @@ impl Game<'_> {
         cancel
     }
     /// LivingEntity.die / dropAllDeathLoot.
-    fn mob_died(&mut self, m: &Mob) {
+    pub(super) fn mob_died(&mut self, m: &Mob) {
         if self.mob_death_canceled(m) {
             return;
         }
@@ -2315,6 +2315,18 @@ impl Game<'_> {
                 MobEvent::ArmorHurt { mob, amount, kind } => self.hurt_mob_armor(mob, amount, kind),
                 MobEvent::GliderWear { mob, slot } => self.wear_mob_glider(mob, slot),
                 MobEvent::EntityEvent { mob, event, at } => {
+                    // Ravager.roar (event 69 ends it): with mob_griefing on,
+                    // ROAR_TARGET_WITH_GRIEFING also takes the armor stands.
+                    if event == 69
+                        && self.ui.rules.bool("mob_griefing")
+                        && let Some(area) = self
+                            .mobs
+                            .iter()
+                            .find(|m| m.id == mob && m.species() == Species::Ravager)
+                            .map(|m| m.bounds().inflate(Vec3::new(4.0, 4.0, 4.0)))
+                    {
+                        self.roar_pushes_armor_stands(area, at);
+                    }
                     self.lan_entity_event(mob as i32, event, at)
                 }
                 MobEvent::LevelParticles {
