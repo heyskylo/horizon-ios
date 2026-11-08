@@ -41,9 +41,8 @@ fn written_lane(
     pack: bool,
     world: bool,
     oit_requested: bool,
-    vis_requested: bool,
 ) -> bool {
-    layered && format == LINEAR_FRAME && !pack && world && !oit_requested && !vis_requested
+    layered && format == LINEAR_FRAME && !pack && world && !oit_requested
 }
 
 fn terrain_shader() -> String {
@@ -8171,7 +8170,6 @@ impl Renderer {
             self.shader_pack_kind().is_some(),
             !frame.title,
             self.improved_transparency,
-            std::env::var("HORIZON_VISBUFFER").as_deref() == Ok("1"),
         );
         if self.hdr_written != hdr_written {
             log::info!(
@@ -12938,25 +12936,23 @@ mod tests {
     #[test]
     fn written_light_requires_the_entire_default_layered_world_lane() {
         use super::{LINEAR_FRAME, WIDE_FRAME, written_lane};
-        assert!(written_lane(true, LINEAR_FRAME, false, true, false, false));
-        for bits in 0..32 {
+        assert!(written_lane(true, LINEAR_FRAME, false, true, false));
+        for bits in 0..16 {
             let layered = bits & 1 != 0;
             let pack = bits & 2 != 0;
             let world = bits & 4 != 0;
             let oit = bits & 8 != 0;
-            let vis = bits & 16 != 0;
             assert_eq!(
-                written_lane(layered, LINEAR_FRAME, pack, world, oit, vis),
-                layered && !pack && world && !oit && !vis
+                written_lane(layered, LINEAR_FRAME, pack, world, oit),
+                layered && !pack && world && !oit
             );
-            assert!(!written_lane(layered, WIDE_FRAME, pack, world, oit, vis));
+            assert!(!written_lane(layered, WIDE_FRAME, pack, world, oit));
             assert!(!written_lane(
                 layered,
                 wgpu::TextureFormat::Bgra8Unorm,
                 pack,
                 world,
-                oit,
-                vis
+                oit
             ));
         }
     }
