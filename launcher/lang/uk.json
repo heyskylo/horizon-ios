@@ -1251,5 +1251,6 @@
   "Buy": "Купити",
   "Gift": "Подарувати",
   "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon виконує функції, теги функцій, предикати, модифікатори предметів, рецепти, таблиці здобичі, досягнення, обміни селян, типи шкоди, більшість тегів і більшу частину генерації світу (біоми, особливості, структури, виміри) із датапака. Інші файли, як-от пресети світу, поки не читаються.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} поки нічого не змінить у Horizon: Horizon ще не читає його {files}.",
   "Looks": "Образи"
 }

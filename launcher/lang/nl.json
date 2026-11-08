@@ -1251,5 +1251,6 @@
   "Buy": "Kopen",
   "Gift": "Cadeau geven",
   "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon voert de functies, functietags, predicaten, voorwerpwijzigers, recepten, buittabellen, vorderingen, dorpelingenhandel, schadetypen, de meeste tags en het grootste deel van de wereldgeneratie (biomen, kenmerken, structuren, dimensies) van een datapack uit. Andere bestanden, zoals wereldvoorinstellingen, worden nog niet gelezen.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} zou in Horizon nog niets veranderen: Horizon leest de {files} ervan nog niet.",
   "Looks": "Looks"
 }

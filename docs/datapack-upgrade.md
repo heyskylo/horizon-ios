@@ -15,9 +15,10 @@ The input is a zip or a folder; nothing is downloaded, and the pack stays on
 your machine (packs are often All Rights Reserved: do not commit or share an
 upgraded copy).
 
-Horizon does not apply a data pack's world generation yet (see
-[the mod browser](mod-browser.md)); the upgraded pack loads in vanilla 26.3,
-and the checks below run it there.
+Horizon applies most of a data pack's world generation (biomes, features,
+structures, dimensions; not world presets), so the upgraded pack can also be
+tried in Horizon (see [the mod browser](mod-browser.md)). The checks below run
+it in vanilla 26.3.
 
 The command prints what it rewrote, what it could not rewrite faithfully
 (`not faithful`) and the types it does not know (`left as it is`).
