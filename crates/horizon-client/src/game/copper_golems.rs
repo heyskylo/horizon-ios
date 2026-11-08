@@ -21,11 +21,14 @@ use horizon_world::{
 const RECHECK_TICKS: i64 = 5;
 
 impl Game<'_> {
-    /// A copper golem opened or closed a chest half: the counter changes and
+    /// A copper golem opened or closed a chest half: the counter changes, the
+    /// first opener posts CONTAINER_OPEN and the last closer CONTAINER_CLOSE
+    /// (`ContainerOpenersCounter.incrementOpeners` / `decrementOpeners`), and
     /// the clients see the block event (`openerCountChanged`).
-    pub(super) fn golem_chest_open(&mut self, chest: [i32; 3], open: bool) {
+    pub(super) fn golem_chest_open(&mut self, chest: [i32; 3], open: bool, mob: u32) {
         let key = (chest[0], chest[1], chest[2]);
         let entry = self.world.chest_openers.entry(key).or_insert((0, 0.0));
+        let before = entry.0;
         if open {
             entry.0 += 1;
             entry.1 = entry.1.max(3.0);
@@ -38,6 +41,12 @@ impl Game<'_> {
         let count = entry.0;
         if count <= 0 {
             self.world.chest_openers.remove(&key);
+        }
+        let who = Some(horizon_client::mobs::Who::Mob(mob));
+        if open && before == 0 {
+            self.post_block_game_event("minecraft:container_open", chest, who, None);
+        } else if !open && count == 0 {
+            self.post_block_game_event("minecraft:container_close", chest, who, None);
         }
         self.block_entity_event(chest, 1, count.max(0));
         // The guests get the same `ClientboundBlockEventPacket` (the lid).
@@ -99,9 +108,11 @@ impl Game<'_> {
             if count == before {
                 continue;
             }
+            // `recheckOpeners`: the game event has no source.
             if count == 0 {
                 self.world.chest_openers.remove(&key);
                 self.golem_chest_sound(p, false);
+                self.post_block_game_event("minecraft:container_close", p, None, None);
             } else if let Some(o) = self.world.chest_openers.get_mut(&key) {
                 o.0 = count;
             }
