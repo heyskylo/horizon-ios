@@ -75,8 +75,17 @@ fn still(cmd: &commands::Cmd) -> bool {
     matches!(cmd.group, commands::Group::Observe)
         || matches!(
             cmd.name,
-            "hello" | "status" | "worlds" | "logs" | "save" | "launch" | "quit" | "pause"
-                | "resume" | "inventory" | "ui"
+            "hello"
+                | "status"
+                | "worlds"
+                | "logs"
+                | "save"
+                | "launch"
+                | "quit"
+                | "pause"
+                | "resume"
+                | "inventory"
+                | "ui"
         )
 }
 
@@ -224,11 +233,26 @@ mod tests {
     #[test]
     fn paced_reading_tools_keep_the_world_still() {
         let find = |n: &str| commands::COMMANDS.iter().find(|c| c.name == n).unwrap();
-        for n in ["state", "inventory", "entities", "events", "find-block", "pause", "save"] {
+        for n in [
+            "state",
+            "inventory",
+            "entities",
+            "events",
+            "find-block",
+            "pause",
+            "save",
+        ] {
             assert!(still(find(n)), "{n} should not let time pass");
         }
         let moving = [
-            "goto", "break", "place", "attack", "wait", "wait-for", "screenshot", "click-slot",
+            "goto",
+            "break",
+            "place",
+            "attack",
+            "wait",
+            "wait-for",
+            "screenshot",
+            "click-slot",
         ];
         for n in moving {
             assert!(!still(find(n)), "{n} needs the world running");
