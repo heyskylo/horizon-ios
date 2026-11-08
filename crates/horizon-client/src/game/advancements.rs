@@ -286,6 +286,20 @@ impl Game<'_> {
         !adv::can_unlock(&lock, spectator, hand.as_ref(), &View(self))
     }
 }
+/// `MinMaxBounds.Doubles.matchesSqr`: `sqr` against the bounds squared
+/// (a missing one matches anything).
+fn matches_sqr(v: &Value, sqr: f64) -> bool {
+    let (min, max) = match v {
+        Value::Null => (None, None),
+        Value::Number(n) => (n.as_f64(), n.as_f64()),
+        Value::Object(o) => (
+            o.get("min").and_then(Value::as_f64),
+            o.get("max").and_then(Value::as_f64),
+        ),
+        _ => return false,
+    };
+    !min.is_some_and(|m| m * m > sqr) && !max.is_some_and(|m| m * m < sqr)
+}
 pub(super) fn item_view(s: &ItemStack) -> ItemView {
     ItemView {
         id: s.item.to_string(),
@@ -483,6 +497,25 @@ impl Game<'_> {
             },
             &View(self),
         )
+    }
+    /// `ExecuteCommand.checkCustomPredicate`: no seed/sequence override;
+    /// reached literal chance leaves use this active level's random source.
+    pub(super) fn command_conditions_hold(
+        &mut self,
+        v: &Value,
+        this: Option<&EntityView>,
+        origin: [f64; 3],
+    ) -> bool {
+        let ctx = adv::Entities {
+            this,
+            origin,
+            tool: None,
+            block_pos: None,
+        };
+        adv::conditions_with(v, &ctx, &mut |leaf, ctx| {
+            adv::literal_random_chance(leaf, &mut || self.world.random.next_float())
+                .unwrap_or_else(|| adv::conditions(leaf, ctx, &View(self)))
+        })
     }
     /// The player as a command's predicates see it: with what it looks at.
     pub(super) fn player_entity(&self) -> EntityView {
@@ -1468,6 +1501,23 @@ impl Game<'_> {
                 block_pos: None,
             };
             adv::conditions(&c["player"], &pctx, w) && adv::item(&c["item"], &it, w)
+        });
+    }
+    /// `UsedEnderEyeTrigger.trigger`: the player threw an eye of ender toward
+    /// a structure `sqr_distance` (squared, horizontal) away.
+    pub(super) fn trigger_used_ender_eye(&mut self, sqr_distance: f64) {
+        if self.remote.is_some() || self.no_player_here() {
+            return;
+        }
+        let me = self.player_entity_for("minecraft:used_ender_eye");
+        self.trigger("minecraft:used_ender_eye", move |c, w| {
+            let pctx = adv::Entities {
+                this: Some(&me),
+                origin: me.position,
+                tool: None,
+                block_pos: None,
+            };
+            adv::conditions(&c["player"], &pctx, w) && matches_sqr(&c["distance"], sqr_distance)
         });
     }
     /// The entity a 100 block ray from the eyes meets first, if no block is
@@ -2976,6 +3026,129 @@ mod structure_tag_tests {
         ));
         assert!(holds(&game, "#minecraft:shipwreck", "minecraft:shipwreck"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod random_chance_command_tests {
+    use super::*;
+    use crate::game::commands::Target;
+    use horizon_world::nbt::Tag;
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn registered_named_random_chance_uses_real_source_and_world_draws() {
+        use crate::game::{Audio, Options, Settings, load_resources};
+        use std::time::Instant;
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &crate::game::Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+
+        let dir = std::env::temp_dir().join(format!("horizon-h122-unit-{}", std::process::id()));
+        assert!(!dir.exists());
+        let pack = dir.join("datapacks/chance");
+        let folder = pack.join("data/h122/predicate");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(pack.join("pack.mcmeta"),r#"{"pack":{"description":"Chance","pack_format":121,"min_format":[121,0],"max_format":[121,0]}}"#).unwrap();
+        let function = pack.join("data/h122/function");
+        std::fs::create_dir_all(&function).unwrap();
+        std::fs::write(
+            function.join("admit.mcfunction"),
+            "scoreboard players set pack h122 17\n",
+        )
+        .unwrap();
+        let rows: Vec<Value> = include_str!("../../../../docs/parity/random-chance-seeded.jsonl")
+            .lines()
+            .map(|s| serde_json::from_str(s).unwrap())
+            .collect();
+        for row in &rows {
+            std::fs::write(
+                folder.join(format!("case_{}.json", row["case"])),
+                row["input"].to_string(),
+            )
+            .unwrap();
+        }
+        std::fs::write(folder.join("pig.json"),r#"{"type":"minecraft:entity_properties","entity":"this","predicate":{"minecraft:entity_type":"minecraft:pig"}}"#).unwrap();
+        game.world_root = dir.clone();
+        game.reload_datapacks(false);
+        assert!(game.run_command("scoreboard objectives add h122 dummy"));
+        assert!(game.run_command("function h122:admit"));
+        assert_eq!(game.score.board.score("pack", "h122").unwrap().value, 17);
+        let tag = Tag::compound([
+            ("id", Tag::String("minecraft:pig".into())),
+            ("UUID", Tag::IntArray(vec![122, 0, 0, 1])),
+            (
+                "Pos",
+                Tag::List(vec![
+                    Tag::Double(4.5_f64.to_bits()),
+                    Tag::Double(200.0_f64.to_bits()),
+                    Tag::Double(4.5_f64.to_bits()),
+                ]),
+            ),
+            ("Health", Tag::Float(10_f32.to_bits())),
+            ("NoAI", Tag::Byte(1)),
+            ("NoGravity", Tag::Byte(1)),
+        ]);
+        let id = game.load_mob(tag, None).unwrap();
+        assert_eq!(game.persist.uuids.get(&id), Some(&[122, 0, 0, 1]));
+        assert_eq!(game.entity_view_of(Target::Mob(id)).kind, "minecraft:pig");
+        let clock = game.world.game_time;
+        assert!(game.run_command("execute as 0000007a-0000-0000-0000-000000000001 if predicate h122:pig run scoreboard players set identity h122 1"));
+        assert_eq!(game.score.board.score("identity", "h122").unwrap().value, 1);
+        for row in &rows {
+            let seed = row["seed"].as_i64().unwrap();
+            let name = format!("h122:case_{}", row["case"]);
+            assert!(game.fns.store.predicates.contains_key(&name));
+            game.world.random.set_seed(seed);
+            game.run_command("scoreboard players set branch h122 -99");
+            game.exec = Default::default();
+            let source = game.player_source();
+            game.execute_line(&format!("execute as 0000007a-0000-0000-0000-000000000001 if predicate {name} run scoreboard players set branch h122 1"),source).unwrap();
+            assert_eq!(
+                game.score.board.score("branch", "h122").unwrap().value,
+                if row["result"].as_bool().unwrap() {
+                    1
+                } else {
+                    -99
+                },
+                "{row}"
+            );
+            let continuation: Vec<i64> = (0..4).map(|_| game.world.random.next_long()).collect();
+            let expected: Vec<i64> = row["continuation"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_i64().unwrap())
+                .collect();
+            assert_eq!(continuation, expected, "actual world RNG {row}");
+        }
+        assert_eq!(game.world.game_time, clock);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
 

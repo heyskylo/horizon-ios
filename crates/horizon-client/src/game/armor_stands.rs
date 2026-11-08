@@ -267,18 +267,24 @@ impl Game<'_> {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut out = Vec::new();
-        for (item, layer) in worn
-            .into_iter()
-            .zip(["helmet", "chestplate", "leggings", "boots"])
-        {
+        for (item, (layer, slot)) in worn.into_iter().zip([
+            ("helmet", "head"),
+            ("chestplate", "chest"),
+            ("leggings", "legs"),
+            ("boots", "feet"),
+        ]) {
             let Some((item, stack)) = item else {
                 continue;
             };
-            let Some(asset) = self
-                .res
-                .items()
-                .get(item)
-                .and_then(|i| i.equip_asset.clone())
+            // HumanoidArmorLayer.renderArmorPiece: the stack's own
+            // `equippable`, drawn when it has an asset and is worn in its slot.
+            let equippable = match stack {
+                Some(s) => horizon_client::item_sync::equippable(s, self.res.items()),
+                None => horizon_client::item_sync::item_equippable(item, self.res.items()),
+            };
+            let Some(asset) = equippable
+                .filter(|e| e.slot == slot)
+                .and_then(|e| e.asset_id)
             else {
                 continue;
             };
@@ -380,9 +386,8 @@ impl Game<'_> {
             let Some(stack) = stack.filter(|s| s.extra.is_some()) else {
                 continue;
             };
-            let Some(asset) = items
-                .get(&stack.item)
-                .and_then(|i| i.equip_asset.as_deref())
+            let Some(asset) =
+                horizon_client::item_sync::equippable(stack, items).and_then(|e| e.asset_id)
             else {
                 continue;
             };
@@ -391,7 +396,7 @@ impl Game<'_> {
             } else {
                 "humanoid"
             };
-            if let Some(t) = assets.trim_texture(asset, kind, stack)
+            if let Some(t) = assets.trim_texture(&asset, kind, stack)
                 && !wanted.contains(&t)
             {
                 wanted.push(t);
@@ -1113,6 +1118,7 @@ impl Game<'_> {
                 continue;
             }
             let entity_start = out.len();
+            self.mark_motion(entity_start, Self::MOTION_OBJECT | u64::from(a.id));
             // EntityRenderer: drawn between last tick's position and this one's.
             let at = a.render_position(alpha);
             let p = super::entity_culling::at(at) - camera;
@@ -1240,20 +1246,20 @@ impl Game<'_> {
         // HumanoidArmorLayer: head, chest, legs, feet. One pose map for every layer
         // (`reset` keeps its capacity).
         let mut layer_poses = Poses::default();
-        for (slot, layer) in [
-            (5usize, "helmet"),
-            (4, "chestplate"),
-            (3, "leggings"),
-            (2, "boots"),
+        for (slot, layer, worn) in [
+            (5usize, "helmet", "head"),
+            (4, "chestplate", "chest"),
+            (3, "leggings", "legs"),
+            (2, "boots", "feet"),
         ] {
             let Some(stack) = &a.equipment[slot] else {
                 continue;
             };
-            let Some(asset) = self
-                .res
-                .items()
-                .get(&stack.item)
-                .and_then(|i| i.equip_asset.clone())
+            // HumanoidArmorLayer.renderArmorPiece: the stack's own
+            // `equippable`, drawn when it has an asset and is worn in its slot.
+            let Some(asset) = horizon_client::item_sync::equippable(stack, self.res.items())
+                .filter(|e| e.slot == worn)
+                .and_then(|e| e.asset_id)
             else {
                 continue;
             };
@@ -1705,11 +1711,8 @@ impl Game<'_> {
         }
         // A head item that is not worn armour.
         if let Some(stack) = &a.equipment[5]
-            && self
-                .res
-                .items()
-                .get(&stack.item)
-                .is_none_or(|i| i.equip_asset.is_none())
+            && !horizon_client::item_sync::equippable(stack, self.res.items())
+                .is_some_and(|e| e.asset_id.is_some() && e.slot == "head")
             && let Some(head) = part_matrix(model, base, poses, "head", 0.0)
         {
             let pose = head

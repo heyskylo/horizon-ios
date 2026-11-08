@@ -70,6 +70,8 @@ pub struct Facts<'a> {
     pub server: &'a str,
     /// Modrinth categories.
     pub categories: &'a [String],
+    /// Modrinth's loaders for the whole project, over all its versions.
+    pub project_loaders: &'a [String],
     /// From the jar: classes, and whether it has blocks, items or data.
     pub classes: Option<usize>,
     pub has_content: bool,
@@ -98,6 +100,11 @@ pub fn rules(f: &Facts) -> (&'static str, &'static str, &'static str) {
     }
     if f.classes == Some(0) && f.has_content {
         return ("content", "data", "jar");
+    }
+    // The project also ships as a plain data pack, so its jar is probably one too. Only the jar
+    // can tell, so this gets the jar fetched; once it is read, the rule above or those below decide.
+    if f.classes.is_none() && f.project_loaders.iter().any(|l| l == "datapack") {
+        return ("content", "data", "loaders");
     }
     let content = [
         "adventure",
@@ -214,6 +221,26 @@ mod tests {
             ("content", "data", "categories")
         );
         assert_eq!(f("", "", &[]).0, "unknown");
+    }
+
+    #[test]
+    fn a_project_that_ships_as_a_data_pack_is_data_tier_until_its_jar_says_otherwise() {
+        let adventure = ["adventure".to_owned()];
+        let loaders = ["datapack".to_owned(), "fabric".to_owned()];
+        let f = |classes, has_content| {
+            rules(&Facts {
+                kind: "mods",
+                client: "required",
+                server: "required",
+                categories: &adventure,
+                project_loaders: &loaders,
+                classes,
+                has_content,
+            })
+        };
+        assert_eq!(f(None, false), ("content", "data", "loaders"));
+        assert_eq!(f(Some(0), true), ("content", "data", "jar"));
+        assert_eq!(f(Some(12), true), ("content", "deep", "categories"));
     }
 
     #[test]
