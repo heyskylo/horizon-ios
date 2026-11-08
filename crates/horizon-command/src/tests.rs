@@ -1105,3 +1105,108 @@ fn shallow_execute_run_still_parses() {
     assert!(run("execute if entity @s run say hi").is_ok());
     assert!(run("execute as @a at @s run tp @s 0 0 0").is_ok());
 }
+
+#[test]
+fn h149_cardinal_local_positions_use_exact_table_values() {
+    let mut failures = Vec::new();
+    let got = Coordinates::Local([0.75, 0.5, 1.25])
+        .position([8.5, 202.25, 8.5], [0.0f32, 0.0f32])
+        .map(f64::to_bits);
+    let want = [
+        0x4022800000000000u64,
+        0x4069580000000000u64,
+        0x4023800000000000u64,
+    ];
+    if got != want {
+        failures.push(("south", got, want));
+    }
+    let got = Coordinates::Local([0.75, 0.5, 1.25])
+        .position([8.5, 202.25, 8.5], [90.0f32, 0.0f32])
+        .map(f64::to_bits);
+    let want = [
+        0x401d000000000000u64,
+        0x4069580000000000u64,
+        0x4022800000000000u64,
+    ];
+    if got != want {
+        failures.push(("west", got, want));
+    }
+    let got = Coordinates::Local([0.75, 0.5, 1.25])
+        .position([8.5, 202.25, 8.5], [180.0f32, 0.0f32])
+        .map(f64::to_bits);
+    let want = [
+        0x401f000000000000u64,
+        0x4069580000000000u64,
+        0x401d000000000000u64,
+    ];
+    if got != want {
+        failures.push(("north", got, want));
+    }
+    let got = Coordinates::Local([0.75, 0.5, 1.25])
+        .position([8.5, 202.25, 8.5], [270.0f32, 0.0f32])
+        .map(f64::to_bits);
+    let want = [
+        0x4023800000000000u64,
+        0x4069580000000000u64,
+        0x401f000000000000u64,
+    ];
+    if got != want {
+        failures.push(("east", got, want));
+    }
+    assert!(
+        failures.is_empty(),
+        "exact cardinal local-coordinate bit mismatches: {failures:#?}"
+    );
+}
+
+#[test]
+fn h149_oblique_local_offsets_are_grouped_before_the_origin() {
+    let world = Coordinates::World([
+        Coord {
+            relative: true,
+            value: 0.75,
+        },
+        Coord {
+            relative: true,
+            value: 0.5,
+        },
+        Coord {
+            relative: true,
+            value: 1.25,
+        },
+    ]);
+    assert_eq!(
+        world
+            .position([8.5, 202.25, 8.5], [37.5, -22.25])
+            .map(f64::to_bits),
+        [9.25f64, 202.75, 9.75].map(f64::to_bits),
+        "unchanged world/relative control before local failures"
+    );
+    let mut failures = Vec::new();
+    let got = Coordinates::Local([0.1, 0.1, 0.1])
+        .position([8.5, 202.25, 8.5], [37.5f32, -22.25f32])
+        .map(f64::to_bits);
+    let want = [
+        0x402117934a6314b9u64,
+        0x40694c2c5ee98f58u64,
+        0x40213562572e889au64,
+    ];
+    if got != want {
+        failures.push(("oblique", got, want));
+    }
+    let got = Coordinates::Local([0.1, 0.1, 0.1])
+        .position([8.5, 202.25, 8.5], [123.75f32, 47.125f32])
+        .map(f64::to_bits);
+    let want = [
+        0x4020a7648c7aa86bu64,
+        0x406947d514129374u64,
+        0x4021025e8b180036u64,
+    ];
+    if got != want {
+        failures.push(("positioned_oblique", got, want));
+    }
+    assert!(
+        failures.is_empty(),
+        "exact oblique local-coordinate bit mismatches: {failures:#?}"
+    );
+}

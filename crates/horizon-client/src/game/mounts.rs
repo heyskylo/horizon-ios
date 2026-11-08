@@ -70,7 +70,7 @@ impl MountState {
 }
 /// `AbstractHorse.isFood` and `handleEating`: what a mount eats, and what that
 /// mouthful does — `(heal, age up seconds, temper, falls in love)`. The temper
-/// is the `u8` the mob stores it in.
+/// increment is kept separate from its signed saved counter.
 ///
 /// `AbstractHorse.isFood` is the `#minecraft:horse_food` tag, `ZombieHorse`
 /// overrides it with `#minecraft:zombie_horse_food` (a red mushroom and
@@ -170,6 +170,7 @@ impl Game<'_> {
         self.mobs[index].set_saddle(None);
         let context = self.who_context(Some(Who::Player), None);
         self.post_game_event("minecraft:shear", [at.x, at.y, at.z], context);
+        self.mob_equip_event(id, [at.x, at.y, at.z], false);
         self.spawn_at_location(at, offset, saddle.clone());
         let target = self.mob_entity(&self.mobs[index]);
         self.trigger_item_entity("minecraft:player_sheared_equipment", &saddle, &target);
@@ -190,8 +191,11 @@ impl Game<'_> {
             } else {
                 "minecraft:entity.pig.saddle"
             };
-            self.audio.play(sound, Some(at), 0.5, 1.0);
+            self.audio.play(sound, Some(at), 1.0, 1.0);
             self.consume_held();
+            let id = self.mobs[index].id;
+            let pos = self.mobs[index].position;
+            self.mob_equip_event(id, [pos.x, pos.y, pos.z], true);
             self.world
                 .modified
                 .insert((at[0].floor() as i32 >> 4, at[2].floor() as i32 >> 4));
@@ -361,8 +365,15 @@ impl Game<'_> {
         if let Some(sound) = sound {
             let pitch =
                 (self.world.random.next_float() - self.world.random.next_float()) * 0.2 + 1.0;
-            self.audio.play(sound, Some(at), 0.5, pitch);
+            let chest = item == "minecraft:chest";
+            self.audio
+                .play(sound, Some(at), if chest { 0.5 } else { 1.0 }, pitch);
             self.consume_held();
+            if !chest {
+                let id = self.mobs[index].id;
+                let pos = self.mobs[index].position;
+                self.mob_equip_event(id, [pos.x, pos.y, pos.z], true);
+            }
             self.world
                 .modified
                 .insert((at[0].floor() as i32 >> 4, at[2].floor() as i32 >> 4));
@@ -404,8 +415,8 @@ impl Game<'_> {
             m.extra.age = (m.extra.age + age_up * 20).min(0);
             used = true;
         }
-        if temper > 0 && (used || !m.extra.tame) && m.extra.variant3 < 100 {
-            m.extra.variant3 = (m.extra.variant3 + temper).min(100);
+        if temper > 0 && (used || !m.extra.tame) && equine::temper(m) < 100 {
+            equine::modify_temper(m, i32::from(temper));
             used = true;
         }
         if !used {
@@ -564,7 +575,16 @@ impl Game<'_> {
         };
         let m = &self.mobs[i];
         let mut at = Vec3::new(m.position.x, m.position.y + seat(m.species()), m.position.z);
-        if horizon_client::mobs::camel::is_camel(m.species()) {
+        if &*m.kind.id == "minecraft:player" || &*m.kind.id == "minecraft:mannequin" {
+            // Avatar attachments follow pose and minecraft:scale, just as for
+            // remote avatars riding other avatars. Do not guess a standing height.
+            at = horizon_client::mobs::riders::seat(
+                horizon_client::mobs::riders::passenger_attachment(m),
+                f64::from(0.6_f32),
+                m.position,
+                m.yaw,
+            );
+        } else if horizon_client::mobs::camel::is_camel(m.species()) {
             // Camel.getPassengerAttachmentPoint: the driver half a block
             // forward, at the body anchor (lower while sitting), turned with
             // the camel.

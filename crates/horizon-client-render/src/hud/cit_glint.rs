@@ -5,6 +5,7 @@
 //! vanilla's glint's is. Without enchantment rules nothing here is made.
 
 use super::HudVertex;
+use crate::gfx::hud_coverage::Pipeline;
 use horizon_optifine::cit::{Blend, Factor, Kind, Rule};
 use std::path::Path;
 
@@ -230,7 +231,7 @@ pub fn blend_state(blend: Option<Blend>) -> wgpu::BlendState {
 /// pipeline per blend.
 pub(super) struct CitGlintPass {
     group: wgpu::BindGroup,
-    pipelines: Vec<wgpu::RenderPipeline>,
+    pipelines: Vec<Pipeline>,
 }
 
 impl CitGlintPass {
@@ -241,6 +242,7 @@ impl CitGlintPass {
         format: wgpu::TextureFormat,
         hud: &wgpu::BindGroupLayout,
         textures: &GlintTextures,
+        coverage: bool,
     ) -> Option<Self> {
         use wgpu::util::DeviceExt;
         if textures.is_empty() {
@@ -381,7 +383,7 @@ impl CitGlintPass {
             .blends
             .iter()
             .map(|&blend| {
-                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                let desc = wgpu::RenderPipelineDescriptor {
                     label: Some("CIT glint"),
                     layout: Some(&pipeline_layout),
                     vertex: wgpu::VertexState {
@@ -409,7 +411,9 @@ impl CitGlintPass {
                     }),
                     multiview_mask: None,
                     cache: None,
-                })
+                };
+                let source = wgpu::ShaderSource::Wgsl(include_str!("../hud.wgsl").into());
+                Pipeline::new(device, &desc, source, coverage).expect("the CIT glint's coverage")
             })
             .collect();
         Some(Self { group, pipelines })
@@ -421,9 +425,10 @@ impl CitGlintPass {
         pass: &mut wgpu::RenderPass<'_>,
         blend: u8,
         vertices: std::ops::Range<u32>,
+        coverage: bool,
     ) {
         if let Some(pipeline) = self.pipelines.get(usize::from(blend)) {
-            pass.set_pipeline(pipeline);
+            pass.set_pipeline(pipeline.get(coverage));
             pass.set_bind_group(1, &self.group, &[]);
             pass.draw(vertices, 0..1);
         }

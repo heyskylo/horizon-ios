@@ -26,7 +26,7 @@ Nautilus.getAmbientSound	port	crates/horizon-client/src/mobs/nautilus.rs::sounds
 Nautilus.getHurtSound	port	crates/horizon-client/src/mobs/nautilus.rs::sounds	by age and by under water or on land
 Nautilus.getDeathSound	port	crates/horizon-client/src/mobs/nautilus.rs::sounds	by age and by under water or on land
 Nautilus.playEatingSound	port	crates/horizon-client/src/mobs/nautilus.rs::eat_sound	baby and adult eat sounds
-Nautilus.baseTick	inline	crates/horizon-client/src/mobs/ai.rs::base_tick	gap: minor: dries out on land through the generic needs_water air supply, so the damage is the drown kind instead of dry_out and a no-AI nautilus dries out too
+Nautilus.baseTick	inline	crates/horizon-client/src/mobs/ai.rs::base_tick	NoAI skips custom supply and uses superclass Breath/drown; gap: minor: the normal handler still uses generic needs_water air so damage is drown instead of dry_out
 NautilusAi.initCoreActivity	inline	crates/horizon-client/src/mobs/nautilus.rs::register	panic 1.6 is a goal; the look and move sinks are the generic controls and the cooldown counters tick in ai_step
 NautilusAi.initIdleActivity	inline	crates/horizon-client/src/mobs/nautilus.rs::register	gap: minor: breed 0.4, tempt 1.3, swim stroll 1.0 and the target pick (find_target), but SetWalkTargetFromLookTarget is not ported so it does not swim toward what it looks at
 NautilusAi.initFightActivity	inline	crates/horizon-client/src/mobs/nautilus.rs::register	the Charge goal: speed 0.6, 12 block range, 80 tick cooldown, only without love or temptation
@@ -148,3 +148,5 @@ Sniffer.jumpFromGround	port	crates/horizon-client/src/mobs/living.rs::jump_from_
 Sniffer.mobInteract	inline	crates/horizon-client/src/mobs/ai.rs::eating_sound	the eating sound plays when the food was taken (feed_animal)
 Sniffer.playEatingSound	port	crates/horizon-client/src/mobs/ai.rs::eating_sound	Species::Sniffer arm: entity.sniffer.eat with pitch 0.8 to 1.2
 Sniffer.playSearchingSound	port	crates/horizon-client/src/game/sniffers.rs::Game::tick_sniffer_effects	searching sound every 20 ticks while searching, near any player
+Parrot.canBeABaby	port	crates/horizon-client/src/mobs/species.rs::can_be_a_baby	the false arm: a parrot with a negative Age is an adult, and its getVoicePitch is the plain range
+ZombieNautilus.canBeABaby	port	crates/horizon-client/src/mobs/species.rs::can_be_a_baby	the false arm: a zombie nautilus with a negative Age is an adult

@@ -10,7 +10,7 @@ pub(super) const NATIVE_EXPLOSION_MAX_RADIUS: f32 = 32.0;
 
 /// What a mod's blast does to blocks (`Level.ExplosionInteraction`). Built by
 /// mods only.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "native mod API (docs/native-mods.md)")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum NativeBlast {
     /// Blocks stay; entities are hurt and pushed (`ExplosionInteraction.NONE`).
@@ -34,7 +34,7 @@ fn blast_ok(center: [f64; 3], radius: f32) -> bool {
         && radius <= NATIVE_EXPLOSION_MAX_RADIUS
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, reason = "native mod API (docs/native-mods.md)")]
 impl Game<'_> {
     /// Explodes at `center` in the level in place, `dimension`, as
     /// `Level.explode(null, x, y, z, radius, fire, interaction)` does: the

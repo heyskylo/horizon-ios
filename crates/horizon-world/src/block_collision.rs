@@ -97,7 +97,7 @@ impl<'r> BlockCollisionRegistry<'r> {
         for index in 0..cached.registry().len() {
             let id = BlockStateId(index as u32);
             let state = cached.registry().state(id).unwrap();
-            let large = cached.cached_shape(id)?.is_none_or(|shape| {
+            let mut large = cached.cached_shape(id)?.is_none_or(|shape| {
                 Axis::ALL
                     .into_iter()
                     .any(|axis| shape.min(axis) < 0.0 || shape.max(axis) > 1.0)
@@ -109,21 +109,30 @@ impl<'r> BlockCollisionRegistry<'r> {
             } else if state.name == "minecraft:powder_snow" {
                 contextual.insert(id, ContextualRule::PowderSnow);
             }
+            let mut declared_collision = false;
+            let mut declared_nonempty = false;
+            for shape in cached.collision_variants(id) {
+                declared_collision = true;
+                declared_nonempty |= !shape.is_empty();
+                large |= Axis::ALL
+                    .into_iter()
+                    .any(|axis| shape.min(axis) < 0.0 || shape.max(axis) > 1.0);
+            }
             // No contextual rule and an empty cached shape: empty everywhere.
-            let empty = !contextual.contains_key(&id)
+            let empty = !declared_nonempty
+                && !contextual.contains_key(&id)
                 && cached.cached_shape(id)?.is_some_and(VoxelShape::is_empty);
             scan_flags.push(
                 u8::from(large)
                     | (u8::from(state.name == "minecraft:moving_piston") << 1)
                     | (u8::from(empty) << 2)
-                    | (u8::from(contextual.contains_key(&id)) << 3),
+                    | (u8::from(contextual.contains_key(&id) || declared_collision) << 3),
             );
-            if cached.cached_shape(id)?.is_none() {
-                if let Some(rule) =
+            if cached.cached_shape(id)?.is_none()
+                && let Some(rule) =
                     DynamicSupport::from_state(cached.registry().state(id).unwrap())?
-                {
-                    dynamic.insert(id, rule);
-                }
+            {
+                dynamic.insert(id, rule);
             }
         }
         let pistons = PistonBlockBindings::new(cached.registry()).ok();
@@ -213,6 +222,13 @@ impl<'r> BlockCollisionRegistry<'r> {
             .scan_flags
             .get(state.0 as usize)
             .is_none_or(|flags| flags & 8 != 0);
+        if contextual
+            && let Some(shape) = self
+                .cached
+                .context_collision_shape(state, context.entity_kind())
+        {
+            return Ok(shape.clone());
+        }
         match contextual.then(|| self.contextual.get(&state)).flatten() {
             Some(ContextualRule::Scaffolding(rule)) => Ok(rule.shape(context, position)),
             Some(ContextualRule::Liquid(rule)) => rule
