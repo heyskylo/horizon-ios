@@ -1504,8 +1504,9 @@ pub struct Renderer {
     /// The no-pack float HDR lane, with independent blending and an R8 coverage target.
     hud_coverage: bool,
     /// What `frame_format` was picked from besides the settings and the pack: whether the
-    /// surface offers HDR output, the device draws the 16-bit frame, and it draws the float one.
-    frame_device: (bool, bool, bool),
+    /// surface offers HDR output, the device draws the 16-bit and float frames, and it supports
+    /// the HUD layer. The layer must follow the pack even when the format stays float.
+    frame_device: (bool, bool, bool, bool),
     /// Whether a pack picked or dropped since the renderer was made has been told it runs on
     /// the frame that exists (`set_native_shader_pack`).
     frame_kept_logged: bool,
@@ -2160,6 +2161,38 @@ fn frame_format(
     }
 }
 
+fn frame_configuration(
+    wide_frame: bool,
+    device: (bool, bool, bool, bool),
+    swapchain: wgpu::TextureFormat,
+    linear_pack: bool,
+    hdr_float: bool,
+) -> (wgpu::TextureFormat, bool) {
+    let (hdr_offered, wide_ok, linear_ok, coverage_ok) = device;
+    let layered = !linear_pack && hdr_float && hdr_offered && linear_ok && coverage_ok;
+    (
+        frame_format(
+            wide_frame,
+            hdr_offered,
+            wide_ok,
+            swapchain,
+            (linear_pack, layered, linear_ok),
+        ),
+        layered,
+    )
+}
+
+fn frame_follows(
+    current: (wgpu::TextureFormat, bool),
+    wide_frame: bool,
+    device: (bool, bool, bool, bool),
+    swapchain: wgpu::TextureFormat,
+    linear_pack: bool,
+    hdr_float: bool,
+) -> bool {
+    current == frame_configuration(wide_frame, device, swapchain, linear_pack, hdr_float)
+}
+
 /// Opens a device on the first of `backend_order`'s backends that gives one.
 /// Offscreen rendering needs no surface, so it can use a GPU the window's
 /// display cannot present from (a headless compositor).
@@ -2797,19 +2830,18 @@ impl Renderer {
                 "Horizon renderer: the device can't draw a float frame; the shader API 0.2 pack runs on the 8-bit one"
             );
         }
-        let frame_format = frame_format(
-            wide_frame,
-            hdr_output.is_some(),
-            wide_ok,
-            config.format,
-            linear,
-        );
-        let hud_coverage = hud_coverage::supported(
-            linear,
-            hdr_output.is_some(),
+        let coverage_ok = hud_coverage::supported(
             device.limits().max_color_attachments,
             adapter.get_downlevel_capabilities().flags,
             adapter.get_texture_format_features(hud_coverage::FORMAT),
+        );
+        let frame_device = (hdr_output.is_some(), wide_ok, linear.2, coverage_ok);
+        let (frame_format, hud_coverage) = frame_configuration(
+            wide_frame,
+            frame_device,
+            config.format,
+            linear_pack,
+            hdr_float,
         );
         if previous.is_none() {
             startup_step(format_args!("creating the pipelines"));
@@ -5111,7 +5143,7 @@ impl Renderer {
             hdr_output,
             frame_format,
             hud_coverage,
-            frame_device: (hdr_output.is_some(), wide_ok, linear.2),
+            frame_device,
             frame_kept_logged: false,
             hdr_marker: None,
             pack_post: None,
@@ -6862,15 +6894,14 @@ impl Renderer {
     /// `Renderer::new` takes them). Under `HORIZON_HDR_FRAME=float` the game makes the renderer
     /// again when it isn't (docs/design/hdr-linear-light.md, "When it changes").
     pub fn frame_follows(&self, wide_frame: bool, linear_pack: bool, hdr_float: bool) -> bool {
-        let (hdr_offered, wide_ok, linear_ok) = self.frame_device;
-        self.frame_format
-            == frame_format(
-                wide_frame,
-                hdr_offered,
-                wide_ok,
-                self.config.format,
-                (linear_pack, hdr_float, linear_ok),
-            )
+        frame_follows(
+            (self.frame_format, self.hud_coverage),
+            wide_frame,
+            self.frame_device,
+            self.config.format,
+            linear_pack,
+            hdr_float,
+        )
     }
     /// HDR output (Horizon setting): HDR10 or scRGB at `paper_white` nits, the world's
     /// highlights expanded up to `peak` nits. Off where the surface can't present it.
@@ -12918,6 +12949,122 @@ fn frustum(m: Mat4) -> [Vec4; 6] {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn frame_policy_keeps_compatibility_frames_and_requires_layering_for_float_hdr() {
+        use super::{LINEAR_FRAME, WIDE_FRAME, frame_configuration};
+        use wgpu::TextureFormat::{Bgra8Unorm, Bgra8UnormSrgb};
+
+        for bits in 0..128 {
+            let hdr = bits & 1 != 0;
+            let offered = bits & 2 != 0;
+            let wide_ok = bits & 4 != 0;
+            let float_ok = bits & 8 != 0;
+            let coverage_ok = bits & 16 != 0;
+            let switch = bits & 32 != 0;
+            let smooth = bits & 64 != 0;
+            for pack in ["none", "0.1", "0.2", "shaders"] {
+                let expected = if switch && float_ok && pack == "0.2" {
+                    (LINEAR_FRAME, false)
+                } else if switch && float_ok && pack == "none" && hdr && offered && coverage_ok {
+                    (LINEAR_FRAME, true)
+                } else if hdr && smooth && offered && wide_ok {
+                    (WIDE_FRAME, false)
+                } else {
+                    (Bgra8Unorm, false)
+                };
+                assert_eq!(
+                    frame_configuration(
+                        hdr && smooth,
+                        (offered, wide_ok, float_ok, coverage_ok),
+                        Bgra8UnormSrgb,
+                        switch && pack == "0.2",
+                        switch && hdr && pack == "none",
+                    ),
+                    expected,
+                    "bits {bits}, pack {pack}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn float_hdr_falls_back_for_each_missing_hud_layer_requirement() {
+        use super::{LINEAR_FRAME, WIDE_FRAME, frame_configuration, hud_coverage};
+        use wgpu::{DownlevelFlags as D, TextureFormat as F, TextureFormatFeatureFlags as Fl};
+        use wgpu::{TextureFormatFeatures, TextureUsages as U};
+
+        let usages = U::RENDER_ATTACHMENT | U::TEXTURE_BINDING;
+        for (attachments, flags, allowed_usages, format_flags) in [
+            (1, D::INDEPENDENT_BLEND, usages, Fl::BLENDABLE),
+            (2, D::empty(), usages, Fl::BLENDABLE),
+            (2, D::INDEPENDENT_BLEND, U::TEXTURE_BINDING, Fl::BLENDABLE),
+            (2, D::INDEPENDENT_BLEND, U::RENDER_ATTACHMENT, Fl::BLENDABLE),
+            (2, D::INDEPENDENT_BLEND, usages, Fl::empty()),
+        ] {
+            let coverage = hud_coverage::supported(
+                attachments,
+                flags,
+                TextureFormatFeatures {
+                    allowed_usages,
+                    flags: format_flags,
+                },
+            );
+            let device = (true, true, true, coverage);
+            assert_eq!(
+                frame_configuration(true, device, F::Bgra8Unorm, false, true),
+                (WIDE_FRAME, false)
+            );
+            assert_eq!(
+                frame_configuration(false, device, F::Bgra8Unorm, false, true),
+                (F::Bgra8Unorm, false)
+            );
+            assert_eq!(
+                frame_configuration(true, device, F::Bgra8Unorm, true, false),
+                (LINEAR_FRAME, false)
+            );
+        }
+    }
+
+    #[test]
+    fn frame_follows_requires_a_rebuild_when_only_layering_changes() {
+        use super::{LINEAR_FRAME, frame_follows};
+        use wgpu::TextureFormat::Bgra8Unorm;
+
+        let device = (true, true, true, true);
+        assert!(frame_follows(
+            (LINEAR_FRAME, true),
+            true,
+            device,
+            Bgra8Unorm,
+            false,
+            true
+        ));
+        assert!(!frame_follows(
+            (LINEAR_FRAME, true),
+            true,
+            device,
+            Bgra8Unorm,
+            true,
+            false
+        ));
+        assert!(frame_follows(
+            (LINEAR_FRAME, false),
+            true,
+            device,
+            Bgra8Unorm,
+            true,
+            false
+        ));
+        assert!(!frame_follows(
+            (LINEAR_FRAME, false),
+            true,
+            device,
+            Bgra8Unorm,
+            false,
+            true
+        ));
+    }
+
     #[test]
     fn written_light_requires_the_entire_default_layered_world_lane() {
         use super::{LINEAR_FRAME, WIDE_FRAME, written_lane};
