@@ -242,7 +242,7 @@ impl Game<'_> {
         let mut world = World::new(self.res.facts().air, self.level.seed);
         world.attachments = save.load_attachments();
         world.shape = self.level_shapes.get(dim.id());
-        world.fast_lava = dim == Dim::Nether;
+        world.fast_lava = self.dimension_type_of(dim).fast_lava;
         Ok(Parked {
             world,
             streaming,
@@ -496,12 +496,16 @@ impl Game<'_> {
         let running = (!paused && !self.agent.hold_server).then(|| self.clock.world_runs());
         let server = self.serving.is_some() || self.options.dedicated.is_some();
         // A config edited while the server is paused (empty) still reloads.
+        // The parts outside every level get spans of their own, so that a slow
+        // tick's line and `horizon-report` say when a mod's tick hook took it.
         if server {
+            let _span = horizon_client::spans::guard("mod_configs_poll");
             self.native_configs_poll();
         }
         if let Some(running) = running
             && server
         {
+            let _span = horizon_client::spans::guard("mods_server_tick_start");
             self.native_lifecycle_server_tick_start(running);
         }
         let observe_level =
@@ -578,13 +582,20 @@ impl Game<'_> {
             self.native_lifecycle.cancel_server_tick();
         }
         result?;
-        if let Err(error) = self.close_idle_levels() {
+        let closed = {
+            let _span = horizon_client::spans::guard("close_idle_levels");
+            self.close_idle_levels()
+        };
+        if let Err(error) = closed {
             self.native_lifecycle.cancel_server_tick();
             return Err(error);
         }
         // `ServerTickEnd`: an errored tick or an idle-close failure (at
         // the `?` above) never reaches this site.
-        self.native_lifecycle_server_tick_end(paused);
+        {
+            let _span = horizon_client::spans::guard("mods_server_tick_end");
+            self.native_lifecycle_server_tick_end(paused);
+        }
         // The packets counted for `native_server_packets` (only while a mod counts them).
         if server {
             self.diagnostics_packets_tick();

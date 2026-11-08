@@ -113,6 +113,7 @@ impl Game<'_> {
                     || carts.contains(&v)
                     || tnts.contains(&v)
                     || cushions.contains(&v)
+                    || self.seat(v).is_some()
                     || index
                         .get(&v)
                         .is_some_and(|&j| self.mobs[j].alive() && !self.mobs[j].removed));
@@ -146,6 +147,7 @@ impl Game<'_> {
         self.seat_cart_mobs(&riders);
         self.seat_tnt_mobs(&riders);
         self.seat_cushion_mobs(&riders);
+        self.seat_static_mobs(&riders);
         let index: HashMap<u32, usize> = self
             .mobs
             .iter()

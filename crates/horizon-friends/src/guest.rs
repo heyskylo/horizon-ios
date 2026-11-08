@@ -259,20 +259,42 @@ fn join_relay(config: &GuestConfig, relay_url: &str, code: &Code) -> Result<Tunn
     })
 }
 
+/// The bytes a client sends first on the loopback port, before its handshake: what
+/// [`Tunnel::serve_loopback`] handed it.
+pub const TOKEN_LEN: usize = 16;
+
+/// The session offered on a loopback port ([`Tunnel::serve_loopback`]).
+pub struct Loopback {
+    pub port: u16,
+    /// What the connection must send first: any other local process or a web page that finds
+    /// the port gets nothing.
+    pub token: [u8; TOKEN_LEN],
+    /// Ends when the connection does, or when none came in time.
+    pub thread: JoinHandle<()>,
+}
+
 impl Tunnel {
-    /// Offer the session on `127.0.0.1:port` for one connection (the game's
-    /// client); the returned thread ends when that connection does.
-    pub fn serve_loopback(self) -> io::Result<(u16, JoinHandle<()>)> {
+    /// Offer the session on `127.0.0.1:port` for one connection (the game's client), the first
+    /// that sends `token` within a second of connecting. Another process on the computer could
+    /// otherwise reach the port first and take the authenticated session to the host's server.
+    pub fn serve_loopback(self) -> io::Result<Loopback> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let port = listener.local_addr()?.port();
         listener.set_nonblocking(true)?;
+        let mut token = [0u8; TOKEN_LEN];
+        crate::fill_random(&mut token)?;
         let thread = std::thread::Builder::new()
             .name("horizon-friends-guest".into())
             .spawn(move || {
                 let deadline = std::time::Instant::now() + Duration::from_secs(30);
                 let plain = loop {
                     match listener.accept() {
-                        Ok((s, from)) if from.ip().is_loopback() => break Some(s),
+                        Ok((s, from)) if from.ip().is_loopback() => {
+                            if sends_token(&s, &token) {
+                                break Some(s);
+                            }
+                            // Anything else is dropped, and the port waits on.
+                        }
                         Ok(_) => {}
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                             if std::time::Instant::now() > deadline {
@@ -289,11 +311,25 @@ impl Tunnel {
                     let _ = reader.get_ref().shutdown(std::net::Shutdown::Both);
                     return;
                 };
-                let _ = plain.set_nonblocking(false);
                 if let Ok(t) = crate::pump(plain, reader, writer) {
                     let _ = t.join();
                 }
             })?;
-        Ok((port, thread))
+        Ok(Loopback {
+            port,
+            token,
+            thread,
+        })
     }
+}
+
+/// Whether `s` sends `token` within a second, compared in constant time. Leaves it blocking.
+fn sends_token(mut s: &TcpStream, token: &[u8; TOKEN_LEN]) -> bool {
+    use std::io::Read;
+    let mut got = [0u8; TOKEN_LEN];
+    let read = s.set_nonblocking(false).is_ok()
+        && s.set_read_timeout(Some(Duration::from_secs(1))).is_ok()
+        && s.read_exact(&mut got).is_ok()
+        && s.set_read_timeout(None).is_ok();
+    read && got.iter().zip(token).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
 }
