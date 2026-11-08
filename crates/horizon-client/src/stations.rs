@@ -188,6 +188,35 @@ fn component_int(tag: &horizon_world::nbt::Tag) -> Option<i32> {
         _ => None,
     }
 }
+/// An item holder set in a component: one id or tag, or a list of them.
+fn component_items(tag: &horizon_world::nbt::Tag) -> Vec<String> {
+    use horizon_world::nbt::Tag;
+    match tag {
+        Tag::String(s) => vec![s.to_string_lossy().to_owned()],
+        Tag::List(list) => list
+            .iter()
+            .filter_map(|item| match item {
+                Tag::String(s) => Some(s.to_string_lossy().to_owned()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+/// `ItemStack.get(DataComponents.REPAIRABLE)`: the stack's component, else
+/// the item's default; a removed component leaves none.
+fn repairable(e: &Enchantments, stack: &ItemStack) -> Vec<String> {
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:repairable").is_some()) {
+        return Vec::new();
+    }
+    if let Some(tag) = data.and_then(|d| d.other("minecraft:repairable")) {
+        return tag.get("items").map(component_items).unwrap_or_default();
+    }
+    e.props(&stack.item)
+        .map(|p| p.repairable.clone())
+        .unwrap_or_default()
+}
 /// `ItemStack.getDamageValue`: the damage clamped to `[0, max_damage]`.
 fn damage_value(items: &Items, stack: &ItemStack) -> i32 {
     (stack.damage.min(i32::MAX as u32) as i32).clamp(0, max_damage(items, stack).max(0))
@@ -204,15 +233,15 @@ pub fn is_damageable(items: &Items, stack: &ItemStack) -> bool {
 fn set_damage_value(items: &Items, stack: &mut ItemStack, damage: i32) {
     stack.damage = damage.clamp(0, max_damage(items, stack).max(0)) as u32;
 }
-/// `ItemStack.isValidRepairItem`.
+/// `ItemStack.isValidRepairItem`: `REPAIRABLE` from the stack's components,
+/// not only the item's default.
 pub fn is_valid_repair_item(
     e: &Enchantments,
     items: &Items,
     stack: &ItemStack,
     material: &ItemStack,
 ) -> bool {
-    e.props(&stack.item)
-        .is_some_and(|p| Enchantments::item_in(items, &p.repairable, &material.item))
+    Enchantments::item_in(items, &repairable(e, stack), &material.item)
 }
 /// `stack.has(STORED_ENCHANTMENTS)`: the enchanted book's default component
 /// unless removed, or an explicitly set one, even when empty.
@@ -990,6 +1019,7 @@ fn apply_trim(
 mod tests {
     use super::*;
     use crate::enchant::tests::{sample, sample_items};
+    use horizon_world::nbt::Tag;
 
     fn sword(ench: &[(&str, u32)]) -> ItemStack {
         let mut s = ItemStack::new("minecraft:diamond_sword", 1);
@@ -1014,6 +1044,37 @@ mod tests {
             Some(horizon_world::nbt::Tag::Int(max)),
         );
         s
+    }
+
+    /// Anvil: `ItemStack.isValidRepairItem` reads the stack's `REPAIRABLE`
+    /// component, so a patched list repairs where the item's default does not.
+    #[test]
+    fn anvil_reads_the_stacks_repairable_component() {
+        let e = sample();
+        let items = sample_items();
+        let mut sword = worn("minecraft:diamond_sword", 100, 20);
+        sword.data_mut().set_other(
+            "minecraft:repairable",
+            Some(Tag::compound([(
+                "items",
+                Tag::List(vec![Tag::String("minecraft:stick".into())]),
+            )])),
+        );
+        let r = anvil_result(
+            &e,
+            &items,
+            Some(&sword),
+            Some(&ItemStack::new("minecraft:stick", 1)),
+            None,
+            "",
+            false,
+        );
+        let out = r.result.expect("the stick repairs the sword");
+        // 20 damage of a 100 max is under the 25 one material restores.
+        assert_eq!(out.damage, 0);
+        assert_eq!(r.cost, 1);
+        assert_eq!(r.repair_item_count_cost, 1);
+        assert_eq!(out.repair_cost(), 1);
     }
 
     /// Grindstone: the larger MAX_DAMAGE is written and the damage follows it.
@@ -1366,6 +1427,28 @@ mod tests {
             (&*out.item, out.enchantment_level("minecraft:sharpness")),
             ("minecraft:netherite_sword", 2)
         );
+        // Anvil: a patched REPAIRABLE list repairs with an item the sword's
+        // default does not accept.
+        let mut repairable = ItemStack::new("minecraft:diamond_sword", 1);
+        repairable.damage = 100;
+        repairable.data_mut().set_other(
+            "minecraft:repairable",
+            Some(Tag::compound([(
+                "items",
+                Tag::List(vec![Tag::String("minecraft:stick".into())]),
+            )])),
+        );
+        let r = anvil_result(
+            e,
+            &items,
+            Some(&repairable),
+            Some(&ItemStack::new("minecraft:stick", 1)),
+            None,
+            "Diamond Sword",
+            false,
+        );
+        assert_eq!(r.cost, 1);
+        assert_eq!(r.result.unwrap().damage, 0);
         assert!(
             data.recipes
                 .stonecutter(&ItemStack::new("minecraft:stone", 1))
