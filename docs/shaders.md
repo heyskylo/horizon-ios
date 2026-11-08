@@ -58,9 +58,11 @@ A picked pack's options are pages of the same screen, under the pack's name in i
 names the pack gives them, its profiles, and Reset. The main screen and those it links to are in the list (when
 there are more than it has room for, they collapse into one `‹ Name ›` row that the arrows and a controller's
 bumpers step through); deeper screens open from their links, and Escape goes back. A click, Enter or Right picks an
-option's next value, a right click, a Shift click or Left the one before, and the options the pack lists in
+option's next value, a Shift click or Left the one before, and the options the pack lists in
 `sliders` are sliders. Pointing at one shows what the pack says of it (`option.NAME.comment`); the search finds an
-option on any screen. Undo puts back the pick and the options as the screen opened with them. A `shaders/` pack's
+option on any screen. Undo puts back the pick, the Shadow Cache, the Horizon packs' options and the options of the
+`shaders/` pack that was picked when the screen opened; another `shaders/` pack keeps what was saved for it (picking
+away from it saves its changes, as Apply does). A `shaders/` pack's
 options are saved to `shaderpacks/<pack>.txt` (`NAME=value` lines), and the pack loads again with them, with Apply
 (shown while they differ from the saved ones) or on leaving the screen; a Horizon pack's apply at once.
 

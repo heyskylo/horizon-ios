@@ -1368,7 +1368,7 @@ pub(crate) trait Screen {
     fn slide(&mut self, _s: &mut Settings, _row: Self::Row, _position: f32) {}
     /// A slider let go of, or stepped by a key: what its change does now that it is done (a
     /// Horizon shader pack saves its options once a drag, not on every move).
-    fn let_go(&mut self) -> Vec<Output> {
+    fn slider_released(&mut self) -> Vec<Output> {
         Vec::new()
     }
     /// The page a row opens, for a row that links to one: the shell opens it, and Escape goes
@@ -1478,7 +1478,7 @@ pub(crate) trait Hosted {
         shift: bool,
     ) -> Vec<Output>;
     /// Lets go of a slider or the scrollbar: for a slider (it plays its click), what its change
-    /// does now (`Screen::let_go`).
+    /// does now (`Screen::slider_released`).
     fn release(&mut self) -> Option<Vec<Output>>;
     /// A controller's or the keyboard's focus is on the row at `rect`: if the list hides part of
     /// it, it scrolls all into view (`AbstractSelectionList.setSelected`). How far the row moved
@@ -1717,9 +1717,15 @@ impl<S: Screen> Shell<S> {
         self.page = Some(page);
         self.path.clear();
     }
-    /// Follow a row's link to `page`: it opens alone, and Escape comes back here.
-    fn follow(&mut self, page: S::Page) -> Vec<Output> {
-        if let Some(from) = self.page {
+    /// Follow `row`'s link to `page`: it opens alone, and Escape comes back to the page the row
+    /// is on (while searching, the page it was found on).
+    fn follow(&mut self, row: S::Row, page: S::Page) -> Vec<Output> {
+        let on = self.built.as_ref().and_then(|(_, view)| {
+            let mut lines = view.lines.iter();
+            let line = lines.find(|l| l.setting.is_some_and(|i| view.rows[i].id == row));
+            line.map(|l| l.page)
+        });
+        if let Some(from) = on.or(self.page) {
             self.path.push(from);
         }
         self.page = Some(page);
@@ -1996,7 +2002,7 @@ impl<S: Screen> Shell<S> {
         track: Option<f32>,
     ) -> Vec<Output> {
         if let Some(page) = self.screen.link(row.id) {
-            return self.follow(page);
+            return self.follow(row.id, page);
         }
         match row.value {
             Value::Note | Value::Read(_) => Vec::new(),
@@ -2317,7 +2323,7 @@ impl<S: Screen + Default> Hosted for Shell<S> {
             use crate::widgets::Action as Declared;
             let (label, declared, primary) = match target {
                 Target::Undo => (UNDO, (!self.pending).then_some(Declared::Apply), false),
-                Target::Apply => (APPLY, Some(Declared::Apply), false),
+                Target::Apply => (APPLY, Some(Declared::Apply), true),
                 _ => (DONE, Some(Declared::Done), true),
             };
             let label = Text::literal(lang::get(label));
@@ -2364,15 +2370,9 @@ impl<S: Screen + Default> Hosted for Shell<S> {
             }
             return Vec::new();
         }
+        // The right button presses nothing, as on vanilla's `CycleButton`.
         if right {
-            // A value between `<` `>` steps back on the right button, as on a Shift press.
-            let choice =
-                |(row, _): &(&Row<S::Row>, f32)| row.live && matches!(row.value, Value::Choice(_));
-            let Some((row, _)) = self.row_at(&view, (x, y)).filter(choice) else {
-                return Vec::new();
-            };
-            self.focus = Some(Target::Row(row.id));
-            return self.activate(s, row, true, None);
+            return Vec::new();
         }
         if cols.scrolls()
             && self
@@ -2437,7 +2437,7 @@ impl<S: Screen + Default> Hosted for Shell<S> {
     fn release(&mut self) -> Option<Vec<Output>> {
         self.scroll.release();
         self.dragging.take()?;
-        Some(self.screen.let_go())
+        Some(self.screen.slider_released())
     }
     fn reveal(&mut self, s: &Settings, size: (f32, f32), [x, y, w, h]: [f32; 4]) -> Option<f32> {
         let view = self.view(s, size);
@@ -2551,7 +2551,7 @@ impl<S: Screen + Default> Hosted for Shell<S> {
             self.screen.slide(s, row.id, next);
             self.did(&[DRAGGED]);
             let mut outputs = vec![DRAGGED];
-            outputs.extend(self.screen.let_go());
+            outputs.extend(self.screen.slider_released());
             return outputs;
         }
         // A choice's `<` `>`: Left steps it back and Right on, as a Shift press and a press.
@@ -3540,10 +3540,11 @@ mod tests {
     }
 
     #[test]
-    fn a_link_opens_a_page_out_of_the_list_and_escape_comes_back() {
+    fn a_link_opens_a_page_out_of_the_list_and_escape_comes_back_to_the_links_page() {
         let mut s = Settings::default();
         let mut shell = Shell::<Pages>::default();
-        shell.show(1);
+        // Found by the search from another page: back is the page the link is on.
+        shell.show(HOME);
         shell.set_search("deeper");
         let at = shell.point_at(&s, SIZE, LINK);
         assert_eq!(shell.click(&mut s, at, SIZE, false, false, false), [CLICK]);
@@ -3585,20 +3586,15 @@ mod tests {
     }
 
     #[test]
-    fn the_right_button_steps_a_choice_back_and_presses_nothing_else() {
+    fn the_right_button_steps_no_choice_as_vanillas_cycle_button() {
         let mut s = Settings::default();
         let mut shell = Shell::<Probe>::default();
         let choice = middle_of(&mut shell, CHOICE, SIZE);
-        assert_eq!(
-            shell.click(&mut s, choice, SIZE, false, true, false),
-            [CLICK, CHANGED]
-        );
-        let filler = middle_of(&mut shell, FIRST_FILLER, SIZE);
         assert!(
             shell
-                .click(&mut s, filler, SIZE, false, true, false)
+                .click(&mut s, choice, SIZE, false, true, false)
                 .is_empty()
         );
-        assert_eq!(shell.screen.pressed, [(CHOICE, true)]);
+        assert!(shell.screen.pressed.is_empty());
     }
 }

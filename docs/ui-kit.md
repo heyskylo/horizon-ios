@@ -159,7 +159,7 @@ pages read from a shader pack, rows that link to pages out of the page list, and
    played the click. `side` gives lines to show under the page list, such as whose settings these are
    (Controller Settings: "Editing: <player>" and the controller the game sees); they are read-only.
    `link` makes a row open a page (Shaders' links to a pack's screens): the shell opens it alone, and
-   Escape goes back. A slider's `let_go` says what its change does once the drag ends, or a key stepped
+   Escape goes back. A slider's `slider_released` says what its change does once the drag ends, or a key stepped
    it (a Horizon shader pack saves its options once a drag).
 4. **Fingerprint what the rows read** in `stamp` (`stamp_of`), besides the presses: the rows are built
    again only when it changes.

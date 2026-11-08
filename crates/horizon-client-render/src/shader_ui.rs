@@ -62,8 +62,6 @@ const PENDING: &str = "Changed options apply with Apply, or when you leave.";
 const NOTE_LINES: usize = 3;
 /// Screens this many links from the main one, or fewer, are in the page list.
 const LISTED_DEPTH: u8 = 1;
-/// Short of a float slider's steps when the range isn't a whole number of them (`slider_value`).
-const STEP_SLACK: f32 = 1e-6;
 
 /// One of the picked pack's screens.
 struct PackScreen {
@@ -316,7 +314,9 @@ fn slider_steps(item: Item, s: &Settings) -> Option<u32> {
     let Item::Option(i) = item else { return None };
     let stops = match picked(s)? {
         (p, Kind::Horizon) => match s.shader_packs[p].options.get(usize::from(i))?.kind {
-            OptionKind::Float { min, max, step, .. } => ((max - min) / step - STEP_SLACK).ceil(),
+            OptionKind::Float { min, max, step, .. } => {
+                crate::shader_pack_list::float_steps(min, max, step) as f32
+            }
             OptionKind::Int { min, max, .. } => (max - min) as f32,
             _ => return None,
         },
@@ -582,7 +582,7 @@ impl shell::Screen for ShaderScreen {
         }
     }
     /// A Horizon pack's options are saved, and the pack rebuilt, once a drag.
-    fn let_go(&mut self) -> Vec<Output> {
+    fn slider_released(&mut self) -> Vec<Output> {
         let changed = self.drag_changed.take();
         changed.map_or_else(Vec::new, |p| {
             vec![Output::Event(Event::NativePackOptions(p))]
@@ -606,8 +606,9 @@ impl shell::Screen for ShaderScreen {
     fn undoes(&self) -> bool {
         true
     }
-    /// The pick, the Shadow Cache, and every pack's options as the screen opened with them: a
-    /// Horizon pack's saved again, a `shaders/` pack's saved when the screen closes (or Apply).
+    /// The pick, the Shadow Cache, the Horizon packs' options (saved again) and the options of the
+    /// `shaders/` pack picked when the screen opened (saved when it closes, or Apply), as the
+    /// screen opened with them. Another `shaders/` pack keeps what was saved for it.
     fn undo(&mut self, s: &mut Settings, before: &Settings) -> Vec<Output> {
         let mut outputs = Vec::new();
         s.horizon.shadow_cache = before.horizon.shadow_cache;
@@ -925,7 +926,7 @@ mod tests {
     }
 
     #[test]
-    fn left_and_right_step_an_option_and_the_right_button_steps_it_back() {
+    fn left_and_right_step_an_option_and_a_shift_click_steps_it_back() {
         let mut s = settings();
         let mut shell = shell_at(Tab::Screen(0));
         let value = |s: &Settings| classic(s).unwrap().value("QUALITY").map(str::to_owned);
@@ -937,6 +938,12 @@ mod tests {
         assert_eq!(value(&s).as_deref(), Some("3"));
         let at = shell.point_at(&s, SIZE, Item::Option(1));
         shell.click(&mut s, at, SIZE, false, true, false);
+        assert_eq!(
+            value(&s).as_deref(),
+            Some("3"),
+            "the right button presses nothing"
+        );
+        shell.click(&mut s, at, SIZE, false, false, true);
         assert_eq!(value(&s).as_deref(), Some("2"));
         assert_eq!(shell.focused_row(), Some(Item::Option(1)));
     }
@@ -997,7 +1004,7 @@ mod tests {
     }
 
     #[test]
-    fn a_horizon_packs_slider_drag_is_saved_once_when_let_go_and_a_key_step_at_once() {
+    fn a_horizon_packs_slider_drag_is_saved_once_when_released_and_a_key_step_at_once() {
         let mut s = horizon_pack();
         let mut shell = shell_at(Tab::Screen(0));
         let (_, y) = shell.point_at(&s, SIZE, Item::Option(0));
