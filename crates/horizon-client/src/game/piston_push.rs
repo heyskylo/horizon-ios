@@ -534,140 +534,61 @@ impl Game<'_> {
                 self.mobs[i].on_ground = limited.y < 0.0 && limited.y != resolved.y;
             }
         }
+        // `Entity.move(MoverType.PISTON, …)` restitution, which runs whether or
+        // not the step is applied: so a primed TNT in a chunk that does not tick
+        // entities still loses its velocity into walls and ceilings and
+        // bounces on slime (#12022).
+        self.restitute_piston(target, limited, resolved);
         if resolved.length_squared() <= 1.0e-7
             && limited.length_squared() - resolved.length_squared() >= 1.0e-7
         {
             return;
         }
         self.apply_push(target, resolved);
-        // `Entity.move(MoverType.PISTON, …)` restitution: blocked axes are
-        // zeroed, a downward hit on slime bounces, and the ground flag
-        // updates. Matches vanilla even when the entity's chunk does not tick
-        // entities, so a pushed primed TNT loses its velocity into walls,
-        // ceilings and slime.
-        self.restitute_piston(target, limited, resolved);
     }
 
-    /// `Entity.move(MoverType.PISTON, …)` restitution after the collision
-    /// scan resolved the push. Compares the attempted movement (`limited`)
-    /// with the actual one (`resolved`) and, exactly as vanilla does, zeroes
-    /// blocked horizontal axes, zeroes or bounces the vertical axis, and
-    /// updates the ground flag. Runs for every pushed target so a primed TNT
-    /// in a lazy chunk loses its velocity into walls, ceilings and slime
-    /// instead of keeping it.
+    /// `Entity.restituteMovementAfterCollisions` after a block's push, for a
+    /// server entity (`canSimulateMovement`; a player's own client moves it):
+    /// an axis the collision cut off stops (no entity bounces off walls), and
+    /// a cut-off vertical push stops the fall or rise, except a fall onto
+    /// slime fast enough to bounce. The bounce is of the entity's own
+    /// velocity, scaled by the part of the push that was made. The ground
+    /// flag is set by `set_pushed_on_ground`.
     fn restitute_piston(&mut self, target: Target, limited: Vec3, resolved: Vec3) {
-        const EPS: f64 = 1.0e-5;
-        let collided_x = (limited.x - resolved.x).abs() >= EPS;
-        let collided_z = (limited.z - resolved.z).abs() >= EPS;
-        let vertical_collision = (limited.y - resolved.y).abs() >= EPS;
-        let collision_below = vertical_collision && limited.y < 0.0;
-
-        match target {
-            Target::Player => {
-                if let Some(p) = self.player.as_mut() {
-                    if collided_x {
-                        p.velocity.x = 0.0;
-                    }
-                    if collided_z {
-                        p.velocity.z = 0.0;
-                    }
-                    if vertical_collision {
-                        p.velocity.y = if collision_below {
-                            let below = self.world.block(
-                                p.position.x.floor() as i32,
-                                (p.position.y - 1.0e-5).floor() as i32,
-                                p.position.z.floor() as i32,
-                            );
-                            let slime =
-                                &*self.res.facts().get(below).name == "minecraft:slime_block";
-                            crate::entities::vertical_collision_velocity(
-                                limited.y, resolved.y, 0.04, true, slime,
-                            )
-                        } else {
-                            0.0
-                        };
-                    }
-                    // `Entity.setOnGroundWithMovement`: below sets true, moving
-                    // up sets false, otherwise preserves the old value.
-                    p.ground.on_ground = if collision_below {
-                        true
-                    } else if limited.y > 0.0 {
-                        false
-                    } else {
-                        p.ground.on_ground
-                    };
-                }
-            }
-            Target::Guest(conn) => {
-                if let Some(host) = self.lan.as_mut()
-                    && let Some(g) = host.hub.guests.iter_mut().find(|g| g.conn == conn)
-                {
-                    if let Some(motion) = g.motion.as_deref_mut() {
-                        if collided_x {
-                            motion.velocity.x = 0.0;
-                        }
-                        if collided_z {
-                            motion.velocity.z = 0.0;
-                        }
-                        if vertical_collision {
-                            motion.velocity.y = if collision_below {
-                                let below = self.world.block(
-                                    g.position[0] as i32,
-                                    (g.position[1] - 1.0e-5).floor() as i32,
-                                    g.position[2] as i32,
-                                );
-                                let slime =
-                                    &*self.res.facts().get(below).name == "minecraft:slime_block";
-                                crate::entities::vertical_collision_velocity(
-                                    limited.y, resolved.y, 0.04, true, slime,
-                                )
-                            } else {
-                                0.0
-                            };
-                        }
-                    }
-                    // `Entity.setOnGroundWithMovement`: below sets true, moving
-                    // up sets false, otherwise preserves the old value.
-                    g.on_ground = if collision_below {
-                        true
-                    } else if limited.y > 0.0 {
-                        false
-                    } else {
-                        g.on_ground
-                    };
-                }
-            }
-            Target::Entity(handle) => {
-                with_entity_mut!(self, handle, entity => {
-                    if collided_x {
-                        entity.velocity_mut().x = 0.0;
-                    }
-                    if collided_z {
-                        entity.velocity_mut().z = 0.0;
-                    }
-                    if vertical_collision {
-                        entity.velocity_mut().y = if collision_below {
-                            let pos = entity.position();
-                            let below = self.world.block(
-                                pos.x.floor() as i32,
-                                (pos.y - 1.0e-5).floor() as i32,
-                                pos.z.floor() as i32,
-                            );
-                            let slime = &*self.res.facts().get(below).name == "minecraft:slime_block";
-                            crate::entities::vertical_collision_velocity(
-                                limited.y,
-                                resolved.y,
-                                0.04,
-                                true,
-                                slime,
-                            )
-                        } else {
-                            0.0
-                        };
-                    }
-                });
-            }
+        let Target::Entity(handle) = target else {
+            return;
+        };
+        // `Mth.equal` horizontally, exact vertically, as `Entity.move` compares.
+        let collided_x = (limited.x - resolved.x).abs() >= 1.0e-5;
+        let collided_z = (limited.z - resolved.z).abs() >= 1.0e-5;
+        let moved_vertically = limited.y.abs() > 0.0;
+        let vertical = limited.y != resolved.y;
+        if !(collided_x || collided_z || moved_vertically && vertical) {
+            return;
         }
+        let below = vertical && limited.y < 0.0;
+        with_entity_mut!(self, handle, entity => {
+            let pos = entity.position();
+            // `getOnPosLegacy`: the block 0.2 under the feet.
+            let on = self.world.block(
+                pos.x.floor() as i32,
+                (pos.y - 0.2).floor() as i32,
+                pos.z.floor() as i32,
+            );
+            let slime = &*self.res.facts().get(on).name == "minecraft:slime_block";
+            let velocity = entity.velocity_mut();
+            if collided_x {
+                velocity.x = 0.0;
+            }
+            if collided_z {
+                velocity.z = 0.0;
+            }
+            if vertical {
+                velocity.y = crate::entities::vertical_collision_velocity(
+                    velocity.y, resolved.y, 0.04, below, slime,
+                );
+            }
+        });
     }
 
     /// The end of a block's `Entity.move` push: a server entity's ground flag
