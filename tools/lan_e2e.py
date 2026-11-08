@@ -5690,6 +5690,8 @@ def check_boats(host, guest, out):
             assert player('state').get('using') is not None, \
                 f'{label}: item use after paddling stopped did not resume'
             player.script(['mouse right up', 'wait 5'])
+            player('command', command='clear @s minecraft:spyglass')
+            player.wait(5)
             # The summoned boat faces south: forward paddles it along the pool.
             player.raw('key', 'w', 'down')
             player.wait(30)
