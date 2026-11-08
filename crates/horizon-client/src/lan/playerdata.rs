@@ -143,7 +143,7 @@ pub fn migrate_owner(world: &Path, level: &mut Level, old: u128, new: u128) -> b
         return false;
     }
     let new_data = read_dat(&new_file);
-    // Both files: the one written more recently is the player's data (取新). When their
+    // Both files: the one written more recently is the player's data. When their
     // times cannot be compared, the file level.dat names (the old one) wins.
     let prefer_new = match (&old_data, &new_data) {
         (Some(_), Some(_)) => {
@@ -178,10 +178,11 @@ pub fn migrate_owner(world: &Path, level: &mut Level, old: u128, new: u128) -> b
         level.read_player(&tag);
         level.player_extra = Some(tag);
         level.singleplayer_file = true;
-        // The same data is under the account's name now; an unreadable old file is left
-        // where it is rather than deleted.
-        let _ = std::fs::remove_file(&old_file);
-        let _ = std::fs::remove_file(&old_old);
+        // The same data is under the account's name now. The offline files are kept
+        // beside it as `.dat_offline` / `.dat_old_offline` rather than deleted, so a
+        // migration that went wrong never costs the player their inventory.
+        let _ = std::fs::rename(&old_file, old_file.with_extension("dat_offline"));
+        let _ = std::fs::rename(&old_old, old_file.with_extension("dat_old_offline"));
     }
     level.player_uuid = Some(new_ints);
     // `saveDataTag`: `singleplayer_uuid` is the profile the world's player file is named
@@ -958,6 +959,10 @@ mod tests {
             "the file is named after its UUID"
         );
         assert!(!path(&dir, old).exists(), "the offline file is gone");
+        assert!(
+            path(&dir, old).with_extension("dat_offline").exists(),
+            "the offline file is kept as a backup"
+        );
         let named = read_dat(&dir.join("level.dat")).unwrap();
         assert_eq!(
             uuid_from_tag(named.get("Data").and_then(|d| d.get("singleplayer_uuid"))),
