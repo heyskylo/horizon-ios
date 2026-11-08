@@ -253,6 +253,7 @@ impl Boat {
             raw,
             self.chest.then_some(&self.items[..]),
         );
+        horizon_client::entity_nbt::write_saved_flags(&mut tag, self.on_ground, self.no_gravity);
         if let Tag::Compound(map) = &mut tag {
             map.insert("Fire".into(), Tag::Short(self.fire_ticks as i16));
         }

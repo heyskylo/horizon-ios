@@ -2961,6 +2961,7 @@ impl Minecart {
             uuid,
             raw,
         );
+        horizon_client::entity_nbt::write_saved_flags(&mut tag, self.on_ground, self.no_gravity);
         if let Tag::Compound(map) = &mut tag {
             // ContainerEntity.addChestVehicleSaveData belongs only to the
             // container subclasses, never to a plain or specialized cart.
@@ -3059,6 +3060,7 @@ impl Minecart {
         c.yaw = yaw;
         c.previous_yaw = yaw;
         c.no_gravity = horizon_client::entity_nbt::flag(tag, "NoGravity");
+        c.on_ground = horizon_client::entity_nbt::flag(tag, "OnGround");
         c.pitch = horizon_client::entity_nbt::rotation(tag)[1];
         c.previous_pitch = c.pitch;
         // ValueInput's numeric getters take any NumericTag: getIntOr is its

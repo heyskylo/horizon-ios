@@ -59,13 +59,40 @@ pub fn loaded_motion(tag: &Tag) -> Vec3 {
 pub fn rotation(tag: &Tag) -> [f32; 2] {
     read_doubles::<2>(tag.get("Rotation")).map_or([0.0; 2], |r| [r[0] as f32, r[1] as f32])
 }
-/// `NumericTag.byteValue`'s nonzero test for entity NBT, defaulting to false.
+/// `TagValueInput.getBooleanOr`: a numeric tag's byteValue is nonzero, with a false default.
 pub fn flag(tag: &Tag, key: &str) -> bool {
     // NBT floats floor before int narrowing; the final byte keeps the low bits.
     tag.get(key)
         .and_then(int_value)
         .is_some_and(|value| value as i8 != 0)
 }
+
+/// `Entity.saveWithoutId`: write the movement flags and the flags retained
+/// from `Entity.load` as booleans. Only OnGround and Invulnerable write false.
+pub fn write_saved_flags(tag: &mut Tag, on_ground: bool, no_gravity: bool) {
+    let invulnerable = flag(tag, "Invulnerable");
+    let optional = [
+        ("NoGravity", no_gravity),
+        ("CustomNameVisible", flag(tag, "CustomNameVisible")),
+        ("Silent", flag(tag, "Silent")),
+        ("Glowing", flag(tag, "Glowing")),
+        ("HasVisualFire", flag(tag, "HasVisualFire")),
+    ];
+    let Tag::Compound(map) = tag else {
+        return;
+    };
+    map.insert("OnGround".into(), Tag::Byte(i8::from(on_ground)));
+    map.insert("Invulnerable".into(), Tag::Byte(i8::from(invulnerable)));
+    for (key, value) in optional {
+        let key = key.into();
+        if value {
+            map.insert(key, Tag::Byte(1));
+        } else {
+            map.remove(&key);
+        }
+    }
+}
+
 /// `Entity.saveWithoutId` fields every entity has, over the loaded compound.
 struct Base<'a> {
     id: &'a str,
@@ -3816,18 +3843,22 @@ pub fn painting_from_nbt(tag: &Tag) -> Option<([i32; 3], u8, String)> {
     let facing = (number(tag.get("facing")).unwrap_or(0) & 3) as u8;
     Some((pos, facing, text(tag.get("variant"))?))
 }
-/// Cushion.addAdditionalSaveData: the block it sits on and its colour.
+/// `Cushion.addAdditionalSaveData`: the block it sits on and its colour.
 pub fn cushion_to_nbt(c: &Cushion, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
+    // A block-attached cushion does not update these movement flags.
+    let on_ground = raw.is_some_and(|tag| flag(tag, "OnGround"));
+    let no_gravity = raw.is_some_and(|tag| flag(tag, "NoGravity"));
     let base = Base {
         id: "minecraft:cushion",
         uuid,
         position: c.position,
         motion: Vec3::ZERO,
         rotation: [c.yaw, 0.0],
-        on_ground: false,
+        on_ground,
         fall_distance: 0.0,
     };
     let mut tag = base.tag(raw);
+    write_saved_flags(&mut tag, on_ground, no_gravity);
     put(&mut tag, "block_pos", Tag::IntArray(c.pos.to_vec()));
     put(&mut tag, "color", string(c.color_name()));
     if let Some(name) = &c.custom_name {

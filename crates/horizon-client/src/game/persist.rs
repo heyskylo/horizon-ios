@@ -855,6 +855,7 @@ impl Game<'_> {
             let (wood, chest) = super::boats::any_boat_wood(k).unwrap_or(("oak", false));
             let mut b = super::boats::Boat::new(id, std::sync::Arc::from(wood), position, yaw);
             b.no_gravity = entity_nbt::flag(&tag, "NoGravity");
+            b.on_ground = entity_nbt::flag(&tag, "OnGround");
             b.fire_ticks = super::boats::saved_fire(&tag);
             b.pitch = entity_nbt::rotation(&tag)[1];
             if chest {
