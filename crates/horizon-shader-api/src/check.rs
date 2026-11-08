@@ -4,8 +4,10 @@
 //!
 //! Each stage is built as the renderer builds it, parsed and validated by
 //! naga, checked against its signature and the API's rules (no bindings, no
-//! entry points, no `horizon_` names), then translated to SPIR-V, Metal and
-//! HLSL with its options at their defaults, minimums and maximums.
+//! entry points, no `horizon_` names; in 0.2 none of the structs Horizon hands it
+//! constructed), then translated to SPIR-V, Metal and HLSL with its options at their
+//! defaults, minimums and maximums.
+use crate::inputs::{DISPLACEMENT_INPUT, Frame};
 use crate::manifest::{OptionKind, PackOption};
 use crate::package::Pack;
 use crate::stages::{Composed, StageKind, compose};
@@ -250,6 +252,10 @@ pub fn check_stage(pack: &Pack, kind: StageKind, file: &str) -> Result<CheckedSt
         ));
     }
     problems.extend(api_rules(&module, kind, &own));
+    // 0.1's structs won't grow: it is retired when 0.2 is on by default.
+    if pack.manifest.api == crate::Api::V0_2 {
+        problems.extend(constructions(&module, &own));
+    }
     problems.extend(options(&module, &pack.manifest.options, file));
     if !problems.is_empty() {
         return Err(problems);
@@ -474,6 +480,50 @@ fn api_rules(module: &naga::Module, kind: StageKind, own: &Composed) -> Vec<Prob
             file,
             format!("`{name}`: names starting with horizon_ are Horizon's"),
         ));
+    }
+    problems
+}
+
+/// 0.2: the pack's files construct none of the structs Horizon hands a stage (`Frame`, the
+/// stage inputs and the post helpers' `SurfaceData`). They may gain fields, which would break a
+/// positional `PostInput(...)`; reading them and passing them along stay as they are. `Surface`,
+/// which `material` returns, is built.
+fn constructions(module: &naga::Module, own: &Composed) -> Vec<Problem> {
+    let provided: Vec<&str> = StageKind::ALL
+        .iter()
+        .map(|k| k.input().name)
+        .chain([Frame::WGSL.name, DISPLACEMENT_INPUT.name, "SurfaceData"])
+        .collect();
+    let arenas = module
+        .functions
+        .iter()
+        .map(|(_, f)| &f.expressions)
+        .chain([&module.global_expressions]);
+    let in_pack = |at: Option<usize>| {
+        at.is_some_and(|at| own.parts[1..].iter().any(|(_, r)| r.contains(&at)))
+    };
+    let mut problems = Vec::new();
+    for arena in arenas {
+        for (handle, e) in arena.iter() {
+            let naga::Expression::Compose { ty, .. } = *e else {
+                continue;
+            };
+            let Some(name) = module.types[ty].name.as_deref() else {
+                continue;
+            };
+            let at = arena.get_span(handle).to_range().map(|r| r.start);
+            // Built in the pack's files (the prelude's helpers aren't the pack's), as a struct the
+            // prelude declares (a pack's own struct of the same name is its own).
+            let horizon_s = (module.types.get_span(ty).to_range())
+                .is_some_and(|r| own.parts[0].1.contains(&r.start));
+            if provided.contains(&name) && horizon_s && in_pack(at) {
+                problems.push(located(
+                    own,
+                    at,
+                    format!("constructs `{name}`: it is Horizon's and may gain fields; read it, don't construct it"),
+                ));
+            }
+        }
     }
     problems
 }
