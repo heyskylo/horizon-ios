@@ -800,9 +800,16 @@ pub fn encode_block_entity(
                 entries.push(("item", item_to_nbt(item)));
             }
         }
-        // Encoded above.
+        // ConduitBlockEntity.saveAdditional: EntityReference.store.
+        BlockEntity::Conduit(target) => {
+            if let Some(uuid) = target {
+                entries.push(("Target", Tag::IntArray(uuid.to_vec())));
+            }
+        }
+        // Encoded above; an enchanting table's CustomName is the block name.
         BlockEntity::DaylightDetector
         | BlockEntity::Bell
+        | BlockEntity::EnchantingTable
         | BlockEntity::CopperGolemStatue(_)
         | BlockEntity::Mod(_) => {}
         // PotentSulfurBlockEntity.saveAdditional.
@@ -1134,7 +1141,16 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
         | BlockEntity::Skull(_)
         | BlockEntity::DaylightDetector
         | BlockEntity::Bell
+        | BlockEntity::EnchantingTable
         | BlockEntity::Mod(_) => {}
+        // ConduitBlockEntity.loadAdditional: EntityReference.read through
+        // UUIDUtil.CODEC, an int array of four.
+        BlockEntity::Conduit(target) => {
+            *target = match tag.get("Target") {
+                Some(Tag::IntArray(v)) if v.len() == 4 => Some([v[0], v[1], v[2], v[3]]),
+                _ => None,
+            };
+        }
         // `BlockEntity.loadAdditional`: the components the block entity keeps.
         BlockEntity::CopperGolemStatue(components) => {
             *components = match tag.get("components") {
@@ -6386,8 +6402,15 @@ mod tests {
             super::read_dat(&dir.join("level.dat"))
                 .and_then(|r| super::number(r.get("Data")?.get("DataVersion")))
         };
-        // 1.12.2 and 1.16.5: upgraded too, every server fix is ported.
-        for old in [1343, 2586] {
+        // 1.12.2 and 1.16.5: upgraded too, every server fix is ported. Data from before 1.13
+        // needs the data fixers' tables of the prepared resources: without them (a checkout
+        // nothing was prepared in, CI's verify) only 1.16.5 is upgraded here.
+        let olds: &[i32] = if horizon_world::datafix::tables_available() {
+            &[1343, 2586]
+        } else {
+            &[2586]
+        };
+        for &old in olds {
             super::write_dat(&dir.join("level.dat"), level(old)).unwrap();
             super::upgrade_older_world(&dir).unwrap();
             assert_eq!(version(&dir), Some(i64::from(super::DATA_VERSION)));
