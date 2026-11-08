@@ -19155,6 +19155,8 @@ mod mob_landing_support_tests;
 #[cfg(test)]
 mod orb_data_tests;
 #[cfg(test)]
+mod orb_score_store_tests;
+#[cfg(test)]
 mod recipe_book_variants_tests;
 #[cfg(test)]
 mod stand_break_loot_tests;
@@ -19547,3 +19549,6 @@ mod player_save_projection_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod entity_die_tests;
