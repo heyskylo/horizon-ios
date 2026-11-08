@@ -22,6 +22,7 @@ use horizon_client::{
     random_source,
     text::Text,
 };
+use horizon_client_core::nbt_value;
 use horizon_core::position::BlockPos;
 use horizon_core::{
     geometry::{Aabb, Vec3, trig},
@@ -3734,14 +3735,15 @@ impl Dragon {
         let (position, velocity, yaw) = horizon_client::entity_nbt::boat_from_nbt(tag)?;
         let mut d = Self::new(position, yaw, seed);
         d.velocity = velocity;
-        if let Some(Tag::Float(h)) = tag.get("Health") {
-            d.health = f32::from_bits(*h);
+        // Vanilla getFloatOr/getIntOr accept any numeric tag type.
+        if let Some(h) = nbt_value::float(tag.get("Health")) {
+            d.health = h as f32;
         }
-        if let Some(Tag::Int(p)) = tag.get("DragonPhase") {
-            d.phase = Phase::from_id(*p);
+        if let Some(p) = nbt_value::number(tag.get("DragonPhase")) {
+            d.phase = Phase::from_id(p as i32);
         }
-        if let Some(Tag::Int(t)) = tag.get("DragonDeathTime") {
-            d.death_time = *t;
+        if let Some(t) = nbt_value::number(tag.get("DragonDeathTime")) {
+            d.death_time = t as i32;
         }
         d.no_ai = matches!(tag.get("NoAI"), Some(Tag::Byte(b)) if *b != 0);
         Some(d)
