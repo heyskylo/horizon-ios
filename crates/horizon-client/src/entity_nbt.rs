@@ -1453,7 +1453,8 @@ pub fn mob_to_nbt(
         // ZombieVillager and ZombifiedPiglin save Zombie's tracker too; Horizon
         // never starts their water conversion, so its time is -1.
         if matches!(m.species(), S::ZombieVillager | S::ZombifiedPiglin) {
-            map.entry("DrownedConversionTime".into()).or_insert(Tag::Int(-1));
+            map.entry("DrownedConversionTime".into())
+                .or_insert(Tag::Int(-1));
         }
     }
     // Skeleton supplies its cached isInPowderSnow to the same isAfflicted check.
