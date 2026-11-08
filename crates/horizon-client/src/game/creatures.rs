@@ -1425,7 +1425,7 @@ impl Game<'_> {
                     let mut k = from;
                     while k < events.len() {
                         if super::lan_mobs::acts_on_player(&events[k]) {
-                            guest_events.push((conn, events.remove(k)));
+                            guest_events.push((conn, m.id, events.remove(k)));
                         } else {
                             k += 1;
                         }
@@ -4030,6 +4030,7 @@ impl Game<'_> {
     ) -> bool {
         let post_attack_if_alive = std::mem::take(&mut self.combat.post_attack_if_alive);
         let rocket = std::mem::take(&mut self.combat.rocket_hit);
+        let melee = self.combat.melee_mob.take();
         // ServerPlayer.canHarmPlayer refused another player's projectile.
         if self.creative || self.combat.refuse_player_hit {
             self.combat.forget_noted(false);
@@ -4048,6 +4049,7 @@ impl Game<'_> {
         // Melee: the attacker stands at `from` (another player's hit has no mob behind it).
         let attacker = match known {
             Some(known) => known,
+            None if melee.is_some() => melee,
             None => from
                 .filter(|_| !projectile && damage_type != "minecraft:player_attack")
                 .and_then(|from| {
@@ -4184,7 +4186,7 @@ impl Game<'_> {
         if outcome.hurt || outcome.sound {
             let source = attacker
                 .or(owner)
-                .and_then(|id| self.mobs.iter().find(|m| m.id == id))
+                .and_then(|id| self.mob_index.get(&self.mobs, id))
                 .map(|m| self.mob_entity(m));
             self.trigger_entity_hurt_player(&horizon_client::advancements::DamageView {
                 kind: damage_type.to_owned(),
