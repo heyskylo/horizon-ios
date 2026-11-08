@@ -165,6 +165,9 @@ public final class VanillaSpawnRulesOracle {
                     int y = Integer.parseInt(c.getOrDefault("y", "64"));
                     level.x0 = Integer.parseInt(c.getOrDefault("x", "8"));
                     level.z0 = Integer.parseInt(c.getOrDefault("z", "8"));
+                    level.border = new WorldBorder();
+                    level.border.setCenter(Double.parseDouble(c.getOrDefault("borderx", "0")), Double.parseDouble(c.getOrDefault("borderz", "0")));
+                    level.border.setSize(Double.parseDouble(c.getOrDefault("bordersize", "59999968")));
                     level.column.clear();
                     for (var e : c.entrySet()) {
                         if (e.getKey().startsWith("at")) {
