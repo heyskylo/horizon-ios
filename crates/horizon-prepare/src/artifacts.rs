@@ -360,6 +360,10 @@ fn prism_manifest(root: &Path, instance: Option<&Path>, version: &str) -> Option
         ]);
     candidates
         .map(|dir| dir.join(format!("{version}.json")))
+        // Prism Launcher's own layout: its Minecraft component is `meta/net.minecraft/<version>.json`.
+        .chain([root
+            .join("meta/net.minecraft")
+            .join(format!("{version}.json"))])
         .find(|path| path.is_file())
 }
 
@@ -1743,6 +1747,39 @@ mod tests {
         let manifest = import_manifest(&lock, &game_files(Some(&minecraft), "9.9")).unwrap();
         assert!(manifest.get("patches").is_none());
         assert_eq!(digest(&destination, "sha1").unwrap(), pinned);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Prism Launcher keeps its Minecraft component as `meta/net.minecraft/<version>.json`, not
+    /// in a folder of that version. Both are read; the folder's file wins when both exist.
+    #[test]
+    fn the_prism_version_file_is_found_flat_or_in_its_folder() {
+        let root = std::env::temp_dir().join(format!("horizon-prism-meta-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let put = |path: &str, data: &[u8]| {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, data).unwrap();
+        };
+        let version_file =
+            br#"{"mainJar":{"name":"com.mojang:minecraft:9.9:client"},"uid":"net.minecraft"}"#;
+        put(
+            "libraries/com/mojang/minecraft/9.9/minecraft-9.9-client.jar",
+            b"client",
+        );
+        put("assets/indexes/1.json", b"{}");
+        let flat = root.join("meta/net.minecraft/9.9.json");
+        let nested = root.join("meta/net.minecraft/9.9/9.9.json");
+
+        put("meta/net.minecraft/9.9.json", version_file);
+        assert_eq!(prism_game_files(&root, "9.9").unwrap().manifest, flat);
+        assert_eq!(game_files(Some(&root), "9.9").manifest, flat);
+
+        put("meta/net.minecraft/9.9/9.9.json", version_file);
+        assert_eq!(prism_game_files(&root, "9.9").unwrap().manifest, nested);
+
+        fs::remove_file(&flat).unwrap();
+        assert_eq!(prism_game_files(&root, "9.9").unwrap().manifest, nested);
         fs::remove_dir_all(&root).unwrap();
     }
 

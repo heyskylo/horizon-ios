@@ -169,7 +169,7 @@ pub struct AnvilResult {
 }
 /// `DataComponents.MAX_DAMAGE` of a stack: its patch, else the item default
 /// (0 when the component is absent or removed).
-fn max_damage(items: &Items, stack: &ItemStack) -> i32 {
+pub fn max_damage(items: &Items, stack: &ItemStack) -> i32 {
     let data = stack.data();
     if data.is_some_and(|d| d.other("!minecraft:max_damage").is_some()) {
         return 0;
