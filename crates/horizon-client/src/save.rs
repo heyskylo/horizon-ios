@@ -4624,6 +4624,8 @@ struct SavedLodSampler<G: ChunkGenerator> {
     /// Chunks the generator decorated for far terrain alone, kept from
     /// earlier sessions; saved chunks take precedence over them.
     generated: Arc<crate::lod::cache::DiskCache>,
+    /// The generator's far samples from earlier sessions (`lod::bake`).
+    bake: Option<Arc<crate::lod::bake::LodBake>>,
 }
 impl<G: ChunkGenerator> SavedLodSampler<G> {
     fn saved_columns(&mut self, key: (i32, i32)) -> Option<LodSurfaces> {
@@ -4654,6 +4656,7 @@ impl<G: ChunkGenerator> crate::streaming::LodSampler for SavedLodSampler<G> {
             details: Vec::new(),
             approximate: self.approximate,
             generated: self.generated.clone(),
+            bake: self.bake.clone(),
         }))
     }
     fn set_approximate(&mut self, approximate: bool) {
@@ -4691,7 +4694,15 @@ impl<G: ChunkGenerator> crate::streaming::LodSampler for SavedLodSampler<G> {
         details
     }
     fn grid(&mut self, x: i32, z: i32, stride: i32, side: usize) -> Vec<crate::lod::Column> {
-        let mut columns = self.inner.grid(x, z, stride, side);
+        let approximate = self.approximate;
+        let baked = (self.bake.as_ref()).and_then(|b| b.grid(approximate, [x, z], stride, side));
+        let mut columns = baked.unwrap_or_else(|| {
+            let columns = self.inner.grid(x, z, stride, side);
+            if let Some(bake) = &self.bake {
+                bake.put_grid(approximate, [x, z], stride, side, &columns);
+            }
+            columns
+        });
         // Saved chunks show in tiles up to 16 blocks a column. With Reduced far
         // detail only up to 4 (within about a kilometre): coarser tiles keep
         // the generator's terrain, which saved chunks were made from, since
@@ -5064,6 +5075,13 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
             self.save.root.join("data/horizon_far_terrain"),
             crate::lod::cache::build_key(self.registry.registry.len(), self.biomes.list.len()),
         ));
+        let bake = crate::lod::bake::LodBake::open(
+            &self.save.root,
+            self.save.shape,
+            self.registry.registry.len(),
+            self.biomes.list.len(),
+        )
+        .map(Arc::new);
         Box::new(SavedLodSampler {
             generator: self,
             inner,
@@ -5071,6 +5089,7 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
             details: Vec::new(),
             approximate: false,
             generated,
+            bake,
         })
     }
     fn load(&self, x: i32, z: i32) -> Option<Chunk> {
@@ -5988,6 +6007,7 @@ mod tests {
             details: Vec::new(),
             approximate: false,
             generated: Arc::new(crate::lod::cache::DiskCache::new(dir.join("far"), 1)),
+            bake: None,
         };
         use crate::streaming::LodSampler;
         sampler.request_detail(&[(-2, 3)], [-32, 48]);
