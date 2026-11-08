@@ -1403,11 +1403,11 @@ impl Game<'_> {
             // The shared resource preload has vanilla flags and vanilla biomes.
             // Feature flags and biomes belong to this world, not to the cached
             // resources or the next world opened.
-            let mut world_sync = SyncData::load_with_kept(
+            let mut world_sync = SyncData::load_over(
                 &self.options.resources,
                 &self.pack_files(),
                 packed.as_deref(),
-                Some(sync.as_ref()),
+                sync.as_ref(),
             )?;
             world_sync.features = features;
             sync = Arc::new(world_sync);
