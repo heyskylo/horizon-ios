@@ -747,6 +747,21 @@ fn canonical_other_component(id: &str, tag: &Tag) -> Tag {
 /// A filled map's empty decorations equal its prototype (`Items.mapProperties`).
 pub fn encode_components(stack: &ItemStack) -> Option<Tag> {
     let mut components = components_tag(stack.damage, stack.data())?;
+    // MobEffectInstance.Details' codec always saves the resolved icon flag.
+    // An omitted icon follows show_particles, whose default is true.
+    if let Some(Tag::List(effects)) = components
+        .get_mut("minecraft:potion_contents")
+        .and_then(|potion| potion.get_mut("custom_effects"))
+    {
+        for effect in effects {
+            let shown = effect.get("show_particles").and_then(int).unwrap_or(1) != 0;
+            if let Tag::Compound(fields) = effect {
+                fields
+                    .entry(JavaString::from("show_icon"))
+                    .or_insert(Tag::Byte(i8::from(shown)));
+            }
+        }
+    }
     // LodestoneTracker.CODEC: optionalFieldOf("tracked", true).
     if let Some(Tag::Compound(tracker)) = components.get_mut("minecraft:lodestone_tracker")
         && tracker.get(&JavaString::from("tracked")) == Some(&Tag::Byte(1))
@@ -1175,7 +1190,15 @@ pub fn decode_components(components: Option<&Tag>) -> (u32, Option<Box<StackData
             let ominous_part = data.ominous_banner
                 && (matches!(key.as_str(), "minecraft:item_name" | "minecraft:rarity")
                     || (key == "minecraft:tooltip_display" && v == &ominous_tooltip_display()));
-            if !MODELLED.contains(&key.as_str()) && !ominous_part {
+            // An explicitly empty stored_enchantments still counts as present
+            // (`ItemStack.has`); the list is modelled, so keep a marker.
+            if key == "minecraft:stored_enchantments"
+                && data.stored_enchantments.is_empty()
+                && matches!(v, Tag::Compound(_))
+            {
+                data.other
+                    .push((key, Tag::compound(Vec::<(&str, Tag)>::new())));
+            } else if !MODELLED.contains(&key.as_str()) && !ominous_part {
                 let value = canonical_other_component(&key, v);
                 data.other.push((key, value));
             }
@@ -1186,7 +1209,7 @@ pub fn decode_components(components: Option<&Tag>) -> (u32, Option<Box<StackData
 }
 
 /// The `[id=value,...]` component list of an item argument (`ItemParser`)
-/// as a `components` compound; `!id` removals are skipped.
+/// as a `components` compound, retaining `!id` removal patches.
 pub fn command_components(text: &str) -> Result<Tag, String> {
     let inner = text
         .strip_prefix('[')
@@ -1207,6 +1230,16 @@ pub fn command_components(text: &str) -> Result<Tag, String> {
             };
             entries.insert(JavaString::from(id.as_str()), tag);
             rest = &value[used..];
+        } else if let Some(key) = key.strip_prefix('!') {
+            let id = if key.contains(':') {
+                format!("!{key}")
+            } else {
+                format!("!minecraft:{key}")
+            };
+            entries.insert(
+                JavaString::from(id.as_str()),
+                Tag::compound([] as [(&str, Tag); 0]),
+            );
         }
         rest = rest.trim_start();
         rest = rest.strip_prefix(',').unwrap_or(rest).trim_start();
@@ -1383,6 +1416,68 @@ mod tests {
                 .set_other("minecraft:custom_data", Some(keep.clone()));
             assert_eq!(crate::item_nbt::item_to_nbt(&fresh), saved);
         }
+    }
+
+    #[test]
+    fn potion_custom_effect_icons_save_the_codec_default() {
+        let parse = |text: &str| horizon_world::nbt::parse_snbt(text).unwrap().0;
+        for (flags, icon) in [
+            ("", 1),
+            (",show_icon:0b", 0),
+            (",show_icon:1b", 1),
+            (",show_particles:0b", 0),
+            (",show_particles:0b,show_icon:0b", 0),
+            (",show_particles:0b,show_icon:1b,ambient:1b", 1),
+        ] {
+            let contents = |suffix: &str| {
+                format!(
+                    r#"{{potion:"minecraft:water",custom_color:123456,custom_effects:[{{id:"minecraft:speed",duration:100,amplifier:2{suffix}}}]}}"#
+                )
+            };
+            let input = parse(&format!(
+                r#"{{"minecraft:potion_contents":{},"minecraft:custom_data":{{keep:7}}}}"#,
+                contents(flags)
+            ));
+            let expected = parse(&format!(
+                r#"{{"minecraft:potion_contents":{},"minecraft:custom_data":{{keep:7}}}}"#,
+                contents(&format!("{flags},show_icon:{icon}b"))
+            ));
+            let (damage, extra) = decode_components(Some(&input));
+            let decoded = ItemStack {
+                damage,
+                extra,
+                ..ItemStack::new("minecraft:potion", 1)
+            };
+            assert_eq!(
+                encode_components(&decoded),
+                Some(expected.clone()),
+                "decoded {flags}"
+            );
+            // Build a model directly, without decoded input or a retained raw patch.
+            let mut fresh = ItemStack::new("minecraft:potion", 1);
+            fresh.data_mut().potion = Some(Arc::from("minecraft:water"));
+            let potion = input.get("minecraft:potion_contents").unwrap();
+            for name in ["custom_color", "custom_effects"] {
+                fresh
+                    .data_mut()
+                    .potion_extra
+                    .push((name.into(), potion.get(name).unwrap().clone()));
+            }
+            fresh.data_mut().set_other(
+                "minecraft:custom_data",
+                input.get("minecraft:custom_data").cloned(),
+            );
+            assert_eq!(encode_components(&fresh), Some(expected), "modeled {flags}");
+        }
+        assert!(encode_components(&ItemStack::new("minecraft:potion", 1)).is_none());
+        let mut base = ItemStack::new("minecraft:potion", 1);
+        base.data_mut().potion = Some(Arc::from("minecraft:water"));
+        assert_eq!(
+            encode_components(&base),
+            Some(parse(
+                r#"{"minecraft:potion_contents":{potion:"minecraft:water"}}"#
+            ))
+        );
     }
 
     #[test]
