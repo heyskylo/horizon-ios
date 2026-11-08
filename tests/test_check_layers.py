@@ -70,6 +70,11 @@ class CheckLayersTests(unittest.TestCase):
                           crates={"gameplay": "engine"})
         self.assertEqual(problems, [])
 
+    def test_a_new_dependency_target_excuses_nothing(self):
+        base = {"crates": CONFIG["crates"], "allowed": []}
+        problems, _ = run(package("game", "shop"), allowed=["game -> shop"], base=base, crates={"shop": "horizon"})
+        self.assertIn("added to 'allowed'", problems[0])
+
     def test_unknown_crate_fails(self):
         self.assertIn("no layer", run(package("newcrate", "core"))[0][0])
 
