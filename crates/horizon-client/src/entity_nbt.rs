@@ -1056,15 +1056,17 @@ pub fn mob_to_nbt(
             } else {
                 map.insert("equipment".into(), Tag::compound(equipment));
             }
-            let modelled = [
-                ("minecraft:max_health", f64::from(m.attrs.max_health)),
-                ("minecraft:movement_speed", m.attrs.speed),
-                ("minecraft:jump_strength", m.extra.vector[0]),
-            ];
             // AttributeMap.pack writes the instances that exist: the ones the
-            // entity was loaded with, or all three randomized by finalizeSpawn.
-            let attributes = match map.get(&"attributes".into()) {
-                Some(Tag::List(list)) => list
+            // entity was loaded with. When the tag had no attributes list,
+            // instances are not synthesized (SummonCommand without finalizeSpawn
+            // saves attributes: []).
+            if let Some(Tag::List(list)) = map.get(&"attributes".into()) {
+                let modelled = [
+                    ("minecraft:max_health", f64::from(m.attrs.max_health)),
+                    ("minecraft:movement_speed", m.attrs.speed),
+                    ("minecraft:jump_strength", m.extra.vector[0]),
+                ];
+                let attributes = list
                     .iter()
                     .map(|a| {
                         let id = text(a.get("id"));
@@ -1078,15 +1080,9 @@ pub fn mob_to_nbt(
                             _ => a.clone(),
                         }
                     })
-                    .collect(),
-                _ => modelled
-                    .iter()
-                    .map(|(id, v)| {
-                        Tag::compound([("id", string(id)), ("base", Tag::Double(v.to_bits()))])
-                    })
-                    .collect(),
-            };
-            map.insert("attributes".into(), Tag::List(attributes));
+                    .collect();
+                map.insert("attributes".into(), Tag::List(attributes));
+            }
         }
         "minecraft:pig" | "minecraft:strider" => {
             let mut equipment = match map.get(&"equipment".into()) {
@@ -1497,8 +1493,9 @@ pub fn mob_to_nbt(
     // Every other living entity's first tick makes the movement_speed instance
     // (LivingEntity.removeFrost reads it through getAttribute); before it, the
     // mob has only the instances it was loaded with (the kept list above).
-    let speed_at_load =
-        crate::mobs::doors::is_zombie(species) || species == crate::mobs::Species::Piglin;
+    let speed_at_load = crate::mobs::doors::is_zombie(species)
+        || species == crate::mobs::Species::Piglin
+        || (species == crate::mobs::Species::Ravager && crate::mobs::ravager::immobile(m));
     let mut made = Vec::new();
     if speed_at_load || m.age > 0 {
         made.push(Attr::MovementSpeed);
@@ -1516,16 +1513,23 @@ pub fn mob_to_nbt(
             _ => Vec::new(),
         };
         let attr_id = format!("minecraft:{}", attr.name());
-        if !list
-            .iter()
-            .any(|t| text(t.get("id")).as_deref() == Some(attr_id.as_str()))
+        if let Some(existing) = list
+            .iter_mut()
+            .find(|t| text(t.get("id")).as_deref() == Some(attr_id.as_str()))
         {
+            if species == crate::mobs::Species::Ravager
+                && attr == Attr::MovementSpeed
+                && let Tag::Compound(c) = existing
+            {
+                c.insert("base".into(), Tag::Double(base.to_bits()));
+            }
+        } else {
             list.push(Tag::compound([
                 ("id", string(&attr_id)),
                 ("base", Tag::Double(base.to_bits())),
             ]));
-            map.insert("attributes".into(), Tag::List(list));
         }
+        map.insert("attributes".into(), Tag::List(list));
     }
     // Mob.addAdditionalSaveData: the chances that are not the default.
     if let Some(chances) = &m.extra.drop_chances {
@@ -2310,7 +2314,11 @@ pub fn mob_from_nbt(
             }
         }
         if m.extra.vector[0] <= 0.0 {
-            m.extra.vector[0] = 0.7;
+            m.extra.vector[0] = if crate::mobs::equine::is_chested(m.species()) {
+                0.5
+            } else {
+                0.7
+            };
         }
     }
     if crate::mobs::finalize::saves_variant_name(m.species())
@@ -2616,6 +2624,11 @@ pub fn mob_from_nbt(
         m.extra.counter = number(tag.get("AttackTick")).unwrap_or(0) as i32;
         m.extra.counter2 = number(tag.get("StunTick")).unwrap_or(0) as i32;
         m.extra.anim_ticks = number(tag.get("RoarTick")).unwrap_or(0) as i32;
+        if crate::mobs::ravager::immobile(&m)
+            && !matches!(tag.get("attributes"), Some(Tag::List(l)) if l.iter().any(|a| text(a.get("id")).as_deref() == Some("minecraft:movement_speed")))
+        {
+            m.attrs.speed = 0.0;
+        }
     }
     if m.species() == crate::mobs::Species::Endermite {
         m.extra.counter = number(tag.get("Lifetime")).unwrap_or(0) as i32;
@@ -10427,5 +10440,49 @@ mod equine_temper_preservation_tests {
                 Some(&Tag::Int(0))
             );
         }
+    }
+
+    #[test]
+    fn equine_and_ravager_attributes_parity() {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        Arc::make_mut(&mut kind).species = Species::Donkey;
+        let types = [("minecraft:donkey".into(), kind.clone())].into();
+        let donkey = mob_from_nbt(
+            &Tag::compound([
+                ("id", string("minecraft:donkey")),
+                ("Pos", doubles(&[0.0, 0.0, 0.0])),
+            ]),
+            &types,
+            1,
+            None,
+        )
+        .unwrap();
+        assert_eq!(donkey.extra.vector[0], 0.5);
+        assert_eq!(
+            mob_to_nbt(&donkey, [0; 4], None, None, |_| None).get("attributes"),
+            Some(&Tag::List(vec![]))
+        );
+        Arc::make_mut(&mut kind).species = Species::Ravager;
+        let types = [("minecraft:ravager".into(), kind)].into();
+        let mut ravager = mob_from_nbt(
+            &Tag::compound([
+                ("id", string("minecraft:ravager")),
+                ("Pos", doubles(&[0.0, 0.0, 0.0])),
+                ("RoarTick", Tag::Int(10)),
+            ]),
+            &types,
+            2,
+            None,
+        )
+        .unwrap();
+        ravager.age = 1;
+        let saved = mob_to_nbt(&ravager, [0; 4], None, None, |_| None);
+        assert_eq!(
+            saved.get("attributes"),
+            Some(&Tag::List(vec![Tag::compound([
+                ("id", string("minecraft:movement_speed")),
+                ("base", Tag::Double(0.0f64.to_bits()))
+            ])]))
+        );
     }
 }
