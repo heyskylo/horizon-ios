@@ -96,6 +96,8 @@ pub(in crate::game) struct OtherEntity {
     pub yaw: f32,
     pub pitch: f32,
     pub item_transformation: Option<super::native_entities::ItemDisplayTransformation>,
+    /// Only explicitly loaded leash knots own this BlockAttachedEntity check counter.
+    pub knot_check: Option<u8>,
 }
 pub(super) fn err(key: &str, args: &[&dyn std::fmt::Display]) -> CommandError {
     CommandError::tr(key, args)
@@ -2638,8 +2640,23 @@ impl Game<'_> {
             .resolve(&state)
             .map_err(|_| err("argument.block.id.invalid", &[&b.id]))
     }
-    /// BlockPredicateArgument test.
-    fn block_matches(&self, b: &BlockInput, state: BlockStateId) -> bool {
+    /// BlockPredicateArgument test of the block at `p`: its state, then any
+    /// `{...}` against the block entity's `saveWithFullMetadata`
+    /// (`NbtUtils.compareNbt(…, true)`); no block entity fails.
+    fn block_matches(&self, b: &BlockInput, p: [i32; 3]) -> bool {
+        let state = self.world.block(p[0], p[1], p[2]);
+        if !self.block_state_matches(b, state) {
+            return false;
+        }
+        let Some(nbt) = &b.nbt else { return true };
+        // (the argument's own grammar, `TagParser`, as the predicate was read)
+        let Ok(pattern) = horizon_client::command::snbt::parse_fully(nbt) else {
+            return false;
+        };
+        horizon_client::nbt_path::compare_nbt(&pattern, self.block_entity_nbt(p).as_ref())
+    }
+    /// The state part of `block_matches`: name or tag, then properties.
+    fn block_state_matches(&self, b: &BlockInput, state: BlockStateId) -> bool {
         block_input_matches(
             self.pack.assets.registry,
             [&self.res.items().block_tags, &self.items().block_tags],
@@ -3027,12 +3044,17 @@ impl Game<'_> {
                         continue;
                     }
                     if let Some(f) = &filter {
-                        let ok = match matched.get(&current) {
-                            Some(&ok) => ok,
-                            None => {
-                                let ok = self.block_matches(f, current);
-                                matched.insert(current, ok);
-                                ok
+                        // (a filter with NBT reads each block's own block entity)
+                        let ok = if f.nbt.is_some() {
+                            self.block_matches(f, [x, y, z])
+                        } else {
+                            match matched.get(&current) {
+                                Some(&ok) => ok,
+                                None => {
+                                    let ok = self.block_state_matches(f, current);
+                                    matched.insert(current, ok);
+                                    ok
+                                }
                             }
                         };
                         if !ok {
@@ -3116,7 +3138,7 @@ impl Game<'_> {
                         continue;
                     }
                     if let Some(f) = &filter
-                        && !self.block_matches(f, s)
+                        && !self.block_matches(f, [x, y, z])
                     {
                         continue;
                     }
@@ -3158,6 +3180,19 @@ impl Game<'_> {
                     None => self.world.block_names.remove(&key),
                 };
             }
+        }
+        // LevelTicks.copyAreaFrom: the block ticks pending anywhere in the
+        // source box go to the same offset in the destination, before the
+        // command can fail on an empty count.
+        {
+            use horizon_core::position::BlockPos;
+            self.block_ticks.blocks.copy_area(
+                horizon_core::ticks::TickArea::new(
+                    BlockPos::new(min[0], min[1], min[2]),
+                    BlockPos::new(max[0], max[1], max[2]),
+                ),
+                BlockPos::new(dest[0] - min[0], dest[1] - min[1], dest[2] - min[2]),
+            );
         }
         if count == 0 {
             return Err(err("commands.clone.failed", &[]));
@@ -3701,6 +3736,46 @@ impl Game<'_> {
                                 horizon_world::nbt::Tag::Int(i) => n == i64::from(*i),
                                 _ => false,
                             }
+                        }
+                        // `MinMaxBounds.Ints.matches`: DamagePredicate's damage-only
+                        // Int bounds shape; effective DAMAGE presence is required.
+                        // Other fields keep the entire existing predicate path.
+                        ("minecraft:damage", Some(ref v))
+                            if matches!(v, horizon_world::nbt::Tag::Compound(c) if c.len() == 1)
+                                && match v.get("damage") {
+                                    Some(horizon_world::nbt::Tag::Int(_)) => true,
+                                    Some(horizon_world::nbt::Tag::Compound(bounds)) => {
+                                        bounds.iter().all(|(key, value)| {
+                                            matches!(key.to_string_lossy().as_str(), "min" | "max")
+                                                && matches!(value, horizon_world::nbt::Tag::Int(_))
+                                        })
+                                    }
+                                    _ => false,
+                                } =>
+                        {
+                            let removed = stack
+                                .data()
+                                .is_some_and(|data| data.other("!minecraft:damage").is_some());
+                            let has_damage = !removed
+                                && (present.is_some()
+                                    || self.items().get(&stack.item).is_some_and(|item| {
+                                        item.components.iter().any(|c| c == "minecraft:damage")
+                                    }));
+                            let n = i64::from(stack.damage);
+                            has_damage
+                                && match v.get("damage").unwrap() {
+                                    horizon_world::nbt::Tag::Int(exact) => n == i64::from(*exact),
+                                    bounds => {
+                                        let get = |key| match bounds.get(key) {
+                                            Some(horizon_world::nbt::Tag::Int(value)) => {
+                                                Some(i64::from(*value))
+                                            }
+                                            _ => None,
+                                        };
+                                        get("min").is_none_or(|min| n >= min)
+                                            && get("max").is_none_or(|max| n <= max)
+                                    }
+                                }
                         }
                         (_, Some(v)) => present.is_some_and(|have| {
                             horizon_client::nbt_path::compare_nbt(&v, Some(have))
@@ -4743,6 +4818,205 @@ mod selector_bounds_tests {
 }
 
 #[cfg(test)]
+mod local_coordinate_command_tests {
+    use super::super::native_machines::tests::server_game;
+    use super::*;
+    use horizon_core::position::BlockPos;
+    use horizon_world::nbt::Tag;
+
+    fn pos_bits(tag: &Tag) -> [u64; 3] {
+        let Some(Tag::List(pos)) = tag.get("Pos") else {
+            panic!("actual saved Double position missing")
+        };
+        assert_eq!(pos.len(), 3);
+        std::array::from_fn(|i| match &pos[i] {
+            Tag::Double(bits) => *bits,
+            other => panic!("actual Pos must be Double: {other:?}"),
+        })
+    }
+    #[test]
+    #[ignore = "needs prepared resources and scratch homes/cwd"]
+    fn h149_actual_registered_local_commands_preserve_exact_saved_positions() {
+        let mut game = server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.block_ticks
+            .add_empty_chunk(BlockPos::new(0, 0, 0).chunk())
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        assert!(game.run_command("scoreboard objectives add h149 dummy"));
+        let clock = game.world.game_time;
+        let mut failures = Vec::new();
+        let cases = [
+            (
+                "south",
+                "execute positioned 8.5 202.25 8.5 rotated 0.0 0.0 run tp 00000095-0000-0001-0000-000000000001 ^0.75 ^0.5 ^1.25",
+                [
+                    0x4022800000000000u64,
+                    0x4069580000000000u64,
+                    0x4023800000000000u64,
+                ],
+                false,
+            ),
+            (
+                "west",
+                "execute positioned 8.5 202.25 8.5 rotated 90.0 0.0 run tp 00000095-0000-0001-0000-000000000002 ^0.75 ^0.5 ^1.25",
+                [
+                    0x401d000000000000u64,
+                    0x4069580000000000u64,
+                    0x4022800000000000u64,
+                ],
+                false,
+            ),
+            (
+                "north",
+                "execute positioned 8.5 202.25 8.5 rotated 180.0 0.0 run tp 00000095-0000-0001-0000-000000000003 ^0.75 ^0.5 ^1.25",
+                [
+                    0x401f000000000000u64,
+                    0x4069580000000000u64,
+                    0x401d000000000000u64,
+                ],
+                false,
+            ),
+            (
+                "east",
+                "execute positioned 8.5 202.25 8.5 rotated 270.0 0.0 run tp 00000095-0000-0001-0000-000000000004 ^0.75 ^0.5 ^1.25",
+                [
+                    0x4023800000000000u64,
+                    0x4069580000000000u64,
+                    0x401f000000000000u64,
+                ],
+                false,
+            ),
+            (
+                "oblique",
+                "execute positioned 8.5 202.25 8.5 rotated 37.5 -22.25 run tp 00000095-0000-0001-0000-000000000005 ^0.1 ^0.1 ^0.1",
+                [
+                    0x402117934a6314b9u64,
+                    0x40694c2c5ee98f58u64,
+                    0x40213562572e889au64,
+                ],
+                false,
+            ),
+            (
+                "positioned_oblique",
+                "execute positioned 8.5 202.25 8.5 rotated 123.75 47.125 positioned ^0.1 ^0.1 ^0.1 run tp 00000095-0000-0001-0000-000000000006 ~ ~ ~",
+                [
+                    0x4020a7648c7aa86bu64,
+                    0x406947d514129374u64,
+                    0x4021025e8b180036u64,
+                ],
+                false,
+            ),
+            (
+                "world",
+                "execute positioned 8.5 202.25 8.5 rotated 37.5 -22.25 run tp 00000095-0000-0001-0000-000000000007 9.25 202.75 9.75",
+                [
+                    0x4022800000000000u64,
+                    0x4069580000000000u64,
+                    0x4023800000000000u64,
+                ],
+                true,
+            ),
+            (
+                "relative_eyes",
+                "execute positioned 8.5 202.25 8.5 rotated 37.5 -22.25 anchored eyes run tp 00000095-0000-0001-0000-000000000008 ~0.75 ~0.5 ~1.25",
+                [
+                    0x4022800000000000u64,
+                    0x4069580000000000u64,
+                    0x4023800000000000u64,
+                ],
+                true,
+            ),
+            (
+                "feet",
+                "execute as 00000095-0000-0001-0000-000000000009 at @s anchored feet rotated 37.5 -22.25 run tp @s ^ ^ ^",
+                [
+                    0x4012000000000000u64,
+                    0x4069000000000000u64,
+                    0x4012000000000000u64,
+                ],
+                true,
+            ),
+            (
+                "eyes",
+                "execute as 00000095-0000-0001-0000-00000000000a at @s anchored eyes rotated 37.5 -22.25 run tp @s ^ ^ ^",
+                [
+                    0x4012000000000000u64,
+                    0x4069187ae1400000u64,
+                    0x4012000000000000u64,
+                ],
+                true,
+            ),
+        ];
+        for (i, (name, command, want, control)) in cases.into_iter().enumerate() {
+            let number = i as i32 + 1;
+            let actor = format!("00000095-0000-0001-0000-{number:012x}");
+            let uuid = [149, 1, 0, number];
+            assert!(game.run_command(&format!(r#"summon pig 4.5 200 4.5 {{UUID:[I;149,1,0,{number}],Tags:["h149"],Health:10f,NoAI:1b,NoGravity:1b,Silent:1b,PersistenceRequired:1b,Motion:[0d,0d,0d],Rotation:[11f,7f]}}"#)));
+            let id = *game
+                .persist
+                .uuids
+                .iter()
+                .find(|(_, u)| **u == uuid)
+                .unwrap()
+                .0;
+            assert!(game.mobs.iter().any(|m| m.id == id));
+            assert!(game.run_command(&format!("execute if entity @e[type=pig,nbt={{UUID:[I;149,1,0,{number}],Health:10f,NoAI:1b,NoGravity:1b,Pos:[4.5d,200d,4.5d],Motion:[0d,0d,0d],Rotation:[11f,7f]}}]")));
+            assert!(game.world.loaded(4, 4));
+            let before = game.entity_nbt(Target::Mob(id)).unwrap();
+            assert_eq!(pos_bits(&before), [4.5f64, 200.0, 4.5].map(f64::to_bits));
+            assert_eq!(before.get("UUID"), Some(&Tag::IntArray(uuid.to_vec())));
+            assert_eq!(before.get("Health"), Some(&Tag::Float(10f32.to_bits())));
+            // Discard retained raw input: only actual modeled position may prove this.
+            game.persist.raw.remove(&id);
+            assert!(game.run_command("scoreboard players set #r h149 91"));
+            assert!(game.run_command("scoreboard players set #s h149 17"));
+            assert!(
+                game.run_command(&format!(
+                    "execute store result score #r h149 store success score #s h149 run {command}"
+                )),
+                "actual command accepted: {name}"
+            );
+            assert_eq!(game.score.board.score("#r", "h149").unwrap().value, 1);
+            assert_eq!(game.score.board.score("#s", "h149").unwrap().value, 1);
+            let model = game.mobs.iter().find(|m| m.id == id).unwrap();
+            let model_bits =
+                [model.position.x, model.position.y, model.position.z].map(f64::to_bits);
+            let saved = game.entity_nbt(Target::Mob(id)).unwrap();
+            let got = pos_bits(&saved);
+            assert_eq!(
+                model_bits, got,
+                "actual model and typed canonical save agree: {name}"
+            );
+            assert_eq!(saved.get("UUID"), before.get("UUID"));
+            for key in ["Health", "NoAI", "NoGravity", "Rotation", "Motion"] {
+                assert_eq!(saved.get(key), before.get(key), "unchanged {key}: {name}");
+            }
+            assert!(game.run_command(&format!("execute as {actor} at @s if block ~ 199 ~ stone")));
+            assert!(game.world.loaded(
+                f64::from_bits(got[0]).floor() as i32,
+                f64::from_bits(got[2]).floor() as i32,
+            ));
+            if control {
+                assert_eq!(
+                    got, want,
+                    "independent world/relative/anchor control {name}"
+                );
+            } else if got != want {
+                failures.push((name, got, want));
+            }
+            assert_eq!(game.world.game_time, clock, "zero observation ticks");
+        }
+        assert!(
+            failures.is_empty(),
+            "actual registered local-coordinate bit mismatches: {failures:#?}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod query_feedback_tests {
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
@@ -4893,6 +5167,169 @@ mod forced_respawn_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod item_damage_range_tests {
+    use super::super::native_machines::tests::server_game;
+    use super::*;
+    use horizon_core::position::BlockPos;
+
+    #[test]
+    #[ignore = "needs prepared resources and scratch homes/cwd"]
+    fn actual_chest_damage_range_uses_live_damage_and_effective_presence() {
+        let mut game = server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.block_ticks
+            .add_empty_chunk(BlockPos::new(0, 0, 0).chunk())
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("setblock 4 199 4 stone"));
+        assert!(game.run_command(r#"setblock 4 200 4 chest{Items:[{Slot:0b,id:"minecraft:diamond_sword",count:1,components:{"minecraft:custom_data":{marker:195}}},{Slot:1b,id:"minecraft:diamond_sword",count:1,components:{"minecraft:damage":3,"minecraft:custom_data":{marker:195}}},{Slot:2b,id:"minecraft:diamond_sword",count:1,components:{"minecraft:damage":4,"minecraft:custom_data":{marker:195}}},{Slot:3b,id:"minecraft:diamond_sword",count:1,components:{"minecraft:damage":5,"minecraft:custom_data":{marker:195}}},{Slot:4b,id:"minecraft:stone",count:1,components:{"minecraft:custom_data":{marker:195}}},{Slot:5b,id:"minecraft:diamond_sword",count:1,components:{"!minecraft:damage":{},"minecraft:custom_data":{marker:195}}}]}"#));
+        assert!(game.run_command("scoreboard objectives add h195 dummy"));
+        assert!(game.world.loaded(4, 4));
+        assert!(game.run_command("execute if block 4 199 4 stone"));
+        let clock = game.world.game_time;
+        let stacks = match game.world.block_entities.get(&(4, 200, 4)).unwrap() {
+            horizon_client::containers::BlockEntity::Chest(slots) => slots.clone(),
+            _ => panic!("actual loaded chest missing"),
+        };
+        for (slot, damage) in [0, 3, 4, 5, 0, 0].into_iter().enumerate() {
+            let stack = stacks[slot].as_ref().unwrap();
+            assert_eq!(stack.damage, damage);
+            assert_eq!(stack.count, 1);
+            assert_eq!(
+                &*stack.item,
+                if slot == 4 {
+                    "minecraft:stone"
+                } else {
+                    "minecraft:diamond_sword"
+                }
+            );
+            assert_eq!(
+                stack.custom_data().unwrap().get(&"marker".into()),
+                Some(&horizon_world::nbt::Tag::Int(195))
+            );
+            assert!(game.run_command(&format!(
+                "execute if items block 4 200 4 container.{slot} {}",
+                stack.item
+            )));
+        }
+        assert!(stacks[6].is_none());
+        assert!(
+            game.items()
+                .get("minecraft:diamond_sword")
+                .unwrap()
+                .components
+                .iter()
+                .any(|c| c == "minecraft:damage")
+        );
+        assert!(
+            !game
+                .items()
+                .get("minecraft:stone")
+                .unwrap()
+                .components
+                .iter()
+                .any(|c| c == "minecraft:damage")
+        );
+        let removed =
+            horizon_client::item_data::encode_components(stacks[5].as_ref().unwrap()).unwrap();
+        assert!(
+            removed.get("!minecraft:damage").is_some(),
+            "actual removal patch must survive load before evaluating it"
+        );
+        assert!(game.run_command(
+            "execute unless data block 4 200 4 Items[{Slot:0b}].components.\"minecraft:damage\""
+        ));
+        assert!(game.run_command(
+            "execute if data block 4 200 4 Items[{Slot:2b,components:{\"minecraft:damage\":4}}]"
+        ));
+        assert!(game.run_command(
+            "execute if data block 4 200 4 Items[{Slot:5b}].components.\"!minecraft:damage\""
+        ));
+        let mut cases = Vec::new();
+        for (slot, damage) in [(1, 3), (2, 4), (3, 5)] {
+            for (shape, expected) in [
+                ("4", damage == 4),
+                ("{min:4}", damage >= 4),
+                ("{max:4}", damage <= 4),
+                ("{min:3,max:4}", (3..=4).contains(&damage)),
+            ] {
+                cases.push((
+                    slot,
+                    format!("minecraft:damage~{{damage:{shape}}}"),
+                    expected,
+                ));
+            }
+        }
+        cases.extend([
+            (0, "damage~{damage:0}".into(), true),
+            (0, "damage~{damage:{min:1}}".into(), false),
+            (4, "damage~{damage:0}".into(), false),
+            (5, "damage~{damage:0}".into(), false),
+            (2, "!damage~{damage:4}".into(), false),
+            (1, "!damage~{damage:4}".into(), true),
+            (1, "damage=3".into(), true),
+            (1, "damage=4".into(), false),
+            (1, "count~1".into(), true),
+            (1, "custom_data~{marker:195}".into(), true),
+        ]);
+        let mut mismatches = Vec::new();
+        for (slot, term, expected) in cases {
+            let stack = stacks[slot].as_ref().unwrap();
+            let predicate = ItemInput {
+                id: stack.item.to_string(),
+                tag: false,
+                any: false,
+                components: Some(format!("[{term}]")),
+            };
+            let actual = game.stack_matches(&predicate, stack);
+            if actual != expected {
+                mismatches.push(format!(
+                    "direct slot{slot} {term}: {actual}, expected{expected}"
+                ));
+            }
+            assert!(game.run_command("scoreboard players set #r h195 91"));
+            assert!(game.run_command("scoreboard players set #s h195 17"));
+            let command = format!(
+                "execute store result score #r h195 store success score #s h195 if items block 4 200 4 container.{slot} {}[{term}]",
+                stack.item
+            );
+            game.run_command(&command);
+            let r = game.score.board.score("#r", "h195").map(|s| s.value);
+            let s = game.score.board.score("#s", "h195").map(|s| s.value);
+            if (r, s) != (Some(i32::from(expected)), Some(i32::from(expected))) {
+                mismatches.push(format!("command {term}: {r:?}/{s:?}, expected{expected}"));
+            }
+            assert!(game.run_command("scoreboard players set #branch h195 23"));
+            game.run_command(&format!("execute unless items block 4 200 4 container.{slot} {}[{term}] run scoreboard players set #branch h195 7",stack.item));
+            let branch = game.score.board.score("#branch", "h195").map(|s| s.value);
+            if branch != Some(if expected { 23 } else { 7 }) {
+                mismatches.push(format!("unless {term}: {branch:?}"));
+            }
+        }
+        assert!(!game.run_command(
+            "execute if items block 4 200 4 container.4 diamond_sword[damage~{damage:4}]"
+        ));
+        assert!(!game.run_command(
+            "execute if items block 4 200 4 container.6 diamond_sword[damage~{damage:4}]"
+        ));
+        let actual = match game.world.block_entities.get(&(4, 200, 4)).unwrap() {
+            horizon_client::containers::BlockEntity::Chest(slots) => slots,
+            _ => panic!("source chest changed"),
+        };
+        assert_eq!(
+            actual, &stacks,
+            "queries must leave the authoritative loaded stacks unchanged"
+        );
+        assert_eq!(game.world.game_time, clock);
+        assert!(
+            mismatches.is_empty(),
+            "damage-only command predicate mismatches: {mismatches:#?}"
+        );
     }
 }
 

@@ -633,6 +633,40 @@ impl Game<'_> {
             self.lan_entity_event(id as i32, if body { 65 } else { 49 }, at);
         }
     }
+    /// `LivingEntity.updateFallFlying`'s wear, `ItemStack.hurtAndBreak(1, this,
+    /// slot)` on the glider `MobEvent::GliderWear` picked: Unbreaking (from the
+    /// level's random, `Enchantment.modifyItemFilteredCount`) may save it, and
+    /// the rest goes on the stack where it is worn. A glider is only picked
+    /// while its next point of wear will not break it (`canGlideUsing`), so
+    /// this wear never breaks one.
+    fn wear_mob_glider(&mut self, id: u32, slot: horizon_world::player_inventory::EquipmentSlot) {
+        use horizon_client::mobs::finalize;
+        use horizon_world::player_inventory::EquipmentSlot as S;
+        let Some(stack) = self
+            .mobs
+            .iter()
+            .find(|m| m.id == id)
+            .and_then(|m| finalize::equipment_stack(m, slot))
+        else {
+            return;
+        };
+        if !horizon_client::stations::is_damageable(self.res.items(), &stack) {
+            return;
+        }
+        let loss = self.durability_loss(&stack, 1);
+        if loss == 0 {
+            return;
+        }
+        let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
+            return;
+        };
+        let damage = stack.damage + loss;
+        match slot {
+            S::Body => m.extra.body_damage = damage as i32,
+            S::Saddle => m.set_saddle(Some(ItemStack { damage, ..stack })),
+            _ => finalize::set_slot_damage(m, slot as usize, damage),
+        }
+    }
     /// `LivingEntity.hurtArmor` -> `LivingEntity.doHurtEquipment`, from the hit
     /// `MobEvent::ArmorHurt` reported. Only `Horse` overrides `hurtArmor` for a
     /// mob, and its override asks for the BODY slot alone, so the body piece is
@@ -1657,16 +1691,24 @@ impl Game<'_> {
         self.villager_murdered(m, slain_by_player, killer.flatten());
         let pos = [m.position.x, m.position.y + 0.5, m.position.z];
         let killer_entity = self.killer_loot_entity(killer.flatten());
-        // LAST_DAMAGE_PLAYER only while the player-hurt memory lasts
-        // (LivingEntity.dropFromLootTable's playerKilled): a mob that dies to
-        // the environment long after a player's hit names no player.
+        // LAST_DAMAGE_PLAYER only while the player is still in the world and
+        // the hurt memory lasts (LivingEntity.dropFromLootTable). Experience
+        // and equipment use the timer alone (dropExperience / playerKilled):
+        // a guest who has left still counts.
         let player = killer
             .filter(|_| m.ai.last_hurt_by_player > 0)
             .and_then(|conn| self.killer_uuid(conn));
         if let Some(player) = player.filter(|_| m.extra.leash.is_some()) {
             self.lead_killers.insert(m.id, (player, self.dim));
         }
-        self.drop_death_loot(&mut dying, player, by_player, killer_entity, consumed, pos);
+        self.drop_death_loot(
+            &mut dying,
+            player,
+            m.ai.last_hurt_by_player > 0,
+            killer_entity,
+            consumed,
+            pos,
+        );
         self.create_wither_rose(m);
         if m.species() == Species::CopperGolem {
             // CopperGolem.dropEquipment: the preserved equipment too.
@@ -1832,7 +1874,7 @@ impl Game<'_> {
         &mut self,
         m: &mut Mob,
         player_uuid: Option<u128>,
-        by_player: bool,
+        player_killed: bool,
         killer: horizon_world::loot::LootEntity,
         consumed: bool,
         pos: [f64; 3],
@@ -1899,7 +1941,8 @@ impl Game<'_> {
         let death = drops::Death {
             loot: &loot,
             damage,
-            player: by_player.then(player),
+            player: player_uuid.is_some().then(player),
+            player_killed,
             luck: 0.0,
             vehicle,
             mob_drops: self.ui.rules.bool("mob_drops"),
@@ -1989,7 +2032,7 @@ impl Game<'_> {
         }
         let mut killed = false;
         let mut hurt = false;
-        let mut infested = false;
+        let mut infested = Vec::new();
         let aim = self.attacker_aim(source.attacker);
         // So `living_knockback_v2` sees who hit and what they hold.
         let _attacker = self.knockback_scope_for(source.attacker);
@@ -2006,7 +2049,7 @@ impl Game<'_> {
                             self.audio
                                 .play(&format!("minecraft:{s}"), Some(center), volume, pitch);
                         }
-                        MobEvent::Infested { .. } => infested = true,
+                        MobEvent::Infested { at, velocities } => infested.push((at, velocities)),
                         other => {
                             // Left for the end of the tick.
                             t.outbox.push(other);
@@ -2018,8 +2061,8 @@ impl Game<'_> {
         if hurt {
             self.resolve_player_responsible(target, source);
         }
-        if infested {
-            self.mob_infested(target);
+        for (at, velocities) in infested {
+            self.spawn_infested(at, velocities);
         }
         if hurt
             && let Some(Who::Mob(attacker)) = source.attacker
@@ -2082,18 +2125,6 @@ impl Game<'_> {
             .flat_map(|h| h.hub.guests.iter())
             .find(|g| g.placed && g.uuid == uuid)
             .map(|g| Some(g.conn))
-    }
-    /// `InfestedMobEffect.onMobHurt` for a mob: silverfish from half its height up.
-    pub(super) fn mob_infested(&mut self, mob: u32) {
-        if let Some(m) = self.mobs.iter().find(|m| m.id == mob) {
-            let at = [
-                m.position.x,
-                m.position.y + f64::from(m.height()) / 2.0,
-                m.position.z,
-            ];
-            let look = m.view_vector();
-            self.infested_hurt(at, look, Some(mob));
-        }
     }
     /// `LivingEntity.dropFromGiftLootTable`: the gift table from its random
     /// sequence with the mob as `this` (a chicken's egg depends on its
@@ -2267,6 +2298,7 @@ impl Game<'_> {
                 }
                 MobEvent::SunProtectionWear { mob } => self.wear_sun_protection(mob),
                 MobEvent::ArmorHurt { mob, amount, kind } => self.hurt_mob_armor(mob, amount, kind),
+                MobEvent::GliderWear { mob, slot } => self.wear_mob_glider(mob, slot),
                 MobEvent::EntityEvent { mob, event, at } => {
                     self.lan_entity_event(mob as i32, event, at)
                 }
@@ -2387,13 +2419,13 @@ impl Game<'_> {
                     self.post_game_event(event, at, ctx);
                 }
                 MobEvent::GameEvent {
-                    event: "minecraft:block_place",
+                    event: event @ ("minecraft:block_place" | "minecraft:block_destroy"),
                     at,
                     source,
                     state,
                 } => {
                     let ctx = self.who_context(Some(Who::Mob(source)), Some(state));
-                    self.post_game_event("minecraft:block_place", at, ctx);
+                    self.post_game_event(event, at, ctx);
                 }
                 // The sculk layer tracks steps and bee/bat flaps itself
                 // (`entity_motion_events`, `tick_mob_sculk_events`). Birds
@@ -2793,14 +2825,14 @@ impl Game<'_> {
                         let _ = self.process_level_events();
                     }
                 }
-                MobEvent::ChestOpen { chest, open } => self.golem_chest_open(chest, open),
+                MobEvent::ChestOpen { chest, open, mob } => self.golem_chest_open(chest, open, mob),
                 MobEvent::ChestSlot { chest, slot, stack } => {
                     self.golem_chest_slot(chest, slot, stack)
                 }
                 MobEvent::BecomeStatue { mob } => self.golem_become_statue(mob),
                 MobEvent::EnterHive { mob, hive } => self.bee_enter_hive(mob, hive),
                 MobEvent::ParrotToShoulder { mob } => self.parrot_to_shoulder(mob),
-                MobEvent::Infested { mob } => self.mob_infested(mob),
+                MobEvent::Infested { at, velocities } => self.spawn_infested(at, velocities),
                 MobEvent::Gift { target, item } => {
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == target)
                         && m.saddle_item().is_none()
@@ -6185,7 +6217,7 @@ impl Game<'_> {
             self.swing_arm();
             return Ok(true);
         }
-        if let Some(sheared) = self.shear_pig_saddle(index, &item) {
+        if let Some(sheared) = self.shear_saddle(index, &item) {
             if sheared {
                 self.swing_arm();
             }
@@ -7079,6 +7111,8 @@ impl Game<'_> {
             on_ground,
         );
         self.add_projectile(proj);
+        // SnowballItem.use / EggItem.use / EnderpearlItem.use: awardStat(ITEM_USED).
+        self.award_stat("used", item, 1);
         // ItemStack.use's applyAfterUseComponentSideEffects: the pearl's
         // second is the `use_cooldown` component, as for any thrown item.
         self.apply_use_cooldown(stack);

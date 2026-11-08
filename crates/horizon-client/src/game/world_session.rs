@@ -122,6 +122,14 @@ impl Game<'_> {
                 }
             }
         }
+        // A new world opened without the Create screen still gets the game folder's packs.
+        if create.is_none() {
+            let game_dir = std::env::current_dir()?;
+            let world = game_dir.join("saves").join(folder);
+            if let Err(e) = horizon_client::datapack::install_new_world_packs(&game_dir, &world) {
+                log::warn!("Horizon: data packs for {folder}: {e}");
+            }
+        }
         // IntegratedServer.initServer's line, which other launchers read in `latest.log` to
         // offer the world again.
         horizon_client::logging::write_as(

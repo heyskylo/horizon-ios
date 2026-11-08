@@ -19,6 +19,9 @@ use horizon_core::{
 };
 
 #[cfg(test)]
+#[path = "fall_flying_tests.rs"]
+mod fall_flying_tests;
+#[cfg(test)]
 #[path = "wet_fire_tests.rs"]
 mod wet_fire_tests;
 
@@ -684,6 +687,7 @@ pub fn tick(
         super::villager_brain::woken(m, w.game_time);
     }
     if m.no_ai {
+        update_fall_flying(m, w, events);
         reset_effect_fall_distance(m);
         // Mob.aiStep still runs without AI (only serverAiStep is skipped),
         // so undead still burn in daylight and the endermite's life keeps
@@ -739,6 +743,7 @@ pub fn tick(
     } else {
         ai_step(m, w, level_random, events);
     }
+    count_fall_fly_ticks(m);
     effects_from_blocks(m, w, level_random, events);
     extinguish_if_wet(m, w, was_on_fire, events);
     if m.species() == Species::SulfurCube && m.alive() {
@@ -1591,6 +1596,70 @@ fn ageable_step(
     }
 }
 
+/// `LivingEntity.updateFallFlying` on the server, which `aiStep` calls while
+/// the glide flag is set, with or without AI: a mob that cannot glide
+/// (`canGlide`: on the ground, riding, levitating, or no slot holding a
+/// glider whose next damage will not break it, `canGlideUsing`) stops
+/// gliding; else on every 20th glide tick one of its gliders, picked with
+/// `Util.getRandom` from the mob's own random, takes a point of wear.
+/// `checkFallDistanceAccumulation` and the `ELYTRA_GLIDE` game event of
+/// every 10th tick are not ported here.
+fn update_fall_flying(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+    use horizon_world::player_inventory::EquipmentSlot;
+    if !m.extra.fall_flying {
+        return;
+    }
+    let gliders: Vec<EquipmentSlot> = match w.items {
+        Some(items) => EquipmentSlot::ALL
+            .into_iter()
+            .filter(|&slot| {
+                super::finalize::equipment_stack(m, slot).is_some_and(|stack| {
+                    crate::item_sync::can_glide_using(&stack, glider_slot_name(slot), items)
+                })
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    if m.on_ground
+        || m.extra.mount.is_some()
+        || m.has_effect("minecraft:levitation")
+        || gliders.is_empty()
+    {
+        m.extra.fall_flying = false;
+        return;
+    }
+    let ticks = m.extra.fall_fly_ticks + 1;
+    if ticks % 10 == 0 && (ticks / 10) % 2 == 0 {
+        let pick = m.random.next_int_bound(gliders.len() as i32).unwrap_or(0) as usize;
+        events.push(MobEvent::GliderWear {
+            mob: m.id,
+            slot: gliders[pick],
+        });
+    }
+}
+/// `EquipmentSlot`'s serialized name, which `equippable` names its slot by.
+fn glider_slot_name(slot: horizon_world::player_inventory::EquipmentSlot) -> &'static str {
+    use horizon_world::player_inventory::EquipmentSlot as S;
+    match slot {
+        S::MainHand => "mainhand",
+        S::OffHand => "offhand",
+        S::Feet => "feet",
+        S::Legs => "legs",
+        S::Chest => "chest",
+        S::Head => "head",
+        S::Body => "body",
+        S::Saddle => "saddle",
+    }
+}
+/// `LivingEntity.tick` after `aiStep`: the glide's tick count.
+fn count_fall_fly_ticks(m: &mut Mob) {
+    m.extra.fall_fly_ticks = if m.extra.fall_flying {
+        m.extra.fall_fly_ticks + 1
+    } else {
+        0
+    };
+}
+
 /// `LivingEntity.aiStep`: both flight effects discard accumulated fall before
 /// travel, even when NoAI skips the server AI step.
 fn reset_effect_fall_distance(m: &mut Mob) {
@@ -1655,6 +1724,7 @@ fn ai_step(m: &mut Mob, w: &MobWorld, level_random: &mut LegacyRandom, events: &
         f64::from(m.ai.yya),
         f64::from(m.ai.zza),
     );
+    update_fall_flying(m, w, events);
     reset_effect_fall_distance(m);
     if super::equine::moved_by_client(m) {
         // LivingEntity.travelRidden: the rider's client moves it
@@ -2640,7 +2710,6 @@ pub fn after_hurt(m: &mut Mob, source: &Damage) {
     m.ai.no_action_time = 0;
     match m.species() {
         Species::Armadillo => super::armadillo::after_hurt(m, source),
-        Species::Shulker => super::shulker::after_hurt(m),
         Species::Warden => super::warden::hurt(m, source),
         Species::Nautilus | Species::ZombieNautilus => super::nautilus::after_hurt(m, source),
         Species::Zombie
@@ -2996,6 +3065,12 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
             {
                 m.heal(1.0);
             }
+            // AbsorptionMobEffect.applyEffectTick (asked on every tick): false
+            // once the absorption is used up, so tickServer drops the effect
+            // before it counts down.
+            "minecraft:absorption" if m.absorption <= 0.0 => {
+                expired = true;
+            }
             id if horizon_client_core::potions::is_mod_effect(id) => {
                 // tickServer: one with no ticks left goes unasked.
                 if !infinite && m.extra.effects[i].1 <= 0 {
@@ -3014,6 +3089,14 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
         if !infinite && m.extra.effects.get(i).is_some_and(|e| e.0 == effect) {
             let ticks = &mut m.extra.effects[i].1;
             *ticks = if expired { 0 } else { *ticks - 1 };
+        } else if infinite
+            && expired
+            && effect == "minecraft:absorption"
+            && m.extra.effects.get(i).is_some_and(|e| e.0 == effect)
+        {
+            // An infinite Absorption goes the same way (tickServer asks it
+            // by tickCount); other infinite effects keep their -1.
+            m.extra.effects[i].1 = 0;
         }
         i += 1;
     }
@@ -3024,7 +3107,16 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
             m.absorption = (m.absorption - 4.0 * (e.2 + 1) as f32).max(0.0);
         }
     }
+    let boost_gone = m
+        .extra
+        .effects
+        .iter()
+        .any(|e| e.0 == "minecraft:health_boost" && e.1 <= 0 && e.1 != -1);
     m.extra.effects.retain(|e| e.1 > 0 || e.1 == -1);
+    // LivingEntity.onEffectsRemoved -> refreshDirtyAttributes.
+    if boost_gone {
+        super::finalize::health_boost_changed(m);
+    }
     m.extra
         .hidden_effects
         .retain(|h| m.extra.effects.iter().any(|e| e.0 == *h));
@@ -3441,17 +3533,19 @@ mod poison_effect_tests {
         tick_effects(&mut pig, None);
         assert_eq!(pig.health, 19.2);
         // `onMobHurt` finds Infested in the same in-place list: the hurt mob
-        // leaves a silverfish call in the outbox.
-        let mut pig = Mob::new(2, pig_kind.clone(), Vec3::new(0.0, 4.0, 0.0), 0.0);
-        pig.extra.effects.push(("minecraft:poison", 25, 0));
-        pig.extra.effects.push(("minecraft:infested", -1, 0));
-        tick_effects(&mut pig, None);
-        assert!(
+        // leaves its silverfish in the outbox when its random passes the
+        // effect's 1-in-10 chance (some seed among the first hundred does).
+        let spawned = (0..100).any(|seed| {
+            let mut pig = Mob::new(2, pig_kind.clone(), Vec3::new(0.0, 4.0, 0.0), 0.0);
+            pig.extra.effects.push(("minecraft:poison", 25, 0));
+            pig.extra.effects.push(("minecraft:infested", -1, 0));
+            pig.random = horizon_core::random::LegacyRandom::new(seed);
+            tick_effects(&mut pig, None);
             pig.outbox
                 .iter()
-                .any(|e| matches!(e, MobEvent::Infested { .. })),
-            "a hurt while infested pushes Infested"
-        );
+                .any(|e| matches!(e, MobEvent::Infested { .. }))
+        });
+        assert!(spawned, "a hurt while infested pushes Infested");
     }
 
     /// `MobEffectInstance.hasRemainingDuration` is false at 0 ticks, so an effect

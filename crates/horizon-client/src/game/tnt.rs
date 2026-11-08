@@ -157,11 +157,8 @@ impl PrimedTnt {
                 self.velocity.z *= scale;
             }
         }
-        self.velocity = Vec3::new(
-            self.velocity.x * 0.98,
-            self.velocity.y * 0.98,
-            self.velocity.z * 0.98,
-        );
+        // Entity.scale(getAirDrag()): 0.98F, widened before it scales motion.
+        self.velocity = horizon_client::entity_rules::scale_air_drag(self.velocity);
         if self.on_ground {
             self.velocity = Vec3::new(
                 self.velocity.x * 0.7,
@@ -493,6 +490,7 @@ impl Game<'_> {
             ) {
                 continue;
             }
+            self.mark_motion(out.len(), Self::MOTION_OBJECT | u64::from(t.id));
             let fuse = t.fuse as f32 - alpha as f32 + 1.0;
             let scale = if fuse < 10.0 {
                 let g = (1.0 - fuse / 10.0).clamp(0.0, 1.0);

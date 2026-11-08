@@ -62,6 +62,7 @@ mod tests {
         pub(super) struct ModelPart;
         pub(super) struct NativeShake;
         pub(super) struct WorldPrimitives;
+        pub(super) struct WorldHold;
         pub(super) struct Music;
         pub(super) struct MusicLayer;
         pub(super) struct NativeBlockRim;

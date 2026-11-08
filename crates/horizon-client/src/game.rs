@@ -91,6 +91,8 @@ mod chat_filter;
 mod chiseled_bookshelf;
 mod client_ambient;
 mod clipboard;
+#[cfg(test)]
+mod clone_block_ticks_tests;
 mod code_of_conduct;
 mod combat;
 mod command_blocks;
@@ -146,6 +148,8 @@ mod extras;
 mod falling_damage;
 mod fangs;
 mod fireworks;
+#[cfg(test)]
+mod first_tick_registration_tests;
 mod fishing;
 mod fov;
 mod foxes;
@@ -332,6 +336,7 @@ mod ordered_tick;
 mod packs;
 mod pad;
 mod pad_actions;
+mod pad_craft;
 mod pad_menu;
 mod paintings;
 mod pandas;
@@ -343,6 +348,8 @@ mod pick_entity;
 mod pickups;
 mod piglins;
 mod piston_push;
+#[cfg(test)]
+mod place_feature_tests;
 mod play_input;
 mod play_keys;
 mod player_equip;
@@ -403,6 +410,7 @@ mod sniffers;
 mod social;
 mod spawner;
 mod spear;
+mod spear_players;
 mod spectator;
 mod spill;
 mod splash_water;
@@ -453,6 +461,8 @@ mod world_entry;
 mod world_loading;
 mod world_primitives;
 mod world_session;
+#[cfg(test)]
+mod world_test_def_tests;
 mod zombie_reinforcements;
 mod zombie_villagers;
 use event_loop::EventLoopCtl;
@@ -585,6 +595,9 @@ const AUTO_UPLOAD_TIME: Duration = Duration::from_millis(2);
 const AUTO_UPLOAD_TIME_ARRIVING: Duration = Duration::from_millis(6);
 /// A frame's finished meshes up to this many upload at once, unqueued.
 const AUTO_UPLOADS_AT_ONCE: usize = 8;
+/// The most changed columns far terrain waits on behind a mod's hold (`Game::lod_held`): past
+/// it, they go in as ever.
+const HELD_FAR_COLUMNS: usize = 1 << 13;
 
 #[derive(Clone)]
 struct Options {
@@ -2079,6 +2092,22 @@ impl LevelAccess for GameLevel<'_> {
             }
         }
     }
+    fn create_feature_spawner(&mut self, pos: BlockPos, nbt: horizon_world::nbt::Compound) {
+        // Guard at the owner/insert boundary as well as the live feature sink.
+        // Existing entries of every class retain the prior no-op behavior.
+        if self
+            .registry
+            .state(self.world.block(pos.x, pos.y, pos.z))
+            .is_none_or(|state| state.name != "minecraft:spawner")
+            || self
+                .world
+                .block_entities
+                .contains_key(&(pos.x, pos.y, pos.z))
+        {
+            return;
+        }
+        self.load_block_entity(pos, nbt);
+    }
     fn set_command_block_powered(&mut self, pos: BlockPos, powered: bool) -> Option<(bool, bool)> {
         command_blocks::set_powered(self.world, self.registry, (pos.x, pos.y, pos.z), powered)
     }
@@ -2146,6 +2175,19 @@ impl FallingBlock {
             self.previous.z + (self.position.z - self.previous.z) * alpha - 0.5 + dz,
         )
     }
+}
+
+/// A block entity's `mark_motion` id: its position, packed into the 32 bits beside the tag
+/// (x and z wrap at 2048 blocks and y at 1024; two block entities that far apart in one frame's
+/// view are told apart by their vertex counts, as `PackEntities` matches only equal runs).
+fn motion_block_entity(pos: [i32; 3]) -> u64 {
+    motion_at(Game::MOTION_BLOCK_ENTITY, pos)
+}
+
+/// `tag` with a block position packed into its low 32 bits (`motion_block_entity`).
+fn motion_at(tag: u64, pos: [i32; 3]) -> u64 {
+    let [x, y, z] = pos.map(|c| c as u32);
+    tag | u64::from((x & 0x7FF) | (z & 0x7FF) << 11 | (y & 0x3FF) << 22)
 }
 
 /// `FallingBlockRenderer.shouldRender` drops a falling block whose own state is
@@ -2401,6 +2443,9 @@ struct Game<'a> {
     lod: Option<horizon_client::lod::Lod>,
     lod_source_attempted: bool,
     lod_observe: horizon_client::fast_hash::FxHashSet<(i32, i32)>,
+    /// Columns the single-player server changed in bulk inside a mod's hold on the terrain
+    /// (`native_world_hold`): far terrain takes them in when the hold lets go of them.
+    lod_held: horizon_client::fast_hash::FxHashMap<(i32, i32), Arc<horizon_client::chunk::Chunk>>,
     /// The server level far terrain keeps the chunks of.
     lod_level: Option<String>,
     /// The server's BlueMap far terrain draws from, when the player named one
@@ -3064,6 +3109,8 @@ struct Game<'a> {
     remote: Option<remote::Remote>,
     /// Active packet replay session (game/studio.rs).
     pub(super) studio_replay: Option<horizon_client::studio::ReplayDriver>,
+    pub(super) studio_freecam: horizon_client::studio::StudioFreecam,
+    studio_camera_track_dirty: bool,
     /// Camera perspective to restore after leaving replay playback.
     studio_replay_previous_camera_type: Option<perspective::CameraType>,
     /// Replay opened from the title screen owns the synthetic remote session.
@@ -3095,6 +3142,9 @@ struct Game<'a> {
     structure_templates: HashMap<String, Option<structure_blocks::TemplateEntry>>,
     /// The game tests read so far, by id (the test instance registry).
     test_defs: std::cell::RefCell<HashMap<String, Option<test_instances::TestDef>>>,
+    /// `test_defs` holds the world's whole test instance registry
+    /// (`snapshot_test_defs`), so a miss is final.
+    test_defs_snapshot: bool,
     /// `GameTestBlockHighlightRenderer.markers`: block, text, removal time.
     test_highlights: HashMap<(i32, i32, i32), (String, std::time::Instant)>,
     /// `GameTestTicker.SINGLETON`: the game tests running on this server.
@@ -3194,6 +3244,12 @@ struct Game<'a> {
     /// `LivingEntity.recentKineticEnemies`: when each player (a guest, or the
     /// window's own) last stabbed each entity this use.
     stabbed: HashMap<(Option<u32>, u32), i64>,
+    /// The other players the acting player's spear can reach this turn,
+    /// taken from the hub before it (`spear_players`).
+    stab_players: Vec<spear_players::StabPlayer>,
+    /// Spear stabs on players worked out in a guest's turn, landed once the
+    /// hub is back (`land_player_stabs`).
+    player_stabs: Vec<spear_players::StabBatch>,
     /// The movement a guest's client reported this tick
     /// (`ServerPlayer.getKnownMovement`), for their turn.
     known_movement: Vec3,
@@ -6128,7 +6184,7 @@ impl Game<'_> {
         self.capture(false);
         self.right = false;
     }
-    /// FallingBlockEntity.tick: fall with 0.04 gravity and 0.98 drag, then land.
+    /// FallingBlockEntity.tick: fall with 0.04 gravity and 0.98F drag, then land.
     /// One falling block's `tick`: places or drops its block in its own tick,
     /// so a block falling onto one that just landed lands on top of it. `i` is
     /// its place in the list; the caller has checked it is ticking.
@@ -6303,11 +6359,8 @@ impl Game<'_> {
                 f.position.z.floor() as i32,
             ]));
         }
-        f.velocity = Vec3::new(
-            f.velocity.x * 0.98,
-            f.velocity.y * 0.98,
-            f.velocity.z * 0.98,
-        );
+        // Entity.scale(getAirDrag()): 0.98F, widened before it scales motion.
+        f.velocity = horizon_client::entity_rules::scale_air_drag(f.velocity);
         Ok(if teleported.is_some() {
             FallStep::Gone
         } else {
@@ -7643,6 +7696,7 @@ impl Game<'_> {
         if running {
             horizon_client::spans::time("tick_paintings", || self.tick_paintings());
             horizon_client::spans::time("tick_item_frames", || self.tick_item_frames());
+            self.tick_explicit_knots();
             self.ordered_before(ordered_tick::Batch::ArmorStands)?;
             horizon_client::spans::time("tick_armor_stands", || self.tick_armor_stands())?;
             horizon_client::spans::time("tick_cushions", || self.tick_cushions());
@@ -8279,6 +8333,7 @@ impl Game<'_> {
                 | BlockEntity::EndGateway(_)
                 | BlockEntity::Skull(_)
                 | BlockEntity::DaylightDetector
+                | BlockEntity::Bell
                 | BlockEntity::Campfire(_)
                 | BlockEntity::ChiseledBookshelf(_)
                 | BlockEntity::Brushable(_)
@@ -8342,6 +8397,7 @@ impl Game<'_> {
                 | BlockEntity::EndGateway(_)
                 | BlockEntity::Skull(_)
                 | BlockEntity::DaylightDetector
+                | BlockEntity::Bell
                 | BlockEntity::Campfire(_)
                 | BlockEntity::ChiseledBookshelf(_)
                 | BlockEntity::Brushable(_)
@@ -8476,6 +8532,7 @@ impl Game<'_> {
                     | BlockEntity::EndGateway(_)
                     | BlockEntity::Skull(_)
                     | BlockEntity::DaylightDetector
+                    | BlockEntity::Bell
                     | BlockEntity::Campfire(_)
                     | BlockEntity::ChiseledBookshelf(_)
                     | BlockEntity::Brushable(_)
@@ -9478,12 +9535,30 @@ impl Game<'_> {
     /// `Camera.setRotation`: the camera's orientation, turned round in
     /// third-person front view.
     pub(super) fn camera_orientation(&self) -> glam::Quat {
+        if self.studio_freecam.active {
+            return camera_rotation(
+                perspective::CameraType::FirstPerson,
+                self.studio_freecam.yaw,
+                self.studio_freecam.pitch,
+            ) * glam::Quat::from_rotation_z(self.studio_freecam.roll.to_radians());
+        }
         match self.posed_rotation {
             // The frame's camera, already turned round in front view.
             Some((yaw, pitch)) => camera_rotation(perspective::CameraType::FirstPerson, yaw, pitch),
             None => camera_rotation(self.camera_type, self.yaw, self.pitch),
         }
     }
+    /// `mark_motion` ids of entities that aren't mobs or dropped items (boats, minecarts, armor
+    /// stands, item frames, paintings, primed TNT, falling blocks): their entity id under this tag.
+    pub(super) const MOTION_OBJECT: u64 = 3 << 32;
+    /// An item frame's held item, apart from the frame (one id may mark one run).
+    pub(super) const MOTION_FRAME_ITEM: u64 = 4 << 32;
+    /// A block entity, by its position (`motion_block_entity`).
+    pub(super) const MOTION_BLOCK_ENTITY: u64 = 5 << 32;
+    /// A block a piston moves, by the cell it moves to (`motion_at`).
+    pub(super) const MOTION_MOVING_BLOCK: u64 = 6 << 32;
+    /// The player's own model (third person, and a shader pack's shadow pass).
+    pub(super) const MOTION_OWN_PLAYER: u64 = 7 << 32;
     /// The entity whose geometry starts at vertex `start` (0: none), for frame
     /// generation to follow its own motion. Each run lasts until the next mark.
     pub(super) fn mark_motion(&self, start: usize, id: u64) {
@@ -9515,6 +9590,7 @@ impl Game<'_> {
         self.entity_spans.borrow_mut().clear();
         self.entity_motion.borrow_mut().clear();
         self.entity_motion_posed.borrow_mut().clear();
+        self.maps.slots.next_frame();
         // LevelExtractor.extract: the transient blocks queued since the last frame.
         self.drain_transient_block_queue();
         self.prepare_entity_culling();
@@ -9669,6 +9745,7 @@ impl Game<'_> {
         // In first person only a shader pack's shadow pass draws the player.
         self.mark_player(out.len(), !self.own_body_in_view());
         let player_start = out.len();
+        self.mark_motion(player_start, Self::MOTION_OWN_PLAYER);
         let player_alpha = if self.studio_replay.is_some() {
             (self.studio_virtual_tick_ms as f64 / 50.0).clamp(0.0, 1.0)
         } else {
@@ -9682,6 +9759,7 @@ impl Game<'_> {
                 .borrow_mut()
                 .extend(out.drain(player_start..));
         }
+        self.mark_motion(out.len(), 0);
         // Companions in first person, trails and auras (game/cosmetics/fx.rs).
         self.cosmetics_fx_geometry(camera, alpha, &mut out);
         self.mark_entity(out.len(), "minecraft:evoker_fangs");
@@ -9885,6 +9963,7 @@ impl Game<'_> {
                 skull: &|p| self.skull_skin_at(p),
                 glyph: &|c| self.gui.atlas.glyph_cell(c),
                 glyphs: self.gui.atlas.font.epoch(),
+                font: Some(&self.gui.atlas.font),
                 dynamic_visible: Some(&dynamic_visible),
             };
             let visible = camera_list.into_iter().chain(shadow_only.iter().copied());
@@ -9914,7 +9993,10 @@ impl Game<'_> {
                         r.block_entity_revision(),
                         Some(&section_revision),
                         &mut out,
-                        |_, state, start| self.mark_block_entity(start, state),
+                        |pos, state, start| {
+                            self.mark_block_entity(start, state);
+                            self.mark_motion(start, motion_block_entity(pos));
+                        },
                         |pos, _, start, out| {
                             if shadow_only_at.contains(&pos) {
                                 self.hide_spans_from(start, out.len());
@@ -10107,6 +10189,7 @@ impl Game<'_> {
             let light = self.world.light(x, y + 1, z);
             let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
             let start = out.len();
+            self.mark_motion(start, Self::MOTION_OBJECT | u64::from(f.id));
             self.block_model_vertices(
                 f.state,
                 horizon_core::random::position_seed(f.start_pos),
@@ -10120,23 +10203,30 @@ impl Game<'_> {
                 vertex.color = horizon_client::hud_layout::multiply(vertex.color, tint);
             }
         }
+        self.mark_motion(out.len(), 0);
         self.mark_entity(out.len(), "");
         self.moving_piston_geometry(camera, alpha, &mut out);
         // LevelRenderer.submitTransientBlocks.
         self.transient_block_geometry(camera, &mut out);
         self.mark_entity(out.len(), "minecraft:tnt");
         self.tnt_geometry(camera, alpha, &mut out);
+        self.mark_motion(out.len(), 0);
         self.mark_entity(out.len(), "minecraft:painting");
         self.painting_geometry(camera, &mut out);
+        self.mark_motion(out.len(), 0);
         self.mark_entity(out.len(), "minecraft:item_frame");
         self.frame_geometry(camera, &mut out);
+        self.mark_motion(out.len(), 0);
         self.mark_entity(out.len(), "minecraft:armor_stand");
         self.armor_stand_geometry(camera, alpha, &mut out);
+        self.mark_motion(out.len(), 0);
         self.cushion_geometry(camera, &mut out);
         self.mark_entity(out.len(), "minecraft:oak_boat");
         self.boat_geometry(camera, alpha, &mut out);
+        self.mark_motion(out.len(), 0);
         self.mark_entity(out.len(), "minecraft:minecart");
         self.cart_geometry(camera, alpha, &mut out);
+        self.mark_motion(out.len(), 0);
         // Beams: `gbuffers_beaconbeam`, not a block entity's program (5.4 has no stage for them).
         self.mark_stage(out.len(), "NONE");
         self.beacon_geometry(camera, alpha, &mut out);
@@ -10608,23 +10698,24 @@ impl Game<'_> {
             // The hurt or death sound the mob raised (getHurtSound / getDeathSound,
             // its voice pitch from its own random).
             let queued = std::mem::take(&mut self.mobs[index].outbox);
-            let mut infested = false;
+            let mut infested = Vec::new();
             for event in queued {
                 match event {
                     horizon_client::mobs::MobEvent::Sound(s, at, volume, pitch) => {
                         self.audio
                             .play(&format!("minecraft:{s}"), Some(at), volume, pitch);
                     }
-                    horizon_client::mobs::MobEvent::Infested { .. } => infested = true,
+                    horizon_client::mobs::MobEvent::Infested { at, velocities } => {
+                        infested.push((at, velocities))
+                    }
                     other => {
                         // Left for the end of the tick.
                         self.mobs[index].outbox.push(other);
                     }
                 }
             }
-            if infested {
-                let id = self.mobs[index].id;
-                self.mob_infested(id);
+            for (at, velocities) in infested {
+                self.spawn_infested(at, velocities);
             }
             self.weapon_hit(index);
             // Player.attack: causeFoodExhaustion(0.1F) only when the hit hurt
@@ -12612,6 +12703,7 @@ impl Game<'_> {
         // F1 hides both; a native HUD mode may keep the hands visible. A
         // studio replay never draws them.
         if self.studio_replay.is_some()
+            || self.studio_freecam.active
             || !self.ui.hands_drawn(
                 self.spectator(),
                 self.sleeping.is_some(),
@@ -13912,7 +14004,15 @@ impl Game<'_> {
         // FishingHookRenderer's line, then DebugRenderer: chunk borders and
         // hitboxes (F3+G, F3+B).
         let mut lines = self.fishing_line(alpha, size);
-        let g = self.debug_gizmos(alpha as f32, camera.to_array());
+        let mut g = self.debug_gizmos(alpha as f32, camera.to_array());
+        if self.studio_freecam.active || self.studio_replay.is_some() {
+            horizon_client::studio::render_camera_path(
+                &self.studio_freecam.track,
+                &mut g,
+                None,
+                100,
+            );
+        }
         lines.extend(g.lines);
         let on_top = g.on_top;
         pr.lap("pr_debug");
@@ -13934,7 +14034,11 @@ impl Game<'_> {
             Vec::new()
         };
         pr.lap("pr_native_visuals");
-        let view = horizon_client::camera::view_matrix(view_yaw, view_pitch);
+        let view = if self.studio_freecam.active {
+            glam::Mat4::from_quat(self.camera_orientation().conjugate())
+        } else {
+            horizon_client::camera::view_matrix(view_yaw, view_pitch)
+        };
         let world_primitives = if self.title.is_none() {
             self.world_primitive_geometry(camera, alpha, view)
         } else {
@@ -13956,7 +14060,8 @@ impl Game<'_> {
         let debug_lines = horizon_client::gizmos::camera_relative(&lines, at, view);
         let debug_lines_on_top = horizon_client::gizmos::camera_relative(&on_top, at, view);
         let debug_crosshair = horizon_client::gizmos::camera_relative(&crosshair.on_top, at, view);
-        // LevelExtractor.extractBlockOutline: model translucency controls draw order.
+        // LevelExtractor.extractBlockOutline: model translucency controls draw order;
+        // no outline when an entity is targeted (Minecraft.hitResult an EntityHitResult).
         let mut outline_after_terrain = false;
         // GameRenderer.shouldRenderBlockOutline: not with the HUD hidden (F1), and only for a
         // player who may build. Adventure players only get one with a CAN_BREAK or
@@ -13964,7 +14069,8 @@ impl Game<'_> {
         // does not open menus for spectators, so those never show it. An open
         // screen does not hide it: vanilla checks the HUD and the game mode, not the screen.
         let adventure = self.mode == horizon_client::command::args::GameMode::Adventure;
-        let outline = if !self.ui.hide_gui && (self.may_build() || adventure) {
+        let can_build = self.may_build() || adventure;
+        let outline = if !self.ui.hide_gui && !self.entity_targeted() && can_build {
             self.pick()
                 .filter(|h| {
                     self.may_build()
@@ -14442,6 +14548,7 @@ impl Game<'_> {
         self.lod = None;
         self.lod_source_attempted = false;
         self.lod_observe.clear();
+        self.lod_held.clear();
         self.lod_blue_map = None;
         self.far_beacons.clear();
         self.lod_covered_at = None;
@@ -14592,8 +14699,18 @@ impl Game<'_> {
         if self.remote.is_some() {
             let changed = horizon_client::lan::handoff::take_changed();
             if let Some(lod) = &mut self.lod {
+                let renderer = self.renderer.as_ref();
                 for chunk in changed {
-                    if !self.world.chunks.contains_key(&(chunk.x, chunk.z)) {
+                    let column = (chunk.x, chunk.z);
+                    if self.world.chunks.contains_key(&column) {
+                        continue;
+                    }
+                    // Inside a mod's hold, far terrain shows it with the sections (`native_world_hold`).
+                    if renderer.is_some_and(|r| r.world_holds_column(column))
+                        && self.lod_held.len() < HELD_FAR_COLUMNS
+                    {
+                        self.lod_held.insert(column, chunk);
+                    } else {
                         lod.observe(chunk, self.res.facts());
                     }
                 }
@@ -14681,6 +14798,13 @@ impl Game<'_> {
         {
             log::warn!("Horizon: failed to save unloaded chunks: {e}");
         }
+        // LevelChunk.registerTickContainerInLevel: a chunk that became
+        // resident has its tick containers before a command can schedule into
+        // it, even in a frozen level that runs no world tick. The unloaded
+        // chunks above were saved with their ticks first.
+        if self.remote.is_none() {
+            self.sync_tick_chunks();
+        }
         let (far_distance, far_reduced) = self.far_terrain_choice();
         // Terrain still on its way from the server (single player's integrated one
         // too): the view's outermost columns not all in, or its events not all handled.
@@ -14702,7 +14826,29 @@ impl Game<'_> {
             .as_ref()
             .map(|p| [p.position.x, p.position.y, p.position.z])
             .and_then(|camera| self.lod_aim(camera));
+        // A mod's hold on the terrain's picture, before this frame's uploads (`native_world_hold`).
+        let world_hold = self
+            .renderer
+            .is_some()
+            .then(|| self.native_world_hold_now());
         if let Some(renderer) = self.renderer.as_mut() {
+            if let Some(hold) = &world_hold {
+                renderer.hold_world(hold);
+            }
+            // Far terrain takes in the columns the hold let go of, as the sections show.
+            if !self.lod_held.is_empty() {
+                let let_go: Vec<_> = self
+                    .lod_held
+                    .extract_if(|&column, _| !renderer.world_holds_column(column))
+                    .collect();
+                if let Some(lod) = &mut self.lod {
+                    for (column, chunk) in let_go {
+                        if !self.world.chunks.contains_key(&column) {
+                            lod.observe(chunk, self.res.facts());
+                        }
+                    }
+                }
+            }
             let g = &self.settings.horizon;
             let budgeted = g.chunk_updates > 0 || g.upload_budget_kib > 0;
             // The meshes, once copied, are freed by a worker (`Streaming::free`).
@@ -16058,6 +16204,25 @@ impl Game<'_> {
                     let between = now.saturating_duration_since(self.frame_end);
                     self.frame_ticks = elapsed.as_secs_f32() * 20.0;
                     self.previous = now;
+                    if self.studio_freecam.active
+                        && self.screen == Screen::Playing
+                        && !self.dialog_open()
+                    {
+                        let held = |key| f64::from(u8::from(self.keys.raw(&key)));
+                        let forward = held(KeyCode::KeyW) - held(KeyCode::KeyS);
+                        let strafe = held(KeyCode::KeyD) - held(KeyCode::KeyA);
+                        let vertical = held(KeyCode::Space)
+                            - f64::from(u8::from(self.keys.raw(&KeyCode::ShiftLeft)));
+                        let fast = self.keys.raw(&KeyCode::ControlLeft)
+                            || self.keys.raw(&KeyCode::ControlRight);
+                        self.studio_freecam.update_flight_motion(
+                            forward,
+                            strafe,
+                            vertical,
+                            fast,
+                            elapsed.as_secs_f64().min(0.1),
+                        );
+                    }
                     // Arrow-key camera controls belong to gameplay; chat and
                     // other screens use the same keys for their own navigation.
                     if self.screen == Screen::Playing
@@ -16418,6 +16583,7 @@ impl<'a> Game<'a> {
             lod_source_attempted: false,
             far_beacons: HashMap::new(),
             lod_observe: Default::default(),
+            lod_held: Default::default(),
             lod_level: None,
             lod_blue_map: None,
             lod_covered_at: None,
@@ -16800,6 +16966,8 @@ impl<'a> Game<'a> {
             entity_attachments: Default::default(),
             remote: None,
             studio_replay: None,
+            studio_freecam: Default::default(),
+            studio_camera_track_dirty: false,
             studio_replay_previous_camera_type: None,
             studio_replay_standalone: false,
             last_replay_tick: None,
@@ -16815,6 +16983,7 @@ impl<'a> Game<'a> {
             block_editor: None,
             structure_templates: HashMap::new(),
             test_defs: std::cell::RefCell::new(HashMap::new()),
+            test_defs_snapshot: false,
             test_highlights: HashMap::new(),
             game_tests: game_tests::GameTests::default(),
             #[cfg(feature = "friends")]
@@ -16863,6 +17032,8 @@ impl<'a> Game<'a> {
             lan_critical_hits: Vec::new(),
             lan_kinetic_hits: Vec::new(),
             stabbed: HashMap::new(),
+            stab_players: Vec::new(),
+            player_stabs: Vec::new(),
             known_movement: Vec3::ZERO,
             kinetic_feedback: HashMap::new(),
             lan_global_events: Vec::new(),
@@ -18097,6 +18268,10 @@ fn write_level_for_role(
 
 #[cfg(test)]
 mod mannequin_save_tests;
+#[cfg(test)]
+mod storage_alias_tests;
+#[cfg(test)]
+mod sulfur_bucket_tests;
 #[cfg(test)]
 mod vibration_tests;
 

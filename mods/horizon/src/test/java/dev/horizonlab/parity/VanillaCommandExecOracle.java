@@ -865,6 +865,15 @@ public final class VanillaCommandExecOracle {
                             boat.getId(), net.minecraft.world.InteractionHand.MAIN_HAND,
                             net.minecraft.world.phys.Vec3.ZERO, false));
                     }
+                    case "mob_interact" -> {
+                        // The player's real Interact packet on a live mob, by UUID.
+                        var mob = level.getEntity(UUID.fromString(op.get("uuid").getAsString()));
+                        if (!(mob instanceof net.minecraft.world.entity.Mob) || !mob.isAlive())
+                            throw new IllegalStateException("mob click: missing live mob");
+                        player.connection.handleInteract(new net.minecraft.network.protocol.game.ServerboundInteractPacket(
+                            mob.getId(), net.minecraft.world.InteractionHand.MAIN_HAND,
+                            net.minecraft.world.phys.Vec3.ZERO, false));
+                    }
                     case "use_item" -> {
                         if (!op.has("sequence")) {
                             player.gameMode.useItem(player, player.level(), player.getMainHandItem(),

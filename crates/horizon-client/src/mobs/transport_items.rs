@@ -307,7 +307,7 @@ fn opener_area(w: &MobWorld, p: [i32; 3]) -> Aabb {
 /// 3): the opener count changes and the first opener or the last closer
 /// plays the chest's sound (`ChestBlockEntity.playSound`, at the middle of
 /// a double chest from its right half, none from its left).
-fn open_or_close(cx: &mut Bx, p: [i32; 3], open: bool) {
+fn open_or_close(cx: &mut Bx, p: [i32; 3], open: bool, mob: u32) {
     let w = cx.w;
     let count = w
         .world
@@ -347,7 +347,11 @@ fn open_or_close(cx: &mut Bx, p: [i32; 3], open: bool) {
         let pitch = cx.lr.next_float() * 0.1 + 0.9;
         cx.events.push(MobEvent::Sound(sound, at, 0.5, pitch));
     }
-    cx.events.push(MobEvent::ChestOpen { chest: p, open });
+    cx.events.push(MobEvent::ChestOpen {
+        chest: p,
+        open,
+        mob,
+    });
 }
 
 impl Transport {
@@ -582,7 +586,7 @@ impl Transport {
             if self.ticks == 1 {
                 // container.startOpen, before setOpenedChestPos.
                 for h in &t.halves {
-                    open_or_close(cx, *h, true);
+                    open_or_close(cx, *h, true, m.id);
                 }
                 m.extra.opened_chest = Some(t.pos);
                 m.extra.variant3 = state;
@@ -597,7 +601,7 @@ impl Transport {
                 // keeps Container's empty list, so a double chest is left
                 // to the openers recheck).
                 if t.halves.len() == 1 && has_open(cx.w, m, t.pos) {
-                    open_or_close(cx, t.pos, false);
+                    open_or_close(cx, t.pos, false, m.id);
                 }
                 m.extra.opened_chest = None;
             }

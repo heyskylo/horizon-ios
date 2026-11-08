@@ -695,7 +695,9 @@ pub fn encode_block_entity(
             if let Some(record) = j.record() {
                 entries.push(("RecordItem", item_to_nbt(record)));
             }
-            entries.push(("ticks_since_song_started", Tag::Long(j.ticks)));
+            if j.song_clock_present {
+                entries.push(("ticks_since_song_started", Tag::Long(j.ticks)));
+            }
         }
         BlockEntity::Beacon(b) => {
             if let Some(p) = &b.primary {
@@ -799,8 +801,10 @@ pub fn encode_block_entity(
             }
         }
         // Encoded above.
-        BlockEntity::DaylightDetector | BlockEntity::CopperGolemStatue(_) | BlockEntity::Mod(_) => {
-        }
+        BlockEntity::DaylightDetector
+        | BlockEntity::Bell
+        | BlockEntity::CopperGolemStatue(_)
+        | BlockEntity::Mod(_) => {}
         // PotentSulfurBlockEntity.saveAdditional.
         BlockEntity::PotentSulfur(sulfur) => {
             entries.push(("countdown", Tag::Int(sulfur.waiting_countdown)))
@@ -938,13 +942,18 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
     }
     if id == "minecraft:jukebox" {
         let record = tag.get("RecordItem").and_then(item_from_nbt);
-        let ticks = number(tag.get("ticks_since_song_started")).unwrap_or(0);
+        let clock = number(tag.get("ticks_since_song_started"));
+        let ticks = clock.unwrap_or(0);
+        // JukeboxBlockEntity.loadAdditional adopts a saved clock separately
+        // from a record-only load. Catalog-dependent load validation is separate.
+        let song_clock_present = record.is_some() && clock.is_some();
         let playing = record.is_some();
         return Some((
             pos,
             BlockEntity::Jukebox(crate::containers::Jukebox {
                 items: [record],
                 ticks,
+                song_clock_present,
                 playing,
             }),
         ));
@@ -1124,6 +1133,7 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
         | BlockEntity::EndGateway(_)
         | BlockEntity::Skull(_)
         | BlockEntity::DaylightDetector
+        | BlockEntity::Bell
         | BlockEntity::Mod(_) => {}
         // `BlockEntity.loadAdditional`: the components the block entity keeps.
         BlockEntity::CopperGolemStatue(components) => {
@@ -1693,7 +1703,6 @@ fn decode_column(
         }
     }
     let air = registry.default_state("minecraft:air")?.0;
-    let mut cache: HashMap<String, u32> = HashMap::new();
     let Some(Tag::List(sections)) = tag.get("sections") else {
         return Some(chunk);
     };
@@ -1709,30 +1718,7 @@ fn decode_column(
         {
             let palette: Vec<u32> = palette
                 .iter()
-                .map(|p| {
-                    let state = BlockState::from_nbt(p).ok();
-                    let key = state
-                        .as_ref()
-                        .map(|s| format!("{}{:?}", s.name, s.properties))
-                        .unwrap_or_default();
-                    *cache.entry(key).or_insert_with(|| {
-                        state
-                            .and_then(|s| {
-                                registry.id(&s).or_else(|| {
-                                    // Missing properties take the block's defaults.
-                                    let default = registry.default_state(&s.name)?;
-                                    let mut full = registry.state(default)?.clone();
-                                    for (k, v) in &s.properties {
-                                        if full.properties.contains_key(k) {
-                                            full.properties.insert(k.clone(), v.clone());
-                                        }
-                                    }
-                                    registry.id(&full).or(Some(default))
-                                })
-                            })
-                            .map_or(air, |id| id.0)
-                    })
-                })
+                .map(|p| registry.saved_state_id(p).map_or(air, |id| id.0))
                 .collect();
             let target = Arc::make_mut(&mut chunk.sections[si]);
             let data = match states.get("data") {
@@ -1934,70 +1920,91 @@ pub fn load_light(tag: &Tag, chunk: &mut Chunk, sky_light: bool) {
         };
         layers[si] = (layer("SkyLight"), layer("BlockLight"));
     }
-    // Uniform saved layers need no expanded allocation. Both nibbles of
-    // each byte must match, not merely the bytes across the layer.
+    // A saved layer is already the resident `Light::Sky`/`Light::Block`
+    // layer: byte `i` holds block `2i` in its low nibble and `2i + 1` in its
+    // high one. Both nibbles of each byte must match for a layer to be
+    // uniform; only then is the whole section one value.
     let uniform_layer = |layer: &[u8]| {
         let first = layer[0];
         (first & 15 == first >> 4 && layer.iter().all(|&v| v == first)).then_some(first & 15)
     };
+    let copy_layer = |layer: &[u8]| {
+        let mut out = Box::new([0u8; 2048]);
+        out.copy_from_slice(layer);
+        out
+    };
     let mut above = [if sky_light { 15 } else { 0 }; 256];
     for (si, (sky, block)) in layers.into_iter().enumerate().rev() {
         let sky = sky.filter(|_| sky_light);
-        let sky_uniform = sky.map_or_else(
-            || above.iter().all(|&v| v == above[0]).then_some(above[0]),
-            uniform_layer,
-        );
-        let block_uniform = block.map_or(Some(0), uniform_layer);
+        let sky_uniform = sky.and_then(uniform_layer);
+        let sky_varies = match sky {
+            Some(_) => sky_uniform.is_none(),
+            None => above.iter().any(|&v| v != above[0]),
+        };
+        let block_uniform = block.and_then(uniform_layer);
+        let block_varies = block.is_some() && block_uniform.is_none();
+        let sky_first = sky.map_or(above[0], |layer| layer[0] & 15);
+        let block_first = block.map_or(0, |layer| layer[0] & 15);
         let section = Arc::make_mut(&mut chunk.sections[si]);
-        if let (Some(s), Some(b)) = (sky_uniform, block_uniform) {
-            section.light = Light::Uniform(s << 4 | b);
-            above.fill(s);
-        } else {
-            let mut data = Box::new([0u8; 4096]);
-            match (sky, block) {
-                (Some(sky), Some(block)) => {
-                    for ((pair, &s), &b) in
-                        data.as_chunks_mut::<2>().0.iter_mut().zip(sky).zip(block)
-                    {
-                        pair[0] = s << 4 | (b & 15);
-                        pair[1] = (s & 0xf0) | (b >> 4);
+        section.compact();
+        // The saved layer decides the resident variant directly: expand
+        // only when both nibbles vary (which keeps `Light::Full`).
+        section.light = match (sky_varies, block_varies) {
+            (false, false) => Light::Uniform(sky_first << 4 | block_first),
+            (false, true) => Light::Block(copy_layer(block.expect("block layer")), sky_first),
+            (true, false) => {
+                let layer = match sky {
+                    Some(layer) => copy_layer(layer),
+                    // No stored sky: the same 256-byte bottom row over and
+                    // over, which is exactly `Light::packed`'s layer here.
+                    None => {
+                        let mut layer = Box::new([0u8; 2048]);
+                        for row in layer.as_chunks_mut::<128>().0 {
+                            for (out, v) in
+                                row.iter_mut().zip(above.as_chunks::<2>().0.iter().cycle())
+                            {
+                                *out = v[0] | v[1] << 4;
+                            }
+                        }
+                        layer
                     }
-                }
-                (Some(sky), None) => {
-                    for (pair, &s) in data.as_chunks_mut::<2>().0.iter_mut().zip(sky) {
-                        pair[0] = s << 4;
-                        pair[1] = s & 0xf0;
-                    }
-                }
-                (None, Some(block)) => {
-                    for (i, (pair, &b)) in data
-                        .as_chunks_mut::<2>()
-                        .0
-                        .iter_mut()
-                        .zip(block)
-                        .enumerate()
-                    {
-                        pair[0] = above[(i * 2) & 255] << 4 | (b & 15);
-                        pair[1] = above[(i * 2 + 1) & 255] << 4 | (b >> 4);
-                    }
-                }
-                (None, None) => {
-                    for layer in data.as_chunks_mut::<256>().0 {
-                        for (v, &s) in layer.iter_mut().zip(&above) {
-                            *v = s << 4;
+                };
+                Light::Sky(layer, block_first)
+            }
+            (true, true) => {
+                let mut data = Box::new([0u8; 4096]);
+                match (sky, block) {
+                    (Some(sky), Some(block)) => {
+                        for ((pair, &s), &b) in
+                            data.as_chunks_mut::<2>().0.iter_mut().zip(sky).zip(block)
+                        {
+                            pair[0] = s << 4 | (b & 15);
+                            pair[1] = (s & 0xf0) | (b >> 4);
                         }
                     }
+                    (None, Some(block)) => {
+                        for (i, (pair, &b)) in data
+                            .as_chunks_mut::<2>()
+                            .0
+                            .iter_mut()
+                            .zip(block)
+                            .enumerate()
+                        {
+                            pair[0] = above[(i * 2) & 255] << 4 | (b & 15);
+                            pair[1] = above[(i * 2 + 1) & 255] << 4 | (b >> 4);
+                        }
+                    }
+                    _ => unreachable!("both light kinds vary"),
                 }
+                Light::Full(data)
             }
-            if let Some(sky) = sky {
-                for (pair, &s) in above.as_chunks_mut::<2>().0.iter_mut().zip(sky) {
-                    pair[0] = s & 15;
-                    pair[1] = s >> 4;
-                }
+        };
+        if let Some(sky) = sky {
+            for (pair, &s) in above.as_chunks_mut::<2>().0.iter_mut().zip(sky) {
+                pair[0] = s & 15;
+                pair[1] = s >> 4;
             }
-            section.light = Light::Full(data);
         }
-        section.compact();
     }
     chunk.lit = true;
     chunk.light_loaded = true;
@@ -6959,6 +6966,34 @@ mod tests {
         assert_eq!(nibbles(&light, false)[0], 0x23);
         assert_eq!(nibbles(&light, true)[0], 0x5F);
     }
+    /// The independent reference: parse the saved layers and let
+    /// `crate::light::light_from_layers` expand and repack them.
+    fn reference(tag: &Tag, chunk: &mut Chunk, sky_light: bool) {
+        if tag.get("isLightOn") != Some(&Tag::Byte(1)) {
+            return;
+        }
+        let Some(Tag::List(sections)) = tag.get("sections") else {
+            return;
+        };
+        let mut layers: Vec<(Option<&[u8]>, Option<&[u8]>)> = vec![(None, None); SECTIONS];
+        for section in sections {
+            let Some(y) = number(section.get("Y")) else {
+                continue;
+            };
+            let si = y as i32 - (MIN_Y >> 4);
+            if !(0..SECTIONS as i32).contains(&si) {
+                continue;
+            }
+            let layer = |name: &str| match section.get(name) {
+                Some(Tag::ByteArray(a)) if a.len() == 2048 => Some(&a[..]),
+                _ => None,
+            };
+            layers[si as usize] = (layer("SkyLight"), layer("BlockLight"));
+        }
+        let above = [if sky_light { 15 } else { 0 }; 256];
+        crate::light::light_from_layers(chunk, &layers, above, sky_light);
+    }
+
     #[test]
     fn stored_light_loads_with_vanilla_defaults() {
         let mut sky = vec![0u8; 2048];
@@ -7007,32 +7042,6 @@ mod tests {
     }
     #[test]
     fn saved_light_matches_reference_for_layers_and_metadata() {
-        fn reference(tag: &Tag, chunk: &mut Chunk, sky_light: bool) {
-            if tag.get("isLightOn") != Some(&Tag::Byte(1)) {
-                return;
-            }
-            let Some(Tag::List(sections)) = tag.get("sections") else {
-                return;
-            };
-            let mut layers: Vec<(Option<&[u8]>, Option<&[u8]>)> = vec![(None, None); SECTIONS];
-            for section in sections {
-                let Some(y) = number(section.get("Y")) else {
-                    continue;
-                };
-                let si = y as i32 - (MIN_Y >> 4);
-                if !(0..SECTIONS as i32).contains(&si) {
-                    continue;
-                }
-                let layer = |name: &str| match section.get(name) {
-                    Some(Tag::ByteArray(a)) if a.len() == 2048 => Some(&a[..]),
-                    _ => None,
-                };
-                layers[si as usize] = (layer("SkyLight"), layer("BlockLight"));
-            }
-            let above = [if sky_light { 15 } else { 0 }; 256];
-            crate::light::light_from_layers(chunk, &layers, above, sky_light);
-        }
-
         let section = |y: Tag, sky: Option<Tag>, block: Option<Tag>| {
             let mut entries = vec![("Y", y)];
             if let Some(v) = sky {
@@ -7149,6 +7158,37 @@ mod tests {
             ),
             section(Tag::Byte(0), None, Some(Tag::ByteArray(varied))),
         ]));
+    }
+    /// A saved sky layer is the resident `Light::Sky` layer byte for byte,
+    /// so a section whose block light is uniformly zero can adopt it.
+    #[test]
+    fn a_varying_sky_layer_is_adopted_without_expansion() {
+        let saved: Vec<u8> = (0..2048).map(|i| (i as u8).wrapping_mul(29)).collect();
+        let tag = Tag::compound([
+            ("isLightOn", Tag::Byte(1)),
+            (
+                "sections",
+                Tag::List(vec![Tag::compound([
+                    ("Y", Tag::Byte(3)),
+                    ("SkyLight", Tag::ByteArray(saved.clone())),
+                ])]),
+            ),
+        ]);
+        let mut chunk = Chunk::empty(0, 0);
+        let mut expected = chunk.clone();
+        load_light(&tag, &mut chunk, true);
+        reference(&tag, &mut expected, true);
+        for i in 0..4096 {
+            assert_eq!(chunk.sections[7].light(i), expected.sections[7].light(i));
+        }
+        let Light::Sky(layer, 0) = &chunk.sections[7].light else {
+            panic!("varying sky with no block light is Light::Sky(_, 0)");
+        };
+        assert_eq!(
+            &layer[..],
+            &saved[..],
+            "resident layer equals the saved one"
+        );
     }
     /// #2571: the difficulty is a property of the world: the level data
     /// holds it, so a world that was set to hard is hard when it is opened
@@ -8721,5 +8761,124 @@ mod far_census {
                 started.elapsed().as_secs_f32()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod jukebox_song_clock_tests {
+    use super::*;
+    use crate::containers::{BlockEntity, Jukebox};
+
+    fn input(clock: Option<i64>, with_record: bool) -> Tag {
+        let record = if with_record {
+            "RecordItem:{id:\"minecraft:music_disc_cat\",count:1,components:{\"minecraft:custom_data\":{h032:1}}},"
+        } else {
+            ""
+        };
+        let clock = clock.map_or(String::new(), |n| format!("ticks_since_song_started:{n}L,"));
+        nbt::parse_snbt(&format!(
+            "{{id:\"minecraft:jukebox\",x:4,y:200,z:4,{record}{clock}}}"
+        ))
+        .unwrap()
+        .0
+    }
+    fn record_kept(tag: &Tag) {
+        let record = tag.get("RecordItem").expect("actual modeled record");
+        assert_eq!(
+            record.get("id"),
+            Some(&Tag::String("minecraft:music_disc_cat".into()))
+        );
+        assert_eq!(record.get("count"), Some(&Tag::Int(1)));
+        assert_eq!(
+            record
+                .get("components")
+                .and_then(|c| c.get("minecraft:custom_data"))
+                .and_then(|c| c.get("h032")),
+            Some(&Tag::Int(1))
+        );
+    }
+    #[test]
+    fn model_save_preserves_song_clock_presence_without_raw() {
+        let mut failures = Vec::new();
+        let mut check = |label: &str, tag: &Tag, expected: Option<i64>| {
+            let got = tag.get("ticks_since_song_started").cloned();
+            let want = expected.map(Tag::Long);
+            if got != want {
+                failures.push(format!("{label}: {got:?}, expected {want:?}"));
+            }
+        };
+        for (label, clock, with_record) in [
+            ("empty", None, false),
+            ("record-only", None, true),
+            ("loaded-zero", Some(0), true),
+            ("loaded-41", Some(41), true),
+        ] {
+            let (pos, model) =
+                decode_block_entity(&input(clock, with_record)).expect("actual load path");
+            let BlockEntity::Jukebox(j) = &model else {
+                panic!("wrong modeled type")
+            };
+            assert_eq!(j.record().is_some(), with_record);
+            assert_eq!(j.ticks, clock.unwrap_or(0));
+            // H032 must preserve the separate legacy record-only adoption policy.
+            assert_eq!(j.playing, with_record);
+            let saved = encode_block_entity(pos, &model, "minecraft:jukebox");
+            let command = block_entity_data(pos, &model, "minecraft:jukebox", None);
+            check(label, &saved, clock);
+            check(label, &command, clock);
+            if with_record {
+                record_kept(&saved);
+                record_kept(&command);
+            } else {
+                assert!(saved.get("RecordItem").is_none());
+            }
+            if clock.is_some() {
+                let mut detached = model.clone();
+                let BlockEntity::Jukebox(j) = &mut detached else {
+                    unreachable!()
+                };
+                j.playing = false;
+                // Decoded clock state, not this separate legacy flag, owns saving.
+                let saved = encode_block_entity(pos, &detached, "minecraft:jukebox");
+                check("clock independent of legacy playing", &saved, clock);
+                record_kept(&saved);
+            }
+        }
+        let empty = BlockEntity::Jukebox(Jukebox::default());
+        check(
+            "default modeled/no raw",
+            &encode_block_entity((4, 200, 4), &empty, "minecraft:jukebox"),
+            None,
+        );
+        let raw = input(Some(41), true);
+        let (pos, loaded_model) = decode_block_entity(&raw).unwrap();
+        let loaded = encode_block_entity(pos, &loaded_model, "minecraft:jukebox");
+        let BlockEntity::Jukebox(j) = loaded_model else {
+            unreachable!()
+        };
+        let current = BlockEntity::Jukebox(Jukebox {
+            items: j.items,
+            playing: true,
+            ..Default::default()
+        });
+        let current = encode_block_entity(pos, &current, "minecraft:jukebox");
+        check("modeled record-only/no raw", &current, None);
+        record_kept(&current);
+        // The chunk writer uses this real overlay after encoding its model.
+        // A stale input clock must not resurrect the removed modeled field.
+        let merged = merge_block_entity(&raw, &loaded, &current);
+        check("contradictory raw clock", &merged, None);
+        record_kept(&merged);
+        let canonical = crate::block_entity_nbt::canonical(&merged).unwrap();
+        check(
+            "chunk canonical after actual model overlay",
+            &canonical,
+            None,
+        );
+        record_kept(&canonical);
+        assert!(
+            failures.is_empty(),
+            "modeled song clock presence mismatches: {failures:?}"
+        );
     }
 }

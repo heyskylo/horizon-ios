@@ -1020,9 +1020,9 @@ impl Projectile {
         let inertia = f64::from(match self.kind {
             ProjectileKind::WitherSkull { dangerous: true } => 0.73_f32,
             // AbstractWindCharge.getInertia and getLiquidInertia.
-            ProjectileKind::WindCharge | ProjectileKind::BreezeWindCharge => 1.0,
-            _ if water => 0.8,
-            _ => 0.95,
+            ProjectileKind::WindCharge | ProjectileKind::BreezeWindCharge => 1.0_f32,
+            _ if water => 0.8_f32,
+            _ => 0.95_f32,
         });
         let v = self.velocity;
         let len = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt().max(1.0e-9);
@@ -1297,10 +1297,12 @@ impl Projectile {
                 return (false, Hit::None);
             }
             self.position = to;
+            // LlamaSpit.getAirDrag is 0.99F, widened before it scales motion.
+            let drag = f64::from(0.99_f32);
             self.velocity = Vec3::new(
-                self.velocity.x * 0.99,
-                self.velocity.y * 0.99 - self.get_gravity(),
-                self.velocity.z * 0.99,
+                self.velocity.x * drag,
+                self.velocity.y * drag - self.get_gravity(),
+                self.velocity.z * drag,
             );
             self.update_rotation();
             return (self.position.y > -128.0 && self.age < 6000, spit_hit);
@@ -1525,8 +1527,8 @@ mod tests {
         p.tick(&w);
         // ThrowableProjectile: gravity before inertia, then move.
         // `getAirDrag` is 0.99F, widened to double: 0.9900000095367432.
-        assert!((p.velocity.y - (-0.03 * 0.99)).abs() < 1e-9);
-        assert!((p.position.x - f64::from(0.99_f32)).abs() < 1e-9);
+        assert_eq!(p.velocity.y.to_bits(), 0xbf9e_69ad_47ae_147b);
+        assert_eq!(p.position.x.to_bits(), 0x3fef_ae14_8000_0000);
     }
     /// One fire block in the cell (0, 99, 0), open air around it: a throwable
     /// inside that cell is set alight, and one that has left it burns down.
@@ -1936,7 +1938,7 @@ mod tests {
         let (keep, _) = p.tick(&w);
         assert!(keep);
         assert!((p.position.x - 1.0).abs() < 1e-9);
-        assert!((p.velocity.x - 0.99).abs() < 1e-9);
+        assert_eq!(p.velocity.x.to_bits(), 0x3fef_ae14_8000_0000);
         assert!((p.velocity.y + 0.06).abs() < 1e-9);
     }
     #[test]
