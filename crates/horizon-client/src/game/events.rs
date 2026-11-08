@@ -170,6 +170,22 @@ fn diff(before: &Snapshot, now: &Snapshot, chat: &[String]) -> Vec<Value> {
 }
 
 /// The condition, the timeout and `--since`.
+/// `events [--since SEQ] [--limit N]` → (since, newest N).
+fn parse_events(words: &[&str]) -> Result<(u64, Option<usize>)> {
+    let (mut since, mut limit) = (0, None);
+    let mut it = words.iter();
+    while let Some(word) = it.next() {
+        match (*word, it.next()) {
+            ("--since", Some(n)) => since = n.parse().map_err(|_| "--since takes a number")?,
+            ("--limit", Some(n)) => {
+                limit = Some(n.parse().map_err(|_| "--limit takes a number")?)
+            }
+            _ => return Err("events [--since SEQ] [--limit N]".into()),
+        }
+    }
+    Ok((since, limit))
+}
+
 fn parse_wait(words: &[&str]) -> Result<(Condition, Duration, Option<u64>)> {
     let mut rest = Vec::new();
     let mut timeout = 30.0;
@@ -335,15 +351,14 @@ impl Game<'_> {
     ) -> Result<Option<Option<Value>>> {
         match words[0] {
             "events" => {
-                let since = match words.get(1..) {
-                    Some(["--since", n]) => n.parse().map_err(|_| "--since takes a number")?,
-                    Some([]) | None => 0,
-                    _ => return Err("events [--since SEQ]".into()),
-                };
+                let (since, limit) = parse_events(&words[1..])?;
                 let events: Vec<&Value> = self.events.since(since).collect();
-                Ok(Some(Some(
-                    json!({ "events": events, "last": self.events.seq }),
-                )))
+                let skipped = events.len().saturating_sub(limit.unwrap_or(usize::MAX));
+                Ok(Some(Some(json!({
+                    "events": events[skipped..],
+                    "last": self.events.seq,
+                    "skipped": skipped,
+                }))))
             }
             "wait-for" => {
                 let (condition, timeout, since) = parse_wait(&words[1..])?;
@@ -365,6 +380,14 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn events_take_since_and_limit_in_any_order() {
+        assert_eq!(parse_events(&[]).unwrap(), (0, None));
+        assert_eq!(parse_events(&["--limit", "5", "--since", "42"]).unwrap(), (42, Some(5)));
+        assert!(parse_events(&["--limit"]).is_err());
+        assert!(parse_events(&["--since", "x"]).is_err());
+    }
 
     fn snap(screen: &'static str, chat: u64, logs: i64) -> Snapshot {
         Snapshot {
