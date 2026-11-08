@@ -101,6 +101,7 @@ python3 tools/parity.py --changed-files paths.txt --list   # which harnesses cov
 python3 tools/parity.py mob_ai sculk       # named harnesses
 python3 tools/lan_e2e.py --check chest     # two real games over LAN (server-thread host)
 python3 tools/agent_control_e2e.py         # horizon-ctl / MCP end to end
+python3 tools/lang_coverage.py --summary   # the keys each language still misses, and its English leftovers
 ```
 
 - Harnesses and the game need the vanilla data in `.local/` (`minecraft/`, `horizon-client/26.3`, `datagen/`,
