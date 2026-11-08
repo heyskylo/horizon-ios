@@ -1077,6 +1077,11 @@ impl Goal for CatTempt {
         !m.extra.tame && self.0.can_use(m, cx)
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        // `CatTemptGoal` has no `canContinueToUse`: `TemptGoal`'s calls
+        // `canUse()` again, so `!isTame()` is re-checked mid-tempt.
+        if m.extra.tame {
+            return false;
+        }
         // CatTemptGoal.canScare: a selected player that is the tempter is not scared.
         let picked = self.1.is_some() && self.1 == cx.w.player.as_ref().map(|p| p.uuid);
         let scare = self.0.can_scare;
@@ -2032,5 +2037,57 @@ mod universal_anger_tests {
                 );
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod cat_tempt_tests {
+    use super::*;
+    use crate::mobs::world::{test_player, with_test_world};
+    use horizon_core::{geometry::Vec3, random::LegacyRandom};
+    use std::sync::Arc;
+
+    /// `CatTemptGoal` overrides `canUse` with `!cat.isTame()`, and inherits
+    /// `TemptGoal.canContinueToUse`, which calls `canUse()` again: taming the
+    /// cat mid-tempt ends the goal. Horizon's `CatTempt::can_continue` ran the
+    /// base tempt continue, which never asked whether the cat was tamed.
+    #[test]
+    fn a_tamed_cat_stops_being_tempted() {
+        let mut outcomes = None;
+        let ran = with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:cat"].clone());
+            let food = kind.food.clone();
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            let mut world = w.clone();
+            let mut p = test_player(Vec3::new(2.5, 64.0, 0.5));
+            p.main_hand = Some("minecraft:cod".into());
+            world.player = Some(p);
+            m.ai.goals.add(
+                4,
+                CatTempt(super::super::goals::Tempt::new(0.6, food, true), None),
+            );
+            let mut lr = LegacyRandom::new(0);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w: &world,
+                lr: &mut lr,
+                events: &mut events,
+            };
+            let mut goals = std::mem::take(&mut m.ai.goals);
+            goals.tick(&mut m, &mut cx);
+            let started = goals.is_running("CatTempt");
+            m.extra.tame = true;
+            goals.tick(&mut m, &mut cx);
+            outcomes = Some((started, goals.is_running("CatTempt")));
+            m.ai.goals = goals;
+        });
+        if !ran {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            Some((true, false)),
+            "a wild cat is tempted; once tamed the same goal must stop"
+        );
     }
 }

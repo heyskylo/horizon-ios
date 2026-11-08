@@ -1971,6 +1971,8 @@ impl Game<'_> {
             e.on_ground = place.on_ground;
             e.velocity = place.velocity;
             e.needs_sync = m.needs_sync;
+            e.sync_position = m.sync_position;
+            e.stepped = true;
             (e.idle, e.bare) = (idle, bare);
             e.leash = leash;
             if bare {
@@ -2118,6 +2120,19 @@ impl Game<'_> {
                             continue;
                         }
                     }
+                    // PlayerList.placeNewPlayer: the name the user cache knew,
+                    // before it learns this one, for a renamed player's join line.
+                    let mut renamed = None;
+                    if self.options.dedicated.is_some()
+                        && let Some((uuid, name)) =
+                            host.hub.guest(conn).map(|g| (g.uuid, g.name.clone()))
+                        && let Some(old) = super::dedicated::cached_user_by_id(uuid)
+                    {
+                        if !old.name.eq_ignore_ascii_case(&name) {
+                            renamed = Some(old.name.clone());
+                        }
+                        host.hub.former_names.insert(uuid, old.name);
+                    }
                     self.lan_guest_joined(&mut host, conn, entities, spawn);
                     if self.options.dedicated.is_some()
                         && let Some(g) = host.hub.guest(conn)
@@ -2148,6 +2163,15 @@ impl Game<'_> {
                             super::dedicated::log(
                                 "INFO",
                                 &horizon_client::lan::arrivals::held_line(&g.name),
+                            );
+                        } else if let Some(old) = renamed {
+                            let line = Text::translate(
+                                "multiplayer.player.joined.renamed",
+                                &[Text::literal(g.name.clone()), Text::literal(old)],
+                            );
+                            super::dedicated::log(
+                                "INFO",
+                                &format!("System chat: {}", line.plain()),
                             );
                         } else {
                             super::dedicated::log(
@@ -2663,8 +2687,10 @@ impl Game<'_> {
                 }
             }
             // ServerEntity.sendChanges clears needsSync once it has looked.
+            // SteppedInterpolationTracker.updateTracking clears syncPosition.
             for m in &mut self.mobs {
                 m.needs_sync = false;
+                m.sync_position = false;
             }
             for p in &mut self.creatures.projectiles {
                 p.needs_sync = false;

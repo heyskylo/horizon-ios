@@ -127,6 +127,42 @@ fn resource_only_instance_and_repeated_import_keep_edits() {
 }
 
 #[test]
+fn an_empty_shaderpacks_folder_is_not_a_shader_pack() {
+    let t = Temp::new();
+    let src = t.0.join("instance");
+    put(&src.join("minecraftinstance.json"), b"{}");
+    fs::create_dir_all(src.join("shaderpacks")).unwrap();
+    put(&src.join("resourcepacks/look.zip"), b"zip");
+    let report = imported(&src, &t.work()).unwrap();
+    assert!(!report.files.contains_key("shaderpacks/"));
+
+    put(&src.join("shaderpacks/Complementary.zip"), b"shader");
+    let report = imported(&src, &t.work()).unwrap();
+    assert_eq!(report.files["shaderpacks/"].state, State::Unsupported);
+}
+
+#[test]
+fn an_archive_with_an_empty_shaderpacks_folder_is_not_a_shader_pack() {
+    let t = Temp::new();
+    let src = t.0.join("pack.zip");
+    {
+        let mut zip = zip::ZipWriter::new(fs::File::create(&src).unwrap());
+        zip.start_file("manifest.json", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(br#"{"name":"Empty","overrides":"overrides","files":[]}"#)
+            .unwrap();
+        zip.add_directory(
+            "overrides/shaderpacks/",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.finish().unwrap();
+    }
+    let report = imported(&src, &t.work()).unwrap();
+    assert!(!report.files.contains_key("shaderpacks/"));
+}
+
+#[test]
 fn hostile_archive_paths_and_cross_layer_collisions_are_rejected_before_staging() {
     for name in [
         "../escape.zip",

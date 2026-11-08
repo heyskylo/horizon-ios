@@ -156,12 +156,14 @@ fn calibration_nits(p: vec2<f32>, size: vec2<f32>) -> f32 {
 
 // The light of colour `f` under the world's mark `a` (the alpha the world left, hdr_mark) where
 // the world `shows`, else the colour clipped at white; and whether a light source lifted it.
+// `eased` for the last pass, which eases it into the peak itself; the layered frame leaves that
+// to the tone curve (fs_tonemap).
 struct Lit {
     light: vec3<f32>,
     lifted: bool,
 };
 
-fn lit(f: vec3<f32>, a: f32, shows: bool) -> Lit {
+fn lit(f: vec3<f32>, a: f32, shows: bool, eased: bool) -> Lit {
     var lifted = false;
     // Light over 1 (a float frame's) shows only where the world does and carries
     // no mark (alpha 1), up to the peak: light written as light. Marked pixels clip
@@ -180,10 +182,10 @@ fn lit(f: vec3<f32>, a: f32, shows: bool) -> Lit {
         let v = top * gain;
         let knee = max(0.6 * params.peak, 1.0);
         var out = v;
-        if v > knee && params.peak > knee {
+        if eased && v > knee && params.peak > knee {
             out = knee + (params.peak - knee) * (1.0 - exp(-(v - knee) / (params.peak - knee)));
         }
-        light *= select(gain, out / max(top, 1e-4), v > knee);
+        light *= select(gain, out / max(top, 1e-4), eased && v > knee);
     }
     // The world's alpha is below 0.75 on light sources, the sun and the moon
     // (terrain.wgsl, entity.wgsl): its band of 0.175 is the tier, the lower the
@@ -194,7 +196,10 @@ fn lit(f: vec3<f32>, a: f32, shows: bool) -> Lit {
         let lift = 1.0 - clamp((a - 0.175 * f32(band)) / 0.165, 0.0, 1.0);
         if lift > 0.0 {
             let top = max(light.r, max(light.g, light.b));
-            let gain = min(1.0 + (params.peak - 1.0) * params.share[tier] * lift, params.peak / max(top, 1e-4));
+            var gain = 1.0 + (params.peak - 1.0) * params.share[tier] * lift;
+            if eased {
+                gain = min(gain, params.peak / max(top, 1e-4));
+            }
             light *= max(gain, 1.0);
             lifted = true;
         }
@@ -208,7 +213,10 @@ fn lit(f: vec3<f32>, a: f32, shows: bool) -> Lit {
             light = vec3(dot(light, vec3(0.2126, 0.7152, 0.0722)));
         }
     }
-    return Lit(min(light, vec3(params.peak)), lifted);
+    if eased {
+        light = min(light, vec3(params.peak));
+    }
+    return Lit(light, lifted);
 }
 
 // Calibration: above its controls the test picture, straight in nits, past
@@ -258,19 +266,69 @@ fn display(light: vec3<f32>) -> vec4<f32> {
     // hand writes its own alpha there (Hdr::hand_light_view): 1, or a light source it holds.
     let shows = params.world > 0.5 && params.peak > 1.0
         && (hand || (!covered && shows_world(f.rgb, w.rgb)));
-    var light = lit(f.rgb, w.a, shows).light;
+    var light = lit(f.rgb, w.a, shows, true).light;
     // The HUD and menus at their own brightness, by how much they cover.
     light *= mix(1.0, params.ui, ui);
     return display(light);
 }
 
 // Hdr::resolve, after the world and the hand: the marks they left (`world` holds the frame as
-// they drew it) become light in the frame, in gamma as the frame stores it, alpha 1. What draws
-// after it (camera overlays, the menu blur) draws on light, and nothing is lifted later.
+// they drew it) become light in the frame, in gamma as the frame stores it, alpha 1, past the
+// peak if they lift it there (the tone curve eases it in). What draws after it (camera overlays,
+// the menu blur) draws on light, and nothing is lifted later.
 @fragment fn fs_resolve(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let w = frame_texel(textureLoad(world, vec2<i32>(pos.xy), 0));
     let shows = params.world > 0.5 && params.peak > 1.0;
-    return vec4(pow(lit(w.rgb, w.a, shows).light, vec3(1.0 / 2.2)), 1.0);
+    return vec4(pow(lit(w.rgb, w.a, shows, false).light, vec3(1.0 / 2.2)), 1.0);
+}
+
+// The tone curve's knee: up to it light stays as it is. Where HDR lighting eased into the peak
+// before the curve (`lit`), 60% of it, so bright textures keep their detail; at least paper white.
+fn tone_knee(headroom: f32) -> f32 {
+    return max(0.6 * headroom, 1.0);
+}
+
+// The tone curve on light whose brightest channel is `top`, in units of paper white `paper`
+// nits: what to scale the light by, so it ends at most `headroom` (above 1). ITU-R BT.2390's
+// EETF in PQ, without the black level lift (`display` does that): the same up to its knee, then
+// a Hermite spline that reaches the peak level, at the source's peak. That peak is where the knee
+// lands at `tone_knee`, PQ's 10 000 nits at most; light past it shows at the peak. The brightest
+// channel sets the scale for all three, so light keeps its hue as it eases (lava stays orange)
+// and no channel passes the peak.
+fn tone_scale(top: f32, headroom: f32, paper: f32) -> f32 {
+    if top <= tone_knee(headroom) {
+        return 1.0;
+    }
+    let peak = pq(vec3(headroom * paper)).x;
+    let source = min(3.0 * peak - 2.0 * pq(vec3(tone_knee(headroom) * paper)).x, 1.0);
+    let e = pq(vec3(top * paper)).x / source;
+    let max_lum = peak / source;
+    let ks = 1.5 * max_lum - 0.5;
+    if e >= 1.0 {
+        return headroom / top;
+    }
+    if e <= ks {
+        return 1.0;
+    }
+    let t = (e - ks) / (1.0 - ks);
+    let t2 = t * t;
+    let t3 = t2 * t;
+    let p = (2.0 * t3 - 3.0 * t2 + 1.0) * ks + (t3 - 2.0 * t2 + t) * (1.0 - ks) + (3.0 * t2 - 2.0 * t3) * max_lum;
+    return pq_nits(vec3(p * source)).x / paper / top;
+}
+
+// Hdr::tonemap, after the post effects and before the camera overlays (docs/design/
+// hdr-linear-light.md, `[tonemap]`): the light (`world` holds the frame) eased into the peak, in
+// gamma, where scaling the light by s scales the stored colour by s^(1/2.2). Light up to the
+// knee stays exactly as stored. With no headroom, a clip at white.
+@fragment fn fs_tonemap(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let g = textureLoad(world, vec2<i32>(pos.xy), 0).rgb;
+    if params.peak <= 1.0 {
+        return vec4(min(g, vec3(1.0)), 1.0);
+    }
+    let top = pow(max(max(g.r, max(g.g, g.b)), 0.0), 2.2);
+    let s = tone_scale(top, params.peak, params.paper * 80.0);
+    return vec4(select(g * pow(s, 1.0 / 2.2), g, s == 1.0), 1.0);
 }
 
 // Hdr::keep_world: the HUD's backdrop, the world clipped to white with alpha 0, the frame as

@@ -615,20 +615,20 @@ fn a_no_from_the_services_blocks_at_once() {
     assert!(accounts.has_owner(&store));
     assert_eq!(
         launch(&ep, Some("test-client"), &store, &mut accounts).unwrap_err(),
-        NoOwner
+        NoOwner::default()
     );
     // The answer is kept beside the tokens: offline now, it still says no.
     assert!(!kept(&store).owns && !accounts.has_owner(&store));
     assert_eq!(
         launch(&offline(), Some("test-client"), &store, &mut accounts).unwrap_err(),
-        NoOwner
+        NoOwner::default()
     );
     assert_eq!(
-        NoOwner.to_string(),
+        NoOwner::default().to_string(),
         "Sign in with a Microsoft account that owns Minecraft: Java Edition to play."
     );
     assert_eq!(
-        NoOwner::in_window(),
+        NoOwner::default().in_window(),
         "Sign in with a Microsoft account that owns Minecraft: Java Edition to play. Open Settings and sign in under Account."
     );
 }
@@ -722,10 +722,10 @@ fn the_developer_option_off_is_the_owner_gate() {
     assert_eq!(accounts, Accounts::default());
     let (_, ep) = mock(|m| m.owns_game = false);
     let refused = launch_for_game(&ep, Some("test-client"), &store, &mut accounts, false);
-    assert_eq!(refused.unwrap_err(), NoOwner);
+    assert_eq!(refused.unwrap_err(), NoOwner::default());
     let mut accounts = signed_in(&store, &secrets("mc-token", true));
     let refused = launch_for_game(&ep, Some("test-client"), &store, &mut accounts, false);
-    assert_eq!(refused.unwrap_err(), NoOwner);
+    assert_eq!(refused.unwrap_err(), NoOwner::default());
 }
 
 #[test]
@@ -1241,7 +1241,7 @@ fn the_java_edition_plays_as_an_owner_even_offline() {
     let mut accounts = signed_in(&store, &secrets("mc-token", false));
     assert_eq!(
         java_player_with(&offline(), Some("test-client"), &store, &mut accounts).unwrap_err(),
-        NoOwner.to_string()
+        NoOwner::default().to_string()
     );
 }
 
@@ -1857,6 +1857,149 @@ fn a_dismissed_prompt_is_asked_once_a_run() {
     assert_eq!(run.get("B").unwrap(), None);
     assert_eq!(keychain.asked(), 1);
     remove_secrets_dir(&path);
+}
+
+/// A keyring that never answers until the test lets it go: a stuck Secret Service daemon
+/// (#12179).
+struct Silent {
+    hung: Arc<Mutex<()>>,
+    asked: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Silent {
+    fn answer(&self) {
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        drop(self.hung.lock().unwrap());
+    }
+}
+
+impl SecretStore for Silent {
+    fn get(&self, _: &str) -> Result<Option<String>, String> {
+        self.answer();
+        Ok(None)
+    }
+    fn set(&self, _: &str, _: &str) -> Result<(), String> {
+        self.answer();
+        Ok(())
+    }
+    fn delete(&self, _: &str) -> Result<(), String> {
+        self.answer();
+        Ok(())
+    }
+    fn persistent(&self) -> bool {
+        true
+    }
+}
+
+/// How long the tests' keyrings get: short, the behaviour is the same as with [`KEYCHAIN_WAIT`].
+const SILENT_WAIT: Duration = Duration::from_millis(300);
+
+#[test]
+fn a_keyring_that_never_answers_ends_play_with_what_is_wrong() {
+    let path = secrets_file("silent");
+    let hung = Arc::new(Mutex::new(()));
+    let held = hung.lock().unwrap();
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let keyring = Silent {
+        hung: hung.clone(),
+        asked: asked.clone(),
+    };
+    let store = Arc::new(Layered::new(
+        Box::new(Bounded::new(keyring, SILENT_WAIT)),
+        FileStore::new(path.clone()),
+    ));
+    let mut accounts = signed_in(&MemoryStore::default(), &secrets("mc-token", true));
+    let started = Instant::now();
+    // The window's sign-in check at start-up asks first, and holds the account lock meanwhile.
+    let checking = {
+        let store = store.clone();
+        std::thread::spawn(move || session::status_with_progress(store.as_ref(), UUID, &|_| {}))
+    };
+    while asked.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // Then Play, behind it.
+    let (done, played) = std::sync::mpsc::channel();
+    {
+        let store = store.clone();
+        std::thread::spawn(move || {
+            let _ = done.send(launch(
+                &offline(),
+                Some("test-client"),
+                store.as_ref(),
+                &mut accounts,
+            ));
+        });
+    }
+    let refused = played
+        .recv_timeout(Duration::from_secs(10))
+        .expect("Play waited on the keyring forever")
+        .unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(5));
+    let status = checking.join().unwrap();
+    assert_eq!(status.state, session::State::Retry);
+    // Not "sign in with an account that owns Minecraft": the player is signed in.
+    let said = format!("Can't read Notch's sign-in: {KEYCHAIN_AWAY}");
+    assert_eq!(refused.keyring.as_deref(), Some(said.as_str()));
+    assert_eq!(
+        (refused.to_string(), refused.in_window()),
+        (said.clone(), said)
+    );
+    // The next start asks the keyring again, and says it didn't answer.
+    let restarted = Layered::new(
+        Box::new(Bounded::new(
+            Silent {
+                hung: hung.clone(),
+                asked: asked.clone(),
+            },
+            SILENT_WAIT,
+        )),
+        FileStore::new(path.clone()),
+    );
+    let mut accounts = signed_in(&MemoryStore::default(), &secrets("mc-token", true));
+    let refused = launch(&offline(), Some("test-client"), &restarted, &mut accounts).unwrap_err();
+    assert_eq!(
+        refused.keyring,
+        Some(format!(
+            "Can't read Notch's sign-in: {}",
+            keyring_no_answer(SILENT_WAIT)
+        ))
+    );
+    drop(held);
+    remove_secrets_dir(&path);
+}
+
+#[test]
+fn a_keyring_given_up_on_is_not_asked_again_until_it_answers() {
+    let hung = Arc::new(Mutex::new(()));
+    let held = hung.lock().unwrap();
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let keyring = Bounded::new(
+        Silent {
+            hung: hung.clone(),
+            asked: asked.clone(),
+        },
+        SILENT_WAIT,
+    );
+    let started = Instant::now();
+    assert_eq!(keyring.get("A"), Err(keyring_no_answer(SILENT_WAIT)));
+    assert!(started.elapsed() >= SILENT_WAIT);
+    // Still stuck: the next calls fail at once, without a second call piling up behind it.
+    let again = Instant::now();
+    assert_eq!(
+        keyring.set("A", "secret-a"),
+        Err(keyring_no_answer(SILENT_WAIT))
+    );
+    assert!(again.elapsed() < SILENT_WAIT);
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+    // It answers at last: it is asked again, and its answers come back.
+    drop(held);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while keyring.delete("A").is_err() {
+        assert!(Instant::now() < deadline, "the late answer never counted");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(keyring.get("A"), Ok(None));
 }
 
 #[test]
