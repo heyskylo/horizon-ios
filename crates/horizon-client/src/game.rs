@@ -7963,6 +7963,11 @@ impl Game<'_> {
         }
         Ok(())
     }
+    /// The title remains the no-level sentinel while debug options covers it.
+    /// Only UI dispatch ignores it; world loading and simulation still see it.
+    fn title_input_active(&self) -> bool {
+        self.title.is_some() && self.screen != Screen::DebugOptions
+    }
     fn hud(&mut self, size: [u32; 2]) -> HudBatch {
         // The pack prompt replaces the connecting screen (setScreen), but
         // in game it opens over the world.
@@ -8043,6 +8048,16 @@ impl Game<'_> {
             for found in title.lan_found_narrations((w, h)) {
                 self.say_system_queued(&found);
             }
+        }
+        if self.screen == Screen::DebugOptions && self.title.is_some() {
+            // DebugOptionsScreen replaces the title; no level HUD is behind it.
+            self.draw_debug_options(&mut batch);
+            self.fire_screen_render_post(&mut batch);
+            self.draw_toasts(&mut batch, false);
+            self.draw_tutorial_toasts(&mut batch, false);
+            self.draw_pack_toasts(&mut batch, false);
+            self.draw_music_toast(&mut batch, false);
+            return batch;
         }
         if self.title.is_some() {
             // TitleScreen.extractRenderState, then ToastManager over it: vanilla
@@ -15168,6 +15183,7 @@ impl Game<'_> {
         }
         // `PackSelectionScreen.onFilesDrop` on the Create New World screen.
         if let WindowEvent::DroppedFile(path) = &event
+            && self.title_input_active()
             && let Some(title) = &mut self.title
         {
             title.drop_file(path.clone());
@@ -15634,7 +15650,9 @@ impl Game<'_> {
                         if matches!(self.screen, Screen::Inventory | Screen::Creative) {
                             self.inventory_drag_move();
                         }
-                        if let Some(title) = &mut self.title {
+                        if self.title_input_active()
+                            && let Some(title) = &mut self.title
+                        {
                             title.drag(self.cursor, (b.width, b.height));
                             title.drag_field(&self.gui.atlas, self.cursor.0);
                         }
@@ -15712,8 +15730,9 @@ impl Game<'_> {
                     }
                     let stick_scroll = self.pad_stick_scroll();
                     let step_scroll = self.pad_step_scroll();
-                    if let Some(title) = &mut self.title
+                    if self.title_input_active()
                         && self.screen != Screen::Win
+                        && let Some(title) = &mut self.title
                     {
                         let size = self
                             .window
@@ -15847,7 +15866,7 @@ impl Game<'_> {
                     state: ElementState::Released,
                     button: MouseButton::Left,
                     ..
-                } if self.title.is_some() && self.screen != Screen::Options => {
+                } if self.title_input_active() && self.screen != Screen::Options => {
                     if let Some(title) = &mut self.title {
                         title.release();
                         title.release_field();
@@ -15857,7 +15876,7 @@ impl Game<'_> {
                     state,
                     button: MouseButton::Left,
                     ..
-                } if self.title.is_some() && state == ElementState::Pressed => {
+                } if self.title_input_active() && state == ElementState::Pressed => {
                     let size = self
                         .renderer
                         .as_ref()
@@ -15887,7 +15906,7 @@ impl Game<'_> {
                     state: ElementState::Pressed,
                     button: MouseButton::Middle,
                     ..
-                } if self.title.is_some() && self.screen != Screen::Options => {
+                } if self.title_input_active() && self.screen != Screen::Options => {
                     let size = self
                         .renderer
                         .as_ref()
@@ -15898,7 +15917,7 @@ impl Game<'_> {
                         title.select_world_at(self.cursor.0, self.cursor.1, (b.width, b.height));
                     }
                 }
-                WindowEvent::MouseInput { .. } if self.title.is_some() => {}
+                WindowEvent::MouseInput { .. } if self.title_input_active() => {}
                 WindowEvent::MouseInput { state, button, .. } if self.book.is_some() => {
                     if state == ElementState::Pressed && button == MouseButton::Left {
                         let size = self
@@ -16352,7 +16371,7 @@ impl Game<'_> {
                         self.death_key(key)?;
                     }
                 }
-                WindowEvent::KeyboardInput { event, .. } if self.title.is_some() => {
+                WindowEvent::KeyboardInput { event, .. } if self.title_input_active() => {
                     if event.state == ElementState::Pressed {
                         if let Some(shortcut) = self.edit_shortcut(&event) {
                             self.title_shortcut(shortcut);
