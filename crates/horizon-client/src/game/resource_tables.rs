@@ -218,6 +218,13 @@ impl PackResources {
                         .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
                 )
             });
+        let polytone_post = horizon_client::polytone_post::PolytonePost::read(
+            root,
+            horizon_client::packs::polytone_configs(&horizon_client::packs::Source::Dir(
+                root.to_path_buf(),
+            )),
+        )
+        .map(Arc::new);
         Self {
             layer_names: Arc::new(
                 render
@@ -242,6 +249,7 @@ impl PackResources {
             custom_sky: Arc::new(custom_sky),
             environments,
             polytone_particles,
+            polytone_post,
         }
     }
 }

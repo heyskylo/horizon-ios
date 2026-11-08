@@ -345,10 +345,10 @@ pub const WEATHER_INPUT: Struct = Struct {
 /// The tonemap stage's input (0.2): one pixel of the window.
 pub const TONEMAP_INPUT: Struct = Struct {
     name: "TonemapInput",
-    doc: "One pixel of the window, for `fn tonemap(input: TonemapInput) -> vec3<f32>`, which returns its colour for the display: linear light, 1.0 at paper white, from 0 to `frame.headroom` (Horizon clamps it there).",
+    doc: "One pixel of an output (the window), for `fn tonemap(input: TonemapInput) -> vec3<f32>`, which returns its colour for the output `frame` describes: linear light, 1.0 at paper white, from 0 to `frame.headroom` (Horizon clamps it there).",
     fields: fields! {
         uv: "vec2<f32>" = "Where the pixel is, 0..1 from the top left.",
-        pixel: "vec2<f32>" = "The pixel's centre, in pixels from the top left of the window.",
+        pixel: "vec2<f32>" = "The pixel's centre, in pixels from the top left of the output (the window).",
         color: "vec3<f32>" = "The post chain's picture here (the world's without one), linear light, never negative or NaN.",
     },
 };
