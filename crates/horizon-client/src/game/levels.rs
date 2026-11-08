@@ -298,6 +298,65 @@ impl Game<'_> {
         })
     }
 
+    /// `MinecraftServer.prepareLevels`: before the first tick, the chunks the
+    /// open levels' restored tickets hold (forced chunks, a native mod's) are
+    /// loaded (`ChunkLoadCounter`). The first tick then finds them ticking
+    /// and unpacks their saved block and fluid ticks at the game time they
+    /// were saved at (`startTickingChunk`), not at whichever tick they finish
+    /// streaming in.
+    pub(super) fn prepare_levels(&mut self) -> Result<()> {
+        if self.options.execution_role.is_client() {
+            return Ok(());
+        }
+        let deadline = Instant::now() + Duration::from_secs(600);
+        self.wait_for_ticket_chunks(deadline);
+        let back = self.dim;
+        for dim in [Dim::Overworld, Dim::Nether, Dim::End] {
+            if dim != back && self.levels.parked.contains_key(&dim) {
+                self.enter_level(None, dim)?;
+                self.wait_for_ticket_chunks(deadline);
+            }
+        }
+        if self.dim != back {
+            self.enter_level(None, back)?;
+        }
+        Ok(())
+    }
+
+    /// Stream the level in place until each chunk its tickets make block
+    /// ticking is a ticking chunk (lit, with its neighbours loaded).
+    fn wait_for_ticket_chunks(&mut self, deadline: Instant) {
+        // A `PORTAL` ticket reaches block ticking two chunks out, a forced one one.
+        const REACH: i32 = 2;
+        loop {
+            self.update_chunk_tickets();
+            let levels = self.tickets.levels();
+            let streaming = &self.streaming;
+            let ready = streaming
+                .forced
+                .iter()
+                .chain(&streaming.mod_forced)
+                .copied()
+                .chain(self.tickets.portal_chunks())
+                .all(|(cx, cz)| {
+                    (cz - REACH..=cz + REACH).all(|z| {
+                        (cx - REACH..=cx + REACH).all(|x| {
+                            !levels.loaded_ticking(x, z) || super::ticking_chunk(&self.world, x, z)
+                        })
+                    })
+                });
+            if ready {
+                return;
+            }
+            if Instant::now() >= deadline {
+                log::warn!("Horizon: the chunks of the saved tickets did not load");
+                return;
+            }
+            self.update_world();
+            self.streaming.wait(Duration::from_millis(5));
+        }
+    }
+
     /// Exchange the level in place with `p`.
     fn swap_level(&mut self, p: &mut Parked) {
         use std::mem::swap;
@@ -572,10 +631,15 @@ impl Game<'_> {
                         moved = true;
                     }
                 }
-                if moved {
+                if moved && k + 1 < n {
                     self.enter_level(None, dim)?;
                 }
             }
+        }
+        if let Some(&first) = order.first()
+            && self.dim != first
+        {
+            let _ = self.enter_level(None, first);
         }
         self.level_pass = Pass::default();
         if result.is_err() {

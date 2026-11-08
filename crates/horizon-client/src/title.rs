@@ -211,6 +211,8 @@ pub struct WorldEntry {
     pub file_fixing: bool,
     /// `BackupStatus.DOWNGRADE`: a newer version saved the world.
     pub downgrade: bool,
+    /// `LevelSummary.isExperimental`: an experimental feature flag is enabled.
+    pub experimental: bool,
 }
 impl WorldEntry {
     /// `LevelSummary.isCompatible`: the saved series is this build's.
@@ -249,6 +251,7 @@ impl WorldEntry {
             incompatible: None,
             file_fixing: false,
             downgrade: false,
+            experimental: false,
         }
     }
 }
@@ -586,11 +589,37 @@ pub fn list_worlds(saves: &Path) -> Vec<WorldEntry> {
                 incompatible: crate::save::incompatible_version(&path),
                 file_fixing: crate::save::needs_file_fixes(&path),
                 downgrade: crate::save::downgraded_from(&path).is_some(),
+                experimental: experimental_features(data),
             })
         })
         .collect();
     worlds.sort_by_key(|w| std::cmp::Reverse(w.modified));
     worlds
+}
+/// `FeatureFlags.isExperimental` of `LevelStorageSource.parseFeatureFlagsFromSummary`:
+/// level.dat's `enabled_features` name a known flag other than `minecraft:vanilla`
+/// (unknown names are dropped).
+fn experimental_features(data: &horizon_world::nbt::Tag) -> bool {
+    const EXPERIMENTAL: [&str; 3] = [
+        "minecraft:trade_rebalance",
+        "minecraft:redstone_experiments",
+        "minecraft:minecart_improvements",
+    ];
+    let Some(horizon_world::nbt::Tag::List(flags)) = data.get("enabled_features") else {
+        return false;
+    };
+    flags.iter().any(|flag| {
+        let horizon_world::nbt::Tag::String(name) = flag else {
+            return false;
+        };
+        let name = name.to_string_lossy();
+        let id = if name.contains(':') {
+            name
+        } else {
+            format!("minecraft:{name}")
+        };
+        EXPERIMENTAL.contains(&id.as_str())
+    })
 }
 /// LevelSummary.createInfo: a hardcore world's mode in red (CommonColors.RED),
 /// else `gameMode.` + its GameType name, then commands and the version.
@@ -643,6 +672,18 @@ fn world_info(world: &WorldEntry) -> crate::text::Text {
         format!(", {}", lang::get_or("selectWorld.commands", "Commands"))
     } else {
         String::new()
+    };
+    // An experimental world says so in yellow (ChatFormatting.YELLOW).
+    let (mode, commands) = if world.experimental {
+        let mode = mode
+            .append(crate::text::Text::literal(format!("{commands}, ")))
+            .append(crate::text::Text::colored(
+                lang::get_or("selectWorld.experimental", "Experimental"),
+                0xFFFF55,
+            ));
+        (mode, String::new())
+    } else {
+        (mode, commands)
     };
     // A world that asks for a backup shows its version in italics, red when downgrading.
     let version = crate::text::Text::literal(world.version.clone());
@@ -830,7 +871,7 @@ impl Title {
             seed: String::new(),
             creative: false,
             focus: 0,
-            options: WorldOptions::default(),
+            options: WorldOptions::for_new_world(),
         }
     }
     /// WorldSelectionList.handleNewLevels: a singleplayer list that comes
@@ -4121,6 +4162,9 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             }
             Mode::Multiplayer(screen) => match screen.confirm() {
                 crate::multiplayer::Outcome::Connect { address, lan } => {
+                    if matches!(screen, crate::multiplayer::Screen::Direct { .. }) {
+                        crate::multiplayer::remember_direct_join(&self.saves, &address);
+                    }
                     (Action::Connect { address, lan }, true)
                 }
                 _ => (Action::None, false),

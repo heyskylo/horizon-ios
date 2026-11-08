@@ -83,6 +83,8 @@ pub enum BlockEntity {
     /// `DaylightDetectorBlockEntity`: no data, only the ticker
     /// (`DaylightDetectorBlock.tickEntity`).
     DaylightDetector,
+    /// `BellBlockEntity`: saved identity only; ringing state is kept separately.
+    Bell,
     /// Suspicious sand and gravel: saved loot and the transient brushed face.
     Brushable(Box<Brushable>),
     /// A shelf holds three displayed item stacks.
@@ -452,6 +454,9 @@ pub struct Jukebox {
     pub items: [Option<ItemStack>; 1],
     /// `ticks_since_song_started`, while a song plays.
     pub ticks: i64,
+    /// `JukeboxBlockEntity.saveAdditional` writes the clock only when its song
+    /// reference exists. Keep this separate from legacy playback adoption.
+    pub song_clock_present: bool,
     pub playing: bool,
 }
 impl Jukebox {

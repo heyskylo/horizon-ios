@@ -149,9 +149,11 @@ def scenarios():
     # loaded chunks.)
     add('enderman_rain_infested', 15, ['mob minecraft:enderman 0.5 -60 0.5 0 355 persistent effect=infested:0'], 'rain')
     # Shulker.hurtServer rolls its low-health teleport after super.hurtServer (the hurt sound's pitch):
-    # a strong poison takes it under half health at tick 151. It stops before the first roll that
-    # teleports (tick 281): Horizon's shulker moves on the next tick, vanilla's inside the hurt.
-    add('shulker_poison_teleport', 280, ['mob minecraft:shulker 0.5 -60 0.5 0 356 persistent effect=poison:4'])
+    # a strong poison takes it under half health at tick 151, and the teleport (first at tick 281)
+    # happens inside the hurt, before the rest of the shulker's tick; also without AI.
+    add('shulker_poison_teleport', 330, ['mob minecraft:shulker 0.5 -60 0.5 0 356 persistent effect=poison:4'])
+    add('shulker_poison_teleport_noai', 330,
+        ['mob minecraft:shulker 0.5 -60 0.5 0 357 persistent noai effect=poison:4'])
     # RandomStandGoal (rearing, with the ambient sound) of every equine, left alone for 800 ticks.
     for i, species in enumerate(['horse', 'donkey', 'mule', 'zombie_horse', 'skeleton_horse', 'llama']):
         # The zombie horse at night: by day it burns, and a burning horse's hurts are another matter.

@@ -153,6 +153,8 @@ def main():
     parser.add_argument("--macro-source-type-fixture", action="store_true")
     parser.add_argument("--stand-fall-fixture", action="store_true")
     parser.add_argument('--orb-uuid-fixture', action='store_true')
+    parser.add_argument('--mob-health-boost-fixture', action='store_true', help='Health Boost on a mob: heal to its maximum, clamp on removal')
+    parser.add_argument('--mob-health-boost-raw-diagnostic', action='store_true', help='add each mob\'s whole entity data')
     parser.add_argument('--mob-absorption-fixture', action='store_true', help='a mob\'s Absorption effect once the absorption is used up')
     parser.add_argument('--mob-absorption-infinite-fixture', action='store_true', help='infinite Absorption used up, kept, and beside another infinite effect')
     parser.add_argument('--mob-absorption-raw-diagnostic', action='store_true', help='add each mob\'s whole entity data')
@@ -186,6 +188,8 @@ def main():
             sys.exit(f'{name} failed ({result.returncode}):\n{tail}')
 
     groups = corpus_module.groups()
+    if not args.only:
+        groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_JUKEBOX_CLOCK]
     if args.macro_source_type_fixture or args.only == "macro source type error":
         groups = [(name, ops) for name, ops in groups if name == "macro source type error"]
     elif not args.only:
@@ -334,12 +338,16 @@ def main():
         groups = [("pufferfish player contact", contact_fixture(args.pufferfish_body_diagnostic))]
     if args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
+    if args.only in corpus_module.ISOLATED_JUKEBOX_CLOCK:
+        groups = [g for g in groups if g[0] == args.only]
     if args.vehicle_kill_diagnostic:
         from vehicle_kill_corpus import vehicle_kill_contents
         groups = [('setup', corpus_module.group_setup()), ('vehicle kill contents', vehicle_kill_contents(corpus_module.cmd, True))]
     if args.slot_codec_diagnostic:
         groups.append(('slot source codec diagnostic', [corpus_module.cmd(
             '/item fill block 4 200 4 {type:"minecraft:slot_range",slots:"container.99"} with diamond')]))
+    if any(name in corpus_module.ISOLATED_JUKEBOX_CLOCK for name, _ in groups) and len(groups) != 1:
+        parser.error('jukebox clock fixture requires --only with its exact group')
     if any(name in isolated_reinforcements for name, _ in groups) and sum(name != 'setup' for name, _ in groups) != 1:
         parser.error('reinforcement fixtures require --only with one exact group')
     if any(name in isolated_recipes for name, _ in groups) and sum(name != 'setup' for name, _ in groups) != 1:
@@ -353,6 +361,9 @@ def main():
     if args.selector_bounds_fixture:
         from selector_bounds_corpus import selector_bounds
         groups = [("setup", corpus_module.group_setup()), ("selector entity bounds", selector_bounds())]
+    if args.mob_health_boost_fixture:
+        from mob_health_boost_corpus import mob_health_boost
+        groups = [('setup', corpus_module.group_setup()), ('mob health boost', mob_health_boost(args.mob_health_boost_raw_diagnostic))]
     if args.mob_absorption_fixture:
         from mob_absorption_corpus import mob_absorption
         groups = [('setup', corpus_module.group_setup()), ('mob depleted absorption', mob_absorption(args.mob_absorption_raw_diagnostic))]
