@@ -3026,6 +3026,8 @@ struct Game<'a> {
     mod_chunk_tickets: HashMap<Dim, HashMap<(i32, i32), std::collections::BTreeSet<String>>>,
     /// Where item entities are, while the block entities tick (hoppers).
     item_columns: Option<machines::ItemColumns>,
+    /// Where the mobs are, while the block entities tick (potent sulfur gas).
+    pass_mobs: Option<potent_sulfur::PassMobs>,
     creative_screen: Creative,
     /// `CreativeModeInventoryScreen.ignoreTextInput`: the chat key opened the
     /// search tab, so the letter it carries is not typed into the box.
@@ -16961,6 +16963,7 @@ impl<'a> Game<'a> {
             mod_container_viewers: HashMap::new(),
             mod_chunk_tickets: HashMap::new(),
             item_columns: None,
+            pass_mobs: None,
             creative_screen: prepared.creative_screen,
             creative_ignore_text: false,
             control: None,
