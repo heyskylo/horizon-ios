@@ -478,6 +478,15 @@ impl ItemColumns {
         }
         self.cells.contains(&(x, z))
     }
+    /// Whether an item's box may reach into any column of x0..=x1, z0..=z1.
+    pub(super) fn may_reach_area(
+        &mut self,
+        items: &[horizon_client::entities::ItemEntity],
+        (x0, x1): (i32, i32),
+        (z0, z1): (i32, i32),
+    ) -> bool {
+        (x0..=x1).any(|x| (z0..=z1).any(|z| self.may_reach(items, x, z)))
+    }
 }
 
 fn bone_meal() -> ItemStack {
@@ -1747,6 +1756,53 @@ mod item_column_tests {
             assert_eq!(a, b);
             println!("{hoppers} hoppers, {count} items: {before:.3} ms -> {after:.3} ms");
         }
+    }
+
+    #[test]
+    fn no_player_with_an_item_in_reach_is_skipped() {
+        // guest_pickups' horizontal test, on every item.
+        let touches = |items: &[ItemEntity], p: [f64; 3]| {
+            items
+                .iter()
+                .any(|d| (d.position.x - p[0]).abs() < 1.5 && (d.position.z - p[2]).abs() < 1.5)
+        };
+        let mut seed = 0x0bad_5eed_u64;
+        let mut next = |range: f64| {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (seed >> 11) as f64 / (1u64 << 53) as f64 * range
+        };
+        let mut items: Vec<ItemEntity> = Vec::new();
+        let mut columns = ItemColumns::default();
+        let (mut skipped, mut found) = (0, 0);
+        for round in 0..4000u32 {
+            if round % 25 == 0 {
+                // On column edges as often as not.
+                let mut at = || {
+                    let v = next(40.0) - 20.0;
+                    if next(1.0) < 0.5 { v.round() } else { v }
+                };
+                items.push(item(round, at(), 64.0, at()));
+            } else if round % 101 == 0 && !items.is_empty() {
+                items.remove(next(items.len() as f64) as usize);
+            }
+            let p = [next(44.0) - 22.0, 64.0, next(44.0) - 22.0];
+            let reach = columns.may_reach_area(
+                &items,
+                ((p[0] - 1.5).floor() as i32, (p[0] + 1.5).floor() as i32),
+                ((p[2] - 1.5).floor() as i32, (p[2] + 1.5).floor() as i32),
+            );
+            let touching = touches(&items, p);
+            assert!(
+                reach || !touching,
+                "round {round}: skipped a player touching an item"
+            );
+            skipped += usize::from(!reach);
+            found += usize::from(touching);
+        }
+        assert!(
+            skipped > 1000 && found > 100,
+            "skipped {skipped}, found {found}"
+        );
     }
 
     #[test]
