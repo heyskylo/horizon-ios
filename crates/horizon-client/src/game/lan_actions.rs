@@ -3918,12 +3918,7 @@ impl Game<'_> {
             return;
         };
         // The guest's own bed, else the world spawn: never the host's bed.
-        let world = self
-            .level
-            .world_spawn
-            .map(|[x, y, z]| [f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5])
-            .or(self.spawn.map(|s| [s.x, s.y, s.z]))
-            .unwrap_or([0.5, 80.0, 0.5]);
+        let world = self.world_spawn_position();
         let spawn = host.hub.guests[i].spawn.unwrap_or(world);
         if !host.hub.guests[i].dead {
             return;

@@ -4290,8 +4290,12 @@ mod world_spawn_sync_tests {
 
     fn spawns(rx: &mpsc::Receiver<Out>) -> Vec<play::SetDefaultSpawnPosition> {
         rx.try_iter()
-            .filter_map(|out| {
-                let Out::Packet(body) = out else { return None };
+            .flat_map(|out| match out {
+                Out::Packet(body) => vec![body],
+                Out::Packets(bodies) => bodies,
+                Out::Disconnect(_) => panic!("unexpected disconnect"),
+            })
+            .filter_map(|body| {
                 let mut r = horizon_protocol::buf::Reader::new(&body);
                 let id = r.varint().unwrap();
                 match C::decode(id, r.rest()).unwrap() {
@@ -4396,5 +4400,92 @@ mod world_spawn_sync_tests {
         );
         game.as_console(|game| assert!(game.run_command("setworldspawn -7 90 12 45 -10")));
         assert!(spawns(&rx).is_empty());
+        // RespawnData.of wraps yaw and clamps pitch before storing or comparing.
+        game.as_console(|game| assert!(game.run_command("setworldspawn -7 90 12 405 100")));
+        let sent = spawns(&rx);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(game.level.world_spawn_angle, [45.0, 90.0]);
+        assert_eq!([sent[0].yaw, sent[0].pitch], [45.0, 90.0]);
+        println!(
+            "world-spawn\tnormalized\t{}\t{}\t{}\t{}\t{:.1}\t{:.1}",
+            sent[0].pos.dimension,
+            sent[0].pos.pos[0],
+            sent[0].pos.pos[1],
+            sent[0].pos.pos[2],
+            sent[0].yaw,
+            sent[0].pitch
+        );
+        for command in [
+            "setworldspawn -7 90 12 45 90",
+            "setworldspawn -7 90 12 405 100",
+        ] {
+            game.as_console(|game| assert!(game.run_command(command)));
+            assert!(
+                spawns(&rx).is_empty(),
+                "equivalent normalized rotations are unchanged"
+            );
+        }
+        // Clamp raw pitch: wrapping -270 first would incorrectly produce +90.
+        game.as_console(|game| assert!(game.run_command("setworldspawn -7 90 12 405 -270")));
+        let sent = spawns(&rx);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(game.level.world_spawn_angle, [45.0, -90.0]);
+        assert_eq!([sent[0].yaw, sent[0].pitch], [45.0, -90.0]);
+        println!(
+            "world-spawn\tclamped\t{}\t{}\t{}\t{}\t{:.1}\t{:.1}",
+            sent[0].pos.dimension,
+            sent[0].pos.pos[0],
+            sent[0].pos.pos[1],
+            sent[0].pos.pos[2],
+            sent[0].yaw,
+            sent[0].pitch
+        );
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources and scratch homes/cwd"]
+    fn guest_respawn_without_a_known_world_spawn_never_advertises_the_hosts_personal_point() {
+        let mut game = super::super::native_machines::tests::server_game();
+        game.level.world_spawn = None;
+        game.level.world_spawn_angle = [45.0, -10.0];
+        let host_personal = horizon_core::geometry::Vec3::new(96.5, 145.0, -31.5);
+        let guest_personal = [5.5, 81.0, 5.5];
+        game.spawn = Some(host_personal);
+        let rx = host(&mut game);
+        let mut host = game.lan.take().unwrap();
+        let guest = &mut host.hub.guests[0];
+        guest.dimension = "minecraft:overworld".into();
+        guest.spawn = Some(guest_personal);
+        guest.health = 0.0;
+        guest.dead = true;
+        guest.loaded = true;
+        game.guest_respawn(&mut host, 1);
+        let guest = &host.hub.guests[0];
+        assert_eq!(
+            guest.position, guest_personal,
+            "the guest's landing stays personal"
+        );
+        assert!(!guest.dead);
+        assert_eq!(game.spawn, Some(host_personal));
+        let sent = spawns(&rx);
+        assert_eq!(sent.len(), 2, "respawn and level info both send world data");
+        for point in &sent {
+            assert_eq!(point.pos.dimension, "minecraft:overworld");
+            assert_eq!(
+                point.pos.pos,
+                [0, 80, 0],
+                "the host's personal point is not world data"
+            );
+            assert_eq!([point.yaw, point.pitch], [45.0, -10.0]);
+        }
+        println!(
+            "world-spawn\trespawn\t{}\t{}\t{}\t{}\t{:.1}\t{:.1}",
+            sent[0].pos.dimension,
+            sent[0].pos.pos[0],
+            sent[0].pos.pos[1],
+            sent[0].pos.pos[2],
+            sent[0].yaw,
+            sent[0].pitch
+        );
     }
 }

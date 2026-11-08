@@ -23,7 +23,7 @@ public final class VanillaWorldSpawnPacketOracle {
         buffer.release();
         OUT.println("world-spawn\t" + label + "\t" + actual.dimension().identifier()
             + "\t" + actual.pos().getX() + "\t" + actual.pos().getY() + "\t" + actual.pos().getZ()
-            + (label.equals("angle") ? "\t" + actual.yaw() + "\t" + actual.pitch() : ""));
+            + ((label.equals("angle") || label.equals("respawn") || label.equals("normalized") || label.equals("clamped")) ? "\t" + actual.yaw() + "\t" + actual.pitch() : ""));
     }
     public static void main(String[] args) {
         net.minecraft.SharedConstants.tryDetectVersion();
@@ -32,5 +32,8 @@ public final class VanillaWorldSpawnPacketOracle {
         emit("changed", "minecraft:overworld", 100, 140, -20, 0.0F, 0.0F);
         emit("override", "minecraft:the_end", 9, 70, -4, 0.0F, 0.0F);
         emit("angle", "minecraft:overworld", -7, 90, 12, 45.0F, -10.0F);
+        emit("respawn", "minecraft:overworld", 0, 80, 0, 45.0F, -10.0F);
+        emit("normalized", "minecraft:overworld", -7, 90, 12, 405.0F, 100.0F);
+        emit("clamped", "minecraft:overworld", -7, 90, 12, 405.0F, -270.0F);
     }
 }

@@ -70,7 +70,7 @@ def main():
                        str(classes) + os.pathsep + cp, 'dev.horizonlab.parity.VanillaWorldSpawnPacketOracle'],
                       'java', cwd=scratch, env=env)
         rows = [r for r in vanilla.read_text(encoding='utf-8').splitlines() if r.startswith('world-spawn\t')]
-        assert len(rows) == 4 and len(set(rows)) == 4, 'vanilla oracle did not emit all four cases'
+        assert len(rows) == 7 and len(set(rows)) == 7, 'vanilla oracle did not emit all seven cases'
         compiled = run(['cargo', 'test', '--locked', '-p', 'horizon-client', '--lib', '--no-run',
                         '--message-format=json'], 'compile', cwd=lab.ROOT, env=env)
         binaries = []
@@ -87,15 +87,15 @@ def main():
         env['HORIZON_TEST_RESOURCES'] = str(args.resources.resolve())
         result = run([binaries[0], TESTS, '--ignored', '--nocapture'], 'game', cwd=scratch, env=env)
         text = result.read_text(encoding='utf-8')
-        assert 'running 2 tests' in text and '2 passed; 0 failed' in text, 'regressions did not execute'
+        assert 'running 3 tests' in text and '3 passed; 0 failed' in text, 'regressions did not execute'
         rust_rows = [r[r.index('world-spawn\t'):] for r in text.splitlines() if 'world-spawn\t' in r]
         assert sorted(rows) == sorted(rust_rows), (rows, rust_rows)
         assert binary_hash == lab.digest(binaries[0], 'sha256'), 'test artifact changed'
     base.ensure_sources_unchanged(sources, hashes)
     lab.write_json(report, dict(sources_sha256=hashes, server_sha256=lab.digest(jars['server'], 'sha256'),
-                               rust_binary_sha256=binary_hash, vanilla_packets=4, game_tests=2,
+                               rust_binary_sha256=binary_hash, vanilla_packets=7, game_tests=3,
                                scope=__doc__))
-    print('4 vanilla packet rows and 2 actual Game regressions passed')
+    print('7 vanilla packet rows and 3 actual Game regressions passed')
 
 
 if __name__ == '__main__':
