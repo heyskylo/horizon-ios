@@ -1427,6 +1427,8 @@ impl Game<'_> {
             Some(Target::Other(id))
         } else if self.tnts.iter().any(|t| t.id == id) {
             Some(Target::Tnt(id))
+        } else if self.crystals.iter().any(|c| c.id == id) {
+            Some(Target::Crystal(id))
         } else if self.cushions.iter().any(|c| c.id == id) {
             Some(Target::Cushion(id))
         } else if self.falling.iter().any(|f| f.id == id) {
