@@ -2805,8 +2805,10 @@ impl Game<'_> {
             if new_render {
                 (yaw, pitch) = lerp.map_or((c.yaw, c.pitch), |(_, yaw, pitch)| (yaw, pitch));
             } else if let Some(on) = self.rail_pos(x, y, z) {
-                let front = self.rail_pos_offs(x, y, z, 0.3).unwrap_or(on);
-                let back = self.rail_pos_offs(x, y, z, -0.3).unwrap_or(on);
+                // getPosOffs(..., 0.3F): the float widened.
+                let half = f64::from(0.3_f32);
+                let front = self.rail_pos_offs(x, y, z, half).unwrap_or(on);
+                let back = self.rail_pos_offs(x, y, z, -half).unwrap_or(on);
                 offset = glam::DVec3::new(on[0] - x, (front[1] + back[1]) / 2.0 - y, on[2] - z);
                 let d =
                     glam::DVec3::new(back[0] - front[0], back[1] - front[1], back[2] - front[2]);
