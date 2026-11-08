@@ -1260,5 +1260,7 @@
   "Recommended": "おすすめ",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "古いバージョン {version} はプレイ中の Horizon でビルドできます: インストールするとそれが選ばれます",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: バージョン {version} はビルドできませんでした。{older} を試します",
-  "Use recommended (kept at {version})": "推奨を使う ({version} に固定中)"
+  "Use recommended (kept at {version})": "推奨を使う ({version} に固定中)",
+  "Only what works on {instance}": "{instance} で動くものだけ",
+  "{count} versions that don't work on {instance} are hidden": "{instance} で動かない {count} 個のバージョンを隠しています"
 }

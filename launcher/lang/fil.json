@@ -1260,5 +1260,7 @@
   "Recommended": "Inirerekomenda",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Isang mas lumang bersyon, {version}, ang nabubuo sa Horizon na nilalaro mo: ito ang pipiliin ng pag-install",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: hindi nabuo ang bersyon {version}, sinusubukan ang {older}",
-  "Use recommended (kept at {version})": "Gamitin ang inirerekomenda (naka-{version})"
+  "Use recommended (kept at {version})": "Gamitin ang inirerekomenda (naka-{version})",
+  "Only what works on {instance}": "Ang gumagana lang sa {instance}",
+  "{count} versions that don't work on {instance} are hidden": "Nakatago ang {count} bersyon na hindi gumagana sa {instance}"
 }

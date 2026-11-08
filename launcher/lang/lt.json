@@ -1260,5 +1260,7 @@
   "Recommended": "Rekomenduojama",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Senesnė versija {version} susikompiliuoja tavo žaidžiamam Horizon: diegimas parenka ją",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: versija {version} nesusikompiliavo, bandoma {older}",
-  "Use recommended (kept at {version})": "Naudoti rekomenduojamą (palikta {version})"
+  "Use recommended (kept at {version})": "Naudoti rekomenduojamą (palikta {version})",
+  "Only what works on {instance}": "Tik tai, kas veikia {instance}",
+  "{count} versions that don't work on {instance} are hidden": "Paslėpta {count} versijų, kurios neveikia {instance}"
 }

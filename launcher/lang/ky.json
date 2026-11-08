@@ -1260,5 +1260,7 @@
   "Recommended": "Сунушталат",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Эскирээк версия, {version}, сен ойногон Horizon'до курулат: орнотуу ошону тандайт",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: {version} версиясы курулган жок, {older} сыналууда",
-  "Use recommended (kept at {version})": "Сунушталганды колдонуу ({version} калтырылган)"
+  "Use recommended (kept at {version})": "Сунушталганды колдонуу ({version} калтырылган)",
+  "Only what works on {instance}": "{instance} ичинде иштегендер гана",
+  "{count} versions that don't work on {instance} are hidden": "{instance} ичинде иштебеген {count} версия жашырылды"
 }

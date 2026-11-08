@@ -1260,5 +1260,7 @@
   "Recommended": "E rekomanduar",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Një version më i vjetër, {version}, ndërtohet në Horizon-in që luan: instalimi e zgjedh atë",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: versioni {version} nuk u ndërtua, po provohet {older}",
-  "Use recommended (kept at {version})": "Përdor të rekomanduarin (mbajtur në {version})"
+  "Use recommended (kept at {version})": "Përdor të rekomanduarin (mbajtur në {version})",
+  "Only what works on {instance}": "Vetëm ato që punojnë në {instance}",
+  "{count} versions that don't work on {instance} are hidden": "{count} versione që nuk punojnë në {instance} janë fshehur"
 }

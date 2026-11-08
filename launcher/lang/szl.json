@@ -1260,5 +1260,7 @@
   "Recommended": "Zalecanŏ",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Starszo wersyjo, {version}, buduje sie na Horizonie, we kery grosz: instalacyjo wybiyro jã",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: wersyjo {version} sie niy zbudowała, prōbujymy {older}",
-  "Use recommended (kept at {version})": "Użyj polecanyj (trzimano na {version})"
+  "Use recommended (kept at {version})": "Użyj polecanyj (trzimano na {version})",
+  "Only what works on {instance}": "Ino to, co działo we {instance}",
+  "{count} versions that don't work on {instance} are hidden": "Skryto {count} wersyji, co niy działajōm we {instance}"
 }

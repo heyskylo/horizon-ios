@@ -1260,5 +1260,7 @@
   "Recommended": "Kunconyiwe",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Inguqulo endala, {version}, iyakhiwa ku-Horizon oyidlalayo: ukufaka kuyayikhetha",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: inguqulo {version} ayakhiwanga, kuzanywa {older}",
-  "Use recommended (kept at {version})": "Sebenzisa enconyiwe (igcinwe ku-{version})"
+  "Use recommended (kept at {version})": "Sebenzisa enconyiwe (igcinwe ku-{version})",
+  "Only what works on {instance}": "Okusebenza ku-{instance} kuphela",
+  "{count} versions that don't work on {instance} are hidden": "Izinguqulo ezingu-{count} ezingasebenzi ku-{instance} zifihliwe"
 }

@@ -1260,5 +1260,7 @@
   "Recommended": "Рекомендовано",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Старіша версія, {version}, збирається на Horizon, у який ти граєш: встановлення обирає її",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: версія {version} не зібралася, пробуємо {older}",
-  "Use recommended (kept at {version})": "Використати рекомендовану (закріплено {version})"
+  "Use recommended (kept at {version})": "Використати рекомендовану (закріплено {version})",
+  "Only what works on {instance}": "Лише те, що працює в {instance}",
+  "{count} versions that don't work on {instance} are hidden": "Приховано версій, які не працюють в {instance}: {count}"
 }

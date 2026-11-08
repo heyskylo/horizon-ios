@@ -220,6 +220,7 @@ impl Launcher {
 /// Find mods: the Mods page, to add some to this instance.
 fn find_mods(cx: &mut Context<Launcher>) -> Listener<ClickEvent> {
     Box::new(cx.listener(|this, _: &ClickEvent, _, cx| {
+        this.mods_find_for_instance();
         this.go(Page::Mods);
         cx.notify();
     }))

@@ -1260,5 +1260,7 @@
   "Recommended": "מומלצת",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "גרסה ישנה יותר, {version}, נבנית על ה-Horizon שבו אתה משחק: ההתקנה בוחרת בה",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: הגרסה {version} לא נבנתה, מנסה את {older}",
-  "Use recommended (kept at {version})": "השתמש במומלצת (נשמרה על {version})"
+  "Use recommended (kept at {version})": "השתמש במומלצת (נשמרה על {version})",
+  "Only what works on {instance}": "רק מה שעובד ב-{instance}",
+  "{count} versions that don't work on {instance} are hidden": "הוסתרו {count} גרסאות שלא עובדות ב-{instance}"
 }

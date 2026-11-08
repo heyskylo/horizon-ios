@@ -1260,5 +1260,7 @@
   "Recommended": "Recomandada",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Una version mai anciana, {version}, se compila sus l'Horizon que jogas: l'installacion la causís",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: la version {version} s'es pas compilada, ensag de {older}",
-  "Use recommended (kept at {version})": "Utilizar la recomandada (gardada a {version})"
+  "Use recommended (kept at {version})": "Utilizar la recomandada (gardada a {version})",
+  "Only what works on {instance}": "Sonque çò que fonciona sus {instance}",
+  "{count} versions that don't work on {instance} are hidden": "{count} versions que foncionan pas sus {instance} son amagadas"
 }

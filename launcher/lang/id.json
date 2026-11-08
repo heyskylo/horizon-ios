@@ -1260,5 +1260,7 @@
   "Recommended": "Disarankan",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Versi lebih lama, {version}, dapat di-build di Horizon yang kamu mainkan: memasang akan memilihnya",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: versi {version} gagal di-build, mencoba {older}",
-  "Use recommended (kept at {version})": "Pakai yang disarankan (ditahan di {version})"
+  "Use recommended (kept at {version})": "Pakai yang disarankan (ditahan di {version})",
+  "Only what works on {instance}": "Hanya yang jalan di {instance}",
+  "{count} versions that don't work on {instance} are hidden": "{count} versi yang tidak jalan di {instance} disembunyikan"
 }

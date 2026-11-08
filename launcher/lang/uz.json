@@ -1260,5 +1260,7 @@
   "Recommended": "Tavsiya etiladi",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Eskiroq versiya, {version}, siz o'ynaydigan Horizon'da yig'iladi: o'rnatish uni tanlaydi",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: {version} versiyasi yig'ilmadi, {older} sinab ko'rilmoqda",
-  "Use recommended (kept at {version})": "Tavsiya etilganini ishlatish ({version} da qoldirilgan)"
+  "Use recommended (kept at {version})": "Tavsiya etilganini ishlatish ({version} da qoldirilgan)",
+  "Only what works on {instance}": "Faqat {instance} da ishlaydiganlar",
+  "{count} versions that don't work on {instance} are hidden": "{instance} da ishlamaydigan {count} ta versiya yashirildi"
 }

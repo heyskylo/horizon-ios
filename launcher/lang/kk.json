@@ -1260,5 +1260,7 @@
   "Recommended": "Ұсынылады",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Ескірек нұсқа, {version}, сен ойнайтын Horizon-да жиналады: орнату соны таңдайды",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: {version} нұсқасы жиналмады, {older} байқалуда",
-  "Use recommended (kept at {version})": "Ұсынылғанды қолдану ({version} нұсқасында қалдырылған)"
+  "Use recommended (kept at {version})": "Ұсынылғанды қолдану ({version} нұсқасында қалдырылған)",
+  "Only what works on {instance}": "Тек {instance} ішінде жұмыс істейтіндер",
+  "{count} versions that don't work on {instance} are hidden": "{instance} ішінде жұмыс істемейтін {count} нұсқа жасырылған"
 }

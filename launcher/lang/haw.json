@@ -1260,5 +1260,7 @@
   "Recommended": "Paipai ʻia",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Kūkulu ʻia kekahi mana kahiko, {version}, ma ka Horizon āu e pāʻani nei: koho ka hoʻokomo iā ia",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: ʻaʻole i kūkulu ʻia ka mana {version}, e hoʻāʻo ana iā {older}",
-  "Use recommended (kept at {version})": "E hoʻohana i ka mea i paipai ʻia (mālama ʻia ma {version})"
+  "Use recommended (kept at {version})": "E hoʻohana i ka mea i paipai ʻia (mālama ʻia ma {version})",
+  "Only what works on {instance}": "Ka mea e hana ana ma {instance} wale nō",
+  "{count} versions that don't work on {instance} are hidden": "Ua hūnā ʻia nā mana {count} ʻaʻole e hana ma {instance}"
 }

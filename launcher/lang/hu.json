@@ -1260,5 +1260,7 @@
   "Recommended": "Ajánlott",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Egy régebbi verzió, a(z) {version}, lefordul a játszott Horizonon: a telepítés ezt választja",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: a(z) {version} verzió nem fordult le, a(z) {older} kipróbálása",
-  "Use recommended (kept at {version})": "Ajánlott használata (a(z) {version} verziónál tartva)"
+  "Use recommended (kept at {version})": "Ajánlott használata (a(z) {version} verziónál tartva)",
+  "Only what works on {instance}": "Csak ami fut ezen: {instance}",
+  "{count} versions that don't work on {instance} are hidden": "{count} verzió, amely nem fut ezen ({instance}), el van rejtve"
 }

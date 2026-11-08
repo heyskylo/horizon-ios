@@ -1260,5 +1260,7 @@
   "Recommended": "Önerilen",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Daha eski bir sürüm, {version}, oynadığın Horizon'da derleniyor: kurulum onu seçer",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: {version} sürümü derlenmedi, {older} deneniyor",
-  "Use recommended (kept at {version})": "Önerileni kullan ({version} sürümünde tutuldu)"
+  "Use recommended (kept at {version})": "Önerileni kullan ({version} sürümünde tutuldu)",
+  "Only what works on {instance}": "Yalnızca {instance} üzerinde çalışanlar",
+  "{count} versions that don't work on {instance} are hidden": "{instance} üzerinde çalışmayan {count} sürüm gizlendi"
 }

@@ -1260,5 +1260,7 @@
   "Recommended": "Oanrikkemandearre",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "In âldere ferzje, {version}, bout op de Horizon dy't do spilest: ynstallearjen kiest dy",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: ferzje {version} boude net, besykje {older}",
-  "Use recommended (kept at {version})": "Oanrekommandearre brûke (hâlden op {version})"
+  "Use recommended (kept at {version})": "Oanrekommandearre brûke (hâlden op {version})",
+  "Only what works on {instance}": "Allinnich wat wurket op {instance}",
+  "{count} versions that don't work on {instance} are hidden": "{count} ferzjes dy't net wurkje op {instance} binne ferburgen"
 }

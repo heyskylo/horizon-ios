@@ -1260,5 +1260,7 @@
   "Recommended": "רעקאָמענדירט",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "אַן עלטערע ווערסיע, {version}, בויט זיך אויף דעם Horizon וואָס דו שפּילסט: אינסטאַלירן קלייבט זי",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: ווערסיע {version} האָט זיך נישט געבויט, מען פּרוּווט {older}",
-  "Use recommended (kept at {version})": "ניץ די רעקאָמענדירטע (געהאַלטן אויף {version})"
+  "Use recommended (kept at {version})": "ניץ די רעקאָמענדירטע (געהאַלטן אויף {version})",
+  "Only what works on {instance}": "נאָר וואָס אַרבעט אויף {instance}",
+  "{count} versions that don't work on {instance} are hidden": "{count} ווערסיעס וואָס אַרבעטן נישט אויף {instance} זענען באַהאַלטן"
 }

@@ -1260,5 +1260,7 @@
   "Recommended": "Recomandată",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "O versiune mai veche, {version}, se compilează pe Horizon-ul pe care îl joci: instalarea o alege",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: versiunea {version} nu s-a compilat, se încearcă {older}",
-  "Use recommended (kept at {version})": "Folosește recomandata (păstrată la {version})"
+  "Use recommended (kept at {version})": "Folosește recomandata (păstrată la {version})",
+  "Only what works on {instance}": "Doar ce merge pe {instance}",
+  "{count} versions that don't work on {instance} are hidden": "Sunt ascunse {count} versiuni care nu merg pe {instance}"
 }

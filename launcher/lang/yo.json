@@ -1260,5 +1260,7 @@
   "Recommended": "A dámọ̀ràn",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Ẹ̀yà àtijọ́ kan, {version}, ń kọ́ lórí Horizon tí o ń ṣe: fífi sórí ẹ̀rọ yàn án",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: ẹ̀yà {version} kò kọ́, à ń gbìyànjú {older}",
-  "Use recommended (kept at {version})": "Lo èyí tí a dábàá (tí a dì mú ní {version})"
+  "Use recommended (kept at {version})": "Lo èyí tí a dábàá (tí a dì mú ní {version})",
+  "Only what works on {instance}": "Ohun tó ń ṣiṣẹ́ lórí {instance} nìkan",
+  "{count} versions that don't work on {instance} are hidden": "A ti fi ẹ̀yà {count} tí kò ṣiṣẹ́ lórí {instance} pamọ́"
 }

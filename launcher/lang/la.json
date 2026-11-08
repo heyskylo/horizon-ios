@@ -1260,5 +1260,7 @@
   "Recommended": "Commendata",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Versio vetustior, {version}, in Horizon quo ludis aedificatur: institutio eam eligit",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: versio {version} non aedificata est, {older} temptatur",
-  "Use recommended (kept at {version})": "Commendatam adhibe (ad {version} retenta)"
+  "Use recommended (kept at {version})": "Commendatam adhibe (ad {version} retenta)",
+  "Only what works on {instance}": "Tantum quae in {instance} operantur",
+  "{count} versions that don't work on {instance} are hidden": "{count} versiones quae in {instance} non operantur celantur"
 }

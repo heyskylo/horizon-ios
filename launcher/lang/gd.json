@@ -1260,5 +1260,7 @@
   "Recommended": "Air a mholadh",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Togaidh tionndadh nas sine, {version}, air an Horizon a chluicheas tu: taghaidh stàladh e",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: cha deach tionndadh {version} a thogail, a' feuchainn {older}",
-  "Use recommended (kept at {version})": "Cleachd am fear a mholar (air a chumail aig {version})"
+  "Use recommended (kept at {version})": "Cleachd am fear a mholar (air a chumail aig {version})",
+  "Only what works on {instance}": "Dìreach na dh'obraicheas air {instance}",
+  "{count} versions that don't work on {instance} are hidden": "Tha {count} tionndadh nach obraich air {instance} falaichte"
 }

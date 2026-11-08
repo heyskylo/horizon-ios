@@ -1260,5 +1260,7 @@
   "Recommended": "موصى به",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "إصدار أقدم، {version}، يُبنى على Horizon الذي تلعبه: التثبيت يختاره",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: لم يُبنَ الإصدار {version}، تجربة {older}",
-  "Use recommended (kept at {version})": "استخدم الموصى به (مثبت على {version})"
+  "Use recommended (kept at {version})": "استخدم الموصى به (مثبت على {version})",
+  "Only what works on {instance}": "فقط ما يعمل على {instance}",
+  "{count} versions that don't work on {instance} are hidden": "{count} إصدارات لا تعمل على {instance} مخفية"
 }

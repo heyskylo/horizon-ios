@@ -1260,5 +1260,7 @@
   "Recommended": "Consigliada",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Una version pussee vegia, {version}, la se compila sul Horizon che te zoeughet: l'instalazion la sceglie",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: la version {version} l'è minga compilada, se preuva {older}",
-  "Use recommended (kept at {version})": "Dopera quella consiliada (tegnuda a {version})"
+  "Use recommended (kept at {version})": "Dopera quella consiliada (tegnuda a {version})",
+  "Only what works on {instance}": "Domà quell che el va su {instance}",
+  "{count} versions that don't work on {instance} are hidden": "{count} version che van minga su {instance} hinn scondude"
 }

@@ -1260,5 +1260,7 @@
   "Recommended": "Сүбэлэнэр",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Эргэ барыла, {version}, эн оонньуур Horizon-гар хомуллар: туруоруу ону талар",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: {version} барыла хомуллубата, {older} боруобаланар",
-  "Use recommended (kept at {version})": "Сүбэлэммити туттуу ({version} хаалларыллыбыт)"
+  "Use recommended (kept at {version})": "Сүбэлэммити туттуу ({version} хаалларыллыбыт)",
+  "Only what works on {instance}": "{instance} иһигэр үлэлиир эрэ",
+  "{count} versions that don't work on {instance} are hidden": "{instance} иһигэр үлэлээбэт {count} барыла кистэммит"
 }

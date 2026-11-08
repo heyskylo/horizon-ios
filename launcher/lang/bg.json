@@ -1260,5 +1260,7 @@
   "Recommended": "Препоръчано",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "По-стара версия, {version}, се компилира за Horizon, който играеш: инсталирането я избира",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: версия {version} не се компилира, опитва се {older}",
-  "Use recommended (kept at {version})": "Използвай препоръчаната (задържана на {version})"
+  "Use recommended (kept at {version})": "Използвай препоръчаната (задържана на {version})",
+  "Only what works on {instance}": "Само каквото работи на {instance}",
+  "{count} versions that don't work on {instance} are hidden": "Скрити са {count} версии, които не работят на {instance}"
 }

@@ -1260,5 +1260,7 @@
   "Recommended": "La taliyay",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Nooc hore, {version}, ayaa ka dhismaya Horizon-ka aad ciyaarto: rakibiddu way dooranaysaa",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: nooca {version} ma dhismin, waxaa la isku dayayaa {older}",
-  "Use recommended (kept at {version})": "Isticmaal kan lagu taliyay (lagu hayo {version})"
+  "Use recommended (kept at {version})": "Isticmaal kan lagu taliyay (lagu hayo {version})",
+  "Only what works on {instance}": "Kaliya waxa ka shaqeeya {instance}",
+  "{count} versions that don't work on {instance} are hidden": "{count} nooc oo aan ka shaqeyn {instance} waa la qariyay"
 }

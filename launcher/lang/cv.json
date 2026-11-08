@@ -1260,5 +1260,7 @@
   "Recommended": "Сӗнетпӗр",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Кивӗрех версийӗ, {version}, эсӗ вылякан Horizon ҫинче пухӑнать: лартни ӑна суйлать",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: {version} версийӗ пухӑнмарӗ, {older} тӗрӗслетпӗр",
-  "Use recommended (kept at {version})": "Сӗннине усӑ курас ({version} хӑварнӑ)"
+  "Use recommended (kept at {version})": "Сӗннине усӑ курас ({version} хӑварнӑ)",
+  "Only what works on {instance}": "{instance} валли ӗҫлекеннисем ҫеҫ",
+  "{count} versions that don't work on {instance} are hidden": "{instance} валли ӗҫлемен {count} версие пытарнӑ"
 }

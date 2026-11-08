@@ -1260,5 +1260,7 @@
   "Recommended": "Soovitatud",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Vanem versioon {version} ehitub sinu mängitaval Horizonil: paigaldamine valib selle",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: versioon {version} ei ehitunud, proovitakse {older}",
-  "Use recommended (kept at {version})": "Kasuta soovitatut (hoitud versioonil {version})"
+  "Use recommended (kept at {version})": "Kasuta soovitatut (hoitud versioonil {version})",
+  "Only what works on {instance}": "Ainult see, mis töötab {instance} peal",
+  "{count} versions that don't work on {instance} are hidden": "{count} versiooni, mis {instance} peal ei tööta, on peidetud"
 }

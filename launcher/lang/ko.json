@@ -1260,5 +1260,7 @@
   "Recommended": "추천",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "이전 버전 {version}은(는) 플레이 중인 Horizon에서 빌드됩니다: 설치하면 이 버전을 고릅니다",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: 버전 {version} 빌드 실패, {older} 시도 중",
-  "Use recommended (kept at {version})": "추천 버전 사용 ({version}에 고정됨)"
+  "Use recommended (kept at {version})": "추천 버전 사용 ({version}에 고정됨)",
+  "Only what works on {instance}": "{instance}에서 작동하는 것만",
+  "{count} versions that don't work on {instance} are hidden": "{instance}에서 작동하지 않는 버전 {count}개를 숨겼습니다"
 }

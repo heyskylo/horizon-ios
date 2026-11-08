@@ -1260,5 +1260,7 @@
   "Recommended": "Recommandéiert",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Eng méi al Versioun, {version}, baut um Horizon, deen s du spills: Installéiere wielt se",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: Versioun {version} huet net gebaut, probéiere {older}",
-  "Use recommended (kept at {version})": "Recommandéiert benotzen (op {version} gehalen)"
+  "Use recommended (kept at {version})": "Recommandéiert benotzen (op {version} gehalen)",
+  "Only what works on {instance}": "Just wat op {instance} leeft",
+  "{count} versions that don't work on {instance} are hidden": "{count} Versiounen, déi op {instance} net lafen, sinn verstoppt"
 }

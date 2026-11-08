@@ -1260,5 +1260,7 @@
   "Recommended": "Тәҡдим ителә",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Иҫкерәк версия, {version}, һин уйнаған Horizon-да йыйыла: ҡуйыу уны һайлай",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: {version} версияһы йыйылманы, {older} һынала",
-  "Use recommended (kept at {version})": "Тәҡдим ителгәнде ҡулланырға ({version} ҡалдырылған)"
+  "Use recommended (kept at {version})": "Тәҡдим ителгәнде ҡулланырға ({version} ҡалдырылған)",
+  "Only what works on {instance}": "{instance} өсөн эшләгәндәр генә",
+  "{count} versions that don't work on {instance} are hidden": "{instance} өсөн эшләмәгән {count} версия йәшерелгән"
 }

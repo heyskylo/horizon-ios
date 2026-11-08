@@ -1260,5 +1260,7 @@
   "Recommended": "Conseade",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Une version plui vecje, {version}, si fâs sul Horizon che tu zuiis: la instalazion le sielç",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: la version {version} no si è fate, si prove {older}",
-  "Use recommended (kept at {version})": "Dopre chê conseade (tignude a {version})"
+  "Use recommended (kept at {version})": "Dopre chê conseade (tignude a {version})",
+  "Only what works on {instance}": "Dome ce che al va su {instance}",
+  "{count} versions that don't work on {instance} are hidden": "{count} versions che no van su {instance} a son platadis"
 }

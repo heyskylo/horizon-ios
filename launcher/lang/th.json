@@ -1260,5 +1260,7 @@
   "Recommended": "แนะนำ",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "เวอร์ชันเก่ากว่า {version} บิลด์ได้บน Horizon ที่คุณเล่น: การติดตั้งจะเลือกเวอร์ชันนั้น",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: เวอร์ชัน {version} บิลด์ไม่ผ่าน กำลังลอง {older}",
-  "Use recommended (kept at {version})": "ใช้ที่แนะนำ (คงไว้ที่ {version})"
+  "Use recommended (kept at {version})": "ใช้ที่แนะนำ (คงไว้ที่ {version})",
+  "Only what works on {instance}": "เฉพาะที่ใช้ได้ใน {instance}",
+  "{count} versions that don't work on {instance} are hidden": "ซ่อน {count} เวอร์ชันที่ใช้ไม่ได้ใน {instance} แล้ว"
 }

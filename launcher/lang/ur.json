@@ -1260,5 +1260,7 @@
   "Recommended": "تجویز کردہ",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "ایک پرانا ورژن، {version}، آپ کے Horizon پر بنتا ہے: انسٹال کرنے پر وہی چنا جاتا ہے",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: ورژن {version} نہیں بنا، {older} آزمایا جا رہا ہے",
-  "Use recommended (kept at {version})": "تجویز کردہ استعمال کریں ({version} پر رکھا گیا)"
+  "Use recommended (kept at {version})": "تجویز کردہ استعمال کریں ({version} پر رکھا گیا)",
+  "Only what works on {instance}": "صرف وہ جو {instance} پر چلتا ہے",
+  "{count} versions that don't work on {instance} are hidden": "{instance} پر نہ چلنے والے {count} ورژن چھپا دیے گئے ہیں"
 }

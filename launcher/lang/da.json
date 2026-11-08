@@ -1260,5 +1260,7 @@
   "Recommended": "Anbefalet",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "En ældre version, {version}, bygger på det Horizon, du spiller: installation vælger den",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: version {version} kunne ikke bygges, prøver {older}",
-  "Use recommended (kept at {version})": "Brug anbefalet (holdt på {version})"
+  "Use recommended (kept at {version})": "Brug anbefalet (holdt på {version})",
+  "Only what works on {instance}": "Kun det, der virker på {instance}",
+  "{count} versions that don't work on {instance} are hidden": "{count} versioner, der ikke virker på {instance}, er skjult"
 }

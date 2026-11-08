@@ -1260,5 +1260,7 @@
   "Recommended": "ແນະນຳ",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "ເວີຊັນເກົ່າກວ່າ, {version}, ສ້າງໄດ້ໃນ Horizon ທີ່ທ່ານຫຼິ້ນ: ການຕິດຕັ້ງຈະເລືອກມັນ",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: ເວີຊັນ {version} ສ້າງບໍ່ໄດ້, ກຳລັງລອງ {older}",
-  "Use recommended (kept at {version})": "ໃຊ້ທີ່ແນະນຳ (ຮັກສາໄວ້ທີ່ {version})"
+  "Use recommended (kept at {version})": "ໃຊ້ທີ່ແນະນຳ (ຮັກສາໄວ້ທີ່ {version})",
+  "Only what works on {instance}": "ສະເພາະທີ່ໃຊ້ໄດ້ໃນ {instance}",
+  "{count} versions that don't work on {instance} are hidden": "ເຊື່ອງ {count} ເວີຊັນທີ່ໃຊ້ບໍ່ໄດ້ໃນ {instance} ແລ້ວ"
 }

@@ -1260,5 +1260,7 @@
   "Recommended": "Argymhellir",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Mae fersiwn hŷn, {version}, yn adeiladu ar yr Horizon rwyt ti'n ei chwarae: mae gosod yn ei dewis",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: ni adeiladodd fersiwn {version}, yn rhoi cynnig ar {older}",
-  "Use recommended (kept at {version})": "Defnyddio'r un a argymhellir (wedi'i chadw ar {version})"
+  "Use recommended (kept at {version})": "Defnyddio'r un a argymhellir (wedi'i chadw ar {version})",
+  "Only what works on {instance}": "Dim ond yr hyn sy'n gweithio ar {instance}",
+  "{count} versions that don't work on {instance} are hidden": "Mae {count} fersiwn nad ydynt yn gweithio ar {instance} wedi'u cuddio"
 }

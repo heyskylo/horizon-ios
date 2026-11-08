@@ -1260,5 +1260,7 @@
   "Recommended": "Тәкъдим ителә",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Искерәк версия, {version}, син уйный торган Horizon'да җыела: урнаштыру аны сайлый",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: {version} версиясе җыелмады, {older} сынала",
-  "Use recommended (kept at {version})": "Тәкъдим ителгәнне куллану ({version} калдырылган)"
+  "Use recommended (kept at {version})": "Тәкъдим ителгәнне куллану ({version} калдырылган)",
+  "Only what works on {instance}": "{instance} эчендә эшләгәннәр генә",
+  "{count} versions that don't work on {instance} are hidden": "{instance} эчендә эшләмәгән {count} версия яшерелгән"
 }

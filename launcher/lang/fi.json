@@ -1260,5 +1260,7 @@
   "Recommended": "Suositeltu",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Vanhempi versio {version} kääntyy pelaamallesi Horizonille: asennus valitsee sen",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: versio {version} ei kääntynyt, kokeillaan {older}",
-  "Use recommended (kept at {version})": "Käytä suositeltua (pidetty versiossa {version})"
+  "Use recommended (kept at {version})": "Käytä suositeltua (pidetty versiossa {version})",
+  "Only what works on {instance}": "Vain se, mikä toimii {instance}-instanssissa",
+  "{count} versions that don't work on {instance} are hidden": "{count} versiota, jotka eivät toimi {instance}-instanssissa, on piilotettu"
 }

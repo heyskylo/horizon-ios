@@ -1260,5 +1260,7 @@
   "Recommended": "Akwadoro",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Ụdị ochie, {version}, na-ewu na Horizon ị na-egwu: ịwụnye na-ahọrọ ya",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: ụdị {version} ewughị, na-anwale {older}",
-  "Use recommended (kept at {version})": "Jiri nke a tụrụ aro (edobere na {version})"
+  "Use recommended (kept at {version})": "Jiri nke a tụrụ aro (edobere na {version})",
+  "Only what works on {instance}": "Naanị ihe na-arụ ọrụ na {instance}",
+  "{count} versions that don't work on {instance} are hidden": "Ezoro ụdị {count} na-adịghị arụ ọrụ na {instance}"
 }

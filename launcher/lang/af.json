@@ -1260,5 +1260,7 @@
   "Recommended": "Aanbeveel",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "'n Ouer weergawe, {version}, bou op die Horizon wat jy speel: installeer kies dit",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: weergawe {version} het nie gebou nie, probeer {older}",
-  "Use recommended (kept at {version})": "Gebruik aanbevole (gehou op {version})"
+  "Use recommended (kept at {version})": "Gebruik aanbevole (gehou op {version})",
+  "Only what works on {instance}": "Net wat op {instance} werk",
+  "{count} versions that don't work on {instance} are hidden": "{count} weergawes wat nie op {instance} werk nie, is versteek"
 }

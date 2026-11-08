@@ -1260,5 +1260,7 @@
   "Recommended": "Gomendatua",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Bertsio zaharrago bat, {version}, jokatzen duzun Horizonen eraikitzen da: instalatzeak hura aukeratzen du",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: {version} bertsioa ez da eraiki, {older} probatzen",
-  "Use recommended (kept at {version})": "Erabili gomendatua ({version}-n mantenduta)"
+  "Use recommended (kept at {version})": "Erabili gomendatua ({version}-n mantenduta)",
+  "Only what works on {instance}": "{instance}-n dabilena bakarrik",
+  "{count} versions that don't work on {instance} are hidden": "{instance}-n ez dabiltzan {count} bertsio ezkutatuta daude"
 }

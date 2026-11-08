@@ -1260,5 +1260,7 @@
   "Recommended": "Empfohlen",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Eine ältere Version, {version}, baut auf dem Horizon, das du spielst: Installieren wählt sie",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: Version {version} ließ sich nicht bauen, versuche {older}",
-  "Use recommended (kept at {version})": "Empfohlene nutzen (bei {version} gehalten)"
+  "Use recommended (kept at {version})": "Empfohlene nutzen (bei {version} gehalten)",
+  "Only what works on {instance}": "Nur was auf {instance} läuft",
+  "{count} versions that don't work on {instance} are hidden": "{count} Versionen, die auf {instance} nicht laufen, sind ausgeblendet"
 }

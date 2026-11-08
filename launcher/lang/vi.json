@@ -1260,5 +1260,7 @@
   "Recommended": "Đề xuất",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Một phiên bản cũ hơn, {version}, build được trên Horizon bạn đang chơi: cài đặt sẽ chọn nó",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: phiên bản {version} không build được, đang thử {older}",
-  "Use recommended (kept at {version})": "Dùng bản đề xuất (đang giữ ở {version})"
+  "Use recommended (kept at {version})": "Dùng bản đề xuất (đang giữ ở {version})",
+  "Only what works on {instance}": "Chỉ những gì chạy được trên {instance}",
+  "{count} versions that don't work on {instance} are hidden": "Đã ẩn {count} phiên bản không chạy được trên {instance}"
 }

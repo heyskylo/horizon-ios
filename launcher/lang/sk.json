@@ -1260,5 +1260,7 @@
   "Recommended": "Odporúčané",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Staršia verzia {version} sa zostaví na Horizone, ktorý hráš: inštalácia vyberie ju",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: verzia {version} sa nezostavila, skúša sa {older}",
-  "Use recommended (kept at {version})": "Použiť odporúčanú (ponechané na {version})"
+  "Use recommended (kept at {version})": "Použiť odporúčanú (ponechané na {version})",
+  "Only what works on {instance}": "Len to, čo funguje na {instance}",
+  "{count} versions that don't work on {instance} are hidden": "Skrytých je {count} verzií, ktoré na {instance} nefungujú"
 }

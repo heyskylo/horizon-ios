@@ -1260,5 +1260,7 @@
   "Recommended": "Erbedet",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Ur stumm koshoc'h, {version}, a sav war an Horizon a c'hoarit: staliañ a zibab anezhañ",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: n'eo ket savet ar stumm {version}, o klask {older}",
-  "Use recommended (kept at {version})": "Implijout an hini erbedet (miret war {version})"
+  "Use recommended (kept at {version})": "Implijout an hini erbedet (miret war {version})",
+  "Only what works on {instance}": "Ar pezh a ya en-dro war {instance} hepken",
+  "{count} versions that don't work on {instance} are hidden": "{count} stumm na ya ket en-dro war {instance} a zo kuzhet"
 }

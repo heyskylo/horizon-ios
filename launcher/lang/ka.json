@@ -1260,5 +1260,7 @@
   "Recommended": "რეკომენდებული",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "ძველი ვერსია, {version}, აიგება იმ Horizon-ზე, რომელსაც თამაშობ: ინსტალაცია მას აირჩევს",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: ვერსია {version} ვერ აიგო, ვცდით {older}-ს",
-  "Use recommended (kept at {version})": "რეკომენდებულის გამოყენება (დატოვებულია {version}-ზე)"
+  "Use recommended (kept at {version})": "რეკომენდებულის გამოყენება (დატოვებულია {version}-ზე)",
+  "Only what works on {instance}": "მხოლოდ ის, რაც მუშაობს {instance}-ზე",
+  "{count} versions that don't work on {instance} are hidden": "{instance}-ზე არამომუშავე {count} ვერსია დამალულია"
 }

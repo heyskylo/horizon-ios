@@ -1260,5 +1260,7 @@
   "Recommended": "Mælt við",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Ein eldri útgáva, {version}, byggir á tí Horizon, tú spælir: uppseting velur hana",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: útgáva {version} bygdist ikki, roynir {older}",
-  "Use recommended (kept at {version})": "Brúka viðmælda (hildin á {version})"
+  "Use recommended (kept at {version})": "Brúka viðmælda (hildin á {version})",
+  "Only what works on {instance}": "Bert tað, sum virkar á {instance}",
+  "{count} versions that don't work on {instance} are hidden": "{count} útgávur, sum ikki virka á {instance}, eru fjaldar"
 }

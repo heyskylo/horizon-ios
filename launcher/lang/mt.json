@@ -1260,5 +1260,7 @@
   "Recommended": "Rakkomandata",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Verżjoni eqdem, {version}, tinbena fuq il-Horizon li tilgħab: l-installazzjoni tagħżilha",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: il-verżjoni {version} ma nbnietx, qed nippruvaw {older}",
-  "Use recommended (kept at {version})": "Uża dik rakkomandata (miżmuma fuq {version})"
+  "Use recommended (kept at {version})": "Uża dik rakkomandata (miżmuma fuq {version})",
+  "Only what works on {instance}": "Biss dak li jaħdem fuq {instance}",
+  "{count} versions that don't work on {instance} are hidden": "{count} verżjonijiet li ma jaħdmux fuq {instance} huma moħbija"
 }

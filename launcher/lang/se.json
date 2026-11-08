@@ -1260,5 +1260,7 @@
   "Recommended": "Ávžžuhuvvon",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Boarrásat veršuvdna, {version}, huksejuvvo Horizonis maid don speallat: sajáiduhttin vállje dan",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: veršuvdna {version} ii huksejuvvon, geahččaluvvo {older}",
-  "Use recommended (kept at {version})": "Geavat ávžžuhuvvon (doalahuvvon {version})"
+  "Use recommended (kept at {version})": "Geavat ávžžuhuvvon (doalahuvvon {version})",
+  "Only what works on {instance}": "Dušše dat mii doaibmá {instance}:s",
+  "{count} versions that don't work on {instance} are hidden": "{count} veršuvnna mat eai doaimma {instance}:s leat čihkkojuvvon"
 }

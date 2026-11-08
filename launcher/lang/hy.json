@@ -1260,5 +1260,7 @@
   "Recommended": "Խորհուրդ է տրվում",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Ավելի հին տարբերակը՝ {version}, կառուցվում է քո խաղացած Horizon-ի վրա. տեղադրումը ընտրում է այն",
   "{mod}: version {version} didn't build, trying {older}": "{mod}. {version} տարբերակը չկառուցվեց, փորձվում է {older}",
-  "Use recommended (kept at {version})": "Օգտագործել առաջարկվածը (պահված {version}-ում)"
+  "Use recommended (kept at {version})": "Օգտագործել առաջարկվածը (պահված {version}-ում)",
+  "Only what works on {instance}": "Միայն այն, ինչ աշխատում է {instance}-ում",
+  "{count} versions that don't work on {instance} are hidden": "{instance}-ում չաշխատող {count} տարբերակ թաքցված է"
 }

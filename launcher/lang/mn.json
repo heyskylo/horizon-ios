@@ -1260,5 +1260,7 @@
   "Recommended": "Санал болгосон",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Хуучин хувилбар {version} таны тоглодог Horizon дээр бүтнэ: суулгахад түүнийг сонгоно",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: {version} хувилбар бүтсэнгүй, {older}-г туршиж байна",
-  "Use recommended (kept at {version})": "Санал болгосныг ашиглах ({version} дээр үлдээсэн)"
+  "Use recommended (kept at {version})": "Санал болгосныг ашиглах ({version} дээр үлдээсэн)",
+  "Only what works on {instance}": "Зөвхөн {instance} дээр ажилладаг нь",
+  "{count} versions that don't work on {instance} are hidden": "{instance} дээр ажилладаггүй {count} хувилбарыг нуусан"
 }

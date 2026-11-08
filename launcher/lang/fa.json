@@ -1260,5 +1260,7 @@
   "Recommended": "پیشنهادی",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "نسخه قدیمی‌تر، {version}، روی Horizon ای که بازی می‌کنی ساخته می‌شود: نصب آن را انتخاب می‌کند",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: نسخه {version} ساخته نشد، امتحان {older}",
-  "Use recommended (kept at {version})": "استفاده از پیشنهادی (روی {version} نگه داشته شده)"
+  "Use recommended (kept at {version})": "استفاده از پیشنهادی (روی {version} نگه داشته شده)",
+  "Only what works on {instance}": "فقط آنچه روی {instance} کار می‌کند",
+  "{count} versions that don't work on {instance} are hidden": "{count} نسخه که روی {instance} کار نمی‌کنند پنهان شده‌اند"
 }

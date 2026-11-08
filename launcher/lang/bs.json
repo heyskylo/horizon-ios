@@ -1260,5 +1260,7 @@
   "Recommended": "Preporučeno",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Starija verzija, {version}, se gradi na Horizonu koji igraš: instalacija bira nju",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: verzija {version} se nije izgradila, pokušava se {older}",
-  "Use recommended (kept at {version})": "Koristi preporučenu (zadržano na {version})"
+  "Use recommended (kept at {version})": "Koristi preporučenu (zadržano na {version})",
+  "Only what works on {instance}": "Samo ono što radi na {instance}",
+  "{count} versions that don't work on {instance} are hidden": "Sakriveno je {count} verzija koje ne rade na {instance}"
 }

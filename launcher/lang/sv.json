@@ -1260,5 +1260,7 @@
   "Recommended": "Rekommenderad",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "En äldre version, {version}, byggs på det Horizon du spelar: installering väljer den",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: version {version} gick inte att bygga, provar {older}",
-  "Use recommended (kept at {version})": "Använd rekommenderad (låst vid {version})"
+  "Use recommended (kept at {version})": "Använd rekommenderad (låst vid {version})",
+  "Only what works on {instance}": "Bara det som fungerar på {instance}",
+  "{count} versions that don't work on {instance} are hidden": "{count} versioner som inte fungerar på {instance} är dolda"
 }

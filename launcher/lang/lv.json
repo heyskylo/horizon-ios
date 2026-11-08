@@ -1260,5 +1260,7 @@
   "Recommended": "Ieteicams",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Vecāka versija {version} būvējas tavā spēlētajā Horizon: instalēšana izvēlas to",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: versija {version} neuzbūvējās, mēģina {older}",
-  "Use recommended (kept at {version})": "Lietot ieteikto (paturēta {version})"
+  "Use recommended (kept at {version})": "Lietot ieteikto (paturēta {version})",
+  "Only what works on {instance}": "Tikai tas, kas darbojas {instance}",
+  "{count} versions that don't work on {instance} are hidden": "Paslēptas {count} versijas, kas nedarbojas {instance}"
 }
