@@ -68,12 +68,12 @@ pub fn enchantment_list(
     seed: i32,
     slot: usize,
     cost: i32,
-    item: &str,
+    stack: &ItemStack,
 ) -> Levels {
     let mut random = LegacyRandom::new(i64::from(seed.wrapping_add(slot as i32)));
     let pool = e.tag("minecraft:in_enchanting_table").to_vec();
-    let mut list = e.select(items, &mut random, item, cost, &pool);
-    if item == "minecraft:book" && list.len() > 1 {
+    let mut list = e.select_of(items, &mut random, stack, cost, &pool);
+    if &*stack.item == "minecraft:book" && list.len() > 1 {
         let i = random.next_int_bound(list.len() as i32).unwrap_or(0) as usize;
         list.remove(i);
     }
@@ -90,12 +90,12 @@ pub fn enchant_offers(
     let mut offers = EnchantOffers::default();
     let Some(stack) = stack else { return offers };
     // ItemStack.isEnchantable: enchantable component and no enchantments yet.
-    if e.enchantable(&stack.item) == 0 || !stack.enchantments().is_empty() {
+    if e.enchantable_of(stack) == 0 || !stack.enchantments().is_empty() {
         return offers;
     }
     let mut random = LegacyRandom::new(i64::from(seed));
     for i in 0..3 {
-        offers.costs[i] = e.enchantment_cost(&mut random, i, bookcases, &stack.item);
+        offers.costs[i] = e.enchantment_cost_of(&mut random, i, bookcases, stack);
         if offers.costs[i] < i as i32 + 1 {
             offers.costs[i] = 0;
         }
@@ -121,7 +121,7 @@ pub fn enchant_clue(
     // getEnchantmentList reseeds the menu random; the clue draws continue from it.
     let mut list_random = LegacyRandom::new(i64::from(seed.wrapping_add(slot as i32)));
     let pool = e.tag("minecraft:in_enchanting_table").to_vec();
-    let mut list = e.select(items, &mut list_random, &stack.item, cost, &pool);
+    let mut list = e.select_of(items, &mut list_random, stack, cost, &pool);
     if &*stack.item == "minecraft:book" && list.len() > 1 {
         let r = list_random.next_int_bound(list.len() as i32).unwrap_or(0) as usize;
         list.remove(r);
@@ -141,7 +141,7 @@ pub fn apply_enchantment(
     cost: i32,
     stack: &ItemStack,
 ) -> Option<ItemStack> {
-    let list = enchantment_list(e, items, seed, slot, cost, &stack.item);
+    let list = enchantment_list(e, items, seed, slot, cost, stack);
     if list.is_empty() {
         return None;
     }
@@ -990,6 +990,7 @@ fn apply_trim(
 mod tests {
     use super::*;
     use crate::enchant::tests::{sample, sample_items};
+    use horizon_world::nbt::Tag;
 
     fn sword(ench: &[(&str, u32)]) -> ItemStack {
         let mut s = ItemStack::new("minecraft:diamond_sword", 1);
@@ -1014,6 +1015,51 @@ mod tests {
             Some(horizon_world::nbt::Tag::Int(max)),
         );
         s
+    }
+
+    /// Enchanting: `ItemStack.isEnchantable` and `selectEnchantment` read the
+    /// stack's `ENCHANTABLE`, so a patch can remove or change an offer.
+    #[test]
+    fn enchanting_reads_the_stacks_enchantable_component() {
+        let e = sample();
+        let items = sample_items();
+        let mut removed = ItemStack::new("minecraft:diamond_sword", 1);
+        removed.data_mut().set_other(
+            "!minecraft:enchantable",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert_eq!(
+            enchant_offers(&e, &items, 1234, 15, Some(&removed)).costs,
+            [0, 0, 0]
+        );
+        let mut low = ItemStack::new("minecraft:diamond_sword", 1);
+        low.data_mut().set_other(
+            "minecraft:enchantable",
+            Some(Tag::compound([("value", Tag::Int(1))])),
+        );
+        let offers = enchant_offers(&e, &items, 1234, 15, Some(&low));
+        assert_eq!(offers.costs, [5, 13, 30]);
+        let plain = ItemStack::new("minecraft:diamond_sword", 1);
+        assert!((0..100).any(|seed| {
+            let offers = enchant_offers(&e, &items, seed, 15, Some(&low));
+            (0..3).any(|slot| {
+                let patched =
+                    apply_enchantment(&e, &items, seed, slot, offers.costs[slot], &low).unwrap();
+                let default =
+                    apply_enchantment(&e, &items, seed, slot, offers.costs[slot], &plain).unwrap();
+                patched.enchantments() != default.enchantments()
+            })
+        }));
+        // No item default is needed: the component alone makes a stick an
+        // enchantable item, with costs but no supported enchantment.
+        let mut stick = ItemStack::new("minecraft:stick", 1);
+        stick.data_mut().set_other(
+            "minecraft:enchantable",
+            Some(Tag::compound([("value", Tag::Int(15))])),
+        );
+        let offers = enchant_offers(&e, &items, 1234, 15, Some(&stick));
+        assert_eq!(offers.costs, [5, 13, 30]);
+        assert!(offers.clues.iter().all(Option::is_none));
     }
 
     /// Grindstone: the larger MAX_DAMAGE is written and the damage follows it.
@@ -1118,14 +1164,7 @@ mod tests {
         assert!(a.costs[0] >= 1 && a.costs[0] <= a.costs[2]);
         // The clue is the first offer's random pick from the same list.
         for slot in 0..3 {
-            let list = enchantment_list(
-                &e,
-                &items,
-                1234,
-                slot,
-                a.costs[slot],
-                "minecraft:diamond_sword",
-            );
+            let list = enchantment_list(&e, &items, 1234, slot, a.costs[slot], &s);
             let clue = a.clues[slot].clone().unwrap();
             assert!(list.contains(&clue));
             let applied = apply_enchantment(&e, &items, 1234, slot, a.costs[slot], &s).unwrap();
@@ -1365,6 +1404,30 @@ mod tests {
         assert_eq!(
             (&*out.item, out.enchantment_level("minecraft:sharpness")),
             ("minecraft:netherite_sword", 2)
+        );
+        // Enchanting: a patched ENCHANTABLE changes costs and selection; a
+        // removed one leaves no offers at all.
+        let mut low = ItemStack::new("minecraft:diamond_sword", 1);
+        low.data_mut().set_other(
+            "minecraft:enchantable",
+            Some(Tag::compound([("value", Tag::Int(1))])),
+        );
+        let offers = enchant_offers(e, &items, 1234, 15, Some(&low));
+        assert_eq!(offers.costs, [5, 13, 30]);
+        let clue = |i: usize| offers.clues[i].as_ref().map(|(id, l)| (&**id, *l));
+        assert_eq!(clue(0), Some(("minecraft:unbreaking", 1)));
+        assert_eq!(clue(1), Some(("minecraft:sharpness", 2)));
+        assert_eq!(clue(2), Some(("minecraft:smite", 4)));
+        let applied = apply_enchantment(e, &items, 1234, 2, 30, &low).unwrap();
+        assert_eq!(applied.enchantments(), &[("minecraft:smite".into(), 4)]);
+        let mut removed = ItemStack::new("minecraft:diamond_sword", 1);
+        removed.data_mut().set_other(
+            "!minecraft:enchantable",
+            Some(Tag::compound(Vec::<(&str, Tag)>::new())),
+        );
+        assert_eq!(
+            enchant_offers(e, &items, 1234, 15, Some(&removed)).costs,
+            [0, 0, 0]
         );
         assert!(
             data.recipes
