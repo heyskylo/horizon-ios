@@ -5,7 +5,8 @@ use horizon_client::{
     blocks::Fluid,
     music::{BackgroundMusic, Music, MusicFrequency, Situation},
     options_ui::MusicGroup,
-    sound_engine::{SoundEngine, SoundInstance, Sounds, TickContext},
+    random_source,
+    sound_engine::{SoundInstance, Sounds, TickContext},
 };
 
 impl Game<'_> {
@@ -182,7 +183,7 @@ impl Game<'_> {
         // LocalPlayer.onSyncedDataUpdated: starting to glide starts the
         // elytra's flying sound.
         if player_fall_flying && !self.was_fall_flying {
-            let instance = SoundInstance::elytra(player_position, SoundEngine::unseeded());
+            let instance = SoundInstance::elytra(player_position, random_source::create());
             self.audio.play_instance(instance, false);
         }
         self.was_fall_flying = player_fall_flying;
