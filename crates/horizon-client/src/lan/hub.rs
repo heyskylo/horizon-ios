@@ -324,6 +324,10 @@ pub struct Hub {
     /// only players of at least that permission level see them, in the
     /// player list, the world and their joining and leaving.
     pub hidden: crate::fast_hash::FxHashMap<u128, u8>,
+    /// Names (lowercase) a native mod said will join as fake players (`native_expect_fake_player`):
+    /// such a player is fake from its first packet on, so its join sends and builds nothing a
+    /// client-less player cannot read.
+    pub expected_fake: std::collections::HashSet<String>,
     pub lan: Lan,
     pub config: HubConfig,
     pub encoder: ChunkEncoder,
@@ -766,6 +770,7 @@ impl Hub {
             native_advancement_grants: Vec::new(),
             mods_loaded: false,
             hidden: Default::default(),
+            expected_fake: Default::default(),
             teams: Vec::new(),
             nicknames: std::collections::HashMap::new(),
             compass_targets: std::collections::HashMap::new(),
@@ -834,7 +839,7 @@ impl Hub {
         }
         let body = packet.encode();
         for g in self.guests.iter().filter(|g| g.placed) {
-            g.sender.send(body.clone());
+            g.sender.send_shared(&body);
         }
     }
     /// [`Self::broadcast`] to the held players as well, which keep a picture of
@@ -842,7 +847,7 @@ impl Hub {
     pub fn broadcast_watching(&self, packet: &C) {
         let body = packet.encode();
         for g in self.guests.iter().filter(|g| g.placed || g.held) {
-            g.sender.send(body.clone());
+            g.sender.send_shared(&body);
         }
     }
     /// MinecraftServer.onGameRuleChanged: every player is told when
@@ -974,16 +979,46 @@ impl Hub {
     pub fn loading_chunks(&self, loads: impl Fn(&Guest) -> bool) -> Vec<(i32, i32)> {
         self.guests
             .iter()
-            .filter(|g| self.watches(g) && loads(g))
+            .filter(|g| self.watches(g) && loads(g) && !g.fake)
             .map(Guest::chunk)
             .collect()
+    }
+    /// The areas fake players keep loaded: the chunk under each and its radius, their own view
+    /// distance plus one (what they track), under the server's.
+    pub fn fake_loading_areas(&self, loads: impl Fn(&Guest) -> bool) -> Vec<((i32, i32), i32)> {
+        let server = self.config.view_distance + 1;
+        self.guests
+            .iter()
+            .filter(|g| self.watches(g) && loads(g) && g.fake)
+            .map(|g| (g.chunk(), (g.view_distance + 1).min(server)))
+            .collect()
+    }
+    /// Says that a player named `name` (any case) will join as a fake player, or not any more
+    /// (`native_expect_fake_player`).
+    pub fn expect_fake_player(&mut self, name: &str, fake: bool) {
+        let name = name.to_ascii_lowercase();
+        if fake {
+            self.expected_fake.insert(name);
+        } else {
+            self.expected_fake.remove(&name);
+        }
+    }
+    /// Marks the player `uuid` as a fake player or not (`native_set_player_fake`). False for no
+    /// such player.
+    pub fn set_guest_fake(&mut self, uuid: u128, fake: bool) -> bool {
+        let Some(g) = self.guests.iter_mut().find(|g| g.uuid == uuid) else {
+            return false;
+        };
+        g.fake = fake;
+        g.sender.set_fake(fake);
+        true
     }
     /// `PlayerList.broadcastAll(packet, dimension)`: the players in the
     /// level in place.
     pub fn broadcast_level(&self, packet: &C) {
         let body = packet.encode();
         for g in self.guests.iter().filter(|g| self.watches(g)) {
-            g.sender.send(body.clone());
+            g.sender.send_shared(&body);
         }
     }
     /// `DedicatedServer.sendLowDiskSpaceWarning`: the players with
@@ -991,13 +1026,13 @@ impl Hub {
     pub fn send_low_disk_space_warning(&self) {
         let body = C::LowDiskSpaceWarning(horizon_protocol::packets::Empty).encode();
         for g in self.guests.iter().filter(|g| g.placed && g.permission >= 3) {
-            g.sender.send(body.clone());
+            g.sender.send_shared(&body);
         }
     }
     pub fn broadcast_except(&self, conn: u32, packet: &C) {
         let body = packet.encode();
         for g in self.guests.iter().filter(|g| g.placed && g.conn != conn) {
-            g.sender.send(body.clone());
+            g.sender.send_shared(&body);
         }
     }
     /// PlayerList.broadcastSystemMessage.
@@ -1016,7 +1051,7 @@ impl Hub {
         })
         .encode();
         for g in self.guests.iter().filter(|g| g.placed && hears(&g.name)) {
-            g.sender.send(body.clone());
+            g.sender.send_shared(&body);
         }
     }
     /// `ServerPlayer.sendSystemMessage` to the guest with `uuid`, in any
@@ -1028,7 +1063,7 @@ impl Hub {
         })
         .encode();
         for g in self.guests.iter().filter(|g| g.placed && g.uuid == uuid) {
-            g.sender.send(body.clone());
+            g.sender.send_shared(&body);
         }
     }
     /// `ServerPlayer.sendOverlayMessage` to every guest (the action bar).
@@ -1391,6 +1426,15 @@ impl Hub {
         guest.position = ctx.spawn;
         guest.previous_position = ctx.spawn;
         guest.dimension = self.config.dimension.clone();
+        // A mod announced this name as a fake player (`native_expect_fake_player`): fake from its
+        // first packet on.
+        if self
+            .expected_fake
+            .contains(&guest.name.to_ascii_lowercase())
+        {
+            guest.fake = true;
+            guest.sender.set_fake(true);
+        }
         self.guests.push(guest);
         conn
     }
@@ -1432,6 +1476,10 @@ impl Hub {
             let g = &mut self.guests[i];
             g.held = true;
             g.held_since = self.ticks;
+        }
+        if self.guests[i].fake {
+            self.place_new_fake_player(i);
+            return;
         }
         let held = self.guests[i].held;
         let g = &self.guests[i];
@@ -1555,6 +1603,56 @@ impl Hub {
         // ServerPlayer.sendPostEffects and initInventoryMenu.
         self.send_post_effects(i);
         self.send_inventory(i);
+    }
+
+    /// [`Self::place_new_player`] for a fake player (a mod's bot with no client): it reads only the teleport, so it gets none of the login, recipe book,
+    /// command tree, player list, level info or inventory, which hundreds of bots would each have
+    /// built and dropped. The real players still see the join line and the list entry; the other
+    /// fake players are told nothing.
+    fn place_new_fake_player(&mut self, i: usize) {
+        let (name, uuid, mode, conn) = {
+            let g = &self.guests[i];
+            (g.name.clone(), g.uuid, g.game_mode, g.conn)
+        };
+        let joined = C::SystemChat(play::SystemChat {
+            content: yellow_names(
+                "multiplayer.player.joined",
+                vec![self.player_display_name(uuid, &name)],
+            ),
+            overlay: false,
+        })
+        .encode();
+        let newcomer = C::PlayerInfoUpdate(play::PlayerInfoUpdate {
+            actions: Self::INFO_ACTIONS,
+            entries: vec![self.player_info(uuid, &name, mode, 0)],
+        })
+        .encode();
+        let level = self.hidden.get(&uuid).copied();
+        for g in self
+            .guests
+            .iter()
+            .filter(|g| g.placed && g.conn != conn && !g.fake)
+        {
+            if self.sees(g.permission, uuid) {
+                g.sender.send(joined.clone());
+            }
+        }
+        for g in self
+            .guests
+            .iter_mut()
+            .filter(|g| (g.placed || g.held) && g.conn != conn && !g.fake)
+        {
+            if level.is_some_and(|l| g.permission < l) {
+                g.tab_hidden.insert(uuid);
+            } else {
+                g.sender.send(newcomer.clone());
+            }
+        }
+        self.guests[i].placed = true;
+        self.resend_teleport(i, None);
+        let g = &mut self.guests[i];
+        g.center_sent = Some(g.chunk());
+        g.placed_at = self.ticks;
     }
 
     /// What an import changed, told to the held player's client the way a join tells it: game
@@ -1941,6 +2039,9 @@ impl Hub {
     /// Commands.sendCommands: the command tree for this player.
     fn send_commands(&self, i: usize) {
         let g = &self.guests[i];
+        if g.fake {
+            return;
+        }
         let mut packet = self.commands_packet(g.permission, &g.granted_commands);
         // What the mods took out is not in the tree the client gets.
         if !g.hidden_commands.is_empty() {
@@ -3009,7 +3110,7 @@ impl Hub {
             };
             let body = self.encoder.light_update(chunk, sections);
             for &i in &viewers {
-                self.guests[i].sender.send(body.clone());
+                self.guests[i].sender.send_shared(&body);
             }
         }
     }
@@ -3060,7 +3161,7 @@ impl Hub {
                 }
                 let body = self.encoder.body_in(chunk, world);
                 for &i in &viewers {
-                    self.guests[i].sender.send(body.clone());
+                    self.guests[i].sender.send_shared(&body);
                 }
                 if recording {
                     // The prediction's replay excuses a client near the column: any of its blocks may have
@@ -3146,7 +3247,7 @@ impl Hub {
             };
             let body = packet.encode();
             for &i in &viewers {
-                self.guests[i].sender.send(body.clone());
+                self.guests[i].sender.send_shared(&body);
             }
             if recording {
                 for &i in &viewers {
@@ -3188,7 +3289,7 @@ impl Hub {
                 })
                 .encode();
                 for &i in &viewers {
-                    self.guests[i].sender.send(body.clone());
+                    self.guests[i].sender.send_shared(&body);
                 }
             }
         }
@@ -3494,7 +3595,9 @@ impl Hub {
         let dimension = &self.config.dimension;
         // The viewers include the held players: they are shown the entities
         // around them, but are not among the entities shown (`track_entities`).
-        let here = |g: &Guest| (g.placed || g.held) && g.dimension == *dimension;
+        // A fake player (a bot with no client) is not shown anything: it is tracked by the others
+        // but tracks none itself.
+        let here = |g: &Guest| (g.placed || g.held) && g.dimension == *dimension && !g.fake;
         outs.resize_with(self.guests.iter().filter(|g| here(g)).count(), Vec::new);
         // The prediction's replay excuses a client that may still have an entity that left it.
         let recording = self.recording();
@@ -3614,7 +3717,9 @@ impl Hub {
             }));
             // ServerPlayer.tick's CriteriaTriggers.TICK, then flushDirty. A
             // player who has been here has had the tick's criteria already.
-            if !g.advancements_loaded {
+            if g.fake {
+                // A fake player has no advancements screen or recipe book to fill.
+            } else if !g.advancements_loaded {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |d| d.as_millis() as i64);

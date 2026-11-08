@@ -301,6 +301,7 @@ fn server_player(host: &LanHost, g: &horizon_client::lan::guest::Guest) -> Nativ
         selected_slot: g.selected as u8,
         nickname: host.hub.nicknames.get(&g.uuid).cloned(),
         hidden: host.hub.hidden.get(&g.uuid).copied(),
+        fake: g.fake,
     }
 }
 
@@ -695,6 +696,7 @@ impl Game<'_> {
             selected_slot: self.selected as u8,
             nickname: hub.as_ref().and_then(|h| h.nickname.clone()),
             hidden: hub.as_ref().and_then(|h| h.hidden),
+            fake: false,
             address: hub.map(|h| h.address).unwrap_or_default(),
         })
     }

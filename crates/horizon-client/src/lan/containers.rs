@@ -82,7 +82,7 @@ impl Hub {
             .iter()
             .filter(|g| self.here(g) && g.tracker.is_tracking(id))
         {
-            g.sender.send(body.clone());
+            g.sender.send_shared(&body);
         }
     }
 
@@ -96,7 +96,7 @@ impl Hub {
             .filter(|g| self.here(g) && Some(g.conn) != except)
         {
             if within_range(at, g.position, range) {
-                g.sender.send(body.clone());
+                g.sender.send_shared(&body);
             }
         }
     }
@@ -237,7 +237,7 @@ impl Hub {
         for g in self.guests.iter().filter(|g| {
             self.here(g) && (g.entity_id == attacker || g.tracker.is_tracking(attacker))
         }) {
-            g.sender.send(body.clone());
+            g.sender.send_shared(&body);
         }
     }
 
