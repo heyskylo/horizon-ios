@@ -4525,7 +4525,14 @@ impl Game<'_> {
                     .map(|g| g.conn)
                     .collect()
             });
+            // `EntityTickList.forEach`: a projectile that joined during this
+            // tick's entity pass (a mob's shot) first ticks on the next one; a
+            // player's or a dispenser's, which join before the pass, tick now.
+            let through = self.ticked_entities_through;
             for i in 0..projectiles.len() {
+                if projectiles[i].id > through {
+                    continue;
+                }
                 // A ghast's fireball or a wind charge is pickable, so a pearl, an
                 // arrow or a trident can strike it (`Projectile.isPickable`,
                 // `Projectile.onHit`).
