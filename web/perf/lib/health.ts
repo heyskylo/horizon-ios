@@ -1,5 +1,4 @@
-// Reading the health series the wasm computed. This module only picks values out of `series` rows
-// and orders them; every statistic of a series comes in the row's own `stats`.
+// Picks values out of the wasm's `series` rows; every statistic comes in the row's own `stats`.
 import type { SeriesRow, Side } from "./types";
 
 /** The finite values of a series, in time order (the last one is `last`). */
