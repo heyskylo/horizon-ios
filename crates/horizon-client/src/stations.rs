@@ -1507,6 +1507,29 @@ mod tests {
         let xp = grindstone_experience(&e, &mut r, Some(&s), None);
         assert!((12..24).contains(&xp));
     }
+    /// Grindstone: `ItemStack.matches` compares the component patch, so an
+    /// explicit `damage: 0` on an item whose prototype has no damage component
+    /// keeps the two stacks from merging.
+    #[test]
+    fn grindstone_keeps_an_explicit_zero_damage_apart() {
+        let e = sample();
+        let items = sample_items();
+        let zero = item_data::parse_stack(
+            r#"{id:"minecraft:book",count:1,components:{"minecraft:damage":0,"minecraft:enchantments":{"minecraft:sharpness":1}}}"#,
+        )
+        .unwrap()
+        .unwrap();
+        let plain = item_data::parse_stack(
+            r#"{id:"minecraft:book",count:1,components:{"minecraft:enchantments":{"minecraft:sharpness":1}}}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(grindstone_result(&e, &items, Some(&zero), Some(&plain)).is_none());
+        let out = grindstone_result(&e, &items, Some(&zero), Some(&zero.clone())).unwrap();
+        assert_eq!(out.count, 2);
+        assert!(!out.has_any_enchantments());
+    }
+
     #[test]
     fn smithing_transform_overlay_matches_optional_inputs_and_takes_template_result() {
         use crate::{banner::Banners, brewing::Brewing, crafting::Recipes, creative::Names, menu};
