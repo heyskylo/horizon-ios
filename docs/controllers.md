@@ -93,10 +93,12 @@ again. The controls options can make it hold-to-sneak.
 A Nintendo pad's face buttons can go by their places, as the table and SDL's
 layout have them (B, at the bottom, jumps and confirms), or by their letters,
 as a Switch's own menus and keyboard do: A (right) jumps and confirms, B goes
-back and drops, X swaps the offhand, Y opens the inventory, and the binds list
-and the on-screen keyboard's hints show those letters (splitscreen's join and
-lost-controller prompts, which a controller nobody holds yet answers, stay by
-places). Controller Settings > Device > Nintendo Buttons picks one: By
+back and drops, X swaps the offhand, Y opens the inventory, and every glyph
+shows those letters: the binds list, the gameplay guide, the glyphs on declared
+buttons, notices and the on-screen keyboard's hints. Letter mode is part of the
+player's resolved glyph style, so nothing that draws a glyph handles it
+([ui-kit.md](ui-kit.md)). Splitscreen's join and lost-controller prompts, which
+a controller nobody holds yet answers, stay by places. Controller Settings > Device > Nintendo Buttons picks one: By
 Position or By Letter, saved as `nintendoLetters:true|false` in
 `horizon-controller.txt`. By position unless changed (a build for the Switch
 itself goes by letters). The row is always there, like the DualSense rows
@@ -435,18 +437,25 @@ book's page text), the pad drives the pointer instead.
 
 A button is drawn as Horizon's own art where its family has a picture, and otherwise as the label
 printed on the pad, in its colour, on a dark key (`pad_glyph.rs`; no Mojang assets, nothing from the
-player's jar). Whatever draws or measures a glyph goes through that module.
+player's jar). Whatever draws or measures a glyph goes through that module, asking for it by what the button
+does (a bound action or a menu job), never by a button: a rebinding or a pad's letters reach every glyph
+([ui-kit.md](ui-kit.md)).
 
 | Family | Art | Text |
 |---|---|---|
 | Xbox, also Auto, Steam Deck and anything unknown | `xb_*`: a b x y, lb rb lt rt, view menu, l3 r3, up down left right | none |
 | PlayStation | `psx_*`: cross circle square triangle, l1 r1 l2 r2, create options, l3 r3, up down left right | none |
-| Nintendo | `nx_*`, by what the pad prints: b a y x at south, east, west and north, l r zl zr, minus plus, l3 r3, up down left right | none |
+| Nintendo | `nx_*`, by what the pad prints: b a y x at south, east, west and north, l r zl zr, minus plus, l3 r3, up down left riEach family has its own file for every picture, so a family's art can change without touching another's.
+Only the sticks and the D-pad are the same picture in all three. Nintendo's letters are plain white, as the
+pad prints them, where Xbox's carry Xbox's colours. Text remains for what runs inside a line of text, and for
+an atlas without the sprite.
 
-Every family has its own file for every button, so a family's art can change without touching another's.
-Some are copies until theirs is drawn: Nintendo's letters and shoulders are Xbox's, and all three share the
-same sticks, D-pad and menu pictures. Text remains for what runs inside a line of text, and for an atlas
-without the sprite.
+Nintendo's art, Xbox's View and Menu and PlayStation's Create and Options are drawn by
+`tools/pad_glyphs/gen.py` (standard library only: `python3 tools/pad_glyphs/gen.py` rewrites them in place,
+byte for byte); the rest is hand-made. The script measures nothing at run time: the key shapes and bevel
+were measured from the hand-made art and typed in, so the set matches.
+
+ the sprite.
 
 The art is in `crates/horizon-client/assets/horizon/textures/gui/controller/`, built into the binary, one
 line of `pad_glyph::ART` per picture: a button with no line is text, and adding one is that line and its

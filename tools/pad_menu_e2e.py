@@ -46,6 +46,9 @@ Cases:
 - erase_checkbox: the D-pad reaches Optimize World's Erase Cached Data box, and A ticks it.
 - controller_nintendo_buttons: with Nintendo glyphs, A on Device's Nintendo Buttons picks By Letter and saves it, and
   again goes back to By Position.
+- nintendo_letters: a Nintendo pad going by its letters shows the letter of the button that acts on the title's
+  declared buttons (Options is X, Quit Game's B), and by places Y and A, and the guide's Jump is A or B; the guide
+  and a connected pad's notice are shot in both modes.
 - extras_shell: Horizon Extras on the settings shell: the D-pad walks its rows and scrolls through the hidden ones, past
   a greyed row, the right stick scrolls it, A changes and saves a toggle, the strip follows the row, B leaves.
 - graphics_shell: the Graphics screen on the settings shell: the D-pad goes from its Quality page into the rows, A
@@ -2850,6 +2853,46 @@ def glyph_art_world(args, name):
     return check.failures
 
 
+def nintendo_letters(args, name):
+    check = Check()
+    # By letters the pad's X (on top) plays West and its B (at the bottom) East; by places Y and A.
+    for letters, west, east in ((True, 'X', 'B'), (False, 'Y', 'A')):
+        mode = 'letters' if letters else 'places'
+        seed = seed_controller(f'nintendoLetters:{str(letters).lower()}\n')
+        game = Game(args, f'{name}-{mode}', seed=seed)
+        try:
+            game.ctl('pad', 'family', 'nintendo')
+            game.wait_targets()
+            game.pad('down')
+            shown = {g['button']: g for g in game.menu()['glyphs']}
+            for part, label in (('West', west), ('East', east)):
+                glyph = shown.get(part) or {}
+                check(glyph.get('label') == label, f'{mode} {part}: {glyph.get("label")}, not {label}')
+                sprite = f'horizon:gui/controller/nx_{label.lower()}'
+                check(glyph.get('sprite') == sprite, f'{mode} {part}: {glyph.get("sprite")}, not {sprite}')
+            shot(game, f'nintendo_{mode}_title')
+        finally:
+            game.quit()
+        game = Game(args, f'{name}-{mode}-world', world=True, seed=seed)
+        try:
+            game.ctl('pad', 'family', 'nintendo')
+            game.pad('lb')
+            left, right = guide(game)
+            check(left or right, f'{mode}: no gameplay guide rows')
+            # Jump is South: the A on the right by letters, the B at the bottom by places.
+            labels = {r['caption']: r['label'] for r in game.ctl('pad', 'status')['guide']['left']}
+            jump = 'A' if letters else 'B'
+            check(labels.get('key.jump') == jump, f'{mode}: jump shows {labels.get("key.jump")}, not {jump}')
+            shot(game, f'nintendo_{mode}_guide')
+            game.ctl('pad', 'connection', 'connected', 'nintendo')
+            time.sleep(1)
+            check(game.ctl('pad', 'status').get('notice'), f'{mode}: no notice for the connected pad')
+            shot(game, f'nintendo_{mode}_notice')
+        finally:
+            game.quit()
+    return check.failures
+
+
 def controller_trigger_threshold(args, name):
     game = Game(args, name)
     check = Check()
@@ -3180,6 +3223,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'shell_choice_step': shell_choice_step,
          'glyph_art': glyph_art,
          'glyph_art_world': glyph_art_world,
+         'nintendo_letters': nintendo_letters,
          'key_row_a_x': key_row_a_x,
          'prompt_dialog': prompt_dialog,
          'prompt_dialog_field': prompt_dialog_field,

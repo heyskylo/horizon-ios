@@ -54,8 +54,8 @@ pub(super) const HELP: &[&str] = &[
     "mouse-move DX DY               relative mouse motion, turned like a player's mouse",
     "attack [ID]                    swing at the target (after looking at entity ID)",
     "break X Y Z [--timeout S]      mine a block until it breaks; reports drops and pickups",
-    "place X Y Z [--item ITEM]      place the held (or given) item at a position",
-    "interact X Y Z [FACE]          right-click a block (open a door, chest, crafting table...)",
+    "place X Y Z [--item ITEM] [--sneak]  place the held (or given) item at a position",
+    "interact X Y Z [FACE] [--sneak]  right-click a block (open a door, chest, crafting table...)",
     "use-item [--hold S]            right-click with the held item (eat, drink, throw, draw a bow)",
     "select SLOT|ITEM               select a hotbar slot (1-9) or the hotbar slot holding ITEM",
     "drop [all]                     drop one of the held item (all: the stack)",
@@ -133,6 +133,16 @@ impl Args<'_> {
         v.parse()
             .map_err(|_| format!("{what} must be a number, not {v}").into())
     }
+    /// X or Z of a goto target: a whole number names a block, so aim at its
+    /// center the way the player stands in it; a decimal is an exact position.
+    fn column(&self, i: usize, what: &str) -> Result<f64> {
+        let v = self.f64(i, what)?;
+        Ok(if whole(self.get(i, what)?) {
+            v + 0.5
+        } else {
+            v
+        })
+    }
     fn i32(&self, i: usize, what: &str) -> Result<i32> {
         let v = self.get(i, what)?;
         v.parse()
@@ -178,6 +188,9 @@ fn face_dir(name: &str) -> Result<[i32; 3]> {
 }
 fn add(a: [i32; 3], b: [i32; 3]) -> [i32; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+fn whole(v: &str) -> bool {
+    !v.contains(['.', 'e', 'E'])
 }
 fn dist(a: [f64; 3], b: [f64; 3]) -> f64 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
@@ -236,6 +249,8 @@ enum TaskKind {
         report_tick: u64,
         release: Option<Instant>,
         place: bool,
+        /// `--sneak`: the click waits until the sneak key has been held.
+        sneak: Option<SneakClick>,
     },
     Attack {
         id: Option<u32>,
@@ -274,6 +289,16 @@ struct Break {
     collect_until: Option<u64>,
     broke_tick: u64,
     drops: BTreeMap<u32, ItemStack>,
+}
+/// A right click made while sneaking (placing against a crafting table or a
+/// chest instead of opening it): the sneak key is held for a couple of ticks
+/// first, so the server has the player's shift state before the click.
+struct SneakClick {
+    /// Not clicked yet: click on this tick.
+    click_tick: Option<u64>,
+    /// The block (and face) to aim at again, as sneaking lowers the eye.
+    aim: Option<([i32; 3], Option<[i32; 3]>)>,
+    hold: f64,
 }
 struct Task {
     kind: TaskKind,
@@ -381,6 +406,13 @@ impl Game<'_> {
         let mut v = json!({ "item": &*s.item, "count": s.count });
         if s.damage > 0 {
             v["damage"] = json!(s.damage);
+        }
+        // How worn a tool or armour piece is: its durability and what is left.
+        let items = self.res.items();
+        if horizon_client::stations::is_damageable(items, s) {
+            let max = horizon_client::stations::max_damage(items, s);
+            v["max_damage"] = json!(max);
+            v["durability_left"] = json!((i64::from(max) - i64::from(s.damage)).max(0));
         }
         if let Some(c) = horizon_client::item_data::encode_components(s) {
             v["components"] = json!(horizon_client::snbt::to_snbt(&c));
@@ -758,7 +790,20 @@ impl Game<'_> {
             );
         }
         list.sort_by(|a, b| a.0.total_cmp(&b.0));
-        json!({ "entities": list.into_iter().map(|(_, v)| v).collect::<Vec<_>>() })
+        // What the search covered, so an empty list reads as "none within
+        // the radius" rather than "none at all": everything this client
+        // tracks, and the loaded chunks.
+        json!({
+            "entities": list.into_iter().map(|(_, v)| v).collect::<Vec<_>>(),
+            "radius": radius,
+            "type": want,
+            "tracked": {
+                "mobs": self.mobs.iter().filter(|m| !m.removed).count(),
+                "items": self.dropped.len(),
+                "orbs": self.orbs.len(),
+            },
+            "loaded_chunks": self.world.chunks.len(),
+        })
     }
 
     pub(super) fn inventory_value(&self) -> Value {
@@ -895,18 +940,26 @@ impl Game<'_> {
             let point = |f: &[i32; 3]| [0, 1, 2].map(|i| centre[i] + f64::from(f[i]) * 0.45);
             dist(eye, point(a)).total_cmp(&dist(eye, point(b)))
         });
+        // The first other block a ray stopped at, to name what is in the way.
+        let mut in_the_way: Option<[i32; 3]> = None;
         for f in faces {
             for inset in [0.45, 0.3, 0.0] {
                 let point = [0, 1, 2].map(|i| centre[i] + f64::from(f[i]) * inset);
                 let (yaw, pitch) = yaw_pitch(eye, point);
                 let dir = super::view_vector(yaw, pitch);
-                if let Some(hit) = self.clip_ray(eye, dir, self.reach())
+                let hit = self.clip_ray(eye, dir, self.reach());
+                if let Some(hit) = &hit
                     && hit.pos == pos
                     && (face.is_none() || hit.face == f)
                 {
                     self.yaw = yaw;
                     self.pitch = pitch;
                     return Ok(hit.face);
+                }
+                if let Some(hit) = hit
+                    && hit.pos != pos
+                {
+                    in_the_way.get_or_insert(hit.pos);
                 }
             }
         }
@@ -918,12 +971,55 @@ impl Game<'_> {
             )
             .into());
         }
+        if let Some(p) = in_the_way {
+            let name = &self
+                .res
+                .facts()
+                .get(self.world.block(p[0], p[1], p[2]))
+                .name;
+            return Err(format!(
+                "no face of block {pos:?} is visible from here: {name} at {p:?} is in the way"
+            )
+            .into());
+        }
         Err(format!("no face of block {pos:?} is visible from here").into())
+    }
+
+    /// `--sneak` on place or interact: hold the sneak key now and click a
+    /// couple of ticks later, from the lowered eye (see [`SneakClick`]).
+    fn sneak_click(
+        &mut self,
+        a: &Args<'_>,
+        aim: Option<([i32; 3], Option<[i32; 3]>)>,
+        hold: f64,
+    ) -> Option<SneakClick> {
+        if !a.has("sneak") {
+            return None;
+        }
+        self.keys.press(KeyCode::ShiftLeft, Source::Agent);
+        Some(SneakClick {
+            click_tick: Some(self.ticks + 2),
+            aim,
+            hold,
+        })
     }
 
     /// A left or right click, as the mouse would.
     fn agent_mouse(&mut self, button: MouseButton, pressed: bool) -> Result<()> {
         self.mouse_mapping(button, pressed, Source::Agent)
+    }
+    /// Ends the running agent command (and a turn) with `why`, so the agent
+    /// hears why rather than the socket just closing (the window closing
+    /// while it waits, say).
+    pub(super) fn agent_cancel(&mut self, why: &str) {
+        let reply = json!({ "error": why, "cancelled": true }).to_string();
+        if let Some(t) = self.agent.task.take() {
+            let _ = t.reply.send(reply.clone());
+        }
+        if let Some(g) = self.agent.glide.take() {
+            let _ = g.reply.send(reply);
+        }
+        self.release_agent_keys();
     }
     fn release_agent_keys(&mut self) {
         for k in MOVE_KEYS {
@@ -1195,7 +1291,7 @@ impl Game<'_> {
             }
             "goto" => {
                 self.playing()?;
-                let target = [a.f64(0, "X")?, a.f64(1, "Y")?, a.f64(2, "Z")?];
+                let target = [a.column(0, "X")?, a.f64(1, "Y")?, a.column(2, "Z")?];
                 let near = a.num("near", 0.6)?.max(0.3);
                 let timeout = a.num("timeout", 60.0)?;
                 let p = self.player.as_ref().ok_or("no player")?.position;
@@ -1375,6 +1471,7 @@ impl Game<'_> {
                 let mut aimed = !self.res.facts().is_air(before)
                     && !self.res.facts().get(before).outline.is_empty()
                     && self.aim_block(pos, None).is_ok();
+                let mut aim_at = aimed.then_some((pos, None));
                 for (_, d) in FACES.iter().filter(|_| !aimed) {
                     let d = *d;
                     let support = add(pos, d);
@@ -1389,6 +1486,7 @@ impl Game<'_> {
                     let face = d.map(|v| -v);
                     if self.aim_block(support, Some(face)).is_ok() {
                         aimed = true;
+                        aim_at = Some((support, Some(face)));
                         break;
                     }
                 }
@@ -1399,8 +1497,11 @@ impl Game<'_> {
                     .into());
                 }
                 let inventory = self.inventory_counts();
-                self.agent_mouse(MouseButton::Right, true)?;
-                self.agent_mouse(MouseButton::Right, false)?;
+                let sneak = self.sneak_click(&a, aim_at, 0.0);
+                if sneak.is_none() {
+                    self.agent_mouse(MouseButton::Right, true)?;
+                    self.agent_mouse(MouseButton::Right, false)?;
+                }
                 let report_tick = self.ticks + 2;
                 self.start_task(
                     "place",
@@ -1411,6 +1512,7 @@ impl Game<'_> {
                         report_tick,
                         release: None,
                         place: true,
+                        sneak,
                     },
                     reply,
                     5.0,
@@ -1419,22 +1521,29 @@ impl Game<'_> {
             "interact" | "use-item" => {
                 self.playing()?;
                 let hold = a.num("hold", 0.0)?;
+                let mut aim_at = None;
                 let pos = if name == "interact" {
                     let pos = a.block_pos(0)?;
                     let face = a.pos.get(3).map(|f| face_dir(f)).transpose()?;
                     self.aim_block(pos, face)?;
+                    aim_at = Some((pos, face));
                     Some(pos)
                 } else {
                     None
                 };
                 let before = pos.map(|p| self.world.block(p[0], p[1], p[2]));
                 let inventory = self.inventory_counts();
-                self.agent_mouse(MouseButton::Right, true)?;
-                let release = if hold > 0.0 {
-                    Some(Instant::now() + Duration::from_secs_f64(hold))
-                } else {
-                    self.agent_mouse(MouseButton::Right, false)?;
+                let sneak = self.sneak_click(&a, aim_at, hold);
+                let release = if sneak.is_some() {
                     None
+                } else {
+                    self.agent_mouse(MouseButton::Right, true)?;
+                    if hold > 0.0 {
+                        Some(Instant::now() + Duration::from_secs_f64(hold))
+                    } else {
+                        self.agent_mouse(MouseButton::Right, false)?;
+                        None
+                    }
                 };
                 let report_tick = self.ticks + 2;
                 self.start_task(
@@ -1450,6 +1559,7 @@ impl Game<'_> {
                         report_tick,
                         release,
                         place: false,
+                        sneak,
                     },
                     reply,
                     hold + 5.0,
@@ -1964,7 +2074,29 @@ impl Game<'_> {
                 report_tick,
                 release,
                 place,
+                sneak,
             } => {
+                if let Some(s) = sneak
+                    && let Some(at) = s.click_tick
+                {
+                    if self.ticks < at && !timed_out && interrupted.is_none() {
+                        return None;
+                    }
+                    s.click_tick = None;
+                    if interrupted.is_none() && !timed_out {
+                        if let Some((p, f)) = s.aim {
+                            let _ = self.aim_block(p, f);
+                        }
+                        let _ = self.agent_mouse(MouseButton::Right, true);
+                        if s.hold > 0.0 {
+                            *release = Some(Instant::now() + Duration::from_secs_f64(s.hold));
+                        } else {
+                            let _ = self.agent_mouse(MouseButton::Right, false);
+                        }
+                        *report_tick = self.ticks + 2;
+                        return None;
+                    }
+                }
                 if let Some(at) = release {
                     if Instant::now() < *at && !timed_out && interrupted.is_none() {
                         return None;
@@ -1990,6 +2122,23 @@ impl Game<'_> {
                 {
                     return None;
                 }
+                // Likewise a block's menu (crafting table, furnace, chest)
+                // opens once the server's open-screen packet comes: wait for
+                // it while nothing else came of the click yet.
+                if !*place
+                    && pos.is_some()
+                    && !changed
+                    && self.remote.is_some()
+                    && self.screen == Screen::Playing
+                    && *inventory == self.inventory_counts()
+                    && self.ticks < *report_tick + 20
+                    && !timed_out
+                {
+                    return None;
+                }
+                if sneak.is_some() {
+                    self.keys.release(&KeyCode::ShiftLeft, Source::Agent);
+                }
                 let after = pos.map(|p| self.block_json(p));
                 let used = delta(inventory, &self.inventory_counts());
                 let mut v = json!({
@@ -2001,9 +2150,24 @@ impl Game<'_> {
                     "screen": self.screen_label(),
                 });
                 if *place && !changed {
-                    v["error"] = json!(
+                    // The player's own box (0.6 wide, 1.8 high) in the cell
+                    // is the usual reason: say so.
+                    let p = self.position();
+                    let player_inside = pos.is_some_and(|b| {
+                        (0..3).all(|i| {
+                            let (lo, hi) = if i == 1 {
+                                (p[1], p[1] + 1.8)
+                            } else {
+                                (p[i] - 0.3, p[i] + 0.3)
+                            };
+                            lo < f64::from(b[i]) + 1.0 && hi > f64::from(b[i])
+                        })
+                    });
+                    v["error"] = json!(if player_inside {
+                        "the block did not change: the player is standing in that cell; move out of it first"
+                    } else {
                         "the block did not change (blocked by an entity, or the item cannot be placed)"
-                    );
+                    });
                 }
                 Some(v)
             }
@@ -2036,13 +2200,13 @@ impl Game<'_> {
         if navigation::arrived(p, g.target, g.near) {
             return Some(
                 json!({ "ok": true, "arrived": true, "position": p, "target": g.target,
-                                "distance": dist(p, g.target), "warning": g.warning }),
+                                "distance": dist(p, g.target), "horizontal_distance": horizontal(p, g.target), "warning": g.warning }),
             );
         }
         if timed_out {
             return Some(
                 json!({ "error": "timed out before arriving", "arrived": false, "position": p,
-                                "target": g.target, "distance": dist(p, g.target), "warning": g.warning }),
+                                "target": g.target, "distance": dist(p, g.target), "horizontal_distance": horizontal(p, g.target), "warning": g.warning }),
             );
         }
         let previous_next = g.next;
@@ -2065,7 +2229,7 @@ impl Game<'_> {
                 if g.replans > 3 {
                     return Some(
                         json!({ "error": "stuck: cannot make progress", "arrived": false,
-                        "position": p, "target": g.target, "distance": dist(p, g.target) }),
+                        "position": p, "target": g.target, "distance": dist(p, g.target), "horizontal_distance": horizontal(p, g.target) }),
                     );
                 }
                 if g.next > 0 && g.next < g.path.nodes.len() {
@@ -2084,7 +2248,7 @@ impl Game<'_> {
                 return Some(
                     json!({ "error": "no further walking progress through loaded terrain",
                     "arrived": false, "position": p, "target": g.target,
-                    "distance": dist(p, g.target), "warning": g.warning }),
+                    "distance": dist(p, g.target), "horizontal_distance": horizontal(p, g.target), "warning": g.warning }),
                 );
             };
             g.path = path;
@@ -2145,10 +2309,13 @@ impl Game<'_> {
                 b.collect_until = Some(self.ticks + 20);
             } else if timed_out {
                 let _ = self.agent_mouse(MouseButton::Left, false);
-                return Some(
-                    json!({ "error": "timed out before the block broke", "pos": b.pos,
-                                    "block": self.state_string(state), "ticks": self.ticks - b.started_tick }),
-                );
+                // The held item explains most slow breaks: a tool that broke
+                // mid-vein leaves the bare hand, and stone never breaks by hand.
+                return Some(json!({
+                    "error": "timed out before the block broke", "pos": b.pos,
+                    "block": self.state_string(state), "ticks": self.ticks - b.started_tick,
+                    "held": self.held().map(|s| self.stack_value(s)),
+                }));
             } else if self.screen != Screen::Playing {
                 return Some(
                     json!({ "error": format!("the {} screen opened", self.screen_label()), "pos": b.pos }),
@@ -2193,6 +2360,7 @@ impl Game<'_> {
             "ticks": b.broke_tick - b.started_tick,
             "drops": counts(b.drops.values().cloned()),
             "picked_up": delta(&b.inventory, &self.inventory_counts()),
+            "held": self.held().map(|s| self.stack_value(s)),
             "items_left_on_ground": remaining,
             "on_ground": self.dropped.iter().filter(|i| b.drops.contains_key(&i.id)).map(|i| json!({
                 "id": i.id, "item": &*i.stack.item, "count": i.stack.count,
@@ -2205,6 +2373,12 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn whole_goto_coordinates_name_a_block() {
+        assert!(whole("8") && whole("-12"));
+        assert!(!whole("8.0") && !whole("8.25") && !whole("1e2"));
+    }
 
     #[test]
     fn only_wait_keeps_held_input() {

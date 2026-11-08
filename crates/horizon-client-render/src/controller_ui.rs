@@ -4,10 +4,11 @@
 //! router's.
 use crate::widgets::Action as Declared;
 use crate::{
-    gamepad::{self, Button, GlyphStyle, PadSettings},
+    gamepad::{self, GlyphOf, GlyphStyle, MenuJob, PadSettings},
     graphics_style as style,
     hud::{HudAtlas, HudBatch},
     lang,
+    pad_glyph::{Glyph, Glyphs},
     settings::{Opt, Settings},
     settings_shell::{self as shell, Columns},
     text::Text,
@@ -314,11 +315,8 @@ pub struct Context {
     pub device: Option<Device>,
     /// The glyph family of `device`, before the player's choice.
     pub detected: GlyphStyle,
-    /// The family menus show.
-    pub style: GlyphStyle,
-    /// The pad goes by its letters (`PadSettings::nintendo_letters`) and the glyphs are
-    /// Nintendo's: each part shows the letter of the button playing it.
-    pub by_letter: bool,
+    /// The glyphs menus show, letter mode included.
+    pub glyphs: Glyphs,
 }
 
 fn glyphs_name(style: GlyphStyle) -> String {
@@ -460,13 +458,9 @@ impl ControllerUi {
     fn query(&self) -> String {
         self.search.value.trim().to_lowercase()
     }
-    /// The button a binding reads as on this pad.
-    fn shown(&self, b: Button) -> Button {
-        if self.context.by_letter {
-            b.by_letter()
-        } else {
-            b
-        }
+    /// The glyph of the button bound to `action`, in this pad's glyphs.
+    fn bound(&self, action: &'static str, s: &Settings) -> Option<Glyph> {
+        Glyph::of(GlyphOf::Bound(action), &s.controller, self.context.glyphs)
     }
     /// A row as its name and its value.
     fn parts(&self, item: Item, s: &Settings) -> (String, Option<String>) {
@@ -474,8 +468,8 @@ impl ControllerUi {
             Item::Option(o) => shell::name_and_value(&o.label(s).plain()),
             Item::Bind(action) => {
                 let name = lang::get(gamepad::action_caption(action));
-                let value = match s.controller.binding(action) {
-                    Some(b) => self.shown(b).label(self.context.style).to_owned(),
+                let value = match self.bound(action, s) {
+                    Some(glyph) => glyph.label().to_owned(),
                     None => lang::get("key.keyboard.unknown"),
                 };
                 let value = if self.binding == Some(action) {
@@ -508,7 +502,7 @@ impl ControllerUi {
                         },
                     ),
                     Info::Detected => ("Detected glyphs", glyphs_name(c.detected)),
-                    Info::Using => ("Glyphs in use", glyphs_name(c.style)),
+                    Info::Using => ("Glyphs in use", glyphs_name(c.glyphs.family())),
                 };
                 (lang::get(name), Some(value))
             }
@@ -772,12 +766,12 @@ impl ControllerUi {
             style::CONTROL_H,
         ];
         // The button in its colour; yellow over it when another action has it too.
-        let shown = match s.controller.binding(action) {
+        let shown = match self.bound(action, s) {
             _ if self.binding == Some(action) || s.controller.conflicts(action) => {
                 Text::literal(value).with_color(crate::text::YELLOW)
             }
-            Some(b) => {
-                let [r, g, bl] = self.shown(b).color(self.context.style);
+            Some(glyph) => {
+                let [r, g, bl] = glyph.color();
                 Text::literal(value)
                     .with_color(u32::from(r) << 16 | u32::from(g) << 8 | u32::from(bl))
             }
@@ -894,12 +888,9 @@ impl ControllerUi {
             _ => return lang::get(setting.text),
         };
         let pad = &s.controller;
-        let style = self.context.style;
         if self.binding == Some(action) {
-            return lang::tr(
-                "Press the button for this. %s cancels.",
-                &[&Button::Start.label(style)],
-            );
+            let cancel = Glyph::menu(MenuJob::Start, self.context.glyphs);
+            return lang::tr("Press the button for this. %s cancels.", &[&cancel.label()]);
         }
         if pad.conflicts(action)
             && let Some(button) = pad.binding(action)
@@ -1287,6 +1278,7 @@ impl ControllerUi {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gamepad::Button;
     use winit::keyboard::KeyCode as K;
 
     const SIZE: (f32, f32) = (854.0, 480.0);

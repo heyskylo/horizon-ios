@@ -7,6 +7,7 @@ use crate::{
     mesher::SectionMesh,
     streaming::{LodSource, WorkerContext},
 };
+pub mod bake;
 pub mod cache;
 mod mesh;
 pub mod packed;
