@@ -1,5 +1,6 @@
 //! 1.21.2's packets in 1.21.1's layout for a 1.21.1 client (and 1.21): the mirror of `translate`'s `mod v1_21_1`
-//! (1.21.1 to 1.21.2). Clientbound only, for now: the serverbound packets 1.21.2 changed are not written yet.
+//! (1.21.1 to 1.21.2). Serverbound: movement, player_input and client_information; the other serverbound
+//! packets 1.21.2 changed are not written yet.
 //!
 //! Done here, packet by packet:
 //! - The window id of container_close, container_set_content, container_set_data and mount_screen_open is a
@@ -29,15 +30,14 @@
 //!   31 types), so the ids table's runs are the only change (see adapter.rs V1_21_1).
 use crate::{
     Error, Result, State,
-    buf::{Codec, Opt, Reader, Vec3d, Writer},
+    buf::{Codec, Reader, Vec3d, Writer},
     entity_data::Particle,
     ids as packet_ids,
     packets::{login::Property, play},
 };
 
-/// The strength 1.21.1 is sent for an explosion. 1.21.2's explode has no radius: this is 1.21.8's guess too
-/// (translate's `EXPLODE_RADIUS`), and only chooses the blast's particles and sound volume on a 1.21.1 client.
-// TODO(step1_21_1): the radius is unknown here; 3.0 is a guess.
+/// The strength written for an explosion. 1.21.2's explode has no radius; `ClientSession` overwrites this with
+/// 26.3's radius, which the steps in between drop. It only chooses the blast's particles and sound volume.
 const EXPLODE_STRENGTH: f32 = 3.0;
 
 /// The pinned clientbound packet `id` (`payload` in 1.21.2's layout) in 1.21.1's layout; `None` when laid out alike.
@@ -261,22 +261,33 @@ fn player_info(payload: &[u8]) -> Result<Vec<u8>> {
 /// the block interaction (0 keep), and two particles: the small and the large one. Both are the one particle here.
 fn explode(payload: &[u8]) -> Result<Vec<u8>> {
     let mut r = Reader::new(payload);
-    let center = Vec3d::read(&mut r)?;
-    let knockback = <Opt<Vec3d>>::read(&mut r)?;
-    let particle = Particle::read(&mut r)?;
-    let sound = play::SoundHolder::read(&mut r)?;
-    let mut w = Writer::new();
-    Vec3d::write(&center, &mut w);
-    w.f32(EXPLODE_STRENGTH);
-    w.varint(0);
-    for v in knockback.unwrap_or([0.0; 3]) {
-        w.f32(v as f32);
-    }
-    w.varint(0);
-    particle.write(&mut w);
-    particle.write(&mut w);
-    play::SoundHolder::write(&sound, &mut w);
-    Ok(w.data)
+    // The knockback arrives as 1.21.4's step leaves it: a double, then two floats.
+    let (center, knockback, particle, sound) = super::read_in_client_ids(|| {
+        let center = Vec3d::read(&mut r)?;
+        let knockback = if r.bool()? {
+            Some([r.f64()?, f64::from(r.f32()?), f64::from(r.f32()?)])
+        } else {
+            None
+        };
+        Ok((
+            center,
+            knockback,
+            Particle::read(&mut r)?,
+            play::SoundHolder::read(&mut r)?,
+        ))
+    })?;
+    Ok(super::write_in_client_ids(|w| {
+        Vec3d::write(&center, w);
+        w.f32(EXPLODE_STRENGTH);
+        w.varint(0);
+        for v in knockback.unwrap_or([0.0; 3]) {
+            w.f32(v as f32);
+        }
+        w.varint(0);
+        particle.write(w);
+        particle.write(w);
+        play::SoundHolder::write(&sound, w);
+    }))
 }
 
 /// The serverbound packet `id` a 1.21.1 client sent, in 1.21.2's layout (`None`: laid out alike). The movement
@@ -284,6 +295,16 @@ fn explode(payload: &[u8]) -> Result<Vec<u8>> {
 /// Its steering (player_input: sideways and forward floats, a flags byte) becomes 1.21.2's key flags.
 pub(super) fn serverbound(state: State, id: i32, payload: &[u8]) -> Result<Option<Vec<u8>>> {
     use packet_ids::play::serverbound as sb;
+    // ClientInformation gained its particle status in 1.21.2: a 1.21.1 client's ends before it.
+    if (state, id)
+        == (
+            State::Configuration,
+            packet_ids::configuration::serverbound::CLIENT_INFORMATION,
+        )
+        || (state, id) == (State::Play, sb::CLIENT_INFORMATION)
+    {
+        return client_information(payload).map(Some);
+    }
     if state != State::Play {
         return Ok(None);
     }
@@ -302,6 +323,23 @@ pub(super) fn serverbound(state: State, id: i32, payload: &[u8]) -> Result<Optio
         sb::PLAYER_INPUT => player_input(payload).map(Some),
         _ => Ok(None),
     }
+}
+
+/// 1.21.1's client information with 1.21.2's particle status after it: all particles
+/// (ParticleStatus.ALL, the default the client had no option for).
+fn client_information(payload: &[u8]) -> Result<Vec<u8>> {
+    let mut r = Reader::new(payload);
+    let mut w = Writer::new();
+    w.string(&r.string(16)?);
+    w.i8(r.i8()?);
+    w.varint(r.varint()?);
+    w.bool(r.bool()?);
+    w.u8(r.u8()?);
+    w.varint(r.varint()?);
+    w.bool(r.bool()?);
+    w.bool(r.bool()?);
+    w.varint(0);
+    Ok(w.data)
 }
 
 /// 1.21.1's steering as 1.21.2's key flags: the sign of forward (0x01 forward, 0x02 backward) and of sideways
@@ -364,10 +402,41 @@ mod tests {
     use super::*;
     use crate::adapter::{ServerVersion, session::Session, translate};
 
+    /// A 1.21.1 client's information (no particle status) reads as 1.21.2's with all particles.
+    #[test]
+    fn client_information_gains_the_particle_status() {
+        use crate::packets::configuration::ClientInformation;
+        let mut older = Writer::new();
+        older.string("fr_ch");
+        older.i8(12);
+        older.varint(1);
+        older.bool(true);
+        older.u8(0x7f);
+        older.varint(0);
+        older.bool(false);
+        older.bool(true);
+        for state in [State::Configuration, State::Play] {
+            let id = if state == State::Play {
+                packet_ids::play::serverbound::CLIENT_INFORMATION
+            } else {
+                packet_ids::configuration::serverbound::CLIENT_INFORMATION
+            };
+            let up = serverbound(state, id, &older.data).unwrap().unwrap();
+            let p = ClientInformation::read(&mut Reader::new(&up)).unwrap();
+            assert_eq!(
+                (p.language.as_str(), p.view_distance, p.chat_visibility),
+                ("fr_ch", 12, 1)
+            );
+            assert_eq!((p.model_customisation, p.main_hand), (0x7f, 0));
+            assert!(p.chat_colors && !p.text_filtering && p.allows_listing);
+            assert_eq!(p.particle_status, 0);
+        }
+    }
+
     /// Through the reader and back: `payload` (1.21.1's) must come out as it went in.
     fn round_trip(id: i32, payload: &[u8]) {
         let session = Session::new(ServerVersion::V1_21_1);
-        let up = translate::v1_21_1::clientbound(&session, State::Play, id, payload)
+        let up = translate::client_layout_v1_21_1::clientbound(&session, State::Play, id, payload)
             .unwrap()
             .expect("the reader changes this packet");
         let down = clientbound(State::Play, id, &up)
@@ -384,7 +453,7 @@ mod tests {
         assert_eq!(down.len(), 21);
         assert_eq!(down[20], 0);
         let session = Session::new(ServerVersion::V1_21_1);
-        let up = translate::v1_21_1::clientbound(&session, State::Login, id, &down)
+        let up = translate::client_layout_v1_21_1::clientbound(&session, State::Login, id, &down)
             .unwrap()
             .unwrap();
         assert_eq!(up, profile);
@@ -591,11 +660,14 @@ mod tests {
 
     #[test]
     fn an_explosion_is_1_21_1_s_bytes() {
-        // 1.21.2 layout in: centre, a knockback, the particle (id 5, no data), the sound inline ("a:b", no range).
+        // 1.21.4's step out: centre, a knockback (a double, two floats), the particle (id 5, no data), the sound
+        // inline ("a:b", no range).
         let mut i = Writer::new();
         [1.0, 2.0, 3.0].iter().for_each(|v| i.f64(*v));
         i.bool(true);
-        [0.5, 0.0, -1.0].iter().for_each(|v| i.f64(*v));
+        i.f64(0.5);
+        i.f32(0.0);
+        i.f32(-1.0);
         i.varint(5);
         i.varint(0);
         i.string("a:b");

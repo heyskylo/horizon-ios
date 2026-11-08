@@ -270,7 +270,7 @@ public final class VanillaNaturalSpawnOracle {
         @Override public ServerChunkCache getChunkSource() { return chunkSource; }
         @Override public StructureManager structureManager() { return structures; }
         @Override public LevelData.RespawnData getRespawnData() { return respawn; }
-        @Override public boolean canSpawnEntitiesInChunk(ChunkPos pos) { return !unloaded.contains(pos.pack()); }
+        @Override public boolean canSpawnEntitiesInChunk(ChunkPos pos) { return !unloaded.contains(pos.pack()) && border.isWithinBounds(pos); }
         @Override public DifficultyInstance getCurrentDifficultyAt(BlockPos pos) { return new DifficultyInstance(difficulty, 0L, 0L, 0.0F); }
         @Override public BlockGetter getChunkForCollisions(int chunkX, int chunkZ) { return this; }
         @Override public boolean containsAnyLiquid(AABB box) {
@@ -349,7 +349,8 @@ public final class VanillaNaturalSpawnOracle {
         @Override public ChunkPos getPos() { return at; }
         @Override public BlockState getBlockState(BlockPos pos) { return level.getBlockState(pos); }
         @Override public FluidState getFluidState(BlockPos pos) { return level.getFluidState(pos); }
-        @Override public int getHeight(Heightmap.Types type, int x, int z) { return level.getHeight(type, x, z); }
+        /** ChunkAccess.getHeight is the heightmap's firstAvailable minus one; the level's own getHeight is firstAvailable. */
+        @Override public int getHeight(Heightmap.Types type, int x, int z) { return level.getHeight(type, x, z) - 1; }
     }
 
     static final class Source extends ServerChunkCache {
@@ -683,6 +684,9 @@ public final class VanillaNaturalSpawnOracle {
                 try {
                     level.dimensionKey = ResourceKey.create(Registries.DIMENSION, Identifier.parse(c.getOrDefault("dim", "minecraft:overworld")));
                     level.dimensionType = dimensions.getOrThrow(ResourceKey.create(Registries.DIMENSION_TYPE, level.dimensionKey.identifier())).value();
+                    level.border = new WorldBorder();
+                    level.border.setCenter(Double.parseDouble(c.getOrDefault("borderx", "0")), Double.parseDouble(c.getOrDefault("borderz", "0")));
+                    level.border.setSize(Double.parseDouble(c.getOrDefault("bordersize", "59999968")));
                     level.blocks.clear();
                     for (int i = 0; c.containsKey("k" + i); i++) {
                         String[] p = c.get("k" + i).split("/", 2);
@@ -864,6 +868,8 @@ public final class VanillaNaturalSpawnOracle {
                             log.add("cats " + names);
                             // spawnForChunk, then spawnCategoryForChunk with its start logged.
                             for (MobCategory category : categories) {
+                                // ServerChunkCache.tickSpawningChunk gates the whole pass.
+                                if (mode.equals("tick_chunk") && !level.canSpawnEntitiesInChunk(chunk.at)) break;
                                 boolean ok = (boolean) local.invoke(state, category, chunk.at);
                                 log.add("local " + category.getSerializedName() + " " + ok);
                                 if (!ok) continue;

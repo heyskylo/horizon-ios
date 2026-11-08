@@ -342,7 +342,9 @@ impl Goal for HappyGhastFloat {
         !on_still_timeout(m) && Float.can_use(m, cx)
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        Float.can_use(m, cx)
+        // `HappyGhastFloatGoal` inherits `Goal.canContinueToUse`, which asks
+        // the overridden `canUse`: the still timeout applies mid-float too.
+        self.can_use(m, cx)
     }
     fn every_tick(&self) -> bool {
         true
@@ -703,5 +705,56 @@ mod tests {
         );
         assert_eq!(m.ai.nav.kind, crate::mobs::nav::NavKind::Flying);
         assert!(m.ai.nav.can_float);
+    }
+}
+
+#[cfg(test)]
+mod still_float_tests {
+    use super::*;
+    use crate::mobs::{Species, world::with_test_world};
+
+    /// `HappyGhastFloatGoal` inherits `Goal.canContinueToUse` (`canUse`), so
+    /// the still-timeout guard is re-checked on a running float goal too: a
+    /// ghast a player stands on stops floating instead of hopping in water.
+    #[test]
+    fn a_happy_ghast_on_a_still_timeout_stops_floating() {
+        let mut t = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        t.species = Species::HappyGhast;
+        let mut m = Mob::new(
+            1,
+            std::sync::Arc::new(t),
+            horizon_core::geometry::Vec3::ZERO,
+            0.0,
+        );
+        m.fluids.water = 1.0;
+        let mut stopped = None;
+        let ran = with_test_world(&[], |w, _| {
+            let mut lr = horizon_core::random::LegacyRandom::new(0);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w,
+                lr: &mut lr,
+                events: &mut events,
+            };
+            let mut goals = std::mem::take(&mut m.ai.goals);
+            goals.tick(&mut m, &mut cx);
+            assert!(
+                goals.is_running("HappyGhastFloatGoal"),
+                "an unburdened happy ghast in deep water floats"
+            );
+            // `isOnStillTimeout`: an adult with serverStillTimeout > 0.
+            m.extra.counter = 1;
+            goals.tick(&mut m, &mut cx);
+            stopped = Some(!goals.is_running("HappyGhastFloatGoal"));
+            m.ai.goals = goals;
+        });
+        if !ran {
+            return;
+        }
+        assert_eq!(
+            stopped,
+            Some(true),
+            "a happy ghast on a still timeout must stop floating"
+        );
     }
 }
