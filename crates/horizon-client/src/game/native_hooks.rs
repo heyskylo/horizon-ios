@@ -6,6 +6,10 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 415 adds a world warp (`native_world_warp`): WGSL every terrain and entity vertex goes through, with an optional per-pixel stage for terrain.
+//!
+//! API 414 adds a held world (`native_world_hold`): the terrain kept drawn as it stands while the world changes under it, and every change shown on one frame when let go.
+//!
 //! API 413 adds chunk tickets in a level nobody is in (`native_force_chunk_in`).
 //!
 //! API 412 adds chunks a mod keeps loaded and ticking (`native_force_chunk`, `native_forced_chunks`).
@@ -1172,7 +1176,7 @@ pub(super) use horizon_world::level::flags;
 
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
-pub(crate) const NATIVE_HOOKS_API: u32 = 413;
+pub(crate) const NATIVE_HOOKS_API: u32 = 415;
 
 impl GameLevel<'_> {
     /// `EntityBlock.newBlockEntity` with the actual placed state. The first
@@ -3205,7 +3209,7 @@ impl Game<'_> {
     /// radius)` for only the sections inside circles. Not asking lets go, and every change
     /// shows on that frame. Asked once a frame while a world is shown, before the frame's
     /// section uploads, by each player's game (splitscreen: each its own). Client only.
-    /// API @API:world_hold@.
+    /// API 414.
     pub(super) fn native_world_hold(&self, hold: &mut WorldHold) {
         mod_api::dispatch_world_hold(self, mod_api::mods(), hold);
     }
