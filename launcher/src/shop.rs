@@ -107,6 +107,15 @@ pub fn set_share(set: u32, unowned: u32, full: u32) -> u32 {
     ((set * unowned + full / 2) / full) as u32
 }
 
+/// Whether the account owns all of `id`: an item it has, or a set whose every item it has. What
+/// it owns shows "Owned" and nothing to buy.
+pub fn owns(id: &str, c: &Catalogue, owned: &HashSet<String>) -> bool {
+    match c.sets.iter().find(|s| s.id == id) {
+        Some(set) => set.items.iter().all(|i| owned.contains(i)),
+        None => owned.contains(id),
+    }
+}
+
 /// What a set costs an account that owns `owned` of its items, and how many those are.
 pub fn set_price(
     set: &Set,
