@@ -8739,27 +8739,28 @@ impl Renderer {
         }
         // `[displacement]`: the solid quads of the sections it reaches, nearest first.
         if let Some(d) = self.native.as_mut().and_then(|n| n.displacement.as_mut()) {
-            let near: Vec<displace::Near<'_>> = if frame.title {
-                Vec::new()
-            } else {
-                visible
-                    .iter()
-                    .filter(|v| {
-                        let o = glam::Vec3::from(v.origin);
-                        let closest = glam::Vec3::ZERO.clamp(o, o + 16.0);
-                        closest.length() < d.distance
-                    })
-                    .filter_map(|v| {
-                        let s = self.sections.get(v.slot);
-                        (s.solid > 0).then(|| displace::Near {
-                            buffer: self.arena.buffer(s.page),
-                            start: s.start,
-                            quads: s.solid,
-                            origin: v.origin,
+            let near: smallvec::SmallVec<[displace::Near<'_>; displace::MAX_SECTIONS]> =
+                if frame.title {
+                    smallvec::SmallVec::new()
+                } else {
+                    visible
+                        .iter()
+                        .filter(|v| {
+                            let o = glam::Vec3::from(v.origin);
+                            let closest = glam::Vec3::ZERO.clamp(o, o + 16.0);
+                            closest.length() < d.distance
                         })
-                    })
-                    .collect()
-            };
+                        .filter_map(|v| {
+                            let s = self.sections.get(v.slot);
+                            (s.solid > 0).then(|| displace::Near {
+                                buffer: self.arena.buffer(s.page),
+                                start: s.start,
+                                quads: s.solid,
+                                origin: v.origin,
+                            })
+                        })
+                        .collect()
+                };
             d.prepare(&self.queue, &mut encoder, &near, view_proj);
         }
         // Solid sections front to back, then translucent ones back to front,
