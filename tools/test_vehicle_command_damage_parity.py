@@ -46,6 +46,24 @@ def program():
     # VehicleEntity.destroy's spawnAtLocation: the ItemEntity's own motion, 0.2 up (X/Z are random).
     if kind=='oak_boat':cmd(f'/data get entity @e[type=item,nbt={{Item:{{id:"minecraft:{kind}"}}}},limit=1] Motion[1] 1000',label+'-hull-motion-y',admission=False)
     cmd(f'/data get entity @e[type=item,nbt={{Item:{{id:"minecraft:{kind}"}}}},limit=1]',label+'-hull-full',admission=False,diagnostic=True)
+ # VehicleEntity.destroy's spawnAtLocation: the cart item has an ItemEntity's own motion, 0.2 up (X/Z random).
+ cmd('/data get entity @e[type=item,nbt={Item:{id:"minecraft:minecart"}},limit=1] Motion[1] 1000','minecart-hull-motion-y',200,admission=False)
+ cmd('/data get entity @e[type=item,nbt={Item:{id:"minecraft:minecart"}},limit=1] PickupDelay','minecart-hull-delay',10,admission=False)
+ # AbstractMinecartContainer.remove: Containers.dropContents scatters the contents from a spot in the
+ # cart's block, in pieces of 10 to 30, with no pickup delay. Spots and motions are random; these are not.
+ u=str(uuid.UUID(int=(500<<96)|8));items='[{Slot:0b,id:"minecraft:diamond",count:5},{Slot:1b,id:"minecraft:dirt",count:40}]'
+ cmd('/execute if block 3 199 13 stone','chest-cart-support',1)
+ cmd(f'/summon chest_minecart 3.5 200 13.5 {{UUID:[I;500,0,0,8],NoGravity:1b,Motion:[0d,0d,0d],Items:{items}}}','chest-cart-summon',1)
+ cmd(f'/execute as {u} if entity @s[type=chest_minecart,nbt={{Items:{items}}}]','chest-cart-actor',1)
+ action(f'damage {u} 5 minecraft:generic','chest-cart-break')
+ cmd(f'/execute unless entity {u}','chest-cart-removed',admission=False)
+ cmd('/execute if entity @e[type=item,nbt={Item:{id:"minecraft:chest_minecart",count:1}}]','chest-cart-hull',admission=False)
+ cmd('/data get entity @e[type=item,nbt={Item:{id:"minecraft:chest_minecart"}},limit=1] Motion[1] 1000','chest-cart-hull-motion-y',admission=False)
+ cmd('/data get entity @e[type=item,nbt={Item:{id:"minecraft:chest_minecart"}},limit=1] PickupDelay','chest-cart-hull-delay',admission=False)
+ cmd('/execute if entity @e[type=item,nbt={Item:{id:"minecraft:diamond",count:5}},x=3,y=200,z=13,dx=0,dy=0,dz=0]','chest-cart-diamonds',admission=False)
+ cmd('/data get entity @e[type=item,nbt={Item:{id:"minecraft:diamond"}},limit=1] PickupDelay','chest-cart-diamonds-delay',admission=False)
+ cmd('/execute if entity @e[type=item,nbt={Item:{id:"minecraft:dirt",count:40}}]','chest-cart-dirt-split',admission=False)
+ cmd('/execute if entity @e[type=item,nbt={Item:{id:"minecraft:dirt"}},x=3,y=200,z=13,dx=0,dy=0,dz=0]','chest-cart-dirt-pieces',admission=False,diagnostic=True)
  cmd('/summon pig 13.5 200 6.5 {UUID:[I;500,0,0,7],Health:10f,NoAI:1b,NoGravity:1b}','pig-summon',1)
  pig=str(uuid.UUID(int=(500<<96)|7))
  cmd(f'/execute as {pig} if entity @s[type=pig,nbt={{Health:10f,NoAI:1b,NoGravity:1b}}]','pig-before',1)

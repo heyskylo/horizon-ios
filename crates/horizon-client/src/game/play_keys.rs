@@ -8,6 +8,7 @@ impl Game<'_> {
     /// `Screen.keyPressed` hears the raw one, and only a raw key settles what
     /// the container's hotbar keys are now (`checkHotbarKeyPressed`).
     pub(super) fn key_pressed(&mut self, key: KeyCode, raw: KeyCode) -> Result<()> {
+        self.direct_craft_stop();
         if self.screen == Screen::Playing && self.studio_replay.is_some() {
             match key {
                 KeyCode::Escape => {

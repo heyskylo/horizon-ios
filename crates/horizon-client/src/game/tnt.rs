@@ -490,6 +490,7 @@ impl Game<'_> {
             ) {
                 continue;
             }
+            self.mark_motion(out.len(), Self::MOTION_OBJECT | u64::from(t.id));
             let fuse = t.fuse as f32 - alpha as f32 + 1.0;
             let scale = if fuse < 10.0 {
                 let g = (1.0 - fuse / 10.0).clamp(0.0, 1.0);
