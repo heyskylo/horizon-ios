@@ -462,7 +462,6 @@
   "Copying…": "Kopierer...",
   "Filters": "Filtre",
   "{count} followers": "{count} følgere",
-  "{count} stars on GitHub": "{count} stjerner på GitHub",
   "Connect an AI agent": "Tilslut en AI-agent",
   "Each switch is off unless you turn it on. What it sends is below it; the privacy page on playhorizon.dev says how long it is kept.": "Hver kontakt er slukket, medmindre du tænder den. Hvad den sender er under den; privatlivssiden på playhorizon.dev siger, hvor længe den opbevares.",
   "Players": "Spillere",
@@ -1181,7 +1180,6 @@
   "Builds on the Horizon you play": "Builds on the Horizon you play",
   "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first",
   "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile",
-  "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}",
   "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
   "Tags": "Tags",
   "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on.": "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on.",
@@ -1260,5 +1258,11 @@
   "Recommended": "Anbefalet",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "En ældre version, {version}, bygger på det Horizon, du spiller: installation vælger den",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: version {version} kunne ikke bygges, prøver {older}",
-  "Use recommended (kept at {version})": "Brug anbefalet (holdt på {version})"
+  "Use recommended (kept at {version})": "Brug anbefalet (holdt på {version})",
+  "Only what works on {instance}": "Kun det, der virker på {instance}",
+  "{count} versions that don't work on {instance} are hidden": "{count} versioner, der ikke virker på {instance}, er skjult",
+  "Made for Horizon {pin}: the launcher builds it on {yours}, the one you play, and on {pin} only if it doesn't compile there": "Lavet til Horizon {pin}: launcheren bygger den på {yours}, det du spiller, og kun på {pin}, hvis den ikke kompilerer der",
+  "{mods} didn't build on the Horizon you play: building on the one they were made for": "{mods} kunne ikke bygges på det Horizon, du spiller: bygger på det, de blev lavet til",
+  "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "I seneste build, på Horizon {commit} for {mods}, ikke på {horizon}",
+  "In the last build, on {horizon}": "I seneste build, på {horizon}"
 }

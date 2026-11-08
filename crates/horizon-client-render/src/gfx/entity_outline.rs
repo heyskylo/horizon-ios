@@ -36,7 +36,7 @@ pub(super) struct EntityOutline {
 
 impl EntityOutline {
     /// `entity` draws the silhouettes with the entity shader's vertex stage and
-    /// `fs_outline`; `format` is the frame's.
+    /// `fs_outline`; `format` is what it draws onto (`Renderer::overlay_format`).
     pub(super) fn new(
         device: &wgpu::Device,
         entity: (

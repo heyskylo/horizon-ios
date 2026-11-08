@@ -91,6 +91,8 @@ void main() {
         terrain: Some(horizon_shaders::GbuffersInputs {
             body: "vec2 p = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2)); hz_Vertex=vec4(p*2.0-1.0,0.0,1.0);".into(),
             paged_maps: true,
+            water_mask: false,
+            water_patches: false,
             ..Default::default()
         }),
         ..Default::default()
