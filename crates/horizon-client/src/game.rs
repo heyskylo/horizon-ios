@@ -14406,6 +14406,7 @@ impl Game<'_> {
                 camera: camera.to_array(),
                 sky_light: i32::from(light >> 4),
                 block_light: i32::from(light & 15),
+                biome: biomes.get(biome).name.clone(),
                 temperature: biomes.get(biome).temperature,
                 downfall: biomes.get(biome).downfall,
             };

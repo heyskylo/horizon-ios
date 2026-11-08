@@ -8,11 +8,11 @@ use super::{
     ParticleUpdate, Sprite,
 };
 use crate::environment::Frame;
-use horizon_core::noise::SimplexNoise;
 use horizon_core::random::{LegacyRandom, RandomSource};
 use horizon_polytone::expr::{Host, Program, Root, Value as V};
 use horizon_polytone::particles::{
     BlockEmitters, CustomParticle, Emitter, EntityEmitters, LiquidAffinity, RenderType,
+    SoundEmitter,
 };
 use horizon_world::registry::BlockRegistry;
 use serde_json::Value as Json;
@@ -35,7 +35,82 @@ pub struct Registry {
     pub frame: Arc<RwLock<Frame>>,
     configs: horizon_polytone::pack::Configs,
     blocks: &'static BlockRegistry,
-    noise: SimplexNoise,
+    /// Each custom particle type's colormap (`colormap`), by type id.
+    tints: HashMap<String, Arc<Tint>>,
+    /// Sound ids as the engine's sound queue holds them, interned once.
+    sound_names: Mutex<HashMap<String, &'static str>>,
+    /// Sounds the custom particles played this tick (`ParticleEngine::tick` plays them).
+    sounds: Mutex<Vec<Sound>>,
+}
+
+/// A sound for the engine's queue: id, position, volume, pitch, delayed by the distance.
+type Sound = (&'static str, [f64; 3], f32, f32, bool);
+
+/// Where a particle's colormap colour comes from.
+enum TintSource {
+    /// A vanilla biome colour (`grass_color`, `foliage_color`, `dry_foliage_color`,
+    /// `water_color`): the biome's own, as blocks get it.
+    Biome(fn(&crate::biome::BiomeInfo) -> u32),
+    /// A pack's colormap (`polytone/colormaps`), its axes run against the particle.
+    Pack(crate::environment::Colormap),
+}
+
+/// When a particle's colormap is sampled again (`cache`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TintCache {
+    EveryTick,
+    PerPosition,
+    OnSpawn,
+}
+
+/// A custom particle type's colormap: multiplied into its colour.
+struct Tint {
+    source: TintSource,
+    cache: TintCache,
+}
+
+impl Tint {
+    /// `colormap`: an id, or `{"colormap": id, "cache": ...}`. Inline colormaps aren't read.
+    fn read(pack_root: &Path, json: &Json) -> Option<Self> {
+        let (id, cache) = match json {
+            Json::String(id) => (id.as_str(), TintCache::EveryTick),
+            Json::Object(o) => (
+                o.get("colormap")?.as_str()?,
+                match o.get("cache").and_then(Json::as_str) {
+                    Some("per_position") => TintCache::PerPosition,
+                    Some("on_spawn") => TintCache::OnSpawn,
+                    _ => TintCache::EveryTick,
+                },
+            ),
+            _ => return None,
+        };
+        let id = if id.contains(':') {
+            id.to_owned()
+        } else {
+            format!("minecraft:{id}")
+        };
+        let source = match id.as_str() {
+            "minecraft:grass_color" => TintSource::Biome(|b| b.grass),
+            "minecraft:foliage_color" => TintSource::Biome(|b| b.foliage),
+            "minecraft:dry_foliage_color" => TintSource::Biome(|b| b.dry_foliage),
+            "minecraft:water_color" => TintSource::Biome(|b| b.water),
+            _ => TintSource::Pack(crate::environment::Colormap::load(pack_root, &id)?),
+        };
+        Some(Self { source, cache })
+    }
+
+    /// The colour (0 to 1 per channel) at the particle in `ctx`; `None` keeps its own.
+    fn sample(&self, ctx: &mut Ctx) -> Option<[f32; 3]> {
+        let rgb = match &self.source {
+            TintSource::Biome(colour) => {
+                let at = ParticleLevel::block_at(ctx.position());
+                let info = ctx.biome_info(at)?;
+                colour(&info)
+            }
+            TintSource::Pack(colormap) => colormap.sample(ctx)?,
+        };
+        Some([16, 8, 0].map(|shift| ((rgb >> shift) & 0xff) as f32 / 255.0))
+    }
 }
 
 /// Every `.json` under `dir`, with its path relative to `root`.
@@ -104,7 +179,7 @@ impl Registry {
             for (relative, json) in json_files(pack_root, &polytone.join("block_modifiers")) {
                 let implicit = horizon_polytone::implicit_id(&relative, "block_modifiers");
                 match BlockEmitters::parse(&json, implicit.as_deref()) {
-                    Ok(Some(m)) if !m.particle_emitters.is_empty() => modifiers.push(Arc::new(m)),
+                    Ok(Some(m)) => modifiers.push(Arc::new(m)),
                     Ok(_) => {}
                     Err(e) => log::warn!("{relative}: {e}"),
                 }
@@ -137,6 +212,19 @@ impl Registry {
                     .clone()
             })
             .collect();
+        let tints = types
+            .iter()
+            .filter_map(|(id, def)| {
+                let json = def.render.get("colormap")?;
+                match Tint::read(pack_root, json) {
+                    Some(tint) => Some((id.clone(), Arc::new(tint))),
+                    None => {
+                        log::warn!("custom particle {id}: colormap {json} not found");
+                        None
+                    }
+                }
+            })
+            .collect();
         Self {
             types,
             block_emitters,
@@ -146,7 +234,9 @@ impl Registry {
             frame: Arc::new(RwLock::new(Frame::default())),
             configs,
             blocks,
-            noise: SimplexNoise::new(&mut LegacyRandom::new(0)),
+            tints,
+            sound_names: Mutex::default(),
+            sounds: Mutex::default(),
         }
     }
 
@@ -154,6 +244,22 @@ impl Registry {
         self.types.is_empty()
             && self.block_emitters.iter().all(Option::is_none)
             && self.entity_modifiers.is_empty()
+    }
+
+    /// A sound id as the engine's sound queue holds it.
+    fn sound_name(&self, id: &str) -> &'static str {
+        let mut names = self.sound_names.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(name) = names.get(id) {
+            return name;
+        }
+        let name: &'static str = Box::leak(id.to_owned().into_boxed_str());
+        names.insert(id.to_owned(), name);
+        name
+    }
+
+    /// The sounds custom particles played since the last call.
+    pub(super) fn take_sounds(&self) -> Vec<Sound> {
+        std::mem::take(&mut *self.sounds.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     pub fn get(&self, id: &str) -> Option<&Arc<CustomParticle>> {
@@ -219,6 +325,54 @@ struct Controller {
     ticks: u32,
     /// Sprites in its set, for the age-driven frame.
     frames: usize,
+    /// Its colormap, and what the last sample left.
+    tint: Option<Arc<Tint>>,
+    tinting: Tinting,
+}
+
+/// A particle's colormap state: its colour before the colormap, the block it was last
+/// sampled at, and that sample.
+#[derive(Clone, Copy, Debug)]
+struct Tinting {
+    base: Option<[f32; 3]>,
+    at: Option<[i32; 3]>,
+    rgb: [f32; 3],
+}
+
+impl Default for Tinting {
+    fn default() -> Self {
+        Self {
+            base: None,
+            at: None,
+            rgb: [1.0; 3],
+        }
+    }
+}
+
+impl Tinting {
+    /// Samples the colormap as its `cache` says and multiplies it into the colour.
+    fn apply(&mut self, tint: &Tint, ctx: &mut Ctx) {
+        let Subject::Particle(p) = &ctx.subject else {
+            return;
+        };
+        let base = [p.rgba[0], p.rgba[1], p.rgba[2]];
+        let at = ParticleLevel::block_at(p.position);
+        let resample = match tint.cache {
+            TintCache::EveryTick => true,
+            TintCache::PerPosition => self.at != Some(at),
+            TintCache::OnSpawn => self.at.is_none(),
+        };
+        if resample {
+            self.at = Some(at);
+            self.rgb = tint.sample(ctx).unwrap_or([1.0; 3]);
+        }
+        self.base = Some(base);
+        if let Subject::Particle(p) = &mut ctx.subject {
+            for i in 0..3 {
+                p.rgba[i] = base[i] * self.rgb[i];
+            }
+        }
+    }
 }
 
 impl std::fmt::Debug for Controller {
@@ -280,6 +434,13 @@ impl Ctx<'_> {
             Subject::Entity(at) => *at,
         }
     }
+    /// The biome at a block, when the level and biomes are known.
+    fn biome_info(&self, at: [i32; 3]) -> Option<crate::biome::BiomeInfo> {
+        let chunk = self.level?.world.chunks.get(&(at[0] >> 4, at[2] >> 4))?;
+        let id = chunk.biome(at[0], at[1], at[2]);
+        let biomes = self.registry.biomes.read().ok()?;
+        Some(biomes.as_ref()?.get(id).clone())
+    }
     /// The biome at a block (`minecraft:plains`), when the level and biomes are known.
     fn biome(&self, at: [i32; 3]) -> Option<String> {
         let chunk = self.level?.world.chunks.get(&(at[0] >> 4, at[2] >> 4))?;
@@ -300,11 +461,18 @@ impl Ctx<'_> {
         if name == "biome" {
             return Ok(V::Str(self.biome(at).unwrap_or_default().into()));
         }
+        // The biome's climate where it is known, else the camera's.
         if name == "temperature" {
-            return num(f64::from(self.frame.temperature));
+            let t = self
+                .biome_info(at)
+                .map_or(self.frame.temperature, |b| b.temperature);
+            return num(f64::from(t));
         }
         if name == "downfall" {
-            return num(f64::from(self.frame.downfall));
+            let d = self
+                .biome_info(at)
+                .map_or(self.frame.downfall, |b| b.downfall);
+            return num(f64::from(d));
         }
         let arg = |i: usize| args.get(i).map_or(0.0, V::num) as i32;
         let neighbour = match name {
@@ -517,7 +685,7 @@ impl Host for Ctx<'_> {
                 // `r.noise(x, y)`: one simplex noise (named noises aren't read yet).
                 let mut coords = args.iter().filter(|v| !matches!(v, V::Str(_))).map(V::num);
                 let (x, y) = (coords.next().unwrap_or(0.0), coords.next().unwrap_or(0.0));
-                num(f64::from(self.registry.noise.get2(x, y)))
+                num(f64::from(crate::environment::polytone_noise().get2(x, y)))
             }
             (id, _) if id >= BLOCKS => {
                 let at = *self
@@ -709,6 +877,45 @@ fn emit(emitters: &[Emitter], ctx: &mut Ctx, out: &mut Vec<(ParticleOptions, [f6
     }
 }
 
+/// Runs sound emitters from the subject: each plays when its `chance` beats a random draw, at
+/// its position relative to the subject (a block's centre).
+fn emit_sounds(emitters: &[SoundEmitter], ctx: &mut Ctx, out: &mut Vec<Sound>) {
+    for emitter in emitters {
+        let chance = emitter
+            .fields
+            .get("chance")
+            .map_or(Some(1.0), |c| eval(c, ctx))
+            .unwrap_or(0.0);
+        if ctx.rand() >= chance {
+            continue;
+        }
+        let field = |ctx: &mut Ctx, key: &str| emitter.fields.get(key).and_then(|p| eval(p, ctx));
+        let base = match &ctx.subject {
+            Subject::Block(b) => b.map(|c| f64::from(c) + 0.5),
+            _ => ctx.position(),
+        };
+        if let Some(biomes) = &emitter.biomes
+            && !biome_matches(biomes, ctx, ParticleLevel::block_at(base))
+        {
+            continue;
+        }
+        let at = [
+            base[0] + field(ctx, "x").unwrap_or(0.0),
+            base[1] + field(ctx, "y").unwrap_or(0.0),
+            base[2] + field(ctx, "z").unwrap_or(0.0),
+        ];
+        if let Some(predicate) = &emitter.state_predicate
+            && !state_matches(predicate, ctx, ParticleLevel::block_at(at))
+        {
+            continue;
+        }
+        let volume = field(ctx, "volume").unwrap_or(1.0) as f32;
+        let pitch = field(ctx, "pitch").unwrap_or(1.0) as f32;
+        let name = ctx.registry.sound_name(&emitter.sound);
+        out.push((name, at, volume, pitch, emitter.distance_delay));
+    }
+}
+
 /// Sets each `keys` field the program map holds on `p` through `apply`.
 fn run_fields(
     programs: &BTreeMap<String, Program>,
@@ -782,6 +989,10 @@ impl super::ParticleController for Controller {
             let Ok(frame) = registry.frame.read() else {
                 return update;
             };
+            // Expressions see the colour before the colormap.
+            if let Some(base) = self.tinting.base {
+                p.rgba[..3].copy_from_slice(&base);
+            }
             let mut random = std::mem::replace(&mut p.random, LegacyRandom::new(0));
             let mut ctx = Ctx {
                 subject: Subject::Particle(p),
@@ -811,6 +1022,18 @@ impl super::ParticleController for Controller {
                     }
                 }
                 emit(&def.emitters, &mut ctx, &mut update.spawned);
+                if !def.sound_emitters.is_empty() {
+                    let mut sounds = Vec::new();
+                    emit_sounds(&def.sound_emitters, &mut ctx, &mut sounds);
+                    registry
+                        .sounds
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .extend(sounds);
+                }
+                if let Some(tint) = self.tint.clone() {
+                    self.tinting.apply(&tint, &mut ctx);
+                }
             }
             drop(ctx);
             p.random = random;
@@ -956,6 +1179,8 @@ pub(super) fn make(
         customs,
         ticks: 0,
         frames,
+        tint: registry.tints.get(name).cloned(),
+        tinting: Tinting::default(),
     }));
     Some(particle)
 }
@@ -1029,14 +1254,17 @@ impl ParticleEngine {
             level: Some(level),
             blocks: Vec::new(),
         };
+        let mut sounds = Vec::new();
         for modifier in modifiers.iter() {
             emit(&modifier.particle_emitters, &mut ctx, &mut out);
+            emit_sounds(&modifier.sound_emitters, &mut ctx, &mut sounds);
         }
         drop(ctx);
         drop(frame);
         for (options, position, velocity) in out {
             self.add(&options, position, velocity);
         }
+        self.sounds.extend(sounds);
     }
 }
 
@@ -1340,6 +1568,62 @@ mod tests {
             engine.polytone_gpu_records(),
             0,
             "gone once its 3 ticks are over"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_colormap_tints_the_particle_and_sound_emitters_play() {
+        let blocks = blocks();
+        let root = pack(&[
+            (
+                "assets/test/polytone/custom_particles/leaf.json",
+                serde_json::json!({
+                    "has_physics": false, "colormap": "minecraft:foliage_color",
+                    "initializer": {"red": "1", "green": "0.5", "blue": "1"},
+                    "sound_emitters": [{"sound": "block.note_block.harp", "chance": "1", "volume": "0.5"}]
+                }),
+            ),
+            (
+                "assets/minecraft/polytone/entity_modifiers/player.json",
+                serde_json::json!({"emitters": [{"particle": "test:leaf"}]}),
+            ),
+        ]);
+        let scene = scene(blocks);
+        let level = ParticleLevel {
+            world: &scene.world,
+            facts: &scene.facts,
+            collision: &scene.collision,
+            player: None,
+        };
+        let registry = Arc::new(Registry::read(&root, Default::default(), blocks));
+        // The chunk's biome is id 0: plains, whose foliage is #336699.
+        registry.set_biomes(&Arc::new(crate::biome::Biomes::from_jsons(&[(
+            "minecraft:plains",
+            serde_json::json!({"effects": {"foliage_color": 0x336699}}),
+        )])));
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        engine.mod_sets.insert("test:leaf".into(), (0, None));
+        engine.set_sprites.push(vec![10]);
+        engine.camera = [1.0, 65.0, 1.0];
+        engine.set_polytone(Some(registry.clone()));
+        engine.polytone_entity(&level, "minecraft:player", [1.0, 64.0, 1.0]);
+        let mut p = engine.pending.pop().unwrap();
+        let tinted = [
+            0x33 as f32 / 255.0,
+            0.5 * 0x66 as f32 / 255.0,
+            0x99 as f32 / 255.0,
+        ];
+        for _ in 0..2 {
+            engine.tick_particle(&mut p, &level);
+            // Multiplied into its own colour, every tick, without compounding.
+            assert_eq!(&p.rgba[..3], &tinted);
+        }
+        let sounds = registry.take_sounds();
+        assert_eq!(sounds.len(), 2);
+        assert_eq!(
+            (sounds[0].0, sounds[0].2, sounds[0].3),
+            ("minecraft:block.note_block.harp", 0.5, 1.0)
         );
         std::fs::remove_dir_all(root).unwrap();
     }

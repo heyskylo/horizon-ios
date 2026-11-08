@@ -141,6 +141,50 @@ impl Emitter {
     }
 }
 
+/// A sound emitter (wiki "Sound Emission"): the sound event, and as expressions how often
+/// (`chance`), where (`x`, `y`, `z`) and how (`volume`, `pitch`).
+pub struct SoundEmitter {
+    pub sound: String,
+    /// `chance`, `x`, `y`, `z`, `volume`, `pitch`: those present.
+    pub fields: BTreeMap<String, Program>,
+    /// Delayed by the distance, as fireworks' far bangs.
+    pub distance_delay: bool,
+    pub state_predicate: Option<Json>,
+    pub biomes: Option<Json>,
+}
+
+impl SoundEmitter {
+    pub fn parse(v: &Json) -> Result<Self, String> {
+        let o = v.as_object().ok_or("a sound emitter is not an object")?;
+        let sound = o
+            .get("sound")
+            .and_then(Json::as_str)
+            .ok_or("a sound emitter without a sound")?;
+        let sound = if sound.contains(':') {
+            sound.to_owned()
+        } else {
+            format!("minecraft:{sound}")
+        };
+        let (fields, _) = expressions(o, &["chance", "x", "y", "z", "volume", "pitch"])?;
+        Ok(Self {
+            sound,
+            fields,
+            distance_delay: o.get("distance_delay").and_then(Json::as_bool) == Some(true),
+            state_predicate: o.get("state_predicate").cloned(),
+            biomes: o.get("biomes").cloned(),
+        })
+    }
+}
+
+fn sound_emitters(v: Option<&Json>) -> Result<Vec<SoundEmitter>, String> {
+    v.and_then(Json::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .map(|(i, e)| SoundEmitter::parse(e).map_err(|err| format!("sound emitter {i}: {err}")))
+        .collect()
+}
+
 fn emitters(v: Option<&Json>) -> Result<Vec<Emitter>, String> {
     v.and_then(Json::as_array)
         .into_iter()
@@ -189,8 +233,7 @@ pub struct CustomParticle {
     pub ticker: BTreeMap<String, Program>,
     pub ticker_customs: BTreeMap<String, Program>,
     pub emitters: Vec<Emitter>,
-    /// Sound emitters, kept as JSON.
-    pub sound_emitters: Vec<Json>,
+    pub sound_emitters: Vec<SoundEmitter>,
     pub has_physics: bool,
     pub kill_on_contact: bool,
     pub kill_when_still: bool,
@@ -376,11 +419,7 @@ impl CustomParticle {
             ticker,
             ticker_customs,
             emitters: emitters(o.get("particle_emitters"))?,
-            sound_emitters: o
-                .get("sound_emitters")
-                .and_then(Json::as_array)
-                .cloned()
-                .unwrap_or_default(),
+            sound_emitters: sound_emitters(o.get("sound_emitters"))?,
             has_physics: flag("has_physics", true),
             kill_on_contact: flag("kill_on_contact", false),
             kill_when_still: flag("kill_when_still", true),
@@ -410,7 +449,7 @@ pub struct BlockEmitters {
     pub targets: Targets,
     pub priority: i32,
     pub particle_emitters: Vec<Emitter>,
-    pub sound_emitters: Vec<Json>,
+    pub sound_emitters: Vec<SoundEmitter>,
 }
 
 impl BlockEmitters {
@@ -420,11 +459,7 @@ impl BlockEmitters {
             return Ok(None);
         }
         let particle_emitters = emitters(json.get("particle_emitters"))?;
-        let sound_emitters = json
-            .get("sound_emitters")
-            .and_then(Json::as_array)
-            .cloned()
-            .unwrap_or_default();
+        let sound_emitters = sound_emitters(json.get("sound_emitters"))?;
         if particle_emitters.is_empty() && sound_emitters.is_empty() {
             return Ok(None);
         }
@@ -582,5 +617,24 @@ mod tests {
         assert!(gpu.kill_below_heightmap);
         // Without a texture a GPU particle is no particle.
         assert!(CustomParticle::parse(&serde_json::json!({"type": "gpu"})).is_err());
+    }
+
+    #[test]
+    fn sound_emitters_compile_their_expressions() {
+        let p = CustomParticle::parse(&serde_json::json!({
+            "sound_emitters": [
+                {"sound": "block.bubble_column.upwards_ambient", "chance": "r.rand()*0.3",
+                 "volume": "sqrt(square(o.xd)+square(o.yd)+square(o.zd))", "distance_delay": true}
+            ]
+        }))
+        .unwrap();
+        let e = &p.sound_emitters[0];
+        assert_eq!(e.sound, "minecraft:block.bubble_column.upwards_ambient");
+        assert_eq!(e.fields.keys().collect::<Vec<_>>(), ["chance", "volume"]);
+        assert!(e.distance_delay);
+        assert!(
+            CustomParticle::parse(&serde_json::json!({"sound_emitters": [{"chance": "1"}]}))
+                .is_err()
+        );
     }
 }
