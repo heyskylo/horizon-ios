@@ -29,7 +29,6 @@ use horizon_client::{
     mod_api::NativeLootDrops,
     particles::{ParticleOptions, ParticleType},
     projectiles::{Hit, Projectile, ProjectileKind, ProjectileWorld, clip_including_border},
-    text::Text,
 };
 use horizon_core::{
     geometry::{Aabb, Direction, Vec3, traverse_blocks, trig::Mth},
@@ -2272,7 +2271,7 @@ impl Game<'_> {
         } else {
             String::new()
         };
-        let (id, kind) = (p.id, p.kind.id());
+        let (id, kind) = (p.id, p.entity_type());
         if let Some(a) = p.arrow.as_mut()
             && !p.stuck
         {
@@ -4445,6 +4444,7 @@ impl Game<'_> {
             return self.flush_wind_bursts();
         }
         let mut projectiles = std::mem::take(&mut self.creatures.projectiles);
+        let ticking = self.entity_ticking_area();
         let mut hits = Vec::new();
         let mut deflections: Vec<u32> = Vec::new();
         let mut arrow_events = Vec::new();
@@ -4511,7 +4511,21 @@ impl Game<'_> {
                     .map(|g| g.conn)
                     .collect()
             });
+            // `EntityTickList.forEach`: a projectile that joined during this
+            // tick's entity pass (a mob's shot) first ticks on the next one; a
+            // player's or a dispenser's, which join before the pass, tick now.
+            let through = self.ticked_entities_through;
             for i in 0..projectiles.len() {
+                if projectiles[i].id > through {
+                    continue;
+                }
+                // ServerLevel.tick: losing an entity-ticking ticket must not
+                // advance projectile flags or motion while its chunk unloads.
+                let at = projectiles[i].position;
+                if !ticking(at.x.floor() as i32, at.z.floor() as i32) {
+                    projectiles[i].previous = at;
+                    continue;
+                }
                 // A ghast's fireball or a wind charge is pickable, so a pearl, an
                 // arrow or a trident can strike it (`Projectile.isPickable`,
                 // `Projectile.onHit`).
@@ -5182,15 +5196,7 @@ impl Game<'_> {
             self.native_target_hit(self.dim.id(), pos, strength);
             if p.owner == Some(Who::Player) && (p.guest.is_none() || p.guest == self.lan_acting) {
                 self.award_custom_stat("target_hit", 1);
-                let kind = if p
-                    .arrow
-                    .as_ref()
-                    .is_some_and(|a| &*a.pickup_item.item == "minecraft:spectral_arrow")
-                {
-                    "minecraft:spectral_arrow"
-                } else {
-                    p.kind.id()
-                };
+                let kind = p.entity_type();
                 let projectile = horizon_client::advancements::EntityView {
                     kind: kind.to_owned(),
                     position: [p.position.x, p.position.y, p.position.z],
@@ -5231,21 +5237,7 @@ impl Game<'_> {
         self.combat.projectile_direct = match hit {
             Hit::Entity {
                 who: Who::Player, ..
-            } => {
-                let spectral = p
-                    .arrow
-                    .as_ref()
-                    .is_some_and(|a| &*a.pickup_item.item == "minecraft:spectral_arrow");
-                let id = if spectral {
-                    "minecraft:spectral_arrow"
-                } else {
-                    p.kind.id()
-                };
-                Some(Text::translate(
-                    &format!("entity.{}", id.replace(':', ".")),
-                    &[],
-                ))
-            }
+            } => Some(self.target_name(super::commands::Target::Projectile(p.id))),
             _ => None,
         };
         let at = match hit {
@@ -9496,7 +9488,7 @@ mod breeding_orb_tests {
             game.breeding_orb(7, [8.5, 64.0, 8.5]);
             assert_eq!(game.orbs.len(), orbs + 1, "a fresh orb, not merged");
             assert_eq!(
-                game.orbs.last().map(|o| (o.value, o.count)),
+                game.orbs.last().map(|o| (o.points(), o.count)),
                 Some((roll, 1))
             );
             values.insert(roll);

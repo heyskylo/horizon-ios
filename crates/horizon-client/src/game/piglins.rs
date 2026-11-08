@@ -3,6 +3,7 @@
 //! their chests or mine their gold.
 use super::Game;
 use horizon_client::{
+    first_person::SwingAnimation,
     items::ItemStack,
     mobs::{
         Mob, Species,
@@ -372,6 +373,12 @@ impl Game<'_> {
     /// `PiglinAi.throwItems`: barters and a baby's unwanted main-hand item
     /// use the same player-directed throw.
     fn piglin_throw_items(&mut self, i: usize, items: Vec<ItemStack>) {
+        if items.is_empty() {
+            return;
+        }
+        // `PiglinAi.throwItemsTowardPos` swings the off hand once before the
+        // throws, so the barters leave the hand the piglin admires them in.
+        self.mobs[i].swing_hand_modified(true, SwingAnimation::DEFAULT);
         let m = &self.mobs[i];
         let from = [m.position.x, m.position.y + 1.3, m.position.z];
         // BehaviorUtils.throwItem toward the nearest visible player
@@ -593,5 +600,30 @@ mod tests {
             Slot::MainHand,
             None
         ));
+    }
+
+    /// `PiglinAi.throwItemsTowardPos` swings the off hand once when it has
+    /// something to throw, so barters leave the admiring hand (#12512).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_throw_swings_the_off_hand_once() {
+        let mut game = super::super::native_machines::tests::server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        assert!(game.run_command("summon piglin 8.5 80 8.5 {NoAI:1b,PersistenceRequired:1b}"));
+        let i = game
+            .mobs
+            .iter()
+            .position(|m| m.species() == Species::Piglin)
+            .expect("the summoned piglin");
+        // An empty list has nothing to throw and leaves the body alone.
+        game.piglin_throw_items(i, Vec::new());
+        assert!(!game.mobs[i].ai.swinging);
+        game.piglin_throw_items(i, vec![ItemStack::new("minecraft:gold_ingot", 1)]);
+        let m = &game.mobs[i];
+        assert!(m.ai.swinging, "the throw starts a swing");
+        // The off hand's arm: the right one only when the piglin is left-handed.
+        assert_eq!(m.extra.swing_right_arm, Some(m.main_arm_left()));
+        assert_eq!(m.swing_duration(), 6, "SwingAnimation.DEFAULT's ticks");
     }
 }
