@@ -1131,6 +1131,9 @@ pub struct Extra {
     pub party_jukebox: Option<[i32; 3]>,
     /// The owner's UUID (tamed animals).
     pub owner: Option<[i32; 4]>,
+    /// `Vindicator.isJohnny`: a custom name that was ever `Johnny`, which
+    /// `setCustomName` latches and nothing clears.
+    pub johnny: bool,
     /// Slime/magma cube size (0 = not sized).
     pub size: i32,
     /// Sheep eat-grass / iron golem attack / ravager animation ticks.

@@ -1519,6 +1519,15 @@ pub fn mob_to_nbt(
     if matches!(m.species(), S::Evoker | S::Illusioner) {
         map.insert("SpellTicks".into(), Tag::Int(m.extra.counter));
     }
+    // Vindicator.addAdditionalSaveData: `Johnny` only while the flag is set
+    // (`if (this.isJohnny) output.putBoolean("Johnny", true)`).
+    if m.species() == S::Vindicator {
+        if m.extra.johnny {
+            map.insert("Johnny".into(), Tag::Byte(1));
+        } else {
+            map.remove(&"Johnny".into());
+        }
+    }
     crate::mobs::raider::write_nbt(m, map);
     crate::mobs::riders::write_nbt(m, map);
     // LivingEntity equipment: what the mob holds now.
@@ -2696,6 +2705,11 @@ pub fn mob_from_nbt(
         crate::mobs::Species::Evoker | crate::mobs::Species::Illusioner
     ) {
         m.extra.counter = number(tag.get("SpellTicks")).unwrap_or(0) as i32;
+    }
+    // Vindicator.readAdditionalSaveData: `Johnny`, false when absent. A name
+    // that is Johnny latches the flag again on the next AI step.
+    if m.species() == crate::mobs::Species::Vindicator {
+        m.extra.johnny = flag(tag, "Johnny");
     }
     crate::mobs::raider::read_nbt(&mut m, tag);
     crate::mobs::riders::read_nbt(&mut m, tag);
