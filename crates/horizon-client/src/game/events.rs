@@ -256,7 +256,10 @@ impl Game<'_> {
                     .collect(),
                 None => self.ui.chat.recent_lines(new_chat),
             };
-            let at = self.player.as_ref().map(|p| [p.position.x, p.position.y, p.position.z]);
+            let at = self
+                .player
+                .as_ref()
+                .map(|p| [p.position.x, p.position.y, p.position.z]);
             for mut event in diff(before, &now, &lines) {
                 // Where it happened: a death drops the inventory there.
                 if let Some(at) = at
@@ -378,7 +381,11 @@ mod tests {
         assert_eq!(diff(&now, &healed, &[])[0]["event"], "heal");
         let mut dead = now;
         dead.screen = "dead";
-        assert!(diff(&dead, &snap("playing", 0, 0), &[]).iter().all(|e| e["event"] != "heal"));
+        assert!(
+            diff(&dead, &snap("playing", 0, 0), &[])
+                .iter()
+                .all(|e| e["event"] != "heal")
+        );
     }
 
     #[test]
