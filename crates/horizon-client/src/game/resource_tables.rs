@@ -137,7 +137,10 @@ impl PackResources {
         light: Arc<LightTables>,
     ) -> Result<Self> {
         let visibility = models::load_visibility(root, assets.registry)?;
-        let tables = Arc::new(MeshTables::new(&assets, &render, facts, visibility)?);
+        let tables = Arc::new(
+            MeshTables::new(&assets, &render, facts, visibility)?
+                .with_polytone_colormaps(root, assets.registry),
+        );
         let item_renderer = horizon_client::item_render::ItemRenderer::load_with_library(
             root,
             render.model_library.clone(),
@@ -204,6 +207,13 @@ impl PackResources {
             )
         });
         let polytone_particles = pack_particles(root, assets.registry);
+        let polytone_post = horizon_client::polytone_post::PolytonePost::read(
+            root,
+            horizon_client::packs::polytone_configs(&horizon_client::packs::Source::Dir(
+                root.to_path_buf(),
+            )),
+        )
+        .map(Arc::new);
         Self {
             layer_names: Arc::new(
                 render
@@ -228,6 +238,7 @@ impl PackResources {
             custom_sky: Arc::new(custom_sky),
             environments: pack_environments(root),
             polytone_particles,
+            polytone_post,
         }
     }
 }
