@@ -7849,6 +7849,48 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_menu_input_closed(self, mod_api::mods(), uuid, window, slots);
     }
+    /// Recipe placement into the crafting grid of a mod menu type
+    /// (`crafting`, docs/mods.md) open at `pos`, the recipe book's or a
+    /// recipe viewer's (`native_place_recipe`, `native_transfer_recipe`), by
+    /// `player`: push the positions of block containers the placement may
+    /// also take ingredients from onto `sources`, as a crafting station takes
+    /// them from the chests beside it. `menu` is the menu type (`<id>:<name>`).
+    /// Chests, barrels, shulker boxes, hoppers, dispensers, droppers and mod
+    /// containers in the player's level count; others, the menu's own block
+    /// and repeats are passed by, and at most 64 are used. The placement takes
+    /// from the player's inventory first, then the sources in order; what the
+    /// grid held goes back to the player as vanilla's does. No answer keeps
+    /// vanilla's placement. Server-side. API @API:recipe_sources@.
+    pub(super) fn native_recipe_sources(
+        &mut self,
+        player: u128,
+        menu: &str,
+        pos: [i32; 3],
+        sources: &mut Vec<[i32; 3]>,
+    ) {
+        mod_api::dispatch_recipe_sources(self, mod_api::mods(), player, menu, pos, sources);
+    }
+    /// The containers whose slots the linked slots (`links`, docs/mods.md)
+    /// of a mod menu type open at `pos` show to `player`: push their
+    /// positions onto `links`, in order, as a crafting station shows the
+    /// chests beside it. `menu` is the menu type (`<id>:<name>`). Asked on
+    /// the server each tick while the menu is open, so what it links may
+    /// change (a tab the player picked, a chest placed or broken). Chests,
+    /// barrels, shulker boxes, hoppers, dispensers, droppers and mod
+    /// containers in the player's level count; others, the menu's own block
+    /// and repeats are passed by, and at most 64 are used. Their slots fill
+    /// the linked slots in order (a double chest's two halves: push both,
+    /// the first half first); linked slots past them hold nothing and take
+    /// nothing. Server-side. API @API:menu_links@.
+    pub(super) fn native_menu_links(
+        &mut self,
+        player: u128,
+        menu: &str,
+        pos: [i32; 3],
+        links: &mut Vec<[i32; 3]>,
+    ) {
+        mod_api::dispatch_menu_links(self, mod_api::mods(), player, menu, pos, links);
+    }
     /// Once a server tick, after `ServerTickEnd`, the play packets one
     /// player's connection sent (`outbound`) or received since the last tick
     /// while a mod counts them (`native_count_packets(true)`; off, nothing is
@@ -11432,14 +11474,15 @@ impl Game<'_> {
         self.known_displays()
     }
     /// Places a recipe in the open screen's grid as a click in the recipe
-    /// book does (`ServerboundPlaceRecipePacket`): the inventory's grid or a
-    /// crafting table's. `all` places as many as the items allow, as with
+    /// book does (`ServerboundPlaceRecipePacket`): the inventory's grid, a
+    /// crafting table's or a mod menu type's crafting grid. `all` places as many as the items allow, as with
     /// Shift. Refused while no such screen is open and for a recipe the
     /// player's book doesn't hold; one missing items shows as a ghost.
     pub(super) fn native_place_recipe(&mut self, book_id: i32, all: bool) -> Result<(), String> {
         self.recipe_place(book_id, all)
     }
-    /// Move ingredients for a viewer recipe into the open crafting grid.
+    /// Move ingredients for a viewer recipe into the open crafting grid (the
+    /// inventory's, a crafting table's or a mod menu type's).
     /// Unlike the recipe book click, this doesn't require learning the recipe.
     pub(super) fn native_transfer_recipe(&mut self, book_id: i32) {
         self.transfer_viewer_recipe(book_id);

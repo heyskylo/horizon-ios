@@ -702,7 +702,7 @@ impl Game<'_> {
         ));
         let id = self.game_tests.next_id();
         let info = Info::new(id, key, def, Some(pos), self.dim, rotation);
-        self.track_and_start_runner(vec![info], false, None);
+        self.track_and_start_runner(vec![info], false, None, false);
     }
 }
 

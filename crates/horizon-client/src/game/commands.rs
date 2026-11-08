@@ -789,7 +789,11 @@ impl Game<'_> {
                 candidates.append(&mut source_candidates);
             }
             if s.kind != 's' {
-                candidates.extend(self.level_candidates());
+                if s.kind == 'e' && matches!(s.sort, Sort::Arbitrary) && !s.world_limited() {
+                    candidates.extend(self.global_selector_candidates());
+                } else {
+                    candidates.extend(self.level_candidates());
+                }
             }
             out.extend(self.select_in_level(candidates, s, origin));
             if let Some(back) = back {
@@ -916,6 +920,42 @@ impl Game<'_> {
             })
             .collect()
     }
+    /// `EntityLookup.getEntities`: insertion order for the joined families in
+    /// unbounded arbitrary queries. Spatial queries keep their existing path;
+    /// their section membership order is a separate traversal.
+    fn global_selector_candidates(&self) -> Vec<Target> {
+        use super::entity::{Entity as _, entity_lists_of, with_entity};
+        let original = self.level_candidates();
+        // Counts preserve every occurrence, including nonwalk fallback targets.
+        // The map is never iterated to choose order and is not an order store.
+        let mut remaining = std::collections::HashMap::<Target, usize>::new();
+        for target in &original {
+            *remaining.entry(*target).or_default() += 1;
+        }
+        let mut ordered = Vec::with_capacity(original.len());
+        let walked = entity_lists_of!(self).walk_in_join_order(|handle, _| {
+            if let Some(target) = with_entity!(self, handle, entity => entity.selector_target())
+                && let Some(count) = remaining.get_mut(&target)
+                && *count > 0
+            {
+                *count -= 1;
+                ordered.push(target);
+            }
+        });
+        // Invalid/unjoined storage retains the whole old path, never a prefix.
+        if walked.is_err() {
+            return original;
+        }
+        for target in original {
+            let count = remaining.get_mut(&target).expect("an original candidate");
+            if *count > 0 {
+                *count -= 1;
+                ordered.push(target);
+            }
+        }
+        ordered
+    }
+
     /// The entities of the level in place a selector can find: one walk over
     /// the entity lists (a kind added there joins `@e` once it names its
     /// `Target`), then the kinds that are not on the walk. An
@@ -5914,6 +5954,154 @@ mod vehicle_kill_tests {
         assert!(
             differences.is_empty(),
             "kill must spill authoritative explicit contents: {differences:#?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod global_selector_order_tests {
+    use super::{Selector, Sort, Target};
+    use horizon_client::join_seq::Joined;
+    use horizon_core::position::ChunkPos;
+    use horizon_world::nbt::Tag;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn actual_registered_global_selector_keeps_interleaved_insertion_and_limits() {
+        let mut game = crate::game::native_machines::tests::server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        for x in 0..2 {
+            for z in 0..2 {
+                game.world.chunks.insert(
+                    (x, z),
+                    std::sync::Arc::new(horizon_client::chunk::Chunk::empty(x, z)),
+                );
+                game.block_ticks
+                    .add_empty_chunk(ChunkPos::new(x, z))
+                    .unwrap();
+            }
+        }
+        assert!(game.run_command("fill 0 199 0 31 199 31 stone"));
+        assert!(game.run_command("scoreboard objectives add h268 dummy"));
+        let clock = game.world.game_time;
+        let actors = [
+            ("pig", 41, [17.5, 200.0, 16.25]),
+            ("armor_stand", 7, [15.75, 200.0, 15.5]),
+            ("item", 93, [15.5, 200.0, 17.0]),
+            ("pig", 2, [17.0, 200.0, 15.75]),
+            ("armor_stand", 68, [18.5, 200.0, 16.5]),
+            ("item", 11, [14.0, 200.0, 16.75]),
+        ];
+        let mut targets = Vec::new();
+        let mut last_join = 0;
+        for (i, (kind, uuid, pos)) in actors.iter().enumerate() {
+            let extra = match *kind {
+                "pig" => ",NoAI:1b,Health:10f,PersistenceRequired:1b",
+                "armor_stand" => ",Health:20f",
+                _ => ",Item:{id:\"minecraft:stone\",count:1},PickupDelay:32767s",
+            };
+            assert!(game.run_command(&format!(
+                "summon {kind} {:?} {:?} {:?} {{UUID:[I;268,0,0,{uuid}],Tags:[\"h268\"],NoGravity:1b,Motion:[0d,0d,0d]{extra}}}",
+                pos[0], pos[1], pos[2]
+            )));
+            let target = game
+                .target_by_uuid((268u128 << 96) | *uuid as u128)
+                .unwrap();
+            assert_eq!(game.target_type(target), format!("minecraft:{kind}"));
+            assert_eq!(game.target_position(target), Some(*pos));
+            assert!(game.world.loaded(pos[0] as i32, pos[2] as i32));
+            let join = match target {
+                Target::Mob(id) => game.mobs.iter().find(|m| m.id == id).unwrap().join_seq(),
+                Target::Stand(id) => game
+                    .armor_stands
+                    .iter()
+                    .find(|m| m.id == id)
+                    .unwrap()
+                    .join_seq(),
+                Target::Item(id) => game.dropped.iter().find(|m| m.id == id).unwrap().join_seq(),
+                _ => panic!("actual admitted family"),
+            };
+            assert!(
+                join.is_joined() && join.get() > last_join,
+                "actual registered creation chronology {i}"
+            );
+            last_join = join.get();
+            targets.push(target);
+            assert!(game.run_command("scoreboard players set #r h268 91"));
+            assert!(game.run_command(
+                "execute store result score #r h268 run execute if entity @e[tag=h268]"
+            ));
+            assert_eq!(
+                game.score.board.score("#r", "h268").unwrap().value,
+                i as i32 + 1
+            );
+        }
+        let selector = Selector {
+            kind: 'e',
+            include_entities: true,
+            limit: usize::MAX,
+            tags: vec![("h268".into(), false)],
+            ..Default::default()
+        };
+        // Existing sorted paths remain controls, with no equal-distance ties.
+        let mut nearest = selector.clone();
+        nearest.sort = Sort::Nearest;
+        nearest.pos = [Some(16.0), Some(200.0), Some(16.0)];
+        assert_eq!(
+            game.select(&nearest),
+            [1, 3, 2, 0, 5, 4].map(|i| targets[i])
+        );
+        nearest.sort = Sort::Furthest;
+        assert_eq!(
+            game.select(&nearest),
+            [4, 5, 0, 2, 3, 1].map(|i| targets[i])
+        );
+        let mut spatial = selector.clone();
+        spatial.distance = Some((None, Some(3.0)));
+        spatial.pos = [Some(16.0), Some(200.0), Some(16.0)];
+        let old_spatial = game.select(&spatial);
+        let mut failures = Vec::new();
+        for (name, options, expected) in [
+            ("all", "sort=arbitrary", vec![41, 7, 93, 2, 68, 11]),
+            ("two", "sort=arbitrary,limit=2", vec![41, 7]),
+            (
+                "filtered",
+                "type=!minecraft:armor_stand,sort=arbitrary,limit=3",
+                vec![41, 93, 2],
+            ),
+        ] {
+            assert!(game.run_command(&format!(
+                "data modify storage h268:proof {name} set value []"
+            )));
+            assert!(game.run_command("scoreboard players set #r h268 91"));
+            assert!(game.run_command("scoreboard players set #s h268 17"));
+            assert!(game.run_command(&format!("execute positioned 16.0 200.0 16.0 store result score #r h268 store success score #s h268 as @e[tag=h268,{options}] run data modify storage h268:proof {name} append from entity @s UUID")));
+            assert_eq!(game.score.board.score("#r", "h268").unwrap().value, 1);
+            assert_eq!(game.score.board.score("#s", "h268").unwrap().value, 1);
+            let actual = game.score.storage.get("h268:proof").get(name).cloned();
+            let wanted = Some(Tag::List(
+                expected
+                    .iter()
+                    .map(|v| Tag::IntArray(vec![268, 0, 0, *v]))
+                    .collect(),
+            ));
+            if actual != wanted {
+                failures.push(format!("{name}: {actual:?} != {wanted:?}"));
+            }
+        }
+        assert_eq!(
+            game.select(&spatial),
+            old_spatial,
+            "unchanged spatial path within the scene"
+        );
+        assert_eq!(game.world.game_time, clock);
+        for (target, (_, _, pos)) in targets.iter().zip(actors.iter()) {
+            assert_eq!(game.target_position(*target), Some(*pos));
+        }
+        assert!(
+            failures.is_empty(),
+            "actual registered selector order/limits: {failures:#?}"
         );
     }
 }

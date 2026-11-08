@@ -186,8 +186,6 @@ def main():
     parser.add_argument('--potion-effect-icon-fixture', action='store_true')
     parser.add_argument('--unsynced-randoms', action='store_true',
                         help='leave out the sync_randoms steps: the control in which their fields differ run to run')
-    parser.add_argument('--seed-sync-gaps-diagnostic', action='store_true',
-                        help='add the synced reads where Horizon draws otherwise than vanilla (tools/seed_sync_corpus.py)')
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)

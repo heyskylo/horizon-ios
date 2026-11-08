@@ -40,7 +40,10 @@ struct Globals {
     hdr_windows: array<vec4<f32>, 2>,
     // HDR lighting: x how strongly the sky lights the world now (`Sky::sky_light_factor`),
     // y what the sky and fog get: the same, but none under water; z 1 with HDR output on.
+    // w: this entire frame writes light, so alpha is coverage rather than a mark.
     hdr_light: vec4<f32>,
+    hdr_settings: vec4<f32>,
+    hdr_shares: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var sprites: texture_2d_array<f32>;
@@ -757,7 +760,11 @@ fn solid_color(in: TerrainOut) -> vec4<f32> {
 }
 // The rest of a solid pixel's colour once it is kept: emission and fog.
 fn solid_finish(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>) -> vec4<f32> {
-    return solid_finish_at(in, texel, color, dpdx(in.uv), dpdy(in.uv));
+    let finished = solid_finish_at(in, texel, color, dpdx(in.uv), dpdy(in.uv));
+    if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 {
+        return vec4(hdr_written(finished.rgb, finished.a, globals.hdr_settings, globals.hdr_shares), 1.0);
+    }
+    return finished;
 }
 // `solid_finish` with the UV's screen gradients given (`sprite_at`).
 fn solid_finish_at(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>, du: vec2<f32>,
@@ -820,10 +827,24 @@ fn solid_finish_at(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>, du: vec2<
 // pixels showed the layer behind through the one in front, twice the water.
 @fragment fn fs_translucent(wire: TerrainWire) -> @location(0) vec4<f32> {
     let in = from_wire(wire);
-    var color = sprite(in.uv, in.layer & 0x7fffu) * in.color;
+    if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 {
+        hdr_normal = normalize(cross(dpdy(in.local), dpdx(in.local)));
+    }
+    let texel = sprite(in.uv, in.layer & 0x7fffu);
+    var color = texel * in.color;
     color = mix(globals.fog_color * vec4(1.0, 1.0, 1.0, color.a), color, in.visibility);
     if color.a < 0.01 { discard; }
-    return apply_fog(color, in.spherical, in.cylindrical);
+    let finished = apply_fog(color, in.spherical, in.cylindrical);
+    if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 {
+        // The surface's own light, whatever its texel's alpha: what is behind it is light already.
+        // (The marked frame keeps one mark a pixel, so there `fs_translucent_mark` skips clear
+        // texels to leave what is behind them its own.)
+        let fogged = max(linear_fog(in.spherical, globals.fog.x, globals.fog.y),
+            linear_fog(in.cylindrical, globals.fog.z, globals.fog.w)) * globals.fog_color.a;
+        let mark = hdr_scene_alpha(mix(hdr_scene(in.scene.x, in.scene.y, hdr_facing()), globals.hdr_light.y, fogged));
+        return vec4(hdr_written(finished.rgb, mark, globals.hdr_settings, globals.hdr_shares), finished.a);
+    }
+    return finished;
 }
 
 // Native still-fluid boxes use block sprites and lightmap without terrain AO/emission
@@ -889,7 +910,8 @@ struct NativeModelOut {
             + max(0.0, dot(light1, in.normal))) * 0.6 + 0.4);
         color = vec4(color.rgb * shade, color.a);
     }
-    return apply_fog(color, in.spherical, in.cylindrical);
+    let finished = apply_fog(color, in.spherical, in.cylindrical);
+    return vec4(finished.rgb, select(finished.a, 1.0, HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0));
 }
 
 // Sky (SkyRenderer): the 10-vertex sky disc fan at y = 16 (radius 512) in
@@ -1022,12 +1044,19 @@ fn sky_along_ray_base(d: vec3<f32>) -> vec3<f32> {
     }
     return color;
 }
+fn sky_finished(color: vec3<f32>) -> vec4<f32> {
+    let mark = 1.0 - 0.24 * globals.hdr_light.y;
+    if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 {
+        return vec4(hdr_written(color, mark, globals.hdr_settings, globals.hdr_shares), 1.0);
+    }
+    return vec4(color, mark);
+}
 @fragment fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     // `hdr_scene_alpha`, spelled out: this part of the file also goes into shader packs' skies.
-    return vec4(sky_along_ray(view_ray(in.ndc)), 1.0 - 0.24 * globals.hdr_light.y);
+    return sky_finished(sky_along_ray(view_ray(in.ndc)));
 }
 @fragment fn fs_sky_base(in: SkyOut) -> @location(0) vec4<f32> {
-    return vec4(sky_along_ray_base(view_ray(in.ndc)), 1.0 - 0.24 * globals.hdr_light.y);
+    return sky_finished(sky_along_ray_base(view_ray(in.ndc)));
 }
 // The sunrise/sunset fan as geometry: the clip position is projected by the
 // CPU with the sky's unjittered view, and the apex weight (1 at the apex, 0 at
@@ -1040,7 +1069,7 @@ struct SunriseOut {
     return SunriseOut(clip, weight);
 }
 @fragment fn fs_sunrise(in: SunriseOut) -> @location(0) vec4<f32> {
-    return vec4(globals.sunrise.rgb, in.weight * globals.sunrise.a);
+    return vec4(sky_finished(globals.sunrise.rgb).rgb, in.weight * globals.sunrise.a);
 }
 // The first-person hand's depth clear inside the world pass: `vs_sky`'s triangle lies at the
 // far plane, written over the whole depth target with no colour.
