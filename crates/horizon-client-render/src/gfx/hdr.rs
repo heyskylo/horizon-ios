@@ -189,8 +189,9 @@ pub struct Hdr {
     pub ui: f32,
     /// Which pixels of a light source shine (`Masks`).
     pub masks: Masks,
-    /// HDR lighting: off while a shader pack's post or material stage runs, the pack's own, and
-    /// with `HORIZON_HDR_LIGHTING=0`, to compare.
+    /// HDR lighting, whether Horizon lifts this frame's world: off under a Horizon shader pack
+    /// that draws, while a `shaders/` pack's post or material stage runs (the pack's own),
+    /// with HDR Lighting (`look`) off, and with `HORIZON_HDR_LIGHTING=0`, to compare.
     pub lighting: bool,
     /// The HDR Lighting setting: off, nothing in the world is lifted, light sources and the
     /// sun included, so the picture is SDR's on the HDR canvas.
@@ -533,8 +534,9 @@ impl Hdr {
     }
 
     /// The layered frame's SDR screenshot, directly in the readback's texture; the icon
-    /// maps only the world, and with HDR Lighting off nothing is mapped. Neither the
-    /// display's targets nor its parameters are changed.
+    /// maps only the world. Where Horizon lifted nothing (`lighting` off: HDR Lighting off,
+    /// or under a shader pack) nothing is mapped. Neither the display's targets nor its
+    /// parameters are changed.
     pub fn sdr_screenshot(
         &mut self,
         device: &wgpu::Device,
@@ -542,7 +544,7 @@ impl Hdr {
         format: wgpu::TextureFormat,
         world_only: bool,
     ) -> Option<wgpu::Texture> {
-        let shoulder = self.look;
+        let shoulder = self.lighting;
         let (l, t) = (self.layered.as_mut()?, self.targets.as_ref()?);
         if l.screenshot
             .as_ref()
@@ -695,6 +697,20 @@ impl Hdr {
                 .as_ref()?
                 .create_view(&Default::default()),
         )
+    }
+
+    /// The display as a 0.2 pack's `Frame` describes it, with the values the last pass uses:
+    /// the headroom (the peak over paper white, at least 1), then paper white, the peak and
+    /// the black level in nits.
+    pub fn display(&self) -> [f32; 4] {
+        let paper = self.paper_white.max(1.0);
+        let headroom = (self.peak / paper).max(1.0);
+        [
+            headroom,
+            paper,
+            paper * headroom,
+            self.black.clamp(0.0, paper),
+        ]
     }
 
     /// The peak the HDR metadata gives: while calibration's peak step runs, PQ's own
@@ -1511,6 +1527,23 @@ struct ReferenceParams { peak: f32, scene: f32, world: f32, debug: f32, share: v
         assert!(r == 1.0 && near(g, 0.5) && near(b, 0.2), "{r} {g} {b}");
     }
 
+    /// What a 0.2 pack's `Frame` reads of the display: the headroom the tone curve eases
+    /// into, never below 1, and the black Horizon lifts after it, never above paper white.
+    #[test]
+    fn the_display_a_pack_reads_is_the_one_the_curve_maps_to() {
+        let Some((device, queue)) = gpu() else {
+            return;
+        };
+        let mut hdr = Hdr::with_debug(&device, &queue, F::Rgba16Float, Output::Pq, true, None);
+        (hdr.paper_white, hdr.peak, hdr.black) = (203.0, 1000.0, 0.05);
+        let [headroom, paper, peak, black] = hdr.display();
+        assert_eq!((headroom, paper, black), (1000.0 / 203.0, 203.0, 0.05));
+        assert!((peak - 1000.0).abs() < 1e-3, "{peak}");
+        // A peak under paper white has no headroom: the display tops out at white.
+        (hdr.peak, hdr.black) = (150.0, 400.0);
+        assert_eq!(hdr.display(), [1.0, 203.0, 203.0, 203.0]);
+    }
+
     #[test]
     fn sdr_screenshots_roll_off_the_world_and_keep_the_hud_as_drawn() {
         let Some((device, queue)) = gpu() else {
@@ -1610,8 +1643,9 @@ struct ReferenceParams { peak: f32, scene: f32, world: f32, debug: f32, share: v
         let stored = [191.0, 223.0, 112.0, 0.0].map(|v| v / 255.0);
         let hud = t.hud.as_ref().unwrap();
         assert_eq!(texel(&device, &queue, encoder, hud), stored);
-        // With HDR Lighting off nothing is lifted: the screenshot is the SDR picture, clipped at white.
-        hdr.look = false;
+        // With HDR Lighting off or under a pack, Horizon lifts nothing: the screenshot is the
+        // SDR picture, clipped at white.
+        hdr.lighting = false;
         for gamma in [0.5f32, 0.9, 1.0] {
             let w = [gamma, gamma / 2.0, 0.0];
             // Uncovered, the HUD's target holds the world as drawn; the icon ignores the HUD.
