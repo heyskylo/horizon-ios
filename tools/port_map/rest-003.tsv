@@ -98,7 +98,7 @@ Minecraft.updateLevelInEngines	skip:other		one world state in Horizon; no engine
 Minecraft.telemetryOptInExtra	skip:service		
 Minecraft.extraTelemetryAvailable	skip:service		
 Minecraft.allowsTelemetry	skip:service		
-Minecraft.allowsMultiplayer	skip:service		
+Minecraft.allowsMultiplayer	port	crates/horizon-client-render/src/ban_notice.rs::AccountStatus::allows_multiplayer	servers allowed, no multiplayer ban and no forced name change; the title screen enables its Multiplayer and Realms buttons from it
 Minecraft.allowsRealms	skip:service		
 Minecraft.friendsEnabled	skip:service		
 Minecraft.handleGlobalKeyPress	port	crates/horizon-client/src/game/play_keys.rs::Game::key_pressed	F11 and F2 shortcuts; the friends key is service
