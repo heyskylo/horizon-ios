@@ -3881,6 +3881,8 @@ pub(crate) mod tests {
                     }
                 },
                 player_chat: |_, _, _, _, _| {},
+                player_chat_v2: |_, _, _, _, _, _| {},
+                chat_decorate: |_, _, _, _| {},
                 sound_play: |_, _, _, _| {},
                 living_heal: |_, _, _| {},
                 living_breathe: |_, _, _, _, _| {},
