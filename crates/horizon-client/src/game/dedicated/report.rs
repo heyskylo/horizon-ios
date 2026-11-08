@@ -121,6 +121,7 @@ pub(in crate::game) fn log_saved(perf: &mut ServerPerf, wait: bool) -> Vec<Done>
                 log::info!("Horizon: {}", files::saved_line(&saved.path));
                 Done::Saved {
                     path: shown(&saved.path),
+                    file: saved.path.clone(),
                     removed: saved.deleted.iter().map(|p| shown(p)).collect(),
                 }
             }
@@ -232,6 +233,7 @@ impl Game<'_> {
 
     /// Begins and ends the captures guests asked for, between two ticks.
     pub(super) fn serve_perf_requests(&mut self, state: &mut super::ServerState) {
+        self.pump_perf_files();
         for asked in self.take_perf_asked() {
             match asked {
                 Asked::Start { conn, name, wanted } => {

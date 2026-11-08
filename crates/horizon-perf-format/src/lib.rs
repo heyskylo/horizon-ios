@@ -9,6 +9,7 @@ pub mod v1 {
 mod counters;
 pub mod files;
 mod health;
+mod merge;
 mod slow;
 mod strings;
 mod writer;
@@ -18,10 +19,12 @@ pub use counters::{
     global as counter_registry,
 };
 pub use health::{Gauges, HealthRecorder, TIERS, Tps};
+pub use merge::{MergeError, PartMerger};
 pub use prost::Message as ProtoMessage;
 pub use slow::{SLOW_RING_CAPACITY, SLOW_TOP_SPANS, SlowRecord, SlowRing, SlowSpan};
 pub use strings::Interner;
 
 pub use writer::{
-    CHANNEL_CAPACITY, CaptureWriter, FORMAT, Field, FieldSender, WRITER_THREAD_NAME, WriterThread,
+    CHANNEL_CAPACITY, CaptureWriter, FORMAT, Field, FieldSender, RawSend, WRITER_THREAD_NAME,
+    WriterThread,
 };

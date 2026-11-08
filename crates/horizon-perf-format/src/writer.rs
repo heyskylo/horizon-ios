@@ -129,6 +129,12 @@ impl<W: Write> CaptureWriter<W> {
         self.gz.flush()
     }
 
+    /// Appends bytes that are whole top-level fields already (another side's stream), then sync-flushes.
+    pub fn write_raw(&mut self, fields: &[u8]) -> io::Result<()> {
+        self.gz.write_all(fields)?;
+        self.gz.flush()
+    }
+
     pub fn get_ref(&self) -> &W {
         self.gz.get_ref()
     }
@@ -148,10 +154,25 @@ impl Dropped {
     }
 }
 
+enum Item {
+    Field(Field),
+    Raw(Vec<u8>),
+}
+
+/// What became of bytes offered to [`FieldSender::try_send_raw`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum RawSend {
+    Sent,
+    /// The channel had no room; the bytes come back to try again.
+    Full(Vec<u8>),
+    /// The writer is gone.
+    Closed,
+}
+
 /// The producers' end of a writer thread's bounded channel.
 #[derive(Clone)]
 pub struct FieldSender {
-    tx: SyncSender<Field>,
+    tx: SyncSender<Item>,
     dropped: Arc<Dropped>,
 }
 
@@ -159,17 +180,26 @@ impl FieldSender {
     /// Queues `field` without waiting: a full channel drops it and counts it for its side; a `Stop` alone waits for room.
     pub fn send(&self, field: Field) -> bool {
         if let Field::Stop(_) = field {
-            return self.tx.send(field).is_ok();
+            return self.tx.send(Item::Field(field)).is_ok();
         }
-        match self.tx.try_send(field) {
+        match self.tx.try_send(Item::Field(field)) {
             Ok(()) => true,
-            Err(TrySendError::Full(field)) => {
+            Err(TrySendError::Full(Item::Field(field))) => {
                 self.dropped
                     .slot(field.side())
                     .fetch_add(1, Ordering::Relaxed);
                 false
             }
-            Err(TrySendError::Disconnected(_)) => false,
+            Err(TrySendError::Full(Item::Raw(_)) | TrySendError::Disconnected(_)) => false,
+        }
+    }
+
+    /// Queues bytes that are whole top-level fields, never dropping them: a full channel hands them back.
+    pub fn try_send_raw(&self, fields: Vec<u8>) -> RawSend {
+        match self.tx.try_send(Item::Raw(fields)) {
+            Ok(()) => RawSend::Sent,
+            Err(TrySendError::Full(Item::Raw(fields))) => RawSend::Full(fields),
+            Err(_) => RawSend::Closed,
         }
     }
 
@@ -187,7 +217,7 @@ pub struct WriterThread<W> {
 
 impl<W: Write + Send + 'static> WriterThread<W> {
     pub fn spawn(out: W) -> io::Result<Self> {
-        let (tx, rx) = mpsc::sync_channel(CHANNEL_CAPACITY);
+        let (tx, rx) = mpsc::sync_channel::<Item>(CHANNEL_CAPACITY);
         let dropped = Arc::new(Dropped::default());
         let counts = Arc::clone(&dropped);
         let handle = thread::Builder::new()
@@ -212,9 +242,16 @@ impl<W: Write + Send + 'static> WriterThread<W> {
     }
 }
 
-fn run<W: Write>(out: W, rx: Receiver<Field>, dropped: &Dropped) -> io::Result<W> {
+fn run<W: Write>(out: W, rx: Receiver<Item>, dropped: &Dropped) -> io::Result<W> {
     let mut writer = CaptureWriter::new(out)?;
-    for field in rx {
+    for item in rx {
+        let field = match item {
+            Item::Raw(fields) => {
+                writer.write_raw(&fields)?;
+                continue;
+            }
+            Item::Field(field) => field,
+        };
         let field = match field {
             Field::Stop(mut stop) => {
                 let count = dropped.slot(stop.side()).load(Ordering::Relaxed);

@@ -4,10 +4,15 @@ use super::integrated::capture::{Live, Target};
 use super::lan::LanHost;
 use super::profile_capture::{reports_dir, shown};
 use horizon_client::perf_net::{
-    CHANNEL, Held, OPERATOR_LEVEL, Refusal, Reply, Request, Verdict, Wanted, judge,
+    CHANNEL, Held, OPERATOR_LEVEL, Outgoing, Refusal, Reply, Request, Verdict, Wanted, judge,
 };
 use horizon_perf_format::v1::{StopReason, Trigger};
 use horizon_protocol::packets::{configuration::CustomPayload, play};
+use std::fs::File;
+use std::io::Read;
+use std::path::PathBuf;
+use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 /// The guest whose capture runs on this server.
 pub(in crate::game) struct Requester {
@@ -30,11 +35,23 @@ pub(in crate::game) enum Asked {
 pub(in crate::game) struct Served {
     requester: Option<Requester>,
     asked: Vec<Asked>,
+    sending: Vec<Sending>,
+}
+
+/// A finished capture's file on its way to the guest that asked for it.
+struct Sending {
+    conn: u32,
+    file: File,
+    pace: Outgoing,
 }
 
 /// How a server capture's file ended.
 pub(in crate::game) enum Done {
-    Saved { path: String, removed: Vec<String> },
+    Saved {
+        path: String,
+        file: PathBuf,
+        removed: Vec<String>,
+    },
     Failed,
 }
 
@@ -139,9 +156,38 @@ impl Game<'_> {
                 continue;
             };
             match done {
-                Done::Saved { path, removed } => {
+                Done::Saved {
+                    path,
+                    file,
+                    removed,
+                } => {
                     log::info!("Horizon: {name}'s server profile saved to {path}");
-                    self.perf_reply(conn, &Reply::Finished { path, removed });
+                    let (bytes, sending) = match File::open(&file).and_then(|f| {
+                        let len = f.metadata()?.len();
+                        Ok((f, len))
+                    }) {
+                        Ok((file, len)) => (
+                            len,
+                            Some(Sending {
+                                conn,
+                                file,
+                                pace: Outgoing::new(len, Instant::now()),
+                            }),
+                        ),
+                        Err(e) => {
+                            log::warn!("Horizon: {name}'s server profile cannot be sent: {e}");
+                            (0, None)
+                        }
+                    };
+                    self.perf_reply(
+                        conn,
+                        &Reply::Finished {
+                            path,
+                            removed,
+                            bytes,
+                        },
+                    );
+                    self.profile.served.sending.extend(sending);
                 }
                 Done::Failed => {
                     log::error!("Horizon: {name}'s server profile could not be written");
@@ -151,8 +197,36 @@ impl Game<'_> {
         }
     }
 
+    /// Sends the next chunk of each file that is due, at most [`horizon_client::perf_net::RATE`] a second and not while the guest has a backlog.
+    pub(in crate::game) fn pump_perf_files(&mut self) {
+        let now = Instant::now();
+        let mut sending = std::mem::take(&mut self.profile.served.sending);
+        sending.retain_mut(|s| {
+            let Some(guest) = self.lan.as_ref().and_then(|h| h.hub.guest(s.conn)) else {
+                return false;
+            };
+            let queued = guest.sender.pending.load(Ordering::Relaxed);
+            let Some(n) = s.pace.next(now, queued) else {
+                return !s.pace.done();
+            };
+            let mut chunk = vec![0; n];
+            match s.file.read_exact(&mut chunk) {
+                Ok(()) => guest.send(&payload(&Reply::Chunk(chunk))),
+                Err(e) => {
+                    log::warn!("Horizon: a server profile could not be read for sending: {e}");
+                    guest.send(&payload(&Reply::Refused(Refusal::Failed)));
+                    return false;
+                }
+            }
+            !s.pace.done()
+        });
+        sending.append(&mut self.profile.served.sending);
+        self.profile.served.sending = sending;
+    }
+
     /// On the server thread, between two ticks: begins and ends the captures guests asked for.
     pub(super) fn serve_perf_asked(&mut self) {
+        self.pump_perf_files();
         for asked in self.take_perf_asked() {
             match asked {
                 Asked::Start { conn, name, wanted } => {

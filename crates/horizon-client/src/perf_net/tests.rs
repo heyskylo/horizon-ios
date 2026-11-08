@@ -21,9 +21,14 @@ fn started(path: &str, seconds: Option<u32>) -> Reply {
 }
 
 fn finished(path: &str) -> Reply {
+    finished_with(path, 0)
+}
+
+fn finished_with(path: &str, bytes: u64) -> Reply {
     Reply::Finished {
         path: path.into(),
         removed: Vec::new(),
+        bytes,
     }
 }
 
@@ -104,7 +109,10 @@ fn replies_round_trip_and_refusals_are_distinct_bytes() {
         Reply::Finished {
             path: "reports/a.hzperf".into(),
             removed: vec!["reports/old.hzperf".into(), "reports/older.hzperf".into()],
+            bytes: 5_000_000_000,
         },
+        Reply::Chunk(vec![0x1f, 0x8b, 8, 0, 255]),
+        Reply::Chunk(Vec::new()),
     ];
     for reply in replies {
         assert_eq!(Reply::decode(&reply.encode()).unwrap(), reply);
@@ -292,4 +300,166 @@ fn wanted_carries_every_switch_a_server_has_and_never_a_file() {
             ..options
         }
     );
+}
+
+#[test]
+fn a_chunk_is_a_tag_and_a_length_prefixed_array_and_no_bigger_than_the_limit() {
+    assert_eq!(Reply::Chunk(vec![9, 8, 7]).encode(), [3, 3, 9, 8, 7]);
+    let mut big = vec![3, 0x81, 0x80, 0x02];
+    big.extend(std::iter::repeat_n(0u8, CHUNK + 1));
+    assert!(Reply::decode(&big).is_err());
+    assert!(Reply::decode(&[3, 4, 1, 2]).is_err());
+    assert!(
+        Reply::decode(&[3, 1, 1, 0]).is_err(),
+        "bytes after the chunk"
+    );
+}
+
+#[test]
+fn a_finished_reply_announces_the_file_size_as_a_varlong() {
+    let bytes = Reply::Finished {
+        path: "p".into(),
+        removed: Vec::new(),
+        bytes: 300,
+    }
+    .encode();
+    assert_eq!(bytes, [1, 1, b'p', 0xac, 0x02, 0]);
+}
+
+/// Everything the server would send, with the poll turns it takes, against a clock.
+fn drain(total: u64, step: Duration, queued: impl Fn(Duration) -> usize) -> Vec<(Duration, usize)> {
+    let t0 = Instant::now();
+    let mut out = Outgoing::new(total, t0);
+    let mut sent = Vec::new();
+    let mut at = Duration::ZERO;
+    while !out.done() && at < Duration::from_secs(600) {
+        if let Some(n) = out.next(t0 + at, queued(at)) {
+            sent.push((at, n));
+        }
+        at += step;
+    }
+    sent
+}
+
+#[test]
+fn the_transfer_sends_the_whole_file_in_32_kib_chunks() {
+    let total = 5 * CHUNK as u64 + 123;
+    let sent = drain(total, Duration::from_millis(50), |_| 0);
+    let sizes: Vec<usize> = sent.iter().map(|s| s.1).collect();
+    assert_eq!(sizes, [32768, 32768, 32768, 32768, 32768, 123]);
+    assert_eq!(sizes.iter().sum::<usize>() as u64, total);
+}
+
+#[test]
+fn the_transfer_never_sends_more_than_256_kib_in_any_second() {
+    let polls = [1, 7, 50, 125, 130];
+    for poll_ms in polls {
+        let sent = drain(64 * 1024 * 1024, Duration::from_millis(poll_ms), |_| 0);
+        let last = sent.last().unwrap().0;
+        let mut worst = 0usize;
+        for (start, _) in &sent {
+            let end = *start + Duration::from_secs(1);
+            let in_second: usize = sent
+                .iter()
+                .filter(|(at, _)| at >= start && *at < end)
+                .map(|s| s.1)
+                .sum();
+            worst = worst.max(in_second);
+        }
+        assert!(
+            worst <= 256 * 1024,
+            "polled every {poll_ms} ms: {worst} bytes in a second"
+        );
+        let seconds = last.as_secs_f64();
+        let average = (sent.iter().map(|s| s.1).sum::<usize>() as f64) / seconds;
+        assert!(
+            average > 200.0 * 1024.0,
+            "polled every {poll_ms} ms: only {average} bytes/s"
+        );
+    }
+}
+
+#[test]
+fn a_backlog_holds_the_transfer_back_until_gameplay_packets_are_out() {
+    let busy_until = Duration::from_secs(3);
+    let sent = drain(4 * CHUNK as u64, Duration::from_millis(50), |at| {
+        if at < busy_until {
+            BUSY_QUEUE + 1
+        } else {
+            BUSY_QUEUE
+        }
+    });
+    assert_eq!(sent.len(), 4);
+    assert!(sent.iter().all(|(at, _)| *at >= busy_until));
+}
+
+#[test]
+fn the_file_arrives_chunk_by_chunk_and_the_last_one_frees_the_link() {
+    let t0 = Instant::now();
+    let mut link = Link::default();
+    link.ask("horizon", t0).unwrap();
+    link.answer(started("p", None), t0);
+    link.stop(t0).unwrap();
+    assert!(matches!(
+        link.answer(finished_with("p", 70_000), t0),
+        Outcome::Finished { bytes: 70_000, .. }
+    ));
+    assert!(!link.is_idle(), "the file is still coming");
+    assert!(!link.running());
+    assert_eq!(link.ask("horizon", t0), Err(Unsent::Busy));
+    assert_eq!(link.chunk(32_768, t0), Received::More);
+    assert_eq!(link.chunk(32_768, t0), Received::More);
+    assert_eq!(link.chunk(4_464, t0), Received::Last);
+    assert!(link.is_idle());
+    assert_eq!(link.chunk(1, t0), Received::Stray);
+}
+
+#[test]
+fn a_chunk_beyond_the_announced_size_ends_the_transfer() {
+    let t0 = Instant::now();
+    let mut link = Link::default();
+    link.ask("horizon", t0).unwrap();
+    link.answer(started("p", None), t0);
+    link.answer(finished_with("p", 10), t0);
+    assert_eq!(link.chunk(11, t0), Received::TooMuch);
+    assert!(link.is_idle());
+}
+
+#[test]
+fn a_server_that_fails_mid_file_frees_the_link() {
+    let t0 = Instant::now();
+    let mut link = Link::default();
+    link.ask("horizon", t0).unwrap();
+    link.answer(started("p", None), t0);
+    link.answer(finished_with("p", 100), t0);
+    assert_eq!(link.chunk(10, t0), Received::More);
+    assert_eq!(
+        link.answer(Reply::Refused(Refusal::Failed), t0),
+        Outcome::Refused(Refusal::Failed)
+    );
+    assert!(link.is_idle());
+}
+
+#[test]
+fn a_silent_server_is_given_up_on_thirty_seconds_after_the_last_sign_of_life() {
+    let t0 = Instant::now();
+    let mut link = Link::default();
+    link.ask("horizon", t0).unwrap();
+    link.answer(started("p", None), t0);
+    assert!(
+        !link.stalled(t0 + STALL_TIMEOUT * 10),
+        "a running capture may run long"
+    );
+    link.stop(t0).unwrap();
+    assert!(!link.stalled(t0 + STALL_TIMEOUT));
+    assert!(link.stalled(t0 + STALL_TIMEOUT + Duration::from_millis(1)));
+    assert!(link.is_idle());
+    link.ask("horizon", t0).unwrap();
+    link.answer(started("p", None), t0);
+    link.stop(t0).unwrap();
+    link.answer(finished_with("p", 100), t0);
+    let t1 = t0 + Duration::from_secs(25);
+    assert_eq!(link.chunk(10, t1), Received::More);
+    assert!(!link.stalled(t1 + STALL_TIMEOUT));
+    assert!(link.stalled(t1 + STALL_TIMEOUT + Duration::from_millis(1)));
 }

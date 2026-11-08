@@ -66,6 +66,11 @@ def client_capture(bins, ctl, work, seconds):
     return [row['code'] for row in perf('warnings') if row['side'] == 'client'], [row['name'] for row in perf('marks')]
 
 
+def perf_rows(bins, file, op):
+    out = subprocess.run([str(bins / f'horizon-perf{EXE}'), 'query', op, str(file)], capture_output=True, text=True, timeout=60)
+    return json.loads(out.stdout)['rows']
+
+
 def start_server(command, folder, props, log):
     folder.mkdir()
     (folder / 'server.properties').write_text(''.join(f'{k}={v}\n' for k, v in props.items()))
@@ -115,11 +120,12 @@ def check_horizon(bins, resources, scratch, out):
         if not any('already being recorded' in l for l in server.since(0)):
             raise Failed('the console started a report over the player\'s')
         stopped = ctl('profile', 'server', 'stop')
-        if stopped['path'] != started['path']:
-            raise Failed(f'stop: {stopped} after {started}')
         made = folder / started['path']
         if not made.exists() or not gzip.decompress(made.read_bytes()):
             raise Failed(f'the server has no copy at {made}')
+        received = next(iter(work.rglob(Path(stopped['path']).name)), None)
+        if received is None or received.read_bytes() != made.read_bytes():
+            raise Failed(f'the client did not receive the server file: {stopped}')
         lines = server.since(0)
         if not any(f'{PLAYER} started a server profile (30 s, samples off)' in l for l in lines):
             raise Failed('the server log does not name the player at the start')
@@ -138,6 +144,10 @@ def check_horizon(bins, resources, scratch, out):
         codes, marks = client_capture(bins, ctl, work, 3)
         if codes or marks != ['server_started']:
             raise Failed(f'a bare capture at level 4 holds warnings {codes} and marks {marks}')
+        merged = sorted(work.rglob('profile-*.hzperf'), key=lambda p: p.stat().st_mtime)[-1]
+        sides = {row['side'] for row in perf_rows(bins, merged, 'meta')}
+        if sides != {'client', 'server'}:
+            raise Failed(f'a bare capture at level 4 holds the sides {sides}')
         server.console(f'deop {PLAYER}')
         time.sleep(1)
         codes, marks = client_capture(bins, ctl, work, 2)
