@@ -155,7 +155,9 @@ fn median(values: &mut Vec<f32>) -> Option<f32> {
 
 /// `Start` for a client capture: its build and machine; the capture fills the rest.
 pub fn start_message(same_process: bool, gpu: Option<&str>) -> Start {
-    let mut machine: Machine = server_perf::machine(Some(server_perf::hardware_now()));
+    let mut machine: Machine = server_perf::machine(Some(
+        server_perf::hardware().unwrap_or_else(server_perf::hardware_now),
+    ));
     if let Some(gpu) = gpu {
         machine.gpu = gpu.to_owned();
     }

@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end check of client captures: an offscreen game writes a .hzperf into its home's reports/.
-
-It launches a game with a scratch HORIZON_HOME, runs `horizon-ctl profile start`, `mark` and `stop`, then reads the
-file back with `horizon-perf`: the seconds' frame counts must add up to the frames the game drew while the capture ran,
-and the mark must sit at the time it was typed. F3+O starts and saves a capture too, and HORIZON_PROFILE=DIR writes
-one into DIR when the game quits.
-
-    python3 tools/profile_client_e2e.py                    # builds with the fast profile first
-    python3 tools/profile_client_e2e.py --bin-dir target/fast
-
-Needs the prepared resources in .local/horizon-client and a build of horizon-client, horizon-ctl and horizon-perf.
-"""
+"""End-to-end check of client captures: an offscreen game writes a .hzperf into its home's reports/."""
 import argparse
 import json
 import subprocess

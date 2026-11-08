@@ -75,9 +75,7 @@ pub const ACTIONS: [(&str, DebugAction); 20] = [
     ),
 ];
 
-/// Horizon's own debug keys: fixed, so they never enter the options table that
-/// vanilla parity compares (`MAPPINGS`). F3+R and F3+E stay off until the AI Agent
-/// page enables them; `Game` decides that in `debug_action`.
+/// Horizon's own debug keys: fixed, so they never enter the options table that vanilla parity compares.
 const HORIZON_ACTIONS: [(&str, DebugAction); 3] = [
     ("key.keyboard.r", DebugAction::RecordSession),
     ("key.keyboard.e", DebugAction::ExportRepro),

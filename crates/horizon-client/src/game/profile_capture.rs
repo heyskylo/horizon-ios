@@ -5,7 +5,7 @@ use horizon_client::client_perf::{
     self, ClientPerf,
     request::{self, Failed, Marked, ProfileSide, Request, StartOptions, Started, Status, Stopped},
 };
-use horizon_client::server_perf::{SlowDetail, WorldCounts};
+use horizon_client::server_perf::{self, SlowDetail, WorldCounts};
 use horizon_client::spans::{self, Span};
 use horizon_client::text::{ClickEvent, Style, Text};
 use horizon_perf_format::{
@@ -22,9 +22,11 @@ const ENV_DIR: &str = "HORIZON_PROFILE";
 pub(super) struct Profile {
     perf: ClientPerf,
     started_by: Trigger,
+    stopped_by_key: bool,
     /// `profile stop` waits for the file to be whole.
     reply: Option<Sender<String>>,
     spans_were_on: bool,
+    hardware_warmed: bool,
     env_tried: bool,
 }
 
@@ -33,8 +35,10 @@ impl Profile {
         Self {
             perf: ClientPerf::new(slow_ms),
             started_by: Trigger::Unspecified,
+            stopped_by_key: false,
             reply: None,
             spans_were_on: false,
+            hardware_warmed: false,
             env_tried: false,
         }
     }
@@ -143,6 +147,7 @@ impl Game<'_> {
     /// F3+O: starts a capture, or stops the running one and says where it went.
     pub(super) fn profile_key(&mut self) {
         let outcome = if self.profile.perf.capturing() {
+            self.profile.stopped_by_key = true;
             self.stop_profile(StopReason::Normal).map(|()| None)
         } else {
             self.start_profile(&StartOptions::default(), Trigger::Key)
@@ -179,7 +184,11 @@ impl Game<'_> {
                 chunks: self.world.chunks.len() as u32,
                 entities: self.mobs.len() as u32,
             });
-        if !self.profile.env_tried {
+        if !self.profile.hardware_warmed {
+            self.profile.hardware_warmed = true;
+            server_perf::warm_hardware();
+        }
+        if !self.profile.env_tried && server_perf::hardware().is_some() {
             self.profile.env_tried = true;
             if std::env::var_os(ENV_DIR).is_some_and(|d| !d.is_empty())
                 && let Err(e) = self.start_profile(&StartOptions::default(), Trigger::Env)
@@ -209,7 +218,8 @@ impl Game<'_> {
     fn profile_saved(&mut self, saved: std::io::Result<horizon_client::server_perf::Saved>) {
         spans::record_here(self.profile.spans_were_on);
         let reply = self.profile.reply.take();
-        let by_key = self.profile.started_by == Trigger::Key;
+        let by_key = std::mem::take(&mut self.profile.stopped_by_key)
+            || (self.profile.started_by == Trigger::Key && reply.is_none());
         match saved {
             Ok(saved) => {
                 for path in &saved.deleted {

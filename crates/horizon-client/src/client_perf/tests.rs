@@ -123,6 +123,29 @@ fn a_client_capture_reads_back_with_its_frames_marks_and_health() {
 }
 
 #[test]
+fn health_samples_carry_the_process_gauges_and_this_seconds_counts() {
+    let mut perf = ClientPerf::new(SLOW_FRAME_MS);
+    let counts = || WorldCounts {
+        players: 3,
+        chunks: 40,
+        entities: 7,
+    };
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    let mut t = 0.0;
+    let sample = loop {
+        perf.frame(t, 16.0, 5.0, None, None, counts);
+        t += 1.0;
+        let (samples, _) = perf.health().samples_since(0, 0.0);
+        if let Some(s) = samples.into_iter().find(|s| s.rss_mb > 0.0) {
+            break s;
+        }
+        assert!(Instant::now() < deadline, "no sample carried an rss_mb");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert_eq!((sample.players, sample.chunks, sample.entities), (3, 40, 7));
+}
+
+#[test]
 fn the_first_second_of_a_capture_counts_only_frames_after_it_began() {
     let scratch = Scratch::new("midsecond");
     let mut perf = ClientPerf::new(SLOW_FRAME_MS);

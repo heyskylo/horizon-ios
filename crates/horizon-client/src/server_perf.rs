@@ -5,8 +5,8 @@ use horizon_perf_format::v1::{
     Kind, Mark, Options, Overhead, Side, Start, Stop, StopReason, ThreadSelection, Trigger, Unit,
 };
 use horizon_perf_format::{
-    CounterReporter, Field, FieldSender, HealthRecorder, Interner, SlowRecord, SlowRing, SlowSpan,
-    WriterThread, counter_registry,
+    CounterReporter, Field, FieldSender, Gauges, HealthRecorder, Interner, SlowRecord, SlowRing,
+    SlowSpan, WriterThread, counter_registry,
 };
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -184,7 +184,7 @@ impl ServerPerf {
             ticks: 0,
             gauges_at: start,
             system: SystemProbe::default(),
-            background: role.background_probe.then(BackgroundProbe::spawn),
+            background: None,
             frame_medians: (None, None),
             session: None,
             ending: Vec::new(),
@@ -222,13 +222,25 @@ impl ServerPerf {
         world: impl FnOnce() -> WorldCounts,
         wire: impl FnOnce() -> Wire,
     ) {
-        if self.gauges_due(t) {
+        let first_background = self.role.background_probe && self.background.is_none();
+        let due = self.gauges_due(t);
+        let counts = (first_background || due).then(world);
+        if let (true, Some(counts)) = (first_background, counts) {
+            let probe = BackgroundProbe::spawn();
+            probe.request(t, counts);
+            self.background = Some(probe);
+        }
+        if let (true, Some(counts)) = (due, counts) {
             self.gauges_at = t;
-            let counts = world();
             let mut g = match &self.background {
                 Some(probe) => {
                     probe.request(t, counts);
-                    probe.latest()
+                    Gauges {
+                        players: counts.players,
+                        chunks: counts.chunks,
+                        entities: counts.entities,
+                        ..probe.latest()
+                    }
                 }
                 None => self.system.read(t, counts),
             };
