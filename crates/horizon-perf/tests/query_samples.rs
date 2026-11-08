@@ -436,6 +436,24 @@ fn frames_with_three_captures_are_three_columns_equal_to_the_single_runs() {
 }
 
 #[test]
+fn frames_warn_when_the_captures_sampled_different_threads() {
+    let dir = TempDir::new("frames-threads");
+    let same = save(&dir, "a.hzperf", &waypoints(1, 50).fields());
+    let twin = save(&dir, "b.hzperf", &waypoints(2, 50).fields());
+    let quiet = query(&["frames", UPDATE_ID, &same, &twin]);
+    assert!(quiet.warnings.unwrap_or_default().is_empty());
+    let mut b = waypoints(1, 50);
+    b.thread = "render".into();
+    let other = save(&dir, "c.hzperf", &b.fields());
+    let mixed = query(&["frames", UPDATE_ID, &same, &other]);
+    let warnings = mixed.warnings.unwrap_or_default();
+    assert!(
+        warnings.iter().any(|w| w.contains("different threads")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
 fn frames_take_ids_regexes_and_report_unknown_or_ambiguous_names() {
     let dir = TempDir::new("frames-names");
     let file = standard(&dir);
@@ -621,4 +639,54 @@ fn split_rows_keep_their_wire_names() {
     assert!(text.contains(r#""by":"dim""#), "{text}");
     let row: &SplitRow = split_rows(&reply)[0];
     assert_eq!(row.by, SampleBy::Dim);
+}
+
+/// The standard tree on a 50-tick thread, plus a 10-tick worker with 25 samples of 10 ms.
+fn two_threads(dir: &TempDir) -> String {
+    let mut b = waypoints(1, 50);
+    b.extra_threads.push(("worker".into(), 10, 0));
+    let root = b.root_on(1, "worker::run");
+    let job = b.node(Some(root), "worker::job");
+    let on_worker = W {
+        thread: 1,
+        ..W::default()
+    };
+    b.weight(root, 5, on_worker);
+    b.weight(job, 20, on_worker);
+    save(dir, "threads.hzperf", &b.fields())
+}
+
+#[test]
+fn split_by_thread_id_divides_by_the_named_threads_own_ticks() {
+    let dir = TempDir::new("split-thread-id");
+    let file = two_threads(&dir);
+    let reply = query(&["split", "t:worker", "--by", "thread", &file]);
+    // 25 samples of 10 ms over the worker's 10 ticks, not the tick thread's 50.
+    assert_eq!(split(&reply), keyed(&[("t:worker", 25.0)]));
+    let sel = reply.selection.as_ref().unwrap();
+    assert_eq!(sel.thread.as_deref(), Some("worker"));
+    assert_eq!((sel.ticks, sel.samples), (Some(10), Some(25)));
+    let spans = query(&["split", "t:worker", "--by", "span", &file]);
+    assert_eq!(split(&spans), vec![(None, 25.0)]);
+    let tick = query(&["split", "t:tick", "--by", "thread", &file]);
+    assert_eq!(split(&tick), keyed(&[("t:tick", 24.0)]));
+    assert_eq!(tick.selection.as_ref().unwrap().ticks, Some(50));
+    let missing = query(&["split", "t:nobody", "--by", "thread", &file]);
+    assert!(!missing.ok);
+}
+
+#[test]
+fn thread_filter_and_group_by_thread_use_the_chosen_threads_ticks() {
+    let dir = TempDir::new("group-thread");
+    let file = two_threads(&dir);
+    let hot = query(&["hot", "--thread", "worker", &file]);
+    assert_eq!(hot.selection.as_ref().unwrap().ticks, Some(10));
+    let rows = hot_rows(&hot);
+    assert_eq!(rows[0].full, "worker::job");
+    assert_eq!(rows[0].self_ms, 20.0);
+    let group = query(&["group", "--by", "thread", &file]);
+    // 1200 and 250 ms over the tick thread's 50 ticks, with a warning saying so.
+    assert_eq!(split(&group), keyed(&[("t:tick", 24.0), ("t:worker", 5.0)]));
+    let warnings = group.warnings.unwrap_or_default();
+    assert!(warnings.iter().any(|w| w.contains("tick")), "{warnings:?}");
 }

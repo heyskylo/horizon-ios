@@ -63,6 +63,16 @@ pub(super) fn prepare<'a>(
     i: usize,
     all_threads: bool,
 ) -> Result<Run<'a>, QueryError> {
+    prepare_on(ctx, i, all_threads, ctx.q.filters.thread.as_deref())
+}
+
+/// Like `prepare`, with the thread named by `named` (None: the side's main thread) giving the units.
+fn prepare_on<'a>(
+    ctx: &'a Ctx<'_>,
+    i: usize,
+    all_threads: bool,
+    named: Option<&str>,
+) -> Result<Run<'a>, QueryError> {
     let f = &ctx.q.filters;
     let side = ctx.side(i)?;
     let file = &ctx.files[i].file;
@@ -79,7 +89,7 @@ pub(super) fn prepare<'a>(
         }));
     }
     let thread = samples
-        .thread(f.thread.as_deref())
+        .thread(named)
         .map_err(|e| QueryError::new(format!("{file}: {e}")))?;
     let window = if ctx.has_window() {
         ctx.window(i, side, 0.0)?
@@ -193,8 +203,7 @@ fn scope(run: &mut Run, id: &str) -> Result<Scope, QueryError> {
         Kind::Dimension => by_context(ContextKey::Dim),
         Kind::Chunk => by_context(ContextKey::Chunk),
         Kind::Thread => {
-            let thread = s.thread(Some(&parsed.key)).map_err(QueryError::new)?;
-            run.pick.thread = Some(thread);
+            run.pick.thread = Some(run.thread);
             return Ok(Scope::All);
         }
         Kind::Function => {
@@ -240,7 +249,11 @@ pub(super) fn divide(ctx: &Ctx, group: bool) -> Result<Reply, QueryError> {
             QueryError::new(format!("{op} needs --by {}", ok.join("|")))
         })?;
     let f = &ctx.q.filters;
-    let mut run = prepare(ctx, 0, by == SampleBy::Thread)?;
+    let named = match ctx.q.args.first().and_then(|a| Id::parse(a)) {
+        Some(id) if !group && id.kind == Kind::Thread => Some(id.key),
+        _ => f.thread.clone(),
+    };
+    let mut run = prepare_on(ctx, 0, by == SampleBy::Thread, named.as_deref())?;
     let narrow = match (group, ctx.q.args.first()) {
         (false, Some(id)) => scope(&mut run, id)?,
         _ => Scope::All,
@@ -268,6 +281,12 @@ pub(super) fn divide(ctx: &Ctx, group: bool) -> Result<Reply, QueryError> {
         .collect();
     let mut reply = Reply::new(unit_of(&run, f.select, f.slow), rows);
     reply.warnings = run.warnings(count);
+    if by == SampleBy::Thread {
+        reply.warnings.push(format!(
+            "every thread's weight is divided by the ticks or frames of {}",
+            run.samples.thread_names[run.thread as usize]
+        ));
+    }
     reply.sampled = Some(run.sampled(count));
     reply.window = run.window();
     Ok(reply)
@@ -344,6 +363,7 @@ pub(super) fn frames(ctx: &Ctx) -> Result<Reply, QueryError> {
     let mut columns: Vec<Stats> = Vec::new();
     let mut known: Vec<Found> = Vec::new();
     let mut first_run = None;
+    let mut differs = false;
     for i in 0..ctx.views.len() {
         let run = prepare(ctx, i, false)?;
         let t = run.samples.tally(&run.pick);
@@ -354,12 +374,19 @@ pub(super) fn frames(ctx: &Ctx) -> Result<Reply, QueryError> {
             }
         }
         columns.push(stats);
-        if first_run.is_none() {
-            let mut reply = Reply::new(unit_of(&run, f.select, f.slow), Vec::new());
-            reply.warnings = run.warnings(t.grand_n);
-            reply.sampled = Some(run.sampled(t.grand_n));
-            reply.window = run.window();
-            first_run = Some(reply);
+        match &first_run {
+            None => {
+                let mut reply = Reply::new(unit_of(&run, f.select, f.slow), Vec::new());
+                reply.warnings = run.warnings(t.grand_n);
+                reply.sampled = Some(run.sampled(t.grand_n));
+                reply.window = run.window();
+                first_run = Some(reply);
+            }
+            Some(first) => {
+                let thread = first.sampled.as_ref().map(|s| s.thread.as_str());
+                differs |= thread != Some(run.sampled(0).thread.as_str())
+                    || first.unit != unit_of(&run, f.select, f.slow);
+            }
         }
     }
     let first = |id: &str| columns[0].get(id).map_or(f64::MIN, |s| s.0);
@@ -429,5 +456,11 @@ pub(super) fn frames(ctx: &Ctx) -> Result<Reply, QueryError> {
         .collect();
     let mut reply = first_run.expect("at least one capture");
     reply.rows = rows;
+    if differs {
+        reply.warnings.push(
+            "the captures sampled different threads or units; the selection describes the first"
+                .to_string(),
+        );
+    }
     Ok(reply)
 }

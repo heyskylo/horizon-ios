@@ -4,7 +4,10 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-use horizon_perf_format::v1::{SampleProfile, Side, StringEntry, Unit};
+use horizon_perf_format::v1::{
+    Kind as CaptureKind, SampleProfile, Side, Start, Stop, StringEntry, Unit,
+};
+use horizon_perf_format::{CaptureWriter, Field};
 use horizon_threads::profile::{self, Aggregate, Config, Profile};
 use horizon_threads::sampler::{self, Context, Kind, Record, Stats};
 use horizon_threads::unwind::MAX_FRAMES;
@@ -445,4 +448,101 @@ fn crates_come_from_the_first_path_segment() {
     ] {
         assert_eq!(crate_of(name), krate, "{name}");
     }
+}
+
+fn ask(
+    file: &std::path::Path,
+    parts: &[&str],
+) -> horizon_perf::wire::Envelope<horizon_perf::query::Row> {
+    let env = horizon_perf::cli::Env {
+        horizon_home: None,
+        poll: Duration::from_millis(2),
+    };
+    let mut args = vec!["query".to_owned()];
+    args.extend(parts.iter().map(|p| (*p).to_owned()));
+    args.push(file.to_string_lossy().into_owned());
+    let mut out = Vec::new();
+    if let Err(e) = horizon_perf::cli::run(&args, &env, &mut out) {
+        panic!("{e:?}");
+    }
+    serde_json::from_slice(&out)
+        .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out)))
+}
+
+#[test]
+fn a_converted_profile_written_to_a_file_reads_back_through_the_queries() {
+    let ctx = Context::default();
+    let mut agg = Aggregate::new(50_000_000);
+    for _ in 0..5 {
+        agg.add(
+            "tick",
+            &record(Kind::Cpu, ctx, 0, &[at(alpha, 4), at(gamma, 3)]),
+        );
+    }
+    for _ in 0..2 {
+        agg.add(
+            "tick",
+            &record(Kind::Cpu, ctx, 0, &[at(beta, 4), at(gamma, 3)]),
+        );
+    }
+    for _ in 0..2 {
+        agg.add("tick", &record(Kind::Tick, ctx, 9_000_000, &[]));
+    }
+    for _ in 0..3 {
+        agg.add("worker", &record(Kind::Cpu, ctx, 0, &[at(beta, 4)]));
+    }
+    agg.add("worker", &record(Kind::Tick, ctx, 9_000_000, &[]));
+    agg.finish();
+    let config = Config {
+        sampler: sampler::Config {
+            hz: 100,
+            ..sampler::Config::default()
+        },
+        ..Config::default()
+    };
+    let c = convert(&profile_of(agg, config));
+    let mut fields = vec![Field::Start(Start {
+        side: Side::Server as i32,
+        kind: CaptureKind::Dedicated as i32,
+        ..Default::default()
+    })];
+    fields.extend(c.strings.into_iter().map(Field::String));
+    fields.push(Field::Samples(c.samples));
+    fields.push(Field::Stop(Stop {
+        side: Side::Server as i32,
+        t: 10.0,
+        ..Default::default()
+    }));
+    let dir = std::env::temp_dir().join(format!("horizon-render-perf-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("real.hzperf");
+    let mut writer = CaptureWriter::new(std::fs::File::create(&file).unwrap()).unwrap();
+    for field in fields {
+        writer.write(field).unwrap();
+    }
+    writer.finish().unwrap();
+
+    // 10 ms samples: alpha has 5 over the tick thread's 2 ticks.
+    let hot = ask(&file, &["hot"]);
+    let alpha = hot.rows().iter().find_map(|r| match r {
+        horizon_perf::query::Row::Hot(h) if h.full.ends_with("alpha") => Some(h),
+        _ => None,
+    });
+    assert_eq!(alpha.map(|h| (h.self_ms, h.samples)), Some((25.0, 5)));
+    let worker = ask(&file, &["split", "t:worker", "--by", "thread"]);
+    let sel = worker.selection.as_ref().unwrap();
+    assert_eq!(
+        (sel.thread.as_deref(), sel.ticks, sel.samples),
+        (Some("worker"), Some(1), Some(3))
+    );
+    let values: Vec<_> = worker
+        .rows()
+        .iter()
+        .map(|r| match r {
+            horizon_perf::query::Row::Split(s) => (s.key.clone(), s.value),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(values, [(Some("t:worker".to_owned()), 30.0)]);
+    std::fs::remove_dir_all(&dir).unwrap();
 }

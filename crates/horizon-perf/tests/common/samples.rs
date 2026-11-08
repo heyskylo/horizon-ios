@@ -14,6 +14,7 @@ pub struct W {
     pub state: u32,
     pub slow: bool,
     pub block: u32,
+    pub thread: u32,
 }
 
 pub struct Builder {
@@ -30,6 +31,8 @@ pub struct Builder {
     pub block_units: Vec<u32>,
     pub wall: bool,
     pub alloc: bool,
+    /// Threads after the first: name, ticks and slow ticks.
+    pub extra_threads: Vec<(String, u64, u64)>,
 }
 
 impl Builder {
@@ -48,6 +51,7 @@ impl Builder {
             block_units: block_units.to_vec(),
             wall: false,
             alloc: false,
+            extra_threads: Vec::new(),
         };
         b.ctx("", "", (0, 0), "");
         b
@@ -91,6 +95,13 @@ impl Builder {
         self.nodes.parent.len() as u32 - 1
     }
 
+    /// A root call node of sampled thread `thread` (0 is the first thread).
+    pub fn root_on(&mut self, thread: u32, name: &str) -> u32 {
+        let at = self.node(None, name);
+        self.nodes.thread_root[at as usize] = thread + 1;
+        at
+    }
+
     /// A context row: entity, dimension, chunk and span (empty text means none).
     pub fn ctx(&mut self, entity: &str, dim: &str, chunk: (i32, i32), span: &str) -> u32 {
         let (span, entity, dim) = (self.text(span), self.text(entity), self.text(dim));
@@ -107,7 +118,7 @@ impl Builder {
         let kind = u32::from(w.state != 0);
         self.wall |= w.state != 0;
         self.weights.node.push(node);
-        self.weights.thread.push(0);
+        self.weights.thread.push(w.thread);
         self.weights.kind.push(kind);
         self.weights.state.push(w.state);
         self.weights.slow.push(w.slow);
@@ -132,6 +143,10 @@ impl Builder {
     pub fn profile(mut self) -> (SampleProfile, Vec<String>) {
         let thread = self.thread.clone();
         let name = self.text(&thread);
+        let mut threads = vec![(name, self.ticks, self.slow_ticks)];
+        for (n, units, slow) in std::mem::take(&mut self.extra_threads) {
+            threads.push((self.text(&n), units, slow));
+        }
         let kind = |source: SampleSource, unit: SampleUnit, period: f64| SampleKind {
             source: source as i32,
             unit: unit as i32,
@@ -153,12 +168,15 @@ impl Builder {
         let profile = SampleProfile {
             side: SERVER,
             kinds,
-            threads: vec![SampledThread {
-                name,
-                units: self.ticks,
-                slow_units: self.slow_ticks,
-                unit: Unit::Tick as i32,
-            }],
+            threads: threads
+                .into_iter()
+                .map(|(name, units, slow_units)| SampledThread {
+                    name,
+                    units,
+                    slow_units,
+                    unit: Unit::Tick as i32,
+                })
+                .collect(),
             block_s: 5.0,
             block_units: vec![BlockUnits {
                 thread: 0,
