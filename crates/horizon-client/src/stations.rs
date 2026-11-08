@@ -254,6 +254,17 @@ fn has_stored_enchantments(stack: &ItemStack) -> bool {
         || !stack.stored_enchantments().is_empty()
         || data.is_some_and(|d| d.other("minecraft:stored_enchantments").is_some())
 }
+/// `EnchantmentHelper.canStoreEnchantments`: the stack has the component the
+/// item's enchantments live in (stored for a book, enchantments otherwise).
+/// A removal patch leaves none.
+fn can_store_enchantments(stack: &ItemStack) -> bool {
+    let removed = if &*stack.item == "minecraft:enchanted_book" {
+        "!minecraft:stored_enchantments"
+    } else {
+        "!minecraft:enchantments"
+    };
+    !stack.data().is_some_and(|d| d.other(removed).is_some())
+}
 /// `AnvilMenu.calculateIncreasedRepairCost`.
 pub fn increased_repair_cost(cost: u32) -> u32 {
     (u64::from(cost) * 2 + 1).min(i32::MAX as u64) as u32
@@ -303,8 +314,11 @@ pub fn anvil_result(
 ) -> AnvilResult {
     let fail = AnvilResult::default();
     let Some(input) = input else { return fail };
-    // EnchantmentHelper.canStoreEnchantments: enchantable or enchanted book... every
-    // item with an enchantments component, which is all of them in 26.3.
+    // EnchantmentHelper.canStoreEnchantments: the item's enchantments component
+    // is there (all items have one by default; a removal patch leaves none).
+    if !can_store_enchantments(input) {
+        return fail;
+    }
     let mut result = input.clone();
     let mut enchantments: Levels = input.crafting_enchantments().to_vec();
     let mut price: i64 = 0;
@@ -1244,6 +1258,59 @@ mod tests {
         let offers = enchant_offers(&e, &items, 1234, 15, Some(&stick));
         assert_eq!(offers.costs, [5, 13, 30]);
         assert!(offers.clues.iter().all(Option::is_none));
+    }
+
+    /// Anvil: `EnchantmentHelper.canStoreEnchantments` is component presence,
+    /// so a removed enchantments component leaves no result, not even a rename.
+    #[test]
+    fn anvil_refuses_an_item_without_its_enchantments_component() {
+        let e = sample();
+        let items = sample_items();
+        let removed = || {
+            Some(horizon_world::nbt::Tag::compound(Vec::<(
+                &str,
+                horizon_world::nbt::Tag,
+            )>::new()))
+        };
+        let mut blade = sword(&[]);
+        blade
+            .data_mut()
+            .set_other("!minecraft:enchantments", removed());
+        let r = anvil_result(
+            &e,
+            &items,
+            Some(&blade),
+            None,
+            Some("Blade"),
+            "Diamond Sword",
+            false,
+        );
+        assert_eq!((r.result, r.cost), (None, 0));
+        let mut book = book(&[]);
+        book.data_mut()
+            .set_other("!minecraft:stored_enchantments", removed());
+        let r = anvil_result(
+            &e,
+            &items,
+            Some(&book),
+            None,
+            Some("Blade"),
+            "Enchanted Book",
+            false,
+        );
+        assert_eq!((r.result, r.cost), (None, 0));
+        // The same items without the removal still rename.
+        let r = anvil_result(
+            &e,
+            &items,
+            Some(&sword(&[])),
+            None,
+            Some("Blade"),
+            "Diamond Sword",
+            false,
+        );
+        assert_eq!(r.cost, 1);
+        assert!(r.result.is_some());
     }
 
     /// Grindstone: the larger MAX_DAMAGE is written and the damage follows it.
