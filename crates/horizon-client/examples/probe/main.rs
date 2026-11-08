@@ -86,6 +86,7 @@ mod particle_providers_probe;
 mod pick_block_data_fixture;
 mod place_recipe_fixture;
 mod player_sync_fixture;
+mod portal_tickets_fixture;
 mod raid_fixture;
 mod random_tick_sections_probe;
 mod recipe_book_fixture;
@@ -100,6 +101,7 @@ mod screen_layout_fixture;
 mod section_mesh_fixture;
 mod server_files_probe;
 mod sheep_dye_fixture;
+mod shulker_bullet_probe;
 mod situational_music_fixture;
 mod skin_image_fixture;
 mod sound_engine_fixture;
@@ -202,6 +204,7 @@ probes! {
     pick_block_data_fixture,
     place_recipe_fixture,
     player_sync_fixture,
+    portal_tickets_fixture,
     raid_fixture,
     random_tick_sections_probe,
     recipe_book_fixture,
@@ -219,6 +222,7 @@ probes! {
     skin_image_fixture,
     late_entity_pair_fixture,
     sheep_dye_fixture,
+    shulker_bullet_probe,
     allay_interaction_fixture,
     entity_sound_packet_fixture,
     sound_engine_fixture,

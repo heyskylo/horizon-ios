@@ -515,6 +515,11 @@ pub struct Info {
     pub pos: [f64; 3],
     pub source: Option<Who>,
     pub owner: Option<Who>,
+    /// `uuid`: the source's saved identity (`source`), taken when the event
+    /// was posted. `source` is the live entity and comes back `None` on load.
+    pub source_uuid: Option<[i32; 4]>,
+    /// `projectileOwnerUuid` (`projectile_owner`), likewise beside `owner`.
+    pub owner_uuid: Option<[i32; 4]>,
 }
 /// `VibrationSelector`: the closest, then highest-frequency candidate of a tick.
 #[derive(Clone, Debug, Default, PartialEq)]

@@ -12426,6 +12426,12 @@ impl Game<'_> {
     }
     /// A native mod's command.
     pub(super) fn client_mod_command(&mut self, command: &str) -> bool {
+        // A guest's turn never reaches these: client-side mod commands belong
+        // to the local player, and vanilla has no path for a remote player to
+        // run them (a guest's commands run at their permission level instead).
+        if self.lan_acting.is_some() {
+            return false;
+        }
         let mut ran = false;
         self.native_command(command, &mut ran);
         ran

@@ -68,7 +68,7 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 ## Design notes
 
 - [Design system](design-system.md): shared tokens and interface rules for the launcher, website and Horizon-only game overlays.
-- [UI kit](ui-kit.md): the shared code Horizon's own overlays draw with: controller glyphs asked for by what the button does, the Nintendo letter rule, and how to test them.
+- [HUD kit](ui-kit.md): the pieces Horizon's own HUD overlays share: `Room`, which keeps the controller notice and splitscreen's join strip below the boss bars, `Plate`, the box behind their text, and controller glyphs asked for by what the button does, with the Nintendo letter rule.
 - [Offscreen frame compositor](design/compositor.md): sharing a window surface between views, clipping and the standalone splitscreen compositor example.
 - [Linear light for HDR and shader packs](design/hdr-linear-light.md): the proposed shader API 0.2 colour contract and frame format for HDR output.
 - [Live mod reloading](design/mod-hotload.md): loading, enabling and updating mods from inside the game without a restart.

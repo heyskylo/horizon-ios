@@ -12,6 +12,58 @@ use horizon_core::{position::ChunkPos, random::RandomSource};
 /// How long `/forceload add` waits for its chunks, as the game tests' loads do.
 const FORCED_CHUNK_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// `LocationCheck.test` / `BlockPredicate`: the measured loaded block-state subset.
+fn loot_location_block(
+    condition: &serde_json::Value,
+    origin: [i32; 3],
+    chunks: &horizon_client::chunk_map::ChunkMap,
+    registry: &horizon_world::registry::BlockRegistry,
+    items: &horizon_client::items::Items,
+) -> Option<bool> {
+    let condition = condition.as_object()?;
+    if condition.keys().any(|k| {
+        !matches!(
+            k.as_str(),
+            "type" | "predicate" | "offsetX" | "offsetY" | "offsetZ"
+        )
+    }) {
+        return None;
+    }
+    let predicate = condition.get("predicate")?.as_object()?;
+    if predicate.len() != 1 || !predicate.contains_key("block") {
+        return None;
+    }
+    let block = predicate.get("block")?.as_object()?;
+    if block
+        .keys()
+        .any(|k| !matches!(k.as_str(), "blocks" | "state"))
+        || block.get("blocks")?.as_str().is_none()
+    {
+        return None;
+    }
+    if let Some(state) = block.get("state")
+        && state.as_object()?.values().any(|v| !v.is_string())
+    {
+        return None;
+    }
+    let mut at = origin;
+    for (axis, key) in ["offsetX", "offsetY", "offsetZ"].iter().enumerate() {
+        let offset = match condition.get(*key) {
+            None => 0,
+            Some(value) => i32::try_from(value.as_i64()?).ok()?,
+        };
+        // floor(integer block origin + .5 + integer offset), also for negatives.
+        at[axis] = origin[axis].checked_add(offset)?;
+    }
+    // Unloaded positions are unsupported: never load or invent a block here.
+    // `LocationPredicate.matches`: a block check fails where `Level.isLoaded` is false.
+    let Some(chunk) = chunks.get(&(at[0] >> 4, at[2] >> 4)) else {
+        return Some(false);
+    };
+    let state = registry.state(chunk.block(at[0] & 15, at[1], at[2] & 15))?;
+    Some(items.matches_block_state(&predicate["block"], &state.name, &state.properties))
+}
+
 fn num(n: impl std::fmt::Display) -> Text {
     Text::literal(n.to_string())
 }
@@ -615,11 +667,25 @@ impl Game<'_> {
                         &[&self.target_name(t).plain()],
                     ));
                 }
-                let by_player = matches!(
-                    self.command_source.map(|s| s.entity),
-                    None | Some(Some(Target::Player))
-                );
-                let held = self.slot_get(&super::items::Slot::Inv(self.selected));
+                // LootCommand.dropKillLoot: the source's entity is the killer.
+                // A connected player is the last damage player, and its own
+                // stack counts; it is in place only to read that stack.
+                let guest = match self.command_source.map(|s| s.entity) {
+                    Some(Some(Target::Guest(conn))) => self.for_player(Target::Guest(conn), |g| {
+                        g.slot_get(&super::items::Slot::Inv(g.selected))
+                    }),
+                    _ => None,
+                };
+                let (by_player, held) = match guest {
+                    Some(held) => (true, held),
+                    None => (
+                        matches!(
+                            self.command_source.map(|s| s.entity),
+                            None | Some(Some(Target::Player))
+                        ),
+                        self.slot_get(&super::items::Slot::Inv(self.selected)),
+                    ),
+                };
                 // LootCommand.dropKillLoot's THIS_ENTITY is the selected live mob.
                 let target = match t {
                     Target::Mob(id) => self
@@ -712,22 +778,30 @@ impl Game<'_> {
                 } else {
                     false
                 };
+                let chunks = &self.world.chunks;
+                let registry = self.pack.assets.registry;
+                let items = world_items!(self);
+                let location = |condition: &serde_json::Value| {
+                    loot_location_block(condition, p, chunks, registry, items)
+                };
                 let mut drops = match world_items!(self).loot_sequence(&table) {
                     Some(seq) => {
                         let random = self.rand_sequences.get(&seq, self.level.seed);
-                        world_items!(self).block_drops_for_command(
+                        items.block_drops_with_location(
                             self.pack.assets.registry,
                             state,
                             tool.as_ref(),
+                            &location,
                             random,
                             executor_present,
                             keep_empty,
                         )
                     }
-                    None => world_items!(self).block_drops_for_command(
+                    None => items.block_drops_with_location(
                         self.pack.assets.registry,
                         state,
                         tool.as_ref(),
+                        &location,
                         &mut self.world.random,
                         executor_present,
                         keep_empty,
@@ -753,13 +827,12 @@ impl Game<'_> {
                 for &t in &self.entities(ctx, "players", true)? {
                     // LootCommand.playerGive gives to every target player: a
                     // guest gets it with their state in place, as with /give.
-                    let given = self.for_player(t, |g| {
-                        if let Some(rest) = g.give(d.clone()) {
-                            let p = g.source_position();
-                            g.spawn_item(rest, [p[0], p[1] + 1.32, p[2]], [0.0; 3], 0);
-                        }
-                    });
-                    if given.is_some() {
+                    // `Inventory.add` keeps what fits and drops the rest. It is
+                    // true only when all of it went in (its last pass, which
+                    // adds nothing, is what it compares), or always for a
+                    // player with infinite materials (creative).
+                    let added = self.for_player(t, |g| g.give(d.clone()).is_none() || g.creative);
+                    if added == Some(true) {
                         used.push(d.clone());
                     }
                 }
@@ -1472,5 +1545,239 @@ mod loot_kill_target_tests {
             differences.is_empty(),
             "actual command wool-state differences: {differences:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod loot_mine_location_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use horizon_client::{chunk::Chunk, containers::BlockEntity};
+    use std::sync::Arc;
+    const TABLE: &str = r###"{"type":"minecraft:block","pools":[{"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:emerald","modifier":{"type":"minecraft:set_count","count":2}}]},{"rolls":1,"condition":{"type":"minecraft:location_check","offsetX":1,"predicate":{"block":{"blocks":"minecraft:oak_log","state":{"axis":"x"}}}},"entries":[{"type":"minecraft:item","name":"minecraft:diamond"}]}]}"###;
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn loot_mine_location_reads_actual_offset_block_state() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources required"),
+        );
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap()).join("h079-game"),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+
+        game.world
+            .chunks
+            .insert((-1, -1), Arc::new(Chunk::empty(-1, -1)));
+        game.world
+            .chunks
+            .insert((-1, 0), Arc::new(Chunk::empty(-1, 0)));
+        game.world
+            .chunks
+            .insert((0, -1), Arc::new(Chunk::empty(0, -1)));
+        for (x, z) in [(-1, -1), (-1, 0), (0, -1)] {
+            game.block_ticks
+                .add_empty_chunk(ChunkPos::new(x, z))
+                .unwrap();
+        }
+        game.world_root =
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap()).join("h079-world");
+        let pack = game.world_root.join("datapacks/h079");
+        std::fs::create_dir_all(pack.join("data/minecraft/loot_table/blocks")).unwrap();
+        std::fs::create_dir_all(pack.join("data/h079/function")).unwrap();
+        std::fs::write(
+            pack.join("pack.mcmeta"),
+            r#"{"pack":{"description":"H079 fixture"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            pack.join("data/minecraft/loot_table/blocks/stone.json"),
+            TABLE,
+        )
+        .unwrap();
+        std::fs::write(
+            pack.join("data/h079/function/admit.mcfunction"),
+            "scoreboard players set pack h079 42\n",
+        )
+        .unwrap();
+        std::fs::write(
+            game.world_root.join("datapacks.json"),
+            r#"{"enabled":["vanilla","file/h079"],"disabled":[]}"#,
+        )
+        .unwrap();
+        game.world_tables = game.build_world_tables(false, &[]).unwrap().0;
+        assert!(game.world_tables.is_some());
+        game.ensure_datapacks();
+        assert!(game.run_command("scoreboard objectives add h079 dummy"));
+        game.run_command("function h079:admit");
+        assert!(
+            game.run_command("execute if score pack h079 matches 42"),
+            "real pack function admission"
+        );
+        assert!(game.run_command("forceload add -16 -16 15 15"));
+        assert!(game.run_command("fill -16 199 -16 15 199 15 stone"));
+        let clock = game.world.game_time;
+        let mut differences = Vec::new();
+        for (label, x, z, counterpart, expected) in [
+            ("correct", 4, 4, Some("oak_log[axis=x]"), 1),
+            ("wrong-state", 8, 4, Some("oak_log[axis=z]"), 0),
+            ("absent", 12, 4, None, 0),
+            ("negative-center", -4, -4, Some("oak_log[axis=x]"), 1),
+        ] {
+            assert!(game.run_command(&format!("setblock {x} 200 {z} stone strict")));
+            if let Some(other) = counterpart {
+                assert!(game.run_command(&format!("setblock {} 200 {z} {other} strict", x + 1)));
+            }
+            assert!(game.run_command(&format!(
+                "execute if block {} 200 {z} {}",
+                x + 1,
+                counterpart.unwrap_or("air")
+            )));
+            let before = (game.world.block(x, 200, z), game.world.block(x + 1, 200, z));
+            assert!(game.run_command(&format!("setblock {x} 200 10 chest strict")));
+            let Some(BlockEntity::Chest(initial)) = game.world.block_entities.get(&(x, 200, 10))
+            else {
+                panic!("real output chest")
+            };
+            assert!(initial.iter().all(Option::is_none));
+            let prefix = if x < 0 {
+                "execute positioned -8.25 200.125 -8.75 run "
+            } else {
+                ""
+            };
+            assert!(game.run_command(&format!(
+                "{prefix}loot insert {x} 200 10 mine {x} 200 {z} stick"
+            )));
+            let Some(BlockEntity::Chest(output)) = game.world.block_entities.get(&(x, 200, 10))
+            else {
+                panic!("actual output")
+            };
+            assert!(
+                output
+                    .iter()
+                    .flatten()
+                    .any(|s| s.item.as_ref() == "minecraft:emerald" && s.count == 2),
+                "pack override and unconditional roll are real"
+            );
+            let diamonds: u32 = output
+                .iter()
+                .flatten()
+                .filter(|s| s.item.as_ref() == "minecraft:diamond")
+                .map(|s| s.count)
+                .sum();
+            if diamonds != expected {
+                differences.push((label, diamonds, expected));
+            }
+            assert_eq!(
+                (game.world.block(x, 200, z), game.world.block(x + 1, 200, z)),
+                before
+            );
+        }
+        assert_eq!(game.world.game_time, clock);
+        assert!(
+            differences.is_empty(),
+            "actual offset block predicate differences: {differences:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod loot_location_shape_tests {
+    use super::*;
+    use horizon_client::{chunk::Chunk, chunk_map::ChunkMap};
+    use horizon_world::registry::BlockRegistry;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    #[test]
+    fn location_shape_uses_loaded_facts_and_rejects_whole_unsupported_conjunctions() {
+        let registry = BlockRegistry::from_facts_json(
+            &br#"{"defaults":{"minecraft:air":0,"minecraft:oak_log":1},"states":[
+            ["air",true,false,"","minecraft:air"],
+            ["log",false,false,"",{"id":"minecraft:oak_log","properties":{"axis":"x"}}]
+        ]}"#[..],
+        )
+        .unwrap();
+        let mut positive = Chunk::empty(0, 0);
+        positive.set(5, 200, 4, 1);
+        let mut negative = Chunk::empty(-1, -1);
+        negative.set(13, 200, 12, 1);
+        let mut chunks = ChunkMap::default();
+        chunks.insert((0, 0), Arc::new(positive));
+        chunks.insert((-1, -1), Arc::new(negative));
+        let items = horizon_client::items::Items::for_tests(Default::default());
+        let valid = json!({"type":"minecraft:location_check","offsetX":1,"predicate":{"block":{"blocks":"minecraft:oak_log","state":{"axis":"x"}}}});
+        assert_eq!(
+            loot_location_block(&valid, [4, 200, 4], &chunks, &registry, &items),
+            Some(true)
+        );
+        assert_eq!(
+            loot_location_block(&valid, [-4, 200, -4], &chunks, &registry, &items),
+            Some(true)
+        );
+        assert_eq!(
+            loot_location_block(&valid, [8, 200, 4], &chunks, &registry, &items),
+            Some(false)
+        );
+        for (key, value) in [
+            ("biomes", json!("minecraft:plains")),
+            ("light", json!({"light":15})),
+            ("dimension", json!("minecraft:overworld")),
+        ] {
+            let mut unsupported = valid.clone();
+            unsupported["predicate"][key] = value;
+            assert_eq!(
+                loot_location_block(&unsupported, [4, 200, 4], &chunks, &registry, &items),
+                None
+            );
+        }
+        for value in [json!(1.5), json!(2147483648_i64), json!("1")] {
+            let mut unsupported = valid.clone();
+            unsupported["offsetX"] = value;
+            assert_eq!(
+                loot_location_block(&unsupported, [4, 200, 4], &chunks, &registry, &items),
+                None
+            );
+        }
+        let count = chunks.len();
+        assert_eq!(
+            loot_location_block(&valid, [32, 200, 32], &chunks, &registry, &items),
+            Some(false),
+            "an unloaded counterpart fails, as Level.isLoaded does"
+        );
+        assert_eq!(chunks.len(), count, "no chunk is loaded as a side effect");
     }
 }

@@ -10,6 +10,7 @@ use crate::{
 pub mod cache;
 mod mesh;
 pub mod packed;
+mod samples;
 use horizon_world::registry::BlockStateId;
 use std::{
     collections::VecDeque,
@@ -957,7 +958,7 @@ type Reduced = FxHashMap<(i32, i32), Arc<ReducedColumns>>;
 /// every tile's inputs from it (gathering on the render thread stalled the
 /// frame, tens of milliseconds for a large job on a 4-thread machine).
 struct Snapshot {
-    samples: FxHashMap<TileKey, Arc<Vec<Column>>>,
+    samples: samples::Samples,
     saved: Saved,
     reduced: Reduced,
     /// The plan's tiles, to tell terrain not drawn yet from terrain out of
@@ -1267,6 +1268,8 @@ pub struct Lod {
     /// Stale tiles `refresh`ed again while sampled: that sample may be older.
     restale: FxHashSet<TileKey>,
     active: FxHashSet<TileKey>,
+    /// The active tiles' `ready` samples, as mesh jobs read them (`sync_sample`).
+    mesh_samples: samples::Samples,
     /// Tiles needing a mesh, with the revision their job must carry.
     dirty: FxHashMap<TileKey, u64>,
     /// The newest revision of each active tile's mesh.
@@ -1657,6 +1660,7 @@ impl Lod {
             ready: FxHashMap::default(),
             complete: FxHashMap::default(),
             active: FxHashSet::default(),
+            mesh_samples: samples::Samples::default(),
             dirty: FxHashMap::default(),
             mesh_version: FxHashMap::default(),
             shown_version: FxHashMap::default(),
@@ -1935,9 +1939,11 @@ impl Lod {
             if active != was_active {
                 if active {
                     self.active.insert(node);
+                    self.sync_sample(node);
                     self.removed_pending.remove(&node);
                 } else {
                     self.active.remove(&node);
+                    self.sync_sample(node);
                     self.removed_pending.insert(node);
                     self.cancel_mesh(node);
                     self.mesh_version.remove(&node);
@@ -2210,6 +2216,7 @@ impl Lod {
             }
         }
         for key in modified {
+            self.sync_sample(key);
             self.mark_data_changed(key);
         }
     }
@@ -2271,6 +2278,7 @@ impl Lod {
                 return;
             }
             let existed = self.ready.insert(key, Arc::new(samples)).is_some();
+            self.sync_sample(key);
             self.refresh_ready(key, existed);
         }
     }
@@ -2505,6 +2513,8 @@ impl Lod {
             .collect();
         self.plan = plan;
         self.ready.retain(|key, _| self.plan.nodes.contains(key));
+        let nodes = &self.plan.nodes;
+        self.mesh_samples.retain(|key| nodes.contains(key));
         // Queued tiles the view left are not sampled (a running one is
         // dropped when it finishes, `finish_sample`).
         drop_queued_samples(&self.shared, &mut self.pending, |key| {
@@ -2572,6 +2582,7 @@ impl Lod {
             .retain(|key| !self.active.contains(key));
         let changed: Vec<_> = old.symmetric_difference(&self.active).copied().collect();
         for &key in &changed {
+            self.sync_sample(key);
             if old.contains(&key) && !self.active.contains(&key) {
                 self.cancel_mesh(key);
                 self.removed_pending.insert(key);
@@ -2857,12 +2868,10 @@ impl Lod {
         if keys.is_empty() {
             return;
         }
+        #[cfg(debug_assertions)]
+        self.check_mesh_samples();
         let snapshot = Arc::new(Snapshot {
-            samples: self
-                .active
-                .iter()
-                .filter_map(|key| self.ready.get(key).map(|columns| (*key, columns.clone())))
-                .collect(),
+            samples: self.mesh_samples.clone(),
             saved: self.saved.clone(),
             reduced: self.reduced.clone(),
             nodes: self.plan.nodes.clone(),
@@ -2894,6 +2903,31 @@ impl Lod {
         drop(queued);
         self.outstanding_meshes += count;
         self.shared.mesh_wake.notify_all();
+    }
+    /// Brings `mesh_samples` up to date for `key` after its `active` or `ready` changed.
+    fn sync_sample(&mut self, key: TileKey) {
+        let samples = self.ready.get(&key).filter(|_| self.active.contains(&key));
+        self.mesh_samples.set(key, samples);
+    }
+    /// `mesh_samples` holds every active tile's ready samples and nothing else (debug builds).
+    #[cfg(debug_assertions)]
+    fn check_mesh_samples(&self) {
+        let kept = self.mesh_samples.iter().count();
+        let mut want = 0;
+        for key in &self.active {
+            if let Some(columns) = self.ready.get(key) {
+                want += 1;
+                let got = self.mesh_samples.get(key);
+                assert!(
+                    got.is_some_and(|got| Arc::ptr_eq(got, columns)),
+                    "mesh samples of {key:?} out of date"
+                );
+            }
+        }
+        assert_eq!(
+            kept, want,
+            "mesh samples keep tiles no longer active or ready"
+        );
     }
     fn finer_of(&self, key: TileKey) -> Vec<TileKey> {
         if !self.plan.split.contains(&key) {
@@ -4852,6 +4886,7 @@ mod tests {
         lod.active.insert(key);
         lod.ready
             .insert(key, Arc::new(vec![Column::default(); CELLS * CELLS]));
+        lod.sync_sample(key);
         lod.mark_mesh(key);
         lod.set_near_loading(true);
         lod.dispatch_meshes([0, 0]);

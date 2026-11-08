@@ -217,11 +217,13 @@ impl ProjectileWorld for ProjWorld<'_, '_> {
         )
         .map(|c| (c.drag, c.surface))
     }
-    fn solid(&self, p: [i32; 3]) -> bool {
-        self.w
-            .facts
-            .get(self.w.world.block(p[0], p[1], p[2]))
-            .full_collision
+    fn can_stand_on(&self, p: [i32; 3], entity_y: f64) -> bool {
+        horizon_client::collisions::projectile_can_stand_on(
+            self.w.world,
+            self.w.collision,
+            BlockPos::new(p[0], p[1], p[2]),
+            entity_y,
+        )
     }
 }
 
@@ -1206,11 +1208,7 @@ impl Game<'_> {
         };
         let mut guest_events = Vec::new();
         // The block writes since the last tick: mobs re-path around them.
-        let path_writes = self
-            .world
-            .path_writes
-            .get_or_insert_with(Vec::new)
-            .split_off(0);
+        let path_writes = std::mem::take(self.world.path_writes.get_or_insert_with(Vec::new));
         // The mobs whose bodies go this tick: (id, feet, width, height, split).
         // 🤖 Agent: the last field is the grown slime, magma cube or sulfur
         // cube the body leaves behind (`AbstractCubeMob.remove`), captured as
@@ -1658,7 +1656,7 @@ impl Game<'_> {
         cancel
     }
     /// LivingEntity.die / dropAllDeathLoot.
-    fn mob_died(&mut self, m: &Mob) {
+    pub(super) fn mob_died(&mut self, m: &Mob) {
         if self.mob_death_canceled(m) {
             return;
         }
@@ -2321,7 +2319,7 @@ impl Game<'_> {
         self.handle_mob_events_reusable(&mut events)
     }
 
-    fn handle_mob_events_reusable(&mut self, events: &mut Vec<MobEvent>) -> Result<()> {
+    pub(super) fn handle_mob_events_reusable(&mut self, events: &mut Vec<MobEvent>) -> Result<()> {
         for e in events.drain(..) {
             match e {
                 MobEvent::BubbleColumnParticles { pos } => {

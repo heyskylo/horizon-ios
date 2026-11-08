@@ -193,7 +193,8 @@ impl ArmorStandAssets {
     /// `TrimTextureKey`: the trim texture of `stack` on its humanoid
     /// layer (`humanoid` or `humanoid_leggings`), if it has a trim.
     fn trim_texture(&self, asset: &str, kind: &str, stack: &ItemStack) -> Option<TrimTexture> {
-        let (material, pattern) = stack.extra.as_ref()?.trim.as_ref()?;
+        let (material, pattern) =
+            horizon_client::item_data::trim::named(stack.extra.as_ref()?.trim.as_ref()?)?;
         let overrides = self
             .trim_overrides
             .get(asset)
@@ -1073,6 +1074,79 @@ impl Game<'_> {
             .play("minecraft:entity.armor_stand.break", Some(at), 1.0, 1.0);
         self.entity_killed_event(at, false);
         self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
+    }
+    /// `ArmorStand.hurtServer` for a command's damage of `damage_type` from the
+    /// causing entity `causing`, up to its sources that act and still return
+    /// false: a blast breaks the stand (`brokenByAnything`, `kill`), fire that
+    /// ignites stands lights it (or burns a burning one 0.15), and burning
+    /// takes 4 health. Every other source is refused here, so this is always
+    /// false and `/damage` fails as vanilla's does.
+    pub(super) fn command_damage_stand(
+        &mut self,
+        id: u32,
+        damage_type: &str,
+        causing: Option<super::commands::Target>,
+    ) -> bool {
+        use super::commands::Target;
+        let Some(i) = self.armor_stands.iter().position(|a| a.id == id) else {
+            return false;
+        };
+        let registry = &self.motion.health.damage;
+        let Some(kind) = registry.id(damage_type) else {
+            return false;
+        };
+        let tagged = |tag: &str| registry.in_tag(kind, tag);
+        if !self.ui.rules.bool("mob_griefing") && matches!(causing, Some(Target::Mob(_))) {
+            return false;
+        }
+        if tagged("minecraft:bypasses_invulnerability") {
+            self.kill_target(Target::Stand(id));
+            return false;
+        }
+        // Entity.isInvulnerableToBase: the flag, unless a creative player hits.
+        let creative = match causing {
+            Some(Target::Player) => self.creative,
+            Some(Target::Guest(conn)) => self.command_guest(conn).is_some_and(|g| g.creative()),
+            _ => false,
+        };
+        let invulnerable = self
+            .persist
+            .raw
+            .get(&id)
+            .is_some_and(|tag| horizon_client::entity_nbt::flag(tag, "Invulnerable"));
+        let a = &self.armor_stands[i];
+        if (invulnerable && !creative) || a.invisible || a.marker {
+            return false;
+        }
+        let (explosion, ignites, burns) = (
+            tagged("minecraft:is_explosion"),
+            tagged("minecraft:ignites_armor_stands"),
+            tagged("minecraft:burns_armor_stands"),
+        );
+        if explosion {
+            self.break_armor_stand_by_anything(i);
+        } else if ignites {
+            if self.armor_stands[i].fire_ticks > 0 {
+                self.cause_stand_damage(i, 0.15);
+            } else {
+                // igniteForSeconds(5.0f): at least 100 ticks.
+                let a = &mut self.armor_stands[i];
+                a.fire_ticks = a.fire_ticks.max(100);
+            }
+        } else if burns && self.armor_stands[i].health > 0.5 {
+            self.cause_stand_damage(i, 4.0);
+        }
+        false
+    }
+    /// `ArmorStand.causeDamage`: the health less `amount`, broken by anything
+    /// at 0.5 or less.
+    fn cause_stand_damage(&mut self, i: usize, amount: f32) {
+        let health = self.armor_stands[i].health - amount;
+        if health <= 0.5 {
+            self.break_armor_stand_by_anything(i);
+        } else {
+            self.armor_stands[i].health = health;
+        }
     }
     /// ArmorStandRenderer: the stand with its default pose, then armor layers.
     pub(super) fn armor_stand_geometry(
