@@ -1,4 +1,4 @@
-use horizon_perf_format::v1::{Capture, Side};
+use horizon_perf_format::v1::{Attachment, Capture, Side};
 use horizon_perf_format::{FORMAT, Field};
 use prost::Message;
 
@@ -10,6 +10,8 @@ use crate::inflate::GzipInflater;
 pub enum Entry {
     Format(u32),
     Field(Field),
+    /// Capture-wide, so it belongs to no side.
+    Attachment(Attachment),
     /// A field number this reader does not know; it is skipped, as protobuf says.
     Other {
         number: u32,
@@ -22,6 +24,7 @@ impl Entry {
         match self {
             Entry::Format(n) => capture.format = n,
             Entry::Other { .. } => {}
+            Entry::Attachment(m) => capture.attachments.push(m),
             Entry::Field(Field::Start(m)) => capture.start.push(m),
             Entry::Field(Field::String(m)) => capture.strings.push(m),
             Entry::Field(Field::History(m)) => capture.history.push(m),
@@ -41,6 +44,7 @@ impl Entry {
             Entry::Field(Field::Samples(m)) => capture.samples.push(m),
             Entry::Field(Field::Net(m)) => capture.net.push(m),
             Entry::Field(Field::Gpu(m)) => capture.gpu.push(m),
+            Entry::Field(Field::Bench(m)) => capture.bench.push(m),
             Entry::Field(Field::Stop(m)) => capture.stop.push(m),
         }
     }
@@ -167,8 +171,12 @@ fn decode_entry(number: u32, bytes: &[u8]) -> Result<Entry, Error> {
         Field::Net(m)
     } else if let Some(m) = c.gpu.pop() {
         Field::Gpu(m)
+    } else if let Some(m) = c.bench.pop() {
+        Field::Bench(m)
     } else if let Some(m) = c.stop.pop() {
         Field::Stop(m)
+    } else if let Some(m) = c.attachments.pop() {
+        return Ok(Entry::Attachment(m));
     } else {
         return Ok(Entry::Other { number });
     };

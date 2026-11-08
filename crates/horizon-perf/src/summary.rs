@@ -5,6 +5,7 @@ use crate::error::{Error, side_name};
 use crate::health::{live, max, mean, trailing_mean};
 use crate::view::View;
 
+mod bench;
 mod hot;
 mod sections;
 

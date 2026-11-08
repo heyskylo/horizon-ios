@@ -40,6 +40,7 @@ pub(super) fn all(
         world(view, side),
         workers(view, side),
         cost(view, side),
+        super::bench::lines(view, side),
         warnings(view, side),
     ]);
     Ok(parts.into_iter().filter(|p| !p.is_empty()).collect())

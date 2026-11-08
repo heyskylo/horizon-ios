@@ -45,7 +45,10 @@ message Capture {
   repeated GpuPasses gpu = 19;
   // end: servers, and a client's own bytes.
   repeated NetTraffic net = 20;
-  // Numbers 21-22 (bench, attachments) are allocated in §3.5 to later pieces.
+  // end: benchmark reports embedded verbatim.
+  repeated BenchResult bench = 21;
+  // end: capture-wide, added by drivers through horizon-perf attach, so it carries no side.
+  repeated Attachment attachments = 22;
 
   // end: the side's last field.
   repeated Stop stop = 23;
@@ -530,6 +533,23 @@ message NetTraffic {
   Side side = 1;
   float block_s = 2;
   repeated PlayerTraffic players = 3;
+}
+
+// A horizon-benchmark-report v1 (or a scene_replay result) as written, so the share and upload format stays one.
+message BenchResult {
+  Side side = 1;
+  // The report's own format name, for example horizon-benchmark-report.
+  string format = 2;
+  string report_json = 3;
+  // The corpus a scene_replay result ran on; empty for a game benchmark.
+  string corpus_id = 4;
+}
+
+// A named document a driver adds to a finished capture, for example a load test's run record.
+message Attachment {
+  string name = 1;
+  string media_type = 2;
+  string body = 3;
 }
 
 enum SampleSource {

@@ -376,6 +376,11 @@ chunk); `--no-samples` leaves that out. Finishing the file after the window can 
 ticks. The old `perf-<time>.json` and `.txt` files are no
 longer written; the ones already in `reports/` stay.
 
+`python3 tools/server_bench.py --profile` records each Horizon run's measure window this way (`--profile=--no-samples`
+passes flags to `horizon-report`) and adds the run's record, MSPT, RSS, CPU and chunk figures, to the capture with
+`horizon-perf attach FILE --name NAME --body JSONFILE`, which keeps whatever else the file holds. Build
+`-p horizon-perf` beside the server first; the capture's path is the run's `profile` in the report.
+
 To see a slow stretch tick by tick, `horizon-trace [SECONDS]` (30 by default, up to 600) writes a capture with every
 thread's timed steps to `reports/profile-<time>Z.hzperf`, one row per thread. `horizon-trace stop` ends it early, and
 `horizon-report --timeline` adds the same steps to a report. The steps are recorded for the first 60 seconds of a

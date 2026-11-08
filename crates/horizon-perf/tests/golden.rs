@@ -525,7 +525,7 @@ const CASES: &[(&str, &[&str])] = &[
     ("frames", &["query", "frames", LEVEL_ID, "{samples}"]),
     ("meta_samples", &["query", "meta", "{samples}"]),
     ("hot_without_samples", &["query", "hot", "{hand}"]),
-    ("unanswered_op", &["query", "bench", "{hand}"]),
+    ("unanswered_op", &["query", "samples", "{hand}"]),
     ("unknown_op", &["query", "nonsense", "{hand}"]),
     ("bare_world", &["query", "world", "{bare}"]),
     (

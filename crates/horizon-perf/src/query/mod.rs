@@ -1,5 +1,6 @@
 //! `horizon-perf query OP` (docs/perf-platform.md §6): every reply is one JSON envelope with `rows`.
 
+mod bench;
 mod calls;
 mod gpu;
 mod meta;
@@ -294,7 +295,8 @@ pub fn run(q: &Query, files: &[Loaded]) -> Result<Envelope<Row>, QueryError> {
         Op::Split => profile::divide(&ctx, false)?,
         Op::Group => profile::divide(&ctx, true)?,
         Op::Frames => profile::frames(&ctx)?,
-        Op::Bench | Op::Samples => unreachable!("answered above"),
+        Op::Bench => bench::bench(&ctx)?,
+        Op::Samples => unreachable!("answered above"),
     };
     Ok(envelope(&ctx, reply))
 }

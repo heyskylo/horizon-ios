@@ -3,9 +3,11 @@
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use horizon_perf_format::v1::Capture;
+use horizon_perf_format::v1::{Attachment, Capture};
 use serde::{Deserialize, Serialize};
 
+use crate::attach;
+use crate::bare;
 use crate::bench_diff::{self, BenchDiff, BenchReply, BenchReport};
 use crate::cli::files::{self, Peek};
 use crate::diff::{Diff, DiffEnvelope, DiffOptions, diff};
@@ -39,6 +41,15 @@ pub enum Report {
     Bench(BenchReport),
 }
 
+/// A capture file, or a bare benchmark report read as the capture it stands for.
+fn read_any(path: &Path) -> Result<Capture, String> {
+    let bytes = read_bytes(path)?;
+    if bench_diff::looks_like_report(&bytes) {
+        return bare::capture_of(&bytes);
+    }
+    read_capture(&bytes).map_err(|e| e.to_string())
+}
+
 pub fn load(path: &Path) -> Result<Report, String> {
     let bytes = read_bytes(path)?;
     if bench_diff::looks_like_report(&bytes) {
@@ -49,6 +60,29 @@ pub fn load(path: &Path) -> Result<Report, String> {
     read_capture(&bytes)
         .map(|c| Report::Capture(Box::new(c)))
         .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Adds the JSON document in `body` to the capture at `path` as an attachment called `name`; returns the body's size in bytes.
+pub fn attach(path: &Path, name: &str, body: &Path) -> Result<usize, String> {
+    let text = std::fs::read_to_string(body)
+        .map_err(|e| format!("cannot read {}: {e}", body.display()))?;
+    serde_json::from_str::<serde::de::IgnoredAny>(&text)
+        .map_err(|e| format!("{} is not JSON: {e}", body.display()))?;
+    let size = text.len();
+    let attachment = Attachment {
+        name: name.to_string(),
+        media_type: attach::JSON_MEDIA_TYPE.to_string(),
+        body: text,
+    };
+    let rewritten = attach::attach(&read_bytes(path)?, &attachment)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut scratch = path.as_os_str().to_owned();
+    scratch.push(".attach");
+    let scratch = PathBuf::from(scratch);
+    std::fs::write(&scratch, rewritten)
+        .and_then(|()| std::fs::rename(&scratch, path))
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    Ok(size)
 }
 
 /// The earlier capture a summary compares against.
@@ -66,7 +100,7 @@ pub fn baseline(path: &Path) -> Result<Baseline, String> {
 }
 
 pub fn summary(path: &Path, options: &SummaryOptions) -> Result<String, String> {
-    let capture = read_capture(&read_bytes(path)?).map_err(|e| e.to_string())?;
+    let capture = read_any(path)?;
     summarize(&capture, &file_name(path), options).map_err(|e| e.to_string())
 }
 
@@ -97,8 +131,7 @@ pub fn unknown_op(text: &str) -> QueryAnswer {
 pub fn query(paths: &[PathBuf], q: &Query) -> Result<QueryAnswer, String> {
     let mut loaded = Vec::new();
     for path in paths {
-        let capture =
-            read_capture(&read_bytes(path)?).map_err(|e| format!("{}: {e}", path.display()))?;
+        let capture = read_any(path).map_err(|e| format!("{}: {e}", path.display()))?;
         loaded.push(Loaded {
             file: file_name(path),
             capture,

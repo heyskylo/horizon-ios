@@ -13,7 +13,7 @@ use horizon_client::spans::{self, Span};
 use horizon_client::text::{ClickEvent, Style, Text};
 use horizon_perf_format::{
     files,
-    v1::{StopReason, Trigger},
+    v1::{BenchResult, StopReason, Trigger},
 };
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
@@ -112,6 +112,11 @@ fn gpu_readout(
     renderer.filter(|_| wanted != GpuSwitch::Off)?.gpu_readout()
 }
 
+fn read_bench(path: &str) -> Result<BenchResult> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    Ok(client_perf::bench_result(text).map_err(|e| format!("{path}: {e}"))?)
+}
+
 fn json_of<T: serde::Serialize>(reply: &T) -> Result<Option<serde_json::Value>> {
     Ok(Some(serde_json::to_value(reply)?))
 }
@@ -143,8 +148,9 @@ impl Game<'_> {
                     gpu: options.gpu,
                 })
             }
-            Request::Stop => {
-                self.stop_profile(StopReason::Normal)?;
+            Request::Stop { bench } => {
+                let bench = bench.map(|path| read_bench(&path)).transpose()?;
+                self.stop_profile_with(StopReason::Normal, bench.into_iter().collect())?;
                 self.profile.reply = Some(reply.clone());
                 Ok(None)
             }
@@ -213,6 +219,11 @@ impl Game<'_> {
         if self.profile.perf.capturing() || self.profile.perf.saving() {
             return Err("a capture is already running or still being saved".into());
         }
+        let trigger = if trigger == Trigger::Ctl && self.options.benchmark.is_some() {
+            Trigger::Benchmark
+        } else {
+            trigger
+        };
         let start = client_perf::start_message(
             self.integrated.is_some(),
             horizon_client::telemetry::gpu_name().as_deref(),
@@ -232,9 +243,13 @@ impl Game<'_> {
     }
 
     fn stop_profile(&mut self, reason: StopReason) -> Result<()> {
+        self.stop_profile_with(reason, Vec::new())
+    }
+
+    fn stop_profile_with(&mut self, reason: StopReason, bench: Vec<BenchResult>) -> Result<()> {
         let t = self.profile.perf.now();
         let gpu = self.gpu_readout();
-        if !self.profile.perf.stop_with_gpu(t, reason, gpu) {
+        if !self.profile.perf.stop_with(t, reason, gpu, bench) {
             return Err("no capture is running".into());
         }
         self.profile.gpu = GpuSwitch::Off;
