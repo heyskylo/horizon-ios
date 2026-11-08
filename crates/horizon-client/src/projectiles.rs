@@ -227,6 +227,10 @@ pub struct Projectile {
     /// `Entity.needsSync`: a server tells its clients about the change this
     /// tick instead of at the next update interval.
     pub needs_sync: bool,
+    /// The bubble column tops this tick's `onAboveBubbleColumn` pushes came
+    /// from, for their particles (`sendBubbleColumnParticles`); the caller
+    /// drains them.
+    pub bubble_surfaces: Vec<[i32; 3]>,
     /// `Entity.wasTouchingWater`: what the last tick's
     /// `updateFluidInteraction` found around the box after the move, read by
     /// the next tick's inertia (false until the first tick has moved it).
@@ -422,6 +426,7 @@ impl Projectile {
             bonus: Default::default(),
             acceleration,
             needs_sync: false,
+            bubble_surfaces: Vec::new(),
             touching_water: false,
             no_gravity: false,
             fire_ticks: 0,
@@ -1036,35 +1041,44 @@ impl Projectile {
     pub fn tick(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
         self.tick_with(w, true)
     }
-    /// One tick of a server's projectile on its client: [`tick`](Self::tick)
-    /// with `ThrowableProjectile.tick`'s bubble columns, which push it on the
-    /// client too, so a pearl held in a stasis chamber hovers between the
-    /// server's updates instead of sinking and snapping back. The integrated
-    /// and dedicated servers push their pearls in the creature tick instead.
+    /// One tick of a server's projectile on its client: [`tick`](Self::tick),
+    /// whose bubble columns push it on the client too, so a pearl held in a
+    /// stasis chamber hovers between the server's updates instead of sinking
+    /// and snapping back.
     pub fn tick_remote(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
-        if !self.is_throwable_projectile() {
-            return self.tick(w);
-        }
-        // handleFirstTickBubbleColumn: before gravity, every column block in
-        // the box (`findBlocksIn`, BlockPos.containing of both corners),
-        // entered precisely.
-        if self.age == 0 {
-            let b = self.bounds();
-            let (lo, hi) = (b.min_position(), b.max_position());
-            for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
-                for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
-                    for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
-                        if let Some((drag, surface)) = w.bubble_column([x, y, z]) {
-                            self.bubble_column_push(drag, surface);
-                        }
+        self.tick(w)
+    }
+    /// The projectiles whose tick applies the effects of the blocks they moved
+    /// through (`applyEffectsFromBlocks`), bubble columns among them:
+    /// `ThrowableProjectile`, `AbstractHurtingProjectile` and `ShulkerBullet`.
+    /// Arrows push themselves (`arrows::tick`); llama spit applies none.
+    fn applies_block_effects(&self) -> bool {
+        self.is_throwable_projectile()
+            || matches!(
+                self.kind,
+                ProjectileKind::SmallFireball
+                    | ProjectileKind::LargeFireball { .. }
+                    | ProjectileKind::WitherSkull { .. }
+                    | ProjectileKind::WindCharge
+                    | ProjectileKind::BreezeWindCharge
+                    | ProjectileKind::ShulkerBullet { .. }
+            )
+    }
+    /// `ThrowableProjectile.handleFirstTickBubbleColumn`: on its first tick,
+    /// before gravity, every bubble column block in the box
+    /// (`BlockPos.betweenClosed`) pushes it.
+    fn first_tick_bubble_columns(&mut self, w: &impl ProjectileWorld) {
+        let b = self.bounds();
+        let (lo, hi) = (b.min_position(), b.max_position());
+        for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
+            for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
+                for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
+                    if let Some((drag, surface)) = w.bubble_column([x, y, z]) {
+                        self.bubble_column_push(drag, surface, [x, y, z]);
                     }
                 }
             }
         }
-        let from = self.position;
-        let result = self.tick(w);
-        self.bubble_columns_along(w, from);
-        result
     }
     /// A `ThrowableProjectile`: the thrown kinds but llama spit, a plain
     /// `Projectile` with its own tick.
@@ -1073,7 +1087,10 @@ impl Projectile {
     }
     /// `Projectile.onAboveBubbleColumn` / `onInsideBubbleColumn`: unlike
     /// `Entity`'s, a projectile's pushes are not clamped.
-    fn bubble_column_push(&mut self, drag: bool, surface: bool) {
+    fn bubble_column_push(&mut self, drag: bool, surface: bool, at: [i32; 3]) {
+        if surface {
+            self.bubble_surfaces.push(at);
+        }
         self.velocity.y += match (drag, surface) {
             (true, _) => -0.03,
             (false, true) => 0.1,
@@ -1133,7 +1150,7 @@ impl Projectile {
                 Vec3::new(f64::from(p.x + 1), f64::from(p.y + 1), f64::from(p.z + 1)),
             );
             if far || deflated.intersects(cell) {
-                self.bubble_column_push(drag, surface);
+                self.bubble_column_push(drag, surface, [p.x, p.y, p.z]);
             }
         }
     }
@@ -1153,8 +1170,15 @@ impl Projectile {
         if base_first {
             self.tick_shoot_event();
         }
+        self.bubble_surfaces.clear();
+        if self.age == 0 && self.is_throwable_projectile() {
+            self.first_tick_bubble_columns(w);
+        }
         let from = self.position;
         let result = self.tick_inner(w, impact);
+        if self.applies_block_effects() {
+            self.bubble_columns_along(w, from);
+        }
         w.block_contacts(
             self.id as i32,
             self.kind.id(),
