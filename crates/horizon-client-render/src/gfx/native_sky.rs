@@ -30,6 +30,7 @@ pub struct NativeSky {
 /// terrain.wgsl's sky with every name it declares (and `globals`) prefixed.
 fn vanilla_sky() -> String {
     let text = [
+        include_str!("../hdr_light.wgsl"),
         section(TERRAIN, "struct Globals {", "@group(0) @binding(1)"),
         section(TERRAIN, "fn linear_fog(", "fn apply_fog("),
         section(TERRAIN, "struct SkyOut {", "// rendertype_lines"),

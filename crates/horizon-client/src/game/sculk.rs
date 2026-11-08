@@ -5,6 +5,7 @@
 //! spreader from deaths, and the darkness wardens and shriekers cast.
 use super::{Game, Result};
 use horizon_client::actions::Action;
+use horizon_client::join_seq::ListStamp;
 use horizon_client::{
     containers::BlockEntity,
     effects::{EffectInstance, PlayerEffects},
@@ -106,6 +107,10 @@ pub(super) struct SculkState {
     pub actor: Option<Who>,
     ticks: u32,
     pub tracker_loaded: bool,
+    /// The wardens' and allays' slots in the mob list, and the list they were
+    /// read from: see `listener_slots`.
+    listeners: Vec<u32>,
+    listeners_of: Option<ListStamp>,
 }
 
 /// How far from a warden's or an allay's feet an event may be heard: their
@@ -469,6 +474,21 @@ impl Game<'_> {
             }
             self.sculk.known = loaded;
         }
+        self.sculk_sync_writes();
+    }
+
+    /// `LevelChunk.setBlockState`: finish sculk placement before a command
+    /// or `BlockItem.updateCustomBlockEntityTag` loads saved entity fields.
+    pub(super) fn sculk_place_entity(&mut self, state: BlockStateId) -> bool {
+        self.sculk_prepare();
+        if self.kind_of_state(state.0) == 0 {
+            return false;
+        }
+        self.sculk_sync_writes();
+        true
+    }
+
+    fn sculk_sync_writes(&mut self) {
         let writes = std::mem::take(&mut self.world.watched_writes);
         for (key, old, new) in writes {
             let (old_kind, new_kind) = (self.kind_of_state(old), self.kind_of_state(new));
@@ -563,6 +583,8 @@ impl Game<'_> {
         Context {
             source: Some(Who::Player),
             owner: None,
+            source_uuid: None,
+            owner_uuid: None,
             dampening_state: self.state_dampens(state),
             spectator: self.spectator(),
             stepping_carefully: self.keys.held(Action::Sneak),
@@ -573,25 +595,28 @@ impl Game<'_> {
         }
     }
     /// `GameEvent.Context.of(mob, state)`.
-    pub(super) fn mob_context(&self, id: u32, state: Option<BlockStateId>) -> Context {
-        self.context_of_mob(self.mob_by_id(id), id, state)
+    pub(super) fn mob_context(&mut self, id: u32, state: Option<BlockStateId>) -> Context {
+        let mob = self.mob_slot(id).map(|i| &self.mobs[i]);
+        self.context_of_mob(mob, id, state)
     }
-    /// The first mob with this id, from the slots taken for the mobs' events
-    /// while the mob is still there (mobs are only appended meanwhile), else
-    /// by a scan.
-    fn mob_by_id(&self, id: u32) -> Option<&Mob> {
+    /// The slot of the first mob with this id, from the slots taken for the
+    /// mobs' events while the mob is still there (mobs are only appended
+    /// meanwhile), else from the mob index (as a scan finds it).
+    fn mob_slot(&mut self, id: u32) -> Option<usize> {
         if let Some(slots) = &self.sculk.mob_slots
             && let Some(&i) = slots.by_id.get(&id)
             && self.mobs.get(i).is_some_and(|m| m.id == id)
         {
-            return self.mobs.get(i);
+            return Some(i);
         }
-        self.mobs.iter().find(|m| m.id == id)
+        self.mob_index.find(&self.mobs, id)
     }
     fn context_of_mob(&self, mob: Option<&Mob>, id: u32, state: Option<BlockStateId>) -> Context {
         Context {
             source: Some(Who::Mob(id)),
             owner: None,
+            source_uuid: None,
+            owner_uuid: None,
             dampening_state: self.state_dampens(state),
             spectator: false,
             stepping_carefully: false,
@@ -601,7 +626,7 @@ impl Game<'_> {
             player: mob.is_some_and(|m| m.rider.is_some()),
         }
     }
-    pub(super) fn who_context(&self, who: Option<Who>, state: Option<BlockStateId>) -> Context {
+    pub(super) fn who_context(&mut self, who: Option<Who>, state: Option<BlockStateId>) -> Context {
         match who {
             Some(Who::Player) => self.player_context(state),
             Some(Who::Mob(id)) => self.mob_context(id, state),
@@ -646,7 +671,7 @@ impl Game<'_> {
         &mut self,
         event: &'static str,
         pos: [f64; 3],
-        ctx: impl FnOnce(&Self) -> Context,
+        ctx: impl FnOnce(&mut Self) -> Context,
     ) {
         self.native_game_event(event, pos);
         super::dispense_fixture::record(|| {
@@ -682,6 +707,7 @@ impl Game<'_> {
             return;
         }
         let ctx = ctx(self);
+        let ctx = self.with_vibration_uuids(ctx);
         for key in near {
             self.sculk_listen(key, event, pos, &ctx);
         }
@@ -692,10 +718,58 @@ impl Game<'_> {
                 }
             }
             None => {
-                for i in 0..self.mobs.len() {
-                    self.mob_listen(i, event, pos, &ctx);
+                let stamp = self.mobs.stamp();
+                let slots = self.listener_slots(stamp);
+                for &i in &slots {
+                    if (i as usize) < self.mobs.len() {
+                        self.mob_listen(i as usize, event, pos, &ctx);
+                    }
                 }
+                self.sculk.listeners = slots;
+                self.sculk.listeners_of = Some(stamp);
             }
+        }
+    }
+    /// The slots of the wardens and allays (the mobs that hear game events),
+    /// in list order, for an event posted outside the mobs' own events. A walk
+    /// over the list misses the cache once per mob, and a busy server posts
+    /// hundreds of such events a tick: one walk serves until the list is next
+    /// written to ([`ListStamp`]).
+    fn listener_slots(&mut self, stamp: ListStamp) -> Vec<u32> {
+        let mut slots = std::mem::take(&mut self.sculk.listeners);
+        // Taken: an event a listener posts while it hears this one finds none
+        // and walks the list itself.
+        if self.sculk.listeners_of.take() != Some(stamp) {
+            slots.clear();
+            slots.extend(
+                self.mobs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, m)| matches!(m.species(), Species::Warden | Species::Allay))
+                    .map(|(i, _)| i as u32),
+            );
+        }
+        slots
+    }
+    /// The context with the saved identities of its source and owner, as
+    /// `VibrationInfo`'s constructor takes them from the entities when the
+    /// event is heard. Only what the context already names is filled.
+    fn with_vibration_uuids(&self, mut ctx: Context) -> Context {
+        if ctx.source_uuid.is_none() {
+            ctx.source_uuid = self.vibration_uuid(ctx.source);
+        }
+        if ctx.owner_uuid.is_none() {
+            ctx.owner_uuid = self.vibration_uuid(ctx.owner);
+        }
+        ctx
+    }
+    /// The saved UUID of a vibration's mob through the save layer's
+    /// `save_who_uuid`. `Who::Player` stays `None`: on a server it can be the
+    /// acting guest as well as the host, so it names no single entity here.
+    fn vibration_uuid(&self, who: Option<Who>) -> Option<[i32; 4]> {
+        match who {
+            Some(who @ Who::Mob(_)) => self.save_who_uuid(who),
+            _ => None,
         }
     }
     /// The mob at `index` hears a game event, if it is a warden or an allay.
@@ -722,9 +796,8 @@ impl Game<'_> {
     /// the end-of-tick scan then knows this damage.
     pub(super) fn mob_damage_event(&mut self, id: u32) {
         if let Some(t) = self
-            .mobs
-            .iter()
-            .find(|m| m.id == id)
+            .mob_index
+            .get(&self.mobs, id)
             .and_then(|m| m.last_damage.map(|(_, t)| t))
         {
             self.sculk.damaged.insert(id, t);
@@ -738,9 +811,10 @@ impl Game<'_> {
                 .player
                 .as_ref()
                 .map(|p| [p.position.x, p.position.y, p.position.z]),
-            Who::Mob(id) => self
-                .mob_by_id(id)
-                .map(|m| [m.position.x, m.position.y, m.position.z]),
+            Who::Mob(id) => self.mob_slot(id).map(|i| {
+                let p = self.mobs[i].position;
+                [p.x, p.y, p.z]
+            }),
         };
         if let Some(at) = at {
             self.post_game_event_with(event, at, |g| g.who_context(Some(who), None));
@@ -843,6 +917,8 @@ impl Game<'_> {
                     pos,
                     source: ctx.source,
                     owner: ctx.owner,
+                    source_uuid: ctx.source_uuid,
+                    owner_uuid: ctx.owner_uuid,
                 },
                 time,
             );
@@ -936,6 +1012,7 @@ impl Game<'_> {
         // a sculk tick does loads, unloads or lights a chunk or moves a ticket.
         let levels = self.tickets.levels();
         let chunks = &self.world.chunks;
+        let pending = &self.world.entities_pending;
         let mut ticking = FxHashMap::<(i32, i32), bool>::default();
         let mut ticks = |cx: i32, cz: i32| {
             *ticking.entry((cx, cz)).or_insert_with(|| {
@@ -954,7 +1031,9 @@ impl Game<'_> {
             .iter()
             .filter_map(|&key| {
                 let (cx, cz) = (key.0 >> 4, key.2 >> 4);
+                // `LevelChunk.isTicking`: its own chunk's entities loaded too.
                 if !ticks(cx, cz)
+                    || pending.contains(&(cx, cz))
                     || matches!(entities.get(&key), Some(BlockEntity::Sculk(e)) if e.idle())
                 {
                     return None;
@@ -1153,6 +1232,7 @@ impl Game<'_> {
                     let d = [at[0] - dest[0], at[1] - dest[1], at[2] - dest[2]];
                     let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() as f32;
                     let time = self.world.game_time;
+                    let source_uuid = self.vibration_uuid(Some(who));
                     if let Some(e) = self.sculk_entity(key) {
                         e.vibration.schedule(
                             Info {
@@ -1161,6 +1241,8 @@ impl Game<'_> {
                                 pos: at,
                                 source: Some(who),
                                 owner: None,
+                                source_uuid,
+                                owner_uuid: None,
                             },
                             time,
                         );
@@ -2087,9 +2169,9 @@ impl Game<'_> {
         });
     }
     /// Where the vehicle `id` stands: a mob, boat, minecart or cushion.
-    fn vehicle_position(&self, id: u32) -> Option<[f64; 3]> {
-        let p = if let Some(m) = self.mob_by_id(id) {
-            m.position
+    fn vehicle_position(&mut self, id: u32) -> Option<[f64; 3]> {
+        let p = if let Some(i) = self.mob_slot(id) {
+            self.mobs[i].position
         } else if let Some(b) = self.boats.iter().find(|b| b.id == id) {
             b.position
         } else if let Some(c) = self.carts.iter().find(|c| c.id == id) {
@@ -2164,11 +2246,12 @@ impl Game<'_> {
         .flatten()
     }
     /// `Entity.mainSupportingBlockPos` of a player or mob on the ground.
-    fn main_support(&self, who: Who) -> Option<BlockPos> {
+    fn main_support(&mut self, who: Who) -> Option<BlockPos> {
         match who {
             Who::Player => self.player.as_ref()?.ground.supporting_block,
             Who::Mob(id) => {
-                let mob = self.mob_by_id(id)?;
+                let slot = self.mob_slot(id)?;
+                let mob = &self.mobs[slot];
                 self.supporting_block(mob.position, mob.bounds())
             }
         }
@@ -2355,6 +2438,72 @@ fn flaps(species: Species, resting: bool, on_ground: bool, age: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The wardens that hear an event are those in the list when it is
+    /// posted, however the list changed since the last one.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn wardens_hear_events_however_the_list_changed_between_them() {
+        let mut game = super::super::native_machines::tests::server_game();
+        game.sculk_prepare();
+        let warden = game
+            .res
+            .mob_types()
+            .get("minecraft:warden")
+            .cloned()
+            .unwrap();
+        let zombie = game
+            .res
+            .mob_types()
+            .get("minecraft:zombie")
+            .cloned()
+            .unwrap();
+        let at = |x| horizon_core::geometry::Vec3::new(x, 100.0, 0.0);
+        let post = |game: &mut Game<'_>| {
+            game.post_game_event("minecraft:explode", [0.5, 100.5, 0.5], Context::default());
+            let later = game.world.game_time + 1;
+            let heard = |m: &mut Mob| {
+                let warden = m.extra.warden.as_mut()?;
+                let heard = warden.vibration.selector.chosen_candidate(later);
+                warden.vibration = Default::default();
+                heard
+            };
+            let mut ids: Vec<u32> = game
+                .mobs
+                .iter_mut()
+                .filter_map(|m| heard(m).map(|_| m.id))
+                .collect();
+            ids.sort_unstable();
+            ids
+        };
+        assert_eq!(post(&mut game), [0u32; 0], "nobody to hear it");
+        assert_eq!(post(&mut game), [0u32; 0]);
+
+        game.mobs.push(Mob::new(1, zombie.clone(), at(1.0), 0.0));
+        game.mobs.push(Mob::new(2, warden.clone(), at(2.0), 0.0));
+        assert_eq!(post(&mut game), [2], "one that joined since");
+        assert_eq!(post(&mut game), [2], "and again with nothing changed");
+
+        game.mobs
+            .insert(0, Mob::new(3, warden.clone(), at(3.0), 0.0));
+        assert_eq!(post(&mut game), [2, 3], "the slots moved");
+
+        let level = std::mem::take(&mut game.mobs);
+        assert_eq!(post(&mut game), [0u32; 0], "another level's list");
+        game.mobs = level;
+        assert_eq!(post(&mut game), [2, 3], "this level's again");
+
+        game.mobs.retain(|m| m.id != 3);
+        assert_eq!(post(&mut game), [2], "one that left");
+
+        // A write that keeps every slot and makes the zombie's a listener.
+        game.mobs[0] = Mob::new(1, warden, at(1.0), 0.0);
+        assert_eq!(post(&mut game), [1, 2], "one replaced in its slot");
+
+        game.mobs[0].removed = true;
+        game.mobs[0].health = 0.0;
+        assert_eq!(post(&mut game), [2], "the dead hear nothing");
+    }
 
     /// Retaining keeps the insertion order and the membership in step.
     #[test]

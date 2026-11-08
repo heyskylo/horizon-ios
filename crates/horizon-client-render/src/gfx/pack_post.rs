@@ -62,6 +62,9 @@ mod shadow_faces_tests;
 mod r11f_image_tests;
 
 #[cfg(test)]
+mod work_group_fold_tests;
+
+#[cfg(test)]
 mod forced_flip_tests;
 
 #[cfg(test)]
@@ -430,6 +433,9 @@ struct Pass {
     /// What `texture` reads instead of the block atlas.
     atlas: Option<wgpu::TextureView>,
     material_maps: bool,
+    /// Draws the shared atlas's geometry: `normals` and `specular` are its paged maps
+    /// (`PackPost::set_paged_maps`), as its programs were translated to read them.
+    paged: bool,
     /// Reads `mc_Entity`'s table (`PackPost::block_ids`).
     ids: bool,
     /// Bind groups by the sides read (bits 0–15), the buffers whose mip chain is current (bits
@@ -527,8 +533,7 @@ pub(super) struct World<'a> {
     pub lightmap: wgpu::TextureView,
     /// Terrain's geometry, when the pack draws it.
     pub terrain: Option<Geometry<'a>>,
-    /// Of each block sprite layer, `mc_Entity` (id, then 1 for fluids or 0) and `at_midBlock.w`
-    /// (its block's light): three values a layer.
+    /// Per source block state: its model material id, then its fluid material id.
     pub block_ids: &'a [i32],
     /// The atlas of the sun and moon's sprites.
     pub celestial: Option<wgpu::TextureView>,
@@ -661,10 +666,10 @@ pub struct PackPost {
     down: HashMap<wgpu::TextureFormat, (wgpu::RenderPipeline, wgpu::BindGroupLayout)>,
     /// The per-draw uniforms of gbuffers programs.
     draws: DrawUniforms,
-    /// Set 3 of flat terrain (`mc_Entity`'s table, then the sprites' places) and its bind group
-    /// for each arena page, with the page buffer it was made for.
+    /// Set 3 of flat terrain: an unknown-source fallback and immutable state/sprite tables.
+    /// Each page's bind group tracks both its vertex buffer and optional source sidecar.
     block_ids: Option<(wgpu::BindGroupLayout, wgpu::Buffer, wgpu::Buffer)>,
-    page_groups: HashMap<u32, (wgpu::Buffer, wgpu::BindGroup)>,
+    page_groups: HashMap<u32, (wgpu::Buffer, Option<wgpu::Buffer>, wgpu::BindGroup)>,
     gui_size: [u32; 2],
     /// GPU time of each pass, while the renderer asks for it (`pack_timing.rs`).
     pub timing: Option<super::pack_timing::PassTiming>,
@@ -674,6 +679,8 @@ pub struct PackPost {
     custom: horizon_shaders::Custom,
     atlas: Option<wgpu::TextureView>,
     material_maps: Option<[wgpu::TextureView; 2]>,
+    /// The shared atlas's normal and specular paged maps (`set_paged_maps`).
+    paged_maps: [Option<wgpu::TextureView>; 2],
     lightmap: wgpu::TextureView,
     deferred_pre: u16,
     composite_pre: u16,
@@ -1202,30 +1209,44 @@ pub(super) struct ShadowView {
     pub depth_planes: bool,
 }
 
-/// Set 3 of flat terrain, read by the vertex stage: the sprite layers' table (`mc_Entity`'s id
-/// and fluid, `at_midBlock.w`; -1, -1, 0 when empty), per arena page, the page's vertices
-/// (a vertex reads its quad's corners for its normal), and each sprite's place in a stitched
-/// atlas (`rects`; zeros for a grid, which doesn't read them).
-fn block_ids(
+/// An arena page's key, native vertices and optional per-quad source records.
+pub(super) type TerrainPage = (u32, wgpu::Buffer, Option<wgpu::Buffer>);
+
+/// Header (sprite-rect words, state count), sprite rectangles, then model/fluid ids.
+/// Keeping immutable tables together leaves the existing three storage bindings intact.
+pub(super) fn terrain_tables(table: &[i32], rects: &[u32]) -> Vec<i32> {
+    let rects = if rects.is_empty() { &[0, 0][..] } else { rects };
+    [rects.len() as i32, (table.len() / 2) as i32]
+        .into_iter()
+        .chain(rects.iter().map(|&v| v as i32))
+        .chain(table.iter().copied())
+        .collect()
+}
+
+pub(super) fn block_ids(
     device: &wgpu::Device,
+    queue: &wgpu::Queue,
     table: &[i32],
     rects: &[u32],
-) -> (wgpu::BindGroupLayout, wgpu::Buffer, wgpu::Buffer) {
-    let empty = [-1, -1, 0];
-    let table = if table.is_empty() { &empty[..] } else { table };
+) -> Option<(wgpu::BindGroupLayout, wgpu::Buffer, wgpu::Buffer)> {
     let buffer = |label, contents: &[u8]| {
-        wgpu::util::DeviceExt::create_buffer_init(
+        if contents.len() as u64 > device.limits().max_storage_buffer_binding_size {
+            return None;
+        }
+        let buffer = super::arena::try_create(
             device,
-            &wgpu::util::BufferInitDescriptor {
-                label: Some(label),
-                contents,
-                usage: wgpu::BufferUsages::STORAGE,
-            },
-        )
+            label,
+            contents.len() as u64,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        )?;
+        queue.write_buffer(&buffer, 0, contents);
+        Some(buffer)
     };
-    let rects = if rects.is_empty() { &[0, 0][..] } else { rects };
-    let ids = buffer("Shader pack block ids", bytemuck::cast_slice(table));
-    let rects = buffer("Shader pack sprite rects", bytemuck::cast_slice(rects));
+    let ids = buffer("Unknown terrain sources", &[0; 8])?;
+    let rects = buffer(
+        "Shader pack terrain tables",
+        bytemuck::cast_slice(&terrain_tables(table, rects)),
+    )?;
     let storage = |binding| wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::VERTEX,
@@ -1240,7 +1261,7 @@ fn block_ids(
         label: Some("Shader pack terrain"),
         entries: &[storage(0), storage(1), storage(2)],
     });
-    (layout, ids, rects)
+    Some((layout, ids, rects))
 }
 
 /// The game's geometry a gbuffers program draws: its vertex buffers and, for flat draws
@@ -2179,6 +2200,7 @@ fn build_pass(
         draw,
         atlas: geometry.and_then(|g| g.atlas.clone()),
         material_maps: geometry.is_some_and(|g| g.material_maps),
+        paged: false,
         ids: geometry.is_some_and(|g| g.ids.is_some()),
         groups: HashMap::new(),
         portal_groups: HashMap::new(),
@@ -2319,6 +2341,7 @@ fn build_compute(
         draw: false,
         atlas: None,
         material_maps: false,
+        paged: false,
         ids: false,
         groups: HashMap::new(),
         portal_groups: HashMap::new(),
@@ -2357,6 +2380,13 @@ impl Refused {
 }
 
 impl PackPost {
+    /// The shared atlas's normal and specular paged maps (`paged_maps.rs`), which the programs
+    /// drawing its geometry read as `normals` and `specular`; set before the first frame (a pass's
+    /// bind groups are kept once made). A missing one reads as the dummy (flat, no specular).
+    pub fn set_paged_maps(&mut self, maps: [Option<wgpu::TextureView>; 2]) {
+        self.paged_maps = maps;
+    }
+
     /// Builds the pipelines of `post` for a screen of `screen` format. An error when the pack
     /// can't show anything on the screen: the game turns it off, as a pack that fails to load.
     ///
@@ -2447,6 +2477,12 @@ impl PackPost {
         let textures = pack_textures::upload(device, queue, post.textures, &mut notes);
         let shadow_config = post.config.shadow.clone();
         let noise_size = post.config.noise_resolution.unwrap_or(256);
+        let half_lives = post.config.half_lives;
+        for (name, ticks) in horizon_shaders::HALF_LIVES.iter().zip(half_lives) {
+            if let Some(t) = ticks {
+                notes.push(format!("`{name}` is {t} ticks"));
+            }
+        }
         // shadowcolor2 to 7 only for a pack that names `HIGHER_SHADOWCOLOR`.
         let shadow_colors = (1u16 << post.shadow_colors) - 1;
         let mut custom = post.custom;
@@ -2560,6 +2596,20 @@ impl PackPost {
                 .fold(0, |m, n| m | 1 << n),
             jobs: defer.then(Default::default),
         };
+        // Flat terrain resolves each quad's source state against the current pack.
+        let block_ids = world
+            .terrain
+            .as_ref()
+            .filter(|g| g.table.is_some())
+            .map(|_| {
+                block_ids(device, queue, world.block_ids, world.sprite_rects).ok_or_else(|| {
+                    Refused {
+                        reason: "terrain source tables could not be allocated".into(),
+                        notes: notes.clone(),
+                    }
+                })
+            })
+            .transpose()?;
         let mut build = |mut p: horizon_shaders::PostProgram, geometry: Option<&Geometry<'_>>| {
             // Not wanted any more: the rest is skipped and the build refused below.
             if cancel.load(std::sync::atomic::Ordering::Relaxed) {
@@ -2671,12 +2721,6 @@ impl PackPost {
             }
             Some(pass)
         };
-        // Flat terrain reads `mc_Entity` from a table of the sprite layers.
-        let block_ids = world
-            .terrain
-            .as_ref()
-            .filter(|g| g.table.is_some())
-            .map(|_| block_ids(device, world.block_ids, world.sprite_rects));
         let terrain_geometry = world.terrain.as_ref().map(|g| Geometry {
             buffers: g.buffers,
             table: g.table,
@@ -2756,13 +2800,17 @@ impl PackPost {
             post.particles,
             post.damaged_block,
             post.beacon_beam,
+            post.block_translucent,
+            post.particles_translucent,
         ];
-        let late = [
+        let mut late = [
             false,
             false,
             post.translucent_late,
             post.particles_late,
             false,
+            true,
+            post.translucent_late,
             true,
         ];
         let shadow_only = (post.shadow_only_player, post.shadow_only_lit_blocks);
@@ -2780,6 +2828,13 @@ impl PackPost {
             ids: None,
             cull: false,
         });
+        // Programs drawing the shared atlas's geometry read its paged maps (`pack_entities::inputs`).
+        let paged = |pass: Option<Pass>| {
+            pass.map(|mut pass| {
+                pass.paged = true;
+                pass
+            })
+        };
         let entity_passes = programs.map(|p| {
             p.zip(entity_geometry.as_ref()).and_then(|(p, g)| {
                 if p.name == "gbuffers_damagedblock" {
@@ -2792,15 +2847,20 @@ impl PackPost {
                         ids: g.ids,
                         cull: false,
                     };
-                    build(p, Some(&decal))
+                    paged(build(p, Some(&decal)))
                 } else {
-                    build(p, Some(g))
+                    paged(build(p, Some(g)))
                 }
             })
         });
+        // Translation alone is insufficient: a refused GPU pipeline must retain the
+        // legacy single particle pass and its timing as well as its geometry grouping.
+        if entity_passes[super::pack_entities::PARTICLE_TRANSLUCENT].is_some() {
+            late[super::pack_entities::PARTICLE] = false;
+        }
         let shadow_entities = shadow_programs.map(|p| {
             p.zip(entity_geometry.as_ref())
-                .and_then(|(p, g)| build(p, Some(g)))
+                .and_then(|(p, g)| paged(build(p, Some(g))))
         });
         let entities = entity_vertices
             .filter(|_| (entity_passes.iter().chain(&shadow_entities)).any(Option::is_some))
@@ -2821,10 +2881,12 @@ impl PackPost {
             cull: false,
         });
         let hides_clouds = post.clouds_off || post.clouds.is_some() && cloud_geometry.is_some();
+        // Rain and snow test depth but never write it: Iris 1.11.7 left none of either in
+        // `depthtex0`, whatever `rain.depth` said (probe packs of ours, #10492).
         let weather_geometry = world.weather.then(|| Geometry {
             buffers: &entity_buffers,
             table: None,
-            depth_write: post.rain_depth,
+            depth_write: false,
             atlas: None,
             material_maps: false,
             ids: None,
@@ -2843,7 +2905,7 @@ impl PackPost {
                 ids: None,
                 cull: false,
             };
-            build(p, Some(&g)).map(|pass| (pass, geometry))
+            paged(build(p, Some(&g))).map(|pass| (pass, geometry))
         });
         // Translucent held items, drawn from the hand's own buffer.
         let hand_water = post.hand_water.and_then(|p| {
@@ -2857,7 +2919,7 @@ impl PackPost {
                 ids: None,
                 cull: false,
             };
-            build(p, Some(&g))
+            paged(build(p, Some(&g)))
         });
         let weather = post
             .weather
@@ -3296,6 +3358,7 @@ impl PackPost {
             custom,
             atlas: world.atlas.as_ref().map(|a| a.0.clone()),
             material_maps: world.material_maps,
+            paged_maps: [None, None],
             lightmap: world.lightmap,
             deferred_pre: mask(&post.deferred_pre),
             composite_pre: mask(&post.composite_pre),
@@ -3418,6 +3481,7 @@ impl PackPost {
                 let mut u = FrameUniforms::default();
                 u.atlas = world.atlas.map_or([0; 2], |a| a.1);
                 u.shadow = shadow_config;
+                u.half_lives = half_lives;
                 u
             },
             shadow_cache: Default::default(),
@@ -3656,6 +3720,12 @@ impl PackPost {
                     Source::Dummy if s.dimension == wgpu::TextureViewDimension::D1 => {
                         &self.dummy_1d
                     }
+                    Source::Normals if pass.paged => {
+                        self.paged_maps[0].as_ref().unwrap_or(&self.dummy_normal)
+                    }
+                    Source::Specular if pass.paged => {
+                        self.paged_maps[1].as_ref().unwrap_or(&self.dummy_black)
+                    }
                     Source::Normals => self
                         .material_maps
                         .as_ref()
@@ -3756,6 +3826,16 @@ impl PackPost {
             [n(0), n(1), 1]
         });
         let (pipeline, groups) = (pipeline.clone(), groups);
+        // wgpu panics on a dispatch over its limit. The translator reshapes a large
+        // `workGroups`; a `workGroupsRender` that large is not run.
+        let most = device.limits().max_compute_workgroups_per_dimension;
+        if groups.iter().any(|&n| n > most) {
+            log::warn!(
+                "shader pack: {}: {groups:?} work groups is over {most} per dimension; not run",
+                pass.name
+            );
+            return;
+        }
         for image in (0..self.images.len()).filter(|k| pass.snapshots & 1 << k != 0) {
             pack_images::snapshot(encoder, &self.images[image]);
         }
@@ -3890,7 +3970,7 @@ impl PackPost {
             }
             let (groups, ids) = (&self.page_groups, pass.ids);
             let page = |rp: &mut wgpu::RenderPass<'_>, page: u32| {
-                if let Some((_, group)) = groups.get(&page).filter(|_| ids) {
+                if let Some((_, _, group)) = groups.get(&page).filter(|_| ids) {
                     rp.set_bind_group(3, group, &[]);
                 }
             };
@@ -4108,7 +4188,7 @@ impl PackPost {
                 continue;
             };
             let mut draws = (geometry.draws.iter())
-                .filter(|d| d.shadow && d.program == program)
+                .filter(|d| d.shadow && super::pack_entities::shadow_program(d.program) == program)
                 .peekable();
             if draws.peek().is_none() {
                 continue;
@@ -4120,7 +4200,11 @@ impl PackPost {
                 encoder,
                 pass,
                 size,
-                (geometry.draws.iter()).any(|d| d.shadow && d.program == program && d.portal),
+                (geometry.draws.iter()).any(|d| {
+                    d.shadow
+                        && super::pack_entities::shadow_program(d.program) == program
+                        && d.portal
+                }),
             );
             let mut on_portal = false;
             let mut rp = self.begin(encoder, pass);
@@ -5105,7 +5189,7 @@ impl PackPost {
         inputs: &PackInputs,
         size: [u32; 2],
         window: [u32; 2],
-        pages: &[(u32, wgpu::Buffer)],
+        pages: &[TerrainPage],
         terrain: &mut TerrainDraw<'_>,
     ) {
         self.resize(device, size);
@@ -5141,8 +5225,8 @@ impl PackPost {
         if let Some((layout, ids, rects)) = &self.block_ids {
             // A page that grew has a new buffer.
             self.page_groups
-                .retain(|p, (b, _)| pages.iter().any(|(q, c)| q == p && c == b));
-            for (page, buffer) in pages {
+                .retain(|p, (b, s, _)| pages.iter().any(|(q, c, t)| q == p && c == b && s == t));
+            for (page, buffer, sources) in pages {
                 self.page_groups.entry(*page).or_insert_with(|| {
                     let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("Shader pack terrain"),
@@ -5150,7 +5234,7 @@ impl PackPost {
                         entries: &[
                             wgpu::BindGroupEntry {
                                 binding: 0,
-                                resource: ids.as_entire_binding(),
+                                resource: sources.as_ref().unwrap_or(ids).as_entire_binding(),
                             },
                             wgpu::BindGroupEntry {
                                 binding: 1,
@@ -5162,7 +5246,7 @@ impl PackPost {
                             },
                         ],
                     });
-                    (buffer.clone(), group)
+                    (buffer.clone(), sources.clone(), group)
                 });
             }
         }
@@ -6257,6 +6341,34 @@ mod tests {
     }
 
     #[test]
+    fn an_image_is_made_in_its_layout_qualifiers_format() {
+        // `image.x = … RGB10_A2 …` read through `layout(rgb10_a2) image2D x`.
+        for q in [
+            "rgba32f",
+            "rgba16f",
+            "rg16f",
+            "r11f_g11f_b10f",
+            "r32f",
+            "rgba16",
+            "rgb10_a2",
+            "rgba8",
+            "rg8",
+            "r16",
+            "rgba16_snorm",
+            "rgba8_snorm",
+            "r8_snorm",
+            "rgba32i",
+            "r16i",
+            "rgb10_a2ui",
+            "rgba8ui",
+            "r32ui",
+        ] {
+            let def = Format::parse(q).unwrap();
+            assert_eq!(Some(pack_images::format(def, true)), image_format(q), "{q}");
+        }
+    }
+
+    #[test]
     fn samplers_read_custom_textures_of_their_type() {
         use wgpu::TextureSampleType as T;
         let float = T::Float { filterable: true };
@@ -6302,6 +6414,10 @@ mod destination_tests;
 mod material_tests;
 
 #[cfg(test)]
+#[path = "pack_paged_maps_tests.rs"]
+mod paged_maps_tests;
+
+#[cfg(test)]
 mod rgb_alpha_tests;
 
 #[cfg(test)]
@@ -6333,3 +6449,6 @@ mod mipmap_box_tests;
 
 #[cfg(test)]
 mod colortex_mip_blend_tests;
+
+#[cfg(test)]
+mod material_route_tests;

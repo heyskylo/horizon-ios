@@ -179,7 +179,7 @@ impl Game<'_> {
         let context = self.controller_settings_context();
         let mut ui = std::mem::take(&mut self.ui.options);
         if ui.controller_open() {
-            ui.controller.context = context;
+            ui.set_controller_context(context);
         }
         ui.draw(&self.settings, batch, &self.gui.atlas, self.cursor);
         self.ui.options = ui;
@@ -197,8 +197,7 @@ impl Game<'_> {
             player,
             device: self.pad.device_or_virtual(),
             detected: detected_controller_style(self.pad.device.as_ref(), self.pad.style),
-            style: self.ui.options.pad_style,
-            by_letter: self.ui.options.pad_by_letter,
+            glyphs: self.ui.options.pad_glyphs,
         }
     }
     /// HDR calibration's test picture to the renderer, full screen while it runs: the
@@ -560,13 +559,24 @@ impl Game<'_> {
                 s.horizon.fxaa,
                 s.horizon.taa,
                 s.horizon.upscaling.ratio(),
+                s.horizon.upscaling_sharpness as f32 / 100.0,
             );
             r.set_frame_generation(
                 s.horizon.frame_generation != horizon_client::graphics::FrameGeneration::Off,
             );
             r.set_hdr_lighting(s.horizon.hdr_lighting);
             // Where it is offered (`Renderer::gpu_culling_offer`); unchanged, it does nothing.
-            let _ = r.set_gpu_culling(s.horizon.gpu_culling);
+            // Auto has it on while its measurements say so (`GpuCullingAuto`), and starts over
+            // when the choice is another one.
+            let gpu_culling = match s.horizon.gpu_culling {
+                horizon_client::graphics::GpuCullingMode::Off => false,
+                horizon_client::graphics::GpuCullingMode::On => true,
+                horizon_client::graphics::GpuCullingMode::Auto => self.gpu_culling_auto.on(),
+            };
+            if s.horizon.gpu_culling != horizon_client::graphics::GpuCullingMode::Auto {
+                self.gpu_culling_auto.reset();
+            }
+            let _ = r.set_gpu_culling(gpu_culling);
             r.set_hdr(
                 s.horizon.hdr,
                 s.horizon.paper_white_nits() as f32,

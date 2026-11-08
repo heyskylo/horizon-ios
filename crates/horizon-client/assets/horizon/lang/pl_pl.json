@@ -222,6 +222,7 @@
   "Brighter-than-white output on an HDR display.": "Obraz jaśniejszy niż biel na ekranie HDR.",
   "Results for \"%s\"": "Wyniki dla \"%s\"",
   "No settings match.": "Żadne ustawienie nie pasuje.",
+  "horizon.plain.official": "Oficjalny Horizon z launcherem, modami i aktualizacjami: playhorizon.dev",
   "horizon.title.not_affiliated": "Niepowiązane z Mojang ani Microsoft",
   "horizon.extras.header.lighting": "Oświetlenie",
   "horizon.extras.header.third_person": "Widok z trzeciej osoby",

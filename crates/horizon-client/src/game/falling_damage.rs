@@ -137,10 +137,14 @@ impl Game<'_> {
             let name = self.res.facts().get(state).name.clone();
             // LevelChunk.setBlockState creates the new block entity even when
             // the falling entity has no supplied data.
-            if let Some(entity) = self.new_block_entity(&name) {
-                let key = (pos[0], pos[1], pos[2]);
-                let mut tag = horizon_client::save::encode_block_entity(key, &entity, &name);
+            let key = (pos[0], pos[1], pos[2]);
+            if !self.world.block_entities.stateful_entity(state.0)
+                && let Some(entity) = self.new_block_entity_for_state(state)
+            {
                 self.world.block_entities.insert(key, entity);
+            }
+            if let Some(entity) = self.world.block_entities.get(&key) {
+                let mut tag = horizon_client::save::encode_block_entity(key, entity, &name);
                 // FallingBlockEntity.tick copies each supplied field over the
                 // new block entity's saved defaults before loadWithComponents.
                 if let Some(horizon_world::nbt::Tag::Compound(carried)) = block
@@ -196,16 +200,15 @@ impl Game<'_> {
             return;
         }
         let original = amount;
-        let amount = if self.armor[0].is_some() {
-            amount * 0.75
-        } else {
-            amount
+        let Some(id) = self.health_resources.damage.id(kind) else {
+            return;
         };
-        let hurt = match (self.player.as_mut(), self.health_resources.damage.id(kind)) {
-            (Some(p), Some(id)) => p
-                .hurt(&self.health_resources, self.world.health_rules, id, amount)
-                .unwrap_or(false),
-            _ => false,
+        let (hurt, amount) = match self.hurt_player_equipment(id, amount, None, false, 0) {
+            Ok((outcome, actual)) => (outcome.hurt, actual),
+            Err(error) => {
+                log::warn!("falling block damage failed: {error}");
+                (false, amount)
+            }
         };
         if hurt {
             // LivingEntity.hurtServer: ENTITY_HURT_PLAYER, the falling block
@@ -228,3 +231,6 @@ impl Game<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod helmet_tests;

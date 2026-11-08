@@ -32,6 +32,7 @@ use horizon_client::{
     enchant::Enchantments,
     hud::{HudBatch, rgba},
     items::ItemStack,
+    random_source,
     stations::{self, AnvilResult, EnchantOffers},
     text::Text,
 };
@@ -389,9 +390,7 @@ impl Station {
             beacon_levels: None,
             loom: Default::default(),
             cycling: Default::default(),
-            book: EnchantBook::new(LegacyRandom::new(
-                horizon_client::sound_engine::unique_seed(),
-            )),
+            book: EnchantBook::new(random_source::create()),
         }
     }
     pub(super) fn new_kind(kind: Kind, pos: [i32; 3]) -> Self {
@@ -740,7 +739,7 @@ impl Game<'_> {
             // client menu only clears them without an enchantable item.
             Kind::Enchanting if self.remote.is_some() => {
                 let enchantable = s.inputs[0].as_ref().is_some_and(|i| {
-                    data.enchantments.enchantable(&i.item) > 0 && i.enchantments().is_empty()
+                    data.enchantments.enchantable_of(i) > 0 && i.enchantments().is_empty()
                 });
                 if !enchantable {
                     s.offers = Default::default();
@@ -760,7 +759,7 @@ impl Game<'_> {
                 let name = self.anvil_item_name(&s);
                 let hover = s.inputs[0]
                     .as_ref()
-                    .map(|i| stations::hover_name(&|id| self.pack.names.display_item(id), i))
+                    .map(|i| stations::hover_name(&self.pack.names, i))
                     .unwrap_or_default();
                 s.anvil = stations::anvil_result(
                     &data.enchantments,
@@ -1224,7 +1223,7 @@ impl Game<'_> {
             s.anvil_last = s.inputs[0].clone();
             s.name = s.inputs[0]
                 .as_ref()
-                .map(|i| stations::hover_name(&|id| self.pack.names.display_item(id), i))
+                .map(|i| stations::hover_name(&self.pack.names, i))
                 .unwrap_or_default();
             let name = s.name.clone();
             s.rename.set_value(&name);
@@ -1611,8 +1610,8 @@ impl Game<'_> {
                 let named = self
                     .station
                     .as_ref()
-                    .and_then(|s| self.world.block_names.get(&(s.pos[0], s.pos[1], s.pos[2])));
-                Text::literal(named.cloned().unwrap_or(default)).resolve_legacy()
+                    .and_then(|s| self.block_name_plain((s.pos[0], s.pos[1], s.pos[2])));
+                Text::literal(named.unwrap_or(default)).resolve_legacy()
             });
             super::screen_info::name_container(|| title.plain());
             let tw = atlas.font.width_text(&title);
@@ -2158,11 +2157,17 @@ impl Game<'_> {
             _ => u32::MAX,
         }
     }
-    /// `ItemStack.getHoverName`: the custom name, a written book's title, the
-    /// item name component, else the item's or potion's name.
+    /// `ItemStack.getHoverName`: the custom name, a potion's or tipped
+    /// arrow's contents, a written book's title, the item name component,
+    /// else the item's name.
     fn stack_hover_name(&self, stack: &ItemStack) -> String {
         if let Some(n) = stack.custom_name() {
             n.to_owned()
+        } else if let Some(key) = brewing::contents_name_key(stack) {
+            self.pack
+                .names
+                .display_get(&key)
+                .unwrap_or_else(|| self.pack.names.display_item(&stack.item))
         } else if let Some(title) = stack
             .data()
             .and_then(|d| d.written.as_ref())
@@ -2174,15 +2179,6 @@ impl Game<'_> {
             n
         } else if stack.data().is_some_and(|d| d.ominous_banner) {
             self.translate("block.minecraft.ominous_banner", "Ominous Banner")
-        } else if stack.data().and_then(|d| d.potion.as_ref()).is_some()
-            || stack.item.ends_with("potion")
-            || &*stack.item == "minecraft:tipped_arrow"
-        {
-            let key = brewing::potion_name_key(&stack.item, stack.potion());
-            self.pack
-                .names
-                .display_get(&key)
-                .unwrap_or_else(|| self.pack.names.display_item(&stack.item))
         } else if let Some(head) = horizon_client::item_tooltip::player_head_name(stack) {
             head.title(&|key| self.pack.names.display_get(key))
         } else {
@@ -2382,7 +2378,10 @@ impl Game<'_> {
             push(&mut lines, text, gray);
         }
         if display.shows("minecraft:trim")
-            && let Some((material, pattern)) = stack.data().and_then(|d| d.trim.clone())
+            && let Some((material, pattern)) = stack
+                .data()
+                .and_then(|d| d.trim.as_ref())
+                .and_then(horizon_client::item_data::trim::named)
         {
             push(
                 &mut lines,
@@ -2391,10 +2390,10 @@ impl Game<'_> {
                 rgba(170, 170, 170, 255),
             );
             let short = |s: &str| s.trim_start_matches("minecraft:").to_owned();
-            let p = translate(&format!("trim_pattern.minecraft.{}", short(&pattern)))
-                .unwrap_or_else(|| short(&pattern));
-            let m = translate(&format!("trim_material.minecraft.{}", short(&material)))
-                .unwrap_or_else(|| short(&material));
+            let p = translate(&format!("trim_pattern.minecraft.{}", short(pattern)))
+                .unwrap_or_else(|| short(pattern));
+            let m = translate(&format!("trim_material.minecraft.{}", short(material)))
+                .unwrap_or_else(|| short(material));
             push(&mut lines, format!(" {p}"), rgba(170, 170, 170, 255));
             push(&mut lines, format!(" {m}"), rgba(170, 170, 170, 255));
         }
@@ -2534,6 +2533,26 @@ impl Game<'_> {
                     push(&mut lines, format!(" {desc2}"), rgba(85, 85, 255, 255));
                 }
             }
+        }
+        // AdventureModePredicate.addToTooltip under its header, for
+        // can_break and then can_place_on. A block tag's blocks are listed by
+        // id, as this side keeps tags unordered.
+        for (text, c) in horizon_client::item_tooltip::adventure_lines(
+            stack,
+            &display,
+            &|tag| {
+                let mut blocks: Vec<String> = self
+                    .items()
+                    .block_tags
+                    .get(tag)
+                    .map(|s| s.iter().cloned().collect())
+                    .unwrap_or_default();
+                blocks.sort();
+                blocks
+            },
+            &translate,
+        ) {
+            push(&mut lines, text, c);
         }
         if display.shows("minecraft:damage")
             && let Some(info) = item_info

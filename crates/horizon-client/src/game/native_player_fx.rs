@@ -66,7 +66,7 @@ impl Game<'_> {
         if self.native_player_fx.queued.is_empty() {
             return;
         }
-        let spawn = self.spawn.map_or([0.5, 80.0, 0.5], |s| [s.x, s.y, s.z]);
+        let spawn = self.world_spawn_position();
         for (uuid, fx) in std::mem::take(&mut self.native_player_fx.queued) {
             let Some((conn, position, horizon)) = host
                 .hub
@@ -147,7 +147,8 @@ impl Game<'_> {
                         Some(pos) => host.hub.compass_targets.insert(uuid, pos),
                         None => host.hub.compass_targets.remove(&uuid),
                     };
-                    host.hub.default_spawn(uuid, spawn)
+                    host.hub
+                        .default_spawn(uuid, spawn, self.level.world_spawn_angle)
                 }
             };
             host.hub.send_to(conn, &packet);

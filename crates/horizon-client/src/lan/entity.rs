@@ -75,6 +75,13 @@ pub struct EntityState {
     pub horizontal_collision: bool,
     /// `Entity.needsSync`: send its changes this tick, due or not.
     pub needs_sync: bool,
+    /// `Entity.syncPosition`: a living entity bounced this tick; where it is
+    /// becomes a step of the next move sent (`SteppedInterpolationTracker`).
+    pub sync_position: bool,
+    /// `LivingEntity.createInterpolationHandler`: a `SteppedInterpolationTracker`
+    /// on the server, so its moves are sent as stepped paths. Every other entity
+    /// has a no-op tracker and sends a linear one.
+    pub stepped: bool,
     /// Outside `DistanceManager.inEntityTickingRange`: `ChunkMap.tick` sends
     /// its changes only if it changed section or needs sync (its lead aside,
     /// which `Leashable` sends at once).
@@ -119,6 +126,8 @@ impl EntityState {
         self.vertical_collision = false;
         self.horizontal_collision = false;
         self.needs_sync = false;
+        self.sync_position = false;
+        self.stepped = false;
         self.idle = false;
         self.bare = false;
         self.leash = None;
@@ -252,6 +261,11 @@ struct ServerEntity {
     velocity: [f64; 3],
     /// NewMinecartBehavior.lerpSteps accumulated across tracking intervals.
     minecart_steps: Vec<play::MinecartStep>,
+    /// SteppedInterpolationTracker: the positions where it bounced since the
+    /// last move sent, with the ticks between them, and the ticks since the
+    /// last one (-1 before the first update).
+    tracked_steps: Vec<([f64; 3], i32)>,
+    ticks_since_step: i32,
     /// trackedDataValues: the entity data the clients hold.
     meta: Vec<(u8, i32, Value)>,
     equipment: Vec<(u8, Option<Stack>)>,
@@ -294,6 +308,42 @@ fn encode(v: f64) -> i64 {
     horizon_core::jmath::round(v * 4096.0)
 }
 
+/// `VecDeltaCodec.tryEncode`: the path as deltas from `base`, a stepped one
+/// step by step from the step before; None when a delta is too big for a short.
+fn try_encode(base: [f64; 3], path: &PositionPath) -> Option<VecDelta> {
+    let delta = |from: [f64; 3], to: [f64; 3]| {
+        let d = [0, 1, 2].map(|k| encode(to[k]) - encode(from[k]));
+        d.iter()
+            .all(|v| i16::try_from(*v).is_ok())
+            .then(|| d.map(|v| v as i16))
+    };
+    match path {
+        PositionPath::Linear(p) => delta(base, *p).map(VecDelta::Linear),
+        PositionPath::Stepped(steps) => {
+            let mut from = base;
+            let mut out = Vec::with_capacity(steps.len());
+            for (p, ticks) in steps {
+                out.push((delta(from, *p)?, *ticks));
+                from = *p;
+            }
+            Some(VecDelta::Stepped(out))
+        }
+    }
+}
+
+/// `VecDelta.hasDeltaX` and `hasDeltaZ` (any step's, for a stepped delta), as
+/// the nonzero x and z `full_precision_required` reads.
+fn delta_axes(delta: &VecDelta) -> [i64; 3] {
+    match delta {
+        VecDelta::Linear(d) => d.map(i64::from),
+        VecDelta::Stepped(steps) => [
+            i64::from(steps.iter().any(|(d, _)| d[0] != 0)),
+            0,
+            i64::from(steps.iter().any(|(d, _)| d[2] != 0)),
+        ],
+    }
+}
+
 /// `ServerEntity.isFullPrecisionEncodingRequired`: an item whose last move was
 /// stopped by a block rests where the collision solver left it, which is not on
 /// the 1/4096 grid a delta decodes to; vanilla sends its exact position instead.
@@ -331,6 +381,8 @@ impl ServerEntity {
             head: pack_degrees(e.head_yaw),
             velocity: e.velocity,
             minecart_steps: e.minecart_steps.clone().unwrap_or_default(),
+            tracked_steps: Vec::new(),
+            ticks_since_step: -1,
             meta: e.meta.clone(),
             equipment: e.equipment.clone(),
             attributes: e.attributes.clone(),
@@ -404,6 +456,15 @@ impl ServerEntity {
         }
     }
 
+    /// `SteppedInterpolationTracker.addStep`: a step at `position` with the
+    /// ticks since the last one, if any passed.
+    fn add_step(&mut self, position: [f64; 3]) {
+        if self.ticks_since_step > 0 {
+            self.tracked_steps.push((position, self.ticks_since_step));
+            self.ticks_since_step = 0;
+        }
+    }
+
     /// Changes since the last update (ServerEntity.sendChanges): movement and
     /// rotation every update interval (positions at least every 60 ticks, a
     /// full position sync every 400 or when the entity lands or leaves the
@@ -421,6 +482,23 @@ impl ServerEntity {
             self.passengers.extend_from_slice(passengers);
         }
         self.send_leash(e, out);
+        // SteppedInterpolationTracker.updateTracking: a tick more since the
+        // last step, and a step where the entity bounced (Entity.syncPosition,
+        // which only living entities' movement sets).
+        if e.stepped {
+            self.ticks_since_step += 1;
+            if e.sync_position {
+                self.add_step(e.position);
+            }
+        }
+        // ServerEntity.sendChanges: a bounce moves the update clock onto its next
+        // send tick (UpdateInterval.nextInterval; 0 for NEVER), so it goes out now.
+        if e.sync_position {
+            self.tick = self
+                .tick
+                .checked_div(self.interval)
+                .map_or(0, |n| (n + 1) * self.interval);
+        }
         // SynchedEntityData.isDirty: once for every client.
         let dirty = e.meta != self.meta;
         let due = self.interval != 0 && self.tick.is_multiple_of(self.interval);
@@ -443,6 +521,9 @@ impl ServerEntity {
                     )));
                     self.rotation = rotation;
                 }
+                // interpolationTracker.clear: a passenger's steps are never sent.
+                self.tracked_steps.clear();
+                self.ticks_since_step = 0;
                 self.base = e.position;
                 self.was_riding = true;
                 self.send_dirty(e, dirty, out);
@@ -462,9 +543,20 @@ impl ServerEntity {
             self.teleport_delay += 1;
             let d: f64 = (0..3).map(|k| (e.position[k] - self.base[k]).powi(2)).sum();
             let send_position = self.arrow || d >= 7.629_394_5e-6 || self.tick.is_multiple_of(60);
+            // SteppedInterpolationTracker.getPositionPath, then clear: the
+            // current position is the last step of a bounced path.
+            if e.stepped {
+                self.add_step(e.position);
+            }
+            let path = if self.tracked_steps.is_empty() {
+                PositionPath::Linear(e.position)
+            } else {
+                PositionPath::Stepped(std::mem::take(&mut self.tracked_steps))
+            };
+            self.ticks_since_step = 0;
             let sync = EntityPositionSync {
                 id: e.id,
-                path: PositionPath::Linear(e.position),
+                path: path.clone(),
                 yaw: e.yaw,
                 pitch: e.pitch,
                 on_ground: e.on_ground,
@@ -480,15 +572,12 @@ impl ServerEntity {
                 self.was_riding = false;
                 Some(play::Clientbound::EntityPositionSync(sync))
             } else if send_position {
-                let delta = [0, 1, 2].map(|k| encode(e.position[k]) - encode(self.base[k]));
-                if delta.iter().any(|v| i16::try_from(*v).is_err())
-                    || full_precision_required(e, delta)
-                {
-                    Some(play::Clientbound::EntityPositionSync(sync))
-                } else {
+                let delta = try_encode(self.base, &path)
+                    .filter(|d| !full_precision_required(e, delta_axes(d)));
+                if let Some(delta) = delta {
                     let m = MoveEntity {
                         id: e.id,
-                        delta: Some(VecDelta::Linear(delta.map(|v| v as i16))),
+                        delta: Some(delta),
                         rotation: rotate.then_some((rotation.1, rotation.0)),
                         on_ground: e.on_ground,
                     };
@@ -497,6 +586,8 @@ impl ServerEntity {
                     } else {
                         play::Clientbound::MoveEntityPos(MoveEntityPos(m))
                     })
+                } else {
+                    Some(play::Clientbound::EntityPositionSync(sync))
                 }
             } else if rotate {
                 Some(play::Clientbound::MoveEntityRot(MoveEntityRot(
@@ -883,6 +974,11 @@ pub struct Entities {
     /// flag per entity.
     moved: Vec<usize>,
     is_moved: Vec<bool>,
+    /// The entities with nothing to send this tick (idle, not moved, no sync
+    /// asked, leash as sent, paired before): unless a client starts tracking
+    /// them, the send pass skips them without looking their state up again.
+    /// Thousands of items frozen past the simulation distance cost a flag each.
+    quiet: Vec<bool>,
     /// One entity's packets and their bodies, kept between entities.
     packets: Vec<play::Clientbound>,
     bodies: Vec<Vec<u8>>,
@@ -1061,12 +1157,19 @@ impl Entities {
         self.moved.clear();
         self.is_moved.clear();
         self.is_moved.resize(entities.len(), false);
+        self.quiet.clear();
+        self.quiet.resize(entities.len(), false);
+        // The states stamped this tick: when that is all of them, none left.
+        let mut stamped = 0;
         for (index, e) in entities.iter().enumerate() {
             let mut added = false;
             let s = self.states.entry(e.id).or_insert_with(|| {
                 added = true;
                 ServerEntity::new(e, kind(&e.kind), riding)
             });
+            if s.seen != now {
+                stamped += 1;
+            }
             s.seen = now;
             s.index = index;
             // ChunkMap.addEntity, ChunkMap.tick's section change, and a
@@ -1087,6 +1190,8 @@ impl Entities {
                 self.moved.push(index);
                 self.is_moved[index] = true;
             }
+            self.quiet[index] =
+                !self.is_moved[index] && !s.added && e.idle && !e.needs_sync && e.leash == s.leash;
             let at = (
                 (e.position[0].floor() as i32) >> 4,
                 (e.position[2].floor() as i32) >> 4,
@@ -1251,6 +1356,11 @@ impl Entities {
             }
         }
         for (index, e) in entities.iter().enumerate() {
+            // Nothing to send and nobody to pair with: what the pass below
+            // would do with it (an unchanged leash) is nothing.
+            if self.quiet[index] && !self.pairs[index] {
+                continue;
+            }
             let Some(s) = self.states.get_mut(&e.id) else {
                 continue;
             };
@@ -1325,7 +1435,10 @@ impl Entities {
                 }
             }
         }
-        self.states.retain(|_, s| s.seen == now);
+        // ChunkMap.removeEntity for the ones no longer in the level.
+        if self.states.len() > stamped {
+            self.states.retain(|_, s| s.seen == now);
+        }
     }
 }
 
@@ -1363,6 +1476,8 @@ mod tests {
             vertical_collision: false,
             horizontal_collision: false,
             needs_sync: false,
+            sync_position: false,
+            stepped: false,
             idle: false,
             bare: false,
             leash: None,

@@ -114,7 +114,8 @@ public final class VanillaCommandExecOracle {
             WorldDataConfiguration config = WorldDataConfiguration.DEFAULT;
             LevelSettings settings = new LevelSettings("Harness", GameType.SURVIVAL, LevelSettings.DifficultySettings.DEFAULT, true, config);
             WorldLoader.PackConfig packConfig = new WorldLoader.PackConfig(packs, config, false, true);
-            WorldLoader.InitConfig init = new WorldLoader.InitConfig(packConfig, Commands.CommandSelection.INTEGRATED, LevelBasedPermissionSet.OWNER);
+            WorldLoader.InitConfig init = new WorldLoader.InitConfig(packConfig, Commands.CommandSelection.INTEGRATED,
+                Boolean.getBoolean("horizon.functionAdmissionFixture") ? LevelBasedPermissionSet.GAMEMASTER : LevelBasedPermissionSet.OWNER);
             boolean flat = Boolean.getBoolean("horizon.parity.flat");
             WorldOptions options = new WorldOptions(seed, !flat, false);
             WorldStem stem = Util.<WorldStem>blockUntilDone(executor -> WorldLoader.load(init, context -> {
@@ -565,7 +566,7 @@ public final class VanillaCommandExecOracle {
                     messages.add(spans(chatType.decorate(message.content())));
                 }
             };
-            if(Boolean.getBoolean("horizon.merchantCraftedFixture")) this.tickRateManager().setFrozen(true);
+            if(Boolean.getBoolean("horizon.merchantFixture")||Boolean.getBoolean("horizon.merchantCraftedFixture")) this.tickRateManager().setFrozen(true);
             Connection connection = new Connection(PacketFlow.SERVERBOUND);
             EmbeddedChannel channel = Boolean.getBoolean("horizon.merchantCraftedFixture") ? new EmbeddedChannel(
                 new io.netty.channel.ChannelInitializer<io.netty.channel.Channel>() {
@@ -619,7 +620,12 @@ public final class VanillaCommandExecOracle {
                         String command = op.get("cmd").getAsString();
                         messages.clear();
                         List<JsonArray> results = new ArrayList<>();
-                        var source = player.createCommandSourceStack().withCallback((success, value) -> {
+                        // Reuse the existing feedback receiver while retaining the actual
+                        // server stack's null entity, names, position and permissions.
+                        var baseSource = op.has("source") && op.get("source").getAsString().equals("console")
+                                ? this.createCommandSourceStack().withSource(player.commandSource())
+                                : player.createCommandSourceStack();
+                        var source = baseSource.withCallback((success, value) -> {
                             JsonArray r = new JsonArray();
                             r.add(success);
                             r.add(value);
@@ -859,6 +865,15 @@ public final class VanillaCommandExecOracle {
                             boat.getId(), net.minecraft.world.InteractionHand.MAIN_HAND,
                             net.minecraft.world.phys.Vec3.ZERO, false));
                     }
+                    case "mob_interact" -> {
+                        // The player's real Interact packet on a live mob, by UUID.
+                        var mob = level.getEntity(UUID.fromString(op.get("uuid").getAsString()));
+                        if (!(mob instanceof net.minecraft.world.entity.Mob) || !mob.isAlive())
+                            throw new IllegalStateException("mob click: missing live mob");
+                        player.connection.handleInteract(new net.minecraft.network.protocol.game.ServerboundInteractPacket(
+                            mob.getId(), net.minecraft.world.InteractionHand.MAIN_HAND,
+                            net.minecraft.world.phys.Vec3.ZERO, false));
+                    }
                     case "use_item" -> {
                         if (!op.has("sequence")) {
                             player.gameMode.useItem(player, player.level(), player.getMainHandItem(),
@@ -1045,7 +1060,8 @@ public final class VanillaCommandExecOracle {
                         record.add("results", results);
                         out.append(gson.toJson(record)).append('\n');
                     }
-                    case "close_menu" -> player.closeContainer();
+                    case "close_menu" -> player.connection.handleContainerClose(
+                        new net.minecraft.network.protocol.game.ServerboundContainerClosePacket(player.containerMenu.containerId));
                     case "merchant_saved_stats" -> {
                         player.getStats().save();
                         String raw;
@@ -1133,9 +1149,22 @@ public final class VanillaCommandExecOracle {
                         JsonArray p = op.getAsJsonArray("pos");
                         BlockPos pos = new BlockPos(p.get(0).getAsInt(), p.get(1).getAsInt(), p.get(2).getAsInt());
                         var state = player.level().getBlockState(pos);
-                        if (!state.is(net.minecraft.world.level.block.Blocks.CRAFTER))
-                            throw new IllegalStateException("crafter tick without a crafter");
+                        if (!state.is(net.minecraft.world.level.block.Blocks.CRAFTER) && !state.is(net.minecraft.world.level.block.Blocks.DISPENSER))
+                            throw new IllegalStateException("crafter tick without a crafter or dispenser");
                         state.tick(player.level(), pos, player.level().getRandom());
+                    }
+                    case "sync_randoms" -> {
+                        // docs/parity-workflow.md "Randoms that repeat": needs tools/seed_agent.py's -javaagent.
+                        try {
+                            Class.forName("dev.horizonlab.parity.SeedAgent").getMethod("setUniquifier", long.class)
+                                .invoke(null, op.get("uniquifier").getAsLong());
+                            var counter = ServerLevel.class.getDeclaredField("ENTITY_COUNTER");
+                            counter.setAccessible(true);
+                            ((java.util.concurrent.atomic.AtomicInteger) counter.get(null)).set(op.get("entity_id").getAsInt());
+                        } catch (ReflectiveOperationException e) {
+                            throw new IllegalStateException(e);
+                        }
+                        player.level().getRandom().setSeed(op.get("level_seed").getAsLong());
                     }
                     case "break" -> {
                         JsonArray pos = op.getAsJsonArray("pos");

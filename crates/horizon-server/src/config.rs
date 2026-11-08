@@ -73,6 +73,7 @@ max_expect_seconds = 60      # the longest the proxy may ask for
 max_expected = 64            # players waited for at once
 max_freeze_seconds = 30      # the longest a player stays frozen while it is handed over
 max_hold_seconds = 60        # the longest a player arriving from another server is held before it is dropped
+stop_wait_seconds = 10       # a stop with players on waits this long for the proxy to move them out (0 to 60; 0: no wait)
 
 # Post the chat, joins, leaves and deaths to a Discord channel, drawn like the in-game chat (docs/hosting.md)
 [discord]
@@ -344,6 +345,7 @@ pub struct Transfer {
     pub max_expected: u32,
     pub max_freeze_seconds: u32,
     pub max_hold_seconds: u32,
+    pub stop_wait_seconds: u32,
 }
 
 impl Default for Transfer {
@@ -355,6 +357,7 @@ impl Default for Transfer {
             max_expected: 64,
             max_freeze_seconds: 30,
             max_hold_seconds: 60,
+            stop_wait_seconds: 10,
         }
     }
 }
@@ -375,6 +378,20 @@ impl Transfer {
         if self.expect_seconds > self.max_expect_seconds {
             return Err("transfer.expect_seconds is above transfer.max_expect_seconds".into());
         }
+        // The supervisor kills a game that has not stopped within STOP_TIMEOUT: the wait must leave
+        // time for the saves (the game caps the wait with a freeze at 90 s).
+        if self.stop_wait_seconds > 60 {
+            return Err("transfer.stop_wait_seconds is above 60".into());
+        }
+        // The game cuts the wait at 90 s: past it, no hand-over could start during a stop.
+        if self.stop_wait_seconds > 0
+            && u64::from(self.stop_wait_seconds) + u64::from(self.max_freeze_seconds) > 90
+        {
+            return Err(
+                "transfer.stop_wait_seconds and transfer.max_freeze_seconds add up to more than 90: no hand-over could start during a stop (lower one, or set stop_wait_seconds = 0)"
+                    .into(),
+            );
+        }
         Ok(())
     }
 
@@ -382,12 +399,13 @@ impl Transfer {
     pub fn engine_arg(&self) -> Option<String> {
         self.enabled.then(|| {
             format!(
-                "expect_seconds={},max_expect_seconds={},max_expected={},max_freeze_seconds={},max_hold_seconds={}",
+                "expect_seconds={},max_expect_seconds={},max_expected={},max_freeze_seconds={},max_hold_seconds={},stop_wait_seconds={}",
                 self.expect_seconds,
                 self.max_expect_seconds,
                 self.max_expected,
                 self.max_freeze_seconds,
-                self.max_hold_seconds
+                self.max_hold_seconds,
+                self.stop_wait_seconds
             )
         })
     }
@@ -634,6 +652,7 @@ pub fn render(config: &Config) -> String {
         ("transfer", "max_expected"),
         ("transfer", "max_freeze_seconds"),
         ("transfer", "max_hold_seconds"),
+        ("transfer", "stop_wait_seconds"),
     ] {
         set(&mut doc, section, field, &table[section][field]);
     }
@@ -795,7 +814,7 @@ mod tests {
         assert_eq!(
             config.transfer.engine_arg().as_deref(),
             Some(
-                "expect_seconds=10,max_expect_seconds=60,max_expected=64,max_freeze_seconds=30,max_hold_seconds=60"
+                "expect_seconds=10,max_expect_seconds=60,max_expected=64,max_freeze_seconds=30,max_hold_seconds=60,stop_wait_seconds=10"
             )
         );
         assert_eq!(Config::parse(&render(&config)).unwrap(), config);
@@ -803,6 +822,8 @@ mod tests {
             ("expect_seconds = 10 ", "expect_seconds = 0  "),
             ("max_expect_seconds = 60", "max_expect_seconds = 5 "),
             ("max_freeze_seconds = 30", "max_freeze_seconds = 0 "),
+            ("stop_wait_seconds = 10", "stop_wait_seconds = 61"),
+            ("max_freeze_seconds = 30", "max_freeze_seconds = 81"),
         ] {
             let bad = on.replace(from, to);
             assert_ne!(bad, on, "{from} is in the template");

@@ -9,6 +9,102 @@ use horizon_assets::palette::apply_palette;
 use serde_json::Value;
 use std::{collections::HashMap, fs, path::Path};
 
+/// Runtime trim slots and the completed ordered requests for their current atlas.
+/// A frame with more requests than slots keeps the same final residents as the
+/// sequential LRU pass, without decoding and evicting them again every frame.
+#[derive(Default)]
+pub struct TrimSlots {
+    slots: Vec<(String, usize)>,
+    atlas_revision: u64,
+    prepared: Option<Vec<TrimTexture>>,
+}
+
+impl TrimSlots {
+    /// The renderer was rebuilt: runtime pixels must be uploaded again.
+    pub fn forget(&mut self) {
+        self.atlas_revision = 0;
+        self.prepared = None;
+    }
+
+    pub fn prepare(
+        &mut self,
+        wanted: Vec<TrimTexture>,
+        root: &Path,
+        atlas: &mut crate::hud::HudAtlas,
+        patches: &mut Vec<crate::font::Patch>,
+    ) {
+        if self.atlas_revision != atlas.revision {
+            for (name, _) in self.slots.drain(..) {
+                atlas.sprites.remove(&name);
+            }
+            self.atlas_revision = atlas.revision;
+            self.prepared = None;
+        }
+        let before = self.slots.len();
+        self.slots
+            .retain(|(name, _)| atlas.sprites.contains_key(name));
+        if before != self.slots.len() {
+            self.prepared = None;
+        }
+        if self.prepared.as_ref() == Some(&wanted) {
+            return;
+        }
+        let mut complete = true;
+        for t in &wanted {
+            let name = t.sprite();
+            if let Some(i) = self.slots.iter().position(|e| e.0 == name) {
+                let e = self.slots.remove(i);
+                self.slots.push(e);
+                continue;
+            }
+            let Some((w, h, rgba)) = t.generate(root) else {
+                complete = false;
+                continue;
+            };
+            let slot =
+                match (0..crate::hud::TRIM_SLOTS).find(|i| !self.slots.iter().any(|e| e.1 == *i)) {
+                    Some(free) => free,
+                    None => {
+                        let (old, slot) = self.slots.remove(0);
+                        atlas.sprites.remove(&old);
+                        slot
+                    }
+                };
+            let Some(area) = atlas.sprites.get(&format!("horizon/trim{slot}")).copied() else {
+                complete = false;
+                continue;
+            };
+            if w > area.w || h > area.h {
+                complete = false;
+                continue;
+            }
+            let (aw, ah) = (atlas.width as f32, atlas.height as f32);
+            let (x, y) = ((area.u0 * aw).round(), (area.v0 * ah).round());
+            patches.push(crate::font::Patch {
+                x: x as u32,
+                y: y as u32,
+                width: w,
+                height: h,
+                rgba,
+            });
+            atlas.sprites.insert(
+                name.clone(),
+                crate::hud::Rect {
+                    u0: area.u0,
+                    v0: area.v0,
+                    u1: (x + w as f32) / aw,
+                    v1: (y + h as f32) / ah,
+                    w,
+                    h,
+                },
+            );
+            self.slots.push((name, slot));
+        }
+        // Failed or not-yet-available textures retain their per-frame retries.
+        self.prepared = complete.then_some(wanted);
+    }
+}
+
 /// An RGBA image: width, height, pixels.
 pub type Image = (u32, u32, Vec<u8>);
 
@@ -248,6 +344,9 @@ fn png_size(path: &Path) -> Option<(u32, u32)> {
     let be = |i: usize| u32::from_be_bytes(head[i..i + 4].try_into().unwrap());
     (&head[12..16] == b"IHDR").then(|| (be(16), be(20)))
 }
+
+#[cfg(test)]
+mod slots_tests;
 
 #[cfg(test)]
 mod tests {

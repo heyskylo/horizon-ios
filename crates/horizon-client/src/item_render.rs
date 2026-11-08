@@ -457,6 +457,9 @@ fn submit_quads(
     // translucency up once.
     let mut last: Option<(&str, bool)> = None;
     let mut last_rect: Option<(&str, Option<Rect>)> = None;
+    // A glint in the GUI follows the quad's sprite in the glint atlas: looked up once a sprite too.
+    let gui_glint = display == DisplayContext::Gui && foil == Foil::Standard;
+    let mut last_glint: Option<(&str, Option<Rect>)> = None;
     for q in &baked.quads {
         let rect = match last_rect {
             Some((sprite, rect)) if sprite == q.material.sprite => rect,
@@ -509,8 +512,15 @@ fn submit_quads(
             pos,
             uv,
             foil_uv: q.uv,
-            gui_glint_uv: (display == DisplayContext::Gui && foil == Foil::Standard)
-                .then(|| atlas.get(sprite_name(&q.material.sprite)))
+            gui_glint_uv: gui_glint
+                .then(|| match last_glint {
+                    Some((sprite, rect)) if sprite == q.material.sprite => rect,
+                    _ => {
+                        let rect = atlas.get(sprite_name(&q.material.sprite)).copied();
+                        last_glint = Some((&q.material.sprite, rect));
+                        rect
+                    }
+                })
                 .flatten()
                 .map(|r| {
                     q.uv.map(|[u, v]| [r.u0 + (r.u1 - r.u0) * u, r.v0 + (r.v1 - r.v0) * v])

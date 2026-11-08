@@ -89,7 +89,7 @@ fn data_packs_are_their_own_kind() {
     assert!(pick(Kind::DataPack, &versions[..1], true).is_none());
 
     let now = support(Kind::DataPack, &v(&[GAME]), &v(&["datapack"]));
-    assert_eq!(now.reason(), Some(DATAPACK_SUPPORT));
+    assert_eq!(now.reason(), Some(datapack_support()));
     let old = support(Kind::DataPack, &v(&["1.21.4"]), &v(&["datapack"]));
     assert!(
         old.reason().unwrap().starts_with("Made for 1.21.4"),

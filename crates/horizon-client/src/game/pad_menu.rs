@@ -44,6 +44,16 @@ use winit::{
 const STICK_STEP: f32 = 0.55;
 /// Scrolls a step may try to reveal the next row of a list.
 const SCROLL_TRIES: u8 = 4;
+/// How far apart two rectangles may be and still be one widget found again (GUI pixels).
+const SAME_RECT: f32 = 0.5;
+/// Frames after a scroll that may still have been drawn before it: their rectangles are stale.
+const STALE_FRAMES: u64 = 1;
+
+/// Whether the frames drawn since `pad_reveal` scrolled a row, at frame `revealed`, may still
+/// show the list where it was.
+fn reveal_pending(revealed: Option<u64>, now: u64) -> bool {
+    revealed.is_some_and(|at| now <= at + STALE_FRAMES)
+}
 
 /// A focus step that ran off the visible part of a list: the list was
 /// scrolled and the step runs again once a new frame is drawn. When the
@@ -131,6 +141,9 @@ pub(super) struct MenuCursor {
     /// The focused button A went down on: letting go presses it, unless the
     /// focus moved or the input was cancelled first.
     pub(super) armed: Option<Rect>,
+    /// The frame count when `pad_reveal` scrolled the focused row into view: the frames drawn
+    /// before it still show the row where it was, so the focus isn't looked for in them.
+    pub(super) revealed: Option<u64>,
     /// The OS pointer is hidden while the pad's cursor is drawn.
     os_hidden: bool,
     /// Polls since a menu opened (its widgets are drawn after one frame).
@@ -146,6 +159,11 @@ pub(super) struct MenuCursor {
     repeats: u32,
     /// The on-screen keyboard, open over a text field.
     pub(super) osk: Option<Keyboard>,
+    /// The recipe being crafted straight into the inventory (`pad_craft`).
+    pub(super) craft: Option<super::pad_craft::DirectCraft>,
+    /// LT held over the crafting book: it changes the category as it comes up, unless A was
+    /// pressed meanwhile (LT + A crafts, `pad_craft`).
+    pub(super) trigger: Option<HeldTrigger>,
     /// The keyboard was closed on this screen (it doesn't open by itself again).
     osk_dismissed: bool,
     /// The keyboard drives the focus (`key_focus`: Tab, the arrows, Enter):
@@ -184,7 +202,21 @@ pub(super) struct MenuCursor {
     prompt_crosshair: Option<(Screen, (f32, f32))>,
 }
 
+/// LT held over the crafting book.
+#[derive(Clone, Copy)]
+pub(super) struct HeldTrigger {
+    /// A was pressed while it was held: it was LT + A, not a category change.
+    pressed_a: bool,
+}
+
 impl MenuCursor {
+    /// A running direct craft ends, as cleanly as the server still lets it (`DirectCraft::stop`).
+    pub(super) fn stop_craft(&mut self) {
+        if let Some(craft) = &mut self.craft {
+            craft.stop();
+        }
+    }
+
     /// `Screen.clearFocus`: nothing is focused any more, and no click focus
     /// is kept for the next Tab (`ComponentPath.applyFocus(false)`).
     fn clear_focus(&mut self) {
@@ -236,10 +268,12 @@ fn beside(rect: Rect, targets: &[Rect]) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
-/// Where letting go of A clicks: the armed button, if the focus is still on it.
+/// Where letting go of A clicks: the armed button, if the focus is still on it. A row scrolled
+/// into view under A (`pad_reveal`) is found again a fraction of a pixel off.
 fn armed_click(armed: Option<Rect>, focus: Option<Target>) -> Option<(f32, f32)> {
+    let same = |a: Rect, b: Rect| a.iter().zip(b).all(|(a, b)| (a - b).abs() < SAME_RECT);
     focus
-        .filter(|focus| armed == Some(focus.rect))
+        .filter(|focus| armed.is_some_and(|armed| same(armed, focus.rect)))
         .map(|focus| focus.center())
 }
 
@@ -723,6 +757,12 @@ impl Game<'_> {
     ) -> Result<()> {
         if !down {
             match button {
+                Button::LeftTrigger if self.pad.menu.trigger.is_some() => {
+                    let pressed_a = self.pad.menu.trigger.take().is_some_and(|t| t.pressed_a);
+                    if !pressed_a && self.pad_recipe_book_showing() {
+                        self.pad_tab(event_loop, false);
+                    }
+                }
                 Button::South if self.pad.menu.armed.is_some() => {
                     let armed = self.pad.menu.armed.take();
                     if let Some(at) = armed_click(armed, self.pad.menu.focus) {
@@ -742,6 +782,17 @@ impl Game<'_> {
         }
         // The pad takes the focus back from the keyboard.
         self.pad.menu.keyboard = false;
+        // A with LT held over the crafting book is LT + A: LT coming up changes no category.
+        if button == Button::South
+            && let Some(trigger) = &mut self.pad.menu.trigger
+        {
+            trigger.pressed_a = true;
+        }
+        // Any press ends a running craft but another LT + A on its recipe, which asks for one
+        // more further down: quick taps while one is in flight each make a craft.
+        if !self.direct_craft_takes_press(button) {
+            self.direct_craft_stop();
+        }
         // A prompt over the screen answers first; no press reaches both.
         let prompt = self.prompt_open();
         // Bindings waiting for a button: this one (Start cancels).
@@ -837,6 +888,21 @@ impl Game<'_> {
                 return Ok(());
             }
         }
+        // LT + A on a recipe crafts it into the inventory.
+        if button == Button::South
+            && !prompt
+            && self.pad.edges.is_held(Button::LeftTrigger)
+            && self.screen == Screen::Inventory
+            && self.title.is_none()
+        {
+            self.pad_take_pointer(event_loop);
+            // Refused, the press is plain A's.
+            if let Some(entry) = self.recipe_under_pointer()
+                && self.direct_craft_start(entry)
+            {
+                return Ok(());
+            }
+        }
         // The book's controls take A alone; X, Y and the throws are for slots and recipes.
         let book_control = !prompt
             && self.screen == Screen::Inventory
@@ -848,7 +914,8 @@ impl Game<'_> {
             Button::Select | Button::LeftStick if book_control => {}
             Button::East | Button::Start => return self.pad_back(),
             Button::South if self.pad_focusing() => {
-                let focus = self.pad.menu.focus.expect("focusing");
+                let focus = self.pad_reveal(self.pad.menu.focus.expect("focusing"));
+                self.pad.menu.focus = Some(focus);
                 match focus.kind {
                     // A click would jump the handle: A takes hold of it, or lets it go.
                     Kind::Slider { .. } => {
@@ -921,6 +988,15 @@ impl Game<'_> {
             // The recipe book open: bumpers turn its pages, triggers change its category.
             Button::LeftBumper | Button::RightBumper if self.pad_recipe_book_showing() => {
                 self.pad_recipe_page(button == Button::RightBumper);
+            }
+            // On the crafting book LT waits for its release, as LT + A crafts there; RT, and
+            // either on a furnace's book, change the category as they go down.
+            Button::LeftTrigger
+                if self.pad_recipe_book_showing()
+                    && self.active_book()
+                        == Some(horizon_client::recipe_book::BookType::Crafting) =>
+            {
+                self.pad.menu.trigger = Some(HeldTrigger { pressed_a: false });
             }
             Button::LeftTrigger | Button::RightTrigger if self.pad_recipe_book_showing() => {
                 self.pad_tab(event_loop, button == Button::RightTrigger);
@@ -1047,7 +1123,36 @@ impl Game<'_> {
             self.pad_nudge(event_loop, focus, sign * step);
             return;
         }
+        if self.pad_step_value(event_loop, button, focus) {
+            return;
+        }
         self.pad_focus_move(event_loop, button, focus, targets);
+    }
+
+    /// Left or right on a focused value the screen steps with them (`widgets::steps_value`: the
+    /// settings shell's choices): Right presses it, Left presses it with Shift, the screen's own
+    /// step back. Whether it did; anything else moves the focus.
+    fn pad_step_value(
+        &mut self,
+        event_loop: &dyn EventLoopCtl,
+        button: Button,
+        focus: Target,
+    ) -> bool {
+        if !matches!(button, Button::DPadLeft | Button::DPadRight)
+            || !widgets::last_steps_value(focus.rect)
+        {
+            return false;
+        }
+        let focus = self.pad_reveal(focus);
+        self.pad.menu.focus = Some(focus);
+        if button == Button::DPadLeft {
+            self.pad_with_modifier(KeyCode::ShiftLeft, |game| {
+                game.pad_click_at(event_loop, focus.center(), false)
+            });
+        } else {
+            self.pad_click_at(event_loop, focus.center(), false);
+        }
+        true
     }
 
     /// Left and right are the focused slider's, after A took hold of it. Until then they move the
@@ -1092,8 +1197,22 @@ impl Game<'_> {
         if self.pad.menu.pending.is_some() {
             return;
         }
+        // Nor while a row scrolled into view: the targets still show it where it was, and a step
+        // from them could land on its neighbour.
+        if reveal_pending(self.pad.menu.revealed, widgets::generation()) {
+            return;
+        }
         let rects: Vec<Rect> = targets.iter().map(|t| t.rect).collect();
         let vertical = matches!(button, Button::DPadUp | Button::DPadDown);
+        // A step the screen declared comes first (`widgets::focus_link`).
+        let linked = vertical
+            .then(|| widgets::linked_step(focus.rect, button == Button::DPadDown))
+            .flatten()
+            .and_then(|to| gamepad::refind(to, &rects, 0.0));
+        if let Some(i) = linked {
+            self.pad_focus_on(event_loop, targets[i]);
+            return;
+        }
         let areas = widgets::last_scroll_areas();
         let step = if vertical {
             gamepad::list_step(focus.rect, button, &rects, &areas)
@@ -1137,7 +1256,23 @@ impl Game<'_> {
         }
     }
 
+    /// `AbstractSelectionList.setSelected`: a settings row the focus lands on, or presses, while
+    /// its list hides part of it scrolls all into view first. Where it is now.
+    fn pad_reveal(&mut self, target: Target) -> Target {
+        if self.screen != Screen::Options {
+            return target;
+        }
+        let size = self.gui_size();
+        let mut moved = target;
+        if let Some(dy) = self.ui.options.reveal(&self.settings, size, target.rect) {
+            moved.rect[1] += dy;
+            self.pad.menu.revealed = Some(widgets::generation());
+        }
+        moved
+    }
+
     fn pad_focus_on(&mut self, event_loop: &dyn EventLoopCtl, target: Target) {
+        let target = self.pad_reveal(target);
         self.pad.menu.shortcut_focus = None;
         let left = self.pad.menu.focus.replace(target);
         if left.is_some_and(|l| l.rect != target.rect) {
@@ -1327,11 +1462,13 @@ impl Game<'_> {
             menu.focus = None;
             menu.pending = None;
             menu.stick_scrolled = None;
+            menu.trigger = None;
             menu.anchors = None;
             menu.layout = None;
             menu.nudge = None;
             menu.osk = None;
             menu.osk_dismissed = false;
+            menu.craft = None;
             menu.focus_name = None;
             menu.prompt = None;
             menu.prompt_restart = None;
@@ -1340,6 +1477,7 @@ impl Game<'_> {
             return;
         }
         self.pad.menu.open_polls = self.pad.menu.open_polls.saturating_add(1);
+        self.direct_craft_poll();
         // Once the focus or the screen moved on from a slider it's let go for good, or coming back
         // to it would find it still held.
         if !self.pad_holding_slider() {
@@ -1706,7 +1844,10 @@ impl Game<'_> {
                 }
                 None => {}
             }
-        } else if ready.is_none() {
+        } else if ready.is_none()
+            // Two frames on, as after a step that scrolled: the first may predate the scroll.
+            && !reveal_pending(self.pad.menu.revealed, widgets::generation())
+        {
             if let Some(focus) = self.pad.menu.focus {
                 let kind = std::mem::discriminant(&focus.kind);
                 let named = self.pad_named_focus(focus, &rects);
@@ -1822,6 +1963,8 @@ impl Game<'_> {
             "holding_slider": self.pad_holding_slider(),
             "pointer": self.pad.menu.pos.map(|_| self.cursor),
             "keyboard": self.pad.menu.osk.is_some(),
+            "crafting": self.pad.menu.craft.is_some(),
+            "craft_hint": self.direct_craft_usable(),
             "targets": self.pad_targets().iter().map(target).collect::<Vec<_>>(),
             "actions": self.pad_actions_status(),
             "glyphs": self.pad_glyphs_status(),
@@ -1849,6 +1992,7 @@ impl Game<'_> {
         self.pad.menu.stick = None;
         self.pad.menu.wheel = [0.0; 2];
         self.pad.menu.moving = false;
+        self.pad.menu.trigger = None;
         self.pad.menu.glide = None;
         self.pad.menu.gesture = None;
         self.pad.menu.pending = None;
@@ -1964,9 +2108,13 @@ impl Game<'_> {
                 self.pad.menu.slider_edit = key_focus::slider_edit_on_focus(nav);
             }
             (Act::Step(button), Some(focus)) => {
-                self.pad_focus_move(event_loop, button, focus, &targets);
+                if !self.pad_step_value(event_loop, button, focus) {
+                    self.pad_focus_move(event_loop, button, focus, &targets);
+                }
             }
             (Act::Press, Some(focus)) => {
+                let focus = self.pad_reveal(focus);
+                self.pad.menu.focus = Some(focus);
                 // AbstractButton.keyPressed: onPress, with its click sound.
                 self.pad_click_at(event_loop, focus.center(), false);
             }
@@ -2394,7 +2542,7 @@ impl Game<'_> {
                 || self.screen == Screen::Chat;
             let mut ui = horizon_client::ui_theme::Ui::new(&self.gui.atlas, batch, self.cursor);
             let options = &self.ui.options;
-            keyboard.draw(&mut ui, at_top, options.pad_style, options.pad_by_letter);
+            keyboard.draw(&mut ui, at_top, options.pad_glyphs);
             ui.finish();
             return;
         }
@@ -2553,6 +2701,15 @@ mod tests {
         let kind = Kind::Button;
         let focus = Some(Target { rect, kind });
         assert_eq!(armed_click(Some(rect), focus), Some((60.0, 30.0)));
+        let refound = Some(Target {
+            rect: [10.0, 20.000_002, 100.0, 20.0],
+            kind,
+        });
+        assert!(armed_click(Some(rect), refound).is_some());
+        // A row scrolled into view at frame 10 is looked for again from frame 12.
+        assert!(!reveal_pending(None, 10));
+        assert!(reveal_pending(Some(10), 10) && reveal_pending(Some(10), 11));
+        assert!(!reveal_pending(Some(10), 12));
         let moved = Some(Target {
             rect: [10.0, 44.0, 100.0, 20.0],
             kind,

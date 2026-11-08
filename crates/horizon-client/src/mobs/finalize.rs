@@ -490,6 +490,10 @@ pub struct Modifier {
 pub struct Attributes {
     pub bases: Vec<(Attr, f64)>,
     pub modifiers: Vec<Modifier>,
+    /// The transient minecraft:baby speed modifier was taken away
+    /// (`/attribute ... modifier remove`) until the next setBaby. Not
+    /// saved: a load runs setBaby again.
+    pub baby_speed_removed: bool,
 }
 /// The attribute `/attribute` names (`follow_range`, not
 /// `minecraft:follow_range`) when gameplay reads it from this store. Armor
@@ -509,6 +513,9 @@ pub fn base_value(m: &Mob, a: Attr) -> f64 {
 /// [`base_value`] with the type's default given (`default_value`), for a
 /// caller that already looked it up for the mob's type.
 pub fn base_value_with(m: &Mob, a: Attr, default: impl FnOnce() -> Option<f64>) -> f64 {
+    if a == Attr::MovementSpeed && m.species() == Species::Ravager {
+        return m.attrs.speed;
+    }
     m.extra
         .attributes
         .as_ref()
@@ -523,7 +530,13 @@ pub fn base_value_with(m: &Mob, a: Attr, default: impl FnOnce() -> Option<f64>) 
 }
 /// The transient modifiers of the mob's state (`SPEED_MODIFIER_BABY`).
 pub fn transient(m: &Mob, a: Attr) -> Option<(f64, Op)> {
-    if a != Attr::MovementSpeed || !m.is_baby() {
+    if a != Attr::MovementSpeed
+        || !m.is_baby()
+        || m.extra
+            .attributes
+            .as_ref()
+            .is_some_and(|s| s.baby_speed_removed)
+    {
         return None;
     }
     match m.species() {
@@ -749,6 +762,20 @@ pub fn zombie_attributes(m: &mut Mob, special: f32, reason: Reason) {
 pub fn max_health(m: &Mob) -> f32 {
     value(m, Attr::MaxHealth) as f32
 }
+/// `LivingEntity.onAttributeUpdated(MAX_HEALTH)` after a Health Boost
+/// change: the cached maximum follows the attribute model again, and Health
+/// above it is lowered (nothing is healed). Sulfur cubes and wolves write
+/// their maximum straight into the cache (`sulfur_cube::set_size`,
+/// `tame::set_tame`), outside the model, so they keep theirs.
+pub fn health_boost_changed(m: &mut Mob) {
+    if matches!(m.species(), Species::SulfurCube | Species::Wolf) {
+        return;
+    }
+    refresh(m, Attr::MaxHealth);
+    if m.health > m.attrs.max_health {
+        m.health = m.attrs.max_health;
+    }
+}
 
 // ---- species facts --------------------------------------------------------
 
@@ -952,6 +979,14 @@ pub fn set_baby(m: &mut Mob, baby: bool) {
     match s {
         _ if zombie(s) || s == Species::Piglin => {
             m.extra.age = if baby { NON_AGEABLE_BABY } else { 0 };
+            // Zombie/Piglin.setBaby: removeModifier(minecraft:baby), then the
+            // transient one again for a baby.
+            if let Some(a) = m.extra.attributes.as_mut() {
+                a.baby_speed_removed = false;
+            }
+            if has_modifier(m, Attr::MovementSpeed, "minecraft:baby") {
+                remove_modifier(m, Attr::MovementSpeed, "minecraft:baby");
+            }
         }
         Species::Zoglin => {
             m.extra.age = if baby { NON_AGEABLE_BABY } else { 0 };
@@ -1027,6 +1062,19 @@ pub fn item_stack(m: &Mob, slot: usize) -> Option<crate::items::ItemStack> {
         stack.set_crafting_enchantments(slot_enchantments(m, slot));
         Some(stack)
     })
+}
+/// `LivingEntity.getItemBySlot` from the stacks a mob keeps: the hands and
+/// armour from `item_stack` (`EquipmentSlot` ordinals match these slots), the
+/// body and saddle from their own fields.
+pub fn equipment_stack(
+    m: &Mob,
+    slot: horizon_world::player_inventory::EquipmentSlot,
+) -> Option<crate::items::ItemStack> {
+    use horizon_world::player_inventory::EquipmentSlot as S;
+    match slot {
+        S::Body | S::Saddle => m.item_by_slot(slot),
+        _ => item_stack(m, slot as usize),
+    }
 }
 /// `setItemSlot` with the whole `stack`: its enchantments, trim, damage, name
 /// and count stay with the mob.
@@ -1109,10 +1157,7 @@ pub fn equip_stack(
             .iter()
             .find(|(id, _)| id == "minecraft:trim")
             .and_then(|(_, v)| {
-                Some((
-                    Arc::from(v["material"].as_str()?),
-                    Arc::from(v["pattern"].as_str()?),
-                ))
+                crate::item_data::trim::from_nbt(&horizon_client_core::scoreboard::json_to_tag(v))
             });
         gear::set_trim(m, gear_slot(slot), trim);
     }
@@ -2680,7 +2725,7 @@ mod tests {
         let mut m = crate::mobs::Mob::new(1, kind, horizon_core::geometry::Vec3::ZERO, 0.0);
         set_item(&mut m, CHEST, "minecraft:iron_chestplate");
         set_slot_enchantments(&mut m, CHEST, vec![(Arc::from("minecraft:thorns"), 3)]);
-        let trim: gear::Trim = (Arc::from("minecraft:gold"), Arc::from("minecraft:coast"));
+        let trim: gear::Trim = ("minecraft:gold".into(), "minecraft:coast".into());
         gear::set_trim(&mut m, gear::CHEST, Some(trim.clone()));
         set_slot_damage(&mut m, CHEST, 2);
         set_slot_damage(&mut m, CHEST, 5);

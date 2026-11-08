@@ -69,6 +69,15 @@ fn picked_item<'a>(
 }
 
 impl Game<'_> {
+    /// Plain projection for the existing container-title consumers. The live
+    /// `BaseContainerBlockEntity` name remains a Component, not rendered text.
+    pub(super) fn block_name_plain(&self, key: (i32, i32, i32)) -> Option<String> {
+        self.world.block_names.get(&key).map(|name| match name {
+            Tag::String(text) => text.to_string_lossy(),
+            component => horizon_client::component::name_text(component).plain(),
+        })
+    }
+
     /// The block entity at `key` as vanilla saves it, with its custom name.
     fn saved_block_entity(&self, key: (i32, i32, i32)) -> Option<Tag> {
         let entity = self.world.block_entities.get(&key)?;
@@ -79,7 +88,7 @@ impl Game<'_> {
             .name;
         let mut tag = save::encode_block_entity(key, entity, block);
         if let (Some(name), Tag::Compound(map)) = (self.world.block_names.get(&key), &mut tag) {
-            map.insert("CustomName".into(), Tag::String(name.as_str().into()));
+            map.insert("CustomName".into(), name.clone());
         }
         if matches!(entity, BlockEntity::Mod(_)) {
             // The mod owns its serializer; the vanilla canonicalizer only knows
@@ -103,7 +112,11 @@ impl Game<'_> {
         if matches!(entity, BlockEntity::Banner(_) | BlockEntity::Sign(_)) {
             return false;
         }
-        let name = save::text(tag.get("CustomName"));
+        let name = if matches!(entity, BlockEntity::Mod(_)) {
+            save::text(tag.get("CustomName")).map(|name| Tag::String(name.as_str().into()))
+        } else {
+            tag.get("CustomName").and_then(block_entity_nbt::component)
+        };
         if self.world.block_names.get(&key) == name.as_ref() {
             return false;
         }
@@ -206,7 +219,13 @@ impl Game<'_> {
         // DecoratedPotBlock.getCloneItemStack: createDecoratedPotInstance, the
         // sherds only; the pot's item comes with include_data.
         let pot = &*facts.name == "minecraft:decorated_pot";
-        if (include_data || banner || pot)
+        // CopperGolemStatueBlockEntity.getItem: collectComponents (the golem's
+        // custom name), data or not.
+        let statue = matches!(
+            self.world.block_entities.get(&key),
+            Some(BlockEntity::CopperGolemStatue(_))
+        );
+        if (include_data || banner || pot || statue)
             && let Some(saved) = self.saved_block_entity(key)
         {
             let mut picked = block_entity_item::pick(&saved);
@@ -240,12 +259,7 @@ impl Game<'_> {
         let mut stack = ItemStack::new(&self.res.facts().get(state).item, 1);
         let patch = block_entity_item::collected_components(&saved);
         (stack.damage, stack.extra) = item_data::decode_components(Some(&Tag::Compound(patch)));
-        self.spawn_item(
-            stack,
-            pos.map(|v| f64::from(v) + 0.5),
-            super::dispenser::new_item_motion(),
-            10,
-        );
+        self.spawn_item_own(stack, pos.map(|v| f64::from(v) + 0.5), 10);
     }
 
     /// `BlockItem.updateBlockStateFromTag`: the properties of the item's
@@ -309,6 +323,8 @@ impl Game<'_> {
     ) {
         let key = (pos[0], pos[1], pos[2]);
         self.pending.banner.remove(&pos);
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        self.sculk_place_entity(state);
         let Some(saved) = self.saved_block_entity(key) else {
             return;
         };
@@ -420,6 +436,298 @@ mod tests {
         assert_eq!(
             clone_item("minecraft:cake", "minecraft:cake"),
             "minecraft:cake"
+        );
+    }
+}
+
+#[cfg(test)]
+mod plain_name_overlay_tests {
+    use super::*;
+    use crate::game::native_machines::tests::server_game;
+    use horizon_core::position::BlockPos;
+
+    /// BaseContainerBlockEntity's removed external name must not be restored
+    /// from the original saved source by the chunk writer.
+    #[test]
+    #[ignore = "requires real prepared resources and scratch homes/cwd; must execute"]
+    fn removed_actual_plain_name_stays_absent_in_saved_and_reloaded_model() {
+        let mut game = server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.block_ticks
+            .add_empty_chunk(BlockPos::new(0, 0, 0).chunk())
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        let clock = game.world.game_time;
+        let mut failures = Vec::new();
+        for (x, kind, lock) in [(2, "chest", ""), (5, "barrel", ",lock:{items:diamond}")] {
+            assert!(game.run_command(&format!("setblock {x} 200 4 {kind}{{CustomName:Original,Items:[{{Slot:0b,id:diamond,count:3}}]{lock}}}")));
+            let pos = (x, 200, 4);
+            assert!(game.world.loaded(x, 4));
+            assert!(game.world.block_names.contains_key(&pos));
+            assert_eq!(
+                game.block_entity_nbt([x, 200, 4])
+                    .unwrap()
+                    .get("CustomName"),
+                Some(&Tag::String("Original".into()))
+            );
+            let Some(BlockEntity::Chest(slots)) = game.world.block_entities.get(&pos) else {
+                panic!("actual container")
+            };
+            assert_eq!(&*slots[0].as_ref().unwrap().item, "minecraft:diamond");
+            assert_eq!(slots[0].as_ref().unwrap().count, 3);
+            if x == 5 {
+                assert!(game.world.block_lock(pos).is_some());
+                let chunk = game.world.chunks.get(&(0, 0)).unwrap();
+                let source = &chunk
+                    .saved
+                    .as_ref()
+                    .unwrap()
+                    .block_entity_sources
+                    .iter()
+                    .find(|(p, _)| *p == pos)
+                    .unwrap()
+                    .1;
+                assert_eq!(
+                    source.get("CustomName"),
+                    Some(&Tag::String("Original".into()))
+                );
+            }
+            assert!(game.run_command(&format!("data remove block {x} 200 4 CustomName")));
+            assert!(!game.world.block_names.contains_key(&pos));
+            assert!(
+                game.block_entity_nbt([x, 200, 4])
+                    .unwrap()
+                    .get("CustomName")
+                    .is_none()
+            );
+            let names = game.world.block_names.clone();
+            let resident = game.world.chunks.get(&(0, 0)).unwrap();
+            if x == 5 {
+                let source = &resident
+                    .saved
+                    .as_ref()
+                    .unwrap()
+                    .block_entity_sources
+                    .iter()
+                    .find(|(p, _)| *p == pos)
+                    .unwrap()
+                    .1;
+                assert_eq!(
+                    source.get("CustomName"),
+                    Some(&Tag::String("Original".into())),
+                    "real retained source witness"
+                );
+                assert!(source.get("lock").is_some());
+            }
+            let snapshot = game.with_entities([resident]).remove(0);
+            let encoded = save::encode(&snapshot, game.pack.assets.registry, game.res.biomes());
+            let Tag::List(entries) = encoded.tag.get("block_entities").unwrap() else {
+                panic!("actual saved entries")
+            };
+            let saved = entries
+                .iter()
+                .find(|e| save::number(e.get("x")) == Some(i64::from(x)))
+                .unwrap();
+            let Tag::List(items) = saved.get("Items").unwrap() else {
+                panic!("actual saved contents")
+            };
+            assert_eq!(save::number(items[0].get("count")), Some(3));
+            if x == 5 {
+                assert!(saved.get("lock").is_some());
+            }
+            let reloaded =
+                save::decode(&encoded, game.pack.assets.registry, game.res.biomes()).unwrap();
+            if saved.get("CustomName").is_some()
+                || reloaded.block_names.iter().any(|(p, _)| *p == pos)
+            {
+                failures.push((pos, saved.clone()));
+            }
+            assert_eq!(
+                game.world.block_names, names,
+                "save is read-only for the name model"
+            );
+        }
+        assert_eq!(game.world.game_time, clock);
+        assert!(
+            failures.is_empty(),
+            "removed actual plain name reappeared from source: {failures:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod styled_name_model_tests {
+    use super::*;
+    use crate::game::native_machines::tests::server_game;
+    use horizon_core::position::BlockPos;
+
+    fn parse(input: &str) -> Tag {
+        let (tag, used) = horizon_world::nbt::parse_snbt(input).unwrap();
+        assert_eq!(used, input.len());
+        tag
+    }
+    fn chunk_saved(game: &Game<'_>, pos: (i32, i32, i32)) -> Tag {
+        let resident = game.world.chunks.get(&(0, 0)).unwrap();
+        let snapshot = game.with_entities([resident]).remove(0);
+        let encoded = save::encode(&snapshot, game.pack.assets.registry, game.res.biomes());
+        let Tag::List(entities) = encoded.tag.get("block_entities").unwrap() else {
+            panic!("actual chunk entities")
+        };
+        let saved = entities
+            .iter()
+            .find(|tag| {
+                save::number(tag.get("x")) == Some(i64::from(pos.0))
+                    && save::number(tag.get("y")) == Some(i64::from(pos.1))
+                    && save::number(tag.get("z")) == Some(i64::from(pos.2))
+            })
+            .expect("actual saved block entity")
+            .clone();
+        let decoded = save::decode(&encoded, game.pack.assets.registry, game.res.biomes()).unwrap();
+        assert!(decoded.block_entities.iter().any(|(at, _)| *at == pos));
+        saved
+    }
+    fn views(game: &Game<'_>, pos: (i32, i32, i32), want: Option<&Tag>, missing: &mut Vec<String>) {
+        assert!(game.world.loaded(pos.0, pos.2));
+        let Some(BlockEntity::Chest(slots)) = game.world.block_entities.get(&pos) else {
+            panic!("actual modeled container")
+        };
+        assert_eq!(slots[0].as_ref().unwrap().count, 3);
+        assert_eq!(slots[26].as_ref().unwrap().count, 5);
+        assert_eq!(&*slots[0].as_ref().unwrap().item, "minecraft:diamond");
+        assert_eq!(&*slots[26].as_ref().unwrap().item, "minecraft:apple");
+        let no_raw = game.saved_block_entity(pos).unwrap();
+        let command = game.block_entity_nbt([pos.0, pos.1, pos.2]).unwrap();
+        let chunk = chunk_saved(game, pos);
+        for (route, saved) in [
+            ("modeled/pick", no_raw),
+            ("command", command),
+            ("chunk", chunk),
+        ] {
+            assert_eq!(save::number(saved.get("x")), Some(i64::from(pos.0)));
+            assert_eq!(save::number(saved.get("y")), Some(i64::from(pos.1)));
+            assert_eq!(save::number(saved.get("z")), Some(i64::from(pos.2)));
+            if saved.get("CustomName") != want {
+                missing.push(format!(
+                    "{route} {pos:?}: {:?} != {want:?}",
+                    saved.get("CustomName")
+                ));
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires real prepared resources and scratch homes/cwd; must execute"]
+    fn actual_container_names_load_place_mutate_and_save_without_raw() {
+        let mut game = server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.block_ticks
+            .add_empty_chunk(BlockPos::new(0, 0, 0).chunk())
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        assert!(game.world.loaded(4, 4));
+        let clock = game.world.game_time;
+        let contents = "Items:[{Slot:0b,id:\"minecraft:diamond\",count:3,components:{\"minecraft:custom_data\":{h210:1}}},{Slot:26b,id:\"minecraft:apple\",count:5}]";
+        let styled = "{text:\"Styled\",color:\"aqua\",bold:0b,extra:[{text:\"Box\",italic:1b}]}";
+        let translated = "{translate:\"container.chest\",color:\"red\",italic:0b}";
+        let changed = "{text:\"Changed\",color:\"gold\",italic:1b}";
+        let mut missing = Vec::new();
+        for (x, kind, name) in [
+            (2, "chest", Some("\"Plain\"")),
+            (5, "barrel", Some(styled)),
+            (8, "shulker_box", Some(translated)),
+            (11, "chest", None),
+        ] {
+            let extra = name.map_or(String::new(), |n| format!(",CustomName:{n}"));
+            assert!(game.run_command(&format!(
+                "setblock {x} 200 4 minecraft:{kind}{{{contents}{extra}}}"
+            )));
+            assert_eq!(
+                &*game.res.facts().get(game.world.block(x, 200, 4)).name,
+                format!("minecraft:{kind}")
+            );
+            let want = name.map(parse);
+            if x == 2 {
+                assert_eq!(
+                    game.block_entity_nbt([x, 200, 4])
+                        .unwrap()
+                        .get("CustomName"),
+                    want.as_ref(),
+                    "plain-name admission"
+                );
+            }
+            game.world.forget_block_entity_source((x, 200, 4));
+            assert!(
+                game.world
+                    .chunks
+                    .get(&(0, 0))
+                    .unwrap()
+                    .saved
+                    .as_ref()
+                    .is_none_or(|s| !s
+                        .block_entity_sources
+                        .iter()
+                        .any(|(p, _)| *p == (x, 200, 4)))
+            );
+            views(&game, (x, 200, 4), want.as_ref(), &mut missing);
+        }
+        // The real source snapshot stays Old while an actual data command changes
+        // only the live name. It must not be used as the saved answer.
+        assert!(game.run_command(&format!("setblock 5 200 8 barrel{{{contents},CustomName:\"Old\",lock:{{items:\"minecraft:diamond\"}}}}")));
+        let stale_pos = (5, 200, 8);
+        assert!(game.world.block_lock(stale_pos).is_some());
+        assert!(game.run_command(&format!(
+            "data merge block 5 200 8 {{CustomName:{changed}}}"
+        )));
+        let source = game
+            .world
+            .chunks
+            .get(&(0, 0))
+            .unwrap()
+            .saved
+            .as_ref()
+            .unwrap()
+            .block_entity_sources
+            .iter()
+            .find(|(p, _)| *p == stale_pos)
+            .unwrap();
+        assert_eq!(
+            source.1.get("CustomName"),
+            Some(&parse("\"Old\"")),
+            "actual stale source admission"
+        );
+        let want = parse(changed);
+        views(&game, stale_pos, Some(&want), &mut missing);
+        game.world.forget_block_entity_source(stale_pos);
+        views(&game, stale_pos, Some(&want), &mut missing);
+        if !game.run_command("data remove block 5 200 8 CustomName") {
+            missing.push("actual styled-name remove had no modeled source".into());
+        }
+        views(&game, stale_pos, None, &mut missing);
+        // The real Game placement helper consumes the source stack components;
+        // connected-owner consumption/ACK is independently covered at runtime.
+        assert!(game.run_command(&format!("setblock 8 200 11 chest{{{contents}}}")));
+        let source = parse(&format!(
+            "{{id:\"minecraft:chest\",count:1,components:{{\"minecraft:custom_name\":{styled},\"minecraft:container\":[{{slot:0,item:{{id:\"minecraft:diamond\",count:3,components:{{\"minecraft:custom_data\":{{h210:1}}}}}}}},{{slot:26,item:{{id:\"minecraft:apple\",count:5}}}}]}}}}"
+        ));
+        let stack = save::item_from_nbt(&source).expect("real item codec source");
+        assert_eq!(stack.count, 1);
+        assert_eq!(
+            stack.data().unwrap().custom_name.as_ref(),
+            Some(&parse(styled))
+        );
+        game.apply_placed_item([8, 200, 11], &stack, false);
+        views(&game, (8, 200, 11), Some(&parse(styled)), &mut missing);
+        assert_eq!(stack.count, 1, "placement-helper source is unchanged");
+        assert!(game.run_command("clone 8 200 4 8 200 4 11 200 8 replace"));
+        views(&game, (11, 200, 8), Some(&parse(translated)), &mut missing);
+        assert_eq!(game.world.game_time, clock);
+        assert!(
+            missing.is_empty(),
+            "actual styled-name model/save mismatches: {missing:?}"
         );
     }
 }

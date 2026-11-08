@@ -80,6 +80,13 @@ pub fn is_equine(s: Species) -> bool {
             | Species::TraderLlama
     )
 }
+/// `AbstractChestedHorse`: donkeys, mules and llamas.
+pub fn is_chested(s: Species) -> bool {
+    matches!(
+        s,
+        Species::Donkey | Species::Mule | Species::Llama | Species::TraderLlama
+    )
+}
 /// `Entity.canSprint`: false everywhere but the camel (`Camel.canSprint`). A
 /// rider's `LocalPlayer.isSprintingPossible` asks its vehicle.
 pub fn can_sprint(s: Species) -> bool {
@@ -92,6 +99,19 @@ pub fn max_temper(s: Species) -> i32 {
     } else {
         100
     }
+}
+/// `AbstractHorse.getTemper`: the signed saved counter.
+pub fn temper(m: &Mob) -> i32 {
+    m.extra.equine_temper
+}
+/// `AbstractHorse.modifyTemper`: Java int addition, then the gameplay clamp.
+/// Loading a saved counter does not call this method.
+pub fn modify_temper(m: &mut Mob, amount: i32) -> i32 {
+    let value = temper(m)
+        .wrapping_add(amount)
+        .clamp(0, max_temper(m.species()));
+    m.extra.equine_temper = value;
+    value
 }
 /// `canPerformRearing`: every `AbstractHorse` but llamas (and camels).
 fn can_rear(s: Species) -> bool {
@@ -238,6 +258,12 @@ pub fn finalize(m: &mut Mob) {
     if let Some(speed) = speed {
         set_base(m, Attr::MovementSpeed, speed);
     }
+    if matches!(
+        species,
+        Species::Horse | Species::SkeletonHorse | Species::ZombieHorse
+    ) {
+        set_base(m, Attr::JumpStrength, m.extra.vector[0]);
+    }
     m.health = m.attrs.max_health;
 }
 /// `AbstractHorse.createOffspringAttribute`.
@@ -375,7 +401,7 @@ impl Goal for RunAroundLikeCrazy {
         if m.extra.tame || m.random.next_int_bound(50).unwrap_or(1) != 0 {
             return;
         }
-        let temper = i32::from(m.extra.variant3);
+        let temper = temper(m);
         let max = max_temper(m.species());
         if m.random.next_int_bound(max).unwrap_or(0) < temper {
             // tameWithName
@@ -383,7 +409,7 @@ impl Goal for RunAroundLikeCrazy {
             cx.events.push(MobEvent::Tamed { mob: m.id });
             return;
         }
-        m.extra.variant3 = (temper + 5).min(max) as u8;
+        modify_temper(m, 5);
         cx.events.push(MobEvent::Buck { mob: m.id });
         make_mad(m, cx.events);
     }
@@ -1080,6 +1106,134 @@ mod tests {
         k.species = species;
         k.max_health = 53.0;
         Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+
+    /// The existing goal reads the loaded counter; only its failed attempt
+    /// modifies it, with the gameplay clamp. The random continuation is kept.
+    #[test]
+    #[ignore = "needs prepared resources for the existing mob world fixture"]
+    fn temper_preservation_reaches_the_existing_taming_consumer() {
+        use horizon_core::random::LegacyRandom;
+        let ran = crate::mobs::world::with_test_world(&[], |w, types| {
+            let kinds = types
+                .types
+                .iter()
+                .map(|(n, k)| (n.clone(), Arc::new(k.clone())))
+                .collect();
+            for (name, max) in [("llama", 30), ("trader_llama", 30), ("horse", 100)] {
+                for value in [1000, -7] {
+                    let raw = horizon_world::nbt::Tag::compound([
+                        (
+                            "id",
+                            horizon_world::nbt::Tag::String(
+                                format!("minecraft:{name}").as_str().into(),
+                            ),
+                        ),
+                        ("Temper", horizon_world::nbt::Tag::Int(value)),
+                        ("Pos", crate::save::doubles(&[0.5, 200.0, 0.5])),
+                    ]);
+                    let mut m = crate::entity_nbt::mob_from_nbt(&raw, &kinds, 7, None).unwrap();
+                    m.rider = Some(Rider::default());
+                    let seed = (0..10_000)
+                        .find(|&seed| LegacyRandom::new(seed).next_int_bound(50).unwrap() == 0)
+                        .unwrap();
+                    m.random = LegacyRandom::new(seed);
+                    let mut expected = m.random.clone();
+                    assert_eq!(expected.next_int_bound(50).unwrap(), 0);
+                    expected.next_int_bound(max).unwrap();
+                    let (mut lr, mut events) = (LegacyRandom::new(1), Vec::new());
+                    RunAroundLikeCrazy.tick(
+                        &mut m,
+                        &mut Cx {
+                            w,
+                            lr: &mut lr,
+                            events: &mut events,
+                        },
+                    );
+                    assert_eq!(m.extra.tame, value == 1000);
+                    if value < 0 {
+                        expected.next_float();
+                        expected.next_float();
+                        assert!(
+                            events
+                                .iter()
+                                .any(|e| matches!(e, MobEvent::Buck { mob: 7 }))
+                        );
+                    } else {
+                        assert!(
+                            events
+                                .iter()
+                                .any(|e| matches!(e, MobEvent::Tamed { mob: 7 }))
+                        );
+                    }
+                    assert_eq!(
+                        m.random.next_long(),
+                        expected.next_long(),
+                        "{name}: RNG continuation"
+                    );
+                    let saved =
+                        crate::entity_nbt::mob_to_nbt(&m, [93, 0, 0, 1], None, None, |_| None);
+                    assert_eq!(
+                        saved.get("Temper"),
+                        Some(&horizon_world::nbt::Tag::Int(if value < 0 {
+                            0
+                        } else {
+                            1000
+                        })),
+                        "{name}: actual goal uses the same modeled temper"
+                    );
+                }
+            }
+        });
+        assert!(ran, "the consumer test must actually run");
+    }
+
+    #[test]
+    fn temper_preservation_modification_keeps_limits_and_java_overflow() {
+        for (species, name) in [
+            (Species::Llama, "minecraft:llama"),
+            (Species::TraderLlama, "minecraft:trader_llama"),
+            (Species::Horse, "minecraft:horse"),
+        ] {
+            let mut m = equine(7, species, name);
+            m.extra.variant3 = 217;
+            let max = max_temper(species);
+            for (value, amount, expected) in [
+                (-7, 5, 0),
+                (max - 1, 5, max),
+                (1000, 5, max),
+                (i32::MAX, 5, 0),
+                (i32::MIN, -1, max),
+            ] {
+                m.extra.equine_temper = value;
+                assert_eq!(temper(&m), value);
+                assert_eq!(modify_temper(&mut m, amount), expected);
+                assert_eq!(m.extra.equine_temper, expected);
+                assert_eq!(m.extra.variant3, 217, "unrelated byte is untouched");
+            }
+        }
+        // Camels inherit the same AbstractHorse counter: loaded unclamped,
+        // clamped only by a modification.
+        for (species, name) in [
+            (Species::Camel, "minecraft:camel"),
+            (Species::CamelHusk, "minecraft:camel_husk"),
+        ] {
+            let mut m = equine(7, species, name);
+            let raw = horizon_world::nbt::Tag::compound([
+                ("id", horizon_world::nbt::Tag::String(name.into())),
+                ("Pos", crate::save::doubles(&[0.5, 200.0, 0.5])),
+                ("Temper", horizon_world::nbt::Tag::Int(1000)),
+            ]);
+            let kinds = [(name.into(), m.kind.clone())].into();
+            let decoded = crate::entity_nbt::mob_from_nbt(&raw, &kinds, 7, None).unwrap();
+            assert_eq!(decoded.extra.equine_temper, 1000);
+            assert_eq!(temper(&decoded), 1000);
+            m.extra.variant3 = 97;
+            m.extra.equine_temper = 98;
+            assert_eq!(modify_temper(&mut m, 5), 100);
+            assert_eq!(m.extra.equine_temper, 100);
+            assert_eq!(m.extra.variant3, 97, "unrelated byte is untouched");
+        }
     }
 
     /// The rolled health is the attribute's base, which the server syncs: a

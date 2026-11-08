@@ -115,7 +115,8 @@ impl LakeFeature {
             return Ok(false);
         }
         let origin = tb::offset(origin, -8, -4, -8);
-        let mut grid = [false; 2048];
+        // Vanilla's 16x16x8 grid, one byte per column (bit y).
+        let mut grid = [0u8; 256];
         let spots = random.next_int_bound(4)? + 4;
         for _ in 0..spots {
             let xr = random.next_double() * 6.0 + 3.0;
@@ -124,45 +125,61 @@ impl LakeFeature {
             let xp = random.next_double() * (16.0 - xr - 2.0) + 1.0 + xr / 2.0;
             let yp = random.next_double() * (8.0 - yr - 4.0) + 2.0 + yr / 2.0;
             let zp = random.next_double() * (16.0 - zr - 2.0) + 1.0 + zr / 2.0;
+            // Each axis term once per coordinate: the same expressions and
+            // sum as vanilla's, without three divisions per cell.
+            let square = |v: i32, p: f64, r: f64| {
+                let d = (f64::from(v) - p) / (r / 2.0);
+                d * d
+            };
+            let xs: [f64; 16] = std::array::from_fn(|v| square(v as i32, xp, xr));
+            let ys: [f64; 8] = std::array::from_fn(|v| square(v as i32, yp, yr));
+            let zs: [f64; 16] = std::array::from_fn(|v| square(v as i32, zp, zr));
             for xx in 1..15 {
                 for zz in 1..15 {
                     for yy in 1..7 {
-                        let xd = (f64::from(xx) - xp) / (xr / 2.0);
-                        let yd = (f64::from(yy) - yp) / (yr / 2.0);
-                        let zd = (f64::from(zz) - zp) / (zr / 2.0);
-                        if xd * xd + yd * yd + zd * zd < 1.0 {
-                            grid[((xx * 16 + zz) * 8 + yy) as usize] = true;
+                        if xs[xx] + ys[yy] + zs[zz] < 1.0 {
+                            grid[xx * 16 + zz] |= 1 << yy;
                         }
                     }
                 }
             }
         }
-        let at = |x: i32, y: i32, z: i32| grid[((x * 16 + z) * 8 + y) as usize];
-        let edge = |x: i32, y: i32, z: i32| {
-            !at(x, y, z)
-                && ((x < 15 && at(x + 1, y, z))
-                    || (x > 0 && at(x - 1, y, z))
-                    || (z < 15 && at(x, y, z + 1))
-                    || (z > 0 && at(x, y, z - 1))
-                    || (y < 7 && at(x, y + 1, z))
-                    || (y > 0 && at(x, y - 1, z)))
-        };
+        // Vanilla's edge test (not in the lake, a lake neighbour within the
+        // grid) for a whole column at once.
+        let edges: [u8; 256] = std::array::from_fn(|i| {
+            let (x, z) = (i / 16, i % 16);
+            let c = grid[i];
+            let mut near = (c << 1) | (c >> 1);
+            if x < 15 {
+                near |= grid[i + 16];
+            }
+            if x > 0 {
+                near |= grid[i - 16];
+            }
+            if z < 15 {
+                near |= grid[i + 1];
+            }
+            if z > 0 {
+                near |= grid[i - 1];
+            }
+            !c & near
+        });
+        // The Ys of a column's set bits, ascending (vanilla's Y loop order).
+        let ys = |bits: u8| (0..8).filter(move |y| bits >> y & 1 != 0);
         let fluid = sample_state(&self.fluid, world, random, origin)?;
         for xx in 0..16 {
             for zz in 0..16 {
-                for yy in 0..8 {
-                    if edge(xx, yy, zz) {
-                        let p = tb::offset(origin, xx, yy, zz);
-                        let state = read(world, p)?;
-                        if yy >= 4 && self.blocks.has(state, tb::LIQUID) {
-                            return Ok(false);
-                        }
-                        if yy < 4 && !self.blocks.has(state, tb::SOLID) && state != fluid {
-                            return Ok(false);
-                        }
-                        if !self.can_place.test(world, p).map_err(query)? {
-                            return Ok(false);
-                        }
+                for yy in ys(edges[(xx * 16 + zz) as usize]) {
+                    let p = tb::offset(origin, xx, yy, zz);
+                    let state = read(world, p)?;
+                    if yy >= 4 && self.blocks.has(state, tb::LIQUID) {
+                        return Ok(false);
+                    }
+                    if yy < 4 && !self.blocks.has(state, tb::SOLID) && state != fluid {
+                        return Ok(false);
+                    }
+                    if !self.can_place.test(world, p).map_err(query)? {
+                        return Ok(false);
                     }
                 }
             }
@@ -170,20 +187,18 @@ impl LakeFeature {
         let cave_air = state(&self.blocks, "minecraft:cave_air")?;
         for xx in 0..16 {
             for zz in 0..16 {
-                for yy in 0..8 {
-                    if at(xx, yy, zz) {
-                        let p = tb::offset(origin, xx, yy, zz);
-                        if self
-                            .can_replace_air_or_fluid
-                            .test(world, p)
-                            .map_err(query)?
-                        {
-                            let air = yy >= 4;
-                            write(world, p, if air { cave_air } else { fluid }, 2)?;
-                            if air {
-                                world.schedule_block_tick(p, cave_air, 0).map_err(query)?;
-                                mark_above(world, &self.blocks, p)?;
-                            }
+                for yy in ys(grid[(xx * 16 + zz) as usize]) {
+                    let p = tb::offset(origin, xx, yy, zz);
+                    if self
+                        .can_replace_air_or_fluid
+                        .test(world, p)
+                        .map_err(query)?
+                    {
+                        let air = yy >= 4;
+                        write(world, p, if air { cave_air } else { fluid }, 2)?;
+                        if air {
+                            world.schedule_block_tick(p, cave_air, 0).map_err(query)?;
+                            mark_above(world, &self.blocks, p)?;
                         }
                     }
                 }
@@ -193,8 +208,8 @@ impl LakeFeature {
         if !self.blocks.is_air(barrier) {
             for xx in 0..16 {
                 for zz in 0..16 {
-                    for yy in 0..8 {
-                        if edge(xx, yy, zz) && (yy < 4 || random.next_int_bound(2)? != 0) {
+                    for yy in ys(edges[(xx * 16 + zz) as usize]) {
+                        if yy < 4 || random.next_int_bound(2)? != 0 {
                             let p = tb::offset(origin, xx, yy, zz);
                             let state = read(world, p)?;
                             if self.blocks.has(state, tb::SOLID)
@@ -235,6 +250,20 @@ const DUNGEON_MOBS: [&str; 4] = [
     "minecraft:zombie",
     "minecraft:spider",
 ];
+/// Initial data for a fresh dungeon spawner, preserving the generation
+/// sink's fields and insertion order. The entity was already selected.
+pub(crate) fn dungeon_spawner_nbt(entity: &str) -> crate::nbt::Compound {
+    use crate::nbt::Tag;
+    let mut mob = crate::nbt::Compound::new();
+    mob.insert("id".into(), Tag::String(entity.into()));
+    let mut data = crate::nbt::Compound::new();
+    data.insert("entity".into(), Tag::Compound(mob));
+    let mut nbt = crate::nbt::Compound::new();
+    nbt.insert("id".into(), Tag::String("minecraft:mob_spawner".into()));
+    nbt.insert("SpawnData".into(), Tag::Compound(data));
+    nbt.insert("SpawnPotentials".into(), Tag::List(Vec::new()));
+    nbt
+}
 #[derive(Clone, Debug)]
 pub struct MonsterRoomFeature {
     blocks: Arc<TreeBlocks>,
@@ -696,5 +725,38 @@ impl GeodeFeature {
             }
         }
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod dungeon_spawner_data_tests {
+    use super::*;
+    #[test]
+    fn extracted_generation_builder_preserves_exact_payload_and_order() {
+        use crate::nbt::{Limits, Tag, write_network};
+        for entity in [
+            "minecraft:skeleton",
+            "minecraft:zombie",
+            "minecraft:spider",
+            "example:bound_entity",
+        ] {
+            let expected = {
+                let mut mob = crate::nbt::Compound::new();
+                mob.insert("id".into(), Tag::String(entity.into()));
+                let mut data = crate::nbt::Compound::new();
+                data.insert("entity".into(), Tag::Compound(mob));
+                let mut nbt = crate::nbt::Compound::new();
+                nbt.insert("id".into(), Tag::String("minecraft:mob_spawner".into()));
+                nbt.insert("SpawnData".into(), Tag::Compound(data));
+                nbt.insert("SpawnPotentials".into(), Tag::List(Vec::new()));
+
+                nbt
+            };
+            let actual = dungeon_spawner_nbt(entity);
+            assert_eq!(
+                write_network(&Tag::Compound(actual), Limits::default()).unwrap(),
+                write_network(&Tag::Compound(expected), Limits::default()).unwrap()
+            );
+        }
     }
 }

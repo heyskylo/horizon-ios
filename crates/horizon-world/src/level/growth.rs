@@ -284,6 +284,35 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         *self.random() = random;
         placed
     }
+    /// `Feature.place(level, generator, level.random, pos)` for an inline
+    /// feature already decoded, with the same level random as a named one.
+    pub(crate) fn place_inline_feature(
+        &mut self,
+        feature: &crate::worldgen::feature_graph::FeatureDefinition,
+        pos: BlockPos,
+    ) -> bool {
+        let b = self.b;
+        let Some(features) = b.live_features() else {
+            return false;
+        };
+        let mut random = self.random().clone();
+        let placed = {
+            let mut world = LevelFeatureWorld {
+                sim: self,
+                features,
+                entities: Vec::new(),
+            };
+            features.place_definition(
+                feature,
+                "an inline feature",
+                &mut world,
+                &mut random,
+                [pos.x, pos.y, pos.z],
+            )
+        };
+        *self.random() = random;
+        placed
+    }
     /// `PlacedFeature.place(level, generator, level.random, pos)`.
     pub(crate) fn place_placed_feature(&mut self, name: &str, pos: BlockPos) -> bool {
         let b = self.b;

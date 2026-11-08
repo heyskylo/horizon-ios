@@ -5,12 +5,12 @@
 //! client's use_item gets the head's yaw and pitch, which 1.21 reads and 1.20.6 does not send.
 //!
 //! The pinned ids are renumbered down before this step, so the stacks are in the client's numbering; their components
-//! are measured with the stack codec under `ids` renumbered up, as [`translate::v1_20_6::slot`] does.
+//! are measured with the stack codec under `ids` renumbered up, as [`translate::client_layout_v1_20_6::slot`] does.
 use crate::{
     Result, State,
     adapter::{
         ids::{self, Ids, Way},
-        translate::v1_20_6::{LEVEL_PARTICLES_HEAD, slot},
+        translate::client_layout_v1_20_6::{LEVEL_PARTICLES_HEAD, slot},
     },
     buf::{Codec, Reader, Writer},
     ids as packet_ids,
@@ -203,7 +203,7 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(Reader::new(&down).varint().unwrap(), 7);
-        let up = translate::v1_20_6::clientbound(&session, State::Play, id, &down)
+        let up = translate::client_layout_v1_20_6::clientbound(&session, State::Play, id, &down)
             .unwrap()
             .unwrap();
         assert_eq!(up, original);
@@ -244,7 +244,7 @@ mod tests {
         assert_eq!(r.varint().unwrap(), 2);
         assert_eq!(r.varint().unwrap(), 3);
         assert_eq!(r.string(32767).unwrap(), "minecraft:entity.generic.explode");
-        let up = translate::v1_20_6::clientbound(&session, State::Play, id, &down)
+        let up = translate::client_layout_v1_20_6::clientbound(&session, State::Play, id, &down)
             .unwrap()
             .unwrap();
         assert_eq!(up, original);
@@ -276,7 +276,7 @@ mod tests {
         v.f64(0.0);
         v.f64(3.0);
         v.f64(4.0);
-        let up = translate::v1_20_6::clientbound(&session, State::Play, id, &v.data)
+        let up = translate::client_layout_v1_20_6::clientbound(&session, State::Play, id, &v.data)
             .unwrap()
             .unwrap();
         let mut r = Reader::new(&up);
@@ -321,9 +321,10 @@ mod tests {
             let down = clientbound(State::Play, id, &original, ids)
                 .unwrap()
                 .unwrap();
-            let up = translate::v1_20_6::clientbound(&session, State::Play, id, &down)
-                .unwrap()
-                .unwrap();
+            let up =
+                translate::client_layout_v1_20_6::clientbound(&session, State::Play, id, &down)
+                    .unwrap()
+                    .unwrap();
             assert_eq!(up, original);
         }
     }

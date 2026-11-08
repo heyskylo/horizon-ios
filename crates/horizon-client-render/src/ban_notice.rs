@@ -17,11 +17,15 @@ pub struct BanDetails {
     pub reason_message: Option<String>,
 }
 
-/// authlib's `UserProperties`, as far as the title screen reads it.
+/// authlib's `UserProperties`, as far as the title screen and the friends service read it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UserProperties {
     /// `UserFlag.SERVERS_ALLOWED` (`privileges.multiplayerServer.enabled`).
     pub servers_allowed: bool,
+    /// `UserFlag.FRIENDS_ENABLED` (`friendsPreferences.friends`).
+    pub friends_enabled: bool,
+    /// `UserFlag.ACCEPT_FRIEND_INVITES` (`friendsPreferences.acceptInvites`).
+    pub accept_friend_invites: bool,
     /// `bannedScopes.get("MULTIPLAYER")`.
     pub multiplayer_ban: Option<BanDetails>,
 }
@@ -30,6 +34,8 @@ impl Default for UserProperties {
     fn default() -> Self {
         Self {
             servers_allowed: true,
+            friends_enabled: false,
+            accept_friend_invites: false,
             multiplayer_ban: None,
         }
     }
@@ -209,6 +215,13 @@ pub fn parse_properties(body: &str) -> Option<UserProperties> {
         .pointer("/privileges/multiplayerServer/enabled")
         .and_then(|e| e.as_bool())
         .unwrap_or(false);
+    let toggle = |name: &str| {
+        v.pointer(&format!("/friendsPreferences/{name}"))
+            .and_then(|f| f.as_str())
+            .is_some_and(|f| f.eq_ignore_ascii_case("ENABLED"))
+    };
+    let friends_enabled = toggle("friends");
+    let accept_friend_invites = toggle("acceptInvites");
     let multiplayer_ban = v
         .pointer("/banStatus/bannedScopes/MULTIPLAYER")
         .filter(|b| b.is_object())
@@ -222,6 +235,8 @@ pub fn parse_properties(body: &str) -> Option<UserProperties> {
         });
     Some(UserProperties {
         servers_allowed,
+        friends_enabled,
+        accept_friend_invites,
         multiplayer_ban,
     })
 }
@@ -276,6 +291,24 @@ mod tests {
     }
 
     #[test]
+    fn friends_preferences_read_their_two_flags() {
+        let body = r#"{"privileges":{"multiplayerServer":{"enabled":true}},
+            "friendsPreferences":{"friends":"ENABLED","acceptInvites":"DISABLED"}}"#;
+        let p = parse_properties(body).unwrap();
+        assert!(p.friends_enabled);
+        assert!(!p.accept_friend_invites);
+        let other = parse_properties(
+            r#"{"friendsPreferences":{"friends":"DISABLED","acceptInvites":"ENABLED"}}"#,
+        )
+        .unwrap();
+        assert!(!other.friends_enabled);
+        assert!(other.accept_friend_invites);
+        // The offline fallback has neither flag, as `OFFLINE_PROPERTIES` does.
+        assert!(!UserProperties::default().friends_enabled);
+        assert!(!UserProperties::default().accept_friend_invites);
+    }
+
+    #[test]
     fn parses_profile_actions() {
         let a = parse_profile_actions(
             r#"{"id":"x","profileActions":[{"type":"FORCED_NAME_CHANGE"},{"type":"OTHER"}]}"#,
@@ -297,6 +330,7 @@ mod tests {
             properties: UserProperties {
                 servers_allowed: true,
                 multiplayer_ban: Some(ban.clone()),
+                ..Default::default()
             },
             actions: ProfileActions {
                 forced_name_change: true,
@@ -317,7 +351,7 @@ mod tests {
         let no_servers = AccountStatus {
             properties: UserProperties {
                 servers_allowed: false,
-                multiplayer_ban: None,
+                ..Default::default()
             },
             ..Default::default()
         };
