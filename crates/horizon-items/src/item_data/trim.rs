@@ -48,18 +48,22 @@ fn description(tag: &Tag) -> Option<Tag> {
     super::read_text(tag)?;
     Some(super::collapsed_text(tag.clone()))
 }
+/// `ProvidesTrimMaterial.CODEC`: a named trim material or its inline
+/// definition (`palette_id` and `description`).
+pub fn material_from_nbt(tag: &Tag) -> Option<Holder<Material>> {
+    if let Some(name) = name(tag) {
+        return Some(Holder::Named(name));
+    }
+    Some(Holder::Direct(Material {
+        palette_id: name(tag.get("palette_id")?)?,
+        description: description(tag.get("description")?)?,
+    }))
+}
 pub fn from_nbt(tag: &Tag) -> Option<Trim> {
-    let material = tag.get("material")?;
+    let material = material_from_nbt(tag.get("material")?)?;
     let pattern = tag.get("pattern")?;
     Some((
-        if let Some(name) = name(material) {
-            Holder::Named(name)
-        } else {
-            Holder::Direct(Material {
-                palette_id: name(material.get("palette_id")?)?,
-                description: description(material.get("description")?)?,
-            })
-        },
+        material,
         if let Some(name) = name(pattern) {
             Holder::Named(name)
         } else {

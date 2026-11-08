@@ -965,6 +965,23 @@ impl StationRecipes {
         })
     }
 }
+/// `ItemStack.get(DataComponents.PROVIDES_TRIM_MATERIAL)`: the stack's
+/// component (a name or an inline definition), else the item's default.
+fn trim_material(
+    e: &Enchantments,
+    stack: &ItemStack,
+) -> Option<crate::item_data::trim::Holder<crate::item_data::trim::Material>> {
+    let data = stack.data();
+    if data.is_some_and(|d| d.other("!minecraft:provides_trim_material").is_some()) {
+        return None;
+    }
+    if let Some(tag) = data.and_then(|d| d.other("minecraft:provides_trim_material")) {
+        return crate::item_data::trim::material_from_nbt(tag);
+    }
+    e.props(&stack.item)
+        .and_then(|p| p.trim_material.clone())
+        .map(|id| crate::item_data::trim::Holder::Named(id.into()))
+}
 /// `SmithingTrimRecipe.applyTrim`: none when the material provides no trim
 /// or the base already has this one.
 fn apply_trim(
@@ -973,8 +990,8 @@ fn apply_trim(
     material: &ItemStack,
     pattern: &str,
 ) -> Option<ItemStack> {
-    let material = e.props(&material.item)?.trim_material.clone()?;
-    let trim: crate::item_data::Trim = (material.as_str().into(), pattern.into());
+    let material = trim_material(e, material)?;
+    let trim: crate::item_data::Trim = (material, pattern.into());
     if base.data().and_then(|d| d.trim.as_ref()) == Some(&trim) {
         return None;
     }
@@ -990,6 +1007,7 @@ fn apply_trim(
 mod tests {
     use super::*;
     use crate::enchant::tests::{sample, sample_items};
+    use horizon_world::nbt::Tag;
 
     fn sword(ench: &[(&str, u32)]) -> ItemStack {
         let mut s = ItemStack::new("minecraft:diamond_sword", 1);
@@ -1014,6 +1032,57 @@ mod tests {
             Some(horizon_world::nbt::Tag::Int(max)),
         );
         s
+    }
+
+    /// Smithing: `SmithingTrimRecipe.applyTrim` reads the addition's
+    /// `PROVIDES_TRIM_MATERIAL`, a named material or an inline definition.
+    #[test]
+    fn smithing_trim_reads_the_additions_trim_material() {
+        let e = sample();
+        let recipes = StationRecipes {
+            smithing: vec![Smithing::Trim {
+                id: "minecraft:coast".into(),
+                template: Ingredient::of(vec![
+                    "minecraft:coast_armor_trim_smithing_template".into(),
+                ]),
+                base: Ingredient::of(vec!["minecraft:diamond_chestplate".into()]),
+                addition: Ingredient::of(vec!["minecraft:gold_ingot".into()]),
+                pattern: "minecraft:coast".into(),
+            }],
+            ..Default::default()
+        };
+        let template = ItemStack::new("minecraft:coast_armor_trim_smithing_template", 1);
+        let base = ItemStack::new("minecraft:diamond_chestplate", 1);
+        let mut gold = ItemStack::new("minecraft:gold_ingot", 1);
+        gold.data_mut().set_other(
+            "minecraft:provides_trim_material",
+            Some(Tag::String("minecraft:copper".into())),
+        );
+        let out = recipes
+            .smithing_result(&e, Some(&template), Some(&base), Some(&gold))
+            .expect("the gold ingot provides a trim material");
+        assert_eq!(
+            crate::item_data::trim::named(
+                out.data().and_then(|d| d.trim.as_ref()).expect("a trim")
+            ),
+            Some(("minecraft:copper", "minecraft:coast"))
+        );
+        // An inline definition is the addition's material too.
+        let mut inline = ItemStack::new("minecraft:gold_ingot", 1);
+        inline.data_mut().set_other(
+            "minecraft:provides_trim_material",
+            Some(Tag::compound([
+                ("palette_id", Tag::String("minecraft:gold".into())),
+                ("description", Tag::String("Gold".into())),
+            ])),
+        );
+        let out = recipes
+            .smithing_result(&e, Some(&template), Some(&base), Some(&inline))
+            .expect("the inline material applies");
+        assert!(matches!(
+            out.data().and_then(|d| d.trim.as_ref()).map(|t| &t.0),
+            Some(crate::item_data::trim::Holder::Direct(_))
+        ));
     }
 
     /// Grindstone: the larger MAX_DAMAGE is written and the damage follows it.
@@ -1365,6 +1434,28 @@ mod tests {
         assert_eq!(
             (&*out.item, out.enchantment_level("minecraft:sharpness")),
             ("minecraft:netherite_sword", 2)
+        );
+        // Smithing: the addition's PROVIDES_TRIM_MATERIAL is the trim's material.
+        let mut gold = ItemStack::new("minecraft:gold_ingot", 1);
+        gold.data_mut().set_other(
+            "minecraft:provides_trim_material",
+            Some(Tag::String("minecraft:copper".into())),
+        );
+        let out = data
+            .recipes
+            .smithing_result(
+                e,
+                Some(&ItemStack::new(
+                    "minecraft:coast_armor_trim_smithing_template",
+                    1,
+                )),
+                Some(&ItemStack::new("minecraft:diamond_chestplate", 1)),
+                Some(&gold),
+            )
+            .unwrap();
+        assert_eq!(
+            crate::item_data::trim::named(out.data().and_then(|d| d.trim.as_ref()).unwrap()),
+            Some(("minecraft:copper", "minecraft:coast"))
         );
         assert!(
             data.recipes
