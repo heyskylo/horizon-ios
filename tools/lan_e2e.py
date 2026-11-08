@@ -13633,6 +13633,70 @@ CHECKS += ['mob-thorns']
 CHECK_FNS['mob-thorns'] = check_mob_thorns
 
 
+def check_player_thorns(host, guest, out):
+    """The player's Thorns answers the mob that hits them (#9954): the victim's whole equipment runs, the hands too
+    (`EquipmentSlot.VALUES`; Thorns' slots are `any`), and `DamageEntity` hurts the mob by `thorns` damage the player
+    caused, so the kill is the player's and drops experience. A 1-health husk shut in a glass box with the host, who
+    holds a Thorns 255 chestplate (the 15% per level always rolls), hits them, then one hits the guest, who wears it:
+    each husk dies of it, and its experience reaches that player."""
+    hx, hy, hz = (int(v // 1) for v in pos_of(host))
+    host('command', command='difficulty normal')
+    thorny = 'minecraft:diamond_chestplate[minecraft:enchantments={"minecraft:thorns":255}]'
+    boxes = []
+    seen = {}
+    try:
+        for name, game, slot in (('host holds', host, 'weapon.mainhand'), ('guest wears', guest, 'armor.chest')):
+            x, z = hx + 8, hz + (-6 if game is host else 6)
+            box = f'{x - 2} {hy - 1} {z - 2} {x + 5} {hy + 3} {z + 2}'
+            boxes.append(box)
+            host('command', command=f'fill {box} minecraft:glass hollow')
+            game('command', command='gamemode survival')
+            game('command', command='xp set @s 0 levels')
+            game('command', command='xp set @s 0 points')
+            game('command', command=f'item replace entity @s {slot} with {thorny}')
+            game('command', command=f'tp @s {x + 0.5} {hy} {z + 0.5} -90 0')
+            game('command', command='effect give @s minecraft:instant_health 1 5 true')
+            game.wait(20)
+            host('command', command=f'summon minecraft:husk {x + 2.5} {hy} {z + 0.5} '
+                                    '{PersistenceRequired:1b,Tags:["thorny"],Health:1f,'
+                                    'attributes:[{id:"minecraft:max_health",base:1}]}')
+            husks = lambda: game.raw('entities', 10, 'minecraft:husk')['entities']
+            # The server's health, before the husk can reach the player (a client is not sent a mob's).
+            start = server_reply(host, 'data get entity @e[tag=thorny,limit=1] Health', 'entity data')
+            start = float(re.search(r'entity data: (-?[\d.]+)', start).group(1))
+            game.until(husks, bool, 40)
+            for _ in range(20):
+                if not husks():
+                    break
+                game.wait(10)
+            # The orbs fly to the player standing by.
+            game.wait(60)
+            points = server_reply(game, 'xp query @s points', 'experience points')
+            seen[name] = {'husk health': start, 'husk alive': bool(husks()),
+                          'points': int(re.search(r'has (\d+) experience', points).group(1))}
+            game.shot(out, 'player-thorns-' + name.replace(' ', '-'))
+            host('command', command='kill @e[tag=thorny]')
+            game('command', command=f'item replace entity @s {slot} with minecraft:air')
+    finally:
+        host('command', command='kill @e[tag=thorny]')
+        for box in boxes:
+            host('command', command=f'fill {box} minecraft:air')
+        for game in (host, guest):
+            back_to_game(game)
+            game('command', command='clear @s')
+            game('command', command='xp set @s 0 points')
+        face_each_other(host, guest)
+    for name, s in seen.items():
+        assert s['husk health'] <= 1.0, f'{name}: the husk did not start at 1 health: {seen}'
+        assert not s['husk alive'], f'{name}: the player\'s thorns never killed the husk: {seen}'
+        assert s['points'] > 0, f'{name}: the husk\'s thorns death gave the player no experience: {seen}'
+    return seen
+
+
+CHECKS += ['player-thorns']
+CHECK_FNS['player-thorns'] = check_player_thorns
+
+
 def check_command_block_chat(host, guest, out):
     """#9377: SayCommand broadcasts to real clients, independently of TrackOutput.
 
