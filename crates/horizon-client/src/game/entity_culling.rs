@@ -398,7 +398,7 @@ impl CullGrow {
         }
         match species {
             Species::Illusioner => grow.side += 3.0,
-            Species::Sniffer => grow.all += 0.6,
+            Species::Sniffer => grow.all += f64::from(0.6_f32), // inflate(0.6F)
             Species::HappyGhast => grow.down += height / 2.0,
             _ => {}
         }
