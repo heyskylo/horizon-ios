@@ -655,6 +655,7 @@ pub fn encode_block_entity(
     }
     let components = match e {
         BlockEntity::Banner(b) => b.components.clone(),
+        BlockEntity::CopperGolemStatue(components) => components.clone(),
         _ => Compound::new(),
     };
     let mut entries = vec![
@@ -798,7 +799,8 @@ pub fn encode_block_entity(
             }
         }
         // Encoded above.
-        BlockEntity::DaylightDetector | BlockEntity::Mod(_) => {}
+        BlockEntity::DaylightDetector | BlockEntity::CopperGolemStatue(_) | BlockEntity::Mod(_) => {
+        }
         // PotentSulfurBlockEntity.saveAdditional.
         BlockEntity::PotentSulfur(sulfur) => {
             entries.push(("countdown", Tag::Int(sulfur.waiting_countdown)))
@@ -1123,6 +1125,13 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
         | BlockEntity::Skull(_)
         | BlockEntity::DaylightDetector
         | BlockEntity::Mod(_) => {}
+        // `BlockEntity.loadAdditional`: the components the block entity keeps.
+        BlockEntity::CopperGolemStatue(components) => {
+            *components = match tag.get("components") {
+                Some(Tag::Compound(c)) => c.clone(),
+                _ => Compound::new(),
+            };
+        }
         BlockEntity::Spawner(s) => **s = crate::mobs::spawner::Spawner::load(tag),
         BlockEntity::TrialSpawner(s) => **s = crate::mobs::trial_spawner::TrialSpawner::load(tag),
         BlockEntity::Vault(v) => **v = crate::vault::Vault::load(tag),
@@ -1925,70 +1934,91 @@ pub fn load_light(tag: &Tag, chunk: &mut Chunk, sky_light: bool) {
         };
         layers[si] = (layer("SkyLight"), layer("BlockLight"));
     }
-    // Uniform saved layers need no expanded allocation. Both nibbles of
-    // each byte must match, not merely the bytes across the layer.
+    // A saved layer is already the resident `Light::Sky`/`Light::Block`
+    // layer: byte `i` holds block `2i` in its low nibble and `2i + 1` in its
+    // high one. Both nibbles of each byte must match for a layer to be
+    // uniform; only then is the whole section one value.
     let uniform_layer = |layer: &[u8]| {
         let first = layer[0];
         (first & 15 == first >> 4 && layer.iter().all(|&v| v == first)).then_some(first & 15)
     };
+    let copy_layer = |layer: &[u8]| {
+        let mut out = Box::new([0u8; 2048]);
+        out.copy_from_slice(layer);
+        out
+    };
     let mut above = [if sky_light { 15 } else { 0 }; 256];
     for (si, (sky, block)) in layers.into_iter().enumerate().rev() {
         let sky = sky.filter(|_| sky_light);
-        let sky_uniform = sky.map_or_else(
-            || above.iter().all(|&v| v == above[0]).then_some(above[0]),
-            uniform_layer,
-        );
-        let block_uniform = block.map_or(Some(0), uniform_layer);
+        let sky_uniform = sky.and_then(uniform_layer);
+        let sky_varies = match sky {
+            Some(_) => sky_uniform.is_none(),
+            None => above.iter().any(|&v| v != above[0]),
+        };
+        let block_uniform = block.and_then(uniform_layer);
+        let block_varies = block.is_some() && block_uniform.is_none();
+        let sky_first = sky.map_or(above[0], |layer| layer[0] & 15);
+        let block_first = block.map_or(0, |layer| layer[0] & 15);
         let section = Arc::make_mut(&mut chunk.sections[si]);
-        if let (Some(s), Some(b)) = (sky_uniform, block_uniform) {
-            section.light = Light::Uniform(s << 4 | b);
-            above.fill(s);
-        } else {
-            let mut data = Box::new([0u8; 4096]);
-            match (sky, block) {
-                (Some(sky), Some(block)) => {
-                    for ((pair, &s), &b) in
-                        data.as_chunks_mut::<2>().0.iter_mut().zip(sky).zip(block)
-                    {
-                        pair[0] = s << 4 | (b & 15);
-                        pair[1] = (s & 0xf0) | (b >> 4);
+        section.compact();
+        // The saved layer decides the resident variant directly: expand
+        // only when both nibbles vary (which keeps `Light::Full`).
+        section.light = match (sky_varies, block_varies) {
+            (false, false) => Light::Uniform(sky_first << 4 | block_first),
+            (false, true) => Light::Block(copy_layer(block.expect("block layer")), sky_first),
+            (true, false) => {
+                let layer = match sky {
+                    Some(layer) => copy_layer(layer),
+                    // No stored sky: the same 256-byte bottom row over and
+                    // over, which is exactly `Light::packed`'s layer here.
+                    None => {
+                        let mut layer = Box::new([0u8; 2048]);
+                        for row in layer.as_chunks_mut::<128>().0 {
+                            for (out, v) in
+                                row.iter_mut().zip(above.as_chunks::<2>().0.iter().cycle())
+                            {
+                                *out = v[0] | v[1] << 4;
+                            }
+                        }
+                        layer
                     }
-                }
-                (Some(sky), None) => {
-                    for (pair, &s) in data.as_chunks_mut::<2>().0.iter_mut().zip(sky) {
-                        pair[0] = s << 4;
-                        pair[1] = s & 0xf0;
-                    }
-                }
-                (None, Some(block)) => {
-                    for (i, (pair, &b)) in data
-                        .as_chunks_mut::<2>()
-                        .0
-                        .iter_mut()
-                        .zip(block)
-                        .enumerate()
-                    {
-                        pair[0] = above[(i * 2) & 255] << 4 | (b & 15);
-                        pair[1] = above[(i * 2 + 1) & 255] << 4 | (b >> 4);
-                    }
-                }
-                (None, None) => {
-                    for layer in data.as_chunks_mut::<256>().0 {
-                        for (v, &s) in layer.iter_mut().zip(&above) {
-                            *v = s << 4;
+                };
+                Light::Sky(layer, block_first)
+            }
+            (true, true) => {
+                let mut data = Box::new([0u8; 4096]);
+                match (sky, block) {
+                    (Some(sky), Some(block)) => {
+                        for ((pair, &s), &b) in
+                            data.as_chunks_mut::<2>().0.iter_mut().zip(sky).zip(block)
+                        {
+                            pair[0] = s << 4 | (b & 15);
+                            pair[1] = (s & 0xf0) | (b >> 4);
                         }
                     }
+                    (None, Some(block)) => {
+                        for (i, (pair, &b)) in data
+                            .as_chunks_mut::<2>()
+                            .0
+                            .iter_mut()
+                            .zip(block)
+                            .enumerate()
+                        {
+                            pair[0] = above[(i * 2) & 255] << 4 | (b & 15);
+                            pair[1] = above[(i * 2 + 1) & 255] << 4 | (b >> 4);
+                        }
+                    }
+                    _ => unreachable!("both light kinds vary"),
                 }
+                Light::Full(data)
             }
-            if let Some(sky) = sky {
-                for (pair, &s) in above.as_chunks_mut::<2>().0.iter_mut().zip(sky) {
-                    pair[0] = s & 15;
-                    pair[1] = s >> 4;
-                }
+        };
+        if let Some(sky) = sky {
+            for (pair, &s) in above.as_chunks_mut::<2>().0.iter_mut().zip(sky) {
+                pair[0] = s & 15;
+                pair[1] = s >> 4;
             }
-            section.light = Light::Full(data);
         }
-        section.compact();
     }
     chunk.lit = true;
     chunk.light_loaded = true;
@@ -5018,6 +5048,14 @@ impl SaveDir {
 impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
     type Worker = G::Worker;
     fn worker(&self) -> G::Worker {
+        let save = self.save.clone();
+        self.inner.set_saved_starts(Arc::new(move |pos| {
+            let root = save.raw_chunk(pos.x, pos.z)?;
+            match root.tag.get("structures")?.get("starts")? {
+                Tag::Compound(starts) => Some(starts.clone()),
+                _ => None,
+            }
+        }));
         self.inner.worker()
     }
     fn lod_sampler(self: Arc<Self>) -> Box<dyn crate::streaming::LodSampler> {
@@ -5410,6 +5448,82 @@ mod tests {
         save.save_attachments(&map).unwrap();
         assert_eq!(save.load_attachments().get(&key), Ok(7));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn loaded_chunk_uses_saved_jigsaw_from_its_referenced_start_chunk() {
+        let Some(root) = std::env::var_os("HORIZON_TEST_RESOURCES") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let assets = Arc::new(crate::assets::Assets::load(&root).expect("assets"));
+        let biomes = Arc::new(Biomes::load(&root).expect("biomes"));
+        let inner = Arc::new(
+            crate::vanillagen::VanillaTerrain::new(
+                &root.join("worldgen"),
+                assets.registry,
+                &biomes,
+                12345,
+            )
+            .unwrap(),
+        );
+        let mut original = inner
+            .structure_start("minecraft:ancient_city", 2, -3)
+            .unwrap();
+        Arc::get_mut(&mut original).unwrap().references = 4;
+        let starts = Tag::compound([
+            ("minecraft:ancient_city", original.save().unwrap()),
+            (
+                "minecraft:mineshaft",
+                Tag::compound([("id", string("INVALID"))]),
+            ),
+        ]);
+        let mut saved = encode(&Chunk::empty(2, -3), assets.registry, &biomes);
+        let Tag::Compound(root) = &mut saved.tag else {
+            panic!("chunk root")
+        };
+        let Some(Tag::Compound(structures)) = root.get_mut(&"structures".into()) else {
+            panic!("structures")
+        };
+        structures.insert("starts".into(), starts.clone());
+        let loaded = decode(&saved, assets.registry, &biomes).expect("chunk");
+        let Tag::Compound(expected) = &starts else {
+            unreachable!()
+        };
+        assert_eq!(loaded.saved_structure_starts(), Some(expected));
+        let again = encode(&loaded, assets.registry, &biomes);
+        assert_eq!(
+            again.tag.get("structures").and_then(|s| s.get("starts")),
+            Some(&starts)
+        );
+        let save = Arc::new(SaveDir::new(
+            std::env::temp_dir().join(format!("horizon-saved-starts-{}", std::process::id())),
+            LevelShape::OVERWORLD,
+        ));
+        // A pending record is authoritative even before any region file exists.
+        save.pending
+            .lock()
+            .unwrap()
+            .insert((Folder::Region, 2, -3), (0, Record::Tag(Arc::new(saved))));
+        let generator = Persistent {
+            inner: inner.clone(),
+            save,
+            registry: assets,
+            biomes,
+        };
+        let mut worker = generator.worker();
+        let mut referring = Chunk::empty(3, -3);
+        referring
+            .structure_refs
+            .push(("minecraft:ancient_city".into(), (2, -3)));
+        generator.prepare_loaded(&mut worker, &referring);
+        let starts = inner.starts_at(2, -3);
+        let restored = starts
+            .iter()
+            .find(|s| s.name == original.name)
+            .expect("referenced saved start");
+        assert_eq!(restored.save(), original.save());
+        assert_eq!(format!("{restored:?}"), format!("{original:?}"));
     }
 
     #[test]
@@ -6611,6 +6725,59 @@ mod tests {
             Some((_, crate::containers::BlockEntity::Mod(_)))
         ));
     }
+    /// `CopperGolemStatueBlockEntity.createStatue`: the golem's styled custom
+    /// name lives in the statue's components, through every weathering stage,
+    /// a save and its item.
+    #[test]
+    fn copper_golem_statue_keeps_the_golem_name() {
+        use crate::containers::BlockEntity;
+        let name = Tag::compound([
+            ("text", string("Bob")),
+            ("color", string("gold")),
+            ("bold", Tag::Byte(1)),
+        ]);
+        let components: Compound = [("minecraft:custom_name".into(), name.clone())].into();
+        for block in [
+            "minecraft:copper_golem_statue",
+            "minecraft:exposed_copper_golem_statue",
+            "minecraft:weathered_copper_golem_statue",
+            "minecraft:oxidized_copper_golem_statue",
+            "minecraft:waxed_oxidized_copper_golem_statue",
+        ] {
+            // Scraping and waxing swap the block, so every stage keeps the entity.
+            let entity = BlockEntity::for_block(block).expect(block);
+            assert!(entity.fits(block), "{block}");
+            let BlockEntity::CopperGolemStatue(_) = entity else {
+                panic!("{block}: not a statue");
+            };
+        }
+        let entity = BlockEntity::CopperGolemStatue(components.clone());
+        let tag = encode_block_entity((1, 2, 3), &entity, "minecraft:oxidized_copper_golem_statue");
+        assert_eq!(
+            tag.get("id"),
+            Some(&string("minecraft:copper_golem_statue"))
+        );
+        let (pos, back) = decode_block_entity(&tag).expect("statue");
+        assert_eq!(pos, (1, 2, 3));
+        let BlockEntity::CopperGolemStatue(back) = back else {
+            panic!("not a statue");
+        };
+        assert_eq!(back, components);
+        // The statue item carries the name (`getItem`: collectComponents).
+        let saved = crate::block_entity_nbt::canonical(&tag).expect("canonical statue");
+        let patch = crate::block_entity_item::pick(&saved);
+        assert_eq!(patch.get(&"minecraft:custom_name".into()), Some(&name));
+        // Placing that item gives the entity the name back.
+        let fresh = crate::block_entity_nbt::canonical(&encode_block_entity(
+            (1, 2, 3),
+            &BlockEntity::CopperGolemStatue(Compound::new()),
+            "minecraft:copper_golem_statue",
+        ))
+        .expect("canonical statue");
+        let placed = crate::block_entity_item::place(&fresh, &patch, false);
+        let (_, placed) = decode_block_entity(&placed).expect("placed statue");
+        assert!(matches!(placed, BlockEntity::CopperGolemStatue(c) if c == components));
+    }
     #[test]
     fn banner_block_entity_round_trips() {
         let banner = crate::containers::Banner {
@@ -6813,6 +6980,34 @@ mod tests {
         assert_eq!(nibbles(&light, false)[0], 0x23);
         assert_eq!(nibbles(&light, true)[0], 0x5F);
     }
+    /// The independent reference: parse the saved layers and let
+    /// `crate::light::light_from_layers` expand and repack them.
+    fn reference(tag: &Tag, chunk: &mut Chunk, sky_light: bool) {
+        if tag.get("isLightOn") != Some(&Tag::Byte(1)) {
+            return;
+        }
+        let Some(Tag::List(sections)) = tag.get("sections") else {
+            return;
+        };
+        let mut layers: Vec<(Option<&[u8]>, Option<&[u8]>)> = vec![(None, None); SECTIONS];
+        for section in sections {
+            let Some(y) = number(section.get("Y")) else {
+                continue;
+            };
+            let si = y as i32 - (MIN_Y >> 4);
+            if !(0..SECTIONS as i32).contains(&si) {
+                continue;
+            }
+            let layer = |name: &str| match section.get(name) {
+                Some(Tag::ByteArray(a)) if a.len() == 2048 => Some(&a[..]),
+                _ => None,
+            };
+            layers[si as usize] = (layer("SkyLight"), layer("BlockLight"));
+        }
+        let above = [if sky_light { 15 } else { 0 }; 256];
+        crate::light::light_from_layers(chunk, &layers, above, sky_light);
+    }
+
     #[test]
     fn stored_light_loads_with_vanilla_defaults() {
         let mut sky = vec![0u8; 2048];
@@ -6861,32 +7056,6 @@ mod tests {
     }
     #[test]
     fn saved_light_matches_reference_for_layers_and_metadata() {
-        fn reference(tag: &Tag, chunk: &mut Chunk, sky_light: bool) {
-            if tag.get("isLightOn") != Some(&Tag::Byte(1)) {
-                return;
-            }
-            let Some(Tag::List(sections)) = tag.get("sections") else {
-                return;
-            };
-            let mut layers: Vec<(Option<&[u8]>, Option<&[u8]>)> = vec![(None, None); SECTIONS];
-            for section in sections {
-                let Some(y) = number(section.get("Y")) else {
-                    continue;
-                };
-                let si = y as i32 - (MIN_Y >> 4);
-                if !(0..SECTIONS as i32).contains(&si) {
-                    continue;
-                }
-                let layer = |name: &str| match section.get(name) {
-                    Some(Tag::ByteArray(a)) if a.len() == 2048 => Some(&a[..]),
-                    _ => None,
-                };
-                layers[si as usize] = (layer("SkyLight"), layer("BlockLight"));
-            }
-            let above = [if sky_light { 15 } else { 0 }; 256];
-            crate::light::light_from_layers(chunk, &layers, above, sky_light);
-        }
-
         let section = |y: Tag, sky: Option<Tag>, block: Option<Tag>| {
             let mut entries = vec![("Y", y)];
             if let Some(v) = sky {
@@ -7003,6 +7172,37 @@ mod tests {
             ),
             section(Tag::Byte(0), None, Some(Tag::ByteArray(varied))),
         ]));
+    }
+    /// A saved sky layer is the resident `Light::Sky` layer byte for byte,
+    /// so a section whose block light is uniformly zero can adopt it.
+    #[test]
+    fn a_varying_sky_layer_is_adopted_without_expansion() {
+        let saved: Vec<u8> = (0..2048).map(|i| (i as u8).wrapping_mul(29)).collect();
+        let tag = Tag::compound([
+            ("isLightOn", Tag::Byte(1)),
+            (
+                "sections",
+                Tag::List(vec![Tag::compound([
+                    ("Y", Tag::Byte(3)),
+                    ("SkyLight", Tag::ByteArray(saved.clone())),
+                ])]),
+            ),
+        ]);
+        let mut chunk = Chunk::empty(0, 0);
+        let mut expected = chunk.clone();
+        load_light(&tag, &mut chunk, true);
+        reference(&tag, &mut expected, true);
+        for i in 0..4096 {
+            assert_eq!(chunk.sections[7].light(i), expected.sections[7].light(i));
+        }
+        let Light::Sky(layer, 0) = &chunk.sections[7].light else {
+            panic!("varying sky with no block light is Light::Sky(_, 0)");
+        };
+        assert_eq!(
+            &layer[..],
+            &saved[..],
+            "resident layer equals the saved one"
+        );
     }
     /// #2571: the difficulty is a property of the world: the level data
     /// holds it, so a world that was set to hard is hard when it is opened
@@ -7709,7 +7909,7 @@ mod tests {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, text).unwrap();
         };
-        write("p", "pack.mcmeta", "{}");
+        write("p", "pack.mcmeta", r#"{"pack":{"description":"fixture"}}"#);
         // A pack's dimension of another id is not vanilla-like.
         write(
             "p",
