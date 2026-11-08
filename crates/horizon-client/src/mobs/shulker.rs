@@ -271,9 +271,10 @@ fn pack_diff(pos: [i32; 3], to: [i32; 3]) -> i32 {
         | ((to[1] - pos[1] + 8) & 0xFF) << 8
         | (to[2] - pos[2] + 8) & 0xFF
 }
-/// `Shulker.teleportSomewhere`: up to five tries within 8 blocks.
+/// `Shulker.teleportSomewhere`: up to five tries within 8 blocks; never
+/// without AI.
 fn teleport(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
-    if !m.alive() {
+    if m.no_ai || !m.alive() {
         return false;
     }
     let old = block_pos(m);
@@ -290,6 +291,9 @@ fn teleport(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
         );
         if t[1] <= w.world.bottom_y()
             || !w.facts.is_air(w.world.block(t[0], t[1], t[2]))
+            // WorldBorder.isWithinBounds(BlockPos): the block's corner, no margin.
+            || w.border
+                .is_some_and(|b| !b.is_within_bounds(f64::from(t[0]), f64::from(t[2]), 0.0))
             || !no_collision(m, w, unit.deflate(Vec3::new(1.0e-6, 1.0e-6, 1.0e-6)))
         {
             continue;
@@ -305,6 +309,8 @@ fn teleport(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
         ) {
             continue;
         }
+        // unRide: off its vehicle (it lands at the target below).
+        super::riders::stop_riding(m, None);
         m.extra.variant3 = face;
         events.push(MobEvent::Sound(
             "entity.shulker.teleport",
@@ -528,34 +534,57 @@ pub fn accepts(m: &Mob, source: &Damage) -> bool {
 /// chance to teleport away.
 pub fn after_hurt(m: &mut Mob) {
     if m.health < m.attrs.max_health * 0.5 && m.random.next_int_bound(4).unwrap_or(1) == 0 {
-        // The teleport needs the world: ask for it on the next tick.
+        // The teleport needs the world, which `Mob::damage` has not: whoever
+        // dealt the hurt runs it right after (`hurt_teleport`,
+        // `run_pending_teleports`).
         m.extra.flag = true;
     }
 }
 /// `Shulker.hurtServer` after a shulker bullet's damage: unless the
 /// low-health teleport was drawn instead (`else if`), `hitByShulkerBullet`
-/// runs on the next tick. Whether the shell is open is read here, at hurt
-/// time, so a goal opening it before that tick cannot change the outcome.
+/// runs right after the hurt (`run_pending_teleports`). Whether the shell is
+/// open is read here, at hurt time.
 pub fn hit_by_bullet(m: &mut Mob) {
     if m.species() == Species::Shulker && !m.extra.flag && m.extra.counter != 0 {
         m.extra.flag2 = true;
     }
 }
-/// The deferred teleport of `after_hurt` and `hitByShulkerBullet`.
+/// Whether a hurt left `Shulker.hurtServer` a teleport to make.
+pub fn teleport_pending(m: &Mob) -> bool {
+    m.species() == Species::Shulker && (m.extra.flag || m.extra.flag2)
+}
+/// `Shulker.hurtServer`'s low-health `teleportSomewhere()`, inside the hurt
+/// `after_hurt` drew it for (a hurt within the shulker's own tick).
+pub fn hurt_teleport(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
+    if m.species() == Species::Shulker && m.extra.flag {
+        m.extra.flag = false;
+        teleport(m, w, events);
+    }
+}
+/// The teleport `Shulker.hurtServer` makes inside a hurt: the low-health
+/// `teleportSomewhere()` (`after_hurt`), else a bullet's
+/// `hitByShulkerBullet()` (`hit_by_bullet`).
+pub fn run_pending_teleports(
+    m: &mut Mob,
+    w: &MobWorld,
+    level_random: &mut LegacyRandom,
+    events: &mut Vec<MobEvent>,
+) {
+    hurt_teleport(m, w, events);
+    if m.extra.flag2 {
+        m.extra.flag2 = false;
+        hit_by_shulker_bullet(m, w, level_random, events);
+    }
+}
+/// What a hurt left that no one ran right after it (a hurt the game layer
+/// does not settle at once).
 pub fn ai_step(
     m: &mut Mob,
     w: &MobWorld,
     level_random: &mut LegacyRandom,
     events: &mut Vec<MobEvent>,
 ) {
-    if m.extra.flag {
-        m.extra.flag = false;
-        teleport(m, w, events);
-    }
-    if m.extra.flag2 {
-        m.extra.flag2 = false;
-        hit_by_shulker_bullet(m, w, level_random, events);
-    }
+    run_pending_teleports(m, w, level_random, events);
 }
 /// `Shulker.hitByShulkerBullet` (only queued by an open shulker): it
 /// teleports, and leaves a new one of its colour behind unless shulkers

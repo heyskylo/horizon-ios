@@ -12,19 +12,24 @@ use horizon_world::{
 
 impl Game<'_> {
     /// `Enderman.hurtServer` teleports inside the hurt (`teleport()`,
-    /// `repeatedlyTryToTeleport()`). `Mob::damage` has no world, so it leaves
-    /// the tries in `counter2`; a hurt the game layer deals runs them here,
-    /// right after it, not on the enderman's next AI step.
+    /// `repeatedlyTryToTeleport()`), and so does `Shulker.hurtServer`
+    /// (`teleportSomewhere()`, `hitByShulkerBullet()`). `Mob::damage` has no
+    /// world, so it leaves them pending (an enderman's tries in `counter2`, a
+    /// shulker's flags); a hurt the game layer deals runs them here, right
+    /// after it, not on the mob's next AI step.
     pub(super) fn settle_hurt_teleports(&mut self) -> Result<()> {
         let pending: Vec<u32> = self
             .mobs
             .iter()
-            .filter(|m| m.species() == Species::Enderman && m.extra.counter2 > 0)
+            .filter(|m| {
+                (m.species() == Species::Enderman && m.extra.counter2 > 0)
+                    || horizon_client::mobs::shulker::teleport_pending(m)
+            })
             .map(|m| m.id)
             .collect();
         for id in pending {
             // What `LivingEntity.hurtServer` raised comes first, where the
-            // enderman was hurt and from its random's next draws: the hurt
+            // mob was hurt and from its random's next draws: the hurt
             // sound, `InfestedMobEffect.onMobHurt`'s silverfish.
             let Some(i) = self.mobs.iter().position(|m| m.id == id) else {
                 continue;
@@ -33,21 +38,46 @@ impl Game<'_> {
             if !hurt.is_empty() {
                 self.handle_mob_events(hurt)?;
             }
-            // The world is read while the enderman moves: take it out, then
-            // put it back where it was (the mob order stays).
             let Some(i) = self.mobs.iter().position(|m| m.id == id) else {
                 continue;
             };
+            let shulker = self.mobs[i].species() == Species::Shulker;
+            // A shulker's teleport reads the mobs around it (`noCollision`,
+            // the crowding count of `hitByShulkerBullet`), itself included as
+            // in its own tick; an enderman's reads only blocks.
+            let uuid = self.level.player_uuid;
+            let others: Vec<_> = if shulker {
+                self.mobs
+                    .iter()
+                    .map(|m| super::creatures::seen(m, uuid))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            // The world is read while the mob moves: take it out, then put it
+            // back where it was (the mob order stays).
             let mut mob = self.mobs.swap_remove(i);
             let mut events = Vec::new();
+            // `hitByShulkerBullet` draws its crowding check from the level's random.
+            let mut level_random = self.world.random.clone();
             {
-                let world = self.mob_world_base(&[]);
-                horizon_client::mobs::enderman::run_pending_teleports(
-                    &mut mob,
-                    &world,
-                    &mut events,
-                );
+                let world = self.mob_world_base(&others);
+                if shulker {
+                    horizon_client::mobs::shulker::run_pending_teleports(
+                        &mut mob,
+                        &world,
+                        &mut level_random,
+                        &mut events,
+                    );
+                } else {
+                    horizon_client::mobs::enderman::run_pending_teleports(
+                        &mut mob,
+                        &world,
+                        &mut events,
+                    );
+                }
             }
+            self.world.random = level_random;
             self.mobs.push(mob);
             let last = self.mobs.len() - 1;
             self.mobs.swap(i, last);
