@@ -714,6 +714,7 @@ impl Game<'_> {
                 self.wait_for_next_server_tick(&mut next, true);
                 continue;
             }
+            self.server_tick_deadline = Some(next + self.clock.tick_duration());
             let paused = flags.paused.load(Ordering::Relaxed);
             if paused && !was_paused {
                 // IntegratedServer.tickServer: the tick the game pauses saves

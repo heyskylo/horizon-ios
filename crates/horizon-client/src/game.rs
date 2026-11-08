@@ -3287,6 +3287,8 @@ struct Game<'a> {
     saved_for_exit: bool,
     native_client_stopped: bool,
     pending_save: Option<saving::ClosingSave>,
+    /// Scheduled end of the server tick (`MinecraftServer.haveTime`).
+    server_tick_deadline: Option<Instant>,
     /// The last world frame reached the swap chain. A window the compositor
     /// stops showing gets no frames, and the event loop must not spin on it.
     frame_drawn: bool,
@@ -5552,6 +5554,7 @@ impl Game<'_> {
         laps = horizon_client::spans::laps();
         let sent = self.lan_broadcast_changes();
         laps.lap("tb_broadcast");
+        self.save_chunks_eagerly();
         self.with_level(|b, level, ticks| {
             b.run_block_events(level, ticks);
         });
@@ -7884,6 +7887,10 @@ impl Game<'_> {
             // (`ensureActiveIsNotIterated`). Primed TNT and falling blocks
             // keep their own packet cutoff (`ordered.announced`, #10063).
             self.ticked_entities_through = self.next_entity;
+        }
+        // ChunkMap still ticks while /tick freeze holds block/entity ticks.
+        if !running {
+            self.save_chunks_eagerly();
         }
         self.begin_ordered_ticks();
         if running {
@@ -13997,17 +14004,66 @@ impl Game<'_> {
         self.save
             .save_chunk_tickets(&self.streaming.forced, self.tickets.portal_tickets())?;
         self.streaming.save(&mut self.world, wait);
+        let now = Instant::now();
         let keys: Vec<_> = self.world.modified.drain().collect();
         let chunks = self.with_entities(keys.iter().filter_map(|k| self.world.chunks.get(k)));
         self.save
             .save_later(&chunks, self.pack.assets.registry, world_biomes!(self))?;
         // Prepare entities while the chunk writer runs, then use one barrier.
+        if !wait {
+            self.world.modified.autosaved(&keys, now);
+        }
         self.save_entities(false)?;
         self.save_raids();
         if wait {
             self.save.flush()?;
         }
         Ok(())
+    }
+    /// `ChunkMap.saveChunksEagerly`: snapshot only while the tick and writer
+    /// have room. NBT encoding, compression and durable writes stay on workers.
+    fn save_chunks_eagerly(&mut self) {
+        // No world open (`world_root` is set by `finish_open_world`): the save
+        // is `Game::new`'s placeholder under the working directory.
+        if self.remote.is_some()
+            || self.world_root.as_os_str().is_empty()
+            || self.agent.hold_server
+            || self.clock.sprinting()
+            || self
+                .server_lists
+                .as_ref()
+                .is_some_and(|lists| !lists.lock().unwrap().autosave)
+        {
+            return;
+        }
+        let deadline = self
+            .server_tick_deadline
+            .unwrap_or_else(|| Instant::now() + self.clock.tick_duration());
+        let mut modified = std::mem::take(&mut self.world.modified);
+        modified.save_eagerly(
+            Instant::now(),
+            || Instant::now() < deadline && self.save.active_chunk_writes() < 128,
+            |key| self.world.chunks.contains_key(&key),
+            |key| {
+                // `saveChunkIfNeeded` saves only a LevelChunk, so a lit one; a
+                // column still waiting for its light keeps its queue entry.
+                let Some(chunk) = self.world.chunks.get(&key).filter(|c| c.lit) else {
+                    return false;
+                };
+                let chunks = self.with_entities([chunk]);
+                match self
+                    .save
+                    .save_later(&chunks, self.pack.assets.registry, world_biomes!(self))
+                {
+                    Ok(_) => true,
+                    Err(e) => {
+                        log::warn!("Horizon: failed to save changed chunks: {e}");
+                        false
+                    }
+                }
+            },
+        );
+        self.world.modified = modified;
     }
     /// `GameRenderer.tryTakeScreenshotIfNeeded`: while a local world without a
     /// saved icon is on the screen, grab the rendered frame once a second until
@@ -15151,6 +15207,9 @@ impl Game<'_> {
                     }
                 }
             });
+        }
+        for chunk in &unloaded {
+            self.world.modified.unloaded(&(chunk.x, chunk.z));
         }
         let dirty: Vec<_> = unloaded
             .iter()
@@ -17563,6 +17622,7 @@ impl<'a> Game<'a> {
             saved_for_exit: false,
             native_client_stopped: false,
             pending_save: None,
+            server_tick_deadline: None,
             frame_drawn: true,
             world_icon: None,
             forced_hit: None,
@@ -18823,6 +18883,103 @@ mod tests {
             ModifiersState::empty(),
             &HashSet::new()
         ));
+    }
+
+    #[test]
+    fn eager_saves_keep_dirty_order_cooldowns_and_writer_budget() {
+        use horizon_client::world::ModifiedChunks;
+        use std::cell::Cell;
+        let now = Instant::now();
+        let mut dirty = ModifiedChunks::default();
+        dirty.extend((0..27).map(|x| (x, 0)));
+        dirty.autosaved(&[(0, 0), (2, 0)], now);
+        dirty.remove(&(1, 0)); // already clean
+        let writes = Cell::new(127);
+        let mut chosen = Vec::new();
+        dirty.save_eagerly(
+            now,
+            || writes.get() < 128,
+            |k| k != (3, 0),
+            |k| {
+                chosen.push(k);
+                writes.set(writes.get() + 1);
+                true
+            },
+        );
+        assert_eq!(chosen, [(4, 0)]); // cooldown, clean, absent, then budget exhausted
+        chosen.clear();
+        dirty.save_eagerly(
+            now,
+            || true,
+            |_| true,
+            |k| {
+                chosen.push(k);
+                true
+            },
+        );
+        assert_eq!(chosen, (5..25).map(|x| (x, 0)).collect::<Vec<_>>()); // exactly 20
+        dirty.insert((4, 0)); // a later edit goes AFTER the still-cooled entries
+        chosen.clear();
+        dirty.save_eagerly(
+            now + Duration::from_secs(10),
+            || true,
+            |_| true,
+            |k| {
+                chosen.push(k);
+                true
+            },
+        );
+        assert_eq!(chosen, [(0, 0), (2, 0), (25, 0), (26, 0), (4, 0)]);
+        dirty.insert((4, 0));
+        dirty.save_eagerly(
+            now + Duration::from_secs(11),
+            || false,
+            |_| true,
+            |_| panic!("no time"),
+        );
+        assert!(dirty.contains(&(4, 0)));
+        dirty.unloaded(&(4, 0)); // unloading removes the cooldown even if reloaded immediately
+        chosen.clear();
+        dirty.save_eagerly(
+            now + Duration::from_secs(11),
+            || true,
+            |_| true,
+            |k| {
+                chosen.push(k);
+                true
+            },
+        );
+        assert_eq!(chosen, [(4, 0)]);
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn eager_saves_wait_for_an_open_world_and_for_light() {
+        let mut game = super::native_machines::tests::server_game();
+        let dir = std::env::temp_dir().join(format!("horizon-eager-game-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        game.save = Arc::new(horizon_client::save::SaveDir::new(
+            dir.clone(),
+            horizon_client::save::LevelShape::OVERWORLD,
+        ));
+        Arc::make_mut(game.world.chunks.get_mut(&(0, 0)).unwrap()).lit = true;
+        game.world
+            .chunks
+            .insert((1, 0), Arc::new(horizon_client::chunk::Chunk::empty(1, 0)));
+        game.world.modified.extend([(0, 0), (1, 0)]);
+        game.save_chunks_eagerly(); // no world open: nothing to save into
+        assert!(game.world.modified.contains(&(0, 0)));
+        game.world_root = dir.clone();
+        game.save_chunks_eagerly();
+        assert!(!game.world.modified.contains(&(0, 0)));
+        assert!(game.world.modified.contains(&(1, 0))); // not lit yet
+        Arc::make_mut(game.world.chunks.get_mut(&(1, 0)).unwrap()).lit = true;
+        game.save_chunks_eagerly(); // still queued: no new dirty transition needed
+        assert!(!game.world.modified.contains(&(1, 0)));
+        game.save.flush().unwrap();
+        assert!(dir.join("region/r.0.0.mca").exists());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
