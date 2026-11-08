@@ -54,7 +54,7 @@ SectionUpdateTracker.SectionDirtyState.setSectionNode	skip:java		section node ex
 StringSplitter.stringWidth	port	crates/horizon-client-render/src/font.rs::Font::width	
 StringSplitter.plainIndexAtWidth	port	crates/horizon-client-render/src/screen_draw.rs::Measure::plain	gap: minor: measures without the style (bold widths)
 StringSplitter.plainTailByWidth	port	crates/horizon-client-render/src/screen_draw.rs::Measure::plain	gap: minor: same as plainIndexAtWidth, from the end
-StringSplitter.findLineBreak	port	crates/horizon-client-render/src/block_entity_render.rs::first_line	gap: minor: returns the line text rather than the break index; plain text only
+StringSplitter.findLineBreak	port	crates/horizon-client-render/src/block_entity_render.rs::first_line	returns the first styled line rather than the break index; production signs use Font.split_formatted
 StringSplitter.getWordPosition	port	crates/horizon-client-render/src/ui.rs::word_position	gap: minor: always strips spaces; no newline stop
 StringSplitter.FlatComponents.getRemainder	inline	crates/horizon-client-render/src/font.rs::Font::split	the remainder is produced inside split
 StringSplitter.LineBreakFinder.accept	port	crates/horizon-client-render/src/font.rs::Font::split_lines	

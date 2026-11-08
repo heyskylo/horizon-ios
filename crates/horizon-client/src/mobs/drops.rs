@@ -36,8 +36,12 @@ pub struct Death<'a> {
     pub loot: &'a LootData,
     /// The killing `DamageSource`.
     pub damage: Option<LootDamage>,
-    /// The player who last hurt the mob, when `lastHurtByPlayerMemoryTime > 0`.
+    /// `LAST_DAMAGE_PLAYER`: the player who last hurt the mob, when they are
+    /// still in the world. Gone after they leave, even while the memory lasts.
     pub player: Option<LootEntity>,
+    /// `LivingEntity.lastHurtByPlayerMemoryTime > 0` (`playerKilled`):
+    /// experience and equipment follow this, not whether `player` is present.
+    pub player_killed: bool,
     /// That player's luck.
     pub luck: f32,
     /// The entity the mob rides.
@@ -430,7 +434,7 @@ pub fn die(
         skulls = items.iter().any(|i| !i.is_empty());
         out.extend(items.into_iter().filter(|i| !i.is_empty()).map(Drop::Item));
     }
-    let killed_by_player = d.player.is_some();
+    let killed_by_player = d.player_killed;
     let s = m.species();
     // Fox.dropAllDeathLoot: whatever it holds in its mouth comes out first.
     if s == Species::Fox
@@ -658,6 +662,7 @@ mod death_loot_table_tests {
             loot: &loot,
             damage: None,
             player: None,
+            player_killed: false,
             luck: 0.0,
             vehicle: None,
             mob_drops: true,
@@ -690,6 +695,7 @@ mod slot_tests {
     use super::*;
     use crate::mobs::sensor_scan_tests::kind;
     use horizon_core::geometry::Vec3;
+    use horizon_world::loot::PackOverlay;
     use std::sync::Arc;
 
     fn mob(id: &str, species: Species) -> Mob {
@@ -729,5 +735,79 @@ mod slot_tests {
         let body = slot_item(&zombie, "body").unwrap();
         assert_eq!(body.item, "minecraft:iron_helmet");
         assert!(slot_item(&zombie, "head").is_none());
+    }
+
+    /// `LivingEntity.dropExperience` and `Mob.dropCustomDeathLoot`: the
+    /// memory timer (`playerKilled`) awards experience and equipment even
+    /// when `LAST_DAMAGE_PLAYER` is gone (the player left).
+    #[test]
+    fn experience_and_equipment_follow_the_hurt_memory_not_the_player_entity() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-guest-left-xp-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("data/minecraft/loot_table")).unwrap();
+        std::fs::write(root.join("items.json"), "{}").unwrap();
+        let loot = LootData::load(&root, &PackOverlay::default()).unwrap();
+        let death = |player_killed| Death {
+            loot: &loot,
+            damage: None,
+            player: None,
+            player_killed,
+            luck: 0.0,
+            vehicle: None,
+            mob_drops: true,
+            world_seed: 0,
+        };
+        let zombie = |helmet: bool| {
+            let mut m = mob("minecraft:zombie", Species::Zombie);
+            if helmet {
+                m.extra.head = Some("minecraft:iron_helmet".into());
+                m.extra.drop_chances = Some(Box::new([1.0; 8]));
+            }
+            m
+        };
+        let orbs = |out: &[Drop]| out.iter().filter(|d| matches!(d, Drop::Orb(_))).count();
+        let helmet = |out: &[Drop]| {
+            out.iter().any(|d| match d {
+                Drop::Item(s) => s.item == "minecraft:iron_helmet",
+                Drop::Stack(s) => &*s.item == "minecraft:iron_helmet",
+                _ => false,
+            })
+        };
+
+        let mut m = zombie(false);
+        let (out, _) = die(
+            &mut m,
+            &death(true),
+            &mut RandomSequences::default(),
+            &mut LegacyRandom::new(7),
+        );
+        assert!(orbs(&out) > 0, "memory timer awards experience: {out:?}");
+
+        let mut m = zombie(false);
+        let (out, _) = die(
+            &mut m,
+            &death(false),
+            &mut RandomSequences::default(),
+            &mut LegacyRandom::new(7),
+        );
+        assert_eq!(orbs(&out), 0, "no timer, no experience: {out:?}");
+
+        let mut m = zombie(true);
+        let (out, _) = die(
+            &mut m,
+            &death(true),
+            &mut RandomSequences::default(),
+            &mut LegacyRandom::new(7),
+        );
+        assert!(helmet(&out), "memory timer drops equipment: {out:?}");
+
+        let mut m = zombie(true);
+        let (out, _) = die(
+            &mut m,
+            &death(false),
+            &mut RandomSequences::default(),
+            &mut LegacyRandom::new(7),
+        );
+        assert!(!helmet(&out), "no timer, no equipment: {out:?}");
     }
 }
