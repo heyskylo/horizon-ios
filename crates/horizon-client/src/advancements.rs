@@ -1402,10 +1402,64 @@ pub fn recipe_ingredients(v: &Value, used: &[ItemView], w: &dyn World) -> bool {
 }
 
 /// A `ContextAwarePredicate`: a list of loot conditions (or one condition).
+/// Existing callers have no random context and keep their leaf behavior.
 pub fn conditions(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
+    conditions_with(v, ctx, &mut |v, ctx| condition_leaf(v, ctx, w))
+}
+
+/// The existing condition traversal with a caller-owned leaf context.
+/// Leaves run synchronously, in order, with normal boolean short-circuiting.
+pub fn conditions_with(
+    v: &Value,
+    ctx: &Entities,
+    test: &mut dyn FnMut(&Value, &Entities) -> bool,
+) -> bool {
     match v {
         Value::Null => true,
-        Value::Array(list) => list.iter().all(|c| conditions(c, ctx, w)),
+        Value::Array(list) => list.iter().all(|c| conditions_with(c, ctx, test)),
+        Value::Object(o) if o.contains_key("condition") || o.contains_key("type") => {
+            let ty = o
+                .get("condition")
+                .or_else(|| o.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            match &*full(ty) {
+                "minecraft:inverted" => !conditions_with(&v["term"], ctx, test),
+                "minecraft:all_of" => v["terms"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .all(|t| conditions_with(t, ctx, test)),
+                "minecraft:any_of" => v["terms"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|t| conditions_with(t, ctx, test)),
+                _ => test(v, ctx),
+            }
+        }
+        _ => test(v, ctx),
+    }
+}
+
+/// `LootItemRandomChanceCondition.test`: evaluate a literal float chance,
+/// then always draw once, including at zero and one. Other provider forms
+/// and additional fields are not supported by this bounded context.
+pub fn literal_random_chance(v: &Value, draw: &mut dyn FnMut() -> f32) -> Option<bool> {
+    let o = v.as_object()?;
+    let ty = o.get("condition").or_else(|| o.get("type"))?.as_str()?;
+    if full(ty) != "minecraft:random_chance"
+        || o.keys()
+            .any(|k| !matches!(k.as_str(), "condition" | "type" | "chance"))
+    {
+        return None;
+    }
+    let chance = o.get("chance")?.as_f64()? as f32;
+    Some(draw() < chance)
+}
+
+fn condition_leaf(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
+    match v {
         Value::Object(o) if o.contains_key("condition") || o.contains_key("type") => {
             let ty = o
                 .get("condition")
@@ -1475,17 +1529,6 @@ pub fn conditions(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
                     v["raining"].as_bool().is_none_or(|r| r == rain)
                         && v["thundering"].as_bool().is_none_or(|t| t == thunder)
                 }
-                "minecraft:inverted" => !conditions(&v["term"], ctx, w),
-                "minecraft:all_of" => v["terms"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .all(|t| conditions(t, ctx, w)),
-                "minecraft:any_of" => v["terms"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .any(|t| conditions(t, ctx, w)),
                 _ => false,
             }
         }
@@ -3359,5 +3402,95 @@ mod tests {
         let all = get_list(&tree, None, "everything");
         let granted_everything = grant(&tree, &mut p, &all);
         assert_eq!(granted_everything, 116);
+    }
+    #[test]
+    fn random_chance_literal_matches_official_seeded_float_and_continuation() {
+        use horizon_core::random::{LegacyRandom, RandomSource};
+        let ctx = Entities {
+            this: None,
+            origin: [0.0; 3],
+            tool: None,
+            block_pos: None,
+        };
+        for line in include_str!("../../../docs/parity/random-chance-seeded.jsonl").lines() {
+            let row: Value = serde_json::from_str(line).unwrap();
+            let mut random = LegacyRandom::new(row["seed"].as_i64().unwrap());
+            let result = conditions_with(&row["input"], &ctx, &mut |v, ctx| {
+                literal_random_chance(v, &mut || random.next_float())
+                    .unwrap_or_else(|| conditions(v, ctx, &Flat))
+            });
+            assert_eq!(result, row["result"].as_bool().unwrap(), "{row}");
+            let next: Vec<i64> = (0..4).map(|_| random.next_long()).collect();
+            let expected: Vec<i64> = row["continuation"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x.as_i64().unwrap())
+                .collect();
+            assert_eq!(next, expected, "{row}");
+        }
+    }
+    #[test]
+    fn existing_no_random_context_and_traversal_keep_their_behavior() {
+        let ctx = Entities {
+            this: None,
+            origin: [0.0; 3],
+            tool: None,
+            block_pos: None,
+        };
+        let z = json!({"type":"minecraft:random_chance","chance":0});
+        let o = json!({"type":"minecraft:random_chance","chance":1});
+        for (v, expected) in [
+            (Value::Null, true),
+            (json!([]), true),
+            (z.clone(), false),
+            (o.clone(), false),
+            (json!({"type":"inverted","term":o}), true),
+            (
+                json!({"type":"all_of","terms":[z.clone(),Value::Null]}),
+                false,
+            ),
+            (
+                json!({"type":"any_of","terms":[z.clone(),Value::Null]}),
+                true,
+            ),
+            (json!("h122:unsupported_reference"), false),
+        ] {
+            assert_eq!(conditions(&v, &ctx, &Flat), expected, "{v}");
+        }
+        let mut seen = vec![];
+        let v =
+            json!({"type":"any_of","terms":[{"type":"all_of","terms":[false,true]},true,false]});
+        assert!(conditions_with(&v, &ctx, &mut |v, _| {
+            seen.push(v.as_bool().unwrap());
+            v.as_bool().unwrap()
+        }));
+        assert_eq!(seen, vec![false, true]);
+    }
+    #[test]
+    fn unsupported_chance_shapes_keep_prior_false_without_a_draw() {
+        let ctx = Entities {
+            this: None,
+            origin: [0.0; 3],
+            tool: None,
+            block_pos: None,
+        };
+        let mut draws = 0;
+        for v in [
+            json!({"type":"random_chance","chance":{"type":"minecraft:uniform","min":0,"max":1}}),
+            json!({"type":"random_chance"}),
+            json!({"type":"random_chance","chance":"1"}),
+            json!({"type":"random_chance","chance":1,"unsupported":true}),
+        ] {
+            assert_eq!(
+                literal_random_chance(&v, &mut || {
+                    draws += 1;
+                    0.0
+                }),
+                None
+            );
+            assert!(!conditions(&v, &ctx, &Flat));
+        }
+        assert_eq!(draws, 0);
     }
 }

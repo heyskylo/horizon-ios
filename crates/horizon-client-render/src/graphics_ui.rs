@@ -6,8 +6,8 @@
 //! looks comes from `graphics_style`.
 use crate::{
     graphics::{
-        EntityCullingMode, FarDetail, FrameGeneration, GraphicsApi, LeafCullingMode, Overlay,
-        Pacing, ParticleCullingMode, PresentMode, Preset, Upscaling,
+        EntityCullingMode, FarDetail, FrameGeneration, GpuCullingMode, GraphicsApi,
+        LeafCullingMode, Overlay, Pacing, ParticleCullingMode, PresentMode, Preset, Upscaling,
     },
     graphics_style::{self as style, Cost},
     hud::{HudAtlas, HudBatch},
@@ -713,6 +713,9 @@ fn description(item: Item, s: &Settings, text: &'static str) -> &'static str {
         (Item::Horizon(H::HdrPeak | H::HdrPaperWhite), Setup::Automatic | Setup::Changed) => {
             "Set up for your display. Leave on Auto unless it looks wrong."
         }
+        (Item::Horizon(H::GpuCulling), _) if s.horizon.gpu_culling == GpuCullingMode::Auto => {
+            "Auto: tries it where your CPU limits the frame, keeps it if frames get faster."
+        }
         (Item::Horizon(H::EntityCulling), _) => match s.horizon.entity_culling {
             EntityCullingMode::Off => "No entity occlusion culling.",
             EntityCullingMode::Synchronous => "CPU occlusion test runs this frame.",
@@ -838,7 +841,11 @@ impl H {
             // the saved value waits.
             H::GpuCulling => labelled(
                 "GPU Culling",
-                on_off(g.gpu_culling && crate::graphics::gpu_culling_offer().reason().is_none()),
+                if crate::graphics::gpu_culling_offer().reason().is_none() {
+                    g.gpu_culling.label()
+                } else {
+                    GpuCullingMode::Off.label()
+                },
             ),
             H::EntityCulling => labelled("Entity Culling", g.entity_culling.label()),
             H::EntityCullingPrecheck => labelled(
@@ -1011,7 +1018,7 @@ impl H {
                 g.blue_map.radius = step(&BLUE_MAP_RADII, g.blue_map.radius_chunks(), back)
             }
             H::CaveCulling => g.cave_culling = !g.cave_culling,
-            H::GpuCulling => g.gpu_culling = !g.gpu_culling,
+            H::GpuCulling => g.gpu_culling = step(&GpuCullingMode::ALL, g.gpu_culling, back),
             H::EntityCulling => {
                 g.entity_culling = step(&EntityCullingMode::ALL, g.entity_culling, back)
             }
@@ -1167,9 +1174,6 @@ impl Item {
         Some(match self {
             Item::Horizon(H::BlueMapAutoDetect) => g.blue_map.auto_detect,
             Item::Horizon(H::CaveCulling) => g.cave_culling,
-            Item::Horizon(H::GpuCulling) => {
-                g.gpu_culling && crate::graphics::gpu_culling_offer().reason().is_none()
-            }
             Item::Horizon(H::CacheShulkerBoxes) => g.cache_shulker_boxes,
             Item::Horizon(H::CacheSigns) => g.cache_signs,
             Item::Horizon(H::CacheDecoratedPots) => g.cache_decorated_pots,
@@ -3074,10 +3078,10 @@ mod tests {
         }
     }
 
-    /// GPU Culling: a switch right after Cave Culling, off by default, no part of a preset,
-    /// and greyed out with its reason, reading Off, wherever it isn't offered.
+    /// GPU Culling: Off, On or Auto right after Cave Culling, off by default, no part of a
+    /// preset, and greyed out with its reason, reading Off, wherever it isn't offered.
     #[test]
-    fn gpu_culling_is_a_culling_switch_where_it_is_offered() {
+    fn gpu_culling_steps_off_on_auto_where_it_is_offered() {
         use crate::graphics::GpuCullingOffer;
         let item = Item::Horizon(H::GpuCulling);
         let at = |item| items().into_iter().position(|(_, i)| i == item);
@@ -3090,9 +3094,10 @@ mod tests {
         assert_eq!(items()[i].0, Page::Performance);
         assert_eq!(at(Item::Horizon(H::CaveCulling)), Some(i - 1));
         let mut s = Settings::default();
-        assert_eq!(item.switch(&s), Some(false));
+        assert_eq!(item.switch(&s), None);
+        assert_eq!(s.horizon.gpu_culling, GpuCullingMode::Off);
         s.horizon.preset = Preset::Balanced;
-        s.horizon.gpu_culling = true;
+        s.horizon.gpu_culling = GpuCullingMode::On;
         // Where it isn't offered, the saved On reads Off, and neither a click nor Enter after
         // it does anything.
         for offer in [
@@ -3106,35 +3111,37 @@ mod tests {
             assert!(offer.reason().is_some());
             assert_eq!(item.blocked(&s), offer.reason());
             assert_eq!(item.label(&s).plain(), "GPU Culling: Off");
-            // The box, the narrator and the widget tree read the switch.
-            assert_eq!(item.switch(&s), Some(false), "{offer:?}");
             let mut ui = GraphicsUi::default();
             let r = row(&mut ui, &s, item);
             assert!(press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)).is_empty());
             ui.focus = Some(Target::Item(item));
             let enter = ui.key_modifiers(&mut s, K::Enter, None, false, SIZE, FB);
             assert!(enter.0.is_empty());
-            assert!(s.horizon.gpu_culling, "{offer:?}");
+            assert_eq!(s.horizon.gpu_culling, GpuCullingMode::On, "{offer:?}");
         }
-        // Where it is, a click switches it and keeps the preset.
+        // Where it is, it steps through its three values and keeps the preset.
         crate::graphics::offer_gpu_culling(GpuCullingOffer::Offered);
         assert_eq!(item.blocked(&s), None);
-        assert_eq!(item.label(&s).plain(), "GPU Culling: On");
-        assert_eq!(item.switch(&s), Some(true));
-        let mut ui = GraphicsUi::default();
-        let r = row(&mut ui, &s, item);
-        assert_eq!(
-            press(&mut ui, &mut s, (r[0] + 4.0, r[1] + 4.0)),
-            [Action::ButtonClick, Action::Changed]
-        );
-        assert!(!s.horizon.gpu_culling);
+        for label in ["Auto", "Off", "On"] {
+            item.cycle(&mut s, false, FB);
+            assert_eq!(item.label(&s).plain(), format!("GPU Culling: {label}"));
+            assert_eq!(
+                crate::graphics::Graphics::parse(&s.horizon.serialize()).gpu_culling,
+                s.horizon.gpu_culling
+            );
+        }
+        item.cycle(&mut s, true, FB);
+        assert_eq!(s.horizon.gpu_culling, GpuCullingMode::Off);
         assert_eq!(s.horizon.preset, Preset::Balanced);
+        // Auto says what it does.
+        s.horizon.gpu_culling = GpuCullingMode::Auto;
+        assert!(description(item, &s, "").starts_with("Auto: "));
         // No preset sets it.
-        for on in [false, true] {
-            s.horizon.gpu_culling = on;
+        for mode in GpuCullingMode::ALL {
+            s.horizon.gpu_culling = mode;
             for preset in Preset::ALL {
                 crate::graphics::apply_preset(preset, &mut s);
-                assert_eq!(s.horizon.gpu_culling, on, "{preset:?}");
+                assert_eq!(s.horizon.gpu_culling, mode, "{preset:?}");
             }
         }
     }

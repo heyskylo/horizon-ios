@@ -73,10 +73,15 @@ pub struct WorldDrawn<'a> {
     pub entities: &'a [Vertex],
     pub spans: &'a [EntitySpan],
     /// Which entity each run of `entities` is, recorded every frame (`Frame::entity_motion`):
-    /// the run's first vertex and the entity, `(1 << 32) | id` for a mob or a player and
-    /// `(2 << 32) | id` for a dropped item (their entity ids), 0 for anything else. A run lasts
-    /// until the next. Unlike `spans`, whose ids name a type, these follow one entity from
-    /// frame to frame (API 371).
+    /// the run's first vertex and the entity, `(1 << 32) | id` for a mob or a player,
+    /// `(2 << 32) | id` for a dropped item, `(3 << 32) | id` for another entity (boat,
+    /// minecart, armor stand, item frame, painting, primed TNT, falling block) and
+    /// `(4 << 32) | id` for an item frame's held item (their entity ids), `(5 << 32) | p` for a
+    /// block entity (`p`: its position, x and z in 11 bits each, y in 10), `(6 << 32) | p`
+    /// for a block a piston moves (`p`: the cell it moves to), `7 << 32` for the player's own
+    /// model, 0 for anything else.
+    /// A run lasts until the next. Unlike `spans`, whose ids name a type, these follow one
+    /// entity from frame to frame (API 371).
     pub motion: &'a [(u32, u64)],
     /// The shared atlas entity UVs point into.
     pub atlas: Option<&'a wgpu::Texture>,
