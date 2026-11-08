@@ -649,7 +649,10 @@ impl Game<'_> {
                 {
                     let _ = p.ignite_for_ticks((sweep.ignite * 20.0) as i32);
                 }
+                // The swept player's thorns, dealt to the attacker below.
+                return g.thorns_damage();
             }
+            Vec::new()
         };
         for (victim, id, team) in victims {
             if sweep.skip == Some(id)
@@ -660,10 +663,33 @@ impl Game<'_> {
             }
             let hit = self.pvp_hit_of(host, sweep.attacker, victim, "sweep");
             let Victim::Guest(conn) = victim;
-            self.guest_struck_by(host, conn, |g| {
-                let _hit = pvp_scope(hit);
-                land(g)
-            });
+            let thorns = self
+                .guest_struck_by(host, conn, |g| {
+                    let _hit = pvp_scope(hit);
+                    land(g)
+                })
+                .unwrap_or_default();
+            // doPostAttackEffects' victim side: its armour's thorns hurt the
+            // attacker, as on a direct hit (pvp_land).
+            let thorns_cause = self.player_attacker(host, victim.conn());
+            for damage in thorns {
+                match sweep.attacker {
+                    None => {
+                        if let Some((id, name)) = &thorns_cause {
+                            self.note_named_attacker("minecraft:thorns", *id, name.clone());
+                        }
+                        self.hurt_player_by("minecraft:thorns", damage);
+                    }
+                    Some(conn) => {
+                        self.guest_hit_by(host, conn, |g| {
+                            if let Some((id, name)) = &thorns_cause {
+                                g.note_named_attacker("minecraft:thorns", *id, name.clone());
+                            }
+                            g.hurt_player_by("minecraft:thorns", damage)
+                        });
+                    }
+                }
+            }
         }
     }
 }

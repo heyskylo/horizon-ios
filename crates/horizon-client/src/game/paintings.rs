@@ -444,6 +444,7 @@ impl Game<'_> {
                 1.0 / 32.0,
             );
             let entity_start = out.len();
+            self.mark_motion(entity_start, Self::MOTION_OBJECT | u64::from(p.id));
             let light = self.world.light(p.pos[0], p.pos[1], p.pos[2]);
             let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
             let mut quad =

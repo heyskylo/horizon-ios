@@ -1149,7 +1149,7 @@ mod tests {
         for pack in ["void", "islands"] {
             let dir = game.join(NEW_WORLD_PACKS).join(pack);
             std::fs::create_dir_all(dir.join("data/v/function")).unwrap();
-            std::fs::write(dir.join("pack.mcmeta"), "{}").unwrap();
+            std::fs::write(dir.join("pack.mcmeta"), r#"{"pack":{"description":""}}"#).unwrap();
             std::fs::write(dir.join("data/v/function/a.mcfunction"), "say a").unwrap();
         }
         let (temp, ids) = seed_create_world(&game).unwrap();

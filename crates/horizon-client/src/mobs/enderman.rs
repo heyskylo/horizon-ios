@@ -475,6 +475,13 @@ impl Goal for TakeBlock {
             pos: [x, y, z],
             state: cx.w.world.air,
         });
+        // level.gameEvent(BLOCK_DESTROY, pos, Context.of(enderman, blockState)).
+        cx.events.push(MobEvent::GameEvent {
+            event: "minecraft:block_destroy",
+            at: [f64::from(x) + 0.5, f64::from(y) + 0.5, f64::from(z) + 0.5],
+            source: m.id,
+            state,
+        });
         m.extra.carried = Some(state);
     }
 }
