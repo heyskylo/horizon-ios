@@ -204,10 +204,15 @@ impl Game<'_> {
                 let raw = self.persist.raw.get(&id);
                 // Projectile.addAdditionalSaveData stores the retained EntityReference,
                 // including an owner that is not currently resolved to a live entity.
-                entity_nbt::arrow_to_nbt(p, uuid, p.owner_uuid.or(owner), in_block, raw)
-                    .or_else(|| entity_nbt::fireball_to_nbt(p, uuid, owner, raw))
-                    .or_else(|| entity_nbt::throwable_to_nbt(p, uuid, owner, raw))
-                    .or_else(|| entity_nbt::spit_or_bullet_to_nbt(p, uuid, owner, target, raw))?
+                let mut tag =
+                    entity_nbt::arrow_to_nbt(p, uuid, p.owner_uuid.or(owner), in_block, raw)
+                        .or_else(|| entity_nbt::fireball_to_nbt(p, uuid, owner, raw))
+                        .or_else(|| entity_nbt::throwable_to_nbt(p, uuid, owner, raw))
+                        .or_else(|| {
+                            entity_nbt::spit_or_bullet_to_nbt(p, uuid, owner, target, raw)
+                        })?;
+                self.save_projectile_portal_cooldown(p, &mut tag);
+                tag
             }
             Target::Crystal(id) => {
                 let c = self.crystals.iter().find(|c| c.id == id)?;
