@@ -3,6 +3,7 @@
 //! (positional, mixed across nearby biomes for the visual attributes), timelines and the weather
 //! (time-based). Also `WeatherAttributes`, `SpatialAttributeInterpolator` and `GaussianSampler`.
 use crate::environment_attributes::{Attribute, AttributeMap, Entry, Lerp, Value};
+use crate::environment_timeline::{Timeline, TrackSampler};
 use std::collections::HashMap;
 
 /// `SpatialAttributeInterpolator`: biome attribute maps with their summed weights, in the order
@@ -89,15 +90,17 @@ pub struct Conditions<'a, 'b> {
     /// The biome's attributes at the position: the noise biome, or the block's biome for
     /// attributes with full-resolution biomes.
     pub biome: &'b dyn Fn(bool) -> Option<&'a AttributeMap>,
+    /// `ClockManager.getInstance(clock).totalTicks()` for a `WorldClock` id.
+    pub clock: &'b dyn Fn(&str) -> i64,
 }
-
-/// A time-based layer other than the weather, such as a timeline's track.
-pub type TimeLayer = Box<dyn Fn(&Value) -> Value + Send + Sync>;
 
 enum Layer {
     Constant(Entry),
     Biome,
-    Time(TimeLayer),
+    Track {
+        sampler: TrackSampler,
+        clock: String,
+    },
     Weather {
         rain: Option<Entry>,
         thunder: Option<Entry>,
@@ -146,9 +149,19 @@ impl Builder {
         self
     }
 
-    /// `addTimeBasedLayer`, for a timeline's track.
-    pub fn time_layer(&mut self, attribute: &'static Attribute, layer: TimeLayer) -> &mut Self {
-        self.push(attribute, Layer::Time(layer));
+    /// `EnvironmentAttributeSystem.Builder.addTimelineLayer`: a time-based layer per track
+    /// (`Timeline.createTrackSampler`), reading the timeline's clock.
+    pub fn timeline_layer(&mut self, timeline: &Timeline) -> &mut Self {
+        for track in &timeline.tracks {
+            let sampler = track.sampler(timeline.period);
+            self.push(
+                track.attribute,
+                Layer::Track {
+                    sampler,
+                    clock: timeline.clock.clone(),
+                },
+            );
+        }
         self
     }
 
@@ -227,7 +240,9 @@ impl Sampler {
         for layer in &self.layers {
             result = match layer {
                 Layer::Constant(entry) => entry.apply(&result),
-                Layer::Time(f) => f(&result),
+                Layer::Track { sampler, clock } => {
+                    sampler.apply(&result, (conditions.clock)(clock))
+                }
                 Layer::Biome if !positional => result,
                 // `addBiomeLayerForAttribute`'s positional layer.
                 Layer::Biome => match conditions.blend {

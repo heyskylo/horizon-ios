@@ -475,6 +475,13 @@ impl Entry {
             .and_then(Json::as_str)
             .ok_or_else(|| format!("{value_error}; and no modifier"))?;
         let argument = object.get("argument").ok_or("no argument")?;
+        Self::with_modifier(attribute, op, argument)
+    }
+
+    /// `EnvironmentAttributeMap.Entry.createFullCodec`: the entry `op` makes of `argument` on
+    /// this attribute, with the modifier's argument codec (also a timeline keyframe's value,
+    /// under its track's modifier).
+    pub fn with_modifier(attribute: &Attribute, op: &str, argument: &Json) -> Result<Self, String> {
         let kind = attribute.kind;
         let color = matches!(kind, Kind::RgbColor | Kind::ArgbColor);
         let simple = |argument: &Json| -> Result<Value, String> {
@@ -533,6 +540,77 @@ impl Entry {
             "xnor" => bool_op(BoolOp::Xnor)?,
             _ => return Err(format!("modifier {op} is not allowed on this attribute")),
         })
+    }
+
+    /// `AttributeTrack.bakeSampler`'s argument lerp: two keyframes of one track (same
+    /// modifier) blended at `alpha`. Overrides use the type's keyframe lerp; float arguments
+    /// `Mth.lerp`; color arguments `ARGB.srgbLerp`; `FloatWithAlpha` and
+    /// `ColorModifier.BlendToGray.lerp` each field; boolean arguments step at 1
+    /// (as `AttributeType.ofNotInterpolated` keyframes do).
+    pub fn keyframe_lerp(attribute: &Attribute, alpha: f32, from: &Self, to: &Self) -> Self {
+        let float = |a: f32, b: f32| a + alpha * (b - a);
+        let value = |a: &Value, b: &Value| match (a, b) {
+            (Value::Float(a), Value::Float(b)) => Value::Float(float(*a, *b)),
+            (Value::Rgb(a), Value::Rgb(b)) => {
+                Value::Rgb(std::array::from_fn(|i| (b[i] - a[i]) * alpha + a[i]))
+            }
+            (Value::Argb(a), Value::Argb(b)) => {
+                Value::Argb(std::array::from_fn(|i| (b[i] - a[i]) * alpha + a[i]))
+            }
+            _ => {
+                if alpha >= 1.0 {
+                    b.clone()
+                } else {
+                    a.clone()
+                }
+            }
+        };
+        match (from, to) {
+            (Self::Override(a), Self::Override(b)) => {
+                Self::Override(attribute.lerp(Lerp::Keyframe, alpha, a, b))
+            }
+            (
+                Self::AlphaBlendFloat {
+                    value: v1,
+                    alpha: a1,
+                },
+                Self::AlphaBlendFloat {
+                    value: v2,
+                    alpha: a2,
+                },
+            ) => Self::AlphaBlendFloat {
+                value: float(*v1, *v2),
+                alpha: float(*a1, *a2),
+            },
+            (Self::Add(a), Self::Add(b)) => Self::Add(value(a, b)),
+            (Self::Subtract(a), Self::Subtract(b)) => Self::Subtract(value(a, b)),
+            (Self::Multiply(a), Self::Multiply(b)) => Self::Multiply(value(a, b)),
+            (Self::Minimum(a), Self::Minimum(b)) => Self::Minimum(float(*a, *b)),
+            (Self::Maximum(a), Self::Maximum(b)) => Self::Maximum(float(*a, *b)),
+            (Self::AlphaBlendColor(a), Self::AlphaBlendColor(b)) => {
+                Self::AlphaBlendColor(std::array::from_fn(|i| (b[i] - a[i]) * alpha + a[i]))
+            }
+            (
+                Self::BlendToGray {
+                    brightness: b1,
+                    factor: f1,
+                },
+                Self::BlendToGray {
+                    brightness: b2,
+                    factor: f2,
+                },
+            ) => Self::BlendToGray {
+                brightness: float(*b1, *b2),
+                factor: float(*f1, *f2),
+            },
+            _ => {
+                if alpha >= 1.0 {
+                    to.clone()
+                } else {
+                    from.clone()
+                }
+            }
+        }
     }
 
     /// `AttributeModifier.apply(subject, argument)`.
