@@ -845,6 +845,8 @@ pub enum Opt {
     PadLookDeadzone,
     PadTriggerThreshold,
     PadGlyphs,
+    /// A Nintendo pad's face buttons by place or by letter (`PadSettings::nintendo_letters`).
+    PadNintendoButtons,
     PadKeyboard,
     PadGameplayGuide,
     /// `options.modelPart.*`: one skin layer (index into `options_file::MODEL_PARTS`).

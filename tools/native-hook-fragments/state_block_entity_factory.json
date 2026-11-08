@@ -1,0 +1,21 @@
+{
+  "hooks": [
+    {
+      "name": "stateful_block_entity",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_stateful_block_entity",
+      "mod_api": {
+        "contract": "listen"
+      }
+    },
+    {
+      "name": "block_entity_from_state",
+      "target": "horizon_client::game::native_hooks::GameLevel<'_>::native_block_entity_from_state",
+      "mod_api": {
+        "contract": "replace",
+        "out": "entity"
+      }
+    }
+  ],
+  "rust_summary": "opt-in state-aware native block entity factories.",
+  "doc_summary": "`native_stateful_block_entity` declares static factory ownership; pure `native_block_entity_from_state` receives the borrowed actual block/property map. An empty result creates no new entity and never falls through to API15. LevelChunk mutation creates inline after onPlace; existing same-block entities survive state property changes. Bundles need \"hooks\": @API:state_block_entity_factory@."
+}

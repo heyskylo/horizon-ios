@@ -9,7 +9,7 @@ use horizon_client::{
         Chat, ChatAbilities, ChatAction, ChatScreen, ChatSource, ChatVisibility, Commands,
         SYSTEM_INDICATOR, normalize_chat_message,
     },
-    command::Registries,
+    command::{ArgType, Dispatcher, MOD_COMMAND, Registries},
     gamerules::GameRules,
     hud::HudBatch,
     screen_draw::Measure,
@@ -55,6 +55,91 @@ pub(super) fn with_native_commands(
     )
 }
 
+/// Add Studio's local command grammar to the suggestion tree. Commands are
+/// still dispatched by `studio_command`; this tree supplies coloring,
+/// completion, and Tab acceptance in chat.
+fn with_studio_commands(base: &Dispatcher) -> Dispatcher {
+    fn literal(d: &mut Dispatcher, parent: usize, name: &str) -> usize {
+        let node = d.literal(parent, name);
+        d.executes(node, MOD_COMMAND);
+        node
+    }
+    fn argument(d: &mut Dispatcher, parent: usize, name: &str, ty: ArgType) -> usize {
+        let node = d.argument(parent, name, ty);
+        d.executes(node, MOD_COMMAND);
+        node
+    }
+
+    let mut d = base.clone();
+    let root = d.find("studio").unwrap_or_else(|| d.literal(0, "studio"));
+    d.executes(root, MOD_COMMAND);
+
+    let record = literal(&mut d, root, "record");
+    let start = literal(&mut d, record, "start");
+    argument(&mut d, start, "name", ArgType::Word);
+    literal(&mut d, record, "stop");
+    literal(&mut d, record, "status");
+
+    let replay = literal(&mut d, root, "replay");
+    let open = literal(&mut d, replay, "open");
+    argument(&mut d, open, "path", ArgType::Greedy);
+    literal(&mut d, replay, "pause");
+    literal(&mut d, replay, "resume");
+    let speed = literal(&mut d, replay, "speed");
+    argument(
+        &mut d,
+        speed,
+        "multiplier",
+        ArgType::Double {
+            min: 0.01,
+            max: 20.0,
+        },
+    );
+    let seek = literal(&mut d, replay, "seek");
+    argument(
+        &mut d,
+        seek,
+        "milliseconds",
+        ArgType::Integer {
+            min: 0,
+            max: i32::MAX,
+        },
+    );
+    literal(&mut d, replay, "status");
+    literal(&mut d, replay, "close");
+
+    let freecam = literal(&mut d, root, "freecam");
+    argument(
+        &mut d,
+        freecam,
+        "state",
+        ArgType::StrEnum(&["on", "off"], "argument.enum.invalid"),
+    );
+
+    let keyframe = literal(&mut d, root, "keyframe");
+    literal(&mut d, keyframe, "add");
+    let remove = literal(&mut d, keyframe, "remove");
+    argument(
+        &mut d,
+        remove,
+        "index",
+        ArgType::Integer {
+            min: 0,
+            max: i32::MAX,
+        },
+    );
+    literal(&mut d, keyframe, "clear");
+
+    let path = literal(&mut d, root, "path");
+    argument(
+        &mut d,
+        path,
+        "state",
+        ArgType::StrEnum(&["lock", "unlock"], "argument.enum.invalid"),
+    );
+    d
+}
+
 impl Game<'_> {
     /// The tree the chat box colours, completes and parses with for the
     /// world's connection: `base`, the tree the server sent, or the game's own
@@ -66,12 +151,11 @@ impl Game<'_> {
     ) -> horizon_client::command::Dispatcher {
         let mut names = Vec::new();
         self.native_commands(&mut names);
-        names.push("studio");
         let base = match base {
             Some(tree) => tree,
             None => horizon_client::command::vanilla::game_dispatcher(),
         };
-        with_native_commands(base, &names)
+        with_studio_commands(&with_native_commands(base, &names))
     }
 }
 
@@ -1799,6 +1883,8 @@ impl Game<'_> {
         }
         self.ui.chat.clear();
         self.build_registries();
+        // The world opens with its test instances (`Registries.TEST_INSTANCE`).
+        self.snapshot_test_defs();
         self.sync_rules();
     }
     /// Save the clock beside level.dat (Level.write saves the game rules: a
@@ -2144,6 +2230,43 @@ mod tests {
         assert_eq!(shared.nodes.len(), vanilla.nodes.len());
     }
 
+    #[test]
+    fn studio_command_tree_suggests_subcommands_and_arguments() {
+        let reg = Registries::default();
+        let base = horizon_client::command::vanilla::game_dispatcher();
+        let tree = with_studio_commands(base);
+        let suggestions = |input: &str| {
+            let parse = tree.parse(input, &reg);
+            tree.client_suggestions(&parse, input.len(), &reg)
+                .1
+                .into_iter()
+                .map(|suggestion| suggestion.text)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            suggestions("studio "),
+            ["freecam", "keyframe", "path", "record", "replay"]
+        );
+        assert_eq!(suggestions("studio record "), ["start", "status", "stop"]);
+        assert_eq!(
+            suggestions("studio replay "),
+            [
+                "close", "open", "pause", "resume", "seek", "speed", "status"
+            ]
+        );
+        assert_eq!(suggestions("studio freecam "), ["off", "on"]);
+        assert_eq!(suggestions("studio keyframe "), ["add", "clear", "remove"]);
+        assert_eq!(suggestions("studio path "), ["lock", "unlock"]);
+        assert_eq!(
+            tree.parse("studio replay open some-recording.mcpr", &reg)
+                .executable()
+                .unwrap()
+                .1,
+            MOD_COMMAND
+        );
+    }
+
     /// When `entity_types` is empty (no `entity-types.json`), fallback includes
     /// standard mobs, non-mob entities, and `wind_charge` / `breeze_wind_charge`.
     #[test]
@@ -2399,7 +2522,11 @@ mod enchantment_snapshot_tests {
         let pack = dir.join("datapacks/model");
         let tags = pack.join("data/h024/tags/enchantment");
         std::fs::create_dir_all(&tags).unwrap();
-        std::fs::write(pack.join("pack.mcmeta"), "{}").unwrap();
+        std::fs::write(
+            pack.join("pack.mcmeta"),
+            r#"{"pack":{"description":"fixture"}}"#,
+        )
+        .unwrap();
         std::fs::write(tags.join("empty.json"), r#"{"values":[]}"#).unwrap();
         std::fs::write(
             dir.join("datapacks.json"),

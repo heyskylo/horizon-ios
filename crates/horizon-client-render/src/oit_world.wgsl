@@ -42,7 +42,12 @@ struct OitFragment {
 @fragment fn fs_oit_cull(@builtin(position) pos: vec4<f32>) -> OitFragment {
     let b = textureLoad(oit_bounds, vec2<i32>(pos.xy), 0);
     let opaque = oit_linear_depth(b.a);
-    return OitFragment(vec4(b.r, min(b.g, opaque), b.b, b.a), b.a);
+    // The later stages test GreaterEqual against this depth, so the opaque fragment itself must still
+    // pass: Metal's `position.z` can differ from the rasterizer's depth by an ulp, which dropped
+    // random pixels of an opaque body. A few ulps farther (a positive float's bits minus one is
+    // the next smaller value) keeps it, and culls anything behind it by a visible distance.
+    let culled_depth = select(0.0, bitcast<f32>(bitcast<u32>(b.a) - 4u), b.a > 0.0);
+    return OitFragment(vec4(b.r, min(b.g, opaque), b.b, b.a), culled_depth);
 }
 // The sum over the world, renormalized to the coverage the transform gives.
 @fragment fn fs_oit_composite(@builtin(position) pos: vec4<f32>) -> OitFragment {

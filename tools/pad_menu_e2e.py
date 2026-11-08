@@ -34,8 +34,12 @@ Cases:
 - pause_icon: the pause menu's icons are targets, and A presses one.
 - studio_rows: the D-pad walks Replay Studio's recordings to its buttons, and B leaves.
 - erase_checkbox: the D-pad reaches Optimize World's Erase Cached Data box, and A ticks it.
+- controller_nintendo_buttons: with Nintendo glyphs, A on Device's Nintendo Buttons picks By Letter and saves it, and
+  again goes back to By Position.
 - extras_shell: Horizon Extras on the settings shell: the D-pad walks its rows and scrolls through the hidden ones, past
   a greyed row, the right stick scrolls it, A changes and saves a toggle, the strip follows the row, B leaves.
+- extras_shell_edges: on Extras, which has no page list, down from the search field lands on the first row, not Done;
+  a row the right stick leaves mostly hidden scrolls back into view when A presses it, and A changes it.
 Needs built fast binaries (`cargo build --profile fast -p horizon-client -p horizon-client-lib --bins`)
 and prepared resources in .local/horizon-client/26.3. Exit status 0 when every case passes.
 """
@@ -1454,6 +1458,31 @@ def controller_bind(args, name):
     return check.failures
 
 
+def controller_nintendo_buttons(args, name):
+    # The virtual pad poses as Nintendo through the glyphs, the way the screen shows it.
+    game = Game(args, name, seed=seed_controller('glyphs:nintendo\n'))
+    check = Check()
+    try:
+        open_controller(game, 2)
+        game.pad('right')
+        for _ in range(16):
+            if 'nintendo buttons' in (game.focused_label() or '').lower():
+                break
+            game.pad('down')
+        check('By Position' in (game.focused_label() or ''), f'never reached Nintendo Buttons: {game.focused_label()}')
+        game.pad('south')
+        check('By Letter' in (game.focused_label() or ''), f'A did not pick By Letter: {game.focused_label()}')
+        check('nintendoLetters:true' in controller_saved(game), f'not saved: {controller_saved(game)}')
+        shot(game, 'controller-nintendo-buttons')
+        # The virtual pad joins after a real pad's letters are read, so it still confirms with South.
+        game.pad('south')
+        check('By Position' in (game.focused_label() or ''), f'A did not step back: {game.focused_label()}')
+        check('nintendoLetters:false' in controller_saved(game), f'not saved: {controller_saved(game)}')
+    finally:
+        game.quit()
+    return check.failures
+
+
 def controller_settings_keys(args, name):
     # Keys go through `key`, which needs a world open.
     game = Game(args, name, world=True)
@@ -1586,6 +1615,54 @@ def extras_shell(args, name):
         game.pad('east')
         game.wait_targets()
         check(not has_label(game, AUTO_RECONNECT), f'B did not leave Extras: {labels(game)}')
+    finally:
+        game.quit()
+    return check.failures
+
+
+ZOOM_INSTALL = 'Zoom: install from Mods'
+# How far a group's name sits over its first row (`graphics_style::GROUP_ROW`): the list's top from the Mods note.
+GROUP_NAME_H = 14
+STICK_NOTCHES = 8
+
+
+def extras_shell_edges(args, name):
+    game = Game(args, name)
+    check = Check()
+    try:
+        game.press_through('west')
+        game.ctl('options', 'extras')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        check((game.menu()['focus'] or {}).get('kind') == 'field', f"Extras opened on {game.menu()['focus']}")
+        game.pad('down')
+        check(FIRST_EXTRA in (game.focused_label() or ''),
+              f'down from the search field went to {game.focused_label()}, not {FIRST_EXTRA}')
+
+        # The right stick moves the list until the focused row's middle is above the list's top.
+        note = label_of(game, ZOOM_INSTALL)
+        check(note is not None, f'no Mods note to find the list by: {labels(game)}')
+        if not note or FIRST_EXTRA not in (game.focused_label() or ''):
+            return check.failures
+        top = note['bounds'][1] - GROUP_NAME_H
+        before = game.focused_label()
+        for _ in range(STICK_NOTCHES):
+            focus = game.focus()
+            if not focus or focus[1] + focus[3] / 2 < top:
+                break
+            game.stick()
+        focus = game.focus()
+        check(focus and focus[1] + focus[3] > top > focus[1] + focus[3] / 2,
+              f'the stick did not leave the row mostly hidden under {top}: {focus}')
+        check(game.focused_label() == before, f'the stick moved the focus from {before} to {game.focused_label()}')
+        shot(game, 'extras-clipped')
+        game.pad('south')
+        shown = game.focus()
+        check(shown and shown[1] >= top, f'A did not scroll the row into view under {top}: {shown}')
+        after = game.focused_label()
+        check(after and after != before and after.split(':')[0] == before.split(':')[0],
+              f'A on the half-hidden row left it {before} -> {after}')
+        shot(game, 'extras-revealed')
     finally:
         game.quit()
     return check.failures
@@ -2517,12 +2594,14 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'flat_rows_select': flat_rows_select,
          'controller_settings_pad': controller_settings_pad,
          'controller_bind': controller_bind,
+         'controller_nintendo_buttons': controller_nintendo_buttons,
          'controller_settings_keys': controller_settings_keys,
          'controller_notices': controller_notices,
          'every_screen_has_targets': every_screen_has_targets,
          'studio_rows': studio_rows, 'pause_icon': pause_icon,
          'erase_checkbox': erase_checkbox,
          'extras_shell': extras_shell,
+         'extras_shell_edges': extras_shell_edges,
          'glyph_art': glyph_art,
          'glyph_art_world': glyph_art_world,
          'key_row_a_x': key_row_a_x,
