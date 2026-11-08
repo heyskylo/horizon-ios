@@ -4060,6 +4060,15 @@ Bundles need `"hooks": @API:toast_add@`.
 
 ### Toasts a mod shows
 
+`native_push_voice(mod_id, source, samples, sample_rate, at)` (client, `host.push_voice`) plays a
+mod's own audio, such as a proximity voice chat's: mono samples from -1 to 1 at `sample_rate` hertz.
+`source` is the mod's own id for a speaker (a player's UUID, say): each source's blocks play one
+after another, in the order they were pushed, while different sources play at the same time. `at`
+is where they were spoken, for direction and a linear fade to silence at 48 blocks; none plays them
+centred. A source holds at most two seconds, and a burst past that is refused rather than delayed;
+at most 64 sources play at once. False when nothing was queued: on a server, without an audio
+device, with nothing to play or past a cap. Bundles need `"hooks": @API:push_voice@`.
+
 `native_add_toast(id, icon, title, description, challenge)` (client, `host.add_toast`) queues a toast of the mod's own
 in the five slots the advancement, recipe and system toasts share, drawn as vanilla's `AdvancementToast`: the item
 `icon` at 16 pixels (an unknown item draws none), `title` where the advancement toast's frame label goes ("Advancement
