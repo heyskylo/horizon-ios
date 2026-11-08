@@ -19291,6 +19291,8 @@ mod orb_score_store_tests;
 #[cfg(test)]
 mod recipe_book_variants_tests;
 #[cfg(test)]
+mod spawn_yaw_tests;
+#[cfg(test)]
 mod stand_break_loot_tests;
 #[cfg(test)]
 mod stand_command_hurt_tests;

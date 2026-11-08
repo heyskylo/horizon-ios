@@ -2606,7 +2606,9 @@ impl Game<'_> {
         }
         let name;
         if self.res.mob_types().contains_key(&kind) {
-            self.spawn_mob_spawned(&short, pos)
+            // SummonCommand.createEntity loads the mob from `{id:..}`: its yaw
+            // is the compound's (none, so 0), with no level-random draw.
+            self.spawn_mob_spawned(&short, pos, super::creatures::SpawnYaw::Fixed(0.0))
                 .ok_or_else(|| err("commands.summon.failed.uuid", &[]))?;
             name = Text::translate(&entity_name_key(&kind), &[]);
         } else {
