@@ -2247,6 +2247,11 @@ impl OptionsUi {
             _ => None,
         }
     }
+    /// A controller's or the keyboard's focus landed on `rect`: a row of a shell screen's list
+    /// that is partly hidden scrolls all into view. How far it moved down, when it moved.
+    pub fn reveal(&mut self, s: &Settings, size: (f32, f32), rect: [f32; 4]) -> Option<f32> {
+        self.shell_mut()?.reveal(s, size, rect)
+    }
     /// What a shell screen's outputs do to these options.
     fn shell_events(&mut self, s: &mut Settings, outputs: Vec<shell::Output>) -> Vec<Event> {
         let mut events = Vec::new();
@@ -3717,6 +3722,8 @@ impl OptionsUi {
         let in_world = self.in_world;
         if let Some(shell) = self.shell_mut() {
             shell.draw(s, batch, atlas, cursor, in_world, waiting);
+            // The keys lay the screen out at the size it was drawn at.
+            self.size = (batch.width, batch.height);
             return;
         }
         if self.page() == Page::SplitSetup {
@@ -4932,10 +4939,12 @@ impl OptionsUi {
             }
             return events;
         }
-        let gui = (
-            self.size.0.max(MIN_KEY_GUI.0),
-            self.size.1.max(MIN_KEY_GUI.1),
-        );
+        // The size it was drawn at; before the first draw, one its keys can lay out at.
+        let gui = if self.size.0 > 0.0 && self.size.1 > 0.0 {
+            self.size
+        } else {
+            MIN_KEY_GUI
+        };
         if let Some(shell) = self.shell_mut() {
             let outputs = shell.key(s, key, text, shift, gui);
             return self.shell_events(s, outputs);
