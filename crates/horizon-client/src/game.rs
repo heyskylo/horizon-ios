@@ -18215,9 +18215,9 @@ fn write_level_for_role(
 }
 
 #[cfg(test)]
-mod test_pos_guest_tests;
-#[cfg(test)]
 mod sulfur_bucket_tests;
+#[cfg(test)]
+mod test_pos_guest_tests;
 #[cfg(test)]
 mod vibration_tests;
 
