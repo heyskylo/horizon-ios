@@ -447,6 +447,12 @@ impl BlockEntity {
         if name == "minecraft:bell" {
             return Some(Self::Bell);
         }
+        if name == "minecraft:conduit" {
+            return Some(Self::Conduit(None));
+        }
+        if name == "minecraft:enchanting_table" {
+            return Some(Self::EnchantingTable);
+        }
         if name == "minecraft:daylight_detector" {
             return Some(Self::DaylightDetector);
         }
@@ -551,7 +557,9 @@ impl BlockEntity {
             Self::EndGateway(_) => name == "minecraft:end_gateway",
             Self::DaylightDetector => name == "minecraft:daylight_detector",
             Self::Bell => name == "minecraft:bell",
+            Self::Conduit(_) => name == "minecraft:conduit",
             Self::EndPortal => name == "minecraft:end_portal",
+            Self::EnchantingTable => name == "minecraft:enchanting_table",
             Self::StructureBlock(_) => name == "minecraft:structure_block",
             Self::TestBlock(_) => name == "minecraft:test_block",
             Self::TestInstanceBlock(_) => name == "minecraft:test_instance_block",
@@ -591,7 +599,9 @@ impl BlockEntity {
             Self::EndGateway(_) => "minecraft:end_gateway",
             Self::DaylightDetector => "minecraft:daylight_detector",
             Self::Bell => "minecraft:bell",
+            Self::Conduit(_) => "minecraft:conduit",
             Self::EndPortal => "minecraft:end_portal",
+            Self::EnchantingTable => "minecraft:enchanting_table",
             Self::Brushable(_) => "minecraft:brushable_block",
             Self::Campfire(_) => "minecraft:campfire",
             Self::ChiseledBookshelf(_) => "minecraft:chiseled_bookshelf",
@@ -627,7 +637,9 @@ impl BlockEntity {
             | Self::TestInstanceBlock(_)
             | Self::DaylightDetector
             | Self::Bell
+            | Self::Conduit(_)
             | Self::EndPortal
+            | Self::EnchantingTable
             | Self::Brushable(_) => Vec::new(),
             Self::Mod(m) => m.items.iter().flatten().cloned().collect(),
             Self::Lectern(l) => l.book.iter().cloned().collect(),
@@ -659,7 +671,9 @@ impl BlockEntity {
             | Self::TestInstanceBlock(_)
             | Self::DaylightDetector
             | Self::Bell
+            | Self::Conduit(_)
             | Self::EndPortal
+            | Self::EnchantingTable
             | Self::Brushable(_) => &[],
             Self::Jukebox(j) => &j.items,
             Self::Crafter(c) => &c.items,
@@ -696,7 +710,9 @@ impl BlockEntity {
             | Self::TestInstanceBlock(_)
             | Self::DaylightDetector
             | Self::Bell
+            | Self::Conduit(_)
             | Self::EndPortal
+            | Self::EnchantingTable
             | Self::Brushable(_) => &mut [],
             Self::Jukebox(j) => &mut j.items,
             Self::Crafter(c) => &mut c.items,

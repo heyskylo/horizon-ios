@@ -2254,19 +2254,165 @@ impl Overlay<'_> {
         fs::write(path, bytes)?;
         Ok(())
     }
-    /// `write` with a file's own bytes, copied without reading them (a clone on APFS).
-    fn copy(&self, rel: &str, from: &Path) -> Result<()> {
-        let rel = Path::new(rel);
-        if let Some(parent) = rel.parent() {
+    /// `write` for many files, each with a file's own bytes, copied without
+    /// reading them (a clone on APFS). One copy is a few filesystem calls and
+    /// Chipped alone has 10k textures, so [`COPY_THREADS`] threads share them,
+    /// once this thread made their folders. A path given twice keeps its last file.
+    fn copy_all(&self, copies: &[(String, PathBuf)]) -> Result<()> {
+        let mut last: BTreeMap<&str, &Path> = copies
+            .iter()
+            .map(|(rel, from)| (rel.as_str(), from.as_path()))
+            .collect();
+        // A namespace folder the base lacks, with every file of the mod's folder copied, is
+        // cloned whole where the system can: one call instead of one per file.
+        for (folder, from, left_out) in whole_folders(self.base, &last) {
+            if let Some(parent) = Path::new(&folder).parent() {
+                self.dir(parent)?;
+            }
+            let to = self.out.join(&folder);
+            // Another mod's data may have been written there already.
+            if fs::symlink_metadata(&to).is_ok() {
+                continue;
+            }
+            if horizon_threads::clone_tree(&from, &to).is_err() {
+                if fs::symlink_metadata(&to).is_ok() {
+                    fs::remove_dir_all(&to)?;
+                }
+                continue;
+            }
+            // What the copies leave out goes, with the folders it leaves empty.
+            for rel in &left_out {
+                fs::remove_file(to.join(rel))?;
+                for dir in Path::new(rel).ancestors().skip(1) {
+                    if dir.as_os_str().is_empty() || fs::remove_dir(to.join(dir)).is_err() {
+                        break;
+                    }
+                }
+            }
+            last.retain(|rel, _| !rel.starts_with(&format!("{folder}/")));
+        }
+        let parents: BTreeSet<&Path> = last
+            .keys()
+            .filter_map(|rel| Path::new(rel).parent())
+            .collect();
+        for parent in parents {
             self.dir(parent)?;
         }
-        let path = self.out.join(rel);
-        if fs::symlink_metadata(&path).is_ok() {
-            fs::remove_file(&path)?;
-        }
-        fs::copy(from, path)?;
+        let jobs: Vec<(&str, &Path)> = last.into_iter().collect();
+        let copy = |rel: &str, from: &Path| -> std::io::Result<()> {
+            let path = self.out.join(rel);
+            if fs::symlink_metadata(&path).is_ok() {
+                fs::remove_file(&path)?;
+            }
+            fs::copy(from, path).map(|_| ())
+        };
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let threads = horizon_threads::worker_count().clamp(1, COPY_THREADS);
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..threads)
+                .map(|_| {
+                    scope.spawn(|| -> std::result::Result<(), String> {
+                        loop {
+                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some((rel, from)) = jobs.get(i) else {
+                                return Ok(());
+                            };
+                            copy(rel, from).map_err(|e| format!("{rel}: {e}"))?;
+                        }
+                    })
+                })
+                .collect();
+            workers.into_iter().try_for_each(|w| {
+                w.join()
+                    .unwrap_or_else(|_| Err("a copy thread panicked".into()))
+            })
+        })?;
         Ok(())
     }
+}
+
+/// Threads copying the mods' files into the overlay ([`Overlay::copy_all`]).
+const COPY_THREADS: usize = 8;
+
+/// The namespace folders (`assets/<ns>`, `data/<ns>`) of `copies` (path → file) that can
+/// be cloned whole: the folder, the mod's folder it is cloned from, and the files of that
+/// folder the copies leave out (a refused block's model), to delete from the clone. The
+/// base has no such folder, all its files come from one mod folder holding only files and
+/// folders (no link), and at most as many are left out as are copied.
+fn whole_folders(
+    base: &Path,
+    copies: &BTreeMap<&str, &Path>,
+) -> Vec<(String, PathBuf, Vec<String>)> {
+    let mut groups: BTreeMap<&str, (Option<PathBuf>, BTreeSet<&str>)> = BTreeMap::new();
+    for (rel, from) in copies {
+        let mut parts = rel.splitn(3, '/');
+        let (Some(top), Some(ns), Some(_)) = (parts.next(), parts.next(), parts.next()) else {
+            continue;
+        };
+        let folder = &rel[..top.len() + 1 + ns.len()];
+        let source = from
+            .ancestors()
+            .nth(rel.split('/').count())
+            .filter(|root| root.join(rel) == *from)
+            .map(|root| root.join(folder));
+        let group = groups
+            .entry(folder)
+            .or_insert_with(|| (source.clone(), BTreeSet::new()));
+        if group.0 != source {
+            group.0 = None;
+        }
+        group.1.insert(&rel[folder.len() + 1..]);
+    }
+    groups
+        .into_iter()
+        .filter_map(|(folder, (source, files))| {
+            let source = source?;
+            let mut found = BTreeSet::new();
+            if fs::symlink_metadata(base.join(folder)).is_ok()
+                || !only_files(&source, &source, &mut found)
+                || !files.iter().all(|f| found.contains(*f))
+            {
+                return None;
+            }
+            let left_out: Vec<String> = found
+                .into_iter()
+                .filter(|f| !files.contains(f.as_str()))
+                .collect();
+            (left_out.len() <= files.len()).then(|| (folder.to_owned(), source, left_out))
+        })
+        .collect()
+}
+
+/// Gathers the files below `dir` as `/`-joined paths from `root`; false at anything
+/// that is neither a file nor a folder, or can't be read.
+fn only_files(root: &Path, dir: &Path, found: &mut BTreeSet<String>) -> bool {
+    let Ok(read) = fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in read {
+        let Ok(entry) = entry else { return false };
+        let Ok(kind) = entry.file_type() else {
+            return false;
+        };
+        let path = entry.path();
+        if kind.is_dir() {
+            if !only_files(root, &path, found) {
+                return false;
+            }
+        } else if kind.is_file() {
+            let Some(rel) = path
+                .strip_prefix(root)
+                .ok()
+                .and_then(|rel| rel.iter().map(|p| p.to_str()).collect::<Option<Vec<_>>>())
+            else {
+                return false;
+            };
+            found.insert(rel.join("/"));
+        } else {
+            return false;
+        }
+    }
+    true
 }
 fn out_path(overlay: &Overlay<'_>, rel: &str) -> PathBuf {
     overlay.out.join(rel)
@@ -2473,22 +2619,27 @@ impl TagMerge {
 /// would mostly add memory.
 const TABLE_THREADS: usize = 3;
 
-/// Rewrites the base's per-state tables for the mods' states into the
-/// overlay. They are independent: [`TABLE_THREADS`] threads take them,
-/// the largest first.
-fn tables(base: &Path, plan: &Plan, overlay: &Overlay<'_>) -> Result<()> {
+/// The base's per-state tables, the largest first, with their directories
+/// made real in the overlay: [`tables`]' threads then only write files.
+fn table_jobs(base: &Path, overlay: &Overlay<'_>) -> Result<Vec<(&'static str, u64)>> {
     let mut jobs: Vec<(&str, u64)> = JSON_TABLES
         .iter()
         .chain(&NBT_TABLES)
         .filter_map(|name| Some((*name, fs::metadata(base.join(name)).ok()?.len())))
         .collect();
     jobs.sort_by_key(|(_, size)| std::cmp::Reverse(*size));
-    // Their directories become real here, so the threads only write files.
     for (name, _) in &jobs {
         if let Some(parent) = Path::new(name).parent() {
             overlay.dir(parent)?;
         }
     }
+    Ok(jobs)
+}
+
+/// Rewrites the base's per-state tables (`jobs`, from [`table_jobs`]) for
+/// the mods' states into the overlay. They are independent:
+/// [`TABLE_THREADS`] threads take them, the largest first.
+fn tables(base: &Path, plan: &Plan, overlay: &Overlay<'_>, jobs: &[(&str, u64)]) -> Result<()> {
     let table = |name: &str| -> Result<()> {
         let path = base.join(name);
         let bytes = if name == "entity-types.json" {
@@ -2553,8 +2704,8 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
     let base = &std::path::absolute(base)?;
     let plan = Plan::new(base, mods)?;
     let overlay = Overlay::new(base, out)?;
-    tables(base, &plan, &overlay)?;
     // Mod files, and every tag addition gathered per tag file.
+    let mut copies = Vec::new();
     let mut tags: BTreeMap<String, TagMerge> = BTreeMap::new();
     let mut warnings = Vec::new();
     let mut worldgen: BTreeMap<&str, Vec<(String, String)>> = BTreeMap::new();
@@ -2575,7 +2726,7 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
                 && worldgen_entry(file).is_none()
                 && !(file.starts_with("data/") && file.contains("/structure/"));
             if plain && let Some(from) = reader.path(file)? {
-                overlay.copy(file, &from)?;
+                copies.push((file.clone(), from));
                 continue;
             }
             let bytes = reader.read(file)?;
@@ -2622,6 +2773,19 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
             }
         }
     }
+    // The tables are rewritten on threads of their own while the files are copied: the
+    // two write different folders, each made real here first.
+    let jobs = table_jobs(base, &overlay)?;
+    std::thread::scope(|scope| -> Result<()> {
+        let tables =
+            scope.spawn(|| tables(base, &plan, &overlay, &jobs).map_err(|e| e.to_string()));
+        let copied = overlay.copy_all(&copies);
+        let tables = tables
+            .join()
+            .unwrap_or_else(|_| Err("a table thread panicked".into()));
+        copied?;
+        Ok(tables?)
+    })?;
     // A reload appends every pack's sources for an atlas to the ones below it.
     for (file, sources) in &atlases {
         let vanilla = fs::read_to_string(base.join(file)).ok();

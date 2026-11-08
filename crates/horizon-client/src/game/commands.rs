@@ -623,7 +623,7 @@ impl Game<'_> {
                 .projectiles
                 .iter()
                 .find(|p| p.id == id)
-                .map_or_else(String::new, |p| p.kind.id().into()),
+                .map_or_else(String::new, |p| p.entity_type().into()),
             Target::Stand(_) => "minecraft:armor_stand".into(),
             Target::Frame(id) => {
                 if self.item_frames.iter().any(|f| f.id == id && f.glow) {
@@ -703,6 +703,18 @@ impl Game<'_> {
             // FallingBlockEntity.getTypeName: `entity.minecraft.falling_block_type`
             // with the block's name.
             Target::Falling(id) => {
+                let custom = self
+                    .falling
+                    .iter()
+                    .find(|f| f.id == id)
+                    .and_then(|f| f.saved.as_ref())
+                    .and_then(|saved| saved.1.get("CustomName"))
+                    .or_else(|| self.persist_raw(id).and_then(|r| r.get("CustomName")));
+                if let Some(c) = custom {
+                    return horizon_client::scoreboard::comp_text(
+                        &horizon_client::scoreboard::tag_to_json(c),
+                    );
+                }
                 let block = self
                     .falling
                     .iter()
@@ -721,17 +733,9 @@ impl Game<'_> {
             ),
             other => {
                 // Entity.getDisplayName: the CustomName component, else the type.
-                let custom = match other {
-                    Target::Stand(id)
-                    | Target::Frame(id)
-                    | Target::Painting(id)
-                    | Target::Boat(id)
-                    | Target::Cart(id)
-                    | Target::Other(id)
-                    | Target::Fangs(id)
-                    | Target::Cloud(id) => self.persist_raw(id).and_then(|r| r.get("CustomName")),
-                    _ => None,
-                };
+                let custom = super::native_entities::target_id(other)
+                    .and_then(|id| self.persist_raw(id))
+                    .and_then(|r| r.get("CustomName"));
                 if let Some(c) = custom {
                     return horizon_client::scoreboard::comp_text(
                         &horizon_client::scoreboard::tag_to_json(c),
