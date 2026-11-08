@@ -20,6 +20,10 @@ const MATERIALS: usize = 16;
 pub const TERRAIN_MODEL_SOLID_OVERLAY: u32 = 42;
 pub const TERRAIN_MODEL_CUTOUT_OVERLAY: u32 = 43;
 pub const TERRAIN_MODEL_CUTOUT_MIPPED_OVERLAY: u32 = 44;
+/// The overlay of a resource pack's Polytone custom particle drawn additively
+/// (`additive_translucent`): fog tints its colour as vanilla's particle shader does, which the
+/// other additive geometry does not take.
+pub const ADDITIVE_PARTICLE_OVERLAY: u32 = 45;
 /// Native terrain-array UV/payloads must never enter a shared-atlas shader-pack pass.
 pub fn is_native_terrain(layer: u32) -> bool {
     matches!(

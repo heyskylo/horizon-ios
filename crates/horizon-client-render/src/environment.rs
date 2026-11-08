@@ -178,6 +178,21 @@ struct FrameHost<'a> {
     seed: u64,
 }
 
+/// `program`'s value for the frame (a pack's expression outside attribute layers: its `v` is 0).
+pub(crate) fn eval_frame(
+    program: &horizon_polytone::expr::Program,
+    frame: &Frame,
+    configs: &horizon_polytone::pack::Configs,
+) -> Option<horizon_polytone::expr::Value> {
+    let mut host = FrameHost {
+        frame,
+        configs,
+        value: 0.0,
+        seed: frame.game_time as u64,
+    };
+    program.eval(&mut host).ok()
+}
+
 impl horizon_polytone::expr::Host for FrameHost<'_> {
     fn root(&mut self, root: horizon_polytone::expr::Root) -> horizon_polytone::expr::Value {
         use horizon_polytone::expr::{Root, Value as V};

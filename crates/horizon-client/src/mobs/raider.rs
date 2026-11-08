@@ -144,7 +144,8 @@ pub fn register(m: &mut Mob) {
     m.ai.goals.add(4, LongDistancePatrol::new(0.7, 0.595));
     m.ai.goals.add(1, ObtainBanner::default());
     m.ai.goals.add(3, PathfindToRaid::default());
-    m.ai.goals.add(4, MoveThroughVillage::new(1.05, 1.0));
+    m.ai.goals
+        .add(4, MoveThroughVillage::new(f64::from(1.05_f32), 1.0));
     m.ai.goals.add(5, Celebration);
 }
 

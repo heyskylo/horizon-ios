@@ -99,10 +99,11 @@ impl FogState {
         self.block_light_flicker += (a - b) * c * d * 0.1;
         self.block_light_flicker *= 0.9;
     }
-    /// `LocalPlayer.aiStep`: water vision ramps up while the eye is in water.
-    pub fn tick(&mut self, eye_in_water: bool) {
+    /// `LocalPlayer.aiStep`: water vision ramps up while the eye is in water, ten times faster
+    /// for a spectator.
+    pub fn tick(&mut self, eye_in_water: bool, spectator: bool) {
         self.water_vision_time = if eye_in_water {
-            (self.water_vision_time + 1).min(600)
+            (self.water_vision_time + if spectator { 10 } else { 1 }).min(600)
         } else {
             (self.water_vision_time - 10).max(0)
         };
@@ -707,11 +708,11 @@ mod tests {
     fn water_vision_ramps() {
         let mut s = FogState::default();
         for _ in 0..100 {
-            s.tick(true);
+            s.tick(true, false);
         }
         assert!((s.water_vision(true) - 0.6).abs() < 1e-6);
         for _ in 0..500 {
-            s.tick(true);
+            s.tick(true, false);
         }
         assert_eq!(s.water_vision(true), 1.0);
         assert_eq!(s.water_vision(false), 0.0);
@@ -726,17 +727,17 @@ mod tests {
         input.fog_type = FogType::Water;
         // Just in: vanilla's water vision is 0, so the fog ends at a quarter of 96 blocks.
         let mut state = FogState::default();
-        state.tick(true);
+        state.tick(true, false);
         let first = setup_fog(&tables, &state, &input);
         assert_eq!(first.environmental_end, 24.0);
         for _ in 0..600 {
-            state.tick(true);
+            state.tick(true, false);
         }
         let settled = setup_fog(&tables, &state, &input);
         assert_eq!(settled.environmental_end, 96.0);
         input.full_water_vision = true;
         let mut fresh = FogState::default();
-        fresh.tick(true);
+        fresh.tick(true, false);
         let clear = setup_fog(&tables, &fresh, &input);
         assert_eq!(clear.environmental_end, settled.environmental_end);
         assert_eq!(clear.color, settled.color);
@@ -781,5 +782,21 @@ mod tests {
         let fog = setup_fog(&tables, &state, &inputs(&sky));
         assert_eq!(fog.environmental_start, -160.0);
         assert_eq!(fog.environmental_end, 768.0);
+    }
+
+    #[test]
+    fn a_spectator_sees_clearly_under_water_ten_times_sooner() {
+        let mut swimmer = FogState::default();
+        let mut spectator = FogState::default();
+        for _ in 0..60 {
+            swimmer.tick(true, false);
+            spectator.tick(true, true);
+        }
+        // LocalPlayer.getWaterVision after 60 ticks: 60 and 600 ticks of vision.
+        assert!((swimmer.water_vision(true) - 0.36).abs() < 1e-6);
+        assert_eq!(spectator.water_vision(true), 1.0);
+        // Out of the water both lose it 10 a tick.
+        spectator.tick(false, true);
+        assert_eq!(spectator.water_vision_time, 590);
     }
 }
