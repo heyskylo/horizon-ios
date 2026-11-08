@@ -1687,18 +1687,17 @@ impl Game<'_> {
             let id = self.boats[i].id;
             self.release_vehicle_container(id);
             let b = self.boats.remove(i);
-            // AbstractBoat.remove: a destroyed boat drops its lead.
-            self.boat_removed(&b);
             // `AbstractChestBoat.remove` spills the chest through
-            // `Containers.dropContents` for every destroying removal reason;
-            // that has no `entity_drops` gate of its own.
-            for stack in b.items.iter().flatten() {
-                self.spawn_item_own(stack.clone(), at, 10);
-            }
+            // `Containers.dropContents` for every destroying removal reason
+            // (the kill below, and a creative hit's discard); that has no
+            // `entity_drops` gate of its own. A plain boat has no slots.
+            self.drop_vehicle_contents(at, &b.items);
+            // AbstractBoat.remove, after that: a destroyed boat drops its lead.
+            self.boat_removed(&b);
             // `VehicleEntity.destroy(level, dropItem)`: `kill` (the boat's own
-            // ENTITY_DIE), then the boat item on the death path only, and only
-            // with `entity_drops` on, by `spawnAtLocation` (an ItemEntity's own
-            // random motion).
+            // ENTITY_DIE after that removal), then the boat item on the death
+            // path only, and only with `entity_drops` on, by `spawnAtLocation`
+            // (an ItemEntity's own random motion).
             if !creative {
                 self.entity_killed_event(at, false);
             }
@@ -1714,6 +1713,12 @@ impl Game<'_> {
                     at,
                     10,
                 );
+                // AbstractChestBoat.destroy: `chestVehicleDestroyed` drops the
+                // emptied chest again, which only draws each slot's spot.
+                if b.chest {
+                    let empty = vec![None; b.items.len()];
+                    self.drop_vehicle_contents(at, &empty);
+                }
             }
         }
         Some(destroyed)
