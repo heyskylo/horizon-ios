@@ -9351,8 +9351,9 @@ impl Game<'_> {
         if gliding && &*held.item == "minecraft:firework_rocket" {
             self.with_hand(hand, Game::swing_arm);
         }
-        // A stack's own `blocks_attacks` raises it as a shield's does.
-        let blocks = self.blocks_attacks(&held).is_some();
+        // A stack's own `blocks_attacks` raises it as a shield's does; a
+        // use the server's patch gives it is CONSUME too (no swing).
+        let blocks = self.blocks_attacks(&held).is_some() || self.patched_held_use(&held);
         let ends = use_ends_click(&info, gliding) || blocks;
         // MultiPlayerGameMode.useItem: `ItemStack.use`'s SUCCESS swings
         // (SwingSource.CLIENT); CONSUME does not — a bow, crossbow, trident
@@ -9467,8 +9468,12 @@ impl Game<'_> {
             // Item.use: a kinetic weapon starts being used.
             id if horizon_client::spear::Kinetic::of(id).is_some() => true,
             // ShieldItem.use: anything that blocks attacks, off cooldown.
+            // Item.use: a consumable or `blocks_attacks` the server's patch
+            // adds starts the use (Consumable.startConsuming, startUsingItem).
             _ => {
-                self.raise_shield(self.held_slot());
+                if !self.raise_shield(self.held_slot()) && self.patched_held_use(held) {
+                    self.start_using_item();
+                }
                 return true;
             }
         };
@@ -9510,6 +9515,21 @@ impl Game<'_> {
                 | "minecraft:ender_eye"
         ) || horizon_client::spear::Kinetic::of(&stack.item).is_some()
             || self.blocks_attacks(stack).is_some()
+            || self.patched_held_use(stack)
+    }
+    /// Whether the server's patch gives `stack`, an item with no consumable
+    /// of its own, a `consumable` with a use time or `blocks_attacks` (a
+    /// sword made to block): `Item.use` starts a use of it
+    /// (`Consumable.startConsuming`, `startUsingItem`) that lasts until the
+    /// button lets go or the server stops it, as the client's
+    /// `LivingEntity.updateUsingItem` never completes one.
+    fn patched_held_use(&self, stack: &ItemStack) -> bool {
+        let (ticks, blocks) = horizon_client::item_sync::patched_use(stack);
+        ticks.map_or(blocks, |ticks| ticks > 0)
+            && self
+                .items()
+                .get(&stack.item)
+                .is_none_or(|i| i.consumable.is_none())
     }
 
     /// The rest of Minecraft.startUseItem once the main hand's target passed:
