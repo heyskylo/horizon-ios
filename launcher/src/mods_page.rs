@@ -1992,6 +1992,8 @@ pub(super) fn auto_update(targets: &[AutoTarget]) -> (Vec<String>, Vec<String>) 
             in_pack: horizon::auto::in_pack(&i.home),
             level,
             natives: t.natives,
+            fit: horizon_launcher::native_fit::plays(i)
+                .map(|plays| (plays, horizon_launcher::native_fit::pins(&i.home))),
         };
         if let Some(report) = horizon::auto::run(&i.home, &ctx, &|_, _| {}) {
             lines.extend(report.lines());
