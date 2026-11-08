@@ -4757,7 +4757,10 @@ fn roots_unused_for_a_day_are_removed() {
     let reused = root("00000000000000dd", 2 * 86400);
     fs::write(used_path(&reused), b"").unwrap();
     fs::write(used_path(&stale), b"").unwrap();
-    let file = fs::File::options().write(true).open(used_path(&stale)).unwrap();
+    let file = fs::File::options()
+        .write(true)
+        .open(used_path(&stale))
+        .unwrap();
     file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 86400))
         .unwrap();
     drop(file);
