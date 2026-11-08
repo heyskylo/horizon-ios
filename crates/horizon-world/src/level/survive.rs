@@ -140,7 +140,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             Class::Crop => {
                 self.raw_brightness(pos, 0) >= 8 && self.can_survive_at(depth + 1, state, pos)
             }
-            Class::Diode => b.is_face_sturdy_rigid(self.below_state(pos), Direction::Up),
+            Class::Diode => self.can_support_rigid_block(below(pos)),
             Class::Door => {
                 let below_state = self.below_state(pos);
                 if b.table.text(state, p.half) == "lower" {

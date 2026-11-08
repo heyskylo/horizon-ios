@@ -2463,7 +2463,11 @@ pub trait StructureMobs: Send + Sync {
     ) -> bool;
 }
 
+/// A start chunk's saved `structures.starts`, including pending writes.
+pub type SavedStructureStarts = dyn Fn(ChunkPos) -> Option<crate::nbt::Compound> + Send + Sync;
+
 trait SeededPipeline: Send + Sync {
+    fn set_saved_starts(&self, source: Arc<SavedStructureStarts>);
     fn generate(
         &self,
         worker: &mut WorkerState,
@@ -2709,6 +2713,11 @@ where
             valid: BTreeSet::new(),
         };
         structures.use_saved_start(&mut queries, chunk, structure, pieces)
+    }
+    fn set_saved_starts(&self, source: Arc<SavedStructureStarts>) {
+        if let Some(structures) = &self.structures {
+            structures.set_saved_starts(source);
+        }
     }
     fn forget_structure_starts(&self) {
         if let Some(structures) = &self.structures {
@@ -3401,6 +3410,10 @@ pub struct OverworldGenerator {
     noise_clamped: Option<(NoiseSettings, NoiseSettings)>,
 }
 impl OverworldGenerator {
+    /// Install before workers run, so every cache miss can consult the save before generation.
+    pub fn set_saved_starts(&self, source: Arc<SavedStructureStarts>) {
+        self.pipeline.set_saved_starts(source);
+    }
     /// What the shared caches hold, for `horizon-ctl memory`.
     pub fn cache_census(&self) -> CacheCensus {
         self.pipeline.cache_census()
@@ -4948,6 +4961,102 @@ mod tests {
             .unwrap_or_else(|| {
                 Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local/horizon-client/26.3")
             })
+    }
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn saved_jigsaw_starts_match_generated_layouts() {
+        use super::super::structure::start::Piece;
+        use crate::nbt::Compound;
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("resources"),
+        );
+        let registry = Box::leak(Box::new(crate::level::data::load_registry(&root).unwrap()));
+        let data = GeneratorData::load(&root.join("worldgen"), registry).unwrap();
+        for seed in [12345, 1234] {
+            for (dimension, names) in [
+                (
+                    "minecraft:overworld",
+                    &[
+                        "village_plains",
+                        "village_desert",
+                        "village_savanna",
+                        "village_snowy",
+                        "village_taiga",
+                        "pillager_outpost",
+                        "ancient_city",
+                        "trail_ruins",
+                        "trial_chambers",
+                    ][..],
+                ),
+                ("minecraft:the_nether", &["bastion_remnant"][..]),
+            ] {
+                let generator = OverworldGenerator::for_dimension(
+                    data.clone(),
+                    seed,
+                    "minecraft:normal",
+                    dimension,
+                )
+                .unwrap();
+                let mut worker = generator.worker();
+                let mut originals = Vec::new();
+                // A naturally generated area, including unsupported starts sharing its chunks.
+                if seed == 12345 && dimension == "minecraft:overworld" {
+                    let starts = worker.structure_starts(ChunkPos::new(11, -11));
+                    assert!(starts.iter().any(|s| s.name == "minecraft:ancient_city"));
+                    originals.extend(starts);
+                }
+                for (i, name) in names.iter().enumerate() {
+                    let name = format!("minecraft:{name}");
+                    let pos = ChunkPos::new(i as i32 * 3, 0);
+                    originals.push(
+                        worker
+                            .structure_start(&name, pos)
+                            .unwrap_or_else(|| panic!("{seed} {name}")),
+                    );
+                }
+                let mut saved = HashMap::<(i32, i32), Compound>::new();
+                worker.forget_structure_starts();
+                for original in &mut originals {
+                    // Locating a generated start can increment its count. A nonzero value also
+                    // proves that loading did not silently fall back to seed-identical generation.
+                    if original.pieces.iter().all(|p| matches!(p, Piece::Pool(_))) {
+                        Arc::get_mut(original)
+                            .expect("uncached placement start")
+                            .references = 3;
+                    }
+                    saved
+                        .entry((original.chunk.x, original.chunk.z))
+                        .or_default()
+                        .insert(original.name.as_str().into(), original.save().unwrap());
+                }
+                generator
+                    .set_saved_starts(Arc::new(move |pos| saved.get(&(pos.x, pos.z)).cloned()));
+                for original in &originals {
+                    let starts = worker.structure_starts(original.chunk);
+                    let loaded = starts
+                        .iter()
+                        .find(|s| s.name == original.name)
+                        .expect("saved or fallback start");
+                    assert_eq!(
+                        loaded.save(),
+                        original.save(),
+                        "{seed} {}: every saved field",
+                        original.name
+                    );
+                    assert_eq!(
+                        format!("{loaded:?}"),
+                        format!("{original:?}"),
+                        "{seed} {}: every runtime field",
+                        original.name
+                    );
+                    let again = generator.worker().structure_starts(original.chunk);
+                    assert!(
+                        again.iter().any(|s| Arc::ptr_eq(s, loaded)),
+                        "workers share admitted starts"
+                    );
+                }
+            }
+        }
     }
     /// The block registry the worldgen bundle needs. `GeneratorData` keeps it
     /// for as long as the generator lives, so it is shared, not freed.

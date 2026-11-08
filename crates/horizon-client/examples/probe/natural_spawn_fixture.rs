@@ -30,7 +30,7 @@ use horizon_client::{
     mobs::{
         MobTypes, Species,
         data::MobData,
-        spawn_rules::{Dimension, SpawnLevel},
+        spawn_rules::SpawnLevel,
         spawn_selection::{
             self, Category, Counted, Event, GenEvent, Heightmap, NaturalLevel, SpawnCost,
             SpawnPlayer, SpawnRequest, SpawnState, Spawned, StructureAt, StructureSpawns,
@@ -49,12 +49,13 @@ use horizon_client::{
     vault::{Vault, VaultEvent, VaultLevel, VaultPlayer, VaultState},
 };
 use horizon_core::{
+    LevelKey,
     geometry::Aabb,
     random::{LegacyRandom, RandomSource},
 };
 use horizon_world::{
-    block_collision::BlockCollisionRegistry, chunk::BlockState, loot::PackOverlay, nbt::Tag,
-    registry::BlockStateId,
+    block_collision::BlockCollisionRegistry, chunk::BlockState, dimension_type::DimensionFacts,
+    loot::PackOverlay, nbt::Tag, registry::BlockStateId,
 };
 use serde_json::Value;
 use std::{
@@ -98,6 +99,7 @@ struct Shared<'a> {
     entity_types: &'a HashSet<String>,
 }
 struct World<'a> {
+    border: horizon_core::geometry::border::BorderGeometry,
     s: &'a Shared<'a>,
     blocks: Vec<(Bx, BlockStateId)>,
     lights: Vec<(Bx, i32, i32)>,
@@ -110,7 +112,7 @@ struct World<'a> {
     sea: i32,
     seed: i64,
     peaceful: bool,
-    dimension: Dimension,
+    dimension: &'static DimensionFacts,
     dimension_id: String,
     slime: f32,
     starts: Vec<Start>,
@@ -158,6 +160,10 @@ impl World<'_> {
     }
 }
 impl SpawnLevel for World<'_> {
+    fn within_world_border(&self, x: i32, z: i32) -> bool {
+        self.border
+            .is_within_bounds(f64::from(x), f64::from(z), 0.0)
+    }
     fn state(&self, x: i32, y: i32, z: i32) -> BlockStateId {
         if let Some((_, s)) = self
             .placed
@@ -214,7 +220,7 @@ impl SpawnLevel for World<'_> {
     fn peaceful(&self) -> bool {
         self.peaceful
     }
-    fn dimension(&self) -> Dimension {
+    fn dimension_type(&self) -> &DimensionFacts {
         self.dimension
     }
     fn surface_slime_chance(&self, _: i32, _: i32, _: i32) -> f32 {
@@ -232,28 +238,24 @@ impl SpawnLevel for World<'_> {
 }
 impl NaturalLevel for World<'_> {
     fn min_y(&self) -> i32 {
-        if self.dimension == Dimension::Overworld {
+        if self.dimension.id == "minecraft:overworld" {
             -64
         } else {
             0
         }
     }
     fn max_y(&self) -> i32 {
-        if self.dimension == Dimension::Overworld {
+        if self.dimension.id == "minecraft:overworld" {
             319
         } else {
             255
         }
     }
     fn ambient_light(&self) -> f32 {
-        match self.dimension {
-            Dimension::Overworld => 0.0,
-            Dimension::Nether => 0.1,
-            Dimension::End => 0.25,
-        }
+        self.dimension.ambient_light
     }
     fn has_ceiling(&self) -> bool {
-        self.dimension == Dimension::Nether
+        self.dimension.id == "minecraft:the_nether"
     }
     fn mob_type(&self, entity: &str) -> Option<(Species, f32, f32, Category)> {
         let t = self.s.types.types.get(entity)?;
@@ -316,6 +318,8 @@ impl NaturalLevel for World<'_> {
     }
     fn can_spawn_in_chunk(&self, cx: i32, cz: i32) -> bool {
         !self.unloaded.contains(&(cx, cz))
+            && self.within_world_border(cx << 4, cz << 4)
+            && self.within_world_border((cx << 4).wrapping_add(15), (cz << 4).wrapping_add(15))
     }
     fn no_collision(&self, bounds: Aabb) -> bool {
         let lookup = |x: i32, y: i32, z: i32| self.state(x, y, z);
@@ -664,11 +668,8 @@ pub fn main() -> horizon_client::Result<()> {
             })
             .collect::<Vec<_>>();
         let dimension_id = get("dim", "minecraft:overworld");
-        let dimension = match dimension_id.as_str() {
-            "minecraft:the_nether" => Dimension::Nether,
-            "minecraft:the_end" => Dimension::End,
-            _ => Dimension::Overworld,
-        };
+        let dimension =
+            DimensionFacts::of_builtin_level(LevelKey::builtin_or_overworld(&dimension_id));
         let respawn = {
             let r = get("respawn", "0,-1000,0/minecraft:overworld");
             let (p, d) = r.split_once('/').ok_or("bad respawn")?;
@@ -709,6 +710,11 @@ pub fn main() -> horizon_client::Result<()> {
             ));
         }
         let world = World {
+            border: horizon_core::geometry::border::BorderGeometry::new(
+                [get("borderx", "0").parse()?, get("borderz", "0").parse()?],
+                get("bordersize", "59999968").parse()?,
+                29_999_984,
+            )?,
             s: &shared,
             blocks,
             lights,
@@ -885,15 +891,17 @@ pub fn main() -> horizon_client::Result<()> {
                 let categories = state
                     .filtered_categories(get("enemies", "1") == "1", get("persistent", "1") == "1");
                 trace(Event::Categories(categories.clone()));
-                spawn_selection::spawn_for_chunk(
-                    &world,
-                    &mut random,
-                    &mut state,
-                    &categories,
-                    chunk,
-                    &mut spawn,
-                    &mut trace,
-                );
+                if mode != "tick_chunk" || world.can_spawn_in_chunk(chunk.0, chunk.1) {
+                    spawn_selection::spawn_for_chunk(
+                        &world,
+                        &mut random,
+                        &mut state,
+                        &categories,
+                        chunk,
+                        &mut spawn,
+                        &mut trace,
+                    );
+                }
             }
             log.push(format!("next {}", random.next_int_bound(1000).unwrap_or(0)));
         }

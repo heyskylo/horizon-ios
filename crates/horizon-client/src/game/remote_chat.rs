@@ -249,7 +249,8 @@ impl Game<'_> {
     /// (SignableCommand.of over the chat's tree, the server's once it sent one) has each of them signed,
     /// all with the same time, salt and last seen (without a chat session the
     /// signature list is empty, as in vanilla); any other command goes as the
-    /// unsigned packet.
+    /// unsigned packet on releases that have one. Before 1.20.5 even a command
+    /// without message arguments carries the real last-seen acknowledgement.
     pub(super) fn send_command(&mut self, command: &str) {
         let Some(r) = self.remote.as_mut() else {
             return;
@@ -261,7 +262,12 @@ impl Game<'_> {
         } else {
             Vec::new()
         };
-        if arguments.is_empty() {
+        if arguments.is_empty()
+            && !r
+                .session
+                .server_version()
+                .at_most(horizon_protocol::adapter::ServerVersion::V1_20_3)
+        {
             self.send(S::ChatCommand(play::ChatCommand {
                 command: command.to_owned(),
             }));
@@ -318,9 +324,9 @@ impl Game<'_> {
         let over_screen = self.screen != Screen::Playing || self.dialog_open();
         let (message, accept) = match check {
             CommandCheck::NoIssues => {
-                self.send(S::ChatCommand(play::ChatCommand {
-                    command: command.to_owned(),
-                }));
+                // Verification above excludes message arguments. Use the ordinary sender so
+                // releases without an unsigned command packet still acknowledge seen chat.
+                self.send_command(command);
                 return;
             }
             CommandCheck::ParseErrors => (
