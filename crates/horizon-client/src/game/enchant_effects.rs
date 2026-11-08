@@ -218,7 +218,9 @@ impl Game<'_> {
     /// `doPostAttackEffects`): the victim's equipment first (Thorns), then the
     /// attacker's weapon on the victim (fire aspect and wind burst).
     pub(super) fn post_attack(&mut self, mob: usize) {
-        self.victim_post_attack(mob, "minecraft:player", None);
+        if let Some(id) = self.mobs.get(mob).map(|m| m.id) {
+            self.mob_post_attack(id, Some(Who::Player), Some("minecraft:player"), None);
+        }
         let Some(held) = self.held().cloned() else {
             return;
         };
@@ -500,6 +502,7 @@ impl Game<'_> {
         self.player_thorns(|g, min, max| {
             // DamageEntity: Mth.randomBetween from the hurt entity's own random.
             let Some(index) = g.mob_index.find(&g.mobs, attacker) else {
+                g.dragon_thorns(attacker, min, max);
                 return;
             };
             let damage = g.mobs[index].random.next_float() * (max - min) + min;
@@ -645,20 +648,34 @@ impl Game<'_> {
             }
         }
     }
-    /// `EnchantmentHelper.doPostAttackEffectsWithItemSource`'s `VICTIM` loop
-    /// after the player's hit hurt the mob at `victim` (`direct` is the hit's
-    /// direct entity: the player, or its arrow or trident):
-    /// `runIterationOnEquipment` over what the mob holds and wears, in
-    /// `EquipmentSlot` order, runs the `minecraft:post_attack` effects with
-    /// `enchanted: victim` of each enchantment on the player (Thorns).
-    pub(super) fn victim_post_attack(
+    /// `EnchantmentHelper.doPostAttackEffectsWithItemSource`'s victim loop:
+    /// each equipment slot's chance, damage from the attacker's random, then wear.
+    pub(super) fn mob_post_attack(
         &mut self,
-        victim: usize,
-        direct: &str,
+        target: u32,
+        attacker: Option<Who>,
+        direct: Option<&str>,
         damage_type: Option<&str>,
     ) {
+        let attacker_kind = match attacker {
+            Some(Who::Player) => self.player.as_ref().map(|_| "minecraft:player".to_owned()),
+            Some(Who::Mob(id)) => self
+                .mobs
+                .iter()
+                .find(|m| m.id == id && !m.removed)
+                .map(|m| m.kind.id.clone())
+                .or_else(|| {
+                    self.dragon
+                        .as_ref()
+                        .filter(|d| d.id == id)
+                        .map(|_| "minecraft:ender_dragon".to_owned())
+                }),
+            None => None,
+        };
+        let attacker = attacker.filter(|_| attacker_kind.is_some());
+        let direct = direct.or(attacker_kind.as_deref());
         use horizon_client::mobs::finalize as f;
-        let Some(m) = self.mobs.get(victim) else {
+        let Some(m) = self.mobs.iter().find(|m| m.id == target) else {
             return;
         };
         let (id, kind) = (m.id, m.kind.id.clone());
@@ -700,9 +717,9 @@ impl Game<'_> {
                 // Enchantment.damageContext: random_chance draws from the level's random.
                 let ctx = EffectContext {
                     this: Some(&kind),
-                    attacker: Some("minecraft:player"),
-                    direct_attacker: Some(direct),
-                    is_direct: direct == "minecraft:player",
+                    attacker: attacker_kind.as_deref(),
+                    direct_attacker: direct,
+                    is_direct: direct.is_some() && direct == attacker_kind.as_deref(),
                     damage_type,
                     items: Some(world_items!(self)),
                     ..Default::default()
@@ -715,39 +732,70 @@ impl Game<'_> {
                         &mut self.world.random,
                     )
                 });
-                // The player is the attacker; with no attacker nothing applies.
-                if ok && effect["affected"] == "attacker" && self.player.is_some() {
-                    self.victim_effect_on_player(&effect["effect"], level, id, slot);
+                if ok
+                    && effect["affected"] == "attacker"
+                    && let Some(attacker) = attacker
+                {
+                    self.victim_effect(&effect["effect"], level, id, slot, attacker);
                 }
             }
         }
     }
     /// `DamageEntity.apply`, `ChangeItemDamage.apply` (on the piece) and
     /// `AllOf` for one `post_attack` effect of the piece the mob `wearer` has
-    /// in `slot`, on the player that hit it.
-    fn victim_effect_on_player(&mut self, effect: &Value, level: u32, wearer: u32, slot: usize) {
+    /// in `slot`, on the entity that hit it.
+    fn victim_effect(
+        &mut self,
+        effect: &Value,
+        level: u32,
+        wearer: u32,
+        slot: usize,
+        attacker: Who,
+    ) {
         match effect["type"]
             .as_str()
             .map(|t| t.trim_start_matches("minecraft:"))
         {
             Some("all_of") => {
                 for e in effect["effects"].as_array().into_iter().flatten() {
-                    self.victim_effect_on_player(e, level, wearer, slot);
+                    self.victim_effect(e, level, wearer, slot, attacker);
                 }
             }
-            // Mth.randomBetween from the hurt entity's own random (the
-            // player's, which no level draw shares), then its hurtServer by a
-            // source the wearer caused: from where the wearer stands.
+            // DamageEntity.apply: the affected attacker's own random, then
+            // hurtServer by a source the wearer caused, from its feet.
             Some("damage_entity") => {
                 let min = level_value(&effect["min_damage"], level);
                 let max = level_value(&effect["max_damage"], level);
-                let damage = random_source::entity().next_float() * (max - min) + min;
+                let random = match attacker {
+                    Who::Player => random_source::entity().next_float(),
+                    Who::Mob(id) => match self.mob_index.find(&self.mobs, id) {
+                        Some(index) => self.mobs[index].random.next_float(),
+                        None => match self.dragon_effect_random(id) {
+                            Some(random) => random,
+                            None => return,
+                        },
+                    },
+                };
+                let damage = random * (max - min) + min;
                 let Some(m) = self.mobs.iter().find(|m| m.id == wearer) else {
                     return;
                 };
                 let from = [m.position.x, m.position.y, m.position.z];
                 let kind = effect["damage_type"].as_str().unwrap_or("minecraft:thorns");
-                self.mob_hits_player_caused(damage, from, kind, Some(wearer));
+                match attacker {
+                    Who::Player => {
+                        self.mob_hits_player_caused(damage, from, kind, Some(wearer));
+                    }
+                    Who::Mob(id) => {
+                        let source = horizon_client::mobs::Damage {
+                            kind: Self::damage_kind(kind),
+                            attacker: Some(Who::Mob(wearer)),
+                            from: Some(from),
+                            attacker_species: Some(m.species()),
+                        };
+                        self.mob_hits_mob(id, damage, source);
+                    }
+                }
             }
             Some("change_item_damage") => {
                 let amount = level_value(&effect["amount"], level) as u32;

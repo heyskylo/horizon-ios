@@ -44,7 +44,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex, OnceLock,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         mpsc,
     },
 };
@@ -2263,6 +2263,7 @@ enum Record {
     Tag(Arc<NamedTag>),
     /// A chunk to encode on the writer thread.
     Chunk(Arc<Chunk>, Arc<Encoding>),
+    Proto(Arc<SavedProto>, Arc<Encoding>),
     /// A chunk's points of interest, made on the writer thread against the
     /// saved ones (`resolve_poi`).
     Poi(Arc<Chunk>, Arc<SaveTables>),
@@ -2281,6 +2282,13 @@ impl Record {
             Record::Tag(t) => Some(t.clone()),
             Record::Chunk(c, e) => Some(Arc::new(encode_with(
                 c,
+                e.registry,
+                &e.biomes,
+                e.tables.as_deref(),
+                e.shape,
+            ))),
+            Record::Proto(p, e) => Some(Arc::new(encode_proto(
+                p,
                 e.registry,
                 &e.biomes,
                 e.tables.as_deref(),
@@ -2453,6 +2461,7 @@ struct Writer {
 #[derive(Default)]
 struct Outstanding {
     count: Mutex<usize>,
+    chunks: AtomicUsize,
     error: Mutex<Option<String>>,
     done: Condvar,
 }
@@ -2868,19 +2877,26 @@ impl SaveDir {
     /// Queue proto chunks for the writer thread; loads see them meanwhile.
     pub fn save_protos(
         &self,
-        protos: &[SavedProto],
-        registry: &BlockRegistry,
-        biomes: &Biomes,
+        protos: Vec<SavedProto>,
+        registry: &'static BlockRegistry,
+        biomes: &Arc<Biomes>,
     ) -> Result<()> {
-        let tables = self.tables.get().map(|t| &**t);
+        let encoding = Arc::new(Encoding {
+            registry,
+            biomes: biomes.clone(),
+            tables: self.tables.get().cloned(),
+            shape: self.shape,
+        });
         let records = protos
-            .iter()
+            .into_iter()
             .map(|p| {
-                let tag = encode_proto(p, registry, biomes, tables, self.shape);
-                ((p.column.x, p.column.z), Some(tag))
+                (
+                    (p.column.x, p.column.z),
+                    Record::Proto(Arc::new(p), encoding.clone()),
+                )
             })
             .collect();
-        self.write_records("region", records, false)
+        self.queue(Folder::Region, records, false)
     }
     /// Entities saved for a chunk (`entities/`; older chunks may still keep
     /// them in the chunk's own `entities` list).
@@ -2925,7 +2941,14 @@ impl SaveDir {
                 .map_err(|_| "writer poisoned")? += 1;
             let mut writer = self.writer.lock().map_err(|_| "writer poisoned")?;
             let writer = writer.get_or_insert_with(|| self.start_writer());
+            let chunks = if folder == Folder::Region {
+                batch.len()
+            } else {
+                0
+            };
+            self.outstanding.chunks.fetch_add(chunks, Ordering::Relaxed);
             if writer.send.send((folder, batch)).is_err() {
+                self.outstanding.chunks.fetch_sub(chunks, Ordering::Relaxed);
                 *self
                     .outstanding
                     .error
@@ -2998,6 +3021,9 @@ impl SaveDir {
                             }
                         }
                     }
+                    if kind == Folder::Region {
+                        outstanding.chunks.fetch_sub(batch.len(), Ordering::Relaxed);
+                    }
                     if let Ok(mut count) = outstanding.count.lock() {
                         *count -= 1;
                         outstanding.done.notify_all();
@@ -3022,6 +3048,10 @@ impl SaveDir {
                 .map_err(|_| "writer poisoned")?;
         }
         self.write_result()
+    }
+    /// `ChunkMap.activeChunkWrites`: chunk records, excluding entity/POI IO.
+    pub fn active_chunk_writes(&self) -> usize {
+        self.outstanding.chunks.load(Ordering::Relaxed)
     }
     /// Poll durability without holding up the event loop. Errors remain visible
     /// to every waiter, including a later synchronous shutdown.
@@ -5292,7 +5322,7 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
             .collect();
         if let Err(e) = self
             .save
-            .save_protos(&saved, self.registry.registry, &self.biomes)
+            .save_protos(saved, self.registry.registry, &self.biomes)
         {
             log::warn!("Horizon: failed to save proto chunks: {e}");
         }
@@ -6458,11 +6488,17 @@ mod tests {
         save.save_entities_later(vec![((1, 2), vec![entity(2)])])
             .unwrap();
         assert!(!save.writes_finished().unwrap());
+        assert_eq!(save.active_chunk_writes(), 0); // entity batches do not count
+        save.write_records("region", vec![((0, 0), None), ((1, 0), None)], false)
+            .unwrap();
+        // The writer is blocked above: two chunk records in ONE queued batch.
+        assert_eq!(save.active_chunk_writes(), 2);
         assert_eq!(save.load_entities(1, 2), vec![entity(2)]);
         assert!(super::SessionLock::acquire(&dir).is_err());
         drop(blocked);
         save.flush().unwrap();
         assert!(save.writes_finished().unwrap());
+        assert_eq!(save.active_chunk_writes(), 0);
         let reopened = super::SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
         assert_eq!(reopened.load_entities(1, 2), vec![entity(2)]);
         save.save_entities_later(vec![((1, 2), vec![])]).unwrap();

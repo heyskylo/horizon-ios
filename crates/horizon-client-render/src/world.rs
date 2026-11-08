@@ -9,6 +9,9 @@ use horizon_core::random::LegacyRandom;
 use horizon_world::registry::BlockStateId;
 use std::sync::Arc;
 
+mod modified;
+pub use modified::ModifiedChunks;
+
 /// Sections (x, section index, z) waiting to be remeshed, kept by column
 /// (a bit per section index), so the mesh scheduler looks at each column once
 /// rather than at every section of it.
@@ -87,7 +90,7 @@ pub struct World {
     /// was generated rather than read from the save: the game tells native mods.
     pub loaded_chunks: Vec<(i32, i32, bool)>,
     /// Chunks changed since the last save.
-    pub modified: FxHashSet<(i32, i32)>,
+    pub modified: ModifiedChunks,
     /// Block entities, and the order they tick in.
     pub block_entities: crate::block_entities::BlockEntities,
     /// Each chest's `ContainerOpenersCounter`: opener count and largest
@@ -224,7 +227,7 @@ impl World {
             loaded_entities: Vec::new(),
             entities_pending: FxHashSet::default(),
             loaded_chunks: Vec::new(),
-            modified: FxHashSet::default(),
+            modified: ModifiedChunks::default(),
             attachments: Default::default(),
             attachment_syncs: FxHashSet::default(),
             block_entities: Default::default(),
