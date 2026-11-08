@@ -131,34 +131,12 @@ impl Goal for BlazeAttack {
         }
     }
 }
-/// `Blaze.aiStep`: slow falling, the burning sound and smoke.
-pub fn blaze_ai_step(m: &mut Mob, events: &mut Vec<MobEvent>) {
+/// `Blaze.aiStep`: slow falling. The burning sound and the smoke are its
+/// `isClientSide()` branch, which the window's game makes for itself
+/// (`ambient::client_ai_step`): a server neither plays them nor draws for them.
+pub fn blaze_ai_step(m: &mut Mob) {
     if !m.on_ground && m.velocity.y < 0.0 {
         m.velocity.y *= 0.6;
-    }
-    if m.random.next_int_bound(24).unwrap_or(1) == 0 {
-        let volume = 1.0 + m.random.next_float();
-        let pitch = m.random.next_float() * 0.7 + 0.3;
-        events.push(MobEvent::Sound(
-            "entity.blaze.burn",
-            m.center(),
-            volume,
-            pitch,
-        ));
-    }
-    // getRandomX(0.5), getRandomY(), getRandomZ(0.5), at rest.
-    let (w, h) = (f64::from(m.width()), f64::from(m.height()));
-    for _ in 0..2 {
-        let at = [
-            m.position.x + w * (2.0 * m.random.next_double() - 1.0) * 0.5,
-            m.position.y + h * m.random.next_double(),
-            m.position.z + w * (2.0 * m.random.next_double() - 1.0) * 0.5,
-        ];
-        events.push(MobEvent::Particles {
-            kind: "large_smoke",
-            at,
-            count: 0,
-        });
     }
 }
 /// `Blaze.customServerAiStep`: rise toward a target above the allowed offset.
