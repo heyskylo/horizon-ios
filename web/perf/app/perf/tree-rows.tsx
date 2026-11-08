@@ -12,6 +12,7 @@ import type { FlatRow } from "@/lib/tree-model";
 import type { TreeRow } from "@/lib/types";
 import { amount } from "@/lib/units";
 import { Icons } from "./icons";
+import { RowTools, infoText } from "./row-tools";
 import { targetOf, useTreeEnv } from "./tree-state";
 import type { Scope } from "./tree-state";
 import styles from "./page.module.css";
@@ -72,6 +73,7 @@ function NodeLine({ flat, scope, max }: NodeLineProps) {
   const names = node.members.map((member) => member.name);
   const group = crateGroup(tail.crate, env.mods);
   const picked = env.selected?.scope.id === scope.id && env.selected.key === node.key;
+  const explained = node.members.find((member) => infoText(member.function) !== null);
   return (
     <div className={`${styles.meterRow} ${tree.row}`} data-picked={picked} title={first.id}>
       <span className={`${styles.meterName} ${tree.name}`} style={{ "--depth": indent(depth) } as CSSProperties}>
@@ -107,6 +109,12 @@ function NodeLine({ flat, scope, max }: NodeLineProps) {
             </Fragment>
           ))}
         </button>
+        <RowTools
+          id={first.function}
+          name={names.join(" › ")}
+          about={explained?.function}
+          subject={node.members.length > 1 ? explained?.name : undefined}
+        />
       </span>
       <span className={`${styles.meterTrack} ${tree.trackCell}`} aria-hidden="true">
         <span className={styles.meterFill} style={{ width: `${Math.min(100, (first.total / max) * 100)}%` }} />

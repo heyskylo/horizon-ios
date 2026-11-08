@@ -575,6 +575,7 @@
 }
 
 .meterName {
+  position: relative;
   display: flex;
   align-items: center;
   min-width: 0;
@@ -662,6 +663,123 @@
 .disclosureSpace {
   display: inline-block;
   margin-right: 2px;
+}
+
+/* Row tools: the info marker sits after a name, the copy control appears over the name cell's end */
+
+.nameText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.info {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-left: 4px;
+  border: 0;
+  border-radius: 50%;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+  opacity: 0.55;
+  cursor: help;
+  transition:
+    opacity 120ms ease,
+    color 120ms ease;
+}
+
+.info:hover,
+.info:focus-visible {
+  color: var(--ink);
+  opacity: 1;
+}
+
+.tip {
+  position: fixed;
+  z-index: 50;
+  max-width: min(320px, calc(100vw - 16px));
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--plate);
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  line-height: 1.45;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.4);
+}
+
+.tipTitle {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.copyId {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  height: 22px;
+  border: 0;
+  border-radius: 6px;
+  padding: 0 5px;
+  background: var(--plate-soft);
+  box-shadow: -10px 0 8px var(--plate-soft);
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+
+:is(.meterRow, .meterRowStrong, .tickSpan):hover .copyId,
+:is(.meterRow, .meterRowStrong, .tickSpan):has(:focus-visible) .copyId,
+.tickRow:hover > .tickTools .copyId,
+.tickRow:has(> .tickHead:focus-visible) > .tickTools .copyId,
+.tickRow:has(> details > summary:focus-visible) > .tickTools .copyId,
+.copyId:focus-visible,
+.copyId:not([data-state="idle"]) {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.copyId:focus-visible,
+.info:focus-visible {
+  outline-offset: -2px;
+}
+
+.copyId:hover {
+  color: var(--ink);
+}
+
+.copyId[data-state="done"] {
+  color: var(--success);
+}
+
+.copyId[data-state="failed"] {
+  color: var(--danger);
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 /* Ticks */
@@ -771,9 +889,23 @@
 }
 
 .tickSpanName {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.tickRow {
+  position: relative;
+}
+
+.tickTools {
+  position: absolute;
+  top: 0;
+  right: 8px;
+  height: 28px;
 }
 
 .tickSpanMs {

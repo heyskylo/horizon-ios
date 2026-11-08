@@ -10,6 +10,7 @@ import type { ContextKey } from "@/lib/tree-options";
 import type { GroupRow, TreeRow } from "@/lib/types";
 import { amount } from "@/lib/units";
 import { Icons } from "./icons";
+import { RowTools } from "./row-tools";
 import { Swatch } from "./tree-rows";
 import { useTreeEnv } from "./tree-state";
 import type { Target } from "./tree-state";
@@ -42,7 +43,10 @@ function SplitList({ target, by }: { target: Target; by: ContextKey }) {
           const label = row.key === null ? t("tree.noContext") : row.label;
           return (
             <div key={row.key ?? ""} className={`${styles.meterRow} ${tree.detailRow}`} title={label}>
-              <span className={styles.meterName}>{label}</span>
+              <span className={styles.meterName}>
+                <span className={tree.groupLabel}>{label}</span>
+                <RowTools id={row.key} name={label} />
+              </span>
               <span className={styles.meterTrack} aria-hidden="true">
                 <span className={styles.meterFill} style={{ width: `${(row.value / max) * 100}%` }} />
               </span>
@@ -117,6 +121,7 @@ function CallerList({ target }: { target: Target }) {
                   <span className={styles.disclosureSpace} />
                 )}
                 <span className={tree.groupLabel}>{row.name}</span>
+                <RowTools id={row.function} name={row.name} />
               </span>
               <span className={styles.meterTrack} aria-hidden="true">
                 <span className={styles.meterFill} style={{ width: `${(row.total / max) * 100}%` }} />

@@ -9,6 +9,7 @@ import type { GroupKind } from "@/lib/tree-options";
 import type { GroupRow, TreeRow } from "@/lib/types";
 import { amount } from "@/lib/units";
 import { Icons } from "./icons";
+import { RowTools } from "./row-tools";
 import { Marked, TreeBody } from "./tree-rows";
 import { TREE_SHAPE, useTreeEnv } from "./tree-state";
 import type { Scope } from "./tree-state";
@@ -57,6 +58,7 @@ export function GroupList({ kind }: { kind: Exclude<GroupKind, "none"> }) {
                 <span className={tree.groupLabel} title={label}>
                   <Marked text={label} query={env.query} />
                 </span>
+                <RowTools id={row.key} name={label} />
               </span>
               <span className={`${styles.meterTrack} ${tree.trackCell}`} aria-hidden="true">
                 <span className={styles.meterFill} style={{ width: `${(row.value / max) * 100}%` }} />

@@ -12,6 +12,11 @@ export function setMessages(next: Messages): void {
   messages = { ...fallback, ...next };
 }
 
+/** Whether the language has text for `key`. */
+export function has(key: string): boolean {
+  return key in messages;
+}
+
 /** `t("health.tps")`, with `{name}` placeholders filled from `vars`. */
 export function t(key: string, vars?: Record<string, string | number>): string {
   let text = messages[key] ?? key;

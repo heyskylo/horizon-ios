@@ -18,6 +18,8 @@ import {
 } from "@/lib/overview";
 import type { Overview, PhaseNode } from "@/lib/overview";
 import type { CostRow, GroupRow, HotRow, TickRow } from "@/lib/types";
+import { spanId } from "@/lib/info";
+import { RowTools } from "./row-tools";
 import { Segmented } from "./segmented";
 import { Spark } from "./spark";
 import type { LoadedCapture } from "./use-capture";
@@ -94,6 +96,7 @@ function Card({
 
 /** A row of a meter list: a name, a bar, a value and a second value. */
 function Meter({
+  id,
   name,
   title,
   indent = 0,
@@ -104,6 +107,7 @@ function Meter({
   extraColor,
   strong = false,
 }: {
+  id?: string;
   name: string;
   title?: string;
   indent?: number;
@@ -117,7 +121,8 @@ function Meter({
   return (
     <div className={strong ? styles.meterRowStrong : styles.meterRow} title={title}>
       <span className={styles.meterName} style={indent ? { paddingLeft: indent } : undefined}>
-        {name}
+        <span className={styles.nameText}>{name}</span>
+        <RowTools id={id} name={name} />
       </span>
       <span className={styles.meterTrack} aria-hidden="true">
         <span
@@ -156,6 +161,7 @@ function Phase({ node, depth, max }: { node: PhaseNode; depth: number; max: numb
     pct >= 30 ? "var(--ink)" : pct >= 10 ? "var(--ink-soft)" : "var(--muted)";
   return (
     <Meter
+      id={node.id}
       name={node.name}
       title={node.name}
       indent={Math.min(depth * 8, 32)}
@@ -430,6 +436,7 @@ export function SummaryView({ capture, data, text }: ViewProps) {
                 {data.hot.map((row: HotRow) => (
                   <Meter
                     key={row.id}
+                    id={row.id}
                     name={row.name}
                     title={row.full}
                     width={share(hotBy === "self" ? row.self : row.total, hotMax)}
@@ -449,33 +456,41 @@ export function SummaryView({ capture, data, text }: ViewProps) {
             >
               <div className={styles.ticks}>
                 {data.worst.map((tick: TickRow) => (
-                  <details key={tick.id} className={styles.tick}>
-                    <summary className={styles.tickHead}>
-                      <span className={styles.tickMs}>{num(tick.wall_ms, 1)} ms</span>
-                      <span className={styles.tickAt}>
-                        {t("summary.at", { time: at(tick.t) })}
-                      </span>
-                      <span className={styles.tickSpans}>
-                        {topSpans(tick).map(([name, , ms]) => (
-                          <span key={name} className={styles.chip}>
-                            {name} {num(ms, 1)}
-                          </span>
+                  <div key={tick.id} className={styles.tickRow}>
+                    <details className={styles.tick}>
+                      <summary className={styles.tickHead}>
+                        <span className={styles.tickMs}>{num(tick.wall_ms, 1)} ms</span>
+                        <span className={styles.tickAt}>
+                          {t("summary.at", { time: at(tick.t) })}
+                        </span>
+                        <span className={styles.tickSpans}>
+                          {topSpans(tick).map(([name, , ms]) => (
+                            <span key={name} className={styles.chip}>
+                              {name} {num(ms, 1)}
+                            </span>
+                          ))}
+                        </span>
+                      </summary>
+                      <div className={styles.tickBody}>
+                        {tick.spans.map(([name, depth, wall], index) => (
+                          <div
+                            key={`${name}-${index}`}
+                            className={styles.tickSpan}
+                            style={{ paddingLeft: depth * 12 }}
+                          >
+                            <span className={styles.tickSpanName}>
+                              <span className={styles.nameText}>{name}</span>
+                              <RowTools id={spanId(name)} name={name} />
+                            </span>
+                            <span className={styles.tickSpanMs}>{num(wall, 2)} ms</span>
+                          </div>
                         ))}
-                      </span>
-                                          </summary>
-                    <div className={styles.tickBody}>
-                      {tick.spans.map(([name, depth, wall], index) => (
-                        <div
-                          key={`${name}-${index}`}
-                          className={styles.tickSpan}
-                          style={{ paddingLeft: depth * 12 }}
-                        >
-                          <span className={styles.tickSpanName}>{name}</span>
-                          <span className={styles.tickSpanMs}>{num(wall, 2)} ms</span>
-                        </div>
-                      ))}
-                    </div>
-                  </details>
+                      </div>
+                    </details>
+                    <span className={styles.tickTools}>
+                      <RowTools id={tick.id} name={at(tick.t)} />
+                    </span>
+                  </div>
                 ))}
               </div>
             </Card>
@@ -489,6 +504,7 @@ export function SummaryView({ capture, data, text }: ViewProps) {
                 {entityRows.map((row: GroupRow) => (
                   <Meter
                     key={row.key}
+                    id={row.key ?? undefined}
                     name={shortId(row.label)}
                     title={row.key ?? undefined}
                     width={share(row.value, entityMax)}
@@ -506,6 +522,7 @@ export function SummaryView({ capture, data, text }: ViewProps) {
                 {blockRows.map((row: GroupRow) => (
                   <Meter
                     key={row.key}
+                    id={row.key ?? undefined}
                     name={shortId(row.label)}
                     title={row.key ?? undefined}
                     width={share(row.value, blockMax)}
@@ -528,6 +545,7 @@ export function SummaryView({ capture, data, text }: ViewProps) {
                 {data.costs.map((row: CostRow) => (
                   <Meter
                     key={row.id}
+                    id={row.id}
                     name={shortId(row.name)}
                     title={row.name}
                     width={share(row.ms_per_tick, costMax)}
