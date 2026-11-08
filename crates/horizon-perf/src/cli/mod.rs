@@ -1,3 +1,4 @@
+mod attach;
 mod diff;
 pub mod files;
 mod query;
@@ -49,6 +50,7 @@ usage:
   horizon-perf diff    A B [--min-ms X] [--side client|server] [--thread T] [--limit N] [--json] [--dir DIR]
   horizon-perf list    [DIR]
   horizon-perf follow  [FILE|latest] [--every S] [--json] [--dir DIR]
+  horizon-perf attach  FILE --name NAME --body JSONFILE   adds the JSON file to a finished capture as an attachment
   horizon-perf mcp                                     MCP server on stdio: perf_summary, perf_query, perf_diff, perf_list, perf_follow
 
 OPs: {ops}.
@@ -89,6 +91,8 @@ vocab! {
         MinPct = "min-pct",
         Budget = "budget",
         Baseline = "baseline",
+        Name = "name",
+        Body = "body",
         Slow = "slow",
         All = "all",
         Diff = "diff",
@@ -120,7 +124,9 @@ impl Flag {
             | Flag::Depth
             | Flag::MinPct
             | Flag::Budget
-            | Flag::Baseline => false,
+            | Flag::Baseline
+            | Flag::Name
+            | Flag::Body => false,
         }
     }
 }
@@ -180,6 +186,7 @@ pub fn run(args: &[String], env: &Env, out: &mut dyn Write) -> Result<(), CliErr
         "follow" => follow(rest, env, out),
         "query" => query::query(rest, env, out),
         "diff" => diff::run(rest, env, out),
+        "attach" => attach::run(rest, env, out),
         "mcp" => {
             if !rest.is_empty() {
                 return Err(CliError::Usage("mcp takes no arguments".into()));

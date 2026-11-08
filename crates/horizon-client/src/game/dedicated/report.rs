@@ -374,6 +374,7 @@ impl Game<'_> {
             span_ns,
             mob_ns,
             gpu: None,
+            bench: Vec::new(),
         }
     }
 }

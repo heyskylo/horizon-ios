@@ -5,7 +5,7 @@ use crate::server_perf::{
     self, CaptureEnd, CaptureOptions, CaptureStatus, MAX_WINDOW_S, Role, SamplerOptions, Saved,
     ServerPerf, TickDetail, WorldCounts,
 };
-use horizon_perf_format::v1::{Machine, Start, StopReason, Trigger};
+use horizon_perf_format::v1::{BenchResult, Machine, Side, Start, StopReason, Trigger};
 use request::{GpuSwitch, StartOptions, Threads};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -153,14 +153,26 @@ impl ClientPerf {
 
     /// Ends the running capture; its file is finished off this thread and comes back from [`ClientPerf::take_saved`].
     pub fn stop(&mut self, t: f64, reason: StopReason) -> bool {
-        self.stop_with_gpu(t, reason, None)
+        self.stop_with(t, reason, None, Vec::new())
     }
 
     /// [`ClientPerf::stop`], recording `gpu`'s pass timings if the capture asked for them.
     pub fn stop_with_gpu(&mut self, t: f64, reason: StopReason, gpu: Option<GpuReadout>) -> bool {
+        self.stop_with(t, reason, gpu, Vec::new())
+    }
+
+    /// [`ClientPerf::stop_with_gpu`] with benchmark reports embedded in the capture.
+    pub fn stop_with(
+        &mut self,
+        t: f64,
+        reason: StopReason,
+        gpu: Option<GpuReadout>,
+        bench: Vec<BenchResult>,
+    ) -> bool {
         self.window = None;
         let end = CaptureEnd {
             gpu,
+            bench,
             ..CaptureEnd::default()
         };
         self.perf.begin_stop(t, reason, end)
@@ -188,6 +200,17 @@ impl ClientPerf {
     pub fn remaining_s(&self, t: f64) -> Option<f64> {
         self.window.map(|(end, _)| (end - t).max(0.0))
     }
+}
+
+/// A benchmark report's JSON as the capture embeds it; anything but a `horizon-benchmark-report` is refused.
+pub fn bench_result(report_json: String) -> Result<BenchResult, String> {
+    horizon_bench::Report::parse(&report_json)?;
+    Ok(BenchResult {
+        side: Side::Client as i32,
+        format: horizon_bench::FORMAT.to_owned(),
+        report_json,
+        corpus_id: String::new(),
+    })
 }
 
 /// The median of the values, which are cleared; None when there were none.

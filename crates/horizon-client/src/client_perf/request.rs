@@ -141,7 +141,10 @@ impl Default for StartOptions {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
     Start(StartOptions),
-    Stop,
+    /// With the path of a benchmark report to embed in the capture.
+    Stop {
+        bench: Option<String>,
+    },
     Status,
     Mark(String),
 }
@@ -152,7 +155,7 @@ pub struct Parsed {
     pub request: Request,
 }
 
-const USAGE: &str = "profile [client|server] start [--seconds S] [--hz N] [--over MS] [--threads main|all] [--wall] [--gpu[=detail]] [--no-samples] [--timeline] | stop | status | mark NAME";
+const USAGE: &str = "profile [client|server] start [--seconds S] [--hz N] [--over MS] [--threads main|all] [--wall] [--gpu[=detail]] [--no-samples] [--timeline] | stop [--bench REPORT] | status | mark NAME";
 
 /// The words after `profile`; the side comes first or as `--side`, and the switches follow `start`.
 pub fn parse(words: &[&str]) -> Result<Parsed, String> {
@@ -169,6 +172,7 @@ pub fn parse(words: &[&str]) -> Result<Parsed, String> {
     }
     let mut options = StartOptions::default();
     let mut switched = false;
+    let mut bench = None;
     let mut words = rest.iter().copied().peekable();
     while let Some(word) = words.next() {
         let mut value = || {
@@ -200,14 +204,26 @@ pub fn parse(words: &[&str]) -> Result<Parsed, String> {
             _ if word.starts_with("--gpu=") => options.gpu = word["--gpu=".len()..].parse()?,
             "--no-samples" => options.samples = false,
             "--timeline" => options.timeline = true,
+            "--bench" => {
+                let path = words.by_ref().collect::<Vec<_>>().join(" ");
+                if path.is_empty() {
+                    return Err(format!("--bench needs a report path; usage: {USAGE}"));
+                }
+                bench = Some(path);
+                continue;
+            }
             other => return Err(format!("unexpected {other}; usage: {USAGE}")),
         }
         switched |= word != "--side";
     }
     let request = match action {
+        Action::Start if bench.is_some() => {
+            return Err(format!("only stop takes --bench; usage: {USAGE}"));
+        }
         Action::Start => Request::Start(options),
         _ if switched => return Err(format!("only start takes options; usage: {USAGE}")),
-        Action::Stop => Request::Stop,
+        Action::Stop => Request::Stop { bench },
+        _ if bench.is_some() => return Err(format!("only stop takes --bench; usage: {USAGE}")),
         _ => Request::Status,
     };
     Ok(Parsed { side, request })
@@ -371,6 +387,22 @@ mod tests {
         assert!(p("mark --side client").is_err());
         assert!(p(&format!("mark {}", "x".repeat(MARK_NAME_MAX + 1))).is_err());
         assert!(p(&format!("mark {}", "x".repeat(MARK_NAME_MAX))).is_ok());
+    }
+
+    #[test]
+    fn stop_takes_the_rest_of_the_line_as_a_report_path() {
+        assert_eq!(p("stop").unwrap().request, Request::Stop { bench: None });
+        let with = p("client stop --bench /home/a b/games/benchmarks/game-1.json").unwrap();
+        assert_eq!(with.side, Some(ProfileSide::Client));
+        assert_eq!(
+            with.request,
+            Request::Stop {
+                bench: Some("/home/a b/games/benchmarks/game-1.json".into())
+            }
+        );
+        for line in ["stop --bench", "start --bench x.json", "status --bench x.json"] {
+            assert!(p(line).is_err(), "{line:?} was accepted");
+        }
     }
 
     #[test]

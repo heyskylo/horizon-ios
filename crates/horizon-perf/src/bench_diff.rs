@@ -237,7 +237,7 @@ fn verdict_word(verdict: PairVerdict) -> &'static str {
     }
 }
 
-fn ab_line(metric: &str, r: &Paired) -> String {
+pub(crate) fn ab_line(metric: &str, r: &Paired) -> String {
     let ci = match r.ci95 {
         Some([lo, hi]) => format!("CI [{lo:?}, {hi:?}]"),
         None => "no CI".to_string(),

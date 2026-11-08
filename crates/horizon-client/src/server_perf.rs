@@ -4,8 +4,8 @@ use crate::spans::Span;
 use horizon_client_render::perf_gpu;
 use horizon_perf_format::files;
 use horizon_perf_format::v1::{
-    GpuMode, Kind, Mark, Options, Overhead, Side, Start, Stop, StopReason, ThreadSelection,
-    Trigger, Unit, Warning, WarningCode,
+    BenchResult, GpuMode, Kind, Mark, Options, Overhead, Side, Start, Stop, StopReason,
+    ThreadSelection, Trigger, Unit, Warning, WarningCode,
 };
 use horizon_perf_format::{
     CounterReporter, Field, FieldSender, Gauges, HealthRecorder, Interner, SlowRecord, SlowRing,
@@ -130,6 +130,8 @@ pub struct CaptureEnd {
     pub mob_ns: f64,
     /// The GPU pass timings, when the capture asked for them.
     pub gpu: Option<GpuReadout>,
+    /// Benchmark reports to embed verbatim; the capture gives them its side.
+    pub bench: Vec<BenchResult>,
 }
 
 /// A finished capture: where it is and the older files retention removed.
@@ -554,6 +556,10 @@ impl Session {
         self.tx.send(Field::Net(traffic));
         self.gpu(rel, end.gpu.as_ref());
         self.tx.send(Field::World(world));
+        for mut bench in end.bench {
+            bench.side = self.side as i32;
+            self.tx.send(Field::Bench(bench));
+        }
         overhead
     }
 

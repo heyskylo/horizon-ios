@@ -1,5 +1,7 @@
 //! The dev-only reader for `.hzperf` captures (docs/perf-platform.md §2.2).
 
+pub mod attach;
+pub mod bare;
 pub mod bench_diff;
 pub mod cli;
 pub mod diff;

@@ -59,6 +59,60 @@ fn run(perf: &mut ClientPerf, from: u32, to: u32, per_s: u32, hitch: f32) {
     }
 }
 
+fn benchmark_report() -> horizon_bench::Report {
+    let app = horizon_bench::App {
+        name: "horizon-client".into(),
+        version: "26.3.1".into(),
+        ..Default::default()
+    };
+    let mut report = horizon_bench::Report::with_hardware(
+        horizon_bench::Kind::Game,
+        app,
+        horizon_bench::Hardware::default(),
+    );
+    report.conditions.scenario = Some("travel".into());
+    report.metric("startup.title_ms", &[100.0, 120.0]);
+    report
+}
+
+#[test]
+fn a_benchmark_report_given_at_stop_is_in_the_capture_verbatim() {
+    let scratch = Scratch::new("bench");
+    let mut perf = ClientPerf::new(SLOW_FRAME_MS);
+    run(&mut perf, 0, 2, 60, 16.0);
+    let options = no_samples();
+    perf.start(
+        2.0,
+        &scratch.0,
+        Trigger::Benchmark,
+        &options,
+        Start::default(),
+        Vec::new(),
+    )
+    .unwrap();
+    run(&mut perf, 2, 4, 60, 16.0);
+    let report = benchmark_report();
+    let result = bench_result(report.to_json()).unwrap();
+    assert!(perf.stop_with(4.0, R::Normal, None, vec![result]));
+    let saved = perf.take_saved(true).pop().unwrap().unwrap();
+
+    let c = read(&saved.path);
+    assert_eq!(c.start[0].trigger(), Trigger::Benchmark);
+    let [bench] = &c.bench[..] else {
+        panic!("one report: {:?}", c.bench);
+    };
+    assert_eq!(bench.side(), Side::Client);
+    assert_eq!(bench.format, "horizon-benchmark-report");
+    assert_eq!(bench.report_json, report.to_json());
+    assert_eq!(c.stop[0].t, 2.0);
+}
+
+#[test]
+fn only_a_benchmark_report_can_be_embedded() {
+    assert!(bench_result("{\"format\":\"something-else\"}".into()).is_err());
+    assert!(bench_result("not json".into()).is_err());
+}
+
 #[test]
 fn a_client_capture_reads_back_with_its_frames_marks_and_health() {
     let scratch = Scratch::new("readback");

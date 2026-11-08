@@ -1816,6 +1816,24 @@ mod tests {
     }
 
     #[test]
+    fn a_benchmark_profile_only_goes_with_a_benchmark() {
+        let parse = |args: &[&str]| {
+            super::super::Options::parse(args.iter().map(|a| a.to_string())).map(|o| o.unwrap())
+        };
+        assert!(
+            parse(&["--benchmark", "village", "--profile"])
+                .unwrap()
+                .benchmark_profile
+        );
+        assert!(
+            !parse(&["--benchmark", "village"])
+                .unwrap()
+                .benchmark_profile
+        );
+        assert!(parse(&["--profile"]).is_err());
+    }
+
+    #[test]
     fn a_benchmark_set_only_goes_with_the_trip() {
         let parse = |args: &[&str]| {
             super::super::Options::parse(args.iter().map(|a| a.to_string())).map(|o| o.unwrap())

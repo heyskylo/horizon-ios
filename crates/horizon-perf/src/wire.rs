@@ -67,7 +67,7 @@ macro_rules! mirror {
 }
 
 vocab! {
-    /// The `op` of a query: `bench` and `samples` are listed but not answered yet.
+    /// The `op` of a query: `samples` is listed but not answered yet.
     Op {
         Spans = "spans",
         Ticks = "ticks",
@@ -93,10 +93,10 @@ vocab! {
 }
 
 impl Op {
-    /// Ops no piece answers yet: `bench` and `samples` wait for their sections.
+    /// Ops no piece answers yet: `samples` waits for its section.
     pub fn unanswered(self) -> bool {
         match self {
-            Op::Bench | Op::Samples => true,
+            Op::Samples => true,
             Op::Spans
             | Op::Ticks
             | Op::Tick
@@ -114,7 +114,8 @@ impl Op {
             | Op::Callees
             | Op::Split
             | Op::Group
-            | Op::Frames => false,
+            | Op::Frames
+            | Op::Bench => false,
         }
     }
 
@@ -202,6 +203,7 @@ vocab! {
         Warnings = "warnings",
         Memory = "memory",
         MemoryDiff = "memory_diff",
+        Bench = "bench",
     }
 }
 

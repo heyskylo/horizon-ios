@@ -151,6 +151,8 @@ pub struct Setup {
     pub game_dir: PathBuf,
     /// `--benchmark-set`: a switch and its value, applied before the world opens.
     pub set: Option<(String, String)>,
+    /// `--profile`: record a .hzperf capture of the run and embed the report in it.
+    pub profile: bool,
 }
 
 /// Starts the driver; the game quits when it is done, and the report's path is printed.
@@ -283,6 +285,9 @@ fn run(control: &Control, setup: Setup) -> Result<PathBuf, String> {
     let loaded = wait_loaded(control, |_| true)?;
     report.metric("startup.world_ms", &[ms(loaded - setup.started)]);
 
+    if setup.profile {
+        control.call(START_CAPTURE)?;
+    }
     let mut steady = Vec::new();
     match scenario {
         Scenario::Scenes(scenes) => {
@@ -349,9 +354,24 @@ fn run(control: &Control, setup: Setup) -> Result<PathBuf, String> {
         report.metric("game.binary_bytes", &[meta.len() as f64]);
     }
     crate::telemetry::keep_benchmark(&crate::logging::game_home(), &report);
-    report
+    let written = report
         .write_to(&setup.game_dir.join("benchmarks"))
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if setup.profile {
+        match control.call(&stop_capture(&written)) {
+            Ok(done) => println!("Horizon: benchmark capture {}", text(&done["path"])),
+            Err(e) => eprintln!("Horizon: the benchmark capture failed: {e}"),
+        }
+    }
+    Ok(written)
+}
+
+/// Starts the capture the run's frames feed; its trigger is the benchmark's.
+const START_CAPTURE: &str = "profile client start";
+
+/// Ends the capture with the written report embedded in it.
+fn stop_capture(report: &Path) -> String {
+    format!("profile client stop --bench {}", report.display())
 }
 
 /// Sets a switch with its control word; a refusal (GPU culling not offered) is the game's reason.
@@ -671,6 +691,24 @@ impl RssSampler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_capture_commands_are_the_ones_the_game_parses() {
+        use crate::client_perf::request::{self, ProfileSide, Request, StartOptions};
+        let words = |line: &str| request::parse(&line.split(' ').skip(1).collect::<Vec<_>>());
+        let start = words(START_CAPTURE).unwrap();
+        assert_eq!(start.side, Some(ProfileSide::Client));
+        assert_eq!(start.request, Request::Start(StartOptions::default()));
+        let path = Path::new("/home/a b/game/benchmarks/game-20261108-travel.json");
+        let stop = words(&stop_capture(path)).unwrap();
+        assert_eq!(stop.side, Some(ProfileSide::Client));
+        assert_eq!(
+            stop.request,
+            Request::Stop {
+                bench: Some(path.display().to_string())
+            }
+        );
+    }
 
     #[test]
     fn scenarios() {

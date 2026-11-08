@@ -1,5 +1,9 @@
 //! The row of each query op (docs/perf-platform.md §6.3), exactly as it is written to JSON.
 
+use std::collections::BTreeMap;
+
+use horizon_bench::compare::Ab;
+use horizon_bench::{Frames, Summary};
 use serde::{Deserialize, Serialize};
 
 use crate::wire::{
@@ -33,6 +37,7 @@ pub enum Row {
     Tree(TreeRow),
     Split(SplitRow),
     Frame(FrameRow),
+    Bench(BenchRow),
 }
 
 /// One span, one value per capture asked about; a capture without the span has null.
@@ -316,6 +321,22 @@ pub struct OverheadInfo {
     pub dropped_samples: u64,
     pub dropped_messages: u64,
     pub timeline_stopped_t: Option<f64>,
+}
+
+/// A benchmark report embedded in the capture, read back as the report holds it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BenchRow {
+    pub id: String,
+    pub side: SideName,
+    pub format: String,
+    pub corpus_id: Option<String>,
+    pub scenario: Option<String>,
+    pub app_version: Option<String>,
+    pub created: Option<String>,
+    pub metrics: BTreeMap<String, Summary>,
+    pub frames: Vec<Frames>,
+    pub ab: Option<Ab>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

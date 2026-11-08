@@ -14,6 +14,7 @@ pub enum Error {
     NoSuchSide { side: Side },
     NoSuchThread { detail: String },
     Incomparable(String),
+    DuplicateAttachment { name: String },
 }
 
 pub fn side_name(side: Side) -> &'static str {
@@ -37,6 +38,9 @@ impl fmt::Display for Error {
             Error::Empty => write!(f, "this capture has no data yet: it is still being written"),
             Error::NoSuchThread { detail } => f.write_str(detail),
             Error::Incomparable(detail) => f.write_str(detail),
+            Error::DuplicateAttachment { name } => {
+                write!(f, "this capture already has an attachment named {name}")
+            }
             Error::NoSuchSide { side } => {
                 write!(f, "this capture has no {} side", side_name(*side))
             }
