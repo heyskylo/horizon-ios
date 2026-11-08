@@ -29,6 +29,16 @@ Cases:
 - glyphs_title: the title's X and B on their buttons, A once the focus is on the exit, gone at the mouse.
 - glyph_on_field: A on a focused text field and B on Cancel; A opens one keyboard, which hides them; B closes it.
 - settings_apply: X presses World Options' Apply once something changed.
+- trigger_rules: over the crafting book RT changes the category as it goes down, LT as it comes up (however slowly) unless
+  A was pressed meanwhile.
+- craft_direct, craft_remainder, craft_full, craft_grid, craft_carrying: LT + A on a recipe, tapped and held: results,
+  what a recipe leaves behind, a full inventory, a grid already in use, a stack in the hand.
+- craft_tap_hold: LT + A tapped crafts one, whichever comes up first; held, several, stopping with the items.
+- craft_release_a, craft_release_lt, craft_release_press: a held craft ends cleanly as A or LT comes up or another
+  button goes down: no craft running, an empty grid, every item accounted for, and the next press starts fresh.
+- craft_lan_guest, craft_dedicated: the same on a LAN host and a dedicated server, as a real server's client, and
+  quick taps of A with LT held while a paced craft is in flight, each making one; joined by address, the LAN world
+  refuses it (plain A) until Quick Craft on Servers is on.
 - long_label: a label too wide for its button slides, beside its glyph.
 - every_screen_has_targets: the title's submenus and every options page give the focus something to land on.
 - pause_icon: the pause menu's icons are targets, and A presses one.
@@ -63,6 +73,8 @@ import lab  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 EXE = '.exe' if os.name == 'nt' else ''
 SETTLE = 0.5
+# Between quick taps of a button: a few of the game's polls, well inside a paced craft (`PLACE_GAP`).
+TAP_APART = 0.05
 
 
 WINDOW_ASPECT = 16 / 9
@@ -758,7 +770,7 @@ def seed_servers(game_home):
 
 
 def quick_tap(game, side):
-    """A trigger down and up, well inside the book's tap (`TRIGGER_TAP`)."""
+    """A trigger down and up, quickly."""
     game.ctl('pad', 'trigger', side, 1)
     time.sleep(0.05)
     game.ctl('pad', 'trigger', side, 0)
@@ -2225,6 +2237,455 @@ osk_command_block = osk_block('command_block', 'command-block')
 osk_jigsaw = osk_block('jigsaw', 'block-editor')
 
 
+def open_book(game, *recipes, player='@s', command=None):
+    """Survival, the player knowing only these recipes, the inventory open on the book: where the first recipe is."""
+    command = command or (lambda line: game.ctl('command', line))
+    command(f'gamemode survival {player}')
+    command(f'recipe take {player} *')
+    for recipe in recipes:
+        command(f'recipe give {player} {recipe}')
+    time.sleep(1)
+    game.ctl('key', 'e', 'tap')
+    time.sleep(SETTLE)
+    game.wait_targets()
+    book = game.ctl('screen')['recipe_book']
+    x, y, w, h = next(t for t in book['targets'] if t[2:] == [20.0, 18.0])
+    if not book['open']:
+        game.ctl('click-at', x + w / 2, y + h / 2)
+        time.sleep(SETTLE)
+    x, y, w, h = next(t for t in game.ctl('screen')['recipe_book']['targets'] if t[2:] == [25.0, 25.0])
+    return x + w / 2, y + h / 2
+
+
+def counts(game):
+    return game.ctl('inventory')['counts']
+
+
+def grid(game):
+    return {s['slot']: s['count'] for s in game.ctl('screen')['slots'] if 100 <= s['slot'] < 109 and s['item']}
+
+
+def craft_ended(game):
+    """Until no craft is running."""
+    end = time.time() + 60
+    while game.menu()['crafting']:
+        if time.time() > end:
+            raise RuntimeError('the craft never ended')
+        time.sleep(0.1)
+    time.sleep(SETTLE)
+
+
+def direct_craft(game):
+    """LT + A tapped, and the craft to its end."""
+    game.ctl('pad', 'trigger', 'left', 1)
+    time.sleep(SETTLE)
+    game.pad('south')
+    game.ctl('pad', 'trigger', 'left', 0)
+    time.sleep(SETTLE)
+    craft_ended(game)
+
+
+def craft_held(game):
+    """LT + A held until the craft ends by itself (the items, the inventory), then let go."""
+    game.ctl('pad', 'trigger', 'left', 1)
+    time.sleep(SETTLE)
+    game.pad('south', 'down')
+    craft_ended(game)
+    game.pad('south', 'up')
+    game.ctl('pad', 'trigger', 'left', 0)
+    time.sleep(SETTLE)
+
+
+def world_case(run):
+    def case(args, name):
+        game = Game(args, name, world=True)
+        check = Check()
+        try:
+            run(game, check)
+        finally:
+            game.quit()
+        return check.failures
+    case.__name__ = run.__name__
+    return case
+
+
+@world_case
+def craft_direct(game, check):
+    at = open_book(game, 'minecraft:oak_planks')
+    game.ctl('command', 'clear @s')
+    game.ctl('command', 'give @s oak_log 5')
+    time.sleep(1)
+    crosshair_walk(game, *at)
+    direct_craft(game)
+    have = counts(game)
+    check(have.get('minecraft:oak_planks') == 4 and have.get('minecraft:oak_log') == 4, f'LT + A: {have}')
+    check(not grid(game), f'LT + A left {grid(game)} in the grid')
+    craft_held(game)
+    have = counts(game)
+    check(have.get('minecraft:oak_planks') == 20 and not have.get('minecraft:oak_log'), f'LT + A held: {have}')
+    check(not grid(game), f'LT + A held left {grid(game)} in the grid')
+    craft_held(game)
+    check(counts(game).get('minecraft:oak_planks') == 20, f'with nothing left: {counts(game)}')
+
+
+@world_case
+def craft_remainder(game, check):
+    at = open_book(game, 'minecraft:sugar_from_honey_bottle')
+    game.ctl('command', 'clear @s')
+    game.ctl('command', 'give @s honey_bottle 3')
+    time.sleep(1)
+    crosshair_walk(game, *at)
+    craft_held(game)
+    have = counts(game)
+    check(have.get('minecraft:sugar') == 9, f'sugar: {have}')
+    check(have.get('minecraft:glass_bottle') == 3, f'the bottles: {have}')
+    check(not have.get('minecraft:honey_bottle'), f'honey left: {have}')
+    check(not grid(game), f'left in the grid: {grid(game)}')
+
+
+@world_case
+def craft_full(game, check):
+    at = open_book(game, 'minecraft:oak_planks')
+    game.ctl('command', 'clear @s')
+    # Thirty-six full slots: two logs, 62 planks (room for two, of a result of four), and dirt.
+    game.ctl('command', 'give @s oak_log 2')
+    game.ctl('command', 'give @s oak_planks 62')
+    game.ctl('command', f'give @s dirt {34 * 64}')
+    time.sleep(1)
+    crosshair_walk(game, *at)
+    craft_held(game)
+    want = {'minecraft:oak_log': 2, 'minecraft:oak_planks': 62, 'minecraft:dirt': 34 * 64}
+    check(counts(game) == want, f'{counts(game)}, not {want}')
+    check(not grid(game), f'left in the grid: {grid(game)}')
+
+
+@world_case
+def craft_grid(game, check):
+    at = open_book(game, 'minecraft:oak_planks')
+    game.ctl('command', 'clear @s')
+    game.ctl('command', 'give @s oak_log 2')
+    game.ctl('command', 'give @s dirt 1')
+    time.sleep(1)
+    game.ctl('click-slot', 1)
+    game.ctl('click-slot', 100)
+    time.sleep(SETTLE)
+    check(sum(grid(game).values()) == 1, f'the dirt is not in the grid: {grid(game)}')
+    crosshair_walk(game, *at)
+    direct_craft(game)
+    have = counts(game)
+    check(have == {'minecraft:oak_log': 1, 'minecraft:oak_planks': 4, 'minecraft:dirt': 1}, f'{have}')
+    check(not grid(game), f'left in the grid: {grid(game)}')
+
+
+@world_case
+def craft_carrying(game, check):
+    at = open_book(game, 'minecraft:oak_planks')
+    game.ctl('command', 'clear @s')
+    game.ctl('command', 'give @s oak_log 2')
+    game.ctl('command', 'give @s dirt 1')
+    time.sleep(1)
+    game.ctl('click-slot', 1)
+    time.sleep(SETTLE)
+    check(game.ctl('inventory')['carried'], 'nothing in the hand')
+    crosshair_walk(game, *at)
+    check(not game.menu()['craft_hint'], 'the guide offers LT + A with a stack in the hand')
+    direct_craft(game)
+    check(not counts(game).get('minecraft:oak_planks'), f'crafted with a stack in the hand: {counts(game)}')
+
+
+def trigger_rules(args, name):
+    game = Game(args, name, world=True)
+    check = Check()
+    tab = lambda: selected_tab(game)[0]
+
+    def settled(label, want):
+        time.sleep(SETTLE)
+        check(tab() == want, f'{label}: category {tab()}, not {want}')
+
+    def chord(side, button):
+        """A trigger with a press, as fast as they go."""
+        game.ctl('pad', 'trigger', side, 1)
+        game.ctl('pad', button, 'tap')
+        game.ctl('pad', 'trigger', side, 0)
+        time.sleep(SETTLE)
+        craft_ended(game)
+
+    try:
+        at = open_book(game, 'minecraft:oak_planks')
+        game.ctl('command', 'clear @s')
+        game.ctl('command', 'give @s oak_log 4')
+        game.ctl('command', 'give @s dirt 8')
+        time.sleep(1)
+        before = tab()
+        # RT changes the category as it goes down, and nothing more as it comes up.
+        game.ctl('pad', 'trigger', 'right', 1)
+        time.sleep(SETTLE)
+        after = tab()
+        check(after != before, 'RT held did not change the category as it went down')
+        game.ctl('pad', 'trigger', 'right', 0)
+        settled('RT coming up', after)
+        # LT on the crafting book: nothing as it goes down, the previous category as it comes up,
+        # however slowly.
+        game.ctl('pad', 'trigger', 'left', 1)
+        time.sleep(1)
+        check(tab() == after, 'LT changed the category as it went down on the crafting book')
+        game.ctl('pad', 'trigger', 'left', 0)
+        settled('a slow LT pull', before)
+        quick_tap(game, 'left')
+        check(tab() != before, 'a quick tap of LT did not change the category')
+        quick_tap(game, 'right')
+        settled('a quick tap of RT', before)
+
+        crosshair_walk(game, *at)
+        chord('left', 'south')
+        settled('LT + A on a recipe', before)
+        have = counts(game)
+        check(have.get('minecraft:oak_planks') == 4 and have.get('minecraft:oak_log') == 3, f'LT + A crafted: {have}')
+        # Y on a recipe is Y, with LT or without: as many as fit, no craft. Only A keeps LT from
+        # changing the category.
+        chord('left', 'north')
+        check(sum(grid(game).values()) == 3, f'LT + Y did not place all, as Y does: {grid(game)}')
+        check(counts(game).get('minecraft:oak_planks') == 4, f'LT + Y crafted: {counts(game)}')
+        check(tab() != before, 'LT + Y did not change the category as LT came up')
+        quick_tap(game, 'right')
+        settled('RT back', before)
+
+        slots = [t for t in game.menu()['targets'] if t['kind'] == 'slot']
+        bottom = max(t['rect'][1] for t in slots)
+        dirt = sorted((t['rect'] for t in slots if t['rect'][1] == bottom), key=lambda r: r[0])[1]
+        crosshair_walk(game, dirt[0] + dirt[2] / 2, dirt[1] + dirt[3] / 2)
+        check(not game.ctl('inventory')['carried'], 'something in the hand already')
+        chord('left', 'south')
+        settled('LT + A on a slot', before)
+        check(game.ctl('inventory')['carried'], 'LT + A on a slot did not take it')
+        game.pad('south')
+
+        # Overlapping triggers, either coming up first: RT's change as it goes down, LT's as it
+        # comes up, so back where it was.
+        for first, second in (('right', 'left'), ('left', 'right')):
+            game.ctl('pad', 'trigger', 'left', 1)
+            game.ctl('pad', 'trigger', 'right', 1)
+            game.ctl('pad', 'trigger', first, 0)
+            game.ctl('pad', 'trigger', second, 0)
+            settled(f'overlapping triggers, {first} up first', before)
+    finally:
+        game.quit()
+    return check.failures
+
+
+def craft_tap_hold(args, name):
+    # A long delay, so the several commands of a tap can't reach it.
+    game = Game(args, name, world=True, seed=seed_controller('repeatDelay:1\n'))
+    check = Check()
+    logs = 40
+
+    def have():
+        now = counts(game)
+        return now.get('minecraft:oak_log', 0), now.get('minecraft:oak_planks', 0)
+
+    try:
+        at = open_book(game, 'minecraft:oak_planks')
+        game.ctl('command', 'clear @s')
+        game.ctl('command', f'give @s oak_log {logs}')
+        time.sleep(1)
+        crosshair_walk(game, *at)
+        check(game.menu()['craft_hint'], 'no craft row with the pad in use')
+        rows = game.ctl('pad', 'status')['guide']['left']
+        check(any(r['with'] == 'lt' and r['button'] == 'south' for r in rows),
+              f'no LT + A row at the bottom left: {rows}')
+        shot(game, 'craft-guide')
+        # A comes up first, then LT comes up first.
+        for up in (('south', 'left'), ('left', 'south')):
+            game.ctl('pad', 'trigger', 'left', 1)
+            game.ctl('pad', 'south', 'down')
+            for button in up:
+                if button == 'left':
+                    game.ctl('pad', 'trigger', 'left', 0)
+                else:
+                    game.ctl('pad', 'south', 'up')
+            time.sleep(SETTLE)
+            craft_ended(game)
+            logs -= 1
+            check(have() == (logs, (40 - logs) * 4), f'a tap with {up[0]} up first: {have()}')
+            check(not grid(game), f'a tap left {grid(game)} in the grid')
+        # Held: one, nothing more until the delay, then several, up to the end of the items.
+        game.ctl('pad', 'trigger', 'left', 1)
+        game.ctl('pad', 'south', 'down')
+        time.sleep(0.5)
+        check(have() == (logs - 1, (41 - logs) * 4), f'held inside the delay: {have()}')
+        time.sleep(1.5)
+        left, _ = have()
+        check(left < logs - 2, f'held past the delay, {logs - left} crafts')
+        craft_ended(game)
+        game.ctl('pad', 'south', 'up')
+        game.ctl('pad', 'trigger', 'left', 0)
+        time.sleep(SETTLE)
+        check(have() == (0, 160), f'held to the end of the items: {have()}')
+        check(not grid(game), f'held to the end left {grid(game)} in the grid')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def craft_release(release):
+    """A held craft that `release` ends part way, then a fresh press."""
+    def case(args, name):
+        game = Game(args, name, world=True)
+        check = Check()
+        logs = 64
+        try:
+            at = open_book(game, 'minecraft:oak_planks')
+            game.ctl('command', 'clear @s')
+            game.ctl('command', f'give @s oak_log {logs}')
+            time.sleep(1)
+            crosshair_walk(game, *at)
+            category = selected_tab(game)[0]
+            game.ctl('pad', 'trigger', 'left', 1)
+            time.sleep(SETTLE)
+            game.ctl('pad', 'south', 'down')
+            time.sleep(1.5)
+            check(game.menu()['crafting'], 'the craft ended by itself')
+            release(game)
+            craft_ended(game)
+            check(not game.menu()['crafting'], 'a craft runs after the release')
+            check(not grid(game), f'left in the grid: {grid(game)}')
+
+            def accounted(extra=0):
+                have = counts(game)
+                planks, left = have.get('minecraft:oak_planks', 0), have.get('minecraft:oak_log', 0)
+                check(planks % 4 == 0 and left + planks // 4 == logs, f'{left} logs and {planks} planks of {logs}')
+                check(not game.ctl('inventory')['carried'], 'something in the hand')
+                return planks // 4
+            made = accounted()
+            check(1 < made < logs, f'{made} crafts')
+            # Nothing goes on by itself, with whatever is still down.
+            time.sleep(1)
+            check(accounted() == made, f'crafts went on: {made} then {accounted()}')
+            game.ctl('pad', 'south', 'up')
+            game.ctl('pad', 'trigger', 'left', 0)
+            time.sleep(SETTLE)
+            check(accounted() == made, f'letting go of the rest crafted: {made} then {accounted()}')
+            check(not grid(game), f'letting go of the rest left {grid(game)} in the grid')
+            check(selected_tab(game)[0] == category, 'letting go of LT changed the category')
+            # The next press starts fresh, and crafts one.
+            direct_craft(game)
+            check(accounted() == made + 1, f'the next press: {made} then {accounted()}')
+            check(not grid(game), f'the next press left {grid(game)} in the grid')
+        finally:
+            game.quit()
+        return check.failures
+    return case
+
+
+craft_release_a = craft_release(lambda game: game.ctl('pad', 'south', 'up'))
+craft_release_lt = craft_release(lambda game: game.ctl('pad', 'trigger', 'left', 0))
+craft_release_press = craft_release(lambda game: game.ctl('pad', 'rb', 'tap'))
+
+
+def craft_option_on(game_home):
+    (game_home / 'horizon-controller.txt').write_text('craftOnServers:true\n')
+
+
+def taps_with_lt(game, taps):
+    """LT held over `taps` quick taps of A, each up before the last craft could finish."""
+    game.ctl('pad', 'trigger', 'left', 1)
+    time.sleep(SETTLE)
+    for _ in range(taps):
+        game.ctl('pad', 'south', 'tap')
+        # A tap comes up at the next poll: one before the next tap keeps them presses of their own.
+        time.sleep(TAP_APART)
+    running = game.menu()['crafting']
+    game.ctl('pad', 'trigger', 'left', 0)
+    time.sleep(SETTLE)
+    craft_ended(game)
+    return running
+
+
+def guest_crafts(game, command, check, allowed):
+    """The player `Crafter`, on another computer's server."""
+    at = open_book(game, 'minecraft:oak_planks', player='Crafter', command=command)
+    command('clear Crafter')
+    command('give Crafter oak_log 6')
+    time.sleep(1)
+    crosshair_walk(game, *at)
+    check(game.menu()['craft_hint'] == allowed, f"the guide's LT + A row with the option {'on' if allowed else 'off'}")
+    direct_craft(game)
+    if not allowed:
+        # Refused, LT + A is plain A: the recipe placed once, nothing crafted.
+        check(not counts(game).get('minecraft:oak_planks'), f'crafted with the option off: {counts(game)}')
+        check(sum(grid(game).values()) == 1, f'LT + A refused did not place the recipe, as A does: {grid(game)}')
+        return
+    have = counts(game)
+    check(have.get('minecraft:oak_planks') == 4 and have.get('minecraft:oak_log') == 5, f'LT + A: {have}')
+    # A server's placements keep their distance, so these taps come while a craft is in flight:
+    # each still makes one.
+    check(taps_with_lt(game, 3), 'the craft had ended before the last tap')
+    have = counts(game)
+    check(have.get('minecraft:oak_planks') == 16 and have.get('minecraft:oak_log') == 2, f'three quick taps: {have}')
+    craft_held(game)
+    have = counts(game)
+    check(have.get('minecraft:oak_planks') == 24 and not have.get('minecraft:oak_log'), f'LT + A held: {have}')
+    check(not grid(game), f'left in the grid: {grid(game)}')
+    game.ctl('key', 'esc', 'tap')
+    time.sleep(SETTLE * 2)
+    have = counts(game)
+    check(have.get('minecraft:oak_planks') == 24 and not have.get('minecraft:oak_log'), f'after closing: {have}')
+
+
+def craft_lan_guest(args, name):
+    check = Check()
+    host = Game(args, f'{name}-host', world=True)
+    try:
+        port = host.ctl('lan', 'open', 0, 'commands')['port']
+        # Joined by address, not from the server list's LAN entries (`connect` has no discovery):
+        # a server like any other, so it takes the option.
+        for allowed in (False, True):
+            label = 'on' if allowed else 'off'
+            guest = Game(args, f'{name}-guest-{label}', seed=craft_option_on if allowed else None)
+            try:
+                guest.wait_targets()
+                guest.ctl('connect', f'127.0.0.1:{port}', 'Crafter')
+                guest.ctl('wait-for', 'loaded', '--timeout', 300, timeout=320)
+                time.sleep(2)
+                guest_crafts(guest, lambda line: host.ctl('command', line), check, allowed)
+            finally:
+                guest.quit()
+    finally:
+        host.quit()
+    return check.failures
+
+
+def craft_dedicated(args, name):
+    from anticheat_e2e import PROPERTIES
+    from server_bench import DONE, Server
+    check = Check()
+    folder = Path(tempfile.mkdtemp(prefix=f'pad-menu-{name}-server-'))
+    port = lab.free_port()
+    props = dict(PROPERTIES, gamemode='survival', difficulty='peaceful', **{'server-port': str(port)})
+    (folder / 'server.properties').write_text(''.join(f'{k}={v}\n' for k, v in props.items()))
+    (folder / 'eula.txt').write_text('eula=true\n')
+    server = Server([args.game, '--resources', args.resources, '--dedicated', '--nogui'], folder, folder / 'out.log')
+    guest = None
+    try:
+        server.wait_for(DONE, 300)
+        guest = Game(args, f'{name}-client', seed=craft_option_on)
+        guest.wait_targets()
+        guest.ctl('connect', f'127.0.0.1:{port}', 'Crafter')
+        guest.ctl('wait-for', 'loaded', '--timeout', 300, timeout=320)
+        time.sleep(2)
+
+        def command(line):
+            server.console(line)
+            time.sleep(0.3)
+        guest_crafts(guest, command, check, True)
+    finally:
+        if guest:
+            guest.quit()
+        server.stop()
+    shutil.rmtree(folder, ignore_errors=True)
+    return check.failures
+
+
 def seed_controller(text):
     def seed(game_home):
         (game_home / 'horizon-controller.txt').write_text(text)
@@ -2623,7 +3084,12 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'gameplay_guide': gameplay_guide,
          'gameplay_guide_basic': gameplay_guide_basic,
          'gameplay_guide_boat_and_keys': gameplay_guide_boat_and_keys,
-         'gameplay_guide_off': gameplay_guide_off, 'gameplay_guide_mobs': gameplay_guide_mobs}
+         'gameplay_guide_off': gameplay_guide_off, 'gameplay_guide_mobs': gameplay_guide_mobs,
+         'craft_direct': craft_direct, 'trigger_rules': trigger_rules, 'craft_tap_hold': craft_tap_hold,
+         'craft_release_a': craft_release_a, 'craft_release_lt': craft_release_lt,
+         'craft_release_press': craft_release_press, 'craft_remainder': craft_remainder,
+         'craft_full': craft_full, 'craft_grid': craft_grid, 'craft_carrying': craft_carrying,
+         'craft_lan_guest': craft_lan_guest, 'craft_dedicated': craft_dedicated}
 
 
 def main():

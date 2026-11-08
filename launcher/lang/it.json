@@ -1251,5 +1251,7 @@
   "Buy": "Acquista",
   "Gift": "Regala",
   "Found on this computer": "Trovati su questo computer",
-  "Looks": "Look"
+  "Looks": "Look",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Il portachiavi di sistema non ha risposto entro {seconds} secondi. Assicurati che sia in esecuzione e sbloccato, poi riavvia il launcher.",
+  "Can't read {name}'s sign-in: {why}": "Impossibile leggere l'accesso di {name}: {why}"
 }

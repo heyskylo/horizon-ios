@@ -840,6 +840,7 @@ pub enum Opt {
     PadRepeatInterval,
     PadInvertX,
     PadInvertY,
+    PadCraftOnServers,
     PadToggleSneak,
     PadMoveDeadzone,
     PadLookDeadzone,

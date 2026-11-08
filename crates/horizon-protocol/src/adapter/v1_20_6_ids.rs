@@ -436,6 +436,15 @@ pub const SOUND_EVENT_SUBSTITUTES: &[(u16, u16, u16)] = &[
 ];
 /// Every table above, as the adapter reads them.
 pub const IDS: super::ids::Ids = super::ids::Ids {
+    dropped_components: DROPPED_COMPONENTS,
+    substitutes: super::ids::Substitutes {
+        block_state: BLOCK_STATE_SUBSTITUTES,
+        block: BLOCK_SUBSTITUTES,
+        item: ITEM_SUBSTITUTES,
+        entity_type: ENTITY_TYPE_SUBSTITUTES,
+        particle_type: PARTICLE_TYPE_SUBSTITUTES,
+        sound_event: SOUND_EVENT_SUBSTITUTES,
+    },
     item: super::ids::Remap::Runs {
         up: ITEM_UP,
         down: ITEM_DOWN,
@@ -455,15 +464,6 @@ pub const IDS: super::ids::Ids = super::ids::Ids {
     enchantment_effect_component_type: super::ids::Remap::Runs {
         up: ENCHANTMENT_EFFECT_COMPONENT_TYPE_UP,
         down: ENCHANTMENT_EFFECT_COMPONENT_TYPE_DOWN,
-    },
-    dropped_components: DROPPED_COMPONENTS,
-    substitutes: super::ids::Substitutes {
-        block_state: BLOCK_STATE_SUBSTITUTES,
-        block: BLOCK_SUBSTITUTES,
-        item: ITEM_SUBSTITUTES,
-        entity_type: ENTITY_TYPE_SUBSTITUTES,
-        particle_type: PARTICLE_TYPE_SUBSTITUTES,
-        sound_event: SOUND_EVENT_SUBSTITUTES,
     },
     // Unchanged registries and block states were checked against v1_21_1_ids's reports.
     ..super::v1_21_1_ids::IDS

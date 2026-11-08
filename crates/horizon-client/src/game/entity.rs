@@ -1252,11 +1252,8 @@ impl Entity for ExperienceOrb {
     fn on_ground(&self) -> bool {
         self.on_ground
     }
-    fn move_by_piston(&mut self, movement: Vec3) {
-        self.position = self.position.add_vector(movement);
-        if movement.y != 0.0 {
-            self.on_ground = movement.y < 0.0;
-        }
+    fn set_piston_on_ground(&mut self, on_ground: bool) {
+        self.on_ground = on_ground;
     }
     fn piston_slime_bounce(&mut self, movement: Direction) {
         self.velocity = piston_push::bounce_velocity(movement, self.velocity);
