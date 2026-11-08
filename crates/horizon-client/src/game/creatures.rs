@@ -217,11 +217,13 @@ impl ProjectileWorld for ProjWorld<'_, '_> {
         )
         .map(|c| (c.drag, c.surface))
     }
-    fn solid(&self, p: [i32; 3]) -> bool {
-        self.w
-            .facts
-            .get(self.w.world.block(p[0], p[1], p[2]))
-            .full_collision
+    fn can_stand_on(&self, p: [i32; 3], entity_y: f64) -> bool {
+        horizon_client::collisions::projectile_can_stand_on(
+            self.w.world,
+            self.w.collision,
+            BlockPos::new(p[0], p[1], p[2]),
+            entity_y,
+        )
     }
 }
 
