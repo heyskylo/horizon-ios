@@ -6,7 +6,7 @@
 //! closes (`AbstractContainerMenu.clearContainer`).
 use super::{Game, lan::LanHost};
 use horizon_client::{
-    containers::BlockEntity,
+    containers::{BlockEntity, ModMenuType},
     furnace::FurnaceCooking,
     items::ItemStack,
     lan::{
@@ -501,6 +501,19 @@ impl Game<'_> {
         let (player, name) = (g.uuid, g.name.clone());
         self.native_player_recipe_book_click(player, &name, &id, p.use_max);
         let creative = g.creative();
+        // A mod menu type's crafting grid places as a crafting table's.
+        if self
+            .lan_mod_crafting_window(host, gi, p.container)
+            .is_some()
+        {
+            let placed = self.lan_mod_craft_apply(host, gi, p.container, |menu, env| {
+                menu.place_recipe(env, &id, p.use_max, creative, None)
+            });
+            if placed == Some(PostPlace::Ghost) {
+                host.hub.send_ghost_recipe(conn, p.container, &id);
+            }
+            return;
+        }
         // AbstractFurnaceMenu.handlePlacement: the current furnace's slots,
         // rather than the separate crafting-table menu, own cooking inputs.
         let furnace = host.hub.guests[gi]
@@ -610,6 +623,9 @@ impl Game<'_> {
         apply: impl FnOnce(&mut Menu, &Env) -> R,
     ) -> Option<R> {
         let conn = host.hub.guests[gi].conn;
+        if self.lan_mod_crafting_window(host, gi, container).is_some() {
+            return self.lan_mod_craft_apply(host, gi, container, apply);
+        }
         let placed = if container == 0 {
             let crafting = host.play.entry(conn).or_default();
             let mut menu = crafting
@@ -738,6 +754,79 @@ impl Game<'_> {
             .get(self.world.block(pos[0], pos[1], pos[2]))
             .name;
         &**name == "minecraft:crafting_table" && g.within_block_range(pos, 4.0)
+    }
+
+    /// Guest `gi`'s open window `container` when it is a mod menu type with a
+    /// crafting grid: its block and its type.
+    fn lan_mod_crafting_window(
+        &self,
+        host: &LanHost,
+        gi: usize,
+        container: i32,
+    ) -> Option<((i32, i32, i32), &'static ModMenuType)> {
+        let m = host.hub.guests[gi]
+            .menu
+            .as_ref()
+            .filter(|m| container != 0 && m.window == container)?;
+        let Slots::Block(pos) = m.slots else {
+            return None;
+        };
+        let t = m.mod_type.filter(|t| t.crafting.is_some())?;
+        matches!(self.world.block_entities.get(&pos), Some(BlockEntity::Mod(e)) if !e.id.is_empty())
+            .then_some((pos, t))
+    }
+
+    /// `apply` (a recipe book placement or a viewer's transfer) on guest
+    /// `gi`'s open mod crafting menu `container`, over its block entity's
+    /// slots as a click is; None when that window is no such menu. Changes
+    /// reach the guest with the tick's container sync.
+    fn lan_mod_craft_apply<R>(
+        &mut self,
+        host: &mut LanHost,
+        gi: usize,
+        container: i32,
+        apply: impl FnOnce(&mut Menu, &Env) -> R,
+    ) -> Option<R> {
+        let (pos, t) = self.lan_mod_crafting_window(host, gi, container)?;
+        let Some(BlockEntity::Mod(m)) = self.world.block_entities.get(&pos) else {
+            return None;
+        };
+        let mut items = m.items.clone();
+        items.resize(t.slots, None);
+        let conn = host.hub.guests[gi].conn;
+        let kind = Kind::Mod(t);
+        let mut menu = host
+            .play
+            .entry(conn)
+            .or_default()
+            .crafting
+            .machine
+            .take()
+            .filter(|(window, m)| *window == container && m.kind() == kind)
+            .map_or_else(|| Box::new(Menu::new(kind)), |(_, m)| m);
+        let shown = Self::lan_mod_craft_shown(host, gi, &items);
+        let out = self.guest_menu_op(host, gi, &mut menu, |menu, env| {
+            menu.load_container(env, &items);
+            if let Some((slot, result)) = shown {
+                menu.set_slot(env, slot, result);
+            }
+            apply(menu, env)
+        });
+        let after = menu.container_items();
+        if after != items {
+            if let Some(BlockEntity::Mod(m)) = self.world.block_entities.get_mut(&pos) {
+                if m.items.len() < after.len() {
+                    m.items.resize(after.len(), None);
+                }
+                for (slot, stack) in m.items.iter_mut().zip(after) {
+                    *slot = stack;
+                }
+            }
+            self.container_changed(pos);
+        }
+        self.lan_mod_craft_settle(host, gi, pos, &mut menu);
+        host.play.entry(conn).or_default().crafting.machine = Some((container, menu));
+        Some(out)
     }
 
     /// The result guest `gi`'s mod crafting menu shows, with its slot, while

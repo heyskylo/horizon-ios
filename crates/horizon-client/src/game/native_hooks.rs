@@ -11432,14 +11432,15 @@ impl Game<'_> {
         self.known_displays()
     }
     /// Places a recipe in the open screen's grid as a click in the recipe
-    /// book does (`ServerboundPlaceRecipePacket`): the inventory's grid or a
-    /// crafting table's. `all` places as many as the items allow, as with
+    /// book does (`ServerboundPlaceRecipePacket`): the inventory's grid, a
+    /// crafting table's or a mod menu type's crafting grid. `all` places as many as the items allow, as with
     /// Shift. Refused while no such screen is open and for a recipe the
     /// player's book doesn't hold; one missing items shows as a ghost.
     pub(super) fn native_place_recipe(&mut self, book_id: i32, all: bool) -> Result<(), String> {
         self.recipe_place(book_id, all)
     }
-    /// Move ingredients for a viewer recipe into the open crafting grid.
+    /// Move ingredients for a viewer recipe into the open crafting grid (the
+    /// inventory's, a crafting table's or a mod menu type's).
     /// Unlike the recipe book click, this doesn't require learning the recipe.
     pub(super) fn native_transfer_recipe(&mut self, book_id: i32) {
         self.transfer_viewer_recipe(book_id);
