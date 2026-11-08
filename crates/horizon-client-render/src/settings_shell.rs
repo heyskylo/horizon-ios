@@ -951,7 +951,22 @@ pub(crate) fn foot_button(
     rect: [f32; 4],
     label: &Text,
     cursor: (f32, f32),
+    flags: (bool, bool),
+) {
+    foot_button_with_room(batch, atlas, rect, label, cursor, flags, 0.0);
+}
+
+/// A foot button whose label leaves `room` at its left for a controller's glyph: a button that
+/// declared its job gets one, as vanilla's do (`ui::action_button`), which a half-width Undo or
+/// Apply needs.
+fn foot_button_with_room(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    rect: [f32; 4],
+    label: &Text,
+    cursor: (f32, f32),
     (focused, primary): (bool, bool),
+    room: f32,
 ) {
     let [x, y, w, h] = rect;
     let hovered = ui::hovered(cursor, x, y, w, h);
@@ -964,7 +979,7 @@ pub(crate) fn foot_button(
     });
     crate::widgets::widget_cursor(hovered, true);
     crate::widgets::target(rect);
-    style::button(batch, atlas, rect, label, (hover, true, primary));
+    style::button_with_room(batch, atlas, rect, label, (hover, true, primary), room);
 }
 
 /// Of the rows (their target, `y` and whether they can take the focus), those the keys reach.
@@ -2305,12 +2320,16 @@ impl<S: Screen + Default> Hosted for Shell<S> {
                 Target::Apply => (APPLY, Some(Declared::Apply), false),
                 _ => (DONE, Some(Declared::Done), true),
             };
-            if let Some(declared) = declared {
-                crate::widgets::declare_action(declared, rect, true);
-            }
             let label = Text::literal(lang::get(label));
             let flags = (self.shows_focus(target), primary);
-            foot_button(batch, atlas, rect, &label, cursor, flags);
+            let room = match declared {
+                Some(declared) => {
+                    crate::widgets::declare_action(declared, rect, true);
+                    crate::widgets::action_glyph_room()
+                }
+                None => 0.0,
+            };
+            foot_button_with_room(batch, atlas, rect, &label, cursor, flags, room);
         }
     }
     fn click(
