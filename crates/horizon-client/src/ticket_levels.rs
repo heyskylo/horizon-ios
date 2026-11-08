@@ -261,6 +261,7 @@ impl ChunkTickets {
             && next.simulation_distance == old.simulation_distance
             && next.players == old.players
             && next.forced == old.forced
+            && next.dragon == old.dragon
             && self.portal_matches(old)
         {
             return;
