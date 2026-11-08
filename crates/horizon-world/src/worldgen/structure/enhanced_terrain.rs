@@ -246,7 +246,7 @@ fn push_piece(
 mod tests {
     use super::*;
     use crate::worldgen::structure::{
-        StructureTemplate,
+        LazyTemplate, StructureTemplate,
         jigsaw::{Junction, PoolElement, PoolPiece},
     };
     use serde_json::json;
@@ -301,7 +301,7 @@ mod tests {
 
     fn element(projection: Projection, own: Option<Adaptation>) -> Arc<PoolElement> {
         Arc::new(PoolElement::Single {
-            template: Arc::new(StructureTemplate::empty()),
+            template: LazyTemplate::loaded(Arc::new(StructureTemplate::empty())),
             processors: Default::default(),
             processors_source: serde_json::Value::Null,
             legacy: false,

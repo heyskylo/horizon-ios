@@ -507,15 +507,16 @@ impl Facts {
     /// and what it does not reproduce.
     pub fn item(&self, id: &str, owned: &[&str]) -> Result<(Value, Vec<String>), String> {
         let item = self.items.get(id).ok_or("not in the oracle")?;
-        if item.block.is_some() {
-            return Err("a block item without a block".into());
-        }
         let mut differences = Vec::new();
         if !item.class.starts_with(VANILLA_PACKAGE) {
             differences.push(format!("class {} (behaviour beyond Item)", item.class));
         }
         let template = item_template(item);
         let mut decl = json!({"template": template});
+        // A block item whose block has another name (seeds): its `BlockItem.getBlock`.
+        if let Some(block) = &item.block {
+            decl["place_block"] = json!(block);
+        }
         if item.max_stack_size != 64 {
             decl["max_stack_size"] = json!(item.max_stack_size);
         }

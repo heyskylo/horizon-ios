@@ -48,27 +48,35 @@ fn description(tag: &Tag) -> Option<Tag> {
     super::read_text(tag)?;
     Some(super::collapsed_text(tag.clone()))
 }
+/// A trim holder from its codec: a registry name or the inline definition.
+fn holder<T>(tag: &Tag, direct: impl FnOnce(&Tag) -> Option<T>) -> Option<Holder<T>> {
+    if let Some(name) = name(tag) {
+        Some(Holder::Named(name))
+    } else {
+        direct(tag).map(Holder::Direct)
+    }
+}
+pub fn material_from_nbt(tag: &Tag) -> Option<Holder<Material>> {
+    holder(tag, |tag| {
+        Some(Material {
+            palette_id: name(tag.get("palette_id")?)?,
+            description: description(tag.get("description")?)?,
+        })
+    })
+}
+pub fn pattern_from_nbt(tag: &Tag) -> Option<Holder<Pattern>> {
+    holder(tag, |tag| {
+        Some(Pattern {
+            asset_id: name(tag.get("asset_id")?)?,
+            description: description(tag.get("description")?)?,
+            decal: matches!(tag.get("decal"), Some(Tag::Byte(v)) if *v != 0),
+        })
+    })
+}
 pub fn from_nbt(tag: &Tag) -> Option<Trim> {
-    let material = tag.get("material")?;
-    let pattern = tag.get("pattern")?;
     Some((
-        if let Some(name) = name(material) {
-            Holder::Named(name)
-        } else {
-            Holder::Direct(Material {
-                palette_id: name(material.get("palette_id")?)?,
-                description: description(material.get("description")?)?,
-            })
-        },
-        if let Some(name) = name(pattern) {
-            Holder::Named(name)
-        } else {
-            Holder::Direct(Pattern {
-                asset_id: name(pattern.get("asset_id")?)?,
-                description: description(pattern.get("description")?)?,
-                decal: matches!(pattern.get("decal"), Some(Tag::Byte(v)) if *v != 0),
-            })
-        },
+        material_from_nbt(tag.get("material")?)?,
+        pattern_from_nbt(tag.get("pattern")?)?,
     ))
 }
 pub fn to_nbt(trim: &Trim) -> Tag {

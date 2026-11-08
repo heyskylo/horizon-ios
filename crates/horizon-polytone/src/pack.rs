@@ -27,29 +27,192 @@ impl ConfigValue {
     }
 }
 
-/// The values of a pack's config entries, by id (`namespace:name`).
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Configs(BTreeMap<String, ConfigValue>);
+/// What kind of control a config entry is, with its kind's own fields.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConfigKind {
+    /// A slider from `min` to `max` in steps of `step`.
+    Number { min: f64, max: f64, step: f64 },
+    /// A cycle button over `allowed_values`.
+    Text { allowed: Vec<String> },
+    /// An ON/OFF toggle.
+    Bool,
+}
 
-impl Configs {
-    /// A `config_entries/<name>.json` file: its `default_value`, a number, string or boolean.
-    pub fn add_entry(&mut self, id: String, json: &Json) {
-        let value = match &json["default_value"] {
-            Json::Number(n) => ConfigValue::Number(n.as_f64().unwrap_or_default()),
-            Json::String(s) => ConfigValue::Text(s.clone()),
-            Json::Bool(b) => ConfigValue::Bool(*b),
-            _ => return,
+/// A config entry's file (wiki "Polytone Configs"): its control, default and how the options
+/// screen lists it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConfigEntry {
+    pub kind: ConfigKind,
+    pub default: ConfigValue,
+    /// The `config.<namespace>.section.<id>` group it is listed under, and that group's place.
+    pub section: Option<String>,
+    pub section_order: Option<i64>,
+    pub display_order: i64,
+    /// `low`, `medium`, `high` or `varies`.
+    pub performance_impact: Option<String>,
+    /// A full-width row instead of a half-width one.
+    pub wide: bool,
+    /// The translation key of the value's label (`%s blocks`).
+    pub value_translation: Option<String>,
+    /// Its value in each pack-wide preset, and in each preset of its section.
+    pub presets: BTreeMap<String, ConfigValue>,
+    pub section_presets: BTreeMap<String, ConfigValue>,
+}
+
+impl ConfigValue {
+    fn parse(v: &Json) -> Option<Self> {
+        Some(match v {
+            Json::Number(n) => Self::Number(n.as_f64()?),
+            Json::String(s) => Self::Text(s.clone()),
+            Json::Bool(b) => Self::Bool(*b),
+            _ => return None,
+        })
+    }
+}
+
+impl ConfigEntry {
+    /// `None` without a `default_value` of a number, string or boolean.
+    pub fn parse(json: &Json) -> Option<Self> {
+        let default = ConfigValue::parse(&json["default_value"])?;
+        let num = |key: &str, d: f64| json[key].as_f64().unwrap_or(d);
+        let kind = match &default {
+            ConfigValue::Number(_) => ConfigKind::Number {
+                min: num("min", 0.0),
+                max: num("max", 1.0),
+                step: num("step", 0.1),
+            },
+            ConfigValue::Text(_) => ConfigKind::Text {
+                allowed: json["allowed_values"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect(),
+            },
+            ConfigValue::Bool(_) => ConfigKind::Bool,
         };
-        self.0.insert(id, value);
+        let presets = |key: &str| -> BTreeMap<String, ConfigValue> {
+            json[key]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter_map(|(k, v)| Some((k.clone(), ConfigValue::parse(v)?)))
+                .collect()
+        };
+        let text = |key: &str| json[key].as_str().map(str::to_owned);
+        Some(Self {
+            kind,
+            default,
+            section: text("section"),
+            section_order: json["section_order"].as_i64(),
+            display_order: json["display_order"].as_i64().unwrap_or(0),
+            performance_impact: text("performance_impact"),
+            wide: json["wide"].as_bool() == Some(true),
+            value_translation: text("value_translation"),
+            presets: presets("presets"),
+            section_presets: presets("section_presets"),
+        })
     }
 
-    /// Changes an entry's value (a player's choice).
+    /// `value` kept within what the entry allows: a number clamped to its range and snapped
+    /// to its step, a text one of its values; `None` for a value of another kind.
+    pub fn accept(&self, value: &ConfigValue) -> Option<ConfigValue> {
+        match (&self.kind, value) {
+            (ConfigKind::Number { min, max, step }, ConfigValue::Number(n)) => {
+                let (lo, hi) = (min.min(*max), max.max(*min));
+                let mut v = n.clamp(lo, hi);
+                if *step > 0.0 {
+                    v = (lo + ((v - lo) / step).round() * step).clamp(lo, hi);
+                }
+                Some(ConfigValue::Number(v))
+            }
+            (ConfigKind::Text { allowed }, ConfigValue::Text(t)) => {
+                (allowed.is_empty() || allowed.contains(t)).then(|| value.clone())
+            }
+            (ConfigKind::Bool, ConfigValue::Bool(_)) => Some(value.clone()),
+            _ => None,
+        }
+    }
+}
+
+/// A pack's config entries and their values, by id (`namespace:name`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Configs {
+    values: BTreeMap<String, ConfigValue>,
+    entries: BTreeMap<String, ConfigEntry>,
+}
+
+impl Configs {
+    /// A `config_entries/<name>.json` file: its value starts at its `default_value`.
+    pub fn add_entry(&mut self, id: String, json: &Json) {
+        let Some(entry) = ConfigEntry::parse(json) else {
+            return;
+        };
+        self.values.insert(id.clone(), entry.default.clone());
+        self.entries.insert(id, entry);
+    }
+
+    /// Changes an entry's value (a player's choice), kept within what the entry allows. An id
+    /// without an entry takes any value.
     pub fn set(&mut self, id: &str, value: ConfigValue) {
-        self.0.insert(id.to_owned(), value);
+        let value = match self.entries.get(id) {
+            Some(entry) => match entry.accept(&value) {
+                Some(v) => v,
+                None => return,
+            },
+            None => value,
+        };
+        self.values.insert(id.to_owned(), value);
     }
 
     pub fn get(&self, id: &str) -> Option<&ConfigValue> {
-        self.0.get(id)
+        self.values.get(id)
+    }
+
+    /// The entries, by id.
+    pub fn entries(&self) -> &BTreeMap<String, ConfigEntry> {
+        &self.entries
+    }
+
+    /// The values that differ from their entries' defaults: what a player chose.
+    pub fn chosen(&self) -> BTreeMap<String, ConfigValue> {
+        self.values
+            .iter()
+            .filter(|(id, v)| self.entries.get(*id).is_none_or(|e| &e.default != *v))
+            .map(|(id, v)| (id.clone(), v.clone()))
+            .collect()
+    }
+
+    /// Every entry with a value in `preset` (a pack-wide preset) takes it.
+    pub fn apply_preset(&mut self, preset: &str) {
+        let picks: Vec<_> = self
+            .entries
+            .iter()
+            .filter_map(|(id, e)| Some((id.clone(), e.presets.get(preset)?.clone())))
+            .collect();
+        for (id, value) in picks {
+            self.set(&id, value);
+        }
+    }
+
+    /// Takes `other`'s entries and values (another pack's), over its own of the same id.
+    pub fn merge(&mut self, other: &Configs) {
+        self.entries
+            .extend(other.entries.iter().map(|(k, v)| (k.clone(), v.clone())));
+        self.values
+            .extend(other.values.iter().map(|(k, v)| (k.clone(), v.clone())));
+    }
+
+    /// The pack-wide presets' names, in order.
+    pub fn presets(&self) -> Vec<String> {
+        let mut names: Vec<_> = self
+            .entries
+            .values()
+            .flat_map(|e| e.presets.keys().cloned())
+            .collect();
+        names.sort();
+        names.dedup();
+        names
     }
 }
 
@@ -307,5 +470,65 @@ mod tests {
             false
         ));
         assert!(overlay_active(&json!({"directory": "plain"}), &c, true));
+    }
+
+    #[test]
+    fn config_entries_keep_their_control_and_values_within_it() {
+        let mut configs = Configs::default();
+        configs.add_entry(
+            "p:fog".into(),
+            &serde_json::json!({
+                "default_value": 0.5, "min": 0, "max": 2, "step": 0.25,
+                "section": "rendering", "section_order": 1, "performance_impact": "medium",
+                "presets": {"performance": 0, "pretty": 2}
+            }),
+        );
+        configs.add_entry(
+            "p:rain".into(),
+            &serde_json::json!({"default_value": "drops", "allowed_values": ["drops", "streaks"]}),
+        );
+        configs.add_entry(
+            "p:birds".into(),
+            &serde_json::json!({"default_value": true}),
+        );
+        // No default: no entry.
+        configs.add_entry("p:broken".into(), &serde_json::json!({"min": 1}));
+        assert_eq!(configs.entries().len(), 3);
+        let fog = &configs.entries()["p:fog"];
+        assert_eq!(
+            fog.kind,
+            ConfigKind::Number {
+                min: 0.0,
+                max: 2.0,
+                step: 0.25
+            }
+        );
+        assert_eq!(
+            (fog.section.as_deref(), fog.section_order),
+            (Some("rendering"), Some(1))
+        );
+        // Clamped and snapped to the step; another kind, or a value not allowed, is refused.
+        configs.set("p:fog", ConfigValue::Number(1.6));
+        assert_eq!(configs.get("p:fog"), Some(&ConfigValue::Number(1.5)));
+        configs.set("p:fog", ConfigValue::Number(9.0));
+        assert_eq!(configs.get("p:fog"), Some(&ConfigValue::Number(2.0)));
+        configs.set("p:fog", ConfigValue::Bool(false));
+        configs.set("p:rain", ConfigValue::Text("snow".into()));
+        assert_eq!(
+            configs.get("p:rain"),
+            Some(&ConfigValue::Text("drops".into()))
+        );
+        configs.set("p:birds", ConfigValue::Bool(false));
+        // What differs from the defaults.
+        assert_eq!(
+            configs.chosen().into_iter().collect::<Vec<_>>(),
+            [
+                ("p:birds".to_owned(), ConfigValue::Bool(false)),
+                ("p:fog".to_owned(), ConfigValue::Number(2.0)),
+            ]
+        );
+        assert_eq!(configs.presets(), ["performance", "pretty"]);
+        configs.apply_preset("performance");
+        assert_eq!(configs.get("p:fog"), Some(&ConfigValue::Number(0.0)));
     }
 }

@@ -1,11 +1,23 @@
 //! What splitscreen draws over a player's view: its badge, questions answered with the pad and
 //! notices.
 use super::*;
-use horizon_client::controller_notice::{NoticeSlot, panel};
-use horizon_client::gamepad::Button;
+use horizon_client::controller_notice::NoticeSlot;
+use horizon_client::gamepad::{GlyphStyle, MenuJob};
 use horizon_client::hud::{HudBatch, rgba};
+use horizon_client::hud_kit::{
+    plate::{self, Plate},
+    room::Room,
+};
 use horizon_client::pad_glyph;
+use horizon_client::pad_glyph::Glyphs;
 use std::time::Duration;
+
+/// Where the join strip and notices go with nothing above them, in GUI px from the view's top.
+const TOP: f32 = 18.0;
+/// A prompt's height in GUI px: its title and a row of glyphs.
+const STRIP: f32 = 34.0;
+/// The gap in GUI px between the join strip and a notice under it.
+const GAP: f32 = 4.0;
 
 /// What splitscreen draws over a player's view (`Game::split_hud`): its corner badge (who, for a
 /// moment, with why), a question its controller answers, and notices nobody has to answer.
@@ -25,7 +37,11 @@ pub(in crate::game) struct Hud {
 pub(super) struct Prompt {
     pub(super) ask: Ask,
     pub(super) title: String,
-    pub(super) choices: Vec<(Button, String)>,
+    /// Each answer: the menu job whose button gives it, and its words.
+    pub(super) choices: Vec<(MenuJob, String)>,
+    /// The family of the controller asked (a joining one), whose glyphs answer it; none when any
+    /// controller may answer (one lost), shown in this player's family.
+    pub(super) family: Option<GlyphStyle>,
 }
 
 /// What a prompt asks: a controller may join (every view, a strip at the top: nobody stops
@@ -35,6 +51,19 @@ pub(super) struct Prompt {
 pub(super) enum Ask {
     Join,
     Lost,
+}
+
+/// Where the join strip and a notice go on a view, as `(strip, notice)` tops in GUI px: at
+/// `TOP`, or below the boss bars when they reach past it (`Room::below_top`); the notice under
+/// the strip while it shows (`below_strip`).
+fn tops(room: &Room, below_strip: bool) -> (f32, f32) {
+    let strip = room.below_top(TOP);
+    let notice = if below_strip {
+        strip + STRIP + GAP
+    } else {
+        strip
+    };
+    (strip, notice)
 }
 
 /// A splitscreen prompt's text in the selected language (`horizon.splitscreen.prompt.*`).
@@ -48,9 +77,10 @@ pub(super) fn lost_prompt(name: &str) -> Prompt {
         ask: Ask::Lost,
         title: tr("lost", &[&name]),
         choices: vec![
-            (Button::South, tr("lost.use_another", &[])),
-            (Button::East, tr("lost.leave", &[])),
+            (MenuJob::Confirm, tr("lost.use_another", &[])),
+            (MenuJob::Back, tr("lost.leave", &[])),
         ],
+        family: None,
     }
 }
 
@@ -84,9 +114,14 @@ impl Game<'_> {
                 batch.text(atlas, &text, 2.0, 2.0, rgba(255, 255, 255, 230), true);
             }
         }
+        let below_strip = matches!(&self.split_hud.prompt, Some(p) if p.ask == Ask::Join);
+        let (top, notice_top) = tops(&self.ui.room, below_strip);
         // A question: centred over the view dimmed, or a strip at the top (a controller joining).
         if let Some(prompt) = &self.split_hud.prompt {
-            let style = self.ui.options.pad_style;
+            // Join and lost-controller questions are answered by a controller nobody holds yet,
+            // whose letters aren't read yet: by places (docs/controllers.md, Nintendo pads).
+            let family = prompt.family.unwrap_or(self.pad.style);
+            let places = Glyphs::unheld(&self.settings.controller, family);
             let dim = prompt.ask != Ask::Join;
             if dim {
                 batch.fill(atlas, 0.0, 0.0, w, h, rgba(0, 0, 0, 120));
@@ -94,7 +129,10 @@ impl Game<'_> {
             let glyphs: Vec<_> = prompt
                 .choices
                 .iter()
-                .map(|(b, what)| (*b, pad_glyph::width(atlas, *b, style), what.as_str()))
+                .map(|(job, what)| {
+                    let glyph = pad_glyph::Glyph::menu(*job, places);
+                    (glyph, pad_glyph::width(atlas, glyph), what.as_str())
+                })
                 .collect();
             let line: f32 = glyphs
                 .iter()
@@ -102,12 +140,15 @@ impl Game<'_> {
                 .sum::<f32>()
                 - 12.0;
             let pw = width(&prompt.title).max(line) + 16.0;
-            let ph = 34.0;
             let (px, py) = (
                 ((w - pw) / 2.0).floor(),
-                if dim { ((h - ph) / 2.0).floor() } else { 18.0 },
+                if dim {
+                    ((h - STRIP) / 2.0).floor()
+                } else {
+                    top
+                },
             );
-            panel(batch, atlas, [px, py, pw, ph]);
+            plate::draw(batch, atlas, Plate::Notice, [px, py, pw, STRIP]);
             let tx = (px + (pw - width(&prompt.title)) / 2.0).floor();
             batch.text(
                 atlas,
@@ -119,8 +160,8 @@ impl Game<'_> {
             );
             let mut x = (px + (pw - line) / 2.0).floor();
             let y = py + 20.0;
-            for (button, gw, what) in glyphs {
-                pad_glyph::draw(batch, atlas, button, style, x, y);
+            for (glyph, gw, what) in glyphs {
+                pad_glyph::draw(batch, atlas, glyph, x, y);
                 x += gw + 4.0;
                 batch.text(atlas, what, x, y, rgba(220, 220, 220, 255), false);
                 x += width(what) + gap(what);
@@ -128,11 +169,11 @@ impl Game<'_> {
         }
         // A notice nobody answers: at the top, under a joining controller's strip, for as long
         // as a toast shows (5 s, times the setting).
-        let below_strip = matches!(&self.split_hud.prompt, Some(p) if p.ask == Ask::Join);
         let shown_for =
             Duration::from_secs_f64(5.0 * f64::from(self.settings.notification_display_time));
-        let top = if below_strip { 56.0 } else { 18.0 };
-        self.split_hud.notice.draw(batch, atlas, top, shown_for);
+        self.split_hud
+            .notice
+            .draw(batch, atlas, notice_top, shown_for);
     }
 }
 
@@ -166,5 +207,34 @@ impl<'a> Split<'a> {
         if let Some(game) = self.game_mut(i) {
             game.split_hud.place = place;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horizon_client::hud_kit::room::Keep;
+    use horizon_client::hud_overlays::boss_bars_bottom;
+
+    /// A room on a 500 x 300 view with `n` boss bars.
+    fn with_bars(n: usize) -> Room {
+        let bottom = boss_bars_bottom(300, n) as f32;
+        Room::new(500.0, 300.0).with(Keep::BossBars, [159.0, 0.0, 182.0, bottom])
+    }
+
+    #[test]
+    fn with_nothing_showing_the_strip_and_notice_stay_where_they_were() {
+        // Before the room: the strip at 18, a notice under it at 56.
+        assert_eq!(tops(&Room::new(500.0, 300.0), false), (18.0, 18.0));
+        assert_eq!(tops(&Room::new(500.0, 300.0), true), (18.0, 56.0));
+    }
+
+    #[test]
+    fn the_strip_and_notice_go_below_the_boss_bars_they_would_cover() {
+        // One bar ends at 17, above the strip's 18: nothing moves.
+        assert_eq!(tops(&with_bars(1), true), (18.0, 56.0));
+        // Two end at 36, three at 55: below them, 2 px away.
+        assert_eq!(tops(&with_bars(2), false), (38.0, 38.0));
+        assert_eq!(tops(&with_bars(3), true), (57.0, 95.0));
     }
 }

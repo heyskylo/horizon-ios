@@ -175,7 +175,11 @@ fn entity_vertex(position: vec3<f32>, uv: vec2<f32>,
 @vertex fn vs_entity(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>,
     @location(2) overlay: u32, @location(3) color: vec4<f32>, @location(4) light: vec4<u32>,
     @location(5) normal: vec4<f32>, @location(6) glint_uv: vec2<f32>) -> Out {
-    var out = entity_vertex(position, uv, overlay & 0xffffu, color, light, normal);
+    // [world warp entity]
+    // (a world warp's pipelines put the vertex through the mod's `world_warp`: gfx/world_warp.rs)
+    let at = position;
+    // [end world warp entity]
+    var out = entity_vertex(at, uv, overlay & 0xffffu, color, light, normal);
     out.glint_uv = glint_uv;
     out.tier = (overlay >> 16u) & 0xffu;
     return out;
@@ -279,10 +283,11 @@ fn crumbling_uv(uv: vec2<f32>, packed_origin: vec2<f32>, sprite_size: vec2<f32>,
 }
 // CRUMBLING_UV_END
 @fragment fn fs_entity(in: Out, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    return entity_written_color(in, front);
+    return entity_written_color(in, entity_color(in, front));
 }
-fn entity_written_color(in: Out, front: bool) -> vec4<f32> {
-    let color = entity_color(in, front);
+// Takes entity_color's result rather than calling it: FXC (DX12) fails with "argument pulled into
+// unrelated predicate" when entity_color's discards sit a function call below the entry point.
+fn entity_written_color(in: Out, color: vec4<f32>) -> vec4<f32> {
     if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 && in.overlay != 11u && in.overlay != 12u {
         var mark = hdr_entity_mark(in);
         if in.overlay == 4u { mark = hdr_scene_alpha(globals.hdr_light.y); }

@@ -305,6 +305,7 @@ fn the_page_search_keeps_the_players_filters_but_not_their_version() {
         game_version: Some("26.3".into()),
         environment: Some(details::Environment::Client),
         sort: Some(details::Sort::Downloads),
+        works_on: false,
     };
     let q = t.search("fps", Kind::Mod, &picked);
     assert_eq!(q.text, "fps");

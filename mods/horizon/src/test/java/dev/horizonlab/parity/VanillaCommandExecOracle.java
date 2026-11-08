@@ -1060,7 +1060,8 @@ public final class VanillaCommandExecOracle {
                         record.add("results", results);
                         out.append(gson.toJson(record)).append('\n');
                     }
-                    case "close_menu" -> player.closeContainer();
+                    case "close_menu" -> player.connection.handleContainerClose(
+                        new net.minecraft.network.protocol.game.ServerboundContainerClosePacket(player.containerMenu.containerId));
                     case "merchant_saved_stats" -> {
                         player.getStats().save();
                         String raw;
