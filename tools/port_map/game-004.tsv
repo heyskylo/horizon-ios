@@ -52,7 +52,7 @@ AreaEffectCloud.defineSynchedData	port	crates/horizon-client/src/game/lan_entiti
 AreaEffectCloud.setRadius	inline	crates/horizon-client/src/game/potions.rs::Game::tick_potion_cloud	loaded radius and nonzero per-tick/per-use changes clamp to 0..32
 AreaEffectCloud.refreshDimensions	inline	crates/horizon-client/src/game/potions.rs::Game::tick_potion_cloud	the affected box is rebuilt from the radius every check
 AreaEffectCloud.readAdditionalSaveData	port	crates/horizon-client/src/game/potions.rs::Game::load_potion_cloud	loaded potion effects, age, radius, duration, wait, reapplication, per-use/per-tick changes and duration scale join the live cloud model; owner resolution and custom particles remain unmodeled; save/reopen remains separate
-AreaEffectCloud.addAdditionalSaveData	missing		minor: a lingering potion or dragon breath cloud is gone after the world is saved and reopened
+AreaEffectCloud.addAdditionalSaveData	port	crates/horizon-client/src/game/potions.rs::potion_cloud_to_nbt	the lifetime, radius, the four use settings, RadiusPerTick, potion_duration_scale and the effects as `custom_effects` with the colour; a dragon's own breath carries no potion and is not written
 AreaEffectCloud.get	skip:other		entity data component accessor for predicates and /data; Horizon keeps the cloud's potion in PotionCloud
 AreaEffectCloud.applyImplicitComponents	inline	crates/horizon-client/src/game/potions.rs::Game::splash	the lingering branch takes the thrown stack's potion effects and colour; potion_duration_scale is fixed at 0.25
 AreaEffectCloud.applyImplicitComponent	inline	crates/horizon-client/src/game/potions.rs::Game::splash	same: potion contents only

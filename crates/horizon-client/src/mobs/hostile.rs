@@ -381,6 +381,7 @@ pub fn creeper_tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
             [m.position.x, m.position.y, m.position.z],
             radius,
             m.species(),
+            m.silent,
         ));
         // Creeper.spawnLingeringCloud: the effects it has make a cloud where it stood, after the
         // blast. A hidden effect (`hideParticles`) takes no part in the cloud's colour.

@@ -335,7 +335,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     ) -> bool {
         let b = self.b;
         let (min_y, max_y) = (self.level.min_y(), self.level.max_y() - 1);
-        if pos.y < min_y || pos.y > max_y {
+        if pos.y < min_y || pos.y > max_y || !self.level.within_world_border(pos) {
             return false;
         }
         if b.is_air(state) {
@@ -363,6 +363,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             return false;
         }
         !b.has_flag(state, super::data::state_flags::BLOCK_ENTITY)
+            && !self.level.has_native_block_entity(state)
             && !self.level.has_mod_block_entity(pos)
     }
     fn is_slime_or_honey(&self, state: BlockStateId) -> bool {

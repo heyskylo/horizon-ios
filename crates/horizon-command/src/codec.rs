@@ -217,7 +217,15 @@ pub fn decode(registry: &str, t: &Tag, reg: &Registries) -> Result<(), String> {
                 .collect();
             require(map, t, &keys)
         }),
-        "minecraft:worldgen/feature" | "minecraft:loot_table" => match t {
+        // The ConfiguredFeature codec, where the source has the live features.
+        "minecraft:worldgen/feature" => match t {
+            Tag::Compound(_) => match &reg.inline_feature {
+                Some(codec) => codec.check(t),
+                None => Ok(()),
+            },
+            _ => Err(not_map(t)),
+        },
+        "minecraft:loot_table" => match t {
             Tag::Compound(_) => Ok(()),
             _ => Err(not_map(t)),
         },
