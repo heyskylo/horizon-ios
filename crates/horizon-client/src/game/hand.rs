@@ -339,16 +339,18 @@ impl Game<'_> {
     }
     /// `LocalPlayer.isHandsBusy`: paddling a boat.
     pub(super) fn hands_busy(&self) -> bool {
+        use winit::keyboard::KeyCode;
+        let keys = horizon_client::sprint::Keys {
+            forward: self.keys.contains(&KeyCode::KeyW),
+            backward: self.keys.contains(&KeyCode::KeyS),
+            left: self.keys.contains(&KeyCode::KeyA),
+            right: self.keys.contains(&KeyCode::KeyD),
+            ..Default::default()
+        }
+        .with_stick(self.pad_move());
         self.riding
             .is_some_and(|id| self.boats.iter().any(|b| b.id == id))
-            && [
-                winit::keyboard::KeyCode::KeyW,
-                winit::keyboard::KeyCode::KeyS,
-                winit::keyboard::KeyCode::KeyA,
-                winit::keyboard::KeyCode::KeyD,
-            ]
-            .iter()
-            .any(|k| self.keys.contains(k))
+            && (keys.forward || keys.backward || keys.left || keys.right)
     }
     /// `MultiPlayerGameMode.startUseItem`'s bookkeeping around the game's
     /// use: nothing starts while a block is being broken or the hands are
