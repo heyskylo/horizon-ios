@@ -1378,7 +1378,10 @@ impl Game<'_> {
     /// `EndGatewayBlock.entityInside` for the items, mobs and thrown ender
     /// pearls in the End: the gateway blocks their box swept through. A
     /// gateway that is cooling down (`TheEndGatewayBlockEntity.triggerCooldown`)
-    /// takes nobody in.
+    /// takes nobody in. `entityInside` comes from the entity's own tick
+    /// (`applyEffectsFromBlocks`), and `ServerLevel.tick` ticks only the
+    /// entities in entity-ticking chunks: one past the simulation distance
+    /// enters none (and costs nothing here, however many lie there).
     pub(super) fn find_end_gateway_portals(&mut self) {
         if self.remote.is_some() || self.dim != Dim::End {
             return;
@@ -1386,20 +1389,23 @@ impl Game<'_> {
         let is_gateway = |game: &Self, p: BlockPos| {
             &*game.res.facts().get(game.world.block(p.x, p.y, p.z)).name == "minecraft:end_gateway"
         };
+        let ticking = self.entity_ticking_area();
+        let ticks = |at: Vec3| ticking(at.x.floor() as i32, at.z.floor() as i32);
         let items: Vec<(u32, Vec3, f32, f32)> = self
             .dropped
             .iter()
+            .filter(|e| ticks(e.position))
             .map(|e| (e.id, e.position, 0.25, 0.25))
             .collect();
         let mobs: Vec<(u32, Vec3, f32, f32)> = self
             .mobs
             .iter()
-            .filter(|m| self.mob_can_use_portal(m))
+            .filter(|m| ticks(m.position) && self.mob_can_use_portal(m))
             .map(|m| (m.id, m.position, m.width(), m.height()))
             .chain(
                 self.boats
                     .iter()
-                    .filter(|b| self.vehicle_can_use_portal(b.id))
+                    .filter(|b| ticks(b.position) && self.vehicle_can_use_portal(b.id))
                     .map(|b| {
                         (
                             b.id,
@@ -1412,7 +1418,7 @@ impl Game<'_> {
             .chain(
                 self.carts
                     .iter()
-                    .filter(|c| self.vehicle_can_use_portal(c.id))
+                    .filter(|c| ticks(c.position) && self.vehicle_can_use_portal(c.id))
                     .map(|c| {
                         (
                             c.id,
@@ -1438,6 +1444,7 @@ impl Game<'_> {
             .creatures
             .projectiles
             .iter()
+            .filter(|p| ticks(p.position))
             .filter_map(|p| {
                 let pos = horizon_client::end_gateway::pearl_gateway(p, |b| is_gateway(self, b))?;
                 Some((p.id, p.owner, p.guest, pos))
@@ -1481,33 +1488,43 @@ impl Game<'_> {
     /// `Entity.handlePortal` for the entities in an End gateway: they go
     /// through to the gateway's exit, where they wait for its chunks.
     pub(super) fn handle_end_gateway_portals(&mut self) {
-        if self.remote.is_some() || self.dim != Dim::End {
+        // Nobody in a gateway (nearly always): nothing to look up.
+        if self.remote.is_some() || self.dim != Dim::End || self.end.gateways.is_empty() {
             return;
         }
-        let ids: Vec<(u32, bool)> = self
+        // `handlePortal` runs in the entity's tick: one past the simulation
+        // distance waits in its gateway, its state kept as it is.
+        let ticking = self.entity_ticking_area();
+        let ticks = |at: Vec3| ticking(at.x.floor() as i32, at.z.floor() as i32);
+        let ids: Vec<(u32, bool, bool)> = self
             .dropped
             .iter()
-            .map(|e| (e.id, true))
-            .chain(self.mobs.iter().map(|m| (m.id, self.mob_can_use_portal(m))))
+            .map(|e| (e.id, true, ticks(e.position)))
+            .chain(
+                self.mobs
+                    .iter()
+                    .map(|m| (m.id, self.mob_can_use_portal(m), ticks(m.position))),
+            )
             .chain(
                 self.boats
                     .iter()
-                    .map(|b| (b.id, self.vehicle_can_use_portal(b.id))),
+                    .map(|b| (b.id, self.vehicle_can_use_portal(b.id), ticks(b.position))),
             )
             .chain(
                 self.carts
                     .iter()
-                    .map(|c| (c.id, self.vehicle_can_use_portal(c.id))),
+                    .map(|c| (c.id, self.vehicle_can_use_portal(c.id), ticks(c.position))),
             )
             .chain(
                 self.creatures
                     .projectiles
                     .iter()
                     .filter(|p| matches!(p.kind, ProjectileKind::EnderPearl))
-                    .map(|p| (p.id, true)),
+                    .map(|p| (p.id, true, ticks(p.position))),
             )
             .collect();
-        let mut present: std::collections::HashSet<u32> = ids.iter().map(|(id, _)| *id).collect();
+        let mut present: std::collections::HashSet<u32> =
+            ids.iter().map(|(id, _, _)| *id).collect();
         // A pearl waiting for its exit keeps its portal cooldown.
         present.extend(self.end.arrivals.iter().map(|a| match &a.traveller {
             Arriving::Pearl(p) => p.id,
@@ -1515,7 +1532,10 @@ impl Game<'_> {
         }));
         self.end.gateways.retain(|id, _| present.contains(id));
         let mut leaving: Vec<(u32, BlockPos)> = Vec::new();
-        for (id, allowed) in ids {
+        for (id, allowed, ticking) in ids {
+            if !ticking {
+                continue;
+            }
             let Some(state) = self.end.gateways.get_mut(&id) else {
                 continue;
             };

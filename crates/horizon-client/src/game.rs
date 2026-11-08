@@ -134,6 +134,8 @@ mod emote_wheel;
 mod emotes;
 mod enchant_effects;
 mod end;
+#[cfg(test)]
+mod end_gateway_ticking_tests;
 mod enderman;
 #[cfg(test)]
 mod enderman_hurt_teleport_tests;
