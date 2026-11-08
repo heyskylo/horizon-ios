@@ -445,7 +445,7 @@ impl McprWriter {
                 let mut entry = archive.by_index(index).map_err(io::Error::other)?;
                 let name = entry
                     .name()
-                    .map(|name| name.to_owned())
+                    .map(|name| name.into_owned())
                     .map_err(io::Error::other)?;
                 if name == "markers.json" {
                     continue;
