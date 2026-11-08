@@ -588,7 +588,10 @@ impl Game<'_> {
         let t = self.res.mob_types().get(&kind).cloned()?;
         self.next_entity += 1;
         let yaw = self.world.random.next_float() * 360.0;
-        let mut mob = Mob::new(self.next_entity, t, Vec3::new(at[0], at[1], at[2]), yaw);
+        let (own, uuid) = horizon_client::mobs::living_random();
+        self.persist.uuids.insert(self.next_entity, uuid);
+        let position = Vec3::new(at[0], at[1], at[2]);
+        let mut mob = Mob::with_random(self.next_entity, t, position, yaw, own);
         mob.persistent = persistent;
         if finalize {
             let facts = self.biome_facts(

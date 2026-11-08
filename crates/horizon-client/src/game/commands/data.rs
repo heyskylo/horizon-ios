@@ -385,6 +385,10 @@ impl Game<'_> {
                     // entity keeps its place in the level's join order.
                     let old = std::mem::replace(slot, new);
                     slot.join = old.join;
+                    // Entity.load fills in the entity that is there: its own
+                    // random (Entity.random) goes on, as a spawn egg's entity
+                    // data finds it.
+                    slot.random = old.random.clone();
                     if keep_liked_player {
                         slot.extra.tame = old.extra.tame;
                         slot.extra.owner = old.extra.owner;
