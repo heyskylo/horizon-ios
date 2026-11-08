@@ -15,9 +15,10 @@ The kit grows a piece at a time, each with something on screen that needs it:
 | Piece | What it gives |
 |---|---|
 | `hud_kit::room` | `Room`: what of a view an overlay may use, clear of vanilla's boss bars |
-| `hud_kit::plate` | `Plate`: the box behind a notice's text |
+| `hud_kit::plate` | `Plate`: the box behind a notice's text, or a guide row's backing |
 | `pad_glyph`, with `GlyphOf` and `MenuJob` in `gamepad.rs` | `Glyph`: a controller button, asked for by what it does, in the player's `Glyphs` |
 | `hud_kit::fit` | `ellipsize`, `wrap`, `chord` and `fit_in_circle`: text cut or wrapped to the room it has |
+| `hud_kit::hint` | `HintRow`: glyphs and what they do, "(A) Jump", measured, fitted and drawn one way |
 | `settings_shell` | `Shell`: a searchable settings screen (Extras, Graphics, Controller Settings) a `Screen` describes; it draws and drives it, binding rows included |
 | `hud_kit::tabs` | `collapsed`: a page list in one row, `‹ Name ›` with a pip per page |
 
@@ -68,6 +69,7 @@ its 1 px edge inside the area.
 | `Plate` | Look | Used by |
 |---|---|---|
 | `Notice` | dark fill (alpha 210), faint white edge | controller notices, splitscreen's prompts |
+| `Backing { alpha }` | black at the player's Text Background Opacity, no edge | the gameplay guide's rows |
 
 It keeps the colours these overlays had before the kit, so moving them onto it changes nothing on
 screen.
@@ -165,6 +167,61 @@ let x = cx - atlas.font.width(&label) / 2.0;
 `ellipsize` under its old name. It used to rebuild and measure the whole string once per character;
 a test cuts every Horizon string in seven languages, at widths from 0 to 240 px, both ways and
 expects the same text.
+
+## Hint rows
+
+A `HintRow` is a controller's glyphs and what pressing them does: `HintRow::new([glyph], caption)`.
+A `Look` says how it reads, and the kit has one for each overlay that shows them:
+
+| `Look` | Caption | Gap to the glyphs | Used by |
+|---|---|---|---|
+| `hint::GUIDE` | white, shadowed | 3 px (glyphs 1 px apart) | the gameplay guide's rows; the right column's take `Side::Trailing` |
+| `hint::NOTICE` | light grey | 5 px | the controller notice's line under its title |
+| `hint::PROMPT` | a lighter grey | 5 px | splitscreen's join and lost-controller answers |
+
+- `measure(atlas, look)` is the row's width: its glyphs, the gap, its caption.
+- `fitted(atlas, look, width)` cuts the caption with `ellipsize` to the room the glyphs leave. The
+  glyphs always stay: a row is no use without its button.
+- `draw_hint(batch, atlas, row, look, x, y)` draws from `x`, the row's left edge (the first glyph's
+  art, `pad_glyph::rect`), on the text line at `y`.
+- `draw_plated(batch, atlas, row, look, plate, area)` draws a plate over `area` and the row on it,
+  against the glyphs' edge, with `hint::PAD` on the caption's side. `plated_width` is its width.
+- `text()` is the row as plain words, each glyph by its print ("A Type"), for a surface that draws
+  no art: the on-screen keyboard's hint line, in the launcher's font.
+
+```rust
+use horizon_client::hud_kit::hint::{self, HintRow, Look, Side};
+use horizon_client::hud_kit::plate::Plate;
+
+let row = HintRow::new(self.glyph(GlyphOf::Bound("key.jump")), lang::get("key.jump"));
+// Against the view's right edge, cut to the room it has.
+let look = Look { side: Side::Trailing, ..hint::GUIDE };
+let row = row.fitted(atlas, &look, room - hint::PAD);
+let w = hint::plated_width(atlas, &row, &look);
+hint::draw_plated(batch, atlas, &row, &look, Plate::Backing { alpha }, [x, y, w, 11.0]);
+```
+
+Each overlay's captions now fit their room:
+
+- **The gameplay guide.** A row goes as wide as its caption wherever it overlaps nothing. Where it
+  would run into the other column, its caption is cut to the room left beside it
+  (`gameplay_guide::left_room`: the view less the right column's widest row and `COLUMN_GAP`), and
+  only if even that overlaps does it move down, as before. A row wider than the view is cut to it
+  (`row_room`) instead of being dropped. The right column comes first, as before.
+- **The controller notice.** Its title and any word wider than the notice are cut to it.
+- **Splitscreen's prompts.** The title is cut to the view, and when the answers don't fit on one
+  line each caption is cut to an equal share.
+
+### Tests
+
+- `hud_kit::fit` tests: the corpus test against the old `graphics_style::fit`, chords, and lines in
+  a circle getting shorter away from its centre.
+- `hud_kit::hint` tests draw rows by hand (`pad_glyph::draw`, `batch.text`) at the documented
+  places and compare the vertices with `draw_hint` and `draw_plated`, so each migrated overlay draws
+  what it drew before when its text fits.
+- `gameplay_guide` tests place a left row beside a right column it would overlap, keep a row whole
+  where nothing is beside it, and cut a row wider than the view; and
+  `game/split/hud.rs` tests fit a prompt's answers to a narrow view.
 
 ## The settings shell
 
