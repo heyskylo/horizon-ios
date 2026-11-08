@@ -3086,17 +3086,18 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
             }
             _ => {}
         }
-        if !infinite && m.extra.effects.get(i).is_some_and(|e| e.0 == effect) {
-            let ticks = &mut m.extra.effects[i].1;
-            *ticks = if expired { 0 } else { *ticks - 1 };
-        } else if infinite
-            && expired
-            && effect == "minecraft:absorption"
-            && m.extra.effects.get(i).is_some_and(|e| e.0 == effect)
-        {
-            // An infinite Absorption goes the same way (tickServer asks it
-            // by tickCount); other infinite effects keep their -1.
-            m.extra.effects[i].1 = 0;
+        if m.extra.effects.get(i).is_some_and(|e| e.0 == effect) {
+            if expired {
+                // Cancellation ends the instance, not just its active layer.
+                m.extra.effects[i].1 = 0;
+                m.set_effect_fallback(effect, None);
+            } else {
+                let mut active = m.effect_instance(i);
+                // Only the existing pure duration/promotion operation, after
+                // server periodic/native work; never the player action engine.
+                active.tick_client();
+                m.project_effect_instance(i, active);
+            }
         }
         i += 1;
     }
@@ -3121,6 +3122,9 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
     if boost_gone {
         super::finalize::health_boost_changed(m);
     }
+    m.extra
+        .effect_fallbacks
+        .retain(|h| m.extra.effects.iter().any(|e| e.0 == h.id));
     m.extra
         .hidden_effects
         .retain(|h| m.extra.effects.iter().any(|e| e.0 == *h));
@@ -5858,5 +5862,74 @@ mod happy_ghast_ambient_tests {
             },
         );
         assert!(ran, "prepared-data callback did not run");
+    }
+}
+
+#[cfg(test)]
+mod hidden_speed_causal_tests {
+    use super::*;
+    use std::sync::Arc;
+    fn mob() -> Mob {
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.id = "minecraft:pig".into();
+        kind.species = Species::Pig;
+        Mob::new(202, Arc::new(kind), Vec3::ZERO, 0.0)
+    }
+    #[test]
+    fn zero_active_never_promotes_and_infinite_fallback_counts_once() {
+        let mut m = mob();
+        m.add_effect("speed", 200, 0);
+        m.add_effect("speed", 0, 1);
+        assert_eq!(m.extra.effect_fallbacks.len(), 1);
+        tick_effects(&mut m, None);
+        assert!(m.extra.effects.is_empty() && m.extra.effect_fallbacks.is_empty());
+        m.add_effect("speed", -1, 0);
+        m.add_effect("speed", 2, 1);
+        tick_effects(&mut m, None);
+        assert_eq!(m.extra.effects, [("minecraft:speed", 1, 1)]);
+        assert_eq!(m.extra.effect_fallbacks[0].duration, -1);
+        tick_effects(&mut m, None);
+        assert_eq!(m.extra.effects, [("minecraft:speed", -1, 0)]);
+        tick_effects(&mut m, None);
+        assert_eq!(m.extra.effects, [("minecraft:speed", -1, 0)]);
+        assert!(m.extra.effect_fallbacks.is_empty());
+    }
+    #[test]
+    fn native_cancellation_drops_the_whole_chain_before_promotion() {
+        struct Cancel(std::cell::Cell<usize>);
+        impl crate::mobs::ModEffectTicks for Cancel {
+            fn tick_mod_effect(&self, id: &str, mob: u32, count: i32, amp: i32) -> bool {
+                assert_eq!((id, mob, amp), ("h202:cancel", 202, 1));
+                assert!(count == 1 || count == 17);
+                self.0.set(self.0.get() + 1);
+                false
+            }
+        }
+        for duration in [1, -1] {
+            let mut m = mob();
+            m.age = 17;
+            m.add_effect("h202:cancel", 200, 0);
+            if duration == -1 {
+                // A loaded subtree can accompany an infinite active instance.
+                m.extra.effects[0].1 = -1;
+                let h = crate::effects::EffectInstance {
+                    id: "h202:cancel",
+                    duration: 200,
+                    amplifier: 0,
+                    ambient: false,
+                    visible: true,
+                    show_icon: true,
+                    hidden: None,
+                };
+                m.extra.effects[0].2 = 1;
+                m.extra.effect_fallbacks.push(h);
+            } else {
+                m.add_effect("h202:cancel", duration, 1);
+            }
+            let cancel = Cancel(std::cell::Cell::new(0));
+            tick_effects(&mut m, Some(&cancel));
+            assert_eq!(cancel.0.get(), 1);
+            assert!(m.extra.effects.is_empty() && m.extra.effect_fallbacks.is_empty());
+        }
     }
 }

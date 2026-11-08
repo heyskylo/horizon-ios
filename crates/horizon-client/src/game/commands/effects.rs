@@ -175,6 +175,9 @@ impl Game<'_> {
                         }
                         let left = &m.extra.effects;
                         m.extra
+                            .effect_fallbacks
+                            .retain(|h| left.iter().any(|x| x.0 == h.id));
+                        m.extra
                             .hidden_effects
                             .retain(|h| left.iter().any(|x| x.0 == *h));
                         m.extra
