@@ -4997,6 +4997,14 @@ def zombie_nautilus_ignored_age():
 
 
 
+def jukebox_saved_clock_cases():
+    try:
+        from .jukebox_saved_clock_corpus import cases
+    except ImportError:
+        from jukebox_saved_clock_corpus import cases
+    return cases(cmd)
+
+
 def structured_item_slots():
     range3 = '{type:"minecraft:slot_range",slots:"container.3"}'
     range5 = '{type:"minecraft:slot_range",slots:"container.5"}'
@@ -6039,7 +6047,8 @@ ISOLATED_PICKUP_SAVE = frozenset({'mob saved pickup loot'})
 ISOLATED_ORB_UUID = frozenset({'orb saved UUID'})
 ISOLATED_STAND_FALL = frozenset({'stand saved fall distance'})
 ISOLATED_POTION_ICONS = frozenset({'potion custom effect icons'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS
+ISOLATED_JUKEBOX_CLOCK = frozenset({'jukebox saved clock'})
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK
 
 
 def groups():
@@ -6143,6 +6152,7 @@ def groups():
         ('named smoke predicates', named_smoke_predicates()),
         ('mining_efficiency_9021', mining_efficiency_9021()),
         ('structured item slots', structured_item_slots()),
+        ('jukebox saved clock', jukebox_saved_clock_cases()),
         ('loaded potion clouds', loaded_clouds(cmd, setup)),
         ('server clock', server_clock()),
         ('inline execute predicates', inline_execute_predicates()),
