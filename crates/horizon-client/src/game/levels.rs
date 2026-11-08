@@ -540,11 +540,15 @@ impl Game<'_> {
         };
         let uuid = p.persist.uuids.remove(&id);
         let raw = p.persist.raw.remove(&id);
+        let slots = p.persist.passenger_slots.remove(&id);
         if let Some(u) = uuid {
             self.persist.uuids.insert(id, u);
         }
         if let Some(r) = raw {
             self.persist.raw.insert(id, r);
+        }
+        if let Some(s) = slots {
+            self.persist.passenger_slots.insert(id, s);
         }
     }
 

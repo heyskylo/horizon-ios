@@ -73,13 +73,19 @@ pub struct PackModifiers {
     dimensions: Vec<horizon_polytone::DimensionModifier>,
     /// The packs' config values, for `config(id)` in expressions.
     configs: horizon_polytone::pack::Configs,
+    /// The pack overlay root they were read from, where their colormaps are.
+    root: Option<std::path::PathBuf>,
+    colormaps: ColormapCache,
 }
 
 impl PackModifiers {
     /// Every `assets/<namespace>/polytone/{biome,dimension}_modifiers/**.json` under a pack
     /// overlay root. A file that fails to parse is skipped with a warning.
     pub fn read(pack_root: &Path) -> Self {
-        let mut out = Self::default();
+        let mut out = Self {
+            root: Some(pack_root.to_path_buf()),
+            ..Self::default()
+        };
         let Ok(namespaces) = std::fs::read_dir(pack_root.join("assets")) else {
             return out;
         };
@@ -149,11 +155,17 @@ pub struct Frame {
     pub sky_type: i32,
     pub dimension: String,
     pub player: [f64; 3],
+    /// The player's motion per tick (`p.speedSq`).
+    pub player_velocity: [f64; 3],
+    pub player_on_ground: bool,
     pub in_water: bool,
     pub camera: [f64; 3],
     /// The sky and block light at the camera.
     pub sky_light: i32,
     pub block_light: i32,
+    /// The camera's biome's climate (`o.temperature`, `o.downfall`).
+    pub temperature: f32,
+    pub downfall: f32,
 }
 
 /// The game side of a pack expression in an attribute value: `g`, `p`, `c`, `o` (the camera's
@@ -202,6 +214,8 @@ impl horizon_polytone::expr::Host for FrameHost<'_> {
             "inWater" if on(Root::Player) => Ok(V::Bool(f.in_water)),
             "skyLight" if on(Root::Object) || on(Root::Player) => num(f64::from(f.sky_light)),
             "blockLight" if on(Root::Object) || on(Root::Player) => num(f64::from(f.block_light)),
+            "temperature" if on(Root::Object) => num(f64::from(f.temperature)),
+            "downfall" if on(Root::Object) => num(f64::from(f.downfall)),
             "rand" if on(Root::Random) => {
                 // A splitmix64 step: the frame's own sequence.
                 self.seed = self.seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
@@ -249,11 +263,94 @@ fn as_number(value: &Value) -> f64 {
     }
 }
 
+/// A Polytone colormap used as an attribute value (wiki "Colormaps"): an image read at the
+/// column and row its two expressions pick, each 0 to 1 with 1 the top-left corner.
+struct Colormap {
+    x: horizon_polytone::expr::Program,
+    y: horizon_polytone::expr::Program,
+    /// Only the lower-left triangle: the row value is scaled by the column value, as vanilla's
+    /// grass colormap scales downfall by temperature.
+    triangular: bool,
+    /// Rounds to the nearest pixel (the default) instead of the one below.
+    rounds: bool,
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+}
+
+impl Colormap {
+    /// `assets/<namespace>/polytone/colormaps/<path>.png` and its optional `.json` (without
+    /// one, the axes are the biome's temperature and downfall). The `biome_id` axis isn't
+    /// supported yet.
+    fn load(pack_root: &Path, id: &str) -> Option<Self> {
+        let (namespace, path) = id.split_once(':')?;
+        let base = pack_root.join(format!("assets/{namespace}/polytone/colormaps/{path}"));
+        let png = base.with_extension("png");
+        let (width, height, rgba) = match crate::sprites::read_rgba(&png) {
+            Ok(image) => image,
+            Err(e) => {
+                log::warn!("colormap {id}: {e}");
+                return None;
+            }
+        };
+        let json: Json =
+            horizon_world::json_file::read(&base.with_extension("json")).unwrap_or(Json::Null);
+        let axis = |key: &str, default: &str| -> Option<horizon_polytone::expr::Program> {
+            let src = match &json[key] {
+                Json::String(s) => s.clone(),
+                Json::Number(n) => n.to_string(),
+                _ => default.to_owned(),
+            };
+            match horizon_polytone::expr::Program::compile(&src) {
+                Ok(program) => Some(program),
+                Err(e) => {
+                    log::warn!("colormap {id} {key}: {e}");
+                    None
+                }
+            }
+        };
+        Some(Self {
+            x: axis("x_axis", "o.temperature")?,
+            y: axis("y_axis", "o.downfall")?,
+            triangular: json["triangular"].as_bool() == Some(true),
+            rounds: json["rounds"].as_bool() != Some(false),
+            width,
+            height,
+            rgba,
+        })
+    }
+
+    /// The colour the axes pick, ARGB; `None` for a transparent pixel (the value stays what
+    /// it was, the default `fallback_colormap: original`) or an axis that fails.
+    fn sample(&self, host: &mut dyn horizon_polytone::expr::Host) -> Option<u32> {
+        let x = self.x.eval(host).ok()?.num().clamp(0.0, 1.0);
+        let mut y = self.y.eval(host).ok()?.num().clamp(0.0, 1.0);
+        if self.triangular {
+            y *= x;
+        }
+        let pixel = |v: f64, size: u32| {
+            let p = (1.0 - v) * f64::from(size.saturating_sub(1));
+            let p = if self.rounds { p.round() } else { p.floor() };
+            (p as u32).min(size.saturating_sub(1))
+        };
+        let (px, py) = (pixel(x, self.width), pixel(y, self.height));
+        let i = (py as usize * self.width as usize + px as usize) * 4;
+        let [r, g, b, a] = self.rgba.get(i..i + 4)?.try_into().ok()?;
+        (a != 0).then(|| u32::from(a) << 24 | u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b))
+    }
+}
+
 /// Turns Polytone layers into vanilla entries, compiling expressions against the frame.
 struct Resolver {
     frame: Arc<RwLock<Frame>>,
     configs: Arc<horizon_polytone::pack::Configs>,
+    /// Where the packs' colormaps are, and the ones loaded so far (`None`: missing).
+    pack_root: Option<std::path::PathBuf>,
+    colormaps: ColormapCache,
 }
+
+/// Colormaps by id, loaded once for all three dimensions' stacks.
+type ColormapCache = Arc<std::sync::Mutex<HashMap<String, Option<Arc<Colormap>>>>>;
 
 impl Resolver {
     /// A Polytone layer as a vanilla entry: `Some(None)` removes the attribute's entry, `None`
@@ -296,7 +393,7 @@ impl Resolver {
             Argument::Color(c) => Json::String(format!("#{c:08x}")),
             Argument::Object(o) => Json::Object(o.clone()),
             Argument::Expression(src) => return self.expression(attribute, op, src).map(Some),
-            Argument::Colormap(_) => return None,
+            Argument::Colormap(id) => return self.colormap(attribute, op, id).map(Some),
         };
         match Entry::with_modifier(attribute, op, &json) {
             Ok(entry) => Some(Some(entry)),
@@ -336,7 +433,50 @@ impl Resolver {
                 horizon_polytone::expr::Value::Bool(b) => Json::Bool(b),
                 result => Json::from(result.num()),
             };
-            Entry::with_modifier(attribute, op, &json).ok()
+            // A number out of the attribute's range is clamped into it, as the sampled value is
+            // (`AttributeRange.sanitize`), not dropped: a pack's fog end that goes negative deep
+            // underground is the thickest fog, not the default.
+            Entry::with_modifier(attribute, op, &json).ok().or_else(|| {
+                let n = json.as_f64()? as f32;
+                let Value::Float(clamped) = attribute.sanitize(Value::Float(n)) else {
+                    return None;
+                };
+                Entry::with_modifier(attribute, op, &Json::from(clamped)).ok()
+            })
+        };
+        Some(Entry::Dynamic(
+            horizon_world::environment_attributes::Dynamic(Arc::new(f)),
+        ))
+    }
+
+    /// A colormap value: sampled whenever its layer applies, its colour the modifier's argument
+    /// (`#rrggbb` on RGB attributes, `#aarrggbb` on ARGB ones).
+    fn colormap(&self, attribute: &'static Attribute, op: &'static str, id: &str) -> Option<Entry> {
+        let root = self.pack_root.as_deref()?;
+        let colormap = self
+            .colormaps
+            .lock()
+            .ok()?
+            .entry(id.to_owned())
+            .or_insert_with(|| Colormap::load(root, id).map(Arc::new))
+            .clone()?;
+        let (frame, configs) = (self.frame.clone(), self.configs.clone());
+        let rgb = attribute.kind == Kind::RgbColor;
+        let f = move |value: &Value| -> Option<Entry> {
+            let frame = frame.read().ok()?;
+            let mut host = FrameHost {
+                frame: &frame,
+                configs: &configs,
+                value: as_number(value),
+                seed: 0,
+            };
+            let color = colormap.sample(&mut host)?;
+            let text = if rgb {
+                format!("#{:06x}", color & 0x00ff_ffff)
+            } else {
+                format!("#{color:08x}")
+            };
+            Entry::with_modifier(attribute, op, &Json::String(text)).ok()
         };
         Some(Entry::Dynamic(
             horizon_world::environment_attributes::Dynamic(Arc::new(f)),
@@ -352,6 +492,17 @@ impl Resolver {
                 continue;
             };
             match self.entry(attribute, layer) {
+                // A computed value that can't decide (a transparent colormap pixel, a failing
+                // expression) falls back to the entry it replaces: the value before the pack.
+                Some(Some(Entry::Dynamic(f))) => match map.get(attribute).cloned() {
+                    Some(original) => {
+                        let fallback = move |v: &Value| (f.0)(v).or_else(|| Some(original.clone()));
+                        let entry =
+                            horizon_world::environment_attributes::Dynamic(Arc::new(fallback));
+                        map.set(attribute, Entry::Dynamic(entry));
+                    }
+                    None => map.set(attribute, Entry::Dynamic(f)),
+                },
                 Some(Some(entry)) => map.set(attribute, entry),
                 Some(None) => map.remove(attribute),
                 None => {}
@@ -459,6 +610,8 @@ impl Environment {
         let resolver = Resolver {
             frame: frame.clone(),
             configs: Arc::new(packs.configs.clone()),
+            pack_root: packs.root.clone(),
+            colormaps: packs.colormaps.clone(),
         };
         let mut dimension_map = AttributeMap::parse(&json["attributes"])?;
         let (mut rain, mut thunder) = horizon_world::environment_system::weather_maps();
@@ -658,6 +811,11 @@ mod tests {
     /// A world with one sky-lit dimension and two biomes, one of them in a tag, and a pack with
     /// Polytone modifiers.
     fn with_packs(pack: &[(&str, &str)]) -> Environment {
+        let files: Vec<(&str, &[u8])> = pack.iter().map(|(p, t)| (*p, t.as_bytes())).collect();
+        with_pack_files(&files)
+    }
+
+    fn with_pack_files(pack: &[(&str, &[u8])]) -> Environment {
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!(
             "horizon-env-packs-{}-{}",
@@ -665,7 +823,7 @@ mod tests {
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         let _ = std::fs::remove_dir_all(&dir);
-        let write = |path: &str, text: &str| {
+        let write = |path: &str, text: &[u8]| {
             let path = dir.join(path);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, text).unwrap();
@@ -673,19 +831,19 @@ mod tests {
         write(
             "world/data/minecraft/dimension_type/overworld.json",
             r##"{"has_skylight": true, "has_ceiling": false,
-                "attributes": {"minecraft:visual/sky_color": "#808080", "minecraft:visual/fog_color": "#000000"}}"##,
+                "attributes": {"minecraft:visual/sky_color": "#808080", "minecraft:visual/fog_color": "#000000"}}"##.as_bytes(),
         );
         write(
             "world/data/minecraft/worldgen/biome/plains.json",
-            r##"{"attributes": {"minecraft:visual/sky_color": "#404040"}}"##,
+            r##"{"attributes": {"minecraft:visual/sky_color": "#404040"}}"##.as_bytes(),
         );
         write(
             "world/data/minecraft/worldgen/biome/desert.json",
-            r#"{"attributes": {}}"#,
+            r#"{"attributes": {}}"#.as_bytes(),
         );
         write(
             "world/data/minecraft/tags/worldgen/biome/dry.json",
-            r#"{"values": ["minecraft:desert"]}"#,
+            r#"{"values": ["minecraft:desert"]}"#.as_bytes(),
         );
         for (path, text) in pack {
             write(&format!("pack/{path}"), text);
@@ -775,6 +933,26 @@ mod tests {
         assert!(env.biome_post("minecraft:desert").is_none());
     }
 
+    /// A number an expression gives outside the attribute's range is clamped into it, as vanilla
+    /// clamps a sampled value: a fog end that a pack takes below zero deep underground is fog
+    /// at once, not the default end.
+    #[test]
+    fn an_expression_value_out_of_range_is_clamped() {
+        let env = with_packs(&[(
+            "assets/minecraft/polytone/dimension_modifiers/overworld.json",
+            r#"{"attributes_modifiers": {"visual/fog_end_distance": "64 - (p.y < 0) * 80"}}"#,
+        )]);
+        let end_at = |y: f64| {
+            env.set_frame(Frame {
+                player: [0.5, y, 0.5],
+                ..Frame::default()
+            });
+            sky_at(&env, "minecraft:plains", 0.0).fog_end
+        };
+        assert_eq!(end_at(70.0), 64.0);
+        assert_eq!(end_at(-2.0), 0.0);
+    }
+
     #[test]
     fn expression_values_read_the_frame_and_the_value_so_far() {
         let env = with_packs(&[
@@ -804,5 +982,51 @@ mod tests {
         // `v` is the value the layers before gave: the default start 0, and 192.33 for clouds.
         assert_eq!(at(0.0, 16).fog_start, 7.0);
         assert_eq!(at(0.0, 16).cloud_height, 192.33 * 0.5);
+    }
+
+    /// A PNG of RGBA pixels in one row.
+    fn png_row(pixels: &[[u8; 4]]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut encoder = png::Encoder::new(&mut out, pixels.len() as u32, 1);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&pixels.concat()).unwrap();
+        writer.finish().unwrap();
+        out
+    }
+
+    #[test]
+    fn colormap_values_read_the_pixel_their_axes_pick() {
+        // Left to right: red, green, transparent, blue; x 1 is the left edge.
+        let png = png_row(&[
+            [255, 0, 0, 255],
+            [0, 255, 0, 255],
+            [9, 9, 9, 0],
+            [0, 0, 255, 255],
+        ]);
+        let env = with_pack_files(&[
+            (
+                "assets/minecraft/polytone/dimension_modifiers/overworld.json",
+                br#"{"attributes_modifiers": {"visual/sky_color": "mypack:sky"}}"#,
+            ),
+            (
+                "assets/mypack/polytone/colormaps/sky.json",
+                br#"{"x_axis": "1 - g.rain", "y_axis": 0}"#,
+            ),
+            ("assets/mypack/polytone/colormaps/sky.png", &png),
+        ]);
+        let sky = |rain: f32| {
+            env.set_frame(Frame {
+                rain,
+                ..Frame::default()
+            });
+            env.sample(&Sample::default()).sky_color
+        };
+        assert_eq!(sky(0.0), [1.0, 0.0, 0.0]);
+        assert_eq!(sky(0.3), [0.0, 1.0, 0.0]);
+        assert_eq!(sky(1.0), [0.0, 0.0, 1.0]);
+        // A transparent pixel keeps the colour the layers before gave (the dimension's #808080).
+        assert_eq!(sky(0.7), [128.0 / 255.0; 3]);
     }
 }
