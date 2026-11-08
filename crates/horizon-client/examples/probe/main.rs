@@ -100,6 +100,7 @@ mod screen_layout_fixture;
 mod section_mesh_fixture;
 mod server_files_probe;
 mod sheep_dye_fixture;
+mod shulker_bullet_probe;
 mod situational_music_fixture;
 mod skin_image_fixture;
 mod sound_engine_fixture;
@@ -219,6 +220,7 @@ probes! {
     skin_image_fixture,
     late_entity_pair_fixture,
     sheep_dye_fixture,
+    shulker_bullet_probe,
     allay_interaction_fixture,
     entity_sound_packet_fixture,
     sound_engine_fixture,
