@@ -199,26 +199,73 @@ fn sprite_at(tiled: vec2<f32>, layer: u32, du: vec2<f32>, dv: vec2<f32>) -> vec4
     return sample_nearest(uv, layer, pixel, du, dv, texel_screen, tiled_face);
 }
 
+// The terrain stages' values, as the code reads them. What crosses from the vertex stage to the
+// fragment stage is `TerrainWire`: the same values in fewer interpolant locations.
 struct TerrainOut {
-    @builtin(position) clip: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-    @location(1) @interpolate(flat) layer: u32,
-    @location(2) color: vec4<f32>,
-    @location(3) spherical: f32,
-    @location(4) cylindrical: f32,
+    clip: vec4<f32>,
+    uv: vec2<f32>,
+    layer: u32,
+    color: vec4<f32>,
+    spherical: f32,
+    cylindrical: f32,
     // How the face shines in HDR output (mesher.rs's `EMISSION_BITS`): 0 not
     // at all, 1 to 4 the tier with its bright parts, 5 to 8 the tier all over.
-    @location(5) @interpolate(flat) emission: u32,
+    emission: u32,
     // HDR lighting: block and sky light, as levels 0 to 15.
-    @location(11) scene: vec2<f32>,
-    @location(6) @interpolate(flat) fade: u32,
+    scene: vec2<f32>,
+    fade: u32,
     // A distant tile's tile-relative position, for its fade (`faded`).
-    @location(7) local: vec3<f32>,
+    local: vec3<f32>,
     // terrain.vsh's chunkVisibility: the section's fade-in, from 16 blocks out.
-    @location(8) visibility: f32,
+    visibility: f32,
     // The camera-relative height, for the water mirror's cut at the plane.
-    @location(9) height: f32,
-    @location(10) @interpolate(flat) emissive_layer: u32,
+    height: f32,
+    emissive_layer: u32,
+}
+// `TerrainOut` in 5 interpolant locations instead of 12. A GPU's vertex stage pays for each
+// location it exports (AMD's parameter cache gives one a whole slot, however few of its four
+// components are used): on an RX 580 the 12 cost 3.2 ns per quad and these 5 cost 1.6. Every
+// component is still interpolated on its own (and the integers stay flat), so each pixel gets
+// the very values the separate locations gave it.
+struct TerrainWire {
+    @builtin(position) clip: vec4<f32>,
+    // The colour.
+    @location(0) a: vec4<f32>,
+    // `local` and `visibility`.
+    @location(1) b: vec4<f32>,
+    // `uv` and `scene`.
+    @location(2) c: vec4<f32>,
+    // `spherical`, `cylindrical` and `height`.
+    @location(3) d: vec4<f32>,
+    // `layer`, `emission`, `fade` and `emissive_layer`.
+    @location(4) @interpolate(flat) e: vec4<u32>,
+}
+fn to_wire(o: TerrainOut) -> TerrainWire {
+    var w: TerrainWire;
+    w.clip = o.clip;
+    w.a = o.color;
+    w.b = vec4(o.local, o.visibility);
+    w.c = vec4(o.uv, o.scene);
+    w.d = vec4(o.spherical, o.cylindrical, o.height, 0.0);
+    w.e = vec4(o.layer, o.emission, o.fade, o.emissive_layer);
+    return w;
+}
+fn from_wire(w: TerrainWire) -> TerrainOut {
+    var o: TerrainOut;
+    o.clip = w.clip;
+    o.color = w.a;
+    o.local = w.b.xyz;
+    o.visibility = w.b.w;
+    o.uv = w.c.xy;
+    o.scene = w.c.zw;
+    o.spherical = w.d.x;
+    o.cylindrical = w.d.y;
+    o.height = w.d.z;
+    o.layer = w.e.x;
+    o.emission = w.e.y;
+    o.fade = w.e.z;
+    o.emissive_layer = w.e.w;
+    return o;
 }
 // Whether a fading tile or section leaves this pixel out (gfx/lod.rs's
 // `fade_code`, `fade_out_code`). It fades in, or out, chunk by chunk: each
@@ -333,9 +380,9 @@ fn fade_code(w: f32) -> u32 {
 @vertex fn vs_terrain(
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>,
-    @location(5) origin: vec4<f32>) -> TerrainOut {
-    return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
-        origin.w);
+    @location(5) origin: vec4<f32>) -> TerrainWire {
+    return to_wire(terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
+        origin.w));
 }
 // Flat section draws (gfx/flat.rs): one draw per arena page over the frame's
 // index list. A section's vertices fill whole 256-vertex blocks of its page:
@@ -346,10 +393,10 @@ fn fade_code(w: f32) -> u32 {
     @builtin(vertex_index) vertex: u32,
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
-) -> TerrainOut {
+) -> TerrainWire {
     let origin = slot_origins[block_slots[vertex >> 8u]];
-    return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
-        origin.w);
+    return to_wire(terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
+        origin.w));
 }
 // Solid terrain draws in two passes, each over its own part of every mesh's quads
 // (`mesher::Part`): first the quads with no cutout that are not fading, through
@@ -370,38 +417,38 @@ fn left_out() -> TerrainOut {
 @vertex fn vs_terrain_opaque(
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>,
-    @location(5) origin: vec4<f32>) -> TerrainOut {
-    if !opaque_quad(layer, origin.w) { return left_out(); }
-    return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
-        origin.w);
+    @location(5) origin: vec4<f32>) -> TerrainWire {
+    if !opaque_quad(layer, origin.w) { return to_wire(left_out()); }
+    return to_wire(terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
+        origin.w));
 }
 @vertex fn vs_terrain_cutout(
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>,
-    @location(5) origin: vec4<f32>) -> TerrainOut {
-    if opaque_quad(layer, origin.w) { return left_out(); }
-    return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
-        origin.w);
+    @location(5) origin: vec4<f32>) -> TerrainWire {
+    if opaque_quad(layer, origin.w) { return to_wire(left_out()); }
+    return to_wire(terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
+        origin.w));
 }
 @vertex fn vs_terrain_flat_opaque(
     @builtin(vertex_index) vertex: u32,
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
-) -> TerrainOut {
+) -> TerrainWire {
     let origin = slot_origins[block_slots[vertex >> 8u]];
-    if !opaque_quad(layer, origin.w) { return left_out(); }
-    return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
-        origin.w);
+    if !opaque_quad(layer, origin.w) { return to_wire(left_out()); }
+    return to_wire(terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
+        origin.w));
 }
 @vertex fn vs_terrain_flat_cutout(
     @builtin(vertex_index) vertex: u32,
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
-) -> TerrainOut {
+) -> TerrainWire {
     let origin = slot_origins[block_slots[vertex >> 8u]];
-    if opaque_quad(layer, origin.w) { return left_out(); }
-    return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
-        origin.w);
+    if opaque_quad(layer, origin.w) { return to_wire(left_out()); }
+    return to_wire(terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
+        origin.w));
 }
 // Solid section draws that read their vertices from the arena page (gfx.rs's `pulled`
 // pipelines; `mesher/packed.rs`): a draw's vertex indices below PACKED_BASE name vertices
@@ -511,37 +558,37 @@ fn corner_vertex(c: ArenaCorner, origin: vec4<f32>) -> TerrainOut {
         unorm8x4(c.r.z), light, origin.xyz, origin.w);
 }
 @vertex fn vs_section(@builtin(vertex_index) vertex: u32,
-    @location(5) origin: vec4<f32>) -> TerrainOut {
-    return corner_vertex(section_corner(vertex).c, origin);
+    @location(5) origin: vec4<f32>) -> TerrainWire {
+    return to_wire(corner_vertex(section_corner(vertex).c, origin));
 }
 @vertex fn vs_section_opaque(@builtin(vertex_index) vertex: u32,
-    @location(5) origin: vec4<f32>) -> TerrainOut {
+    @location(5) origin: vec4<f32>) -> TerrainWire {
     let s = section_corner(vertex);
-    if !opaque_quad(corner_layer(s.c), origin.w) { return left_out(); }
-    return corner_vertex(s.c, origin);
+    if !opaque_quad(corner_layer(s.c), origin.w) { return to_wire(left_out()); }
+    return to_wire(corner_vertex(s.c, origin));
 }
 @vertex fn vs_section_cutout(@builtin(vertex_index) vertex: u32,
-    @location(5) origin: vec4<f32>) -> TerrainOut {
+    @location(5) origin: vec4<f32>) -> TerrainWire {
     let s = section_corner(vertex);
-    if opaque_quad(corner_layer(s.c), origin.w) { return left_out(); }
-    return corner_vertex(s.c, origin);
+    if opaque_quad(corner_layer(s.c), origin.w) { return to_wire(left_out()); }
+    return to_wire(corner_vertex(s.c, origin));
 }
-@vertex fn vs_section_flat(@builtin(vertex_index) vertex: u32) -> TerrainOut {
+@vertex fn vs_section_flat(@builtin(vertex_index) vertex: u32) -> TerrainWire {
     let s = section_corner(vertex);
     let origin = slot_origins[block_slots[s.slot >> 8u]];
-    return corner_vertex(s.c, origin);
+    return to_wire(corner_vertex(s.c, origin));
 }
-@vertex fn vs_section_flat_opaque(@builtin(vertex_index) vertex: u32) -> TerrainOut {
+@vertex fn vs_section_flat_opaque(@builtin(vertex_index) vertex: u32) -> TerrainWire {
     let s = section_corner(vertex);
     let origin = slot_origins[block_slots[s.slot >> 8u]];
-    if !opaque_quad(corner_layer(s.c), origin.w) { return left_out(); }
-    return corner_vertex(s.c, origin);
+    if !opaque_quad(corner_layer(s.c), origin.w) { return to_wire(left_out()); }
+    return to_wire(corner_vertex(s.c, origin));
 }
-@vertex fn vs_section_flat_cutout(@builtin(vertex_index) vertex: u32) -> TerrainOut {
+@vertex fn vs_section_flat_cutout(@builtin(vertex_index) vertex: u32) -> TerrainWire {
     let s = section_corner(vertex);
     let origin = slot_origins[block_slots[s.slot >> 8u]];
-    if opaque_quad(corner_layer(s.c), origin.w) { return left_out(); }
-    return corner_vertex(s.c, origin);
+    if opaque_quad(corner_layer(s.c), origin.w) { return to_wire(left_out()); }
+    return to_wire(corner_vertex(s.c, origin));
 }
 // HDR lighting: how far a surface's light carries it above paper white, 0 to 1. Only the
 // strongest light does, so dark stays as dark as in SDR; sky light by how the face meets the sun.
@@ -620,11 +667,13 @@ fn hdr_mark(tier: u32, y: f32) -> f32 {
     let lift = smoothstep(globals.hdr_windows[0][t], globals.hdr_windows[1][t], y);
     return 0.175 * f32(3u - t) + 0.165 * (1.0 - lift);
 }
-@fragment fn fs_solid(in: TerrainOut) -> @location(0) vec4<f32> {
+@fragment fn fs_solid(wire: TerrainWire) -> @location(0) vec4<f32> {
+    let in = from_wire(wire);
     return solid_color(in);
 }
 // `fs_solid` for the opaque pass (`opaque_quad`): no fade, no cutout, no discard.
-@fragment fn fs_opaque(in: TerrainOut) -> @location(0) vec4<f32> {
+@fragment fn fs_opaque(wire: TerrainWire) -> @location(0) vec4<f32> {
+    let in = from_wire(wire);
     if HDR_LIGHTING && globals.hdr_light.z != 0.0 {
         hdr_normal = normalize(cross(dpdy(in.local), dpdx(in.local)));
     }
@@ -635,7 +684,8 @@ fn hdr_mark(tier: u32, y: f32) -> f32 {
 }
 // The water mirror (gfx.rs's reflection pass): what lies below the water plane
 // (`fog_ends.w`, camera-relative) would show above it in the mirror, so it is cut away.
-@fragment fn fs_solid_mirror(in: TerrainOut) -> @location(0) vec4<f32> {
+@fragment fn fs_solid_mirror(wire: TerrainWire) -> @location(0) vec4<f32> {
+    let in = from_wire(wire);
     if in.height < globals.fog_ends.w { discard; }
     return solid_color(in);
 }
@@ -703,7 +753,8 @@ fn solid_finish_at(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>, du: vec2<
 // HDR lighting on what's mostly opaque among translucent faces (water), drawn again after
 // them with only alpha written: `fs_translucent` blends its alpha as coverage, so a lake's
 // value would be diluted. Clear glass leaves what's behind it, light sources included, alone.
-@fragment fn fs_translucent_mark(in: TerrainOut) -> @location(0) vec4<f32> {
+@fragment fn fs_translucent_mark(wire: TerrainWire) -> @location(0) vec4<f32> {
+    let in = from_wire(wire);
     let dx = dpdx(in.local);
     let dy = dpdy(in.local);
     hdr_normal = normalize(cross(dy, dx));
@@ -716,7 +767,8 @@ fn solid_finish_at(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>, du: vec2<
 // Water, glass and other see-through faces draw whole as they fade in, the
 // layer drawn first in front (gfx.rs's water tiers): dithered, the faded-out
 // pixels showed the layer behind through the one in front, twice the water.
-@fragment fn fs_translucent(in: TerrainOut) -> @location(0) vec4<f32> {
+@fragment fn fs_translucent(wire: TerrainWire) -> @location(0) vec4<f32> {
+    let in = from_wire(wire);
     var color = sprite(in.uv, in.layer & 0x7fffu) * in.color;
     color = mix(globals.fog_color * vec4(1.0, 1.0, 1.0, color.a), color, in.visibility);
     if color.a < 0.01 { discard; }

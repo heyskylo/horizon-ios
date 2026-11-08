@@ -264,6 +264,7 @@ impl Pads {
         // Another pad, or none: its A going away isn't a release.
         if self.devices.active != active {
             self.menu.armed = None;
+            self.menu.stop_craft();
         }
         let Some(pad) = self
             .devices

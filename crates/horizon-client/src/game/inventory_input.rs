@@ -99,6 +99,7 @@ impl Game<'_> {
     pub(super) fn inventory_press(&mut self, right: bool) {
         use horizon_client::container_screen::Target;
         use horizon_client::menu::Input;
+        self.direct_craft_stop();
         if self.mod_browser_press(right) {
             return;
         }
