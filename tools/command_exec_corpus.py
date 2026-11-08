@@ -2025,6 +2025,12 @@ def advancement_reward_fixtures(group_names):
 
 def function_return_fixtures(group_names):
     functions = {}
+    if 'fork function feedback' in group_names:
+        try:
+            from .fork_function_feedback_corpus import functions as fork_functions
+        except ImportError:
+            from fork_function_feedback_corpus import functions as fork_functions
+        functions.update(fork_functions())
     if 'function condition fallthrough' in group_names:
         try:
             from .function_condition_corpus import functions as condition_functions
@@ -2132,6 +2138,14 @@ def function_return_feedback():
                   cmd('/execute if score #clock audit = #after audit', expect_result=1),
                   cmd('/scoreboard objectives remove audit')])
     return lines
+
+
+def fork_function_feedback_cases():
+    try:
+        from .fork_function_feedback_corpus import cases
+    except ImportError:
+        from fork_function_feedback_corpus import cases
+    return cases(cmd)
 
 
 def function_condition_fallthrough():
@@ -5733,6 +5747,36 @@ def piston_entity_tick_order():
     return ops
 
 
+def scheduled_item_birth():
+    """#12017: an item a scheduled block tick drops ticks in that tick's entity pass;
+    one an entity's block contact drops does not."""
+    ops = []
+    for front in ('air', 'powder_snow'):
+        ops += setup('/kill @e[type=!player]', '/fill 0 200 0 5 215 5 air',
+                     '/setblock 1 200 1 dropper[facing=up]{Items:[{Slot:0b,id:"minecraft:stone",count:1}]}',
+                     f'/setblock 1 201 1 {front}',
+                     '/setblock 2 200 1 redstone_block')
+        item = '@e[type=item,x=1.5,y=201.5,z=1.5,distance=..3,limit=1]'
+        # The dropper's tick is due 4 ticks after it was powered.
+        for _ in range(6):
+            ops.append({'op': 'tick', 'n': 1})
+            ops.append(cmd(f'/execute if entity {item}'))
+            ops.append(cmd(f'/data get entity {item} Age'))
+    # A boat breaks a lily pad in its own tick (`applyEffectsFromBlocks`), inside
+    # the entity pass: that drop waits for the next tick.
+    ops += setup('/kill @e[type=!player]', '/fill 0 200 0 5 215 5 air',
+                 '/fill 0 200 0 2 200 2 water', '/setblock 1 201 1 lily_pad',
+                 '/summon oak_boat 1.5 201 1.5 {NoGravity:1b}')
+    item = '@e[type=item,x=1.5,y=201.5,z=1.5,distance=..3,limit=1]'
+    for _ in range(3):
+        ops.append({'op': 'tick', 'n': 1})
+        ops.append(cmd('/execute if block 1 201 1 lily_pad'))
+        ops.append(cmd(f'/execute if entity {item}'))
+        ops.append(cmd(f'/data get entity {item} Age'))
+    ops += setup('/kill @e[type=!player]', '/fill 0 200 0 5 215 5 air')
+    return ops
+
+
 def piston_push_ground():
     """#12029, #12100: `Entity.move(MoverType.PISTON)` ends in `setOnGroundWithMovement`
     on the server, so a push sets an item's, primed TNT's or experience orb's OnGround to whether
@@ -6076,7 +6120,8 @@ ISOLATED_ORB_UUID = frozenset({'orb saved UUID'})
 ISOLATED_STAND_FALL = frozenset({'stand saved fall distance'})
 ISOLATED_POTION_ICONS = frozenset({'potion custom effect icons'})
 ISOLATED_JUKEBOX_CLOCK = frozenset({'jukebox saved clock'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK
+ISOLATED_FUNCTION_FEEDBACK = frozenset({'fork function feedback'})
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK
 
 
 def groups():
@@ -6225,6 +6270,7 @@ def groups():
         ('wither spawn', wither_spawn()),
         ('riding teleport', riding_teleport()),
         ('piston entity tick order', piston_entity_tick_order()),
+        ('scheduled block item birth', scheduled_item_birth()),
         ('piston push ground', piston_push_ground()),
         ('carpet farms', carpet_farms(cmd, setup)),
         ('passenger teleports', passenger_teleports(cmd, setup)),
@@ -6276,6 +6322,7 @@ def groups():
         ('mob full resistance hits', mob_full_resistance_hits()),
         ('sulfur cube loaded health', sulfur_cube_loaded_health()),
         ('function return feedback', function_return_feedback()),
+        ('fork function feedback', fork_function_feedback_cases()),
         ('function condition fallthrough', function_condition_fallthrough()),
         ('ticking and random', ticking()),
         ('compute', compute()),

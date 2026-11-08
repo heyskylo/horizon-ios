@@ -1045,16 +1045,23 @@ impl Game<'_> {
         overlay: u32,
         out: &mut Vec<horizon_client::mesher::Vertex>,
     ) {
-        let Some(asset) = chest
-            .and_then(|item| self.items().get(item))
-            .and_then(|i| i.equip_asset.as_ref())
+        // The worn stack's own `equippable`, for the chest slot, with an asset
+        // (getEquipmentIfRenderable: anything else counts as nothing worn).
+        let equippable = match stack {
+            Some(s) => horizon_client::item_sync::equippable(s, self.items()),
+            None => chest
+                .and_then(|item| horizon_client::item_sync::item_equippable(item, self.items())),
+        };
+        let Some(asset) = equippable
+            .filter(|e| e.slot == "chest")
+            .and_then(|e| e.asset_id)
         else {
             return;
         };
         let assets = &self.armor_stand_assets;
         let Some((texture, _)) = assets
             .equipment
-            .get(asset)
+            .get(&asset)
             .and_then(|k| k.get("wings"))
             .and_then(|layers| layers.first())
         else {
@@ -1142,10 +1149,19 @@ impl Game<'_> {
         if horizon_client::mobs::trader::is_invisible(m) {
             return;
         }
-        let layers = chest
-            .and_then(|item| self.res.items().get(item))
-            .and_then(|i| i.equip_asset.as_ref())
-            .and_then(|asset| self.armor_stand_assets.equipment.get(asset));
+        // CapeLayer.hasLayer: the worn stack's own `equippable` asset.
+        let items = self.res.items();
+        let equippable = match m.extra.armor[1]
+            .as_ref()
+            .filter(|s| chest == Some(&*s.item))
+        {
+            Some(s) => horizon_client::item_sync::equippable(s, items),
+            None => chest.and_then(|item| horizon_client::item_sync::item_equippable(item, items)),
+        };
+        let layers = equippable
+            .filter(|e| e.slot == "chest")
+            .and_then(|e| e.asset_id)
+            .and_then(|asset| self.armor_stand_assets.equipment.get(&asset));
         if layers.is_some_and(|k| k.contains_key("wings")) {
             return;
         }

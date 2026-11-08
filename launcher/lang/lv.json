@@ -1251,5 +1251,9 @@
   "Buy": "Pirkt",
   "Gift": "Dāvināt",
   "Found on this computer": "Atrasts šajā datorā",
-  "Looks": "Tēli"
+  "Looks": "Tēli",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Sistēmas atslēgu saišķis neatbildēja {seconds} sekunžu laikā. Pārliecinieties, ka tas darbojas un ir atbloķēts, pēc tam restartējiet palaidēju.",
+  "Can't read {name}'s sign-in: {why}": "Nevar nolasīt {name} pierakstīšanos: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}."
 }

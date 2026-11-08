@@ -1421,7 +1421,17 @@ impl Goal for MeleeAttack {
         if !self.follow_unseen {
             return !m.ai.nav.is_done();
         }
-        !(t.is_player && t.creative)
+        // `MeleeAttackGoal.canContinueToUse`'s follow branch re-checks
+        // `isWithinHome(target.blockPosition())` and refuses a spectator or
+        // creative player.
+        let target_block = [
+            t.position.x.floor() as i32,
+            t.position.y.floor() as i32,
+            t.position.z.floor() as i32,
+        ];
+        m.ai.home
+            .is_none_or(|(center, radius)| within_home(center, radius, target_block))
+            && !(t.is_player && (t.creative || cx.w.player.as_ref().is_some_and(|p| p.spectator)))
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         let path = m.ai.pending_path.take();
@@ -2262,9 +2272,12 @@ impl Goal for Breed {
         }
         let llama = super::llama::is_llama(species);
         let equine = matches!(species, Species::Horse | Species::Donkey) || llama;
+        // Camel.canMate asks AbstractHorse.canParent of both sides: not a
+        // vehicle or a passenger and at full health (a camel is always tame).
+        let camel = species == Species::Camel;
         // AbstractHorse.canParent: tame, an adult, not a vehicle or passenger
         // and at full health.
-        if equine
+        if (equine || camel)
             && (!m.extra.tame
                 || m.is_baby()
                 || m.rider.is_some()
@@ -2287,7 +2300,7 @@ impl Goal for Breed {
                     // Wolf.canMate: a sitting wolf is no partner.
                     && !(species == Species::Wolf && s.sitting)
                     // AbstractHorse.canParent of the partner.
-                    && (!equine || s.tame && !s.ridden && s.health >= s.stats[0] as f32)
+                    && (!(equine || camel) || s.tame && !s.ridden && s.health >= s.stats[0] as f32)
                     && (!sniffer || super::sniffer::can_mate_state(s.variant))
             })
             .map(|s| s.id)
@@ -3486,6 +3499,84 @@ mod melee_range_tests {
         assert_eq!(rider.hitbox().min_position().y, at.y);
         rider.extra.mount = None;
         assert_eq!(rider.hitbox().min_position().y, at.y);
+    }
+}
+
+#[cfg(test)]
+mod melee_continue_tests {
+    use super::*;
+    use crate::mobs::world::{test_player, with_test_world};
+    use horizon_core::geometry::Vec3;
+    use std::sync::Arc;
+
+    /// Tick one `<MeleeAttack>` goal through the real selector.
+    fn tick(goals: &mut GoalSelector, m: &mut Mob, world: &MobWorld) {
+        let mut lr = LegacyRandom::new(0);
+        let mut events = Vec::new();
+        let mut cx = Cx {
+            w: world,
+            lr: &mut lr,
+            events: &mut events,
+        };
+        goals.tick(m, &mut cx);
+    }
+
+    /// `MeleeAttackGoal.canContinueToUse`'s follow branch refuses a target
+    /// outside the mob's home (`isWithinHome(target.blockPosition())`).
+    #[test]
+    fn a_chase_stops_outside_the_mobs_home() {
+        let mut outcomes = None;
+        let ran = with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:iron_golem"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            m.ai.home = Some(([0, 64, 0], 8));
+            m.ai.target = Some(Who::Player);
+            let mut world = w.clone();
+            world.player = Some(test_player(Vec3::new(0.5, 64.0, 0.5)));
+            let mut goals = GoalSelector::default();
+            goals.add(1, MeleeAttack::new(1.0, true));
+            tick(&mut goals, &mut m, &world);
+            let started = goals.is_running("MeleeAttack");
+            world.player.as_mut().unwrap().position = Vec3::new(100.5, 64.0, 0.5);
+            tick(&mut goals, &mut m, &world);
+            outcomes = Some((started, goals.is_running("MeleeAttack")));
+        });
+        if !ran {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            Some((true, false)),
+            "the chase starts at home and stops when the target leaves its radius"
+        );
+    }
+
+    /// The same branch refuses a spectator (`!(player.isSpectator() || player.isCreative())`).
+    #[test]
+    fn a_chase_stops_when_the_target_is_a_spectator() {
+        let mut outcomes = None;
+        let ran = with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:iron_golem"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            m.ai.target = Some(Who::Player);
+            let mut world = w.clone();
+            world.player = Some(test_player(Vec3::new(0.5, 64.0, 0.5)));
+            let mut goals = GoalSelector::default();
+            goals.add(1, MeleeAttack::new(1.0, true));
+            tick(&mut goals, &mut m, &world);
+            let started = goals.is_running("MeleeAttack");
+            world.player.as_mut().unwrap().spectator = true;
+            tick(&mut goals, &mut m, &world);
+            outcomes = Some((started, goals.is_running("MeleeAttack")));
+        });
+        if !ran {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            Some((true, false)),
+            "a mob chases a survival player and stops when they become a spectator"
+        );
     }
 }
 

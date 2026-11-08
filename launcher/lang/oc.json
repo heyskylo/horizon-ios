@@ -1251,5 +1251,9 @@
   "Buy": "Crompar",
   "Gift": "Ofrir",
   "Found on this computer": "Trobats sus aqueste ordenador",
-  "Looks": "Estils"
+  "Looks": "Estils",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Lo clavièr del sistèma a pas respondut en {seconds} segondas. Verificatz que fonciona e qu'es desblocat, puèi reaviatz l'aviador.",
+  "Can't read {name}'s sign-in: {why}": "Impossible de legir la connexion de {name} : {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}."
 }
