@@ -45,7 +45,7 @@ pub use geometry::{GeometryInputs, translate_geometry};
 use scan::Stage;
 
 /// What a program's stages need from the game.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Interface {
     /// The uniform block at binding 0: its size and each value's name, GLSL type and offset.
     /// Ours come first: `hz_target` (the target's width, height, 1/width, 1/height), and the
@@ -88,6 +88,7 @@ pub struct Image {
 /// A compute program (`deferred4_a.csh`): its module, what it reads and writes, and how many
 /// work groups it runs: `workGroups`, or `workGroupsRender` times the target's size over the
 /// local size (1, 1 when neither is set).
+#[derive(Clone)]
 pub struct ComputeProgram {
     pub module: naga::Module,
     pub interface: Interface,
@@ -131,6 +132,7 @@ pub struct Error {
     pub message: String,
 }
 
+#[derive(Clone)]
 pub struct Program {
     pub vertex: naga::Module,
     pub fragment: naga::Module,
@@ -173,6 +175,10 @@ pub struct GbuffersInputs {
     /// `gl_FragDepth`, while `gl_FragCoord.z` stays the geometry's own: the sky shows only where
     /// nothing else drew, and reads its own depth as in Iris 1.11.7.
     pub far_depth: bool,
+    /// `normals` and `specular` are bound as paged maps of the atlas `texture` reads
+    /// (`horizon-client-render`'s `paged_maps.rs`), not as images of its layout: the program's
+    /// texture calls on them read through `hz_pagedTexture`.
+    pub paged_maps: bool,
 }
 
 /// A fragment stays when its output 0's alpha compares to `reference` as `op` says (a GLSL
@@ -293,6 +299,8 @@ fn translate(
     let mut f = Stage::scan(fragment, ShaderStage::Fragment);
     v.gbuffers = gbuffers.is_some();
     f.gbuffers = gbuffers.is_some();
+    v.paged_maps = gbuffers.is_some_and(|g| g.paged_maps);
+    f.paged_maps = v.paged_maps;
     let mut errors: Vec<Error> = v
         .errors
         .drain(..)
@@ -768,7 +776,42 @@ pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<E
         })
         .collect();
     let mut images = bind_images([&c, &c], samplers.len());
+    // `workGroups` is an ivec3, `workGroupsRender` a vec2 (a third number, the depth of a 2D
+    // render, is taken as 1); anything else is not understood rather than guessed.
+    let mut sizes = |name: &str, counts: &[usize]| {
+        let v = constant(&c, name)?;
+        if !counts.contains(&v.len()) {
+            errors.push(Error {
+                file: compute.files.first().cloned().unwrap_or_default(),
+                line: 0,
+                message: format!("`{name}` must have {counts:?} numbers, not {}", v.len()),
+            });
+            return None;
+        }
+        Some(v)
+    };
+    let mut work_groups =
+        sizes("workGroups", &[3]).map(|v| [v[0] as u32, v[1] as u32, v[2] as u32]);
+    let work_groups_render =
+        sizes("workGroupsRender", &[2, 3]).map_or([1.0, 1.0], |v| [v[0] as f32, v[1] as f32]);
     let code = c.rewrite(&samplers, &uniforms);
+    let mut folded = None;
+    let code = match work_groups.map(|g| fold_work_groups(&code, g)) {
+        Some(Ok(Some((code, fold)))) => {
+            work_groups = Some(fold.dispatch);
+            folded = Some(fold);
+            code
+        }
+        Some(Err(message)) => {
+            errors.push(Error {
+                file: compute.files.first().cloned().unwrap_or_default(),
+                line: 0,
+                message,
+            });
+            code
+        }
+        _ => code,
+    };
     let code = work_group_size(&code).unwrap_or_else(|message| {
         errors.push(Error {
             file: compute.files.first().cloned().unwrap_or_default(),
@@ -798,6 +841,9 @@ pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<E
         images.push(copy);
     }
     let mut main = String::from("\nvoid main() {\n");
+    if let Some(fold) = &folded {
+        main.push_str(&fold.unfold());
+    }
     main.push_str(
         "    hz_Fog = hz_FogParameters(hz_fog_color, hz_fog.x, hz_fog.y, hz_fog.z, hz_fog.w);\n",
     );
@@ -805,25 +851,11 @@ pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<E
         writeln!(main, "    {name} = hz_init_{name}();").unwrap();
     }
     main.push_str("    hz_main();\n}\n");
-    let header = resources(&uniforms, &samplers, &images) + &c.prelude();
+    let mut header = resources(&uniforms, &samplers, &images) + &c.prelude();
+    if folded.is_some() {
+        header.push_str("uvec3 hz_WorkGroupID;\n");
+    }
     let text = format!("{header}{code}{main}");
-    // `workGroups` is an ivec3, `workGroupsRender` a vec2 (a third number, the depth of a 2D
-    // render, is taken as 1); anything else is not understood rather than guessed.
-    let mut sizes = |name: &str, counts: &[usize]| {
-        let v = constant(&c, name)?;
-        if !counts.contains(&v.len()) {
-            errors.push(Error {
-                file: compute.files.first().cloned().unwrap_or_default(),
-                line: 0,
-                message: format!("`{name}` must have {counts:?} numbers, not {}", v.len()),
-            });
-            return None;
-        }
-        Some(v)
-    };
-    let work_groups = sizes("workGroups", &[3]).map(|v| [v[0] as u32, v[1] as u32, v[2] as u32]);
-    let work_groups_render =
-        sizes("workGroupsRender", &[2, 3]).map_or([1.0, 1.0], |v| [v[0] as f32, v[1] as f32]);
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -865,6 +897,83 @@ pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<E
         work_groups,
         work_groups_render,
     })
+}
+
+/// The most work groups wgpu dispatches along one dimension (WebGPU's
+/// `maxComputeWorkgroupsPerDimension`, which wgpu's Metal backend reports too).
+pub const MAX_WORK_GROUPS_PER_DIMENSION: u32 = 65_535;
+
+/// A `workGroups` over [`MAX_WORK_GROUPS_PER_DIMENSION`] in some dimension, run as the same
+/// number of groups in the shape `dispatch`.
+#[derive(Debug, PartialEq)]
+struct Fold {
+    groups: [u32; 3],
+    dispatch: [u32; 3],
+}
+
+impl Fold {
+    /// The start of `main`: the group's place in `groups`, from its linear index in `dispatch`.
+    fn unfold(&self) -> String {
+        let ([x, y, _], [a, b, _]) = (self.groups, self.dispatch);
+        format!(
+            "    uint hz_group = gl_WorkGroupID.x + {a}u * (gl_WorkGroupID.y + {b}u * gl_WorkGroupID.z);\n    \
+             hz_WorkGroupID = uvec3(hz_group % {x}u, hz_group / {x}u % {y}u, hz_group / {}u);\n",
+            x * y
+        )
+    }
+}
+
+/// `code` for a dispatch of `groups` laid out as a [`Fold`] when a dimension is over the limit:
+/// `gl_WorkGroupID`, `gl_GlobalInvocationID` and `gl_NumWorkGroups` read what they would in
+/// `groups`. The shape uses every group exactly, so no group returns early before a `barrier()`.
+fn fold_work_groups(code: &str, groups: [u32; 3]) -> Result<Option<(String, Fold)>, String> {
+    if groups.iter().all(|&n| n <= MAX_WORK_GROUPS_PER_DIMENSION) {
+        return Ok(None);
+    }
+    let too_many = || {
+        format!(
+            "`workGroups` {groups:?} can't be dispatched: no shape of at most \
+                 {MAX_WORK_GROUPS_PER_DIMENSION} per dimension holds them"
+        )
+    };
+    let total = groups
+        .iter()
+        .try_fold(1u32, |t, &n| t.checked_mul(n))
+        .ok_or_else(too_many)?;
+    let divisor = |n: u32| {
+        (1..=n.min(MAX_WORK_GROUPS_PER_DIMENSION))
+            .rev()
+            .find(|d| n.is_multiple_of(*d))
+            .unwrap_or(1)
+    };
+    let a = divisor(total);
+    let b = divisor(total / a);
+    let c = total / a / b;
+    if c > MAX_WORK_GROUPS_PER_DIMENSION {
+        return Err(too_many());
+    }
+    let [x, y, z] = groups;
+    let mut tokens: Vec<String> = crate::macros::lex(code)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    for t in &mut tokens {
+        match t.as_str() {
+            "gl_WorkGroupID" => *t = "hz_WorkGroupID".to_owned(),
+            "gl_GlobalInvocationID" => {
+                *t = "(hz_WorkGroupID * gl_WorkGroupSize + gl_LocalInvocationID)".to_owned()
+            }
+            "gl_NumWorkGroups" => *t = format!("uvec3({x}u, {y}u, {z}u)"),
+            _ => {}
+        }
+    }
+    Ok(Some((
+        tokens.concat(),
+        Fold {
+            groups,
+            dispatch: [a, b, c],
+        },
+    )))
 }
 
 /// `code` with `gl_WorkGroupSize` written as the constant its `layout(local_size_*)` declares:
@@ -2363,6 +2472,56 @@ in VertexData {{ {member} }} vIn;
                 &inputs,
             )
             .unwrap_or_else(|e| panic!("{fsh}: {e:?}"));
+        }
+    }
+
+    #[test]
+    fn paged_maps_read_through_their_page_table() {
+        let vsh = "#version 120\nvarying vec2 uv;\nvoid main() { gl_Position = ftransform(); uv = gl_MultiTexCoord0.st; }\n";
+        // A read with a bias, at a level, with gradients; a local named like a map is not one.
+        let fsh = "#version 120\nuniform sampler2D normals;\nuniform sampler2D specular;\nvarying vec2 uv;\n\
+                   float f() { float normals = 0.5; return normals; }\n\
+                   void main() { gl_FragData[0] = texture2D(normals, uv, -1.0) + texture2DLod(specular, uv, 0.0)\n\
+                   + textureGrad(normals, uv, dFdx(uv), dFdy(uv)) + vec4(f()); }\n";
+        let files = [
+            ("shaders/gbuffers_entities.vsh", vsh),
+            ("shaders/gbuffers_entities.fsh", fsh),
+        ];
+        let pack = Pack::from_zip_bytes("P.zip", zip(&files)).unwrap();
+        let m = Macros::standard();
+        for paged_maps in [false, true] {
+            let inputs = GbuffersInputs {
+                body: "    hz_Vertex = vec4(0.0, 0.0, 0.0, 1.0);\n".into(),
+                paged_maps,
+                ..Default::default()
+            };
+            let p = translate_gbuffers(
+                &preprocess(&pack, "gbuffers_entities.vsh", &m),
+                &preprocess(&pack, "gbuffers_entities.fsh", &m),
+                Target::Buffers,
+                &inputs,
+            )
+            .unwrap_or_else(|e| panic!("{e:?}"));
+            // Calls of the functions named `name`, in every function's body.
+            let calls = |name: &str| {
+                let bodies: Vec<String> = (p.fragment.functions.iter().map(|(_, f)| &f.body))
+                    .chain([&p.fragment.entry_points[0].function.body])
+                    .map(|body| format!("{body:?}"))
+                    .collect();
+                (p.fragment.functions.iter())
+                    .filter(|(_, f)| f.name.as_deref() == Some(name))
+                    .map(|(h, _)| {
+                        let call = format!("function: {h:?}");
+                        bodies
+                            .iter()
+                            .map(|b| b.matches(&call).count())
+                            .sum::<usize>()
+                    })
+                    .sum::<usize>()
+            };
+            // The three reads of the maps, and each of the three overloads reading.
+            let n = if paged_maps { 3 } else { 0 };
+            assert_eq!((calls("hz_pagedTexture"), calls("hz_pagedRead")), (n, n));
         }
     }
 

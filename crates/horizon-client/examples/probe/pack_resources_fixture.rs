@@ -34,10 +34,13 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = crate::args().collect();
     let input = fs::read_to_string(&args[1])?;
     let mut lines = input.lines();
-    let root: Vec<&str> = lines.next().ok_or("empty input")?.split(' ').collect();
-    let vanilla = PathBuf::from(root[1]);
-    let ids: Vec<String> = root[3..].iter().map(|s| (*s).to_owned()).collect();
-    let all = packs::discover(&vanilla, &PathBuf::from(root[2]));
+    let root: Vec<String> = serde_json::from_str(lines.next().ok_or("empty input")?)?;
+    if root.len() < 3 || root[0] != "root" {
+        return Err("invalid resource-pack header".into());
+    }
+    let vanilla = PathBuf::from(&root[1]);
+    let ids = root[3..].to_vec();
+    let all = packs::discover(&vanilla, &PathBuf::from(&root[2]));
     let enabled = packs::enabled(&all, &ids);
     let overlay = PathBuf::from(&args[2]).with_extension("overlay");
     packs::build_overlay(&vanilla, &enabled, &overlay)?;

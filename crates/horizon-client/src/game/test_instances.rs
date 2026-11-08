@@ -86,6 +86,80 @@ impl TestDef {
     }
 }
 
+/// `GameTestInstance`'s codec, as the game reads a `test_instance` file.
+fn parse_test_def(json: &serde_json::Value) -> Option<TestDef> {
+    let string = |key: &str| json.get(key).and_then(|v| v.as_str());
+    let structure = string("structure")?.to_owned();
+    let environment = string("environment")?.to_owned();
+    let dimension = string("dimension").unwrap_or("minecraft:overworld");
+    let function = string("function");
+    // `ExtraCodecs.POSITIVE_INT`, 1 when absent.
+    let positive = |key: &str| {
+        json.get(key)
+            .and_then(|v| v.as_i64())
+            .unwrap_or(1)
+            .clamp(1, i64::from(i32::MAX)) as i32
+    };
+    // GameTestInstance.describe: the type, the function (function tests
+    // only), then the structure, batch and dimension.
+    let block_based = string("type") == Some("minecraft:block_based");
+    let mut description = Text::translate(
+        "test_instance.description.type",
+        &[Text::translate(
+            if block_based {
+                "test_instance.type.block_based"
+            } else {
+                "test_instance.type.function"
+            },
+            &[],
+        )
+        .with_color(0x5555FF)],
+    )
+    .append(Text::literal("\n"));
+    if !block_based && let Some(function) = function {
+        description = description.append(row("test_instance.description.function", function));
+    }
+    description = description
+        .append(row("test_instance.description.structure", &structure))
+        .append(row("test_instance.description.batch", &environment))
+        .append(row("test_instance.description.dimension", dimension));
+    Some(TestDef {
+        structure,
+        rotation: string("rotation")
+            .and_then(Rotation::from_name)
+            .unwrap_or(Rotation::None),
+        padding: json
+            .get("padding")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0)
+            .clamp(0, 128) as i32,
+        required: json
+            .get("required")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true),
+        sky_access: json
+            .get("sky_access")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        block_based,
+        function: function.map(str::to_owned),
+        environment: environment.clone(),
+        dimension: dimension.to_owned(),
+        max_ticks: json
+            .get("max_ticks")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(1)
+            .clamp(1, i64::from(i32::MAX)) as i32,
+        setup_ticks: json
+            .get("setup_ticks")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0)
+            .clamp(0, i64::from(i32::MAX)) as i32,
+        max_attempts: positive("max_attempts"),
+        required_successes: positive("required_successes"),
+        description,
+    })
+}
 /// `GameTestInstance.descriptionRow`: the row's value in blue, then a line break.
 fn row(key: &str, value: &str) -> Text {
     Text::translate(key, &[Text::literal(value).with_color(0x5555FF)]).append(Text::literal("\n"))
@@ -102,6 +176,10 @@ impl Game<'_> {
         if let Some(known) = self.test_defs.borrow().get(id) {
             return known.clone();
         }
+        // A world's test instances are the ones it opened with.
+        if self.test_defs_snapshot {
+            return None;
+        }
         let def = self.read_test_def(id);
         self.test_defs
             .borrow_mut()
@@ -109,6 +187,50 @@ impl Game<'_> {
         def
     }
 
+    /// `Registries.TEST_INSTANCE` as a world loads it: the built-in pack's
+    /// `test_instance` files, then those of the packs the world starts with
+    /// enabled, later packs overriding earlier ones. The set stays as it is
+    /// until the next world opens; `/reload` and `/datapack` do not change it.
+    /// It replaces the previous world's definitions and selector ids.
+    pub(super) fn snapshot_test_defs(&mut self) {
+        let stack = super::functions::pack_stack(
+            &self.world_root,
+            &self.options.resources,
+            self.cmds.vanilla_disabled,
+            &self.level.enabled_features,
+        );
+        let mut defs = std::collections::HashMap::new();
+        for pack in stack.builtin.iter().chain(stack.enabled_packs()) {
+            for file in pack.list_folder("test_instance") {
+                let Some(id) = file
+                    .strip_prefix("data/")
+                    .and_then(|r| r.split_once("/test_instance/"))
+                    .and_then(|(ns, path)| Some(format!("{ns}:{}", path.strip_suffix(".json")?)))
+                else {
+                    continue;
+                };
+                let Some(json) = pack
+                    .read(&file)
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                else {
+                    continue;
+                };
+                if let Some(def) = parse_test_def(&json) {
+                    defs.insert(id, Some(def));
+                }
+            }
+        }
+        let mut ids: Vec<String> = defs.keys().cloned().collect();
+        ids.sort();
+        self.ui
+            .registries
+            .by_registry
+            .entry("minecraft:test_instance".into())
+            .or_default()
+            .ids = ids;
+        *self.test_defs.borrow_mut() = defs;
+        self.test_defs_snapshot = true;
+    }
     fn read_test_def(&self, id: &str) -> Option<TestDef> {
         let (ns, path) = id.split_once(':').unwrap_or(("minecraft", id));
         let file = self
@@ -119,77 +241,7 @@ impl Game<'_> {
             .join("test_instance")
             .join(format!("{path}.json"));
         let json: serde_json::Value = serde_json::from_slice(&std::fs::read(file).ok()?).ok()?;
-        let string = |key: &str| json.get(key).and_then(|v| v.as_str());
-        let structure = string("structure")?.to_owned();
-        let environment = string("environment")?.to_owned();
-        let dimension = string("dimension").unwrap_or("minecraft:overworld");
-        let function = string("function");
-        // `ExtraCodecs.POSITIVE_INT`, 1 when absent.
-        let positive = |key: &str| {
-            json.get(key)
-                .and_then(|v| v.as_i64())
-                .unwrap_or(1)
-                .clamp(1, i64::from(i32::MAX)) as i32
-        };
-        // GameTestInstance.describe: the type, the function (function tests
-        // only), then the structure, batch and dimension.
-        let block_based = string("type") == Some("minecraft:block_based");
-        let mut description = Text::translate(
-            "test_instance.description.type",
-            &[Text::translate(
-                if block_based {
-                    "test_instance.type.block_based"
-                } else {
-                    "test_instance.type.function"
-                },
-                &[],
-            )
-            .with_color(0x5555FF)],
-        )
-        .append(Text::literal("\n"));
-        if !block_based && let Some(function) = function {
-            description = description.append(row("test_instance.description.function", function));
-        }
-        description = description
-            .append(row("test_instance.description.structure", &structure))
-            .append(row("test_instance.description.batch", &environment))
-            .append(row("test_instance.description.dimension", dimension));
-        Some(TestDef {
-            structure,
-            rotation: string("rotation")
-                .and_then(Rotation::from_name)
-                .unwrap_or(Rotation::None),
-            padding: json
-                .get("padding")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0)
-                .clamp(0, 128) as i32,
-            required: json
-                .get("required")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true),
-            sky_access: json
-                .get("sky_access")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            block_based,
-            function: function.map(str::to_owned),
-            environment: environment.clone(),
-            dimension: dimension.to_owned(),
-            max_ticks: json
-                .get("max_ticks")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(1)
-                .clamp(1, i64::from(i32::MAX)) as i32,
-            setup_ticks: json
-                .get("setup_ticks")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0)
-                .clamp(0, i64::from(i32::MAX)) as i32,
-            max_attempts: positive("max_attempts"),
-            required_successes: positive("required_successes"),
-            description,
-        })
+        parse_test_def(&json)
     }
 
     pub(super) fn test_instance_at(&self, pos: Pos) -> Option<&TestInstanceBlock> {
@@ -650,7 +702,7 @@ impl Game<'_> {
         ));
         let id = self.game_tests.next_id();
         let info = Info::new(id, key, def, Some(pos), self.dim, rotation);
-        self.track_and_start_runner(vec![info], false, None);
+        self.track_and_start_runner(vec![info], false, None, false);
     }
 }
 

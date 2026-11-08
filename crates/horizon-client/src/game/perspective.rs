@@ -292,10 +292,21 @@ impl Game<'_> {
     /// front of) it, pulled in where visual shapes are in the way. Returns the
     /// position, yaw and pitch to render from.
     pub(super) fn camera_view(&mut self, partial: f32) -> Option<(glam::DVec3, f32, f32)> {
+        if self.studio_freecam.active {
+            return Some((
+                self.studio_freecam.position,
+                self.studio_freecam.yaw,
+                self.studio_freecam.pitch,
+            ));
+        }
         // Minecraft.cameraEntity: a server's spectator camera on a mob or
         // another player.
-        let (entity, descending) = match self.camera_mob() {
-            Some(m) => (super::remote_camera::mob_camera_entity(m), false),
+        let (entity, descending, entity_kind) = match self.camera_mob() {
+            Some(m) => (
+                super::remote_camera::mob_camera_entity(m),
+                false,
+                horizon_world::collision_context::EntityContextKind::Living,
+            ),
             None => {
                 let mut entity = self.player_camera_entity()?;
                 if let Some(position) = self.remote_minecart_rider_position(partial) {
@@ -304,7 +315,11 @@ impl Game<'_> {
                     entity.position = position;
                     entity.previous = position;
                 }
-                (entity, self.player.as_ref()?.shift_key_down)
+                (
+                    entity,
+                    self.player.as_ref()?.shift_key_down,
+                    horizon_world::collision_context::EntityContextKind::Player,
+                )
             }
         };
         let mut view = self.view;
@@ -318,6 +333,7 @@ impl Game<'_> {
         let context = CollisionContext::for_entity(
             CollisionEntity {
                 identity: EntityIdentity(0),
+                kind: entity_kind,
                 y: entity.position[1],
                 descending,
                 main_hand: Some(CollisionItem::EMPTY),
@@ -638,6 +654,11 @@ impl Game<'_> {
     /// The model's old pitch is the player's `xRotO`, which the turn moves
     /// with `xRot` (`turn_rotation`).
     pub(super) fn turn_player(&mut self, xo: f64, yo: f64) {
+        if self.studio_freecam.active {
+            self.studio_freecam
+                .turn((xo * 0.15) as f32, (yo * 0.15) as f32);
+            return;
+        }
         let pitch_o = self.player_model.as_ref().map(|m| m.previous_head_pitch);
         let rotation = turn_rotation(self.yaw, self.pitch, pitch_o, xo, yo);
         // The held lead's old look (`LocalPlayer.getRopeHoldPosition`'s
@@ -687,7 +708,7 @@ impl Game<'_> {
     /// `LevelExtractor`'s skip of the camera entity: the player's own body
     /// is drawn unless the camera is in first person, or while it sleeps.
     pub(super) fn own_body_in_view(&self) -> bool {
-        !self.camera_type.first_person() || self.sleeping.is_some()
+        !self.camera_type.first_person() || self.sleeping.is_some() || self.studio_freecam.active
     }
     /// Whether the player's own model shows in the world view (its body or,
     /// while invisible, only its armour and held items).
@@ -790,7 +811,7 @@ impl Game<'_> {
                 packed,
                 out,
             );
-            if horizon_cosmetics::enabled() {
+            if super::cosmetics::enabled() {
                 let base = horizon_client::mobs::render::base_transform(m, alpha as f32, camera);
                 self.cosmetics_geometry(
                     m,
@@ -916,7 +937,7 @@ impl Game<'_> {
             240 | 240 << 8,
             &mut verts,
         );
-        if horizon_cosmetics::enabled() {
+        if super::cosmetics::enabled() {
             let base = horizon_client::mobs::render::base_transform(&m, 1.0, camera);
             self.cosmetics_geometry(&m, true, base, None, 1.0, 240 | 240 << 8, false, &mut verts);
         }
@@ -1024,16 +1045,23 @@ impl Game<'_> {
         overlay: u32,
         out: &mut Vec<horizon_client::mesher::Vertex>,
     ) {
-        let Some(asset) = chest
-            .and_then(|item| self.items().get(item))
-            .and_then(|i| i.equip_asset.as_ref())
+        // The worn stack's own `equippable`, for the chest slot, with an asset
+        // (getEquipmentIfRenderable: anything else counts as nothing worn).
+        let equippable = match stack {
+            Some(s) => horizon_client::item_sync::equippable(s, self.items()),
+            None => chest
+                .and_then(|item| horizon_client::item_sync::item_equippable(item, self.items())),
+        };
+        let Some(asset) = equippable
+            .filter(|e| e.slot == "chest")
+            .and_then(|e| e.asset_id)
         else {
             return;
         };
         let assets = &self.armor_stand_assets;
         let Some((texture, _)) = assets
             .equipment
-            .get(asset)
+            .get(&asset)
             .and_then(|k| k.get("wings"))
             .and_then(|layers| layers.first())
         else {
@@ -1121,10 +1149,19 @@ impl Game<'_> {
         if horizon_client::mobs::trader::is_invisible(m) {
             return;
         }
-        let layers = chest
-            .and_then(|item| self.res.items().get(item))
-            .and_then(|i| i.equip_asset.as_ref())
-            .and_then(|asset| self.armor_stand_assets.equipment.get(asset));
+        // CapeLayer.hasLayer: the worn stack's own `equippable` asset.
+        let items = self.res.items();
+        let equippable = match m.extra.armor[1]
+            .as_ref()
+            .filter(|s| chest == Some(&*s.item))
+        {
+            Some(s) => horizon_client::item_sync::equippable(s, items),
+            None => chest.and_then(|item| horizon_client::item_sync::item_equippable(item, items)),
+        };
+        let layers = equippable
+            .filter(|e| e.slot == "chest")
+            .and_then(|e| e.asset_id)
+            .and_then(|asset| self.armor_stand_assets.equipment.get(&asset));
         if layers.is_some_and(|k| k.contains_key("wings")) {
             return;
         }

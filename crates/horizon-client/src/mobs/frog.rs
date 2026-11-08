@@ -115,7 +115,9 @@ pub fn register(m: &mut Mob) {
     };
     let g = &mut m.ai.goals;
     g.add(0, Float);
-    g.add(1, Panic::new(1.25));
+    // `FrogAi.initCoreActivity`: `AnimalPanic(2.0)` — the panic speed
+    // multiplier is 2.0, not the 1.25 its temptation uses.
+    g.add(1, Panic::new(2.0));
     // `FrogAi.initIdleActivity`: `AnimalMakeLove` first, then `FollowTemptation(1.25)`.
     g.add(2, Breed::new(1.0));
     g.add(3, Unless(is_pregnant, Tempt::new(1.25, food, false)));
@@ -837,7 +839,7 @@ fn candidates([x, y, z]: [i32; 3], width: i32, height: i32) -> Vec<Candidate> {
 /// first arc that reaches the target clear of blocks. `Collections.shuffle`
 /// without a random draws from an unseeded one, not the mob's or the level's.
 fn optimal_jump_vector(m: &Mob, w: &MobWorld, target: Vec3) -> Option<Vec3> {
-    let mut random = crate::sound_engine::SoundEngine::unseeded();
+    let mut random = crate::random_source::create();
     let mut angles = ALLOWED_ANGLES;
     for i in (2..=angles.len()).rev() {
         let j = random.next_int_bound(i as i32).unwrap_or(0) as usize;
@@ -1139,5 +1141,60 @@ mod tests {
         set_jump_cooldown(&mut m, None);
         assert_eq!(jump_cooldown(&m), None);
         assert!(!m.extra.memories.iter().any(|x| x.0 == LONG_JUMP_COOLDOWN));
+    }
+
+    /// `FrogAi.initCoreActivity`: `AnimalPanic(2.0)`. A hurt frog starts the
+    /// panic goal with vanilla's 2.0 speed multiplier, which `PathNavigation`
+    /// stores for `SmoothSwimmingMoveControl` (`speedModifier * movement
+    /// speed`, so 0.2 on land and 0.04 in water). The brain's temptation and
+    /// long jump run at 1.25 and 1.0; 1.25 here would make a fleeing frog 60%
+    /// slower than vanilla's.
+    #[test]
+    fn a_hurt_frog_panics_at_vanillas_two_times_speed() {
+        let ran = crate::mobs::world::with_built_test_world(
+            &[],
+            |world, registry| {
+                for x in -2..=1 {
+                    for z in -2..=1 {
+                        world.chunks.insert(
+                            (x, z),
+                            std::sync::Arc::new(crate::chunk::Chunk::empty(x, z)),
+                        );
+                    }
+                }
+                let stone = registry.default_state("minecraft:stone").unwrap();
+                for x in -8..=8 {
+                    for z in -8..=8 {
+                        world.set(x, 63, z, stone).unwrap();
+                    }
+                }
+            },
+            |w, types| {
+                let kind = std::sync::Arc::new(types.types["minecraft:frog"].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+                register(&mut m);
+                m.on_ground = true;
+                // An environmental hit inside the 40 tick panic window
+                // (`DamageTypeTags.PANIC_CAUSES`).
+                m.last_damage = Some((
+                    super::super::Damage::of(super::super::DamageKind::Freeze),
+                    i64::from(m.age),
+                ));
+                let mut events = Vec::new();
+                let mut lr = LegacyRandom::new(0);
+                let mut cx = Cx {
+                    w,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                let mut goals = std::mem::take(&mut m.ai.goals);
+                goals.tick(&mut m, &mut cx);
+                assert!(goals.is_running("Panic"), "the hurt frog should flee");
+                m.ai.goals = goals;
+                assert!(m.ai.panicking);
+                assert_eq!(m.ai.nav.speed_modifier, 2.0);
+            },
+        );
+        let _ = ran;
     }
 }
