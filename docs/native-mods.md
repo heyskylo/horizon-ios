@@ -3284,6 +3284,26 @@ bobber in water, one hooked to an entity and a LAN host's own bobber are not hea
 it would. The player's state is swapped in, the other players are out of reach. Bundles need "hooks":
 @API:fishing_hook_landed@.
 
+`native_fishing_medium(dimension, hook, position, owner, medium)` lets a bobber fish outside water: lava, the void
+below a skyblock island, a cloud. Each tick a bobber that is flying or floating, not in water and not hooked to an
+entity asks the mods whether its spot (`position`, its feet) is a fishing medium; `owner` is where the player who cast
+it stands. The first mod to answer `Some(NativeFishingMedium)` makes it one, for this tick:
+
+- `surface`: the height it floats at. In the block of the surface or below, the bobber is in the medium as it would
+  be in a water block: a flying bobber stops there, then bobs on the surface, waits for a fish, bites and is reeled in
+  as in still water. Above it, it falls as usual.
+- `loot_table`: what a catch from there rolls, with the fishing context vanilla's table gets (luck, the open-water
+  flag, which is true in a medium). None rolls `minecraft:gameplay/fishing`. The bobber keeps the last medium's table
+  until it lands in water.
+- `lure_ticks`: the wait before a fish comes, drawn from `min..=max` and less the rod's Lure (vanilla draws 100 to 600
+  ticks). None keeps vanilla's.
+
+It is asked on the server, with the owner's state swapped in, and on every client that draws the bobber (`owner` None
+for another player's whom the client doesn't see), so that both move it alike, as vanilla ticks the hook on both
+sides: answer from the world and `owner` alone, the same on both. A mod that isn't on a client leaves it predicting a
+fall that the server's updates pull back. `horizon-ctl status` shows the hook's `loot_table`. Water is never asked
+about, and no answer keeps vanilla. Bundles need "hooks": @API:fishing_medium@.
+
 `native_remove_entity(dimension, id)` also removes projectiles (arrows, tridents, snowballs, eggs, ender pearls,
 fireballs, wind charges, llama spit, shulker bullets, firework rockets) as `/kill` does, and a server player's fishing
 bobber, as `Entity.discard` (Bukkit's `Entity.remove`): an arrow cleanup, or a power rod's bobber taken once its
