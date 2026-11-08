@@ -9834,7 +9834,7 @@ impl Game<'_> {
     }
 
     fn remote_start_attack(&mut self) -> bool {
-        if self.clicks.miss_time > 0 {
+        if self.clicks.miss_time > 0 || self.hands_busy() {
             return false;
         }
         if self.spectator() {

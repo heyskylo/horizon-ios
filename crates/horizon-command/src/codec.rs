@@ -226,9 +226,94 @@ pub fn decode(registry: &str, t: &Tag, reg: &Registries) -> Result<(), String> {
             _ => Err(not_map(t)),
         },
         "minecraft:loot_table" => match t {
-            Tag::Compound(_) => Ok(()),
+            Tag::Compound(_) => loot_table_references(t, reg),
             _ => Err(not_map(t)),
         },
+        _ => Ok(()),
+    }
+}
+
+/// A partial check of `LootTable.DIRECT_CODEC`: only the holders of its
+/// `minecraft:loot_table` entries, in the codec's own structure: `pools`,
+/// each pool's `entries`, a composite entry's `children` (alternatives, group,
+/// sequence), and a `NestedLootTable`'s `value`. Every other field, entry type
+/// and codec error is not checked here and stays accepted.
+fn loot_table_references(t: &Tag, reg: &Registries) -> Result<(), String> {
+    let Tag::Compound(map) = t else {
+        return Ok(());
+    };
+    let Some(Tag::List(pools)) = get(map, "pools") else {
+        return Ok(());
+    };
+    for pool in pools {
+        let Tag::Compound(pool) = pool else {
+            continue;
+        };
+        if let Some(Tag::List(entries)) = get(pool, "entries") {
+            for entry in entries {
+                loot_entry_references(entry, reg)?;
+            }
+        }
+    }
+    Ok(())
+}
+/// `LootPoolEntries.CODEC`, dispatched on the entry's `type`.
+fn loot_entry_references(t: &Tag, reg: &Registries) -> Result<(), String> {
+    let Tag::Compound(map) = t else {
+        return Ok(());
+    };
+    let Some(ty) = get(map, "type")
+        .and_then(as_string)
+        .and_then(|name| parse_identifier(&name))
+    else {
+        return Ok(());
+    };
+    match ty.as_str() {
+        "minecraft:alternatives" | "minecraft:group" | "minecraft:sequence" => {
+            if let Some(Tag::List(children)) = get(map, "children") {
+                for child in children {
+                    loot_entry_references(child, reg)?;
+                }
+            }
+            Ok(())
+        }
+        "minecraft:loot_table" => match get(map, "value") {
+            Some(value) => loot_table_holder_set(value, reg),
+            None => Ok(()),
+        },
+        _ => Ok(()),
+    }
+}
+/// `HolderSetCodec`: either a `TagKey.hashedCodec` or `compactListCodec`,
+/// itself either a list or one `RegistryFileCodec` holder: an identifier the
+/// registry holds, or an inline table.
+fn loot_table_holder_set(t: &Tag, reg: &Registries) -> Result<(), String> {
+    match t {
+        Tag::String(_) => {
+            let name = as_string(t).unwrap_or_default();
+            // A tag's contents are not checked here.
+            if name.starts_with('#') {
+                return Ok(());
+            }
+            // A string that is not an identifier would decode inline: not checked here.
+            let Some(id) = parse_identifier(&name) else {
+                return Ok(());
+            };
+            let known = reg.ids("minecraft:loot_table");
+            if known.is_empty() || known.contains(&id) {
+                return Ok(());
+            }
+            Err(either(
+                "Not a tag id".into(),
+                either(
+                    not_list(t),
+                    format!("Failed to get element {id} from registry minecraft:loot_table"),
+                ),
+            ))
+        }
+        // The inline holder's error is the partial result both eithers keep.
+        Tag::Compound(_) => loot_table_references(t, reg),
+        // A list of holders is not checked here.
         _ => Ok(()),
     }
 }

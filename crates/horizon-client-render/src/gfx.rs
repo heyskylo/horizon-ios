@@ -185,6 +185,7 @@ pub mod compositor;
 pub(crate) mod core_lines;
 pub(crate) mod core_sky;
 mod cull;
+mod dx12_compiler;
 mod end_sky;
 pub mod entity_skin;
 mod flat;
@@ -1959,11 +1960,14 @@ fn mip_chain(
 /// `allow_nonconformant` offers the adapters wgpu hides for reporting no Vulkan
 /// conformance version: Mesa's hasvk, which drives Ivy Bridge and Haswell,
 /// reports 0.0.0.0 while it works. `open_device` asks for them only on a second
-/// try at a backend that had no adapter at all.
+/// try at a backend that had no adapter at all. On DirectX 12, `dx12_compiler`
+/// compiles the shaders (`gfx/dx12_compiler.rs`), unless `WGPU_DX12_COMPILER`
+/// names another.
 fn instance_descriptor(
     backends: wgpu::Backends,
     window: Option<&Arc<Window>>,
     allow_nonconformant: bool,
+    dx12_compiler: wgpu::Dx12Compiler,
 ) -> wgpu::InstanceDescriptor {
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
     if let Some(window) = window {
@@ -1983,6 +1987,7 @@ fn instance_descriptor(
             .flags
             .remove(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL);
     }
+    descriptor.backend_options.dx12.shader_compiler = dx12_compiler;
     let mut descriptor = descriptor.with_env();
     if allow_nonconformant {
         descriptor
@@ -2381,30 +2386,19 @@ async fn open_backend(
     allow_cpu: bool,
 ) -> std::result::Result<Opened, NoDevice> {
     let name = backends_name(backends);
-    let instance = wgpu::Instance::new(instance_descriptor(
-        backends,
-        Some(window),
-        allow_nonconformant,
-    ));
-    let surface = if offscreen {
-        None
-    } else {
-        match instance.create_surface(window.clone()) {
-            Ok(surface) => Some(surface),
-            Err(e) => return Err(NoDevice::Failed(format!("{name} surface: {e}"))),
-        }
+    let open = |dx12_compiler| {
+        wgpu::Instance::new(instance_descriptor(
+            backends,
+            Some(window),
+            allow_nonconformant,
+            dx12_compiler,
+        ))
     };
-    let adapter = match instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: surface.as_ref(),
-            force_fallback_adapter: false,
-            ..Default::default()
-        })
-        .await
-    {
-        Ok(adapter) => adapter,
-        Err(e) => return Err(NoDevice::NoAdapter(format!("{name}: {e}"))),
+    let instance = open(wgpu::Dx12Compiler::Fxc);
+    let (surface, adapter) = match surface_and_adapter(&instance, window, offscreen).await {
+        Ok(found) => found,
+        Err(NoDevice::Failed(e)) => return Err(NoDevice::Failed(format!("{name} surface: {e}"))),
+        Err(NoDevice::NoAdapter(e)) => return Err(NoDevice::NoAdapter(format!("{name}: {e}"))),
     };
     // NoAdapter, so `open_with_retry` asks again: with the non-conformant
     // adapters shown, wgpu ranks a real GPU (hasvk on Ivy Bridge or Haswell)
@@ -2414,6 +2408,27 @@ async fn open_backend(
             "{name}: only a software adapter ({})",
             adapter.get_info().name
         )));
+    }
+    // An integrated GPU on DirectX 12 compiles with DXC: the same request
+    // again, on an instance that loads the DLL beside the game. Anything that
+    // goes wrong keeps the FXC instance.
+    let forced = dx12_compiler::forced();
+    let dxc = if dx12_compiler::wants_dxc(&adapter.get_info(), forced) {
+        open_dxc(&adapter.get_info(), window, offscreen, open).await
+    } else {
+        None
+    };
+    let dxc_found = dxc.is_some();
+    let (instance, surface, adapter) = dxc.unwrap_or((instance, surface, adapter));
+    if adapter.get_info().backend == wgpu::Backend::Dx12 {
+        crate::crash::set_detail(
+            "DirectX 12 shader compiler",
+            match (forced, dxc_found) {
+                (true, _) => "WGPU_DX12_COMPILER",
+                (false, true) => "DXC",
+                (false, false) => "FXC",
+            },
+        );
     }
     describe_adapter(&adapter);
     let info = adapter.get_info();
@@ -2501,6 +2516,73 @@ async fn open_backend(
         }
         Err(e) => Err(NoDevice::Failed(format!("{name} device: {e}"))),
     }
+}
+/// A surface for `window` (none `offscreen`) and the adapter `open_backend`
+/// asks `instance` for. `Failed` is the surface's error, `NoAdapter` the
+/// request's.
+async fn surface_and_adapter(
+    instance: &wgpu::Instance,
+    window: &Arc<Window>,
+    offscreen: bool,
+) -> std::result::Result<(Option<wgpu::Surface<'static>>, wgpu::Adapter), NoDevice> {
+    let surface = if offscreen {
+        None
+    } else {
+        Some(
+            instance
+                .create_surface(window.clone())
+                .map_err(|e| NoDevice::Failed(e.to_string()))?,
+        )
+    };
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: surface.as_ref(),
+            force_fallback_adapter: false,
+            ..Default::default()
+        })
+        .await
+        .map_err(|e| NoDevice::NoAdapter(e.to_string()))?;
+    Ok((surface, adapter))
+}
+/// The DirectX 12 instance, surface and adapter with DXC for the integrated
+/// GPU `fxc` (`gfx/dx12_compiler.rs`), `open` making the instance; `None`, with
+/// one line in the log, when the DLL is missing, doesn't load, or the instance
+/// offers another GPU: the FXC instance stays.
+async fn open_dxc(
+    fxc: &wgpu::AdapterInfo,
+    window: &Arc<Window>,
+    offscreen: bool,
+    open: impl FnOnce(wgpu::Dx12Compiler) -> wgpu::Instance,
+) -> Option<(
+    wgpu::Instance,
+    Option<wgpu::Surface<'static>>,
+    wgpu::Adapter,
+)> {
+    let Some(dll) = dx12_compiler::bundled_dll() else {
+        log::info!(
+            "Horizon renderer: no {} beside the game; DirectX 12 compiles shaders with FXC",
+            dx12_compiler::DLL
+        );
+        return None;
+    };
+    let instance = open(dx12_compiler::dxc(&dll));
+    let why = match surface_and_adapter(&instance, window, offscreen).await {
+        Ok((surface, adapter)) if dx12_compiler::same_adapter(fxc, &adapter.get_info()) => {
+            log::info!(
+                "Horizon renderer: DirectX 12 compiles shaders with DXC ({}) on this integrated GPU",
+                dll.display()
+            );
+            return Some((instance, surface, adapter));
+        }
+        Ok((_, adapter)) => format!("it offered another GPU, {}", adapter.get_info().name),
+        Err(NoDevice::Failed(e) | NoDevice::NoAdapter(e)) => e,
+    };
+    log::warn!(
+        "Horizon renderer: DXC from {} didn't load ({why}); DirectX 12 compiles shaders with FXC",
+        dll.display()
+    );
+    None
 }
 /// What to tell a player whose system offers no usable graphics adapter.
 /// Vulkan is loaded at run time (the game links no graphics library), so a
@@ -13856,7 +13938,7 @@ mod tests {
     #[test]
     fn the_second_try_at_a_backend_shows_nonconformant_adapters() {
         let shown = |allow| {
-            super::instance_descriptor(wgpu::Backends::VULKAN, None, allow)
+            super::instance_descriptor(wgpu::Backends::VULKAN, None, allow, wgpu::Dx12Compiler::Fxc)
                 .flags
                 .contains(wgpu::InstanceFlags::ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER)
         };
@@ -14693,7 +14775,7 @@ mod tests {
     #[test]
     fn indirect_draws_are_validated_only_in_debug_builds_and_on_directx_12() {
         let validated = |backends| {
-            super::instance_descriptor(backends, None, false)
+            super::instance_descriptor(backends, None, false, wgpu::Dx12Compiler::Fxc)
                 .flags
                 .contains(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL)
         };

@@ -6480,6 +6480,7 @@ def groups():
         from .gateway_passenger_corpus import gateway_passengers
         from .gateway_item_motion_corpus import gateway_item_motion
         from .item_merge_corpus import stack_limit_merges
+        from .conduit_table_entity_corpus import conduit_table_entities
     except ImportError:
         from frame_map_corpus import frame_maps, treasure_map_copies
         from allay_damage_corpus import allay_player_damage
@@ -6492,6 +6493,7 @@ def groups():
         from gateway_passenger_corpus import gateway_passengers
         from gateway_item_motion_corpus import gateway_item_motion
         from item_merge_corpus import stack_limit_merges
+        from conduit_table_entity_corpus import conduit_table_entities
     result = [
         ('setup', group_setup()),
         ('guest container close event', guest_close_events()),
@@ -6539,6 +6541,7 @@ def groups():
 
 
         ('decorated pot data', decorated_pot_data()),
+        ('conduit and enchanting table block entities', conduit_table_entities(cmd, setup)),
         ('modern data literal values', storage_literals(cmd)),
         ('comparator output data', comparator_output_data()),
         ('hopper empty slot limits', hopper_empty_slot_limits()),

@@ -55,13 +55,19 @@ pub fn face(skin_png: &[u8]) -> Option<Vec<[u8; 4]>> {
     Some(out)
 }
 
-/// The face of a player with a default skin, from the prepared game files in `resources`.
-pub fn default_face(resources: &Path, uuid: &str) -> Option<Vec<[u8; 4]>> {
+/// The default skin a player with `uuid` wears, as a file of the prepared game files in
+/// `resources`, and whether its arms are slim.
+pub fn default_skin_file(resources: &Path, uuid: &str) -> Option<(std::path::PathBuf, bool)> {
     let skin = default_skin(parse_uuid(uuid)?);
     let path = resources
         .join("assets/minecraft/textures/entity/player")
         .join(format!("{skin}.png"));
-    face(&std::fs::read(path).ok()?)
+    Some((path, skin.starts_with("slim/")))
+}
+
+/// The face of a player with a default skin, from the prepared game files in `resources`.
+pub fn default_face(resources: &Path, uuid: &str) -> Option<Vec<[u8; 4]>> {
+    face(&std::fs::read(default_skin_file(resources, uuid)?.0).ok()?)
 }
 
 fn profile_pixels(png: &[u8]) -> Option<Vec<[u8; 4]>> {
