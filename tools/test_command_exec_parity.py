@@ -109,6 +109,8 @@ def main():
                         help='retain the immediate-load powered sulfur cube H249 diagnostic')
     parser.add_argument('--merchant-gate-fixture', action='store_true')
     parser.add_argument('--binary', type=Path, help='use an already built Horizon game instead of building it')
+    parser.add_argument('--trader-llama-discard-fixture', action='store_true',
+                        help='an AI trader llama is gone after the tick its delay runs out (H182)')
     parser.add_argument('--hurt-cooldown-incoming-fixture', action='store_true',
                         help='a mob hurt cooldown compares the incoming damage before its reductions (H248)')
     parser.add_argument('--level-world-border-fixture', action='store_true',
@@ -322,6 +324,12 @@ def main():
         except ImportError:
             from level_world_border_corpus import level_world_border
         groups = [('setup', corpus_module.group_setup()), ('level world border', level_world_border())]
+    if args.trader_llama_discard_fixture:
+        try:
+            from .trader_llama_discard_corpus import trader_llama_discard
+        except ImportError:
+            from trader_llama_discard_corpus import trader_llama_discard
+        groups = [('setup', corpus_module.group_setup()), ('trader llama discard', trader_llama_discard())]
     if args.map_decoration_namespace_fixture:
         try:
             from .map_decoration_namespace_corpus import map_decoration_namespaces

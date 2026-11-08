@@ -805,7 +805,9 @@ pub fn tick(
     if m.no_ai && m.species() == Species::Dolphin {
         m.air = m.max_air_supply();
     }
-    true
+    // TraderLlama.maybeDespawn discards the llama in its aiStep: it leaves the
+    // level's entity list in this tick, after the rest of its tick ran.
+    !(m.removed && m.species() == Species::TraderLlama)
 }
 /// `LivingEntity.aiStep` -> `Entity.applyEffectsFromBlocks` for the blocks
 /// that hurt, hold or slide a mob: the cactus (`CactusBlock.entityInside`, 1),
