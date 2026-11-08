@@ -281,6 +281,10 @@ fn configure_stream(stream: &TcpStream) -> Result<()> {
         keepalive = keepalive.with_retries(3);
     }
     let _ = sock.set_tcp_keepalive(&keepalive);
+    #[cfg(target_os = "linux")]
+    {
+        let _ = sock.set_quickack(true);
+    }
     Ok(())
 }
 
@@ -603,6 +607,9 @@ impl ConnReader {
     /// [`Self::fill`] from `source`: the bytes read, decrypted into the buffer.
     fn fill_from(&mut self, source: &mut impl Read, frame: usize) -> std::io::Result<usize> {
         const READ: usize = 1 << 16;
+        if self.start == self.end {
+            (self.start, self.end) = (0, 0);
+        }
         let pending = self.end - self.start;
         let room = READ.max(frame.saturating_sub(pending));
         if self.buffer.len() - self.end < room {

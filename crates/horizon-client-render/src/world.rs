@@ -21,6 +21,10 @@ impl DirtySections {
         debug_assert!((0..SectionMask::CAPACITY as i32).contains(&sy));
         self.columns.entry((x, z)).or_default().insert(sy as usize);
     }
+    /// Mark all sections in `mask` dirty for column `(x, z)`.
+    pub fn insert_column_mask(&mut self, (x, z): (i32, i32), mask: SectionMask) {
+        *self.columns.entry((x, z)).or_default() |= mask;
+    }
     pub fn contains(&self, &(x, sy, z): &(i32, i32, i32)) -> bool {
         (0..SectionMask::CAPACITY as i32).contains(&sy)
             && self
