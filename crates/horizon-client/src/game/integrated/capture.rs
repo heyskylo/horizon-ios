@@ -51,7 +51,7 @@ impl Live {
         }
     }
 
-    fn set(&self, phase: Phase) {
+    pub(in crate::game) fn set(&self, phase: Phase) {
         self.0.store(phase as u8, Ordering::Relaxed);
     }
 

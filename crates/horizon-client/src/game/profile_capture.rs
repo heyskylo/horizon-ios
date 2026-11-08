@@ -68,6 +68,13 @@ enum ServerLink {
     Pending,
 }
 
+/// Which capture a `profile stop` ends.
+#[derive(Debug, PartialEq, Eq)]
+enum StopRoute {
+    Window,
+    ServerOnly,
+}
+
 /// A capture of the server thread alone, which writes its own file.
 struct ServerOnly {
     live: Arc<Live>,
@@ -134,6 +141,68 @@ impl Profile {
         self.joined.as_ref().is_some_and(|l| l.wrote())
     }
 
+    /// Where a `profile stop` for `side` (or for any side) goes.
+    fn stop_route(
+        &self,
+        side: Option<ProfileSide>,
+    ) -> std::result::Result<StopRoute, &'static str> {
+        match side {
+            Some(ProfileSide::Client) if !self.perf.capturing() => {
+                Err("no client capture is running")
+            }
+            Some(ProfileSide::Server) if !self.sides().contains(&ProfileSide::Server) => {
+                Err("no server capture is running")
+            }
+            _ if self.perf.capturing() => Ok(StopRoute::Window),
+            _ if self.server_only_live() => Ok(StopRoute::ServerOnly),
+            _ => Err(NO_CAPTURE),
+        }
+    }
+
+    /// The reply to `profile status`; a finished server-only capture is not reported.
+    fn status(&self) -> Status {
+        let client = self.perf.status(self.perf.now());
+        let alone = self
+            .server_only
+            .as_ref()
+            .filter(|s| client.is_none() && s.live.active());
+        Status {
+            ok: true,
+            capturing: client.is_some() || alone.is_some(),
+            sides: self.sides(),
+            path: client
+                .as_ref()
+                .map(|s| shown(&s.path))
+                .or_else(|| alone.map(|s| shown(&s.path))),
+            elapsed_s: client
+                .as_ref()
+                .map(|s| s.elapsed_s)
+                .or_else(|| alone.map(|s| s.since.elapsed().as_secs_f64())),
+            bytes: client
+                .as_ref()
+                .map(|s| s.bytes)
+                .or_else(|| alone.and_then(|s| Some(std::fs::metadata(&s.path).ok()?.len()))),
+        }
+    }
+
+    /// Marks the window's capture if `side` wants it; also the `t` of a server mark that is due, for the caller to post.
+    fn mark(&mut self, side: Option<ProfileSide>, name: &str) -> (Option<f64>, Option<f64>) {
+        let want = |s| side.is_none_or(|only| only == s);
+        let t = self.perf.now();
+        let client = (want(ProfileSide::Client) && self.perf.mark(t, name)).then_some(t);
+        let server = if !want(ProfileSide::Server) {
+            None
+        } else if self.server_live() {
+            Some(t)
+        } else {
+            self.server_only
+                .as_ref()
+                .filter(|s| s.live.active())
+                .map(|s| s.since.elapsed().as_secs_f64())
+        };
+        (client, server)
+    }
+
     /// The sides a capture is writing, server first.
     fn sides(&self) -> Vec<ProfileSide> {
         let server = self.server_live() || self.server_only_live();
@@ -196,75 +265,34 @@ impl Game<'_> {
                 json_of(&started)
             }
             Request::Stop { bench } => {
-                match parsed.side {
-                    Some(ProfileSide::Client) if !self.profile.perf.capturing() => {
-                        return Err("no client capture is running".into());
+                match self.profile.stop_route(parsed.side)? {
+                    StopRoute::Window => {
+                        let bench = bench.map(|path| read_bench(&path)).transpose()?;
+                        self.stop_profile_with(StopReason::Normal, bench.into_iter().collect())?;
+                        self.profile.reply = Some(reply.clone());
                     }
-                    Some(ProfileSide::Server)
-                        if !self.profile.sides().contains(&ProfileSide::Server) =>
-                    {
-                        return Err("no server capture is running".into());
-                    }
-                    _ => {}
-                }
-                if self.profile.perf.capturing() {
-                    let bench = bench.map(|path| read_bench(&path)).transpose()?;
-                    self.stop_profile_with(StopReason::Normal, bench.into_iter().collect())?;
-                    self.profile.reply = Some(reply.clone());
-                } else {
-                    let integrated = self.integrated.as_ref().ok_or(NO_CAPTURE)?;
-                    let reply = reply.clone();
-                    if !integrated
-                        .post(move |g| g.stop_server_capture(StopReason::Normal, Some(reply)))
-                    {
-                        return Err(NO_ANSWER.into());
+                    StopRoute::ServerOnly => {
+                        let integrated = self.integrated.as_ref().ok_or(NO_CAPTURE)?;
+                        let reply = reply.clone();
+                        if !integrated
+                            .post(move |g| g.stop_server_capture(StopReason::Normal, Some(reply)))
+                        {
+                            return Err(NO_ANSWER.into());
+                        }
                     }
                 }
                 Ok(None)
             }
-            Request::Status => {
-                let t = self.profile.perf.now();
-                let client = self.profile.perf.status(t);
-                let alone = self
-                    .profile
-                    .server_only
-                    .as_ref()
-                    .filter(|_| client.is_none());
-                json_of(&Status {
-                    ok: true,
-                    capturing: client.is_some() || self.profile.server_only_live(),
-                    sides: self.profile.sides(),
-                    path: client
-                        .as_ref()
-                        .map(|s| shown(&s.path))
-                        .or_else(|| alone.map(|s| shown(&s.path))),
-                    elapsed_s: client
-                        .as_ref()
-                        .map(|s| s.elapsed_s)
-                        .or_else(|| alone.map(|s| s.since.elapsed().as_secs_f64())),
-                    bytes: client.as_ref().map(|s| s.bytes).or_else(|| {
-                        alone.and_then(|s| Some(std::fs::metadata(&s.path).ok()?.len()))
-                    }),
-                })
-            }
+            Request::Status => json_of(&self.profile.status()),
             Request::Mark(name) => {
-                let want = |side| parsed.side.is_none_or(|only| only == side);
-                let t = self.profile.perf.now();
-                let mut marked = None;
-                if want(ProfileSide::Client) && self.profile.perf.mark(t, &name) {
-                    marked = Some(t);
-                }
-                if want(ProfileSide::Server)
-                    && (self.profile.server_live() || self.profile.server_only_live())
-                    && let Some(integrated) = &self.integrated
-                {
-                    let label = name.clone();
-                    if integrated.post(move |g| g.mark_server_capture(&label)) {
-                        let alone = self.profile.server_only.as_ref();
-                        marked = marked.or(alone.map(|s| s.since.elapsed().as_secs_f64()));
-                    }
-                }
-                let t = marked.ok_or(NO_CAPTURE)?;
+                let (client, server) = self.profile.mark(parsed.side, &name);
+                let posted = server.filter(|_| {
+                    self.integrated.as_ref().is_some_and(|integrated| {
+                        let label = name.clone();
+                        integrated.post(move |g| g.mark_server_capture(&label))
+                    })
+                });
+                let t = client.or(posted).ok_or(NO_CAPTURE)?;
                 json_of(&Marked { ok: true, name, t })
             }
         }
@@ -332,6 +360,7 @@ impl Game<'_> {
         } else {
             trigger
         };
+        self.profile.server_only = None;
         let start = client_perf::start_message(
             self.integrated.is_some(),
             horizon_client::telemetry::gpu_name().as_deref(),
@@ -652,5 +681,194 @@ mod tests {
             );
         }
         assert_eq!(parse_trace(&["a", "2", "3"]), Err(TRACE_USAGE));
+    }
+    use crate::game::integrated::capture::Phase;
+    use std::time::Duration;
+
+    fn live(phase: Phase) -> Arc<Live> {
+        let live = Live::new();
+        live.set(phase);
+        live
+    }
+
+    fn server_only(phase: Phase, running_for: Duration, path: PathBuf) -> ServerOnly {
+        ServerOnly {
+            live: live(phase),
+            path,
+            since: Instant::now() - running_for,
+        }
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("hz-profile-route-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A window capture that the server thread joined, in `phase`.
+    fn joined(dir: &Path, phase: Phase) -> Profile {
+        let mut profile = Profile::new(50.0);
+        let options = StartOptions {
+            samples: false,
+            ..StartOptions::default()
+        };
+        let t = profile.perf.now();
+        profile
+            .perf
+            .start(
+                t,
+                dir,
+                Trigger::Ctl,
+                &options,
+                Default::default(),
+                Vec::new(),
+            )
+            .unwrap();
+        profile.joined = Some(live(phase));
+        profile
+    }
+
+    #[test]
+    fn a_server_mark_in_a_joined_capture_is_stamped_on_the_window_clock() {
+        let dir = scratch("joined-mark");
+        let mut profile = joined(&dir, Phase::Running);
+        // A finished server-only capture, 1000 s old, must not lend its clock.
+        profile.server_only = Some(server_only(
+            Phase::Ended,
+            Duration::from_secs(1000),
+            dir.join("old.hzperf"),
+        ));
+        let (client, server) = profile.mark(Some(ProfileSide::Server), "boss");
+        assert_eq!(client, None);
+        let t = server.expect("a joined capture takes a server mark");
+        assert!((0.0..=profile.perf.now()).contains(&t), "{t}");
+
+        let (client, server) = profile.mark(None, "both");
+        assert_eq!(client, server);
+        assert!(client.is_some());
+
+        let (client, server) = profile.mark(Some(ProfileSide::Client), "mine");
+        assert!(client.is_some());
+        assert_eq!(server, None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_mark_is_refused_when_no_running_capture_has_the_side() {
+        let dir = scratch("no-mark");
+        let mut profile = joined(&dir, Phase::Failed);
+        assert_eq!(
+            profile.mark(Some(ProfileSide::Server), "x"),
+            (None, None),
+            "the server never joined"
+        );
+        profile.server_only = Some(server_only(
+            Phase::Ended,
+            Duration::from_secs(5),
+            dir.join("a"),
+        ));
+        assert_eq!(profile.mark(Some(ProfileSide::Server), "x"), (None, None));
+        assert_eq!(Profile::new(50.0).mark(None, "x"), (None, None));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_server_only_mark_counts_from_its_own_start() {
+        let mut profile = Profile::new(50.0);
+        profile.server_only = Some(server_only(
+            Phase::Running,
+            Duration::from_secs(30),
+            PathBuf::from("a"),
+        ));
+        let (client, server) = profile.mark(None, "x");
+        assert_eq!(client, None);
+        assert!((30.0..40.0).contains(&server.unwrap()), "{server:?}");
+    }
+
+    #[test]
+    fn status_reports_only_captures_that_are_running() {
+        let dir = scratch("status");
+        let file = dir.join("capture.hzperf");
+        std::fs::write(&file, [0u8; 7]).unwrap();
+        let mut profile = Profile::new(50.0);
+        profile.server_only = Some(server_only(
+            Phase::Running,
+            Duration::from_secs(4),
+            file.clone(),
+        ));
+        let running = profile.status();
+        assert!(running.capturing);
+        assert_eq!(running.sides, [ProfileSide::Server]);
+        assert_eq!(running.path, Some(shown(&file)));
+        assert_eq!(running.bytes, Some(7));
+        assert!(running.elapsed_s.unwrap() >= 4.0);
+
+        // After `profile server stop`, or when a timed capture ends, the old file is not reported.
+        profile.server_only.as_ref().unwrap().live.set(Phase::Ended);
+        let done = profile.status();
+        assert!(!done.capturing);
+        assert!(done.sides.is_empty());
+        assert_eq!((done.path, done.elapsed_s, done.bytes), (None, None, None));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_joined_capture_lists_the_server_first_until_the_server_ends() {
+        let dir = scratch("sides");
+        let profile = joined(&dir, Phase::Running);
+        let status = profile.status();
+        assert!(status.capturing);
+        assert_eq!(status.sides, [ProfileSide::Server, ProfileSide::Client]);
+        assert!(status.path.is_some());
+        profile.joined.as_ref().unwrap().set(Phase::Ended);
+        assert_eq!(profile.status().sides, [ProfileSide::Client]);
+        assert!(
+            profile.served(),
+            "an ended server side still holds its part of the file"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stop_goes_to_the_capture_that_is_running() {
+        let dir = scratch("stop");
+        let none = Profile::new(50.0);
+        for side in [None, Some(ProfileSide::Client), Some(ProfileSide::Server)] {
+            assert!(none.stop_route(side).is_err(), "{side:?}");
+        }
+
+        let both = joined(&dir, Phase::Running);
+        for side in [None, Some(ProfileSide::Client), Some(ProfileSide::Server)] {
+            assert_eq!(both.stop_route(side), Ok(StopRoute::Window), "{side:?}");
+        }
+
+        let alone = joined(&dir, Phase::Failed);
+        assert_eq!(alone.stop_route(None), Ok(StopRoute::Window));
+        assert_eq!(
+            alone.stop_route(Some(ProfileSide::Client)),
+            Ok(StopRoute::Window)
+        );
+        assert!(alone.stop_route(Some(ProfileSide::Server)).is_err());
+
+        let mut server = Profile::new(50.0);
+        server.server_only = Some(server_only(
+            Phase::Running,
+            Duration::ZERO,
+            PathBuf::from("a"),
+        ));
+        assert_eq!(server.stop_route(None), Ok(StopRoute::ServerOnly));
+        assert_eq!(
+            server.stop_route(Some(ProfileSide::Server)),
+            Ok(StopRoute::ServerOnly)
+        );
+        assert!(server.stop_route(Some(ProfileSide::Client)).is_err());
+
+        server.server_only.as_ref().unwrap().live.set(Phase::Ended);
+        for side in [None, Some(ProfileSide::Server)] {
+            assert!(server.stop_route(side).is_err(), "{side:?}");
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -63,6 +63,8 @@ def check_ctl(bins, resources):
         assert running['capturing'] is True and running['sides'] == ['server', 'client'], running
         time.sleep(RUN_S)
         ctl('profile', 'mark', 'checkpoint', 'one')
+        server_mark = ctl('profile', 'server', 'mark', 'server', 'only')
+        assert 0 <= server_mark['t'] <= RUN_S + 1.5, server_mark
         time.sleep(RUN_S)
         running = ctl('profile', 'status')
         assert running['elapsed_s'] >= 2 * RUN_S and running['bytes'] > 0, running
@@ -82,7 +84,8 @@ def check_ctl(bins, resources):
         marks = [m for m in perf('query', 'marks', file, '--side', 'client')['rows']]
         assert [m['name'] for m in marks] == ['checkpoint one'], marks
         assert RUN_S <= marks[0]['t'] <= RUN_S + 1.5, marks
-        assert [m['name'] for m in perf('query', 'marks', file, '--side', 'server')['rows']] == ['checkpoint one']
+        server_marks = [m['name'] for m in perf('query', 'marks', file, '--side', 'server')['rows']]
+        assert server_marks == ['checkpoint one', 'server only'], server_marks
         series = perf('query', 'series', 'h:fps', file, '--side', 'client', '--every', '1', '--from', '0')['rows'][0]['values']
         counted = sum(v for v in series if v is not None)
         drawn = after - before
@@ -107,6 +110,24 @@ def check_ctl(bins, resources):
             rows = perf('query', 'meta', file)['rows']
             assert [row['side'] for row in rows] == [side], rows
             print(f'PASS: profile {side} alone wrote {file.name}')
+            ended = ctl('profile', 'status')
+            assert ended['capturing'] is False and ended['path'] is None and ended['elapsed_s'] is None, ended
+            try:
+                ctl('profile', side, 'mark', 'late')
+                raise AssertionError(f'profile {side} mark worked with no capture')
+            except ac.Failed:
+                pass
+
+        for side in ('client', 'server'):
+            ctl('profile', 'start', '--hz', '250')
+            time.sleep(1)
+            stopped = ctl('profile', side, 'stop')
+            assert stopped['sides'] == ['server', 'client'] and (work / stopped['path']).exists(), (side, stopped)
+            deadline = time.time() + 120
+            while not whole(bins, work / stopped['path'], work, env):
+                assert time.time() < deadline, f'profile {side} stop saved no whole capture'
+                time.sleep(0.5)
+            print(f'PASS: profile {side} stop ended the joined capture')
 
         kept = set((work / 'reports').glob(PATTERN))
         f3_o(ctl)
