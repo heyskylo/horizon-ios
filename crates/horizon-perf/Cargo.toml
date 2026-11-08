@@ -16,9 +16,22 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip", "raw_value"] }
 horizon-bench = { path = "../horizon-bench" }
 
+[lib]
+# `cdylib` is what `cargo xtask perf-wasm` builds for the browser; the rlib is everything else.
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# The C ABI of `wasm` and its JS wrapper (docs/perf-platform.md §7.1). Inert natively.
+wasm = []
+
 [[bin]]
 name = "horizon-perf"
 path = "src/main.rs"
+
+[[test]]
+name = "wasm"
+path = "tests/wasm.rs"
+required-features = ["wasm"]
 
 [lints]
 workspace = true

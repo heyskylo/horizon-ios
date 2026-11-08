@@ -242,7 +242,45 @@ pub struct StartInfo {
     pub machine: Option<MachineInfo>,
     pub options: Option<OptionsInfo>,
     pub settings: Option<SettingsInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game_rules: Option<GameRulesInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub horizon_options: Option<HorizonOptionsInfo>,
     pub mods: Vec<ModInfo>,
+}
+
+/// The game rules the capture recorded; an absent rule is one the game did not fill.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GameRulesInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub random_tick_speed: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_entity_cramming: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fire_spread_radius_around_player: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advance_time: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mob_griefing: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawn_mobs: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawn_monsters: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawner_blocks_work: Option<bool>,
+}
+
+/// The Horizon switches that change what a tick costs; an absent switch was off or not recorded.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HorizonOptionsInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_view_distance: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lod_distance: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anticheat: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -36,7 +36,9 @@ pub use rows::Row;
 /// A loaded capture and the name it is listed under.
 pub struct Loaded {
     pub file: String,
-    pub capture: Capture,
+    /// Shared, so a caller that keeps a decoded capture (the wasm boundary) hands it out again
+    /// without copying it per query.
+    pub capture: std::sync::Arc<Capture>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

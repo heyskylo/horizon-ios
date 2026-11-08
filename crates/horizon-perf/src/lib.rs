@@ -21,6 +21,8 @@ pub mod samples;
 pub mod stats;
 pub mod summary;
 pub mod view;
+#[cfg(feature = "wasm")]
+pub mod wasm;
 pub mod watch;
 pub mod wire;
 
