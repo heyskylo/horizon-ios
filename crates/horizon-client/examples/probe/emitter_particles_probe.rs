@@ -73,7 +73,7 @@ fn tracking_case(
                 engine.tracking_emitter(options, target, body);
             }
         } else {
-            engine.tick(level, |id| {
+            engine.tick_tracking(level, |id| {
                 (id == target && !frame.is_null()).then(|| tracking_body(frame))
             });
         }
