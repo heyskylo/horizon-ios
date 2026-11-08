@@ -2,7 +2,7 @@
 //! from a block face, boosting a gliding player, the 1.15 horizontal
 //! acceleration and 0.04 lift, the flight-duration lifetime, explosion
 //! damage with line of sight, and the client explosion (`createFireworks`).
-use super::{Game, Hit, item_draw::owner_at, view_vector};
+use super::{Game, Hit, dragon::FightWho, item_draw::owner_at, view_vector};
 use horizon_assets::item_model::DisplayContext;
 use horizon_client::{
     block_entity_render::vertex_light,
@@ -208,7 +208,7 @@ impl Rocket {
 /// `damageAmount * (float)Math.sqrt((5.0 - this.distanceTo(target)) / 5.0)`
 /// from the rocket at `from` to a target at `to`; `Entity.distanceTo` sums
 /// the squared offsets in floats.
-fn blast_damage(damage: f32, from: Vec3, to: Vec3) -> f32 {
+pub(super) fn blast_damage(damage: f32, from: Vec3, to: Vec3) -> f32 {
     let (x, y, z) = (
         (from.x - to.x) as f32,
         (from.y - to.y) as f32,
@@ -548,6 +548,13 @@ impl Game<'_> {
             } else {
                 self.rocket_hurt_mobs(&hits, owner, at);
             }
+            // The dragon is a living entity of its own, not one of `mobs`.
+            let reach = r.bounds().inflate(Vec3::new(5.0, 5.0, 5.0));
+            let by = (owner == Some(Who::Player)).then(|| {
+                r.guest
+                    .map_or_else(|| self.acting_player(), FightWho::Guest)
+            });
+            self.rocket_blast_dragon(from, damage, reach, by);
         }
         let camera = self.eye_position().unwrap_or(at);
         let v = [r.velocity.x, r.velocity.y, r.velocity.z];
