@@ -328,6 +328,7 @@ mod native_server;
 mod native_shaders;
 mod native_slot_roles;
 mod native_structures;
+pub(crate) mod native_tasks;
 mod native_terrain_model;
 pub mod native_text_field;
 mod native_ticks;
@@ -2662,6 +2663,7 @@ struct Game<'a> {
     /// The camera the last frame drew from (position, yaw, pitch, fov), for the locator bar.
     locator_camera: Option<([f64; 3], f32, f32, f32)>,
     native_camera_frame: Option<horizon_client::mod_api::NativeCamera>,
+    native_tasks: native_tasks::NativeTasks,
     /// The yaw and pitch a native mod's camera drew the last frame from (`native_camera_pose`),
     /// none when it drew from vanilla's.
     posed_rotation: Option<(f32, f32)>,
@@ -13047,6 +13049,7 @@ impl<'a> Game<'a> {
             waypoints: Default::default(),
             locator_camera: None,
             native_camera_frame: None,
+            native_tasks: native_tasks::NativeTasks::new(),
             posed_rotation: None,
             post_effects: Vec::new(),
             polytone_post_ticks: 0.0,
@@ -14038,7 +14041,11 @@ mod allay_pickup_cooldown_tests;
 #[cfg(test)]
 mod dragon_fireball_motion_tests;
 #[cfg(test)]
+mod entity_die_tests;
+#[cfg(test)]
 mod fake_player_tick_tests;
+#[cfg(test)]
+mod falling_air_tick_tests;
 #[cfg(test)]
 mod fence_leash_force_tests;
 #[cfg(test)]
@@ -14070,6 +14077,8 @@ mod orb_data_tests;
 #[cfg(test)]
 mod orb_score_store_tests;
 #[cfg(test)]
+mod player_save_projection_tests;
+#[cfg(test)]
 mod recipe_book_variants_tests;
 #[cfg(test)]
 mod spawn_yaw_tests;
@@ -14089,12 +14098,3 @@ mod test_pos_guest_tests;
 mod vibration_source_tests;
 #[cfg(test)]
 mod vibration_tests;
-
-#[cfg(test)]
-mod falling_air_tick_tests;
-
-#[cfg(test)]
-mod player_save_projection_tests;
-
-#[cfg(test)]
-mod entity_die_tests;
