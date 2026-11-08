@@ -23,11 +23,16 @@ public final class VanillaLavaCauldronItemOracle {
         int next;
         DamageSources damage;
         net.minecraft.world.level.gamerules.GameRules rules;
+        net.minecraft.world.level.block.state.BlockState primary, secondary;
         Lvl() { super(null, null, null, null, null, null, false, 0L, List.of(), false); }
         @Override public int getNextEntityId() { return next++; }
         @Override public RegistryAccess registryAccess() { return ParityData.access; }
         @Override public DamageSources damageSources() { return damage; }
         @Override public net.minecraft.world.level.gamerules.GameRules getGameRules() { return rules; }
+        @Override public net.minecraft.world.level.block.state.BlockState getBlockState(BlockPos p) {
+            return p.equals(BlockPos.ZERO) ? primary : p.equals(new BlockPos(1, 0, 0)) ? secondary : Blocks.AIR.defaultBlockState();
+        }
+        @Override public net.minecraft.world.level.material.FluidState getFluidState(BlockPos p) { return getBlockState(p).getFluidState(); }
         @Override public void gameEvent(net.minecraft.core.Holder<net.minecraft.world.level.gameevent.GameEvent> e, Vec3 p, net.minecraft.world.level.gameevent.GameEvent.Context c) {}
         @Override public void playSound(Entity e, double x, double y, double z, net.minecraft.sounds.SoundEvent s, net.minecraft.sounds.SoundSource c, float v, float pitch) {}
     }
@@ -50,22 +55,30 @@ public final class VanillaLavaCauldronItemOracle {
         for (String line : Files.readAllLines(Path.of(args[0]))) {
             String[] f = line.split("\t");
             var item = new ItemEntity(level, Double.parseDouble(f[2]), Double.parseDouble(f[3]), Double.parseDouble(f[4]), ParityData.stack(f[1]));
-            var state = (f[5].equals("lava") ? Blocks.LAVA_CAULDRON : Blocks.CAULDRON).defaultBlockState();
-            var shape = state.getEntityInsideCollisionShape(level, BlockPos.ZERO, item);
-            boolean inside = shape.toAabbs().stream().anyMatch(b -> b.intersects(item.getBoundingBox().deflate(1.0e-5)));
+            level.primary = (f[5].equals("empty") ? Blocks.CAULDRON : Blocks.LAVA_CAULDRON).defaultBlockState();
+            level.secondary = (f[5].equals("pair") ? Blocks.LAVA_CAULDRON : f[5].equals("mixed") ? Blocks.LAVA : Blocks.AIR).defaultBlockState();
             List<String> steps = new ArrayList<>();
             for (int tick = 0; tick < 2; tick++) {
                 // The preceding baseTick fire phase, without ticking a level.
-                // The fixture contains cauldrons, not ordinary lava fluid.
                 int fire = item.getRemainingFireTicks();
-                if (fire > 0) {
-                    if (fire % 20 == 0) item.hurtServer(level, level.damage.onFire(), 1.0f);
+                if (!item.isRemoved() && fire > 0) {
+                    if (fire % 20 == 0 && !f[5].equals("mixed")) item.hurtServer(level, level.damage.onFire(), 1.0f);
                     item.setRemainingFireTicks(fire - 1);
                 }
-                if (inside && !item.isRemoved()) {
+                if (!item.isRemoved()) {
                     var effects = new InsideBlockEffectApplier.StepBasedCollector();
                     effects.advanceStep(0);
-                    state.entityInside(level, BlockPos.ZERO, item, effects, true);
+                    for (int x = 0; x < 2; x++) {
+                        var pos = new BlockPos(x, 0, 0);
+                        var state = level.getBlockState(pos);
+                        if (state.isAir() || !item.getBoundingBox().deflate((double) 1.0e-5F).intersects(new net.minecraft.world.phys.AABB(pos))) continue;
+                        var shape = state.getEntityInsideCollisionShape(level, pos, item);
+                        if (item.collidedWithShapeMovingFrom(item.position(), item.position(), shape.toAabbs().stream().map(b -> b.move(pos)).toList())) {
+                            state.entityInside(level, pos, item, effects, true);
+                        }
+                        var fluid = state.getFluidState();
+                        if (!fluid.isEmpty() && item.collidedWithFluid(fluid, pos, item.position(), item.position())) fluid.entityInside(level, pos, item, effects);
+                    }
                     effects.applyAndClear(item);
                 }
                 steps.add(health.getInt(item) + "," + item.getRemainingFireTicks() + "," + item.isRemoved());

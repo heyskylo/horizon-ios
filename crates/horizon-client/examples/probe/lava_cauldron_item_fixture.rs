@@ -22,11 +22,25 @@ pub fn main() -> horizon_client::Result<()> {
             return Err("expected six tab-separated columns".into());
         }
         let position = Vec3::new(f[2].parse()?, f[3].parse()?, f[4].parse()?);
-        let block = if f[5] == "lava" {
-            "minecraft:lava_cauldron"
-        } else {
+        let block = if f[5] == "empty" {
             "minecraft:cauldron"
+        } else {
+            "minecraft:lava_cauldron"
         };
+        let secondary = match f[5] {
+            "pair" => "minecraft:lava_cauldron",
+            "mixed" => "minecraft:lava",
+            _ => "minecraft:air",
+        };
+        world.set(
+            1,
+            0,
+            0,
+            assets
+                .registry
+                .default_state(secondary)
+                .ok_or("missing secondary block")?,
+        )?;
         world.set(
             0,
             0,

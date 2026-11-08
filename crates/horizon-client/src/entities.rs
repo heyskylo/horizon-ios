@@ -480,12 +480,22 @@ impl ItemEntity {
         let mut lava_hurt = false;
         // LavaCauldronBlock.entityInside applies LAVA_IGNITE and then lavaHurt.
         // A cauldron is not a lava fluid, and removed items get no block effects.
-        let cauldron = self.health > 0 && lava_cauldron_contact(world, registry, self.bounds());
-        if (fluid == Fluid::Lava || cauldron) && !fire_immune {
-            self.fire_ticks = self.fire_ticks.max(300);
-            if !items.resists_fire(&self.stack, "minecraft:lava") {
-                spilled.extend(self.hurt(4).unwrap_or_default());
-                lava_hurt = true;
+        if self.health > 0 && !fire_immune {
+            let contacts = usize::from(fluid == Fluid::Lava)
+                + lava_cauldron_contacts(world, registry, self.bounds());
+            if contacts > 0 {
+                self.fire_ticks = self.fire_ticks.max(300);
+            }
+            // StepBasedCollector coalesces ignition, but keeps each block's
+            // runAfter(lavaHurt) callback. Stop once an item is destroyed.
+            for _ in 0..contacts {
+                if self.health <= 0 {
+                    break;
+                }
+                if !items.resists_fire(&self.stack, "minecraft:lava") {
+                    spilled.extend(self.hurt(4).unwrap_or_default());
+                    lava_hurt = true;
+                }
             }
         }
         let fire_damage = crate::motion::environment::fire_contact(world, registry, self.bounds());
@@ -1015,17 +1025,23 @@ impl ItemEntity {
 /// `LavaCauldronBlock.getEntityInsideCollisionShape`: the cauldron's solid
 /// shape plus its contents (12 pixels wide, from 4 through 15 pixels high).
 /// In particular, the rim and feet count too, but air above the contents does not.
-fn lava_cauldron_contact(
+fn lava_cauldron_contacts(
     world: &World,
     registry: &horizon_world::registry::BlockRegistry,
     bounds: Aabb,
-) -> bool {
+) -> usize {
     use horizon_core::geometry::ShapeOp;
     static SHAPE: std::sync::OnceLock<VoxelShape> = std::sync::OnceLock::new();
-    let bounds = bounds.deflate(Vec3::new(1e-5, 1e-5, 1e-5));
-    for x in bounds.min_position().x.floor() as i32..=bounds.max_position().x.floor() as i32 {
-        for y in bounds.min_position().y.floor() as i32..=bounds.max_position().y.floor() as i32 {
-            for z in bounds.min_position().z.floor() as i32..=bounds.max_position().z.floor() as i32
+    let epsilon = f64::from(1e-5_f32);
+    let mut contacts = 0;
+    let candidates = bounds.deflate(Vec3::new(epsilon, epsilon, epsilon));
+    for x in candidates.min_position().x.floor() as i32..=candidates.max_position().x.floor() as i32
+    {
+        for y in
+            candidates.min_position().y.floor() as i32..=candidates.max_position().y.floor() as i32
+        {
+            for z in candidates.min_position().z.floor() as i32
+                ..=candidates.max_position().z.floor() as i32
             {
                 if !registry
                     .state(world.block(x, y, z))
@@ -1059,13 +1075,15 @@ fn lava_cauldron_contact(
                         .expect("valid filled cauldron")
                 });
                 let local = bounds.move_by(Vec3::new(-f64::from(x), -f64::from(y), -f64::from(z)));
-                if shape.boxes().iter().any(|part| local.intersects(*part)) {
-                    return true;
+                // Only block enumeration uses the deflated box. The actual
+                // shape contact follows Entity.collidedWithShapeMovingFrom.
+                if local.collided_along_vector(Vec3::ZERO, shape.boxes()) {
+                    contacts += 1;
                 }
             }
         }
     }
-    false
+    contacts
 }
 /// The boxes that stop a dropped item (boats, minecarts, shulkers, a held-still happy ghast),
 /// binned by 8-block cell, so an item looks only at the ones near it: a farm with many drops and

@@ -20,13 +20,20 @@ CASES = [
     ('basin', 'oak_planks', .5, .25, .5, 'lava'),
     ('side', 'oak_planks', -.1, .5, .5, 'lava'),
     ('above', 'oak_planks', .5, .9375, .5, 'lava'),
+    ('near_top', 'oak_planks', .5, .937499, .5, 'lava'),
+    ('within_top_epsilon', 'oak_planks', .5, .93749995, .5, 'lava'),
+    ('above_top', 'oak_planks', .5, .93750001, .5, 'lava'),
     ('rim', 'oak_planks', .05, .95, .5, 'lava'),
     ('outside', 'oak_planks', -.2, .5, .5, 'lava'),
+    ('near_side', 'oak_planks', -.12498, .5, .5, 'lava'),
+    ('outside_side', 'oak_planks', -.12500001, .5, .5, 'lava'),
     ('empty', 'oak_planks', .5, .25, .5, 'empty'),
     ('netherite', 'netherite_ingot', .5, .25, .5, 'lava'),
     ('below', 'oak_planks', .5, -.3, .5, 'lava'),
     ('foot', 'oak_planks', .05, 0, .05, 'lava'),
     ('cross_gap', 'oak_planks', .5, -.2, .5, 'lava'),
+    ('paired_cauldrons', 'oak_planks', .95, .25, .5, 'pair'),
+    ('fluid_and_cauldron', 'oak_planks', 1.05, .25, .5, 'mixed'),
 ]
 
 
@@ -48,6 +55,7 @@ def main():
     java = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity'
     sources = [Path(__file__), java / 'VanillaLavaCauldronItemOracle.java', java / 'ParityData.java',
                lab.ROOT / 'crates/horizon-client/src/entities.rs',
+               lab.ROOT / 'crates/horizon-client/examples/probe/main.rs',
                lab.ROOT / 'crates/horizon-client/examples/probe/lava_cauldron_item_fixture.rs',
                lab.ROOT / 'Cargo.lock']
     hashes = base.source_hashes(sources)
