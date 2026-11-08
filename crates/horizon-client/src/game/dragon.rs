@@ -573,6 +573,10 @@ const ADJACENCY: [u32; 24] = [
     8257536,
 ];
 impl Dragon {
+    /// `Entity.teleportSetPosition` with a transition of no motion (`/tp`).
+    pub(super) fn stop(&mut self) {
+        self.velocity = Vec3::ZERO;
+    }
     /// `EnderDragon`'s constructor: full health, hovering (`EnderDragonPhase.HOVERING`). Only
     /// `EnderDragonFight.createNewDragon` sets the holding pattern; a dragon from `/summon`, a
     /// spawn egg or a save without `DragonPhase` keeps hovering where it was put.

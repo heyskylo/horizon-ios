@@ -82,6 +82,35 @@ pub(super) enum Target {
     Cloud(u32),
 }
 /// `Entity.setXRot`: reduce the angle before clamping the pitch.
+/// Runs `$body` on the moving entity `$t` names (one of `entity_lists!`'s
+/// kinds) as `$e`, through the `Entity` trait; nothing for the others.
+macro_rules! target_entity_mut {
+    ($game:expr, $t:expr, $e:ident => $body:expr) => {{
+        #[allow(unused_imports)]
+        use super::entity::Entity as _;
+        macro_rules! on {
+            ($list:expr, $id:expr) => {
+                if let Some($e) = $list.iter_mut().find(|x| x.id == $id) {
+                    $body
+                }
+            };
+        }
+        match $t {
+            Target::Mob(id) => on!($game.mobs, id),
+            Target::Item(id) => on!($game.dropped, id),
+            Target::Orb(id) => on!($game.orbs, id),
+            Target::Projectile(id) => on!($game.creatures.projectiles, id),
+            Target::Stand(id) => on!($game.armor_stands, id),
+            Target::Boat(id) => on!($game.boats, id),
+            Target::Cart(id) => on!($game.carts, id),
+            Target::Tnt(id) => on!($game.tnts, id),
+            Target::Falling(id) => on!($game.falling, id),
+            Target::Rocket(id) => on!($game.rockets, id),
+            Target::Trident(id) => on!($game.tridents, id),
+            _ => {}
+        }
+    }};
+}
 fn entity_pitch(pitch: f32) -> f32 {
     (pitch % 360.0).clamp(-90.0, 90.0)
 }
@@ -1565,6 +1594,43 @@ impl Game<'_> {
         self.feedback(message);
         Ok(targets.len() as i32)
     }
+    /// `Entity.teleportTo(level, x, y, z, relatives, yRot, xRot, ...)`, as
+    /// `/tp` and `/spreadplayers` call it: its transition has no motion and no
+    /// relative delta, so `teleportSetPosition` leaves the moving entity still.
+    /// (An end gateway's or a vehicle's transition carries its motion.)
+    pub(super) fn teleport_stops(&mut self, t: Target) {
+        let _ = self.in_target_level(t, |g| {
+            target_entity_mut!(g, t, e => *e.velocity_mut() = Vec3::ZERO);
+            // The dragon's flight builds on the motion it carries.
+            if let Target::Dragon(id) = t
+                && let Some(d) = g.dragon.as_mut().filter(|d| d.id == id)
+            {
+                d.stop();
+            }
+        });
+    }
+    /// `TeleportCommand.performTeleport` after a successful `teleportTo` in
+    /// the target's own level: unless it is a fall-flying living entity, its
+    /// vertical motion is zeroed and it is on the ground; a mob's navigation
+    /// stops (`PathfinderMob`; the others hold no path). The players' own
+    /// ground is their clients'.
+    fn tp_lands(&mut self, t: Target) {
+        self.teleport_stops(t);
+        let _ = self.in_target_level(t, |g| {
+            if let Target::Mob(id) = t
+                && let Some(m) = g.mobs.iter_mut().find(|m| m.id == id)
+            {
+                m.nav_stop();
+                if m.extra.fall_flying {
+                    return;
+                }
+            }
+            target_entity_mut!(g, t, e => {
+                e.velocity_mut().y = 0.0;
+                e.set_on_ground(true);
+            });
+        });
+    }
     pub(in crate::game) fn teleport_to(
         &mut self,
         t: Target,
@@ -1954,6 +2020,7 @@ impl Game<'_> {
                     // TeleportCommand.teleportToEntity: the destination's angles,
                     // which the riders turn to as well.
                     self.teleport_to(t, pos, rotation, true);
+                    self.tp_lands(t);
                 }
             }
             let message = if targets.len() == 1 {
@@ -2059,6 +2126,7 @@ impl Game<'_> {
             if let Some(f) = facing {
                 self.send_player_look_at(t, anchored_eyes, f, facing_entity);
             }
+            self.tp_lands(t);
         }
         let [x, y, z] = pos.map(|v| Text::literal(format_double(v)));
         let message = if targets.len() == 1 {
