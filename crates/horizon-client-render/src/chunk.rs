@@ -576,7 +576,7 @@ pub struct Chunk {
     /// Block entities read from a save, moved into the world on arrival.
     pub block_entities: Vec<((i32, i32, i32), block_entity::BlockEntity)>,
     /// `CustomName` of the container block entities (shown as the screen title).
-    pub block_names: Vec<((i32, i32, i32), String)>,
+    pub block_names: Vec<((i32, i32, i32), Tag)>,
     /// Generation postprocessing marks (ProtoChunk.postProcessing) as world
     /// positions, applied once by LevelChunk.postProcessGeneration.
     pub postprocess: Vec<[i32; 3]>,
@@ -618,6 +618,14 @@ impl Chunk {
             postprocess: Vec::new(),
             saved: None,
             entities: Vec::new(),
+        }
+    }
+    /// The original `structures.starts`, including starts with unknown pieces.
+    pub fn saved_structure_starts(&self) -> Option<&horizon_world::nbt::Compound> {
+        let structures = self.saved.as_ref()?.root.get(&"structures".into())?;
+        match structures.get("starts")? {
+            horizon_world::nbt::Tag::Compound(starts) => Some(starts),
+            _ => None,
         }
     }
     /// The minimum block Y of the column.

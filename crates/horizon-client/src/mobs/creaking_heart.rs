@@ -108,7 +108,8 @@ impl Blocks<'_, '_> {
 /// `EnvironmentAttributes.CREAKING_ACTIVE`: the overworld's night, from
 /// 12600 to 23400.
 pub fn creaking_active(w: &MobWorld) -> bool {
-    !w.nether && !w.end && (12600..23401).contains(&w.day_time.rem_euclid(24000))
+    w.dimension_type.has_timeline("minecraft:day")
+        && (12600..23401).contains(&w.day_time.rem_euclid(24000))
 }
 /// `CreakingHeartBlock.hasRequiredLogs`: pale oak logs on both ends of the
 /// heart's axis, along the same axis.

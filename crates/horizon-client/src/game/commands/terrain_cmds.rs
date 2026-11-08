@@ -620,24 +620,70 @@ impl Game<'_> {
                     None | Some(Some(Target::Player))
                 );
                 let held = self.slot_get(&super::items::Slot::Inv(self.selected));
+                // LootCommand.dropKillLoot's THIS_ENTITY is the selected live mob.
+                let target = match t {
+                    Target::Mob(id) => self
+                        .mobs
+                        .iter()
+                        .find(|m| m.id == id)
+                        .map(|m| horizon_client::mobs::drops::loot_entity(m, None)),
+                    _ => None,
+                };
+                let loot = target.as_ref().and_then(|_| {
+                    horizon_client::structure_blocks::loot_data(
+                        &self.options.resources,
+                        &self.pack_files(),
+                    )
+                });
+                let matcher =
+                    |predicate: &serde_json::Value, entity: &horizon_world::loot::LootEntity| {
+                        loot.as_ref()
+                            .is_some_and(|data| data.entity_matches(predicate, Some(entity)))
+                    };
                 let drops = match world_items!(self).loot_sequence(&table) {
                     Some(seq) => {
                         let random = self.rand_sequences.get(&seq, self.level.seed);
-                        world_items!(self).entity_drops_for_command(
-                            &ty,
-                            by_player,
-                            held.as_ref(),
-                            random,
-                            keep_empty,
-                        )
+                        if let Some(target) = target.as_ref().filter(|_| loot.is_some()) {
+                            world_items!(self).entity_drops_with_target(
+                                &ty,
+                                by_player,
+                                held.as_ref(),
+                                target,
+                                &matcher,
+                                random,
+                                keep_empty,
+                            )
+                        } else {
+                            world_items!(self).entity_drops_for_command(
+                                &ty,
+                                by_player,
+                                held.as_ref(),
+                                random,
+                                keep_empty,
+                            )
+                        }
                     }
-                    None => world_items!(self).entity_drops_for_command(
-                        &ty,
-                        by_player,
-                        held.as_ref(),
-                        &mut self.world.random,
-                        keep_empty,
-                    ),
+                    None => {
+                        if let Some(target) = target.as_ref().filter(|_| loot.is_some()) {
+                            world_items!(self).entity_drops_with_target(
+                                &ty,
+                                by_player,
+                                held.as_ref(),
+                                target,
+                                &matcher,
+                                &mut self.world.random,
+                                keep_empty,
+                            )
+                        } else {
+                            world_items!(self).entity_drops_for_command(
+                                &ty,
+                                by_player,
+                                held.as_ref(),
+                                &mut self.world.random,
+                                keep_empty,
+                            )
+                        }
+                    }
                 };
                 (drops, Some(table))
             }
@@ -652,6 +698,9 @@ impl Game<'_> {
                     return Err(err("commands.drop.no_loot_table.block", &[&name]));
                 };
                 let tool = self.tool_stack(ctx)?;
+                // LootCommand.dropBlockLoot: optional THIS_ENTITY is the actual
+                // source entity, including non-player executors such as stands.
+                let executor_present = self.source_entity().is_some();
                 let mut pending = crate::game::spill::Pending::default();
                 let key = (p[0], p[1], p[2]);
                 let has_block_entity = if let Some(entity) = self.world.block_entities.get(&key) {
@@ -671,6 +720,7 @@ impl Game<'_> {
                             state,
                             tool.as_ref(),
                             random,
+                            executor_present,
                             keep_empty,
                         )
                     }
@@ -679,6 +729,7 @@ impl Game<'_> {
                         state,
                         tool.as_ref(),
                         &mut self.world.random,
+                        executor_present,
                         keep_empty,
                     ),
                 };
@@ -1085,6 +1136,118 @@ mod loot_mine_component_tests {
             "actual loot-mine component-copy failures: {failures:#?}"
         );
     }
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn loot_mine_uses_the_actual_stand_or_server_executor_presence() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources required"),
+        );
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+
+        game.command_source = Some(crate::game::commands::execute::Source {
+            silent: false,
+            ..game.server_source()
+        });
+        assert!(game.source_entity().is_none());
+        assert!(game.run_command("execute unless entity @s"));
+        assert!(game.run_command("setblock 12 200 4 chest strict"));
+        assert!(game.run_command("setblock 2 200 4 snow[layers=1] strict"));
+        assert!(game.run_command("setblock 4 200 4 dirt strict"));
+        assert!(game.run_command("item replace block 12 200 4 container.26 with diamond 7"));
+        assert!(game.run_command("item replace block 12 200 4 container.2 with diamond_shovel"));
+        assert_eq!(&*slot(&game, 2).item, "minecraft:diamond_shovel");
+        assert!(game.run_command("execute if items block 12 200 4 container.2 #minecraft:shovels"));
+        assert!(game.run_command(
+            "summon armor_stand 8.5 200 8.5 {UUID:[I;60,0,0,1],Health:20f,NoGravity:1b}"
+        ));
+        let stand = "0000003c-0000-0000-0000-000000000001";
+        assert!(game.run_command(&format!("execute as {stand} if entity @s[type=armor_stand,nbt={{UUID:[I;60,0,0,1],Health:20f,NoGravity:1b,Pos:[8.5d,200d,8.5d]}}]")));
+        let id = game
+            .armor_stands
+            .iter()
+            .find(|s| game.persist.uuids.get(&s.id) == Some(&[60, 0, 0, 1]))
+            .unwrap()
+            .id;
+        let before_stand = game.entity_nbt(Target::Stand(id)).unwrap();
+        assert_eq!(
+            before_stand.get("UUID"),
+            Some(&Tag::IntArray(vec![60, 0, 0, 1]))
+        );
+        let clock = game.world.game_time;
+        // Unconditional dirt proves both sources really execute the same path.
+        for (as_stand, x, expected) in [
+            (false, 4, "minecraft:dirt"),
+            (true, 4, "minecraft:dirt"),
+            (false, 2, "minecraft:emerald"),
+            (true, 2, "minecraft:snowball"),
+        ] {
+            assert!(game.source_entity().is_none());
+            assert!(game.run_command("item replace block 12 200 4 container.0 with emerald 4"));
+            let before = slot(&game, 0);
+            let state = game.world.block(x, 200, 4);
+            let prefix = if as_stand {
+                format!("execute as {stand} run ")
+            } else {
+                String::new()
+            };
+            assert!(game.run_command(&format!(
+                "{prefix}loot replace block 12 200 4 container.0 mine {x} 200 4 diamond_shovel"
+            )));
+            let actual = slot(&game, 0);
+            assert_eq!(
+                &*actual.item, expected,
+                "executor stand={as_stand}, block x={x}"
+            );
+            if !as_stand && x == 2 {
+                assert_eq!(actual, before);
+            } else {
+                assert_eq!(actual.count, 1);
+            }
+            assert_eq!(
+                (&*slot(&game, 26).item, slot(&game, 26).count),
+                ("minecraft:diamond", 7)
+            );
+            assert_eq!(&*slot(&game, 2).item, "minecraft:diamond_shovel");
+            assert_eq!(game.world.block(x, 200, 4), state);
+            assert_eq!(game.entity_nbt(Target::Stand(id)).unwrap(), before_stand);
+            assert_eq!(game.world.game_time, clock);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1189,5 +1352,121 @@ mod loot_position_tests {
         assert!(slot(&mut game, 1).is_none());
         assert_eq!(slot(&mut game, 2).unwrap().count, 5);
         assert_eq!(game.world.game_time, time);
+    }
+}
+
+#[cfg(test)]
+mod loot_kill_target_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use horizon_client::{chunk::Chunk, containers::BlockEntity};
+    use std::sync::Arc;
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn loot_kill_uses_actual_sheep_state_without_killing_the_target() {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources required"),
+        );
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap()).join("h036-game"),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        let clock = game.world.game_time;
+        let mut differences = Vec::new();
+        for (n, color, sheared, wool) in [
+            (1, 0, true, "minecraft:white_wool"),
+            (2, 14, true, "minecraft:red_wool"),
+            (3, 0, false, "minecraft:white_wool"),
+            (4, 14, false, "minecraft:red_wool"),
+        ] {
+            let uuid = format!("00000024-0000-0000-0000-{n:012x}");
+            assert!(game.run_command(&format!(
+                "summon sheep 4.5 200 4.5 {{UUID:[I;36,0,0,{n}],Health:8f,NoAI:1b,NoGravity:1b,Age:0,Color:{color}b,Sheared:{}b,Motion:[0d,0d,0d]}}", i32::from(sheared)
+            )));
+            let mob = game
+                .mobs
+                .iter()
+                .find(|m| game.persist.uuid_of(m.id) == Some([36, 0, 0, n]))
+                .unwrap();
+            assert_eq!(mob.kind.id, "minecraft:sheep");
+            assert_eq!(mob.health, 8.0);
+            assert!(mob.no_ai && mob.no_gravity);
+            assert_eq!(mob.extra.color, color);
+            assert_eq!(mob.extra.sheared, sheared);
+            let before = (mob.id, mob.position, mob.velocity, mob.health);
+            let x = 2 + n * 3;
+            assert!(game.run_command(&format!(
+                "setblock {x} 200 8 chest[facing=north,type=single,waterlogged=false] strict"
+            )));
+            let Some(BlockEntity::Chest(initial)) = game.world.block_entities.get(&(x, 200, 8))
+            else {
+                panic!("real chest required")
+            };
+            assert!(initial.iter().all(Option::is_none));
+            assert!(game.run_command(&format!("loot insert {x} 200 8 kill {uuid}")));
+            let Some(BlockEntity::Chest(items)) = game.world.block_entities.get(&(x, 200, 8))
+            else {
+                panic!("real output chest required")
+            };
+            let output: Vec<_> = items.iter().flatten().collect();
+            assert!(
+                output
+                    .iter()
+                    .any(|s| s.item.as_ref() == "minecraft:mutton" && (1..=2).contains(&s.count)),
+                "nonempty meat proves the command actually rolled"
+            );
+            let actual: u32 = output
+                .iter()
+                .filter(|s| s.item.as_ref() == wool)
+                .map(|s| s.count)
+                .sum();
+            if actual != u32::from(!sheared) {
+                differences.push((n, sheared, wool, actual));
+            }
+            let mob = game.mobs.iter().find(|m| m.id == before.0).unwrap();
+            assert_eq!((mob.id, mob.position, mob.velocity, mob.health), before);
+            assert_eq!(game.persist.uuid_of(mob.id), Some([36, 0, 0, n]));
+            assert_eq!((mob.extra.color, mob.extra.sheared), (color, sheared));
+        }
+        assert_eq!(game.world.game_time, clock);
+        assert!(
+            differences.is_empty(),
+            "actual command wool-state differences: {differences:?}"
+        );
     }
 }
