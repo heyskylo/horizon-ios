@@ -3,7 +3,10 @@ use super::Game;
 use crate::Result;
 use horizon_client::client_perf::{
     self, ClientPerf,
-    request::{self, Failed, Marked, ProfileSide, Request, StartOptions, Started, Status, Stopped},
+    request::{
+        self, Failed, GpuSwitch, Marked, ProfileSide, Request, StartOptions, Started, Status,
+        Stopped,
+    },
 };
 use horizon_client::server_perf::{self, TickDetail, WorldCounts};
 use horizon_client::spans::{self, Span};
@@ -28,6 +31,8 @@ pub(super) struct Profile {
     spans_were_on: bool,
     hardware_warmed: bool,
     env_tried: bool,
+    /// What the running capture asks the renderer to time.
+    gpu: GpuSwitch,
 }
 
 impl Profile {
@@ -40,7 +45,13 @@ impl Profile {
             spans_were_on: false,
             hardware_warmed: false,
             env_tried: false,
+            gpu: GpuSwitch::Off,
         }
+    }
+
+    /// The GPU timing the running capture needs; off when none runs.
+    pub(super) fn gpu(&self) -> GpuSwitch {
+        self.gpu
     }
 }
 
@@ -57,6 +68,13 @@ fn shown(path: &Path) -> String {
         .unwrap_or(path)
         .display()
         .to_string()
+}
+
+fn gpu_readout(
+    wanted: GpuSwitch,
+    renderer: Option<&horizon_client::gfx::Renderer>,
+) -> Option<horizon_client::gfx::pack_timing::GpuReadout> {
+    renderer.filter(|_| wanted != GpuSwitch::Off)?.gpu_readout()
 }
 
 fn json_of<T: serde::Serialize>(reply: &T) -> Result<Option<serde_json::Value>> {
@@ -124,6 +142,7 @@ impl Game<'_> {
                 .perf
                 .start(t, &reports_dir(), trigger, options, start, Vec::new())?;
         self.profile.started_by = trigger;
+        self.profile.gpu = options.gpu;
         self.profile.spans_were_on = spans::recording_here();
         spans::record_here(true);
         log::info!("Horizon: profiling the client to {}", path.display());
@@ -133,15 +152,23 @@ impl Game<'_> {
             path: shown(&path),
             seconds: options.seconds,
             samples: options.samples,
+            gpu: options.gpu,
         })
     }
 
     fn stop_profile(&mut self, reason: StopReason) -> Result<()> {
         let t = self.profile.perf.now();
-        if !self.profile.perf.stop(t, reason) {
+        let gpu = self.gpu_readout();
+        if !self.profile.perf.stop_with_gpu(t, reason, gpu) {
             return Err("no capture is running".into());
         }
+        self.profile.gpu = GpuSwitch::Off;
         Ok(())
+    }
+
+    /// The pass timings the running capture asked for, as the renderer shows them now.
+    fn gpu_readout(&self) -> Option<horizon_client::gfx::pack_timing::GpuReadout> {
+        gpu_readout(self.profile.gpu, self.renderer.as_ref())
     }
 
     /// F3+O: starts a capture, or stops the running one and says where it went.
@@ -177,21 +204,41 @@ impl Game<'_> {
             spans: spans::merge(frame_spans),
         });
         let t = self.profile.perf.now();
-        self.profile
-            .perf
-            .frame(t, wall_ms, cpu_ms, gpu_ms, detail, || WorldCounts {
+        let (wanted, renderer) = (self.profile.gpu, self.renderer.as_ref());
+        self.profile.perf.frame_with_gpu(
+            t,
+            wall_ms,
+            cpu_ms,
+            gpu_ms,
+            detail,
+            || WorldCounts {
                 players: self.lan.as_ref().map_or(0, |h| h.hub.guests.len() as u32),
                 chunks: self.world.chunks.len() as u32,
                 entities: self.mobs.len() as u32,
-            });
+            },
+            || gpu_readout(wanted, renderer),
+        );
+        if !self.profile.perf.capturing() {
+            self.profile.gpu = GpuSwitch::Off;
+        }
         if !self.profile.hardware_warmed {
             self.profile.hardware_warmed = true;
             server_perf::warm_hardware();
         }
         if !self.profile.env_tried && server_perf::hardware().is_some() {
             self.profile.env_tried = true;
-            if std::env::var_os(ENV_DIR).is_some_and(|d| !d.is_empty())
-                && let Err(e) = self.start_profile(&StartOptions::default(), Trigger::Env)
+            let gpu = client_perf::env_gpu(
+                std::env::var_os(client_perf::ENV_PASS_TIMING).as_deref(),
+                std::env::var_os(client_perf::ENV_PASS_DETAIL).as_deref(),
+            );
+            if (std::env::var_os(ENV_DIR).is_some_and(|d| !d.is_empty()) || gpu != GpuSwitch::Off)
+                && let Err(e) = self.start_profile(
+                    &StartOptions {
+                        gpu,
+                        ..StartOptions::default()
+                    },
+                    Trigger::Env,
+                )
             {
                 log::warn!("Horizon: {ENV_DIR}: {e}");
             }

@@ -1,11 +1,12 @@
 //! The client's .hzperf captures (docs/perf-platform.md §4.1): the window's frames feed the always-on health history, and a capture writes it with the samples of the render thread.
+use crate::gfx::pack_timing::GpuReadout;
 use crate::server_perf::traffic::Wire;
 use crate::server_perf::{
     self, CaptureEnd, CaptureOptions, CaptureStatus, MAX_WINDOW_S, Role, SamplerOptions, Saved,
     ServerPerf, TickDetail, WorldCounts,
 };
 use horizon_perf_format::v1::{Machine, Start, StopReason, Trigger};
-use request::{StartOptions, Threads};
+use request::{GpuSwitch, StartOptions, Threads};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -17,6 +18,21 @@ mod tests;
 
 /// A frame this slow enters the slow ring when `HORIZON_SPIKES` names no other threshold.
 pub const SLOW_FRAME_MS: f32 = 50.0;
+
+/// The variables that start a capture with the GPU passes timed: pass timing, and pass timing with its parts.
+pub const ENV_PASS_TIMING: &str = "HORIZON_SHADER_PACK_TIMING";
+pub const ENV_PASS_DETAIL: &str = "HORIZON_GPU_PASS_DETAIL";
+
+/// The GPU switch a run's environment asks for; the detail variable wins over the timing one.
+pub fn env_gpu(timing: Option<&OsStr>, detail: Option<&OsStr>) -> GpuSwitch {
+    if detail.is_some() {
+        GpuSwitch::Detail
+    } else if timing.is_some() {
+        GpuSwitch::Passes
+    } else {
+        GpuSwitch::Off
+    }
+}
 
 /// Where a client's captures go: `HORIZON_PROFILE` when set, else `reports/` in the game home.
 pub fn reports_dir(profile: Option<&OsStr>, home: &Path) -> PathBuf {
@@ -70,6 +86,21 @@ impl ClientPerf {
         detail: Option<TickDetail>,
         world: impl FnOnce() -> WorldCounts,
     ) {
+        self.frame_with_gpu(t, wall_ms, cpu_ms, gpu_ms, detail, world, || None);
+    }
+
+    /// [`ClientPerf::frame`], where `gpu` is asked for the pass timings only when this frame ends the capture's window.
+    #[allow(clippy::too_many_arguments)]
+    pub fn frame_with_gpu(
+        &mut self,
+        t: f64,
+        wall_ms: f32,
+        cpu_ms: f32,
+        gpu_ms: Option<f32>,
+        detail: Option<TickDetail>,
+        world: impl FnOnce() -> WorldCounts,
+        gpu: impl FnOnce() -> Option<GpuReadout>,
+    ) {
         self.cpu_ms.push(cpu_ms);
         self.gpu_ms.extend(gpu_ms);
         if self.perf.gauges_due(t) {
@@ -80,7 +111,7 @@ impl ClientPerf {
         if let Some((end, reason)) = self.window
             && t >= end
         {
-            self.stop(t, reason);
+            self.stop_with_gpu(t, reason, gpu());
         }
     }
 
@@ -108,6 +139,7 @@ impl ClientPerf {
             block_names,
             levels: Vec::new(),
             wire: Wire::new(),
+            gpu: options.gpu.mode(),
         };
         let path = self.perf.start_capture(t, dir, capture)?;
         self.window = Some(match options.seconds {
@@ -119,8 +151,17 @@ impl ClientPerf {
 
     /// Ends the running capture; its file is finished off this thread and comes back from [`ClientPerf::take_saved`].
     pub fn stop(&mut self, t: f64, reason: StopReason) -> bool {
+        self.stop_with_gpu(t, reason, None)
+    }
+
+    /// [`ClientPerf::stop`], recording `gpu`'s pass timings if the capture asked for them.
+    pub fn stop_with_gpu(&mut self, t: f64, reason: StopReason, gpu: Option<GpuReadout>) -> bool {
         self.window = None;
-        self.perf.begin_stop(t, reason, CaptureEnd::default())
+        let end = CaptureEnd {
+            gpu,
+            ..CaptureEnd::default()
+        };
+        self.perf.begin_stop(t, reason, end)
     }
 
     /// Whether a stopped capture's file is still being finished or waits to be taken.

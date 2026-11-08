@@ -67,7 +67,7 @@ macro_rules! mirror {
 }
 
 vocab! {
-    /// The `op` of a query: `gpu`, `bench` and `samples` are listed but not answered yet.
+    /// The `op` of a query: `bench` and `samples` are listed but not answered yet.
     Op {
         Spans = "spans",
         Ticks = "ticks",
@@ -93,16 +93,17 @@ vocab! {
 }
 
 impl Op {
-    /// Ops no piece answers yet: `gpu`, `bench` and `samples` wait for their sections.
+    /// Ops no piece answers yet: `bench` and `samples` wait for their sections.
     pub fn unanswered(self) -> bool {
         match self {
-            Op::Gpu | Op::Bench | Op::Samples => true,
+            Op::Bench | Op::Samples => true,
             Op::Spans
             | Op::Ticks
             | Op::Tick
             | Op::Series
             | Op::World
             | Op::Net
+            | Op::Gpu
             | Op::Meta
             | Op::Memory
             | Op::Marks
@@ -412,6 +413,7 @@ vocab! {
         ServerAlreadyRunning = "WARNING_CODE_SERVER_ALREADY_RUNNING",
         ServerPartIncomplete = "WARNING_CODE_SERVER_PART_INCOMPLETE",
         TimelineCapped = "WARNING_CODE_TIMELINE_CAPPED",
+        GpuUnavailable = "WARNING_CODE_GPU_UNAVAILABLE",
     }
 }
 mirror!(
@@ -421,9 +423,49 @@ mirror!(
         ServerDenied,
         ServerAlreadyRunning,
         ServerPartIncomplete,
-        TimelineCapped
+        TimelineCapped,
+        GpuUnavailable
     }
 );
+
+vocab! {
+    GpuBackendName {
+        Unspecified = "unspecified",
+        Vulkan = "vulkan",
+        Metal = "metal",
+        Dx12 = "dx12",
+        Gl = "gl",
+        Other = "other",
+    }
+}
+mirror!(GpuBackendName <- GpuBackend { Unspecified, Vulkan, Metal, Dx12, Gl, Other });
+
+vocab! {
+    GpuPartsModeName {
+        Unspecified = "unspecified",
+        InsidePasses = "inside_passes",
+        SeparatePasses = "separate_passes",
+    }
+}
+mirror!(GpuPartsModeName <- GpuPartsMode { Unspecified, InsidePasses, SeparatePasses });
+
+vocab! {
+    GpuFragmentUnitName {
+        Unspecified = "unspecified",
+        Pixel = "pixel",
+        Quad = "quad",
+    }
+}
+mirror!(GpuFragmentUnitName <- GpuFragmentUnit { Unspecified, Pixel, Quad });
+
+vocab! {
+    GpuSourceName {
+        Unspecified = "unspecified",
+        Horizon = "horizon",
+        ShaderPack = "shader_pack",
+    }
+}
+mirror!(GpuSourceName <- GpuSource { Unspecified, Horizon, ShaderPack });
 
 /// A number JSON writes as an integer when it is whole and small, else as a rounded decimal.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

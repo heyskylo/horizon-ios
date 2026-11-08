@@ -1,4 +1,5 @@
 //! `horizon-ctl profile`: the words the game receives, as typed requests, and the typed replies.
+use horizon_perf_format::v1::GpuMode;
 use serde::{Deserialize, Serialize};
 use std::ops::RangeInclusive;
 use std::str::FromStr;
@@ -47,6 +48,40 @@ impl FromStr for Threads {
     }
 }
 
+/// What `--gpu` records: nothing, the passes' times, or also their parts and counters.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GpuSwitch {
+    #[default]
+    Off,
+    Passes,
+    Detail,
+}
+
+impl FromStr for GpuSwitch {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "passes" => Ok(Self::Passes),
+            "detail" => Ok(Self::Detail),
+            other => Err(format!(
+                "unknown --gpu value {other}; use --gpu, --gpu=passes or --gpu=detail"
+            )),
+        }
+    }
+}
+
+impl GpuSwitch {
+    pub fn mode(self) -> GpuMode {
+        match self {
+            Self::Off => GpuMode::Off,
+            Self::Passes => GpuMode::Passes,
+            Self::Detail => GpuMode::Detail,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
     Start,
@@ -79,6 +114,7 @@ pub struct StartOptions {
     pub threads: Threads,
     pub wall: bool,
     pub samples: bool,
+    pub gpu: GpuSwitch,
 }
 
 impl Default for StartOptions {
@@ -90,6 +126,7 @@ impl Default for StartOptions {
             threads: Threads::Main,
             wall: false,
             samples: true,
+            gpu: GpuSwitch::Off,
         }
     }
 }
@@ -108,7 +145,7 @@ pub struct Parsed {
     pub request: Request,
 }
 
-const USAGE: &str = "profile [client|server] start [--seconds S] [--hz N] [--over MS] [--threads main|all] [--wall] [--no-samples] | stop | status | mark NAME";
+const USAGE: &str = "profile [client|server] start [--seconds S] [--hz N] [--over MS] [--threads main|all] [--wall] [--gpu[=detail]] [--no-samples] | stop | status | mark NAME";
 
 /// The words after `profile`; the side comes first or as `--side`, and the switches follow `start`.
 pub fn parse(words: &[&str]) -> Result<Parsed, String> {
@@ -125,7 +162,7 @@ pub fn parse(words: &[&str]) -> Result<Parsed, String> {
     }
     let mut options = StartOptions::default();
     let mut switched = false;
-    let mut words = rest.iter().copied();
+    let mut words = rest.iter().copied().peekable();
     while let Some(word) = words.next() {
         let mut value = || {
             words
@@ -147,6 +184,13 @@ pub fn parse(words: &[&str]) -> Result<Parsed, String> {
             }
             "--threads" => options.threads = value()?.parse()?,
             "--wall" => options.wall = true,
+            "--gpu" => {
+                options.gpu = match words.next_if(|w| w.parse::<GpuSwitch>().is_ok()) {
+                    Some(kind) => kind.parse()?,
+                    None => GpuSwitch::Passes,
+                }
+            }
+            _ if word.starts_with("--gpu=") => options.gpu = word["--gpu=".len()..].parse()?,
             "--no-samples" => options.samples = false,
             other => return Err(format!("unexpected {other}; usage: {USAGE}")),
         }
@@ -201,6 +245,7 @@ pub struct Started {
     pub path: String,
     pub seconds: Option<u32>,
     pub samples: bool,
+    pub gpu: GpuSwitch,
 }
 
 /// The reply to `profile stop`, once the file is whole.
@@ -262,10 +307,11 @@ mod tests {
 
     #[test]
     fn every_start_switch_lands_in_its_field() {
-        let Request::Start(o) =
-            p("start --hz 500 --over 12.5 --threads all --wall --no-samples --seconds 9")
-                .unwrap()
-                .request
+        let Request::Start(o) = p(
+            "start --hz 500 --over 12.5 --threads all --wall --gpu=detail --no-samples --seconds 9",
+        )
+        .unwrap()
+        .request
         else {
             panic!("not a start");
         };
@@ -278,6 +324,7 @@ mod tests {
                 threads: Threads::All,
                 wall: true,
                 samples: false,
+                gpu: GpuSwitch::Detail,
             }
         );
     }
@@ -321,7 +368,8 @@ mod tests {
             "start --over 0",
             "start --over nan",
             "start --threads some",
-            "start --gpu",
+            "start --gpu=all",
+            "start --gpu=",
             "stop now",
             "stop --wall",
             "status --hz 100",
@@ -329,6 +377,28 @@ mod tests {
         ] {
             assert!(p(line).is_err(), "{line:?} was accepted");
         }
-        assert!(p("start --gpu").unwrap_err().contains("usage: profile"));
+        assert!(p("start --gpu=all").unwrap_err().contains("--gpu=detail"));
+        assert!(
+            p("start --gpu fast")
+                .unwrap_err()
+                .contains("usage: profile")
+        );
+    }
+
+    #[test]
+    fn gpu_alone_records_the_passes_and_detail_asks_for_more() {
+        let gpu = |line: &str| match p(line).unwrap().request {
+            Request::Start(o) => o.gpu,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(gpu("start"), GpuSwitch::Off);
+        assert_eq!(gpu("start --gpu"), GpuSwitch::Passes);
+        assert_eq!(
+            gpu("client start --seconds 5 --gpu=detail"),
+            GpuSwitch::Detail
+        );
+        assert_eq!(gpu("start --gpu detail --wall"), GpuSwitch::Detail);
+        assert_eq!(gpu("start --gpu --wall"), GpuSwitch::Passes);
+        assert!(p("stop --gpu").is_err(), "only start takes options");
     }
 }

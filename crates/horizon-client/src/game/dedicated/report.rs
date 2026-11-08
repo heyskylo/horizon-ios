@@ -8,7 +8,7 @@ use horizon_client::server_perf::{
 use horizon_client::{spans, streaming::job_stats};
 use horizon_perf_format::{
     files,
-    v1::{HorizonOptions, Start, StopReason, Trigger},
+    v1::{GpuMode, HorizonOptions, Start, StopReason, Trigger},
 };
 use horizon_world::level::BlockId;
 use std::{
@@ -208,6 +208,7 @@ impl Game<'_> {
             block_names: self.block_names(),
             levels: self.level_counts(),
             wire: self.wire_bytes(),
+            gpu: GpuMode::Unspecified,
         }
     }
 
@@ -328,6 +329,7 @@ impl Game<'_> {
             wire: self.wire_bytes(),
             span_ns,
             mob_ns,
+            gpu: None,
         }
     }
 }

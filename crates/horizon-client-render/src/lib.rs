@@ -88,6 +88,7 @@ pub mod par;
 pub mod particles;
 #[cfg(target_os = "linux")]
 pub mod perf_capture;
+pub mod perf_gpu;
 pub mod poi_sections;
 pub mod post_chain;
 pub mod post_glsl;

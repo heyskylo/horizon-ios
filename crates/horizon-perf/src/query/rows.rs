@@ -3,8 +3,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::wire::{
-    Amount, GpuModeName, KindName, MemoryUnit, ModKindName, SampleBy, SeriesUnit, SideName,
-    StopReasonName, SymbolsName, ThreadSelectionName, TriggerName, WarningCodeName,
+    Amount, GpuBackendName, GpuFragmentUnitName, GpuModeName, GpuPartsModeName, GpuSourceName,
+    KindName, MemoryUnit, ModKindName, SampleBy, SeriesUnit, SideName, StopReasonName, SymbolsName,
+    ThreadSelectionName, TriggerName, WarningCodeName,
 };
 
 /// A row of whichever op answered; each op's rows are all of one kind, except `net`'s first.
@@ -20,6 +21,9 @@ pub enum Row {
     /// Every player together: the first row of `net`.
     NetTotal(NetTotal),
     NetPlayer(NetPlayer),
+    /// The device the passes were timed on: the first row of `gpu`.
+    GpuDevice(GpuDeviceRow),
+    GpuPass(GpuPassRow),
     Meta(MetaRow),
     Memory(MemoryRow),
     MemoryDiff(MemoryDiffRow),
@@ -126,6 +130,66 @@ pub struct NetPlayer {
     pub peak_out_kib_s: f64,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GpuDeviceRow {
+    pub id: String,
+    pub adapter: String,
+    pub backend: GpuBackendName,
+    pub driver: String,
+    pub parts_mode: GpuPartsModeName,
+    pub counters: bool,
+    pub fragment_unit: GpuFragmentUnitName,
+}
+
+/// A pass's median GPU time per frame, its parts and what it counted.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GpuPassRow {
+    pub id: String,
+    pub name: String,
+    pub source: GpuSourceName,
+    pub ms: Option<f64>,
+    /// Of the source's passes' total time.
+    pub share: Option<f64>,
+    pub parts: Vec<GpuPartRow>,
+    pub counters: Option<GpuCountersRow>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GpuPartRow {
+    pub name: String,
+    pub ms: f64,
+}
+
+/// Medians of one pass's pipeline statistics per counted frame.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GpuCountersRow {
+    pub total: GpuCountsRow,
+    pub pixels: u64,
+    /// Shaded pixels per pixel of the pass's target; unset when the device's unit is unknown.
+    pub fragments_per_pixel: Option<f64>,
+    pub parts: Vec<GpuPartCountsRow>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GpuCountsRow {
+    pub vertex_shader_invocations: u64,
+    pub clipper_invocations: u64,
+    pub clipper_primitives_out: u64,
+    pub fragment_shader_invocations: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GpuPartCountsRow {
+    pub name: String,
+    pub counts: GpuCountsRow,
+}
+
 /// What one side recorded: the start's facts (when it has a start), the stop (when it has one) and the sections' sizes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MetaRow {
@@ -155,6 +219,7 @@ pub struct Sections {
     pub spans: usize,
     pub workers: usize,
     pub net: usize,
+    pub gpu: usize,
     pub samples: usize,
 }
 

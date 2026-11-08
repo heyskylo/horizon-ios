@@ -19,6 +19,7 @@ const CHILDREN_PER_SPAN: usize = 6;
 const WORST_TICKS: usize = 5;
 const WORST_SPANS: usize = 2;
 const MEMORY_ROWS: usize = 3;
+const GPU_ROWS: usize = 4;
 const NAME_WIDTH_CAP: usize = 30;
 const SLOW_MS: f64 = 50.0;
 const KIB: f64 = 1024.0;
@@ -34,6 +35,7 @@ pub(super) fn all(
     parts.extend([
         worst(view, side),
         net(view, side),
+        gpu(view, side),
         memory(view, side),
         world(view, side),
         workers(view, side),
@@ -326,6 +328,25 @@ fn net(view: &View, side: Side) -> Vec<Line> {
         ));
     }
     vec![Line::body(text)]
+}
+
+fn gpu(view: &View, side: Side) -> Vec<Line> {
+    let parts: Vec<String> = crate::query::gpu_rows(view, side)
+        .into_iter()
+        .take(GPU_ROWS)
+        .map(|p| {
+            let ms = p.ms.map_or_else(String::new, |ms| format!(" {ms:.2} ms"));
+            let overdraw = p
+                .counters
+                .and_then(|c| c.fragments_per_pixel)
+                .map_or_else(String::new, |f| format!(" {f:.2} frag/px"));
+            format!("{}{ms}{overdraw} [{}]", p.name, p.id)
+        })
+        .collect();
+    if parts.is_empty() {
+        return Vec::new();
+    }
+    vec![Line::body(format!("gpu     {}", parts.join(" · ")))]
 }
 
 fn memory(view: &View, side: Side) -> Vec<Line> {

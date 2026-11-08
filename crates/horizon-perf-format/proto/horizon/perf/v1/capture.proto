@@ -40,7 +40,8 @@ message Capture {
   repeated Workers workers = 17;
   // end: the call-tree aggregate of the sampler.
   repeated SampleProfile samples = 18;
-  // Number 19 (gpu) is allocated in §3.5 to a later piece.
+  // end: clients only, one per timer.
+  repeated GpuPasses gpu = 19;
   // end: servers, and a client's own bytes.
   repeated NetTraffic net = 20;
   // Numbers 21-22 (bench, attachments) are allocated in §3.5 to later pieces.
@@ -332,6 +333,8 @@ enum WarningCode {
   WARNING_CODE_SERVER_PART_INCOMPLETE = 4;
   // The timeline hit its cap; args: [seconds recorded, bytes written].
   WARNING_CODE_TIMELINE_CAPPED = 5;
+  // GPU timing was asked for but the device or the run gave no pass times.
+  WARNING_CODE_GPU_UNAVAILABLE = 6;
 }
 
 message Warning {
@@ -613,4 +616,101 @@ message SampleProfile {
   Weights weights = 9;
   // The duration from which a tick or frame counts as slow.
   float slow_over_ms = 10;
+}
+
+enum GpuBackend {
+  GPU_BACKEND_UNSPECIFIED = 0;
+  GPU_BACKEND_VULKAN = 1;
+  GPU_BACKEND_METAL = 2;
+  GPU_BACKEND_DX12 = 3;
+  GPU_BACKEND_GL = 4;
+  GPU_BACKEND_OTHER = 5;
+}
+
+// How a pass's parts are timed on the device.
+enum GpuPartsMode {
+  GPU_PARTS_MODE_UNSPECIFIED = 0;
+  // One compute pass with a timestamp pair around each part.
+  GPU_PARTS_MODE_INSIDE_PASSES = 1;
+  // A compute pass per part, with pass-boundary stamps.
+  GPU_PARTS_MODE_SEPARATE_PASSES = 2;
+}
+
+// What the fragment counter counts on the device; unspecified when it could not be told.
+enum GpuFragmentUnit {
+  GPU_FRAGMENT_UNIT_UNSPECIFIED = 0;
+  GPU_FRAGMENT_UNIT_PIXEL = 1;
+  // Shaded 2x2 quads: four pixels each.
+  GPU_FRAGMENT_UNIT_QUAD = 2;
+}
+
+// Which timer's passes a GpuPasses holds.
+enum GpuSource {
+  GPU_SOURCE_UNSPECIFIED = 0;
+  // Horizon's own render passes.
+  GPU_SOURCE_HORIZON = 1;
+  // The passes of the running shader pack.
+  GPU_SOURCE_SHADER_PACK = 2;
+}
+
+message GpuDevice {
+  // The adapter name, as Machine.gpu.
+  string adapter = 1;
+  GpuBackend backend = 2;
+  // The driver's name and version text.
+  string driver = 3;
+  GpuPartsMode parts_mode = 4;
+  // Whether pipeline statistics queries exist.
+  bool counters = 5;
+  GpuFragmentUnit fragment_unit = 6;
+}
+
+// A part of a pass, for example one dispatch: median ms per frame.
+message GpuPart {
+  // String id of the part's name.
+  uint32 name = 1;
+  float ms = 2;
+}
+
+message GpuPass {
+  // String id of the pass's name.
+  uint32 name = 1;
+  // Median ms per frame over the last timed frames; unset for a pass seen only through its parts.
+  optional float ms = 2;
+  repeated GpuPart parts = 3;
+}
+
+// What a pass or a part of it shaded and sent through the pipeline in one frame.
+message GpuCounts {
+  uint64 vertex_shader_invocations = 1;
+  uint64 clipper_invocations = 2;
+  uint64 clipper_primitives_out = 3;
+  // Pixels or quads, per GpuDevice.fragment_unit.
+  uint64 fragment_shader_invocations = 4;
+}
+
+message GpuPartCounts {
+  // String id of the part's name.
+  uint32 name = 1;
+  GpuCounts counts = 2;
+}
+
+// Medians over the last counted frames of one pass.
+message GpuCounter {
+  // String id of the pass's name.
+  uint32 pass = 1;
+  GpuCounts total = 2;
+  // Pixels of the pass's depth attachment.
+  uint64 pixels = 3;
+  // Present when the pass has two or more segments.
+  repeated GpuPartCounts parts = 4;
+}
+
+// The GPU pass timings of one timer at the end of a capture.
+message GpuPasses {
+  Side side = 1;
+  GpuDevice device = 2;
+  repeated GpuPass passes = 3;
+  repeated GpuCounter counters = 4;
+  GpuSource source = 5;
 }

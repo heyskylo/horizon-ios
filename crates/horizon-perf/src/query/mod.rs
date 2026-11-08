@@ -1,6 +1,7 @@
 //! `horizon-perf query OP` (docs/perf-platform.md §6): every reply is one JSON envelope with `rows`.
 
 mod calls;
+mod gpu;
 mod meta;
 mod notes;
 mod profile;
@@ -24,6 +25,11 @@ use crate::wire::{
 
 pub use crate::wire::{fine, num, opt_num};
 pub use notes::warning_text;
+
+/// One side's GPU pass rows, Horizon's own passes first, for the summary.
+pub(crate) fn gpu_rows(view: &View, side: Side) -> Vec<rows::GpuPassRow> {
+    gpu::rows_of(view, &[side])
+}
 pub use rows::Row;
 
 /// A loaded capture and the name it is listed under.
@@ -276,6 +282,7 @@ pub fn run(q: &Query, files: &[Loaded]) -> Result<Envelope<Row>, QueryError> {
         Op::Series => series::series(&ctx)?,
         Op::World => world::world(&ctx)?,
         Op::Net => traffic::net(&ctx)?,
+        Op::Gpu => gpu::gpu(&ctx)?,
         Op::Meta => meta::meta(&ctx)?,
         Op::Memory => notes::memory(&ctx)?,
         Op::Marks => notes::marks(&ctx)?,
@@ -287,7 +294,7 @@ pub fn run(q: &Query, files: &[Loaded]) -> Result<Envelope<Row>, QueryError> {
         Op::Split => profile::divide(&ctx, false)?,
         Op::Group => profile::divide(&ctx, true)?,
         Op::Frames => profile::frames(&ctx)?,
-        Op::Gpu | Op::Bench | Op::Samples => unreachable!("answered above"),
+        Op::Bench | Op::Samples => unreachable!("answered above"),
     };
     Ok(envelope(&ctx, reply))
 }

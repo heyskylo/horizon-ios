@@ -1,6 +1,5 @@
 //! GPU time of each pass of a shader pack, of either kind, and of Horizon's own passes: shown in
-//! the F3 overlay while it is open, and logged every `REPORT` timed frames with
-//! `HORIZON_SHADER_PACK_TIMING=1`. One frame
+//! the F3 overlay while it is open, and recorded in a capture made with `--gpu`. One frame
 //! at a time is timed, and the CPU never waits for it: its timestamps are resolved in a later
 //! frame, once the GPU has finished it (Metal resolves them without waiting for the passes that
 //! write them), then read back when mapped. The next frame after that is timed again, once `gap`
@@ -14,7 +13,6 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-const REPORT: usize = 30;
 /// Timestamp pairs per frame at most: a pass, a part or an encoder span takes one.
 const CAPACITY: u32 = 96;
 const TIMESTAMP_BYTES: u64 = CAPACITY as u64 * 16;
@@ -84,6 +82,32 @@ pub struct DetailSupport {
     pub counters: bool,
     /// What the fragment counter counts, from a calibration draw; none until it ran or when it fit neither unit.
     pub fragment_unit: Option<FragmentUnit>,
+}
+
+/// What a timer shows at one moment, as plain data: the medians of its last timed frames.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Readings {
+    pub passes: Vec<(String, f32)>,
+    pub parts: Vec<(String, Vec<(String, f32)>)>,
+    pub counters: Vec<(String, PassCounters)>,
+    pub support: DetailSupport,
+}
+
+impl Readings {
+    /// Whether the timer has shown nothing yet.
+    pub fn is_empty(&self) -> bool {
+        self.passes.is_empty() && self.parts.is_empty() && self.counters.is_empty()
+    }
+}
+
+/// The GPU's pass timings for a capture, with the adapter they were taken on.
+#[derive(Clone, Debug)]
+pub struct GpuReadout {
+    pub adapter: wgpu::AdapterInfo,
+    /// Horizon's own passes.
+    pub own: Option<Readings>,
+    /// The running shader pack's passes.
+    pub pack: Option<Readings>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -177,11 +201,8 @@ pub struct PassTiming {
     samples: Vec<(String, VecDeque<f32>)>,
     /// Each part's last `WINDOW` times, by (pass, part).
     part_samples: Vec<(String, String, VecDeque<f32>)>,
-    /// Log the medians every `REPORT` timed frames.
-    log: bool,
     /// `mark`'s pipeline, for the target format it was made for.
     marker: Option<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
-    reports: usize,
     /// Least time between timed frames.
     pub gap: Duration,
     /// When the last timed frame began.
@@ -238,9 +259,7 @@ impl PassTiming {
             counter_samples: Vec::new(),
             samples: Vec::new(),
             part_samples: Vec::new(),
-            log: Self::logging(),
             marker: None,
-            reports: 0,
             gap: Duration::ZERO,
             timed_at: None,
         })
@@ -291,18 +310,6 @@ impl PassTiming {
     /// Whether the frame being recorded counts.
     pub fn counters_frame(&self) -> bool {
         self.recording() && self.kind == FrameKind::Counters
-    }
-
-    /// Whether `HORIZON_GPU_PASS_DETAIL` asks for dispatch parts with pass timing.
-    pub fn detail_logging() -> bool {
-        static DETAIL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *DETAIL.get_or_init(|| std::env::var_os("HORIZON_GPU_PASS_DETAIL").is_some())
-    }
-
-    /// Whether `HORIZON_SHADER_PACK_TIMING` asks for timing without the F3 overlay.
-    pub fn logging() -> bool {
-        static LOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *LOG.get_or_init(|| std::env::var_os("HORIZON_SHADER_PACK_TIMING").is_some())
     }
 
     /// At the start of a frame's passes: moves the last timed frame along, and decides whether
@@ -558,19 +565,6 @@ impl PassTiming {
                 }
             }
         }
-        self.reports += 1;
-        if self.log && self.reports.is_multiple_of(REPORT) {
-            let medians = self.medians();
-            let total: f32 = medians.iter().map(|m| m.1).sum();
-            let parts: Vec<String> = medians
-                .iter()
-                .map(|(n, ms)| format!("{n} {ms:.3}"))
-                .collect();
-            log::info!(
-                "shader pack GPU time per pass (median ms of the last {WINDOW} timed frames): {} = {total:.3}",
-                parts.join(", ")
-            );
-        }
     }
 
     /// Files the counters of the counters frame just read (`words` are the whole readback).
@@ -647,6 +641,16 @@ impl PassTiming {
                 (s.pass.clone(), counted)
             })
             .collect()
+    }
+
+    /// Everything the timer shows now.
+    pub fn readings(&self) -> Readings {
+        Readings {
+            passes: self.medians(),
+            parts: self.part_medians(),
+            counters: self.counter_medians(),
+            support: self.detail_support(),
+        }
     }
 
     /// Each top-level pass's median ms over its last timed frames, in first-run order.

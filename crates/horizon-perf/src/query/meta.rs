@@ -41,6 +41,7 @@ fn sections(c: &Capture, side: Side) -> Sections {
         memory: c.memory.iter().filter(|m| m.side() == side).count(),
         spans: c.spans.iter().filter(|m| m.side() == side).count(),
         workers: c.workers.iter().filter(|m| m.side() == side).count(),
+        gpu: c.gpu.iter().filter(|m| m.side() == side).count(),
         net: c.net.iter().filter(|m| m.side() == side).count(),
         samples: c.samples.iter().filter(|m| m.side() == side).count(),
     }

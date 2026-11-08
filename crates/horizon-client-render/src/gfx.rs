@@ -1460,7 +1460,7 @@ pub struct Renderer {
     pack_loading: Option<PackLoading>,
     /// The post passes of one of Horizon's own shader packs; never beside `pack_post`'s.
     native: Option<native_pack::NativePack>,
-    /// Time the shader pack's passes on the GPU (F3, or `HORIZON_SHADER_PACK_TIMING`).
+    /// Time the shader pack's passes on the GPU (F3, or a capture made with `--gpu`).
     pass_timing: bool,
     /// Times the parts of passes too (`set_pass_detail`).
     pass_detail: bool,
@@ -4935,8 +4935,8 @@ impl Renderer {
             pack_post: None,
             pack_loading: None,
             native: None,
-            pass_timing: pack_timing::PassTiming::logging(),
-            pass_detail: pack_timing::PassTiming::detail_logging(),
+            pass_timing: false,
+            pass_detail: false,
             pass_timing_gap: std::time::Duration::ZERO,
             own_timing: None,
             pack_entity_rest: Vec::new(),
@@ -7092,23 +7092,18 @@ impl Renderer {
                 .terrain_inputs(self.pack_terrain_flat),
         )
     }
-    /// Times the shader pack's passes on the GPU while `on` (the F3 overlay is open), or always
-    /// with `HORIZON_SHADER_PACK_TIMING`.
+    /// Times the shader pack's passes on the GPU while `on` (the F3 overlay is open or a capture records them).
     pub fn set_pass_timing(&mut self, on: bool) {
-        self.pass_timing = on || pack_timing::PassTiming::logging();
+        self.pass_timing = on;
     }
-    /// Times the parts of Horizon's own passes while `on`, or always with `HORIZON_GPU_PASS_DETAIL`.
+    /// Times the parts of Horizon's own passes while `on`.
     pub fn set_pass_detail(&mut self, on: bool) {
-        self.pass_detail = on || pack_timing::PassTiming::detail_logging();
+        self.pass_detail = on;
     }
     /// Times a frame at most once per `gap` while passes are timed (the F3 overlay needs far fewer
-    /// samples than a measurement). `HORIZON_SHADER_PACK_TIMING` keeps every sample.
+    /// samples than a measurement).
     pub fn set_pass_timing_gap(&mut self, gap: std::time::Duration) {
-        self.pass_timing_gap = if pack_timing::PassTiming::logging() {
-            std::time::Duration::ZERO
-        } else {
-            gap
-        };
+        self.pass_timing_gap = gap;
     }
     /// The running shader pack's timer, of either kind.
     fn pass_timer<'a>(
@@ -7154,6 +7149,26 @@ impl Renderer {
             .as_ref()
             .map(pack_timing::PassTiming::counter_medians)
             .unwrap_or_default()
+    }
+    /// Both timers' readings and this adapter, for a capture; `None` when neither has timed a pass.
+    pub fn gpu_readout(&self) -> Option<pack_timing::GpuReadout> {
+        let own = self
+            .own_timing
+            .as_ref()
+            .map(pack_timing::PassTiming::readings)
+            .filter(|r| !r.is_empty());
+        let pack = match (&self.pack_post, &self.native) {
+            (Some((_, Some(post))), _) => post.timing.as_ref(),
+            (_, Some(native)) => native.timing.as_ref(),
+            _ => None,
+        }
+        .map(pack_timing::PassTiming::readings)
+        .filter(|r| !r.is_empty());
+        (own.is_some() || pack.is_some()).then(|| pack_timing::GpuReadout {
+            adapter: self.info.clone(),
+            own,
+            pack,
+        })
     }
     /// Whether dispatch parts and counters are being asked for (`set_pass_detail`).
     pub fn pass_detail(&self) -> bool {
