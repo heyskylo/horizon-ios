@@ -76,6 +76,40 @@ impl Game<'_> {
         }
     }
 
+    /// `moveEntityByPiston`'s `applyEffectsFromBlocks` for the entity-sensing
+    /// blocks (pressure plates, tripwires, buttons, detector rails): the ones
+    /// the pushed box covered, from `start` to `end`, sense it during the push
+    /// (`entityInside`). So a plate a push carried an entity onto powers its
+    /// neighbours before the piston pushes the next entity; the tick's
+    /// entity-inside pass would only see it after the pistons. A push moves
+    /// along one axis, so its two boxes cover the blocks it crossed.
+    fn piston_block_triggers(&mut self, start: Aabb, end: Aabb) {
+        let eps = 1.0e-5;
+        let (a, b) = (start.min_position(), end.min_position());
+        let lo = Vec3::new(a.x.min(b.x), a.y.min(b.y), a.z.min(b.z));
+        let (a, b) = (start.max_position(), end.max_position());
+        let hi = Vec3::new(a.x.max(b.x), a.y.max(b.y), a.z.max(b.z));
+        let behaviours = self.res.behaviours();
+        let mut sensing = Vec::new();
+        for x in (lo.x + eps).floor() as i32..=(hi.x - eps).floor() as i32 {
+            for y in (lo.y + eps).floor() as i32..=(hi.y - eps).floor() as i32 {
+                for z in (lo.z + eps).floor() as i32..=(hi.z - eps).floor() as i32 {
+                    if behaviours.senses_entities(self.world.block(x, y, z)) {
+                        sensing.push(BlockPos::new(x, y, z));
+                    }
+                }
+            }
+        }
+        if sensing.is_empty() {
+            return;
+        }
+        self.with_level(|b, level, ticks| {
+            for pos in sensing {
+                b.entity_inside(level, ticks, pos);
+            }
+        });
+    }
+
     /// The collision view of the moving piston at `pos` takes the progress
     /// its tick gave it. One no longer moving keeps its entry until
     /// `sync_moving_pistons`.
@@ -497,6 +531,7 @@ impl Game<'_> {
                 let from = self.tnts[i].position;
                 self.tnt_piston_block_effects(i, from);
             }
+            self.piston_block_triggers(before, before);
             return;
         }
         // Primed TNT: a `PISTON` move uses up a pending stuck multiplier
@@ -562,14 +597,20 @@ impl Game<'_> {
         // entities still loses its velocity into walls and ceilings and
         // bounces on slime (#12022).
         self.restitute_piston(target, limited, resolved);
-        if resolved.length_squared() > 1.0e-7
-            || limited.length_squared() - resolved.length_squared() < 1.0e-7
-        {
+        let moved = resolved.length_squared() > 1.0e-7
+            || limited.length_squared() - resolved.length_squared() < 1.0e-7;
+        if moved {
             self.apply_push(target, resolved);
         }
         if let Some((i, from, ..)) = tnt {
             self.finish_tnt_piston_move(i, from, resolved);
         }
+        let after = if moved {
+            before.move_by(resolved)
+        } else {
+            before
+        };
+        self.piston_block_triggers(before, after);
     }
 
     /// `Entity.restituteMovementAfterCollisions` after a block's push, for a
