@@ -681,6 +681,58 @@ mod tests {
         assert!(!refuse_to_move(&m));
     }
 
+    /// `Camel.canMate`: both sides answer `AbstractHorse.canParent` — not a
+    /// vehicle or a passenger and at full health (a camel's `isTamed` is
+    /// always true, so only those two can fail). A hurt or ridden camel must
+    /// not start breeding even while it is in love.
+    #[test]
+    fn a_wounded_or_ridden_camel_does_not_breed() {
+        let mut pair = None;
+        let ran = with_test_world(&[], |_, types| {
+            let kind = Arc::new(types.types["minecraft:camel"].clone());
+            let make = |id: u32, x: f64| {
+                let mut m = Mob::new(id, kind.clone(), Vec3::new(x, 64.0, 0.5), 0.0);
+                register(&mut m);
+                m.extra.in_love = 600;
+                m.on_ground = true;
+                m
+            };
+            pair = Some((make(1, 0.5), make(2, 2.5)));
+        });
+        let _ = ran;
+        let Some((mut a, b)) = pair else {
+            return;
+        };
+        let partner = b.seen(None);
+        let mut events = Vec::new();
+        let mut lr = horizon_core::random::LegacyRandom::new(0);
+        let ran = with_test_world(&[partner], |w, _| {
+            let mut cx = Cx {
+                w,
+                lr: &mut lr,
+                events: &mut events,
+            };
+            let mut breed = Breed::new(1.0);
+            assert!(
+                breed.can_use(&mut a, &mut cx),
+                "two healthy camels should breed"
+            );
+            let max = a.attrs.max_health;
+            a.health = max - 1.0;
+            assert!(
+                !breed.can_use(&mut a, &mut cx),
+                "a wounded camel should not breed"
+            );
+            a.health = max;
+            a.extra.rider = Some(3);
+            assert!(
+                !breed.can_use(&mut a, &mut cx),
+                "a ridden camel should not breed"
+            );
+        });
+        let _ = ran;
+    }
+
     /// `CamelAi.RandomSitting.checkExtraStartConditions` ends with
     /// `body.canCamelChangePose()`. `Camel.canCamelChangePose` is
     /// `wouldNotSuffocateAtTargetPose(STANDING)` while it sits: the standing

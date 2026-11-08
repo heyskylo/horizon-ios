@@ -195,6 +195,8 @@ def main():
 
     groups = corpus_module.groups()
     if not args.only:
+        groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_FUNCTION_FEEDBACK]
+    if not args.only:
         groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_JUKEBOX_CLOCK]
     if args.macro_source_type_fixture or args.only == "macro source type error":
         groups = [(name, ops) for name, ops in groups if name == "macro source type error"]
@@ -344,6 +346,8 @@ def main():
         groups = [("pufferfish player contact", contact_fixture(args.pufferfish_body_diagnostic))]
     if args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
+    if args.only in corpus_module.ISOLATED_FUNCTION_FEEDBACK:
+        groups = [g for g in groups if g[0] == args.only]
     if args.only in corpus_module.ISOLATED_JUKEBOX_CLOCK:
         groups = [g for g in groups if g[0] == args.only]
     if args.vehicle_kill_diagnostic:

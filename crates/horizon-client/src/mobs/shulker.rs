@@ -406,18 +406,25 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
 fn physical_peek(amount: f32) -> f64 {
     f64::from(0.5 - ((0.5 + amount) * PI).msin() * 0.5)
 }
-/// `Shulker.onPeekAmountChange`: an opening shell pushes out of its way
-/// every entity that can be collided with (except other shulkers).
-fn on_peek_change(m: &Mob, w: &MobWorld, old: f32, new: f32, events: &mut Vec<MobEvent>) {
+/// `Shulker.onPeekAmountChange`'s push: the step out of the lid's way and the
+/// box the lid swept, while it opens.
+fn peek_push(m: &Mob, old: f32, new: f32) -> Option<([f64; 3], Aabb)> {
     let dir = opposite(m.extra.variant3);
     let s = face_step(dir).map(f64::from);
     let (old_p, new_p) = (physical_peek(old), physical_peek(new));
     let push = new_p - old_p;
     if push <= 0.0 {
-        return;
+        return None;
     }
     let delta = [push * s[0], push * s[1], push * s[2]];
-    let area = progress_aabb(dir, old_p, new_p, m.position);
+    Some((delta, progress_aabb(dir, old_p, new_p, m.position)))
+}
+/// `Shulker.onPeekAmountChange`: an opening shell pushes out of its way
+/// every entity that can be collided with (except other shulkers).
+fn on_peek_change(m: &Mob, w: &MobWorld, old: f32, new: f32, events: &mut Vec<MobEvent>) {
+    let Some((delta, area)) = peek_push(m, old, new) else {
+        return;
+    };
     if let Some(p) = &w.player
         && p.alive
         && !p.spectator
@@ -438,6 +445,24 @@ fn on_peek_change(m: &Mob, w: &MobWorld, old: f32, new: f32, events: &mut Vec<Mo
         }
         events.push(MobEvent::Shift {
             target: Who::Mob(seen.id),
+            delta,
+        });
+    }
+}
+/// `Shulker.tick`'s `onPeekAmountChange` on a client that is not the server,
+/// after `client_tick` eased the lid: the client moves its own player, so a
+/// lid opening into `player` (the local player's box, alive and not a
+/// spectator) pushes it out of the way.
+pub fn client_push(m: &Mob, player: Aabb, events: &mut Vec<MobEvent>) {
+    let (old, new) = (m.anim.vo[PEEK], m.anim.v[PEEK]);
+    if new == old {
+        return;
+    }
+    if let Some((delta, area)) = peek_push(m, old, new)
+        && player.intersects(area)
+    {
+        events.push(MobEvent::Shift {
+            target: Who::Player,
             delta,
         });
     }
