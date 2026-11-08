@@ -830,7 +830,6 @@ impl Game<'_> {
                 }
                 _ => Vec::new(),
             },
-            Some("passengers") => self.player_passengers(entity),
             Some("target") | Some("attacker") => {
                 let attacker = c.literals.last().is_some_and(|l| l == "attacker");
                 match entity {
