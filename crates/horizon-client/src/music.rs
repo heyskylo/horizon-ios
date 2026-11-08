@@ -291,6 +291,28 @@ impl MusicTables {
             .or_else(|| self.dimensions.get(dimension).and_then(|l| l.volume))
             .unwrap_or(1.0)
     }
+    /// `background` and `volume` in a biome a data pack gave (`pack`, its
+    /// file) or the built-in biome `biome`.
+    pub fn at(&self, dimension: &str, biome: &str, pack: Option<&Value>) -> (BackgroundMusic, f32) {
+        let Some(json) = pack else {
+            return (
+                self.background(dimension, biome),
+                self.volume(dimension, biome),
+            );
+        };
+        let layer = Layer::parse(json);
+        let dimension = self.dimensions.get(dimension);
+        (
+            layer
+                .music
+                .or_else(|| dimension.and_then(|l| l.music.clone()))
+                .unwrap_or_default(),
+            layer
+                .volume
+                .or_else(|| dimension.and_then(|l| l.volume))
+                .unwrap_or(1.0),
+        )
+    }
 }
 /// `MusicManager.MusicFrequency` (the `musicFrequency` option).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -725,6 +747,44 @@ mod tests {
             &|_, _| true,
         );
         SoundEngine::new(registry)
+    }
+
+    /// A data pack's biome file replaces the built-in biome's attributes:
+    /// what it leaves out comes from the dimension, not the built-in biome.
+    #[test]
+    fn a_pack_biome_reads_its_own_file_over_the_dimension() {
+        let layer_of = |json: serde_json::Value| Layer::parse(&json);
+        let tables = MusicTables {
+            dimensions: HashMap::from([(
+                "minecraft:overworld".to_owned(),
+                layer_of(serde_json::json!({"attributes": {
+                    "minecraft:audio/background_music": {"default": {"sound": "minecraft:music.game"}},
+                    "minecraft:audio/music_volume": 0.8
+                }})),
+            )]),
+            biomes: HashMap::from([(
+                "minecraft:plains".to_owned(),
+                layer_of(serde_json::json!({"attributes": {
+                    "minecraft:audio/background_music": {"default": {"sound": "minecraft:music.overworld.meadow"}},
+                    "minecraft:audio/music_volume": 0.3
+                }})),
+            )]),
+        };
+        let sound =
+            |(music, volume): (BackgroundMusic, f32)| (music.default.map(|m| m.sound), volume);
+        let builtin = tables.at("minecraft:overworld", "minecraft:plains", None);
+        assert_eq!(
+            sound(builtin),
+            (Some("minecraft:music.overworld.meadow".into()), 0.3)
+        );
+        let pack = serde_json::json!({"attributes": {
+            "minecraft:audio/background_music": {"default": {"sound": "pack:music.dunes"}}
+        }});
+        let packed = tables.at("minecraft:overworld", "minecraft:plains", Some(&pack));
+        assert_eq!(sound(packed), (Some("pack:music.dunes".into()), 0.8));
+        let bare = serde_json::json!({"temperature": 0.8});
+        let packed = tables.at("minecraft:overworld", "minecraft:plains", Some(&bare));
+        assert_eq!(sound(packed), (Some("minecraft:music.game".into()), 0.8));
     }
 
     fn layer(sound: &str, volume: f32) -> MusicLayer {

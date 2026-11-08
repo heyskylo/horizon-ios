@@ -24,6 +24,7 @@ use horizon_client::{
         menu::{Rules, Slots},
     },
     motion::{MotionEvent, MotionWorld, PlayerMotion},
+    particles::TrackingTarget,
     pose::Dimensions,
 };
 use horizon_core::{
@@ -1180,9 +1181,9 @@ impl Game<'_> {
         if let Some(body) = totem {
             let id = host.hub.guests[i].entity_id;
             host.hub
-                .entity_event(id, super::totem::TOTEM_EVENT, body.at);
+                .entity_event(id, super::totem::TOTEM_EVENT, body.bounds.feet);
             if self.player.is_some() {
-                self.totem_event(body, false);
+                self.totem_event(TrackingTarget::Entity(id), body);
             }
         }
         host.play.insert(conn, play);
