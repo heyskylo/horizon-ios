@@ -5733,6 +5733,36 @@ def piston_entity_tick_order():
     return ops
 
 
+def scheduled_item_birth():
+    """#12017: an item a scheduled block tick drops ticks in that tick's entity pass;
+    one an entity's block contact drops does not."""
+    ops = []
+    for front in ('air', 'powder_snow'):
+        ops += setup('/kill @e[type=!player]', '/fill 0 200 0 5 215 5 air',
+                     '/setblock 1 200 1 dropper[facing=up]{Items:[{Slot:0b,id:"minecraft:stone",count:1}]}',
+                     f'/setblock 1 201 1 {front}',
+                     '/setblock 2 200 1 redstone_block')
+        item = '@e[type=item,x=1.5,y=201.5,z=1.5,distance=..3,limit=1]'
+        # The dropper's tick is due 4 ticks after it was powered.
+        for _ in range(6):
+            ops.append({'op': 'tick', 'n': 1})
+            ops.append(cmd(f'/execute if entity {item}'))
+            ops.append(cmd(f'/data get entity {item} Age'))
+    # A boat breaks a lily pad in its own tick (`applyEffectsFromBlocks`), inside
+    # the entity pass: that drop waits for the next tick.
+    ops += setup('/kill @e[type=!player]', '/fill 0 200 0 5 215 5 air',
+                 '/fill 0 200 0 2 200 2 water', '/setblock 1 201 1 lily_pad',
+                 '/summon oak_boat 1.5 201 1.5 {NoGravity:1b}')
+    item = '@e[type=item,x=1.5,y=201.5,z=1.5,distance=..3,limit=1]'
+    for _ in range(3):
+        ops.append({'op': 'tick', 'n': 1})
+        ops.append(cmd('/execute if block 1 201 1 lily_pad'))
+        ops.append(cmd(f'/execute if entity {item}'))
+        ops.append(cmd(f'/data get entity {item} Age'))
+    ops += setup('/kill @e[type=!player]', '/fill 0 200 0 5 215 5 air')
+    return ops
+
+
 def piston_push_ground():
     """#12029, #12100: `Entity.move(MoverType.PISTON)` ends in `setOnGroundWithMovement`
     on the server, so a push sets an item's, primed TNT's or experience orb's OnGround to whether
@@ -6268,6 +6298,7 @@ def groups():
         ('riding teleport', riding_teleport()),
         ('piston entity tick order', piston_entity_tick_order()),
         ('primed tnt fall', primed_tnt_fall()),
+        ('scheduled block item birth', scheduled_item_birth()),
         ('piston push ground', piston_push_ground()),
         ('carpet farms', carpet_farms(cmd, setup)),
         ('passenger teleports', passenger_teleports(cmd, setup)),

@@ -1621,6 +1621,7 @@ def extras_shell(args, name):
         label = game.focused_label()
         check(label and label.endswith('On'), f'A left {AUTO_RECONNECT} as {label}')
         check('autoReconnect:true' in extras_saved(game), 'the toggle was not saved to horizon-extras.txt')
+        check('Apply' not in declared(game), f'Extras has no Undo, yet a change declared {declared(game)}')
         shot(game, 'extras-toggled')
 
         # B presses Done.
