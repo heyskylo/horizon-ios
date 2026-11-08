@@ -643,6 +643,25 @@ impl Game<'_> {
                 set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
                 set_key(&mut tag, "id", Tag::String(marker.kind.as_str().into()));
             }
+            Target::Projectile(id) => {
+                let uuid = self.uuid_for(id);
+                let p = self
+                    .creatures
+                    .projectiles
+                    .iter_mut()
+                    .find(|p| p.id == id)
+                    .ok_or_else(stale)?;
+                if let Some(pos) = entity_nbt::position(&tag) {
+                    p.position = pos;
+                    p.previous = pos;
+                }
+                p.velocity = entity_nbt::motion(&tag);
+                let [yaw, pitch] = entity_nbt::rotation(&tag);
+                p.yaw = yaw;
+                p.pitch = pitch;
+                p.no_gravity = entity_nbt::flag(&tag, "NoGravity");
+                set_key(&mut tag, "UUID", Tag::IntArray(uuid.to_vec()));
+            }
             _ => return Err(stale()),
         }
         if let Target::Mob(id)
@@ -655,7 +674,8 @@ impl Game<'_> {
         | Target::Orb(id)
         | Target::Cushion(id)
         | Target::Other(id)
-        | Target::Fangs(id) = t
+        | Target::Fangs(id)
+        | Target::Projectile(id) = t
         {
             if let Some(kept) = kept_passengers
                 && let Tag::Compound(c) = &mut tag
@@ -1400,6 +1420,8 @@ impl Game<'_> {
             Some(Target::Trident(id))
         } else if self.ominous_spawners.iter().any(|s| s.id == id) {
             Some(Target::Spawner(id))
+        } else if self.creatures.projectiles.iter().any(|p| p.id == id) {
+            Some(Target::Projectile(id))
         } else {
             None
         }

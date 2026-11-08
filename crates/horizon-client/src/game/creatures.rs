@@ -29,7 +29,6 @@ use horizon_client::{
     mod_api::NativeLootDrops,
     particles::{ParticleOptions, ParticleType},
     projectiles::{Hit, Projectile, ProjectileKind, ProjectileWorld, clip_including_border},
-    text::Text,
 };
 use horizon_core::{
     geometry::{Aabb, Direction, Vec3, traverse_blocks, trig::Mth},
@@ -2242,7 +2241,7 @@ impl Game<'_> {
         } else {
             String::new()
         };
-        let (id, kind) = (p.id, p.kind.id());
+        let (id, kind) = (p.id, p.entity_type());
         if let Some(a) = p.arrow.as_mut()
             && !p.stuck
         {
@@ -5148,15 +5147,7 @@ impl Game<'_> {
             self.native_target_hit(self.dim.id(), pos, strength);
             if p.owner == Some(Who::Player) && (p.guest.is_none() || p.guest == self.lan_acting) {
                 self.award_custom_stat("target_hit", 1);
-                let kind = if p
-                    .arrow
-                    .as_ref()
-                    .is_some_and(|a| &*a.pickup_item.item == "minecraft:spectral_arrow")
-                {
-                    "minecraft:spectral_arrow"
-                } else {
-                    p.kind.id()
-                };
+                let kind = p.entity_type();
                 let projectile = horizon_client::advancements::EntityView {
                     kind: kind.to_owned(),
                     position: [p.position.x, p.position.y, p.position.z],
@@ -5197,21 +5188,7 @@ impl Game<'_> {
         self.combat.projectile_direct = match hit {
             Hit::Entity {
                 who: Who::Player, ..
-            } => {
-                let spectral = p
-                    .arrow
-                    .as_ref()
-                    .is_some_and(|a| &*a.pickup_item.item == "minecraft:spectral_arrow");
-                let id = if spectral {
-                    "minecraft:spectral_arrow"
-                } else {
-                    p.kind.id()
-                };
-                Some(Text::translate(
-                    &format!("entity.{}", id.replace(':', ".")),
-                    &[],
-                ))
-            }
+            } => Some(self.target_name(super::commands::Target::Projectile(p.id))),
             _ => None,
         };
         let at = match hit {

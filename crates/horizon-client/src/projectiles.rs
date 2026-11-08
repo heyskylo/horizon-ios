@@ -588,6 +588,15 @@ impl Projectile {
                 .as_ref()
                 .is_some_and(|a| a.spectral || &*a.pickup_item.item == "minecraft:spectral_arrow")
     }
+    /// Its entity type id (`minecraft:spectral_arrow` for a spectral arrow,
+    /// else its kind's id).
+    pub fn entity_type(&self) -> &'static str {
+        if self.is_spectral_arrow() {
+            "minecraft:spectral_arrow"
+        } else {
+            self.kind.id()
+        }
+    }
     /// `Arrow.ID_EFFECT_COLOR` (`updateColor`): the opaque colour of the
     /// potion the arrow carries, from its tipped pickup item or the effect a
     /// stray, bogged or parched adds; -1 for none.
@@ -2296,6 +2305,26 @@ mod render_light_tests {
         assert_eq!(arrow.light_probe_y(1.0).floor(), 65.0);
         // The old probe, this tick's position, was 65.0 for every frame.
         assert_eq!((arrow.position.y + arrow.kind.eye_height()).floor(), 65.0);
+    }
+
+    #[test]
+    fn projectile_entity_type_parity() {
+        let arrow = shot(ProjectileKind::Arrow {
+            base_damage: 2.0,
+            critical: false,
+            effect: None,
+        });
+        assert_eq!(arrow.entity_type(), "minecraft:arrow");
+        let spectral = shot(ProjectileKind::Arrow {
+            base_damage: 2.0,
+            critical: false,
+            effect: Some(("minecraft:glowing", 200)),
+        });
+        assert_eq!(spectral.entity_type(), "minecraft:spectral_arrow");
+        assert_eq!(
+            shot(ProjectileKind::SmallFireball).entity_type(),
+            "minecraft:small_fireball"
+        );
     }
 }
 crate::impl_joined!(Projectile);
