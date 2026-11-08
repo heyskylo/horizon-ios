@@ -9,6 +9,7 @@ export interface LoadedCapture {
   handle: number;
   name: string;
   bytes: number;
+  data?: ArrayBuffer;
   meta: Envelope<MetaRow>;
   /** The side the panels show: the server when the capture has one, else the client. */
   side: Side;
@@ -64,7 +65,7 @@ export function useReader() {
         const side: Side = sides.includes("server") ? "server" : (sides[0] ?? "client");
         if (openHandle.current !== null) reader.close(openHandle.current);
         openHandle.current = handle;
-        setCapture({ handle, name, bytes: bytes.byteLength, meta, side, sides });
+        setCapture({ handle, name, bytes: bytes.byteLength, data: bytes, meta, side, sides });
       } catch (failure) {
         setCapture(null);
         setError(message(failure));

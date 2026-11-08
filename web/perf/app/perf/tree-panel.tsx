@@ -15,6 +15,21 @@ interface Props {
   capture: LoadedCapture;
 }
 
+const WRAPPERS = [
+  "spans::time",
+  "FnOnce::call_once",
+];
+
+function isWrapper(name: string): boolean {
+  return WRAPPERS.some((w) => name.includes(w));
+}
+
+function filterMerge(rows: TreeRow[]): TreeRow[] {
+  return rows
+    .filter((row) => !isWrapper(row.name))
+    .map((row) => ({ ...row, children: row.children ? filterMerge(row.children) : row.children }));
+}
+
 function Tree({
   rows,
   depth = 0,
@@ -37,7 +52,7 @@ function Tree({
             key={row.id}
             style={{ "--depth": depth, paddingLeft: "calc(var(--depth, 0) * 0.75rem)" } as CSSProperties}
           >
-            <div className={styles.meterRow}>
+            <div className={styles.meterRow} title={row.id}>
               <span className={styles.meterName} title={row.name}>
                 {hasChildren ? (
                   <button
@@ -72,6 +87,7 @@ export function TreePanel({ reader, capture }: Props) {
   const [rows, setRows] = useState<TreeRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [merge, setMerge] = useState(false);
 
   useEffect(() => {
     setError(null);
@@ -95,11 +111,18 @@ export function TreePanel({ reader, capture }: Props) {
     });
   };
 
+  const visibleRows = merge ? filterMerge(rows) : rows;
+
   if (error) return <p className={styles.error}>{error}</p>;
   if (rows.length === 0) return <p className={styles.empty}>{t("meta.empty")}</p>;
   return (
-    <div className={styles.meterList}>
-      <Tree rows={rows} collapsed={collapsed} toggle={toggle} />
+    <div className={styles.summary}>
+      <button type="button" className={styles.buttonSmall} onClick={() => setMerge((v) => !v)}>
+        {merge ? t("tree.mergeOn") : t("tree.mergeOff")}
+      </button>
+      <div className={styles.meterList}>
+        <Tree rows={visibleRows} collapsed={collapsed} toggle={toggle} />
+      </div>
     </div>
   );
 }

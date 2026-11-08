@@ -7,6 +7,8 @@ import type { DragEvent, KeyboardEvent } from "react";
 import { grouped } from "@/lib/format";
 import { t } from "@/lib/i18n";
 import { HealthPanel } from "./health-panel";
+import { GpuPanel } from "./gpu-panel";
+import { ComparePanel } from "./compare-panel";
 import { MetadataPanel } from "./metadata-panel";
 import { RawPanel } from "./raw-panel";
 import { SummaryPanel } from "./summary-panel";
@@ -20,6 +22,7 @@ import { WarningsPanel } from "./warnings-panel";
 import { HotPanel } from "./hot-panel";
 import { TreePanel } from "./tree-panel";
 import { useReader } from "./use-capture";
+import type { LoadedCapture } from "./use-capture";
 import styles from "./page.module.css";
 
 type Tab =
@@ -35,6 +38,8 @@ type Tab =
   | "warnings"
   | "hot"
   | "tree"
+  | "gpu"
+  | "compare"
   | "query";
 
 interface TabSpec {
@@ -53,6 +58,7 @@ const TABS: TabSpec[] = [
   { id: "summary", icon: <Icons.summary />, label: "tab.summary" },
   { id: "health", icon: <Icons.health />, label: "tab.health" },
   { id: "metadata", icon: <Icons.metadata />, label: "tab.metadata" },
+  { id: "gpu", icon: <Icons.health />, label: "tab.gpu" },
   { id: "spans", icon: <Icons.spans />, label: "tab.spans", initialRequest: PRESET("spans", '"filters": { "limit": 30 }') },
   { id: "ticks", icon: <Icons.ticks />, label: "tab.ticks", initialRequest: PRESET("ticks", '"filters": { "limit": 25 }') },
   { id: "world", icon: <Icons.world />, label: "tab.world", initialRequest: PRESET("world", '"filters": { "limit": 40 }') },
@@ -62,6 +68,7 @@ const TABS: TabSpec[] = [
   { id: "warnings", icon: <Icons.warnings />, label: "tab.warnings", initialRequest: PRESET("warnings") },
   { id: "hot", icon: <Icons.hot />, label: "tab.hot", initialRequest: PRESET("hot", '"filters": { "limit": 40 }') },
   { id: "tree", icon: <Icons.tree />, label: "tab.tree", initialRequest: PRESET("tree", '"filters": { "limit": 80 }') },
+  { id: "compare", icon: <Icons.query />, label: "tab.compare" },
   { id: "query", icon: <Icons.query />, label: "tab.query" },
 ];
 
@@ -70,10 +77,68 @@ export default function PerfPage() {
   const [tab, setTab] = useState<Tab>("summary");
   const [dragging, setDragging] = useState(false);
   const input = useRef<HTMLInputElement>(null);
+  const compareInput = useRef<HTMLInputElement>(null);
+
+  const [compareCapture, setCompareCapture] = useState<LoadedCapture | null>(null);
+  const [shareNotice, setShareNotice] = useState(false);
+  const [shareInfo, setShareInfo] = useState<string | null>(null);
+  const [shareError, setShareError] = useState<string | null>(null);
+  const [exportKind, setExportKind] = useState<string | null>(null);
 
   const choose = async (files: FileList | File[] | null) => {
     const file = Array.isArray(files) ? files[0] : files?.[0];
     if (file) await open(file, file.name);
+  };
+
+  const chooseCompare = async (files: FileList | File[] | null) => {
+    const file = Array.isArray(files) ? files[0] : files?.[0];
+    if (!file || !reader) return;
+    const bytes = await file.arrayBuffer();
+    const handle = reader.open(bytes);
+    setCompareCapture({
+      handle,
+      name: file.name,
+      bytes: bytes.byteLength,
+      data: bytes,
+      meta: { ok: true, op: "meta", rows: [], warnings: [] } as never,
+      side: capture?.side ?? "client",
+      sides: [capture?.side ?? "client"],
+    });
+  };
+
+  const exportCapture = async (kind: string) => {
+    if (!reader || !capture) return;
+    try {
+      const bytes = reader.export(capture.handle, { kind });
+      const blob = new Blob([bytes as unknown as BlobPart], { type: "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${capture.name}.${kind === "perfetto" ? "pb" : kind === "folded" ? "folded" : "pprof"}`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (failure) {
+      setShareError(failure instanceof Error ? failure.message : String(failure));
+    }
+  };
+
+  const shareCapture = async () => {
+    if (!capture) return;
+    setShareError(null);
+    try {
+      const response = await fetch("/api/perf/captures", {
+        method: "POST",
+        headers: { "content-type": "application/octet-stream" },
+        body: capture.data,
+      });
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+      const json = (await response.json()) as { url?: string; delete_token?: string };
+      setShareInfo(`${json.url ?? ""}\n${json.delete_token ?? ""}`);
+      setShareNotice(false);
+    } catch (failure) {
+      setShareError(failure instanceof Error ? failure.message : String(failure));
+      setShareNotice(false);
+    }
   };
 
   const drop = (event: DragEvent<HTMLElement>) => {
@@ -159,11 +224,51 @@ export default function PerfPage() {
                     {t(`side.${side}`)}
                   </button>
                 ))}
+              <button type="button" className={styles.tab} onClick={() => setShareNotice(true)}>
+                {t("share.button")}
+              </button>
+              <select
+                className={styles.tab}
+                value=""
+                onChange={(event) => {
+                  if (event.target.value) void exportCapture(event.target.value);
+                }}
+              >
+                <option value="">{t("tab.export")}</option>
+                <option value="pprof">pprof</option>
+                <option value="folded">folded</option>
+                <option value="perfetto">Perfetto</option>
+              </select>
+              <input
+                ref={compareInput}
+                type="file"
+                accept=".hzperf"
+                className={styles.fileInput}
+                onChange={(event) => void chooseCompare(event.target.files)}
+              />
+              <button type="button" className={styles.tab} onClick={() => compareInput.current?.click()}>
+                {t("tab.compare")}
+              </button>
               <button type="button" className={styles.tab} onClick={close}>
                 {t("app.close")}
               </button>
             </div>
           </section>
+          {shareNotice ? (
+            <div className={styles.drop}>
+              <p>{t("share.notice")}</p>
+              <div className={styles.actions}>
+                <button type="button" className={styles.button} onClick={() => void shareCapture()}>
+                  {t("share.button")}
+                </button>
+                <button type="button" className={styles.buttonSmall} onClick={() => setShareNotice(false)}>
+                  {t("common.close")}
+                </button>
+              </div>
+            </div>
+          ) : null}
+          {shareInfo ? <pre className={styles.pre}>{shareInfo}</pre> : null}
+          {shareError ? <p className={styles.error}>{shareError}</p> : null}
 
           <nav className={styles.tabBar} aria-label={t("app.tabs")}>
             {TABS.map(({ id, icon, label }) => (
@@ -184,6 +289,8 @@ export default function PerfPage() {
                 <SummaryPanel reader={reader} capture={capture} />
               ) : tab === "health" ? (
                 <HealthPanel reader={reader} capture={capture} />
+              ) : tab === "gpu" ? (
+                <GpuPanel reader={reader} capture={capture} />
               ) : tab === "metadata" ? (
                 <MetadataPanel reader={reader} capture={capture} />
               ) : tab === "spans" ? (
@@ -204,6 +311,8 @@ export default function PerfPage() {
                 <HotPanel reader={reader} capture={capture} />
               ) : tab === "tree" ? (
                 <TreePanel reader={reader} capture={capture} />
+              ) : tab === "compare" ? (
+                <ComparePanel reader={reader} base={capture} other={compareCapture} onPick={(file) => void chooseCompare([file])} />
               ) : (
                 <RawPanel
                   key={tab}

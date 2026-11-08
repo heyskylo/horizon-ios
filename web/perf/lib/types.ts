@@ -248,6 +248,7 @@ export interface CostRow {
 export interface QueryRequest {
   op: string;
   args?: string[];
+  by?: string;
   file?: string;
   filters?: Record<string, unknown>;
 }
