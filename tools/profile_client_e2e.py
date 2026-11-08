@@ -191,7 +191,7 @@ def check_gpu(bins, resources):
         time.sleep(RUN_S)
         stopped = ctl('profile', 'stop')
         file = work / stopped['path']
-        options = perf('query', 'meta', file)['rows'][0]['options']
+        options = perf('query', 'meta', file, '--side', 'client')['rows'][0]['options']
         assert options['gpu'] == 'passes', options
         warnings = [w['code'] for w in perf('query', 'warnings', file)['rows']]
         if 'WARNING_CODE_GPU_UNAVAILABLE' in warnings:
@@ -223,7 +223,7 @@ def check_gpu_env(bins, resources):
         time.sleep(RUN_S)
         assert ctl('profile', 'status')['capturing'] is True
         stopped = ctl('profile', 'stop')
-        options = perf('query', 'meta', work / stopped['path'])['rows'][0]['options']
+        options = perf('query', 'meta', work / stopped['path'], '--side', 'client')['rows'][0]['options']
         assert options['gpu'] == 'passes' and options['window_s'] is None, options
         print('PASS: HORIZON_SHADER_PACK_TIMING started a --gpu capture')
         return True
