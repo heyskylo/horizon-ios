@@ -3620,11 +3620,15 @@ pub struct TridentSave<'a> {
     pub life: i32,
     pub shake: u32,
     pub dealt_damage: bool,
-    pub creative_only: bool,
+    pub pickup: Pickup,
+    pub left_owner: bool,
+    pub has_been_shot: bool,
+    pub owner: Option<[i32; 4]>,
     pub no_gravity: bool,
     pub fire_ticks: i32,
     pub item: &'a crate::items::ItemStack,
 }
+/// `ThrownTrident.addAdditionalSaveData`, including its arrow/projectile state.
 pub fn trident_to_nbt(t: &TridentSave, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
     let mut tag = Base {
         id: "minecraft:trident",
@@ -3636,19 +3640,26 @@ pub fn trident_to_nbt(t: &TridentSave, uuid: [i32; 4], raw: Option<&Tag>) -> Tag
         fall_distance: 0.0,
     }
     .tag(raw);
-    // Projectile.addAdditionalSaveData: LeftOwner once set. A trident keeps no
-    // owner, and an ownerless projectile has left it on its first tick.
+    // Projectile.addAdditionalSaveData omits LeftOwner until it is true,
+    // including when raw NBT explicitly supplied false.
     if let Tag::Compound(map) = &mut tag {
-        map.entry("LeftOwner".into()).or_insert(Tag::Byte(1));
+        map.remove(&"LeftOwner".into());
+        map.remove(&"Owner".into());
+    }
+    if t.left_owner {
+        put(&mut tag, "LeftOwner", Tag::Byte(1));
+    }
+    if let Some(owner) = t.owner {
+        put(&mut tag, "Owner", Tag::IntArray(owner.to_vec()));
     }
     for (key, value) in [
         ("life", Tag::Short(t.life as i16)),
         ("shake", Tag::Byte(t.shake as i8)),
         ("inGround", Tag::Byte(i8::from(t.in_ground))),
         // AbstractArrow.Pickup: 0 disallowed, 1 allowed, 2 creative only.
-        ("pickup", Tag::Byte(if t.creative_only { 2 } else { 1 })),
+        ("pickup", Tag::Byte(t.pickup.byte())),
         ("damage", Tag::Double(2.0_f64.to_bits())),
-        ("HasBeenShot", Tag::Byte(1)),
+        ("HasBeenShot", Tag::Byte(i8::from(t.has_been_shot))),
         ("crit", Tag::Byte(0)),
         ("PierceLevel", Tag::Byte(0)),
         ("SoundEvent", string("minecraft:item.trident.hit_ground")),
@@ -3666,8 +3677,7 @@ pub fn trident_to_nbt(t: &TridentSave, uuid: [i32; 4], raw: Option<&Tag>) -> Tag
     }
     tag
 }
-/// (position, motion, yaw, pitch, in ground, life, shake, dealt damage,
-/// creative only, the trident item)
+/// `AbstractArrow` and `Projectile.readAdditionalSaveData` for a trident.
 pub struct TridentNbt {
     pub position: Vec3,
     pub motion: Vec3,
@@ -3677,11 +3687,15 @@ pub struct TridentNbt {
     pub life: i32,
     pub shake: u32,
     pub dealt_damage: bool,
-    pub creative_only: bool,
+    pub pickup: Pickup,
+    pub left_owner: bool,
+    pub has_been_shot: bool,
+    pub owner: Option<[i32; 4]>,
     pub no_gravity: bool,
     pub fire_ticks: i32,
     pub item: crate::items::ItemStack,
 }
+/// `ThrownTrident.readAdditionalSaveData`, including its arrow/projectile defaults.
 pub fn trident_from_nbt(tag: &Tag) -> Option<TridentNbt> {
     let [yaw, pitch] = rotation(tag);
     Some(TridentNbt {
@@ -3693,7 +3707,10 @@ pub fn trident_from_nbt(tag: &Tag) -> Option<TridentNbt> {
         life: number(tag.get("life")).unwrap_or(0) as i32,
         shake: number(tag.get("shake")).unwrap_or(0).max(0) as u32,
         dealt_damage: flag(tag, "DealtDamage"),
-        creative_only: number(tag.get("pickup")) == Some(2),
+        pickup: Pickup::from_byte(number(tag.get("pickup")).unwrap_or(0)),
+        left_owner: flag(tag, "LeftOwner"),
+        has_been_shot: flag(tag, "HasBeenShot"),
+        owner: owner_uuid(tag),
         no_gravity: flag(tag, "NoGravity"),
         fire_ticks: number(tag.get("Fire")).unwrap_or(0) as i32,
         item: tag
@@ -5115,7 +5132,10 @@ mod tests {
                 life: 9,
                 shake: 3,
                 dealt_damage: true,
-                creative_only: true,
+                pickup: Pickup::CreativeOnly,
+                left_owner: true,
+                has_been_shot: true,
+                owner: Some([5, 6, 7, 8]),
                 no_gravity: true,
                 fire_ticks: 0,
                 item: &trident,
@@ -5128,7 +5148,9 @@ mod tests {
         assert!(t.no_gravity);
         assert!(matches!(tag.get("NoGravity"), Some(Tag::Byte(1))));
         assert_eq!((t.in_ground, t.life, t.shake), (true, 9, 3));
-        assert_eq!((t.dealt_damage, t.creative_only), (true, true));
+        assert_eq!((t.dealt_damage, t.pickup), (true, Pickup::CreativeOnly));
+        assert!(t.left_owner && t.has_been_shot);
+        assert_eq!(t.owner, Some([5, 6, 7, 8]));
         assert_eq!((t.yaw, t.pitch), (10.0, 20.0));
     }
 
@@ -6073,7 +6095,14 @@ mod tests {
         assert_eq!(attributes(&armor_stand_from_nbt(&saved, 1).unwrap()), speed);
     }
     #[test]
-    fn ghast_and_trident_save_their_always_present_keys() {
+    fn summoned_trident_defaults_are_not_pickable_or_already_shot() {
+        let raw = Tag::compound([
+            ("Pos", doubles(&[0.0, 0.0, 0.0])),
+            ("LeftOwner", Tag::Byte(0)),
+        ]);
+        let loaded = trident_from_nbt(&raw).unwrap();
+        assert_eq!(loaded.pickup, Pickup::Disallowed);
+        assert!(!loaded.left_owner && !loaded.has_been_shot);
         let trident = ItemStack::new("minecraft:trident", 1);
         let tag = trident_to_nbt(
             &TridentSave {
@@ -6085,15 +6114,20 @@ mod tests {
                 life: 0,
                 shake: 0,
                 dealt_damage: false,
-                creative_only: false,
+                pickup: loaded.pickup,
+                left_owner: loaded.left_owner,
+                has_been_shot: loaded.has_been_shot,
+                owner: loaded.owner,
                 no_gravity: false,
                 fire_ticks: 0,
                 item: &trident,
             },
             [0; 4],
-            None,
+            Some(&raw),
         );
-        assert_eq!(tag.get("LeftOwner"), Some(&Tag::Byte(1)));
+        assert!(tag.get("LeftOwner").is_none());
+        assert_eq!(tag.get("HasBeenShot"), Some(&Tag::Byte(0)));
+        assert_eq!(tag.get("pickup"), Some(&Tag::Byte(0)));
     }
     #[test]
     fn orbs_keep_their_count() {
