@@ -106,6 +106,8 @@ pub struct Emitter {
     /// Entity emitters: the model bone it sits on, and how far from the camera it still runs.
     pub bone: Option<String>,
     pub max_distance: Option<f64>,
+    /// Block emitters: `animate_tick` (the default), `block_broken` or `block_cracking`.
+    pub tick_source: Option<String>,
 }
 
 const EMITTER_FIELDS: [&str; 19] = [
@@ -131,6 +133,10 @@ impl Emitter {
                 .map(str::to_owned),
             bone: o.get("bone").and_then(Json::as_str).map(str::to_owned),
             max_distance: o.get("max_distance").and_then(Json::as_f64),
+            tick_source: o
+                .get("tick_source")
+                .and_then(Json::as_str)
+                .map(str::to_owned),
         })
     }
 }

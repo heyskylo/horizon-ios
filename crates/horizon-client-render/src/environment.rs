@@ -155,6 +155,9 @@ pub struct Frame {
     pub sky_type: i32,
     pub dimension: String,
     pub player: [f64; 3],
+    /// The player's motion per tick (`p.speedSq`).
+    pub player_velocity: [f64; 3],
+    pub player_on_ground: bool,
     pub in_water: bool,
     pub camera: [f64; 3],
     /// The sky and block light at the camera.
