@@ -593,6 +593,9 @@ pub struct Streaming {
     pub extra: Vec<((i32, i32), i32)>,
     /// `extra`'s squares as a grid, made again when `extra` changes.
     cover: Option<ExtraCover>,
+    /// Set while `update` runs, after it refreshed `cover`: nothing else can
+    /// change `extra` meanwhile, so `cover` answers without comparing them.
+    cover_current: bool,
     /// Mesh the sections for drawing (false on a server thread).
     pub mesh: bool,
     /// The pregeneration band (`set_band`).
@@ -1155,6 +1158,7 @@ impl Streaming {
             relight_resent: false,
             extra: Vec::new(),
             cover: None,
+            cover_current: false,
             mesh: true,
             band: None,
             band_ranked: None,
@@ -1660,6 +1664,7 @@ impl Streaming {
             return (uploads, Vec::new());
         }
         ExtraCover::refresh(&mut self.cover, &self.extra);
+        self.cover_current = true;
         // The sweeps below walk every loaded column and proto chunk. Run them
         // at once when the view moves and every eighth tick otherwise: a
         // column can stay a little past the edge without anyone noticing.
@@ -1869,7 +1874,7 @@ impl Streaming {
                 extra: &self.extra,
                 forced: &self.forced,
                 mod_forced: &self.mod_forced,
-                cover: ExtraCover::matching(&self.cover, &self.extra),
+                cover: ExtraCover::current(&self.cover, &self.extra, self.cover_current),
                 band: self.band.as_ref(),
             };
             let (protos, generating) = (&self.protos, &self.generating);
@@ -2023,6 +2028,7 @@ impl Streaming {
         // A server draws nothing: its sections are never meshed.
         if !self.mesh {
             world.dirty_sections.clear();
+            self.cover_current = false;
             return (uploads, removed);
         }
         // Meshing once the column and its neighbours are lit, and the column
@@ -2043,7 +2049,7 @@ impl Streaming {
                 extra: &self.extra,
                 forced: &self.forced,
                 mod_forced: &self.mod_forced,
-                cover: ExtraCover::matching(&self.cover, &self.extra),
+                cover: ExtraCover::current(&self.cover, &self.extra, self.cover_current),
                 band: self.band.as_ref(),
             };
             self.waiting.retain(|&(x, sy, z)| {
@@ -2131,6 +2137,7 @@ impl Streaming {
                 );
             }
         }
+        self.cover_current = false;
         (uploads, removed)
     }
     fn schedule_generation(&mut self, world: &World, workers: usize) {
@@ -2141,7 +2148,7 @@ impl Streaming {
                 extra: &self.extra,
                 forced: &self.forced,
                 mod_forced: &self.mod_forced,
-                cover: ExtraCover::matching(&self.cover, &self.extra),
+                cover: ExtraCover::current(&self.cover, &self.extra, self.cover_current),
                 band: self.band.as_ref(),
             },
             world,
@@ -2275,7 +2282,7 @@ impl Streaming {
             extra: &self.extra,
             forced: &self.forced,
             mod_forced: &self.mod_forced,
-            cover: ExtraCover::matching(&self.cover, &self.extra),
+            cover: ExtraCover::current(&self.cover, &self.extra, self.cover_current),
             band: self.band.as_ref(),
         }
     }
@@ -2645,6 +2652,20 @@ impl ExtraCover {
         extra: &[((i32, i32), i32)],
     ) -> Option<&'a ExtraCover> {
         cover.as_ref().filter(|c| c.extra == extra)
+    }
+    /// [`Self::matching`], told whether `cover` is known to match: the
+    /// comparison reads every area, and `update` asks for each column it
+    /// looks at (a server holds an area per player).
+    fn current<'a>(
+        cover: &'a Option<ExtraCover>,
+        extra: &[((i32, i32), i32)],
+        known: bool,
+    ) -> Option<&'a ExtraCover> {
+        if known {
+            debug_assert!(cover.as_ref().is_none_or(|c| c.extra == extra));
+            return cover.as_ref();
+        }
+        Self::matching(cover, extra)
     }
     /// Rebuild the coverage index if `extra` changed; none for one area or none
     /// (a scan is as quick).
