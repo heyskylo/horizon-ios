@@ -4042,13 +4042,27 @@ and `id` say which:
 - `tutorial`: the hint, `move`, `look`, `find_tree`, `punch_tree`, `open_inventory`, `craft_planks` or `socialInteractions`;
 - `system`: `narrator_toggle`, `pack_load_failure`, `pack_download` (a server pack batch's progress), `low_disk_space`,
   `chunk_load_failure` or `chunk_save_failure`;
-- `now_playing`: an empty id, each time the music toast shows a new song.
+- `now_playing`: an empty id, each time the music toast shows a new song;
+- `mod`: a mod's own toast (`native_add_toast`, below), with the id the mod gave it.
 
 Set `cancel` and the toast isn't queued, shown or sounded. As in vanilla, an update to a toast already queued or shown
 is not an add: more recipes joining the recipe toast, or a system toast taking new text (`SystemToast.addOrUpdate`).
 A cancelled tutorial hint isn't asked again while it stays the current hint; a cancelled system toast is asked again at
 its next update. The startup menu's narrator toast is not told: it shows before the game's `Host` exists.
 Bundles need `"hooks": @API:toast_add@`.
+
+### Toasts a mod shows
+
+`native_add_toast(id, icon, title, description, challenge)` (client, `host.add_toast`) queues a toast of the mod's own
+in the five slots the advancement, recipe and system toasts share, drawn as vanilla's `AdvancementToast`: the item
+`icon` at 16 pixels (an unknown item draws none), `title` where the advancement toast's frame label goes ("Advancement
+Made!"), yellow, and `description` under it in white. A description longer than one line is wrapped at 125 pixels and
+fades in after the title, as an advancement's long title does. With `challenge` the title is pink and the challenge
+sound plays as the toast leaves the queue. It stays up as long as an advancement toast (5 seconds times the
+notification time setting). `native_toast_add` hears it first as kind `mod` with the mod's `id` (`mymod:quest/first`),
+so a pack can hide them. True when queued; false on a server, without a window and when cancelled. A quest mod's
+server half tells the player's client half (mod messages) and the client half calls it. Bundles need
+`"hooks": @API:add_toast@`.
 
 ### The client's tick
 
