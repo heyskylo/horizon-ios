@@ -29,11 +29,12 @@ fn groups<const N: usize>(json: &Value, names: [&str; N]) -> Result<[Attributes;
         out[0] = parse_attributes(field)?;
         return Ok(out);
     }
+    // A key beside the groups that is none of them is left alone, so a pack Polytone loads
+    // isn't refused over an entry it doesn't read either.
     for (key, value) in object {
-        let i = names
-            .iter()
-            .position(|n| n == key)
-            .ok_or_else(|| format!("{key:?} is no attribute group (expected one of {names:?})"))?;
+        let Some(i) = names.iter().position(|n| n == key) else {
+            continue;
+        };
         out[i] = parse_attributes(value).map_err(|e| format!("{key}: {e}"))?;
     }
     Ok(out)
@@ -144,6 +145,21 @@ mod tests {
     }
 
     #[test]
+    fn a_key_beside_the_groups_that_is_none_of_them_is_left_alone() {
+        let json = json!({
+            "attributes_modifiers": {
+                "base": {"visual/sky_color": "#FF0000"},
+                "comment": "the groups' neighbour"
+            }
+        });
+        let m = BiomeModifier::parse(&json, Some("minecraft:plains"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(m.base.len(), 1);
+        assert!(m.post_process.is_empty());
+    }
+
+    #[test]
     fn dimension_modifiers_read_the_weather_groups() {
         let json = json!({
             "targets": "minecraft:overworld",
@@ -173,16 +189,19 @@ mod tests {
     }
 
     #[test]
-    fn ignored_files_load_nothing_and_broken_ones_fail() {
+    fn ignored_files_load_nothing_and_broken_layers_fail() {
         let ignored = json!({"polytone_ignore": true, "attributes_modifiers": {"x": "REMOVE"}});
         assert!(
             BiomeModifier::parse(&ignored, Some("minecraft:forest"))
                 .unwrap()
                 .is_none()
         );
-        // `rain` is a dimension group, not a biome one.
-        let wrong_group = json!({"attributes_modifiers": {"base": {}, "rain": {}}});
-        assert!(BiomeModifier::parse(&wrong_group, Some("minecraft:forest")).is_err());
+        // `rain` is a dimension group, not a biome one: a biome modifier leaves it alone.
+        let wrong_group = json!({"attributes_modifiers": {"base": {}, "rain": {"x": "REMOVE"}}});
+        let m = BiomeModifier::parse(&wrong_group, Some("minecraft:forest"))
+            .unwrap()
+            .unwrap();
+        assert!(m.base.is_empty() && m.post_process.is_empty());
         let bad_layer = json!({"attributes_modifiers": {"visual/fog_color": null}});
         assert!(DimensionModifier::parse(&bad_layer, Some("minecraft:overworld")).is_err());
     }

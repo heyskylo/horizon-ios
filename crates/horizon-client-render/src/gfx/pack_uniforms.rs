@@ -355,6 +355,25 @@ pub const NAMES: &[&str] = &[
     "hasSkylight",
     "hasCeiling",
     "cloudTime",
+    // Horizon's own: Horizon Extras' dynamic lights (`dynamic_light.rs`), nearest first: how
+    // many, and each one's camera-relative position and light level (zeros past the count).
+    "horizonDynamicLightCount",
+    "horizonDynamicLight0",
+    "horizonDynamicLight1",
+    "horizonDynamicLight2",
+    "horizonDynamicLight3",
+    "horizonDynamicLight4",
+    "horizonDynamicLight5",
+    "horizonDynamicLight6",
+    "horizonDynamicLight7",
+    "horizonDynamicLight8",
+    "horizonDynamicLight9",
+    "horizonDynamicLight10",
+    "horizonDynamicLight11",
+    "horizonDynamicLight12",
+    "horizonDynamicLight13",
+    "horizonDynamicLight14",
+    "horizonDynamicLight15",
     "isElytraFlying",
     "cloudHeight",
 ];
@@ -929,6 +948,12 @@ impl FrameUniforms {
                 "gbufferProjectionInverse" => m4(projection_inverse),
                 "gbufferPreviousModelView" => m4(previous_view),
                 "gbufferPreviousProjection" => m4(previous_projection),
+                "horizonDynamicLightCount" => Value::i(&[frame.dynamic_lights.len() as i32]),
+                n if dynamic_light_index(n).is_some() => Value::f(
+                    &(dynamic_light_index(n).and_then(|k| frame.dynamic_lights.get(k)))
+                        .copied()
+                        .unwrap_or([0.0; 4]),
+                ),
                 "heldItemId" => Value::i(&[inputs.held_items[0]]),
                 "heldItemId2" => Value::i(&[inputs.held_items[1]]),
                 "heldBlockLightValue" => Value::i(&[inputs.held_light[0]]),
@@ -1786,6 +1811,29 @@ pub(super) mod initial_history_tests {
     }
 
     #[test]
+    fn the_dynamic_lights_reach_the_pack_nearest_first() {
+        let hud = HudBatch::new([800, 450]);
+        let mut f = frame(&hud);
+        let lights = [[1.0, 2.0, 3.0, 14.0], [-4.0, 0.5, 6.0, 7.0]];
+        f.dynamic_lights = &lights;
+        let mut u = FrameUniforms::default();
+        u.update(&f, &PackInputs::default(), [800, 450]);
+        let count = index("horizonDynamicLightCount").unwrap();
+        assert_eq!(int(&u, count), 2);
+        assert_eq!(float(&u, "horizonDynamicLight0")[..4], lights[0]);
+        assert_eq!(float(&u, "horizonDynamicLight1")[..4], lights[1]);
+        // Past the count, and the last of the sixteen: zeros.
+        assert_eq!(float(&u, "horizonDynamicLight2")[..4], [0.0; 4]);
+        assert_eq!(float(&u, "horizonDynamicLight15")[..4], [0.0; 4]);
+        assert_eq!(index("horizonDynamicLight16"), None);
+        // Off (no lights): none.
+        f.dynamic_lights = &[];
+        u.update(&f, &PackInputs::default(), [800, 450]);
+        assert_eq!(int(&u, count), 0);
+        assert_eq!(float(&u, "horizonDynamicLight0")[..4], [0.0; 4]);
+    }
+
+    #[test]
     fn environmental_smoothing_starts_at_the_first_inputs_without_resetting_each_frame() {
         let hud = HudBatch::new([800, 450]);
         let f = frame(&hud);
@@ -2532,6 +2580,12 @@ pub(super) mod initial_history_tests {
             post_effects: crate::post_chain::Request::none(),
         }
     }
+}
+
+/// `horizonDynamicLight<k>`'s `k`, for the lights `Frame::dynamic_lights` holds.
+fn dynamic_light_index(name: &str) -> Option<usize> {
+    let k: usize = name.strip_prefix("horizonDynamicLight")?.parse().ok()?;
+    (k < crate::dynamic_light::MAX).then_some(k)
 }
 
 #[cfg(test)]
