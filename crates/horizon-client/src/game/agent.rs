@@ -2291,6 +2291,14 @@ impl Game<'_> {
         None
     }
 
+    /// Whether a mined block is gone: air, or the bare fluid a waterlogged
+    /// block or ice leaves behind.
+    fn block_gone(&self, state: BlockStateId) -> bool {
+        let facts = self.res.facts();
+        let f = facts.get(state);
+        facts.is_air(state) || f.fluid != horizon_client::blocks::Fluid::None && !f.waterlogged
+    }
+
     fn step_break(
         &mut self,
         b: &mut Break,
@@ -2301,6 +2309,11 @@ impl Game<'_> {
         if b.collect_until.is_none() {
             if let Some(why) = interrupted {
                 return Some(json!({ "error": why, "pos": b.pos }));
+            }
+            if state != b.before && !self.block_gone(state) {
+                // Changed into another block while mined (dirt spread to
+                // grass, a crop grew, copper weathered): keep mining it.
+                b.before = state;
             }
             if state != b.before {
                 // Broken: collect what drops for a moment.
