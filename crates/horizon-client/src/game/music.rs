@@ -229,11 +229,9 @@ impl Game<'_> {
         let (background, probe_volume) = match eye {
             Some(eye) => {
                 let (dimension, biome) = (self.dim.id(), self.biome_at(eye));
-                let tables = self.res.music();
-                (
-                    tables.background(dimension, biome),
-                    tables.volume(dimension, biome),
-                )
+                self.res
+                    .music()
+                    .at(dimension, biome, world_biomes!(self).pack_file(biome))
             }
             None => (empty, 1.0),
         };
@@ -294,7 +292,11 @@ impl Game<'_> {
         };
         let feet = [p.position.x, p.position.y, p.position.z];
         let eye_y = feet[1] + f64::from(p.dimensions.eye_height);
-        let sounds = self.res.ambient().get(self.dim.id(), self.biome_at(feet));
+        let biome = self.biome_at(feet);
+        let sounds =
+            self.res
+                .ambient()
+                .at(self.dim.id(), biome, world_biomes!(self).pack_file(biome));
         let underwater = self.eye_in_water(feet[0], eye_y, feet[2]);
         let world = &self.world;
         let light = |b: [i32; 3]| {

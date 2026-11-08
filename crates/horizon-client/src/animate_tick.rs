@@ -632,7 +632,23 @@ fn do_animate_tick(
             .chunks
             .get(&(x >> 4, z >> 4))
             .map_or(0, |c| c.biome(x, y, z));
-        for &(ty, probability) in tables.ambient.get(biome as usize).into_iter().flatten() {
+        // A data pack's biome: its own particles (the tables have the
+        // built-in biomes' files). A type Horizon lacks still draws, so the
+        // others keep their place in the random sequence.
+        let info = ctx.biomes.get(biome);
+        let (builtin, pack) = match ctx.biomes.pack_file(&info.name) {
+            Some(_) => (&[][..], &info.ambient_particles[..]),
+            None => (
+                tables
+                    .ambient
+                    .get(biome as usize)
+                    .map_or(&[][..], |l| &l[..]),
+                &[][..],
+            ),
+        };
+        let entries = (builtin.iter().map(|&(ty, p)| (Some(ty), p)))
+            .chain(pack.iter().map(|(name, p)| (T::from_name(name), *p)));
+        for (ty, probability) in entries {
             // AmbientParticle.canSpawn: random.nextFloat() <= probability.
             let random = engine.random();
             if random.next_float() <= probability {
@@ -641,7 +657,9 @@ fn do_animate_tick(
                     f64::from(y) + random.next_double(),
                     f64::from(z) + random.next_double(),
                 ];
-                add(engine, ty, p, [0.0; 3]);
+                if let Some(ty) = ty {
+                    add(engine, ty, p, [0.0; 3]);
+                }
             }
         }
     }
