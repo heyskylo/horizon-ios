@@ -2762,9 +2762,10 @@ impl Game<'_> {
                             .play(&format!("minecraft:{sound}"), Some(at), 1.0, 1.0);
                     }
                 }
-                MobEvent::Tamed { .. } | MobEvent::Buck { .. } | MobEvent::StabDismount { .. } => {
-                    self.mount_event(&e)
-                }
+                MobEvent::Tamed { .. }
+                | MobEvent::Buck { .. }
+                | MobEvent::StabDismount { .. }
+                | MobEvent::EjectPassengers { .. } => self.mount_event(&e),
                 MobEvent::IronGolemHit {
                     target,
                     amount,
@@ -5074,7 +5075,9 @@ impl Game<'_> {
         let result = self.projectile_hit_inner(p, hit);
         // LivingEntity.actuallyHurt credits the shooter (a ServerPlayer) with the absorbed damage.
         self.settle_dealt_absorbed(p.owner == Some(Who::Player));
-        result
+        result?;
+        // The hit's hurt teleports an enderman or a shulker now (`hurtServer`).
+        self.settle_hurt_teleports()
     }
     fn projectile_hit_inner(&mut self, p: &Projectile, hit: Hit) -> Result<()> {
         let _attacker = self.knockback_scope_for(p.owner);
@@ -5876,12 +5879,22 @@ impl Game<'_> {
                     }
                 }
                 Who::Mob(id) => {
-                    if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
-                        && m.damage_projectile(4.0, source, aim, [p.velocity.x, p.velocity.z])
-                    {
-                        m.add_effect("minecraft:levitation", 200, 0);
-                        // Shulker.hurtServer: a shulker hit by a bullet.
-                        horizon_client::mobs::shulker::hit_by_bullet(m);
+                    let hurt = self.mobs.iter_mut().find(|m| m.id == id).is_some_and(|m| {
+                        let hurt =
+                            m.damage_projectile(4.0, source, aim, [p.velocity.x, p.velocity.z]);
+                        if hurt {
+                            // Shulker.hurtServer: a shulker hit by a bullet.
+                            horizon_client::mobs::shulker::hit_by_bullet(m);
+                        }
+                        hurt
+                    });
+                    if hurt {
+                        // The hurt's teleport (`teleportSomewhere`,
+                        // `hitByShulkerBullet`) comes before the levitation.
+                        self.settle_hurt_teleports()?;
+                        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+                            m.add_effect("minecraft:levitation", 200, 0);
+                        }
                     }
                 }
             },
