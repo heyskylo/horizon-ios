@@ -125,6 +125,7 @@ public final class LocatorBarClient {
     private static volatile boolean events;
     private static volatile boolean spawns;
     private static volatile boolean menus;
+    private static volatile boolean components;
     private static com.google.gson.JsonArray spans(net.minecraft.network.chat.Component message) {
         com.google.gson.JsonArray out = new com.google.gson.JsonArray();
         message.visit((style, text) -> {
@@ -232,6 +233,7 @@ public final class LocatorBarClient {
                     case "close-menu" -> players.get(w[1]).send(
                         new net.minecraft.network.protocol.game.ServerboundContainerClosePacket(Integer.parseInt(w[2])));
                     case "menus" -> menus = w[1].equals("on");
+                    case "components" -> components = w[1].equals("on");
                     case "dump" -> {
                         writeSessions(output, sessions);
                         stdout.println("dumped " + w[1]);
@@ -763,6 +765,10 @@ public final class LocatorBarClient {
                     }
                     if (state) recordState(p);
                     if (menus) recordMenu(p, r.payload);
+                    if (components) {
+                        var evidence = ComponentWireCapture.inspect(p, r.payload);
+                        if (evidence != null) record("component-wire " + evidence);
+                    }
                     if (hooks && p instanceof net.minecraft.network.protocol.game.ClientboundAddEntityPacket a) {
                         entityTypes.put(a.getId(), net.minecraft.world.entity.EntityType.getKey(a.getType()).toString());
                     }

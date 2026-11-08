@@ -146,9 +146,20 @@ impl Game<'_> {
                 (Target::Mob(id), e) => match self.mobs.iter_mut().find(|m| m.id == id) {
                     Some(m) => {
                         let before = m.extra.effects.len();
+                        let boosted = |m: &horizon_client::mobs::Mob| {
+                            m.extra
+                                .effects
+                                .iter()
+                                .any(|x| x.0 == "minecraft:health_boost")
+                        };
+                        let had_boost = boosted(m);
                         m.extra
                             .effects
                             .retain(|x| e.is_some_and(|e| x.0 != namespaced(e.id)));
+                        // LivingEntity.onEffectsRemoved -> refreshDirtyAttributes.
+                        if had_boost && !boosted(m) {
+                            horizon_client::mobs::finalize::health_boost_changed(m);
+                        }
                         let left = &m.extra.effects;
                         m.extra
                             .hidden_effects

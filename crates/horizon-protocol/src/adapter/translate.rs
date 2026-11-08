@@ -374,12 +374,7 @@ pub fn clientbound(
     Ok(Some((id, Some(out))))
 }
 
-/// Pinned entity type ids the translation looks for.
-pub(super) mod packet_ids_entity {
-    /// `minecraft:falling_block` in 26.3.
-    pub const FALLING_BLOCK: i32 = 52;
-    pub const PLAYER: i32 = 159;
-}
+pub(super) use super::pinned_ids::entity_type as packet_ids_entity;
 
 /// A serverbound packet with Horizon's `id`, as the older server numbers and lays it out: its id there and
 /// the payload. `None`: nothing is sent.
@@ -557,8 +552,30 @@ pub fn serverbound(
             };
             renumbered(id, payload)
         }
+        // 26.3 ends sign_update with the side (a VarInt); every older release reads it as a boolean right
+        // after the position, before the four lines.
+        (State::Play, sb::SIGN_UPDATE) => renumbered(id, sign_update(payload)?),
         _ => renumbered(id, payload.to_vec()),
     }
+}
+
+/// A sign_update payload as the older releases read it: position, side, four lines. 26.3 sends the side after
+/// the lines as a VarInt, which for 0 and 1 is one byte equal to the boolean.
+fn sign_update(payload: &[u8]) -> Result<Vec<u8>> {
+    let mut r = Reader::new(payload);
+    let pos = r.i64()?;
+    let mut lines = Vec::with_capacity(4);
+    for _ in 0..4 {
+        lines.push(r.string(384)?);
+    }
+    let front = r.varint()? == 1;
+    let mut w = Writer::new();
+    w.i64(pos);
+    w.bool(front);
+    for line in &lines {
+        w.string(line);
+    }
+    Ok(w.data)
 }
 
 /// 26.2's serverbound `swing` (play), which 26.3 replaced with `punch`.
@@ -659,9 +676,12 @@ fn tags(ids: &Ids, registries: &mut [configuration::RegistryTags]) {
             for &id in &tag.ids {
                 if ids.quirks.components_before_1_21_2
                     && registry.registry == "minecraft:entity_type"
-                    && matches!(remap.up(id), Some(90 | 91))
+                    && matches!(
+                        remap.up(id),
+                        Some(packet_ids_entity::OAK_BOAT | packet_ids_entity::OAK_CHEST_BOAT)
+                    )
                 {
-                    mapped.extend(if remap.up(id) == Some(90) {
+                    mapped.extend(if remap.up(id) == Some(packet_ids_entity::OAK_BOAT) {
                         v1_21_1::boats::TYPES
                     } else {
                         v1_21_1::boats::CHEST_TYPES
@@ -1009,11 +1029,7 @@ pub(crate) mod v1_21_10 {
     // `mount_screen_open` (the id tables pair them): only entity data needs a step.
     use crate::entity_data::{Value, serializer};
 
-    /// Entity types (26.3 ids) whose entity data 1.21.11 changed.
-    pub(crate) const BEE: i32 = 11;
-    pub(crate) const WOLF: i32 = 152;
-    pub(crate) const MANNEQUIN: i32 = 84;
-    pub(crate) const PLAYER: i32 = 159;
+    pub(crate) use crate::adapter::pinned_ids::entity_type::{BEE, MANNEQUIN, PLAYER, WOLF};
 
     /// 1.21.11 made the bee's and the wolf's anger end a LONG (an INT before) and an avatar's main arm a
     /// HUMANOID_ARM (a BYTE before, with the same 0 left, 1 right). Indexes as 1.21.10 numbers them.
@@ -1067,6 +1083,7 @@ pub(crate) mod v1_21_10 {
 /// 1.21.11 to 26.1.
 pub(crate) mod v1_21_11 {
     use super::*;
+    use crate::adapter::pinned_ids::entity_type as entity;
 
     /// 1.21.11's serverbound `swing` and `interact` (play).
     pub const SWING: i32 = 60;
@@ -1076,9 +1093,16 @@ pub(crate) mod v1_21_11 {
     /// Entity types (26.3 ids) whose class extends AgeableMob: 26.1 added a second boolean to it, after the
     /// baby flag (16), so their later entity data entries moved up one. Read off 26.1.2's EntityType
     /// registrations and class hierarchy.
+    #[rustfmt::skip]
     pub(crate) const AGEABLE: [i32; 39] = [
-        4, 7, 11, 19, 20, 21, 26, 30, 36, 37, 55, 56, 59, 62, 63, 65, 67, 79, 87, 88, 89, 92, 97,
-        99, 101, 105, 111, 114, 119, 122, 130, 132, 138, 141, 143, 145, 152, 155, 156,
+        entity::ARMADILLO, entity::AXOLOTL, entity::BEE, entity::CAMEL, entity::CAMEL_HUSK,
+        entity::CAT, entity::CHICKEN, entity::COW, entity::DOLPHIN, entity::DONKEY, entity::FOX,
+        entity::FROG, entity::HAPPY_GHAST, entity::GLOW_SQUID, entity::GOAT, entity::HOGLIN,
+        entity::HORSE, entity::LLAMA, entity::MOOSHROOM, entity::MULE, entity::NAUTILUS,
+        entity::OCELOT, entity::PANDA, entity::PARROT, entity::PIG, entity::POLAR_BEAR,
+        entity::RABBIT, entity::SHEEP, entity::SKELETON_HORSE, entity::SNIFFER, entity::SQUID,
+        entity::STRIDER, entity::TRADER_LLAMA, entity::TURTLE, entity::VILLAGER,
+        entity::WANDERING_TRADER, entity::WOLF, entity::ZOMBIE_HORSE, entity::ZOMBIE_NAUTILUS,
     ];
 
     /// 1.21.11's packet in 26.1's layout; `None` when it is laid out alike. Ids stay the server's.
@@ -1604,6 +1628,7 @@ pub(crate) mod client_layout_v1_21_5 {
 /// needed: `ids.item` and the registry).
 pub(crate) mod client_layout_v1_21_4 {
     use super::*;
+    use crate::adapter::pinned_ids::entity_type as entity;
     use crate::entity_data::{Value, serializer};
 
     /// The clientbound packet `id` a 1.21.4 server sent (`payload` in 1.21.4's layout), in 1.21.5's layout.
@@ -1751,19 +1776,19 @@ pub(crate) mod client_layout_v1_21_4 {
         Ok(w.data)
     }
 
-    /// Entity types (26.3 ids) whose entity data 1.21.5 changed, from the 1.21.4 wiki's classes.
-    pub(crate) const CHICKEN: i32 = 26;
-    pub(crate) const COW: i32 = 30;
-    pub(crate) const DOLPHIN: i32 = 36;
-    pub(crate) const EXPERIENCE_ORB: i32 = 50;
-    pub(crate) const MOOSHROOM: i32 = 87;
-    pub(crate) const PIG: i32 = 101;
-    pub(crate) const PIGLIN: i32 = 102;
-    pub(crate) const STRIDER: i32 = 132;
-    pub(crate) const TURTLE: i32 = 141;
-    pub(crate) const WOLF: i32 = 152;
+    pub(crate) use crate::adapter::pinned_ids::entity_type::{
+        CHICKEN, COW, DOLPHIN, EXPERIENCE_ORB, MOOSHROOM, PIG, PIGLIN, STRIDER, TURTLE, WOLF,
+    };
     /// Minecart, chest, furnace, hopper, spawner, TNT and command block minecarts: Abstract Minecart's fields.
-    pub(crate) const MINECARTS: [i32; 7] = [86, 25, 57, 66, 125, 137, 29];
+    pub(crate) const MINECARTS: [i32; 7] = [
+        entity::MINECART,
+        entity::CHEST_MINECART,
+        entity::FURNACE_MINECART,
+        entity::HOPPER_MINECART,
+        entity::SPAWNER_MINECART,
+        entity::TNT_MINECART,
+        entity::COMMAND_BLOCK_MINECART,
+    ];
 
     /// The index an entry of `kind` has on the other side: `up` from 1.21.4 to 1.21.5, otherwise back. `None` when
     /// the other release has no such field. Minecarts are not here (see `remap_entity_data`).
@@ -3058,5 +3083,31 @@ pub(super) mod tests_support {
     }
     pub fn advancements_26_2(ids: &'static Ids, payload: &[u8]) -> Result<Vec<u8>> {
         advancements(ids, payload)
+    }
+}
+
+#[cfg(test)]
+mod sign_update_tests {
+    use super::*;
+
+    #[test]
+    fn an_older_server_reads_the_side_before_the_lines() {
+        let mut w = Writer::new();
+        w.i64(0x0102_0304_0506_0708);
+        for line in ["Hi", "", "x", ""] {
+            w.string(line);
+        }
+        w.varint(1); // the front
+        let out = sign_update(&w.data).unwrap();
+        let mut expected = Writer::new();
+        expected.i64(0x0102_0304_0506_0708);
+        expected.bool(true);
+        for line in ["Hi", "", "x", ""] {
+            expected.string(line);
+        }
+        assert_eq!(out, expected.data);
+        w.data.pop();
+        w.varint(0); // the back
+        assert_eq!(sign_update(&w.data).unwrap()[8], 0);
     }
 }

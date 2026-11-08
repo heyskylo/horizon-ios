@@ -122,7 +122,7 @@ impl Game<'_> {
             Under::Nothing
         } else if self.recipe_under_pointer().is_some() {
             Under::Recipe {
-                direct_craft: false,
+                direct_craft: self.direct_craft_usable(),
                 alternatives: self.recipe_has_alternatives_under_pointer(),
             }
         } else if self.recipe_book_under_pointer() {
