@@ -701,7 +701,7 @@ mod shown_tests {
 
     #[test]
     fn an_offscreen_run_shows_no_splitscreen_window() {
-        // Starting, adding a player's window, Window 1 used again, splitscreen ending.
+        // The two answers every splitscreen window path asks: shown, and presented.
         assert!(!window_shown(true, true), "a window in use stays hidden");
         assert!(!window_shown(false, true));
         assert!(!presents(true), "nothing presented maps a Wayland window");
