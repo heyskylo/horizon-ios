@@ -1,6 +1,6 @@
 SetStewEffectFunction.Builder	skip:java		builder for the stew effect list; Horizon keeps the effects in loot.rs Context::run (set_stew_effect)
 SetWritableBookPagesFunction	missing		`horizon-world/src/loot.rs::modify` has no `set_writable_book_pages` arm, and no vanilla loot table asks for one
-SetWrittenBookPagesFunction	missing		no `set_written_book_pages` arm in `loot.rs::modify` (the arms run from `sequence` and `set_count` through `set_potion` to `set_stew_effect`); no vanilla loot table asks for one
+SetWrittenBookPagesFunction	home	crates/horizon-world/src/loot.rs,crates/horizon-items/src/item_data.rs	the set_written_book_pages arm applies the page operation to the written_book_content component; written_book_from_tag reads the content into the book's pages
 SmeltItemFunction.run	port	crates/horizon-world/src/loot.rs::Context::run	furnace_smelt arm: smelting recipe, use_input_count and stack cap
 SmeltItemFunction.smelted	skip:java		static builder factory
 ToggleTooltips	home	crates/horizon-client/src/game/commands/items.rs	the `/item modify` arm of cmd_item_modify writes the tooltip_display component's hide_tooltip and hidden_components as run does; the loot run has no arm, and no vanilla loot table uses it
