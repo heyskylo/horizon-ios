@@ -261,10 +261,16 @@ fn tone_scale(top: f32, headroom: f32, paper: f32) -> f32 {
 }
 
 // Hdr::keep_world: the HUD's backdrop, the world clipped to white with alpha 0, the frame as
-// the HUD found it before.
+// the HUD found it before. The HUD's target is 8-bit, as that frame was.
 @fragment fn fs_keep(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let w = textureLoad(frame, vec2<i32>(pos.xy), 0).rgb;
     return vec4(clamp(w, vec3(0.0), vec3(1.0)), 0.0);
+}
+
+// The backdrop `fs_keep` left in the HUD's 8-bit target for world `w`: where no HUD draws, the
+// target holds exactly this, so the HUD's own part below is exactly 0 there.
+fn backdrop(w: vec3<f32>) -> vec3<f32> {
+    return round(clamp(w, vec3(0.0), vec3(1.0)) * 255.0) / 255.0;
 }
 
 // The HUD over the world in gamma, the space the HUD blends in: its own part, what its backdrop
@@ -273,9 +279,9 @@ fn tone_scale(top: f32, headroom: f32, paper: f32) -> f32 {
 // 100%, that is the HUD's picture as drawn.
 fn layered(at: vec2<i32>) -> vec3<f32> {
     let w = max(textureLoad(frame, at, 0).rgb, vec3(0.0));
-    let p = clamp(textureLoad(hud, at, 0).rgb, vec3(0.0), vec3(1.0));
+    let p = textureLoad(hud, at, 0).rgb;
     let c = textureLoad(coverage, at, 0).r;
-    let h = max(p - (1.0 - c) * min(w, vec3(1.0)), vec3(0.0));
+    let h = max(p - (1.0 - c) * backdrop(w), vec3(0.0));
     return h * pow(params.ui, 1.0 / 2.2) + (1.0 - c) * w;
 }
 
@@ -310,9 +316,9 @@ override screenshot_shoulder: bool = true;
     if screenshot_world_only {
         return vec4(mapped, 1.0);
     }
-    let p = clamp(textureLoad(hud, at, 0).rgb, vec3(0.0), vec3(1.0));
+    let p = textureLoad(hud, at, 0).rgb;
     let c = textureLoad(coverage, at, 0).r;
-    let h = max(p - (1.0 - c) * min(w, vec3(1.0)), vec3(0.0));
+    let h = max(p - (1.0 - c) * backdrop(w), vec3(0.0));
     return vec4(h + (1.0 - c) * mapped, 1.0);
 }
 

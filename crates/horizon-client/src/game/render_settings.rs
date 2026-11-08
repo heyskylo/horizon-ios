@@ -2,6 +2,20 @@
 //! shader pack's translucent layers, and the far terrain (LOD) distances.
 use super::*;
 
+#[derive(Default)]
+pub(super) struct FrameAttempt(Option<FrameKey>);
+
+type FrameKey = (bool, bool, PathBuf, Option<Option<horizon_shader_api::Api>>);
+
+impl FrameAttempt {
+    // Remember attempts, including failures, until the requested configuration changes.
+    fn changed(&mut self, key: FrameKey) -> bool {
+        let changed = self.0.as_ref() != Some(&key);
+        self.0 = Some(key);
+        changed
+    }
+}
+
 impl Game<'_> {
     pub(super) fn renderer_for(
         &self,
@@ -28,7 +42,7 @@ impl Game<'_> {
     }
     /// Under `HORIZON_HDR_FRAME=float` the frame follows what draws the picture
     /// (docs/design/hdr-linear-light.md, "When it changes"): when HDR, Smooth Gradients or the
-    /// pack picked call for another frame than the renderer's, the renderer is made again before
+    /// pick (unless refused) call for another frame than the renderer's, it is made again before
     /// this frame draws. Without the switch a frame stays until the next start, as before.
     pub(super) fn follow_frame(&mut self) {
         if !native_shaders::linear_frame_switch()
@@ -37,17 +51,27 @@ impl Game<'_> {
         {
             return;
         }
-        let horizon = &self.settings.horizon;
-        let key = (
-            horizon.hdr_wanted(),
-            horizon.wide_frame(),
-            shader_packs::picked_pack(&self.settings).to_owned(),
+        let picked = shader_packs::picked_pack(&self.settings);
+        let path = self.native_shaders.resolve_path(
+            &Self::shader_packs_dir(),
+            picked,
+            shader_packs::dev_pack().is_some(),
         );
-        if self.frame_followed.as_ref() == Some(&key) {
+        let available = path.exists()
+            && path.file_name().is_none_or(|f| {
+                !shader_packs::active_pack(&f.to_string_lossy(), &self.settings.mods).is_empty()
+            });
+        let outcome = if available {
+            native_shaders::outcome(&path)
+        } else {
+            Some(None)
+        };
+        let horizon = &self.settings.horizon;
+        let wide_frame = horizon.wide_frame();
+        let key = (horizon.hdr_wanted(), wide_frame, path, outcome);
+        if !self.frame_attempted.changed(key) {
             return;
         }
-        let wide_frame = key.1;
-        self.frame_followed = Some(key);
         let shape = shader_packs::picked_pack_shape(&self.settings);
         if self
             .renderer
@@ -182,5 +206,33 @@ impl Game<'_> {
         } else {
             self.streaming.radius
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FrameAttempt;
+    use horizon_shader_api::Api;
+
+    #[test]
+    fn failed_frame_attempt_waits_for_a_policy_or_setting_change() {
+        let mut attempts = FrameAttempt::default();
+        let mut rebuilds = 0;
+        for key in [
+            (true, true, "p", None),
+            (true, true, "p", None),
+            (true, true, "p", Some(Some(Api::V0_2))),
+            (true, true, "p", Some(Some(Api::V0_2))),
+            (true, true, "p", Some(None)),
+            (true, true, "p", Some(None)),
+            (true, true, "q", None),
+            (false, false, "q", None),
+        ] {
+            if attempts.changed((key.0, key.1, key.2.into(), key.3)) {
+                // A replacement fails: no success is recorded, just the attempted key.
+                rebuilds += 1;
+            }
+        }
+        assert_eq!(rebuilds, 5);
     }
 }
