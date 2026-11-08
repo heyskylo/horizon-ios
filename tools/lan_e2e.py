@@ -6009,6 +6009,35 @@ def check_boats(host, guest, out):
         try:
             boat = board(player, 'oak_boat', (bx + 0.5, y, z + 0.5))
             start = boat['position']
+            # startAttack must reject a paddling rider before even swinging.
+            # Aim into the sky so holding attack cannot enter continueAttack's
+            # separate block-mining path. Test each movement key independently.
+            player.raw('look', '0', '-80')
+            swings = player('state')['swings']
+            for key in ('w', 's', 'a', 'd'):
+                player.script([f'key {key} down', 'wait 2', 'mouse left click',
+                               'wait 2', f'key {key} up', 'wait 2'])
+                assert player('state')['swings'] == swings, \
+                    f'{label}: attacking while paddling with {key} swung the hand'
+            player('command', command='give @s minecraft:spyglass')
+            player.wait(5)
+            player.raw('select', 'minecraft:spyglass')
+            player.script(['pad stick left 0 1', 'wait 2', 'mouse left click',
+                           'mouse right down', 'wait 5'])
+            busy = player('state')
+            assert busy['swings'] == swings and busy.get('using') is None, \
+                f'{label}: controller paddling allowed an attack or item use: {busy}'
+            player.script(['mouse right up', 'pad release', 'wait 5'])
+            player.raw('mouse', 'left', 'click')
+            player.wait(10)
+            assert player('state')['swings'] == swings + 1, \
+                f'{label}: attacking after paddling stopped did not resume'
+            player.script(['mouse right down', 'wait 5'])
+            assert player('state').get('using') is not None, \
+                f'{label}: item use after paddling stopped did not resume'
+            player.script(['mouse right up', 'wait 5'])
+            player('command', command='clear @s minecraft:spyglass')
+            player.wait(5)
             # The summoned boat faces south: forward paddles it along the pool.
             player.raw('key', 'w', 'down')
             player.wait(30)
