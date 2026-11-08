@@ -1180,7 +1180,6 @@
   "Builds on the Horizon you play": "Lässt sich mit deinem Horizon bauen",
   "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Braucht native Hook-Punkte v{needs}, dein Horizon hat v{has}: aktualisiere zuerst Horizon",
   "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Für Horizon {pin} gemacht, aber {mods} sind an einen anderen Commit gebunden: der Build fragt nach „Trotzdem bauen“ und kompiliert vielleicht nicht",
-  "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Für Horizon {pin} gemacht, du spielst {yours}: der Launcher baut dein Spiel auf {pin}",
   "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
   "Tags": "Tags",
   "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on.": "Die intelligente App-Steuerung (Smart App Control) von Windows blockiert den Build (os error 4551). Sie lässt nur signierte Programme laufen, und ein nativer Build führt Programme aus, die niemand signiert hat: die, die er auf diesem Computer kompiliert, und einige des Compilers selbst. Um native Mods zu bauen, schalte sie unter Windows-Sicherheit > App- & Browsersteuerung > Einstellungen für intelligente App-Steuerung aus und baue dann erneut. Auf manchen Windows-Versionen lässt sie sich ohne Neuinstallation von Windows nicht wieder einschalten. Inhalts-Mods (.hmod) brauchen keinen Build und funktionieren auch mit ihr.",
@@ -1259,5 +1258,11 @@
   "Recommended": "Empfohlen",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Eine ältere Version, {version}, baut auf dem Horizon, das du spielst: Installieren wählt sie",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: Version {version} ließ sich nicht bauen, versuche {older}",
-  "Use recommended (kept at {version})": "Empfohlene nutzen (bei {version} gehalten)"
+  "Use recommended (kept at {version})": "Empfohlene nutzen (bei {version} gehalten)",
+  "Only what works on {instance}": "Nur was auf {instance} läuft",
+  "{count} versions that don't work on {instance} are hidden": "{count} Versionen, die auf {instance} nicht laufen, sind ausgeblendet",
+  "Made for Horizon {pin}: the launcher builds it on {yours}, the one you play, and on {pin} only if it doesn't compile there": "Gemacht für Horizon {pin}: Der Launcher baut ihn auf {yours}, dem, das du spielst, und nur auf {pin}, wenn er dort nicht kompiliert",
+  "{mods} didn't build on the Horizon you play: building on the one they were made for": "{mods} ließen sich auf dem Horizon, das du spielst, nicht bauen: baue auf dem, für das sie gemacht sind",
+  "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Im letzten Build auf Horizon {commit} wegen {mods}, nicht auf {horizon}",
+  "In the last build, on {horizon}": "Im letzten Build auf {horizon}"
 }

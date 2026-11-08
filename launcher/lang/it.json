@@ -1180,7 +1180,6 @@
   "Builds on the Horizon you play": "Builds on the Horizon you play",
   "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first",
   "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile",
-  "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}",
   "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
   "Tags": "Tag",
   "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on.": "Il Controllo intelligente delle app (Smart App Control) di Windows sta bloccando la compilazione (os error 4551). Lascia eseguire solo programmi firmati, e una compilazione nativa esegue programmi che nessuno ha firmato: quelli che compila su questo computer e alcuni del compilatore stesso. Per compilare le mod native, disattivalo in Sicurezza di Windows > Controllo app e browser > Impostazioni di Controllo intelligente delle app, poi compila di nuovo. In alcune versioni di Windows non si può riattivare senza reinstallare Windows. Le mod di contenuto (.hmod) non richiedono compilazione e funzionano con esso attivo.",
@@ -1259,5 +1258,11 @@
   "Recommended": "Consigliata",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Una versione più vecchia, {version}, compila sull'Horizon a cui giochi: l'installazione sceglie quella",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: la versione {version} non è stata compilata, provo {older}",
-  "Use recommended (kept at {version})": "Usa la consigliata (tenuta a {version})"
+  "Use recommended (kept at {version})": "Usa la consigliata (tenuta a {version})",
+  "Only what works on {instance}": "Solo ciò che funziona su {instance}",
+  "{count} versions that don't work on {instance} are hidden": "Sono nascoste {count} versioni che non funzionano su {instance}",
+  "Made for Horizon {pin}: the launcher builds it on {yours}, the one you play, and on {pin} only if it doesn't compile there": "Fatto per Horizon {pin}: il launcher lo compila su {yours}, quello a cui giochi, e su {pin} solo se lì non compila",
+  "{mods} didn't build on the Horizon you play: building on the one they were made for": "{mods} non sono stati compilati sull'Horizon a cui giochi: compilo su quello per cui sono stati fatti",
+  "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Nell'ultima compilazione, su Horizon {commit} per {mods}, non su {horizon}",
+  "In the last build, on {horizon}": "Nell'ultima compilazione, su {horizon}"
 }
