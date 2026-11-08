@@ -101,6 +101,8 @@ def main():
     parser.add_argument('--vehicle-kill-diagnostic', action='store_true',
                         help='retain random drop UUID/motion and whole vehicle bodies outside the explicit-content gate')
     parser.add_argument('--only', help='run only corpus groups whose name contains this')
+    parser.add_argument('--vehicle-container-diagnostic', action='store_true',
+                        help='retain all vehicle Tags-list and whole-body observations outside the saved-field gate')
     parser.add_argument('--array-storage-diagnostic', action='store_true',
                         help='run all numeric-array edit cases, including the known wildcard/string storage side effects')
     parser.add_argument('--sulfur-power-load-diagnostic', action='store_true',
@@ -220,6 +222,13 @@ def main():
     if not args.only:
         groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_JUKEBOX_CLOCK]
         groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_GUEST_CLOSE]
+    if args.vehicle_container_diagnostic:
+        try:
+            from .vehicle_container_corpus import vehicle_containers
+        except ImportError:
+            from vehicle_container_corpus import vehicle_containers
+        groups = [(name, vehicle_containers(corpus_module.cmd, diagnostic=True)
+                   if name == 'vehicle container saved fields' else ops) for name, ops in groups]
     if args.macro_source_type_fixture or args.only == "macro source type error":
         groups = [(name, ops) for name, ops in groups if name == "macro source type error"]
     elif not args.only:
@@ -384,9 +393,6 @@ def main():
         groups = [g for g in groups if g[0] == args.only]
     if any(n in corpus_module.ISOLATED_EFFECTIVE_PRESENCE for n, _ in groups) and len(groups) != 1:
         parser.error('effective presence fixture requires exact --only group')
-    if args.seed_sync_gaps_diagnostic:
-        from seed_sync_corpus import cases as seed_sync_proof
-        groups = [('setup', corpus_module.group_setup()), ('seed sync proof', seed_sync_proof(corpus_module.cmd, corpus_module.setup, gaps=True))]
     if args.only in corpus_module.ISOLATED_FUNCTION_FEEDBACK:
         groups = [g for g in groups if g[0] == args.only]
     if args.only in corpus_module.ISOLATED_JUKEBOX_CLOCK:

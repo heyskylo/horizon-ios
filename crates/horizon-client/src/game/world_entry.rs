@@ -59,8 +59,9 @@ impl Game<'_> {
                 name,
                 cookies,
                 lan,
+                realm,
             }) => {
-                self.connect_server_with_options(&address, &name, cookies, lan)?;
+                self.connect_server_with_options(&address, &name, cookies, lan, realm)?;
             }
             Some(PendingWorldEntry::StudioReplay(path)) => {
                 let path_str = path.to_string_lossy().to_string();

@@ -12,7 +12,7 @@
     return oit_transmittance_fragment(entity_color(in, front).a, in.clip);
 }
 @fragment fn fs_oit_entity_accumulate(in: Out, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    return oit_accumulate_fragment(entity_written_color(in, front), in.clip);
+    return oit_accumulate_fragment(entity_written_color(in, entity_color(in, front)), in.clip);
 }
 // Text keeps its source gain, as fs_entity_unmarked does in the forward pass.
 @fragment fn fs_oit_text_accumulate(in: Out, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {

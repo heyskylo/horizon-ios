@@ -310,6 +310,7 @@ impl Game<'_> {
             Target::Crystal(id) => {
                 self.command_damage_crystal(id, ty, Self::damage_kind(ty), cause.or(by))
             }
+            Target::Stand(id) => self.command_damage_stand(id, ty, cause.or(by)),
             _ => false,
         }
     }

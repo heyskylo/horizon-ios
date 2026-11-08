@@ -52,8 +52,8 @@ DiscreteVoxelShape.isFull	port	crates/horizon-core/src/geometry/shape.rs::VoxelS
 DiscreteVoxelShape.isEmpty	port	crates/horizon-core/src/geometry/shape.rs::VoxelShape::is_empty	-
 DiscreteVoxelShape.firstFull	port	crates/horizon-core/src/geometry/shape.rs::VoxelShape::min_at	returns the coordinate, not the index; an empty column gives +infinity
 DiscreteVoxelShape.lastFull	port	crates/horizon-core/src/geometry/shape.rs::VoxelShape::max_at	returns the coordinate, not the index; an empty column gives -infinity
-DiscreteVoxelShape.forAllEdges	skip:data		edge outline is precomputed in the outline table (game.rs outline_boxes); no runtime edge walk
-DiscreteVoxelShape.forAllAxisEdges	skip:data		edge outline is precomputed in the outline table (game.rs outline_boxes)
+DiscreteVoxelShape.forAllEdges	port	crates/horizon-core/src/geometry/shape.rs::VoxelShape::edges	merged boundary edges in axis-cycle order; built once into the collision context's outline_edges table (collision.rs) and exported by mod_content::shape_edges
+DiscreteVoxelShape.forAllAxisEdges	inline	crates/horizon-core/src/geometry/shape.rs::VoxelShape::edges	the per-axis edge walk is folded into VoxelShape::edges
 DiscreteVoxelShape.forAllAxisFaces	port	crates/horizon-world/src/worldgen/tree.rs::update_shape_at_edge	the face walk of the tree shape; forAllFaces is used only there
 Shapes.box	port	crates/horizon-core/src/geometry/shape/create.rs::VoxelShape::from_box	-
 Shapes.or	port	crates/horizon-core/src/geometry/shape/create.rs::VoxelShape::join	OR operation

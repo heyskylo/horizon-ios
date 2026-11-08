@@ -1869,7 +1869,7 @@ impl Screen {
             };
             profile.textures()?
         };
-        let textures = crate::skins::unpack(&value, signature, &crate::skins::TEXTURE_URIS);
+        let textures = crate::skins::unpack(&value, signature, crate::skins::texture_uris());
         let url = textures.skin?;
         let location = crate::skins::skin_location(&crate::skins::texture_hash(&url)?);
         let mut downloads = self.skin_workers.downloads.lock().ok()?;
