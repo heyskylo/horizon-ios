@@ -944,12 +944,13 @@ impl Projectile {
         let to = from.add_vector(self.velocity);
         let block = w.clip(from, to);
         let end = block.map_or(to, |b| b.0);
+        let margin = self.hit_margin();
         let mut best: Option<(Who, Vec3, f64)> = None;
         for (who, b) in w.targets() {
             if Some(*who) == self.owner && !self.left_owner {
                 continue;
             }
-            if let Some(at) = b.inflate(Vec3::new(0.3, 0.3, 0.3)).clip(from, end) {
+            if let Some(at) = b.inflate(Vec3::new(margin, margin, margin)).clip(from, end) {
                 let d = (at.x - from.x).powi(2) + (at.y - from.y).powi(2) + (at.z - from.z).powi(2);
                 if best.is_none_or(|bb| d < bb.2) {
                     best = Some((*who, at, d));
@@ -1180,6 +1181,12 @@ impl Projectile {
     pub fn take_shoot_event(&mut self) -> Option<Vec3> {
         self.shoot_event.take()
     }
+    /// `ProjectileUtil.computeMargin`: how far the boxes of the entities on
+    /// its way grow, from nothing for its first two ticks up to 0.3 at its
+    /// eighth (`tickCount`, which `age` counts, is raised before the tick).
+    fn hit_margin(&self) -> f64 {
+        f64::from(((self.age as i32 - 2) as f32 / 20.0).clamp(0.0, 0.3))
+    }
     fn tick_inner(&mut self, w: &impl ProjectileWorld, impact: bool) -> (bool, Hit) {
         // `Entity.setOldPosAndRot` (the previous position and rotation the
         // renderer interpolates from), kept across the `impact` flag's arrival
@@ -1234,13 +1241,14 @@ impl Projectile {
         );
         let block = w.clip(from, to);
         let end = block.map_or(to, |b| b.0);
-        // ProjectileUtil.getEntityHitResult: boxes inflated by 0.3 along the path.
+        // ProjectileUtil.getEntityHitResult: boxes inflated by `computeMargin` along the path.
+        let margin = self.hit_margin();
         let mut best: Option<(Who, Vec3, f64)> = None;
         for (who, b) in w.targets() {
             if Some(*who) == self.owner && !self.left_owner {
                 continue;
             }
-            let inflated = b.inflate(Vec3::new(0.3, 0.3, 0.3));
+            let inflated = b.inflate(Vec3::new(margin, margin, margin));
             if let Some(at) = inflated.clip(from, end) {
                 let d = (at.x - from.x).powi(2) + (at.y - from.y).powi(2) + (at.z - from.z).powi(2);
                 if best.is_none_or(|bb| d < bb.2) {
@@ -2118,9 +2126,11 @@ mod tests {
 
     #[test]
     fn ender_pearl_hits_a_wind_charge_box() {
+        // Through the charge's box itself: a pearl on its first tick has no
+        // margin (`ProjectileUtil.computeMargin`) to reach one it passes near.
         let mut pearl = Projectile::new(
             ProjectileKind::EnderPearl,
-            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 1.1, 0.0),
             Some(Who::Player),
         );
         pearl.left_owner = true;
