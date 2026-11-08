@@ -1,115 +1,141 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { HorizonPerf } from "@/lib/generated/horizon_perf";
-import { num } from "@/lib/format";
+import { groupsIn, modCrates } from "@/lib/crate-group";
 import { t } from "@/lib/i18n";
-import { mergeTree } from "@/lib/merge-tree";
+import { ALL_CLOSED, HOT_OPEN } from "@/lib/tree-model";
+import type { OpenState } from "@/lib/tree-model";
+import { sampleFilters } from "@/lib/tree-options";
+import type { GroupKind, SampleOptions, SampleSelection } from "@/lib/tree-options";
 import type { TreeRow } from "@/lib/types";
+import { amountKind } from "@/lib/units";
+import { GroupList, ScopedTree } from "./tree-groups";
+import { TreeDetail } from "./tree-detail";
+import { TreeBody, TreeHeader } from "./tree-rows";
+import { TREE_SHAPE, TreeEnvProvider, useSampleOptions } from "./tree-state";
+import type { Scope, Target, TreeEnv } from "./tree-state";
+import { TreeLegend, TreeToolbar } from "./tree-toolbar";
 import { useRows } from "./use-capture";
 import type { LoadedCapture } from "./use-capture";
-import { Icons } from "./icons";
 import styles from "./page.module.css";
+import tree from "./tree.module.css";
 
 interface Props {
   reader: HorizonPerf;
   capture: LoadedCapture;
 }
 
-function Tree({
-  rows,
-  depth = 0,
-  max,
-  collapsed,
-  startCollapsed,
-  toggle,
-}: {
-  rows: TreeRow[];
-  depth?: number;
-  max: number;
-  collapsed: Set<string>;
-  startCollapsed: boolean;
-  toggle: (id: string) => void;
-}) {
+const WHOLE: Scope = { id: "", filters: null };
+
+interface ViewProps extends Props {
+  options: SampleOptions;
+}
+
+function TreeView({ reader, capture, options }: ViewProps) {
+  const [selection, setSelection] = useState<SampleSelection>(options.selections[0]);
+  const [group, setGroup] = useState<GroupKind>("none");
+  const [thread, setThread] = useState<string | null>(null);
+  const [merge, setMerge] = useState(false);
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState<OpenState>(HOT_OPEN);
+  const [selected, select] = useState<Target | null>(null);
+  const [focused, setFocused] = useState<Target | null>(null);
+
+  const filters = useMemo(() => sampleFilters(selection, thread), [selection, thread]);
+  const meta = capture.meta.rows.find((row) => row.side === capture.side);
+  const mods = useMemo(() => modCrates(meta?.mods ?? []), [meta]);
+  const whole = useRows<TreeRow>(reader, capture, "tree", { ...filters, ...TREE_SHAPE });
+
+  const fresh = useCallback(() => {
+    setOpen(HOT_OPEN);
+    select(null);
+    setFocused(null);
+  }, []);
+
+  const env: TreeEnv = {
+    reader,
+    capture,
+    filters,
+    merge,
+    query,
+    mods,
+    kind: amountKind(whole.reply?.unit),
+    unit: whole.reply?.unit,
+    open,
+    setOpen,
+    selected,
+    select,
+    focus: setFocused,
+  };
+
+  if (whole.error) return <p className={styles.error}>{whole.error}</p>;
   return (
-    <>
-      {rows.map((row) => {
-        const hasChildren = Boolean(row.children?.length);
-        const isCollapsed = collapsed.has(row.id) !== startCollapsed;
-        return (
-          <div key={row.id}>
-            <div className={styles.meterRow} title={row.id}>
-              <span className={styles.meterName} title={row.name} style={{ paddingLeft: depth * 14 }}>
-                {hasChildren ? (
-                  <button
-                    type="button"
-                    className={styles.disclosure}
-                    aria-expanded={!isCollapsed}
-                    aria-label={row.name}
-                    onClick={() => toggle(row.id)}
-                  >
-                    {isCollapsed ? <Icons.chevronRight /> : <Icons.chevronDown />}
-                  </button>
-                ) : (
-                  <span className={styles.disclosureSpace} />
-                )}
-                {row.name}
-              </span>
-              <span className={styles.meterTrack} aria-hidden="true">
-                <span className={styles.meterFill} style={{ width: `${(row.total / max) * 100}%` }} />
-              </span>
-              <span className={styles.meterValue}>{num(row.total, 2)} ms</span>
-              <span className={styles.meterExtra}>{num(row.pct, 1)}%</span>
-            </div>
-            {hasChildren && !isCollapsed && row.children ? (
-              <Tree rows={row.children} depth={depth + 1} max={max} collapsed={collapsed} startCollapsed={startCollapsed} toggle={toggle} />
-            ) : null}
-          </div>
-        );
-      })}
-    </>
+    <TreeEnvProvider value={env}>
+      <TreeToolbar
+        options={options}
+        side={capture.side}
+        selection={selection}
+        group={group}
+        thread={thread}
+        merge={merge}
+        query={query}
+        onSelection={(value) => {
+          setSelection(value);
+          fresh();
+        }}
+        onGroup={(value) => {
+          setGroup(value);
+          fresh();
+        }}
+        onThread={(value) => {
+          setThread(value);
+          fresh();
+        }}
+        onMerge={() => {
+          setMerge((value) => !value);
+          fresh();
+        }}
+        onQuery={setQuery}
+        onCollapse={() => setOpen(ALL_CLOSED)}
+        onHottest={() => setOpen(HOT_OPEN)}
+      />
+      <TreeLegend groups={groupsIn(whole.rows, mods)} />
+      {focused ? (
+        <div className={tree.focusBar}>
+          <span className={tree.focusName}>{t("tree.focused", { name: focused.names.join(" › ") })}</span>
+          <button type="button" className={styles.buttonSmall} onClick={() => setFocused(null)}>
+            {t("tree.showAll")}
+          </button>
+        </div>
+      ) : null}
+      <div className={tree.layout} data-detail={selected !== null}>
+        <div className={tree.list}>
+          <TreeHeader />
+          {focused ? (
+            <ScopedTree scope={focused.scope} focusKey={focused.key} rows={focused.scope.filters ? null : whole.rows} />
+          ) : group === "none" ? (
+            <TreeBody rows={whole.rows} scope={WHOLE} />
+          ) : (
+            <GroupList kind={group} />
+          )}
+        </div>
+        {selected ? (
+          <TreeDetail
+            key={`${selected.scope.id}${selected.key}`}
+            target={selected}
+            focused={focused?.key === selected.key}
+            onFocus={() => setFocused(selected)}
+            onClose={() => select(null)}
+          />
+        ) : null}
+      </div>
+    </TreeEnvProvider>
   );
 }
 
 export function TreePanel({ reader, capture }: Props) {
-  const { rows, error } = useRows<TreeRow>(reader, capture, "tree", { limit: 200 });
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const [merge, setMerge] = useState(false);
-
-
-  const toggle = (id: string) => {
-    setCollapsed((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const visibleRows = useMemo(() => (merge ? mergeTree(rows) : rows), [merge, rows]);
-
-  const treeMax = visibleRows.reduce((m, row) => Math.max(m, row.total), 0) || 1;
-
-  if (error) return <p className={styles.error}>{error}</p>;
-  if (rows.length === 0) return <p className={styles.empty}>{t("meta.empty")}</p>;
-  return (
-    <div>
-      <div className={styles.toolbar}>
-        <button
-          type="button"
-          className={styles.buttonSmall}
-          aria-pressed={merge}
-          onClick={() => {
-            setMerge((v) => !v);
-            setCollapsed(new Set());
-          }}
-        >
-          {t("tree.merge")}
-        </button>
-      </div>
-      <div className={styles.meterList}>
-        <Tree rows={visibleRows} max={treeMax} collapsed={collapsed} startCollapsed={merge} toggle={toggle} />
-      </div>
-    </div>
-  );
+  const options = useSampleOptions(reader, capture);
+  if (options.selections.length === 0) return <p className={styles.empty}>{t("meta.empty")}</p>;
+  return <TreeView key={`${capture.handle}:${capture.side}`} reader={reader} capture={capture} options={options} />;
 }

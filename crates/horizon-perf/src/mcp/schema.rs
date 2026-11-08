@@ -168,6 +168,10 @@ fn filters() -> Schema {
                 "min_pct",
                 Schema::number("tree: hide nodes under this percent"),
             ),
+            (
+                "self_share",
+                Schema::boolean("tree: give each row its own time as a percent"),
+            ),
         ],
         &[],
     )

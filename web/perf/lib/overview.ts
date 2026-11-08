@@ -9,6 +9,7 @@ import type {
   GroupRow,
   HotRow,
   MetaRow,
+  Selection,
   SeriesRow,
   Side,
   SpanRow,
@@ -34,7 +35,7 @@ export interface Overview {
   costs: CostRow[];
 }
 
-function count(selection: Record<string, unknown> | undefined, key: string): number | null {
+function count(selection: Selection | undefined, key: "ticks" | "samples"): number | null {
   const value = selection?.[key];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
