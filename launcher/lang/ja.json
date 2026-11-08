@@ -329,7 +329,6 @@
   "by {author}": "作者：{author}",
   "{count} downloads": "{count} 回ダウンロード",
   "{count} followers": "{count} フォロワー",
-  "{count} stars on GitHub": "GitHub のスター {count} 件",
   "updated {date}": "{date} に更新",
   "Back to results": "結果に戻る",
   "Sign in with GitHub to rate": "GitHubでサインインして評価",
@@ -1181,7 +1180,6 @@
   "Builds on the Horizon you play": "プレイ中の Horizon でビルドできます",
   "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "ネイティブフックポイント v{needs} が必要ですが、プレイ中の Horizon は v{has} です：先に Horizon を更新してください",
   "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Horizon {pin} 向けですが、{mods} は別のコミットに固定されています：ビルド時に「それでもビルドする」を求められ、コンパイルに失敗する可能性があります",
-  "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Horizon {pin} 向けで、プレイ中は {yours} です：ランチャーはゲームを {pin} でビルドします",
   "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
   "Tags": "タグ",
   "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on.": "Windows のスマート アプリ コントロール（Smart App Control）がビルドをブロックしています（os error 4551）。署名されたプログラムしか実行させないため、誰も署名していないプログラムを実行するネイティブ ビルドは止められます。このコンピューターでコンパイルされたプログラムと、コンパイラー自身のプログラムの一部です。ネイティブ MOD をビルドするには、Windows セキュリティ > アプリとブラウザー コントロール > スマート アプリ コントロールの設定 でオフにしてから、もう一度ビルドしてください。一部の Windows バージョンでは、Windows を再インストールしないと再びオンにできません。コンテンツ MOD（.hmod）はビルド不要で、オンのままでも使えます。",
@@ -1260,5 +1258,11 @@
   "Recommended": "おすすめ",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "古いバージョン {version} はプレイ中の Horizon でビルドできます: インストールするとそれが選ばれます",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: バージョン {version} はビルドできませんでした。{older} を試します",
-  "Use recommended (kept at {version})": "推奨を使う ({version} に固定中)"
+  "Use recommended (kept at {version})": "推奨を使う ({version} に固定中)",
+  "Only what works on {instance}": "{instance} で動くものだけ",
+  "{count} versions that don't work on {instance} are hidden": "{instance} で動かない {count} 個のバージョンを隠しています",
+  "Made for Horizon {pin}: the launcher builds it on {yours}, the one you play, and on {pin} only if it doesn't compile there": "Horizon {pin} 向け: ランチャーはプレイ中の {yours} でビルドし、そこでコンパイルできない場合のみ {pin} でビルドします",
+  "{mods} didn't build on the Horizon you play: building on the one they were made for": "{mods} はプレイ中の Horizon でビルドできませんでした: 作られた Horizon でビルドします",
+  "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "前回のビルドは {mods} のため Horizon {commit} 上（{horizon} ではありません）",
+  "In the last build, on {horizon}": "前回のビルドは {horizon} 上"
 }

@@ -82,49 +82,6 @@ impl Button {
     fn bit(self) -> u32 {
         1 << self as u32
     }
-    /// What is printed on the button for a pad family (`Auto` reads as Xbox).
-    pub fn label(self, style: GlyphStyle) -> &'static str {
-        let i = self as usize;
-        match style {
-            GlyphStyle::PlayStation => [
-                "×", "○", "□", "△", "L1", "R1", "L2", "R2", "Create", "Options", "L3", "R3", "↑",
-                "↓", "←", "→",
-            ][i],
-            GlyphStyle::Nintendo => [
-                "B", "A", "Y", "X", "L", "R", "ZL", "ZR", "−", "+", "LS", "RS", "↑", "↓", "←", "→",
-            ][i],
-            GlyphStyle::Xbox | GlyphStyle::Auto => [
-                "A", "B", "X", "Y", "LB", "RB", "LT", "RT", "View", "Menu", "LS", "RS", "↑", "↓",
-                "←", "→",
-            ][i],
-        }
-    }
-    /// The glyph's colour (RGB): face buttons in their family's colours,
-    /// the rest white.
-    pub fn color(self, style: GlyphStyle) -> [u8; 3] {
-        let face = match self {
-            Button::South => 0,
-            Button::East => 1,
-            Button::West => 2,
-            Button::North => 3,
-            _ => return [255, 255, 255],
-        };
-        match style {
-            GlyphStyle::PlayStation => [
-                [124, 178, 232],
-                [235, 110, 110],
-                [222, 145, 205],
-                [92, 205, 170],
-            ][face],
-            GlyphStyle::Nintendo => [255, 255, 255],
-            GlyphStyle::Xbox | GlyphStyle::Auto => [
-                [110, 200, 90],
-                [235, 90, 80],
-                [80, 150, 240],
-                [240, 200, 60],
-            ][face],
-        }
-    }
     /// The face button that plays this one's part on a Nintendo pad going by its letters
     /// (`PadSettings::nintendo_letters`): the A it prints on the right is South, which confirms
     /// and jumps as A does on a Switch; B (bottom) is East, X (top) West, Y (left) North. It is
@@ -427,6 +384,101 @@ impl HeldDrop {
     }
 }
 
+/// A job a menu's fixed buttons do. Menus aren't rebindable: this is the one map from a job to
+/// its button, and a glyph for a menu asks for the job (`GlyphOf::Menu`), never the button.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuJob {
+    /// A: press, take, type.
+    Confirm,
+    /// B: back, close.
+    Back,
+    /// X: the screen's second job (Apply, Options, half a stack, delete a letter).
+    Alternate,
+    /// Y: the screen's third job (the exit, a quick move, a space).
+    Extra,
+    /// LB: the page or tab before.
+    PagePrev,
+    /// RB: the page or tab after.
+    PageNext,
+    /// LT: the group before; held, the modifier (shift, direct craft).
+    GroupPrev,
+    /// RT: the group after.
+    GroupNext,
+    /// View: throw.
+    View,
+    /// Menu (Start): done, and cancelling a binding.
+    Start,
+    /// The left stick pressed in.
+    LeftStick,
+}
+impl MenuJob {
+    pub const ALL: [MenuJob; 11] = [
+        MenuJob::Confirm,
+        MenuJob::Back,
+        MenuJob::Alternate,
+        MenuJob::Extra,
+        MenuJob::PagePrev,
+        MenuJob::PageNext,
+        MenuJob::GroupPrev,
+        MenuJob::GroupNext,
+        MenuJob::View,
+        MenuJob::Start,
+        MenuJob::LeftStick,
+    ];
+    /// The part that does the job (by place; a pad going by its letters is read so the part
+    /// still lands: `PadState::by_letter`).
+    pub const fn button(self) -> Button {
+        match self {
+            MenuJob::Confirm => Button::South,
+            MenuJob::Back => Button::East,
+            MenuJob::Alternate => Button::West,
+            MenuJob::Extra => Button::North,
+            MenuJob::PagePrev => Button::LeftBumper,
+            MenuJob::PageNext => Button::RightBumper,
+            MenuJob::GroupPrev => Button::LeftTrigger,
+            MenuJob::GroupNext => Button::RightTrigger,
+            MenuJob::View => Button::Select,
+            MenuJob::Start => Button::Start,
+            MenuJob::LeftStick => Button::LeftStick,
+        }
+    }
+    /// The job a part does in menus.
+    pub fn of(button: Button) -> Option<MenuJob> {
+        Self::ALL.into_iter().find(|job| job.button() == button)
+    }
+}
+
+/// What a glyph stands for: what the button does, never the button. `pad_glyph::Glyph` is built
+/// from one, so a rebinding or a pad's letters reach every glyph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GlyphOf {
+    /// A gameplay action (`key.jump`...), on the player's binding.
+    Bound(&'static str),
+    /// A menu's fixed job.
+    Menu(MenuJob),
+}
+impl From<MenuJob> for GlyphOf {
+    fn from(job: MenuJob) -> Self {
+        GlyphOf::Menu(job)
+    }
+}
+impl GlyphOf {
+    /// The part that does it under these settings; none while the action is unbound.
+    pub fn button(self, settings: &PadSettings) -> Option<Button> {
+        match self {
+            GlyphOf::Bound(action) => {
+                // A misspelt action would quietly have no glyph.
+                debug_assert!(
+                    ACTIONS.iter().any(|a| a.0 == action),
+                    "no pad action {action}"
+                );
+                settings.binding(action)
+            }
+            GlyphOf::Menu(job) => Some(job.button()),
+        }
+    }
+}
+
 /// Which button pictures prompts use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum GlyphStyle {
@@ -635,6 +687,10 @@ fn bool_text(v: bool) -> &'static str {
     if v { "true" } else { "false" }
 }
 impl PadSettings {
+    /// A pad of `family` goes by its letters: only a Nintendo pad has letters to go by.
+    pub fn by_letter(&self, family: GlyphStyle) -> bool {
+        self.nintendo_letters && family == GlyphStyle::Nintendo
+    }
     pub fn load(dir: &Path) -> Self {
         fs::read_to_string(dir.join(FILE))
             .map(|t| Self::parse(&t))
@@ -1921,11 +1977,6 @@ bind_key.hotbar.2:north
         assert!(parts.held(Button::LeftBumper));
         assert_eq!(parts.left, [0.5, -0.25]);
         assert_eq!(parts.by_letter(), pad);
-        // A part's glyph is the letter of the button playing it.
-        assert_eq!(Button::South.by_letter().label(GlyphStyle::Nintendo), "A");
-        assert_eq!(Button::East.by_letter().label(GlyphStyle::Nintendo), "B");
-        assert_eq!(Button::West.by_letter().label(GlyphStyle::Nintendo), "X");
-        assert_eq!(Button::North.by_letter().label(GlyphStyle::Nintendo), "Y");
     }
 
     #[test]
@@ -2353,12 +2404,7 @@ bind_key.hotbar.2:north
     }
 
     #[test]
-    fn labels_and_conflicts() {
-        assert_eq!(Button::South.label(GlyphStyle::Xbox), "A");
-        assert_eq!(Button::South.label(GlyphStyle::PlayStation), "×");
-        assert_eq!(Button::South.label(GlyphStyle::Nintendo), "B");
-        assert_eq!(Button::RightTrigger.label(GlyphStyle::PlayStation), "R2");
-        assert_eq!(Button::DPadLeft.label(GlyphStyle::Xbox), "←");
+    fn styles_resolve_and_conflicts() {
         assert_eq!(
             GlyphStyle::Auto.resolve(GlyphStyle::PlayStation),
             GlyphStyle::PlayStation
