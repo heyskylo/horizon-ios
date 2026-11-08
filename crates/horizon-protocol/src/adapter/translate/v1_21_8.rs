@@ -1,5 +1,6 @@
 //! 1.21.8 to 1.21.9, from vanilla's packet codecs and EntityDataSerializers registrations.
 use super::*;
+use crate::adapter::pinned_ids::entity_type as entity;
 
 pub(crate) const VELOCITY_UNIT: f64 = 8000.0;
 
@@ -72,8 +73,7 @@ fn velocity(r: &mut Reader) -> Result<[f64; 3]> {
 /// Moving the main arm and skin mask to Avatar moved these four player fields, but not the shoulders.
 /// The later 1.21.11 step changes the arm's serializer after it has reached index 15 here.
 pub(super) fn entity_data(session: &Session, data: &mut play::SetEntityData) {
-    const PLAYER: i32 = 159; // Pinned minecraft:player.
-    if session.kinds.lock().unwrap().get(&data.id) != Some(&PLAYER) {
+    if session.kinds.lock().unwrap().get(&data.id) != Some(&entity::PLAYER) {
         return;
     }
     for (index, _, _) in &mut data.values {

@@ -1691,16 +1691,24 @@ impl Game<'_> {
         self.villager_murdered(m, slain_by_player, killer.flatten());
         let pos = [m.position.x, m.position.y + 0.5, m.position.z];
         let killer_entity = self.killer_loot_entity(killer.flatten());
-        // LAST_DAMAGE_PLAYER only while the player-hurt memory lasts
-        // (LivingEntity.dropFromLootTable's playerKilled): a mob that dies to
-        // the environment long after a player's hit names no player.
+        // LAST_DAMAGE_PLAYER only while the player is still in the world and
+        // the hurt memory lasts (LivingEntity.dropFromLootTable). Experience
+        // and equipment use the timer alone (dropExperience / playerKilled):
+        // a guest who has left still counts.
         let player = killer
             .filter(|_| m.ai.last_hurt_by_player > 0)
             .and_then(|conn| self.killer_uuid(conn));
         if let Some(player) = player.filter(|_| m.extra.leash.is_some()) {
             self.lead_killers.insert(m.id, (player, self.dim));
         }
-        self.drop_death_loot(&mut dying, player, by_player, killer_entity, consumed, pos);
+        self.drop_death_loot(
+            &mut dying,
+            player,
+            m.ai.last_hurt_by_player > 0,
+            killer_entity,
+            consumed,
+            pos,
+        );
         self.create_wither_rose(m);
         if m.species() == Species::CopperGolem {
             // CopperGolem.dropEquipment: the preserved equipment too.
@@ -1866,7 +1874,7 @@ impl Game<'_> {
         &mut self,
         m: &mut Mob,
         player_uuid: Option<u128>,
-        by_player: bool,
+        player_killed: bool,
         killer: horizon_world::loot::LootEntity,
         consumed: bool,
         pos: [f64; 3],
@@ -1933,7 +1941,8 @@ impl Game<'_> {
         let death = drops::Death {
             loot: &loot,
             damage,
-            player: by_player.then(player),
+            player: player_uuid.is_some().then(player),
+            player_killed,
             luck: 0.0,
             vehicle,
             mob_drops: self.ui.rules.bool("mob_drops"),
@@ -2410,13 +2419,13 @@ impl Game<'_> {
                     self.post_game_event(event, at, ctx);
                 }
                 MobEvent::GameEvent {
-                    event: "minecraft:block_place",
+                    event: event @ ("minecraft:block_place" | "minecraft:block_destroy"),
                     at,
                     source,
                     state,
                 } => {
                     let ctx = self.who_context(Some(Who::Mob(source)), Some(state));
-                    self.post_game_event("minecraft:block_place", at, ctx);
+                    self.post_game_event(event, at, ctx);
                 }
                 // The sculk layer tracks steps and bee/bat flaps itself
                 // (`entity_motion_events`, `tick_mob_sculk_events`). Birds
@@ -2753,9 +2762,10 @@ impl Game<'_> {
                             .play(&format!("minecraft:{sound}"), Some(at), 1.0, 1.0);
                     }
                 }
-                MobEvent::Tamed { .. } | MobEvent::Buck { .. } | MobEvent::StabDismount { .. } => {
-                    self.mount_event(&e)
-                }
+                MobEvent::Tamed { .. }
+                | MobEvent::Buck { .. }
+                | MobEvent::StabDismount { .. }
+                | MobEvent::EjectPassengers { .. } => self.mount_event(&e),
                 MobEvent::IronGolemHit {
                     target,
                     amount,
@@ -2816,7 +2826,7 @@ impl Game<'_> {
                         let _ = self.process_level_events();
                     }
                 }
-                MobEvent::ChestOpen { chest, open } => self.golem_chest_open(chest, open),
+                MobEvent::ChestOpen { chest, open, mob } => self.golem_chest_open(chest, open, mob),
                 MobEvent::ChestSlot { chest, slot, stack } => {
                     self.golem_chest_slot(chest, slot, stack)
                 }
@@ -5065,7 +5075,9 @@ impl Game<'_> {
         let result = self.projectile_hit_inner(p, hit);
         // LivingEntity.actuallyHurt credits the shooter (a ServerPlayer) with the absorbed damage.
         self.settle_dealt_absorbed(p.owner == Some(Who::Player));
-        result
+        result?;
+        // The hit's hurt teleports an enderman or a shulker now (`hurtServer`).
+        self.settle_hurt_teleports()
     }
     fn projectile_hit_inner(&mut self, p: &Projectile, hit: Hit) -> Result<()> {
         let _attacker = self.knockback_scope_for(p.owner);
@@ -5867,12 +5879,22 @@ impl Game<'_> {
                     }
                 }
                 Who::Mob(id) => {
-                    if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
-                        && m.damage_projectile(4.0, source, aim, [p.velocity.x, p.velocity.z])
-                    {
-                        m.add_effect("minecraft:levitation", 200, 0);
-                        // Shulker.hurtServer: a shulker hit by a bullet.
-                        horizon_client::mobs::shulker::hit_by_bullet(m);
+                    let hurt = self.mobs.iter_mut().find(|m| m.id == id).is_some_and(|m| {
+                        let hurt =
+                            m.damage_projectile(4.0, source, aim, [p.velocity.x, p.velocity.z]);
+                        if hurt {
+                            // Shulker.hurtServer: a shulker hit by a bullet.
+                            horizon_client::mobs::shulker::hit_by_bullet(m);
+                        }
+                        hurt
+                    });
+                    if hurt {
+                        // The hurt's teleport (`teleportSomewhere`,
+                        // `hitByShulkerBullet`) comes before the levitation.
+                        self.settle_hurt_teleports()?;
+                        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+                            m.add_effect("minecraft:levitation", 200, 0);
+                        }
                     }
                 }
             },
@@ -6208,7 +6230,7 @@ impl Game<'_> {
             self.swing_arm();
             return Ok(true);
         }
-        if let Some(sheared) = self.shear_pig_saddle(index, &item) {
+        if let Some(sheared) = self.shear_saddle(index, &item) {
             if sheared {
                 self.swing_arm();
             }
@@ -7102,6 +7124,8 @@ impl Game<'_> {
             on_ground,
         );
         self.add_projectile(proj);
+        // SnowballItem.use / EggItem.use / EnderpearlItem.use: awardStat(ITEM_USED).
+        self.award_stat("used", item, 1);
         // ItemStack.use's applyAfterUseComponentSideEffects: the pearl's
         // second is the `use_cooldown` component, as for any thrown item.
         self.apply_use_cooldown(stack);

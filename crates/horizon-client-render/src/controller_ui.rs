@@ -83,6 +83,13 @@ fn choice_description(opt: Opt, pad: &PadSettings) -> Option<&'static str> {
             GlyphStyle::PlayStation => "Always shows PlayStation buttons.",
             GlyphStyle::Nintendo => "Always shows Nintendo buttons.",
         },
+        Opt::PadNintendoButtons => {
+            if pad.nintendo_letters {
+                "A, on the right, confirms and jumps and B goes back, as on a Switch."
+            } else {
+                "B, at the bottom, confirms and jumps and A goes back, as on other controllers."
+            }
+        }
         Opt::PadKeyboard => match pad.keyboard {
             gamepad::TextKeyboard::Auto => {
                 "Opens Steam's keyboard on a Steam Deck under Steam, and Horizon's otherwise."
@@ -185,6 +192,10 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "Show the buttons for what you can do, while you play with a controller.",
                         ),
                         option(
+                            Opt::PadCraftOnServers,
+                            "Lets LT + A craft on servers other than your own worlds. Some servers count it as a macro.",
+                        ),
+                        option(
                             Opt::PadTriggerThreshold,
                             "How far a trigger is pulled before it counts as pressed.",
                         ),
@@ -261,6 +272,10 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             Opt::PadGlyphs,
                             "Follow the controller, or always show one family's buttons.",
                         ),
+                        option(
+                            Opt::PadNintendoButtons,
+                            "Whether a Nintendo controller's A and B work by where they sit or by their letters.",
+                        ),
                         info(Info::Using, "The buttons menus show right now."),
                     ],
                 ),
@@ -333,6 +348,7 @@ impl Item {
             Item::Option(Opt::PadAdaptiveTriggers) => Some(c.adaptive_triggers),
             Item::Option(Opt::PadInvertX) => Some(c.invert_x),
             Item::Option(Opt::PadInvertY) => Some(c.invert_y),
+            Item::Option(Opt::PadCraftOnServers) => Some(c.craft_on_servers),
             _ => None,
         }
     }
@@ -1332,6 +1348,7 @@ mod tests {
             Opt::PadLookDeadzone,
             Opt::PadTriggerThreshold,
             Opt::PadGlyphs,
+            Opt::PadNintendoButtons,
             Opt::PadKeyboard,
             Opt::PadPointerSpeed,
             Opt::PadScrollSpeed,
@@ -1429,6 +1446,53 @@ mod tests {
         assert!((s.controller.move_deadzone - before - 0.01).abs() < 0.001);
     }
 
+    /// The Device page's Nintendo Buttons row sits with the glyphs, steps between its two
+    /// values rather than ticking a box, and what it sets is what the controller file keeps.
+    #[test]
+    fn the_nintendo_buttons_row_flips_letters_and_the_file_keeps_it() {
+        let (page, group) = rows()
+            .into_iter()
+            .flat_map(|(page, groups)| groups.into_iter().map(move |g| (page, g)))
+            .find(|(_, (_, rows))| {
+                rows.iter()
+                    .any(|r| r.item == Item::Option(Opt::PadNintendoButtons))
+            })
+            .unwrap();
+        assert_eq!((page, group.0), (Page::Device, "Glyphs"));
+        let mut s = Settings::default();
+        let item = Item::Option(Opt::PadNintendoButtons);
+        assert!(item.steps(&s));
+        s.controller.nintendo_letters = false;
+        let mut ui = ControllerUi {
+            focus: Some(Target::Item(item)),
+            ..ControllerUi::default()
+        };
+        // Vanilla's caption and value template; Horizon's own words come bundled.
+        struct Vanilla;
+        impl lang::ResourceSource for Vanilla {
+            fn read(&self, path: &str) -> Option<Vec<u8>> {
+                (path == "assets/minecraft/lang/en_us.json")
+                    .then(|| br#"{"options.generic_value": "%s: %s"}"#.to_vec())
+            }
+        }
+        let value = |ui: &ControllerUi, s: &Settings| {
+            lang::scoped(lang::Language::load(&[&Vanilla], "en_us"), || {
+                ui.parts(item, s)
+            })
+            .0
+        };
+        assert_eq!(value(&ui, &s).0, "Nintendo Buttons");
+        assert_eq!(value(&ui, &s).1.as_deref(), Some("By Position"));
+        let actions = key(&mut ui, &mut s, K::Enter);
+        assert!(actions.contains(&Action::Changed), "{actions:?}");
+        assert!(s.controller.nintendo_letters);
+        assert_eq!(value(&ui, &s).1.as_deref(), Some("By Letter"));
+        assert!(PadSettings::parse(&s.controller.serialize()).nintendo_letters);
+        key(&mut ui, &mut s, K::Enter);
+        assert!(!s.controller.nintendo_letters);
+        assert!(!PadSettings::parse(&s.controller.serialize()).nintendo_letters);
+    }
+
     /// What the screen draws at the bottom of the page changes with the choice, in every one of
     /// these settings.
     #[test]
@@ -1438,6 +1502,7 @@ mod tests {
         for (opt, choices) in [
             (Opt::PadGameplayGuide, 3),
             (Opt::PadGlyphs, 4),
+            (Opt::PadNintendoButtons, 2),
             (Opt::PadKeyboard, 3),
             (Opt::PadLightbar, 3),
         ] {
@@ -1470,6 +1535,7 @@ mod tests {
             for opt in [
                 Opt::PadGameplayGuide,
                 Opt::PadGlyphs,
+                Opt::PadNintendoButtons,
                 Opt::PadKeyboard,
                 Opt::PadLightbar,
             ] {

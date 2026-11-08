@@ -1747,7 +1747,7 @@ impl Screen {
                 },
                 Some(50),
             ) => {
-                let mut list = servers::load(&servers_file(saves));
+                let (mut list, mut hidden) = servers::load_all(&servers_file(saves));
                 let mut entry = ServerEntry::new(name.trim(), address.trim());
                 entry.accept_textures = *packs;
                 match index.and_then(|i| list.get_mut(i)) {
@@ -1756,9 +1756,20 @@ impl Screen {
                         e.ip = entry.ip;
                         e.accept_textures = entry.accept_textures;
                     }
-                    None => list.push(entry),
+                    // addServerCallback: ServerList.unhide brings back a hidden entry
+                    // for the address, given the new name and icon
+                    // (copyNameIconFrom); it keeps its other settings.
+                    None => match hidden.iter().position(|h| h.ip == entry.ip) {
+                        Some(h) => {
+                            let mut e = hidden.remove(h);
+                            e.name = entry.name;
+                            e.icon = entry.icon;
+                            list.push(e);
+                        }
+                        None => list.push(entry),
+                    },
                 }
-                let _ = servers::save(&servers_file(saves), &list);
+                let _ = servers::save_all(&servers_file(saves), &list, &hidden);
                 *self = Self::list(saves);
             }
             (
@@ -1776,8 +1787,10 @@ impl Screen {
             ) => *self = Self::list(saves),
             (Self::Disconnected { retry, .. }, Some(55)) => *retry = None,
             (Self::Direct { address }, Some(52)) => {
+                let address = direct_address(address);
+                remember_direct_join(saves, &address);
                 return Outcome::Connect {
-                    address: direct_address(address),
+                    address,
                     lan: false,
                 };
             }
@@ -2095,6 +2108,26 @@ impl Screen {
                 false
             }
         }
+    }
+}
+
+/// `JoinMultiplayerScreen.directJoinCallback`: an address no entry has, shown
+/// or hidden (`ServerList.get`), gets a hidden one named
+/// `selectServer.defaultName`, which keeps the server's resource pack and Code
+/// of Conduct answers. A friend's invite gets none.
+pub fn remember_direct_join(saves: &Path, address: &str) {
+    if address.starts_with(crate::net::FRIEND) {
+        return;
+    }
+    let file = servers_file(saves);
+    let _guard = SAVING.lock();
+    let (shown, hidden) = servers::load_all(&file);
+    if shown.iter().chain(&hidden).any(|s| s.ip == address) {
+        return;
+    }
+    let name = crate::lang::get_or("selectServer.defaultName", "Minecraft Server");
+    if let Err(e) = servers::add_hidden(&file, ServerEntry::new(&name, address)) {
+        log::warn!("could not save {}: {e}", file.display());
     }
 }
 
