@@ -33,6 +33,11 @@ struct Params {
 @group(0) @binding(2) var<uniform> params: Params;
 // Horizon's logo, 1 inside, 0 outside, for calibration's test pictures.
 @group(0) @binding(3) var logo: texture_2d<f32>;
+// The float frame with HUD coverage (Hdr::layered): the frame keeps the world as light
+// (fs_resolve), the HUD draws on a picture of its own (`hud`, fs_keep), and `coverage` says how
+// much of the world it hides there (gfx/hud_coverage.rs).
+@group(0) @binding(4) var coverage: texture_2d<f32>;
+@group(0) @binding(5) var hud: texture_2d<f32>;
 
 // Light sources are lifted evenly rather than by a highlight curve: vanilla's
 // textures were drawn for SDR, so a curve on their brightest pixels blows out
@@ -149,49 +154,29 @@ fn calibration_nits(p: vec2<f32>, size: vec2<f32>) -> f32 {
     return vec4(0.0);
 }
 
-@fragment fn fs_hdr(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-    let at = vec2<i32>(pos.xy);
-    // Calibration: above its controls the test picture, straight in nits, past
-    // paper white, the lift and the black level.
-    let size = vec2<f32>(textureDimensions(frame));
-    if params.calibration.x > 0.5 && pos.y < size.y * params.calibration.z {
-        let nits = vec3(calibration_nits(pos.xy, size));
-        if params.pq > 0.5 {
-            return vec4(pq(nits), 1.0);
-        }
-        return vec4(nits / 80.0, 1.0);
-    }
-    let f = frame_texel(textureLoad(frame, at, 0));
-    // What covers the world here (Hdr::keep_world): nothing at 0, the hand at
-    // 1/255 (Hdr::mark_hand: drawn at the world's brightness), else the HUD or a
-    // menu, by how much.
-    let covered = f.a > 0.0;
-    let hand = covered && f.a < 1.5 / 255.0;
-    let ui = select(f.a, 0.0, hand);
-    let w = frame_texel(textureLoad(world, at, 0));
-    // The world's alpha is below 0.75 on light sources, the sun and the moon
-    // (terrain.wgsl, entity.wgsl): only those shine, and only where nothing was
-    // drawn over them since: grey text over the white sun still looks like the sun
-    // darkened, but it raised the frame's alpha. Its band of 0.175 is the tier, the
-    // lower the brighter, and where in the band how much (hdr_mark). The hand
-    // writes its own alpha there (Hdr::hand_light_view): 1, or a light source it holds.
+// The light of colour `f` under the world's mark `a` (the alpha the world left, hdr_mark) where
+// the world `shows`, else the colour clipped at white; and whether a light source lifted it.
+struct Lit {
+    light: vec3<f32>,
+    lifted: bool,
+};
+
+fn lit(f: vec3<f32>, a: f32, shows: bool) -> Lit {
     var lifted = false;
-    let shows = params.world > 0.5 && params.peak > 1.0
-        && (hand || (!covered && shows_world(f.rgb, w.rgb)));
     // Light over 1 (a float frame's) shows only where the world does and carries
     // no mark (alpha 1), up to the peak: light written as light. Marked pixels clip
     // at white before their lift, as on a unorm frame, so light sources, the sun and
     // HDR lighting look as they do there; so do the HUD, menus and HDR Lighting off.
-    let c = select(min(f.rgb, vec3(1.0)), f.rgb, shows && w.a == 1.0);
+    let c = select(min(f, vec3(1.0)), f, shows && a == 1.0);
     // Gamma 2.2, as SDR displays and the compositors' SDR paths decode it.
     var light = pow(c, vec3(2.2));
     // HDR lighting: alpha between 0.76 and 1 is how much of it the surface gets. Vanilla's
     // light is albedo times lightmap, so this is the lightmap going past 1. It eases into the
     // peak from 60% of it, so bright textures keep their detail. Unmarked light (alpha 1)
     // gets no gain and no knee: the clamp to the peak below is all it needs here.
-    if shows && w.a >= 0.75 && w.a < 1.0 {
+    if shows && a >= 0.75 && a < 1.0 {
         let top = max(light.r, max(light.g, light.b));
-        let gain = 1.0 + (params.scene - 1.0) * (1.0 - w.a) / 0.24;
+        let gain = 1.0 + (params.scene - 1.0) * (1.0 - a) / 0.24;
         let v = top * gain;
         let knee = max(0.6 * params.peak, 1.0);
         var out = v;
@@ -200,10 +185,13 @@ fn calibration_nits(p: vec2<f32>, size: vec2<f32>) -> f32 {
         }
         light *= select(gain, out / max(top, 1e-4), v > knee);
     }
-    if shows && w.a < 0.75 {
-        let band = u32(clamp(floor((w.a + 0.005) / 0.175), 0.0, 3.0));
+    // The world's alpha is below 0.75 on light sources, the sun and the moon
+    // (terrain.wgsl, entity.wgsl): its band of 0.175 is the tier, the lower the
+    // brighter, and where in the band how much (hdr_mark).
+    if shows && a < 0.75 {
+        let band = u32(clamp(floor((a + 0.005) / 0.175), 0.0, 3.0));
         let tier = 3u - band;
-        let lift = 1.0 - clamp((w.a - 0.175 * f32(band)) / 0.165, 0.0, 1.0);
+        let lift = 1.0 - clamp((a - 0.175 * f32(band)) / 0.165, 0.0, 1.0);
         if lift > 0.0 {
             let top = max(light.r, max(light.g, light.b));
             let gain = min(1.0 + (params.peak - 1.0) * params.share[tier] * lift, params.peak / max(top, 1e-4));
@@ -220,9 +208,27 @@ fn calibration_nits(p: vec2<f32>, size: vec2<f32>) -> f32 {
             light = vec3(dot(light, vec3(0.2126, 0.7152, 0.0722)));
         }
     }
-    light = min(light, vec3(params.peak));
-    // The HUD and menus at their own brightness, by how much they cover.
-    light *= mix(1.0, params.ui, ui);
+    return Lit(min(light, vec3(params.peak)), lifted);
+}
+
+// Calibration: above its controls the test picture, straight in nits, past
+// paper white, the lift and the black level.
+fn calibrating(pos: vec4<f32>) -> bool {
+    let size = vec2<f32>(textureDimensions(frame));
+    return params.calibration.x > 0.5 && pos.y < size.y * params.calibration.z;
+}
+
+fn calibration_picture(pos: vec4<f32>) -> vec4<f32> {
+    let nits = vec3(calibration_nits(pos.xy, vec2<f32>(textureDimensions(frame))));
+    if params.pq > 0.5 {
+        return vec4(pq(nits), 1.0);
+    }
+    return vec4(nits / 80.0, 1.0);
+}
+
+// Light in units of paper white, as the swapchain takes it: HDR10 or scRGB, the black level
+// lifted.
+fn display(light: vec3<f32>) -> vec4<f32> {
     let scrgb = light * params.paper;
     if params.pq > 0.5 {
         let e = pq(BT709_TO_BT2020 * scrgb * 80.0);
@@ -232,4 +238,68 @@ fn calibration_nits(p: vec2<f32>, size: vec2<f32>) -> f32 {
         return vec4(pq_nits(lift_black(pq(scrgb * 80.0))) / 80.0, 1.0);
     }
     return vec4(scrgb, 1.0);
+}
+
+@fragment fn fs_hdr(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    if calibrating(pos) {
+        return calibration_picture(pos);
+    }
+    let at = vec2<i32>(pos.xy);
+    let f = frame_texel(textureLoad(frame, at, 0));
+    // What covers the world here (Hdr::keep_world): nothing at 0, the hand at
+    // 1/255 (Hdr::mark_hand: drawn at the world's brightness), else the HUD or a
+    // menu, by how much.
+    let covered = f.a > 0.0;
+    let hand = covered && f.a < 1.5 / 255.0;
+    let ui = select(f.a, 0.0, hand);
+    let w = frame_texel(textureLoad(world, at, 0));
+    // The world's marks lift only where nothing was drawn over them since: grey text over
+    // the white sun still looks like the sun darkened, but it raised the frame's alpha. The
+    // hand writes its own alpha there (Hdr::hand_light_view): 1, or a light source it holds.
+    let shows = params.world > 0.5 && params.peak > 1.0
+        && (hand || (!covered && shows_world(f.rgb, w.rgb)));
+    var light = lit(f.rgb, w.a, shows).light;
+    // The HUD and menus at their own brightness, by how much they cover.
+    light *= mix(1.0, params.ui, ui);
+    return display(light);
+}
+
+// Hdr::resolve, after the world and the hand: the marks they left (`world` holds the frame as
+// they drew it) become light in the frame, in gamma as the frame stores it, alpha 1. What draws
+// after it (camera overlays, the menu blur) draws on light, and nothing is lifted later.
+@fragment fn fs_resolve(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let w = frame_texel(textureLoad(world, vec2<i32>(pos.xy), 0));
+    let shows = params.world > 0.5 && params.peak > 1.0;
+    return vec4(pow(lit(w.rgb, w.a, shows).light, vec3(1.0 / 2.2)), 1.0);
+}
+
+// Hdr::keep_world: the HUD's backdrop, the world clipped to white with alpha 0, the frame as
+// the HUD found it before.
+@fragment fn fs_keep(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let w = textureLoad(frame, vec2<i32>(pos.xy), 0).rgb;
+    return vec4(clamp(w, vec3(0.0), vec3(1.0)), 0.0);
+}
+
+// The HUD over the world in gamma, the space the HUD blends in: its own part, what its backdrop
+// B doesn't explain (H = P - (1 - c) B, exact for the layering blends), at UI Brightness, over
+// (1 - c) of the world, light above white included. Where the world is at or below white, at
+// 100%, that is the HUD's picture as drawn.
+fn layered(at: vec2<i32>) -> vec3<f32> {
+    let w = max(textureLoad(frame, at, 0).rgb, vec3(0.0));
+    let p = clamp(textureLoad(hud, at, 0).rgb, vec3(0.0), vec3(1.0));
+    let c = textureLoad(coverage, at, 0).r;
+    let h = max(p - (1.0 - c) * min(w, vec3(1.0)), vec3(0.0));
+    return h * pow(params.ui, 1.0 / 2.2) + (1.0 - c) * w;
+}
+
+// Hdr::composite: the picture so far, stored as the frame stores light, for the menu blur.
+@fragment fn fs_composite(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    return vec4(layered(vec2<i32>(pos.xy)), 1.0);
+}
+
+@fragment fn fs_hdr_layered(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    if calibrating(pos) {
+        return calibration_picture(pos);
+    }
+    return display(min(pow(layered(vec2<i32>(pos.xy)), vec3(2.2)), vec3(params.peak)));
 }
