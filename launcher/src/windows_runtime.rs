@@ -137,7 +137,30 @@ pub(crate) fn in_use(source: &Path) -> bool {
     in_use_in(source, &crate::backend::data_dir().join("run"))
 }
 
+/// Whether a program in the version's own folder is running: `horizon-ctl` under the launcher's
+/// MCP server, `horizon-server`, `horizon-prepare`. They start from there, not from a runtime
+/// slot, and Windows refuses both to open a running image for writing and to delete it.
+fn runs_program(dir: &Path) -> bool {
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|entry| {
+            let path = entry.path();
+            path.extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("exe"))
+                && fs::OpenOptions::new()
+                    .write(true)
+                    .open(&path)
+                    .is_err_and(|e| e.raw_os_error() == Some(ERROR_SHARING_VIOLATION))
+        })
+}
+
 fn in_use_in(source: &Path, root: &Path) -> bool {
+    if runs_program(source) {
+        return true;
+    }
     let source = fs::canonicalize(source).unwrap_or_else(|_| source.to_path_buf());
     let slots = match fs::read_dir(root) {
         Ok(slots) => slots,
@@ -171,6 +194,37 @@ fn in_use_in(source: &Path, root: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_program_running_from_the_version_folder_keeps_it_in_use() {
+        let root = std::env::temp_dir().join(format!("horizon-program-{}", std::process::id()));
+        let version = root.join("version");
+        fs::create_dir_all(&version).unwrap();
+        let ctl = version.join("horizon-ctl.exe");
+        fs::copy(
+            Path::new(&std::env::var_os("SystemRoot").unwrap()).join("System32/cmd.exe"),
+            &ctl,
+        )
+        .unwrap();
+        // No game ever ran from it: no runtime slot names this version.
+        let slots = root.join("run");
+        assert!(!in_use_in(&version, &slots));
+        let mut cmd = Command::new(&ctl);
+        cmd.current_dir(&root).args(["/D", "/C", "set /p answer="]);
+        crate::process::hide_console(&mut cmd);
+        let mut child = cmd
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let running = child.try_wait().unwrap().is_none();
+        let protected = in_use_in(&version, &slots);
+        let _ = child.kill();
+        child.wait().unwrap();
+        assert!(running && protected);
+        assert!(!in_use_in(&version, &slots));
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn an_orphaned_process_keeps_its_runtime_and_source_version_protected() {
