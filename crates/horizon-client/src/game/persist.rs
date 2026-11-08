@@ -1256,6 +1256,8 @@ impl Game<'_> {
         let uuid = entity_nbt::uuid(&tag);
         let interaction = super::interactions::is_interaction(kind)
             .then(|| super::interactions::InteractionState::from_tag(&tag));
+        let eye =
+            (kind == "minecraft:eye_of_ender").then(|| super::end::SummonedEye::load(&mut tag));
         self.remember(id, uuid, tag);
         self.others.push(super::commands::OtherEntity {
             id,
@@ -1266,6 +1268,7 @@ impl Game<'_> {
             item_transformation,
             interaction,
             knot_check,
+            eye,
         });
         Some(id)
     }
@@ -1312,12 +1315,25 @@ impl Game<'_> {
         {
             state.write(fields);
         }
-        // Marker and LeashFenceKnotEntity still use Entity.saveWithoutId's
-        // common fields when their additional-save methods write nothing.
-        if matches!(
-            o.kind.as_str(),
-            "minecraft:marker" | "marker" | "minecraft:leash_knot"
-        ) {
+        if let Some(eye) = o.eye
+            && let Tag::Compound(c) = &mut tag
+        {
+            // Entity.saveWithoutId: the live motion and the fire ticks.
+            let m = eye.motion;
+            c.insert(
+                "Motion".into(),
+                Tag::List([m.x, m.y, m.z].map(|v| Tag::Double(v.to_bits())).to_vec()),
+            );
+            c.entry("Fire".into()).or_insert(Tag::Short(0));
+        }
+        // Marker, LeashFenceKnotEntity and EyeOfEnder still use
+        // Entity.saveWithoutId's common fields, which their own saves leave out.
+        if o.eye.is_some()
+            || matches!(
+                o.kind.as_str(),
+                "minecraft:marker" | "marker" | "minecraft:leash_knot"
+            )
+        {
             entity_nbt::fill_common_defaults(&mut tag);
         }
         tag

@@ -269,6 +269,7 @@ impl Game<'_> {
                         item_transformation: None,
                         interaction: None,
                         knot_check: None,
+                        eye: None,
                         position: horizon_core::geometry::Vec3::new(x, y, z),
                         yaw: 0.0,
                         pitch: 0.0,
