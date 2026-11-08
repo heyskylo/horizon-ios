@@ -158,7 +158,8 @@ public final class FactsExporter {
             level.setBlock(FLOOR, Blocks.STONE.defaultBlockState(), 3);
             json.name("blocks");
             json.beginObject();
-            for (Block block : BuiltInRegistries.BLOCK) {\n                ResourceLocation id = BuiltInRegistries.BLOCK.getKey(block);
+            for (Block block : BuiltInRegistries.BLOCK) {
+                ResourceLocation id = BuiltInRegistries.BLOCK.getKey(block);
                 boolean mod = ours(id);
                 if (!mod && !id.getNamespace().equals("minecraft")) continue;
                 json.name(id.toString());
