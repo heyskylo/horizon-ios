@@ -1053,6 +1053,40 @@ fn water_spreads_on_a_floor() {
 }
 
 #[test]
+fn water_keeps_spreading_over_waterlogged_scaffolding() {
+    // `FlowingFluid.canPassThroughWall` reads `getCollisionShape(level, pos)`,
+    // where scaffolding is the stable shape: a full top face, so the water above
+    // it is no water hole and still spreads sideways.
+    let mut w = world!();
+    w.floor(0, 10, "stone");
+    let stone = w.id("stone", &[]);
+    for x in 0..=9 {
+        w.put(BlockPos::new(x, 1, -1), stone);
+        w.put(BlockPos::new(x, 1, 1), stone);
+    }
+    let scaffolding = w.id(
+        "scaffolding",
+        &[
+            ("bottom", "false"),
+            ("distance", "0"),
+            ("waterlogged", "true"),
+        ],
+    );
+    // Stone under it keeps it supported, so its own tick leaves it in place.
+    w.put(BlockPos::new(5, -1, 0), stone);
+    w.put(BlockPos::new(5, 0, 0), scaffolding);
+    let water = w.id("water", &[]);
+    w.set(BlockPos::new(0, 1, 0), water);
+    for _ in 0..80 {
+        w.tick();
+    }
+    for d in 1..=7 {
+        let pos = BlockPos::new(d, 1, 0);
+        assert_eq!(w.prop(pos, "level"), d.to_string(), "flow at {d}");
+    }
+}
+
+#[test]
 fn refused_spread_keeps_water_out_of_a_guarded_block() {
     let mut w = world!();
     w.floor(0, 10, "stone");
@@ -3098,6 +3132,38 @@ fn dust_on_a_downward_piston_survives_extend_and_retract() {
         "the dust stays through the retract, got {}",
         w.name(dust)
     );
+}
+
+#[test]
+fn diodes_on_downward_pistons_survive_retraction() {
+    // DiodeBlock.canSurviveOn asks `isFaceSturdy(level, pos, UP, RIGID)` of
+    // the block below, both in canSurvive and in updateShape with the
+    // neighbour's new state. While the base retracts it is a moving_piston,
+    // whose block entity shape holds the extended base: a full top face
+    // (#12019).
+    for base_kind in ["piston", "sticky_piston"] {
+        for diode_kind in ["repeater", "comparator"] {
+            let mut w = world!();
+            w.floor(0, 10, "stone");
+            let base = BlockPos::new(0, 3, 0);
+            let pos = BlockPos::new(0, 4, 0);
+            let power = BlockPos::new(1, 3, 0);
+            let diode = w.id(diode_kind, &[("facing", "south")]);
+            w.set(base, w.id(base_kind, &[("facing", "down")]));
+            w.set(pos, diode);
+            w.set(power, w.id("redstone_block", &[]));
+            for _ in 0..4 {
+                w.full_tick();
+            }
+            assert_eq!(w.prop(base, "extended"), "true");
+            w.set(power, w.b().air());
+            for _ in 0..4 {
+                w.full_tick();
+                assert_eq!(w.get(pos), diode, "{diode_kind} on {base_kind}");
+            }
+            assert_eq!(w.prop(base, "extended"), "false");
+        }
+    }
 }
 
 #[test]

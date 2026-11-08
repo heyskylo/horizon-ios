@@ -26,7 +26,7 @@ class RemoteMiningTests(unittest.TestCase):
 struct Hit { pos: [i32; 3], face: u8 }
 /// The held stack: `ItemStack.item`, which the debug-stick check reads.
 struct Stack { item: &'static str }
-struct Mining { pos: [i32; 3], progress: f32, ticks: u32 }
+struct Mining { pos: [i32; 3], progress: f32, per_tick: f32, ticks: u32 }
 #[derive(Default)]
 struct Remote { destroy_delay: u32, destroying: Option<([i32; 3], u8, f32)>, destroying_item: String, is_destroying: bool }
 struct Ground { on_ground: bool }
@@ -210,8 +210,9 @@ fn main() {
         with tempfile.TemporaryDirectory(prefix="remote-mining-") as directory:
             path = Path(directory)
             (path / "main.rs").write_text(fixture)
-            subprocess.run(["rustc", "--edition=2024", str(path / "main.rs"), "-o", str(path / "probe")],
-                           check=True, capture_output=True, text=True)
+            compiled = subprocess.run(["rustc", "--edition=2024", str(path / "main.rs"), "-o", str(path / "probe")],
+                                      capture_output=True, text=True)
+            self.assertEqual(compiled.returncode, 0, compiled.stdout + compiled.stderr)
             result = subprocess.run([str(path / "probe")], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
