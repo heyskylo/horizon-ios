@@ -1462,6 +1462,9 @@ pub struct Mob {
     /// `Entity.needsSync`: knocked back, pushed or jumped since its server
     /// last sent it, so the next update goes out at once.
     pub needs_sync: bool,
+    /// `Entity.syncPosition`: it bounced this tick (`restituteMovementAfterCollisions`),
+    /// so its tracker keeps this position as a step of the next move it sends.
+    pub sync_position: bool,
     /// `getAttributeValue(KNOCKBACK_RESISTANCE)` with the modifiers of the
     /// items it wears or holds, which the game works out each tick for a mob
     /// that has any (the mob itself knows no item): `None` for the rest.
@@ -1727,6 +1730,8 @@ pub enum MobEvent {
     ChestOpen {
         chest: [i32; 3],
         open: bool,
+        /// The golem, the source of the container's game event.
+        mob: u32,
     },
     /// `BeeEnterHiveGoal.start`: the bee goes into its hive (the host stores
     /// its tag with `BeehiveBlockEntity.addOccupant` and discards it).
@@ -2246,6 +2251,12 @@ pub enum MobEvent {
     /// A horse throws its rider off.
     Buck {
         mob: u32,
+    },
+    /// `Entity.unRide`'s `ejectPassengers` before a move (a shulker's
+    /// teleport): whoever rides `mob` gets off where it stood, `from`.
+    EjectPassengers {
+        mob: u32,
+        from: Vec3,
     },
     /// A piglin's admiring is over: barter or keep the item.
     FinishAdmiring {
@@ -3263,6 +3274,7 @@ impl Mob {
             horizontal_collision: false,
             vertical_collision_below: false,
             needs_sync: false,
+            sync_position: false,
             gear_knockback_resistance: None,
             hurt_time: 0,
             invulnerable: 0,
@@ -4357,6 +4369,10 @@ impl Mob {
             }
         } else {
             self.extra.effects.push((effect, ticks, amplifier));
+        }
+        // MobEffect.addAttributeModifiers, then refreshDirtyAttributes.
+        if effect == "minecraft:health_boost" {
+            finalize::health_boost_changed(self);
         }
     }
     pub fn speed_bonus(&self) -> f64 {

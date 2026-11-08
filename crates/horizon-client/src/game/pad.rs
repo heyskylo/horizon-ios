@@ -44,7 +44,7 @@ pub(super) struct Pads {
     virtual_input: bool,
     /// Buttons a `pad ... tap` releases at the next poll.
     taps: Vec<Button>,
-    edges: Edges,
+    pub(super) edges: Edges,
     activity: gamepad::Activity,
     context: Option<Context>,
     blocked_sticks: [bool; 2],
@@ -215,6 +215,7 @@ impl Pads {
         if self.feed_source != source {
             self.feed_source = source;
             self.menu.armed = None;
+            self.menu.stop_craft();
         }
         self.feed = Some(state);
     }
@@ -231,6 +232,7 @@ impl Pads {
     /// A replay ended: let go of everything it held.
     pub(super) fn clear_injected(&mut self) {
         self.menu.armed = None;
+        self.menu.stop_craft();
         self.injected = PadState::default();
     }
 
@@ -397,8 +399,11 @@ impl Game<'_> {
 
     /// End held actions and captures before another context receives input.
     fn pad_cancel_inputs(&mut self, event_loop: &dyn EventLoopCtl) {
-        // Before the releases below: a cancelled press must not click.
+        // Before the releases below: a cancelled press must not click, nor a cancelled trigger
+        // change the recipe book's category as it comes up.
         self.pad.menu.armed = None;
+        self.pad.menu.trigger = None;
+        self.direct_craft_stop();
         let held_sticks = [
             gamepad::radial(self.pad.state.left, self.settings.controller.move_deadzone)
                 != [0.0; 2],
@@ -798,6 +803,7 @@ impl Game<'_> {
             }
             "release" => {
                 self.pad.menu.armed = None;
+                self.direct_craft_stop();
                 self.pad.injected = PadState::default();
                 self.pad.taps.clear();
                 Ok(json!({ "ok": true }))
