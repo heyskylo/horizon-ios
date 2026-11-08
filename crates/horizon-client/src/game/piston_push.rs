@@ -76,6 +76,44 @@ impl Game<'_> {
         }
     }
 
+    /// `moveEntityByPiston`'s `applyEffectsFromBlocks(previousPos, position)`
+    /// for projectile `i`: a cobweb (`WebBlock.entityInside`) or powder snow
+    /// (`PowderSnowBlock.entityInside`) its box met on the way makes it stuck
+    /// (`makeStuckInBlock`), the last one met deciding. A push moves along one
+    /// axis, so the boxes it started and ended in cover the blocks it crossed.
+    fn projectile_piston_block_effects(&mut self, i: usize, from: Vec3) {
+        let p = &self.creatures.projectiles[i];
+        let end = p.aabb();
+        let offset = from.subtract(p.position);
+        let start = end.move_by(offset);
+        let (lo, hi) = (
+            Vec3::new(
+                start.min_position().x.min(end.min_position().x) + 1.0e-5,
+                start.min_position().y.min(end.min_position().y) + 1.0e-5,
+                start.min_position().z.min(end.min_position().z) + 1.0e-5,
+            ),
+            Vec3::new(
+                start.max_position().x.max(end.max_position().x) - 1.0e-5,
+                start.max_position().y.max(end.max_position().y) - 1.0e-5,
+                start.max_position().z.max(end.max_position().z) - 1.0e-5,
+            ),
+        );
+        let mut stuck = None;
+        for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
+            for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
+                for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
+                    let name = &self.res.facts().get(self.world.block(x, y, z)).name;
+                    if let Some(s) = horizon_client::projectiles::stuck_speed_of(name) {
+                        stuck = Some(s);
+                    }
+                }
+            }
+        }
+        if let Some(stuck) = stuck {
+            self.creatures.projectiles[i].stuck_speed = stuck;
+        }
+    }
+
     /// `moveEntityByPiston`'s `applyEffectsFromBlocks` for the entity-sensing
     /// blocks (pressure plates, tripwires, buttons, detector rails): the ones
     /// the pushed box covered, from `start` to `end`, sense it during the push
@@ -531,9 +569,26 @@ impl Game<'_> {
                 let from = self.tnts[i].position;
                 self.tnt_piston_block_effects(i, from);
             }
+            if let Target::Entity(EntityHandle::Projectile(i)) = target {
+                let at = self.creatures.projectiles[i].position;
+                self.projectile_piston_block_effects(i, at);
+            }
             self.piston_block_triggers(before, before);
             return;
         }
+        // `Entity.move`: a projectile a cobweb or powder snow holds stops dead
+        // (`setDeltaMovement(Vec3.ZERO)`); a piston's push is not scaled.
+        let projectile_from = match target {
+            Target::Entity(EntityHandle::Projectile(i)) => {
+                let p = &mut self.creatures.projectiles[i];
+                if p.stuck_speed.length_squared() > 1.0e-7 {
+                    p.stuck_speed = Vec3::ZERO;
+                    p.velocity = Vec3::ZERO;
+                }
+                Some((i, p.position))
+            }
+            _ => None,
+        };
         // Primed TNT: a `PISTON` move uses up a pending stuck multiplier
         // without scaling the push, and powder snow reads its fall.
         let tnt = match target {
@@ -604,6 +659,9 @@ impl Game<'_> {
         }
         if let Some((i, from, ..)) = tnt {
             self.finish_tnt_piston_move(i, from, resolved);
+        }
+        if let Some((i, from)) = projectile_from {
+            self.projectile_piston_block_effects(i, from);
         }
         let after = if moved {
             before.move_by(resolved)

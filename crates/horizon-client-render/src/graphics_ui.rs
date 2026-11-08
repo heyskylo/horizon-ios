@@ -6,14 +6,14 @@
 //! and what they do live here.
 use crate::{
     graphics::{
-        EntityCullingMode, FarDetail, FrameGeneration, GpuCullingMode, GraphicsApi,
+        EntityCullingMode, FarDetail, FrameGeneration, GpuCullingMode, GraphicsApi, HdrMode,
         LeafCullingMode, Overlay, Pacing, ParticleCullingMode, PresentMode, Preset, Upscaling,
     },
     graphics_style::Cost,
     lang,
     options_ui::{Event, Page as OptionsPage},
     settings::{Opt, Settings},
-    settings_shell::{self as shell, Group, Output, Row, Screen, Sheet, Value},
+    settings_shell::{self as shell, Binding, Group, Output, Row, Screen, Sheet, Value},
     text::Text,
 };
 
@@ -924,7 +924,7 @@ impl H {
                 labelled("Screenshot Quality", format!("{}x", g.screenshot_quality))
             }
             H::FrameGeneration => labelled("Frame Generation", g.frame_generation.label()),
-            H::Hdr => labelled("HDR", on_off(g.hdr)),
+            H::Hdr => labelled("HDR", g.hdr.label()),
             H::HdrCalibrate => Text::literal(lang::get(match setup(s) {
                 Setup::Unknown => "Calibrate...",
                 Setup::Automatic => "Calibrate Anyway...",
@@ -1079,7 +1079,12 @@ impl H {
             H::FrameGeneration => {
                 g.frame_generation = step(&FrameGeneration::ALL, g.frame_generation, back)
             }
-            H::Hdr => g.hdr = !g.hdr,
+            H::Hdr => {
+                g.hdr = step(&HdrMode::ALL, g.hdr, back);
+                if g.hdr == HdrMode::On && !crate::graphics::hdr_offered() {
+                    g.hdr = step(&HdrMode::ALL, g.hdr, back);
+                }
+            }
             H::HdrLighting => g.hdr_lighting = !g.hdr_lighting,
             H::BatteryMode => g.battery = !g.battery,
             H::ShadowCache => g.shadow_cache = !g.shadow_cache,
@@ -1112,11 +1117,9 @@ impl Item {
     fn available(self) -> bool {
         !matches!(self, Item::Vanilla(o) if !o.available())
     }
-    /// Why a control can't be used now, when it can't: HDR's page works only where
-    /// the display offers HDR output, whatever `horizon-graphics.txt` says (a copied game
-    /// folder, a display swapped for an SDR one: the renderer leaves HDR off there, and
-    /// the saved values wait for an HDR display), and its sliders do something only
-    /// while it is on; Translucent Batching switches only where the device can batch
+    /// Why a control can't be used now: HDR's On requires an offered output, while Auto
+    /// can also be chosen on a reporting SDR display. Brightness controls need HDR output
+    /// active; saved values wait for it. Translucent Batching switches where the device can batch
     /// (`graphics::translucent_batching_offered`), its saved value waiting for one that can,
     /// Smooth Gradients only where it can draw the 16-bit frame, the same way, and GPU Culling
     /// only where it is offered (`graphics::gpu_culling_offer`), with the reason it isn't.
@@ -1126,8 +1129,7 @@ impl Item {
         }
         match self {
             Item::Horizon(
-                H::Hdr
-                | H::HdrCalibrate
+                H::HdrCalibrate
                 | H::HdrBlackLevel
                 | H::HdrPeak
                 | H::HdrPaperWhite
@@ -1150,7 +1152,7 @@ impl Item {
                 | H::HdrUiBrightness
                 | H::HdrLighting
                 | H::HdrSmoothGradients,
-            ) if !s.horizon.hdr => Some("Turn HDR on to use it."),
+            ) if !s.horizon.hdr_wanted() => Some("Turn HDR on to use it."),
             Item::Horizon(H::TranslucentBatching)
                 if !crate::graphics::translucent_batching_offered() =>
             {
@@ -1197,7 +1199,6 @@ impl Item {
             Item::Horizon(H::Weather) => g.weather,
             Item::Horizon(H::AnimatedTextures) => g.animated_textures,
             Item::Horizon(H::DitherCutoutMips) => g.dither_cutout_mips,
-            Item::Horizon(H::Hdr) => g.hdr,
             Item::Horizon(H::HdrLighting) => g.hdr_lighting,
             Item::Horizon(H::BatteryMode) => g.battery,
             Item::Horizon(H::ShadowCache) => g.shadow_cache,
@@ -1333,7 +1334,7 @@ fn shown(item: Item, s: &Settings) -> bool {
 /// A control's label as its name and its value ("Render Distance" and "12 chunks").
 fn parts(item: Item, s: &Settings) -> (String, Option<String>) {
     // The shortcut's label is one translated "Shortcut: %s"; the row shows its key apart, as
-    // KeyBindsScreen does ("> key <" while it waits, `settings_shell::Value::Key`).
+    // KeyBindsScreen does ("> key <" while it waits, `settings_shell::Value::Binding`).
     if item == Item::Horizon(H::HdrKey) {
         let key = crate::keybinds::display_name(&s.horizon.hdr_key).plain();
         return (lang::get("Shortcut"), Some(key));
@@ -1347,9 +1348,10 @@ fn row(setting: Setting, s: &Settings) -> Row<Item> {
     let item = setting.item;
     let (name, value) = parts(item, s);
     let value = match (item, item.switch(s), item.slider(s)) {
-        (Item::Horizon(H::HdrKey), ..) => {
-            Value::Key(crate::graphics::HDR_KEY, value.unwrap_or_default())
-        }
+        (Item::Horizon(H::HdrKey), ..) => Value::Binding(Binding::key(
+            crate::graphics::HDR_KEY,
+            value.unwrap_or_default(),
+        )),
         (_, Some(on), _) => Value::Switch(on),
         (_, None, Some(position)) => Value::Slider {
             position,
@@ -1442,6 +1444,7 @@ impl Screen for GraphicsScreen {
         use crate::graphics as g;
         let offers = (
             g::hdr_offered(),
+            g::system_hdr(),
             g::smooth_gradients_offered(),
             g::translucent_batching_offered(),
             g::gpu_culling_offer(),
@@ -1486,7 +1489,6 @@ impl Screen for GraphicsScreen {
                     Output::Push(OptionsPage::ShaderPacks),
                 ]
             }
-            Item::Horizon(H::HdrKey) => vec![Output::BindKey(crate::graphics::HDR_KEY)],
             _ => {
                 item.cycle(s, back, self.framebuffer);
                 vec![Output::Event(Event::Changed)]
@@ -1564,7 +1566,7 @@ mod tests {
     use super::*;
     use crate::{
         graphics_style as style,
-        settings_shell::{Columns, Hosted, Shell, Target},
+        settings_shell::{Capture, Columns, Hosted, Shell, Target},
     };
     use winit::keyboard::KeyCode as K;
 
@@ -1767,14 +1769,14 @@ mod tests {
         // Calibration counts as a change too.
         let _offer = HDR_OFFER.lock().unwrap_or_else(|e| e.into_inner());
         crate::graphics::offer_hdr(true);
-        s.horizon.hdr = true;
+        s.horizon.hdr = HdrMode::On;
         let calibrate = row(&mut ui, &s, Item::Horizon(H::HdrCalibrate));
         press(&mut ui, &mut s, at(calibrate));
         assert!(ui.changed());
         // From the keyboard: Undo puts it back and goes away.
         ui.set_focus(Some(Target::Undo));
         assert_eq!(key(&mut ui, &mut s, K::Enter), [CLICK, CHANGED]);
-        assert!(!s.horizon.hdr && !ui.changed());
+        assert!(!s.horizon.hdr_wanted() && !ui.changed());
         assert_eq!(ui.focused(), Some(Target::Done));
     }
 
@@ -1807,7 +1809,7 @@ mod tests {
         let _offer = HDR_OFFER.lock().unwrap_or_else(|e| e.into_inner());
         crate::graphics::offer_hdr(true);
         let mut s = Settings::default();
-        s.horizon.hdr = true;
+        s.horizon.hdr = HdrMode::On;
         let item = Item::Horizon(H::HdrSmoothGradients);
         // Where the device can't, the saved On reads Off.
         crate::graphics::offer_smooth_gradients(false);
@@ -1823,39 +1825,42 @@ mod tests {
         assert_eq!(item.blocked(&s), None);
         assert_eq!(item.label(&s).plain(), "Smooth Gradients: On");
         assert_eq!(item.switch(&s), Some(true));
-        s.horizon.hdr = false;
+        s.horizon.hdr = HdrMode::Off;
         assert_eq!(item.blocked(&s), Some("Turn HDR on to use it."));
     }
 
     #[test]
-    fn hdr_waits_for_a_display_that_offers_it_and_its_sliders_for_the_switch() {
+    fn hdr_auto_can_be_selected_before_querying_and_brightness_waits_for_output() {
         let _offer = HDR_OFFER.lock().unwrap_or_else(|e| e.into_inner());
         let mut s = Settings::default();
         let mut ui = ui();
         let at = |[x, y, ..]: [f32; 4]| (x + 8.0, y + 4.0);
         crate::graphics::offer_hdr(false);
-        // A 720p window opened at HDR shows only its greyed rows: Down still reaches the shortcut.
+        // Off has not asked the system yet: Auto must still be reachable to start the watch.
         let short = (427.0, 240.0);
         let mut at_hdr = Ui::default();
         at_hdr.show(Page::Hdr);
         at_hdr.key(&mut s, K::ArrowDown, None, false, short);
-        assert_eq!(at_hdr.focused_row(), Some(Item::Horizon(H::HdrKey)));
+        assert_eq!(at_hdr.focused_row(), Some(Item::Horizon(H::Hdr)));
         let hdr = row(&mut ui, &s, Item::Horizon(H::Hdr));
-        assert!(press(&mut ui, &mut s, at(hdr)).is_empty());
-        // Not even with HDR saved on, from another computer: nor its sliders and calibration.
-        s.horizon.hdr = true;
-        for h in [H::Hdr, H::HdrCalibrate, H::HdrPeak, H::HdrPaperWhite] {
+        assert_eq!(press(&mut ui, &mut s, at(hdr)), [CLICK, CHANGED]);
+        assert_eq!(s.horizon.hdr, HdrMode::Auto);
+        assert_eq!(press(&mut ui, &mut s, at(hdr)), [CLICK, CHANGED]);
+        assert_eq!(s.horizon.hdr, HdrMode::Off);
+        // Brightness still needs an output, even with On saved from another computer.
+        s.horizon.hdr = HdrMode::On;
+        for h in [H::HdrCalibrate, H::HdrPeak, H::HdrPaperWhite] {
             assert!(Item::Horizon(h).blocked(&s).is_some(), "{h:?}");
         }
-        s.horizon.hdr = false;
+        s.horizon.hdr = HdrMode::Off;
         crate::graphics::offer_hdr(true);
         let (tx, _) = Columns::of(SIZE.0, SIZE.1).track();
         let peak = row(&mut ui, &s, Item::Horizon(H::HdrPeak));
         assert!(press(&mut ui, &mut s, (tx + 2.0, peak[1] + 4.0)).is_empty());
-        // The switch turns it on, and the sliders below it work.
+        // The choice turns it on, and the sliders below it work.
         let hdr = row(&mut ui, &s, Item::Horizon(H::Hdr));
         assert_eq!(press(&mut ui, &mut s, at(hdr)), [CLICK, CHANGED]);
-        assert!(s.horizon.hdr);
+        assert!(s.horizon.hdr_wanted());
         let peak = row(&mut ui, &s, Item::Horizon(H::HdrPeak));
         assert_eq!(press(&mut ui, &mut s, (tx + 2.0, peak[1] + 4.0)), [DRAGGED]);
         ui.release();
@@ -1868,9 +1873,36 @@ mod tests {
         let key = row(&mut ui, &s, Item::Horizon(H::HdrKey));
         assert_eq!(
             press(&mut ui, &mut s, at(key)),
-            [CLICK, Output::BindKey(crate::graphics::HDR_KEY)]
+            [CLICK, Output::Bind(Capture::Key(crate::graphics::HDR_KEY))]
         );
         assert!(ui.changed());
+    }
+
+    #[test]
+    fn hdr_auto_is_a_choice_on_a_reporting_sdr_display() {
+        let _offer = HDR_OFFER.lock().unwrap_or_else(|e| e.into_inner());
+        crate::graphics::offer_hdr(false);
+        crate::graphics::report_system_hdr(Some(false));
+        let mut s = Settings::default();
+        let item = Item::Horizon(H::Hdr);
+        assert_eq!(item.switch(&s), None);
+        assert_eq!(item.blocked(&s), None);
+        item.cycle(&mut s, false, FB);
+        assert_eq!(s.horizon.hdr, HdrMode::Auto); // On requires an offered output.
+        assert!(!s.horizon.hdr_wanted());
+        assert!(Item::Horizon(H::HdrPeak).blocked(&s).is_some());
+        item.cycle(&mut s, true, FB);
+        assert_eq!(s.horizon.hdr, HdrMode::Off);
+        crate::graphics::offer_hdr(true);
+        for expected in [HdrMode::On, HdrMode::Auto, HdrMode::Off] {
+            item.cycle(&mut s, false, FB);
+            assert_eq!(s.horizon.hdr, expected);
+        }
+        s.horizon.hdr = HdrMode::Auto;
+        crate::graphics::report_system_hdr(Some(true));
+        assert!(s.horizon.hdr_wanted());
+        assert_eq!(Item::Horizon(H::HdrPeak).blocked(&s), None);
+        crate::graphics::report_system_hdr(None);
     }
 
     #[test]
@@ -2092,7 +2124,8 @@ mod tests {
         );
         let key = find(&s, Item::Horizon(H::HdrKey));
         assert_eq!(key.name, "Shortcut");
-        assert!(matches!(key.value, Value::Key(crate::graphics::HDR_KEY, _)));
+        let waits = Capture::Key(crate::graphics::HDR_KEY);
+        assert!(matches!(key.value, Value::Binding(ref b) if b.capture == waits));
         let calibrate = find(&s, Item::Horizon(H::HdrCalibrate));
         assert_eq!(calibrate.value, Value::Press);
     }
@@ -2729,8 +2762,8 @@ mod tests {
                 let pos = i as f32 / steps as f32;
                 let mut s1 = Settings::default();
                 let mut s2 = Settings::default();
-                s1.horizon.hdr = true;
-                s2.horizon.hdr = true;
+                s1.horizon.hdr = HdrMode::On;
+                s2.horizon.hdr = HdrMode::On;
                 h.set_slider(&mut s1, pos);
 
                 item.step_slider(&mut s1, true, 200.0);
@@ -2746,8 +2779,8 @@ mod tests {
                 let pos = i as f32 / steps as f32;
                 let mut s1 = Settings::default();
                 let mut s2 = Settings::default();
-                s1.horizon.hdr = true;
-                s2.horizon.hdr = true;
+                s1.horizon.hdr = HdrMode::On;
+                s2.horizon.hdr = HdrMode::On;
                 h.set_slider(&mut s1, pos);
 
                 item.step_slider(&mut s1, false, 200.0);
@@ -2768,7 +2801,7 @@ mod tests {
     #[test]
     fn every_graphics_text_is_in_the_language_table() {
         let (_, missed) = lang::scoped(lang::Language::load(&[], "de_de"), || {
-            for hdr in [false, true] {
+            for hdr in HdrMode::ALL {
                 let mut s = Settings::default();
                 s.horizon.hdr = hdr;
                 s.horizon.taa = true;

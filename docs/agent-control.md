@@ -56,6 +56,11 @@ agent's client needs one entry and one approval, whichever way the game was star
 are always those of the version the launcher selected, even for a game of another version: a
 command that game does not know answers with an error, and `game_hello` tells which game it is.
 `horizon-ctl mcp` stays available on its own, for a game started by hand or by a script.
+`horizon-ctl mcp --paced` stops a single-player world between tool calls: it opens the pause menu
+after each action and closes it before the next, so the world moves only while an action (or
+`wait`) runs, not while the agent thinks. Reading tools (`state`, `inventory`, `entities`,
+`events`...) leave it paused; a pause a person opened, another menu, a LAN or a server world are
+left alone.
 
 ## Protocol revisions
 
@@ -303,8 +308,10 @@ turn the switch off.
 - `wait-for screen NAME|widget ID|loaded|chat TEXT|event KIND [--timeout S] [--since SEQ]`
   replies when the condition holds, or with `kind: timeout`.
 - `events [--since SEQ]` returns what happened since SEQ: screens, chat, deaths, respawns, items,
-  dimensions and worlds (the newest 256). Take `last` before an action, and wait with `--since`,
-  so the action's event can't slip in before the wait.
+  damage (`hurt`, with the damage type, the amount and what dealt it), `heal`, `food`, dimensions
+  and worlds (the newest 256). `hurt` and `death` carry the player's position: a death drops the
+  inventory there. Take `last` before an action, and wait with `--since`, so the action's event
+  can't slip in before the wait (`wait-for event hurt` wakes an agent when it is attacked).
 
 ### Input provenance
 

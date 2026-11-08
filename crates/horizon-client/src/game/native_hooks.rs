@@ -6,6 +6,10 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 415 adds a world warp (`native_world_warp`): WGSL every terrain and entity vertex goes through, with an optional per-pixel stage for terrain.
+//!
+//! API 414 adds a held world (`native_world_hold`): the terrain kept drawn as it stands while the world changes under it, and every change shown on one frame when let go.
+//!
 //! API 413 adds chunk tickets in a level nobody is in (`native_force_chunk_in`).
 //!
 //! API 412 adds chunks a mod keeps loaded and ticking (`native_force_chunk`, `native_forced_chunks`).
@@ -1172,7 +1176,7 @@ pub(super) use horizon_world::level::flags;
 
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
-pub(crate) const NATIVE_HOOKS_API: u32 = 413;
+pub(crate) const NATIVE_HOOKS_API: u32 = 415;
 
 impl GameLevel<'_> {
     /// `EntityBlock.newBlockEntity` with the actual placed state. The first
@@ -2810,6 +2814,23 @@ impl Game<'_> {
     pub(super) fn native_player_tick(&mut self) {
         mod_api::dispatch_player_tick(self, mod_api::mods());
     }
+    /// A server player's inventory changed (`InventoryChangeTrigger`'s
+    /// moment: the per-tick check found another item or count in a slot),
+    /// with the player's state swapped in, so the helpers read that player.
+    /// `stacks` are the 41 slots in `Inventory` numbering: 0..36 the main
+    /// inventory (0..9 the hotbar), 36..40 the armour (feet, legs, chest,
+    /// head), 40 the off hand. It also fires at a player's first check after
+    /// joining, so a mod sees the inventory they log in with. Fires for the
+    /// single player, LAN guests and a dedicated server's players, never on a
+    /// client of a remote server. Server-side. API
+    /// @API:player_inventory_changed@.
+    pub(super) fn native_player_inventory_changed(
+        &mut self,
+        player: u128,
+        stacks: &[Option<ItemStack>],
+    ) {
+        mod_api::dispatch_player_inventory_changed(self, mod_api::mods(), player, stacks);
+    }
     /// The player-health HUD rows, once a frame the HUD draws them
     /// (`HealthHud::layout`, not under F1): `inputs` carries the health,
     /// food, air and vehicle state the layout reads, `wi`/`hi` the screen's
@@ -3205,7 +3226,7 @@ impl Game<'_> {
     /// radius)` for only the sections inside circles. Not asking lets go, and every change
     /// shows on that frame. Asked once a frame while a world is shown, before the frame's
     /// section uploads, by each player's game (splitscreen: each its own). Client only.
-    /// API @API:world_hold@.
+    /// API 414.
     pub(super) fn native_world_hold(&self, hold: &mut WorldHold) {
         mod_api::dispatch_world_hold(self, mod_api::mods(), hold);
     }
@@ -10896,6 +10917,37 @@ impl Game<'_> {
     /// This `Game` is the window's, not a server's.
     pub(super) fn native_window(&self) -> bool {
         self.options.execution_role == ExecutionRole::Client
+    }
+    /// Queues a toast of the mod's own in the toast slots the advancement
+    /// toasts use, drawn as an `AdvancementToast`: item `icon` (16 pixels; an
+    /// unknown item draws none), `title` in the frame label's place, yellow
+    /// (pink, and the challenge sound as it shows, with `challenge`), and
+    /// `description` as its white line, wrapped and faded in after the label
+    /// as an advancement's long title is. `native_toast_add` is asked first
+    /// with kind `mod` and `id` (the mod's own name for the toast, such as
+    /// `mymod:quest/first_steps`): a cancelled one isn't queued. True when
+    /// queued; false on a server, without a window and when cancelled. API
+    /// @API:add_toast@.
+    pub(super) fn native_add_toast(
+        &mut self,
+        id: &str,
+        icon: &str,
+        title: Text,
+        description: Text,
+        challenge: bool,
+    ) -> bool {
+        if !self.native_window() || !self.toast_allowed("mod", id) {
+            return false;
+        }
+        self.adv
+            .toasts
+            .push_back(super::advancements::Toast::of_mod(
+                icon,
+                title,
+                description,
+                challenge,
+            ));
+        true
     }
     /// Plays sound event `sound` (`minecraft:entity.generic.explode`, or a
     /// mod's own from its `assets/<id>/sounds.json`) at `at` for this
