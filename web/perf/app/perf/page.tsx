@@ -208,7 +208,6 @@ export default function PerfPage() {
         <>
           <section className={styles.captureBar}>
             <div className={styles.captureName}>
-              <strong>{capture.name}</strong>
               <span className={styles.muted}>{grouped(capture.bytes / 1024)} KiB</span>
             </div>
             <div className={styles.actions}>
@@ -251,6 +250,9 @@ export default function PerfPage() {
               </button>
               <button type="button" className={styles.tab} onClick={close}>
                 {t("app.close")}
+              </button>
+              <button type="button" className={styles.tab} onClick={() => { close(); openPicker(); }}>
+                {t("app.newProfile")}
               </button>
             </div>
           </section>
@@ -332,9 +334,6 @@ export default function PerfPage() {
           onClick={openPicker}
           onKeyDown={onDropzoneKey}
         >
-          <p className={styles.dropTitle}>
-            {loading ? t("app.reading") : t("app.drop")}
-          </p>
           <p className={styles.muted}>{t("app.privacy")}</p>
           <p className={styles.muted}>{t("app.dropHint")}</p>
         </div>

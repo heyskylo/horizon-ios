@@ -21,10 +21,11 @@ interface Props {
   capture: LoadedCapture;
 }
 
-type Tab = "overview" | "memory" | "network" | "flags" | "config" | "world" | "rules" | "mods";
+type Tab = "overview" | "host" | "memory" | "network" | "flags" | "config" | "world" | "rules" | "mods";
 
 const TABS: [Tab, string][] = [
   ["overview", "meta.tabOverview"],
+  ["host", "meta.tabHost"],
   ["memory", "meta.tabMemory"],
   ["network", "meta.tabNetwork"],
   ["flags", "meta.tabFlags"],
@@ -149,24 +150,27 @@ export function MetadataPanel({ reader, capture }: Props) {
             <h3>{t("meta.features")}</h3>
             <Chips values={build?.features ?? []} />
           </section>
-          <section>
-            <h3>{t("meta.machine")}</h3>
-            <KV
-              items={[
-                [t("meta.os"), show(machine?.os)],
-                [t("meta.osVersion"), show(machine?.os_version)],
-                [t("meta.arch"), show(machine?.arch)],
-                [t("meta.cpu"), show(machine?.cpu)],
-                [t("meta.threads"), show(machine?.cpu_threads)],
-                [t("meta.cores"), show(machine?.cpu_cores)],
-                [t("meta.ram"), machine ? mib(machine.ram_mb) : "—"],
-                [t("meta.cgroupCpu"), machine?.cgroup_cpu_cores == null ? "Not detected" : num(machine.cgroup_cpu_cores, 2)],
-                [t("meta.cgroupMemory"), machine?.cgroup_memory_mb ? mib(machine.cgroup_memory_mb) : "Not detected"],
-                [t("meta.gpu"), show(machine?.gpu)],
-              ]}
-            />
-          </section>
         </div>
+      ) : null}
+
+      {tab === "host" ? (
+        <section>
+          <h3>{t("meta.machine")}</h3>
+          <KV
+            items={[
+              [t("meta.os"), show(machine?.os)],
+              [t("meta.osVersion"), show(machine?.os_version)],
+              [t("meta.arch"), show(machine?.arch)],
+              [t("meta.cpu"), show(machine?.cpu)],
+              [t("meta.threads"), show(machine?.cpu_threads)],
+              [t("meta.cores"), show(machine?.cpu_cores)],
+              [t("meta.ram"), machine ? mib(machine.ram_mb) : "—"],
+              [t("meta.cgroupCpu"), machine?.cgroup_cpu_cores == null ? "Not detected" : num(machine.cgroup_cpu_cores, 2)],
+              [t("meta.cgroupMemory"), machine?.cgroup_memory_mb ? mib(machine.cgroup_memory_mb) : "Not detected"],
+              [t("meta.gpu"), show(machine?.gpu)],
+            ]}
+          />
+        </section>
       ) : null}
 
       {tab === "memory" ? (
