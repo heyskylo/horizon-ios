@@ -105,10 +105,7 @@ def main():
     parser.add_argument('--reference-dir', type=Path)
     opts, rest = parser.parse_known_args()
     sys.argv = [sys.argv[0], *rest]
-    if '--work-dir' not in sys.argv:
-        parser.error('--work-dir must be a fresh capture directory')
-    folder = Path(sys.argv[sys.argv.index('--work-dir')+1]).resolve()
-    assert not folder.exists(), 'preserve all previous capture attempts'
+    folder = driver.fresh_work_dir('crafter-drop-name-parity')
     driver.corpus_module.groups = lambda: [('Crafter ordinary drop name policy', program())]
     if '--allow-gaps' not in sys.argv:
         sys.argv.append('--allow-gaps')

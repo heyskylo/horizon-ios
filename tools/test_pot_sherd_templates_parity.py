@@ -96,8 +96,7 @@ def source_changes(ops, rows):
 def main():
     parser=argparse.ArgumentParser(add_help=False);parser.add_argument('--reference-dir',type=Path)
     options,rest=parser.parse_known_args();sys.argv=[sys.argv[0],*rest]
-    if '--work-dir' not in sys.argv:parser.error('--work-dir must name a fresh capture directory')
-    folder=Path(sys.argv[sys.argv.index('--work-dir')+1]).resolve();assert not folder.exists(),'preserve previous attempts'
+    folder=driver.fresh_work_dir('pot-sherd-templates-parity')
     driver.corpus_module.groups=lambda:[('Pot sherd template representation',program())]
     if '--allow-gaps' not in sys.argv:sys.argv.append('--allow-gaps')
     driver.main()
