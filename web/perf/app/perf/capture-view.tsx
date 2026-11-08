@@ -18,6 +18,7 @@ import { TicksPanel } from "./ticks-panel";
 import { WorldPanel } from "./world-panel";
 import { NetworkPanel } from "./network-panel";
 import { MemoryPanel } from "./memory-panel";
+import { BenchPanel } from "./bench-panel";
 import { MarksPanel } from "./marks-panel";
 import { WarningsPanel } from "./warnings-panel";
 import { HotPanel } from "./hot-panel";
@@ -34,6 +35,7 @@ const PANELS: Record<Exclude<Tab, "compare">, ComponentType<{ reader: HorizonPer
   world: WorldPanel,
   net: NetworkPanel,
   memory: MemoryPanel,
+  bench: BenchPanel,
   marks: MarksPanel,
   warnings: WarningsPanel,
   hot: HotPanel,
