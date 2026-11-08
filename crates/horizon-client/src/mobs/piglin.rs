@@ -2298,6 +2298,7 @@ mod crossbow_tests {
             loot: &loot,
             damage: None,
             player: None,
+            player_killed: false,
             luck: 0.0,
             vehicle: None,
             mob_drops: true,

@@ -30,7 +30,7 @@ impl ServerState {
         }
     }
     /// Ticks per second over the last few seconds.
-    fn tps(&self) -> f64 {
+    pub(super) fn tps(&self) -> f64 {
         match (self.ticks.front(), self.ticks.back()) {
             (Some(first), Some(last)) if self.ticks.len() > 1 => {
                 (self.ticks.len() - 1) as f64 / last.duration_since(*first).as_secs_f64().max(1e-9)

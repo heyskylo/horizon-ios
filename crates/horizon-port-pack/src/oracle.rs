@@ -63,6 +63,9 @@ pub struct State {
     pub sound: Value,
     pub outline: Value,
     pub collision: Value,
+    /// `BlockBehaviour.canOcclude` (`noOcclusion` clears it); absent in older facts.
+    #[serde(default)]
+    pub can_occlude: Option<bool>,
     /// What breaking the state drops, per tool (`hand`, `diamond_pickaxe`,
     /// `shears`, `silk_touch_pickaxe`...): item id → count.
     #[serde(default)]
@@ -385,7 +388,16 @@ impl Facts {
             properties.insert("light".into(), json!(s.emission));
             properties.insert("requires_tool".into(), json!(s.requires_tool));
             properties.insert("friction".into(), json!(block.friction));
-            properties.insert("map_color".into(), json!(s.map_color_id));
+            // 26.3's MapColor ids end at 61; the game refuses the whole mod for one past them.
+            if s.map_color_id <= 61 {
+                properties.insert("map_color".into(), json!(s.map_color_id));
+            } else {
+                differences.push(format!("map colour {} (not vanilla's)", s.map_color_id));
+            }
+            // `noOcclusion` (a block its block entity draws): neighbours' faces stay drawn.
+            if s.can_occlude == Some(false) && theirs.is_none_or(|t| t.can_occlude != Some(false)) {
+                properties.insert("occludes".into(), json!(false));
+            }
             if theirs.is_none_or(|t| t.sound != s.sound) {
                 match self.sound_block(&s.sound, allowed) {
                     Some(b) => {
@@ -466,8 +478,11 @@ impl Facts {
         if item.max_stack_size != 64 {
             decl["max_stack_size"] = json!(item.max_stack_size);
         }
-        if item.rarity != "common" {
-            decl["rarity"] = json!(item.rarity);
+        match item.rarity.as_str() {
+            "common" => {}
+            "uncommon" | "rare" | "epic" => decl["rarity"] = json!(item.rarity),
+            // NeoForge lets mods add rarities; the game refuses the whole mod for one.
+            other => differences.push(format!("rarity {other} (not vanilla's)")),
         }
         if let Some(armor) = item.armor.as_ref().filter(|a| !a.material.is_empty())
             && !self.armor_asset_exists(armor, owned)
@@ -707,6 +722,64 @@ mod tests {
         assert_eq!(door(&me), Some(SelfDrop::Always));
         // Something else from the upper half: not a door table.
         assert_eq!(door(&json!({"hand": {"m:other": 1}})), None);
+    }
+
+    /// `noOcclusion` on a full-cube block (a cannon its block entity draws): the oracle's
+    /// `can_occlude: false` carries, so the neighbours' faces behind it are drawn.
+    #[test]
+    fn a_block_that_cannot_occlude_hides_no_neighbour_faces() {
+        let cube = json!([[0, 0, 0, 1, 1, 1]]);
+        let plain = ["net.minecraft.world.level.block.Block"];
+        let mut open = state(5.0, "anvil", cube.clone());
+        open["can_occlude"] = json!(false);
+        let mut solid = state(5.0, "metal", cube.clone());
+        solid["can_occlude"] = json!(true);
+        let facts: Facts = serde_json::from_value(json!({
+            "blocks": {
+                "minecraft:iron_block": block(&plain, json!({}), json!({"": solid.clone()})),
+                "m:cannon": block(&["m.Cannon", plain[0]], json!({}), json!({"": open})),
+                "m:plate": block(&["m.Plate", plain[0]], json!({}), json!({"": solid})),
+            },
+            "items": {}
+        }))
+        .unwrap();
+        let cannon = facts.template("m:cannon", &|_| true).unwrap();
+        assert_eq!(cannon.template, "minecraft:iron_block");
+        assert_eq!(cannon.properties.get("occludes"), Some(&json!(false)));
+        let plate = facts.template("m:plate", &|_| true).unwrap();
+        assert_eq!(plate.properties.get("occludes"), None);
+    }
+
+    /// A rarity or map colour a mod adds past vanilla's would make the game refuse the whole mod:
+    /// the template's stands in, and the report says so.
+    #[test]
+    fn values_past_vanillas_keep_the_templates() {
+        let cube = json!([[0, 0, 0, 1, 1, 1]]);
+        let plain = ["net.minecraft.world.level.block.Block"];
+        let mut gas = state(0.0, "stone", cube.clone());
+        gas["map_color_id"] = json!(63);
+        let facts: Facts = serde_json::from_value(json!({
+            "blocks": {
+                "minecraft:stone": block(&plain, json!({}), json!({"": state(1.5, "stone", cube)})),
+                "m:gas": block(&["m.Gas", plain[0]], json!({}), json!({"": gas})),
+            },
+            "items": {"m:relic": {"class": "net.minecraft.world.item.Item", "max_stack_size": 1,
+                "rarity": "m:masterwork"}}
+        }))
+        .unwrap();
+        let gas = facts.template("m:gas", &|_| true).unwrap();
+        assert!(!gas.properties.contains_key("map_color"));
+        assert!(
+            gas.differences.iter().any(|d| d.contains("map colour 63")),
+            "{:?}",
+            gas.differences
+        );
+        let (relic, differences) = facts.item("m:relic", &[]).unwrap();
+        assert_eq!(relic.get("rarity"), None);
+        assert!(
+            differences.iter().any(|d| d.contains("m:masterwork")),
+            "{differences:?}"
+        );
     }
 
     #[test]
