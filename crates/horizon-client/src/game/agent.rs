@@ -959,7 +959,11 @@ impl Game<'_> {
             .into());
         }
         if let Some(p) = in_the_way {
-            let name = &self.res.facts().get(self.world.block(p[0], p[1], p[2])).name;
+            let name = &self
+                .res
+                .facts()
+                .get(self.world.block(p[0], p[1], p[2]))
+                .name;
             return Err(format!(
                 "no face of block {pos:?} is visible from here: {name} at {p:?} is in the way"
             )
