@@ -329,7 +329,6 @@
   "by {author}": "Yazar: {author}",
   "{count} downloads": "{count} indirme",
   "{count} followers": "{count} takipçi",
-  "{count} stars on GitHub": "GitHub'da {count} yıldız",
   "updated {date}": "güncellenme tarihi: {date}",
   "Back to results": "Sonuçlara dön",
   "Sign in with GitHub to rate": "Değerlendirmek için GitHub ile oturum aç",
@@ -1181,7 +1180,6 @@
   "Builds on the Horizon you play": "Oynadığın Horizon üzerinde derlenir",
   "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Yerel kanca noktaları v{needs} gerekiyor, oynadığın Horizon'da v{has} var: önce Horizon'u güncelle",
   "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Horizon {pin} için yapıldı, ancak {mods} başka bir commit'e sabitlenmiş: derleme senden \"Yine de derle\" isteyecek ve derlenmeyebilir",
-  "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Horizon {pin} için yapıldı, sen {yours} oynuyorsun: başlatıcı oyununu {pin} üzerinde derler",
   "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
   "Tags": "Etiketler",
   "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on.": "Windows'un Akıllı Uygulama Denetimi (Smart App Control) derlemeyi engelliyor (os error 4551). Yalnızca imzalı programların çalışmasına izin verir; yerel derleme ise kimsenin imzalamadığı programları çalıştırır: bu bilgisayarda derlediklerini ve derleyicinin kendi programlarından bazılarını. Yerel modları derlemek için Windows Güvenliği > Uygulama ve tarayıcı denetimi > Akıllı Uygulama Denetimi ayarları'ndan kapatın, sonra yeniden derleyin. Bazı Windows sürümlerinde Windows yeniden yüklenmeden tekrar açılamaz. İçerik modları (.hmod) derleme gerektirmez ve açıkken de çalışır.",
@@ -1260,5 +1258,11 @@
   "Recommended": "Önerilen",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Daha eski bir sürüm, {version}, oynadığın Horizon'da derleniyor: kurulum onu seçer",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: {version} sürümü derlenmedi, {older} deneniyor",
-  "Use recommended (kept at {version})": "Önerileni kullan ({version} sürümünde tutuldu)"
+  "Use recommended (kept at {version})": "Önerileni kullan ({version} sürümünde tutuldu)",
+  "Only what works on {instance}": "Yalnızca {instance} üzerinde çalışanlar",
+  "{count} versions that don't work on {instance} are hidden": "{instance} üzerinde çalışmayan {count} sürüm gizlendi",
+  "Made for Horizon {pin}: the launcher builds it on {yours}, the one you play, and on {pin} only if it doesn't compile there": "Horizon {pin} için yapıldı: başlatıcı onu oynadığın {yours} üzerinde derler, yalnızca orada derlenmezse {pin} üzerinde",
+  "{mods} didn't build on the Horizon you play: building on the one they were made for": "{mods} oynadığın Horizon'da derlenmedi: yapıldıkları sürümde derleniyor",
+  "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Son derlemede, {mods} için Horizon {commit} üzerinde, {horizon} üzerinde değil",
+  "In the last build, on {horizon}": "Son derlemede, {horizon} üzerinde"
 }

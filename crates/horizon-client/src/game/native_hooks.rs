@@ -2810,6 +2810,23 @@ impl Game<'_> {
     pub(super) fn native_player_tick(&mut self) {
         mod_api::dispatch_player_tick(self, mod_api::mods());
     }
+    /// A server player's inventory changed (`InventoryChangeTrigger`'s
+    /// moment: the per-tick check found another item or count in a slot),
+    /// with the player's state swapped in, so the helpers read that player.
+    /// `stacks` are the 41 slots in `Inventory` numbering: 0..36 the main
+    /// inventory (0..9 the hotbar), 36..40 the armour (feet, legs, chest,
+    /// head), 40 the off hand. It also fires at a player's first check after
+    /// joining, so a mod sees the inventory they log in with. Fires for the
+    /// single player, LAN guests and a dedicated server's players, never on a
+    /// client of a remote server. Server-side. API
+    /// @API:player_inventory_changed@.
+    pub(super) fn native_player_inventory_changed(
+        &mut self,
+        player: u128,
+        stacks: &[Option<ItemStack>],
+    ) {
+        mod_api::dispatch_player_inventory_changed(self, mod_api::mods(), player, stacks);
+    }
     /// The player-health HUD rows, once a frame the HUD draws them
     /// (`HealthHud::layout`, not under F1): `inputs` carries the health,
     /// food, air and vehicle state the layout reads, `wi`/`hi` the screen's
@@ -10896,6 +10913,37 @@ impl Game<'_> {
     /// This `Game` is the window's, not a server's.
     pub(super) fn native_window(&self) -> bool {
         self.options.execution_role == ExecutionRole::Client
+    }
+    /// Queues a toast of the mod's own in the toast slots the advancement
+    /// toasts use, drawn as an `AdvancementToast`: item `icon` (16 pixels; an
+    /// unknown item draws none), `title` in the frame label's place, yellow
+    /// (pink, and the challenge sound as it shows, with `challenge`), and
+    /// `description` as its white line, wrapped and faded in after the label
+    /// as an advancement's long title is. `native_toast_add` is asked first
+    /// with kind `mod` and `id` (the mod's own name for the toast, such as
+    /// `mymod:quest/first_steps`): a cancelled one isn't queued. True when
+    /// queued; false on a server, without a window and when cancelled. API
+    /// @API:add_toast@.
+    pub(super) fn native_add_toast(
+        &mut self,
+        id: &str,
+        icon: &str,
+        title: Text,
+        description: Text,
+        challenge: bool,
+    ) -> bool {
+        if !self.native_window() || !self.toast_allowed("mod", id) {
+            return false;
+        }
+        self.adv
+            .toasts
+            .push_back(super::advancements::Toast::of_mod(
+                icon,
+                title,
+                description,
+                challenge,
+            ));
+        true
     }
     /// Plays sound event `sound` (`minecraft:entity.generic.explode`, or a
     /// mod's own from its `assets/<id>/sounds.json`) at `at` for this
