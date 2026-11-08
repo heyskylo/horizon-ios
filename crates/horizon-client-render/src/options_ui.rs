@@ -1612,11 +1612,9 @@ pub struct OptionsUi {
     selected_native_key: Option<(usize, usize)>,
     /// Bindings: the action waiting for a pad button.
     pub selected_pad_action: Option<&'static str>,
-    /// The glyphs the binds list shows (the setting, else the pad's family).
-    pub pad_style: GlyphStyle,
-    /// The pad goes by its letters (`PadSettings::nintendo_letters`) and the glyphs are
-    /// Nintendo's: each part shows the letter of the button playing it.
-    pub pad_by_letter: bool,
+    /// The glyphs menus show (`Glyphs::of`: the setting, else the pad's family, and a Nintendo
+    /// pad's letters when it goes by them). The game sets it each frame.
+    pub pad_glyphs: crate::pad_glyph::Glyphs,
     /// The pad's focus drives the page: its hidden pointer sits mid-widget, so a tooltip goes
     /// under the widget instead of beside the pointer.
     pub pad_driving: bool,
@@ -1715,8 +1713,7 @@ impl Default for OptionsUi {
             selected_key: None,
             selected_native_key: None,
             selected_pad_action: None,
-            pad_style: GlyphStyle::Xbox,
-            pad_by_letter: false,
+            pad_glyphs: crate::pad_glyph::Glyphs::default(),
             pad_driving: false,
             languages: Vec::new(),
             language_choice: None,
@@ -3713,7 +3710,7 @@ impl OptionsUi {
         }
         if self.page() == Page::SplitProfiles {
             self.split_profiles
-                .draw(batch, atlas, cursor, self.in_world, self.pad_style);
+                .draw(batch, atlas, cursor, self.in_world, self.pad_glyphs);
             return;
         }
         if self.page() == Page::Studio {
