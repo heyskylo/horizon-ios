@@ -1665,6 +1665,26 @@ impl<R: RandomSource> Context<'_, R> {
                     stack = smelted;
                 }
             }
+            // SetLoreFunction: the lines, each a text component, go through
+            // the function's `ListOperation` over the `minecraft:lore`
+            // component the stack already has. The item layer reads that
+            // component back for the tooltip (`item_tooltip::lore_texts`), so
+            // the lines are kept as written; the `resolutionContext` selectors
+            // are not modelled.
+            "minecraft:set_lore" => {
+                let id = "minecraft:lore";
+                let old = stack
+                    .components
+                    .iter()
+                    .find(|(k, _)| k == id)
+                    .and_then(|(_, v)| v.as_array().cloned())
+                    .unwrap_or_default();
+                let mut spec = f.clone();
+                spec["values"] = f["lore"].clone();
+                let lines = list_operation(&spec, old, Value::clone);
+                stack.components.retain(|(k, _)| k != id);
+                stack.components.push((id.to_owned(), Value::Array(lines)));
+            }
             // SetNameFunction: the component the target names (custom_name by
             // default). The entity-resolved selectors and scores are not
             // modelled; no table uses `entity`.
@@ -2206,6 +2226,59 @@ mod namespace_tests {
         // A mode the codec would refuse reads as a replacement.
         let unknown = serde_json::json!({"mode": "sideways", "values": [5]});
         assert_eq!(list_operation(&unknown, vec![1, 2], int), [5]);
+    }
+
+    /// `SetLoreFunction`: a loot table's lines join the `minecraft:lore`
+    /// component an earlier function wrote when the mode appends, and are the
+    /// whole list when it does not; the item layer reads the component back
+    /// for the tooltip.
+    #[test]
+    fn set_lore_appends_and_replaces_the_lore_lines() {
+        let root = std::env::temp_dir().join(format!("horizon-loot-lore-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let table = r#"{"pools": [{"rolls": 1, "entries": [{"type": "minecraft:item", "name": "minecraft:stick",
+            "modifier": [
+                {"type": "minecraft:set_components", "components": {"minecraft:lore": [{"text": "old"}]}},
+                {"type": "minecraft:set_lore", "mode": "append", "lore": [{"text": "new"}]}
+            ]}]}]}"#;
+        let files = [
+            ("items.json", r#"{"minecraft:stick": {}}"#),
+            ("data/minecraft/loot_table/chests/lore.json", table),
+        ];
+        for (name, text) in files {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        let data = LootData::load(&root, &PackOverlay::NONE).unwrap();
+        let filled = data.fill("minecraft:chests/lore", 3, 27, None);
+        let stack = filled.iter().flatten().next().expect("a stick");
+        let component: Vec<_> = stack
+            .components
+            .iter()
+            .filter(|(k, _)| k == "minecraft:lore")
+            .collect();
+        assert_eq!(component.len(), 1, "{:?}", stack.components);
+        assert_eq!(
+            component[0].1,
+            serde_json::json!([{"text": "old"}, {"text": "new"}])
+        );
+        // `replace_all`: the function's lines are the whole list.
+        fs::write(
+            root.join("data/minecraft/loot_table/chests/lore.json"),
+            table.replace(r#""mode": "append""#, r#""mode": "replace_all""#),
+        )
+        .unwrap();
+        let data = LootData::load(&root, &PackOverlay::NONE).unwrap();
+        let filled = data.fill("minecraft:chests/lore", 3, 27, None);
+        let stack = filled.iter().flatten().next().expect("a stick");
+        let component: Vec<_> = stack
+            .components
+            .iter()
+            .filter(|(k, _)| k == "minecraft:lore")
+            .collect();
+        assert_eq!(component[0].1, serde_json::json!([{"text": "new"}]));
+        let _ = fs::remove_dir_all(&root);
     }
 
     /// `SetBannerPatternFunction`: a banner from a loot table gets the layers
