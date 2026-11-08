@@ -1325,9 +1325,18 @@ impl Game<'_> {
     }
     /// `suck_item_entities` for a hopper minecart, which first asks the
     /// carts' pass whether any item's box reaches the columns of the box: an
-    /// item that meets it reaches one of them.
+    /// item that meets it reaches one of them. Any write to the items since
+    /// the columns were built (an explosion's push, a command, a pickup)
+    /// rebuilds them.
     fn cart_suck_items(&mut self, hopper: &View, min: [f64; 3], max: [f64; 3]) -> bool {
-        if let Some(columns) = self.cart_item_columns.as_mut()
+        let stamp = self.dropped.stamp();
+        if let Some((seen, columns)) = self.cart_item_columns.as_mut()
+            && *seen != stamp
+        {
+            *seen = stamp;
+            *columns = Default::default();
+        }
+        if let Some((_, columns)) = self.cart_item_columns.as_mut()
             && !columns.may_reach_area(
                 &self.dropped,
                 (min[0].floor() as i32, max[0].floor() as i32),
