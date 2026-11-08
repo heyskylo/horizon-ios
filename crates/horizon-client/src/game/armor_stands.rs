@@ -980,28 +980,31 @@ impl Game<'_> {
     /// `delta`, through the stand's `shove`. The stand the shulker
     /// rides is left out (`isPassengerOfSameVehicle`). Stands tick before mobs
     /// here, while vanilla ticks a stand that joined after the shulker (one
-    /// placed on it) after the shulker, and that stand's own travel lands it
-    /// again on the risen lid: so the push leaves `on_ground` as it is.
+    /// placed on it) after the shulker: `shove` makes up for the order.
     pub(super) fn lid_pushes_armor_stands(&mut self, shulker: u32, area: Aabb, delta: [f64; 3]) {
         if self.armor_stands.is_empty() {
             return;
         }
-        let ridden = self
-            .mobs
-            .iter()
-            .position(|m| m.id == shulker)
-            .and_then(|j| self.mob_root_vehicle(j));
         let delta = Vec3::new(delta[0], delta[1], delta[2]);
         let mut obstacles: Option<horizon_client::entities::ObstacleGrid> = None;
+        // (the stand the shulker rides, when it joined), worked out at the first stand it meets.
+        let mut shell: Option<(Option<u32>, horizon_client::join_seq::JoinSeq)> = None;
         let mut nearby = Vec::new();
         for i in 0..self.armor_stands.len() {
             let a = &self.armor_stands[i];
-            if a.marker
-                || a.no_gravity
-                || a.health <= 0.0
-                || Some(a.id) == ridden
-                || !a.bounds().intersects(area)
-            {
+            if a.marker || a.no_gravity || a.health <= 0.0 || !a.bounds().intersects(area) {
+                continue;
+            }
+            let (ridden, joined) = *shell.get_or_insert_with(|| {
+                let j = self.mobs.iter().position(|m| m.id == shulker);
+                (
+                    j.and_then(|j| self.mob_root_vehicle(j)),
+                    j.map_or(horizon_client::join_seq::JoinSeq::UNJOINED, |j| {
+                        self.mobs[j].join
+                    }),
+                )
+            });
+            if Some(a.id) == ridden {
                 continue;
             }
             let grid = obstacles.get_or_insert_with(|| self.stand_entity_collisions());
@@ -1015,7 +1018,14 @@ impl Game<'_> {
                 binding: self.collision,
                 subject: None,
             };
-            a.shove(scene, delta, Some(self.border.geometry()), &nearby);
+            let travels_after = a.join > joined;
+            a.shove(
+                scene,
+                delta,
+                Some(self.border.geometry()),
+                &nearby,
+                travels_after,
+            );
         }
     }
     /// `Ravager.roar` with `mob_griefing` on: every armor stand in `area` (the

@@ -379,8 +379,10 @@ impl Game<'_> {
                             tag.get("Brain").and_then(|brain| brain.get("memories")),
                             Some(Tag::Compound(_))
                         );
-                    // Runtime-only state (AI, animation) carries over.
+                    // Runtime-only state (AI, animation) carries over, and the
+                    // entity keeps its place in the level's join order.
                     let old = std::mem::replace(slot, new);
+                    slot.join = old.join;
                     if keep_liked_player {
                         slot.extra.tame = old.extra.tame;
                         slot.extra.owner = old.extra.owner;
@@ -445,8 +447,10 @@ impl Game<'_> {
             Target::Stand(id) => {
                 let mut new = entity_nbt::armor_stand_from_nbt(&tag, id).ok_or_else(stale)?;
                 if let Some(slot) = self.armor_stands.iter_mut().find(|a| a.id == id) {
-                    // Entity.load keeps the existing entity's firstTick state.
+                    // Entity.load keeps the existing entity's firstTick state
+                    // and its place in the level's join order.
                     new.first_tick = slot.first_tick;
+                    new.join = slot.join;
                     *slot = new;
                 }
             }

@@ -1857,6 +1857,7 @@ impl Game<'_> {
                     && self.native_mob_may_ride(mob, id, true)
                     && let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob)
                 {
+                    horizon_client::mobs::shulker::on_start_riding(m);
                     m.extra.mount = Some(id);
                     m.extra.passenger = true;
                     m.ai.nav.stop();
@@ -1864,6 +1865,7 @@ impl Game<'_> {
                     occupied = true;
                     self.break_leash(mob, true, false);
                     self.note_started_riding(id);
+                    self.vehicle_picked_up();
                 }
                 continue;
             }

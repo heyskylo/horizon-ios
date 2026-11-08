@@ -2420,10 +2420,12 @@ impl ArmorStand {
         }
         self.health > 0.5
     }
-    /// EntityType.ARMOR_STAND dimensions (0.5 x 1.975, half for small).
+    /// EntityType.ARMOR_STAND dimensions (0.5 x 1.975F, half for small).
     pub fn bounds(&self) -> Aabb {
         let s = if self.small { 0.5 } else { 1.0 };
-        let (w, h) = (0.25 * s, 1.975 * s);
+        // EntityDimensions.makeBoundingBox adds the float height, widened
+        // (halving it for the small stand is exact).
+        let (w, h) = (0.25 * s, f64::from(1.975_f32) * s);
         let p = self.position;
         Aabb::new(
             Vec3::new(p.x - w, p.y, p.z - w),
@@ -2541,24 +2543,7 @@ impl ArmorStand {
             );
             self.on_ground = wanted.y < 0.0 && moved.y > wanted.y;
             // Entity.setOnGroundWithMovement: the block under the feet.
-            let context = horizon_world::collision_context::CollisionContext::for_entity(
-                horizon_world::collision_context::CollisionEntity {
-                    identity: horizon_world::entity_obstruction::EntityIdentity(u64::from(self.id)),
-                    kind: horizon_world::collision_context::EntityContextKind::Living,
-                    y: self.position.y,
-                    descending: false,
-                    main_hand: Some(horizon_world::collision_context::CollisionItem::EMPTY),
-                },
-                false,
-            );
-            let position = self.position;
-            let _ =
-                self.support
-                    .check_support(self.on_ground, self.bounds(), Some(wanted), |area| {
-                        horizon_world::ground_support::find_supporting_block(
-                            scene, context, position, area, 1_000_000,
-                        )
-                    });
+            self.ground_support(scene, wanted);
             if (wanted.x - moved.x).abs() >= f64::from(1.0e-5_f32) {
                 horizontal_collision = true;
                 velocity.x = 0.0;
@@ -2582,17 +2567,37 @@ impl ArmorStand {
     /// border and `entities` (the boxes `getEntityCollisions` gives the stand)
     /// cut the move short, a move cut to almost nothing is not made, and an
     /// axis that hits something loses its speed
-    /// (`restituteMovementAfterCollisions`: a stand does not bounce).
-    /// `on_ground` stays as the stand's own travel left it: see the game's
-    /// `lid_pushes_armor_stands`.
+    /// (`restituteMovementAfterCollisions`: a stand does not bounce, so the
+    /// speed becomes `-speed * 0`).
+    ///
+    /// The stand has already travelled this tick (stands tick before mobs
+    /// here). `travels_after` says vanilla ticks it after the shulker (it
+    /// joined the level later, as a stand placed on the shell does), so
+    /// there the push comes first and its own travel follows:
+    /// - a push nothing stops leaves `on_ground` and the speed as that
+    ///   travel left them (it lands the stand again on the risen lid);
+    /// - a push down that something stops: the travel that follows starts
+    ///   with no vertical speed, moves nothing vertically (`on_ground`
+    ///   false) and ends with gravity's speed only, which the stand's own
+    ///   travel, stopped by the same floor, already gave it;
+    /// - a push up that a ceiling stops loses the vertical speed, so the
+    ///   stand stays pinned on the next tick as vanilla's does (vanilla
+    ///   shows gravity's speed by then, and once the lid stops, the stand
+    ///   falls through it one tick later than vanilla's).
+    ///
+    /// Otherwise vanilla ticks it before the shulker, as here, and the push
+    /// sets `on_ground` and the block under the feet itself. Left out: the
+    /// block speed factor on the horizontal speed, the fall distance a push
+    /// down through the air adds, and a slime or bed bounce.
     pub fn shove(
         &mut self,
         scene: SceneCollisions,
         delta: Vec3,
         border: Option<&BorderGeometry>,
         entities: &[Aabb],
+        travels_after: bool,
     ) {
-        let scene = SceneCollisions {
+        let mut scene = SceneCollisions {
             subject: self.feet_are_leather_boots().then_some(
                 crate::collisions::PowderSnowSubject {
                     leather_boots: true,
@@ -2601,7 +2606,12 @@ impl ArmorStand {
             ),
             ..scene
         };
-        let Ok(moved) = scene.resolve_in_border_with(
+        let Ok(moved) = SceneCollisions {
+            world: scene.world,
+            binding: scene.binding,
+            subject: scene.subject,
+        }
+        .resolve_in_border_with(
             self.bounds(),
             delta,
             0.0,
@@ -2617,14 +2627,49 @@ impl ArmorStand {
         }
         // Mth.equal on x and z; y only when the push had a vertical part.
         if (delta.x - moved.x).abs() >= f64::from(1.0e-5_f32) {
-            self.velocity.x = 0.0;
-        }
-        if delta.y != 0.0 && moved.y != delta.y {
-            self.velocity.y = 0.0;
+            self.velocity.x = -self.velocity.x * 0.0;
         }
         if (delta.z - moved.z).abs() >= f64::from(1.0e-5_f32) {
-            self.velocity.z = 0.0;
+            self.velocity.z = -self.velocity.z * 0.0;
         }
+        let vertical = moved.y != delta.y;
+        if travels_after {
+            if vertical {
+                self.on_ground = false;
+                if delta.y > 0.0 {
+                    self.velocity.y = -self.velocity.y * 0.0;
+                }
+                self.ground_support(&mut scene, moved);
+            }
+        } else {
+            if vertical && delta.y != 0.0 {
+                self.velocity.y = -self.velocity.y * 0.0;
+            }
+            self.on_ground = vertical && delta.y < 0.0;
+            self.ground_support(&mut scene, moved);
+        }
+    }
+    /// `Entity.checkSupportingBlock` after a move by `movement`: the block
+    /// under the feet while `on_ground`, none otherwise.
+    fn ground_support(&mut self, scene: &mut SceneCollisions, movement: Vec3) {
+        let context = horizon_world::collision_context::CollisionContext::for_entity(
+            horizon_world::collision_context::CollisionEntity {
+                identity: horizon_world::entity_obstruction::EntityIdentity(u64::from(self.id)),
+                kind: horizon_world::collision_context::EntityContextKind::Living,
+                y: self.position.y,
+                descending: false,
+                main_hand: Some(horizon_world::collision_context::CollisionItem::EMPTY),
+            },
+            false,
+        );
+        let (position, bounds) = (self.position, self.bounds());
+        let _ = self
+            .support
+            .check_support(self.on_ground, bounds, Some(movement), |area| {
+                horizon_world::ground_support::find_supporting_block(
+                    scene, context, position, area, 1_000_000,
+                )
+            });
     }
     /// `HoneyBlock.entityInside`: side-slide movement after the stand's travel.
     /// `ArmorStand.hasPhysics` / `Entity.isAffectedByBlocks` exclude markers

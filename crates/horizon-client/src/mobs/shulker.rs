@@ -238,7 +238,7 @@ impl<'w, 'r> BlockSpace<'w, 'r> {
                         .join_is_not_empty(&face, ShapeOp::XOR)
                         .is_ok_and(|differs| !differs)
                 });
-        full && self.no_collision(m, attachment_box(p, face))
+        full && self.no_collision(m, attachment_box(p, face, m.model_scale()))
     }
 }
 fn block_space<'w, 'r>(m: &Mob, w: &'w MobWorld<'r>) -> BlockSpace<'w, 'r> {
@@ -264,7 +264,9 @@ fn entities_clear(m: &Mob, w: &MobWorld, bounds: Aabb) -> bool {
 fn no_collision(m: &Mob, w: &MobWorld, bounds: Aabb) -> bool {
     block_space(m, w).no_collision(m, bounds) && entities_clear(m, w, bounds)
 }
-fn attachment_box(p: [i32; 3], face: u8) -> Aabb {
+/// `canStayAt`'s `getProgressAabb(getScale(), ...)`: the shell of `size`
+/// fully opened from face `face` of block `p`.
+fn attachment_box(p: [i32; 3], face: u8, size: f32) -> Aabb {
     progress_aabb(
         opposite(face),
         -1.0,
@@ -274,13 +276,14 @@ fn attachment_box(p: [i32; 3], face: u8) -> Aabb {
             f64::from(p[1]),
             f64::from(p[2]) + 0.5,
         ),
-        1.0,
+        size,
     )
     .deflate(Vec3::new(1.0e-6, 1.0e-6, 1.0e-6))
 }
 /// Shulker.canStayAt, including its separately indexed collidable entities.
 fn can_stay_at(m: &Mob, w: &MobWorld, p: [i32; 3], face: u8) -> bool {
-    block_space(m, w).can_stay_at(m, p, face) && entities_clear(m, w, attachment_box(p, face))
+    block_space(m, w).can_stay_at(m, p, face)
+        && entities_clear(m, w, attachment_box(p, face, m.model_scale()))
 }
 /// `findAttachableSurface`: the first face (down, up, north, south, west,
 /// east) to cling to.
@@ -405,7 +408,9 @@ fn ease_peek(m: &mut Mob) -> (f32, f32) {
 }
 /// `Entity.load` on a live shell (`/data merge`): `readAdditionalSaveData`
 /// reads only the raw `Peek`, the lid's target, so `currentPeekAmount` keeps
-/// its eased value from `old` and the lid eases toward the new target.
+/// its eased value from `old` and the lid eases toward the new target. (A
+/// shell loaded or summoned fresh still starts with its lid at the raw
+/// `Peek` here, where vanilla's starts shut and eases open.)
 pub fn keep_eased_peek(slot: &mut Mob, old: &Mob) {
     slot.anim.v[PEEK] = old.anim.v[PEEK];
     slot.anim.vo[PEEK] = old.anim.vo[PEEK];
@@ -946,6 +951,37 @@ mod tests {
         m
     }
 
+    /// A box query over many mobs (a boat's) tests their positions against
+    /// `BoxReach` first. It has to reach an open lid on every face:
+    /// `makeBoundingBox` grows the shell a block out from its position,
+    /// sideways or below it too.
+    #[test]
+    fn box_reach_reaches_an_open_lid_on_every_face() {
+        for face in 0..6u8 {
+            let mut m = shulker();
+            m.position = Vec3::new(0.5, 4.0, 0.5);
+            m.extra.variant3 = face;
+            m.anim.v[PEEK] = 1.0;
+            let reach = crate::mobs::BoxReach::of(std::slice::from_ref(&m));
+            // A small box near the lid's far end, 1.4 out from the shell's
+            // centre, where only the open lid reaches.
+            let s = face_step(opposite(face)).map(f64::from);
+            let tip = Vec3::new(0.5 + s[0] * 1.4, 4.5 + s[1] * 1.4, 0.5 + s[2] * 1.4);
+            let area = Aabb::new(
+                Vec3::new(tip.x - 0.05, tip.y - 0.05, tip.z - 0.05),
+                Vec3::new(tip.x + 0.05, tip.y + 0.05, tip.z + 0.05),
+            );
+            assert!(
+                m.bounds().intersects(area),
+                "face {face}: the lid reaches {tip:?}"
+            );
+            assert!(
+                reach.may_meet(&m, area),
+                "face {face}: the reach misses the lid"
+            );
+        }
+    }
+
     /// `Shulker.hurtServer` returns false for an `AbstractArrow` while
     /// `isClosed` (raw peek 0). An open shell takes the same arrow.
     #[test]
@@ -1065,7 +1101,8 @@ mod tests {
             (w - 1.0).abs() < 1e-9 && (h - 1.5).abs() < 1e-5 && (e - 0.75).abs() < 1e-5,
             "a half open shell is 1 x 1.5 with its eyes at 0.75: {w} x {h} x {e}"
         );
-        // The same box `Mob::bounds_at` and the culling build from `height`.
+        // The culling (and the eye height) use `height`; the collision box
+        // is `bounds_at` (`Shulker.makeBoundingBox`), not built from it.
         assert!((f64::from(m.height()) - 1.5).abs() < 1e-5, "{}", m.height());
     }
 
