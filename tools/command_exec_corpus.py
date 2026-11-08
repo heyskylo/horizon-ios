@@ -3286,6 +3286,59 @@ def setblock_destroy_air():
     return out
 
 
+def block_predicate_nbt():
+    """A block predicate's `{...}` partially matches the block entity's full
+    saved data (BlockPredicateArgument, NbtUtils.compareNbt) (#12030)."""
+    named, plain, stone = '26 220 30', '27 220 30', '28 220 30'
+    out = setup('/tick freeze', '/fill 26 220 30 29 220 32 minecraft:air strict',
+                f'/setblock {named} minecraft:chest{{CustomName:"expected",Items:['
+                '{Slot:0b,id:"minecraft:apple",count:3},{Slot:2b,id:"minecraft:stone",count:1}]}',
+                f'/setblock {plain} minecraft:chest', f'/setblock {stone} minecraft:stone')
+    for kind in ('if', 'unless'):
+        for pos, predicate in [
+            (named, 'minecraft:chest'),
+            (named, 'minecraft:chest{}'),
+            (named, 'minecraft:chest{CustomName:"expected"}'),
+            (named, 'minecraft:chest{CustomName:"different"}'),
+            (named, 'minecraft:chest{CustomName:"\\u0065xpected"}'),
+            (named, 'minecraft:chest[type=single]{CustomName:"expected"}'),
+            (named, 'minecraft:chest[type=left]{CustomName:"expected"}'),
+            (named, 'minecraft:chest{id:"minecraft:chest",x:26,y:220,z:30}'),
+            (named, 'minecraft:chest{x:27}'),
+            (named, 'minecraft:chest{Items:[{id:"minecraft:stone"}]}'),
+            (named, 'minecraft:chest{Items:[{id:"minecraft:stone"},{id:"minecraft:apple"}]}'),
+            (named, 'minecraft:chest{Items:[{id:"minecraft:diamond"}]}'),
+            (named, 'minecraft:chest{Items:[{Slot:0b,count:3}]}'),
+            (named, 'minecraft:chest{Items:[{Slot:0b,count:3b}]}'),
+            (named, 'minecraft:chest{Items:[]}'),
+            (named, 'minecraft:barrel{CustomName:"expected"}'),
+            (named, '#minecraft:guarded_by_piglins{CustomName:"expected"}'),
+            (named, '#minecraft:guarded_by_piglins{CustomName:"different"}'),
+            (plain, 'minecraft:chest{}'),
+            (plain, 'minecraft:chest{CustomName:"expected"}'),
+            (plain, 'minecraft:chest{Items:[]}'),
+            (stone, 'minecraft:stone'),
+            (stone, 'minecraft:stone{}'),
+            (stone, '#minecraft:base_stone_overworld{}'),
+        ]:
+            out.append(cmd(f'/execute {kind} block {pos} {predicate}'))
+    # FillCommand and CloneCommands test the same predicate at each position.
+    out += [cmd('/clone 26 220 30 27 220 30 26 220 32 filtered minecraft:chest{CustomName:"expected"}'),
+            cmd('/execute if block 26 220 32 minecraft:chest{CustomName:"expected"}'),
+            cmd('/execute if block 27 220 32 minecraft:air')]
+    # (no items to spill: the fill cases test only which blocks the filter takes)
+    out += setup('/data remove block 26 220 30 Items')
+    out += [cmd('/fill 26 220 30 28 220 30 minecraft:barrel replace minecraft:chest{CustomName:"expected"}'),
+            cmd('/execute if block 26 220 30 minecraft:barrel'),
+            cmd('/execute if block 27 220 30 minecraft:chest'),
+            cmd('/fill 26 220 30 28 220 30 minecraft:barrel replace #minecraft:guarded_by_piglins{}'),
+            cmd('/execute if block 27 220 30 minecraft:barrel'),
+            cmd('/fill 26 220 30 28 220 30 minecraft:barrel replace minecraft:stone{}')]
+    out += setup('/kill @e[type=minecraft:item]', '/fill 26 220 30 29 220 32 minecraft:air strict',
+                 '/tick unfreeze')
+    return out
+
+
 def forceload_query_order():
     """ForceLoadCommand sorts signed packed chunk IDs, not coordinate tuples (#7451)."""
     return [
@@ -6072,6 +6125,7 @@ def groups():
         ('experience level boundaries', experience_level_boundaries()),
         ('blocks and border', world_blocks()),
         ('setblock destroy air', setblock_destroy_air()),
+        ('block predicate NBT', block_predicate_nbt()),
         ('forceload query order', forceload_query_order()),
         ('entities', entities()),
         ('zombie nautilus ignored age', zombie_nautilus_ignored_age()),
