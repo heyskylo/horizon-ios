@@ -663,6 +663,7 @@ impl Launcher {
         }
         let tx = self.mods.tx.clone();
         let java = self.mods.java.clone();
+        let home = self.mods.home();
         std::thread::spawn(move || {
             let mut found = HashMap::new();
             for e in entries {
@@ -671,7 +672,7 @@ impl Launcher {
                 };
                 let newer = match &java {
                     Some(target) => java_instance::update_for(&*source, target, &e),
-                    None => installed::update_for(&*source, &e),
+                    None => installed::update_for(&*source, &e, &home),
                 };
                 if let Ok(Some(v)) = newer {
                     found.insert((e.source, e.project.clone()), v.number);
