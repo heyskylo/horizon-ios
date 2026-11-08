@@ -109,6 +109,9 @@ pub struct HudAtlas {
     pub emissive: std::sync::Arc<horizon_optifine::emissive::Emissive>,
     /// ETF's blinking frames (`_blink`), packed here too.
     pub blinks: horizon_optifine::blink::Blinks,
+    /// Of the shared atlas's textures, their LabPBR normal and specular maps as paged maps
+    /// (`paged_maps.rs`), read while loading for shader packs (`sprites::labpbr_maps`).
+    pub material_maps: std::sync::Arc<[Option<crate::paged_maps::PagedMap>; 2]>,
     white: Rect,
 }
 /// Atlas rows reserved for glyphs rasterized at run time.
@@ -974,6 +977,7 @@ impl HudAtlas {
             revision: Self::next_revision(),
             pixels: Vec::new(),
             packed: None,
+            material_maps: Default::default(),
             galactic_widths: [0; 128],
             width: 1,
             height: 1,
@@ -1038,6 +1042,7 @@ impl HudAtlas {
                 (glyph_top, height - glyph_top),
                 white,
             ),
+            material_maps: Default::default(),
             galactic_widths: galactic_widths(&sprites, &pixels, width, height),
             pixels,
             packed: None,
@@ -1280,7 +1285,16 @@ impl HudAtlas {
             extra.sort();
             files.extend(extra);
         }
-        type Decoded = (PackedImage, Option<TextureFlags>, Option<(u32, u32)>, bool);
+        // A texture's LabPBR maps, as decoded (width, height, RGBA8), for shader packs.
+        type Maps = [Option<(u32, u32, Vec<u8>)>; 2];
+        let read_maps = full && crate::sprites::labpbr_maps();
+        type Decoded = (
+            PackedImage,
+            Option<TextureFlags>,
+            Option<(u32, u32)>,
+            bool,
+            Option<Box<Maps>>,
+        );
         let decode_one = |path: &PathBuf| -> Option<Decoded> {
             let name = if let Some(name) = named.get(path) {
                 name.clone()
@@ -1328,11 +1342,21 @@ impl HudAtlas {
             let flags = mcmeta.as_deref().and_then(TextureFlags::from_mcmeta);
             let animated = frames && animation.is_some();
             let (gw, gh) = gui_size.unwrap_or((w, h));
+            let maps = read_maps
+                .then(|| {
+                    let stem = path.file_stem()?.to_str()?;
+                    let maps: Maps = ["_n", "_s"].map(|suffix| {
+                        decode(&path.with_file_name(format!("{stem}{suffix}.png"))).ok()
+                    });
+                    maps.iter().any(Option::is_some).then(|| Box::new(maps))
+                })
+                .flatten();
             (gw <= 1024 && (gh <= 512 || name.starts_with("font/"))).then_some((
                 (name, w, h, pixels),
                 flags,
                 gui_size,
                 animated,
+                maps,
             ))
         };
         let threads = std::thread::available_parallelism().map_or(2, |n| n.get());
@@ -1353,7 +1377,11 @@ impl HudAtlas {
         let mut gui_sizes = HashMap::new();
         let mut animated: Vec<String> = Vec::new();
         let mut images: Vec<PackedImage> = Vec::with_capacity(decoded.len());
-        for (image, image_flags, gui_size, is_animated) in decoded {
+        let mut maps: HashMap<String, Box<Maps>> = HashMap::new();
+        for (image, image_flags, gui_size, is_animated, image_maps) in decoded {
+            if let Some(m) = image_maps {
+                maps.insert(image.0.clone(), m);
+            }
             if let Some(f) = image_flags {
                 flags.insert(image.0.clone(), f);
             }
@@ -1528,6 +1556,28 @@ impl HudAtlas {
             }
             sprite_animations.push((rect, animation));
         }
+        // Each mapped texture's maps at its size in the atlas, paged.
+        let material_maps = if maps.is_empty() {
+            Default::default()
+        } else {
+            let mapped: Vec<crate::paged_maps::SpriteMaps> = maps
+                .iter()
+                .filter_map(|(name, m)| {
+                    let rect = sprites.get(name)?;
+                    let (tw, th) = rect.texels((width, height));
+                    let x = (rect.u0 * width as f32).round() as u32;
+                    let y = (rect.v0 * height as f32).round() as u32;
+                    Some(crate::paged_maps::SpriteMaps {
+                        rect: [x, y, tw, th],
+                        maps: m.each_ref().map(|map| {
+                            let (mw, mh, pixels) = map.as_ref()?;
+                            crate::paged_maps::fit(pixels, (*mw, *mh), (tw, th))
+                        }),
+                    })
+                })
+                .collect();
+            crate::paged_maps::build((width, height), &mapped, MAX_ATLAS_SIZE)
+        };
         let white = sprites["horizon/white"];
         let glint = Self::glint_texture(root, defaults, "enchanted_glint_item");
         let glint_armor = Self::glint_texture(root, defaults, "enchanted_glint_armor");
@@ -1542,6 +1592,7 @@ impl HudAtlas {
         );
         Ok(Self {
             revision: Self::next_revision(),
+            material_maps: std::sync::Arc::new(material_maps),
             galactic_widths: galactic_widths(&sprites, &pixels, width, height),
             pixels,
             packed: None,

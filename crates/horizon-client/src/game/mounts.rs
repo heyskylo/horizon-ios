@@ -800,6 +800,46 @@ impl Game<'_> {
                 // RunAroundLikeCrazyGoal.tick: entity event 6, smoke.
                 self.mob_event_particles(mob, 6);
             }
+            // `Entity.ejectPassengers` before the mob moved off `from`: each
+            // rider's `dismountVehicle` reads the vehicle where it stood.
+            MobEvent::EjectPassengers { mob, from } => {
+                let Some(i) = self.mobs.iter().position(|m| m.id == mob) else {
+                    return;
+                };
+                let moved = (self.mobs[i].position, self.mobs[i].previous);
+                self.mobs[i].position = from;
+                self.mobs[i].previous = from;
+                if self.riding == Some(mob) {
+                    self.stop_riding();
+                }
+                let guests: Vec<u32> = self.lan.as_ref().map_or_else(Vec::new, |h| {
+                    h.hub
+                        .guests
+                        .iter()
+                        .filter(|g| g.vehicle == Some(mob))
+                        .map(|g| g.conn)
+                        .collect()
+                });
+                for conn in guests {
+                    if let Some(mut host) = self.lan.take() {
+                        self.as_guest(&mut host, conn, |g| g.stop_riding());
+                        self.lan = Some(host);
+                    }
+                }
+                let riders: Vec<u32> = self
+                    .mobs
+                    .iter()
+                    .filter(|m| m.extra.mount == Some(mob))
+                    .map(|m| m.id)
+                    .collect();
+                for rider in riders {
+                    self.dismount_mob(rider);
+                }
+                if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) {
+                    (m.position, m.previous) = moved;
+                    m.extra.rider = None;
+                }
+            }
             // `LivingEntity.stabAttack`: `target.stopRiding()`.
             MobEvent::StabDismount { target } => match target {
                 Who::Player => self.stop_riding(),
