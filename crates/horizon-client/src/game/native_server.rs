@@ -274,6 +274,18 @@ fn vanilla_command_info(d: &Dispatcher, label: &str) -> Option<NativeCommandInfo
 fn server_player(host: &LanHost, g: &horizon_client::lan::guest::Guest) -> NativeServerPlayer {
     // Abilities.invulnerable, flying and mayfly, as `ServerPlayer.onUpdateAbilities` sends them.
     let abilities = g.ability_flags();
+    // LivingEntity.DATA_LIVING_ENTITY_FLAGS: 1 while using, 2 when it is the off hand's item.
+    let using_item = g.living_flags & 1 != 0;
+    let using_slot = if g.living_flags & 2 != 0 {
+        super::shield::OFFHAND_SLOT
+    } else {
+        g.selected
+    };
+    let blocking = using_item
+        && g.inventory
+            .get(using_slot)
+            .and_then(|s| s.as_ref())
+            .is_some_and(|s| &*s.item == "minecraft:shield");
     NativeServerPlayer {
         uuid: g.uuid,
         name: g.name.clone(),
@@ -301,6 +313,10 @@ fn server_player(host: &LanHost, g: &horizon_client::lan::guest::Guest) -> Nativ
         selected_slot: g.selected as u8,
         nickname: host.hub.nicknames.get(&g.uuid).cloned(),
         hidden: host.hub.hidden.get(&g.uuid).copied(),
+        using_item,
+        blocking,
+        sprinting: g.sprinting,
+        gliding: g.fall_flying,
     }
 }
 
@@ -696,6 +712,11 @@ impl Game<'_> {
             nickname: hub.as_ref().and_then(|h| h.nickname.clone()),
             hidden: hub.as_ref().and_then(|h| h.hidden),
             address: hub.map(|h| h.address).unwrap_or_default(),
+            using_item: self.using.is_some(),
+            blocking: self.using.is_some()
+                && self.held().is_some_and(|s| &*s.item == "minecraft:shield"),
+            sprinting: p.sprinting,
+            gliding: p.fall_flying,
         })
     }
     /// The permission level of a player who is on the server or joining it:

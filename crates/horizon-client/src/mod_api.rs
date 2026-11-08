@@ -21,8 +21,10 @@ pub use crate::extras_hud::Corners;
 pub use crate::first_person::Hand;
 pub use crate::fluid_render::NativeFluidRenderOptions;
 pub use crate::fog::{FogData, FogType};
+pub use crate::game::NativeAttributeModifier;
 pub use crate::game::NativeChunkSnapshot;
 pub use crate::game::NativeEffect;
+pub use crate::game::NativeEffectV2;
 pub use crate::game::NativeFluidTank;
 pub use crate::game::NativeInventoryKind;
 pub use crate::game::native_block_entity_draw::{BlockEntityDraw, CubeFace};
@@ -605,6 +607,14 @@ pub struct NativeServerPlayer {
     /// The level a player needs to see this one, when a server mod hid them
     /// (`native_hide_player`).
     pub hidden: Option<u8>,
+    /// Whether the player is using an item (`LivingEntity.isUsingItem`), and blocking with a
+    /// shield (using one). API @API:server_player_state@.
+    pub using_item: bool,
+    pub blocking: bool,
+    /// Sprinting (`Player.isSprinting`) and gliding with an elytra (`isFallFlying`).
+    /// API @API:server_player_state@.
+    pub sprinting: bool,
+    pub gliding: bool,
 }
 
 /// What a player's client told the server about itself, and what the server sent it
@@ -1166,6 +1176,10 @@ mod tests {
                 selected_slot: 0,
                 nickname: None,
                 hidden: None,
+                using_item: false,
+                blocking: false,
+                sprinting: false,
+                gliding: false,
             })
         }
         fn action_bar(&mut self, _uuid: u128, line: Text) -> bool {
