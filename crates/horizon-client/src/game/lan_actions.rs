@@ -5887,13 +5887,15 @@ impl Game<'_> {
         }
         if listened {
             let dimension = self.dim.id();
+            let points = orb.points();
+            let mut value = points;
             let called = self.as_guest(host, conn, |game| {
                 let player = game.native_acting_id();
                 game.native_experience_orb_pickup(
                     player,
                     dimension,
                     orb.id,
-                    &mut orb.value,
+                    &mut value,
                     &mut orb.count,
                     &mut canceled,
                 );
@@ -5901,7 +5903,10 @@ impl Game<'_> {
             if called.is_none() || canceled {
                 return;
             }
-            orb.value = orb.value.clamp(1, i32::MAX as u32);
+            // A mod's new value is at least 1; an untouched one stays as loaded.
+            if value != points {
+                orb.value = value.clamp(1, i32::MAX as u32) as i32;
+            }
             orb.count = orb.count.max(1);
             self.orbs[index].value = orb.value;
             self.orbs[index].count = orb.count;
@@ -5923,7 +5928,7 @@ impl Game<'_> {
             0.1,
             pitch,
         );
-        let value = orb.value;
+        let value = orb.points();
         self.as_guest(host, conn, |game| {
             let rest = game.mending(value);
             if rest > 0 {

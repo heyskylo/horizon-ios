@@ -247,7 +247,7 @@ impl Casters {
     pub fn cast(&self, span: &EntitySpan, program: usize) -> bool {
         match program {
             ENTITY => self.entities && (!self.only_player || span.player),
-            BLOCK => self.blocks && (!self.only_lit || span.emissive),
+            BLOCK | BLOCK_TRANSLUCENT => self.blocks && (!self.only_lit || span.emissive),
             _ => false,
         }
     }
@@ -440,7 +440,7 @@ impl PackEntities {
         let posed = skin.map_or(0, |s| s.vertices);
         if let Some(skin) = skin {
             for (span, range, overlay) in skin_runs(skin) {
-                let program = program_of(&span).expect("tagged skin stage");
+                let program = material_program(&span, overlay, drawn).expect("tagged skin stage");
                 let pack = drawn[program] && !span.hidden;
                 let casts = shadow.cast(&span, program);
                 if !pack && !casts {
@@ -462,7 +462,7 @@ impl PackEntities {
         extend_without_portals(rest, &entities[..first.min(entities.len())]);
         let (mut other, mut portal_faces, mut beam_faces) = (Vec::new(), Vec::new(), Vec::new());
         let mut without_fluids = Vec::new();
-        for (span, range) in runs(entities.len(), spans) {
+        for (span, range, material) in material_runs(entities, spans, drawn) {
             let run_start = range.start as u32;
             let whole = &entities[range];
             // A native fluid carries sprite-array UVs, not shared-atlas UVs.
@@ -490,7 +490,8 @@ impl PackEntities {
             // gateway: its cube and its beam): each goes to its own program.
             // Beacon beams come in a run of their own, at stage NONE (game.rs: no stage of 5.4
             // is theirs), for gbuffers_beaconbeam.
-            let split = (program_of(&span) == Some(BLOCK) || span.stage == render_stage("NONE"))
+            let split = (matches!(material, Some(BLOCK | BLOCK_TRANSLUCENT))
+                || span.stage == render_stage("NONE"))
                 && whole
                     .chunks(4)
                     .any(|q| matches!(q[0].layer & 0xffff, 6 | 9 | 10));
@@ -520,7 +521,7 @@ impl PackEntities {
                 let program = match part {
                     Part::Portal => Some(BLOCK),
                     Part::Beam => Some(BEAM),
-                    Part::Plain => program_of(&span).filter(|&p| {
+                    Part::Plain => material.filter(|&p| {
                         plain(run)
                             || (p == DESTROY && run.iter().all(|v| matches!(v.layer, 11 | 12)))
                     }),
@@ -635,7 +636,7 @@ impl PackEntities {
         portal: bool,
     ) {
         let (entity_id, block_id) = match program {
-            BLOCK => (0, span.id),
+            BLOCK | BLOCK_TRANSLUCENT => (0, span.id),
             _ => (span.id, 0),
         };
         let mut bytes = [0u8; SLOT as usize];
@@ -782,7 +783,76 @@ pub const PARTICLE: usize = 3;
 pub const DESTROY: usize = 4;
 /// Beacon and End gateway beams (`gbuffers_beaconbeam`).
 pub const BEAM: usize = 5;
-pub const PROGRAMS: usize = 6;
+pub const BLOCK_TRANSLUCENT: usize = 6;
+pub const PARTICLE_TRANSLUCENT: usize = 7;
+pub const PROGRAMS: usize = 8;
+
+/// Translucent blocks retain the ordinary block shadow program and blockEntityId.
+pub fn shadow_program(program: usize) -> usize {
+    if program == BLOCK_TRANSLUCENT {
+        BLOCK
+    } else {
+        program
+    }
+}
+
+fn material_program(span: &EntitySpan, layer: u32, drawn: [bool; PROGRAMS]) -> Option<usize> {
+    Some(match program_of(span)? {
+        BLOCK
+            if drawn[BLOCK_TRANSLUCENT]
+                && (span.translucent
+                    || layer & super::OIT_ENTITY != 0
+                    || matches!(
+                        layer & 0xffff,
+                        super::TRANSLUCENT_ITEM_OVERLAY | super::TRANSLUCENT_GLINT_ITEM_OVERLAY
+                    )) =>
+        {
+            BLOCK_TRANSLUCENT
+        }
+        PARTICLE
+            if drawn[PARTICLE_TRANSLUCENT]
+                && layer & 0xffff == super::TRANSLUCENT_PARTICLE_OVERLAY =>
+        {
+            PARTICLE_TRANSLUCENT
+        }
+        p => p,
+    })
+}
+
+/// Split only where an available variant changes a quad's program. Keep contiguous runs,
+/// their vertex order and the original single draw when no material variant is usable.
+fn material_runs<'a>(
+    vertices: &'a [Vertex],
+    spans: &'a [EntitySpan],
+    drawn: [bool; PROGRAMS],
+) -> impl Iterator<Item = (EntitySpan, Range<usize>, Option<usize>)> + 'a {
+    runs(vertices.len(), spans).flat_map(move |(span, range)| {
+        let split = match program_of(&span) {
+            Some(BLOCK) => drawn[BLOCK_TRANSLUCENT],
+            Some(PARTICLE) => drawn[PARTICLE_TRANSLUCENT],
+            _ => false,
+        };
+        let mut start = range.start;
+        std::iter::from_fn(move || {
+            if start >= range.end {
+                return None;
+            }
+            let program = material_program(&span, vertices[start].layer, drawn);
+            let end = if split {
+                (start..range.end)
+                    .step_by(4)
+                    .skip(1)
+                    .find(|&i| material_program(&span, vertices[i].layer, drawn) != program)
+                    .unwrap_or(range.end)
+            } else {
+                range.end
+            };
+            let run = start..end;
+            start = end;
+            Some((span, run, program))
+        })
+    })
+}
 
 /// Which program draws `span`'s run, given which of them (or their fallbacks) the pack has;
 /// `None`: Horizon draws it.
@@ -940,11 +1010,17 @@ mod tests {
         assert_eq!(drawn_by_pack(&spans[0], all), Some(ENTITY));
         assert_eq!(drawn_by_pack(&spans[1], all), Some(PARTICLE));
         assert_eq!(
-            drawn_by_pack(&spans[1], [true, true, true, false, true, true]),
+            drawn_by_pack(
+                &spans[1],
+                [true, true, true, false, true, true, false, false]
+            ),
             None
         );
         assert_eq!(
-            drawn_by_pack(&spans[2], [true, false, true, true, true, true]),
+            drawn_by_pack(
+                &spans[2],
+                [true, false, true, true, true, true, false, false]
+            ),
             None
         );
         assert_eq!(drawn_by_pack(&spans[2], all), Some(BLOCK));
@@ -1676,3 +1752,6 @@ mod tier_translate_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[cfg(test)]
+mod material_route_tests;

@@ -123,6 +123,7 @@ pub(super) fn feature(v: &Value, report: &mut Report) -> Value {
     let mut v = Value::Object(n);
     states(&mut v);
     nested(&mut v, report);
+    crate::lithostitched::weighted_selector(&mut v);
     v
 }
 

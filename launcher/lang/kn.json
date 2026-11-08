@@ -460,7 +460,6 @@
   "Copying…": "ನಕಲಿಸಲಾಗುತ್ತಿದೆ...",
   "Filters": "ಶೋಧಕಗಳು",
   "{count} followers": "{count} ಅನುಯಾಯಿಗಳು",
-  "{count} stars on GitHub": "GitHub ನಲ್ಲಿ {count} ನಕ್ಷತ್ರಗಳು",
   "Connect an AI agent": "AI ಏಜೆಂಟ್ ಅನ್ನು ಸಂಪರ್ಕಿಸಿ",
   "Each switch is off unless you turn it on. What it sends is below it; the privacy page on playhorizon.dev says how long it is kept.": "ನೀವು ಅದನ್ನು ಆನ್ ಮಾಡದ ಹೊರತು ಪ್ರತಿಯೊಂದು ಸ್ವಿಚ್ ಆಫ್ ಆಗಿದೆ. ಅದು ಏನು ಕಳುಹಿಸುತ್ತದೆ ಎಂಬುದು ಅದರ ಕೆಳಗೆ ಇದೆ; playhorizon.dev ನಲ್ಲಿನ ಗೌಪ್ಯತೆ ಪುಟವು ಅದನ್ನು ಎಷ್ಟು ಸಮಯದವರೆಗೆ ಇರಿಸಲಾಗಿದೆ ಎಂದು ಹೇಳುತ್ತದೆ.",
   "Players": "ಆಟಗಾರರು",
@@ -1181,7 +1180,6 @@
   "Builds on the Horizon you play": "Builds on the Horizon you play",
   "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first",
   "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile",
-  "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}",
   "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
   "Tags": "ಟ್ಯಾಗ್‌ಗಳು",
   "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on.": "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on.",
@@ -1260,5 +1258,11 @@
   "Recommended": "ಶಿಫಾರಸು ಮಾಡಲಾಗಿದೆ",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "ಹಳೆಯ ಆವೃತ್ತಿ {version} ನೀವು ಆಡುವ Horizon ನಲ್ಲಿ ಬಿಲ್ಡ್ ಆಗುತ್ತದೆ: ಇನ್‌ಸ್ಟಾಲ್ ಮಾಡಿದರೆ ಅದೇ ಆಯ್ಕೆಯಾಗುತ್ತದೆ",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: ಆವೃತ್ತಿ {version} ಬಿಲ್ಡ್ ಆಗಲಿಲ್ಲ, {older} ಪ್ರಯತ್ನಿಸಲಾಗುತ್ತಿದೆ",
-  "Use recommended (kept at {version})": "ಶಿಫಾರಸು ಮಾಡಿದ್ದನ್ನು ಬಳಸಿ ({version} ನಲ್ಲಿ ಇರಿಸಲಾಗಿದೆ)"
+  "Use recommended (kept at {version})": "ಶಿಫಾರಸು ಮಾಡಿದ್ದನ್ನು ಬಳಸಿ ({version} ನಲ್ಲಿ ಇರಿಸಲಾಗಿದೆ)",
+  "Only what works on {instance}": "{instance} ನಲ್ಲಿ ಕೆಲಸ ಮಾಡುವವು ಮಾತ್ರ",
+  "{count} versions that don't work on {instance} are hidden": "{instance} ನಲ್ಲಿ ಕೆಲಸ ಮಾಡದ {count} ಆವೃತ್ತಿಗಳನ್ನು ಮರೆಮಾಡಲಾಗಿದೆ",
+  "Made for Horizon {pin}: the launcher builds it on {yours}, the one you play, and on {pin} only if it doesn't compile there": "Horizon {pin} ಗಾಗಿ ಮಾಡಲಾಗಿದೆ: ಲಾಂಚರ್ ಇದನ್ನು ನೀವು ಆಡುವ {yours} ನಲ್ಲಿ ಬಿಲ್ಡ್ ಮಾಡುತ್ತದೆ, ಅಲ್ಲಿ ಕಂಪೈಲ್ ಆಗದಿದ್ದರೆ ಮಾತ್ರ {pin} ನಲ್ಲಿ",
+  "{mods} didn't build on the Horizon you play: building on the one they were made for": "{mods} ನೀವು ಆಡುವ Horizon ನಲ್ಲಿ ಬಿಲ್ಡ್ ಆಗಲಿಲ್ಲ: ಅವುಗಳನ್ನು ಮಾಡಿದ Horizon ನಲ್ಲಿ ಬಿಲ್ಡ್ ಮಾಡಲಾಗುತ್ತಿದೆ",
+  "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "ಕೊನೆಯ ಬಿಲ್ಡ್‌ನಲ್ಲಿ, {mods} ಗಾಗಿ Horizon {commit} ನಲ್ಲಿ, {horizon} ನಲ್ಲಿ ಅಲ್ಲ",
+  "In the last build, on {horizon}": "ಕೊನೆಯ ಬಿಲ್ಡ್‌ನಲ್ಲಿ, {horizon} ನಲ್ಲಿ"
 }
