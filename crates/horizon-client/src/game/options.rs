@@ -179,7 +179,7 @@ impl Game<'_> {
         let context = self.controller_settings_context();
         let mut ui = std::mem::take(&mut self.ui.options);
         if ui.controller_open() {
-            ui.controller.context = context;
+            ui.set_controller_context(context);
         }
         ui.draw(&self.settings, batch, &self.gui.atlas, self.cursor);
         self.ui.options = ui;

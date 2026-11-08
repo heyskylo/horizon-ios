@@ -44,6 +44,12 @@ Cases:
 - pause_icon: the pause menu's icons are targets, and A presses one.
 - studio_rows: the D-pad walks Replay Studio's recordings to its buttons, and B leaves.
 - erase_checkbox: the D-pad reaches Optimize World's Erase Cached Data box, and A ticks it.
+- controller_settings_pad: Controller Settings on the settings shell, by the pad alone: its pages, the D-pad through
+  every page and its rows, the strip describing the focused row, A changing Vibration, X undoing it, B leaving.
+- controller_bind: A on Bindings' Jump waits for a button (the row and the strip say so, Start cancels and leaves no
+  Undo), the next button binds and saves it with an Undo, Right and A reset it and the Undo goes.
+- controller_settings_keys: the keys: Tab to the search, typing finds a row by what it does, the focus off and back
+  keeps the search, a pad press gives the keys back, Escape leaves.
 - controller_nintendo_buttons: with Nintendo glyphs, A on Device's Nintendo Buttons picks By Letter and saves it, and
   again goes back to By Position.
 - nintendo_letters: a Nintendo pad going by its letters shows the letter of the button that acts on the title's
@@ -1374,6 +1380,9 @@ def open_controller(game, page=None):
             game.pad('rb')
 
 
+VIBRATION_ABOUT = 'Rumble when something happens to you.'
+
+
 def controller_saved(game):
     path = game.game_home / 'horizon-controller.txt'
     return path.read_text() if path.exists() else ''
@@ -1432,6 +1441,7 @@ def controller_settings_pad(args, name):
                 break
             game.pad('down')
         check('vibration' in (game.focused_label() or '').lower(), f'never reached Vibration: {game.focused_label()}')
+        check(has_label(game, VIBRATION_ABOUT), f'the strip does not describe the focused row: {labels(game)}')
         game.pad('south')
         check(has_label(game, 'Undo'), 'no Undo after a change')
         check('vibration:false' in controller_saved(game), f'not saved: {controller_saved(game)}')
@@ -1461,16 +1471,22 @@ def controller_bind(args, name):
         check('jump' in (game.focused_label() or '').lower(), f'never reached Jump: {game.focused_label()}')
         game.pad('south')
         check(has_label(game, '> '), f'A did not start the wait: {labels(game)}')
+        check(has_label(game, 'cancels'), f'the strip does not say what cancels the wait: {labels(game)}')
+        shot(game, 'controller-waiting')
         game.pad('start')
         check(not has_label(game, '> '), 'Start did not cancel the wait')
         check(has_label(game, 'Editing:'), 'Start left the screen instead of cancelling')
+        check(not has_label(game, 'Undo'), 'a cancelled wait left an Undo')
         game.pad('south')
         game.pad('rs')
         check('key.jump' in controller_saved(game), f'the binding was not saved: {controller_saved(game)}')
+        check(has_label(game, 'Undo'), 'no Undo after a binding')
+        check(has_label(game, 'This button also does'), f'the strip does not say the button is shared: {labels(game)}')
         shot(game, 'controller-bound')
         game.pad('right')
         game.pad('south')
         check('key.jump' not in controller_saved(game), f'reset did not clear it: {controller_saved(game)}')
+        check(not has_label(game, 'Undo'), 'Undo stayed with the binding back on its default')
         check((game.menu()['focus'] or {}).get('kind') != 'field', f'reset sent the focus to the search: {game.menu()["focus"]}')
     finally:
         game.quit()
@@ -1527,6 +1543,16 @@ def controller_settings_keys(args, name):
         game.ctl('key', 'up', 'tap')
         time.sleep(SETTLE)
         check(not has_label(game, 'Look Sensitivity'), 'coming back to the search cleared it')
+        # The pad moves the focus off the field (its first press lands it), which gives the keys back: typing
+        # changes nothing.
+        for _ in range(3):
+            game.pad('down')
+            if (game.menu()['focus'] or {}).get('kind') not in (None, 'field'):
+                break
+        check((game.menu()['focus'] or {}).get('kind') not in (None, 'field'), f"the pad stayed on the field: {game.menu()['focus']}")
+        game.ctl('type', 'zzz')
+        time.sleep(SETTLE)
+        check(has_label(game, 'Vibration'), f'the search kept the keys after the pad left it: {labels(game)}')
         game.ctl('key', 'esc', 'tap')
         time.sleep(SETTLE)
         check(not has_label(game, 'Editing:'), 'Escape did not leave the screen')
