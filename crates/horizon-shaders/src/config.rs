@@ -190,6 +190,9 @@ pub struct Config {
     pub shadow: Shadow,
     /// `noiseTextureResolution`: the side of the `noisetex` Horizon makes when the pack gives none.
     pub noise_resolution: Option<u32>,
+    /// The smoothed uniforms' half-lives in ticks, in [`HALF_LIVES`] order, when the pack sets
+    /// them (`const float wetnessHalflife = 30.0;`...).
+    pub half_lives: [Option<f32>; 4],
     /// Conflicting or unreadable settings, as `file:line: message`.
     pub notes: Vec<String>,
     /// Each setting read so far and its value, to report a later file changing it.
@@ -202,6 +205,7 @@ impl Default for Config {
             buffers: std::array::from_fn(|_| Buffer::default()),
             shadow: Shadow::default(),
             noise_resolution: None,
+            half_lives: [None; 4],
             notes: Vec::new(),
             seen: Vec::new(),
         }
@@ -270,12 +274,12 @@ impl Config {
     /// of [`VERTEX_IGNORED`] only with it); `others`: whether every other setting does.
     fn read_stage(&mut self, pp: &Preprocessed, formats: bool, shadow: bool, others: bool) {
         let line = |at: usize| pp.locate(code_line(&pp.code, at));
-        for (at, ty, name, value) in constants(&pp.code) {
+        for (at, ty, name, value) in constants(&pp.code, false) {
             let place = line(at);
             self.constant(&place, ty, name, value, [formats, shadow, others]);
         }
         for (origin, comment) in &pp.comments {
-            for (at, ty, name, value) in constants(comment) {
+            for (at, ty, name, value) in constants(comment, true) {
                 let file = pp
                     .files
                     .get(origin.file as usize)
@@ -320,6 +324,12 @@ impl Config {
             return;
         }
         if !others && !format {
+            return;
+        }
+        if let Some(i) = HALF_LIVES.iter().position(|n| *n == name) {
+            if others && let Some(n) = number(value).filter(|n| *n >= 0.0) {
+                self.half_lives[i] = Some(n);
+            }
             return;
         }
         let settings = [
@@ -367,6 +377,15 @@ impl Config {
         }
     }
 }
+
+/// The `const float` half-lives (ShaderDoc, OptiFine's shaders.txt) of `wetness` rising and
+/// falling, `eyeBrightnessSmooth` and `centerDepthSmooth`, in ticks.
+pub const HALF_LIVES: [&str; 4] = [
+    "wetnessHalflife",
+    "drynessHalflife",
+    "eyeBrightnessHalflife",
+    "centerDepthHalflife",
+];
 
 /// Shadow settings a vertex stage's `const` doesn't set: Iris 1.11.7 ignored each declared only in
 /// `final.vsh`, `gbuffers_textured.vsh` or `shadow.vsh` of probe packs of ours (#10490), with
@@ -487,7 +506,9 @@ pub fn draw_buffers(pp: &Preprocessed) -> Option<Vec<u32>> {
 }
 
 /// `const <type> <name> = <value>;` anywhere in `text`: (byte offset, type, name, value).
-fn constants(text: &str) -> Vec<(usize, &str, &str, &str)> {
+/// `lines`: a declaration also ends at the end of its line, as in a comment, where packs list
+/// settings with no `;` (`const vec4 colortex6ClearColor = vec4(0.0, 0.0, 0.0, 1.0)`).
+fn constants(text: &str, lines: bool) -> Vec<(usize, &str, &str, &str)> {
     let mut out = Vec::new();
     let mut from = 0;
     while let Some(found) = text[from..].find("const") {
@@ -498,7 +519,12 @@ fn constants(text: &str) -> Vec<(usize, &str, &str, &str)> {
             continue;
         }
         let rest = &text[from..];
-        let Some(end) = rest.find(';') else { break };
+        let end = if lines {
+            rest.find([';', '\n']).unwrap_or(rest.len())
+        } else {
+            let Some(end) = rest.find(';') else { break };
+            end
+        };
         let decl = &rest[..end];
         let Some((left, value)) = decl.split_once('=') else {
             continue;
@@ -607,6 +633,16 @@ mod tests {
         // Iris 1.11.7 kept RGBA8 for `gdepth` (colortex1) with no format given, in probe pack
         // p9063b of ours; OptiFine's RGBA32F rule doesn't apply.
         assert_eq!(b[1].format, Format::RGBA8, "gdepth");
+        assert!(config.notes.is_empty(), "{:?}", config.notes);
+    }
+
+    #[test]
+    fn half_lives_are_read_from_consts() {
+        let text = "const float wetnessHalflife = 30.0f;\nconst float drynessHalflife = 50;\n\
+                    const int eyeBrightnessHalflife = 4;\n";
+        let mut config = Config::default();
+        config.read(&stage(text));
+        assert_eq!(config.half_lives, [Some(30.0), Some(50.0), Some(4.0), None]);
         assert!(config.notes.is_empty(), "{:?}", config.notes);
     }
 
@@ -742,5 +778,23 @@ mod tests {
                 false, false, true, true, false, false, true, true, true, true, true
             ]
         );
+    }
+
+    #[test]
+    fn a_setting_in_a_comment_may_end_at_its_line() {
+        let pp = stage(
+            "/*\nconst vec4 colortex6ClearColor = vec4(0.0, 0.0, 0.0, 1.0)\n\
+             const vec4 colortex7ClearColor = vec4(0.5)\n\nconst bool colortex7Clear = false\n*/\n\
+             const vec4 colortex8ClearColor =\n    vec4(0.25, 0.0, 0.0, 1.0);\n",
+        );
+        let mut config = Config::default();
+        config.read(&pp);
+        assert!(config.notes.is_empty(), "{:?}", config.notes);
+        let b = &config.buffers;
+        assert_eq!(b[6].clear_color, Some([0.0, 0.0, 0.0, 1.0]));
+        assert_eq!(b[7].clear_color, Some([0.5; 4]));
+        assert!(!b[7].clear);
+        // Live code still reads up to the `;`.
+        assert_eq!(b[8].clear_color, Some([0.25, 0.0, 0.0, 1.0]));
     }
 }

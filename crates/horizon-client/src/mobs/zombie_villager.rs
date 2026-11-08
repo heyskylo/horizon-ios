@@ -65,6 +65,9 @@ pub fn start_converting(
 ) {
     villager::ext_mut(m).cure = Some(Cure { time, starter });
     m.extra.effects.retain(|e| e.0 != "minecraft:weakness");
+    m.extra
+        .effect_fallbacks
+        .retain(|h| h.id != "minecraft:weakness");
     // Strength amplifier: min(difficulty id - 1, 0), always 0 with monsters.
     m.add_effect("minecraft:strength", time, 0);
     events.push(MobEvent::EntityEvent {

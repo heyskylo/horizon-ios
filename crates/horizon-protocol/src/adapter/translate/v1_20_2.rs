@@ -1,5 +1,6 @@
 //! Packet fields before 1.20.3, after the separate JSON text conversion.
 use super::*;
+use crate::adapter::pinned_ids::particle_type as particle;
 
 pub(crate) mod text;
 pub(crate) use text::read_component;
@@ -130,8 +131,7 @@ pub(super) fn explosion(session: &Session, payload: &[u8]) -> Result<Vec<u8>> {
     let mut w = Writer::new();
     w.bytes(payload);
     w.varint(2); // Explosion's old convenience constructor uses DESTROY_WITH_DECAY.
-    for pinned in [30, 29] {
-        // Pinned registry: explosion, explosion_emitter. Read later with this session's map.
+    for pinned in [particle::EXPLOSION, particle::EXPLOSION_EMITTER] {
         w.varint(
             ids.particle_type
                 .down(pinned)

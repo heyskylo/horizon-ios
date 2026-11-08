@@ -1250,5 +1250,15 @@
   "Use a different Microsoft account": "Użyj inkszego kōnta Microsoft",
   "Buy": "Kup",
   "Gift": "Podaruj",
-  "Looks": "Stylizacyje"
+  "Found on this computer": "Znojdzōne na tym kōmputrze",
+  "Looks": "Stylizacyje",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Systymowy pynk kluczy niy ôdpowiedzioł w {seconds} sekund. Wejzdrzij, eli dziołŏ i je ôdblokowany, a potym zaś sztartuj launcher.",
+  "Can't read {name}'s sign-in: {why}": "Niy idzie przeczytać logowanio kōnta {name}: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: używo wersyje {version}, zrobiōnyj do Horizona, we kery grosz",
+  "Recommended": "Zalecanŏ",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "Starszo wersyjo, {version}, buduje sie na Horizonie, we kery grosz: instalacyjo wybiyro jã",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: wersyjo {version} sie niy zbudowała, prōbujymy {older}",
+  "Use recommended (kept at {version})": "Użyj polecanyj (trzimano na {version})"
 }

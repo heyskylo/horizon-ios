@@ -124,6 +124,10 @@ impl<T> Resident<T> {
     pub fn get_mut(&mut self, slot: u32) -> &mut T {
         &mut self.items[slot as usize].1
     }
+    /// Padded mesh bounds of the section in `slot`, relative to its origin.
+    pub fn bounds(&self, slot: u32) -> Option<[Vec3; 2]> {
+        self.bounds[slot as usize]
+    }
     /// Sections from now on count from `min_y` (a level of another column).
     pub fn set_min_y(&mut self, min_y: i32) {
         self.min_y = min_y;
@@ -435,17 +439,18 @@ impl<T> Resident<T> {
             if list.is_empty() {
                 continue;
             }
-            let min = origin((column.x, column.low, column.z), self.min_y, camera).as_vec3();
-            let top = origin((column.x, column.high, column.z), self.min_y, camera).as_vec3();
-            let max = top + Vec3::splat(16.0);
-            let inside = frustum.contains(min, max);
-            if !inside && !frustum.intersects(min, max) {
-                continue;
-            }
             let ox = f64::from(column.x * 16) - camera.x;
             let oz = f64::from(column.z * 16) - camera.z;
             let min_x = ox as f32;
             let min_z = oz as f32;
+            let low_oy = (f64::from(self.min_y + column.low * 16) - camera.y) as f32;
+            let high_oy = (f64::from(self.min_y + column.high * 16) - camera.y) as f32;
+            let min = Vec3::new(min_x, low_oy, min_z);
+            let max = Vec3::new(min_x + 16.0, high_oy + 16.0, min_z + 16.0);
+            let inside = frustum.contains(min, max);
+            if !inside && !frustum.intersects(min, max) {
+                continue;
+            }
             let dx8 = ox + 8.0;
             let dz8 = oz + 8.0;
             let xz_sq = dx8 * dx8 + dz8 * dz8;

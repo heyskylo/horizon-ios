@@ -13,7 +13,7 @@ use horizon_core::{
     storage::PackedStorage,
     ticks::{ChunkTicks, SavedTick, TickTypeId},
 };
-use std::io;
+use std::{collections::HashMap, io};
 
 fn key(value: &str) -> JavaString {
     JavaString::from(value)
@@ -146,10 +146,34 @@ impl PalettedContainer {
         Ok(())
     }
 
+    /// `PalettedContainer.pack`: the cells re-encoded into a fresh palette in
+    /// first-use order, so a slot no cell holds any more is not written and the
+    /// bit count is the one for the entries that remain. Saving the palette as
+    /// it is would keep a state a block edit replaced and pack wider than
+    /// vanilla writes for the same cells.
     pub fn to_nbt(&self) -> Tag {
         let mut map = self.extra.clone();
-        map.insert(key("palette"), Tag::List(self.palette.clone()));
-        if let Some(storage) = &self.storage {
+        let mut palette: Vec<&Tag> = Vec::with_capacity(self.palette.len());
+        let mut seen: HashMap<&Tag, u32> = HashMap::with_capacity(self.palette.len());
+        let mut ids = Vec::with_capacity(self.entries);
+        for index in 0..self.entries {
+            let id = self.storage.as_ref().map_or(0, |s| s.get(index).unwrap()) as usize;
+            let value = &self.palette[id];
+            ids.push(*seen.entry(value).or_insert_with(|| {
+                palette.push(value);
+                palette.len() as u32 - 1
+            }));
+        }
+        let bits = bits_for_palette(palette.len(), self.min_bits);
+        map.insert(
+            key("palette"),
+            Tag::List(palette.into_iter().cloned().collect()),
+        );
+        if bits > 0 {
+            let mut storage = PackedStorage::new(bits, self.entries).unwrap();
+            for (index, id) in ids.into_iter().enumerate() {
+                storage.set(index, id).unwrap();
+            }
             map.insert(
                 key("data"),
                 Tag::LongArray(storage.words().iter().map(|&v| v as i64).collect()),
@@ -722,6 +746,74 @@ impl<'r> BlockSection<'r> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn saved(palette: &PalettedContainer) -> (usize, Option<usize>) {
+        let Tag::Compound(map) = palette.to_nbt() else {
+            unreachable!()
+        };
+        let entries = match map.get(&key("palette")) {
+            Some(Tag::List(entries)) => entries.len(),
+            other => panic!("palette is {other:?}"),
+        };
+        let words = match map.get(&key("data")) {
+            Some(Tag::LongArray(words)) => Some(words.len()),
+            None => None,
+            other => panic!("data is {other:?}"),
+        };
+        (entries, words)
+    }
+
+    /// `PalettedContainer.pack` re-encodes the cells into a fresh palette, so a
+    /// state no cell holds any more is not written and the bit count comes from
+    /// the states that remain: `getConfigurationForPaletteSize(17)` is
+    /// `SimpleBitStorage(5, 4096)` (342 longs), `(16)` is `(4, 4096)` (256).
+    #[test]
+    fn a_state_no_cell_holds_is_not_saved() {
+        let mut palette = PalettedContainer::uniform(Tag::Int(0), 4096, 4).unwrap();
+        for index in 0..16 {
+            palette.set(index, Tag::Int(index as i32 + 1)).unwrap();
+        }
+        assert_eq!((palette.palette_len(), palette.bits()), (17, 5));
+        palette.set(15, Tag::Int(0)).unwrap();
+
+        let Tag::Compound(map) = palette.to_nbt() else {
+            unreachable!()
+        };
+        let Some(Tag::LongArray(words)) = map.get(&key("data")) else {
+            panic!("no data")
+        };
+        assert_eq!(words.len(), 256);
+        let Some(Tag::List(entries)) = map.get(&key("palette")) else {
+            panic!("no palette")
+        };
+        // First use over the cells: state 1 at index 0 … state 15 at index 14,
+        // then air everywhere from index 15 on.
+        let first_use = (1..=15)
+            .map(Tag::Int)
+            .chain([Tag::Int(0)])
+            .collect::<Vec<_>>();
+        assert_eq!(entries, &first_use);
+        let loaded = PalettedContainer::from_nbt(&palette.to_nbt(), 4096, 4).unwrap();
+        for index in 0..4096 {
+            let want = if index <= 14 {
+                Tag::Int(index as i32 + 1)
+            } else {
+                Tag::Int(0)
+            };
+            assert_eq!(loaded.get(index).unwrap(), &want);
+        }
+    }
+
+    /// `pack` writes no `data` once one state is all that is left: a palette of
+    /// one is configuration bits 0, `ZeroBitStorage`, and empty `values`.
+    #[test]
+    fn a_section_that_became_uniform_saves_no_data() {
+        let mut palette = PalettedContainer::uniform(Tag::Int(0), 4096, 4).unwrap();
+        palette.set(4000, Tag::Int(9)).unwrap();
+        assert_eq!(saved(&palette), (2, Some(256)));
+        palette.set(4000, Tag::Int(0)).unwrap();
+        assert_eq!(saved(&palette), (1, None));
+    }
+
     #[test]
     fn palette_grows_across_word_widths_and_compacts_to_uniform() {
         let mut palette = PalettedContainer::uniform(Tag::Int(0), 4096, 4).unwrap();

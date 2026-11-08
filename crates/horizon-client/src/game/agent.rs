@@ -316,6 +316,26 @@ pub(super) enum Handled {
 }
 
 impl Game<'_> {
+    /// The non-air blocks of a box in this world, with counts per block (`blocks`, and `simulation blocks`
+    /// for the server's own world).
+    pub(super) fn blocks_json(&self, lo: [i32; 3], hi: [i32; 3]) -> Value {
+        let mut list = Vec::new();
+        let mut census: BTreeMap<String, u32> = BTreeMap::new();
+        for y in lo[1]..=hi[1] {
+            for z in lo[2]..=hi[2] {
+                for x in lo[0]..=hi[0] {
+                    let state = self.world.block(x, y, z);
+                    if self.res.facts().is_air(state) {
+                        continue;
+                    }
+                    let name = self.res.facts().get(state).name.to_string();
+                    *census.entry(name).or_insert(0) += 1;
+                    list.push(json!([x, y, z, self.state_string(state)]));
+                }
+            }
+        }
+        json!({ "from": lo, "to": hi, "counts": census, "blocks": list })
+    }
     pub(super) fn state_string(&self, state: BlockStateId) -> String {
         let Some(s) = self.pack.assets.registry.state(state) else {
             return "?".into();
@@ -438,6 +458,7 @@ impl Game<'_> {
             Screen::DebugOptions => "debug-options",
             Screen::Mod => "mod",
             Screen::HudEditor => "hud-editor",
+            Screen::Studio => "studio",
         }
     }
     pub(super) fn inventory_counts(&self) -> BTreeMap<String, i64> {
@@ -1049,22 +1070,7 @@ impl Game<'_> {
                 if volume > 32768 {
                     return Err(format!("{volume} blocks; at most 32768 per request").into());
                 }
-                let mut list = Vec::new();
-                let mut census: BTreeMap<String, u32> = BTreeMap::new();
-                for y in lo[1]..=hi[1] {
-                    for z in lo[2]..=hi[2] {
-                        for x in lo[0]..=hi[0] {
-                            let state = self.world.block(x, y, z);
-                            if self.res.facts().is_air(state) {
-                                continue;
-                            }
-                            let name = self.res.facts().get(state).name.to_string();
-                            *census.entry(name).or_insert(0) += 1;
-                            list.push(json!([x, y, z, self.state_string(state)]));
-                        }
-                    }
-                }
-                ok(json!({ "from": lo, "to": hi, "counts": census, "blocks": list }))
+                ok(self.blocks_json(lo, hi))
             }
             "light" => {
                 self.need_world()?;

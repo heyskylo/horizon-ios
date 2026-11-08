@@ -466,6 +466,7 @@ impl Decoration {
             // WorldGenRegion.isOutsideBuildHeight: the level's range, not the noise's.
             build: (min_y, min_y + height),
             shape_ticks: std::cell::RefCell::new(crate::level::Ticks::new(0)),
+            shape_capture: std::cell::RefCell::new(Vec::new()),
         };
         let mut stats = DecorateStats::default();
         let blocks = self.blocks;
@@ -733,6 +734,8 @@ struct World<'a> {
     build: (i32, i32),
     /// The tick capture `shape_update` passes to `updateShape`.
     shape_ticks: std::cell::RefCell<crate::level::Ticks>,
+    /// Reusable capture storage for shape updates in this decoration region.
+    shape_capture: std::cell::RefCell<Vec<crate::level::ticks::CapturedTick>>,
 }
 /// Read-only `LevelAccess` view of the decoration region for
 /// `BlockState.updateShape` (writes go through `World::set_block`).
@@ -791,7 +794,7 @@ impl World<'_> {
         // capturing, scheduling leaves the rest of `Ticks` untouched, so the
         // region keeps one instead of building one per update.
         let mut ticks = self.shape_ticks.borrow_mut();
-        ticks.capture = Some(Vec::new());
+        ticks.capture = Some(std::mem::take(&mut *self.shape_capture.borrow_mut()));
         let updated = behaviours.update_shape(
             &mut level,
             &mut ticks,
@@ -807,21 +810,26 @@ impl World<'_> {
     fn schedule_captured(
         &mut self,
         behaviours: &crate::level::Behaviours,
-        ticks: Vec<crate::level::ticks::CapturedTick>,
+        mut ticks: Vec<crate::level::ticks::CapturedTick>,
     ) -> Result<(), PlacementQueryError> {
-        for t in ticks {
-            let at = [t.pos.x, t.pos.y, t.pos.z];
-            if t.fluid {
-                let fluid = crate::fluid::FluidKind::ALL[t.kind as usize];
-                self.schedule_fluid_tick(at, fluid, t.delay)?;
-            } else {
-                let state = behaviours
-                    .table
-                    .default_state(crate::level::BlockId(t.kind as u16));
-                self.schedule_block_tick(at, state, t.delay)?;
+        let result = (|| {
+            for t in &ticks {
+                let at = [t.pos.x, t.pos.y, t.pos.z];
+                if t.fluid {
+                    let fluid = crate::fluid::FluidKind::ALL[t.kind as usize];
+                    self.schedule_fluid_tick(at, fluid, t.delay)?;
+                } else {
+                    let state = behaviours
+                        .table
+                        .default_state(crate::level::BlockId(t.kind as u16));
+                    self.schedule_block_tick(at, state, t.delay)?;
+                }
             }
-        }
-        Ok(())
+            Ok(())
+        })();
+        ticks.clear();
+        *self.shape_capture.borrow_mut() = ticks;
+        result
     }
 }
 impl DecorationWorld for World<'_> {
@@ -837,7 +845,11 @@ impl DecorationWorld for World<'_> {
     /// bitset instead of sorting every quart of the column.
     fn chunk_biomes(&mut self, chunk: ChunkPos) -> Result<Vec<BiomeId>, RegionError> {
         let biomes = self.biomes.chunk(chunk).map_err(RegionError::Biome)?;
-        let mut seen: Vec<u64> = Vec::new();
+        // Ordinary registry ids fit in the stack array. Keep a spill for
+        // unusually large modded registries without changing the ascending
+        // iteration order of the bitset.
+        let mut seen = [0u64; 128];
+        let mut seen_spill = Vec::new();
         let mut last = None;
         let mut section = 0;
         while let Some(values) = biomes.section(section) {
@@ -847,15 +859,25 @@ impl DecorationWorld for World<'_> {
                 }
                 last = Some(id);
                 let word = id.0 as usize / 64;
-                if seen.len() <= word {
-                    seen.resize(word + 1, 0);
+                if let Some(bits) = seen.get_mut(word) {
+                    *bits |= 1 << (id.0 % 64);
+                } else {
+                    let spill_word = word - seen.len();
+                    if seen_spill.len() <= spill_word {
+                        seen_spill.resize(spill_word + 1, 0);
+                    }
+                    seen_spill[spill_word] |= 1 << (id.0 % 64);
                 }
-                seen[word] |= 1 << (id.0 % 64);
             }
             section += 1;
         }
-        let mut out = Vec::new();
-        for (word, &bits) in seen.iter().enumerate() {
+        let count = seen
+            .iter()
+            .chain(seen_spill.iter())
+            .map(|bits| bits.count_ones() as usize)
+            .sum();
+        let mut out = Vec::with_capacity(count);
+        for (word, &bits) in seen.iter().chain(seen_spill.iter()).enumerate() {
             let mut bits = bits;
             while bits != 0 {
                 out.push(BiomeId(word as u32 * 64 + bits.trailing_zeros()));

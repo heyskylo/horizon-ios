@@ -4,11 +4,22 @@
 use super::Game;
 use horizon_client::actions::Action;
 use horizon_client::{
+    entities::ObstacleGrid,
     items::ItemStack,
-    mobs::{MobEvent, happy_ghast},
+    mobs::{Mob, MobEvent, Species, happy_ghast},
 };
 use horizon_core::geometry::{Aabb, Vec3};
 use horizon_world::registry::BlockStateId;
+
+/// `canBeCollidedWith` toward a mover that is neither a player nor a happy ghast:
+/// a living shulker, or an adult happy ghast held still.
+fn stops_movers(m: &Mob) -> bool {
+    match m.species() {
+        Species::HappyGhast => m.alive() && !m.is_baby() && happy_ghast::on_still_timeout(m),
+        Species::Shulker => m.alive(),
+        _ => false,
+    }
+}
 
 impl Game<'_> {
     /// Client `EntityGetter.getEntityCollisions` for the player: the
@@ -36,24 +47,39 @@ impl Game<'_> {
             )
             .collect()
     }
-    /// `EntityGetter.getEntityCollisions` for a dropped item: the entities whose
-    /// `canBeCollidedWith(item)` is true. A boat always, a living shulker, and a happy
-    /// ghast only while it is held still (`isOnStillTimeout`): a player on its back keeps
-    /// it still, so an item dropped there stays on top. A minecart keeps `Entity`'s false
-    /// (`AbstractMinecart` overrides only `canCollideWith`), so an item falls through it.
+    /// `EntityGetter.getEntityCollisions` for a mover that is neither a player nor a
+    /// happy ghast (a dropped item, an armor stand, primed TNT, a falling block): the
+    /// entities whose `canBeCollidedWith(mover)` is true, the same for all of them. A
+    /// boat always, a living shulker, and a happy ghast only while it is held still
+    /// (`isOnStillTimeout`): a player on its back keeps it still, so an item dropped there
+    /// stays on top. A minecart keeps `Entity`'s false (`AbstractMinecart` overrides only
+    /// `canCollideWith`), so an item falls through it.
     pub(super) fn item_entity_collisions(&self) -> Vec<Aabb> {
         self.mobs
             .iter()
-            .filter(|m| {
-                (m.species() == horizon_client::mobs::Species::HappyGhast
-                    && m.alive()
-                    && !m.is_baby()
-                    && happy_ghast::on_still_timeout(m))
-                    || (m.species() == horizon_client::mobs::Species::Shulker && m.alive())
-            })
+            .filter(|m| stops_movers(m))
             .map(|m| m.bounds())
             .chain(self.boats.iter().map(super::boats::Boat::bounds))
             .collect()
+    }
+    /// [`Self::item_entity_collisions`] for an armor stand, which mobs can ride
+    /// (`/ride`): each mob's box comes with the vehicle at the bottom of what it rides,
+    /// so the stand leaves its own riders out (`isPassengerOfSameVehicle`, through the
+    /// grid's `near_except`).
+    pub(super) fn stand_entity_collisions(&self) -> ObstacleGrid {
+        let mut boxes = Vec::new();
+        let mut roots = Vec::new();
+        for (j, m) in self.mobs.iter().enumerate() {
+            if stops_movers(m) {
+                boxes.push(m.bounds());
+                roots.push(m.extra.mount.and_then(|_| self.mob_root_vehicle(j)));
+            }
+        }
+        for b in &self.boats {
+            boxes.push(b.bounds());
+            roots.push(None);
+        }
+        ObstacleGrid::with_roots(boxes, roots)
     }
     /// `HappyGhast.mobInteract`. Returns whether the click was used.
     pub(super) fn interact_happy_ghast(&mut self, index: usize, item: &str) -> bool {
@@ -158,7 +184,7 @@ impl Game<'_> {
             Some("west") => 90.0,
             _ => 0.0,
         };
-        if let Some(id) = self.spawn_mob("minecraft:happy_ghast", at, true)
+        if let Some(id) = self.spawn_mob_raw("minecraft:happy_ghast", at, true)
             && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
         {
             // DriedGhastBlock.spawnGhastling sets the baby age before

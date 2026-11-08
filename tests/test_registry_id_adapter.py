@@ -1,9 +1,23 @@
 """Renamed blocks retain every state's properties in both adapter directions."""
 import unittest
-from tools.generate_registry_id_adapter import states, table, state_alias, item_names, registry_names, reverse_table
+from tools.generate_registry_id_adapter import (
+    states, table, state_alias, item_names, registry_names, reverse_table, pinned_constants,
+)
 
 
 class RenamedBlockStates(unittest.TestCase):
+    def test_pinned_constants_follow_report_ids_and_fail_when_a_required_name_disappears(self):
+        report = {"minecraft:entity_type": {"entries": {
+            "minecraft:player": {"protocol_id": 0},
+            "minecraft:cow": {"protocol_id": 1},
+        }}}
+        self.assertEqual(pinned_constants(report, {"entity_type": ["cow", "player"]}), [
+            "pub mod entity_type {", "    pub const COW: i32 = 1;",
+            "    pub const PLAYER: i32 = 0;", "}",
+        ])
+        with self.assertRaisesRegex(ValueError, "minecraft:removed"):
+            pinned_constants(report, {"entity_type": ["removed"]})
+
     def test_a_reused_projectile_name_does_not_change_the_old_breeze_projectile(self):
         old = {"minecraft:wind_charge": 0, "minecraft:arrow": 1}
         new = {"minecraft:arrow": 0, "minecraft:breeze_wind_charge": 1, "minecraft:wind_charge": 2}

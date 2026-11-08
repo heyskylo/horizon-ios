@@ -29,6 +29,8 @@
 //!   over a folder of jars, ranked by how many mods use each.
 //! - `port <pack> <work> [--from <folder>] [--resources <prepared>]`: every
 //!   step for the portable mods, as the launcher's "Import modpack" runs it.
+//!   A jar that is only a data pack goes to the profile's packs for new worlds
+//!   (`<work>/home/new-world-datapacks/`), not through the carry.
 //! - `upgrade-datapack <pack> <out> | --world <world>`: a 26.2 data pack
 //!   (zip or folder) with its world generation rewritten in 26.3's formats
 //!   (`docs/datapack-upgrade.md`), into the folder `<out>`, or into

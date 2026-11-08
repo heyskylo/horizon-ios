@@ -1250,5 +1250,15 @@
   "Use a different Microsoft account": "Басқа Microsoft тіркелгісін пайдалану",
   "Buy": "Сатып алу",
   "Gift": "Сыйлау",
-  "Looks": "Бейнелер"
+  "Found on this computer": "Осы компьютерден табылды",
+  "Looks": "Бейнелер",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Жүйенің кілттер байламы {seconds} секунд ішінде жауап бермеді. Оның жұмыс істеп тұрғанына және құлпы ашық екеніне көз жеткізіп, лаунчерді қайта іске қосыңыз.",
+  "Can't read {name}'s sign-in: {why}": "{name} кіруін оқу мүмкін емес: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: сен ойнайтын Horizon үшін жасалған {version} нұсқасы қолданылады",
+  "Recommended": "Ұсынылады",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "Ескірек нұсқа, {version}, сен ойнайтын Horizon-да жиналады: орнату соны таңдайды",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: {version} нұсқасы жиналмады, {older} байқалуда",
+  "Use recommended (kept at {version})": "Ұсынылғанды қолдану ({version} нұсқасында қалдырылған)"
 }

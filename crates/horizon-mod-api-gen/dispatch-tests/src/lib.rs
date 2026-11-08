@@ -80,6 +80,7 @@ mod tests {
         pub(super) struct NativeFluidDrain;
         pub(super) struct NativeFluidStack;
         pub(super) struct NativeFluidTankView;
+        pub(super) struct NativeFishingMedium;
         pub(super) struct ModEnergyBuffer;
         pub(super) struct Mob;
         pub(super) struct LootStack;

@@ -247,6 +247,16 @@ impl Game<'_> {
                 let (pos, prev) = (vehicle.position, vehicle.previous);
                 let (yaw, prev_yaw) = (vehicle.yaw, vehicle.previous_yaw);
                 let (body, prev_body) = (vehicle.body_yaw, vehicle.previous_body_yaw);
+                let rider = &self.mobs[i];
+                let controlling = riders::controls_vehicle(
+                    vehicle,
+                    rider,
+                    vehicle.rider.is_some() || self.riding == Some(v),
+                    self.res
+                        .mob_data()
+                        .entity_has("minecraft:non_controlling_rider", &rider.kind.id),
+                );
+                let takes_body = riders::takes_vehicle_body(vehicle, rider, controlling);
                 let vehicle_width = vehicle.width();
                 let vehicle_box = vehicle.bounds();
                 let m = &mut self.mobs[i];
@@ -257,8 +267,11 @@ impl Game<'_> {
                 m.velocity = Vec3::ZERO;
                 m.fall_distance = 0.0;
                 m.on_ground = false;
-                m.body_yaw = body;
-                m.previous_body_yaw = prev_body;
+                if takes_body {
+                    m.body_yaw = body;
+                    m.previous_body_yaw = prev_body;
+                }
+                m.extra.vehicle_body = Some((v, prev_body, body));
                 m.extra.passenger = true;
                 // A rider never walks off on its own.
                 m.ai.nav.stop();
@@ -437,12 +450,13 @@ impl Game<'_> {
         }
         if let Some(a) = self.armor_stands.iter().find(|a| a.id == vehicle) {
             // ArmorStand.getDefaultDimensions: a marker has no box to sit on.
+            // The passenger point is the float height widened to double.
             let height = if a.marker {
                 0.0
             } else if a.small {
-                0.9875
+                f64::from(0.9875_f32)
             } else {
-                1.975
+                f64::from(1.975_f32)
             };
             let at = if let Some(parent) = a.vehicle {
                 self.passenger_riding_position_inner(parent, me, own_seat, index, path)?

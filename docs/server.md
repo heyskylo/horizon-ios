@@ -720,7 +720,8 @@ runtime or new dependency. Server-sent events can replace the polling later if a
   `HttpOnly; SameSite=Strict` session cookie. Anyone who can read the server folder can manage the server,
   and no one else can. Sessions end when the supervisor stops.
 - **Protection.** The `Host` header must name the panel itself: its address, `localhost` on loopback, or a
-  tailnet name (a MagicDNS short name or `*.ts.net`). That stops DNS rebinding. Changes (POST, PATCH, DELETE) need
+  tailnet name (a MagicDNS short name or `*.ts.net`); bound to every interface (`0.0.0.0` or `::`), any IP
+  address with the panel's port. That stops DNS rebinding. Changes (POST, PATCH, DELETE) need
   the `X-Horizon: 1` header, which stops CSRF. After 10 failed logins in a minute, logins are refused for a
   while. The page is served with a strict Content-Security-Policy (nothing from elsewhere) and can't be
   framed.

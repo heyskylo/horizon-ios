@@ -175,8 +175,7 @@ impl Game<'_> {
                     self.last_hurt_by_player.insert(id, self.lan_acting);
                 }
                 if hurt {
-                    let charge = "minecraft:wind_charge";
-                    self.shot_post_attack(p, who, charge, charge);
+                    self.shot_post_attack(p, who, p.kind.id(), "minecraft:wind_charge");
                 }
             }
         }
@@ -668,6 +667,9 @@ mod tests {
             velocity: Vec3::ZERO,
             fuse: 80,
             on_ground: false,
+            fall_distance: 0.0,
+            stuck: Vec3::ZERO,
+            in_water: false,
             owner: None,
             guest: None,
             no_gravity: false,

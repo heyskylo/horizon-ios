@@ -1443,7 +1443,7 @@ pub fn main() -> horizon_client::Result<()> {
                 // What a copper golem did to chests, before the next mob ticks.
                 for e in &events[from.min(events.len())..] {
                     match e {
-                        MobEvent::ChestOpen { chest, open } => {
+                        MobEvent::ChestOpen { chest, open, .. } => {
                             let o = world
                                 .chest_openers
                                 .entry((chest[0], chest[1], chest[2]))

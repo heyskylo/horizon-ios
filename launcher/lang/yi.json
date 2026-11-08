@@ -1250,5 +1250,15 @@
   "Use a different Microsoft account": "נוצן אַן אַנדער Microsoft חשבון",
   "Buy": "קויפן",
   "Gift": "שענקען",
-  "Looks": "אויסזעענישן"
+  "Found on this computer": "געפֿונען אויף דעם קאָמפּיוטער",
+  "Looks": "אויסזעענישן",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "דער שליסלרינג פֿון דײַן סיסטעם האָט ניט געענטפֿערט אין {seconds} סעקונדעס. מאַך זיכער אַז ער לויפֿט און איז אָפֿן, דערנאָך שטאַרט איבער דעם לאָנטשער.",
+  "Can't read {name}'s sign-in: {why}": "מען קען ניט לייענען {name}ס אַרײַנלאָגירונג: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: ניצט ווערסיע {version}, געמאַכט פֿאַר דעם Horizon וואָס דו שפּילסט",
+  "Recommended": "רעקאָמענדירט",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "אַן עלטערע ווערסיע, {version}, בויט זיך אויף דעם Horizon וואָס דו שפּילסט: אינסטאַלירן קלייבט זי",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: ווערסיע {version} האָט זיך נישט געבויט, מען פּרוּווט {older}",
+  "Use recommended (kept at {version})": "ניץ די רעקאָמענדירטע (געהאַלטן אויף {version})"
 }

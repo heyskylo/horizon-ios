@@ -1250,5 +1250,15 @@
   "Use a different Microsoft account": "Użyj innego konta Microsoft",
   "Buy": "Kup",
   "Gift": "Podaruj",
-  "Looks": "Stylizacje"
+  "Found on this computer": "Znalezione na tym komputerze",
+  "Looks": "Stylizacje",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Systemowy pęk kluczy nie odpowiedział w ciągu {seconds} sekund. Upewnij się, że działa i jest odblokowany, a następnie uruchom ponownie launcher.",
+  "Can't read {name}'s sign-in: {why}": "Nie można odczytać logowania konta {name}: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon uruchamia funkcje, tagi funkcji, predykaty, modyfikatory przedmiotów, receptury, tabele łupów, osiągnięcia, handel wieśniaków, typy obrażeń, większość tagów i większą część generowania świata (biomy, cechy, struktury, wymiary) z paczki danych. Pozostałe pliki, takie jak ustawienia wstępne świata, nie są jeszcze czytane.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} na razie niczego nie zmieni w Horizon: Horizon jeszcze nie czyta jego {files}.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: używa wersji {version}, zrobionej dla Horizona, w który grasz",
+  "Recommended": "Zalecana",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "Starsza wersja, {version}, kompiluje się na Horizonie, w który grasz: instalacja wybiera ją",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: wersja {version} się nie zbudowała, próba {older}",
+  "Use recommended (kept at {version})": "Użyj zalecanej (zatrzymano na {version})"
 }

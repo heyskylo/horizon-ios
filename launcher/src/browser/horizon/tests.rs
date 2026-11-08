@@ -564,3 +564,19 @@ fn a_project_is_starred_on_the_repository_its_source_is_in() {
         assert_eq!(repo(source), None, "{source:?}");
     }
 }
+
+#[test]
+fn a_picked_version_is_kept_until_it_is_cleared() {
+    let home = scratch("chosen-versions");
+    assert!(chosen(&home).is_empty());
+    set_chosen(&home, "skins_3d", Some("1.0.1")).unwrap();
+    set_chosen(&home, "flair", Some("1.0.0")).unwrap();
+    assert_eq!(
+        chosen(&home).get("skins_3d").map(String::as_str),
+        Some("1.0.1")
+    );
+    set_chosen(&home, "skins_3d", None).unwrap();
+    assert_eq!(chosen(&home).keys().collect::<Vec<_>>(), ["flair"]);
+    fs::write(home.join(CHOSEN), b"not json").unwrap();
+    assert!(chosen(&home).is_empty(), "an unreadable file picks nothing");
+}
