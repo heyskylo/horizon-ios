@@ -4191,8 +4191,9 @@ Tanks (`native_block_entity_fluids`) take a mod's own fluids as they take water 
 than `minecraft` (`create:chocolate`). `native_fluid_insert`, `native_fluid_extract` and `native_move_fluids` move them,
 and `native_fluid_tanks` reads what a side reaches (`Host::fluid_tanks`). Equal ids merge in a tank; variants of a fluid,
 a potion's kinds, are ids of their own (`create:potion/healing`). The mod draws its fluid in its block entities. A
-cauldron takes only water and lava, and the world itself has only vanilla's fluids: no source or flowing blocks of a
-mod's fluid yet, and no buckets of one.
+fluid a content mod declares (`data/<id>/horizon/fluid/`, [mods.md](mods.md#content-mods-api-02)) also has network ids
+and may be named in fluid tags; tanks still take undeclared ids as before. A cauldron takes only water and lava, and the
+world itself has only vanilla's fluids: no source or flowing blocks of a mod's fluid yet, and no buckets of one.
 
 A tank may refuse a fluid: `native_block_entity_accepts_fluid(block, tank, fluid, cancel)` (NeoForge's
 `IFluidHandler.isFluidValid`) is asked on the server before `native_fluid_insert` fills a fillable tank, in both its
