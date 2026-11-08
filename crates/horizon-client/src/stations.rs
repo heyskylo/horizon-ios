@@ -576,7 +576,7 @@ pub enum Smithing {
         template: Ingredient,
         base: Ingredient,
         addition: Ingredient,
-        pattern: String,
+        pattern: crate::item_data::trim::Holder<crate::item_data::trim::Pattern>,
     },
 }
 /// A smithing transform's `ItemStackTemplate`, retaining the patch as well as
@@ -786,13 +786,20 @@ impl StationRecipes {
                         });
                     }
                 }
-                "minecraft:smithing_trim" => smithing.push(Smithing::Trim {
-                    id,
-                    template: ingredient(&v["template"], items),
-                    base: ingredient(&v["base"], items),
-                    addition: ingredient(&v["addition"], items),
-                    pattern: v["pattern"].as_str().unwrap_or("").to_owned(),
-                }),
+                "minecraft:smithing_trim" => {
+                    // TrimPattern.CODEC: one holder, named or inline; a missing
+                    // or malformed pattern fails the recipe.
+                    let pattern = crate::scoreboard::json_to_tag(&v["pattern"]);
+                    if let Some(pattern) = crate::item_data::trim::pattern_from_nbt(&pattern) {
+                        smithing.push(Smithing::Trim {
+                            id,
+                            template: ingredient(&v["template"], items),
+                            base: ingredient(&v["base"], items),
+                            addition: ingredient(&v["addition"], items),
+                            pattern,
+                        });
+                    }
+                }
                 "minecraft:stonecutting" => {
                     // A result count outside 1..=99 fails vanilla's codec: no recipe.
                     if let Some(count) = crate::crafting::template_count(&v["result"]) {
@@ -971,10 +978,10 @@ fn apply_trim(
     e: &Enchantments,
     base: &ItemStack,
     material: &ItemStack,
-    pattern: &str,
+    pattern: &crate::item_data::trim::Holder<crate::item_data::trim::Pattern>,
 ) -> Option<ItemStack> {
     let material = e.props(&material.item)?.trim_material.clone()?;
-    let trim: crate::item_data::Trim = (material.as_str().into(), pattern.into());
+    let trim: crate::item_data::Trim = (material.as_str().into(), pattern.clone());
     if base.data().and_then(|d| d.trim.as_ref()) == Some(&trim) {
         return None;
     }
@@ -990,6 +997,7 @@ fn apply_trim(
 mod tests {
     use super::*;
     use crate::enchant::tests::{sample, sample_items};
+    use horizon_world::nbt::Tag;
 
     fn sword(ench: &[(&str, u32)]) -> ItemStack {
         let mut s = ItemStack::new("minecraft:diamond_sword", 1);
@@ -1540,6 +1548,57 @@ mod tests {
             );
         }
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn smithing_trim_reads_an_inline_pattern() {
+        let root = std::env::temp_dir().join(format!("horizon-trim-{}", std::process::id()));
+        fs::create_dir_all(root.join("data/minecraft/recipe")).unwrap();
+        fs::write(
+            root.join("items.json"),
+            r#"{"minecraft:gold_ingot":{"minecraft:max_stack_size":64,"minecraft:provides_trim_material":"minecraft:gold"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("data/minecraft/recipe/coast.json"),
+            serde_json::json!({
+                "type": "minecraft:smithing_trim",
+                "template": "minecraft:coast_armor_trim_smithing_template",
+                "base": "minecraft:diamond_chestplate",
+                "addition": "minecraft:gold_ingot",
+                "pattern": {
+                    "asset_id": "minecraft:coast",
+                    "description": { "text": "Coast" },
+                    "decal": false
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let items = Items::tags_only(&root, &PackOverlay::NONE).unwrap();
+        let recipes = StationRecipes::load(&root, &items, &PackOverlay::NONE);
+        assert_eq!(recipes.smithing.len(), 1);
+        let out = recipes
+            .smithing_result(
+                &items.enchantments,
+                Some(&ItemStack::new(
+                    "minecraft:coast_armor_trim_smithing_template",
+                    1,
+                )),
+                Some(&ItemStack::new("minecraft:diamond_chestplate", 1)),
+                Some(&ItemStack::new("minecraft:gold_ingot", 1)),
+            )
+            .expect("the inline pattern applies");
+        let trim = out.data().and_then(|d| d.trim.as_ref()).unwrap();
+        assert_eq!(
+            trim.1,
+            crate::item_data::trim::Holder::Direct(crate::item_data::trim::Pattern {
+                asset_id: "minecraft:coast".into(),
+                description: Tag::String("Coast".into()),
+                decal: false,
+            })
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
