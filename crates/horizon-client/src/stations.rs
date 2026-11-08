@@ -30,7 +30,7 @@ impl StationData {
             enchantments: std::sync::Arc::clone(&items.enchantments),
             recipes: StationRecipes::load(root, items, overlay),
             brewing: crate::brewing::Brewing::load(root, items, overlay),
-            trades: crate::merchant::Trades::load(root),
+            trades: crate::merchant::Trades::load(root, overlay),
             banners: crate::banner::Banners::load(root),
             recipe_index: crate::recipe_book::RecipeIndex::load(root, overlay),
         }
@@ -100,22 +100,36 @@ pub fn enchant_offers(
         }
     }
     for i in 0..3 {
-        if offers.costs[i] > 0 {
-            // getEnchantmentList reseeds the menu random; the clue draws continue from it.
-            let mut list_random = LegacyRandom::new(i64::from(seed.wrapping_add(i as i32)));
-            let pool = e.tag("minecraft:in_enchanting_table").to_vec();
-            let mut list = e.select(items, &mut list_random, &stack.item, offers.costs[i], &pool);
-            if &*stack.item == "minecraft:book" && list.len() > 1 {
-                let r = list_random.next_int_bound(list.len() as i32).unwrap_or(0) as usize;
-                list.remove(r);
-            }
-            if !list.is_empty() {
-                let pick = list_random.next_int_bound(list.len() as i32).unwrap_or(0) as usize;
-                offers.clues[i] = Some(list[pick].clone());
-            }
-        }
+        offers.clues[i] = enchant_clue(e, items, seed, i, offers.costs[i], stack);
     }
     offers
+}
+/// `EnchantmentMenu.slotsChanged`'s clue for offer `slot` at `cost`: one
+/// enchantment of the list that cost would give, or None for no offer.
+pub fn enchant_clue(
+    e: &Enchantments,
+    items: &Items,
+    seed: i32,
+    slot: usize,
+    cost: i32,
+    stack: &ItemStack,
+) -> Option<(Arc<str>, u32)> {
+    if cost <= 0 {
+        return None;
+    }
+    // getEnchantmentList reseeds the menu random; the clue draws continue from it.
+    let mut list_random = LegacyRandom::new(i64::from(seed.wrapping_add(slot as i32)));
+    let pool = e.tag("minecraft:in_enchanting_table").to_vec();
+    let mut list = e.select(items, &mut list_random, &stack.item, cost, &pool);
+    if &*stack.item == "minecraft:book" && list.len() > 1 {
+        let r = list_random.next_int_bound(list.len() as i32).unwrap_or(0) as usize;
+        list.remove(r);
+    }
+    if list.is_empty() {
+        return None;
+    }
+    let pick = list_random.next_int_bound(list.len() as i32).unwrap_or(0) as usize;
+    Some(list[pick].clone())
 }
 /// `EnchantmentMenu.clickMenuButton` result: the enchanted item, or None.
 pub fn apply_enchantment(
@@ -489,31 +503,36 @@ impl StationRecipes {
         let mut files = Vec::new();
         let namespaces =
             std::iter::once("minecraft".to_owned()).chain(crate::mod_content::namespaces(root));
+        // NeoForge's load conditions: a file whose don't hold is silently
+        // absent (`mod_loaded` asks which mods' data is in this root).
+        let mods: Vec<String> = {
+            let mut mods = horizon_items::content_namespaces::mod_ids(root);
+            if !mods.iter().any(|m| m == "minecraft") {
+                mods.push("minecraft".to_owned());
+            }
+            mods
+        };
+        let conditions_hold = |v: &Value| {
+            horizon_world::conditions::conditions_hold(v, &|id: &str| mods.iter().any(|m| m == id))
+        };
         for namespace in namespaces {
-            let mut more: Vec<_> = fs::read_dir(root.join(format!("data/{namespace}/recipe")))
-                .into_iter()
-                .flatten()
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| p.extension().is_some_and(|e| e == "json"))
-                .collect();
-            more.sort();
-            files.extend(more.into_iter().map(|p| (namespace.clone(), p)));
+            let dir = root.join(format!("data/{namespace}/recipe"));
+            if let Ok(folder) = crate::json_folder::read(&dir) {
+                files.push((namespace, folder));
+            }
         }
         let mut sources: Vec<(String, Value)> = files
             .iter()
-            .filter_map(|(namespace, p)| {
-                let bytes = fs::read(p).ok()?;
-                let v = serde_json::from_slice::<Value>(&bytes).ok()?;
-                let id = format!(
-                    "{namespace}:{}",
-                    p.file_stem().and_then(|s| s.to_str()).unwrap_or("")
-                );
-                Some((id, v))
+            .flat_map(|(namespace, folder)| folder.files.iter().map(move |f| (namespace, f)))
+            .filter_map(|(namespace, file)| {
+                let v = serde_json::from_slice::<Value>(file.bytes().ok()?).ok()?;
+                Some((format!("{namespace}:{}", file.name), v))
             })
             .collect();
         // The world's packs' recipes over the game's own: the top pack's
         // file for each id replaces it (`SimpleJsonResourceReloadListener`).
+        // The gate answers the merged file, as the crafting loader's does:
+        // a false-conditioned pack file leaves the lower one gone too.
         for (id, files) in overlay.kind("recipe") {
             let Ok(v) = serde_json::from_slice::<Value>(PackOverlay::top(files)) else {
                 continue;
@@ -523,6 +542,9 @@ impl StationRecipes {
                 None => sources.push((id.to_owned(), v)),
             }
         }
+        // The data's recipe filters, over the final set.
+        let filters = horizon_items::recipe_filters::RecipeFilters::load(root, overlay);
+        sources.retain_mut(|(id, v)| conditions_hold(v) && filters.apply(id, v));
         let mut smithing = Vec::new();
         let mut stonecutting = Vec::new();
         for (id, v) in sources {
@@ -532,8 +554,7 @@ impl StationRecipes {
                     template: ingredient(&v["template"], items),
                     base: ingredient(&v["base"], items),
                     addition: ingredient(&v["addition"], items),
-                    result: v["result"]["id"]
-                        .as_str()
+                    result: horizon_world::loot::recipe_result_id(&v["result"])
                         .unwrap_or("minecraft:air")
                         .to_owned(),
                 }),
@@ -551,7 +572,8 @@ impl StationRecipes {
                             id,
                             input: ingredient(&v["ingredient"], items),
                             result: ItemStack::new(
-                                v["result"]["id"].as_str().unwrap_or("minecraft:air"),
+                                horizon_world::loot::recipe_result_id(&v["result"])
+                                    .unwrap_or("minecraft:air"),
                                 count,
                             ),
                         });
@@ -686,7 +708,7 @@ impl StationRecipes {
                 addition,
                 pattern,
                 ..
-            } if i == id => Some((&base.1, &addition.1, pattern)),
+            } if i == id => Some((&base.order, &addition.order, pattern)),
             _ => None,
         })?;
         if base.is_empty() || addition.is_empty() {
@@ -1019,13 +1041,13 @@ mod tests {
     fn smithing_ingredient_parses_holders() {
         let items = sample_items();
         let a = ingredient(&serde_json::json!("minecraft:diamond_sword"), &items);
-        assert_eq!(a.1, vec!["minecraft:diamond_sword"]);
+        assert_eq!(a.order, vec!["minecraft:diamond_sword"]);
         let b = ingredient(
             &serde_json::json!(["minecraft:diamond_sword", "minecraft:diamond_axe"]),
             &items,
         );
         assert_eq!(
-            b.1,
+            b.order,
             vec!["minecraft:diamond_sword", "minecraft:diamond_axe"]
         );
     }

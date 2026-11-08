@@ -114,6 +114,17 @@ impl RemoteTextDisplay {
             (((self.age - self.start) as f32 + partial) / self.duration as f32).clamp(0.0, 1.0)
         }
     }
+    /// The casters this display adds to the shadow pass: its interpolated
+    /// shadow radius and strength (`DisplayRenderer.getShadowRadius` and
+    /// `DisplayRenderer.getShadowStrength`), if it has any.
+    pub(super) fn shadow(&self, partial: f64) -> Option<(glam::DVec3, f32, f32)> {
+        horizon_client::shadows::display_caster(
+            self.previous.lerp(self.position, partial),
+            &self.from,
+            &self.shown,
+            self.progress(partial as f32),
+        )
+    }
     /// The entries after `Display`'s: a block state, or an item with its
     /// display context (the stack comes converted by the caller).
     pub fn show(&mut self, values: &[(u8, i32, Value)], item: Option<Option<ItemStack>>) {
@@ -288,6 +299,20 @@ impl Game<'_> {
                 if let Some(state) = display.block {
                     // BlockModelResolver.update: model seed 42.
                     self.block_model_vertices(state, 42, matrix, light, true, out);
+                    // CompositeBlockModel.update: the special model of a chest,
+                    // head, banner and the like comes on top of the block model.
+                    if self
+                        .res
+                        .facts()
+                        .get(state)
+                        .name
+                        .strip_prefix("minecraft:")
+                        .is_some_and(has_special_model)
+                    {
+                        let packed =
+                            ((((light & 0xFF) / 16) << 4) | (((light >> 8) & 0xFF) / 16)) as u8;
+                        self.special_block_model(state, matrix, packed, out);
+                    }
                 } else if let Some(stack) = &display.item {
                     let context = match display.item_display {
                         1 => DisplayContext::ThirdPersonLeftHand,
@@ -355,7 +380,7 @@ impl Game<'_> {
                 (&mut *normal, TEXT_POLYGON_OFFSET_OVERLAY)
             };
             for quad in batch.vertices.as_chunks::<6>().0 {
-                for i in [0, 1, 2, 5] {
+                for i in text_display::CORNERS {
                     let v = quad[i];
                     let point =
                         matrix.transform_point3(glam::Vec3::new(v.pos[0], v.pos[1], v.depth));
@@ -376,6 +401,29 @@ impl Game<'_> {
         }
         self.text_displays = displays;
     }
+}
+
+/// Whether vanilla's built-in block models give this block a special model,
+/// drawn by its block-entity renderer.
+fn has_special_model(block: &str) -> bool {
+    matches!(
+        block,
+        "bell"
+            | "conduit"
+            | "decorated_pot"
+            | "enchanting_table"
+            | "end_gateway"
+            | "end_portal"
+            | "chest"
+            | "trapped_chest"
+            | "ender_chest"
+            | "shulker_box"
+    ) || block.ends_with("_banner")
+        || block.ends_with("_shulker_box")
+        || block.ends_with("_skull")
+        || (block.ends_with("_head") && block != "piston_head")
+        || block.contains("copper_chest")
+        || block.contains("copper_golem_statue")
 }
 
 #[cfg(test)]

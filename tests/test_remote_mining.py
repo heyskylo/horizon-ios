@@ -28,7 +28,7 @@ struct Hit { pos: [i32; 3], face: u8 }
 struct Stack { item: &'static str }
 struct Mining { pos: [i32; 3], progress: f32, ticks: u32 }
 #[derive(Default)]
-struct Remote { destroy_delay: u32, destroying: Option<([i32; 3], u8, f32)>, destroying_item: String }
+struct Remote { destroy_delay: u32, destroying: Option<([i32; 3], u8, f32)>, destroying_item: String, is_destroying: bool }
 struct Ground { on_ground: bool }
 struct Player { ground: Ground }
 #[derive(Clone)]
@@ -181,7 +181,14 @@ fn main() {
     game.creative = true;
     game.remote_mining(false);
     assert_eq!(game.packets.iter().map(|p| p.action).collect::<Vec<_>>(), [0, 2]);
-    assert!(game.remote.as_ref().unwrap().destroying.is_none());
+    // stopDestroyBlock keeps destroyBlockPos and the item and zeroes only the progress, so a
+    // resumed dig on the same block sends no new START (#4124).
+    let stopped = game.remote.as_ref().unwrap();
+    assert_eq!(
+        stopped.destroying.map(|(p, _, progress)| (p, progress)),
+        Some((game.hit.pos, 0.0))
+    );
+    assert!(!stopped.is_destroying);
     assert!(game.mining.is_none());
     assert!(game.world.broken.is_empty());
     // An adventure player without can_break (#3027): startDestroyBlock

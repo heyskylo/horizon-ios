@@ -3,7 +3,18 @@ use super::*;
 /// The settings the Extras page shows, one per row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Item {
+    MusicPage,
+    CosmeticsMine,
+    CosmeticsOthers,
+    ReproKeys,
+    WheelCyclesSettings,
     Fullbright,
+    HideBlockParticles,
+    UiSoundReserve,
+    ChatAnimation,
+    ChatIndicator,
+    Splitscreen,
+
     DynamicLights,
     OwnNameTag,
     Zoom,
@@ -36,8 +47,8 @@ pub enum Item {
 }
 /// The Extras page: headers and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
-    use Item::*;
-    vec![
+    use self::Item::*;
+    let mut rows = vec![
         Err("Lighting"),
         Ok(Fullbright),
         Ok(DynamicLights),
@@ -70,7 +81,21 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Ok(SortKey),
         Err("Multiplayer"),
         Ok(AutoReconnect),
-    ]
+        Ok(HideBlockParticles),
+        Ok(UiSoundReserve),
+        Ok(MusicPage),
+        Ok(ChatAnimation),
+        Ok(ChatIndicator),
+        Ok(WheelCyclesSettings),
+    ];
+    if horizon_cosmetics::enabled() {
+        rows.extend([
+            Err("horizon.extras.header.cosmetics"),
+            Ok(CosmeticsMine),
+            Ok(CosmeticsOthers),
+        ]);
+    }
+    rows
 }
 /// "1 block", "2 blocks", "½ block".
 fn block_count(n: f32) -> String {
@@ -88,8 +113,53 @@ fn next<T: Copy + PartialEq>(all: &[T], current: T, back: bool) -> T {
     all[if back { (i + n - 1) % n } else { (i + 1) % n }]
 }
 impl Item {
+    fn shared(self) -> Option<super::desktop_ui::Item> {
+        Some(match self {
+            Self::MusicPage => super::desktop_ui::Item::MusicPage,
+            Self::CosmeticsMine => super::desktop_ui::Item::CosmeticsMine,
+            Self::CosmeticsOthers => super::desktop_ui::Item::CosmeticsOthers,
+            Self::ReproKeys => super::desktop_ui::Item::ReproKeys,
+            Self::WheelCyclesSettings => super::desktop_ui::Item::WheelCyclesSettings,
+            Self::Fullbright => super::desktop_ui::Item::Fullbright,
+            Self::DynamicLights => super::desktop_ui::Item::DynamicLights,
+            Self::OwnNameTag => super::desktop_ui::Item::OwnNameTag,
+            Self::AutoReconnect => super::desktop_ui::Item::AutoReconnect,
+            Self::MouseTweaks => super::desktop_ui::Item::MouseTweaks,
+            Self::MouseTweaksWheel => super::desktop_ui::Item::MouseTweaksWheel,
+            Self::Sort => super::desktop_ui::Item::Sort,
+            Self::SortKey => super::desktop_ui::Item::SortKey,
+            Self::NoAi => super::desktop_ui::Item::NoAi,
+            Self::AgentControl => super::desktop_ui::Item::AgentControl,
+            Self::DiscordPresence => super::desktop_ui::Item::DiscordPresence,
+            Self::HideBlockParticles => super::desktop_ui::Item::HideBlockParticles,
+            Self::UiSoundReserve => super::desktop_ui::Item::UiSoundReserve,
+            Self::ChatAnimation => super::desktop_ui::Item::ChatAnimation,
+            Self::ChatIndicator => super::desktop_ui::Item::ChatIndicator,
+            Self::Splitscreen => super::desktop_ui::Item::Splitscreen,
+            _ => return None,
+        })
+    }
+    pub fn caption_text(self) -> String {
+        self.shared()
+            .map_or_else(|| self.caption().into(), |item| item.caption_text())
+    }
+    pub fn description_text(self) -> String {
+        self.shared()
+            .map_or_else(|| self.description().into(), |item| item.description_text())
+    }
+
     pub fn caption(self) -> &'static str {
         match self {
+            Item::MusicPage
+            | Item::CosmeticsMine
+            | Item::CosmeticsOthers
+            | Item::ReproKeys
+            | Item::WheelCyclesSettings
+            | Item::HideBlockParticles
+            | Item::UiSoundReserve
+            | Item::ChatAnimation
+            | Item::ChatIndicator
+            | Item::Splitscreen => self.shared().unwrap().caption(),
             Item::Fullbright => "Fullbright",
             Item::DynamicLights => "Dynamic lights",
             Item::OwnNameTag => "Own name tag",
@@ -120,8 +190,11 @@ impl Item {
     }
     /// The switch this setting belongs to: it does nothing while that is off.
     pub fn parent(self) -> Option<Item> {
-        use Item::*;
+        use self::Item::*;
         Some(match self {
+            ChatIndicator => ChatAnimation,
+            HideBlockParticles | UiSoundReserve | ChatAnimation | Splitscreen | MusicPage
+            | CosmeticsMine | CosmeticsOthers | ReproKeys | WheelCyclesSettings => return None,
             ZoomKey | ZoomLevel | ZoomSmooth | ZoomSensitivity => Zoom,
             MinimapCorner | MinimapSize | MinimapShape | MinimapZoom | MinimapRotate => Minimap,
             FpsCorner | FpsLows => Fps,
@@ -137,6 +210,16 @@ impl Item {
     /// What the row says under its caption.
     pub fn description(self) -> &'static str {
         match self {
+            Item::MusicPage
+            | Item::CosmeticsMine
+            | Item::CosmeticsOthers
+            | Item::ReproKeys
+            | Item::WheelCyclesSettings
+            | Item::HideBlockParticles
+            | Item::UiSoundReserve
+            | Item::ChatAnimation
+            | Item::ChatIndicator
+            | Item::Splitscreen => self.shared().unwrap().description(),
             Item::Fullbright => "Show blocks and entities at full light, even in dark areas.",
             Item::DynamicLights => {
                 "Torches and other light sources held, dropped or on fire light the blocks around them."
@@ -198,6 +281,16 @@ impl Item {
     /// On/off items and their value.
     pub fn switch(self, e: &Extras) -> Option<bool> {
         Some(match self {
+            Item::MusicPage
+            | Item::CosmeticsMine
+            | Item::CosmeticsOthers
+            | Item::ReproKeys
+            | Item::WheelCyclesSettings
+            | Item::HideBlockParticles
+            | Item::UiSoundReserve
+            | Item::ChatAnimation
+            | Item::ChatIndicator
+            | Item::Splitscreen => return self.shared().unwrap().switch(e),
             Item::Fullbright => e.fullbright,
             Item::DynamicLights => e.dynamic_lights,
             Item::OwnNameTag => e.own_name_tag,
@@ -245,6 +338,16 @@ impl Item {
     /// A click (`back` for the right button). The zoom key binds instead.
     pub fn cycle(self, e: &mut Extras, back: bool) {
         match self {
+            Item::MusicPage
+            | Item::CosmeticsMine
+            | Item::CosmeticsOthers
+            | Item::ReproKeys
+            | Item::WheelCyclesSettings
+            | Item::HideBlockParticles
+            | Item::UiSoundReserve
+            | Item::ChatAnimation
+            | Item::ChatIndicator
+            | Item::Splitscreen => self.shared().unwrap().cycle(e, back),
             Item::Fullbright => e.fullbright = !e.fullbright,
             Item::DynamicLights => e.dynamic_lights = !e.dynamic_lights,
             Item::OwnNameTag => e.own_name_tag = !e.own_name_tag,

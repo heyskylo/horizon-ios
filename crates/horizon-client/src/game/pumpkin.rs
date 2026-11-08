@@ -42,11 +42,18 @@ impl Game<'_> {
         // ItemEntity in front of the carved side, moved by the level random
         // (no pickup delay).
         let (dx, dz) = (f64::from(dx), f64::from(dz));
-        for seeds in self.sequence_loot(
-            "minecraft:carve/pumpkin",
-            "minecraft:carve/pumpkin",
+        let table = "minecraft:carve/pumpkin";
+        let mut drops = self.sequence_loot(table, table, Some(shears));
+        let origin = pos.map(|c| f64::from(c) + 0.5);
+        self.native_use_drops(
+            table,
+            origin,
+            Some((pos, state)),
+            None,
             Some(shears),
-        ) {
+            &mut drops,
+        );
+        for seeds in drops {
             let at = [
                 f64::from(pos[0]) + 0.5 + dx * 0.65,
                 f64::from(pos[1]) + 0.1,
@@ -80,7 +87,7 @@ impl Game<'_> {
         }
         self.damage_held(1);
         self.post_block_game_event("minecraft:shear", pos, self.sculk_actor(), None);
-        self.stats.add("used", "minecraft:shears", 1);
+        self.award_stat("used", "minecraft:shears", 1);
         // ServerPlayerGameMode.useItemOn: the action was consumed.
         self.trigger_block("minecraft:item_used_on_block", pos, shears);
         Ok(true)

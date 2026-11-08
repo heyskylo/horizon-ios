@@ -13,6 +13,7 @@
 //! frame has (vanilla's partial update), so what it opens shows at once; what
 //! it closes goes at the next full search.
 use super::SectionKey;
+use crate::fast_hash::FxHashSet;
 use crate::mesher::ALL_VISIBLE;
 use glam::DVec3;
 use std::collections::{HashMap, VecDeque};
@@ -128,6 +129,9 @@ struct Graph {
     /// (`Node.sourceDirections`, as the faces rather than the steps); none for
     /// the camera's.
     entered: Vec<u8>,
+    /// Whether any section in the searched top layer was reached. Sections
+    /// above a clamped box use this conservative sky-band answer.
+    sky_reached: bool,
     /// Per section corner, during a full search: `SEES`, or how far the line
     /// from it towards the camera is known to stay in reached sections (the
     /// first sample that was not). Sections are only ever added during a
@@ -156,8 +160,22 @@ impl Graph {
         )
     }
     fn contains(&self, key: SectionKey) -> bool {
-        self.index(key)
-            .is_some_and(|i| self.directions[i] & REACHED != 0)
+        if let Some(i) = self.index(key) {
+            self.directions[i] & REACHED != 0
+        } else if (0..=self.sections).contains(&key.1)
+            && key.1 >= self.y0 + self.height
+            && (key.0 - self.from.0).abs() <= self.radius
+            && (key.2 - self.from.2).abs() <= self.radius
+        {
+            // Everything above the highest non-air section is open sky. A
+            // full search can reach that layer from a neighbouring column,
+            // so checking only this column's top cell can hide an upper
+            // section that is visible through the open layer. Once any top
+            // cell is reached, conservatively keep the whole sky band visible.
+            self.sky_reached
+        } else {
+            false
+        }
     }
     /// The full search from the camera (vanilla's `scheduleFullUpdate`).
     fn search(
@@ -174,13 +192,37 @@ impl Graph {
         self.min_y = columns.min_y;
         self.sections = columns.sections;
         self.y0 = -1;
-        self.height = columns.sections + 2;
+        if from.1 >= columns.sections {
+            self.height = columns.sections + 2;
+        } else {
+            let mut max_non_air_y = 0;
+            for dz in -radius..=radius {
+                for dx in -radius..=radius {
+                    let Some(column) = columns.map.get(&(from.0 + dx, from.2 + dz)) else {
+                        continue;
+                    };
+                    for (y, &v) in column.iter().enumerate().rev() {
+                        let y = y as i32;
+                        if y <= max_non_air_y {
+                            break;
+                        }
+                        if v != ALL_VISIBLE {
+                            max_non_air_y = y;
+                            break;
+                        }
+                    }
+                }
+            }
+            let top_y = max_non_air_y.max(from.1);
+            self.height = (top_y + 3).max(3).min(columns.sections + 2);
+        }
         let side = (2 * radius + 1) as usize;
         let size = side * side * self.height as usize;
         self.directions.clear();
         self.directions.resize(size, 0);
         self.entered.clear();
         self.entered.resize(size, 0);
+        self.sky_reached = false;
         self.rays.clear();
         self.rays
             .resize((side + 1) * (side + 1) * (self.height + 1) as usize, 0);
@@ -194,7 +236,8 @@ impl Graph {
                 let base = self
                     .index((from.0 + dx, 0, from.2 + dz))
                     .expect("column inside the searched box");
-                vis[base..base + column.len()].copy_from_slice(column);
+                let len = (column.len() as i32).min(self.height - 1) as usize;
+                vis[base..base + len].copy_from_slice(&column[..len]);
             }
         }
         queue.clear();
@@ -279,6 +322,9 @@ impl Graph {
         while let Some(index) = queue.pop_front() {
             let i = index as usize;
             let key = self.key(i);
+            if key.1 == self.y0 + self.height - 1 {
+                self.sky_reached = true;
+            }
             let directions = self.directions[i];
             let entered = self.entered[i];
             let exits = if entered == 0 {
@@ -542,6 +588,19 @@ impl Occlusion {
             if vis != ALL_VISIBLE {
                 self.changed((x, y as i32, z), ALL_VISIBLE);
             }
+        }
+    }
+    /// `remove_column` for each of `gone`. When they are every column it holds (a
+    /// teleport drops the whole view), the old graph says nothing about what arrives
+    /// next: it starts over as `clear` does instead of seeing through each removed
+    /// section one edit at a time (some 90 000 at render distance 32).
+    pub fn remove_columns(&mut self, gone: &FxHashSet<(i32, i32)>) {
+        if self.columns.map.keys().all(|column| gone.contains(column)) {
+            self.clear();
+            return;
+        }
+        for &(x, z) in gone {
+            self.remove_column(x, z);
         }
     }
     pub fn clear(&mut self) {
@@ -1082,6 +1141,64 @@ mod tests {
         );
     }
 
+    /// A clamped search may conservatively show sections above its searched
+    /// box, but it must never hide one that the full-height search reaches.
+    #[test]
+    fn vertical_clamping_only_adds_overdraw() {
+        let mut compared = 0;
+        let mut overdraw = 0;
+        let mut clamped = 0;
+        for seed in [0x9e37_79b9, 7, 0xdead_beef, 0x2545_f491] {
+            for (spread, count, radius) in [(6, 900, 6), (12, 2600, 12)] {
+                let mut o = Occlusion::new(0, 24);
+                random_world(&mut o, seed, count, spread);
+                let camera = at((0, 2, 0)) + DVec3::new(3.3, -5.7, 1.9);
+                o.settle(camera, radius);
+                let graph = o.graph.as_ref().expect("searched");
+                clamped += usize::from(graph.height < o.columns.sections + 2);
+                let full = reference(&o.columns, camera, radius, true);
+                let from = o.columns.section_of(camera);
+                let side = 2 * radius + 1;
+                let height = o.columns.sections + 2;
+                let full_contains = |key: SectionKey| {
+                    let (dx, dz, dy) = (key.0 - from.0, key.2 - from.2, key.1 + 1);
+                    if dx.abs() > radius || dz.abs() > radius || !(0..height).contains(&dy) {
+                        return false;
+                    }
+                    full[(((dz + radius) * side + dx + radius) * height + dy) as usize]
+                };
+                for x in from.0 - radius..=from.0 + radius {
+                    for z in from.2 - radius..=from.2 + radius {
+                        for y in -1..=o.columns.sections {
+                            let key = (x, y, z);
+                            let expected = full_contains(key);
+                            let actual = o.contains(key);
+                            compared += 1;
+                            assert!(
+                                !expected || actual,
+                                "clamped search hid {key:?} for seed {seed:#x}, spread {spread}, radius {radius}; from={from:?}, y0={}, height={}, expected={expected}, actual={actual}",
+                                graph.y0,
+                                graph.height
+                            );
+                            overdraw += usize::from(actual && !expected);
+                            if actual && !expected {
+                                assert!(
+                                    y >= graph.y0 + graph.height,
+                                    "overdraw must be above the clamped box: {key:?}, y0={}, height={}",
+                                    graph.y0,
+                                    graph.height
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(clamped > 0, "the comparison exercised a clamped search");
+        assert!(compared > 50_000, "compared {compared} sections");
+        assert!(overdraw > 0, "the conservative top-cell rule was exercised");
+    }
+
     /// A line checked again from the sample it failed at, after more
     /// sections were reached, ends where checking it from its corner does.
     #[test]
@@ -1210,6 +1327,46 @@ mod tests {
         println!("search_cost: best {best:.2} ms over 12, {reached} reached");
     }
 
+    /// Removed columns see through every face: the graph is the one of a world that
+    /// never had them, whether some columns go or all of them (a teleport).
+    #[test]
+    fn removed_columns_leave_the_graph_of_a_world_without_them() {
+        fn without(o: &Occlusion, gone: &FxHashSet<(i32, i32)>) -> Occlusion {
+            let mut fresh = Occlusion::new(0, 6);
+            for (&(x, z), column) in &o.columns.map {
+                if !gone.contains(&(x, z)) {
+                    for (y, &vis) in column.iter().enumerate() {
+                        fresh.set((x, y as i32, z), vis);
+                    }
+                }
+            }
+            fresh
+        }
+        let camera = at((0, 2, 0));
+        let mut o = Occlusion::new(0, 6);
+        random_world(&mut o, 0x51ed_2701, 900, 6);
+        o.settle(camera, 6);
+        let some: FxHashSet<(i32, i32)> = (-6..=6)
+            .flat_map(|x| (-1..=1).map(move |z| (x, z)))
+            .collect();
+        let mut expected = without(&o, &some);
+        o.remove_columns(&some);
+        o.settle(camera, 6);
+        expected.settle(camera, 6);
+        let graph = |o: &Occlusion| o.graph.as_ref().expect("searched").directions.clone();
+        assert_eq!(graph(&o), graph(&expected));
+
+        let all: FxHashSet<(i32, i32)> = o.columns.map.keys().copied().collect();
+        o.remove_columns(&all);
+        assert!(o.contains((40, 3, 40)), "no graph from the old view culls");
+        random_world(&mut o, 0x2545_f491, 900, 6);
+        let mut arrived = Occlusion::new(0, 6);
+        random_world(&mut arrived, 0x2545_f491, 900, 6);
+        o.settle(camera, 6);
+        arrived.settle(camera, 6);
+        assert_eq!(graph(&o), graph(&arrived));
+    }
+
     /// The worker's graph is the one the render thread would compute.
     #[test]
     fn the_worker_matches_a_search_on_the_render_thread() {
@@ -1225,5 +1382,27 @@ mod tests {
             assert_eq!(graph.directions, local.directions);
             assert_eq!(graph.entered, local.entered);
         }
+    }
+
+    #[test]
+    fn vertical_clamping_bounds_height_and_reaches_open_sky() {
+        let mut o = Occlusion::new(0, 24);
+        o.set((0, 5, 0), 0); // Wall at section 5
+        o.settle(at((0, 2, 0)), 4);
+        let graph = o.graph.as_ref().expect("searched");
+        assert_eq!(graph.height, 5 + 3);
+        assert!(o.contains((0, 2, 0)), "camera section is reached");
+        assert!(o.contains((1, 20, 1)), "open air column is reached");
+
+        // An enclosed cave cannot reach the sky
+        let mut cave = Occlusion::new(0, 24);
+        for (dx, dy, dz) in STEPS {
+            cave.set((dx, 1 + dy, dz), 0);
+        }
+        cave.settle(at((0, 1, 0)), 4);
+        assert!(
+            !cave.contains((0, 10, 0)),
+            "enclosed cave does not see the sky"
+        );
     }
 }

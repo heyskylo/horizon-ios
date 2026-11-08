@@ -204,6 +204,7 @@ mod tests {
             player: None,
             nearest_player: None,
             others: &[],
+            dragon: None,
             leash_boats: &[],
             others_grid: None,
             others_index: None,
@@ -215,8 +216,10 @@ mod tests {
             thundering: false,
             nether: false,
             block_tags: &items.block_tags,
+            landing: &motion.landing,
             biomes: &biomes,
             mob_griefing: true,
+            universal_anger: false,
             mob_drops: true,
             max_entity_cramming: 24,
             difficulty: super::super::spawning::LocalDifficulty::new(2, 18000, 0, 0.0),
@@ -225,6 +228,8 @@ mod tests {
             sea_level: 63,
             items: Some(&items),
             lid_openers: &lid_openers,
+            mod_effects: None,
+            border: None,
         };
         for no_ai in [false, true] {
             let kind = std::sync::Arc::new(types.types["minecraft:zombie_villager"].clone());

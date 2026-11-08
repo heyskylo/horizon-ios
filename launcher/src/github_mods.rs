@@ -497,8 +497,8 @@ pub fn pack(bundle: &Bundle) -> Result<Vec<u8>, String> {
     let mut files = Vec::new();
     walk_files(&bundle.dir, &bundle.dir, &mut files)?;
     for (name, path) in files {
-        // What the registry allows in a bundle: sources and data, nothing else.
-        if name.ends_with(".rs") || name.ends_with(".toml") || name.starts_with("data/") {
+        // What the registry allows in a bundle: sources, data and crates' text files.
+        if format::allowed(&name) {
             let bytes = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
             put.push((format!("mixins/{}/{name}", bundle.id), bytes));
         }

@@ -17,13 +17,19 @@ ROOT = Path(__file__).resolve().parents[1]
 class LocalPackReloadTests(unittest.TestCase):
     def test_unified_reload_keeps_ui_responsive_and_routes_latest_results(self):
         source = (ROOT / "crates/horizon-client/src/game/packs.rs").read_text()
-        start = source.index("    pub(super) fn drive_pack_reload(")
-        opening = source.index("{", start)
-        end, depth = opening + 1, 1
-        while depth:
-            depth += (source[end] == "{") - (source[end] == "}")
-            end += 1
-        method = source[start:end].replace("pub(super)", "")
+        def production_method(signature):
+            start = source.index(signature)
+            opening = source.index("{", start)
+            end, depth = opening + 1, 1
+            while depth:
+                depth += (source[end] == "{") - (source[end] == "}")
+                end += 1
+            return source[start:end].replace("pub(super)", "")
+
+        method = "\n".join(production_method(signature) for signature in (
+            "    fn pack_context_loading(",
+            "    pub(super) fn drive_pack_reload(",
+        ))
         fixture = r'''
 extern crate self as log;
 #[macro_export] macro_rules! warn { ($($arg:tt)*) => {} }
@@ -40,7 +46,7 @@ impl PackReload {
 }
 #[derive(Default)] struct Game {
  pack_reload: Option<PackReload>, pending_pack_reload: bool,
- rest_loader: Option<()>, world_loader: Option<()>,
+ rest_loader: Option<()>, pending_entry: Option<()>, integrated_starting: Option<()>,
  applied: Vec<u32>, selection_errors: Vec<String>, server_results: Vec<bool>,
 }
 impl Game {
@@ -80,13 +86,22 @@ fn main() {
  g.pending_pack_reload=false;
  g.complete(ReloadKind::Selection,Ok(2)); g.drive_pack_reload();
  assert_eq!(g.applied,vec![2]);
- for (world,kind) in [(true,ReloadKind::Selection),(false,ReloadKind::Server)] {
-  g.complete(kind,Ok(3));
-  if world {g.world_loader=Some(());} else {g.rest_loader=Some(());}
-  let before=g.applied.len(); g.drive_pack_reload();
-  assert!(g.pack_reload.is_some()); assert_eq!(g.applied.len(),before);
-  g.world_loader=None; g.rest_loader=None; g.drive_pack_reload();
-  assert!(g.pack_reload.is_none()); assert_eq!(g.applied.len(),before+1);
+ // Every individual loading state and their combinations must retain a
+ // completed result, for both local selections and server resource packs.
+ for loading in 1..8 {
+  for kind in [ReloadKind::Selection,ReloadKind::Server] {
+   g.complete(kind,Ok(3));
+   g.rest_loader=(loading&1 != 0).then_some(());
+   g.pending_entry=(loading&2 != 0).then_some(());
+   g.integrated_starting=(loading&4 != 0).then_some(());
+   let before=g.applied.len(); let callbacks=g.server_results.len();
+   g.drive_pack_reload();
+   assert!(g.pack_reload.is_some()); assert_eq!(g.applied.len(),before);
+   assert_eq!(g.server_results.len(),callbacks,"no server callback before application");
+   g.rest_loader=None; g.pending_entry=None; g.integrated_starting=None;
+   g.drive_pack_reload();
+   assert!(g.pack_reload.is_none()); assert_eq!(g.applied.len(),before+1);
+  }
  }
  g.complete(ReloadKind::Selection,Err("invalid pack".into())); g.drive_pack_reload();
  g.complete(ReloadKind::Selection,Ok(0)); g.drive_pack_reload();
@@ -96,8 +111,10 @@ fn main() {
  g.pending_pack_reload=true;
  g.complete(ReloadKind::Server,Ok(4)); g.drive_pack_reload();
  g.complete(ReloadKind::Server,Err("server pack failed".into())); g.drive_pack_reload();
- assert_eq!(g.server_results,vec![true,true,false]);
- assert_eq!(g.applied,vec![2,3,3,4]); assert!(g.pending_pack_reload);
+ let mut expected_results=vec![true;8]; expected_results.push(false);
+ assert_eq!(g.server_results,expected_results);
+ let mut expected_applied=vec![2]; expected_applied.extend([3;14]); expected_applied.push(4);
+ assert_eq!(g.applied,expected_applied); assert!(g.pending_pack_reload);
 }
 '''.replace("METHOD", method)
         with tempfile.TemporaryDirectory(prefix="horizon-pack-coordinator-") as directory:

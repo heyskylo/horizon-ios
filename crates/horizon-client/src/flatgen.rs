@@ -150,6 +150,52 @@ impl FlatTerrain {
             void_platform,
         })
     }
+    /// The settings of a superflat overworld that lets structure sets generate
+    /// (`FlatLevelSource.createState`): its layers, biome and `structure_overrides`
+    /// (no key means every set; `[]` none). `None` for anything else, a world with no
+    /// structure set to generate, the Void preset's biome (its platform is a feature
+    /// this generator places) or one that is not superflat.
+    pub fn structure_settings(
+        settings: &Tag,
+    ) -> Option<horizon_world::worldgen::generator::FlatSettings> {
+        let generator = settings
+            .get("dimensions")?
+            .get("minecraft:overworld")?
+            .get("generator")?;
+        if crate::save::text(generator.get("type"))?.trim_start_matches("minecraft:") != "flat" {
+            return None;
+        }
+        let s = generator.get("settings")?;
+        let biome = crate::save::text(s.get("biome")).unwrap_or_else(|| "minecraft:plains".into());
+        if biome == "minecraft:the_void" {
+            return None;
+        }
+        let mut layers = Vec::new();
+        if let Some(Tag::List(list)) = s.get("layers") {
+            for layer in list {
+                let block = crate::save::text(layer.get("block"))?;
+                let height = crate::save::number(layer.get("height")).unwrap_or(0).max(0) as i32;
+                layers.push((block, height));
+            }
+        }
+        let structure_overrides = match s.get("structure_overrides") {
+            Some(Tag::List(sets)) => Some(
+                sets.iter()
+                    .filter_map(|set| crate::save::text(Some(set)))
+                    .collect::<Vec<_>>(),
+            ),
+            Some(Tag::String(set)) => Some(vec![set.to_string_lossy()]),
+            _ => None,
+        };
+        if structure_overrides.as_ref().is_some_and(Vec::is_empty) {
+            return None;
+        }
+        Some(horizon_world::worldgen::generator::FlatSettings {
+            layers,
+            biome,
+            structure_overrides,
+        })
+    }
     /// FlatLevelSource.getSpawnHeight: the top of the layers.
     pub fn spawn_height(&self) -> i32 {
         self.shape.min_y + self.layers.len().min(self.shape.height as usize) as i32
@@ -477,6 +523,69 @@ mod tests {
                 r#"{"layers":[{"block":"stone","height":4000},{"block":"stone","height":100}],"biome":"plains"}"#
             ),
             (None, vec!["Sum of layer heights is > 4064".into()])
+        );
+    }
+
+    /// `FlatLevelSource.createState`: the settings a flat world's structure sets run with.
+    #[test]
+    fn a_flat_world_names_the_structure_sets_that_may_generate() {
+        let world = |generator: Tag| {
+            Tag::compound([(
+                "dimensions",
+                Tag::compound([(
+                    "minecraft:overworld",
+                    Tag::compound([("generator", generator)]),
+                )]),
+            )])
+        };
+        let flat = |extra: Vec<(&str, Tag)>, biome: &str| {
+            let mut settings = vec![
+                ("biome", Tag::String(biome.into())),
+                (
+                    "layers",
+                    Tag::List(vec![Tag::compound([
+                        ("block", Tag::String("minecraft:stone".into())),
+                        ("height", Tag::Int(3)),
+                    ])]),
+                ),
+            ];
+            settings.extend(extra);
+            world(Tag::compound([
+                ("type", Tag::String("minecraft:flat".into())),
+                ("settings", Tag::compound(settings)),
+            ]))
+        };
+        // No key: every set. A list: those. An empty list: none. The void and a noise world: none.
+        let all = FlatTerrain::structure_settings(&flat(vec![], "minecraft:plains")).unwrap();
+        assert_eq!(all.structure_overrides, None);
+        assert_eq!(all.layers, [("minecraft:stone".to_owned(), 3)]);
+        let some = FlatTerrain::structure_settings(&flat(
+            vec![(
+                "structure_overrides",
+                Tag::List(vec![Tag::String("minecraft:villages".into())]),
+            )],
+            "minecraft:desert",
+        ))
+        .unwrap();
+        assert_eq!(
+            some.structure_overrides,
+            Some(vec!["minecraft:villages".to_owned()])
+        );
+        assert_eq!(some.biome, "minecraft:desert");
+        assert!(
+            FlatTerrain::structure_settings(&flat(
+                vec![("structure_overrides", Tag::List(vec![]))],
+                "minecraft:plains"
+            ))
+            .is_none()
+        );
+        assert!(FlatTerrain::structure_settings(&flat(vec![], "minecraft:the_void")).is_none());
+        assert!(
+            FlatTerrain::structure_settings(&world(Tag::compound([(
+                "type",
+                Tag::String("minecraft:noise".into())
+            )])))
+            .is_none()
         );
     }
 }

@@ -151,17 +151,11 @@ pub fn paint(
             );
         }
         icon.clear();
-        icon.push_str("mob_effect/");
-        icon.push_str(&panel.icon.id);
-        batch.sprite_scaled(
-            atlas,
-            &icon,
-            (panel.x + 7) as f32,
-            (panel.y + 7) as f32,
-            18.0,
-            18.0,
-            u32::MAX,
-        );
+        horizon_client_core::potions::push_sprite(&mut icon, &panel.icon.id);
+        if let Some(r) = atlas.sprite_or_missing(&icon) {
+            let (x, y) = ((panel.x + 7) as f32, (panel.y + 7) as f32);
+            batch.rect_uv(x, y, 18.0, 18.0, r, u32::MAX);
+        }
         if (text_width <= 0 || clipped)
             && cursor[0] >= panel.x
             && cursor[0] <= panel.x + panel.width

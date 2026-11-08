@@ -49,13 +49,49 @@ pub const SYNCHRONIZED: &[&str] = &[
     "minecraft:block_transformer",
     "minecraft:worldgen/block_state_provider",
 ];
+pub const BIOME_REGISTRY: &str = "minecraft:worldgen/biome";
+/// The table a client plays a server with: `known` and the biomes of the
+/// server's biome registry that it lacks, built from their data; None when
+/// there are none.
+pub fn client_biomes(
+    known: &crate::biome::Biomes,
+    registry: &[(String, Option<Tag>)],
+) -> Option<crate::biome::Biomes> {
+    let files: Vec<(&str, Value)> = registry
+        .iter()
+        .filter(|(name, _)| !known.contains(name))
+        .filter_map(|(name, data)| {
+            Some((
+                name.as_str(),
+                crate::scoreboard::tag_to_json(data.as_ref()?),
+            ))
+        })
+        .collect();
+    if files.is_empty() {
+        return None;
+    }
+    log::info!(
+        "Horizon: the server has {} biomes the game lacks",
+        files.len()
+    );
+    Some(known.with_packs(files.iter().map(|(n, v)| (*n, v))))
+}
 /// KnownPack.vanilla("core") for this version.
 pub const CORE_PACK: (&str, &str, &str) = ("minecraft", "core", horizon_protocol::GAME_VERSION);
 
+/// Synchronized registries a world's data packs add entries to (or replace
+/// them in). The others stay the game's own: Horizon's gameplay reads them
+/// from the prepared resources only.
+const PACK_REGISTRIES: &[&str] = &["minecraft:dialog"];
+
 /// A data-driven registry: entry names in network order and their JSON.
+#[derive(Clone)]
 struct Entries {
     names: Vec<String>,
     json: Vec<Value>,
+    /// The entry comes from a world's data pack, which no client knows, so
+    /// its data is always sent.
+    from_pack: Vec<bool>,
 }
 
 pub struct SyncData {
@@ -73,23 +109,59 @@ pub struct SyncData {
     pub advancements: super::advancements::ServerAdvancements,
 }
 
-/// Every `*.json` under `dir`, as (path without extension relative to dir, value), sorted.
-fn walk(dir: &Path, prefix: &str, out: &mut BTreeMap<String, Value>) {
-    let Ok(read) = std::fs::read_dir(dir) else {
+use crate::crafting::qualified;
+
+/// Every `*.json` under `dir`, as (path without extension relative to dir, value), sorted;
+/// a file that can't be read or doesn't parse is left out. Through `json_folder`: from the
+/// prepared data file, and read once for the tables a load builds from the same folder.
+fn walk(dir: &Path, out: &mut BTreeMap<String, Value>) {
+    let Ok(folder) = horizon_world::json_folder::read(dir) else {
         return;
     };
-    for entry in read.flatten() {
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if path.is_dir() {
-            walk(&path, &format!("{prefix}{name}/"), out);
-        } else if let Some(stem) = name.strip_suffix(".json")
-            && let Ok(text) = std::fs::read_to_string(&path)
-            && let Ok(value) = serde_json::from_str::<Value>(&text)
-        {
-            out.insert(format!("{prefix}{stem}"), value);
+    for file in &folder.files {
+        if let Ok(value) = serde_json::from_slice::<Value>(file.bytes().unwrap_or_default()) {
+            out.insert(file.name.clone(), value);
         }
     }
+}
+
+/// A synchronized registry's entries from the world's data packs (`<dir>/`
+/// files, the top pack's for each id) over the game's own. Each entry is
+/// ((namespace, path), JSON, from a pack); `file_order` sorts them.
+fn pack_entries(
+    dir: &str,
+    overlay: &horizon_world::loot::PackOverlay,
+    entries: &mut Vec<((String, String), Value, bool)>,
+) {
+    for (id, files) in overlay.kind(dir) {
+        let Some((ns, path)) = id.split_once(':') else {
+            continue;
+        };
+        let top = horizon_world::loot::PackOverlay::top(files);
+        let value = match serde_json::from_slice::<Value>(top) {
+            Ok(value) => value,
+            Err(e) => {
+                log::warn!("Horizon: data pack {dir} {id} is not read: {e}");
+                continue;
+            }
+        };
+        let key = (ns.to_owned(), path.to_owned());
+        match entries.iter_mut().find(|(k, ..)| *k == key) {
+            Some(entry) => {
+                entry.1 = value;
+                entry.2 = true;
+            }
+            None => entries.push((key, value, true)),
+        }
+    }
+}
+
+/// ResourceManagerRegistryLoadTask.load: the entries register sorted by the
+/// file `Identifier` FileToIdConverter.listMatchingResources keys them by
+/// (`<dir>/<path>.json`), path first, then namespace (Identifier.compareTo).
+/// The `.json` counts: `x-y` comes before `x`, as `-` sorts before `.`.
+fn file_order<T>(entries: &mut [((String, String), T, bool)]) {
+    entries.sort_by_cached_key(|((ns, path), ..)| (format!("{path}.json"), ns.clone()));
 }
 
 /// A JSON value as the NBT that vanilla's NbtOps would produce from the codec
@@ -126,8 +198,7 @@ pub fn component_nbt(v: &Value) -> Tag {
 
 impl SyncData {
     /// No registries, tags or recipes: enough for tests of the login phase.
-    #[cfg(test)]
-    pub(crate) fn empty() -> Self {
+    pub fn empty() -> Self {
         Self {
             builtin: Builtin::default(),
             dynamic: Dynamic::default(),
@@ -141,6 +212,8 @@ impl SyncData {
             advancements: super::advancements::ServerAdvancements::load(
                 Path::new(""),
                 &horizon_world::loot::PackOverlay::NONE,
+                BTreeMap::new(),
+                HashMap::new(),
             ),
             content_identity: None,
         }
@@ -149,29 +222,93 @@ impl SyncData {
         resources: &Path,
         overlay: &horizon_world::loot::PackOverlay,
     ) -> Result<Self, String> {
+        Self::load_with(resources, overlay, None)
+    }
+
+    /// `load` with the open world's biomes: when its data packs added or
+    /// replaced some, the biome registry is that table's, in its order.
+    pub fn load_with(
+        resources: &Path,
+        overlay: &horizon_world::loot::PackOverlay,
+        biomes: Option<&crate::biome::Biomes>,
+    ) -> Result<Self, String> {
+        use crate::spans::startup;
+        // The recipe book, the recipe sync and the advancements read the
+        // recipe folder: held here, they share one read of it.
+        let _recipe_files = startup::time("sync.recipe_folder", || {
+            horizon_world::json_folder::read(&resources.join("data/minecraft/recipe"))
+        });
+        let registries_step = startup::step("sync.registries");
         let builtin = Builtin::find(resources)
             .and_then(|p| Builtin::load(&p).ok())
             .ok_or("registries.json not found next to the resources")?;
         let root: PathBuf = resources.join("data/minecraft");
         let mut registries = Vec::new();
-        let mut dynamic = Dynamic::default();
+        let mut dynamic = Dynamic {
+            custom_components: horizon_protocol::item::custom::entries().next().is_some(),
+            ..Default::default()
+        };
         for key in SYNCHRONIZED {
             let path = key.trim_start_matches("minecraft:");
             let mut found = BTreeMap::new();
-            walk(&root.join(path), "", &mut found);
-            let (names, json): (Vec<_>, Vec<_>) = found
+            walk(&root.join(path), &mut found);
+            let mut entries: Vec<_> = found
                 .into_iter()
-                .map(|(n, v)| (format!("minecraft:{n}"), v))
-                .unzip();
+                .map(|(p, v)| (("minecraft".to_owned(), p), v, false))
+                .collect();
+            if PACK_REGISTRIES.contains(key) {
+                pack_entries(path, overlay, &mut entries);
+            }
+            if *key == BIOME_REGISTRY
+                && let Some(table) = biomes.filter(|b| b.has_packs())
+            {
+                // A pack's biome goes with its data: no client knows it.
+                let found: HashMap<_, _> = entries
+                    .drain(..)
+                    .map(|((ns, p), v, _)| (format!("{ns}:{p}"), v))
+                    .collect();
+                for name in table.registry_order() {
+                    let (ns, p) = name.split_once(':').unwrap_or(("minecraft", name));
+                    let pack = table.pack_file(name);
+                    let json = pack.or_else(|| found.get(name)).cloned();
+                    let json = json.unwrap_or_else(|| Value::Object(Default::default()));
+                    entries.push(((ns.to_owned(), p.to_owned()), json, pack.is_some()));
+                }
+            }
+            file_order(&mut entries);
+            let mut e = Entries {
+                names: Vec::new(),
+                json: Vec::new(),
+                from_pack: Vec::new(),
+            };
+            for ((ns, p), v, from_pack) in entries {
+                e.names.push(format!("{ns}:{p}"));
+                e.json.push(v);
+                e.from_pack.push(from_pack);
+            }
             dynamic.registries.insert(
                 (*key).to_owned(),
-                names.iter().map(|n| (n.clone(), None)).collect(),
+                e.names.iter().map(|n| (n.clone(), None)).collect(),
             );
-            registries.push(((*key).to_owned(), Entries { names, json }));
+            registries.push(((*key).to_owned(), e));
         }
-        let tags = Self::load_tags(&root, &builtin, &dynamic);
-        let content_identity = if resources.join(crate::content_identity::MARKER).exists() {
-            Some(crate::content_identity::identity(resources).map_err(|error| error.to_string())?)
+        // The world's packs' dialogs joined the registry above
+        // (`pack_entries`); their `minecraft:dialog` tags join the root's here,
+        // for the Quick Actions key and `show_dialog`.
+        drop(registries_step);
+        let tags_step = startup::step("sync.tags");
+        let mut tags = Self::load_tags(&root, &builtin, &dynamic);
+        Self::merge_dialog_tags(&mut tags, &root, overlay, &builtin, &dynamic);
+        drop(tags_step);
+        let content_identity = if resources.join(crate::content_identity::MARKER).exists()
+            || horizon_protocol::item::custom::entries().next().is_some()
+        {
+            Some(
+                startup::time("sync.content_identity", || {
+                    crate::content_identity::identity(resources)
+                })
+                .map_err(|error| error.to_string())?,
+            )
         } else {
             None
         };
@@ -182,16 +319,56 @@ impl SyncData {
             registries,
             tags,
             features: vec!["minecraft:vanilla".to_owned()],
-            commands: super::commands::CommandTree::load(resources),
+            commands: startup::time("sync.commands", || {
+                super::commands::CommandTree::load(resources)
+            }),
             recipes: Vec::new(),
-            advancements: super::advancements::ServerAdvancements::load(resources, overlay),
+            advancements: {
+                let (recipes, groups) = startup::time("sync.network_recipes", || {
+                    super::recipes::network_recipes(resources, overlay)
+                });
+                startup::time("sync.advancements", || {
+                    super::advancements::ServerAdvancements::load(
+                        resources, overlay, recipes, groups,
+                    )
+                })
+            },
         };
-        sync.recipes = super::recipes::update_recipes(resources, &sync, overlay);
+        sync.recipes = startup::time("sync.update_recipes", || {
+            super::recipes::update_recipes(&sync.advancements.recipes, &sync)
+        });
         Ok(sync)
+    }
+
+    /// MinecraftServer.reloadResources: `/reload` keeps the synchronized
+    /// registries the server started with (`kept`'s, its
+    /// LayeredRegistryAccess) and reads the tags against them
+    /// (TagLoader.loadTagsForExistingRegistries); the rest stays reloaded.
+    pub fn keep_registries(&mut self, resources: &Path, kept: &SyncData) {
+        self.dynamic = kept.dynamic.clone();
+        self.registries = kept.registries.clone();
+        self.tags = Self::load_tags(
+            &resources.join("data/minecraft"),
+            &self.builtin,
+            &self.dynamic,
+        );
+    }
+
+    /// Whether a synchronized registry holds an entry from a world's pack.
+    pub fn has_pack_entries(&self) -> bool {
+        self.registries
+            .iter()
+            .any(|(_, e)| e.from_pack.contains(&true))
     }
 
     /// The id of a name in a built-in or synchronized registry.
     pub fn id(&self, registry: &str, name: &str) -> Option<i32> {
+        if registry == "minecraft:data_component_type"
+            && self.dynamic.custom_components
+            && let Some(id) = horizon_protocol::item::custom::id(name)
+        {
+            return Some(id);
+        }
         if let Some(ids) = self.builtin.get(registry) {
             return ids.id(name);
         }
@@ -204,7 +381,9 @@ impl SyncData {
     }
 
     /// ClientboundRegistryDataPacket per registry. With `known_pack` the
-    /// client rebuilds the entries from its own data, so none is sent.
+    /// client rebuilds the entries from its own data, so none is sent, the
+    /// dialogs among them (`RegistrySynchronization.packRegistry`): only an
+    /// entry a world's pack added or replaced (`from_pack`) carries its data.
     /// The registries for a client, with the data of a dimension type the
     /// world's data packs changed (`levels`) even when it knows the vanilla
     /// pack.
@@ -217,7 +396,8 @@ impl SyncData {
                     .names
                     .iter()
                     .zip(&e.json)
-                    .map(|(name, json)| {
+                    .zip(&e.from_pack)
+                    .map(|((name, json), &from_pack)| {
                         let changed = (key == "minecraft:dimension_type")
                             .then(|| changed_dimension_type(name, json, levels))
                             .flatten();
@@ -225,7 +405,7 @@ impl SyncData {
                             id: name.clone(),
                             data: match changed {
                                 Some(json) => Some(json_to_nbt(&json)),
-                                None if known_pack => None,
+                                None if known_pack && !from_pack => None,
                                 None => Some(json_to_nbt(json)),
                             },
                         }
@@ -233,6 +413,90 @@ impl SyncData {
                     .collect(),
             })
             .collect()
+    }
+    /// The `minecraft:dialog` tags of the pack stack: the resource root's
+    /// files, then each world pack's in order (`TagLoader`: a file adds its
+    /// values, or replaces the earlier ones with `"replace": true`), nested
+    /// tags expanded to the registry's ids.
+    fn merge_dialog_tags(
+        tags: &mut UpdateTags,
+        root: &Path,
+        overlay: &horizon_world::loot::PackOverlay,
+        builtin: &Builtin,
+        dynamic: &Dynamic,
+    ) {
+        let Some(names) = Self::registry_names(builtin, dynamic, "minecraft:dialog") else {
+            return;
+        };
+        let mut files: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+        let mut own = BTreeMap::new();
+        walk(&root.join("tags/dialog"), &mut own);
+        for (name, value) in own {
+            Self::add_tag_values(files.entry(qualified(&name)).or_default(), &value);
+        }
+        for (id, packs) in overlay.tag_kind("dialog") {
+            for bytes in packs {
+                if let Ok(value) = serde_json::from_slice::<Value>(bytes) {
+                    Self::add_tag_values(files.entry(id.clone()).or_default(), &value);
+                }
+            }
+        }
+        let mut entries = Vec::new();
+        for name in files.keys() {
+            let mut ids = Vec::new();
+            let mut seen = HashSet::new();
+            Self::expand_dialog_tag(&files, name, &names, &mut ids, &mut seen);
+            entries.push(TagEntry {
+                name: name.clone(),
+                ids,
+            });
+        }
+        tags.registries.retain(|r| r.registry != "minecraft:dialog");
+        if !entries.is_empty() {
+            tags.registries.push(RegistryTags {
+                registry: "minecraft:dialog".into(),
+                tags: entries,
+            });
+        }
+    }
+
+    /// A tag file's values, after `"replace": true` empties the earlier ones.
+    fn add_tag_values(entries: &mut Vec<Value>, json: &Value) {
+        if json["replace"].as_bool() == Some(true) {
+            entries.clear();
+        }
+        if let Some(values) = json["values"].as_array() {
+            entries.extend(values.iter().cloned());
+        }
+    }
+
+    /// A dialog tag's entries as registry ids, nested tags expanded once.
+    fn expand_dialog_tag(
+        files: &BTreeMap<String, Vec<Value>>,
+        tag: &str,
+        names: &HashMap<&str, i32>,
+        out: &mut Vec<i32>,
+        seen: &mut HashSet<String>,
+    ) {
+        if !seen.insert(tag.to_owned()) {
+            return;
+        }
+        let Some(values) = files.get(tag) else {
+            return;
+        };
+        for value in values {
+            let id = value
+                .as_str()
+                .or_else(|| value["id"].as_str())
+                .unwrap_or_default();
+            if let Some(reference) = id.strip_prefix('#') {
+                Self::expand_dialog_tag(files, &qualified(reference), names, out, seen);
+            } else if let Some(&n) = names.get(qualified(id).as_str())
+                && !out.contains(&n)
+            {
+                out.push(n);
+            }
+        }
     }
 
     fn registry_names<'a>(
@@ -274,7 +538,7 @@ impl SyncData {
                 continue;
             }
             let mut files = BTreeMap::new();
-            walk(&dir, "", &mut files);
+            walk(&dir, &mut files);
             if files.is_empty() {
                 continue;
             }
@@ -347,12 +611,117 @@ fn changed_dimension_type(name: &str, json: &Value, levels: &LevelShapes) -> Opt
     json["height"] = shape.height.into();
     json["logical_height"] = shape.logical_height.into();
     json["has_skylight"] = shape.sky_light.into();
+    json["has_ceiling"] = shape.has_ceiling.into();
     Some(json)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn world_packs_supply_dialog_entries_and_tags() {
+        use horizon_world::loot::PackOverlay;
+        let vanilla = |p: &str| {
+            (
+                ("minecraft".to_owned(), p.to_owned()),
+                serde_json::json!({ "type": "minecraft:dialog_list" }),
+                false,
+            )
+        };
+        let mut found = vec![vanilla("quick_actions"), vanilla("server_links")];
+        let files = vec![
+            (
+                "dialog/test:menu".to_owned(),
+                vec![br#"{"type":"minecraft:multi_action","title":"Menu"}"#.to_vec()],
+            ),
+            (
+                "dialog/minecraft:quick_actions".to_owned(),
+                vec![br#"{"type":"minecraft:dialog_list","title":"Quick"}"#.to_vec()],
+            ),
+            (
+                "tags/minecraft:dialog/quick_actions".to_owned(),
+                vec![br##"{"values":["test:menu","#minecraft:more"]}"##.to_vec()],
+            ),
+            (
+                "tags/minecraft:dialog/more".to_owned(),
+                vec![br#"{"values":["minecraft:server_links"]}"#.to_vec()],
+            ),
+        ];
+        let overlay = PackOverlay { files: &files };
+        pack_entries("dialog", &overlay, &mut found);
+        file_order(&mut found);
+        let names: Vec<String> = found
+            .iter()
+            .map(|((ns, p), _, _)| format!("{ns}:{p}"))
+            .collect();
+        // Identifier order: by path, then namespace.
+        assert_eq!(
+            names,
+            [
+                "test:menu",
+                "minecraft:quick_actions",
+                "minecraft:server_links"
+            ]
+        );
+        assert_eq!(found[1].1["title"], "Quick", "a pack overrides an entry");
+        let dynamic = Dynamic {
+            registries: HashMap::from([(
+                "minecraft:dialog".to_owned(),
+                names.iter().map(|n| (n.clone(), None)).collect(),
+            )]),
+            ..Default::default()
+        };
+        let mut tags = UpdateTags {
+            registries: Vec::new(),
+        };
+        SyncData::merge_dialog_tags(
+            &mut tags,
+            Path::new("a-resource-root-without-tags"),
+            &overlay,
+            &Builtin::default(),
+            &dynamic,
+        );
+        let dialog = tags
+            .registries
+            .iter()
+            .find(|r| r.registry == "minecraft:dialog")
+            .expect("the dialog tags are sent");
+        let quick = dialog
+            .tags
+            .iter()
+            .find(|t| t.name == "minecraft:quick_actions")
+            .unwrap();
+        assert_eq!(
+            quick.ids,
+            [0, 2],
+            "the pack's dialog, then the nested tag's"
+        );
+    }
+
+    /// RegistrySynchronization.packRegistry: a client that knows the core
+    /// pack gets the vanilla dialogs without data; a pack's dialog has it.
+    #[test]
+    fn known_pack_dialogs_are_sent_without_data() {
+        let mut sync = SyncData::empty();
+        sync.registries.push((
+            "minecraft:dialog".to_owned(),
+            Entries {
+                names: vec!["minecraft:quick_actions".into(), "test:menu".into()],
+                json: vec![serde_json::json!({ "type": "minecraft:dialog_list" }); 2],
+                from_pack: vec![false, true],
+            },
+        ));
+        let data = |known_pack| -> Vec<bool> {
+            sync.registry_packets(known_pack, &LevelShapes::VANILLA)[0]
+                .entries
+                .iter()
+                .map(|e| e.data.is_some())
+                .collect()
+        };
+        assert_eq!(data(true), [false, true]);
+        assert_eq!(data(false), [true, true]);
+    }
 
     #[test]
     fn json_becomes_nbt() {
@@ -373,12 +742,13 @@ mod tests {
             changed_dimension_type("minecraft:overworld", &vanilla, &levels),
             None
         );
-        levels.overworld = crate::chunk::LevelShape::new(-64, 2096, 2096, true).unwrap();
+        levels.overworld = crate::chunk::LevelShape::new(-64, 2096, 2096, true, true).unwrap();
         let sent = changed_dimension_type("minecraft:overworld", &vanilla, &levels).unwrap();
         assert_eq!(
             (sent["min_y"].as_i64(), sent["height"].as_i64()),
             (Some(-64), Some(2096))
         );
+        assert_eq!(sent["has_ceiling"], true);
         assert_eq!(sent["ultrawarm"], false, "the rest of the type is kept");
         assert_eq!(
             changed_dimension_type("minecraft:the_nether", &vanilla, &levels),

@@ -48,6 +48,7 @@ impl TerrainMetadata {
         {
             let Some(new) = super::arena::try_create(
                 device,
+                "Terrain metadata",
                 bytes,
                 wgpu::BufferUsages::STORAGE
                     | wgpu::BufferUsages::COPY_DST
@@ -71,16 +72,64 @@ impl TerrainMetadata {
         }
         true
     }
+    /// Move shader identity/lighting with arena compaction; never leave quads bound
+    /// to metadata from the previous occupant of their destination range.
+    pub fn copy_range(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        from: (u32, u64),
+        to: (u32, u64),
+        capacity: u64,
+        vertices: u64,
+    ) -> bool {
+        let Some(source) = self.pages.get(&from.0).cloned() else {
+            // A device without vertex storage has no sidecars or consumer.
+            return true;
+        };
+        let bytes = capacity.div_ceil(4).max(1) * BYTES;
+        if self
+            .pages
+            .get(&to.0)
+            .is_none_or(|buffer| buffer.size() < bytes)
+        {
+            let Some(new) = super::arena::try_create(
+                device,
+                "Terrain metadata",
+                bytes,
+                wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+            ) else {
+                return false;
+            };
+            if let Some(old) = self.pages.get(&to.0) {
+                encoder.copy_buffer_to_buffer(old, 0, &new, 0, old.size());
+            }
+            self.pages.insert(to.0, new);
+        }
+        encoder.copy_buffer_to_buffer(
+            &source,
+            from.1 / 4 * BYTES,
+            &self.pages[&to.0],
+            to.1 / 4 * BYTES,
+            vertices / 4 * BYTES,
+        );
+        true
+    }
     pub fn page(&self, page: u32) -> &wgpu::Buffer {
         self.pages
             .get(&page)
             .expect("quad metadata accompanies every terrain page")
     }
-    pub fn retain(&mut self, live: impl Fn(u32) -> bool) {
-        self.pages.retain(|&page, _| live(page));
+    pub fn retain(&mut self, live: impl Fn(u32) -> bool) -> Vec<wgpu::Buffer> {
+        self.pages
+            .extract_if(|&page, _| !live(page))
+            .map(|(_, buffer)| buffer)
+            .collect()
     }
-    pub fn clear(&mut self) {
-        self.pages.clear();
+    pub fn clear(&mut self) -> Vec<wgpu::Buffer> {
+        self.pages.drain().map(|(_, buffer)| buffer).collect()
     }
 }
 #[cfg(test)]
@@ -133,7 +182,9 @@ mod tests {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        encoder.copy_buffer_to_buffer(metadata.page(9), 0, &read, 0, 4 * BYTES);
+        // Arena compaction moves both quads into another page before the old page is freed.
+        assert!(metadata.copy_range(&device, &mut encoder, (9, 4), (10, 4), 16, 8));
+        encoder.copy_buffer_to_buffer(metadata.page(10), 0, &read, 0, 4 * BYTES);
         uploads.finish(&encoder);
         queue.submit([encoder.finish()]);
         read.slice(..)
@@ -145,7 +196,7 @@ mod tests {
         assert_eq!(words[2], encode(second));
         drop(data);
         read.unmap();
-        metadata.retain(|page| page != 9);
+        drop(metadata.retain(|page| page != 9 && page != 10));
         assert!(metadata.pages.is_empty());
         let mut encoder = device.create_command_encoder(&Default::default());
         assert!(metadata.upload(
@@ -158,7 +209,7 @@ mod tests {
         uploads.finish(&encoder);
         queue.submit([encoder.finish()]);
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-        metadata.clear();
+        drop(metadata.clear());
         assert!(metadata.pages.is_empty());
     }
 }

@@ -12,7 +12,6 @@ use crate::{
         spawning::{LocalDifficulty, MOON_BRIGHTNESS},
     },
 };
-use chrono::Datelike;
 use horizon_core::{
     geometry::{Aabb, Vec3},
     random::{LegacyRandom, RandomSource, XoroshiroRandom},
@@ -166,7 +165,8 @@ fn run<R: RandomSource>(
 /// The saved compound of mob `i` with the mobs riding it under `Passengers`.
 fn tree(mobs: &[(Mob, Option<Tag>)], i: usize, dimension: &str) -> Compound {
     let (m, raw) = &mobs[i];
-    let Tag::Compound(mut c) = entity_nbt::mob_to_nbt(m, [0; 4], raw.as_ref()) else {
+    // No block registry here: a carried block stays as the template had it.
+    let Tag::Compound(mut c) = entity_nbt::mob_to_nbt(m, [0; 4], raw.as_ref(), None) else {
         return Compound::new();
     };
     c.remove(&"UUID".into());
@@ -208,7 +208,7 @@ impl StructureMobs for StructureMobFinalizer {
         if let Tag::Compound(c) = &mut raw {
             c.remove(&"horizon:finalize".into());
         }
-        let Some(m) = entity_nbt::mob_from_nbt(&raw, &data.types, 1) else {
+        let Some(m) = entity_nbt::mob_from_nbt(&raw, &data.types, 1, None) else {
             // Not a mob: vanilla finalizes only Mob instances.
             return true;
         };
@@ -275,10 +275,7 @@ impl StructureMobFinalizer {
     ) -> Option<Compound> {
         let base = self.difficulty.load(Ordering::Relaxed);
         let day_time = self.day_time.load(Ordering::Relaxed);
-        let calendar = || {
-            let today = chrono::Local::now();
-            (today.month(), today.day()) == (10, 31)
-        };
+        let calendar = finalize::is_halloween;
         #[cfg(test)]
         let halloween = self
             .halloween_override

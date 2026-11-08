@@ -8,12 +8,14 @@ reference implementation. Proposed in horizon-rust/horizon#3545.
 
 | | |
 | --- | --- |
-| Version | 0.1.0, printed by `horizon-client --launch-api` |
+| Version | 0.1.0, printed by `horizon-client --launch-api` and `horizon-prepare --launch-api` |
 | Level | experimental ([stability.md](stability.md)): preview once preparing and the guide are covered too |
-| Covers | starting `horizon-client`: its options, the session JSON, the exit codes, the crash report's path |
-| Not yet | finding a build, preparing it with `horizon-prepare` (see Not there yet) |
+| Covers | starting `horizon-client`: its options, the session JSON, the exit codes, the crash report's path; preparing with `horizon-prepare`: `--launch-api`, `--output`, `--check`, `--complete`, `--progress json` |
+| Not yet | finding a build (see Not there yet) |
 
 ## Guide
+
+The whole way, from picking a build to playing: [launch-guide.md](launch-guide.md). In short:
 
 1. Start Horizon only for a player signed in with a Microsoft account that owns Minecraft: Java Edition, and
    hand over that account's session (`--session-stdin`, or `--session-file`), never on the command line. This
@@ -51,6 +53,53 @@ The account the game joins online-mode servers with ([microsoft-account.md](../m
 - A session the game can't read is reported on stderr (`Horizon: not signed in: …`), and online-mode servers
   will refuse the player.
 
+## Preparing
+
+`horizon-prepare` turns the player's own Minecraft files into the resources `horizon-client --resources` reads. It
+downloads nothing: it reads the files of a Minecraft the player owns (Guide, step 1) and checks each against the
+pins in `research-lock.json`.
+
+```sh
+horizon-prepare --launch-api
+horizon-prepare --prepare --output PREPARED --complete --progress json
+horizon-prepare --check --output PREPARED
+```
+
+- `--launch-api`: prints one JSON object on stdout and exits 0 (1, with an `error:` line, when there is no
+  `research-lock.json` beside it or at `--root`). `launch_api` is the version, the same as
+  `horizon-client --launch-api`'s; `horizon` is the preparer's own; `minecraft` and `java_major` are the pins it
+  prepares for (the game files it needs, and the Java `--java-home` must give); `schema` and `output_version`
+  are the layout and contents of the resources it writes, the ones `--check` compares; `options` lists the
+  options above and below as `{"name", "value"}` (`value` is the placeholder, null for a flag) and
+  `exit_codes` its exit codes. Pass only options it lists; readers ignore fields they don't know.
+- `--output DIR`: where the resources go; the preparer's scratch files stay in its own `.local/`. One
+  preparation at a time writes to a folder; a second one waits.
+- `--check`: exit 0 when the resources are complete and current for this preparer. Otherwise exit 1, with each
+  gap on stdout and the command that fills it, or an `error:` line on stderr when it can't check. It tests which
+  files are there and the versions they were made for, not their contents: a launcher that suspects damage
+  prepares again. A folder being prepared, or whose preparation stopped, is not current.
+  `--check` refuses `--progress` and `--complete` (exit 2): they apply to preparing.
+- `--complete`: after preparing, copies the sounds and fails unless `--check` would pass.
+- `--version-json`, `--client-jar`, `--libraries-dir` (Maven layout), `--assets-dir` (`indexes/` and `objects/`):
+  for a launcher whose files aren't laid out like the official launcher's, each names what `--minecraft-dir`
+  would give. Every file is still checked against the pins. When an earlier import beside the preparer is still
+  verified, it is reused and these files aren't read.
+- `--server-jar PATH`: the first `--prepare` needs the server jar, which no launcher keeps. Horizon never
+  downloads it; a launcher downloads it (the version JSON's `downloads.server`) only for a signed-in account
+  that owns Java Edition, as `horizon-launcher` does.
+- `--java-home PATH`: a Java of the pinned version that the launcher manages, tried after `JAVA_HOME` and the
+  `PATH`, before the official launcher's runtimes.
+- Exit codes: 0 done, 1 failed or gaps found, 2 a refused command line.
+
+### `--progress json`
+
+- Every line on stdout is one JSON object; stderr is human text.
+- `{"message": string}`: a log line, for the player to read.
+- `{"fraction": number}`: how far the work is, from 0 to 1, never decreasing.
+- `{"error": string}`: why it failed. It is the last line, and the exit code is 1.
+- Readers ignore keys they don't know, and lines with no key they know. A new key comes with a patch of the
+  Launch API; a key whose meaning changes starts the next line ([stability.md](stability.md)).
+
 ## Examples
 
 ```sh
@@ -66,12 +115,11 @@ test keeps the contract and the code together.
 
 ## Not there yet
 
-- **Preparing:** `horizon-prepare` with `--output`, explicit inputs (`--version-json`, `--client-jar`,
-  `--libraries-dir`, `--assets-dir`), one complete preparation, `--progress json` and `--check`.
 - **Finding a build:** a signed release index and builds kept longer than seven days.
-- **A guide**, "Running Horizon from another launcher", from picking a build to playing.
 
 ## Changelog
 
-- 0.1.0: `--game-dir`, `--home`, `--fullscreen`, `--session-stdin`, `--launch-api`, exit code 2 for a refused
-  command line.
+- 0.1.0 (not released yet, so still one version): `horizon-client`'s `--game-dir`, `--home`, `--player-dir`, `--fullscreen`,
+  `--session-stdin`, `--launch-api`, exit code 2 for a refused command line; `horizon-prepare`'s `--launch-api`,
+  `--output`, `--check`, `--complete`, `--progress json`, `--version-json`, `--client-jar`, `--libraries-dir`,
+  `--assets-dir` and `--java-home`.

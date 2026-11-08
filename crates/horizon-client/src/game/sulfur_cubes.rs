@@ -6,7 +6,8 @@ use super::Game;
 use horizon_client::{
     items::ItemStack,
     mesher::Vertex,
-    mobs::{Mob, Species, sulfur_cube},
+    mobs::{Mob, Species, Who, sulfur_cube},
+    projectiles::Projectile,
 };
 use horizon_core::{position::BlockPos, random::RandomSource};
 
@@ -108,7 +109,8 @@ impl Game<'_> {
             }
             let m = &mut self.mobs[index];
             let secs = (-m.extra.age / 20) as f32 * 0.1;
-            m.extra.age = (m.extra.age + (secs as i32) * 20).min(0);
+            // AgeableMob.ageUp: a grown cube is size 2 (SulfurCube.ageBoundaryReached).
+            horizon_client::mobs::ai::age_up(m, secs as i32, false);
             self.consume_held();
             self.sulfur_sound(index, "entity.small_sulfur_cube.eat");
             return true;
@@ -188,6 +190,21 @@ impl Game<'_> {
             }
         }
     }
+    /// `SulfurCube.hurtServer`: an arrow or a trident on fire that hits an
+    /// explosive cube with a block lights its fuse (with `tnt_explodes`, as
+    /// `primeTime` asks), called after the hit's hurt, which the priming
+    /// leaves as it is, so its knock and the fuse both go ahead.
+    pub(super) fn burning_arrow_primes(&mut self, p: &Projectile, who: Who) {
+        if !p.arrow.as_ref().is_some_and(|a| a.on_fire()) || !self.ui.rules.bool("tnt_explodes") {
+            return;
+        }
+        if let Who::Mob(id) = who
+            && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
+            && m.species() == Species::SulfurCube
+        {
+            sulfur_cube::burning_arrow_hit(m);
+        }
+    }
     /// `SulfurCubeSearchForItemsGoal` and `pickUpItem`: an adult with nothing
     /// inside hops to a block it can swallow within 8 and takes it in.
     pub(super) fn sulfur_cube_pickups(&mut self) {
@@ -244,7 +261,7 @@ impl Game<'_> {
             let e = &mut self.dropped[j];
             e.stack.count -= 1;
             if e.stack.count == 0 {
-                self.dropped.remove(j);
+                self.remove_dropped(j);
             }
             let m = &mut self.mobs[i];
             m.extra.head = Some(item);

@@ -95,6 +95,42 @@ pub struct Memories {
     pub retreats: Vec<(Who, Vec3)>,
     /// The spear behaviours' memories (`SPEAR_STATUS`...).
     pub spear: super::spear_use::Memories,
+    /// `ADMIRING_ITEM` set by `StartAdmiringItemIfSeen` (nothing in the off
+    /// hand yet): the ticks left before it expires.
+    pub seen_admire: i32,
+    /// `TIME_TRYING_TO_REACH_ADMIRE_ITEM`, when present.
+    pub reach_time: Option<i32>,
+    /// `DISABLE_WALK_TO_ADMIRE_ITEM`: the ticks left.
+    pub walk_off: i32,
+    /// `ADMIRING_DISABLED`: the ticks left.
+    pub admire_disabled: i32,
+}
+impl Memories {
+    /// `StartAdmiringItemIfSeen.create(119)` (core activity) and the admire
+    /// activity's `StopAdmiringIfItemTooFarAway(9)` and
+    /// `StopAdmiringIfTiredOfTryingToReachItem(200, 200)`, from the distance
+    /// squared to `NEAREST_VISIBLE_WANTED_ITEM` and whether that item is loved.
+    /// `holding`: the off hand is not empty, which both stop behaviours check.
+    pub fn admire_seen(&mut self, holding: bool, nearest: Option<f64>, loved: bool) {
+        let absent = self.seen_admire == 0;
+        if !absent && !holding {
+            match nearest {
+                Some(d) if d < 81.0 => match self.reach_time {
+                    None => self.reach_time = Some(0),
+                    Some(t) if t > 200 => {
+                        self.seen_admire = 0;
+                        self.reach_time = None;
+                        self.walk_off = 200;
+                    }
+                    Some(t) => self.reach_time = Some(t + 1),
+                },
+                _ => self.seen_admire = 0,
+            }
+        }
+        if absent && loved && self.admire_disabled == 0 && self.walk_off == 0 {
+            self.seen_admire = ADMIRE;
+        }
+    }
 }
 /// `Sensor.isEntityTargetable`: `TargetingConditions.forNonCombat()` within
 /// the follow range and in sight, which a `NearestVisibleLivingEntities`
@@ -227,8 +263,9 @@ pub fn activity(m: &Mob) -> Activity {
     let b = &m.extra.piglin;
     let piglin = m.species() == Species::Piglin;
     // `ADMIRING_ITEM`: a gold item in the off hand being admired (a charging
-    // crossbow counts `using_item` up too).
-    if piglin && m.extra.off_hand.is_some() && m.extra.using_item > 0 {
+    // crossbow counts `using_item` up too), or one `StartAdmiringItemIfSeen`
+    // saw lying around.
+    if piglin && ((m.extra.off_hand.is_some() && m.extra.using_item > 0) || b.seen_admire > 0) {
         Activity::Admire
     } else if m.ai.target.is_some() {
         Activity::Fight
@@ -290,6 +327,19 @@ pub fn brain_step(m: &mut Mob, cx: &mut Cx) {
         dismount_or_skip_mounting(m, cx.w);
     }
     update_activity(m, cx.w, cx.events);
+}
+/// `Zoglin.customServerAiStep` after the brain: `Zoglin.updateActivity` plays
+/// the angry grunt when the fight activity starts.
+pub fn zoglin_step(m: &mut Mob, cx: &mut Cx) {
+    let now = if m.ai.target.is_some() {
+        Activity::Fight
+    } else {
+        Activity::Idle
+    };
+    let before = std::mem::replace(&mut m.extra.piglin.activity, now);
+    if now == Activity::Fight && before != Activity::Fight {
+        m.voice("entity.zoglin.angry", cx.events);
+    }
 }
 /// `HoglinAi.updateActivity`, `PiglinAi.updateActivity` and
 /// `PiglinBruteAi.updateActivity`: take the first valid activity and, when it
@@ -749,9 +799,10 @@ fn same_type(w: &MobWorld, a: Who, b: Who) -> bool {
         _ => false,
     }
 }
-/// `PiglinAi.broadcastAngerTarget`: as a baby's hit calls it, the adult
-/// piglins around it that have no target (brutes too, unless the attacker is
-/// a hoglin, which they cannot hunt) take the attacker as theirs.
+/// `PiglinAi.broadcastAngerTarget`: as a hit on a baby, or on an adult that
+/// retaliates, calls it, the adult piglins around it that have no target
+/// (brutes too, unless the attacker is a hoglin, which they cannot hunt) take
+/// the attacker as theirs.
 fn broadcast_anger(m: &Mob, w: &MobWorld, by: Who, at: Vec3, events: &mut Vec<MobEvent>) {
     let range = m.attrs.follow_range;
     let hoglin = species_of(w, by) == Some(Species::Hoglin);
@@ -798,10 +849,19 @@ fn piglin_hurt(
     by: Who,
 ) {
     let species = species_of(w, by);
-    if species == Some(Species::Piglin) {
+    // `PiglinBruteAi.wasHurtBy` too: an `AbstractPiglin`'s hit is no one's to answer.
+    if species == Some(Species::Piglin)
+        || (m.species() == Species::PiglinBrute && species == Some(Species::PiglinBrute))
+    {
         return;
     }
     stop_admiring(m);
+    // `brain.eraseMemory(ADMIRING_ITEM)`, and a player's blow disables
+    // admiring for 400 ticks.
+    m.extra.piglin.seen_admire = 0;
+    if by == Who::Player {
+        m.extra.piglin.admire_disabled = 400;
+    }
     m.extra.scratch[0] = 0;
     m.extra.scratch[1] = 0;
     m.extra.home = None;
@@ -823,7 +883,11 @@ fn piglin_hurt(
         set_avoid_target_and_dont_hunt(m, lr, by, at);
         broadcast_retreat(m, w, by, at, events);
         m.ai.last_hurt_by = None;
-    } else if !piglin_retaliates(m, w, by, at) {
+    } else if piglin_retaliates(m, w, by, at) {
+        // `maybeRetaliate`: `broadcastAngerTarget` calls the adult piglins around it
+        // to the attacker, a brute's as a piglin's: the piglins and the brutes.
+        broadcast_anger(m, w, by, at, events);
+    } else {
         m.ai.last_hurt_by = None;
     }
 }
@@ -1106,6 +1170,7 @@ pub fn register_piglin(m: &mut Mob) {
     // `PiglinAi.initCoreActivity`: `InteractWithDoor.create()`.
     g.add(0, super::doors::InteractWithDoor::default());
     g.add(1, Admire);
+    g.add(1, AdmireSeen);
     // `PiglinAi.initRetreatActivity`: `SetWalkTargetAwayFrom.entity(AVOID_TARGET, 1.0, 12, true)`.
     g.add(2, WalkAway::retreat(1.0, 12.0, true));
     // Registered before the spawn weapon is equipped, so the goal checks the
@@ -1423,6 +1488,29 @@ impl Goal for LookAtLoved {
 /// Admiring a gold item held in the off hand: stand and look at it.
 #[derive(Clone, Debug)]
 struct Admire;
+/// `initAdmireItemActivity` for an item only seen: the idle and fight behaviours
+/// stand by while `GoToWantedItem` (the game sets the point) walks to it.
+#[derive(Clone, Debug)]
+struct AdmireSeen;
+impl Goal for AdmireSeen {
+    goal_clone!();
+    fn flags(&self) -> u8 {
+        MOVE | LOOK
+    }
+    fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
+        m.extra.piglin.seen_admire > 0 && m.extra.off_hand.is_none()
+    }
+    fn every_tick(&self) -> bool {
+        true
+    }
+    fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
+        if let Some(p) = m.extra.point
+            && m.ai.nav.is_done()
+        {
+            m.nav_move_to(cx.w, p, 1.0);
+        }
+    }
+}
 impl Goal for Admire {
     goal_clone!();
     fn flags(&self) -> u8 {
@@ -1606,10 +1694,12 @@ pub fn ai_step(
             m.ai.target = None;
         }
     }
-    // Admiring disabled after being hit by a player.
-    if m.extra.egg_time > 0 {
-        m.extra.egg_time -= 1;
-    }
+    // `Brain.forgetOutdatedMemories`: `ADMIRING_DISABLED`, `DISABLE_WALK_TO_ADMIRE_ITEM`
+    // and an `ADMIRING_ITEM` nothing is held for run out.
+    let b = &mut m.extra.piglin;
+    b.admire_disabled = (b.admire_disabled - 1).max(0);
+    b.walk_off = (b.walk_off - 1).max(0);
+    b.seen_admire = (b.seen_admire - 1).max(0);
     // The admired item is in the off hand; a spear in use counts up instead.
     if m.extra.using_item > 0 && m.extra.off_hand.is_some() {
         m.extra.using_item -= 1;
@@ -1621,28 +1711,50 @@ pub fn ai_step(
     if !w.nether && !m.extra.flag2 && m.alive() {
         m.extra.counter2 += 1;
         if m.extra.counter2 > CONVERSION {
-            let (kind, sound) = match m.species() {
-                Species::Hoglin => ("minecraft:zoglin", "entity.hoglin.converted_to_zombified"),
+            // `Piglin.finishConversion` runs `PiglinAi.cancelAdmiring` first:
+            // the item the piglin is admiring leaves the off hand and lands
+            // where it stands, so the zombified piglin never carries it.
+            if m.species() == Species::Piglin {
+                let admiring = (m.extra.off_hand.is_some() && m.extra.using_item > 0)
+                    || m.extra.piglin.seen_admire > 0;
+                if admiring && let Some(item) = m.extra.off_hand.take() {
+                    events.push(MobEvent::DropItem {
+                        mob: m.id,
+                        item,
+                        count: 1,
+                        at: [m.position.x, m.position.y, m.position.z],
+                    });
+                    m.extra.using_item = 0;
+                }
+            }
+            // `Hoglin.finishConversion` is `ConversionParams.single(this, true,
+            // false)`, `AbstractPiglin.finishConversion` `(this, true, true)`;
+            // both leave the new mob nauseous (the game adds it).
+            let (kind, sound, params) = match m.species() {
+                Species::Hoglin => (
+                    "minecraft:zoglin",
+                    "entity.hoglin.converted_to_zombified",
+                    super::conversion::Params {
+                        keep_equipment: true,
+                        preserve_can_pick_up_loot: false,
+                    },
+                ),
                 Species::PiglinBrute => (
                     "minecraft:zombified_piglin",
                     "entity.piglin_brute.converted_to_zombified",
+                    super::conversion::Params::KEEP_ALL,
                 ),
                 _ => (
                     "minecraft:zombified_piglin",
                     "entity.piglin.converted_to_zombified",
+                    super::conversion::Params::KEEP_ALL,
                 ),
             };
             events.push(MobEvent::Sound(sound, m.center(), 1.0, 1.0));
-            events.push(MobEvent::SpawnKind {
-                kind: kind.into(),
-                at: [m.position.x, m.position.y, m.position.z],
-                setup: super::SpawnSetup {
-                    baby: m.is_baby(),
-                    yaw: m.yaw,
-                    persistent: m.persistent,
-                    nausea: true,
-                    ..Default::default()
-                },
+            events.push(MobEvent::Convert {
+                from: Box::new(m.clone()),
+                kind,
+                params,
             });
             m.removed = true;
         }
@@ -2010,6 +2122,52 @@ mod brute_sound_tests {
 }
 
 #[cfg(test)]
+mod hurt_broadcast_tests {
+    use super::*;
+    use crate::mobs::sensor_scan_tests::kind;
+    use crate::mobs::world::{test_player, with_test_world};
+    use std::sync::Arc;
+
+    fn mob(id: u32, species: Species, at: Vec3) -> Mob {
+        let mut kind = kind();
+        Arc::make_mut(&mut kind).species = species;
+        Mob::new(id, kind, at, 0.0)
+    }
+
+    /// `PiglinBruteAi.wasHurtBy` is `PiglinAi.maybeRetaliate`, which calls the adult piglins
+    /// around it, the regular ones too (#7790).
+    #[test]
+    fn a_brute_hit_by_the_player_calls_the_piglins_around_it() {
+        let mut events = Vec::new();
+        let ran = with_test_world(&[], |w, _| {
+            let mut w = w.clone();
+            w.player = Some(test_player(Vec3::new(2.0, 64.0, 0.0)));
+            let mut brute = mob(1, Species::PiglinBrute, Vec3::new(0.0, 64.0, 0.0));
+            brute.ai.last_hurt_by = Some(Who::Player);
+            brute.ai.last_hurt_by_time = 5;
+            let piglin = mob(2, Species::Piglin, Vec3::new(3.0, 64.0, 0.0));
+            let others = [piglin.seen(None)];
+            w.others = &others;
+            let mut lr = LegacyRandom::new(1);
+            before_goals(&mut brute, &w, &mut lr, &mut events);
+        });
+        if !ran {
+            return;
+        }
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                MobEvent::SetTarget {
+                    mob: 2,
+                    target: Who::Player
+                }
+            )),
+            "the piglin takes the player as its target: {events:?}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod crossbow_tests {
     use super::*;
     use crate::mobs::sensor_scan_tests::kind;
@@ -2036,5 +2194,95 @@ mod crossbow_tests {
         assert!(super::super::spear_use::holds_non_melee_weapon(&m));
         m.extra.set_main_hand(Some("minecraft:golden_sword".into()));
         assert!(!super::super::spear_use::holds_non_melee_weapon(&m));
+    }
+
+    #[test]
+    fn a_loved_item_in_sight_is_admired_until_too_far_or_too_long() {
+        let mut b = Memories::default();
+        // Seen: the memory is set at once, and not again while it is there.
+        b.admire_seen(false, Some(25.0), true);
+        assert_eq!(b.seen_admire, ADMIRE);
+        b.seen_admire = 50;
+        b.admire_seen(false, Some(25.0), true);
+        assert_eq!(b.seen_admire, 50);
+        // An item that is not loved starts nothing.
+        let mut c = Memories::default();
+        c.admire_seen(false, Some(25.0), false);
+        assert_eq!(c.seen_admire, 0);
+        // 9 blocks away or gone (`closerThan(9)`) ends it.
+        b.admire_seen(false, Some(81.0), true);
+        assert_eq!(b.seen_admire, 0);
+        b.seen_admire = 50;
+        b.admire_seen(false, None, true);
+        assert_eq!(b.seen_admire, 0);
+        // Admiring disabled by a player's blow: never starts.
+        let mut d = Memories {
+            admire_disabled: 3,
+            ..Memories::default()
+        };
+        d.admire_seen(false, Some(1.0), true);
+        assert_eq!(d.seen_admire, 0);
+        // Tired of trying: 201 ticks near the item stop it and disable the walk
+        // for 200 ticks, in which it does not start again.
+        let mut e = Memories::default();
+        e.admire_seen(false, Some(4.0), true);
+        for _ in 0..203 {
+            e.seen_admire = 50;
+            e.admire_seen(false, Some(4.0), true);
+        }
+        assert_eq!((e.seen_admire, e.walk_off, e.reach_time), (0, 200, None));
+        e.admire_seen(false, Some(4.0), true);
+        assert_eq!(e.seen_admire, 0);
+        // An item in the off hand leaves the memory alone.
+        let mut f = Memories {
+            seen_admire: 40,
+            ..Memories::default()
+        };
+        f.admire_seen(true, None, false);
+        assert_eq!(f.seen_admire, 40);
+    }
+}
+
+#[cfg(test)]
+mod conversion_tests {
+    use super::*;
+    use crate::mobs::world::with_test_world;
+
+    /// `Piglin.finishConversion` cancels the admire before it converts: the
+    /// item in the off hand is dropped at the piglin's feet and the zombified
+    /// piglin does not carry it, where Horizon used to hand it over.
+    #[test]
+    fn a_converted_piglin_drops_the_item_it_was_admiring() {
+        let ran = with_test_world(&[], |w, types| {
+            let mut m = Mob::new(
+                1,
+                std::sync::Arc::new(types.types["minecraft:piglin"].clone()),
+                Vec3::new(0.5, 64.0, 0.5),
+                0.0,
+            );
+            m.extra.off_hand = Some("minecraft:gold_ingot".into());
+            m.extra.using_item = 60;
+            m.extra.counter2 = CONVERSION + 1;
+            let mut lr = LegacyRandom::new(0);
+            let mut events = Vec::new();
+            ai_step(&mut m, w, &mut lr, &mut events);
+            assert!(
+                events.iter().any(|e| matches!(
+                    e,
+                    MobEvent::DropItem { item, count, .. }
+                        if &**item == "minecraft:gold_ingot" && *count == 1
+                )),
+                "the admired item is dropped"
+            );
+            let from = events
+                .iter()
+                .find_map(|e| match e {
+                    MobEvent::Convert { from, .. } => Some(from),
+                    _ => None,
+                })
+                .expect("the piglin converts");
+            assert_eq!(from.extra.off_hand, None, "the new mob carries nothing");
+        });
+        let _ = ran;
     }
 }

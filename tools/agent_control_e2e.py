@@ -9,8 +9,11 @@ widget id instead: the title screen, the options (a slider set by id) and the in
 the options scenario reads and sets options.txt values by key; the events scenario waits for
 states (wait-for) and reads the event log; the consume scenario eats and drinks consumables (a
 golden apple, milk, honey, chorus fruit) and checks their effects, remainders and teleport, then
-holds an eye of ender in use; the pick scenario middle-clicks slots (AbstractContainerScreen's
-cloning): a full stack in creative, from the hotbar and from an item tab, and nothing in survival;
+holds an eye of ender in use and the sprint key with and without blindness; the use-screen
+scenario opens the inventory and the chat over an item in use and checks the use is released, not
+eaten behind the GUI; the pick scenario
+middle-clicks slots (AbstractContainerScreen's cloning): a full stack in creative, from the hotbar
+and from an item tab, and nothing in survival;
 the suggestions scenario checks slash-command Tab completion on single player's connected client
 after a fresh launch; the no-ai scenario turns No AI on in a scratch game home and checks that
 horizon-ctl, its MCP server and the game's control socket all refuse.
@@ -54,6 +57,8 @@ POSITIONAL = {
     'click_button': ['label'], 'type': ['text'], 'wait': ['ticks'], 'wait_ready': ['seconds'],
     'command': ['command'], 'look_at_block': ['x', 'y', 'z'], 'click': ['id'], 'set': ['id', 'value'],
     'give': ['item', 'count'], 'options_get': ['keys'], 'options_set': ['key', 'value'],
+    'record_start': ['name'], 'record_replay': ['name'], 'repro_export': ['name', 'path'],
+    'turn': ['dyaw', 'dpitch'],
     'wait_for': ['condition', 'value'], 'open': ['world', 'seed', 'mode'], 'select': ['slot'],
     'summon': ['kind', 'x', 'y', 'z'], 'interact_entity': ['id'], 'effect': ['id', 'seconds', 'amplifier'],
     'xp': ['levels'], 'options': ['page'], 'lan': ['action'], 'world_backup': ['folder'],
@@ -69,11 +74,11 @@ class Failed(Exception):
 
 def game_env(screen, home=None):
     """The environment of a game: lab.game_env with HORIZON_HOME `home` (a scratch folder when None), no live-count
-    ping, and on Linux the virtual screen `screen`."""
+    ping, and on Linux the virtual screen `screen` (macOS and Windows have none)."""
     extra = {'HORIZON_TELEMETRY_URL': 'off'}  # no live-count ping from test games
     if home is not None:
         extra['HORIZON_HOME'] = home
-    if sys.platform == 'darwin':
+    if sys.platform in ('darwin', 'win32'):
         return lab.game_env(**extra)
     if not shutil.which('vscreen') and os.environ.get('DISPLAY'):
         return lab.game_env(**extra)
@@ -444,6 +449,119 @@ def events_scenario(d, out):
     return {'events': len(events)}
 
 
+def repro_scenario(d, out):
+    # Input provenance and the repro recording: who caused what, the recording on disk,
+    # the bundle a bug report carries, and a replay ending where the recording did.
+    import zipfile
+
+    d('click', id='singleplayer')
+    if 'game' not in widgets(d):
+        d('click', id='create-new-world')
+    d('type', field='name', replace=True, text='Repro')
+    d('click', id='create-new-world')
+    d('wait_for', condition='loaded', timeout=400)
+
+    # Everything the control socket does is the agent's input.
+    d('give', item='stone', count=1)
+    # Stand still on the ground first: the world copy's player data and the
+    # recording start from the same place, so the replay can follow.
+    for _ in range(200):
+        state = d('state')
+        player = state['player']
+        # Standing still: gravity keeps a small downward velocity on the ground.
+        if (player['on_ground'] and abs(player['velocity'][0]) < 0.01
+                and abs(player['velocity'][2]) < 0.01):
+            break
+        d('wait', ticks=2)
+    else:
+        raise AssertionError(f'the player never settled: {player}')
+    provenance = state['input']
+    assert provenance['last_origin'] == 'agent', provenance
+    assert provenance['counts']['agent'] >= 1, provenance
+
+    name = 'e2e-repro'
+    started = d('record_start', name=name)
+    record_dir = Path(started['dir'])
+    assert started['ok'] and record_dir.is_dir(), started
+
+    # Walk a moment, so the recording has key events and a state trail.
+    d('key', key='w', action='down')
+    d('wait', ticks=25)
+    d('key', key='w', action='up')
+    # A deterministic change the replay must reproduce even when the spawn is
+    # against a wall and the walk moves nowhere.
+    d('turn', dyaw=45, dpitch=0)
+    d('wait', ticks=5)
+    entries = d('input_log', origin='agent', limit=50)['events']
+    assert any(e.get('line', '').startswith('key w down') for e in entries), entries
+    assert any(e.get('line', '').startswith('key w up') for e in entries), entries
+    # Read-only polls and session commands never reach the input log.
+    assert not any(e.get('line', '').startswith(('state', 'record-stop')) for e in entries), entries
+    status = d('record_status')['recording']
+    assert status and status['inputs'] > 0, status
+    stopped = d('record_stop')
+    assert stopped['inputs'] > 0 and stopped['state'] > 0, stopped
+
+    # On disk: one JSON line per input and the state keyframes the tick wrote,
+    # not only the final one `record-stop` appends.
+    inputs = [json.loads(line) for line in (record_dir / 'inputs.jsonl').read_text().splitlines() if line.strip()]
+    assert inputs and inputs[0]['origin'] == 'agent' and 'tick' in inputs[0], inputs[:2]
+    assert any(e.get('line') == 'key w down' for e in inputs), inputs
+    # Only real input: no read-only polls and no session commands.
+    assert 3 <= len(inputs) <= 10, f'unexpected input log: {inputs[:10]}'
+    states = [json.loads(line) for line in (record_dir / 'state.jsonl').read_text().splitlines() if line.strip()]
+    keyframes = [s for s in states if s['kind'] == 'state']
+    assert len(keyframes) >= 2, f'the tick did not write keyframes: {states[:2]}'
+    first_state = keyframes[0]['state']['player']
+    last_state = keyframes[-1]['state']['player']
+    walked = sum((a - b) ** 2 for a, b in zip(first_state['position'], last_state['position'])) ** 0.5
+    turned = abs((last_state['yaw'] - first_state['yaw'] + 180) % 360 - 180)
+    assert walked >= 2.0 or turned >= 20.0, (
+        f'the recording did not see the input: {walked:.2f} blocks, {turned:.1f} degrees')
+    assert (record_dir / 'events.jsonl').is_file() and (record_dir / 'session.json').is_file()
+    assert (record_dir / 'world' / 'level.dat').is_file(), 'the world copy is missing'
+
+    # The bundle: the recording, the logs and a status in one zip.
+    bundle = d('repro_export', name=name)
+    zip_path = Path(bundle['path'])
+    assert zip_path.is_file() and zip_path.stat().st_size > 0, bundle
+    with zipfile.ZipFile(zip_path) as archive:
+        names = archive.namelist()
+    prefix = record_dir.name
+    for wanted in ('session.json', 'inputs.jsonl', 'state.jsonl', 'events.jsonl', 'README.txt'):
+        assert f'{prefix}/{wanted}' in names, (wanted, names)
+    assert 'status.json' in names and 'logs/latest.log' in names, names
+    assert any(name.endswith('/world/level.dat') for name in names), names
+
+    # The replay: the recording's world opens and its input runs again.
+    replayed = d('record_replay', name=name, timeout=120)
+    assert replayed['ok'] and replayed['events'] > 0, replayed
+    for _ in range(240):
+        state = d('state')
+        if state['input'].get('replay') is None:
+            break
+        time.sleep(0.25)
+    else:
+        raise AssertionError('the replay did not finish')
+    # How it ended, and that every recorded input ran (none skipped: the
+    # recording holds only key/wait commands).
+    ended_event = next((e for e in d('events')['events']
+                        if e.get('event') == 'replay' and e.get('state') in ('done', 'timeout')), None)
+    assert ended_event and ended_event['state'] == 'done', ended_event
+    assert ended_event['skipped'] == 0 and ended_event['sent'] == ended_event['total'], ended_event
+    ended_player = state['player']
+    want_player = keyframes[-1]['state']['player']
+    ended = ended_player['position']
+    want = want_player['position']
+    distance = sum((a - b) ** 2 for a, b in zip(ended, want)) ** 0.5
+    yaw_error = abs((ended_player['yaw'] - want_player['yaw'] + 180) % 360 - 180)
+    assert yaw_error < 10.0, f'the replay ended facing {ended_player["yaw"]}, the recording {want_player["yaw"]}' 
+    # Best effort: the same inputs on the same saved world, not frame-perfect.
+    assert distance < 4.0, f'the replay ended at {ended}, the recording at {want} ({distance:.2f})'
+    return {'inputs': len(inputs), 'keyframes': len(keyframes), 'bundle': zip_path.name,
+            'replay_distance': round(distance, 2)}
+
+
 def consume_scenario(d, out):
     # Consumables finish as vanilla's Consumable.onConsume: always-edible food at full hunger with its
     # effects, milk and honey (no food or drink sounds) with their effects and use remainders, and
@@ -499,7 +617,127 @@ def consume_scenario(d, out):
     assert eye['using'] is not None, eye['using']
     assert held(eye) == 'minecraft:ender_eye' and eye['held']['count'] >= 2, eye['held']
     assert released['using'] is None, released['using']
+    # LocalPlayer.isSprintingPossible: blindness (Player.isMobilityRestricted) keeps the sprint key
+    # from starting a sprint, and the client reads it from the effect the server sent (#4831).
+    d('command', command='clear @s')
+    x, y, z = d('state')['player']['block_pos']
+    # A stone tunnel, so no fluid or falling block reaches the strip.
+    for box, block in [((x - 2, y - 1, z, x + 2, y + 4, z + 40), 'stone'),
+                       ((x - 1, y, z, x + 1, y + 3, z + 40), 'air')]:
+        reply = d('command', command='fill {} {} {} {} {} {} minecraft:{}'.format(*box, block))
+        assert any('filled' in line for line in reply.get('chat', [])), reply
+
+    def hold_sprint():
+        d('command', command=f'tp @s {x + 0.5} {y} {z + 0.5} 0 0')
+        d('wait', ticks=10)
+        d('key', key='w', action='down')
+        d('key', key='ctrl', action='down')
+        d('wait', ticks=20)
+        return d('state')['player']['sprinting']
+
+    def sprints():
+        sprinting = hold_sprint()
+        d('stop')
+        return sprinting
+
+    assert hold_sprint(), 'the sprint key did not start a sprint'
+    # The server's effect, sent to the client as ClientboundUpdateMobEffectPacket.
+    d('command', command='effect give @s minecraft:blindness 60')
+    d('wait', ticks=5)
+    assert not d('state')['player']['sprinting'], 'blindness did not stop a running sprint'
+    d('stop')
+    assert not sprints(), 'the sprint key started a sprint while blind'
+    d('command', command='effect clear @s minecraft:blindness')
+    assert sprints(), 'no sprint once blindness is cleared'
     return {'teleported': [round(m, 2) for m in moved], 'eye_use_ticks': eye['using']['ticks']}
+
+
+def use_screen_scenario(d, out):
+    """An item in use is released by the keybind screen that opens over it.
+
+    Minecraft.handleKeybinds opens the inventory (and Gui.handleKeybinds the chat) inside the
+    call whose end releases a running use, after Gui.setScreen's KeyMapping.releaseAll cleared
+    key.use. With the button still held, opening the screen must therefore release the use in
+    that tick: the golden apple is not eaten behind the GUI, and no effect is applied. The
+    second half opens the chat the same way; the last part checks that eating without a screen
+    still works. This covers the bin's E/T call sites and the cleared held button, which the
+    interaction-input parity harness (the release sentence itself) cannot see.
+    """
+    # The title screen may still be loading when the game answers the socket.
+    deadline = time.time() + 120
+    while 'singleplayer' not in widgets(d):
+        if time.time() > deadline:
+            raise Failed('the title screen did not open')
+        time.sleep(0.5)
+    d('click', id='singleplayer')
+    deadline = time.time() + 120
+    while not ({'game', 'create-new-world'} & set(widgets(d))):
+        if time.time() > deadline:
+            raise Failed('the world list did not open')
+        time.sleep(0.5)
+    if 'game' not in widgets(d):
+        d('click', id='create-new-world')
+    d('type', field='name', replace=True, text='UseScreen')
+    d('click', id='create-new-world')
+    d('wait_for', condition='loaded', timeout=400)
+    d('command', command='gamemode survival')
+    d('command', command='clear @s')
+    d('give', item='golden_apple', count=64)
+    d('select', slot=1)
+    d('wait', ticks=2)
+
+    def apples(state):
+        held = state['held']
+        assert held and held['item'] == 'minecraft:golden_apple', held
+        return held['count']
+
+    assert apples(d('state')) == 64
+    d('mouse', button='right', action='down')
+    d('wait', ticks=8)
+    assert d('state')['using'] is not None, 'the use did not start'
+    d('key', key='e', action='tap')
+    d('wait', ticks=2)
+    assert d('state')['screen'] == 'inventory', d('state')['screen']
+    # Two seconds is longer than the 1.6 s use: without the release the apple is eaten here.
+    d('wait', ticks=40)
+    state = d('state')
+    assert state['using'] is None, state['using']
+    assert apples(state) == 64, state['held']
+    assert state['player']['effects'] == [], state['player']['effects']
+    d('screenshot', path=str(out / f'use-screen-inventory-{d.name}.png'))
+    # The mouse can only be released with no screen open: close it first.
+    d('key', key='e', action='tap')
+    d('wait', ticks=2)
+    assert d('state')['screen'] == 'playing', d('state')['screen']
+    d('mouse', button='right', action='up')
+
+    # The chat opens from Gui.handleKeybinds, in the same handleKeybinds call.
+    d('mouse', button='right', action='down')
+    d('wait', ticks=8)
+    assert d('state')['using'] is not None, 'the use did not start'
+    d('key', key='t', action='tap')
+    d('wait', ticks=40)
+    state = d('state')
+    assert state['screen'] == 'chat', state['screen']
+    assert state['using'] is None, state['using']
+    assert apples(state) == 64, state['held']
+    assert state['player']['effects'] == [], state['player']['effects']
+    d('screenshot', path=str(out / f'use-screen-chat-{d.name}.png'))
+    d('key', key='esc', action='tap')
+    d('wait', ticks=2)
+    assert d('state')['screen'] == 'playing', d('state')['screen']
+    d('mouse', button='right', action='up')
+
+    # Eating with no screen still finishes: the release only happens for the screens above.
+    d('command', command='clear @s')
+    d('give', item='golden_apple', count=1)
+    d('use_item', hold=2.2)
+    d('wait', ticks=5)
+    state = d('state')
+    effects = {e['id'] for e in state['player']['effects']}
+    assert {'regeneration', 'absorption'} <= effects, effects
+    assert state['held'] is None, state['held']
+    return {'apples_after_screen': 64, 'effects': sorted(effects)}
 
 
 def pick_scenario(d, out):
@@ -669,8 +907,9 @@ def pause_save_scenario(d, out):
 
 
 SCENARIOS = {'survival': scenario, 'ui': ui_scenario, 'options': options_scenario, 'events': events_scenario,
-             'consume': consume_scenario, 'pick': pick_scenario, 'suggestions': suggestions_scenario,
-             'manage': manage_scenario, 'pause-save': pause_save_scenario}
+             'consume': consume_scenario, 'use-screen': use_screen_scenario, 'pick': pick_scenario,
+             'suggestions': suggestions_scenario, 'manage': manage_scenario, 'pause-save': pause_save_scenario,
+             'repro': repro_scenario}
 
 
 REFUSAL = "AI features are off: turn off No AI in the launcher's settings"
@@ -681,7 +920,7 @@ def scratch(mode, resources):
     work = Path(tempfile.mkdtemp(prefix=f'hzac-{mode}-'))
     (work / '.local').mkdir()
     (work / '.local/horizon-client').mkdir()
-    os.symlink(resources, work / '.local/horizon-client' / lab.VERSION)
+    lab.link_dir(resources, work / '.local/horizon-client' / lab.VERSION)
     # A first launch shows the accessibility onboarding before the title (Gui.addInitialScreens): these
     # scenarios start at the title, as a player does after it.
     (work / 'options.txt').write_text('onboardAccessibility:false\n')
@@ -840,7 +1079,7 @@ def main():
     if args.bin_dir:
         bins = Path(args.bin_dir).resolve()
     else:
-        subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-client', '--bins'],
+        subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-client', '-p', 'horizon-client-lib', '--bins'],
                        cwd=ROOT, check=True)
         meta = json.loads(subprocess.run(['cargo', 'metadata', '--format-version', '1', '--no-deps'], cwd=ROOT,
                                          capture_output=True, text=True, check=True).stdout)
@@ -848,7 +1087,7 @@ def main():
     resources = (lab.RESOURCES).resolve()
     if not (resources / 'horizon-resources.json').exists():
         sys.exit(f'no prepared resources in {resources}')
-    out = Path(args.out)
+    out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     modes = ['cli', 'mcp'] if args.mode == 'both' else [args.mode]
     scenarios = [*SCENARIOS, 'no-ai', 'setting'] if args.scenario == 'all' else [args.scenario]

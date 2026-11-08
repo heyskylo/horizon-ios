@@ -37,6 +37,8 @@ impl<'a> Game<'a> {
     /// Splitscreen can start: the world is this window's own and on an AirPlay display.
     pub(super) fn splitscreen_available(&self) -> bool {
         !self.splitscreen.guest
+            && !self.options.split_guest
+            && !self.options.paced_by_split
             && self.integrated.is_some()
             && self.pending_save.is_none()
             && self.title.is_none()

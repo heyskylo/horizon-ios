@@ -9,15 +9,15 @@ use std::path::{Path, PathBuf};
 pub(super) struct Worlds {
     /// The game folder the list is of, and the list as last read: kept on screen while it is
     /// read again, so the page doesn't jump.
-    home: Option<PathBuf>,
-    list: Vec<World>,
+    pub(super) home: Option<PathBuf>,
+    pub(super) list: Vec<World>,
     fresh: bool,
     reading: bool,
     /// The world being backed up, copied or deleted now.
-    busy: Option<String>,
+    pub(super) busy: Option<String>,
     confirm_delete: Option<String>,
     /// What the last action did (a backup's zip), or why it failed.
-    done: Option<Result<(String, Option<PathBuf>), String>>,
+    pub(super) done: Option<Result<(String, Option<PathBuf>), String>>,
 }
 
 impl Worlds {
@@ -39,7 +39,7 @@ pub(super) fn ago(when: std::time::SystemTime) -> String {
     }
 }
 
-enum Action {
+pub(super) enum Action {
     Backup,
     Copy,
     Delete,
@@ -48,7 +48,7 @@ enum Action {
 impl Launcher {
     /// Reads the worlds of `home` in the background when the list is missing or of another
     /// instance.
-    fn load_worlds(&mut self, home: PathBuf, cx: &mut Context<Self>) {
+    pub(super) fn load_worlds(&mut self, home: PathBuf, cx: &mut Context<Self>) {
         if self.worlds.home.as_ref() != Some(&home) {
             self.worlds = Worlds {
                 home: Some(home.clone()),
@@ -78,7 +78,7 @@ impl Launcher {
         .detach();
     }
 
-    fn world_action(&mut self, action: Action, world: World, cx: &mut Context<Self>) {
+    pub(super) fn world_action(&mut self, action: Action, world: World, cx: &mut Context<Self>) {
         let Some(home) = self.worlds.home.clone() else {
             return;
         };
@@ -90,13 +90,20 @@ impl Launcher {
         self.worlds.done = None;
         let task = cx.background_executor().spawn(async move {
             match action {
-                Action::Backup => worlds::backup(&home, &world)
-                    .map(|zip| (format!("{} backed up.", world.name), Some(zip))),
-                Action::Copy => {
-                    worlds::copy(&world).map(|c| (format!("Copied to {}.", c.name), None))
-                }
-                Action::Delete => worlds::delete(&world)
-                    .map(|()| (format!("{} moved to the trash.", world.name), None)),
+                Action::Backup => worlds::backup(&home, &world).map(|zip| {
+                    (
+                        trf("{name} backed up.", &[("name", &world.name)]),
+                        Some(zip),
+                    )
+                }),
+                Action::Copy => worlds::copy(&world)
+                    .map(|c| (trf("Copied to {name}.", &[("name", &c.name)]), None)),
+                Action::Delete => worlds::delete(&world).map(|()| {
+                    (
+                        trf("{name} moved to the trash.", &[("name", &world.name)]),
+                        None,
+                    )
+                }),
             }
         });
         cx.spawn(async move |this, cx| {
@@ -155,7 +162,7 @@ impl Launcher {
                         .child(
                             text(theme::CAPTION)
                                 .text_color(t.muted)
-                                .child("No worlds yet: they appear here once you play one."),
+                                .child(tr("No worlds yet: they appear here once you play one.")),
                         )
                         .child(
                             button("worlds-folder", "Open folder", Kind::Ghost, &t).on_click(
@@ -202,7 +209,7 @@ impl Launcher {
                 .child(blocks::icon("image", 22., t.muted))
                 .into_any_element(),
         };
-        let mut facts = vec![w.mode.to_string()];
+        let mut facts = vec![tr(w.mode).to_string()];
         facts.extend(w.version.clone());
         facts.push(ago(w.last_played));
         facts.push(megabytes(w.size));
@@ -221,7 +228,7 @@ impl Launcher {
                 .child(
                     text(theme::CAPTION)
                         .text_color(t.danger)
-                        .child("Move it to the trash?"),
+                        .child(tr("Move it to the trash?")),
                 )
                 .child(act("world-keep", "Keep", Kind::Ghost).on_click(cx.listener(
                     |this, _: &ClickEvent, _, cx| {
@@ -238,7 +245,11 @@ impl Launcher {
                     )),
                 );
         } else if this_busy {
-            actions = actions.child(text(theme::CAPTION).text_color(t.muted).child("Working…"));
+            actions = actions.child(
+                text(theme::CAPTION)
+                    .text_color(t.muted)
+                    .child(tr("Working…")),
+            );
         } else {
             let (backup, copy, folder) = (w.clone(), w.clone(), w.path.clone());
             let (delete, play) = (w.folder.clone(), w.folder.clone());

@@ -202,6 +202,8 @@ pub struct Settings {
     /// The packs in `shaderpacks/`, listed when the Shader Packs page opens; the pick is
     /// `horizon.shader_pack`.
     pub shader_packs: Vec<crate::shader_pack_list::Entry>,
+    /// The picked pack's options while its Shader Options page is open.
+    pub shader_options: Option<crate::shader_options::ShaderOptions>,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -285,6 +287,7 @@ impl Default for Settings {
             extras: Default::default(),
             mods: Default::default(),
             shader_packs: Vec::new(),
+            shader_options: None,
         }
     }
 }
@@ -329,6 +332,7 @@ impl Settings {
             .parent()
             .map(crate::graphics::Graphics::load)
             .unwrap_or_default();
+        crate::mipmap::set_dither_cutouts(horizon.dither_cutout_mips);
         let controller = path
             .parent()
             .map(crate::gamepad::PadSettings::load)
@@ -337,9 +341,10 @@ impl Settings {
             .parent()
             .map(crate::extras::Extras::load)
             .unwrap_or_default();
+        // The enabled mods are the game folder's, shared by its players (`--player-dir`).
         let mods = path
             .parent()
-            .map(crate::mod_list::ModList::load)
+            .map(|dir| crate::mod_list::ModList::load(&crate::logging::shared_dir(dir)))
             .unwrap_or_default();
         let settings = match fs::read(path) {
             Ok(bytes) => Self {
@@ -467,6 +472,7 @@ impl Settings {
             extras: Default::default(),
             mods: Default::default(),
             shader_packs: Vec::new(),
+            shader_options: None,
             auto_jump: f.bool("autoJump"),
             language: f.string("lang"),
             force_unicode: f.bool("forceUnicodeFont"),
@@ -621,7 +627,7 @@ impl Settings {
     /// These settings with one `options.txt` value changed (`horizon-ctl
     /// options-set`, as `OptionsFile::set_text` reads it). Horizon's own
     /// files (graphics, controller, extras, the mod list) aren't in
-    /// `options.txt`, so they stay as they are.
+    /// `options.txt`, so they stay as they are, as do the monitor's video modes.
     pub fn with_option(&self, key: &str, value: &str) -> Result<Self, String> {
         let mut file = self.to_file();
         file.set_text(key, value)?;
@@ -630,6 +636,7 @@ impl Settings {
             controller: self.controller.clone(),
             extras: self.extras.clone(),
             mods: self.mods.clone(),
+            video_modes: self.video_modes.clone(),
             ..Self::from_file(file)
         })
     }
@@ -644,7 +651,7 @@ impl Settings {
             self.horizon.save(dir);
             self.controller.save(dir);
             self.extras.save(dir);
-            self.mods.save(dir);
+            self.mods.save(&crate::logging::shared_dir(dir));
         }
     }
     /// Volume of a sound source (master excluded).
@@ -659,6 +666,22 @@ impl Settings {
                     self.volumes[i]
                 }
             })
+    }
+    /// `Options.getFinalSoundSourceVolume`: a source's volume times master's.
+    pub fn final_volume(&self, source: &str) -> f32 {
+        if source == "master" {
+            self.master_volume
+        } else {
+            self.volume(source) * self.master_volume
+        }
+    }
+    /// `Options.narrator`: the `narrator` id in options.txt.
+    pub fn narrator(&self) -> horizon_narrator::Status {
+        horizon_narrator::Status::by_id(self.file.int("narrator"))
+    }
+    pub fn set_narrator(&mut self, status: horizon_narrator::Status) {
+        self.file
+            .set("narrator", crate::options_file::V::Int(status.id()));
     }
     /// `Options.getBackgroundColor(float)`: the text backdrop colour, `default`
     /// opacity unless `backgroundForChatOnly` is off.
@@ -807,6 +830,19 @@ pub enum Opt {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_narrator_reads_its_status_and_the_voice_under_master() {
+        let s = Settings::parse("narrator:2\nsoundCategory_master:0.5\nsoundCategory_voice:0.5\n");
+        assert_eq!(s.narrator(), horizon_narrator::Status::Chat);
+        assert_eq!(s.final_volume("voice"), 0.25);
+        assert_eq!(s.final_volume("master"), 0.5);
+        let mut s = s;
+        s.set_narrator(horizon_narrator::Status::Off);
+        assert_eq!(
+            Settings::parse(&s.serialize()).narrator(),
+            horizon_narrator::Status::Off
+        );
+    }
     #[test]
     fn an_option_set_keeps_horizon_files() {
         let mut s = Settings::parse("fov:70\n");

@@ -13,6 +13,13 @@ use horizon_world::{
     synced_floats::SyncedFloats,
 };
 
+/// A living entity is about to heal. Mods may change the amount or cancel.
+/// `entity` identifies the affected entity. 358.
+#[inline(never)]
+pub fn native_living_heal(entity: u32, amount: &mut f32, cancel: &mut bool) {
+    crate::native_client_hooks::living_heal(entity, amount, cancel);
+}
+
 impl PlayerMotion {
     /// Player.causeFoodExhaustion: creative and spectator abilities suppress
     /// exhaustion from movement, attacks and effects.
@@ -33,16 +40,21 @@ impl PlayerMotion {
             let health = self.health.health();
             let maximum = self.attribute("minecraft:max_health")? as f32;
             if health < maximum {
-                let h = &mut self.health;
-                let mut observer = Updates(&mut self.events);
-                PlayerAttributeHealth::new(
-                    &mut self.attributes,
-                    &mut h.data,
-                    h.ids,
-                    h.dead,
-                    &mut observer,
-                )?
-                .heal(1.0)?;
+                let mut amount = 1.0;
+                let mut cancel = false;
+                native_living_heal(self.entity_id as u32, &mut amount, &mut cancel);
+                if !cancel {
+                    let h = &mut self.health;
+                    let mut observer = Updates(&mut self.events);
+                    PlayerAttributeHealth::new(
+                        &mut self.attributes,
+                        &mut h.data,
+                        h.ids,
+                        h.dead,
+                        &mut observer,
+                    )?
+                    .heal(amount)?;
+                }
             }
             let saturation = self.health.food.saturation;
             if saturation < 20.0 {
@@ -60,9 +72,11 @@ impl PlayerMotion {
         }
         let h = &mut self.health;
         let mut world = TickWorld {
+            entity: self.entity_id,
             resources,
             rules,
             invulnerable: self.invulnerable || self.spectator,
+            client_loaded: self.client_loaded,
             attributes: &mut self.attributes,
             data: &mut h.data,
             ids: h.ids,
@@ -77,9 +91,11 @@ impl PlayerMotion {
     }
 }
 struct TickWorld<'a> {
+    entity: i32,
     resources: &'a HealthResources,
     rules: HealthRules,
     invulnerable: bool,
+    client_loaded: bool,
     attributes: &'a mut Attributes,
     data: &'a mut SyncedFloats,
     ids: PlayerFloatIds,
@@ -113,7 +129,12 @@ impl FoodWorld for TickWorld<'_> {
         )?
         .is_hurt()?)
     }
-    fn heal(&mut self, _: &mut FoodData, amount: f32) -> Result<()> {
+    fn heal(&mut self, _: &mut FoodData, mut amount: f32) -> Result<()> {
+        let mut cancel = false;
+        native_living_heal(self.entity as u32, &mut amount, &mut cancel);
+        if cancel {
+            return Ok(());
+        }
         let mut observer = Updates(self.events);
         Ok(PlayerAttributeHealth::new(
             self.attributes,
@@ -144,7 +165,10 @@ impl FoodWorld for TickWorld<'_> {
         self.events
             .push(MotionEvent::Health(HealthEvent::StarvationDamage(amount)));
         let mut environment = Environment {
+            entity: self.entity,
+            causing: 0,
             invulnerable: false,
+            client_loaded: self.client_loaded,
             rules: self.rules,
             source: self
                 .resources
@@ -159,10 +183,12 @@ impl FoodWorld for TickWorld<'_> {
             status: Default::default(),
             blocking: None,
             blocked: 0.0,
+            fully_blocked: false,
             block_sound: false,
             knocked: false,
             totem: false,
             totem_fired: false,
+            canceled: false,
         };
         if ServerPlayerCombat::new(self.attributes, self.data, food, self.ids, &mut environment)?
             .hurt(self.hurt, amount)?

@@ -211,7 +211,8 @@ fn commands_need_allow_commands() {
         .into_iter()
         .map(|s| s.text)
         .collect();
-    // Commands.java with CommandSelection.INTEGRATED: seed and version need no level.
+    // Commands.java with CommandSelection.INTEGRATED: seed and version need no
+    // level (a dedicated server's tree: a_dedicated_server_keeps_seed_and_version_for_game_masters).
     assert_eq!(
         root,
         [
@@ -336,6 +337,44 @@ fn entity_arguments_suggest_the_selected_entity() {
             "{players_only}"
         );
     }
+}
+#[test]
+fn whitespace_is_what_java_character_is_whitespace_says() {
+    let java: Vec<u32> = [
+        0x09..=0x0D,
+        0x1C..=0x20,
+        0x1680..=0x1680,
+        0x2000..=0x2006,
+        0x2008..=0x200A,
+        0x2028..=0x2029,
+        0x205F..=0x205F,
+        0x3000..=0x3000,
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let ours: Vec<u32> = (0..=0x10FFFF)
+        .filter_map(char::from_u32)
+        .filter(|c| Reader::is_java_whitespace(*c))
+        .map(u32::from)
+        .collect();
+    assert_eq!(ours, java);
+
+    let mut r = Reader::new("\u{1F}\u{3000} x");
+    r.skip_whitespace();
+    assert_eq!(r.peek(), 'x');
+    for nbsp in ["\u{A0}", "\u{2007}", "\u{202F}", "\u{85}"] {
+        let text = format!("{nbsp}x");
+        let mut r = Reader::new(&text);
+        r.skip_whitespace();
+        assert_eq!(r.remaining(), text, "{:?} is not whitespace", nbsp);
+    }
+
+    let reg = reg();
+    let parse = |text: &str| selector::parse(&mut Reader::new(text), &reg, true).is_ok();
+    assert!(parse("@e[ type=minecraft:pig]"));
+    assert!(parse("@e[\u{1F}type=minecraft:pig]"));
+    assert!(!parse("@e[\u{A0}type=minecraft:pig]"));
 }
 #[test]
 fn a_uuid_selects_by_entity_uuid() {
@@ -752,10 +791,45 @@ fn profile_commands_parse_like_vanilla() {
     }
 }
 #[test]
+fn the_dedicated_commands_complete_from_the_servers_lists() {
+    // OpCommand, DeOpCommands, PardonCommand, PardonIpCommand and WhitelistCommand: the server answers from
+    // its own lists (vanilla's `.suggests(...)`, javap on the pinned 26.3 classes), not from the registries'
+    // default of the one local player.
+    let reg = Registries {
+        permission: 4,
+        players: vec!["Alex".into(), "Steve".into(), "Zed".into()],
+        ops: vec!["steve".into()],
+        banned_players: vec!["Griefer".into()],
+        banned_ips: vec!["203.0.113.9".into()],
+        whitelisted: vec!["Alex".into(), "Old".into()],
+        ..reg()
+    };
+    let d = vanilla::game_tree(false, false, true);
+    let suggest = |input: &str| -> Vec<String> {
+        let parse = d.parse(input, &reg);
+        d.suggestions(&parse, input.len(), &reg)
+            .1
+            .into_iter()
+            .map(|s| s.text)
+            .collect()
+    };
+    // Only the online players who are not operators (the match ignores case).
+    assert_eq!(suggest("op "), ["Alex", "Zed"]);
+    assert_eq!(suggest("op z"), ["Zed"]);
+    assert_eq!(suggest("deop "), ["steve"]);
+    assert_eq!(suggest("pardon "), ["Griefer"]);
+    assert_eq!(suggest("pardon-ip "), ["203.0.113.9"]);
+    // Add offers the online players who are not whitelisted; remove offers the list, online or not.
+    assert_eq!(suggest("whitelist add "), ["Steve", "Zed"]);
+    assert_eq!(suggest("whitelist remove "), ["Alex", "Old"]);
+    // Nothing else changed: ban still completes by the argument type, with the selectors.
+    assert!(suggest("ban ").contains(&"@a".to_owned()));
+}
+#[test]
 fn only_a_dedicated_server_has_the_dedicated_commands() {
     // Commands.CommandSelection: an integrated server (single player, a LAN
     // world) registers no /op, /ban, /ban-ip, /banlist, /pardon, /pardon-ip,
-    // /deop or /whitelist, so /help and Tab don't offer them.
+    // /deop, /transfer or /whitelist, so /help and Tab don't offer them.
     let dedicated = [
         "ban",
         "ban-ip",
@@ -764,6 +838,7 @@ fn only_a_dedicated_server_has_the_dedicated_commands() {
         "op",
         "pardon",
         "pardon-ip",
+        "transfer",
         "whitelist",
     ];
     for dev in [false, true] {
@@ -774,12 +849,142 @@ fn only_a_dedicated_server_has_the_dedicated_commands() {
                 assert!(integrated.find(name).is_none(), "{name}");
                 assert!(server.find(name).is_some(), "{name}");
             }
+            // includeIntegrated: /publish and /unpublish are the integrated
+            // server's alone.
+            for name in ["publish", "unpublish"] {
+                assert!(integrated.find(name).is_some(), "{name}");
+                assert!(server.find(name).is_none(), "{name}");
+            }
             assert_eq!(
                 server.nodes[0].children.len(),
-                integrated.nodes[0].children.len() + dedicated.len()
+                integrated.nodes[0].children.len() + dedicated.len() - 2
             );
         }
     }
     assert!(vanilla::game_dispatcher().find("ban").is_none());
     assert!(vanilla::release_dispatcher().find("ban").is_none());
+}
+#[test]
+fn a_dedicated_servers_admins_send_players_to_another_server() {
+    // TransferCommand.register: LEVEL_ADMINS, `<hostname> [<port> [<players>]]`
+    // with IntegerArgumentType.integer(1, 65535) for the port.
+    let server = vanilla::game_tree(false, false, true);
+    assert!(
+        vanilla::game_tree(false, false, false)
+            .find("transfer")
+            .is_none()
+    );
+    let at = |level: u8| Registries {
+        permission: level,
+        ..reg()
+    };
+    for line in [
+        "transfer example.net",
+        "transfer example.net 25566",
+        "transfer example.net 25566 Alex",
+    ] {
+        assert_eq!(
+            server.parse(line, &at(3)).executable().unwrap().1,
+            "transfer",
+            "{line}"
+        );
+    }
+    // The hostname is required.
+    let e = server.parse("transfer", &at(3)).executable().unwrap_err();
+    assert_eq!(e.message.plain(), "command.unknown.command");
+    // Below LEVEL_ADMINS the node is not there at all.
+    for level in [0, 1, 2] {
+        let e = server
+            .parse("transfer example.net", &at(level))
+            .executable()
+            .unwrap_err();
+        assert_eq!(
+            e.message.plain(),
+            "command.unknown.command",
+            "level {level}"
+        );
+    }
+    // IntegerArgumentType.integer(1, 65535): port 0 is low, 65536 big.
+    let e = server
+        .parse("transfer example.net 0", &at(3))
+        .executable()
+        .unwrap_err();
+    assert_eq!(e.message.plain(), "argument.integer.low");
+    let e = server
+        .parse("transfer example.net 65536", &at(3))
+        .executable()
+        .unwrap_err();
+    assert_eq!(e.message.plain(), "argument.integer.big");
+}
+/// The root literals a player at `level` is offered (the chat's, client tree).
+fn root_commands(d: &Dispatcher, level: u8) -> Vec<String> {
+    let reg = Registries {
+        permission: level,
+        ..reg()
+    };
+    let parse = d.parse("", &reg);
+    d.client_suggestions(&parse, 0, &reg)
+        .1
+        .into_iter()
+        .map(|s| s.text)
+        .collect()
+}
+#[test]
+fn a_dedicated_server_keeps_seed_and_version_for_game_masters() {
+    // Commands.java: SeedCommand.register(dispatcher, selection != INTEGRATED)
+    // and VersionCommand likewise; `checkPermissions` makes them require
+    // LEVEL_GAMEMASTERS instead of LEVEL_ALL. A dedicated server's player
+    // without op gets neither (a seed cracker's input on an SMP).
+    for dev in [false, true] {
+        for horizon in [false, true] {
+            let integrated = vanilla::game_tree(dev, horizon, false);
+            let server = vanilla::game_tree(dev, horizon, true);
+            let open = root_commands(integrated, 0);
+            assert!(open.contains(&"seed".to_owned()), "{open:?}");
+            assert!(open.contains(&"version".to_owned()), "{open:?}");
+            assert_eq!(
+                root_commands(server, 0),
+                [
+                    "help", "list", "me", "msg", "random", "teammsg", "tell", "tm", "trigger", "w"
+                ]
+            );
+            let gm = root_commands(server, 2);
+            assert!(gm.contains(&"seed".to_owned()), "{gm:?}");
+            assert!(gm.contains(&"version".to_owned()), "{gm:?}");
+            for line in ["seed", "version"] {
+                let player = Registries {
+                    permission: 0,
+                    ..reg()
+                };
+                // Brigadier: a node the source can't use is no node at all.
+                let e = server.parse(line, &player).executable().unwrap_err();
+                assert_eq!(e.message.plain(), "command.unknown.command", "{line}");
+                assert_eq!(e.input.as_deref(), Some(line), "{line}");
+                assert!(integrated.parse(line, &player).executable().is_ok());
+                let op = Registries {
+                    permission: 2,
+                    ..reg()
+                };
+                assert_eq!(server.parse(line, &op).executable().unwrap().1, line);
+            }
+        }
+    }
+}
+
+#[test]
+fn local_coordinate_missing_after_space_expects_a_coordinate() {
+    // LocalCoordinates.readDouble: nothing left to read is ERROR_EXPECTED_DOUBLE,
+    // with the cursor where it stopped; only a non-'^' character is "mixed".
+    let reg = reg();
+    let parse = |text: &str| {
+        let mut r = Reader::new(text);
+        let e = ArgType::Vec3 { center: true }
+            .parse(&mut r, &reg)
+            .map(|_| ())
+            .unwrap_err();
+        (e.key, e.cursor)
+    };
+    assert_eq!(parse("^1 "), ("argument.pos.missing.double".into(), 3));
+    assert_eq!(parse("^1 ^2 "), ("argument.pos.missing.double".into(), 6));
+    assert_eq!(parse("^1 ~"), ("argument.pos.mixed".into(), 0));
 }

@@ -5,14 +5,120 @@
 //! dimension changes (spec 1.2).
 
 use horizon_client::camera::CameraFluid;
-use horizon_client::gfx::pack_uniforms::PackInputs;
+use horizon_client::gfx::pack_uniforms::{PackInputs, PlayerStatus};
+use horizon_client::shader_options::ShaderOptions;
 use horizon_client::text::Text;
-use horizon_shaders::{BlockIds, Macros, Pack, Properties, dimension_folder, load_post};
+use horizon_shaders::{BlockIds, Macros, Pack, Properties, dimension_folder_named, load_post};
 
 use super::{Dim, Game};
 use horizon_client::gfx::pack_draw::EntitySpan;
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, HashMap};
+
+/// The values the player chose for pack `name`'s options (`shaderpacks/<name>.txt`).
+fn chosen_shader_options(name: &str) -> BTreeMap<String, String> {
+    let file = Game::shader_packs_dir().join(horizon_shaders::chosen_file(name));
+    std::fs::read_to_string(file)
+        .map(|text| horizon_shaders::parse_chosen(&text))
+        .unwrap_or_default()
+}
+
+/// Pack `name`'s options, screens and names in `language`, with the values the player chose.
+pub(super) fn read_shader_options(
+    name: &str,
+    language: &str,
+    macros: &Macros,
+) -> Option<ShaderOptions> {
+    let pack = match Pack::open(&Game::shader_packs_dir().join(name)) {
+        Ok(pack) => pack,
+        Err(e) => {
+            log::warn!("shader pack {name}: {e}");
+            return None;
+        }
+    };
+    let options = horizon_shaders::options(&pack);
+    let lang = horizon_shaders::Lang::load(&pack, language);
+    let chosen = chosen_shader_options(name);
+    let pack = pack.with_chosen(chosen.clone());
+    let text = pack.read_text("shaders.properties").unwrap_or_default();
+    let properties = Properties::parse(&text, &horizon_shaders::with_options(&pack, macros));
+    let screens = horizon_shaders::Screens::parse(&properties, &options);
+    Some(ShaderOptions::new(
+        name.to_owned(),
+        options,
+        screens,
+        lang,
+        chosen,
+    ))
+}
+
+/// Saves the values chosen on the Shader Options page; none chosen removes the file.
+pub(super) fn write_shader_options(options: &ShaderOptions) {
+    let file = Game::shader_packs_dir().join(horizon_shaders::chosen_file(&options.pack));
+    let saved = if options.chosen.is_empty() {
+        std::fs::remove_file(&file).or_else(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => Ok(()),
+            _ => Err(e),
+        })
+    } else {
+        std::fs::write(&file, horizon_shaders::chosen_text(&options.chosen))
+    };
+    if let Err(e) = saved {
+        log::warn!("shader pack {}: {}: {e}", options.pack, file.display());
+    }
+}
+
+/// The pack that runs over the world ("": none): `HORIZON_SHADER_PACK`, else the pick
+/// (`active_pack`).
+fn picked_pack(settings: &horizon_client::settings::Settings) -> &str {
+    static DEV_PACK: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let dev = DEV_PACK.get_or_init(|| std::env::var("HORIZON_SHADER_PACK").ok());
+    active_pack(
+        dev.as_deref().unwrap_or(&settings.horizon.shader_pack),
+        &settings.mods,
+    )
+}
+
+/// Whether the pack picked (`picked_pack`) draws flat where the device can (`pack_draws_flat`):
+/// a renderer made now lays the sections out for it before the first world frame loads it
+/// (`Renderer::new`).
+pub(super) fn picked_pack_draws_flat(settings: &horizon_client::settings::Settings) -> bool {
+    let picked = picked_pack(settings);
+    !picked.is_empty() && pack_draws_flat(&Game::shader_packs_dir().join(picked))
+}
+
+/// Whether the pack at `path` has passes that draw the terrain flat where the device can,
+/// reading translucent quads beside their section's solid ones: a `shaders/` pack, taken to
+/// draw terrain, or one of Horizon's own with a `[shadow]` pass.
+fn pack_draws_flat(path: &std::path::Path) -> bool {
+    !horizon_shader_api::package::is_pack(path)
+        || horizon_shader_api::Pack::read(path).is_ok_and(|p| p.manifest.shadow.is_some())
+}
+
+// A native mod can bundle a pack as `native-<mod-id>`; its Mods toggle controls it too.
+fn active_pack<'a>(picked: &'a str, mods: &horizon_client::mod_list::ModList) -> &'a str {
+    if picked.strip_prefix("native-").is_some_and(|id| {
+        mods.installed
+            .iter()
+            .any(|m| m.id == id && m.native.is_some() && mods.disabled.contains(id))
+    }) {
+        ""
+    } else {
+        picked
+    }
+}
+
+/// Whether the pack `settings` pick (or `HORIZON_SHADER_PACK`) is one of Horizon's own: only
+/// then do resource loads read the resource packs' LabPBR maps (`sprites::set_labpbr_maps`).
+pub(super) fn picks_native_pack(settings: &horizon_client::settings::Settings) -> bool {
+    let dev = std::env::var("HORIZON_SHADER_PACK").ok();
+    let picked = active_pack(
+        dev.as_deref().unwrap_or(&settings.horizon.shader_pack),
+        &settings.mods,
+    );
+    !picked.is_empty()
+        && horizon_shader_api::package::is_pack(&Game::shader_packs_dir().join(picked))
+}
 
 use serde_json::{Value, json};
 
@@ -20,6 +126,7 @@ pub(super) const HELP: &[&str] =
     &["shader-pack [list|off|NAME]    list or select a shader pack in shaderpacks/"];
 thread_local! {
     static REPORT: RefCell<Option<Value>> = const { RefCell::new(None) };
+    static OPTIONS_REVISION: Cell<u64> = const { Cell::new(0) };
 }
 pub(super) fn record_report(name: &str, dimension: i32, programs: &[String], notes: &[String]) {
     REPORT.with_borrow_mut(|report| {
@@ -50,13 +157,6 @@ pub(super) fn record_reload_error(name: &str, dimension: i32, errors: &[String])
         );
     }
     record_report(name, dimension, &previous, &notes);
-}
-fn chosen(settings: &horizon_client::settings::Settings) -> &str {
-    static DEV_PACK: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    DEV_PACK
-        .get_or_init(|| std::env::var("HORIZON_SHADER_PACK").ok())
-        .as_deref()
-        .unwrap_or(&settings.horizon.shader_pack)
 }
 pub(super) fn command(
     settings: &mut horizon_client::settings::Settings,
@@ -122,13 +222,22 @@ pub(super) struct PackIds {
     missing_item: i32,
     /// `oldHandLight` (3.2): the first held item and light are those of the brighter hand.
     old_hand_light: bool,
+    /// `vignette`: `false` hides the game's vignette over the pack's image.
+    vignette: bool,
+    /// `oldLighting`: `true` keeps the game's face shading in the block colours.
+    old_lighting: bool,
+    /// `separateAo`: `true` passes AO factor in vertex alpha and keeps pure tint in RGB.
+    pub(super) separate_ao: bool,
 }
 
 #[derive(Clone, PartialEq, Eq)]
 struct LoadKey {
     path: std::path::PathBuf,
+    resources: std::path::PathBuf,
     dimension: i32,
+    dimension_name: String,
     context: (u64, u64),
+    options_revision: u64,
 }
 struct ParsedPack {
     post: horizon_shaders::Post,
@@ -192,73 +301,92 @@ fn parse_source<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String
         .unwrap_or_else(|panic| Err(format!("{SOURCE_PANIC}{panic}")))
 }
 
-fn start_parser(key: LoadKey, inputs: horizon_shaders::GameInputs) -> Result<(), String> {
+fn start_parser(
+    key: LoadKey,
+    inputs: horizon_shaders::GameInputs,
+    mut macros: Macros,
+) -> Result<(), String> {
     let path = key.path.clone();
     let dimension = key.dimension;
+    let dimension_name = key.dimension_name.clone();
+    let resources = key.resources.clone();
+    let options = chosen_shader_options(path.file_name().and_then(|n| n.to_str()).unwrap_or(""));
     let (sender, result) = std::sync::mpsc::channel();
-    let _worker = std::thread::Builder::new()
-        .name("Shader source".into())
-        .stack_size(16 * 1024 * 1024)
-        .spawn(move || {
-            let parsed = parse_source(|| {
-                let pack = Pack::open(&path).map_err(|error| error.to_string())?;
-                let macros = Macros::standard();
-                let properties =
-                    Properties::from_pack(&pack, &dimension_folder(&pack, dimension), &macros)
-                        .in_dimension(dimension);
-                let mut post = load_post(
-                    &pack,
-                    &dimension_folder(&pack, dimension),
-                    &properties,
-                    &macros,
-                    &inputs,
-                );
-                post.notes.extend(
-                    properties
-                        .notes
-                        .iter()
-                        .map(|note| format!("shaders.properties:{}: {}", note.line, note.message)),
-                );
-                let ids = BlockIds::parse(&Properties::parse(
-                    &pack.read_text("block.properties").unwrap_or_default(),
-                    &macros,
-                ));
-                post.notes.extend(
-                    ids.notes
-                        .iter()
-                        .map(|note| format!("block.properties: {note}")),
-                );
-                let entity_text = pack.read_text("entity.properties");
-                let entity_ids = BlockIds::parse_kind(
-                    &Properties::parse(entity_text.as_deref().unwrap_or_default(), &macros),
-                    "entity",
-                );
-                let item_text = pack.read_text("item.properties");
-                let item_ids = BlockIds::parse_kind(
-                    &Properties::parse(item_text.as_deref().unwrap_or_default(), &macros),
-                    "item",
-                );
-                let entity_ids = PackIds {
-                    items: item_ids.plain(),
-                    missing_item: if item_text.is_some() { -1 } else { 0 },
-                    old_hand_light: properties
-                        .get("oldHandLight")
-                        .is_none_or(|value| value.trim() != "false"),
-                    entities: entity_ids.plain(),
-                    missing_entity: if entity_text.is_some() { 65535 } else { 0 },
-                    missing_block: if ids.is_empty() { 0 } else { 65535 },
-                    blocks: ids.clone(),
-                    block_states: RefCell::default(),
-                };
-                Ok(ParsedPack {
-                    post,
-                    ids,
-                    entity_ids,
-                })
-            });
-            let _ = sender.send(parsed);
-        })
-        .map_err(|error| format!("Could not start shader parser: {error}"))?;
+    let _worker =
+        std::thread::Builder::new()
+            .name("Shader source".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || {
+                let parsed =
+                    parse_source(|| {
+                        let pack = Pack::open(&path)
+                            .map_err(|error| error.to_string())?
+                            .with_chosen(options);
+                        let folder = dimension_folder_named(&pack, &dimension_name, dimension);
+                        let properties =
+                            Properties::from_pack(&pack, &folder, &macros).in_dimension(dimension);
+                        let feature_notes = macros.define_features(&properties);
+                        let mut post = load_post(&pack, &folder, &properties, &macros, &inputs);
+                        let read = |namespace: &str, path: &str| {
+                            std::fs::read(resources.join("assets").join(namespace).join(path)).ok()
+                        };
+                        post.notes.extend(horizon_shaders::resolve_resources(
+                            &mut post.textures,
+                            &read,
+                        ));
+                        post.notes.extend(feature_notes);
+                        post.notes.extend(properties.notes.iter().map(|note| {
+                            format!("shaders.properties:{}: {}", note.line, note.message)
+                        }));
+                        let ids = BlockIds::parse(&Properties::parse(
+                            &pack.read_text("block.properties").unwrap_or_default(),
+                            &macros,
+                        ));
+                        post.notes.extend(
+                            ids.notes
+                                .iter()
+                                .map(|note| format!("block.properties: {note}")),
+                        );
+                        let entity_text = pack.read_text("entity.properties");
+                        let entity_ids = BlockIds::parse_kind(
+                            &Properties::parse(entity_text.as_deref().unwrap_or_default(), &macros),
+                            "entity",
+                        );
+                        let item_text = pack.read_text("item.properties");
+                        let item_ids = BlockIds::parse_kind(
+                            &Properties::parse(item_text.as_deref().unwrap_or_default(), &macros),
+                            "item",
+                        );
+                        let entity_ids = PackIds {
+                            items: item_ids.plain(),
+                            missing_item: if item_text.is_some() { -1 } else { 0 },
+                            old_hand_light: properties
+                                .get("oldHandLight")
+                                .is_none_or(|value| value.trim() != "false"),
+                            vignette: properties
+                                .get("vignette")
+                                .is_none_or(|v| v.trim() != "false"),
+                            old_lighting: properties
+                                .get("oldLighting")
+                                .is_some_and(|v| v.trim() == "true"),
+                            separate_ao: properties
+                                .get("separateAo")
+                                .is_some_and(|v| v.trim() == "true"),
+                            entities: entity_ids.plain(),
+                            missing_entity: if entity_text.is_some() { 65535 } else { 0 },
+                            missing_block: if ids.is_empty() { 0 } else { 65535 },
+                            blocks: ids.clone(),
+                            block_states: RefCell::default(),
+                        };
+                        Ok(ParsedPack {
+                            post,
+                            ids,
+                            entity_ids,
+                        })
+                    });
+                let _ = sender.send(parsed);
+            })
+            .map_err(|error| format!("Could not start shader parser: {error}"))?;
     PENDING_LOAD.with_borrow_mut(|pending| {
         *pending = Some(PendingLoad {
             key,
@@ -319,8 +447,11 @@ impl Game<'_> {
                 }
             }
             let desired = LoadKey {
-                path: Self::shader_packs_dir().join(chosen(&self.settings)),
+                path: Self::shader_packs_dir().join(picked_pack(&self.settings)),
+                resources: self.options.resources.clone(),
+                options_revision: OPTIONS_REVISION.with(Cell::get),
                 dimension,
+                dimension_name: self.dim.id().to_owned(),
                 context: renderer.shader_context_key(),
             };
             PENDING_LOAD.with_borrow_mut(|pending| {
@@ -344,14 +475,32 @@ impl Game<'_> {
 
     /// Loads the pack for the current dimension when it changed, and returns this frame's
     /// inputs to the pack's uniforms.
-    pub(super) fn shader_pack_inputs(&mut self, camera: glam::DVec3, partial: f32) -> PackInputs {
+    pub(super) fn shader_pack_inputs(
+        &mut self,
+        camera: glam::DVec3,
+        partial: f32,
+        sky: &horizon_client::environment::Sky,
+    ) -> PackInputs {
+        // A `shaders/` pack lights the faces itself unless `oldLighting=true`: sections mesh
+        // without the game's face shading (the pack loaded or dropped below shows next frame).
+        let pack_lighting = self.pack_ids.as_ref().is_some_and(|ids| !ids.old_lighting);
+        if self.streaming.shader_pack_lighting != pack_lighting {
+            self.streaming.shader_pack_lighting = pack_lighting;
+            self.all_sections_changed();
+        }
         self.poll_shader_workers();
         let completed = poll_parser();
-        let picked = chosen(&self.settings);
+        let separate_ao = self.pack_ids.as_ref().is_some_and(|ids| ids.separate_ao);
+        if self.streaming.separate_ao != separate_ao {
+            self.streaming.separate_ao = separate_ao;
+            self.all_sections_changed();
+        }
+        let picked = picked_pack(&self.settings).to_owned();
         if self.native_shaders.picked != picked {
             REPORT.with_borrow_mut(Option::take);
             // Another pack, or none: drop what ran.
-            self.native_shaders = super::native_shaders::NativeShaders::picking(picked);
+            self.native_shaders = super::native_shaders::NativeShaders::picking(&picked);
+            self.set_translucent_layers(Vec::new());
             self.pack_ids = None;
             if let Some(renderer) = &mut self.renderer {
                 renderer.drop_shader_packs();
@@ -360,7 +509,7 @@ impl Game<'_> {
         if picked.is_empty() {
             return PackInputs::default();
         }
-        let name = picked.to_owned();
+        let name = picked;
         let dimension = match self.dim {
             Dim::Overworld => 0,
             Dim::Nether => -1,
@@ -373,21 +522,25 @@ impl Game<'_> {
         } else if let Some(renderer) = &mut self.renderer {
             let key = LoadKey {
                 path: path.clone(),
+                resources: self.options.resources.clone(),
+                options_revision: OPTIONS_REVISION.with(Cell::get),
                 dimension,
+                dimension_name: self.dim.id().to_owned(),
                 context: renderer.shader_context_key(),
             };
             let ready = completed.and_then(|(at, result)| (at == key).then_some(result));
             if let Some(result) = ready {
                 match result {
                     Ok(mut parsed) => {
-                        let biomes = self.res.biomes();
+                        let biomes = world_biomes!(self);
                         let names: Vec<&str> = biomes
                             .list
                             .iter()
                             .map(|biome| biome.name.as_str())
                             .collect();
                         parsed.post.custom.set_biomes(&names);
-                        let table = block_id_table(&self.pack, &parsed.ids);
+                        let table = state_material_table(&self.pack, &parsed.ids);
+                        renderer.set_separate_ao(parsed.entity_ids.separate_ao);
                         self.pack_ids = parsed.post.complete.then_some(parsed.entity_ids);
                         if let Some((programs, notes)) =
                             renderer.set_shader_pack(dimension, Some(parsed.post), &table)
@@ -407,7 +560,9 @@ impl Game<'_> {
                 }
             } else if renderer.shader_pack_dimension() != Some(dimension) && !parser_busy() {
                 let inputs = renderer.pack_inputs();
-                match start_parser(key,inputs) {
+                let mut macros = Macros::standard();
+                renderer.define_pack_macros(&mut macros);
+                match start_parser(key,inputs,macros) {
                     Ok(())=>record_report(&name,dimension,&[],&["Processing shader sources in the background. Normal rendering remains active until ready.".into()]),
                     Err(error)=>{renderer.set_shader_pack(dimension,None,&[]);record_report(&name,dimension,&[],&[error]);}
                 }
@@ -422,7 +577,8 @@ impl Game<'_> {
             .get(&(at.x >> 4, at.z >> 4))
             .map(|c| c.biome(at.x, at.y, at.z));
         let (held_items, held_light) = self.held_for_pack();
-        let info = biome.map(|b| self.res.biomes().get(b));
+        let status = self.pack_player_status();
+        let info = biome.map(|b| world_biomes!(self).get(b));
         let (end_flash_position, end_flash_intensity) = self.end_flash_for_pack(partial);
         PackInputs {
             day_time: self.world.day_time,
@@ -439,6 +595,7 @@ impl Game<'_> {
             hide_gui: self.ui.hide_gui,
             brightness: self.settings.gamma,
             biome: biome.map_or(-1, i32::from),
+            biome_known: biome.is_some(),
             biome_category: info.map_or(0, |b| horizon_shaders::biome_category(&b.name)),
             biome_precipitation: info.map_or(0, |b| {
                 horizon_shaders::biome_precipitation(b.precipitation, b.temperature)
@@ -468,15 +625,83 @@ impl Game<'_> {
             player_look: glam::DVec3::from_array(self.forward()).as_vec3(),
             elytra_flying: self.player.as_ref().is_some_and(|p| p.fall_flying),
             player_mood: self.ambience.moodiness,
-            // Same cloud plane as clouds::Input::uniform; independent of the Clouds option.
-            cloud_height: if self.dim == Dim::Overworld {
-                192.33
-            } else {
-                f32::NAN
-            },
             heavy_fog: self.boss_overlay.should_create_world_fog(),
             end_flash_position,
             end_flash_intensity,
+            right_handed: !self.settings.main_hand_left,
+            on_ground: self.player.as_ref().is_some_and(|p| p.ground.on_ground),
+            min_y: self.world.shape.min_y,
+            height: self.world.shape.height,
+            logical_height: self.world.shape.logical_height,
+            has_skylight: self.world.shape.sky_light,
+            has_ceiling: self.world.shape.has_ceiling,
+            cloud_height: horizon_client::gfx::pack_uniforms::cloud_height(
+                sky.cloud_color[3],
+                sky.cloud_height,
+            ),
+            // Vanilla's drift in float, times its 0.030000001F blocks a tick.
+            cloud_time: horizon_client::clouds::drift(
+                self.world.game_time,
+                f64::from(partial),
+                self.pack.clouds.0,
+            ) as f32
+                * 0.030_000_001,
+            mod_params: self.native_shader_params_now(partial),
+            status,
+        }
+    }
+
+    /// The local player's state for Iris's status uniforms, read as the HUD reads it.
+    fn pack_player_status(&mut self) -> PlayerStatus {
+        let spectator = self.spectator();
+        let survival = !self.creative && !spectator;
+        let invisible = self.own_invisible();
+        let riding = self.riding.is_some();
+        let Some(p) = &mut self.player else {
+            return PlayerStatus::default();
+        };
+        PlayerStatus {
+            survival,
+            health: p.health.health(),
+            max_health: p.attribute("minecraft:max_health").unwrap_or(20.0) as f32,
+            food: p.health.food.food as f32,
+            air: p.air as f32,
+            armor: p
+                .attribute("minecraft:armor")
+                .or_else(|_| p.attribute("armor"))
+                .unwrap_or(0.0) as f32,
+            spectator,
+            riding,
+            feet_in_water: p.fluids.was_touching_water,
+            swimming: p.pose == horizon_client::pose::Pose::Swimming,
+            burning: p.fire_ticks > 0 && !spectator,
+            hurt: p.health.hurt_animation_time > 0,
+            invisible,
+            sneaking: p.pose == horizon_client::pose::Pose::Crouching,
+            sprinting: p.sprinting,
+        }
+    }
+
+    /// The Shader Options page opened: the picked pack's options, screens and names.
+    pub(super) fn open_shader_options(&mut self) {
+        let mut macros = Macros::standard();
+        if let Some(renderer) = &self.renderer {
+            renderer.define_pack_macros(&mut macros);
+        }
+        let name = &self.settings.horizon.shader_pack;
+        self.settings.shader_options = read_shader_options(name, &self.settings.language, &macros);
+    }
+
+    /// The Shader Options page closed with changes: they are saved, and the pack loads again.
+    pub(super) fn save_shader_options(&mut self) {
+        let Some(options) = self.settings.shader_options.take() else {
+            return;
+        };
+        write_shader_options(&options);
+        OPTIONS_REVISION.with(|revision| revision.set(revision.get().wrapping_add(1)));
+        self.pack_ids = None;
+        if let Some(renderer) = &mut self.renderer {
+            renderer.drop_shader_packs();
         }
     }
 
@@ -499,18 +724,18 @@ impl Game<'_> {
         ));
     }
 
+    /// Whether the game's vignette draws: the option, unless the loaded pack turns it off.
+    pub(super) fn vignette_shown(&self) -> bool {
+        self.settings.vignette && self.pack_ids.as_ref().is_none_or(|ids| ids.vignette)
+    }
+
     /// `heldItemId(2)` and `heldBlockLightValue(2)`: main hand, then off hand (5.2, 5.3).
     fn held_for_pack(&mut self) -> ([i32; 2], [i32; 2]) {
         if self.pack_ids.is_none() {
             return ([0; 2], [0; 2]);
         }
-        if self.luminance.is_none() {
-            self.luminance = Some(horizon_client::dynamic_light::Luminance::new(
-                self.res.facts(),
-                self.pack.assets.registry,
-            ));
-        }
-        let (Some(ids), Some(lum)) = (&self.pack_ids, &self.luminance) else {
+        let lum = self.luminance();
+        let Some(ids) = &self.pack_ids else {
             return ([0; 2], [0; 2]);
         };
         let hands = [self.selected, super::shield::OFFHAND_SLOT].map(|slot| {
@@ -574,18 +799,32 @@ impl Game<'_> {
     }
 
     fn mark_entity_part(&self, start: usize, name: &str, translucent: bool) {
-        if let Some(ids) = &self.pack_ids {
-            let id = ids.entities.get(name).copied();
-            self.push_span(start, "ENTITIES", id.unwrap_or(ids.missing_entity));
-            if let Some(last) = self.entity_spans.borrow_mut().last_mut() {
-                last.translucent = translucent;
+        let id = match &self.pack_ids {
+            Some(ids) => ids
+                .entities
+                .get(name)
+                .copied()
+                .unwrap_or(ids.missing_entity),
+            None if native_spans() => name_id(name),
+            None => return,
+        };
+        self.push_span(start, "ENTITIES", id);
+        if let Some(last) = self.entity_spans.borrow_mut().last_mut() {
+            last.translucent = translucent;
+            if let Some(gpu) = self.skin_frame.borrow_mut().spans.last_mut() {
+                gpu.translucent = translucent;
             }
         }
     }
 
     /// Starts a span for the block entity of block state `state`.
     pub(super) fn mark_block_entity(&self, start: usize, state: u32) {
-        let Some(ids) = &self.pack_ids else { return };
+        let Some(ids) = &self.pack_ids else {
+            if native_spans() {
+                self.push_span(start, "BLOCK_ENTITIES", state as i32);
+            }
+            return;
+        };
         let id = *ids
             .block_states
             .borrow_mut()
@@ -608,6 +847,9 @@ impl Game<'_> {
             .emission;
         if let Some(last) = self.entity_spans.borrow_mut().last_mut() {
             last.emissive = emission > 0;
+            if let Some(gpu) = self.skin_frame.borrow_mut().spans.last_mut() {
+                gpu.emissive = emission > 0;
+            }
         }
     }
 
@@ -615,11 +857,15 @@ impl Game<'_> {
     /// pack's shadow pass draws it.
     pub(super) fn mark_player(&self, start: usize, hidden: bool) {
         self.mark_entity(start, "minecraft:player");
-        if self.pack_ids.is_some()
+        if (self.pack_ids.is_some() || native_spans())
             && let Some(last) = self.entity_spans.borrow_mut().last_mut()
         {
             last.player = true;
             last.hidden = hidden;
+            if let Some(gpu) = self.skin_frame.borrow_mut().spans.last_mut() {
+                gpu.player = true;
+                gpu.hidden = hidden;
+            }
         }
     }
 
@@ -631,7 +877,7 @@ impl Game<'_> {
 
     /// Starts a span of geometry that is not an entity (`PARTICLES`, `DESTROY`...).
     pub(super) fn mark_stage(&self, start: usize, stage: &str) {
-        if self.pack_ids.is_some() {
+        if self.pack_ids.is_some() || native_spans() {
             self.push_span(start, stage, 0);
         }
     }
@@ -644,6 +890,17 @@ impl Game<'_> {
             id,
             ..Default::default()
         };
+        if self.pack_ids.is_some() && self.skinning() {
+            let mut skin = self.skin_frame.borrow_mut();
+            let gpu = EntitySpan {
+                start: skin.vertices,
+                ..span
+            };
+            match skin.spans.last_mut() {
+                Some(last) if last.start == gpu.start => *last = gpu,
+                _ => skin.spans.push(gpu),
+            }
+        }
         // A span that drew nothing gives way to the next.
         match spans.last_mut() {
             Some(last) if last.start == span.start => *last = span,
@@ -652,11 +909,25 @@ impl Game<'_> {
     }
 }
 
-/// `mc_Entity` (x, y) of each block sprite layer, as (id, fluid) pairs: terrain vertices carry
-/// their sprite layer, not their block. A layer takes the id of the block named like its sprite
-/// (`block/oak_leaves` for `oak_leaves`), else the id most blocks drawing it share (ties: the
-/// lowest); -1 when no block drawing it has one. y is 1 for the fluid sprites, -1 otherwise.
-fn block_id_table(pack: &super::PackResources, ids: &BlockIds) -> Vec<i32> {
+/// Spans for a native mod (`native_render::RenderNeeds::entity_spans`), without a pack.
+fn native_spans() -> bool {
+    horizon_client::gfx::native_render::render_needs().entity_spans
+}
+
+/// A span's id for entity type `name` without a pack: stable, so a mod can match runs from one
+/// frame to the next.
+fn name_id(name: &str) -> i32 {
+    // FNV-1a.
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in name.bytes() {
+        hash = (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193);
+    }
+    hash as i32
+}
+
+/// Exact state identities for the GLSL terrain adapter; distinct from native material
+/// tags, which are indexed by sprite layer (`block_id_table`).
+fn state_material_table(pack: &super::PackResources, ids: &BlockIds) -> Vec<i32> {
     state_block_id_table(pack.assets.registry, ids, |id| {
         pack.context.tables.facts(id).map_or(0, |f| f.emission)
     })
@@ -695,6 +966,85 @@ fn state_block_id_table(
     table
 }
 
+/// Sprite material IDs for native packs: named blocks win, then the most common
+/// model use. GLSL uses the exact state table above instead.
+pub(super) fn block_id_table(pack: &super::PackResources, ids: &BlockIds) -> Vec<i32> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let layers = pack
+        .render
+        .sprite_layers
+        .values()
+        .max()
+        .map_or(0, |l| l + 1) as usize;
+    let mut table = vec![-1; layers * 2];
+    if ids.is_empty() {
+        return table;
+    }
+    let registry = pack.assets.registry;
+    let catalog = &pack.render.model_catalog;
+    let sprite = |name: &str| pack.render.sprite_layers.get(name).copied();
+    // (layer, id) -> (a block named like the sprite, the blocks).
+    let mut votes: BTreeMap<(u32, i32), (bool, BTreeSet<&str>)> = BTreeMap::new();
+    for i in 0..registry.len() {
+        let state_id = horizon_world::registry::BlockStateId(i as u32);
+        let Some(state) = registry.state(state_id) else {
+            continue;
+        };
+        let Some(id) = ids.id(&state.name, |k| state.properties.get(k).map(String::as_str)) else {
+            continue;
+        };
+        let block = state.name.strip_prefix("minecraft:").unwrap_or(&state.name);
+        let mut vote = |layer: u32| {
+            let named = pack
+                .layer_names
+                .get(&layer)
+                .and_then(|n| n.strip_prefix("block/"))
+                == Some(block);
+            let v = votes.entry((layer, id)).or_default();
+            v.0 |= named;
+            v.1.insert(&state.name);
+        };
+        // Fluids draw from their own sprites.
+        let fluid = match block {
+            "water" => ["water_still", "water_flow"],
+            "lava" => ["lava_still", "lava_flow"],
+            _ => ["", ""],
+        };
+        for f in fluid.iter().filter(|f| !f.is_empty()) {
+            if let Some(l) = sprite(&format!("minecraft:block/{f}")) {
+                vote(l);
+            }
+        }
+        let origin = horizon_core::position::BlockPos::new(0, 0, 0);
+        for (_, model) in catalog.collect(state_id, origin).unwrap_or_default() {
+            for face in &model.faces {
+                vote(face.layer);
+            }
+        }
+    }
+    let mut best: BTreeMap<u32, (bool, usize, i32)> = BTreeMap::new();
+    for ((layer, id), (named, blocks)) in votes {
+        let candidate = (named, blocks.len(), -id);
+        let b = best.entry(layer).or_insert(candidate);
+        if candidate > *b {
+            *b = candidate;
+        }
+    }
+    for (layer, (_, _, id)) in best {
+        if let Some(slot) = table.get_mut(layer as usize * 2) {
+            *slot = -id;
+        }
+    }
+    for f in ["water_still", "water_flow", "lava_still", "lava_flow"] {
+        if let Some(l) = sprite(&format!("minecraft:block/{f}"))
+            && let Some(slot) = table.get_mut(l as usize * 2 + 1)
+        {
+            *slot = 1;
+        }
+    }
+    table
+}
+
 #[cfg(test)]
 mod integration_tests {
     use super::*;
@@ -721,8 +1071,11 @@ mod integration_tests {
             *pending = Some(PendingLoad {
                 key: LoadKey {
                     path: "shutdown.zip".into(),
+                    resources: "resources".into(),
                     dimension: 0,
+                    dimension_name: "minecraft:overworld".into(),
                     context: (0, 0),
+                    options_revision: 0,
                 },
                 result,
                 worker: Some(worker),
@@ -757,7 +1110,7 @@ mod integration_tests {
             states.push(
                 BlockState {
                     name: name.into(),
-                    properties,
+                    properties: properties.into(),
                 }
                 .to_nbt(),
             );
@@ -821,8 +1174,11 @@ mod integration_tests {
         let (send, result) = std::sync::mpsc::channel();
         let key = LoadKey {
             path: "test.zip".into(),
+            resources: "resources".into(),
             dimension: 0,
+            dimension_name: "minecraft:overworld".into(),
             context: (1, 2),
+            options_revision: 0,
         };
         PENDING_LOAD.with_borrow_mut(|pending| {
             *pending = Some(PendingLoad {
@@ -838,5 +1194,55 @@ mod integration_tests {
         assert!(at == key && result.is_err());
         assert!(!parser_busy());
         assert!(poll_parser().is_none());
+    }
+}
+
+#[cfg(test)]
+mod native_pack_tests {
+    use super::{active_pack, pack_draws_flat};
+    use horizon_client::mod_list::{Installed, ModList, NativePage};
+
+    #[test]
+    fn shaders_packs_and_packs_with_a_shadow_pass_draw_flat() {
+        let root = std::env::temp_dir().join(format!("horizon-flat-packs-{}", std::process::id()));
+        // A folder without a manifest is a `shaders/` pack; with one, a pack of Horizon's own.
+        let pack = |name: &str, manifest: Option<&str>| {
+            let dir = root.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            if let Some(extra) = manifest {
+                std::fs::write(dir.join("material.wgsl"), "").unwrap();
+                let text = format!(
+                    "schema = 1\nid = \"{name}\"\nname = \"{name}\"\nversion = \"1\"\napi = \"{}\"\n\
+                     [material]\nfile = \"material.wgsl\"\n{extra}",
+                    horizon_shader_api::API
+                );
+                std::fs::write(dir.join(horizon_shader_api::MANIFEST), text).unwrap();
+            }
+            dir
+        };
+        assert!(pack_draws_flat(&pack("shaders_pack", None)));
+        assert!(!pack_draws_flat(&pack("unshadowed", Some(""))));
+        assert!(pack_draws_flat(&pack("shadowed", Some("[shadow]\n"))));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn native_shader_follows_its_mod_without_affecting_other_packs() {
+        let mut mods = ModList::default();
+        mods.installed.push(Installed {
+            id: "horizon_better_visuals".into(),
+            title: "Better Visuals".into(),
+            description: String::new(),
+            problem: None,
+            dev: false,
+            native: Some(NativePage::default()),
+        });
+        let owned = "native-horizon_better_visuals";
+        assert_eq!(active_pack(owned, &mods), owned);
+        mods.disabled.insert("horizon_better_visuals".into());
+        assert_eq!(active_pack(owned, &mods), "");
+        assert_eq!(active_pack("golden_hour", &mods), "golden_hour");
+        mods.installed[0].native = None;
+        assert_eq!(active_pack(owned, &mods), owned);
     }
 }

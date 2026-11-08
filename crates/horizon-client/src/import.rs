@@ -220,12 +220,15 @@ impl Pack {
         }
         let archive = ZipArchive::new(File::open(path)?)?;
         // `name_for_index` borrows the archive, so the list is finished before anything is read out.
-        let mut names: Vec<String> = (0..archive.len())
-            .filter_map(|index| {
-                let name = archive.name_for_index(index)?.replace('\\', "/");
-                (!name.ends_with('/') && !is_junk(&name)).then_some(name)
-            })
-            .collect();
+        let mut names = Vec::new();
+        for index in 0..archive.len() {
+            if let Some(name) = archive.name_for_index(index) {
+                let name = name?.replace('\\', "/");
+                if !name.ends_with('/') && !is_junk(&name) {
+                    names.push(name);
+                }
+            }
+        }
         if names.len() > MAX_ENTRIES {
             return Err("the archive holds more files than this will unpack".into());
         }
@@ -288,7 +291,7 @@ impl Pack {
         let mut written = 0u64;
         for index in 0..self.archive.len() {
             let file = self.archive.by_index(index)?;
-            let name = file.name().replace('\\', "/");
+            let name = file.name()?.replace('\\', "/");
             let failure = |message: String| {
                 let _ = fs::remove_dir_all(into);
                 Err::<(usize, u64), _>(message.into())
@@ -382,6 +385,7 @@ fn publish(scratch: &Path, dest: &Path) -> Result<()> {
         fs::rename(dest, &previous)?;
     }
     fs::rename(scratch, dest)?;
+    horizon_core::prepared_files::invalidate(dest);
     let _ = fs::remove_dir_all(&previous);
     Ok(())
 }
@@ -394,10 +398,12 @@ pub fn recover(home: &Path) -> Result<Option<PathBuf>> {
     let previous = home.join("resources.previous");
     if scratch.is_dir() && !dest.exists() {
         fs::rename(&scratch, &dest)?;
+        horizon_core::prepared_files::invalidate(&dest);
         return Ok(Some(dest));
     }
     if !dest.exists() && previous.is_dir() {
         fs::rename(&previous, &dest)?;
+        horizon_core::prepared_files::invalidate(&dest);
         return Ok(Some(dest));
     }
     // Both landed: the new tree is in place, so what is left over is scratch and the old copy.
@@ -641,6 +647,56 @@ mod tests {
         // The archive is a copy of what the computer still has, so it does not stay.
         assert!(!archive.exists());
         assert!(!home.join("resources.unpacking").exists());
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn replacing_game_files_invalidates_the_previous_prepared_cache() {
+        let home = temp_home("prepared-cache-replace");
+        let root = home.join("resources");
+        fs::create_dir_all(root.join("assets/minecraft/textures/block")).unwrap();
+        fs::write(root.join("horizon-resources.json"), r#"{"schema":7}"#).unwrap();
+        let member = "assets/minecraft/textures/block/grass.png";
+        fs::write(root.join(member), b"old pixels").unwrap();
+        horizon_core::prepared_files::write(&root).unwrap();
+        let previous = horizon_core::prepared_files::open(&root).unwrap();
+        let archive = home.join("new.zip");
+        write_archive(&archive, PREPARED);
+        Pack::open(&archive).unwrap().install(&home).unwrap();
+        assert_eq!(
+            horizon_core::prepared_files::read(&root.join(member)).unwrap(),
+            b"png"
+        );
+        assert_eq!(previous.read(member).unwrap().unwrap(), b"old pixels");
+        horizon_core::prepared_files::invalidate(&root);
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn desktop_prepared_binary_is_optional_after_mobile_import() {
+        let home = temp_home("desktop-prepared-cache");
+        let desktop = home.join("desktop");
+        fs::create_dir_all(desktop.join("assets/minecraft/textures/block")).unwrap();
+        fs::write(desktop.join("horizon-resources.json"), r#"{"schema":7}"#).unwrap();
+        let member = "assets/minecraft/textures/block/grass.png";
+        fs::write(desktop.join(member), b"portable pixels").unwrap();
+        horizon_core::prepared_files::write(&desktop).unwrap();
+        let archive = home.join("prepared.zip");
+        pack(&desktop, &archive, |_, _| {}).unwrap();
+        let installed = Pack::open(&archive).unwrap().install(&home).unwrap();
+        assert!(
+            installed
+                .path
+                .join(horizon_core::prepared_files::FILE_NAME)
+                .is_file()
+        );
+        // The cache names its original root; the original files remain portable.
+        assert!(horizon_core::prepared_files::open(&installed.path).is_none());
+        assert_eq!(
+            horizon_core::prepared_files::read(&installed.path.join(member)).unwrap(),
+            b"portable pixels"
+        );
+        horizon_core::prepared_files::invalidate(&installed.path);
         fs::remove_dir_all(home).unwrap();
     }
 

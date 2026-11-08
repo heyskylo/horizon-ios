@@ -137,6 +137,7 @@ impl Game<'_> {
             }
         }
         self.container_changed(key);
+        self.native_crafter_craft([key.0, key.1, key.2], &recipe);
         Ok(())
     }
     /// `CrafterBlock.dispenseItem`: into the container in front, else out as an item.
@@ -253,6 +254,7 @@ impl Game<'_> {
             )
             .resolve_legacy()
         });
+        crate::game::screen_info::name_container(|| title.plain());
         let tw = atlas.font.width_text(&title);
         batch.text_styled(
             atlas,

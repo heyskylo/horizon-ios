@@ -5,7 +5,7 @@ use super::{
     Dispatcher,
     args::{ArgType, Resource, integer},
 };
-use horizon_client_core::gamerules::{RULES, Value};
+use horizon_client_core::gamerules::{MINECART_IMPROVEMENTS, Value, available_rules};
 
 /// Permission levels (Commands.LEVEL_*).
 pub const ALL: u8 = 0;
@@ -38,20 +38,46 @@ pub fn build() -> Dispatcher {
 pub fn build_with(dev: bool) -> Dispatcher {
     build_for(dev, false)
 }
-/// [`build_with`], plus with `dedicated` the commands only a dedicated server
-/// has (Commands.CommandSelection.DEDICATED: `/op`, `/ban`, `/whitelist`...).
+/// [`build_with`] for a server of the given kind (Commands.CommandSelection):
+/// an integrated server's tree, or with `dedicated` a dedicated server's.
 pub fn build_for(dev: bool, dedicated: bool) -> Dispatcher {
-    let mut d = registered(dev);
+    build_for_features(dev, dedicated, false)
+}
+fn build_for_features(dev: bool, dedicated: bool, minecart_improvements: bool) -> Dispatcher {
+    let mut d = registered_with_features(dev, minecart_improvements);
     if dedicated {
-        super::tree_extra::register_dedicated(&mut d, 0);
+        dedicated_selection(&mut d);
     }
     apply_vanilla_order(&mut d);
     d
+}
+/// Commands(CommandSelection.DEDICATED) where it differs from INTEGRATED:
+/// `seed` and `version` check permissions (SeedCommand.register and
+/// VersionCommand.register get `selection != INTEGRATED`), `publish` and
+/// `unpublish` are not registered (`includeIntegrated`), and the dedicated
+/// commands are (`includeDedicated`: `/op`, `/ban`, `/whitelist`...).
+fn dedicated_selection(d: &mut Dispatcher) {
+    for name in ["seed", "version"] {
+        if let Some(n) = d.find(name) {
+            d.requires(n, GAMEMASTERS);
+        }
+    }
+    let kept: Vec<usize> = d.nodes[0]
+        .children
+        .iter()
+        .copied()
+        .filter(|&c| !matches!(d.nodes[c].name(), "publish" | "unpublish"))
+        .collect();
+    d.nodes[0].children = kept;
+    super::tree_extra::register_dedicated(d, 0);
 }
 /// The tree in the order Horizon's code registers it, before
 /// [`vanilla_order`](super::vanilla_order) puts children in vanilla's order
 /// (tools/generate_command_order.py compares the two).
 pub fn registered(dev: bool) -> Dispatcher {
+    registered_with_features(dev, false)
+}
+fn registered_with_features(dev: bool, minecart_improvements: bool) -> Dispatcher {
     let mut d = Dispatcher::new();
     let root = 0;
 
@@ -272,7 +298,7 @@ pub fn registered(dev: bool) -> Dispatcher {
     // gamerule <rule> [<value>] (short and namespaced names)
     let gr = d.literal(root, "gamerule");
     d.requires(gr, GAMEMASTERS);
-    for rule in RULES {
+    for rule in available_rules(minecart_improvements) {
         for name in [rule.name.to_owned(), format!("minecraft:{}", rule.name)] {
             let r = d.literal(gr, &name);
             d.executes(r, "gamerule");
@@ -297,7 +323,8 @@ pub fn registered(dev: bool) -> Dispatcher {
         d.executes(l, "difficulty");
     }
 
-    // seed and version: everyone in the integrated server.
+    // seed and version: everyone in the integrated server, game masters on a
+    // dedicated one (`dedicated_selection`).
     let seed = d.literal(root, "seed");
     d.executes(seed, "seed");
     let version = d.literal(root, "version");
@@ -553,6 +580,26 @@ pub fn game_dispatcher() -> &'static Dispatcher {
         std::env::var_os("HORIZON_DEV_COMMANDS").is_some(),
         HORIZON_COMMANDS.load(std::sync::atomic::Ordering::Relaxed),
         DEDICATED_COMMANDS.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+/// The server's tree for this world's enabled features. Cache entries are
+/// separate from vanilla-only worlds and from each server/command selection.
+pub fn game_dispatcher_with_features(features: &[String]) -> &'static Dispatcher {
+    if !features.iter().any(|f| f == MINECART_IMPROVEMENTS) {
+        return game_dispatcher();
+    }
+    static TREES: [std::sync::OnceLock<Dispatcher>; 8] = [const { std::sync::OnceLock::new() }; 8];
+    let dev = std::env::var_os("HORIZON_DEV_COMMANDS").is_some();
+    let horizon = HORIZON_COMMANDS.load(std::sync::atomic::Ordering::Relaxed);
+    let dedicated = DEDICATED_COMMANDS.load(std::sync::atomic::Ordering::Relaxed);
+    TREES[usize::from(dev) | usize::from(horizon) << 1 | usize::from(dedicated) << 2].get_or_init(
+        || {
+            let mut d = build_for_features(dev, dedicated, true);
+            if horizon {
+                horizon_commands(&mut d, 0);
+            }
+            d
+        },
     )
 }
 /// Whether this process is a dedicated server, whose tree has the dedicated

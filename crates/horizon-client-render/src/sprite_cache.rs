@@ -8,12 +8,14 @@ use std::{
     collections::HashMap,
     fs,
     hash::{DefaultHasher, Hash, Hasher},
+    io::Read,
     path::{Path, PathBuf},
 };
 
 const MAGIC: &[u8; 4] = b"HSPR";
 /// Bump when `Decoded` or the decoding in `Sprites::decode` changes.
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
+const MAX_CACHE_BYTES: usize = 256 << 20;
 const FILE: &str = "horizon-sprites.cache";
 
 /// What decoding one texture gives, before it takes a layer.
@@ -72,8 +74,7 @@ impl SpriteCache {
     pub fn open(root: &Path) -> Option<Self> {
         let fingerprint = fingerprint(root)?;
         let path = root.join(FILE);
-        let entries = fs::read(&path)
-            .ok()
+        let entries = read_cache(&path)
             .and_then(|bytes| parse(&bytes, fingerprint))
             .unwrap_or_default();
         Some(Self {
@@ -96,6 +97,20 @@ impl SpriteCache {
             return;
         }
         self.dirty = false;
+        let total = self.entries.iter().try_fold(20usize, |total, (name, d)| {
+            let frames = d
+                .frames
+                .iter()
+                .try_fold(0usize, |sum, f| sum.checked_add(f.len() + 4))?;
+            total
+                .checked_add(name.len())?
+                .checked_add(d.animation.as_ref().map_or(0, String::len))?
+                .checked_add(frames)?
+                .checked_add(24)
+        });
+        if total.is_none_or(|total| total > MAX_CACHE_BYTES) {
+            return;
+        }
         let temporary = self
             .path
             .with_extension(format!("{}.tmp", std::process::id()));
@@ -105,6 +120,20 @@ impl SpriteCache {
             let _ = fs::remove_file(&temporary);
         }
     }
+}
+
+/// Caches are optional, and a corrupt or externally supplied cache must not bypass
+/// the PNG decoder's allocation bounds.
+fn read_cache(path: &Path) -> Option<Vec<u8>> {
+    let file = fs::File::open(path).ok()?;
+    if file.metadata().ok()?.len() > MAX_CACHE_BYTES as u64 {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_CACHE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() <= MAX_CACHE_BYTES).then_some(bytes)
 }
 
 fn serialize(fingerprint: u64, entries: &HashMap<String, Decoded>) -> Vec<u8> {
@@ -151,6 +180,9 @@ impl<'a> Reader<'a> {
     }
 }
 fn parse(bytes: &[u8], fingerprint: u64) -> Option<HashMap<String, Decoded>> {
+    if bytes.len() > MAX_CACHE_BYTES {
+        return None;
+    }
     let mut r = Reader(bytes);
     if r.take(4)? != MAGIC || r.u32()? != VERSION {
         return None;
@@ -164,9 +196,20 @@ fn parse(bytes: &[u8], fingerprint: u64) -> Option<HashMap<String, Decoded>> {
         let name = String::from_utf8(r.bytes()?.to_vec()).ok()?;
         let side = r.u32()?;
         let frame_count = r.u32()?;
+        let frame_len = (side as usize).checked_mul(side as usize)?.checked_mul(4)?;
+        let total = frame_len
+            .checked_add(std::mem::size_of::<Vec<u8>>())?
+            .checked_mul(frame_count as usize)?;
+        if side == 0 || frame_count == 0 || total > MAX_CACHE_BYTES {
+            return None;
+        }
         let mut frames = Vec::new();
         for _ in 0..frame_count {
-            frames.push(r.bytes()?.to_vec());
+            let frame = r.bytes()?;
+            if frame.len() != frame_len {
+                return None;
+            }
+            frames.push(frame.to_vec());
         }
         let animation = String::from_utf8(r.bytes()?.to_vec()).ok()?;
         let has_animation = r.take(1)?[0] != 0;
@@ -180,10 +223,6 @@ fn parse(bytes: &[u8], fingerprint: u64) -> Option<HashMap<String, Decoded>> {
         };
         let alpha_cutoff_bias = f32::from_bits(r.u32()?);
         let flags = r.take(1)?[0];
-        let frame_len = (side as usize).checked_mul(side as usize)?.checked_mul(4)?;
-        if frames.is_empty() || frames.iter().any(|f| f.len() != frame_len) {
-            return None;
-        }
         entries.insert(
             name,
             Decoded {
@@ -224,6 +263,19 @@ mod tests {
         fs::create_dir_all(dir.join("assets/minecraft/textures/block")).unwrap();
         dir
     }
+    #[test]
+    fn corrupt_cache_cannot_supply_empty_or_oversized_sprites() {
+        let mut entries = HashMap::new();
+        let mut d = sample(1, None);
+        d.side = 0;
+        d.frames = vec![Vec::new()];
+        entries.insert("a:b".into(), d.clone());
+        assert!(parse(&serialize(7, &entries), 7).is_none());
+        d.side = u32::MAX;
+        entries.insert("a:b".into(), d);
+        assert!(parse(&serialize(7, &entries), 7).is_none());
+    }
+
     #[test]
     fn round_trips() {
         let mut entries = HashMap::new();

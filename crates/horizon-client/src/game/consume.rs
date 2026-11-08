@@ -26,24 +26,26 @@ impl Game<'_> {
     /// `Consumable.startConsuming`: positive durations begin a held use;
     /// zero-tick consumables execute onConsume in this interaction, not a later tick.
     pub(super) fn start_eating(&mut self, info: &ItemInfo) -> bool {
+        let Some(stack) = self.held().cloned() else {
+            return false;
+        };
         let Some(consumable) = info.consumable.as_ref() else {
             return false;
         };
         if info.food.is_some()
-            && !self
-                .player
-                .as_ref()
-                .is_some_and(|p| info.can_always_eat || p.health.food.food < 20 || self.creative)
+            && (self.player.is_none() || !self.can_eat(&stack, info.can_always_eat))
         {
             return false;
         }
-        if consumable.ticks() <= 0 {
-            let Some(stack) = self.held().cloned() else {
-                return false;
-            };
-            self.complete_consuming(info, consumable, &stack);
-        } else if self.using.is_none() {
-            self.using = Some((self.held_slot(), 0));
+        if super::item_use::consumes_at_once(consumable.ticks()) {
+            // Instant use is authoritative on the server; a connected client
+            // receives its resulting inventory instead of consuming twice.
+            if self.remote.is_none() {
+                self.complete_consuming(info, consumable, &stack);
+            }
+        } else {
+            // Also initializes the duration and lets native use hooks adjust it.
+            self.start_using_item();
         }
         true
     }
@@ -86,7 +88,7 @@ impl Game<'_> {
     ) {
         self.emit_consume(consumable, stack, 16);
         // ServerPlayer: the used statistic and the consume_item trigger.
-        self.stats.add("used", &stack.item, 1);
+        self.award_stat("used", &stack.item, 1);
         self.trigger_item("minecraft:consume_item", stack);
         // FoodProperties.onConsume, the player's one ConsumableListener.
         if let Some((nutrition, saturation)) = info.food {
@@ -347,6 +349,33 @@ impl TeleportConsumeWorld for Teleporter<'_, '_> {
     }
     fn position(&mut self) -> Result<Vec3, Infallible> {
         Ok(self.at())
+    }
+    fn teleport_allowed(&mut self, target: &mut Vec3) -> Result<bool, Infallible> {
+        // EntityTeleportEvent.ChorusFruit: only a server's player is heard.
+        let (Some(uuid), Some(name)) = (self.0.lan_acting_uuid, self.0.lan_acting_name.clone())
+        else {
+            return Ok(true);
+        };
+        let from = self.at();
+        let mut to = [target.x, target.y, target.z];
+        let mut cancel = false;
+        self.0.native_chorus_fruit_teleport(
+            uuid,
+            &name,
+            [from.x, from.y, from.z],
+            &mut to,
+            &mut cancel,
+        );
+        // Keep the mod's spot inside the level as vanilla's own draw is (a
+        // huge y would walk down a long way); one that is not a number keeps
+        // the draw.
+        if to.iter().all(|v| v.is_finite()) {
+            let shape = self.0.level_shapes.get(self.0.dim.id());
+            let high = shape.min_y + shape.logical_height - 1;
+            let y = to[1].clamp(f64::from(shape.min_y), f64::from(high));
+            *target = Vec3::new(to[0], y, to[2]);
+        }
+        Ok(!cancel)
     }
     fn random_teleport(&mut self, target: Vec3) -> Result<bool, Infallible> {
         Ok(self

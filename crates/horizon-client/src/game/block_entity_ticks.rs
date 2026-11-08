@@ -8,6 +8,7 @@ use super::Game;
 use horizon_client::{
     Result,
     block_entities::{Pos, Ticking},
+    block_entity_anim::Ticker,
     containers::{BlockEntity, FurnaceKind, HOPPER_SLOTS},
     furnace::FurnaceCooking,
 };
@@ -25,6 +26,10 @@ impl Game<'_> {
             self.world.block_entities.set_states(states);
             let containers = self.native_containers();
             self.world.block_entities.set_mod_containers(containers);
+            let fluids = self.native_fluid_tables();
+            self.world.block_entities.set_mod_fluids(fluids);
+            let energy = self.native_energy_tables();
+            self.world.block_entities.set_mod_energy(energy);
         }
         // Only lingering cooldowns are dropped; a hopper that ticks checks
         // its own block. Once a second is soon enough for the rest.
@@ -90,7 +95,59 @@ impl Game<'_> {
                 self.client_tick_trial_spawner(key);
             }
         }
+        // `ShulkerBoxBlockEntity.tick`: the lids of the boxes this level
+        // animates. Their grown collision shape reaches the collision queries
+        // through `World::shulkers`, and an opening lid pushes what it runs
+        // into (`moveCollidedEntities`), as a moving piston does.
+        let pushes = self.tick_shulkers();
+        self.sync_shulkers();
+        self.push_shulker_entities(pushes);
         Ok(())
+    }
+    /// `ShulkerBoxBlockEntity.tick` for the boxes in block-ticking chunks, in
+    /// position order: the lid's new progress, and the swept box of an opening
+    /// lid for `moveCollidedEntities`. A box whose block is gone is dropped.
+    /// The boxes are those the level animates: a box opens (`start_open` and
+    /// block event 1) before it has one, exactly as vanilla's block entity is
+    /// there from the start.
+    fn tick_shulkers(&mut self) -> Vec<super::piston_push::ShulkerPush> {
+        let ticking = self.block_ticking_area();
+        let mut pushes = Vec::new();
+        let mut gone = Vec::new();
+        let positions: Vec<[i32; 3]> = self.be_anims.shulkers.keys().copied().collect();
+        for pos in positions {
+            let state = self.world.block(pos[0], pos[1], pos[2]);
+            let Some(Ticker::Shulker { facing }) = self.be_anims.ticker(state.0) else {
+                gone.push(pos);
+                continue;
+            };
+            if !ticking(pos[0], pos[2])
+                || !self.border.contains(f64::from(pos[0]), f64::from(pos[2]))
+            {
+                continue;
+            }
+            let tick = self
+                .be_anims
+                .shulkers
+                .get_mut(&pos)
+                .map(|shulker| shulker.tick(pos, facing));
+            if let Some(push) = tick.and_then(|tick| tick.push) {
+                pushes.push((pos, facing, push));
+            }
+        }
+        for pos in gone {
+            self.be_anims.shulkers.remove(&pos);
+        }
+        pushes
+    }
+    /// Copies the shulker box lids into the world, where the collision queries
+    /// read them (`SceneCollisions::shulker_collision_state`), as
+    /// `sync_moving_pistons` does for pistons.
+    pub(super) fn sync_shulkers(&mut self) {
+        self.world.shulkers.clear();
+        self.world
+            .shulkers
+            .extend(self.be_anims.shulkers.iter().map(|(p, s)| (*p, s.clone())));
     }
     /// `BlockState.getTicker` of every state, for the block entities ticked
     /// here. A creaking heart keeps its slot while uprooted (see
@@ -158,14 +215,55 @@ impl Game<'_> {
     /// `AbstractFurnaceBlockEntity.serverTick` of the furnace at `pos`, and
     /// its block's `lit` following it.
     fn tick_furnace(&mut self, pos: Pos) -> Result<()> {
-        let Some(BlockEntity::Furnace(f)) = self.world.block_entities.get_mut(&pos) else {
-            return Ok(());
+        // What the hooks need from before the tick, without cloning stacks: the
+        // fuel's id only while the furnace is out (it can light this tick), the
+        // input's id (a last item is gone after it smelts) and the result count.
+        let before = match self.world.block_entities.get(&pos) {
+            Some(BlockEntity::Furnace(f)) => (
+                f.cooking_timer,
+                (f.lit_remaining == 0)
+                    .then(|| f.items[1].as_ref().map(|s| s.item.clone()))
+                    .flatten(),
+                f.items[0].as_ref().map(|s| s.item.clone()),
+                f.items[2].as_ref().map_or(0, |s| s.count),
+            ),
+            _ => return Ok(()),
         };
-        let Some(lit) = f.tick(
-            world_recipes!(self),
-            world_items!(self),
-            self.res.providers(),
-        ) else {
+        let mut drops = Vec::new();
+        let (lit, burning, smelted, smelting) = {
+            let Some(BlockEntity::Furnace(f)) = self.world.block_entities.get_mut(&pos) else {
+                return Ok(());
+            };
+            let lit = f.tick(
+                world_recipes!(self),
+                world_items!(self),
+                self.res.providers(),
+                &mut drops,
+            );
+            let burning = before.1.filter(|_| f.lit_remaining > 0);
+            let smelted = f.items[2]
+                .as_ref()
+                .filter(|after| after.count > before.3)
+                .map(|after| (before.2.clone(), after.item.clone()));
+            let started = before.0 == 0 && f.cooking_timer > 0;
+            let smelting = started
+                .then(|| f.items[0].as_ref().map(|item| item.item.clone()))
+                .flatten();
+            (lit, burning, smelted, smelting)
+        };
+        if let Some(item) = smelting {
+            self.native_furnace_start_smelt([pos.0, pos.1, pos.2], &item);
+        }
+        if let Some(fuel) = burning {
+            self.native_furnace_burn([pos.0, pos.1, pos.2], &fuel);
+        }
+        if let Some((Some(item), result)) = smelted {
+            self.native_furnace_smelt([pos.0, pos.1, pos.2], &item, &result);
+        }
+        for stack in drops {
+            self.campfire_drop(pos, stack);
+        }
+        let Some(lit) = lit else {
             return Ok(());
         };
         let state = self.world.block(pos.0, pos.1, pos.2);

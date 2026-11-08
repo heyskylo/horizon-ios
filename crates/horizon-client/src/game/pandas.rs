@@ -43,7 +43,7 @@ impl Game<'_> {
                     .iter()
                     .position(|e| wants(self, e) && reach.intersects(e.bounds()));
                 if let Some(j) = taken {
-                    let e = self.dropped.remove(j);
+                    let e = self.remove_dropped(j);
                     self.add_pickup(Taken::Item(Box::new(e.clone())), Collector::Mob(id));
                     panda::hold(&mut self.mobs[i], &e.stack.item, e.stack.count, true);
                 }
@@ -114,6 +114,13 @@ impl Game<'_> {
         }
         if loved {
             self.love_cause.insert(id, self.lan_acting);
+            let kind = self
+                .mobs
+                .iter()
+                .find(|m| m.id == id)
+                .map(super::native_hooks::mob_kind)
+                .unwrap_or_default();
+            self.native_entity_enter_love_mode(id, &kind, self.lan_acting_uuid);
         }
         self.consume_held();
         if let Some(stack) = dropped {

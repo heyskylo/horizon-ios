@@ -6,6 +6,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish an unsigned prerelease (main branch only)
+        type: boolean
+        default: false
   pull_request:
     branches: [main]
 permissions:
@@ -28,7 +33,9 @@ jobs:
   ipa:
     # The native launcher uses the iOS 26 SDK (Liquid Glass). macos-15 defaults to Xcode 16.4.
     # MAC_RUNNER remains available for a maintainer-provided runner with Xcode 26 or newer.
-    runs-on: ${{ github.event_name == 'pull_request' && 'macos-26' || vars.MAC_RUNNER || 'macos-26' }}
+    # Standard Intel PR runners avoid the ARM hosted-pool capacity queue.
+    # Both Rust and Xcode still explicitly target ARM64 iOS below.
+    runs-on: ${{ github.event_name == 'pull_request' && 'macos-26-intel' || vars.MAC_RUNNER || 'macos-26' }}
     timeout-minutes: 90
     defaults:
       run:
@@ -72,6 +79,8 @@ jobs:
           with open(path, 'rb') as file:
               info = plistlib.load(file)
           info['HorizonMSAClientID'] = os.environ.get('HORIZON_MSA_CLIENT_ID', '')
+          info['CFBundleVersion'] = os.environ['GITHUB_RUN_NUMBER'] + '.' + os.environ['GITHUB_RUN_ATTEMPT']
+          info['HorizonBuildCommit'] = os.environ['GITHUB_SHA']
           with open(path, 'wb') as file:
               plistlib.dump(info, file)
           PYCONFIG
@@ -86,14 +95,8 @@ jobs:
           path: xcode-game-build.log
           retention-days: 7
           if-no-files-found: ignore
-      - name: Check the distributable contains no prepared assets
-        run: |
-          python3 - <<'PYASSETS'
-          import zipfile
-          with zipfile.ZipFile('Horizon-game-unsigned.ipa') as ipa:
-              if any('horizon-resources.json' in name for name in ipa.namelist()):
-                  raise SystemExit('::error::the .ipa carries prepared vanilla assets; refusing to publish it')
-          PYASSETS
+      - name: Audit the unsigned distributable
+        run: python3 tools/ci/ios_release.py Horizon-game-unsigned.ipa --expect-commit "$GITHUB_SHA"
       - uses: actions/upload-artifact@v4
         with:
           name: horizon-ios-game
@@ -128,3 +131,37 @@ jobs:
               echo "::warning::Discord delivery failed (HTTP $code). The IPA is available in this run's artifacts."
               ;;
           esac
+
+  release:
+    needs: ipa
+    # Never grant publication privileges to PRs or builds of arbitrary branches.
+    if: >-
+      github.repository == 'heyskylo/horizon-ios' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_release))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: horizon-ios-game
+          path: ipa-artifact
+      - name: Prepare versioned IPA and checksum
+        id: asset
+        run: |
+          python3 tools/ci/ios_release.py ipa-artifact/Horizon-game-unsigned.ipa \
+            --expect-commit "$GITHUB_SHA" --output-dir release-assets >> "$GITHUB_OUTPUT"
+      - name: Publish unsigned prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          IPA: ${{ steps.asset.outputs.ipa }}
+          CHECKSUM: ${{ steps.asset.outputs.checksum }}
+          VERSION: ${{ steps.asset.outputs.version }}
+          BUILD: ${{ steps.asset.outputs.build }}
+        run: bash tools/ci/publish-ios-release.sh

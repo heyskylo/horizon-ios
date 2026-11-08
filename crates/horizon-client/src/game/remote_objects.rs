@@ -20,9 +20,10 @@ impl Game<'_> {
         id: i32,
         kind: &str,
         position: [f64; 3],
-        yaw: f32,
+        rotation: (f32, f32),
         data: i32,
     ) -> bool {
+        let (yaw, pitch) = rotation;
         let id = id as u32;
         let at = Vec3::new(position[0], position[1], position[2]);
         let block = position.map(|v| v.floor() as i32);
@@ -64,6 +65,8 @@ impl Game<'_> {
             let mut c = super::minecarts::Minecart::new(id, cart, at);
             c.yaw = yaw;
             c.previous_yaw = yaw;
+            c.pitch = pitch;
+            c.previous_pitch = pitch;
             self.carts.push(c);
         } else if let Some((wood, chest)) = super::boats::any_boat_wood(kind)
             && self.boat_models.has(wood, chest)
@@ -222,13 +225,16 @@ impl Game<'_> {
                     c.color = (*color).clamp(0, 15) as u8;
                 }
             } else if let Some(b) = self.boats.iter_mut().find(|b| b.id == id) {
-                // VehicleEntity's hurt, direction and damage; the paddles.
+                // VehicleEntity's hurt, direction and damage; the paddles and
+                // the bubble time.
                 match (index, value) {
                     (8, Value::Int(v)) => b.hurt_time = *v,
                     (9, Value::Int(v)) => b.hurt_dir = *v,
                     (10, Value::Float(v)) => b.damage = *v,
                     (11, Value::Bool(v)) => b.paddling[0] = *v,
                     (12, Value::Bool(v)) => b.paddling[1] = *v,
+                    // AbstractBoat.DATA_ID_BUBBLE_TIME.
+                    (13, Value::Int(v)) => b.bubble_time = *v,
                     _ => {}
                 }
             } else if let Some(c) = self.carts.iter_mut().find(|c| c.id == id) {
@@ -295,15 +301,10 @@ impl Game<'_> {
                 b.yaw = yaw;
             }
             b.on_ground = on_ground;
-        } else if let Some(c) = self.carts.iter_mut().find(|c| c.id == id) {
-            if let Some(yaw) = yaw {
-                c.yaw = yaw;
-            }
-        } else if let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == id) {
-            if let Some(yaw) = yaw {
-                a.yaw = yaw;
-            }
-            a.on_ground = on_ground;
+        } else if let Some(c) = self.carts.iter_mut().find(|c| c.id == id)
+            && let Some(yaw) = yaw
+        {
+            c.yaw = yaw;
         }
     }
 
@@ -319,9 +320,11 @@ impl Game<'_> {
         for c in &mut self.carts {
             c.previous = c.position;
             c.previous_yaw = c.yaw;
+            c.previous_pitch = c.pitch;
             if !lerp_cart(c) {
                 c.position = step(c.id, c.position);
             }
+            c.accumulate_rotation();
             if c.kind == super::minecarts::CartKind::Furnace
                 && c.fuel > 0
                 && self.world.random.next_int_bound(4).unwrap_or(1) == 0
@@ -346,6 +349,7 @@ impl Game<'_> {
         for a in &mut self.armor_stands {
             a.position = step(a.id, a.position);
         }
+        self.tick_remote_boat_bubbles();
     }
 
     /// The boats, minecarts, armor stands, item frames and paintings in the
@@ -418,6 +422,17 @@ impl Game<'_> {
         self.carts.retain(|c| c.id != id);
         self.boats.retain(|b| b.id != id);
         self.armor_stands.retain(|a| a.id != id);
+        // `Entity.setRemoved`: the cushion's rider gets off where it sat
+        // (`LivingEntity.dismountVehicle`), not inside the block below.
+        if self.riding == Some(id)
+            && let Some(y) = self
+                .cushions
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| c.position.y)
+        {
+            self.dismount_removed_vehicle(y);
+        }
         self.cushions.retain(|c| c.id != id);
         self.item_frames.retain(|f| f.id != id);
         self.paintings.retain(|p| p.id != id);

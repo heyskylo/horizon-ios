@@ -24,10 +24,7 @@ pub(super) fn show(looked_in: &std::path::Path, settings: &Settings) -> Result<(
         renderer: None,
         gui: UiResources {
             atlas: HudAtlas::build(looked_in)?,
-            panorama: Arc::new(horizon_client::gfx::panorama::Faces {
-                size: 1,
-                pixels: [0u8; 4].repeat(6),
-            }),
+            panorama: Arc::new(horizon_client::gfx::panorama::Faces::colour([0; 4])),
         },
         screen: NoResources::new(looked_in),
         pointer: (0.0, 0.0),
@@ -105,8 +102,14 @@ impl ApplicationHandler for Missing {
             .map_err(Into::into)
             .and_then(|window| {
                 let window = Arc::new(window);
-                let renderer =
-                    loading_renderer(window.clone(), false, Some(&self.gui), None, self.api)?;
+                let renderer = loading_renderer(
+                    window.clone(),
+                    false,
+                    Some(&self.gui.atlas),
+                    Some(&self.gui.panorama),
+                    None,
+                    self.api,
+                )?;
                 Ok((window, renderer))
             });
         match made {

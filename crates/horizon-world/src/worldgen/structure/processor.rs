@@ -730,6 +730,15 @@ fn float(value: &Value, key: &'static str) -> Result<f32, DecodeError> {
         .map(|v| v as f32)
         .ok_or(DecodeError::Field(key))
 }
+/// A required float field vanilla reads through `Codec.floatRange`: a value
+/// outside the range, or a NaN, is refused at decode rather than clamped.
+fn float_range(value: &Value, key: &'static str, min: f32, max: f32) -> Result<f32, DecodeError> {
+    let v = float(value, key)?;
+    if !(min..=max).contains(&v) {
+        return Err(DecodeError::Field(key));
+    }
+    Ok(v)
+}
 impl Processor {
     fn decode(
         value: &Value,
@@ -760,7 +769,7 @@ impl Processor {
                     Some(v) => Some(holder_set(v, bindings)?),
                     None => None,
                 },
-                integrity: float(value, "integrity")?,
+                integrity: float_range(value, "integrity", 0., 1.)?,
             },
             "minecraft:gravity" => Self::Gravity {
                 heightmap: match value.get("heightmap").and_then(Value::as_str) {
@@ -777,10 +786,18 @@ impl Processor {
             "minecraft:block_age" => Self::BlockAge(float(value, "mossiness")?),
             "minecraft:lava_submerged_block" => Self::LavaSubmerged,
             "minecraft:blackstone_replace" => Self::BlackstoneReplace,
-            "minecraft:capped" => Self::Capped {
-                delegate: Box::new(Self::decode(&value["delegate"], resources, bindings)?),
-                limit: IntProvider::from_json(&value["limit"].to_string())?,
-            },
+            "minecraft:capped" => {
+                // CappedProcessor's limit is IntProviders.POSITIVE_CODEC: a
+                // provider that can draw 0 or less is refused at decode.
+                let limit = IntProvider::from_json(&value["limit"].to_string())?;
+                if limit.bounds()[0] < 1 {
+                    return Err(DecodeError::Field("capped limit"));
+                }
+                Self::Capped {
+                    delegate: Box::new(Self::decode(&value["delegate"], resources, bindings)?),
+                    limit,
+                }
+            }
             "minecraft:rule" => Self::Rule(
                 value["rules"]
                     .as_array()
@@ -1468,8 +1485,8 @@ fn process_infos<W: PlacementContext>(
     Ok(processed)
 }
 
-/// StructureTemplate.placeInWorld without entities or neighbor shape updates.
-/// Returns false for empty templates.
+/// StructureTemplate.placeInWorld. Returns false for a template with no
+/// palette, with no blocks and no entities to place, or with a side below 1.
 #[allow(clippy::too_many_arguments)]
 pub fn place_in_world<W: FeatureWorld + PlacementContext>(
     world: &mut W,
@@ -1494,7 +1511,10 @@ pub fn place_in_world<W: FeatureWorld + PlacementContext>(
         .next_int_bound(template.palettes().len() as i32)
         .unwrap_or(0) as usize,
     };
-    if template.palettes()[palette].blocks().is_empty() || template.size.iter().any(|s| *s < 1) {
+    let has_entities = !settings.ignore_entities && !template.entities.is_empty();
+    if (template.palettes()[palette].blocks().is_empty() && !has_entities)
+        || template.size.iter().any(|s| *s < 1)
+    {
         return Ok(false);
     }
     let infos = process_infos(

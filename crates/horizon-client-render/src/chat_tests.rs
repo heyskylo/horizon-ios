@@ -104,6 +104,61 @@ fn add(chat: &mut Chat, font: &Font, content: Text) {
 }
 
 #[test]
+fn smooth_chat_slides_a_line_in_and_can_hide_the_indicator() {
+    let mut chat = Chat {
+        smooth: true,
+        ..Chat::default()
+    };
+    chat.lines.push(Line {
+        added: 0,
+        content: Text::literal("hi"),
+        tag: Some(std::sync::Arc::new(Tag::system_single_player(
+            SYSTEM_INDICATOR,
+        ))),
+    });
+    let text_alpha = |draws: &[GuiDraw]| {
+        draws.iter().find_map(|d| match d {
+            GuiDraw::Text { color, .. } => Some(color >> 24),
+            _ => None,
+        })
+    };
+    // The slide is the negative translate the line carries while it moves.
+    let slide = |draws: &[GuiDraw]| {
+        draws.iter().find_map(|d| match d {
+            GuiDraw::Push(ops) => ops.iter().find_map(|op| match op {
+                PoseOp::Translate(x, _) if *x < 0.0 => Some(*x),
+                _ => None,
+            }),
+            _ => None,
+        })
+    };
+    // The tick it arrives: fully faded out, so nothing is drawn.
+    assert_eq!(text_alpha(&chat.layout(361, 0.0, false)), None);
+    // Halfway through the intro: left of its place and still faint.
+    let halfway = chat.layout(361, INTRO_TICKS / 2.0, false);
+    assert!(slide(&halfway).is_some_and(|x| (-INTRO_WIDTH..0.0).contains(&x)));
+    let faded = text_alpha(&halfway).expect("the line shows halfway through");
+    // Settled: in place and as opaque as vanilla's line.
+    let settled = chat.layout(361, INTRO_TICKS, false);
+    assert_eq!(slide(&settled), None);
+    assert!(text_alpha(&settled).expect("settled") > faded);
+    // The extra off draws the line whole on the tick it arrives, as vanilla.
+    chat.smooth = false;
+    let plain = chat.layout(361, 0.0, false);
+    assert_eq!(slide(&plain), None);
+    assert_eq!(text_alpha(&plain), text_alpha(&settled));
+    // The indicator bar is the -4 to -2 fill at the left of the line.
+    let bar = |draws: &[GuiDraw]| {
+        draws
+            .iter()
+            .any(|d| matches!(d, GuiDraw::Fill { x0: -4, x1: -2, .. }))
+    };
+    assert!(bar(&plain));
+    chat.hide_indicator = true;
+    assert!(!bar(&chat.layout(361, 0.0, false)));
+}
+
+#[test]
 fn clicking_seed_copies_the_raw_value_only_inside_the_link() {
     let font = font();
     for seed in [1, -42, i64::MIN, i64::MAX] {
@@ -159,7 +214,7 @@ fn click_targets_match_rendered_spans_when_scaled_wrapped_and_scrolled() {
             for scroll in [0, 3, 12] {
                 chat.scroll = scroll;
                 let mut links = 0;
-                for draw in chat.layout(361, 0, true) {
+                for draw in chat.layout(361, 0.0, true) {
                     if let GuiDraw::Text { text, x, y, .. } = draw {
                         let mut at = x as f64;
                         for (c, style) in text.chars() {
@@ -553,7 +608,7 @@ fn the_chat_option_filters_the_lines_both_ways() {
     assert_eq!(shown(&chat), ["client", "server", "player"]);
 }
 
-/// The in-frame LAN host's chat: a guest's line is a player message, so the
+/// A server's own chat: a guest's line is a player message, so the
 /// Chat option's player-message permission hides it at Commands Only and
 /// Hidden; command feedback (`/list`, `/tp`) is a system message and stays
 /// at Commands Only.
@@ -641,4 +696,72 @@ fn a_deleted_message_shows_60_ticks_then_becomes_the_marker() {
     chat.delete_message_with(&font, &[9; 256], 200);
     assert_eq!(lines(&chat), [marker.clone(), marker]);
     assert!(chat.deletions.is_empty());
+}
+
+/// `SuggestionsList.select` says an entry once (`lastNarratedEntry`), as
+/// "suggestion N out of M", with its tooltip when it has one.
+#[test]
+fn a_suggestion_is_narrated_by_its_place_once() {
+    let suggestion = |text: &str, tooltip: Option<&str>| Suggestion {
+        range: (1, 1),
+        text: text.into(),
+        tooltip: tooltip.map(str::to_owned),
+        int_value: None,
+    };
+    let mut l = SuggestionList {
+        rect: [0; 4],
+        original: "/".into(),
+        list: vec![
+            suggestion("give", None),
+            suggestion("gamemode", Some("Mode")),
+        ],
+        offset: 0,
+        current: 1,
+        last_mouse: (0, 0),
+        tab_cycles: false,
+        last_narrated: 0,
+    };
+    let said = l.narration_message().component();
+    assert_eq!(l.last_narrated, 1);
+    assert_eq!(said["translate"], "narration.suggestion.tooltip");
+    assert_eq!(said["with"].as_array().map(Vec::len), Some(4));
+    l.current = 0;
+    let said = l.narration_message().component();
+    assert_eq!(said["translate"], "narration.suggestion");
+    assert_eq!(said["with"].as_array().map(Vec::len), Some(3));
+}
+
+#[test]
+fn a_chat_message_is_trimmed_and_its_whitespace_runs_collapsed() {
+    // ChatScreen.normalizeChatMessage: String.trim, then StringUtils
+    // .normalizeSpace, so a command gets the arguments the player meant.
+    assert_eq!(normalize_chat_message("  hello   there  "), "hello there");
+    assert_eq!(normalize_chat_message("/msg  Alex\thi"), "/msg Alex hi");
+    assert_eq!(normalize_chat_message("a\n\nb\r\nc"), "a b c");
+    assert_eq!(normalize_chat_message("\t \n"), "");
+    assert_eq!(normalize_chat_message(""), "");
+    // Character.isWhitespace is not str::trim's Unicode whitespace: U+00A0 is
+    // no Java whitespace, so it is neither trimmed nor collapsed, while the
+    // ideographic space U+3000 and Java's U+001C separators are.
+    assert_eq!(normalize_chat_message(" \u{a0} hi"), "\u{a0} hi");
+    assert_eq!(normalize_chat_message("a\u{a0}\u{a0}b"), "a\u{a0}\u{a0}b");
+    assert_eq!(normalize_chat_message("a\u{3000}\u{3000}b"), "a b");
+    assert_eq!(normalize_chat_message("a\u{1c}b"), "a b");
+}
+
+#[test]
+fn a_chat_message_is_cut_to_the_256_utf16_units_the_packet_holds() {
+    // StringUtil.trimChatMessage counts String.length(), UTF-16 code units:
+    // 256 ASCII characters are all kept, 257 are cut to 256.
+    assert_eq!(normalize_chat_message(&"a".repeat(256)).len(), 256);
+    assert_eq!(normalize_chat_message(&"a".repeat(300)).len(), 256);
+    // An emoji is two units, so 128 of them fill the packet and the 129th is
+    // dropped: chars().take(256) would keep all 129 and the server would
+    // reject the message.
+    let emoji = normalize_chat_message(&"\u{1f600}".repeat(129));
+    assert_eq!(emoji, "\u{1f600}".repeat(128));
+    assert_eq!(emoji.encode_utf16().count(), 256);
+    // A cut between the halves of a pair keeps the character below it.
+    let mixed = format!("{}\u{1f600}", "b".repeat(255));
+    assert_eq!(normalize_chat_message(&mixed), "b".repeat(255));
 }
