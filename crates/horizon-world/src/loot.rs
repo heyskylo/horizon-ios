@@ -558,6 +558,19 @@ fn list_operation<T: Clone>(
 
 /// `CompoundTag.merge`: a nested compound on both sides merges key by key,
 /// any other value replaces the one the target had.
+/// A compound as `TagParser.LENIENT_CODEC` reads it: a JSON object, or the
+/// SNBT text of a compound. `None` for anything else.
+fn compound_json(v: &Value) -> Option<Value> {
+    match v {
+        Value::Object(_) => Some(v.clone()),
+        Value::String(text) => match crate::nbt::parse_snbt(text) {
+            Ok((tag @ crate::nbt::Tag::Compound(_), _)) => Some(crate::worldgen::tag_json(&tag)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn merge_json(into: &mut Value, from: &Value) {
     let (Value::Object(target), Value::Object(source)) = (into, from) else {
         return;
@@ -1658,14 +1671,18 @@ impl<R: RandomSource> Context<'_, R> {
             // bucket and block entity code read it.
             "minecraft:set_custom_data" => {
                 let id = "minecraft:custom_data";
+                // `TagParser.LENIENT_CODEC`: the tag, and the component, may
+                // be a compound or its SNBT text ("tag": "{a:1b}").
+                let Some(tag) = compound_json(&f["tag"]) else {
+                    return stack;
+                };
                 let mut data = stack
                     .components
                     .iter()
                     .find(|(k, _)| k == id)
-                    .map(|(_, v)| v.clone())
-                    .filter(Value::is_object)
+                    .and_then(|(_, v)| compound_json(v))
                     .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
-                merge_json(&mut data, &f["tag"]);
+                merge_json(&mut data, &tag);
                 stack.components.retain(|(k, _)| k != id);
                 stack.components.push((id.to_owned(), data));
             }
@@ -2433,8 +2450,8 @@ mod namespace_tests {
     }
     /// `SetCustomDataFunction`: a loot table's compound merges into the
     /// `minecraft:custom_data` component an earlier function wrote, a nested
-    /// compound key by key and a plain value replaced; the item layer reads
-    /// the component from `other`.
+    /// compound key by key and a plain value replaced, the tag given as an
+    /// object or as SNBT text; the item layer reads the component from `other`.
     #[test]
     fn set_custom_data_merges_into_the_component() {
         let root = std::env::temp_dir().join(format!("horizon-loot-data-{}", std::process::id()));
@@ -2442,7 +2459,8 @@ mod namespace_tests {
         let table = r#"{"pools": [{"rolls": 1, "entries": [{"type": "minecraft:item", "name": "minecraft:stick",
             "modifier": [
                 {"type": "minecraft:set_components", "components": {"minecraft:custom_data": {"a": {"b": 1}, "c": 1}}},
-                {"type": "minecraft:set_custom_data", "tag": {"a": {"d": 2}, "c": 2}}
+                {"type": "minecraft:set_custom_data", "tag": {"a": {"d": 2}, "c": 2}},
+                {"type": "minecraft:set_custom_data", "tag": "{a:{e:3b},f:\"x\"}"}
             ]}]}]}"#;
         let files = [
             ("items.json", r#"{"minecraft:stick": {}}"#),
@@ -2464,7 +2482,7 @@ mod namespace_tests {
         assert_eq!(component.len(), 1, "{:?}", stack.components);
         assert_eq!(
             component[0].1,
-            serde_json::json!({"a": {"b": 1, "d": 2}, "c": 2})
+            serde_json::json!({"a": {"b": 1, "d": 2, "e": 3}, "c": 2, "f": "x"})
         );
         let _ = fs::remove_dir_all(&root);
     }
