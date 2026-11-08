@@ -78,15 +78,12 @@ pub fn set_synced_pose_tick(m: &mut Mob, tick: i64) {
     m.extra.pose_change_tick = tick;
     m.extra.camel_sitting = tick < 0;
 }
-/// Put a camel loaded from `LastPoseTick` (kept in `pose_change_tick`) on
-/// the mob's own clock: the pose changed `game_time - |tick|` ticks ago. A
-/// save without the tag leaves it standing for good.
+/// `Camel.getPoseTime`: put the loaded `LastPoseTick` on the mob's own
+/// clock. Zero is game-time zero, and a future tick has negative elapsed
+/// time; neither is an instruction to start a new standing transition.
 pub fn finish_load(m: &mut Mob, game_time: i64) {
     let tick = m.extra.pose_change_tick;
-    if tick == 0 {
-        return stand_up_instantly(m);
-    }
-    let since = (game_time - tick.abs()).clamp(0, i64::from(i32::MAX / 2));
+    let since = (game_time - tick.abs()).min(i64::from(i32::MAX / 2));
     m.extra.egg_time = (i64::from(m.age) - since) as i32;
 }
 /// `Camel.getDefaultDimensions`: the standing box, the type's or a baby's

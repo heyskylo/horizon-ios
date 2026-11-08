@@ -50,6 +50,7 @@ import tempfile
 import time
 import zipfile
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -2183,6 +2184,10 @@ def glyph_art_world(args, name):
     for style in ('xbox', 'playstation'):
         game = Game(args, f'{name}-{style}', world=True, seed=seed_controller(f'glyphs:{style}\nbindLayout:1\n'))
         try:
+            game.pad('lb')
+            left, right = guide(game)
+            check(left or right, f'{style}: no gameplay guide rows')
+            shot(game, f'glyph_art_{style}_guide')
             game.ctl('key', 'e', 'tap')
             time.sleep(SETTLE)
             game.wait_targets()
@@ -2205,6 +2210,9 @@ def controller_trigger_threshold(args, name):
                 break
             game.pad('down')
         check('40%' in (game.focused_label() or ''), f'not on its default: {game.focused_label()}')
+        check(not game.menu()['holding_slider'], 'landing on the slider took hold of it')
+        game.pad('south')
+        check(game.menu()['holding_slider'], 'A did not take hold of the slider')
         # A step of the D-pad is a pixel of the slider, which can be less than a percent.
         for _ in range(6):
             game.pad('right')
@@ -2213,6 +2221,267 @@ def controller_trigger_threshold(args, name):
         check('40%' not in (game.focused_label() or ''), f'right left it on {game.focused_label()}')
         saved = next((line for line in controller_saved(game).splitlines() if line.startswith('triggerThreshold:')), '')
         check(saved and float(saved.split(':')[1]) > 0.4, f'not saved: {saved}')
+    finally:
+        game.quit()
+    return check.failures
+
+
+
+def guide(game):
+    """Each column of the gameplay guide as last drawn, as (button, caption without its prefix)."""
+    time.sleep(SETTLE)
+    shown = game.ctl('pad', 'status')['guide']
+    return tuple([(r['button'], r['caption'].replace('horizon.controller.guide.', '')) for r in shown[side]]
+                 for side in ('left', 'right'))
+
+
+def gameplay_guide(args, name):
+    # Attack moved to Y, Pick Block unbound: the rows must follow.
+    game = Game(args, name, world=True, seed=seed_controller('bind_key.attack:north\nbind_key.pickItem:none\n'))
+    check = Check()
+    try:
+        check(guide(game) == ([], []), f'guide before the pad did anything: {guide(game)}')
+        game.pad('lb')
+        left, right = guide(game)
+        check(('south', 'key.jump') in left and ('north', 'key.inventory') in left, f'left column: {left}')
+
+        x, y, z = game.ctl('state')['player']['block_pos']
+        game.ctl('command', 'gamerule randomTickSpeed 0')
+        game.ctl('command', f'fill {x - 2} {y} {z + 1} {x + 2} {y + 3} {z + 4} air')
+        at = (x, y + 1, z + 3)
+        place = lambda block: game.ctl('command', f'setblock {at[0]} {at[1]} {at[2]} {block}')
+        slot = game.ctl('state')['selected'] - 1
+        give = lambda item: game.ctl('command', f'item replace entity @s hotbar.{slot} with {item}')
+        place('stone')
+        game.ctl('look-at', 'block', *at)
+        give('stone')
+        _, right = guide(game)
+        check(right == [('north', 'break'), ('lt', 'place')], f'creative on stone with stone: {right}')
+
+        place('chest')
+        _, right = guide(game)
+        check(('lt', 'open') in right and ('lt', 'place') not in right, f'on a chest: {right}')
+
+        # Only what opens something says Open, and a block that keeps the click and does nothing
+        # has no row, for it or for the item. Break shows the aim is on the block.
+        def rows_on(block, item='air'):
+            place(block)
+            give(item)
+            game.ctl('look-at', 'block', *at)
+            _, rows = guide(game)
+            check(('north', 'break') in rows, f'not aiming at {block}: {rows}')
+            return rows
+        for block, wanted in (('nether_portal', None), ('end_gateway', None), ('lectern', None),
+                              ('flower_pot', None), ('chiseled_bookshelf', None),
+                              ('stone_button[face=floor,powered=true]', None),
+                              ('lectern[has_book=true]', 'open'), ('ender_chest', 'open'),
+                              ('oak_door', 'use'), ('stone_button[face=floor]', 'use')):
+            rows = rows_on(block)
+            shown = [c for b, c in rows if b == 'lt']
+            check(shown == ([wanted] if wanted else []), f'empty hand on {block}: {rows}')
+        for block, item, wanted in (('lectern', 'stone', []), ('lectern', 'written_book', ['use']),
+                                    ('flower_pot', 'stone', []), ('flower_pot', 'poppy', ['use']),
+                                    ('nether_portal', 'stone', ['place'])):
+            rows = rows_on(block, item)
+            shown = [c for b, c in rows if b == 'lt']
+            check(shown == wanted, f'{item} on {block}: {rows}')
+        give('air')
+
+        game.ctl('command', 'gamemode survival')
+        place('bedrock')
+        give('air')
+        _, right = guide(game)
+        check(right == [], f'survival with an empty hand on bedrock: {right}')
+        place('stone')
+        _, right = guide(game)
+        check(right == [('north', 'break')], f'survival with an empty hand on stone: {right}')
+        game.ctl('command', 'gamemode creative')
+
+        # The item in use.
+        give('bow')
+        # Nothing in reach to break, whatever this world grew here.
+        game.ctl('command', f'fill {x - 6} {y + 1} {z - 6} {x + 6} {y + 7} {z + 6} air')
+        game.ctl('look-at', x + 40, y + 20, z)
+        _, right = guide(game)
+        check(right == [('lt', 'shoot')], f'creative bow at nothing: {right}')
+        game.ctl('pad', 'trigger', 'left', 1)
+        _, right = guide(game)
+        check(right == [('lt', 'release_shoot')], f'drawing it: {right}')
+        game.ctl('pad', 'trigger', 'left', 0)
+        give('air')
+
+        # A screen takes the input, and F1 hides it.
+        game.pad('north')
+        rows = guide(game)
+        check(('south', 'key.jump') not in rows[0] and ('north', 'key.inventory') not in rows[0],
+              f'the gameplay rows over the inventory: {rows}')
+        game.pad('start')
+        game.ctl('pad', 'release')
+        time.sleep(SETTLE)
+        game.pad('lb')
+        check(guide(game) != ([], []), 'the guide did not come back')
+        game.ctl('key', 'f1', 'tap')
+        check(guide(game) == ([], []), 'the guide with the HUD hidden')
+        game.ctl('key', 'f1', 'tap')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def gameplay_guide_mobs(args, name):
+    # An allay's answer to a click is the interaction itself: the guide showing it must not do it.
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.pad('lb')
+        x, y, z = game.ctl('state')['player']['block_pos']
+        game.ctl('command', 'gamemode survival')
+        game.ctl('command', f'fill {x - 2} {y} {z + 1} {x + 2} {y + 3} {z + 4} air')
+        slot = game.ctl('state')['selected'] - 1
+        game.ctl('command', f'item replace entity @s hotbar.{slot} with diamond 8')
+        game.ctl('command', f'summon allay {x} {y + 1} {z + 3} {{NoAI:1b}}')
+        time.sleep(SETTLE)
+        allay = game.ctl('entities', 8, 'allay')['entities'][0]
+        game.ctl('look-at', 'entity', allay['id'])
+        for _ in range(3):
+            _, right = guide(game)
+        check(any(button == 'lt' for button, _ in right), f'no use row on the allay: {right}')
+        held = game.ctl('state')['held']
+        check(held == {'item': 'minecraft:diamond', 'count': 8}, f'the guide gave the allay an item: {held}')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def slider_needs_a(args, name):
+    """Left and right only change a slider A took hold of; B and up or down let go of it."""
+    game = Game(args, name)
+    check = Check()
+    try:
+        open_controller(game)
+        game.pad('right')
+        for _ in range(24):
+            if 'trigger threshold' in (game.focused_label() or '').lower():
+                break
+            game.pad('down')
+        slider = game.focus()
+        # Right is either nothing or the widget beside it, which left comes back from.
+        game.pad('right')
+        if game.focus() != slider:
+            game.pad('left')
+        check(game.focus() == slider, f'never came back to the slider: {game.focus()}')
+        check('40%' in (game.focused_label() or ''), f'moved without A: {game.focused_label()}')
+        check(not game.menu()['holding_slider'], 'moving the focus took hold of the slider')
+
+        game.pad('south')
+        check(game.menu()['holding_slider'], 'A did not take hold of the slider')
+        for _ in range(6):
+            game.pad('right')
+            if '40%' not in (game.focused_label() or ''):
+                break
+        changed = game.focused_label()
+        check('40%' not in (changed or ''), f'right in hand left it on {changed}')
+        check(game.focus() == slider, 'left or right moved the focus off a slider in hand')
+
+        screen = game.menu()['screen_key']
+        game.pad('east')
+        check(not game.menu()['holding_slider'], 'B did not let go of the slider')
+        check(game.menu()['screen_key'] == screen, 'B left the screen as well as the slider')
+        check(game.focused_label() == changed, f'letting go changed the value: {game.focused_label()}')
+
+        game.pad('south')
+        check(game.menu()['holding_slider'], 'A did not take hold again')
+        game.pad('south')
+        check(not game.menu()['holding_slider'], 'A again did not let go')
+
+        game.pad('south')
+        game.pad('down')
+        check(not game.menu()['holding_slider'], 'down did not let go of the slider')
+        check(game.focus() != slider, 'down did not move on from the slider')
+        # Up can land on a row beside it, so find it again by name.
+        for button in ['up'] * 8 + ['down'] * 16:
+            if 'trigger threshold' in (game.focused_label() or '').lower():
+                break
+            game.pad(button)
+        check('trigger threshold' in (game.focused_label() or '').lower(),
+              f'never came back to the slider: {game.focused_label()}')
+        check(not game.menu()['holding_slider'], 'the slider was still held on coming back')
+
+        # The hold goes with the screen: Start, and back to where the focus is remembered.
+        game.pad('south')
+        check(game.menu()['holding_slider'], 'A did not take hold after coming back')
+        game.pad('start')
+        check(not game.menu()['holding_slider'], 'Start left a slider held')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def gameplay_guide_basic(args, name):
+    game = Game(args, name, world=True, seed=seed_controller('gameplayGuide:basic\n'))
+    check = Check()
+    try:
+        game.pad('lb')
+        check(game.ctl('pad', 'status')['in_use'], 'the pad is not in use')
+        left, _ = guide(game)
+        check(left == [], f'basic still shows the left column: {left}')
+        status = game.ctl('pad', 'status')['guide']
+        check('right' in status, f'no right column in {status}')
+    finally:
+        game.quit()
+    return check.failures
+
+
+def gameplay_guide_boat_and_keys(args, name):
+    """A boat shows Ride only when it would take the player, and the keyboard hides the guide."""
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.pad('lb')
+        x, y, z = game.ctl('state')['player']['block_pos']
+        game.ctl('command', f'fill {x - 2} {y} {z + 1} {x + 2} {y + 3} {z + 5} air')
+        game.ctl('command', f'summon oak_boat {x} {y} {z + 3}')
+        time.sleep(1)
+        game.ctl('look-at', x, y + 0.2, z + 3)
+        for _ in range(10):
+            time.sleep(0.3)
+            _, right = guide(game)
+            if right:
+                break
+        check(('lt', 'ride') in right, f'no Ride on a free boat: {right}')
+        game.ctl('key', 'lshift', 'down')
+        game.pad('lb')
+        _, sneaking = guide(game)
+        check(not any(caption == 'ride' for _, caption in sneaking), f'Ride while sneaking: {sneaking}')
+        game.ctl('key', 'lshift', 'up')
+
+        game.ctl('key', 'j', 'tap')
+        time.sleep(SETTLE)
+        check(guide(game) == ([], []), f'the guide stayed up after a key: {guide(game)}')
+        game.pad('lb')
+        check(guide(game) != ([], []), 'the pad did not bring the guide back')
+
+        # The pad's own click isn't the mouse: back to the game from the pause menu.
+        game.pad('start')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        game.pad('south')
+        game.pad('south')
+        time.sleep(SETTLE)
+        check(game.ctl('state')['screen'] == 'playing', f"still on {game.ctl('state')['screen']}")
+        check(guide(game) != ([], []), "the pad's own click hid the guide")
+    finally:
+        game.quit()
+    return check.failures
+
+
+def gameplay_guide_off(args, name):
+    game = Game(args, name, world=True, seed=seed_controller('gameplayGuide:false\n'))
+    check = Check()
+    try:
+        game.pad('lb')
+        check(game.ctl('pad', 'status')['in_use'], 'the pad is not in use')
+        check(guide(game) == ([], []), f'the guide with its setting off: {guide(game)}')
     finally:
         game.quit()
     return check.failures
@@ -2270,7 +2539,12 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'osk_debug_options': osk_debug_options,
          'osk_command_block': osk_command_block,
          'osk_jigsaw': osk_jigsaw,
-         'controller_trigger_threshold': controller_trigger_threshold}
+         'controller_trigger_threshold': controller_trigger_threshold,
+         'slider_needs_a': slider_needs_a,
+         'gameplay_guide': gameplay_guide,
+         'gameplay_guide_basic': gameplay_guide_basic,
+         'gameplay_guide_boat_and_keys': gameplay_guide_boat_and_keys,
+         'gameplay_guide_off': gameplay_guide_off, 'gameplay_guide_mobs': gameplay_guide_mobs}
 
 
 def main():
@@ -2280,21 +2554,25 @@ def main():
     parser.add_argument('--resources', type=Path, default=ROOT / '.local/horizon-client/26.3')
     parser.add_argument('--only', nargs='*', choices=sorted(CASES), help='run only these cases')
     parser.add_argument('--shots', type=Path, help='keep screenshots in this folder')
+    parser.add_argument('--jobs', type=int, default=1, help='cases at once; each has its own game and home')
     args = parser.parse_args()
     args.game, args.ctl, args.resources = args.game.resolve(), args.ctl.resolve(), args.resources.resolve()
-    failed = []
-    for name in args.only or CASES:
+    def run(name):
         # A case that dies takes only itself down, and leaves no game behind it.
         try:
-            failures = CASES[name](args, name)
+            return name, CASES[name](args, name)
         except Exception as error:
-            failures = [f'{type(error).__name__}: {error}']
-        for failure in failures:
-            print(f'FAIL {name}: {failure}')
-        if failures:
-            failed.append(name)
-        else:
-            print(f'ok   {name}')
+            return name, [f'{type(error).__name__}: {error}']
+
+    failed = []
+    with ThreadPoolExecutor(args.jobs) as pool:
+        for name, failures in pool.map(run, args.only or CASES):
+            for failure in failures:
+                print(f'FAIL {name}: {failure}', flush=True)
+            if failures:
+                failed.append(name)
+            else:
+                print(f'ok   {name}', flush=True)
     sys.exit(1 if failed else 0)
 
 

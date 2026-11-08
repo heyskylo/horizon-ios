@@ -541,3 +541,91 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod anchor_save_tests {
+    use super::*;
+    use crate::entity_nbt::{mob_from_nbt, mob_to_nbt};
+    use horizon_world::nbt::Tag;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    /// A phantom at (0.5, 75, 0.5) with the vanilla size 2, and `anchor_pos`
+    /// when it has one. `storeNullable` writes the key only for an anchor.
+    fn saved_phantom(anchor: Option<[i32; 3]>) -> Tag {
+        let mut fields = vec![
+            ("id", Tag::String("minecraft:phantom".into())),
+            (
+                "Pos",
+                Tag::List(vec![
+                    Tag::Double(0.5_f64.to_bits()),
+                    Tag::Double(75.0_f64.to_bits()),
+                    Tag::Double(0.5_f64.to_bits()),
+                ]),
+            ),
+            ("size", Tag::Int(2)),
+        ];
+        if let Some(anchor) = anchor {
+            fields.push(("anchor_pos", Tag::IntArray(anchor.to_vec())));
+        }
+        Tag::compound(fields)
+    }
+
+    fn phantom_types() -> HashMap<String, Arc<crate::mobs::MobType>> {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let ty = Arc::make_mut(&mut kind);
+        ty.id = "minecraft:phantom".into();
+        ty.species = Species::Phantom;
+        [("minecraft:phantom".into(), kind)].into()
+    }
+
+    /// `Phantom.addAdditionalSaveData` writes `anchor_pos` with `storeNullable`
+    /// and `readAdditionalSaveData` reads it back
+    /// (`input.read("anchor_pos", BlockPos.CODEC).orElse(null)`). Horizon models
+    /// the anchor in `extra.home` (vanilla's `anchorPoint`) and neither side
+    /// carried it: a phantom saved and reloaded kept the anchor `register` gives
+    /// every new phantom — its own position five blocks up — and circled there
+    /// instead of around the anchor its save named, or around itself as vanilla
+    /// does for a save with no anchor at all.
+    #[test]
+    fn a_phantoms_circling_anchor_survives_the_chunk_save() {
+        let types = phantom_types();
+        let mut m = mob_from_nbt(&saved_phantom(Some([100, 64, -40])), &types, 1, None).unwrap();
+        assert_eq!(m.extra.home, Some([100, 64, -40]), "the loaded anchor");
+        // `PhantomCircleAroundAnchorGoal.selectNext` flies around the anchor:
+        // `anchor + (distance*cos(angle), -4 + height, distance*sin(angle))`.
+        let mut circle = CircleAroundAnchor {
+            distance: 10.0,
+            height: 2.0,
+            clockwise: 1.0,
+            angle: 0.0,
+        };
+        circle.select_next(&mut m);
+        let angle = 15.0f32.to_radians();
+        let around = [
+            100.0 + f64::from(10.0f32 * angle.mcos()),
+            64.0 + f64::from(-4.0 + 2.0f32),
+            -40.0 + f64::from(10.0f32 * angle.msin()),
+        ];
+        assert_eq!(
+            m.extra.vector, around,
+            "the circle point, 109.66 / 62 / -37.41 around the anchor"
+        );
+        // What the phantom circles now is what its chunk save keeps.
+        m.extra.home = Some([9, 70, -3]);
+        let source = saved_phantom(Some([100, 64, -40]));
+        let saved = mob_to_nbt(&m, [0; 4], Some(&source), None, |_| None);
+        assert_eq!(
+            saved.get("anchor_pos"),
+            Some(&Tag::IntArray(vec![9, 70, -3]))
+        );
+        // A phantom with no anchor: `orElse(null)` on the way in, and no
+        // `anchor_pos` on the way out even when the loaded save had one.
+        let mut loose = mob_from_nbt(&saved_phantom(None), &types, 2, None).unwrap();
+        assert_eq!(loose.extra.home, None, "a save without anchor_pos");
+        loose.extra.home = None;
+        let stale = saved_phantom(Some([100, 64, -40]));
+        let saved = mob_to_nbt(&loose, [0; 4], Some(&stale), None, |_| None);
+        assert_eq!(saved.get("anchor_pos"), None, "no anchor, no key");
+    }
+}
