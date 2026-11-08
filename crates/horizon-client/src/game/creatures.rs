@@ -4728,22 +4728,13 @@ impl Game<'_> {
                 if super::remote_projectiles::has_smoke_trail(&p.kind) {
                     trails.push(p.position);
                 }
-                // ThrownEnderpearl.onAboveBubbleColumn / onInsideBubbleColumn.
-                if keep && hit == Hit::None && matches!(p.kind, ProjectileKind::EnderPearl) {
-                    let (at, h) = (p.position, 0.125);
-                    horizon_client::motion::bubble_column_push_over(
-                        w.world,
-                        w.registry,
-                        w.facts,
-                        w.collision,
-                        Aabb::new(
-                            Vec3::new(at.x - h, at.y, at.z - h),
-                            Vec3::new(at.x + h, at.y + 2.0 * h, at.z + h),
-                        ),
-                        &mut p.velocity,
-                        |pos| bubble_tops.push(pos),
-                    );
-                }
+                // Projectile.onAboveBubbleColumn's particles, from the tick's
+                // bubble column pushes (`Projectile::tick`).
+                bubble_tops.extend(
+                    p.bubble_surfaces
+                        .drain(..)
+                        .map(|[x, y, z]| BlockPos::new(x, y, z)),
+                );
                 let events_from = arrow_events.len();
                 let ordinary_arrow = p.is_arrow();
                 if let Some(a) = p.arrow.as_mut() {
