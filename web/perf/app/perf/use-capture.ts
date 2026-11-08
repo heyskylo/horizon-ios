@@ -96,21 +96,24 @@ export function useReader() {
   return { reader, readerError, capture, loading, error, open, close, showSide };
 }
 
-/** One query's rows for the side on show; `filters` compare by value, and `enabled` false skips it. */
+/** One query's rows for the side on show; `filters` and `args` compare by value, and `enabled` false skips it. */
 export function useRows<R>(
   reader: HorizonPerf,
   capture: LoadedCapture,
   op: string,
   filters: QueryRequest["filters"] = {},
   enabled = true,
+  args: readonly string[] = [],
 ): { rows: R[]; error: string | null; reply: Envelope<R> | null } {
   const key = JSON.stringify(filters);
+  const argsKey = JSON.stringify(args);
   return useMemo(() => {
     if (!enabled) return { rows: [], error: null, reply: null };
     try {
       const reply = reader.query<R>(capture.handle, {
         op,
         file: capture.name,
+        args: JSON.parse(argsKey) as string[],
         filters: { side: capture.side, ...(JSON.parse(key) as QueryRequest["filters"]) },
       });
       return reply.ok
@@ -119,5 +122,5 @@ export function useRows<R>(
     } catch (failure) {
       return { rows: [], error: message(failure), reply: null };
     }
-  }, [reader, capture.handle, capture.name, capture.side, op, key, enabled]);
+  }, [reader, capture.handle, capture.name, capture.side, op, key, argsKey, enabled]);
 }

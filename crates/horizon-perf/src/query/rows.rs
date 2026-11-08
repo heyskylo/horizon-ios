@@ -460,10 +460,14 @@ pub struct TreeRow {
     pub id: String,
     pub function: String,
     pub name: String,
+    #[serde(rename = "crate", default, skip_serializing_if = "Option::is_none")]
+    pub crate_name: Option<String>,
     pub total: f64,
     #[serde(rename = "self", default, skip_serializing_if = "Option::is_none")]
     pub self_ms: Option<f64>,
     pub pct: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_pct: Option<f64>,
     pub samples: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<TreeRow>,

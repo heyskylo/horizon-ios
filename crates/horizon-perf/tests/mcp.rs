@@ -148,6 +148,7 @@ fn every_filter() -> QueryRequest {
         matching: Some("x".into()),
         depth: Some(1),
         min_pct: Some(1.0),
+        self_share: true,
     }
 }
 

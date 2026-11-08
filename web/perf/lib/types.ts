@@ -10,12 +10,40 @@ export interface CaptureInfo {
   seconds: number;
 }
 
+/** What a reply's rows are measured in; the samples queries answer in the first eight. */
+export type Unit =
+  | "ms_per_tick"
+  | "ms_per_frame"
+  | "ms_per_slow_tick"
+  | "ms_per_slow_frame"
+  | "bytes_per_tick"
+  | "bytes_per_frame"
+  | "bytes_per_slow_tick"
+  | "bytes_per_slow_frame"
+  | "kib_per_s"
+  | "count"
+  | "series"
+  | "meta"
+  | "marks"
+  | "warnings"
+  | "memory"
+  | "memory_diff"
+  | "bench";
+
+/** What a samples query looked at: the thread it chose and how many ticks and samples it covered. */
+export interface Selection {
+  side: Side | null;
+  thread: string | null;
+  ticks: number | null;
+  samples: number | null;
+}
+
 export interface Envelope<R> {
   ok: boolean;
   op: string;
-  unit?: string;
+  unit?: Unit;
   captures?: CaptureInfo[];
-  selection?: Record<string, unknown>;
+  selection?: Selection;
   rows: R[];
   warnings: string[];
   error?: string | { code: string; message: string };
@@ -205,9 +233,12 @@ export interface TreeRow {
   id: string;
   function: string;
   name: string;
+  /** The crate the function belongs to, when the capture recorded it. */
+  crate?: string | null;
   total: number;
-  self_ms?: number | null;
+  self?: number | null;
   pct: number;
+  self_pct?: number | null;
   samples: number;
   children?: TreeRow[];
   folded?: { rows: number; total: number } | null;

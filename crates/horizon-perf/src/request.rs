@@ -69,6 +69,8 @@ pub struct QueryRequest {
     pub depth: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_pct: Option<f64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub self_share: bool,
 }
 
 fn bound(name: &str, arg: Option<BoundArg>) -> Result<Option<Bound>, RequestError> {
@@ -152,6 +154,7 @@ impl QueryRequest {
             matching: self.matching,
             depth: self.depth,
             min_pct: self.min_pct,
+            self_share: self.self_share,
         })
     }
 }
