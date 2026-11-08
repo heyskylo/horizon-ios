@@ -68,6 +68,100 @@ impl PrimedTnt {
             ),
         )
     }
+    /// `Entity.move`: a pending stuck multiplier is used up by the next move,
+    /// which starts from rest. Returns it, for a move that scales its step by it.
+    pub(super) fn take_stuck(&mut self) -> Option<Vec3> {
+        if self.stuck.length_squared() <= 1.0e-7 {
+            return None;
+        }
+        self.velocity = Vec3::ZERO;
+        Some(std::mem::replace(&mut self.stuck, Vec3::ZERO))
+    }
+    /// PowderSnowBlock.getCollisionShape: a top that holds it once it has
+    /// fallen more than 2.5 blocks, read with [`Self::collision_context`].
+    pub(super) fn powder_snow_subject(&self) -> horizon_client::collisions::PowderSnowSubject {
+        horizon_client::collisions::PowderSnowSubject {
+            fall_distance: self.fall_distance,
+            ..Default::default()
+        }
+    }
+    pub(super) fn collision_context(
+        &self,
+    ) -> horizon_world::collision_context::CollisionContext<'static> {
+        horizon_world::collision_context::CollisionContext::for_entity(
+            horizon_world::collision_context::CollisionEntity {
+                identity: horizon_world::entity_obstruction::EntityIdentity(u64::from(self.id)),
+                kind: horizon_world::collision_context::EntityContextKind::Other,
+                y: self.position.y,
+                descending: false,
+                main_hand: None,
+            },
+            false,
+        )
+    }
+    /// Entity.checkFallDamage after a move that stepped `moved_y`: out of
+    /// water, each step down is narrowed to a float before it adds to the
+    /// fall; landing forgets it.
+    pub(super) fn check_fall_damage(&mut self, moved_y: f64) {
+        if !self.in_water && moved_y < 0.0 {
+            self.fall_distance -= f64::from(moved_y as f32);
+        }
+        if self.on_ground {
+            self.fall_distance = 0.0;
+        }
+    }
+    /// Entity.applyEffectsFromBlocks for a move from `from` to here
+    /// (`original` the step it asked for, when the move was recorded): powder
+    /// snow and cobwebs it went through make it stuck, a bubble column lifts or
+    /// drags it, and slime it stands on slows it. Returns the columns it is at
+    /// the top of, which send their surface particles.
+    pub(super) fn apply_effects_from_blocks(
+        &mut self,
+        world: &horizon_client::world::World,
+        assets: &horizon_client::assets::Assets,
+        facts: &horizon_client::blocks::BlockFacts,
+        collision: &horizon_world::block_collision::BlockCollisionRegistry<'_>,
+        from: Vec3,
+        original: Option<Vec3>,
+    ) -> Vec<BlockPos> {
+        let mut tops = Vec::new();
+        let stuck = horizon_client::falling_block::apply_effects_from_blocks(
+            from,
+            self.position,
+            original,
+            &mut self.velocity,
+            &mut self.fall_distance,
+            &mut Vec::new(),
+            |p| match &*facts.get(world.block(p.x, p.y, p.z)).name {
+                "minecraft:powder_snow" => horizon_client::falling_block::Inside::PowderSnow,
+                "minecraft:cobweb" => horizon_client::falling_block::Inside::Cobweb,
+                _ => horizon_client::falling_block::Inside::Nothing,
+            },
+        );
+        if let Some(multiplier) = stuck {
+            self.stuck = multiplier;
+        }
+        if self.push_by_bubble_column_over(world, assets.registry, facts, collision, |pos| {
+            tops.push(pos)
+        }) {
+            self.fall_distance = 0.0;
+        }
+        if self.on_ground {
+            // SlimeBlock.stepOn.
+            let under = world.block(
+                self.position.x.floor() as i32,
+                (self.position.y - f64::from(0.2_f32)).floor() as i32,
+                self.position.z.floor() as i32,
+            );
+            if &*facts.get(under).name == "minecraft:slime_block"
+                && let Some(scale) = horizon_client::entities::slime_step_on_scale(self.velocity.y)
+            {
+                self.velocity.x *= scale;
+                self.velocity.z *= scale;
+            }
+        }
+        tops
+    }
     pub(super) fn tick(
         &mut self,
         world: &horizon_client::world::World,
@@ -97,31 +191,14 @@ impl PrimedTnt {
         self.previous = self.position;
         self.velocity.y -= self.get_gravity();
         let mut wanted = self.velocity;
-        if self.stuck.length_squared() > 1.0e-7 {
-            wanted = wanted.multiply(self.stuck);
-            self.stuck = Vec3::ZERO;
-            self.velocity = Vec3::ZERO;
+        if let Some(multiplier) = self.take_stuck() {
+            wanted = wanted.multiply(multiplier);
         }
-        // PowderSnowBlock.getCollisionShape: a top that holds it once it has
-        // fallen more than 2.5 blocks, read through its entity context.
         let scene = SceneCollisions {
             world,
             binding: collision,
-            subject: Some(horizon_client::collisions::PowderSnowSubject {
-                fall_distance: self.fall_distance,
-                ..Default::default()
-            }),
+            subject: Some(self.powder_snow_subject()),
         };
-        let context = horizon_world::collision_context::CollisionContext::for_entity(
-            horizon_world::collision_context::CollisionEntity {
-                identity: horizon_world::entity_obstruction::EntityIdentity(u64::from(self.id)),
-                kind: horizon_world::collision_context::EntityContextKind::Other,
-                y: self.position.y,
-                descending: false,
-                main_hand: None,
-            },
-            false,
-        );
         // Entity.collide: the world border's walls and the entities that
         // `canBeCollidedWith` it (a boat, a shulker) stop it too.
         let border = border.map(|b| (b, [self.position.x, self.position.z]));
@@ -130,7 +207,13 @@ impl PrimedTnt {
             entities,
             border,
         }
-        .resolve_with_context(self.bounds(), wanted, 0.0, self.on_ground, context)
+        .resolve_with_context(
+            self.bounds(),
+            wanted,
+            0.0,
+            self.on_ground,
+            self.collision_context(),
+        )
         .unwrap_or(Vec3::ZERO);
         let from = self.position;
         let recorded = horizon_client::entities::move_applies(wanted, moved);
@@ -142,14 +225,7 @@ impl PrimedTnt {
             );
         }
         self.on_ground = wanted.y < 0.0 && moved.y != wanted.y;
-        // Entity.checkFallDamage: out of water, each step down is narrowed to
-        // a float before it adds to the fall; landing forgets it.
-        if !self.in_water && moved.y < 0.0 {
-            self.fall_distance -= f64::from(moved.y as f32);
-        }
-        if self.on_ground {
-            self.fall_distance = 0.0;
-        }
+        self.check_fall_damage(moved.y);
         if moved.x != wanted.x {
             self.velocity.x = 0.0;
         }
@@ -179,45 +255,14 @@ impl PrimedTnt {
                 horizon_client::motion::block_speed_factor_at(world, blocks, self.position, None);
             self.velocity = horizon_world::entity_move::scale_by_block_speed(self.velocity, factor);
         }
-        // Entity.applyEffectsFromBlocks: powder snow and cobwebs it went
-        // through make it stuck, a bubble column lifts or drags it, and the
-        // columns it is at the top of send their surface particles.
-        let mut tops = Vec::new();
-        let stuck = horizon_client::falling_block::apply_effects_from_blocks(
+        let tops = self.apply_effects_from_blocks(
+            world,
+            assets,
+            facts,
+            collision,
             from,
-            self.position,
             recorded.then_some(wanted),
-            &mut self.velocity,
-            &mut self.fall_distance,
-            &mut Vec::new(),
-            |p| match &*facts.get(world.block(p.x, p.y, p.z)).name {
-                "minecraft:powder_snow" => horizon_client::falling_block::Inside::PowderSnow,
-                "minecraft:cobweb" => horizon_client::falling_block::Inside::Cobweb,
-                _ => horizon_client::falling_block::Inside::Nothing,
-            },
         );
-        if let Some(multiplier) = stuck {
-            self.stuck = multiplier;
-        }
-        if self.push_by_bubble_column_over(world, assets.registry, facts, collision, |pos| {
-            tops.push(pos)
-        }) {
-            self.fall_distance = 0.0;
-        }
-        if self.on_ground {
-            // Entity.applyEffectsFromBlocks -> SlimeBlock.stepOn.
-            let under = world.block(
-                self.position.x.floor() as i32,
-                (self.position.y - f64::from(0.2_f32)).floor() as i32,
-                self.position.z.floor() as i32,
-            );
-            if &*facts.get(under).name == "minecraft:slime_block"
-                && let Some(scale) = horizon_client::entities::slime_step_on_scale(self.velocity.y)
-            {
-                self.velocity.x *= scale;
-                self.velocity.z *= scale;
-            }
-        }
         // Entity.scale(getAirDrag()): 0.98F, widened before it scales motion.
         self.velocity = horizon_client::entity_rules::scale_air_drag(self.velocity);
         if self.on_ground {
@@ -336,6 +381,36 @@ impl Game<'_> {
             power: 4.0,
             block_state: None,
         });
+    }
+    /// The end of a piston's `Entity.move(MoverType.PISTON, …)` for primed TNT
+    /// `i`, after restitution, for a step of `moved` from `from` (which it
+    /// skipped if tiny): its fall and the block speed factor, then
+    /// `moveEntityByPiston`'s `applyEffectsFromBlocks(previousPos, position)`,
+    /// so powder snow it was pushed into makes it stuck.
+    pub(super) fn finish_tnt_piston_move(&mut self, i: usize, from: Vec3, moved: Vec3) {
+        let t = &mut self.tnts[i];
+        t.check_fall_damage(moved.y);
+        let factor = horizon_client::motion::block_speed_factor_at(
+            &self.world,
+            &self.res.motion().blocks,
+            t.position,
+            None,
+        );
+        t.velocity = horizon_world::entity_move::scale_by_block_speed(t.velocity, factor);
+        let known = t.velocity;
+        let tops = t.apply_effects_from_blocks(
+            &self.world,
+            &self.pack.assets,
+            self.res.facts(),
+            self.collision,
+            from,
+            None,
+        );
+        let (to, bounds) = (t.position, t.bounds());
+        self.entity_powder_snow_particles(from, to, bounds, known, false);
+        for pos in tops {
+            self.bubble_column_particles(pos);
+        }
     }
     /// `PrimedTnt.tick` for every primed TNT, in order; an expired fuse
     /// explodes immediately (later TNT in the list feel its knockback this

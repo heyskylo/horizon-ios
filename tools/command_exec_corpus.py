@@ -5797,6 +5797,44 @@ def piston_push_ground():
     return ops
 
 
+def piston_tnt_effects():
+    """#12023: `Entity.move(MoverType.PISTON)` uses up primed TNT's pending
+    stuck multiplier without scaling the push, adds to its fall and resets it
+    on landing, and applies the block speed factor (soul sand); then
+    `moveEntityByPiston` runs `applyEffectsFromBlocks`, so powder snow it is
+    pushed into makes it stuck before its next move and slime under it slows
+    it. After a fall over 2.5, powder snow stops the push. The TNT ticks before
+    the piston moves it (#9337). Positions are read to a tenth: the float box
+    (#12020) moves a stopped push by 1e-8."""
+    sel = '@e[type=minecraft:tnt,tag=piston_tnt,limit=1]'
+    east = ('/setblock 30 210 31 piston[facing=east]',)
+    down = ('/setblock 32 212 31 piston[facing=down]',)
+    ops = []
+    # blocks, summon x and y, TNT fields, power
+    for blocks, at, fields, power in (
+            (east + ('/setblock 32 210 31 powder_snow',), '31.5 210',
+             'Motion:[0.0d,0.1d,0.0d]', '/setblock 30 211 31'),
+            (east + ('/setblock 32 210 31 powder_snow',), '31.5 210',
+             'fall_distance:3.0d', '/setblock 30 211 31'),
+            (east + ('/fill 30 209 31 34 209 31 soul_sand',), '31.5 210',
+             'Motion:[0.0d,0.0d,0.05d]', '/setblock 30 211 31'),
+            (down + ('/setblock 32 210 31 stone',), '32.5 211',
+             'fall_distance:3.0d', '/setblock 32 213 31'),
+            (down + ('/setblock 32 210 31 slime_block',), '32.5 211',
+             'fall_distance:3.0d,Motion:[0.0d,0.0d,0.05d]', '/setblock 32 213 31')):
+        ops += setup('/kill @e[type=!player]', '/fill 28 208 28 36 218 34 air', *blocks,
+                     f'/summon minecraft:tnt {at} 31.5 '
+                     f'{{fuse:200s,NoGravity:1b,{fields},Tags:["piston_tnt"]}}')
+        for tick in range(5):
+            if tick == 1:
+                ops += setup(f'{power} redstone_block')
+            ops.append({'op': 'tick', 'n': 1})
+            for path in ('Pos[0] 10', 'Pos[1] 10', 'Motion', 'fall_distance'):
+                ops.append(cmd(f'/data get entity {sel} {path}'))
+    ops += setup('/kill @e[type=!player]', '/fill 28 208 28 36 218 34 air')
+    return ops
+
+
 def primed_tnt_fall():
     """#12021: primed TNT is an `Entity`: `checkFallDamage` adds each step down,
     narrowed to a float, to its double `fall_distance`, which it saves and
@@ -6300,6 +6338,7 @@ def groups():
         ('primed tnt fall', primed_tnt_fall()),
         ('scheduled block item birth', scheduled_item_birth()),
         ('piston push ground', piston_push_ground()),
+        ('piston tnt effects', piston_tnt_effects()),
         ('carpet farms', carpet_farms(cmd, setup)),
         ('passenger teleports', passenger_teleports(cmd, setup)),
         ('mob riding', mob_riding()),
