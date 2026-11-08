@@ -2968,6 +2968,21 @@ impl Game<'_> {
                         m.ai.target = Some(target);
                     }
                 }
+                MobEvent::HoglinAttackTarget { mob, target } => {
+                    let places: Vec<(u32, horizon_core::geometry::Vec3)> = self
+                        .mobs
+                        .iter()
+                        .filter(|m| m.alive())
+                        .map(|m| (m.id, m.position))
+                        .collect();
+                    let position = |who: Who| match who {
+                        Who::Mob(id) => places.iter().find(|(i, _)| *i == id).map(|(_, p)| *p),
+                        Who::Player => None,
+                    };
+                    if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) {
+                        horizon_client::mobs::piglin::receive_attack_target(m, target, position);
+                    }
+                }
                 MobEvent::HuntHoglin { mob, target, ticks } => {
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) {
                         m.extra.ints[0] = ticks;

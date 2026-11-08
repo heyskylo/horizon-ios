@@ -132,3 +132,95 @@ fn a_hoglin_keeps_attacking_its_attacker_beside_another_hit_hoglin() {
         "this hoglin hits its attacker again ({later})"
     );
 }
+
+/// Added controls (after the frozen baseline above).
+fn mob_id(game: &mut Game<'_>, uuid: &str) -> u32 {
+    match game.target_with_uuid(horizon_client::save::uuid_from_text(uuid).unwrap()) {
+        Some(Target::Mob(id)) => id,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// `setAttackTargetIfCloserThanCurrent` on the receiver: pacified ignores
+/// the broadcast; a nearer current target stays; a nearer (or equally near)
+/// incoming one replaces a farther one; none current takes the new one.
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_broadcast_target_replaces_only_a_farther_one() {
+    use horizon_client::mobs::{Who, piglin::receive_attack_target};
+    use horizon_core::geometry::Vec3;
+    let mut game = game();
+    let receiver = mob_id(&mut game, HOGLIN);
+    let (near, far) = (mob_id(&mut game, PIG), mob_id(&mut game, NEAR_PIG));
+    let place = |game: &Game<'_>, id: u32| game.mobs.iter().find(|m| m.id == id).unwrap().position;
+    let (near_at, far_at) = (place(&game, near), place(&game, far));
+    let position = |who: Who| match who {
+        Who::Mob(id) if id == near => Some(near_at),
+        Who::Mob(id) if id == far => Some(far_at),
+        _ => None::<Vec3>,
+    };
+    let m = game.mobs.iter_mut().find(|m| m.id == receiver).unwrap();
+    // No current target: the broadcast's is taken.
+    m.ai.target = None;
+    receive_attack_target(m, Who::Mob(far), position);
+    assert_eq!(m.ai.target, Some(Who::Mob(far)), "no current target");
+    // Pacified: nothing changes.
+    m.ai.target = None;
+    m.extra.ints[0] = 200;
+    receive_attack_target(m, Who::Mob(near), position);
+    assert_eq!(m.ai.target, None, "pacified");
+    m.extra.ints[0] = 0;
+    // A nearer current target stays.
+    m.ai.target = Some(Who::Mob(near));
+    receive_attack_target(m, Who::Mob(far), position);
+    assert_eq!(m.ai.target, Some(Who::Mob(near)), "nearer current");
+    // A nearer incoming target replaces a farther current one.
+    m.ai.target = Some(Who::Mob(far));
+    receive_attack_target(m, Who::Mob(near), position);
+    assert_eq!(m.ai.target, Some(Who::Mob(near)), "nearer incoming");
+    // A tie takes the incoming one (`getTargetNearestMe`: current only if strictly nearer).
+    m.ai.target = Some(Who::Mob(far));
+    receive_attack_target(m, Who::Mob(near), |_| Some(near_at));
+    assert_eq!(m.ai.target, Some(Who::Mob(near)), "tie");
+}
+
+/// The broadcast's receivers are the sensed visible adult hoglins
+/// (`NEAREST_VISIBLE_ADULT_HOGLINS`): not a baby, not one behind stone.
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn the_sensed_receivers_are_visible_adult_hoglins() {
+    let mut game = game();
+    // Inside this hoglin's pen: an adult and a baby. Beyond a stone wall: an adult.
+    assert!(game.run_command(
+        "summon hoglin 24.5 100 10.5 {PersistenceRequired:1b,IsImmuneToZombification:1b,NoAI:1b,UUID:[I;24723,0,0,6]}"
+    ));
+    assert!(game.run_command(
+        "summon hoglin 24.5 100 6.5 {PersistenceRequired:1b,IsImmuneToZombification:1b,Age:-24000,UUID:[I;24723,0,0,4]}"
+    ));
+    assert!(game.run_command("fill 27 100 0 27 104 15 stone"));
+    assert!(game.run_command(
+        "summon hoglin 29.5 100 8.5 {PersistenceRequired:1b,IsImmuneToZombification:1b,NoAI:1b,UUID:[I;24723,0,0,5]}"
+    ));
+    step(&mut game, 40);
+    let receiver = mob_id(&mut game, HOGLIN);
+    let near = mob_id(&mut game, "00006093-0000-0000-0000-000000000006");
+    let baby = mob_id(&mut game, "00006093-0000-0000-0000-000000000004");
+    let walled = mob_id(&mut game, "00006093-0000-0000-0000-000000000005");
+    let adults = &game
+        .mobs
+        .iter()
+        .find(|m| m.id == receiver)
+        .unwrap()
+        .extra
+        .piglin
+        .adults;
+    assert!(
+        adults.contains(&near),
+        "the visible adult neighbour: {adults:?}"
+    );
+    assert!(!adults.contains(&baby), "not a baby: {adults:?}");
+    assert!(
+        !adults.contains(&walled),
+        "not one behind stone: {adults:?}"
+    );
+}

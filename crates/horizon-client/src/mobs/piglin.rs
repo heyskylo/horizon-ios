@@ -788,8 +788,9 @@ fn hoglin_retaliates(m: &mut Mob, w: &MobWorld, by: Who, at: Vec3) -> bool {
 /// `HoglinAi.wasHurtBy`, which `Hoglin.hurtServer` calls: a hit ends the
 /// pacified state; a baby retreats from the attacker, an adult retaliates
 /// when `maybeRetaliate` allows. The hurt-by goal does the retaliating, so a
-/// hit that does not get it is used up.
-fn hoglin_hurt(m: &mut Mob, w: &MobWorld, lr: &mut LegacyRandom, by: Who) {
+/// hit that does not get it is used up. A retaliation is broadcast to the
+/// visible adult hoglins (`broadcastAttackTarget`, `NEAREST_VISIBLE_ADULT_HOGLINS`).
+fn hoglin_hurt(m: &mut Mob, w: &MobWorld, lr: &mut LegacyRandom, events: &mut Vec<MobEvent>, by: Who) {
     m.extra.ints[0] = 0;
     let Some(at) = w.target_info(by).map(|t| t.position) else {
         return;
@@ -799,6 +800,39 @@ fn hoglin_hurt(m: &mut Mob, w: &MobWorld, lr: &mut LegacyRandom, by: Who) {
         m.ai.last_hurt_by = None;
     } else if !hoglin_retaliates(m, w, by, at) {
         m.ai.last_hurt_by = None;
+    } else {
+        for &mob in &m.extra.piglin.adults {
+            events.push(MobEvent::HoglinAttackTarget { mob, target: by });
+        }
+    }
+}
+/// `HoglinAi.setAttackTargetIfCloserThanCurrent` for a hoglin that received a
+/// broadcast: nothing while pacified; otherwise `BehaviorUtils.getNearestTarget`,
+/// the new target unless the current one is strictly nearer
+/// (`getTargetNearestMe`). `position` gives a live mob target's place; a
+/// current target it cannot place counts as absent. A player on either side
+/// is not compared (`Who::Player` is each mob's own player): the current
+/// target stays.
+pub fn receive_attack_target(m: &mut Mob, target: Who, position: impl Fn(Who) -> Option<Vec3>) {
+    if m.extra.ints[0] > 0 {
+        return;
+    }
+    let Some(current) = m.ai.target else {
+        m.ai.target = Some(target);
+        return;
+    };
+    if current == Who::Player || target == Who::Player {
+        return;
+    }
+    let Some(now) = position(current) else {
+        m.ai.target = Some(target);
+        return;
+    };
+    let Some(new) = position(target) else {
+        return;
+    };
+    if m.distance_sqr(now) >= m.distance_sqr(new) {
+        m.ai.target = Some(target);
     }
 }
 /// `PiglinAi.stopHoldingOffHandItem` without bartering (`wasHurtBy`): a gold
@@ -931,7 +965,7 @@ pub fn before_goals(m: &mut Mob, w: &MobWorld, lr: &mut LegacyRandom, events: &m
     {
         m.extra.piglin.hurt_seen = m.ai.last_hurt_by_time;
         if m.species() == Species::Hoglin {
-            hoglin_hurt(m, w, lr, by);
+            hoglin_hurt(m, w, lr, events, by);
         } else {
             piglin_hurt(m, w, lr, events, by);
         }
@@ -1410,7 +1444,8 @@ pub fn register_hoglin(m: &mut Mob) {
     g.add(4, NotRetreating(super::goals::FollowParent::new(1.1)));
     g.add(5, Stroll::avoiding_water(0.4));
     g.add(6, LookAtPlayer::new(8.0));
-    m.ai.targets.add(1, HurtByTarget::new().alert());
+    // The retaliation's broadcast is `hoglin_hurt`'s (`HoglinAi.broadcastAttackTarget`), not an alert.
+    m.ai.targets.add(1, HurtByTarget::new());
     // `HoglinAi.findNearestValidAttackTarget`: nothing while pacified, and
     // `StartAttacking` is not in the retreat activity.
     m.ai.targets.add(
