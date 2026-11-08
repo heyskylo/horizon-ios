@@ -100,6 +100,11 @@ fn interfaces(source: &str) -> Vec<Interface> {
 fn composed() -> Vec<(&'static str, Vec<&'static str>, String)> {
     let entity = crate::overlay::wgsl_constants() + include_str!("../entity.wgsl");
     vec![
+        (
+            "HDR",
+            vec!["hdr.wgsl", "hdr_light.wgsl"],
+            super::hdr::shader(),
+        ),
         ("entity", vec!["entity.wgsl"], entity.clone()),
         (
             "GPU culling occlusion test",

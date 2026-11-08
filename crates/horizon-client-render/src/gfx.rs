@@ -13534,10 +13534,12 @@ mod tests {
         for path in files {
             let text = std::fs::read_to_string(&path).unwrap();
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name == "oit.wgsl" || name == "gpu_occlusion.wgsl" {
+            if name == "oit.wgsl" || name == "gpu_occlusion.wgsl" || name == "hdr_light.wgsl" {
                 // The shared maths: it needs the file it is appended to. GPU culling's
                 // occlusion test is appended to gpu_culling.wgsl, on Vulkan alone.
                 continue;
+            } else if name == "hdr.wgsl" {
+                sources.push((path, super::hdr::shader()));
             } else if name == "oit_world.wgsl" {
                 let base = include_str!("terrain.wgsl").to_owned() + include_str!("oit.wgsl");
                 sources.push((path, base + &text));
