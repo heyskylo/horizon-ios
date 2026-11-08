@@ -46,6 +46,7 @@ impl Gpu {
             wgpu::TextureFormat::Rgba16Float,
             &view,
             &view,
+            &view,
             &device.create_sampler(&Default::default()),
             true,
         )
