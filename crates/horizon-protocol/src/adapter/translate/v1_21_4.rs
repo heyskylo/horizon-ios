@@ -1,5 +1,6 @@
 //! 1.21.4 to 1.21.5, from vanilla packet codecs and palette serialization.
 use super::*;
+use crate::adapter::pinned_ids::{entity_type as entity, item};
 
 pub(super) fn registry_data(session: &Session, payload: &[u8]) -> Result<()> {
     if Reader::new(payload).string(32767)? != "minecraft:trim_pattern" {
@@ -9,24 +10,24 @@ pub(super) fn registry_data(session: &Session, payload: &[u8]) -> Result<()> {
     // The pinned vanilla template item ids. The pattern ids come from this connection's synced
     // registry, so a data pack may reorder them or use a known template for another pattern.
     const TEMPLATES: &[(&str, i32)] = &[
-        ("sentry", 1580),
-        ("dune", 1581),
-        ("coast", 1582),
-        ("wild", 1583),
-        ("ward", 1584),
-        ("eye", 1585),
-        ("vex", 1586),
-        ("tide", 1587),
-        ("snout", 1588),
-        ("rib", 1589),
-        ("spire", 1590),
-        ("wayfinder", 1591),
-        ("shaper", 1592),
-        ("silence", 1593),
-        ("raiser", 1594),
-        ("host", 1595),
-        ("flow", 1596),
-        ("bolt", 1597),
+        ("sentry", item::SENTRY_ARMOR_TRIM_SMITHING_TEMPLATE),
+        ("dune", item::DUNE_ARMOR_TRIM_SMITHING_TEMPLATE),
+        ("coast", item::COAST_ARMOR_TRIM_SMITHING_TEMPLATE),
+        ("wild", item::WILD_ARMOR_TRIM_SMITHING_TEMPLATE),
+        ("ward", item::WARD_ARMOR_TRIM_SMITHING_TEMPLATE),
+        ("eye", item::EYE_ARMOR_TRIM_SMITHING_TEMPLATE),
+        ("vex", item::VEX_ARMOR_TRIM_SMITHING_TEMPLATE),
+        ("tide", item::TIDE_ARMOR_TRIM_SMITHING_TEMPLATE),
+        ("snout", item::SNOUT_ARMOR_TRIM_SMITHING_TEMPLATE),
+        ("rib", item::RIB_ARMOR_TRIM_SMITHING_TEMPLATE),
+        ("spire", item::SPIRE_ARMOR_TRIM_SMITHING_TEMPLATE),
+        ("wayfinder", item::WAYFINDER_ARMOR_TRIM_SMITHING_TEMPLATE),
+        ("shaper", item::SHAPER_ARMOR_TRIM_SMITHING_TEMPLATE),
+        ("silence", item::SILENCE_ARMOR_TRIM_SMITHING_TEMPLATE),
+        ("raiser", item::RAISER_ARMOR_TRIM_SMITHING_TEMPLATE),
+        ("host", item::HOST_ARMOR_TRIM_SMITHING_TEMPLATE),
+        ("flow", item::FLOW_ARMOR_TRIM_SMITHING_TEMPLATE),
+        ("bolt", item::BOLT_ARMOR_TRIM_SMITHING_TEMPLATE),
     ];
     let mut patterns = session.trim_patterns.lock().unwrap();
     patterns.clear();
@@ -144,7 +145,7 @@ pub(super) fn experience_orb(session: &Session, payload: &[u8]) -> Result<(i32, 
     let p = play::AddEntity {
         id: entity,
         uuid: u128::from(entity as u32),
-        kind: 50,
+        kind: entity::EXPERIENCE_ORB,
         position,
         velocity: [0.0; 3],
         pitch: 0,
@@ -152,7 +153,11 @@ pub(super) fn experience_orb(session: &Session, payload: &[u8]) -> Result<(i32, 
         head_yaw: 0,
         data: 0,
     };
-    session.kinds.lock().unwrap().insert(entity, 50);
+    session
+        .kinds
+        .lock()
+        .unwrap()
+        .insert(entity, entity::EXPERIENCE_ORB);
     let metadata = play::Clientbound::SetEntityData(play::SetEntityData {
         id: entity,
         values: vec![(
@@ -199,24 +204,43 @@ pub(super) fn entity_data(session: &Session, data: &mut play::SetEntityData) {
     let mut display_changed = false;
     data.values.retain_mut(|(index, _ser, value)| {
         match (kind, *index) {
-            (101, 17) | (132, 19) => {
+            (entity::PIG, 17) | (entity::STRIDER, 19) => {
                 if let Value::Bool(saddled) = value {
                     saddle = Some(*saddled);
                 }
                 return false;
             }
-            (101, 18) => *index = 17,
-            (36, 17) => return false,
-            (36, 18..=19) => *index -= 1,
-            (141, 17 | 20..=22) => return false,
-            (141, 18..=19) => *index -= 1,
-            (19 | 37 | 67 | 79 | 88 | 119 | 138 | 155, 17) => {
+            (entity::PIG, 18) => *index = 17,
+            (entity::DOLPHIN, 17) => return false,
+            (entity::DOLPHIN, 18..=19) => *index -= 1,
+            (entity::TURTLE, 17 | 20..=22) => return false,
+            (entity::TURTLE, 18..=19) => *index -= 1,
+            (
+                entity::CAMEL
+                | entity::DONKEY
+                | entity::HORSE
+                | entity::LLAMA
+                | entity::MULE
+                | entity::SKELETON_HORSE
+                | entity::TRADER_LLAMA
+                | entity::ZOMBIE_HORSE,
+                17,
+            ) => {
                 if let Value::Byte(flags) = value {
                     saddle = Some(*flags & 4 != 0);
                     *flags &= !4;
                 }
             }
-            (25 | 29 | 57 | 66 | 86 | 125 | 137, 11 | 13) => {
+            (
+                entity::CHEST_MINECART
+                | entity::COMMAND_BLOCK_MINECART
+                | entity::FURNACE_MINECART
+                | entity::HOPPER_MINECART
+                | entity::MINECART
+                | entity::SPAWNER_MINECART
+                | entity::TNT_MINECART,
+                11 | 13,
+            ) => {
                 let mut cache = session.minecart_display.lock().unwrap();
                 let entry = cache.entry(data.id).or_insert((0, false));
                 match value {
@@ -249,7 +273,7 @@ pub(super) fn entity_data(session: &Session, data: &mut play::SetEntityData) {
     if let Some(saddled) = saddle {
         let equipment = play::Clientbound::SetEquipment(play::SetEquipment {
             id: data.id,
-            slots: vec![(7, saddled.then(|| crate::item::Stack::new(949, 1)))],
+            slots: vec![(7, saddled.then(|| crate::item::Stack::new(item::SADDLE, 1)))],
         });
         session.incoming.lock().unwrap().push_back((
             packet_ids::play::clientbound::SET_EQUIPMENT,
