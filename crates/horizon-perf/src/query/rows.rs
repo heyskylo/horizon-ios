@@ -3,8 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::wire::{
-    Amount, GpuModeName, KindName, MemoryUnit, ModKindName, SeriesUnit, SideName, StopReasonName,
-    SymbolsName, ThreadSelectionName, TriggerName, WarningCodeName,
+    Amount, GpuModeName, KindName, MemoryUnit, ModKindName, SampleBy, SeriesUnit, SideName,
+    StopReasonName, SymbolsName, ThreadSelectionName, TriggerName, WarningCodeName,
 };
 
 /// A row of whichever op answered; each op's rows are all of one kind, except `net`'s first.
@@ -25,6 +25,10 @@ pub enum Row {
     MemoryDiff(MemoryDiffRow),
     Warning(WarningRow),
     Mark(MarkRow),
+    Hot(HotRow),
+    Tree(TreeRow),
+    Split(SplitRow),
+    Frame(FrameRow),
 }
 
 /// One span, one value per capture asked about; a capture without the span has null.
@@ -151,6 +155,7 @@ pub struct Sections {
     pub spans: usize,
     pub workers: usize,
     pub net: usize,
+    pub samples: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -297,4 +302,72 @@ pub struct MemoryDiffRow {
     pub counts: Vec<CountChange>,
     pub only_in_a: Vec<String>,
     pub only_in_b: Vec<String>,
+}
+
+/// A function ranked by its own and its inclusive time.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HotRow {
+    pub id: String,
+    pub name: String,
+    pub full: String,
+    pub file: Option<String>,
+    pub line: Option<u32>,
+    #[serde(rename = "self")]
+    pub self_ms: f64,
+    pub total: f64,
+    pub self_pct: f64,
+    pub total_pct: f64,
+    pub samples: u64,
+}
+
+/// What a tree row left out: rows under the share floor or past the limit, and their time together.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Folded {
+    pub rows: usize,
+    pub total: f64,
+}
+
+/// A call-tree row for `tree`, `callers` and `callees`; `callers` rows have no own time.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TreeRow {
+    pub id: String,
+    pub function: String,
+    pub name: String,
+    pub total: f64,
+    #[serde(rename = "self", default, skip_serializing_if = "Option::is_none")]
+    pub self_ms: Option<f64>,
+    pub pct: f64,
+    pub samples: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<TreeRow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folded: Option<Folded>,
+}
+
+/// A weight divided by one context; a null `key` is the samples that had none.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SplitRow {
+    pub by: SampleBy,
+    pub key: Option<String>,
+    pub label: String,
+    pub value: f64,
+    pub pct: f64,
+    pub samples: u64,
+}
+
+/// A function's inclusive and own time, one value per capture asked about; a capture without it has null.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrameRow {
+    pub id: String,
+    pub name: String,
+    pub full: String,
+    pub values: Vec<Option<f64>>,
+    #[serde(rename = "self")]
+    pub self_ms: Vec<Option<f64>>,
+    pub samples: Vec<Option<u64>>,
 }

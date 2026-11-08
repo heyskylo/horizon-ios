@@ -1645,6 +1645,7 @@ dependencies = [
  "horizon-mod-api-gen",
  "horizon-narrator",
  "horizon-optifine",
+ "horizon-perf",
  "horizon-perf-format",
  "horizon-protocol",
  "horizon-shader-api",
@@ -1837,6 +1838,7 @@ dependencies = [
  "horizon-bench",
  "horizon-perf-format",
  "prost",
+ "regex",
  "serde",
  "serde_json",
 ]

@@ -1,7 +1,9 @@
 //! `horizon-perf query OP` (docs/perf-platform.md §6): every reply is one JSON envelope with `rows`.
 
+mod calls;
 mod meta;
 mod notes;
+mod profile;
 pub mod rows;
 mod series;
 mod spans;
@@ -16,8 +18,8 @@ use horizon_perf_format::v1::{Capture, Side};
 use crate::error::side_name;
 use crate::view::{View, Window};
 use crate::wire::{
-    Candidate, CaptureInfo, ContextKey, Envelope, GroupBy, KindName, Op, OpName, Select, SideName,
-    Unit, bound,
+    Candidate, CaptureInfo, ContextKey, Envelope, GroupBy, HotBy, KindName, Op, OpName, SampleBy,
+    Select, SideName, Unit, bound,
 };
 
 pub use crate::wire::{fine, num, opt_num};
@@ -79,6 +81,12 @@ pub struct Query {
     pub diff: bool,
     pub min_mb: Option<f64>,
     pub by: Option<GroupBy>,
+    pub hot_by: Option<HotBy>,
+    pub by_sample: Option<SampleBy>,
+    /// `hot --match`: functions whose name contains it.
+    pub matching: Option<String>,
+    pub depth: Option<usize>,
+    pub min_pct: Option<f64>,
 }
 
 impl Query {
@@ -94,6 +102,11 @@ impl Query {
             diff: false,
             min_mb: None,
             by: None,
+            hot_by: None,
+            by_sample: None,
+            matching: None,
+            depth: None,
+            min_pct: None,
         }
     }
 }
@@ -132,12 +145,20 @@ impl std::fmt::Display for QueryError {
     }
 }
 
+/// What a sample query looked at, for the envelope's selection.
+pub(crate) struct Sampled {
+    pub thread: String,
+    pub ticks: u64,
+    pub samples: u64,
+}
+
 /// What one operation answers; the envelope around it is common.
 pub(crate) struct Reply {
     pub unit: Unit,
     pub rows: Vec<Row>,
     pub warnings: Vec<String>,
     pub window: Option<Window>,
+    pub sampled: Option<Sampled>,
 }
 
 impl Reply {
@@ -147,6 +168,7 @@ impl Reply {
             rows,
             warnings: Vec::new(),
             window: None,
+            sampled: None,
         }
     }
 }
@@ -226,16 +248,16 @@ impl Ctx<'_> {
 
 /// Runs one query over one or more loaded captures; only `spans` takes several.
 pub fn run(q: &Query, files: &[Loaded]) -> Result<Envelope<Row>, QueryError> {
-    if q.op.needs_samples() {
+    if q.op.unanswered() {
         return Err(QueryError::new(format!(
-            "query {} reads the samples section, which this horizon-perf does not read yet",
+            "query {} is not answered by this horizon-perf yet",
             q.op
         )));
     }
     if files.is_empty() {
         return Err(QueryError::new("no capture given"));
     }
-    if files.len() > 1 && q.op != Op::Spans {
+    if files.len() > 1 && !matches!(q.op, Op::Spans | Op::Frames) {
         return Err(QueryError::new(format!(
             "query {} takes one capture, got {}",
             q.op,
@@ -258,16 +280,14 @@ pub fn run(q: &Query, files: &[Loaded]) -> Result<Envelope<Row>, QueryError> {
         Op::Memory => notes::memory(&ctx)?,
         Op::Marks => notes::marks(&ctx)?,
         Op::Warnings => notes::warnings(&ctx)?,
-        Op::Hot
-        | Op::Tree
-        | Op::Callers
-        | Op::Callees
-        | Op::Split
-        | Op::Group
-        | Op::Frames
-        | Op::Gpu
-        | Op::Bench
-        | Op::Samples => unreachable!("answered above"),
+        Op::Hot => profile::hot(&ctx)?,
+        Op::Tree => calls::tree(&ctx)?,
+        Op::Callers => calls::callers(&ctx)?,
+        Op::Callees => calls::callees(&ctx)?,
+        Op::Split => profile::divide(&ctx, false)?,
+        Op::Group => profile::divide(&ctx, true)?,
+        Op::Frames => profile::frames(&ctx)?,
+        Op::Gpu | Op::Bench | Op::Samples => unreachable!("answered above"),
     };
     Ok(envelope(&ctx, reply))
 }
@@ -295,15 +315,25 @@ fn envelope(ctx: &Ctx, reply: Reply) -> Envelope<Row> {
         .collect();
     let f = &ctx.q.filters;
     let side = ctx.side(0).ok();
-    let thread = side.and_then(|s| ctx.thread(0, s).ok().map(|id| (s, id)));
-    let ticks = thread
-        .and_then(|(s, id)| ctx.views[0].span_table(s, id, None))
-        .map(|t| t.units);
+    let (thread, ticks, samples) = match &reply.sampled {
+        Some(s) => (Some(s.thread.clone()), Some(s.ticks), Some(s.samples)),
+        None => {
+            let thread = side.and_then(|s| ctx.thread(0, s).ok().map(|id| (s, id)));
+            let ticks = thread
+                .and_then(|(s, id)| ctx.views[0].span_table(s, id, None))
+                .map(|t| t.units);
+            (
+                thread.map(|(s, id)| ctx.views[0].text(s, id).into_owned()),
+                ticks,
+                None,
+            )
+        }
+    };
     let end = side.map(|s| ctx.views[0].end(s)).unwrap_or(0.0);
     let window = reply.window.unwrap_or(Window { from: 0.0, to: end });
     let selection = crate::wire::Selection {
         side: side.map(SideName::from),
-        thread: thread.map(|(s, id)| ctx.views[0].text(s, id).into_owned()),
+        thread,
         select: f.select,
         slow: f.slow,
         where_: f
@@ -314,7 +344,7 @@ fn envelope(ctx: &Ctx, reply: Reply) -> Envelope<Row> {
         from: bound(window.from),
         to: bound(window.to),
         ticks,
-        samples: None,
+        samples,
     };
     Envelope::success(
         OpName::Query(ctx.q.op),

@@ -3,6 +3,7 @@
 pub mod blocks;
 pub mod bots;
 pub mod hand;
+pub mod samples;
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -12,8 +13,8 @@ use std::sync::{Arc, Mutex};
 use horizon_perf::Entry;
 use horizon_perf::query::Row;
 use horizon_perf::query::rows::{
-    CostRow, CountRow, DimensionRow, MarkRow, MemoryDiffRow, MemoryRow, MetaRow, NetPlayer,
-    NetTotal, SeriesRow, SpanRow, TickRow, WarningRow,
+    CostRow, CountRow, DimensionRow, FrameRow, HotRow, MarkRow, MemoryDiffRow, MemoryRow, MetaRow,
+    NetPlayer, NetTotal, SeriesRow, SpanRow, SplitRow, TickRow, TreeRow, WarningRow,
 };
 use horizon_perf::wire::Envelope;
 use horizon_perf_format::v1::*;
@@ -245,6 +246,10 @@ rows_of!(memory_rows, Memory, MemoryRow);
 rows_of!(memory_diff_rows, MemoryDiff, MemoryDiffRow);
 rows_of!(warning_rows, Warning, WarningRow);
 rows_of!(mark_rows, Mark, MarkRow);
+rows_of!(hot_rows, Hot, HotRow);
+rows_of!(tree_rows, Tree, TreeRow);
+rows_of!(split_rows, Split, SplitRow);
+rows_of!(frame_rows, Frame, FrameRow);
 
 /// The row of every player together, which `net` lists first.
 pub fn net_total(reply: &Envelope<Row>) -> &NetTotal {

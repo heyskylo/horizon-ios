@@ -395,7 +395,13 @@ Notes on fields:
   `weights.node` is the innermost. `slow_over_ms` is the duration from which a tick counts as slow; read it there, because
   `Start.options.ticks_over_ms` is left unset. Nodes are unique per (parent, function): addresses of one function under one
   caller share a node. Time blocks are `block_s` long (5 s, or window / 32 when longer than 160 s); the last block takes whatever follows it.
-- Q2: `meta`'s `Sections` has no `samples` count, so a capture's sample section is invisible to it.
+- Q2 as built (sample queries read `samples`; `meta`'s `Sections.samples` counts it):
+  - Functions are merged by normalized name (`horizon_perf::names`), so every monomorphization and address of one function is one row; ids are `f:` over that name, `p:` over the thread and the normalized frames.
+  - Weights are `count × kind.period`; "per tick" divides by the thread's units in the selection (`block_units` over the window's blocks; slow units are scaled by the window's share, with a warning).
+  - A function's inclusive time counts a recursion once (the outermost call). Percentages are shares of the selection's weight.
+  - `callers` and `callees` rows are merged over occurrences and carry `f:` ids; `tree` rows carry `p:` ids where one call path explains them, else `f:`. `--depth` counts levels of children (`tree`) or of rows (`callers`, `callees`).
+  - A chunk of (0, 0) in `contexts` means none was set. `split --by state` divides the selected kind, so use `--select wall` to see running against waiting. `group --by thread` ignores `--thread`.
+  - `--where chunk=` takes `dimension/x,z` (a comma inside a chunk value continues it).
 - `functions` is deduplicated, unlike the viewer blob's per-node names. This is what makes function ids (§5.2) and
   bottom-up views cheap.
 - `addr` is the module-relative address, kept so that a later split-debug-file design can symbolize offline (the

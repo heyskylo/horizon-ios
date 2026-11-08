@@ -6,9 +6,9 @@ use std::str::FromStr;
 use super::{CliError, Env, Flag, Parsed, failed, file_name, json_line, parse, resolve, side_flag};
 use crate::query::{self, Bound, DEFAULT_LIMIT, Filters, Loaded, Query, QueryError};
 use crate::read::read_capture;
-use crate::wire::{ContextKey, GroupBy, Op, OpName, Select};
+use crate::wire::{ContextKey, GroupBy, HotBy, Op, OpName, SampleBy, Select};
 
-const FLAGS: [Flag; 14] = [
+const FLAGS: [Flag; 17] = [
     Flag::Side,
     Flag::Thread,
     Flag::Select,
@@ -23,6 +23,9 @@ const FLAGS: [Flag; 14] = [
     Flag::Every,
     Flag::MinMb,
     Flag::By,
+    Flag::Match,
+    Flag::Depth,
+    Flag::MinPct,
 ];
 const SWITCHES: [Flag; 3] = [Flag::Slow, Flag::All, Flag::Diff];
 
@@ -43,9 +46,20 @@ fn bound(parsed: &Parsed, flag: Flag) -> Result<Option<Bound>, CliError> {
         .map_err(|_| CliError::Usage(format!("--{flag} needs seconds or mark:NAME, got {text}")))
 }
 
+/// `k=v[,k=v]`; a piece without `=` continues the value before it, as in a chunk's `dim/x,z`.
 fn where_pairs(text: &str) -> Result<BTreeMap<ContextKey, Vec<String>>, CliError> {
+    let mut pairs: Vec<String> = Vec::new();
+    for piece in text.split(',').filter(|p| !p.is_empty()) {
+        match pairs.last_mut() {
+            Some(last) if !piece.contains('=') => {
+                last.push(',');
+                last.push_str(piece);
+            }
+            _ => pairs.push(piece.to_string()),
+        }
+    }
     let mut out: BTreeMap<ContextKey, Vec<String>> = BTreeMap::new();
-    for pair in text.split(',').filter(|p| !p.is_empty()) {
+    for pair in pairs {
         let (key, value) = pair
             .split_once('=')
             .ok_or_else(|| CliError::Usage(format!("--where needs key=value, got {pair}")))?;
@@ -67,15 +81,33 @@ fn build(parsed: &Parsed, args: Vec<String>, op: Op) -> Result<Query, CliError> 
             CliError::Usage(format!("--select is {}, got {text}", Select::spellings()))
         })?,
     };
-    let by = parsed
-        .flags
-        .get(&Flag::By)
-        .map(|text| {
-            GroupBy::from_str(text).map_err(|_| {
-                CliError::Usage(format!("--by is {}, got {text}", GroupBy::spellings()))
-            })
-        })
-        .transpose()?;
+    let by_text = parsed.flags.get(&Flag::By);
+    let usage =
+        |what: &str, spellings: String| CliError::Usage(format!("--by is {spellings}, got {what}"));
+    let (mut by, mut hot_by, mut by_sample) = (None, None, None);
+    if let Some(text) = by_text {
+        match op {
+            Op::Hot => {
+                hot_by = Some(HotBy::from_str(text).map_err(|_| usage(text, HotBy::spellings()))?);
+            }
+            Op::Split | Op::Group => {
+                let picked = SampleBy::from_str(text)
+                    .ok()
+                    .filter(|b| op == Op::Split || b.groups());
+                by_sample = Some(picked.ok_or_else(|| {
+                    let ok: Vec<&str> = SampleBy::ALL
+                        .iter()
+                        .filter(|b| op == Op::Split || b.groups())
+                        .map(|b| b.as_str())
+                        .collect();
+                    usage(text, ok.join(", "))
+                })?);
+            }
+            _ => {
+                by = Some(GroupBy::from_str(text).map_err(|_| usage(text, GroupBy::spellings()))?);
+            }
+        }
+    }
     let filters = Filters {
         side: side_flag(parsed)?,
         thread: parsed.flags.get(&Flag::Thread).cloned(),
@@ -111,6 +143,11 @@ fn build(parsed: &Parsed, args: Vec<String>, op: Op) -> Result<Query, CliError> 
         diff: parsed.flags.contains_key(&Flag::Diff),
         min_mb: parsed.number(Flag::MinMb)?,
         by,
+        hot_by,
+        by_sample,
+        matching: parsed.flags.get(&Flag::Match).cloned(),
+        depth: parsed.number(Flag::Depth)?,
+        min_pct: parsed.number(Flag::MinPct)?,
     })
 }
 

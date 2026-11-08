@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use common::blocks::{CHILDREN, server, steady};
 use common::hand::{NAMES, Names, capture};
+use common::samples::{LEVEL_ID, waypoints};
 use common::{CLIENT, SERVER, TempDir, save, start, stop};
 use horizon_perf::bench_diff::BenchReply;
 use horizon_perf::cli::{Env, run};
@@ -299,6 +300,10 @@ fn fixtures() -> Fixtures {
         ),
         ("watched", save(&dir, "watched.hzperf", &watched_fields())),
         (
+            "samples",
+            save(&dir, "samples.hzperf", &waypoints(1, 50).fields()),
+        ),
+        (
             "bare",
             save(
                 &dir,
@@ -504,7 +509,22 @@ const CASES: &[(&str, &[&str])] = &[
     ),
     ("marks", &["query", "marks", "{hand}"]),
     ("warnings", &["query", "warnings", "{hand}"]),
-    ("samples_op", &["query", "hot", "{hand}"]),
+    ("hot", &["query", "hot", "--limit", "3", "{samples}"]),
+    (
+        "tree",
+        &["query", "tree", LEVEL_ID, "--min-pct", "10", "{samples}"],
+    ),
+    ("callers", &["query", "callers", LEVEL_ID, "{samples}"]),
+    ("callees", &["query", "callees", LEVEL_ID, "{samples}"]),
+    (
+        "split",
+        &["query", "split", LEVEL_ID, "--by", "chunk", "{samples}"],
+    ),
+    ("group", &["query", "group", "--by", "entity", "{samples}"]),
+    ("frames", &["query", "frames", LEVEL_ID, "{samples}"]),
+    ("meta_samples", &["query", "meta", "{samples}"]),
+    ("hot_without_samples", &["query", "hot", "{hand}"]),
+    ("unanswered_op", &["query", "gpu", "{hand}"]),
     ("unknown_op", &["query", "nonsense", "{hand}"]),
     ("bare_world", &["query", "world", "{bare}"]),
     (

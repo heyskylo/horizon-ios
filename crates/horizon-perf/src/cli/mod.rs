@@ -17,7 +17,7 @@ use crate::follow::Follower;
 use crate::read::read_capture;
 use crate::summary::{Baseline, DEFAULT_BUDGET, SummaryOptions, summarize};
 use crate::watch::Watcher;
-use crate::wire::{GroupBy, Op, SideName, vocab};
+use crate::wire::{GroupBy, HotBy, Op, SampleBy, SideName, vocab};
 
 /// The usage text, with the ops and groupings listed from their enums.
 pub fn usage() -> String {
@@ -26,6 +26,19 @@ pub fn usage() -> String {
         .map(|g| g.as_str())
         .collect::<Vec<_>>()
         .join("|");
+    let by_list = |all: &[SampleBy]| all.iter().map(|b| b.as_str()).collect::<Vec<_>>().join("|");
+    let hot = HotBy::ALL
+        .iter()
+        .map(|h| h.as_str())
+        .collect::<Vec<_>>()
+        .join("|");
+    let split = by_list(SampleBy::ALL);
+    let group_by: Vec<SampleBy> = SampleBy::ALL
+        .iter()
+        .copied()
+        .filter(|b| b.groups())
+        .collect();
+    let group = by_list(&group_by);
     format!(
         "\
 usage:
@@ -39,6 +52,9 @@ OPs: {ops}.
 FILTERS: --side client|server --thread T --from T --to T (seconds; negative counts from the end; mark:NAME) --limit N --dir DIR
   spans: --slow --names a,b   ticks: --worst N --over MS   series: FIELD... --every S (h:NAME, span:NAME, x:NAME)
   memory: --diff [LABEL_A LABEL_B] --min-mb X   world: --by {by} [LABEL]
+  samples (--select cpu|running|waiting|wall|alloc, --slow, --where k=v):
+    hot [--by {hot}] [--match TEXT]   tree [ID] [--depth N] [--min-pct X]   callers ID [--depth N]   callees ID [--depth N]
+    split [ID] --by {split}   group --by {group}   frames NAME... [FILE...] (an f: id, a function name or /regex/)
 
 diff compares B against A (A is the earlier run): two captures, or two benchmark reports (benchmarks/*.json). summary --baseline FILE compares against an earlier capture.
 FILE defaults to latest: the newest finished .hzperf in --dir, else in $HORIZON_HOME/reports, else in ./reports.
@@ -65,6 +81,9 @@ vocab! {
         MinMb = "min-mb",
         MinMs = "min-ms",
         By = "by",
+        Match = "match",
+        Depth = "depth",
+        MinPct = "min-pct",
         Budget = "budget",
         Baseline = "baseline",
         Slow = "slow",
@@ -94,6 +113,9 @@ impl Flag {
             | Flag::MinMb
             | Flag::MinMs
             | Flag::By
+            | Flag::Match
+            | Flag::Depth
+            | Flag::MinPct
             | Flag::Budget
             | Flag::Baseline => false,
         }
