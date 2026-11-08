@@ -911,16 +911,20 @@ impl Game<'_> {
             Some("screen") => match words.get(2).copied() {
                 Some("open") => {
                     let open = self.open_studio_screen();
-                    Ok(Some(json!({ "ok": true, "open": open, "screen": if self.studio_screen_open() { "studio" } else { "playing" } })))
+                    Ok(Some(
+                        json!({ "ok": true, "open": open, "screen": if self.studio_screen_open() { "studio" } else { "playing" } }),
+                    ))
                 }
                 Some("close") => {
                     let was_open = self.studio_screen_open();
                     self.close_studio_screen();
-                    Ok(Some(json!({ "ok": true, "was_open": was_open, "screen": if self.studio_screen_open() { "studio" } else { "playing" } })))
+                    Ok(Some(
+                        json!({ "ok": true, "was_open": was_open, "screen": if self.studio_screen_open() { "studio" } else { "playing" } }),
+                    ))
                 }
-                Some("status") => {
-                    Ok(Some(json!({ "ok": true, "open": self.studio_screen_open(), "screen": if self.studio_screen_open() { "studio" } else { "playing" } })))
-                }
+                Some("status") => Ok(Some(
+                    json!({ "ok": true, "open": self.studio_screen_open(), "screen": if self.studio_screen_open() { "studio" } else { "playing" } }),
+                )),
                 _ => Ok(Some(json!({ "error": "unknown studio screen subcommand" }))),
             },
             _ => Ok(Some(json!({ "error": "unknown studio command" }))),
