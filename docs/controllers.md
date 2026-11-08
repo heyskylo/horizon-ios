@@ -445,14 +445,17 @@ does (a bound action or a menu job), never by a button: a rebinding or a pad's l
 |---|---|---|
 | Xbox, also Auto, Steam Deck and anything unknown | `xb_*`: a b x y, lb rb lt rt, view menu, l3 r3, up down left right | none |
 | PlayStation | `psx_*`: cross circle square triangle, l1 r1 l2 r2, create options, l3 r3, up down left right | none |
-| Nintendo | `nx_*`, by what the pad prints: b a y x at south, east, west and north, l3 r3, up down left right | L R ZL ZR − + |
+| Nintendo | `nx_*`, by what the pad prints: b a y x at south, east, west and north, l r zl zr, minus plus, l3 r3, up down left riEach family has its own file for every picture, so a family's art can change without touching another's.
+Only the sticks and the D-pad are the same picture in all three. Nintendo's letters are plain white, as the
+pad prints them, where Xbox's carry Xbox's colours. Text remains for what runs inside a line of text, and for
+an atlas without the sprite.
 
-Each family has its own file for every picture, so a family's art can change without touching another's.
-Some are copies until theirs is drawn: Nintendo's letters are Xbox's pictures of the same letters (in Xbox's
-colours), all three share the same sticks and D-pad, and PlayStation's Create and Options are still Xbox's
-View and Menu pictures. Nintendo's shoulders, triggers, − and + have no
-picture yet, so they show their label: a copy of Xbox's would print LB or LT. Text remains for what runs inside a line of text, and for an atlas
-without the sprite.
+Nintendo's art, Xbox's View and Menu and PlayStation's Create and Options are drawn by
+`tools/pad_glyphs/gen.py` (standard library only: `python3 tools/pad_glyphs/gen.py` rewrites them in place,
+byte for byte); the rest is hand-made. The script measures nothing at run time: the key shapes and bevel
+were measured from the hand-made art and typed in, so the set matches.
+
+ the sprite.
 
 The art is in `crates/horizon-client/assets/horizon/textures/gui/controller/`, built into the binary, one
 line of `pad_glyph::ART` per picture: a button with no line is text, and adding one is that line and its
