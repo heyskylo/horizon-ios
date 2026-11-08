@@ -11,6 +11,7 @@ The kit grows a piece at a time, and each piece adds its section here.
 | Piece | Where | For |
 |---|---|---|
 | Glyphs | `crates/horizon-client-render/src/pad_glyph.rs`, `MenuJob` and `GlyphOf` in `crates/horizon-client-input/src/gamepad.rs` | a controller button, asked for by what it does |
+| Settings shell | `crates/horizon-client-render/src/settings_shell.rs` | a searchable settings screen: Extras, Graphics, Controller Settings |
 
 ## What never changes
 
@@ -60,6 +61,74 @@ yet, whose letter mode isn't known, so they show the buttons by their places
 ([controllers.md](controllers.md)). A test (`only_the_documented_exception_draws_by_place`) fails if
 another file uses it.
 
+## Moving a screen onto the shell
+
+A settings screen on the shell describes its pages, groups and rows, and says what a press does. The
+shell (`settings_shell::Shell`) does the rest: drawing, the mouse, one scroll path, the keyboard's focus
+and the controller's targets, the search, the strip that describes a row, Undo, and a binding's wait. A
+fix there reaches every screen on it. `extras_ui.rs` is the smallest example, `graphics_ui.rs` has
+sliders, costs and greyed rows, and `controller_ui.rs` has bindings and lines to read.
+
+1. **Name the rows and the pages.** `type Row` is an id for a row (an enum over the settings), `type
+   Page` one for a page (`()` for a screen of one page, which then shows no page list).
+2. **Describe them** in `Screen::sheets`, afresh from the settings: a `Sheet` per page, its `Group`s,
+   and a `Row` each, with its `Value`: `Switch`, `Choice` (stepped by a press, Shift back, and Left and
+   Right), `Slider`, `Binding`, `Read` (a value the focus reaches, which nothing presses), `Press` or
+   `Note`. A row says what it does (`about`), what its chosen value does (`chosen`), and why it is greyed
+   (`blocked`); the strip shows them and the search finds them.
+3. **Say what a press does** in `press`, `slide`, `wheel_step` and, for a binding row's reset button,
+   `reset`, as `Output`s: an `Event` for the game, `Push` another page, `Done`. The shell has already
+   played the click. `side` gives lines to show under the page list, such as whose settings these are
+   (Controller Settings: "Editing: <player>" and the controller the game sees); they are read-only.
+4. **Fingerprint what the rows read** in `stamp` (`stamp_of`), besides the presses: the rows are built
+   again only when it changes.
+5. **Undo**, if the screen has it: `undoes`, and `undo` puts back what the screen changes from the
+   settings it opened with. `differs` lets Undo show exactly while something differs, a binding the game
+   made meanwhile included.
+6. **Host it**: a `Shell` of it on `OptionsUi`, named in `OptionsUi::shell` and `shell_mut`, and opened
+   at its page with `Shell::show`. Every input goes through those two, so a screen can't take the wheel
+   and miss the stick.
+7. **Delete** the screen's own drawing, scrolling, focus, search and click code.
+
+What the old screen's tests checked moves to tests on the `Shell` of the new one: press a row with
+`click` at `point_at`, walk with `key`, and read `listed`, `row_labels`, `focused` and `changed`.
+
+### Binding rows
+
+`Value::Binding` is a row that binds a key or a controller button. The screen says what it binds and
+what it is bound to now; the shell starts the wait when it is pressed, marks the row ("> A <") while the
+host waits, draws the controller button's art (`pad_glyph::Glyph`), says in the strip that it is unbound
+or what else its button does, and draws the row's reset.
+
+- `Capture::Key(name)`: a key or a mouse button, as on Key Binds. The host waits (`selected_key`), and
+  Escape unbinds.
+- `Capture::Pad(action)`: a controller button. The host waits (`selected_pad_action`); the game binds the
+  next button pressed, Start cancels, a click or another key cancels, and the keyboard's Escape unbinds.
+- `shared`: what else the same button does, which the strip lists and the row marks "[ ]" in yellow.
+- `reset`: `Reset::None` (no button), `Reset::Default` (greyed) or `Reset::Changed` (live) for a reset
+  button at the row's end; pressed (a click, or Right then Enter or A), it calls `Screen::reset`.
+
+A press gives `Output::Bind(capture)`; the host's `shell_events` starts the wait, and passes what it waits
+on back to `Hosted::draw`.
+
+```rust
+// A key, as Extras' sort key and Graphics' HDR shortcut have it:
+Row::new(row, name, Value::Binding(Binding::key(extras::SORT_KEY, key_name)))
+
+// A controller button, as Controller Settings > Bindings has each action:
+let shown = Shown::Pad {
+    glyph: Glyph::of(GlyphOf::Bound(action), &s.controller, style),
+    cancel: Glyph::menu(MenuJob::Start, style),
+};
+let binding = Binding {
+    capture: Capture::Pad(action),
+    shown,
+    shared, // the other actions on its button, by name
+    reset: if s.controller.is_default(action) { Reset::Default } else { Reset::Changed },
+};
+Row::new(Item::Bind(action), name, Value::Binding(binding))
+```
+
 ## Testing
 
 Test what is drawn, not which function was called.
@@ -72,3 +141,5 @@ Test what is drawn, not which function was called.
   `pad connection connected nintendo` raises a Nintendo pad's notice. With `nintendoLetters:true` in
   the seeded `horizon-controller.txt`, that is letter mode with no real pad (`tools/pad_menu_e2e.py`,
   `nintendo_letters`). `pad status` lists each declared glyph's part (`button`), `label` and `sprite`.
+- A screen on the shell is tested through its `Shell`: `controller_ui`'s tests press a binding and read
+  the row's "> A <", the strip, the art drawn in its row, and Undo putting a binding back.
