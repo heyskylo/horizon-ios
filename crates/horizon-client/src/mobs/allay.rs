@@ -14,6 +14,9 @@ use horizon_core::geometry::trig::Mth;
 use horizon_core::geometry::{Aabb, Vec3};
 use horizon_protocol::entity_data::PositionSource;
 
+#[cfg(test)]
+#[path = "allay_liked_player_tests.rs"]
+mod allay_liked_player_tests;
 pub mod interaction;
 
 // Allay state: `main_hand` the held filter; `State::inventory` the fetched stack,
@@ -96,6 +99,10 @@ pub struct State {
     pub inventory: Option<ItemStack>,
     pub vibration: sculk::Data,
     pub noteblock: Option<GlobalPos>,
+    /// The `LIKED_PLAYER` memory's time to live (`MemorySlot.timeToLive`);
+    /// None for a memory that never expires. The memory itself is
+    /// `Extra::tame` and `Extra::owner`.
+    pub liked_player_ttl: Option<i64>,
 }
 
 /// The pocket is independent of the main-hand filter.
@@ -366,6 +373,8 @@ pub fn listen(
                 pos,
                 source: ctx.source,
                 owner: ctx.owner,
+                source_uuid: ctx.source_uuid,
+                owner_uuid: ctx.owner_uuid,
             },
             now,
         );
@@ -412,6 +421,7 @@ pub fn travel(m: &mut Mob, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>
 }
 /// `Allay.aiStep` / `tick`: healing, cooldowns, the hold and spin clocks.
 pub fn ai_step(m: &mut Mob) {
+    tick_liked_player(m);
     passive_heal(m);
     for i in [2, 3] {
         if m.extra.ints[i] > 0 {
@@ -420,6 +430,42 @@ pub fn ai_step(m: &mut Mob) {
     }
     update_duplication_cooldown(m);
     animate(m);
+}
+/// `MemorySlot.tick` for `LIKED_PLAYER` in the Allay's brain tick
+/// (`customServerAiStep`, which `NoAI` skips): a memory with a time to live
+/// counts down, and is cleared on the tick after it reaches 0.
+fn tick_liked_player(m: &mut Mob) {
+    if !m.extra.tame {
+        return;
+    }
+    let Some(st) = m.extra.allay.as_mut() else {
+        return;
+    };
+    match st.liked_player_ttl {
+        Some(ttl) if ttl <= 0 => {
+            st.liked_player_ttl = None;
+            m.extra.tame = false;
+            m.extra.owner = None;
+        }
+        Some(ttl) => st.liked_player_ttl = Some(ttl - 1),
+        None => {}
+    }
+}
+/// `Brain.setMemory(LIKED_PLAYER, uuid)`: the memory never expires.
+pub fn like_player(m: &mut Mob, uuid: [i32; 4]) {
+    m.extra.tame = true;
+    m.extra.owner = Some(uuid);
+    if let Some(st) = m.extra.allay.as_mut() {
+        st.liked_player_ttl = None;
+    }
+}
+/// `Brain.eraseMemory(LIKED_PLAYER)`.
+pub fn forget_liked_player(m: &mut Mob) {
+    m.extra.tame = false;
+    m.extra.owner = None;
+    if let Some(st) = m.extra.allay.as_mut() {
+        st.liked_player_ttl = None;
+    }
 }
 /// `Allay.aiStep`: server-side healing runs independently of the AI gate.
 pub fn passive_heal(m: &mut Mob) {

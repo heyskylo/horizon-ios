@@ -1250,5 +1250,15 @@
   "Use a different Microsoft account": "استخدام حساب Microsoft مختلف",
   "Buy": "شراء",
   "Gift": "إهداء",
-  "Looks": "إطلالات"
+  "Found on this computer": "موجود على هذا الحاسوب",
+  "Looks": "إطلالات",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "لم تستجب حلقة المفاتيح في نظامك خلال {seconds} ثانية. تأكد من أنها تعمل وغير مقفلة، ثم أعد تشغيل المشغّل.",
+  "Can't read {name}'s sign-in: {why}": "تعذّرت قراءة تسجيل دخول {name}: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: يُستخدم الإصدار {version}، المصنوع لـ Horizon الذي تلعبه",
+  "Recommended": "موصى به",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "إصدار أقدم، {version}، يُبنى على Horizon الذي تلعبه: التثبيت يختاره",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: لم يُبنَ الإصدار {version}، تجربة {older}",
+  "Use recommended (kept at {version})": "استخدم الموصى به (مثبت على {version})"
 }

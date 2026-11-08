@@ -7,14 +7,16 @@ use super::Vertex;
 use super::pack_draw::EntitySpan;
 use glam::{DVec3, Mat4};
 use std::sync::{
-    OnceLock,
+    Arc, OnceLock,
     atomic::{AtomicBool, Ordering},
 };
 
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/native_render_generated.rs"));
 }
-pub use generated::{HandDrawnEvent, RenderHooks, RenderNeedsEvent, WorldDrawnEvent};
+pub use generated::{
+    HandDrawnEvent, RenderHooks, RenderNeedsEvent, WorldDrawnEvent, WorldWarpEvent,
+};
 pub use wgpu;
 
 static RENDERERS: OnceLock<Box<[&'static dyn RenderHooks]>> = OnceLock::new();
@@ -73,10 +75,15 @@ pub struct WorldDrawn<'a> {
     pub entities: &'a [Vertex],
     pub spans: &'a [EntitySpan],
     /// Which entity each run of `entities` is, recorded every frame (`Frame::entity_motion`):
-    /// the run's first vertex and the entity, `(1 << 32) | id` for a mob or a player and
-    /// `(2 << 32) | id` for a dropped item (their entity ids), 0 for anything else. A run lasts
-    /// until the next. Unlike `spans`, whose ids name a type, these follow one entity from
-    /// frame to frame (API 371).
+    /// the run's first vertex and the entity, `(1 << 32) | id` for a mob or a player,
+    /// `(2 << 32) | id` for a dropped item, `(3 << 32) | id` for another entity (boat,
+    /// minecart, armor stand, item frame, painting, primed TNT, falling block) and
+    /// `(4 << 32) | id` for an item frame's held item (their entity ids), `(5 << 32) | p` for a
+    /// block entity (`p`: its position, x and z in 11 bits each, y in 10), `(6 << 32) | p`
+    /// for a block a piston moves (`p`: the cell it moves to), `7 << 32` for the player's own
+    /// model, 0 for anything else.
+    /// A run lasts until the next. Unlike `spans`, whose ids name a type, these follow one
+    /// entity from frame to frame (API 371).
     pub motion: &'a [(u32, u64)],
     /// The shared atlas entity UVs point into.
     pub atlas: Option<&'a wgpu::Texture>,
@@ -171,6 +178,38 @@ pub fn render_needs() -> RenderNeeds {
     let mut needs = RenderNeeds::default();
     native_render_needs(&mut needs);
     needs
+}
+
+/// A world warp ([`native_world_warp`]): WGSL that every terrain vertex (far terrain's tiles too)
+/// and entity vertex goes through, so a mod can bend the drawn world itself: its real geometry,
+/// light and depth, seen from any side. docs/native-mods.md, "World warps", has the WGSL contract.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct WorldWarp {
+    /// WGSL with `fn world_warp(pos: vec3<f32>, section: vec3<f32>) -> Warped`, and optionally,
+    /// after a line `// [fragments]`, `fn world_fragment(f: Fragment) -> Painted` for every
+    /// pixel of the terrain. `None`: no warp.
+    pub source: Option<Arc<str>>,
+    /// Whether this frame draws with the warp. A source given while this is false is still
+    /// built, so a mod can pay for its pipelines before the frame that needs them.
+    pub on: bool,
+    /// What the warp reads as `warp.params`: four `vec4<f32>`.
+    pub params: [f32; 16],
+}
+
+/// Asked once a frame, before the world is drawn (not on the title screen's panorama): set
+/// [`WorldWarp`] to have the frame drawn through your warp. Mods are asked in order and one warp
+/// draws: the last one set. Keep it cheap: compare and reuse your `Arc<str>`.
+#[inline(never)]
+pub fn native_world_warp(warp: &mut WorldWarp) {
+    generated::dispatch_world_warp(RENDERERS.get().map_or(&[], |renderers| renderers), warp);
+}
+
+/// This frame's world warp ([`native_world_warp`]).
+pub fn world_warp() -> WorldWarp {
+    let mut warp = WorldWarp::default();
+    native_world_warp(&mut warp);
+    warp
 }
 
 #[cfg(test)]
@@ -371,6 +410,33 @@ mod tests {
         let mut expected = quad.as_flattened().to_vec();
         expected.extend([0, 0, 0, 0]);
         assert_eq!(texels, expected);
+    }
+
+    struct Bend(&'static str);
+    impl RenderHooks for Bend {
+        fn world_warp(&self, event: &mut WorldWarpEvent<'_>) {
+            event.warp.source = Some(self.0.into());
+            event.warp.on = true;
+            event.warp.params[0] += 1.0;
+        }
+    }
+
+    #[test]
+    fn the_last_mod_to_set_a_warp_draws() {
+        let mut warp = WorldWarp::default();
+        generated::dispatch_world_warp(&[&Depth, &Bend("a"), &Bend("b")], &mut warp);
+        assert_eq!(warp.source.as_deref(), Some("b"));
+        assert!(warp.on);
+        // each saw what the one before left
+        assert_eq!(warp.params[0], 2.0);
+    }
+
+    #[test]
+    fn without_mods_there_is_no_warp() {
+        let mut warp = WorldWarp::default();
+        generated::dispatch_world_warp(&[], &mut warp);
+        assert_eq!(warp, WorldWarp::default());
+        assert!(warp.source.is_none() && !warp.on);
     }
 
     #[test]

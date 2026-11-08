@@ -1250,5 +1250,15 @@
   "Use a different Microsoft account": "Uporabi drug Microsoftov račun",
   "Buy": "Kupi",
   "Gift": "Podari",
-  "Looks": "Videzi"
+  "Found on this computer": "Najdeno v tem računalniku",
+  "Looks": "Videzi",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Obesek za ključe vašega sistema se ni odzval v {seconds} sekundah. Preverite, ali deluje in je odklenjen, nato znova zaženite zaganjalnik.",
+  "Can't read {name}'s sign-in: {why}": "Prijave za {name} ni mogoče prebrati: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: uporablja se različica {version}, narejena za Horizon, ki ga igraš",
+  "Recommended": "Priporočeno",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "Starejša različica, {version}, se zgradi na Horizonu, ki ga igraš: namestitev izbere njo",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: različica {version} se ni zgradila, poskušam {older}",
+  "Use recommended (kept at {version})": "Uporabi priporočeno (zadržano na {version})"
 }

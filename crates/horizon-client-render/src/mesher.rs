@@ -347,6 +347,10 @@ pub struct SectionMesh {
     /// model order before.
     pub sides: Sides,
     pub translucent: Vec<TerrainVertex>,
+    /// Whether `packed` holds far tile records (`lod::packed`) rather than
+    /// section records (`mesher::packed`): the two are read apart, by the base
+    /// vertex their draws use.
+    pub packed_far: bool,
     /// `solid` in the compact layout (`packed`), when the renderer reads it and it is
     /// smaller; empty otherwise. Made by `sort_solid`.
     pub packed: Vec<[u32; 6]>,
@@ -379,6 +383,7 @@ impl Default for SectionMesh {
             sides: Sides::default(),
             translucent: Vec::new(),
             packed: Vec::new(),
+            packed_far: false,
             solid_tints: Vec::new(),
             visibility: ALL_VISIBLE,
             block_entities: Vec::new(),
@@ -413,6 +418,7 @@ impl SectionMesh {
         self.solid.clear();
         self.translucent.clear();
         self.packed.clear();
+        self.packed_far = false;
         self.solid_tints.clear();
         self.block_entities.clear();
         self.lights.clear();
@@ -442,8 +448,9 @@ impl SectionMesh {
         self.sides = sides::sort_tinted(&mut self.solid, &mut self.solid_tints);
         self.bounds = self.compute_bounds();
         self.packed.clear();
+        self.packed_far = false;
         if packed::packing() && quads > 0 && self.solid_tints.len() == quads {
-            self.packed = packed::layout(&self.solid, &self.solid_tints);
+            packed::layout_into(&self.solid, &self.solid_tints, &mut self.packed);
         }
         self.solid_tints.clear();
     }
@@ -637,6 +644,8 @@ struct Info {
     block_entity: bool,
     tints: [Tint; 2],
     tint_count: u8,
+    /// A resource pack's Polytone colormap over its tints (an index in `MeshTables::colormaps`).
+    colormap: Option<u16>,
     /// `OffsetType` as (max horizontal, max vertical): vertical 0 for XZ.
     offset: Option<(f32, f32)>,
     /// `isSolid()` (legacy), for fluid corner heights.
@@ -652,7 +661,11 @@ struct Info {
     /// and a full collision shape. The only block leaf culling treats as solid.
     opaque_cube: bool,
     blocks_flow: bool,
+    /// `instanceof IceBlock` (frosted ice too): fluids read it.
     ice: bool,
+    /// Regular ice, the block the Opaque Ice option draws opaque; frosted ice
+    /// keeps its see-through, cracking look.
+    opaque_ice: bool,
     sturdy: u8,
     /// Occlusion face per direction: 0 empty, 1 the full-block singleton, 2 partial.
     face: [u8; 6],
@@ -689,6 +702,9 @@ pub struct MeshTables {
     lava_still: u16,
     lava_flow: u16,
     animated_layers: Vec<bool>,
+    /// Resource packs' Polytone block and fluid colormaps (#11486), and the water's.
+    colormaps: Vec<Arc<crate::environment::Colormap>>,
+    water_colormap: Option<u16>,
 }
 fn stem_color(age: u8) -> u32 {
     let a = u32::from(age);
@@ -831,6 +847,7 @@ impl MeshTables {
                 block_entity: s.block_entity,
                 tints,
                 tint_count,
+                colormap: None,
                 offset,
                 legacy_solid: s.legacy_solid,
                 overlay: s.has_class("HalfTransparentBlock") || s.has_class("LeavesBlock"),
@@ -844,6 +861,7 @@ impl MeshTables {
                 ),
                 blocks_flow: assets.blocks_fluid_flow.contains(&*s.name),
                 ice: s.has_class("IceBlock"),
+                opaque_ice: s.has_class("IceBlock") && !s.has_class("FrostedIceBlock"),
                 sturdy: s.sturdy_full,
                 face,
                 cover,
@@ -863,7 +881,51 @@ impl MeshTables {
             lava_still: layer("minecraft:block/lava_still")?,
             lava_flow: layer("minecraft:block/lava_flow")?,
             animated_layers,
+            colormaps: Vec::new(),
+            water_colormap: None,
         })
+    }
+    /// These tables with the colormaps of the Polytone block and fluid modifiers of the packs
+    /// merged at `pack_root` (wiki "Colormaps"): a tinted block they target takes its colour
+    /// from the colormap, and its own tint where the colormap's pixel is transparent.
+    #[must_use]
+    pub fn with_polytone_colormaps(
+        mut self,
+        pack_root: &std::path::Path,
+        registry: &horizon_world::registry::BlockRegistry,
+    ) -> Self {
+        let modifiers = crate::environment::polytone_colormap_modifiers(pack_root);
+        if modifiers.is_empty() {
+            return self;
+        }
+        let mut loaded: std::collections::HashMap<String, Option<u16>> = Default::default();
+        let mut index = |id: &str, colormaps: &mut Vec<Arc<crate::environment::Colormap>>| {
+            *loaded.entry(id.to_owned()).or_insert_with(|| {
+                let colormap = crate::environment::Colormap::load(pack_root, id)?;
+                colormaps.push(Arc::new(colormap));
+                Some((colormaps.len() - 1) as u16)
+            })
+        };
+        for (fluid, targets, id) in &modifiers {
+            if *fluid {
+                if targets.matches("minecraft:water", |_| false) {
+                    self.water_colormap = index(id, &mut self.colormaps);
+                }
+                continue;
+            }
+            let Some(i) = index(id, &mut self.colormaps) else {
+                continue;
+            };
+            for (state, info) in self.info.iter_mut().enumerate() {
+                let Some(block) = registry.state(BlockStateId(state as u32)) else {
+                    continue;
+                };
+                if info.tint_count > 0 && targets.matches(&block.name, |_| false) {
+                    info.colormap = Some(i);
+                }
+            }
+        }
+        self
     }
     /// Whether a terrain sprite layer has an animated clip.
     pub fn is_animated(&self, layer: u16) -> bool {
@@ -959,7 +1021,7 @@ impl MeshTables {
         }
         let [x, y, z] = pos;
         let origin = [x >> 4, z >> 4, y & !15];
-        let mut tints = Tints::new(region, biomes, zoom, blend_radius, origin);
+        let mut tints = Tints::new(region, biomes, zoom, blend_radius, origin).with_colormaps(self);
         Mesher::tint(info, 0, &mut tints, [x & 15, y & 15, z & 15])
     }
     /// `BlockColors` for each of the state's tint indices at `pos`, as the
@@ -977,7 +1039,8 @@ impl MeshTables {
         let sources = self.info.get(state.0 as usize).map(|info| {
             let [x, y, z] = pos;
             let origin = [x >> 4, z >> 4, y & !15];
-            let mut tints = Tints::new(region, biomes, zoom, blend_radius, origin);
+            let mut tints =
+                Tints::new(region, biomes, zoom, blend_radius, origin).with_colormaps(self);
             let local = [x & 15, y & 15, z & 15];
             let colors = [0, 1].map(|i| Mesher::tint(info, i, &mut tints, local));
             (colors, i32::from(info.tint_count))
@@ -1251,6 +1314,8 @@ fn row_masks_match_cell_definition() {
 #[cfg(test)]
 mod leaf_culling_tests;
 #[cfg(test)]
+mod opaque_ice_tests;
+#[cfg(test)]
 mod reuse_tests;
 #[cfg(test)]
 mod tint_tests;
@@ -1368,6 +1433,11 @@ struct Tints<'a> {
     layers: [Option<Box<Layer>>; 16],
     /// `uniform_biome`, once computed.
     uniform: Option<Option<u16>>,
+    /// The packs' colormaps (`MeshTables::colormaps`), the water's, and their colours so far
+    /// by colormap and section-local block.
+    colormaps: &'a [Arc<crate::environment::Colormap>],
+    water_colormap: Option<u16>,
+    sampled: std::collections::HashMap<(u16, [i32; 3]), Option<u32>>,
 }
 impl<'a> Tints<'a> {
     fn new(
@@ -1386,7 +1456,40 @@ impl<'a> Tints<'a> {
             origin,
             layers: Default::default(),
             uniform: None,
+            colormaps: &[],
+            water_colormap: None,
+            sampled: std::collections::HashMap::new(),
         }
+    }
+    /// With the packs' colormaps of `tables`.
+    fn with_colormaps(mut self, tables: &'a MeshTables) -> Self {
+        self.colormaps = &tables.colormaps;
+        self.water_colormap = tables.water_colormap;
+        self
+    }
+    /// Colormap `index`'s colour at block `(x, y, z)` (section-local), `None` where its pixel
+    /// is transparent.
+    fn colormap(&mut self, index: u16, x: i32, y: i32, z: i32) -> Option<u32> {
+        if let Some(&known) = self.sampled.get(&(index, [x, y, z])) {
+            return known;
+        }
+        let colormap = self.colormaps.get(usize::from(index))?;
+        let id = Self::biome_id(&self.zoom, self.region, self.plains, self.origin, [x, y, z]);
+        let [cx, cz, base_y] = self.origin;
+        let at = [cx * 16 + x, base_y + y, cz * 16 + z];
+        let mut host = crate::environment::BlockHost::new(at, self.biomes.get(id));
+        let colour = colormap.sample(&mut host).map(|c| c & 0xFF_FFFF);
+        self.sampled.insert((index, [x, y, z]), colour);
+        colour
+    }
+    /// The water's tint at block `(x, y, z)`: the packs' water colormap, else the biome's.
+    fn water(&mut self, x: i32, y: i32, z: i32) -> u32 {
+        if let Some(index) = self.water_colormap
+            && let Some(colour) = self.colormap(index, x, y, z)
+        {
+            return colour;
+        }
+        self.get(Resolver::Water, x, y, z)
     }
     /// The biome of block `(x, y, z)` (section-local x/z, y in 0..16), as `BiomeManager.getBiome`
     /// picks it.
@@ -1580,6 +1683,8 @@ pub struct Mesher<'a> {
     pub smooth_lighting: bool,
     /// The `cutoutLeaves` option (fancy graphics); off makes leaves opaque.
     pub cutout_leaves: bool,
+    /// The `opaqueIce` option: regular ice draws opaque in the solid pass.
+    pub opaque_ice: bool,
     /// Sprite layers a shader pack moves into the translucent pass, by layer.
     pub translucent_layers: &'a [bool],
     /// What the worker does with leaf faces inside a canopy.
@@ -1629,7 +1734,8 @@ impl Mesher<'_> {
             self.zoom,
             self.blend_radius,
             [center.x, center.z, base_y],
-        );
+        )
+        .with_colormaps(self.tables);
         let info = &self.tables.info;
         let full_faces = &self.tables.full_faces;
         let catalog = &self.render.model_catalog;
@@ -1658,7 +1764,7 @@ impl Mesher<'_> {
                         continue;
                     }
                     if state.fluid.kind() != FluidKind::Empty {
-                        let water = tints.get(Resolver::Water, x, y, z);
+                        let water = tints.water(x, y, z);
                         let shade = (
                             self.nether_shading,
                             self.shader_pack_lighting,
@@ -1705,6 +1811,9 @@ impl Mesher<'_> {
                         let other = &info[neighbor as usize];
                         // LeavesBlock.skipRendering with opaque leaves.
                         let opaque_leaves = !self.cutout_leaves && state.leaves && other.leaves;
+                        // Opaque Ice: faces between two ice blocks are hidden, as they are
+                        // between two opaque blocks.
+                        let opaque_ice = self.opaque_ice && state.opaque_ice && other.opaque_ice;
                         let culled_leaf = match self.leaf_culling {
                             LeafCullingMode::Hollow | LeafCullingMode::Hidden => {
                                 state.leaves
@@ -1722,6 +1831,7 @@ impl Mesher<'_> {
                             _ => false,
                         };
                         visible[d as usize] = !opaque_leaves
+                            && !opaque_ice
                             && !culled_leaf
                             && self
                                 .visibility
@@ -1788,13 +1898,18 @@ impl Mesher<'_> {
         if index < 0 || index >= i32::from(state.tint_count) {
             return None;
         }
+        if let Some(colormap) = state.colormap
+            && let Some(colour) = tints.colormap(colormap, x, y, z)
+        {
+            return Some(colour);
+        }
         Some(match state.tints[(index as usize).min(1)] {
             Tint::None => return None,
             Tint::Grass | Tint::GrassBlock | Tint::SugarCane => tints.get(Resolver::Grass, x, y, z),
             Tint::TallGrassUpper => tints.get(Resolver::Grass, x, y, z),
             Tint::Foliage => tints.get(Resolver::Foliage, x, y, z),
             Tint::DryFoliage => tints.get(Resolver::Dry, x, y, z),
-            Tint::Water => tints.get(Resolver::Water, x, y, z),
+            Tint::Water => tints.water(x, y, z),
             Tint::Constant(c) => c,
             Tint::LilyPad => 0x20_8030,
             Tint::Redstone(p) => redstone_color(p),
@@ -1950,9 +2065,11 @@ impl Mesher<'_> {
             // The face's own UVs, already packed: no per-vertex rounding.
             std::array::from_fn(|i| (vertex(tint, i, face.uv_fixed[i]), q.uv[i]))
         };
-        // Opaque leaves (forceOpaque) and leaves a leaf-culling mode proved internal draw in the
-        // solid layer whatever their sprite.
-        let solid_leaves = !self.cutout_leaves && state.leaves || interior_leaf;
+        // Opaque leaves (forceOpaque), leaves a leaf-culling mode proved internal and Opaque
+        // Ice draw in the solid layer whatever their sprite.
+        let force_solid = !self.cutout_leaves && state.leaves
+            || interior_leaf
+            || self.opaque_ice && state.opaque_ice;
         let own = TileLayer::Layer {
             layer: face.layer as u16,
             translucent: face.translucent,
@@ -1972,8 +2089,8 @@ impl Mesher<'_> {
             TileLayer::Skip | TileLayer::Default => own,
         };
         match pick {
-            Pick::Keep => self.quad(out, solid_leaves, own, corners.map(|c| c.0), tint),
-            Pick::Tile(t) => self.quad(out, solid_leaves, tile(t), corners.map(|c| c.0), tint),
+            Pick::Keep => self.quad(out, force_solid, own, corners.map(|c| c.0), tint),
+            Pick::Tile(t) => self.quad(out, force_solid, tile(t), corners.map(|c| c.0), tint),
             Pick::Quarters(tiles) => {
                 let cuts = cuts(&corners);
                 for s in cuts.windows(2) {
@@ -1982,7 +2099,7 @@ impl Mesher<'_> {
                             .map(|(s, t)| bilinear(&corners, s, t));
                         let quarter = quarter_of(&piece);
                         let piece = piece.map(|c| c.0);
-                        self.quad(out, solid_leaves, tile(tiles[quarter]), piece, tint);
+                        self.quad(out, force_solid, tile(tiles[quarter]), piece, tint);
                     }
                 }
             }
@@ -2031,17 +2148,17 @@ impl Mesher<'_> {
             }
         }
     }
-    /// One terrain quad with sprite `tile`, in the pass its alpha needs (`solid_leaves`: no
+    /// One terrain quad with sprite `tile`, in the pass its alpha needs (`force_solid`: no
     /// alpha cutout whatever the sprite).
     fn quad(
         &self,
         out: &mut SectionMesh,
-        solid_leaves: bool,
+        force_solid: bool,
         tile: TileLayer,
         v: [TerrainVertex; 4],
         tint: Option<u32>,
     ) {
-        self.quad_as(out, solid_leaves, tile, v, true, tint);
+        self.quad_as(out, force_solid, tile, v, true, tint);
     }
     /// Whether [`Mesher::quad`] draws `tile` in the translucent pass.
     fn translucent(&self, tile: TileLayer) -> bool {
@@ -2065,7 +2182,7 @@ impl Mesher<'_> {
     fn quad_as(
         &self,
         out: &mut SectionMesh,
-        solid_leaves: bool,
+        force_solid: bool,
         tile: TileLayer,
         mut v: [TerrainVertex; 4],
         by_sprite: bool,
@@ -2082,14 +2199,16 @@ impl Mesher<'_> {
         if self.tables.is_animated(layer) {
             out.note_sprite_layer(layer);
         }
-        let translucent = if by_sprite {
+        let translucent = if force_solid {
+            false
+        } else if by_sprite {
             self.translucent(tile)
         } else {
             translucent
         };
         // Quads over opaque texels draw in the solid layer: no alpha cutout (a dirt path's side
         // skips its clear top row). All four vertices share the layer.
-        let layer = if opaque && !translucent || solid_leaves {
+        let layer = if opaque && !translucent || force_solid {
             layer | OPAQUE_LAYER
         } else {
             layer

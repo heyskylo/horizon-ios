@@ -1250,5 +1250,15 @@
   "Use a different Microsoft account": "ໃຊ້ບັນຊີ Microsoft ອື່ນ",
   "Buy": "ຊື້",
   "Gift": "ມອບເປັນຂອງຂວັນ",
-  "Looks": "ລຸກ"
+  "Found on this computer": "ພົບໃນຄອມພິວເຕີນີ້",
+  "Looks": "ລຸກ",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "ພວງກະແຈຂອງລະບົບບໍ່ຕອບພາຍໃນ {seconds} ວິນາທີ. ກະລຸນາກວດໃຫ້ແນ່ໃຈວ່າມັນກຳລັງເຮັດວຽກ ແລະ ປົດລັອກແລ້ວ, ຈາກນັ້ນເປີດຕົວເປີດໃໝ່.",
+  "Can't read {name}'s sign-in: {why}": "ບໍ່ສາມາດອ່ານການເຂົ້າສູ່ລະບົບຂອງ {name}: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: ໃຊ້ເວີຊັນ {version} ທີ່ເຮັດມາສຳລັບ Horizon ທີ່ທ່ານຫຼິ້ນ",
+  "Recommended": "ແນະນຳ",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "ເວີຊັນເກົ່າກວ່າ, {version}, ສ້າງໄດ້ໃນ Horizon ທີ່ທ່ານຫຼິ້ນ: ການຕິດຕັ້ງຈະເລືອກມັນ",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: ເວີຊັນ {version} ສ້າງບໍ່ໄດ້, ກຳລັງລອງ {older}",
+  "Use recommended (kept at {version})": "ໃຊ້ທີ່ແນະນຳ (ຮັກສາໄວ້ທີ່ {version})"
 }

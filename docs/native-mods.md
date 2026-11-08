@@ -1222,6 +1222,12 @@ API 144 adds a player's or mob's breathing, on the single player server thread a
 
 API 145 adds blocks and items a native mod declares in code, as NeoForge's `DeferredRegister.Blocks` and `.Items` drained by `RegisterEvent`, instead of one content file each: `native_blocks(blocks)` and `native_items(items)`, asked once at start on every side, take `horizon_mods::content::Block` and `Item`, the declarations a content mod's `data/<id>/horizon/block/` and `item/` files hold (a vanilla template and what differs; `item: true` gives a block its item). Ids are in the mod's namespace. They join the content mods' blocks and items, inside the content mod whose id is that namespace when it is on (its models, textures, loot and recipes), else on their own with the template's look, so their network ids, saves and the joining client's content check are the files' (docs/mods.md). They pass the files' checks; a namespace whose declarations don't is logged and left out. Bundles that use them need `"hooks": 145`.
 
+`Block.state_light` optionally takes a `content::StateLight` (`StateValues<u8>`), selecting emission
+from 0 to 15 by state-property tuples, exactly as the [content declaration](mods.md) does. It overrides
+the scalar `BlockProperties.light` only when present. The content compiler validates and resolves
+every state once; native, content-only, dedicated-server and client declarations use the same emitted
+state facts and ordinary light propagation, without a runtime callback.
+
 `Item.place_block: Option<String>` binds an item to an ordinary `BlockItem` placement of a vanilla
 block or a block in the item's namespace, including blocks with `item: false`. It uses the same
 [content field](mods.md) on clients and servers. Components still come from the item template;
@@ -1671,7 +1677,7 @@ API 353 adds A vault is about to eject a loot item: `native_vault_loot(pos, item
 
 API 354 adds A timed world border size change finished: `native_world_border_bounds_change_finish()` fires after the border reaches its final size. Bundles need "hooks": 354.
 
-API 355 adds `Game::native_mod_image(width, height, rgba)`: a mod's own RGBA image, uploaded into the HUD atlas slot `horizon/modimage` (1024 by 1024) and drawn with `native_sprite`, whose source rectangle crops and stretches it, so a map or a schematic view needs no texture of its own. The slot is reserved only while a native mod is loaded, so a game without mods pays none of its 4 MiB. False for an image that is not `width * height` pixels of four bytes, is larger than the slot, or when there is no slot. Each upload is a texture patch of the image, so send one when the image changed, not every frame.
+API 355 adds `Game::native_mod_image(width, height, rgba)`: a mod's own RGBA image, uploaded into the HUD atlas slot `horizon/modimage` (1024 by 1024) and drawn with `native_sprite`, whose source rectangle crops and stretches it, so a map or a schematic view needs no texture of its own. The slot is reserved only in a game built with native mods, so a game without mods pays none of its 4 MiB: one whose source horizon-mixins changed (its `.horizon-mixins-stage.json` names a mod; the launcher's builds and a bundle applied by hand or by a mod's own script alike), one with trait mods installed, or one whose `native-mods.json` lists mods. False for an image that is not `width * height` pixels of four bytes, is larger than the slot, or when there is no slot. Each upload is a texture patch of the image, so send one when the image changed, not every frame.
 API 356 adds a living entity drowning (`native_living_drown`), with changeable drowning and damage, a read-only bubble count and cancellation. Bundles need "hooks": 356.
 
 API 357 adds a living entity's fall (`native_living_fall`), with changeable distance and multiplier and cancellation. Bundles need "hooks": 357.
@@ -3284,6 +3290,26 @@ bobber in water, one hooked to an entity and a LAN host's own bobber are not hea
 it would. The player's state is swapped in, the other players are out of reach. Bundles need "hooks":
 @API:fishing_hook_landed@.
 
+`native_fishing_medium(dimension, hook, position, owner, medium)` lets a bobber fish outside water: lava, the void
+below a skyblock island, a cloud. Each tick a bobber that is flying or floating, not in water and not hooked to an
+entity asks the mods whether its spot (`position`, its feet) is a fishing medium; `owner` is where the player who cast
+it stands. The first mod to answer `Some(NativeFishingMedium)` makes it one, for this tick:
+
+- `surface`: the height it floats at. In the block of the surface or below, the bobber is in the medium as it would
+  be in a water block: a flying bobber stops there, then bobs on the surface, waits for a fish, bites and is reeled in
+  as in still water. Above it, it falls as usual.
+- `loot_table`: what a catch from there rolls, with the fishing context vanilla's table gets (luck, the open-water
+  flag, which is true in a medium). None rolls `minecraft:gameplay/fishing`. The bobber keeps the last medium's table
+  until it lands in water.
+- `lure_ticks`: the wait before a fish comes, drawn from `min..=max` and less the rod's Lure (vanilla draws 100 to 600
+  ticks). None keeps vanilla's.
+
+It is asked on the server, with the owner's state swapped in, and on every client that draws the bobber (`owner` None
+for another player's whom the client doesn't see), so that both move it alike, as vanilla ticks the hook on both
+sides: answer from the world and `owner` alone, the same on both. A mod that isn't on a client leaves it predicting a
+fall that the server's updates pull back. `horizon-ctl status` shows the hook's `loot_table`. Water is never asked
+about, and no answer keeps vanilla. Bundles need "hooks": @API:fishing_medium@.
+
 `native_remove_entity(dimension, id)` also removes projectiles (arrows, tridents, snowballs, eggs, ender pearls,
 fireballs, wind charges, llama spit, shulker bullets, firework rockets) as `/kill` does, and a server player's fishing
 bobber, as `Entity.discard` (Bukkit's `Entity.remove`): an arrow cleanup, or a power rod's bobber taken once its
@@ -4090,6 +4116,24 @@ something happened can time the sound to the distance, such as a blast heard whe
 `delay = distance / speed`. It answers false on a server and for a value out of range; an event the resources lack
 plays nothing.
 
+`native_muffle_sounds(amount, lowpass, ticks, exempt)` (client, `host.muffle_sounds`) muffles the game's sounds for a
+while, as ears ringing after a close blast hear them: `amount` (0 to 1) of every sound's volume is taken away and
+`lowpass` (0 to 1) dulls it, from untouched to a 300 Hz low-pass. Both start in full and fade back in a straight line
+over `ticks` client ticks, held while the game is paused. The sound events in `exempt` (`mymod:ear.ringing`, at most
+64) play clearly through it, those already playing too, so the mod's own ringing stays sharp; everything else is
+muffled, sounds that were already playing, music and the interface's clicks included. A new call replaces the muffle
+in place, and `ticks` 0 ends it at once. The muffle belongs to the sound output, so in splitscreen every player hears
+it. Nothing changes while no mod calls it. It answers false, changing nothing, on a server, for an amount or strength
+outside 0 to 1, and for an exempt event that isn't `namespace:path`.
+
+```rust,ignore
+// A close blast: half the volume gone and the world dulled, back to normal over 4 seconds.
+game.native_muffle_sounds(0.5, 0.9, 80, &["ironfall:ear.ringing"]);
+game.native_play_local_sound("ironfall:ear.ringing", eye, 1.0, 1.0, 0);
+```
+
+Bundles need `"hooks": @API:muffle_sounds@`.
+
 ### Fluid currents
 
 `native_fluid_flow(dimension, pos)` is `FluidState.getFlow(level, pos)`: the normalised current at a position, the
@@ -4180,6 +4224,26 @@ These are what Create's drill, saw, harvester and deployer need.
   The answer (`NativeFakeUse`) says whether the use did something, and what the fake player holds and carries
   afterwards. Call it from a block entity's tick, not from inside a player's hook: while a player acts, it answers
   `None`.
+
+### Breaking as a player
+
+`crates/horizon-client/src/game/native_player_break.rs`: `native_player_break_block(uuid, pos, into_inventory)`
+(`Host::player_break_block`) breaks a block as the player `uuid` breaks it, for vein miners and area tools such as
+FTB Ultimine, which calls `ServerPlayerGameMode.destroyBlock` from NeoForge's `BlockEvent.BreakEvent`.
+
+- It runs the game's own player break, so the player's checks hold (spectator, adventure `can_break`, an item that
+  can't break blocks, game master blocks, a dedicated server's spawn protection), `native_destroy_block` hears it
+  and can cancel it, and the drops are rolled for the player's held item and its enchantments. The item wears as it
+  would, the mined statistic, exhaustion and experience count, and the other players see the particles and hear
+  the sound. The player's own client is left out of the break event (`Block.playerWillDestroy`), as in vanilla.
+- With `into_inventory`, the block's own drops go to the player's inventory and what doesn't fit is dropped from
+  them. What else the break sets loose (a torch losing its support, a container's contents) drops in the world.
+- The answer is whether the block was removed. False, with nothing broken, for air, an unloaded block, a block a
+  survival player can't break (bedrock), a player who isn't online or is dead, another player than the one whose
+  action is running, and off a server. Reach and line of sight are not checked: that is the mod's choice.
+- Call it from the player's `native_destroy_block` (they act there), or with any online player's UUID from a hook
+  where no player acts, such as `native_server_tick`. Inside `native_destroy_block`, each block the mod breaks is
+  heard by that hook too: keep a guard (an `AtomicBool`) so those breaks don't start more veins.
 
 ### Column reads
 
@@ -4414,6 +4478,68 @@ render thread with the frame's wgpu objects; what a mod draws there shows in tha
   shader pack (each run's id is stable from frame to frame: a hash of the entity type's name, a block entity's state),
   and `world_depth` to keep the world pass's depth when nothing else needs it. Set what you need and leave the rest:
   several mods can ask. It's asked as each frame is built, so keep it cheap.
+- `native_world_warp(warp)`: give the frame a [world warp](#world-warps), WGSL every terrain and entity vertex goes
+  through. Asked once a frame before the world is drawn (not on the title screen's panorama); the last mod to set
+  one draws.
+
+### World warps
+
+A world warp bends the drawn world itself: every terrain vertex (far terrain's tiles too) and entity vertex goes
+through a mod's WGSL, so what moves is the real geometry, with its light and depth, seen from any side. Set
+`WorldWarp` in `native_world_warp`:
+
+- `source`: the WGSL, an `Arc<str>` (keep one and hand out clones: a source that compares equal to the last one is
+  not built again). `None`, the default, is no warp.
+- `on`: whether this frame draws with it. A source given while `on` is false is still built, so give it a moment
+  before it's needed: building takes a while the first time (logged as "a mod's world warp built in N ms").
+- `params`: sixteen floats the WGSL reads as `warp.params`, four `vec4<f32>`. Set them every frame.
+
+The source has `world_warp`, and may go on after a line `// [fragments]` with `world_fragment` for the terrain's
+pixels:
+
+```wgsl
+// pos: the vertex from the camera. section: the corner of the section or far tile it belongs to, from the camera
+// (a vertex on the edge between two sections says by itself which it lies on no better than its position does);
+// for an entity, its own position; for a block entity, its section's corner.
+fn world_warp(pos: vec3<f32>, section: vec3<f32>) -> Warped {
+    // where the world's point p is from the camera, exact far from the origin:
+    // (p - warp.camera.xyz) - warp.camera_rest.xyz; warp.camera.w is the frame's partial tick
+    let lift = sin((pos.x + warp.camera.x) * 0.1 + warp.params[0].x) * warp.params[0].y;
+    // Warped: pos, where to draw it (from the camera); tint, what its colour is multiplied by
+    // (terrain only: red under 0 marks the vertex's faces cut)
+    return Warped(pos + vec3(0.0, lift, 0.0), vec3(1.0));
+}
+// [fragments]
+fn world_fragment(f: Fragment) -> Painted {
+    // Fragment: home (where the point really is, from the camera: world_warp's pos), at (where it is drawn), uv and
+    // layer (sprite(f.uv, f.layer) is the block's texture), color (biome tint, light, shading and the warp's tint),
+    // light (sky and block, 0 to 15), cut (over 0 where a tint had red under 0), front (false on a face's back)
+    if f.cut > 0.0 || !f.front { return Painted(vec4(0.0, 0.0, 0.0, -1.0), 1.0); }  // alpha under 0: left out
+    return Painted(sprite(f.uv, f.layer) * f.color, 1.0);  // Painted: color, and fog (how much of the fog it takes)
+}
+```
+
+Without a `world_fragment` the terrain is drawn as the game draws it, less the faces a tint cut. The source goes into
+copies of the game's terrain and entity shaders (`crates/horizon-client-render/src/gfx/world_warp.rs`), so prefix
+what else it declares to keep clear of their names. What follows `// [fragments]` goes into the terrain's only:
+entities have no pixel stage of the warp. A source that doesn't compile is logged ("a mod's world warp did not
+compile", with naga's message) and the frame draws without it until the source changes.
+
+While a warp draws, the warp's pipelines don't cull back faces and the frame leaves nothing out by where it was:
+frustum, cave and occlusion culling (CPU and GPU) and the culling of section faces turned away are off for it, since
+the warp may bring any of it into view. That makes the frame cost more: turn the warp off when it's done. A warped
+frame also keeps to the plain per-section draws: flat draws, the visibility buffer, improved transparency, the water
+mirror, and a Horizon shader pack's material stage and `[displacement]` give way to it for that frame (the pack's sky
+and post stages still run; its shadows are of the unwarped world). A shader pack that draws the terrain itself (Iris
+and OptiFine format) isn't warped: the frame draws without the warp, logged once. TAA reprojects by the camera alone,
+so a warp that moves fast smears as other moving things do. Warped: terrain (solid and translucent), entities, items,
+particles, block entities, entity shadows and name tags. Not warped: the hand, sky, clouds, weather, block outlines and
+breaking cracks, lightning, and what mods draw themselves (world primitives, the world canvas, native models and
+fluids). A frame without a warp costs nothing more: the game's own shaders hold only comments where a warp goes in,
+and nothing of the warp's is made until a mod gives one.
+
+`cargo run -p horizon-client-render --example world_warp_check -- <dir>` (with throwaway `HORIZON_HOME`,
+`HORIZON_LAUNCHER_HOME`, `XDG_DATA_HOME` and `XDG_CONFIG_HOME`) draws a warp through the renderer offscreen.
 
 ### World primitives
 
@@ -4443,6 +4569,45 @@ fn world_primitives(&self, _host: &dyn Host, event: &mut WorldPrimitivesEvent<'_
         .scale_with_distance();
 }
 ```
+
+### Holding the world's picture
+
+`native_world_hold(hold)` (the trait's `Hooks::world_hold`) is asked once a frame while a world is shown, on the
+client, just before the frame's terrain uploads. A mod that calls `hold.hold()` keeps the terrain drawn as it stands
+while the world changes under it; one that stops asking lets go, and every change shows on that frame. Use it to make a
+change too big to go in at a stroke (thousands of sections) appear at once: the edits go in over seconds at whatever
+pace suits them, the game lights, meshes and uploads their sections as ever, and letting go only swaps which meshes are
+drawn, with nothing left to upload.
+
+`hold.hold_within(x, z, radius)` holds only the sections whose middle lies in that circle (block coordinates; call it
+again for more, at most 64 a frame). Smaller circles than last frame's let go of what they leave on that frame, and
+changes outside them show as ever from then on: shrink them over a few frames to let a change spread across the land.
+Several mods add up: `hold()` from any of them holds everything, and circles join. A circle that isn't finite or has a
+negative radius is left out.
+
+```rust,ignore
+fn world_hold(&self, _host: &dyn Host, event: &mut WorldHoldEvent<'_>) {
+    if self.crater_going_in() {
+        event.hold.hold_within(120.0, -40.0, 300.0);
+    }
+}
+```
+
+- Only the terrain's sections are held, and only those already on screen: terrain streaming in during a hold shows as
+  ever. In single player, far terrain waits too for the columns the server changes beyond the view inside the hold,
+  and takes them in when it lets go of them, so they show a moment after the sections (far terrain summarizes them
+  again). Far terrain a multiplayer server sends, entities, block entities drawn as entities, particles, light,
+  collisions and the blocks themselves change at once, so the land a player sees may not be the land they stand on.
+- Both the old and the new mesh of each waiting section are in memory. A hold is meant for seconds and is bounded: it
+  lets go by itself after 30 seconds, past 1 GiB of waiting meshes and when memory for meshes runs out, showing what
+  waited early rather than losing it; ended so, it stays off until no mod has asked for a frame. Leaving the world,
+  another dimension, a shader pack that lays terrain out again and chunks unloading drop what waits with the sections.
+- A section still being meshed when the hold lets go shows a frame or so later: give the game a moment between the
+  last edit and letting go.
+- Each player's game is asked for itself (splitscreen: one hold per player). The debug census lists
+  `held_section_vertices`.
+
+Bundles need `"hooks": @API:world_hold@`.
 
 ### Block textures
 
@@ -4548,6 +4713,57 @@ only for a server's players (single player's server thread, LAN guests, a dedica
 never ask it. As in vanilla (`AbstractContainerMenu.moveItemStackTo`), a
 shift-click tops up a slot (not a `results` one) that already holds the same item without asking `may_place`, only `max_stack`: to keep a
 slot from filling that way, lower `max_stack`.
+
+### Recipe sources
+
+`native_recipe_sources(player, menu, pos, sources)` is asked on the server when the recipe book or a recipe viewer
+(`native_place_recipe`, `native_transfer_recipe`) fills the crafting grid of a mod menu type (`crafting`,
+[mods.md](mods.md#menu-types)) open at `pos`. Push block positions onto `sources` and the placement may also take
+ingredients from the containers there, as Tinkers' Construct's crafting station takes them from the chests beside it:
+
+```rust
+fn recipe_sources(&self, _host: &mut dyn Host, event: &mut RecipeSourcesEvent<'_>) {
+    if event.menu == "mystation:station" {
+        let [x, y, z] = event.pos;
+        for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            event.sources.push([x + dx, y, z + dz]);
+        }
+    }
+}
+```
+
+Chests, barrels, shulker boxes, hoppers, dispensers, droppers and mod containers (their container slots) in the
+player's level count. Anything else, the menu's own block and repeats are passed by, and at most 64 are used. The
+placement counts and takes from the player's inventory first, then the sources in the order given, with vanilla's
+`ServerPlaceRecipe` matching. What the grid held goes back to the player as vanilla's does. A changed source is saved
+and its comparators update. Every mod adds to the same list. With no answer the placement is vanilla's, from the
+inventory alone. A recipe viewer's craftable marks are still worked out on the client from the player's inventory.
+
+### Menu links
+
+`native_menu_links(player, menu, pos, links)` is asked on the server each tick while `player` has a mod menu type with
+`links` ([mods.md](mods.md#menu-types)) open at `pos`. Push block positions onto `links` and the menu's linked slots
+show the containers there, their slots in order, as real slots of the menu: a crafting station's side panel showing
+the chest beside it, with a tab per neighbour, is a button (`native_screen_click`, `native_menu_button`) that changes
+what the mod answers for that player:
+
+```rust
+fn menu_links(&self, _host: &mut dyn Host, event: &mut MenuLinksEvent<'_>) {
+    if event.menu == "mystation:station" {
+        let [x, y, z] = event.pos;
+        event.links.push([x + 1, y, z]);
+    }
+}
+```
+
+Chests, barrels, shulker boxes, hoppers, dispensers, droppers and mod containers (their container slots) in the
+player's level count; anything else, the menu's own block and repeats are passed by, and at most 64 are used. A
+double chest is its two halves: push both, the first half first, as its own menu orders them. Linked slots past the
+containers' slots hold nothing and are left out of clicks, as a hidden slot is. Every mod adds to the same list, and
+with no answer the linked slots are empty. Clicks run on the server's menu engine as on the block's own slots, so
+nothing is copied: what a player takes out of a linked slot leaves the chest in the same step. The menu does not check
+the player's reach to a linked container: keep links to the blocks beside the menu's own. Guests, single player's
+server thread and dedicated servers work alike; the deprecated in-frame mode does not show links.
 
 ### What a mod's container takes
 

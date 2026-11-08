@@ -2,6 +2,10 @@
 //! `releaseMouse`), the cursor icon, and pausing a world whose window loses focus.
 use super::*;
 
+fn studio_suppresses_focus_pause(replay_active: bool, freecam_active: bool) -> bool {
+    replay_active || freecam_active
+}
+
 impl Game<'_> {
     /// The options `MouseHandler.turnPlayer` reads.
     pub(super) fn look_options(&self) -> LookOptions {
@@ -20,7 +24,9 @@ impl Game<'_> {
         let look = self.look_options();
         let time = self.started.elapsed().as_secs_f64();
         let pointer = self.captured || self.agent_pointer;
-        let grabbed = pointer && self.screen == Screen::Playing && self.player.is_some();
+        let grabbed = pointer
+            && self.screen == Screen::Playing
+            && (self.player.is_some() || self.studio_freecam.active);
         let active = self.focused || self.agent_pointer;
         if let Some((xo, yo)) = self
             .mouse
@@ -85,6 +91,10 @@ impl Game<'_> {
             .is_some_and(|t| t.elapsed() > Duration::from_millis(500))
             && self.control.is_none()
             && self.screen == Screen::Playing
+            && !studio_suppresses_focus_pause(
+                self.studio_replay.is_some(),
+                self.studio_freecam.active,
+            )
             && self.player.is_some()
             && !self.options.no_pause
             && self.settings.file.bool("pauseOnLostFocus")
@@ -155,6 +165,7 @@ impl Game<'_> {
         self.reset_inventory_clicks();
         if !capture {
             self.stop_mining();
+            self.studio_rmb_down = false;
         }
         // The real pointer takes over from an agent's.
         self.agent_pointer = false;
@@ -323,8 +334,26 @@ impl Game<'_> {
     /// click. A screen that is open keeps it free, as releasing the pointer
     /// for that screen did: it is the screen, not the focus, that shows it.
     pub(super) fn regrab_on_refocus(&mut self) {
+        if self.studio_replay.is_some() || self.studio_freecam.active {
+            self.regrab_on_refocus = false;
+            self.studio_rmb_down = false;
+            self.capture(false);
+            return;
+        }
         if std::mem::take(&mut self.regrab_on_refocus) && self.screen == Screen::Playing {
             self.capture(true);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::studio_suppresses_focus_pause;
+
+    #[test]
+    fn studio_replay_and_freecam_never_pause_on_focus_loss() {
+        assert!(studio_suppresses_focus_pause(true, false));
+        assert!(studio_suppresses_focus_pause(false, true));
+        assert!(!studio_suppresses_focus_pause(false, false));
     }
 }

@@ -584,7 +584,7 @@ impl Run<'_> {
         let file = self.log_file(log)?;
         for main in mains {
             self.run(side, worker, heap, classpath, main, args, &file, log)
-                .map_err(fail)?;
+                .map_err(|e| java::export_failure(fail(e), &self.jdk.java, log))?;
         }
         (self.log)(&format!("Exported {what}{}", took(started)));
         Ok(())

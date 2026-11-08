@@ -289,12 +289,13 @@ impl Game<'_> {
         self.award_custom_stat("total_world_time", 1);
         if alive {
             self.award_custom_stat("time_since_death", 1);
-            if !sleeping {
-                self.award_custom_stat("time_since_rest", 1);
-            }
         }
         if crouching {
             self.award_custom_stat("sneak_time", 1);
+        }
+        // ServerPlayer.doTick: dead or alive, every tick out of bed.
+        if !sleeping {
+            self.award_custom_stat("time_since_rest", 1);
         }
     }
     fn tick_movement_stats(&mut self) {

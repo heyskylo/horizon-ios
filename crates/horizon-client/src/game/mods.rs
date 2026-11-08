@@ -284,7 +284,23 @@ fn register_menu_types(mods: &[horizon_client::mod_content::ContentMod]) {
     let menus = horizon_client::mod_content::menu_types(mods);
     let set = containers::register_mod_menu_types(menus.iter().map(|m| {
         let results = m.results.iter().map(|&r| usize::from(r)).collect();
-        (m.id.clone(), m.slots.into(), m.data_slots.into(), results)
+        let crafting = m.crafting.map(|c| containers::ModCrafting {
+            grid: c.grid.into(),
+            size: c.size.into(),
+            result: c.result.into(),
+        });
+        let links = m.links.map(|l| containers::ModLinks {
+            from: l.from.into(),
+            count: l.count.into(),
+        });
+        (
+            m.id.clone(),
+            m.slots.into(),
+            m.data_slots.into(),
+            results,
+            crafting,
+            links,
+        )
     }));
     if !set
         && containers::mod_menu_types()
@@ -307,13 +323,17 @@ fn build_lists_mods(built: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Whether the game playing was built with native mods: the launcher writes their ids into
-/// [`BUILD_INFO`] beside the executable, and a release or Nightly has no such file.
+/// Whether the game playing was built with native mods: horizon-mixins applied bundles to its
+/// source (`HORIZON_MIXIN_MODS`, set by the build script from the record it leaves, as with a mod
+/// author's own build that has no [`BUILD_INFO`]), trait mods are installed, or the launcher wrote
+/// their ids into [`BUILD_INFO`] beside the executable. A release or Nightly has none of them.
 pub(super) fn built_with_native_mods() -> bool {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| std::fs::read_to_string(exe.with_file_name(BUILD_INFO)).ok())
-        .is_some_and(|built| build_lists_mods(&built))
+    option_env!("HORIZON_MIXIN_MODS").is_some_and(|mods| !mods.is_empty())
+        || !crate::mod_api::mods().is_empty()
+        || std::env::current_exe()
+            .ok()
+            .and_then(|exe| std::fs::read_to_string(exe.with_file_name(BUILD_INFO)).ok())
+            .is_some_and(|built| build_lists_mods(&built))
 }
 
 /// The native mods the launcher built this game with, `id version, id version`, for the crash
@@ -457,6 +477,7 @@ impl Game<'_> {
         }
         horizon_client::gfx::native_render::set_mods_built_in(
             built_with_mods
+                || built_with_native_mods()
                 || self
                     .settings
                     .mods

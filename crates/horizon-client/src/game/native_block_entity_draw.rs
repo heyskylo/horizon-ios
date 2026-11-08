@@ -600,6 +600,7 @@ impl Game<'_> {
                 x,
                 y: at[1],
                 text: shown,
+                style: Default::default(),
                 color: 0xFF00_0000 | (span.style.color.unwrap_or(color) & 0xFF_FFFF),
                 outline: if outline == 0 {
                     0
@@ -607,8 +608,14 @@ impl Game<'_> {
                     0xFF00_0000 | (outline & 0xFF_FFFF)
                 },
                 light,
+                tier: 0,
             };
-            text_vertices(&glyph, &call, &mut draw.vertices);
+            text_vertices(
+                &glyph,
+                Some(self.gui.atlas.font.white()),
+                &call,
+                &mut draw.vertices,
+            );
             x += width;
         }
         x - at[0]

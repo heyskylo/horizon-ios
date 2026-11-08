@@ -236,6 +236,7 @@ fn relit_columns_keep_every_mesh_current() {
             blend_radius: 2,
             smooth_lighting: true,
             cutout_leaves: true,
+            opaque_ice: false,
             translucent_layers: &[],
             leaf_culling: LeafCullingMode::Off,
             assets: &context.assets,
@@ -265,4 +266,69 @@ fn relit_columns_keep_every_mesh_current() {
             assert!((0..24).all(|sy| meshes.contains_key(&(x, sy, z))));
         }
     }
+}
+
+/// A server keeps an area loaded around each player (`Streaming::extra`):
+/// every column within `radius + 1` of an area's centre (Chebyshev, as
+/// vanilla's ticket levels) loads, with several areas at once and after the
+/// areas change between updates. `update` trusts the cover it refreshed at
+/// its start; debug builds check it against the areas on every column.
+#[test]
+fn every_extra_area_loads_however_the_areas_change() {
+    let Some(root) = resources() else {
+        return;
+    };
+    let assets = Arc::new(Assets::load(&root).unwrap());
+    let render = Arc::new(assets.reload(&root).unwrap());
+    let facts = BlockFacts::load(&root, assets.registry).unwrap();
+    let visibility = models::load_visibility(&root, assets.registry).unwrap();
+    let context = Arc::new(WorkerContext {
+        tables: Arc::new(MeshTables::new(&assets, &render, &facts, visibility).unwrap()),
+        light: Arc::new(LightTables::load(&root, assets.registry, &facts).unwrap()),
+        biomes: Arc::new(Biomes::load(&root).unwrap()),
+        assets,
+        render,
+    });
+    let mut streaming = Streaming::new(Arc::new(Saved), context, 3);
+    // A server's thread: nothing is meshed.
+    streaming.mesh = false;
+    streaming.radius = 2;
+    let mut world = World::new(BlockStateId(0), 0);
+    let settle = |streaming: &mut Streaming, world: &mut World| {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut quiet = 0;
+        while quiet < 40 {
+            assert!(Instant::now() < deadline, "streaming never settled");
+            let before = world.chunks.len();
+            let _ = streaming.update(world);
+            thread::sleep(Duration::from_millis(5));
+            quiet = if !streaming.busy() && before == world.chunks.len() {
+                quiet + 1
+            } else {
+                0
+            };
+        }
+    };
+    let missing = |world: &World, areas: &[((i32, i32), i32)]| {
+        let mut missing = Vec::new();
+        for &((cx, cz), r) in areas {
+            for x in cx - r - 1..=cx + r + 1 {
+                for z in cz - r - 1..=cz + r + 1 {
+                    if !world.chunks.contains_key(&(x, z)) {
+                        missing.push((x, z));
+                    }
+                }
+            }
+        }
+        missing
+    };
+    let first = [((40, 0), 2), ((-40, 10), 3)];
+    streaming.extra = first.to_vec();
+    settle(&mut streaming, &mut world);
+    assert_eq!(missing(&world, &first), []);
+    // One player left, two came: the next update reads the new areas.
+    let second = [((40, 0), 2), ((0, -40), 1), ((60, 60), 2)];
+    streaming.extra = second.to_vec();
+    settle(&mut streaming, &mut world);
+    assert_eq!(missing(&world, &second), []);
 }

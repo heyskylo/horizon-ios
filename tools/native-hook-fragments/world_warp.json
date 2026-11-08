@@ -1,0 +1,13 @@
+{
+  "hooks": [
+    {
+      "name": "world_warp",
+      "target": "horizon_client_render::gfx::native_render::native_world_warp",
+      "side": "client",
+      "cancellable": false,
+      "mod_api": {"contract": "collect", "out": "warp"}
+    }
+  ],
+  "rust_summary": "a world warp (`native_world_warp`): WGSL every terrain and entity vertex goes through, with an optional per-pixel stage for terrain.",
+  "doc_summary": "a world warp through `native_world_warp`: once a frame a client mod may give WGSL (`world_warp(pos, section) -> Warped`, and optionally `world_fragment(f) -> Painted` after a line `// [fragments]`) that every terrain vertex, far terrain's tiles included, and entity vertex goes through, with sixteen floats it reads as `warp.params`. While it is on the frame culls nothing by where it was. A frame without one costs nothing more ([World warps](#world-warps)). Bundles need \"hooks\": @API:world_warp@."
+}

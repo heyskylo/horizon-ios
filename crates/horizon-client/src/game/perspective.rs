@@ -255,18 +255,6 @@ fn shadow_pass_takes_own_model(
     shadow_draws_player && !(shader_pack && spectator)
 }
 
-/// `LivingEntityRenderer.solveBodyRot` for the rider of a living vehicle: the
-/// body faces the vehicle's body, the head turning at most 85 degrees from it,
-/// and past 50 degrees the body turns a fifth of the head's offset along.
-fn rider_body_yaw(head: f32, vehicle_body: f32) -> f32 {
-    let diff = wrap(head - vehicle_body).clamp(-85.0, 85.0);
-    let mut body = head - diff;
-    if diff.abs() > 50.0 {
-        body += diff * 0.2;
-    }
-    body
-}
-
 fn wrap(d: f32) -> f32 {
     let d = d % 360.0;
     if d >= 180.0 {
@@ -292,6 +280,13 @@ impl Game<'_> {
     /// front of) it, pulled in where visual shapes are in the way. Returns the
     /// position, yaw and pitch to render from.
     pub(super) fn camera_view(&mut self, partial: f32) -> Option<(glam::DVec3, f32, f32)> {
+        if self.studio_freecam.active {
+            return Some((
+                self.studio_freecam.position,
+                self.studio_freecam.yaw,
+                self.studio_freecam.pitch,
+            ));
+        }
         // Minecraft.cameraEntity: a server's spectator camera on a mob or
         // another player.
         let (entity, descending, entity_kind) = match self.camera_mob() {
@@ -542,7 +537,8 @@ impl Game<'_> {
             // A living vehicle's rider is drawn from its body
             // (`LivingEntityRenderer.solveBodyRot`).
             Some(RiddenBody::Living(body)) => {
-                m.body_yaw += wrap(rider_body_yaw(yaw, body) - m.body_yaw);
+                m.body_yaw +=
+                    wrap(horizon_client::mobs::riders::solve_body_rot(yaw, body) - m.body_yaw);
             }
             // A minecart's, a cushion's: the body turns as on foot.
             None => {
@@ -647,6 +643,11 @@ impl Game<'_> {
     /// The model's old pitch is the player's `xRotO`, which the turn moves
     /// with `xRot` (`turn_rotation`).
     pub(super) fn turn_player(&mut self, xo: f64, yo: f64) {
+        if self.studio_freecam.active {
+            self.studio_freecam
+                .turn((xo * 0.15) as f32, (yo * 0.15) as f32);
+            return;
+        }
         let pitch_o = self.player_model.as_ref().map(|m| m.previous_head_pitch);
         let rotation = turn_rotation(self.yaw, self.pitch, pitch_o, xo, yo);
         // The held lead's old look (`LocalPlayer.getRopeHoldPosition`'s
@@ -696,7 +697,7 @@ impl Game<'_> {
     /// `LevelExtractor`'s skip of the camera entity: the player's own body
     /// is drawn unless the camera is in first person, or while it sleeps.
     pub(super) fn own_body_in_view(&self) -> bool {
-        !self.camera_type.first_person() || self.sleeping.is_some()
+        !self.camera_type.first_person() || self.sleeping.is_some() || self.studio_freecam.active
     }
     /// Whether the player's own model shows in the world view (its body or,
     /// while invisible, only its armour and held items).
@@ -1033,16 +1034,23 @@ impl Game<'_> {
         overlay: u32,
         out: &mut Vec<horizon_client::mesher::Vertex>,
     ) {
-        let Some(asset) = chest
-            .and_then(|item| self.items().get(item))
-            .and_then(|i| i.equip_asset.as_ref())
+        // The worn stack's own `equippable`, for the chest slot, with an asset
+        // (getEquipmentIfRenderable: anything else counts as nothing worn).
+        let equippable = match stack {
+            Some(s) => horizon_client::item_sync::equippable(s, self.items()),
+            None => chest
+                .and_then(|item| horizon_client::item_sync::item_equippable(item, self.items())),
+        };
+        let Some(asset) = equippable
+            .filter(|e| e.slot == "chest")
+            .and_then(|e| e.asset_id)
         else {
             return;
         };
         let assets = &self.armor_stand_assets;
         let Some((texture, _)) = assets
             .equipment
-            .get(asset)
+            .get(&asset)
             .and_then(|k| k.get("wings"))
             .and_then(|layers| layers.first())
         else {
@@ -1130,10 +1138,19 @@ impl Game<'_> {
         if horizon_client::mobs::trader::is_invisible(m) {
             return;
         }
-        let layers = chest
-            .and_then(|item| self.res.items().get(item))
-            .and_then(|i| i.equip_asset.as_ref())
-            .and_then(|asset| self.armor_stand_assets.equipment.get(asset));
+        // CapeLayer.hasLayer: the worn stack's own `equippable` asset.
+        let items = self.res.items();
+        let equippable = match m.extra.armor[1]
+            .as_ref()
+            .filter(|s| chest == Some(&*s.item))
+        {
+            Some(s) => horizon_client::item_sync::equippable(s, items),
+            None => chest.and_then(|item| horizon_client::item_sync::item_equippable(item, items)),
+        };
+        let layers = equippable
+            .filter(|e| e.slot == "chest")
+            .and_then(|e| e.asset_id)
+            .and_then(|asset| self.armor_stand_assets.equipment.get(&asset));
         if layers.is_some_and(|k| k.contains_key("wings")) {
             return;
         }
@@ -1830,7 +1847,9 @@ mod preview_tests {
     /// fifth of the turn.
     #[test]
     fn a_living_vehicles_rider_faces_its_body_within_85_degrees() {
-        let body = |head, vehicle| (super::rider_body_yaw(head, vehicle) * 1000.0).round() / 1000.0;
+        let body = |head, vehicle| {
+            (horizon_client::mobs::riders::solve_body_rot(head, vehicle) * 1000.0).round() / 1000.0
+        };
         assert_eq!(body(60.0, 40.0), 40.0);
         assert_eq!(body(100.0, 40.0), 52.0);
         assert_eq!(body(140.0, 40.0), 72.0);

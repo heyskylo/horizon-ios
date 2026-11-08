@@ -50,6 +50,8 @@ pub(crate) struct TestLevel {
     pub block_light: HashMap<BlockPos, i32>,
     /// `Level.isClientSide`.
     pub client_side: bool,
+    pub tick_ready: bool,
+    pub block_events_ready: bool,
     /// Positions that refuse fluids, fire and piston moves, as a land claim would.
     pub guarded: HashSet<BlockPos>,
     /// What `adjust_signal` answers at a position: the weak and direct signal,
@@ -88,6 +90,8 @@ impl TestLevel {
             events: Vec::new(),
             block_light: HashMap::new(),
             client_side: false,
+            tick_ready: true,
+            block_events_ready: true,
             guarded: HashSet::new(),
             fire_odds: HashMap::new(),
             smoke_sources: HashMap::new(),
@@ -99,6 +103,12 @@ impl TestLevel {
     }
 }
 impl LevelAccess for TestLevel {
+    fn should_tick_blocks_at(&self, _chunk: ChunkPos) -> bool {
+        self.block_events_ready
+    }
+    fn is_ticking_chunk(&self, _chunk: ChunkPos) -> bool {
+        self.tick_ready
+    }
     fn container_open(&self, pos: BlockPos) -> bool {
         self.opened.contains(&pos)
     }
@@ -3135,6 +3145,38 @@ fn dust_on_a_downward_piston_survives_extend_and_retract() {
 }
 
 #[test]
+fn diodes_on_downward_pistons_survive_retraction() {
+    // DiodeBlock.canSurviveOn asks `isFaceSturdy(level, pos, UP, RIGID)` of
+    // the block below, both in canSurvive and in updateShape with the
+    // neighbour's new state. While the base retracts it is a moving_piston,
+    // whose block entity shape holds the extended base: a full top face
+    // (#12019).
+    for base_kind in ["piston", "sticky_piston"] {
+        for diode_kind in ["repeater", "comparator"] {
+            let mut w = world!();
+            w.floor(0, 10, "stone");
+            let base = BlockPos::new(0, 3, 0);
+            let pos = BlockPos::new(0, 4, 0);
+            let power = BlockPos::new(1, 3, 0);
+            let diode = w.id(diode_kind, &[("facing", "south")]);
+            w.set(base, w.id(base_kind, &[("facing", "down")]));
+            w.set(pos, diode);
+            w.set(power, w.id("redstone_block", &[]));
+            for _ in 0..4 {
+                w.full_tick();
+            }
+            assert_eq!(w.prop(base, "extended"), "true");
+            w.set(power, w.b().air());
+            for _ in 0..4 {
+                w.full_tick();
+                assert_eq!(w.get(pos), diode, "{diode_kind} on {base_kind}");
+            }
+            assert_eq!(w.prop(base, "extended"), "false");
+        }
+    }
+}
+
+#[test]
 fn a_candle_on_an_uneaten_cake_makes_a_candle_cake() {
     // CakeBlock.useItemOn: any candle on a cake with no bites turns it into the
     // matching unlit candle cake; a bitten cake does not.
@@ -4070,4 +4112,70 @@ fn a_rail_riding_on_slime_stays_on_it() {
     assert_eq!(w.prop(piston_pos, "extended"), "false");
     let pulled = w.name(BlockPos::new(1, 2, 0));
     assert!(pulled.starts_with("rail"), "pulled back: got {pulled}");
+}
+
+#[test]
+fn fresh_chunk_block_events_do_not_wait_for_ticking_readiness() {
+    for (ticketed, ready) in [(true, false), (false, true), (true, true), (false, false)] {
+        let mut w = world!();
+        w.level.tick_ready = ready;
+        w.level.block_events_ready = ticketed;
+        let pos = BlockPos::new(0, 1, 0);
+        let piston = w.id("piston", &[("facing", "up")]);
+        w.set(BlockPos::new(0, 0, 0), w.id("redstone_block", &[]));
+        w.set(pos, piston);
+        assert_eq!(w.ticks.block_events.len(), 1, "placement queues an event");
+        w.f.behaviours.run_block_events(&mut w.level, &mut w.ticks);
+        assert_eq!(
+            w.prop(pos, "extended"),
+            ticketed.to_string(),
+            "ticketed={ticketed}, ticking={ready}"
+        );
+        assert_eq!(w.ticks.block_events.is_empty(), ticketed);
+        if ticketed {
+            assert!(!w.ticks.moving_pistons.is_empty());
+            w.f.behaviours
+                .tick_block_entities(&mut w.level, &mut w.ticks);
+            assert_eq!(
+                w.ticks.moving_pistons[0].1.progress > 0.0,
+                ready,
+                "moving piston entities still require ticking readiness"
+            );
+        } else {
+            w.level.block_events_ready = true;
+            w.f.behaviours.run_block_events(&mut w.level, &mut w.ticks);
+            assert_eq!(
+                w.prop(pos, "extended"),
+                "true",
+                "deferred events run once ticketed"
+            );
+            assert!(w.ticks.block_events.is_empty());
+        }
+    }
+}
+
+#[test]
+fn fresh_chunk_sculk_charge_does_not_wait_for_ticking_readiness() {
+    for (ticketed, ready) in [(true, false), (false, true), (true, true), (false, false)] {
+        let mut w = world!();
+        w.level.tick_ready = ready;
+        w.level.block_events_ready = ticketed;
+        let origin = BlockPos::new(0, 1, 0);
+        let mut spreader = sculk::SculkSpreader::default();
+        let mut cursor = sculk::ChargeCursor::new(origin, 5);
+        cursor.update_delay = 2;
+        spreader.add_cursor(cursor);
+        w.f.behaviours.sculk_update_cursors(
+            &mut w.level,
+            &mut w.ticks,
+            &mut spreader,
+            origin,
+            false,
+        );
+        assert_eq!(
+            spreader.cursors[0].update_delay,
+            if ticketed { 1 } else { 2 },
+            "ticketed={ticketed}, ticking={ready}"
+        );
+    }
 }

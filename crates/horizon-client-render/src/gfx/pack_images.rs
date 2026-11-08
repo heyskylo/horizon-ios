@@ -82,6 +82,9 @@ pub(super) fn format(f: Format, packed_float: bool) -> wgpu::TextureFormat {
         _ => rgba,
     };
     match (f.kind, f.bits) {
+        (Kind::Unorm, 10) => T::Rgb10a2Unorm,
+        (Kind::Uint, 10) => T::Rgb10a2Uint,
+        (Kind::Snorm, 16) => pick(T::R16Snorm, T::Rg16Snorm, T::Rgba16Snorm),
         (Kind::Int, 8) => pick(T::R8Sint, T::Rg8Sint, T::Rgba8Sint),
         (Kind::Int, 16) => pick(T::R16Sint, T::Rg16Sint, T::Rgba16Sint),
         (Kind::Int, _) => pick(T::R32Sint, T::Rg32Sint, T::Rgba32Sint),

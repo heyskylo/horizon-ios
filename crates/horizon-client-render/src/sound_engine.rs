@@ -20,6 +20,7 @@ use std::{
 pub const MASTER: usize = 0;
 pub const MUSIC: usize = 1;
 pub const RECORDS: usize = 2;
+pub const WEATHER: usize = 3;
 pub const NEUTRAL: usize = 6;
 pub const PLAYERS: usize = 7;
 pub const AMBIENT: usize = 8;
@@ -77,7 +78,7 @@ impl SoundEntity {
 }
 
 /// The tickable instance kinds Horizon plays (`TickableSoundInstance`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Ticking {
     /// Not tickable.
     No,
@@ -112,6 +113,24 @@ pub enum Ticking {
     /// A native mod's music layer (`MusicLayers`), whose volume its owner
     /// sets each tick.
     MusicLayer,
+    /// `DirectionalSoundInstance`: ten blocks from the camera toward
+    /// `Vec3.directionFromRotation(x_angle, y_angle)`.
+    Directional { x_angle: f32, y_angle: f32 },
+}
+/// `DirectionalSoundInstance.setPosition`: the camera plus
+/// `Vec3.directionFromRotation(xAngle, yAngle).scale(10.0)`.
+fn directional_position(camera: [f64; 3], x_angle: f32, y_angle: f32) -> [f64; 3] {
+    use horizon_core::geometry::trig;
+    let to_rad = std::f32::consts::PI / 180.0;
+    let y = -y_angle * to_rad - std::f32::consts::PI;
+    let (y_cos, y_sin) = (trig::cos(f64::from(y)), trig::sin(f64::from(y)));
+    let x = -x_angle * to_rad;
+    let (x_cos, x_sin) = (-trig::cos(f64::from(x)), trig::sin(f64::from(x)));
+    [
+        camera[0] + f64::from(y_sin * x_cos) * 10.0,
+        camera[1] + f64::from(x_sin) * 10.0,
+        camera[2] + f64::from(y_cos * x_cos) * 10.0,
+    ]
 }
 /// What a minecart's sound instances read about it.
 #[derive(Clone, Copy, Debug)]
@@ -170,6 +189,8 @@ pub struct TickContext {
     pub player_fall_flying: bool,
     /// The mob the player rides, when it is not a minecart.
     pub ridden: Option<RiddenSound>,
+    /// `mainCamera().position()`.
+    pub camera_position: [f64; 3],
 }
 /// `AbstractSoundInstance` and its subclasses' fields.
 #[derive(Clone, Debug)]
@@ -588,6 +609,31 @@ impl SoundInstance {
         s.ticking = Ticking::Elytra { time: 0 };
         s
     }
+    /// `new DirectionalSoundInstance(event, source, random, camera, xAngle,
+    /// yAngle)`: volume and pitch 1, heard everywhere alike.
+    pub fn directional(
+        id: &str,
+        source: usize,
+        random: LegacyRandom,
+        camera: [f64; 3],
+        x_angle: f32,
+        y_angle: f32,
+    ) -> Self {
+        let mut s = Self::new(
+            id,
+            source,
+            1.0,
+            1.0,
+            random,
+            false,
+            0,
+            Attenuation::None,
+            directional_position(camera, x_angle, y_angle),
+            false,
+        );
+        s.ticking = Ticking::Directional { x_angle, y_angle };
+        s
+    }
     pub fn tickable(&self) -> bool {
         self.ticking != Ticking::No
     }
@@ -762,6 +808,12 @@ impl SoundInstance {
                 self.volume = 1.0;
                 self.pitch = 1.0;
             }
+            Ticking::Directional { x_angle, y_angle } => {
+                // DirectionalSoundInstance.tick: setPosition.
+                let (x_angle, y_angle) = (*x_angle, *y_angle);
+                self.position = directional_position(ctx.camera_position, x_angle, y_angle);
+                self.attenuation = Attenuation::None;
+            }
             Ticking::GuardianAttack { guardian } => {
                 let id = *guardian;
                 // The client's guardian never has a target of its own, so
@@ -861,6 +913,9 @@ pub trait Backend {
     fn unpause(&mut self, channel: ChannelId);
     /// `Channel.stopped`.
     fn stopped(&mut self, channel: ChannelId) -> bool;
+    /// Whether the channel plays clearly through a mod's muffle (`Audio::muffle`): its sound
+    /// event is one the mod exempted. A backend without a muffle ignores it.
+    fn set_unmuffled(&mut self, _channel: ChannelId, _unmuffled: bool) {}
 }
 /// A `SoundEventListener.onPlaySound` call.
 #[derive(Clone, Debug, PartialEq)]
@@ -937,6 +992,9 @@ pub struct SoundEngine {
     /// listener: 0 as vanilla, `HEARD_RESERVE` with the `uiSoundReserve` extra.
     pub listener_reserve: usize,
     pub notifications: Vec<Notification>,
+    /// The sound events a mod's muffle leaves clear (`Audio::muffle`), normalized: their channels
+    /// are marked as they start, and those playing when the list changes are marked again.
+    unmuffled: Vec<String>,
 }
 fn handle_channel(h: &Handle) -> Option<ChannelId> {
     h.channel
@@ -966,6 +1024,21 @@ impl SoundEngine {
             listening: false,
             listener_reserve: 0,
             notifications: Vec::new(),
+            unmuffled: Vec::new(),
+        }
+    }
+    /// The sound events that play clearly through a mod's muffle from now on, normalized
+    /// (`minecraft:ui.button.click`); the channels playing now follow the new list too.
+    pub fn set_unmuffled(&mut self, events: Vec<String>, backend: &mut impl Backend) {
+        self.unmuffled = events;
+        for (id, handle) in &self.instance_to_channel {
+            let (Some(instance), Some(channel)) = (
+                self.instances.get(id),
+                self.handles.get(handle).and_then(handle_channel),
+            ) else {
+                continue;
+            };
+            backend.set_unmuffled(channel, self.unmuffled.contains(&instance.identifier));
         }
     }
     /// Isolate a fixture's dispatch from process-wide native installation.
@@ -1315,6 +1388,7 @@ impl SoundEngine {
         }
         let position = instance.position;
         let looping = instance.looping && instance.delay <= 0;
+        let unmuffled = self.unmuffled.contains(&instance.identifier);
         let streaming = sound.stream;
         let pool = usize::from(streaming);
         // With the `uiSoundReserve` extra, sounds out in the world leave a few static channels free, so a flood of
@@ -1367,6 +1441,7 @@ impl SoundEngine {
         backend.set_looping(channel, looping && !streaming);
         backend.set_position(channel, position);
         backend.set_relative(channel, relative);
+        backend.set_unmuffled(channel, unmuffled);
         backend.start(channel, &sound, looping);
         if tickable {
             self.ticking.push(id);

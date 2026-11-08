@@ -859,6 +859,10 @@ impl Game<'_> {
                 self.world.block_entities.insert(
                     p,
                     BlockEntity::Jukebox(horizon_client::containers::Jukebox {
+                        song_clock_present: stack
+                            .as_ref()
+                            .and_then(|s| self.res.items().get(&s.item))
+                            .is_some_and(|i| i.jukebox_song.is_some()),
                         items: [stack],
                         ticks: 0,
                         playing: false,

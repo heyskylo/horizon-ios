@@ -28,8 +28,12 @@ address. The script then checks, from both sides, what a guest's game used to ge
              drowning and the void (then respawns);
 - pvp:       the guest and the host hit each other with a sword; with the pvp game rule off, or on one
              team without friendly fire, nothing;
+- riders:    `execute on passengers` finds the guest riding a strider, not the host beside it;
+- spear:     the guest's spear jab and its sprinting charge hurt the host; with the pvp game rule off, nothing;
 - kills:     a pig the guest kills counts in the guest's killed statistic, not the host's (#484);
 - leave:     a guest who leaves has leave_game in their saved statistics, and again after the next leave;
+- vehicle-teleport: a strider the guest rides, teleported by a command, is where the server has it in the guest's game;
+- rider-look: a tick function teleporting the strider the guest rides doesn't turn the guest's view;
 
 - arrows:    the guest and the host shoot each other with a bow; with the pvp game rule off, nothing (#484);
 - flame-arrows: an arrow the host or the guest shoots from a Flame bow burns in flight on both sides
@@ -5605,7 +5609,9 @@ def server_player(host, game):
 def check_shield(host, guest, out):
     """An axe disables a raised shield for 5 s (100 ticks), counted down once a tick on the
     server: a vindicator's axe hits each player's shield, then the cooldown left falls by about 40
-    over 40 ticks (#1316)."""
+    over 40 ticks (#1316). Each player's own game is told (BlocksAttacks.disable's item cooldown,
+    ServerItemCooldowns' Cooldown packet): its hotbar shows the shield's cooldown, and once the
+    100 ticks are up, no longer (#11805)."""
     host('command', command='gamerule natural_health_regeneration false')
     rates = {}
     try:
@@ -5638,9 +5644,12 @@ def check_shield(host, guest, out):
             game.raw('mouse', 'right', 'up')
             assert first, f'{game.name}: the vindicator never disabled the shield'
             start = server_player(host, game)['shield_cooldown']
+            shown = game('state')['player']['shield_cooldown_shown']
             game.wait(40)
             end = server_player(host, game)['shield_cooldown']
-            rates[game.name] = {'first': first, 'start': start, 'end': end}
+            game.wait(70)
+            over = game('state')['player']['shield_cooldown_shown']
+            rates[game.name] = {'first': first, 'start': start, 'end': end, 'shown': shown, 'over': over}
             game.shot(out, 'shield')
             game('command', command='item replace entity @s weapon.offhand with minecraft:air')
             game('command', command='effect clear @s')
@@ -5651,6 +5660,9 @@ def check_shield(host, guest, out):
         assert r['first'] <= 100, f'{name}: {rates}'
         # Once a tick: 40 down over 40 ticks, give or take the ticks the two queries straddle.
         assert 30 <= r['start'] - r['end'] <= 50, f'{name}: {rates}'
+        # The player's own hotbar: the cooldown while the shield is disabled, none after.
+        assert r['shown'] > 0, f'{name}: their game was not told the shield is disabled: {rates}'
+        assert r['over'] == 0, f'{name}: their game still shows the cooldown after it ended: {rates}'
     return rates
 
 
@@ -8641,6 +8653,9 @@ def check_sprint_hit_slowdown(host, guest, out):
     causeExtraKnockback: the horizontal speed times 0.6 and setSprinting(false). Ctrl is released
     before the hit (the sprint holds while W stays down), so only the hit can end it. Input and
     the click run in one control script so command latency cannot carry the guest past the host.
+    The guest builds its sprint speed with a run-up: an absolute /tp zeroes the speed, as
+    vanilla's does (TeleportCommand's relatives carry no DELTA), so a hit right after one
+    sees walking speed.
     """
     if dead(guest):
         guest.raw('respawn')
@@ -8660,18 +8675,20 @@ def check_sprint_hit_slowdown(host, guest, out):
     host('command', command=f'fill {x - 6} {y} {z - 2} {x + 14} {y + 3} {z + 2} minecraft:air')
     host('command', command=f'fill {x - 6} {y - 1} {z - 2} {x + 14} {y - 1} {z + 2} minecraft:stone')
     host('command', command=f'tp @s {x + 0.5} {y} {z + 0.5}')
-    guest('command', command=f'tp @s {x + 12.5} {y} {z + 0.5} 90 0')
+    guest('command', command=f'tp @s {x + 8.5} {y} {z + 0.5} 90 0')
     guest.wait(40)  # a full attack charge
     guest.raw('look-at', f'{x + 0.5}', f'{y + 1.6}', f'{z + 0.5}')
     try:
         replies = guest.script([
             'key w down',
             'key ctrl down',
-            'wait 1',
-            f'command tp @s {x + 3.5} {y} {z + 0.5} 90 0',
+            # 19 ticks from 8 blocks out end about 3 blocks from the host's centre, in reach.
+            *['wait 1'] * 19,
             'state',
             'key ctrl up',
             'mouse left click',
+            'state',
+            'wait 1',
             'state',
             'wait 1',
             'state',
@@ -8690,12 +8707,9 @@ def check_sprint_hit_slowdown(host, guest, out):
              if h.get('source') == 'minecraft:player_attack' and h.get('hurt')),
             None,
         )
-        before_index = next(
-            (i for i, p in enumerate(states) if p['sprinting'] and horizontal(p) > 0.1),
-            None,
-        )
-        before = states[before_index] if before_index is not None else None
-        after = states[before_index + 1 :] if before_index is not None else []
+        # The first sample is taken just before the click.
+        before = states[0] if states and states[0]['sprinting'] else None
+        after = states[1:]
     finally:
         guest.raw('key', 'ctrl', 'up')
         guest.raw('key', 'w', 'up')
@@ -8712,15 +8726,116 @@ def check_sprint_hit_slowdown(host, guest, out):
     ended = next((i for i, a in enumerate(seen['after']) if not a['sprinting']), None)
     assert ended is not None and not any(a['sprinting'] for a in seen['after'][ended:]), \
         f'the hit did not end the guest\'s sprint: {seen}'
-    # The first post-hit sample includes one local movement step after the 0.6 cut. Without the cut,
-    # it would remain at sprint speed until the server's later sprint flag update.
+    # The first post-hit sample includes one local movement step after the 0.6 cut (about 0.68 of
+    # the sprint speed), and the speed then climbs back towards walking. Without the cut the
+    # speed only eases down from sprinting once the server's sprint flag arrives (0.9, then 0.84).
     first = seen['after'][ended]
-    assert first['speed'] < 0.9 * seen['before']['speed'], f'the guest sprints on after the hit: {seen}'
+    assert first['speed'] < 0.75 * seen['before']['speed'], f'the guest sprints on after the hit: {seen}'
+    assert len(seen['after']) > ended + 1 and seen['after'][ended + 1]['speed'] > first['speed'], \
+        f'the guest\'s speed did not climb back after the cut: {seen}'
     return seen
 
 
 CHECKS += ['sprint-hit-slowdown']
 CHECK_FNS['sprint-hit-slowdown'] = check_sprint_hit_slowdown
+
+
+def check_riders(host, guest, out):
+    """`execute on passengers` from a strider the guest rides finds the guest (Entity.getPassengers: the
+    server's players too, as a map's datapack sees them), and only them: the host, standing beside it, isn't
+    a passenger. Run by the host, so the guest is another player than the one in place."""
+    if dead(guest):
+        guest.raw('respawn')
+        guest.wait(40)
+    hx, hy, hz = pos_of(host)
+    x, y, z = math.floor(hx), math.floor(hy), math.floor(hz)
+    host('command', command=f'fill {x - 2} {y} {z - 2} {x + 4} {y + 3} {z + 2} minecraft:air')
+    host('command', command=f'fill {x - 2} {y - 1} {z - 2} {x + 4} {y - 1} {z + 2} minecraft:stone')
+    host('command', command='tag @a remove rode')
+    host('command', command=f'summon minecraft:strider {x + 2.5} {y} {z + 0.5} '
+         '{NoAI:1b,Tags:["e2e_ride"],equipment:{saddle:{id:"minecraft:saddle",count:1}}}')
+    guest('command', command=f'tp @s {x + 2.5} {y} {z + 0.5}')
+    guest.wait(10)
+    guest('command', command='ride @s mount @e[tag=e2e_ride,limit=1]')
+    guest.wait(20)
+    passed = lambda who: 'passed' in ' '.join(host('command', command=f'execute if entity @a[name={who},tag=rode]')
+                                              .get('chat', []))
+    try:
+        host('command', command='execute as @e[tag=e2e_ride] on passengers run tag @s add rode')
+        seen = {'guest tagged': passed(GUEST_NAME), 'host tagged': passed(host.player)}
+    finally:
+        guest('command', command='ride @s dismount')
+        host('command', command='kill @e[tag=e2e_ride]')
+        host('command', command='tag @a remove rode')
+    assert seen['guest tagged'], f'`on passengers` missed the guest riding the strider: {seen}'
+    assert not seen['host tagged'], f'`on passengers` named the host, who rides nothing: {seen}'
+    return seen
+
+
+CHECKS += ['riders']
+CHECK_FNS['riders'] = check_riders
+
+
+def check_spear(host, guest, out):
+    """A player's spear stabs another player (KineticWeapon.damageEntities, PiercingWeapon.attack): the guest's jab
+    hurts the host with the spear's damage type, and so does its charge at a sprint, whose speed relative to the host
+    passes the damage condition. With the pvp game rule off (PiercingWeapon.canHitEntity: canHarmPlayer), neither does.
+    """
+    if dead(guest):
+        guest.raw('respawn')
+        guest.wait(40)
+    host('command', command='gamemode survival')
+    # The hurts are logged through Resistance V; it keeps the host alive for every case.
+    host('command', command='effect give @s minecraft:resistance 1000 4 true')
+    guest('command', command='gamemode survival')
+    guest('command', command='effect clear @s')
+    guest('command', command='item replace entity @s weapon.mainhand with minecraft:iron_spear')
+    hx, hy, hz = pos_of(host)
+    x, y, z = math.floor(hx), math.floor(hy), math.floor(hz)
+    host('command', command=f'fill {x - 6} {y} {z - 2} {x + 18} {y + 3} {z + 2} minecraft:air')
+    host('command', command=f'fill {x - 6} {y - 1} {z - 2} {x + 18} {y - 1} {z + 2} minecraft:stone')
+    host('command', command=f'tp @s {x + 0.5} {y} {z + 0.5} -90 0')
+
+    def stabs():
+        logs = host('hurtlog').get('players', [])
+        victim = next((p for p in logs if p.get('name') == host.player), {})
+        return [h for h in victim.get('hurts', []) if h.get('source') == 'minecraft:spear' and h.get('hurt')]
+
+    seen = {}
+    try:
+        for rule in ('true', 'false'):
+            host('command', command=f'gamerule pvp {rule}')
+            # The jab: a left click at full charge (minimum_attack_charge 1) from 3 blocks.
+            guest('command', command=f'tp @s {x + 3.5} {y} {z + 0.5} 90 0')
+            guest.wait(40)
+            guest.raw('look-at', f'{x + 0.5}', f'{y + 1.6}', f'{z + 0.5}')
+            stabs()
+            guest.script(['mouse left click', 'wait 10'])
+            seen[f'jab, pvp {rule}'] = len(stabs())
+            guest.shot(out, f'spear-jab-pvp-{rule}')
+            # The charge: held use past the iron spear's 12-tick delay, then a sprint at the host.
+            guest('command', command=f'tp @s {x + 16.5} {y} {z + 0.5} 90 0')
+            guest.wait(30)
+            guest.raw('look-at', f'{x + 0.5}', f'{y + 1.6}', f'{z + 0.5}')
+            stabs()
+            guest.script(['mouse right down', 'wait 14', 'key w down', 'key ctrl down', 'wait 50', 'key w up',
+                          'key ctrl up', 'mouse right up', 'wait 10'])
+            seen[f'charge, pvp {rule}'] = len(stabs())
+            guest.shot(out, f'spear-charge-pvp-{rule}')
+    finally:
+        guest.raw('key', 'w', 'up')
+        guest.raw('key', 'ctrl', 'up')
+        host('command', command='gamerule pvp true')
+        host('command', command='effect clear @s')
+    assert seen['jab, pvp true'] >= 1, f'the guest\'s jab did not hurt the host: {seen}'
+    assert seen['charge, pvp true'] >= 1, f'the guest\'s charge did not hurt the host: {seen}'
+    assert seen['jab, pvp false'] == 0 and seen['charge, pvp false'] == 0, f'pvp off, a spear still hurts: {seen}'
+    return seen
+
+
+CHECKS += ['spear']
+CHECK_FNS['spear'] = check_spear
+
 
 
 
@@ -8934,6 +9049,47 @@ def check_boat_input_latch(host, guest, out):
 
 CHECKS += ['boat_input_latch']
 CHECK_FNS['boat_input_latch'] = check_boat_input_latch
+
+
+def check_vehicle_teleport(host, guest, out):
+    """A strider the guest rides, teleported 3 blocks by a command, is where the server has it in the guest's game.
+
+    The server tells its riders the teleport at once (Entity.sendTeleportTransitionToRidingPlayers) and its
+    tracker then sends everyone the move as a delta from the position it last reported. A client counts a move's
+    delta from its position codec's base, which a teleport leaves alone (ClientPacketListener.handleMoveEntity,
+    handleTeleportEntity): counted from the teleported position instead, the rider saw the strider 6 blocks on.
+    """
+    if dead(guest):
+        guest.raw('respawn')
+        guest.wait(40)
+    hx, hy, hz = pos_of(host)
+    x, y, z = math.floor(hx), math.floor(hy), math.floor(hz)
+    host('command', command=f'fill {x - 2} {y} {z - 2} {x + 9} {y + 3} {z + 2} minecraft:air')
+    host('command', command=f'fill {x - 2} {y - 1} {z - 2} {x + 9} {y - 1} {z + 2} minecraft:stone')
+    host('command', command=f'summon minecraft:strider {x + 2.5} {y} {z + 0.5} '
+         '{NoAI:1b,Tags:["e2e_tp"],equipment:{saddle:{id:"minecraft:saddle",count:1}}}')
+    guest('command', command=f'tp @s {x + 2.5} {y} {z + 0.5}')
+    guest.wait(10)
+    guest('command', command='ride @s mount @e[tag=e2e_tp,limit=1]')
+    guest.wait(20)
+    try:
+        host('command', command='execute as @e[tag=e2e_tp] at @s run tp @s ~3 ~ ~')
+        guest.wait(20)
+        reply = ' '.join(host('command', command='data get entity @e[tag=e2e_tp,limit=1] Pos').get('chat', []))
+        server = [float(v) for v in re.findall(r'(-?[\d.]+)d', reply)]
+        seen = guest.raw('entities', '16', 'minecraft:strider').get('entities', [])
+        guest.shot(out, 'vehicle-teleport')
+    finally:
+        guest('command', command='ride @s dismount')
+        host('command', command='kill @e[tag=e2e_tp]')
+    assert len(server) == 3 and seen, f'no strider: server {server}, guest {seen}'
+    off = math.dist(server, seen[0]['pos'])
+    assert off < 0.1, f'the rider sees its strider {off:.2f} blocks from the server\'s: {server} vs {seen[0]["pos"]}'
+    return {'server': server, 'guest sees': seen[0]['pos']}
+
+
+CHECKS += ['vehicle-teleport']
+CHECK_FNS['vehicle-teleport'] = check_vehicle_teleport
 
 
 def check_hook_smooth(host, guest, out):
@@ -10622,6 +10778,59 @@ def check_boat_dismount_pose(host, guest, out):
 
 CHECKS += ['boat-dismount-pose']
 CHECK_FNS['boat-dismount-pose'] = check_boat_dismount_pose
+
+
+def check_rider_look(host, guest, out):
+    """A tick function teleporting the strider the guest rides, every tick and to a rotation of its own (as a map's
+    datapack does), leaves the guest's look where they turned it: vanilla's client applies no position packet to a
+    passenger (ClientPacketListener.handleMovePlayer), so the view doesn't snap to the vehicle 20 times a second."""
+    if dead(guest):
+        guest.raw('respawn')
+        guest.wait(40)
+    hx, hy, hz = pos_of(host)
+    x, y, z = math.floor(hx), math.floor(hy), math.floor(hz)
+    host('command', command=f'fill {x - 2} {y} {z - 2} {x + 4} {y + 3} {z + 2} minecraft:air')
+    host('command', command=f'fill {x - 2} {y - 1} {z - 2} {x + 4} {y - 1} {z + 2} minecraft:stone')
+    host('command', command=f'summon minecraft:strider {x + 2.5} {y} {z + 0.5} '
+         '{NoAI:1b,Tags:["e2e_look"],equipment:{saddle:{id:"minecraft:saddle",count:1}}}')
+    guest('command', command=f'tp @s {x + 2.5} {y} {z + 0.5}')
+    guest.wait(10)
+    guest('command', command='ride @s mount @e[tag=e2e_look,limit=1]')
+    guest.wait(20)
+    pack = host.work / 'saves' / 'Lan' / 'datapacks' / 'e2e_look'
+    tick = pack / 'data/minecraft/tags/function/tick.json'
+    look = lambda: [round(guest('state')['player'][k], 1) for k in ('yaw', 'pitch')]
+    # The same direction: a yaw of -150 is one of 210.
+    same = lambda a, b: abs((a[0] - b[0] + 180) % 360 - 180) < 1 and abs(a[1] - b[1]) < 1
+    seen = {}
+    try:
+        (pack / 'data/e2e/function').mkdir(parents=True, exist_ok=True)
+        tick.parent.mkdir(parents=True, exist_ok=True)
+        (pack / 'pack.mcmeta').write_text('{"pack":{"description":"look","min_format":[121,0],"max_format":[121,0]}}')
+        (pack / 'data/e2e/function/hold.mcfunction').write_text(
+            'execute as @e[tag=e2e_look] at @s run tp @s ~ ~ ~ 0 0\n')
+        tick.write_text('{"values":["e2e:hold"]}')
+        host('command', command='reload')
+        host.wait(20)
+        start = look()
+        guest.raw('turn', '120', '30')
+        seen['turned to'] = [start[0] + 120, start[1] + 30]
+        seen['looks'] = []
+        for _ in range(5):
+            guest.wait(2)
+            seen['looks'].append(look())
+        guest.shot(out, 'rider-look')
+    finally:
+        tick.unlink(missing_ok=True)
+        host('command', command='reload')
+        guest('command', command='ride @s dismount')
+        host('command', command='kill @e[tag=e2e_look]')
+    assert all(same(v, seen['turned to']) for v in seen['looks']), f'the strider\'s teleports turned its rider: {seen}'
+    return seen
+
+
+CHECKS += ['rider-look']
+CHECK_FNS['rider-look'] = check_rider_look
 
 
 def check_sprint_fov(host, guest, out):
@@ -13558,6 +13767,70 @@ CHECKS += ['mob-thorns']
 CHECK_FNS['mob-thorns'] = check_mob_thorns
 
 
+def check_player_thorns(host, guest, out):
+    """The player's Thorns answers the mob that hits them (#9954): the victim's whole equipment runs, the hands too
+    (`EquipmentSlot.VALUES`; Thorns' slots are `any`), and `DamageEntity` hurts the mob by `thorns` damage the player
+    caused, so the kill is the player's and drops experience. A 1-health husk shut in a glass box with the host, who
+    holds a Thorns 255 chestplate (the 15% per level always rolls), hits them, then one hits the guest, who wears it:
+    each husk dies of it, and its experience reaches that player."""
+    hx, hy, hz = (int(v // 1) for v in pos_of(host))
+    host('command', command='difficulty normal')
+    thorny = 'minecraft:diamond_chestplate[minecraft:enchantments={"minecraft:thorns":255}]'
+    boxes = []
+    seen = {}
+    try:
+        for name, game, slot in (('host holds', host, 'weapon.mainhand'), ('guest wears', guest, 'armor.chest')):
+            x, z = hx + 8, hz + (-6 if game is host else 6)
+            box = f'{x - 2} {hy - 1} {z - 2} {x + 5} {hy + 3} {z + 2}'
+            boxes.append(box)
+            host('command', command=f'fill {box} minecraft:glass hollow')
+            game('command', command='gamemode survival')
+            game('command', command='xp set @s 0 levels')
+            game('command', command='xp set @s 0 points')
+            game('command', command=f'item replace entity @s {slot} with {thorny}')
+            game('command', command=f'tp @s {x + 0.5} {hy} {z + 0.5} -90 0')
+            game('command', command='effect give @s minecraft:instant_health 1 5 true')
+            game.wait(20)
+            host('command', command=f'summon minecraft:husk {x + 2.5} {hy} {z + 0.5} '
+                                    '{PersistenceRequired:1b,Tags:["thorny"],Health:1f,'
+                                    'attributes:[{id:"minecraft:max_health",base:1}]}')
+            husks = lambda: game.raw('entities', 10, 'minecraft:husk')['entities']
+            # The server's health, before the husk can reach the player (a client is not sent a mob's).
+            start = server_reply(host, 'data get entity @e[tag=thorny,limit=1] Health', 'entity data')
+            start = float(re.search(r'entity data: (-?[\d.]+)', start).group(1))
+            game.until(husks, bool, 40)
+            for _ in range(20):
+                if not husks():
+                    break
+                game.wait(10)
+            # The orbs fly to the player standing by.
+            game.wait(60)
+            points = server_reply(game, 'xp query @s points', 'experience points')
+            seen[name] = {'husk health': start, 'husk alive': bool(husks()),
+                          'points': int(re.search(r'has (\d+) experience', points).group(1))}
+            game.shot(out, 'player-thorns-' + name.replace(' ', '-'))
+            host('command', command='kill @e[tag=thorny]')
+            game('command', command=f'item replace entity @s {slot} with minecraft:air')
+    finally:
+        host('command', command='kill @e[tag=thorny]')
+        for box in boxes:
+            host('command', command=f'fill {box} minecraft:air')
+        for game in (host, guest):
+            back_to_game(game)
+            game('command', command='clear @s')
+            game('command', command='xp set @s 0 points')
+        face_each_other(host, guest)
+    for name, s in seen.items():
+        assert s['husk health'] <= 1.0, f'{name}: the husk did not start at 1 health: {seen}'
+        assert not s['husk alive'], f'{name}: the player\'s thorns never killed the husk: {seen}'
+        assert s['points'] > 0, f'{name}: the husk\'s thorns death gave the player no experience: {seen}'
+    return seen
+
+
+CHECKS += ['player-thorns']
+CHECK_FNS['player-thorns'] = check_player_thorns
+
+
 def check_command_block_chat(host, guest, out):
     """#9377: SayCommand broadcasts to real clients, independently of TrackOutput.
 
@@ -13901,6 +14174,28 @@ def check_ride_guest(host, guest, out):
 
 CHECKS += ['ride_guest']
 CHECK_FNS['ride_guest'] = check_ride_guest
+
+
+def check_loot_give_guest(host, guest, out):
+    """LootCommand.playerGive on another server player: the host's /loot give puts the drop in the
+    guest's inventory, as vanilla does for any ServerPlayer (the console's, a function's or another
+    player's /loot give), and @a gives each player one."""
+    host('command', command=f'clear {GUEST_NAME}')
+    host('command', command='clear @s')
+    seen = {'guest': host('command', command=f'loot give {GUEST_NAME} loot minecraft:blocks/dirt').get('chat'),
+            'all': host('command', command='loot give @a loot minecraft:blocks/dirt').get('chat')}
+    guest.wait(10)
+    seen['guest holds'] = host('command', command=f'clear {GUEST_NAME} minecraft:dirt 0').get('chat')
+    seen['host holds'] = host('command', command='clear @s minecraft:dirt 0').get('chat')
+    guest.shot(out, 'loot-give-guest')
+    assert any('Dropped 1 [Dirt]' in line for line in seen['guest'] or []), f'one dirt for the guest: {seen}'
+    assert any('Found 2 matching' in line for line in seen['guest holds'] or []), f'the guest holds two: {seen}'
+    assert any('Found 1 matching' in line for line in seen['host holds'] or []), f'the host holds one: {seen}'
+    return seen
+
+
+CHECKS += ['loot_give_guest']
+CHECK_FNS['loot_give_guest'] = check_loot_give_guest
 
 
 if __name__ == '__main__':

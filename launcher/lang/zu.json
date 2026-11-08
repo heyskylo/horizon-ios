@@ -1250,5 +1250,15 @@
   "Use a different Microsoft account": "Sebenzisa enye i-akhawunti ye-Microsoft",
   "Buy": "Thenga",
   "Gift": "Nikeza njengesipho",
-  "Looks": "Ukubukeka"
+  "Found on this computer": "Kutholwe kule khompyutha",
+  "Looks": "Ukubukeka",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Iringi yokhiye yesistimu yakho ayiphendulanga phakathi kwamasekhondi angu-{seconds}. Qinisekisa ukuthi iyasebenza futhi ivuliwe, bese uqala kabusha i-launcher.",
+  "Can't read {name}'s sign-in: {why}": "Ayikwazi ukufunda ukungena kuka-{name}: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: kusetshenziswa inguqulo {version}, eyenzelwe i-Horizon oyidlalayo",
+  "Recommended": "Kunconyiwe",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "Inguqulo endala, {version}, iyakhiwa ku-Horizon oyidlalayo: ukufaka kuyayikhetha",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: inguqulo {version} ayakhiwanga, kuzanywa {older}",
+  "Use recommended (kept at {version})": "Sebenzisa enconyiwe (igcinwe ku-{version})"
 }

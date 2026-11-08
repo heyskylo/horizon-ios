@@ -5,7 +5,7 @@
 use crate::i18n::{tr, trf};
 use crate::instances::Instance;
 use crate::{backend, native_mods};
-use horizon_mods::index::BrokenOn;
+use horizon_mods::index::{self, BrokenOn};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
@@ -174,6 +174,34 @@ fn hooks_at(revision: &str) -> Option<u32> {
     Some(hooks)
 }
 
+/// The commit a native mod's version pins (`native-1/<horizon>/<mixins>`), empty when it names none.
+pub fn pin_of(v: &index::Version) -> &str {
+    v.api.split('/').nth(1).unwrap_or_default()
+}
+
+/// The version of native mod `p` to use on the Horizon played: the newest of the `usable` ones
+/// that builds on it, else the newest that moves the build to its own commit without clashing
+/// with `pins`, else none. An older version made for the Horizon played beats a newer one that
+/// would move the game to another commit.
+pub fn best<'a>(
+    p: &'a index::Project,
+    plays: &Plays,
+    pins: &[(String, String)],
+    usable: impl Fn(&index::Version) -> bool,
+) -> Option<&'a index::Version> {
+    let fits = |v: &index::Version| fit(&p.id, v.hooks, pin_of(v), plays, pins, &v.broken_on);
+    let usable: Vec<&index::Version> = p.versions.iter().filter(|v| usable(v)).collect();
+    usable
+        .iter()
+        .find(|v| fits(v) == Some(Fit::Fits))
+        .or_else(|| {
+            usable
+                .iter()
+                .find(|v| matches!(fits(v), Some(Fit::MovesTo { .. })))
+        })
+        .copied()
+}
+
 /// The native mods turned on in game folder `home` that pin a commit, as (id, commit).
 pub fn pins(home: &Path) -> Vec<(String, String)> {
     crate::native_status::bundles_on(home)
@@ -299,6 +327,79 @@ mod tests {
             fit("jei", None, OTHER, &p, &[], &[]),
             Some(Fit::MovesTo { pin: OTHER.into() })
         );
+    }
+
+    fn version(number: &str, hooks: Option<u32>, pin: &str, broken: &[&str]) -> index::Version {
+        serde_json::from_value(serde_json::json!({
+            "version": number,
+            "api": format!("native-1/{pin}/{THIRD}"),
+            "hooks": hooks,
+            "game": "26.3",
+            "broken_on": broken.iter().map(|h| serde_json::json!({"horizon": h, "code": "E0061"})).collect::<Vec<_>>(),
+            "file": {"name": "m.hnmod", "url": "https://example.invalid/m.hnmod", "size": 1, "sha256": "00"},
+        }))
+        .unwrap()
+    }
+
+    fn project(versions: Vec<index::Version>) -> index::Project {
+        let mut p: index::Project = serde_json::from_value(serde_json::json!({
+            "id": "flair", "kind": "native-mod", "name": "Flair", "summary": "", "description": "",
+            "authors": [], "owners": [], "license": "MIT", "source": "https://example.invalid",
+            "versions": [],
+        }))
+        .unwrap();
+        p.versions = versions;
+        p
+    }
+
+    fn picked(p: &index::Project, plays: &Plays, pins: &[(String, String)]) -> Option<String> {
+        best(p, plays, pins, |_| true).map(|v| v.version.clone())
+    }
+
+    #[test]
+    fn the_newest_version_that_builds_on_the_horizon_played_is_picked() {
+        let p = project(vec![
+            version("1.0.2", None, OTHER, &[]),
+            version("1.0.1", None, YOURS, &[]),
+            version("1.0.0", None, THIRD, &[]),
+        ]);
+        assert_eq!(picked(&p, &plays(None), &[]).as_deref(), Some("1.0.1"));
+    }
+
+    #[test]
+    fn a_version_broken_on_the_horizon_played_is_passed_over() {
+        let p = project(vec![
+            version("2.0.0", Some(5), OTHER, &[YOURS]),
+            version("1.9.0", Some(5), OTHER, &[]),
+        ]);
+        assert_eq!(picked(&p, &plays(Some(9)), &[]).as_deref(), Some("1.9.0"));
+    }
+
+    #[test]
+    fn without_a_fitting_version_the_newest_that_moves_the_build_alone_is_picked() {
+        let p = project(vec![
+            version("1.2.0", Some(40), OTHER, &[]),
+            version("1.1.0", None, OTHER, &[]),
+            version("1.0.0", None, THIRD, &[]),
+        ]);
+        assert_eq!(picked(&p, &plays(Some(9)), &[]).as_deref(), Some("1.1.0"));
+        let clash = [pin("veinminer", THIRD)];
+        assert_eq!(
+            picked(&p, &plays(Some(9)), &clash).as_deref(),
+            Some("1.0.0")
+        );
+        let none_fit = project(vec![version("1.2.0", Some(40), OTHER, &[])]);
+        assert_eq!(picked(&none_fit, &plays(Some(9)), &[]), None);
+    }
+
+    #[test]
+    fn unusable_versions_are_never_picked() {
+        let p = project(vec![
+            version("1.0.1", None, YOURS, &[]),
+            version("1.0.0", None, YOURS, &[]),
+        ]);
+        let found = best(&p, &plays(None), &[], |v| v.version != "1.0.1");
+        assert_eq!(found.map(|v| v.version.as_str()), Some("1.0.0"));
     }
 
     #[test]

@@ -2,18 +2,20 @@
 //! variables, `if` blocks and calls on context objects. An expression is parsed once when the pack
 //! loads, with every name resolved, and then evaluated against a [`Host`], the game side that
 //! answers context objects (`o`, `p`, `g`...) and their methods.
+mod colors;
+mod legacy;
 mod lex;
 mod parse;
 
 use parse::{BinOp, Expr, Stmt};
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// A value while an expression runs. Booleans count as 1 and 0 in arithmetic.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     Num(f64),
     Bool(bool),
-    Str(Rc<str>),
+    Str(Arc<str>),
     /// A context object the host hands out (a block, an entity...), by the host's own id.
     Object(u32),
     Null,
@@ -78,43 +80,58 @@ pub trait Host {
 
 type MathFn = fn(&[f64]) -> f64;
 
-/// The math functions (name, arity, function), the wiki's "Math Functions" in Java's `Math`
-/// terms: `round` rounds half up, `%` keeps the dividend's sign and `mod` is always positive.
-pub(crate) const MATH: [(&str, usize, MathFn); 25] = [
-    ("sin", 1, |a| a[0].sin()),
-    ("cos", 1, |a| a[0].cos()),
-    ("tan", 1, |a| a[0].tan()),
-    ("atan2", 2, |a| a[0].atan2(a[1])),
-    ("sqrt", 1, |a| a[0].sqrt()),
-    ("abs", 1, |a| a[0].abs()),
-    ("log", 1, |a| a[0].ln()),
-    ("exp", 1, |a| a[0].exp()),
-    ("pow", 2, |a| a[0].powf(a[1])),
-    ("floor", 1, |a| a[0].floor()),
-    ("ceil", 1, |a| a[0].ceil()),
-    ("round", 1, |a| (a[0] + 0.5).floor()),
-    ("fract", 1, |a| a[0] - a[0].floor()),
-    ("sign", 1, |a| {
+/// The math functions (name, fewest and most arguments, function), the wiki's "Math Functions"
+/// in Java's `Math` terms: `round` rounds half up, `%` keeps the dividend's sign and `mod` is
+/// always positive.
+pub(crate) const MATH: &[(&str, usize, usize, MathFn)] = &[
+    ("sin", 1, 1, |a| a[0].sin()),
+    ("cos", 1, 1, |a| a[0].cos()),
+    ("tan", 1, 1, |a| a[0].tan()),
+    ("atan2", 2, 2, |a| a[0].atan2(a[1])),
+    ("sqrt", 1, 1, |a| a[0].sqrt()),
+    ("abs", 1, 1, |a| a[0].abs()),
+    ("log", 1, 1, |a| a[0].ln()),
+    ("exp", 1, 1, |a| a[0].exp()),
+    ("pow", 2, 2, |a| a[0].powf(a[1])),
+    ("floor", 1, 1, |a| a[0].floor()),
+    ("ceil", 1, 1, |a| a[0].ceil()),
+    ("round", 1, 1, |a| (a[0] + 0.5).floor()),
+    ("fract", 1, 1, |a| a[0] - a[0].floor()),
+    ("sign", 1, 1, |a| {
         if a[0] == 0.0 || a[0].is_nan() {
             a[0]
         } else {
             a[0].signum()
         }
     }),
-    ("radians", 1, |a| a[0].to_radians()),
-    ("degrees", 1, |a| a[0].to_degrees()),
-    ("mod", 2, |a| a[0].rem_euclid(a[1])),
-    ("min", 2, |a| a[0].min(a[1])),
-    ("max", 2, |a| a[0].max(a[1])),
-    ("clamp", 3, |a| a[0].max(a[1]).min(a[2])),
-    ("square", 1, |a| a[0] * a[0]),
-    ("cube", 1, |a| a[0] * a[0] * a[0]),
-    ("lerp", 3, |a| a[0] + (a[1] - a[0]) * a[2]),
-    ("inverseLerp", 3, |a| (a[2] - a[0]) / (a[1] - a[0])),
-    ("smoothstep", 3, |a| {
+    ("radians", 1, 1, |a| a[0].to_radians()),
+    ("degrees", 1, 1, |a| a[0].to_degrees()),
+    ("mod", 2, 2, |a| a[0].rem_euclid(a[1])),
+    ("min", 2, 2, |a| a[0].min(a[1])),
+    ("max", 2, 2, |a| a[0].max(a[1])),
+    ("clamp", 3, 3, |a| a[0].max(a[1]).min(a[2])),
+    ("square", 1, 1, |a| a[0] * a[0]),
+    ("cube", 1, 1, |a| a[0] * a[0] * a[0]),
+    ("lerp", 3, 3, |a| a[0] + (a[1] - a[0]) * a[2]),
+    ("inverseLerp", 3, 3, |a| (a[2] - a[0]) / (a[1] - a[0])),
+    ("smoothstep", 3, 3, |a| {
         let t = ((a[2] - a[0]) / (a[1] - a[0])).clamp(0.0, 1.0);
         t * t * (3.0 - 2.0 * t)
     }),
+    ("distSquare", 4, 4, colors::dist_square),
+    ("dist", 4, 4, colors::dist),
+    ("red", 1, 1, colors::red),
+    ("green", 1, 1, colors::green),
+    ("blue", 1, 1, colors::blue),
+    ("alpha", 1, 1, colors::alpha),
+    ("color", 3, 4, colors::color),
+    ("withAlpha", 2, 2, colors::with_alpha),
+    ("lerpColor", 3, 3, colors::lerp_color),
+    ("lerpHsb", 3, 3, colors::lerp_hsb),
+    ("hsb", 3, 3, colors::hsb),
+    ("hue", 1, 1, colors::hue),
+    ("saturation", 1, 1, colors::saturation),
+    ("brightness", 1, 1, colors::brightness),
 ];
 
 /// A parsed expression, ready to run many times.
@@ -226,9 +243,9 @@ impl Run<'_> {
                 let pick = if self.expr(c)?.truthy() { a } else { b };
                 self.expr(pick)?
             }
-            Expr::Math(i, args) => {
+            Expr::Call(f, args) => {
                 let args: Vec<f64> = self.all(args)?.iter().map(Value::num).collect();
-                Value::Num(MATH[*i].2(&args))
+                Value::Num(f(&args))
             }
             Expr::Host(name, args) => {
                 let args = self.all(args)?;

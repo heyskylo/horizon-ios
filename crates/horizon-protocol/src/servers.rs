@@ -1,6 +1,7 @@
 //! The multiplayer server list, stored like vanilla's ServerList in an
 //! uncompressed `servers.dat`: `{servers: [{name, ip, icon?, acceptTextures?,
-//! acceptedCodeOfConduct?}]}`.
+//! acceptedCodeOfConduct?, hidden}]}`. Hidden entries (servers joined by
+//! Direct Connection or quick play) are not shown but keep their settings.
 use horizon_world::nbt::{self, JavaString, NamedTag, Tag};
 use std::path::Path;
 
@@ -66,34 +67,79 @@ impl ServerEntry {
     }
 }
 
-/// ServerList.load: missing or unreadable files give an empty list.
+/// ServerList.load: the shown entries; missing or unreadable files give an empty list.
 pub fn load(path: &Path) -> Vec<ServerEntry> {
+    load_all(path).0
+}
+/// ServerList.load: the shown entries (`serverList`) and the hidden ones
+/// (`hiddenServerList`, `hidden` set), each in the file's order.
+pub fn load_all(path: &Path) -> (Vec<ServerEntry>, Vec<ServerEntry>) {
+    let (mut shown, mut hidden) = (Vec::new(), Vec::new());
     let Ok(bytes) = std::fs::read(path) else {
-        return Vec::new();
+        return (shown, hidden);
     };
     let Ok((root, _)) = nbt::read_named(&bytes, nbt::Limits::default()) else {
-        return Vec::new();
+        return (shown, hidden);
     };
-    // ServerList skips entries flagged "hidden" (the LAN/quick-play ones).
-    match root.tag.get("servers") {
-        Some(Tag::List(list)) => list
-            .iter()
-            .filter(|t| !matches!(t.get("hidden"), Some(Tag::Byte(1))))
-            .filter_map(ServerEntry::from_tag)
-            .collect(),
-        _ => Vec::new(),
+    if let Some(Tag::List(list)) = root.tag.get("servers") {
+        for t in list {
+            let Some(entry) = ServerEntry::from_tag(t) else {
+                continue;
+            };
+            // CompoundTag.getBooleanOr("hidden", false): any number but zero.
+            let is_hidden = match t.get("hidden") {
+                Some(Tag::Byte(b)) => *b != 0,
+                Some(Tag::Short(n)) => *n as i8 != 0,
+                Some(Tag::Int(n)) => *n as i8 != 0,
+                Some(Tag::Long(n)) => *n as i8 != 0,
+                _ => false,
+            };
+            if is_hidden {
+                hidden.push(entry);
+            } else {
+                shown.push(entry);
+            }
+        }
     }
+    (shown, hidden)
 }
-/// ServerList.save: write to a temporary file, then replace.
+/// ServerList.save for the shown entries, keeping the hidden ones the file has.
 pub fn save(path: &Path, servers: &[ServerEntry]) -> std::io::Result<()> {
+    let (_, hidden) = load_all(path);
+    save_all(path, servers, &hidden)
+}
+/// ServerList.save: the shown entries with `hidden: false`, then the hidden
+/// ones with `hidden: true`, written to a temporary file, then replaced.
+pub fn save_all(
+    path: &Path,
+    servers: &[ServerEntry],
+    hidden: &[ServerEntry],
+) -> std::io::Result<()> {
+    let flagged = |entry: &ServerEntry, flag: bool| {
+        let mut tag = entry.to_tag();
+        if let Tag::Compound(c) = &mut tag {
+            c.insert(JavaString::from("hidden"), Tag::Byte(i8::from(flag)));
+        }
+        tag
+    };
+    let list = servers
+        .iter()
+        .map(|e| flagged(e, false))
+        .chain(hidden.iter().map(|e| flagged(e, true)))
+        .collect();
     let root = NamedTag {
         name: JavaString::from(""),
-        tag: Tag::compound([(
-            "servers",
-            Tag::List(servers.iter().map(ServerEntry::to_tag).collect()),
-        )]),
+        tag: Tag::compound([("servers", Tag::List(list))]),
     };
     write(path, &root)
+}
+/// ServerList.add(server, true): a hidden entry goes first, and only the 16
+/// newest hidden entries are kept (`MAX_HIDDEN_SERVERS`); then saved.
+pub fn add_hidden(path: &Path, entry: ServerEntry) -> std::io::Result<()> {
+    let (shown, mut hidden) = load_all(path);
+    hidden.insert(0, entry);
+    hidden.truncate(16);
+    save_all(path, &shown, &hidden)
 }
 /// Puts `entry` first, keeping every other entry and field as the file has them (the hidden
 /// ones too). A file that is there but can't be read is left as it is.

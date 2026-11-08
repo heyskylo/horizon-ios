@@ -640,6 +640,14 @@ public final class VanillaMobAiOracle {
                         case "strength" -> method(net.minecraft.world.entity.animal.equine.Llama.class, "setStrength", int.class)
                             .invoke(mob, Integer.parseInt(v));
                         case "dead" -> mob.setHealth(0.0F);
+                        // effect=<name>:<amplifier>, never running out.
+                        case "effect" -> {
+                            String[] ea = v.split(":");
+                            var effect = BuiltInRegistries.MOB_EFFECT.wrapAsHolder(BuiltInRegistries.MOB_EFFECT.getValue(
+                                net.minecraft.resources.Identifier.withDefaultNamespace(ea[0])));
+                            afterAdd.add(() -> mob.addEffect(new net.minecraft.world.effect.MobEffectInstance(
+                                effect, -1, Integer.parseInt(ea[1]))));
+                        }
                         case "leashed", "leashto" -> {
                             // Leashed once every mob exists (below).
                         }
