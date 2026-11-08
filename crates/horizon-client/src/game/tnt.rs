@@ -1696,7 +1696,7 @@ mod tests {
                 game.audio.heard.clear();
                 let particles = particle_count(&game);
                 let clouds = game.breath_clouds.len();
-                let xp: u32 = game.orbs.iter().map(|o| o.value * o.count).sum();
+                let xp: u32 = game.orbs.iter().map(|o| o.points() * o.count).sum();
                 game.tick_effects(true);
                 assert_eq!(game.potions.thrown_ids().count(), 0);
                 assert!(particle_count(&game) > particles, "{kind} keeps its splash");
@@ -1709,7 +1709,7 @@ mod tests {
                     game.breath_clouds.len() - clouds,
                     usize::from(kind == "lingering_potion")
                 );
-                let gained = game.orbs.iter().map(|o| o.value * o.count).sum::<u32>() - xp;
+                let gained = game.orbs.iter().map(|o| o.points() * o.count).sum::<u32>() - xp;
                 if kind == "experience_bottle" {
                     assert!((3..=11).contains(&gained), "silence keeps the experience");
                 }
@@ -1763,7 +1763,7 @@ mod tests {
                     },
                 )
                 .unwrap();
-                let xp: u32 = game.orbs.iter().map(|o| o.value * o.count).sum();
+                let xp: u32 = game.orbs.iter().map(|o| o.points() * o.count).sum();
                 let next = game.world.random.next_long();
                 assert!((3..=11).contains(&xp));
                 if let Some((audible_xp, audible_next)) = audible {

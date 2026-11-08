@@ -7,6 +7,7 @@
 //! client predicts its own movement; the server stays authoritative for
 //! everything else.
 use super::remote_chunks::{ChunkDecoder, ChunkFormat, Next};
+use super::render_tick::{mob_tracking_body, player_tracking_body};
 use super::{Dim, Game, Mining, Screen};
 use horizon_client::actions::Action;
 use horizon_client::first_person::{Hand, SwingAnimation};
@@ -23,6 +24,7 @@ use horizon_client::{
     mobs::{Mob, MobType, Who},
     motion::{MotionWorld, PlayerMotion},
     net::{Event, Session},
+    particles::TrackingTarget,
     random_source,
     save::SaveDir,
     screen_effects,
@@ -2682,6 +2684,11 @@ impl Game<'_> {
         self.streaming.nether_shading = self.dim == Dim::Nether;
         // The seed in SpawnInfo is already the hashed one the client's BiomeManager holds.
         self.streaming.biome_zoom = horizon_core::biome::BiomeZoom::new(spawn.seed);
+        let player = self.player.as_ref();
+        self.particles
+            .detach_tracking_target(TrackingTarget::LocalPlayer, || {
+                player.map(player_tracking_body)
+            });
         self.player = None;
         // handleLogin / handleRespawn: LocalPlayer.setPortalCooldown, so a
         // player who arrives standing in a portal gets no overlay from it.
@@ -2816,32 +2823,13 @@ impl Game<'_> {
     /// hit (`CRIT`) or magic critical hit (`ENCHANTED_HIT`) emitter.
     fn remote_animate(&mut self, id: i32, action: u8) {
         use horizon_client::particles::{ParticleOptions, ParticleType};
-        let me = self.remote.as_ref().is_some_and(|r| r.entity_id == id);
-        let body = if me {
-            self.player.as_ref().map(|p| {
-                let d = p.dimensions;
-                (
-                    [p.position.x, p.position.y, p.position.z],
-                    f64::from(d.width),
-                    f64::from(d.height),
-                )
-            })
-        } else {
-            self.mob_index.get(&self.mobs, id as u32).map(|m| {
-                (
-                    [m.position.x, m.position.y, m.position.z],
-                    m.kind.width,
-                    m.kind.height,
-                )
-            })
-        };
-        let Some((feet, width, height)) = body else {
+        let Some((target, body)) = self.remote_tracking_body(id) else {
             return;
         };
         let particle = match action {
             // Player.stopSleepInBed.
             0 => {
-                if me {
+                if target == TrackingTarget::LocalPlayer {
                     self.sleeping = None;
                     self.sleep_timer = 100;
                 }
@@ -2852,7 +2840,7 @@ impl Game<'_> {
             _ => return,
         };
         self.particles
-            .tracking_emitter(ParticleOptions::simple(particle), feet, width, height);
+            .tracking_emitter(ParticleOptions::simple(particle), target, body);
     }
     /// `handleServerData`: the server list entry of the server joined keeps
     /// the icon the server sends (`ServerList.saveSingleServer`). Single
@@ -3077,6 +3065,7 @@ impl Game<'_> {
     /// `recreateFromPacket`: yRot and xRot from the packet, the body and head
     /// both at its head yaw (LivingEntity).
     fn spawn_entity(&mut self, id: i32, kind: &str, position: [f64; 3], rotation: [f32; 3]) {
+        self.detach_remote_tracking_entity(id);
         let [yaw, pitch, head] = rotation;
         let at = Vec3::new(position[0], position[1], position[2]);
         let mob_type = if kind == "minecraft:player" {
@@ -3312,14 +3301,6 @@ impl Game<'_> {
                 f.position = Vec3::new(position[0], position[1], position[2]);
                 return;
             }
-            // A dragon fireball keeps Entity's NO_OP InterpolationHandler too:
-            // the server's position replaces its own at once.
-            if let Some(b) = self.dragon_fireballs.iter_mut().find(|b| b.id == id as u32) {
-                if path.is_some() {
-                    b.position = Vec3::new(position[0], position[1], position[2]);
-                }
-                return;
-            }
             if let Some(p) = r.pending_items.get_mut(&id) {
                 p.0 = position;
             }
@@ -3388,7 +3369,16 @@ impl Game<'_> {
         self.move_remote_text_display(id, position, rotation);
         self.turn_remote_projectile(id, rotation);
     }
+    fn detach_remote_tracking_entity(&mut self, id: i32) {
+        let mobs = &self.mobs;
+        let index = &mut self.mob_index;
+        self.particles
+            .detach_tracking_target(TrackingTarget::Entity(id), || {
+                index.get(mobs, id as u32).map(mob_tracking_body)
+            });
+    }
     fn remove_entity(&mut self, id: i32) {
+        self.detach_remote_tracking_entity(id);
         self.audio.remove_sound_entity(id as u32);
         // Entity.setRemoved detaches every passenger, even when no empty
         // SetPassengers packet preceded the vehicle's removal. Otherwise
@@ -4403,7 +4393,7 @@ impl Game<'_> {
                         && let Value::Int(v) = value
                         && let Some(o) = self.orbs.iter_mut().find(|o| o.id == p.id as u32)
                     {
-                        o.value = (*v).max(0) as u32;
+                        o.value = *v;
                     }
                 }
                 self.remote_object_data(p.id, &p.values);
@@ -4605,6 +4595,19 @@ impl Game<'_> {
                             .map(|m| &*m.kind.id == "minecraft:player")
                     });
                     self.native_client_hurt(attacker, player);
+                    // For `events`: this client has no combat tracker of its own here.
+                    let cause = self.remote.as_ref().and_then(|r| {
+                        r.registries
+                            .name("minecraft:damage_type", p.source_type)
+                            .map(str::to_owned)
+                    });
+                    let by = attacker.and_then(|id| {
+                        self.mob_index
+                            .get(&self.mobs, id)
+                            .map(|m| m.kind.id.to_string())
+                    });
+                    self.events
+                        .note_hit(cause.unwrap_or_else(|| "unknown".into()), by);
                     let at = self
                         .player
                         .as_ref()
@@ -6304,8 +6307,6 @@ impl Game<'_> {
                     p.stuck = false;
                 }
             }
-        } else if let Some(b) = self.dragon_fireballs.iter_mut().find(|b| b.id == id as u32) {
-            b.velocity = v;
         } else if let Some(t) = self.tridents.iter_mut().find(|t| t.id == id as u32) {
             t.velocity = v;
             // AbstractArrow.lerpMotion (ThrownTrident keeps it): `life`
@@ -9973,13 +9974,10 @@ impl Game<'_> {
         if damage * (0.2 + strength * strength * 0.8) > 0.0 && self.critical_attack(strength) {
             use horizon_client::particles::{ParticleOptions, ParticleType};
             let m = &self.mobs[mob];
-            let feet = [m.position.x, m.position.y, m.position.z];
-            let (width, height) = (m.kind.width, m.kind.height);
             self.particles.tracking_emitter(
                 ParticleOptions::simple(ParticleType::Crit),
-                feet,
-                width,
-                height,
+                TrackingTarget::Entity(m.id as i32),
+                mob_tracking_body(m),
             );
         }
         if !horizon_client::attack_strength::attacker_slows_after_hit(
@@ -11953,6 +11951,149 @@ mod tests {
         keep_client_state, open_hash_order, remote_object_swings, remote_use_swings, shape_meets,
         snap_target, synced_local_use,
     };
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn tracking_emitters_follow_the_packet_target() {
+        use crate::game::{
+            Audio, Game, Options, Progress, Settings, execution_role::ExecutionRole,
+            load_resources, totem::TOTEM_EVENT,
+        };
+        use horizon_client::{motion::PlayerMotion, particles::ParticleType, pose::Pose};
+        use horizon_core::geometry::Vec3;
+        use horizon_protocol::{
+            entity_data::{Value, serializer},
+            packets::play::{self, Clientbound as C},
+        };
+
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = ExecutionRole::Client;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let (client, _server) = horizon_protocol::connection::Pipe::pair();
+        game.connect_local(client, "EmitterTest").unwrap();
+        game.remote.as_mut().unwrap().entity_id = 7;
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.0, 64.0, 0.0)).unwrap());
+        game.particles.seed_randoms(42, 43, 44);
+
+        let check = |game: &Game<'_>, ty, feet: [f64; 3], height: f32| {
+            let mut seen = false;
+            for (options, at, velocity) in game.particles.requested.as_ref().unwrap() {
+                if options.ty != ty {
+                    continue;
+                }
+                seen = true;
+                let y = feet[1] + f64::from(height) * (0.5 + (velocity[1] - 0.2) / 4.0);
+                assert!((at[0] - feet[0]).abs() <= f64::from(0.6_f32) / 4.0);
+                assert!(
+                    (at[1] - y).abs() < 1e-10,
+                    "{ty:?} at {at:?}, expected y {y}"
+                );
+                assert!((at[2] - feet[2]).abs() <= f64::from(0.6_f32) / 4.0);
+            }
+            assert!(seen, "no {ty:?} emissions");
+        };
+        let types = [
+            ParticleType::Crit,
+            ParticleType::EnchantedHit,
+            ParticleType::TotemOfUndying,
+        ];
+        let target = 40;
+        let start = [5.0, 64.0, 7.0];
+        game.spawn_entity(target, "minecraft:player", start, [0.0; 3]);
+        game.particles.requested = Some(Vec::new());
+        for action in [1, 2] {
+            game.handle_packet(C::Animate(play::Animate { id: target, action }))
+                .unwrap();
+        }
+        game.handle_packet(C::EntityEvent(play::EntityEvent {
+            id: target,
+            event: TOTEM_EVENT,
+        }))
+        .unwrap();
+        for ty in types {
+            check(&game, ty, start, 1.8);
+        }
+
+        let moved = [15.0, 65.0, -2.0];
+        game.particles.requested = Some(Vec::new());
+        game.handle_packet(C::SetEntityData(play::SetEntityData {
+            id: target,
+            values: vec![(6, serializer::POSE, Value::Id(Pose::Crouching.id()))],
+        }))
+        .unwrap();
+        game.handle_packet(C::EntityPositionSync(play::EntityPositionSync {
+            id: target,
+            path: play::PositionPath::Linear(moved),
+            yaw: 0.0,
+            pitch: 0.0,
+            on_ground: true,
+        }))
+        .unwrap();
+        for _ in 0..4 {
+            game.tick_remote_entities(true);
+        }
+        game.tick_particles();
+        for ty in types {
+            check(&game, ty, moved, 1.5);
+        }
+
+        // The old entity moved again before unpairing. Re-pairing its id before
+        // the next particle tick keeps emitting at the old entity's final body.
+        game.particles.requested = Some(Vec::new());
+        let last = [18.0, 65.0, -2.0];
+        game.mob_index
+            .get_mut(&mut game.mobs, target as u32)
+            .unwrap()
+            .position = Vec3::new(last[0], last[1], last[2]);
+        game.handle_packet(C::RemoveEntities(play::RemoveEntities {
+            ids: vec![target],
+        }))
+        .unwrap();
+        game.spawn_entity(target, "minecraft:player", [28.0, 67.0, 1.0], [0.0; 3]);
+        game.tick_particles();
+        for ty in types {
+            check(&game, ty, last, 1.5);
+        }
+
+        game.particles.clear();
+        game.particles.requested = Some(Vec::new());
+        game.handle_packet(C::EntityEvent(play::EntityEvent {
+            id: 7,
+            event: TOTEM_EVENT,
+        }))
+        .unwrap();
+        check(&game, ParticleType::TotemOfUndying, [0.0, 64.0, 0.0], 1.8);
+        game.particles.requested = Some(Vec::new());
+        let player = game.player.as_mut().unwrap();
+        player.position = Vec3::new(-4.0, 68.0, 8.0);
+        player.set_pose(Pose::Swimming).unwrap();
+        game.tick_particles();
+        check(&game, ParticleType::TotemOfUndying, [-4.0, 68.0, 8.0], 0.6);
+    }
 
     /// The vanilla 26.3 client's ServerboundContainerClickPacket for a shift-click from hotbar slot 37
     /// into slot 10 listed 37 first (wire stream harness, `inventory`). The key 0 always leads.

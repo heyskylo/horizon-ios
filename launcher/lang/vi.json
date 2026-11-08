@@ -462,7 +462,6 @@
   "Copying…": "Đang sao chép…",
   "Filters": "Bộ lọc",
   "{count} followers": "{count} người theo dõi",
-  "{count} stars on GitHub": "{count} sao trên GitHub",
   "Connect an AI agent": "Kết nối một tác nhân AI",
   "Each switch is off unless you turn it on. What it sends is below it; the privacy page on playhorizon.dev says how long it is kept.": "Mỗi công tắc đều tắt trừ khi bạn bật nó lên. Những gì nó gửi ở bên dưới nó; trang quyền riêng tư trên playhorizon.dev cho biết nó được lưu giữ trong bao lâu.",
   "Players": "Người chơi",
@@ -1181,7 +1180,6 @@
   "Builds on the Horizon you play": "Builds on the Horizon you play",
   "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first",
   "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile",
-  "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}",
   "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
   "Tags": "Thẻ",
   "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on.": "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on.",
@@ -1260,5 +1258,11 @@
   "Recommended": "Đề xuất",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Một phiên bản cũ hơn, {version}, build được trên Horizon bạn đang chơi: cài đặt sẽ chọn nó",
   "{mod}: version {version} didn't build, trying {older}": "{mod}: phiên bản {version} không build được, đang thử {older}",
-  "Use recommended (kept at {version})": "Dùng bản đề xuất (đang giữ ở {version})"
+  "Use recommended (kept at {version})": "Dùng bản đề xuất (đang giữ ở {version})",
+  "Only what works on {instance}": "Chỉ những gì chạy được trên {instance}",
+  "{count} versions that don't work on {instance} are hidden": "Đã ẩn {count} phiên bản không chạy được trên {instance}",
+  "Made for Horizon {pin}: the launcher builds it on {yours}, the one you play, and on {pin} only if it doesn't compile there": "Làm cho Horizon {pin}: launcher build nó trên {yours}, bản bạn đang chơi, và chỉ trên {pin} nếu không biên dịch được ở đó",
+  "{mods} didn't build on the Horizon you play: building on the one they were made for": "{mods} không build được trên Horizon bạn đang chơi: đang build trên bản chúng được làm cho",
+  "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Trong lần build gần nhất, trên Horizon {commit} vì {mods}, không phải {horizon}",
+  "In the last build, on {horizon}": "Trong lần build gần nhất, trên {horizon}"
 }

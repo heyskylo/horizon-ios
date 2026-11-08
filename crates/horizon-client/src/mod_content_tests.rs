@@ -2332,6 +2332,56 @@ fn exploration_maps_skip_the_starts_a_chunk_saved_as_referenced() {
     );
 }
 
+/// A skip check reads each saved chunk's record once: the session keeps every
+/// answer (as vanilla's `StructureCheck` does), so a second map searching past
+/// the same chunks asks the save nothing it asked before (#10255: a chest with
+/// exploration maps took a growing second per open reading them again).
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn a_saved_chunks_record_is_read_once_across_map_searches() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let assets = Assets::load(&base).unwrap();
+    let biomes = crate::biome::Biomes::load(&base).unwrap();
+    let terrain = crate::vanillagen::VanillaTerrain::new(
+        &base.join("worldgen"),
+        assets.registry,
+        &biomes,
+        1234,
+    )
+    .unwrap();
+    let names = ["minecraft:buried_treasure".to_owned()];
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let reads = std::sync::Arc::new(AtomicUsize::new(0));
+    let asked: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<(String, i32, i32)>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Default::default()));
+    let (reads_of, asked_of) = (reads.clone(), asked.clone());
+    terrain.set_saved_references(std::sync::Arc::new(move |n, x, z| {
+        reads_of.fetch_add(1, Ordering::Relaxed);
+        asked_of.lock().unwrap().insert((n.to_owned(), x, z));
+        0
+    }));
+    terrain
+        .locate_for_map(&names, [0, 64, 0], 50, true)
+        .unwrap();
+    // The same search again, now skipping the start the first pointed at:
+    // it passes every chunk the first search read and may reach new ones,
+    // but no chunk's record is read a second time.
+    terrain
+        .locate_for_map(&names, [0, 64, 0], 50, true)
+        .unwrap();
+    assert!(
+        reads.load(Ordering::Relaxed) > 0,
+        "the searches asked the save at all"
+    );
+    assert_eq!(
+        reads.load(Ordering::Relaxed),
+        asked.lock().unwrap().len(),
+        "no saved chunk's record is read twice"
+    );
+}
+
 /// `ChunkGenerator.findNearestMapStructure` with `createReference`: an
 /// exploration map that skips known structures points at a start no map
 /// pointed at before, and a reopened world remembers which.
@@ -3991,6 +4041,72 @@ fn biome_modifiers_place_mod_features_in_vanilla_biomes() {
     };
     assert_eq!(names(6, &ids), ["minecraft:ore_coal", "zinc:ore_zinc"]);
     assert_eq!(names(1, &ids), ["minecraft:lake"]);
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+/// A world's data pack that replaces a vanilla biome (Terralith's plains)
+/// keeps the mods' modifier features, and a pack's own biome its tag puts
+/// under the modifier's selector gets them: NeoForge applies modifiers after
+/// every pack. A biome no pack touches stays as the content root has it.
+#[test]
+fn biome_modifiers_apply_over_world_packs() {
+    let base = biome_base("biome-modifiers-packs");
+    let scratch = base.parent().unwrap().to_owned();
+    let m = zinc_mod(
+        &scratch.join("zinc"),
+        &[(
+            "add_zinc",
+            r##"{"type":"neoforge:add_features","biomes":"#minecraft:is_overworld",
+                "features":"zinc:ore_zinc","step":"underground_ores"}"##,
+        )],
+    );
+    let out = scratch.join("out");
+    build(&base, &[m], &out).unwrap();
+    let mut packs = horizon_world::worldgen::overrides::WorldgenOverrides::default();
+    let pack_plains =
+        r#"{"temperature":0.5,"features":[[],[],[],[],[],[],["minecraft:ore_coal"]]}"#;
+    packs.set("biomes", "minecraft:plains", pack_plains.to_owned());
+    packs.set("biomes", "terra:alpine", r#"{"features":[]}"#.to_owned());
+    packs.add_tag(
+        "biome_tags",
+        "minecraft:is_overworld",
+        "file/terra",
+        r#"{"values":["terra:alpine"]}"#.to_owned(),
+    );
+    let after = biome_modifiers_over_packs(&out, &packs)
+        .unwrap()
+        .unwrap_or(packs);
+    let features = |id: &str| -> serde_json::Value {
+        let text = after.entries("biomes").find(|(i, _)| *i == id).unwrap().1;
+        serde_json::from_str::<serde_json::Value>(text).unwrap()["features"].clone()
+    };
+    assert_eq!(
+        features("minecraft:plains"),
+        serde_json::json!([
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            ["minecraft:ore_coal", "zinc:ore_zinc"]
+        ])
+    );
+    assert_eq!(
+        features("terra:alpine"),
+        serde_json::json!([[], [], [], [], [], [], ["zinc:ore_zinc"]])
+    );
+    // The pack's own values stay.
+    let plains = after
+        .entries("biomes")
+        .find(|(i, _)| *i == "minecraft:plains");
+    let plains: serde_json::Value = serde_json::from_str(plains.unwrap().1).unwrap();
+    assert_eq!(plains["temperature"], serde_json::json!(0.5));
+    assert!(
+        after
+            .entries("biomes")
+            .all(|(id, _)| id != "minecraft:desert")
+    );
     let _ = fs::remove_dir_all(&scratch);
 }
 

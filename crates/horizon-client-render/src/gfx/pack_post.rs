@@ -2881,10 +2881,12 @@ impl PackPost {
             cull: false,
         });
         let hides_clouds = post.clouds_off || post.clouds.is_some() && cloud_geometry.is_some();
+        // Rain and snow test depth but never write it: Iris 1.11.7 left none of either in
+        // `depthtex0`, whatever `rain.depth` said (probe packs of ours, #10492).
         let weather_geometry = world.weather.then(|| Geometry {
             buffers: &entity_buffers,
             table: None,
-            depth_write: post.rain_depth,
+            depth_write: false,
             atlas: None,
             material_maps: false,
             ids: None,
