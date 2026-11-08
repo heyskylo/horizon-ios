@@ -46,7 +46,7 @@ fn run(perf: &mut ClientPerf, from: u32, to: u32, per_s: u32, hitch: f32) {
     for i in 0..(to - from) * per_s {
         let t = f64::from(from) + f64::from(i) / f64::from(per_s);
         let wall = if i % per_s == 0 { hitch } else { 16.0 };
-        let detail = (wall > SLOW_FRAME_MS).then(|| SlowDetail {
+        let detail = (wall > SLOW_FRAME_MS).then(|| TickDetail {
             cpu_ms: Some(wall - 30.0),
             spans: vec![Span {
                 name: "terrain",

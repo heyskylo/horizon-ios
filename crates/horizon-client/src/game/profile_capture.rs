@@ -5,7 +5,7 @@ use horizon_client::client_perf::{
     self, ClientPerf,
     request::{self, Failed, Marked, ProfileSide, Request, StartOptions, Started, Status, Stopped},
 };
-use horizon_client::server_perf::{self, SlowDetail, WorldCounts};
+use horizon_client::server_perf::{self, TickDetail, WorldCounts};
 use horizon_client::spans::{self, Span};
 use horizon_client::text::{ClickEvent, Style, Text};
 use horizon_perf_format::{
@@ -172,7 +172,7 @@ impl Game<'_> {
         frame_spans: &[Span],
     ) {
         let slow = wall_ms > self.options.spikes.unwrap_or(client_perf::SLOW_FRAME_MS);
-        let detail = slow.then(|| SlowDetail {
+        let detail = slow.then(|| TickDetail {
             cpu_ms: Some(cpu_ms),
             spans: spans::merge(frame_spans),
         });

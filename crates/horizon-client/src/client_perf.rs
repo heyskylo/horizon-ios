@@ -1,7 +1,8 @@
 //! The client's .hzperf captures (docs/perf-platform.md §4.1): the window's frames feed the always-on health history, and a capture writes it with the samples of the render thread.
+use crate::server_perf::traffic::Wire;
 use crate::server_perf::{
-    self, CaptureOptions, CaptureStatus, MAX_WINDOW_S, Role, SamplerOptions, Saved, ServerPerf,
-    SlowDetail, WorldCounts,
+    self, CaptureEnd, CaptureOptions, CaptureStatus, MAX_WINDOW_S, Role, SamplerOptions, Saved,
+    ServerPerf, TickDetail, WorldCounts,
 };
 use horizon_perf_format::v1::{Machine, Start, StopReason, Trigger};
 use request::{StartOptions, Threads};
@@ -66,7 +67,7 @@ impl ClientPerf {
         wall_ms: f32,
         cpu_ms: f32,
         gpu_ms: Option<f32>,
-        detail: Option<SlowDetail>,
+        detail: Option<TickDetail>,
         world: impl FnOnce() -> WorldCounts,
     ) {
         self.cpu_ms.push(cpu_ms);
@@ -75,7 +76,7 @@ impl ClientPerf {
             self.perf
                 .set_frame_medians(median(&mut self.cpu_ms), median(&mut self.gpu_ms));
         }
-        self.perf.tick(t, wall_ms, detail, world);
+        self.perf.tick(t, wall_ms, detail, world, Wire::new);
         if let Some((end, reason)) = self.window
             && t >= end
         {
@@ -105,6 +106,8 @@ impl ClientPerf {
                 all_threads: options.threads == Threads::All,
             },
             block_names,
+            levels: Vec::new(),
+            wire: Wire::new(),
         };
         let path = self.perf.start_capture(t, dir, capture)?;
         self.window = Some(match options.seconds {
@@ -117,7 +120,7 @@ impl ClientPerf {
     /// Ends the running capture; its file is finished off this thread and comes back from [`ClientPerf::take_saved`].
     pub fn stop(&mut self, t: f64, reason: StopReason) -> bool {
         self.window = None;
-        self.perf.begin_stop(t, reason)
+        self.perf.begin_stop(t, reason, CaptureEnd::default())
     }
 
     /// Whether a stopped capture's file is still being finished or waits to be taken.

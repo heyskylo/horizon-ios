@@ -38,6 +38,8 @@ pub struct Role {
     pub kind: Kind,
     pub unit: Unit,
     pub thread: &'static str,
+    /// The thread whose units the span recorder sums.
+    pub span_thread: &'static str,
     /// Whether the process and machine probes run off the thread that feeds `tick`.
     pub background_probe: bool,
 }
@@ -48,6 +50,7 @@ impl Role {
         kind: Kind::Dedicated,
         unit: Unit::Tick,
         thread: "tick",
+        span_thread: "Server thread",
         background_probe: false,
     };
     pub const CLIENT: Role = Role {
@@ -55,12 +58,10 @@ impl Role {
         kind: Kind::Client,
         unit: Unit::Frame,
         thread: "render",
+        span_thread: "Render thread",
         background_probe: true,
     };
 }
-
-/// The thread whose ticks the span recorder sums: vanilla's name for it.
-const SERVER_THREAD: &str = "Server thread";
 
 /// What a tick spent its time on, gathered by the tick loop only when the tick was slow or a capture runs.
 pub struct TickDetail {
@@ -324,7 +325,7 @@ impl ServerPerf {
             counters: CounterReporter::new(self.role.side),
             sampling,
             block_names: options.block_names,
-            spans: SpanRecorder::new(SERVER_THREAD),
+            spans: SpanRecorder::new(self.role.span_thread, self.role.side, self.role.unit),
             traffic: TrafficRecorder::new(options.wire),
         };
         let mut start = options.start;
@@ -501,8 +502,10 @@ impl Session {
         let overhead = overhead(&self.spans, &end);
         self.traffic.sample(rel, &end.wire);
         let (last_block, summary) = std::mem::take(&mut self.spans).finish(&mut self.strings);
-        let traffic = std::mem::take(&mut self.traffic).finish(rel);
-        let workers = world::workers(&end.jobs, rel, &mut self.strings);
+        let mut traffic = std::mem::take(&mut self.traffic).finish(rel);
+        traffic.side = self.side as i32;
+        let mut workers = world::workers(&end.jobs, rel, &mut self.strings);
+        workers.side = self.side as i32;
         let mut world = world::snapshot(
             "stop",
             rel,
