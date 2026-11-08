@@ -6376,7 +6376,8 @@ ISOLATED_BOAT_TREE = frozenset({'boat passenger tree'})
 ISOLATED_SEED_SYNC = frozenset({'seed sync proof'})
 ISOLATED_EFFECTIVE_PRESENCE = frozenset({'effective component presence'})
 ISOLATED_BOAT_TREE = frozenset({'boat passenger tree'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK | ISOLATED_SEED_SYNC | ISOLATED_EFFECTIVE_PRESENCE | ISOLATED_BOAT_TREE
+ISOLATED_GUEST_CLOSE = frozenset({'guest container close event'})
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK | ISOLATED_SEED_SYNC | ISOLATED_EFFECTIVE_PRESENCE | ISOLATED_BOAT_TREE | ISOLATED_GUEST_CLOSE
 
 
 def groups():
@@ -6413,6 +6414,10 @@ def groups():
     except ImportError:
         from trader_llama_delay_corpus import llama_delay
     try:
+        from .guest_close_event_corpus import cases as guest_close_events
+    except ImportError:
+        from guest_close_event_corpus import cases as guest_close_events
+    try:
         from .transmute_patch_corpus import cases as transmute_patches
     except ImportError:
         from transmute_patch_corpus import cases as transmute_patches
@@ -6444,6 +6449,7 @@ def groups():
         from .gateway_passenger_corpus import gateway_passengers
         from .gateway_item_motion_corpus import gateway_item_motion
         from .item_merge_corpus import stack_limit_merges
+        from .conduit_table_entity_corpus import conduit_table_entities
     except ImportError:
         from frame_map_corpus import frame_maps, treasure_map_copies
         from allay_damage_corpus import allay_player_damage
@@ -6456,8 +6462,10 @@ def groups():
         from gateway_passenger_corpus import gateway_passengers
         from gateway_item_motion_corpus import gateway_item_motion
         from item_merge_corpus import stack_limit_merges
+        from conduit_table_entity_corpus import conduit_table_entities
     result = [
         ('setup', group_setup()),
+        ('guest container close event', guest_close_events()),
         ('spectral saved duration', spectral_saved_duration(cmd, setup)),
         ('item Health short load', item_health_load(cmd, setup)),
         ('vehicle container saved fields', vehicle_containers(cmd)),
@@ -6502,6 +6510,7 @@ def groups():
 
 
         ('decorated pot data', decorated_pot_data()),
+        ('conduit and enchanting table block entities', conduit_table_entities(cmd, setup)),
         ('modern data literal values', storage_literals(cmd)),
         ('comparator output data', comparator_output_data()),
         ('hopper empty slot limits', hopper_empty_slot_limits()),

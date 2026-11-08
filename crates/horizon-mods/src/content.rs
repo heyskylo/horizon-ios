@@ -144,20 +144,25 @@ impl RandomTicks {
     }
 }
 
-/// Boxes selected by one property (legacy) or an ordered tuple of properties.
+/// Values selected by one property or an ordered tuple of state properties.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct BlockShapes {
+pub struct StateValues<T> {
     #[serde(default)]
     pub property: String,
     #[serde(default)]
     pub properties: Vec<String>,
     #[serde(default)]
-    pub values: BTreeMap<String, Vec<[f64; 6]>>,
-    pub default: Option<Vec<[f64; 6]>>,
+    pub values: BTreeMap<String, T>,
+    pub default: Option<T>,
 }
 
-impl BlockShapes {
+/// Block-local boxes selected by state.
+pub type BlockShapes = StateValues<Vec<[f64; 6]>>;
+/// Light emitted by a state, as an integer from 0 to 15.
+pub type StateLight = StateValues<u8>;
+
+impl<T> StateValues<T> {
     pub fn property_names(&self) -> Vec<&str> {
         if self.property.is_empty() {
             self.properties.iter().map(String::as_str).collect()
@@ -166,7 +171,7 @@ impl BlockShapes {
         }
     }
 
-    fn check(&self) -> Result<(), String> {
+    fn check_selection(&self, label: &str) -> Result<(), String> {
         let names = self.property_names();
         if (!self.property.is_empty() && !self.properties.is_empty())
             || names.iter().any(|name| !state_name(name))
@@ -174,14 +179,25 @@ impl BlockShapes {
             || (names.is_empty() && !self.values.is_empty())
             || (self.values.is_empty() && self.default.is_none())
         {
-            return Err("shapes needs distinct properties and values, or a default".into());
+            return Err(format!(
+                "{label} needs distinct properties and values, or a default"
+            ));
         }
         for key in self.values.keys() {
             let values: Vec<_> = key.split(',').collect();
             if values.len() != names.len() || values.iter().any(|value| !state_name(value)) {
-                return Err(format!("invalid shape key {key:?}: one value per property"));
+                return Err(format!(
+                    "invalid {label} key {key:?}: one value per property"
+                ));
             }
         }
+        Ok(())
+    }
+}
+
+impl BlockShapes {
+    fn check(&self) -> Result<(), String> {
+        self.check_selection("shapes")?;
         for boxes in self.values.values().chain(self.default.iter()) {
             if boxes.len() > 16
                 || boxes.iter().any(|bounds| {
@@ -191,6 +207,21 @@ impl BlockShapes {
             {
                 return Err("shape needs at most 16 finite boxes with ordered bounds".into());
             }
+        }
+        Ok(())
+    }
+}
+
+impl StateLight {
+    fn check(&self) -> Result<(), String> {
+        self.check_selection("state_light")?;
+        if self
+            .values
+            .values()
+            .chain(self.default.iter())
+            .any(|value| *value > 15)
+        {
+            return Err("state_light values are integers 0 to 15".into());
         }
         Ok(())
     }
@@ -261,6 +292,7 @@ struct BlockFile {
     #[serde(default)]
     collision_context_shapes: BTreeMap<ShapeEntityKind, BlockShapes>,
     interaction_shapes: Option<BlockShapes>,
+    state_light: Option<StateLight>,
     #[serde(default)]
     state_properties: BTreeMap<String, StateProperty>,
     #[serde(default)]
@@ -300,6 +332,8 @@ pub struct Block {
     pub collision_context_shapes: BTreeMap<ShapeEntityKind, BlockShapes>,
     /// Ray-face override; does not replace the outline hit point or create a hit.
     pub interaction_shapes: Option<BlockShapes>,
+    /// Per-state emission; takes precedence over `properties.light`.
+    pub state_light: Option<StateLight>,
     /// State properties of its own, which its template does not have.
     pub state_properties: BTreeMap<String, StateProperty>,
     /// State properties overlaid on the template default.
@@ -887,6 +921,7 @@ impl Content {
                 outline_context_shapes: file.outline_context_shapes,
                 collision_context_shapes: file.collision_context_shapes,
                 interaction_shapes: file.interaction_shapes,
+                state_light: file.state_light,
                 state_properties: file.state_properties,
                 default_state: file.default_state,
                 item: file.item,
@@ -1169,6 +1204,9 @@ fn check_block(file: &Block) -> Result<(), String> {
         .chain(file.interaction_shapes.iter())
     {
         shapes.check()?;
+    }
+    if let Some(light) = &file.state_light {
+        light.check()?;
     }
     for (name, property) in &file.state_properties {
         if !state_name(name) {
@@ -1465,6 +1503,55 @@ capabilities = ["registries"]
     }
 
     #[test]
+    fn state_light_checks_ranges_selectors_and_native_declarations() {
+        let load = |name: &str, table: &str| {
+            let declaration = format!(
+                r#"{{"template":"minecraft:stone","properties":{{"light":3}},"state_light":{table}}}"#
+            );
+            hmod(
+                name,
+                MANIFEST_TEXT,
+                &[("data/ruby/horizon/block/lamp.json", declaration.as_bytes())],
+            )
+        };
+        let content = load(
+            "state-light-valid",
+            r#"{"properties":["facing","lit"],"values":{"north,true":15},"default":0}"#,
+        )
+        .unwrap();
+        assert_eq!(content.blocks[0].properties.light, Some(3));
+        let table = content.blocks[0].state_light.as_ref().unwrap();
+        assert_eq!(table.default, Some(0));
+        assert_eq!(table.values["north,true"], 15);
+        for (i, table) in [
+            r#"{"default":-1}"#,
+            r#"{"default":16}"#,
+            r#"{"default":256}"#,
+            r#"{"default":2.5}"#,
+            r#"{"default":true}"#,
+            r#"{"default":"15"}"#,
+            r#"{"properties":["axis","axis"],"default":0}"#,
+            r#"{"property":"axis","properties":["axis"],"default":0}"#,
+            r#"{"properties":["axis","lit"],"values":{"x":15},"default":0}"#,
+            r#"{"values":{"x":15},"default":0}"#,
+            r#"{}"#,
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(
+                load(&format!("state-light-invalid-{i}"), table).is_err(),
+                "{table}"
+            );
+        }
+        let mut declared = Content::declared("ruby");
+        let mut lamp = content.blocks[0].clone();
+        lamp.state_light.as_mut().unwrap().default = Some(16);
+        assert!(declared.declare(&[lamp], &[]).is_err());
+        assert!(declared.blocks.is_empty());
+    }
+
+    #[test]
     fn place_block_checks_files_and_native_declarations() {
         for (i, target) in ["ruby:frame", "minecraft:stone"].iter().enumerate() {
             let text = format!(r#"{{"template":"minecraft:stick","place_block":"{target}"}}"#);
@@ -1607,6 +1694,7 @@ capabilities = ["registries"]
                 outline_context_shapes: BTreeMap::new(),
                 collision_context_shapes: BTreeMap::new(),
                 interaction_shapes: None,
+                state_light: None,
                 state_properties: BTreeMap::new(),
                 default_state: BTreeMap::new(),
                 properties: BlockProperties {
