@@ -469,6 +469,10 @@ struct Launcher {
     pack_busy: bool,
     pack_log: VecDeque<String>,
     pack_error: Option<String>,
+    /// Other launchers' modpacks on this computer, offered above the imported ones, and whether
+    /// the scan for them runs now.
+    found_packs: Vec<horizon_launcher::other_launchers::Found>,
+    found_scanning: bool,
     /// The game starting now plays this pack's profile (its work folder).
     starting_pack: Option<std::path::PathBuf>,
     /// The Mods page: the browser's search, installs and updates (`mods_page.rs`).
@@ -736,6 +740,8 @@ impl Launcher {
             pack_busy: false,
             pack_log: VecDeque::new(),
             pack_error: None,
+            found_packs: Vec::new(),
+            found_scanning: false,
             starting_pack: None,
             mods: mods_page::Mods::new(cx),
             github: github_mods_page::Github::new(cx),
@@ -1437,6 +1443,10 @@ impl Launcher {
                     }
                 }
                 Msg::PackDone(result) => self.pack_done(result),
+                Msg::FoundPacks(found) => {
+                    self.found_scanning = false;
+                    self.found_packs = found;
+                }
                 // Old versions log their session; it never reaches the window.
                 Msg::Line(_, line) if line.contains("Session ID is") => {}
                 Msg::Line(job, line) => {

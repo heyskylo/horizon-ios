@@ -51,6 +51,8 @@ fn state(id: u32, kind: &str, position: [f64; 3], yaw: f32, on_ground: bool) -> 
         vertical_collision: false,
         horizontal_collision: false,
         needs_sync: false,
+        sync_position: false,
+        stepped: false,
         idle: false,
         bare: false,
         leash: None,
