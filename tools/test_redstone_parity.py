@@ -5,7 +5,8 @@ A small floor carries randomly placed redstone components (wire, repeaters,
 comparators, torches, observers, pistons, lamps, rails, plates, buttons...). A power
 source is placed and later removed through `Level.setBlock` and the scheduled-tick
 queue is run for N game ticks; the block changes and pending ticks after every
-tick (and the RNG fingerprint at the end) must match.
+tick (and the RNG fingerprint at the end) must match. Deterministic border cases
+also execute piston extension/retraction events and compare the changed blocks.
 """
 import random
 try:
@@ -40,7 +41,38 @@ def build(facts, rng):
     return cells
 
 
+def border_cases(facts):
+    def state(name, **props):
+        return next(i for i in facts.by_block['minecraft:' + name]
+                    if all(facts.states[i][4]['properties'].get(k) == str(v) for k, v in props.items()))
+    stone = facts.defaults['minecraft:stone']
+    power = facts.defaults['minecraft:redstone_block']
+    air = facts.defaults['minecraft:air']
+    for dx, dz, facing, direction in [(1, 0, 'east', 5), (-1, 0, 'west', 4),
+                                       (0, 1, 'south', 3), (0, -1, 'north', 2)]:
+        for size in (2, 2.5, 4, 4.5, 8):
+            for sticky in (False, True):
+                for retract in (False, True):
+                    piston = state('sticky_piston' if sticky else 'piston', facing=facing,
+                                   extended='true' if retract else 'false')
+                    cells = [[0, 64, 0, piston]]
+                    if retract:
+                        cells.extend([[dx, 64, dz, state('piston_head', facing=facing,
+                                      type='sticky' if sticky else 'normal', short='false')],
+                                      [dx * 2, 64, dz * 2, stone]])
+                    else:
+                        cells.extend([[0, 63, 0, power], [dx, 64, dz, stone]])
+                    yield dict(seed=1, mode='piston_event', pos=[0, 64, 0], cells=cells,
+                               border=[0, 0, size], event=1 if retract else 0, dir=direction)
+            # An air source outside the border must also refuse an extension.
+            yield dict(seed=1, mode='piston_event', pos=[0, 64, 0],
+                       cells=[[0, 64, 0, state('piston', facing=facing, extended='false')],
+                              [0, 63, 0, power], [dx, 64, dz, air]],
+                       border=[0, 0, size], event=0, dir=direction)
+
+
 def cases(facts, count, seed, only):
+    yield from border_cases(facts)
     rng = random.Random(seed)
     source = facts.defaults['minecraft:redstone_block']
     air = facts.defaults['minecraft:air']
