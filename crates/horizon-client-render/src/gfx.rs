@@ -11889,6 +11889,13 @@ impl Renderer {
                 timing.as_mut(),
             );
         }
+        // The layered frame's light eases into the peak, before the camera overlays draw on it.
+        if layered
+            && !frame.title
+            && let Some(hdr) = &self.hdr
+        {
+            hdr.tonemap(encoder, timing.as_mut());
+        }
         if !frame.screen.is_empty() {
             let attachments = [Some(wgpu::RenderPassColorAttachment {
                 view: view_target,
