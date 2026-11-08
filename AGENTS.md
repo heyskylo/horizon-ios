@@ -25,8 +25,10 @@ Feature → files → harness for the most-changed areas: [docs/architecture.md]
   first line `> 🤖 Opened by Ludovic's AI agent (Claude), not by Ludovic himself.`, commits
   `Co-Authored-By: Claude <model> <noreply@anthropic.com>`, last line
   `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
-- **Layers** ([docs/layers.md](docs/layers.md)): engine < platform < Horizon; a crate depends only on its own layer or a
-  lower one (`tools/check_layers.py`, crate layers in `tools/layers.json`). New Horizon code goes behind `horizon-extras`.
+- **Layers** ([docs/layers.md](docs/layers.md)): engine uses engine; platform uses engine and platform; Horizon (its extras,
+  cosmetics, shop, telemetry, launcher) uses platform and Horizon only, never the engine: it moves to its own repository
+  later. `tools/check_layers.py` checks it. New Horizon code goes behind `horizon-extras`; built-in addresses go in
+  `horizon-addresses`.
 - Everything players run is Rust. Python/Java only for dev tools and harness drivers in `tools/`.
 - Horizon-only features follow [docs/design-system.md](docs/design-system.md) and are off by default where
   they would change the vanilla look.
