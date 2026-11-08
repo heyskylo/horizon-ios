@@ -477,9 +477,10 @@ impl Game<'_> {
         self.sculk_sync_writes();
     }
 
-    /// `LevelChunk.setBlockState`: register a command-placed sculk block
-    /// before `BlockInput.place` loads its tag into the new block entity.
+    /// `LevelChunk.setBlockState`: finish sculk placement before a command
+    /// or `BlockItem.updateCustomBlockEntityTag` loads saved entity fields.
     pub(super) fn sculk_place_entity(&mut self, state: BlockStateId) -> bool {
+        self.sculk_prepare();
         if self.kind_of_state(state.0) == 0 {
             return false;
         }

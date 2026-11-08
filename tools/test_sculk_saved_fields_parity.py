@@ -23,6 +23,33 @@ def read(sculk):
             for pos, _, field, value in sculk]
 
 
+def item_placement():
+    """BlockItem loads saved data after the block's placement initialization."""
+    pos = '2 230 11'
+    operations = setup('/gamemode creative', '/tp @s 4.5 230 11.5',
+                       '/setblock 2 229 11 stone')
+    cases = [
+        ('sculk_sensor', 'last_vibration_frequency', 6),
+        ('calibrated_sculk_sensor', 'last_vibration_frequency', 11),
+        ('sculk_shrieker', 'warning_level', 2),
+        ('sculk_sensor', 'last_vibration_frequency', 0),
+    ]
+    for block, field, value in cases:
+        item = block
+        if value:
+            item += f'[block_entity_data={{id:"minecraft:{block}",{field}:{value}}}]'
+        operations += setup(f'/setblock {pos} air',
+                            f'/item replace entity @s weapon.mainhand with {item}')
+        operations.append({'op': 'use_block', 'pos': [2, 229, 11], 'face': 1})
+        operations.append(cmd(f'/execute if block {pos} {block}', expect_result=1))
+        operations.append(cmd(f'/data get block {pos} {field}', expect_result=value))
+        operations.append({'op': 'tick', 'n': 1})
+        operations.append(cmd(f'/data get block {pos} {field}', expect_result=value))
+    operations += setup(f'/setblock {pos} air',
+                        '/item replace entity @s weapon.mainhand with air')
+    return operations
+
+
 def groups():
     sculk = blocks(4, 230, 4)
     ticking = [
@@ -79,7 +106,8 @@ def groups():
         *read(distant),
     ]
     return [('setup', group_setup()), ('sculk ticking', ticking),
-            ('sculk replacements', replacements), ('sculk chunk reload', reload_chunk)]
+            ('sculk replacements', replacements), ('sculk item placement', item_placement()),
+            ('sculk chunk reload', reload_chunk)]
 
 
 if __name__ == '__main__':
