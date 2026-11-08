@@ -191,6 +191,71 @@ impl Session {
         Ok(reply)
     }
 
+    /// `hunt ID`: walk up to a mob and hit it until it is gone, at most `timeout` seconds.
+    fn hunt(&mut self, id: i64, timeout: f64) -> Result<Value, Failure> {
+        let deadline = Instant::now() + Duration::from_secs_f64(timeout.max(0.0));
+        let before = self.game("inventory")?;
+        let (mut hits, mut seen) = (0, Value::Null);
+        loop {
+            let near = self.game("entities 48")?;
+            let Some(mob) = find_entity(&near, id) else {
+                break;
+            };
+            if mob["health"].as_f64().is_some_and(|h| h <= 0.0) {
+                // Dying: it vanishes after its death animation.
+                seen = mob;
+                break;
+            }
+            if Instant::now() > deadline {
+                return Err(Failure {
+                    reply: json!({
+                        "error": format!("entity {id} still alive after {timeout} s"),
+                        "kind": "timeout",
+                        "hits": hits,
+                        "entity": mob,
+                    }),
+                    status: GAME_ERROR,
+                });
+            }
+            seen = mob.clone();
+            let pos = &mob["pos"];
+            if mob["distance"].as_f64().unwrap_or(f64::MAX) > 2.5 {
+                // A path may not exist (water, a fence); try again from wherever this ends.
+                let _ = self.game(&format!(
+                    "goto {} {} {} --near 1.5 --sprint --timeout 3",
+                    pos[0], pos[1], pos[2]
+                ));
+                continue;
+            }
+            if self.game(&format!("attack {id}")).is_ok() {
+                hits += 1;
+                // Let the weapon recharge (a sword needs about 12 ticks).
+                self.game("wait 12")?;
+            } else {
+                let _ = self.game(&format!(
+                    "goto {} {} {} --near 0.8 --timeout 2",
+                    pos[0], pos[1], pos[2]
+                ));
+            }
+        }
+        // Walk over the drops so they are picked up.
+        if let Some(pos) = seen["pos"].as_array() {
+            let _ = self.game(&format!(
+                "goto {} {} {} --near 0.5 --timeout 4",
+                pos[0], pos[1], pos[2]
+            ));
+            self.game("wait 10")?;
+        }
+        let after = self.game("inventory")?;
+        Ok(json!({
+            "ok": true,
+            "gone": true,
+            "hits": hits,
+            "last_seen": seen,
+            "inventory_change": count_change(&before["counts"], &after["counts"]),
+        }))
+    }
+
     /// Run one command (CLI words); Ok(reply) or a failure.
     pub fn run(&mut self, words: &[String]) -> Result<Value, Failure> {
         let Some(name) = words.first().map(String::as_str) else {
@@ -255,6 +320,19 @@ impl Session {
                 screen["ok"] = json!(true);
                 screen["inventory_change"] = count_change(&before["counts"], &after["counts"]);
                 Ok(screen)
+            }
+            "hunt" => {
+                let (id, timeout) = match words {
+                    [_, id] => (id.parse::<i64>().ok(), Some(30.0)),
+                    [_, id, flag, s] if flag == "--timeout" => {
+                        (id.parse::<i64>().ok(), s.parse::<f64>().ok())
+                    }
+                    _ => (None, None),
+                };
+                let (Some(id), Some(timeout)) = (id, timeout) else {
+                    return Err(Failure::usage(format!("usage: {}", usage(name))));
+                };
+                self.hunt(id, timeout)
             }
             "hold" => {
                 let (key, seconds) = match words {
@@ -339,6 +417,11 @@ fn aimed_at(look: &Value, id: i64) -> Result<(), String> {
             "entity {id} is not under the crosshair: it is out of reach or moved; walk closer"
         )
     })
+}
+
+/// The entity `id` in an `entities` reply.
+fn find_entity(reply: &Value, id: i64) -> Option<Value> {
+    reply["entities"].as_array()?.iter().find(|e| e["id"].as_i64() == Some(id)).cloned()
 }
 
 /// Item counts that changed from `before` to `after` (`inventory` replies' `counts`).
@@ -694,6 +777,14 @@ mod tests {
         assert!(log.contains("minecraft:oak_log at [1,2,3] is in the way"), "{log}");
         let nothing = aimed_at(&json!({ "target": null }), 91).unwrap_err();
         assert!(nothing.contains("walk closer"), "{nothing}");
+    }
+
+    #[test]
+    fn find_entity_picks_the_id_out_of_an_entities_reply() {
+        let near = json!({ "entities": [{ "id": 3 }, { "id": 90, "type": "minecraft:chicken" }] });
+        assert_eq!(find_entity(&near, 90).unwrap()["type"], "minecraft:chicken");
+        assert!(find_entity(&near, 7).is_none());
+        assert!(find_entity(&json!({}), 90).is_none());
     }
 
     #[test]

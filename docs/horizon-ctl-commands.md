@@ -69,6 +69,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | `attack [ID]` | `attack` | Swing at what the crosshair targets (after facing entity ID) | `id` (integer): entity id to face first |
 | `select SLOT\|ITEM` | `select` | Select a hotbar slot 1-9, or the hotbar slot holding ITEM | `slot` (string, required): 1-9 or an item id |
 | `drop [all]` | `drop` | Drop one of the held item, or the whole stack | `all` (boolean): drop the whole stack |
+| `hunt ID [--timeout S]` | `hunt` | Walk up to a mob and hit it until it is gone, then pick up its drops | `id` (integer, required): entity id from entities<br>`--timeout` (number): give up after this many seconds (default 30) |
 | `hold KEY SECONDS` | CLI only | Press a key, wait, release it | `key` (string, required): key name<br>`seconds` (number, required): how long |
 | `key KEY down\|up\|tap\|repeat` | `key` | Press, release or auto-repeat a key (w a s d space shift ctrl e q esc f3 1-9 arrows ...) | `key` (string, required): key name<br>`action` (down, up, tap, repeat, required): what to do |
 | `mouse left\|right\|middle down\|up\|click` | `mouse` | Press or release a mouse button in the world | `button` (left, right, middle, required): button<br>`action` (down, up, click, required): what to do |
