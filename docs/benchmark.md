@@ -85,8 +85,10 @@ On Windows, run `python tools\perf_bench.py ...` the same way. Horizon's control
 hitches, a fast flight (64 blocks a second over new terrain), eight long teleports, trips to the Nether and back, and
 the inventory and pause menu opened and closed twenty times. For each it reports the median, p99 and p99.9 frame
 times, the slowest frame, the 1% and 0.1% lows and the frames over 33 ms. The game runs with `HORIZON_SPIKES`, so
-every slow frame also logs its timed spans (wall and thread CPU time): the report keeps the slowest ones next to the
-figures, which says whether a hitch was work (a span's CPU time) or waiting (the GPU, a lock, a file).
+its slow ring keeps every slow frame's timed spans (wall and thread CPU time), and a client capture (`profile client start`) records each scenario: the report keeps the 12
+slowest frames' spans, read with `horizon-perf query ticks`, next to the figures, which says whether a hitch was work (a
+span's CPU time) or waiting (the GPU, a lock, a file). Build `horizon-perf` beside the game first
+(`cargo build --profile fast -p horizon-perf`, or pass `--perf`). The ring holds 256 frames, and the threshold (`--spike-ms`, 20 by default) is on the frame's wall time.
 `Renderer`'s frame and `entity_geometry` time their steps as spans too (`spans::laps`).
 
 ```sh

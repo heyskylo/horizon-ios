@@ -33,7 +33,7 @@ thread_local! {
     static COSTS: RefCell<[FxHashMap<(&'static str, usize), Cost>; 2]> = RefCell::default();
 }
 
-/// Who wants the tick's spans recorded besides nobody: `HORIZON_SPIKES` (the slow-tick log),
+/// Who wants the tick's spans recorded besides nobody: `HORIZON_SPIKES` (the slow ring's steps),
 /// a report's recording, a mod (`native_spans`).
 pub(super) const SPANS_SPIKES: u8 = 1;
 pub(super) const SPANS_REPORT: u8 = 2;

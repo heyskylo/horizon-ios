@@ -117,7 +117,7 @@ The memory cost is the headers (16 bytes a block, 32 or more for larger alignmen
 
 The game times its work in named spans (`crates/horizon-client-render/src/spans.rs`). Three tools read them:
 
-- `HORIZON_SPIKES=MS` logs the spans of every frame slower than MS milliseconds, with the render thread's CPU time in the frame.
+- `HORIZON_SPIKES=MS` times the spans on every thread and sets the slow ring's threshold: the last 256 frames (or server ticks) slower than MS milliseconds are kept with their largest spans and the render thread's CPU time in the frame. Nothing is logged; every capture carries the ring, and `horizon-perf query ticks --worst 10` or `query spans --slow` reads it.
 - `horizon-ctl trace FILE [SECONDS]` writes every span of every thread to FILE, a `.hzperf` capture, for the given time (or until `horizon-ctl trace stop`; the spans stop at 60 s); `HORIZON_TRACE=FILE` writes one once the first hardware probe has finished. The startup steps stay in `HORIZON_STARTUP_TRACE`.
 - `horizon-ctl stats [reset] [raw]`, `horizon-ctl bench SECONDS` and `horizon-ctl fly ... SECONDS [PITCH [raw]]` reply with the frame-time summary: frame, CPU and GPU time percentiles and the average of each phase of the frame. They carry no memory figures, except `alloc` in an `alloc-count` build.
 

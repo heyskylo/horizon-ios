@@ -35,7 +35,8 @@ pub fn attempt_counters(publish: bool) {
     }
     let counts = ATTEMPT_COUNTS.with(|c| c.replace([0; 2]));
     if publish {
-        crate::spans::counters(&[("sa_attempts", counts[0]), ("sa_spawns", counts[1])]);
+        horizon_perf_format::counter("natural_spawning.attempts", &[]).add(counts[0]);
+        horizon_perf_format::counter("natural_spawning.spawns", &[]).add(counts[1]);
     }
 }
 fn attempt_count(index: usize) {

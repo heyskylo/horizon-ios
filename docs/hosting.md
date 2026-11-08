@@ -387,9 +387,14 @@ thread's timed steps to `reports/profile-<time>Z.hzperf`, one row per thread. `h
 capture, or until they pass 256 MiB; the capture then says when they stopped. `HORIZON_TRACE=FILE` in the server's
 environment writes such a capture to FILE from the first tick. It holds step names and times only.
 
-Between reports, the log keeps the spikes: a tick slower than 250 ms writes a `Horizon: slow tick` line with
-its phases (`HORIZON_SPIKES=MS` in the engine's environment sets another threshold), and a server more than
-two seconds behind says `Can't keep up!` as vanilla's does, at most every 15 seconds.
+To profile your server from a game, join it as an operator of level 4 and run `horizon-ctl profile server start` (or `profile start`, which captures your game and the server in one file). Another operator level is refused and nothing is written. One server capture runs at a time. The server writes its copy to its own `reports/`, logs who started it and when, and sends the file to your game in the background, at most 256 KiB a second and after gameplay packets; the game says where it saved it. Open a capture with `horizon-perf` ([perf-platform.md](perf-platform.md)), which you build from this repository (`cargo build --release -p horizon-perf`).
+
+Between reports, the server keeps its last 256 slow ticks in memory, each with its eight largest steps. A tick
+counts as slow from 250 ms (`HORIZON_SPIKES=MS` in the engine's environment sets another threshold), and every
+capture carries the ring as it stood at its start and adds the slow ticks of its own window. The log no longer has a
+line for them: `horizon-perf query spans --slow` says which steps they spent their time in, and `query ticks --worst 5`
+lists the five worst with their step trees (the newest capture, or name a file last). A server more than two seconds behind still says `Can't keep up!` as
+vanilla's does, at most every 15 seconds.
 
 `config set` changes `server.toml` without opening it: `horizon-server config set world.difficulty=hard
 server.max_players=10`. Each key is a section and a name from the file (`properties.spawn-protection=0` for any

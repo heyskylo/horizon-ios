@@ -2355,7 +2355,6 @@ impl Hub {
     /// changed.
     pub fn drain_packets(&mut self, ctx: &mut TickCtx) -> Vec<HostEvent> {
         let mut events = Vec::new();
-        let timed = crate::spans::recording_here();
         for i in 0..self.guests.len() {
             if self.here(&self.guests[i]) {
                 let frozen = self.guests[i].handover.is_some();
@@ -2363,21 +2362,11 @@ impl Hub {
                     // Frozen for a hand-over: it answers the server and nothing more.
                     self.keep_acknowledgements(i, &mut events);
                 }
-                let started = timed.then(std::time::Instant::now);
-                let waiting = self.guests[i].inbox.len();
                 self.process_inbox(i, ctx, &mut events);
                 // Its moves are dropped, so whether the last one left it floating is
                 // stale: a player frozen in a jump is not kicked for flying.
                 if !frozen {
                     self.tick_floating(i, &mut events);
-                }
-                // A slow tick's line says whose packets took it (`spans::note`).
-                if let Some(started) = started {
-                    let g = &self.guests[i];
-                    crate::spans::note(started.elapsed().as_secs_f32() * 1000.0, || {
-                        let handled = waiting.saturating_sub(g.inbox.len());
-                        format!("{}'s {handled} packets", g.name)
-                    });
                 }
             } else if self.guests[i].held && self.watches(&self.guests[i]) {
                 // A held player only answers what the server asked of it: its

@@ -1,10 +1,4 @@
-//! Named timings within a frame, for finding what makes a frame slow:
-//! `HORIZON_SPIKES=MS` prints the spans of every frame whose CPU time
-//! exceeds MS milliseconds, and of every server tick (dedicated or
-//! integrated) longer than MS. Each span keeps its wall time and the
-//! thread's CPU time inside it, so a span that waited (for a lock, the GPU
-//! or a core on a busy machine) shows apart from one that worked. Costs two
-//! clock reads per span when enabled and a relaxed load otherwise.
+//! Named timings (wall and thread CPU) of a frame or tick, on with `HORIZON_SPIKES` or while a capture records; the slow ones go to the slow ring, never the log.
 use std::{
     cell::{Cell, RefCell},
     sync::atomic::{AtomicBool, Ordering},
@@ -18,19 +12,12 @@ thread_local! {
     static HERE: Cell<bool> = const { Cell::new(false) };
     /// How many timed spans the thread is inside: the next span's [`Span::depth`].
     static DEPTH: Cell<u8> = const { Cell::new(0) };
-    /// What this thread's slowest steps were busy with since it last took them ([`note`]).
-    static NOTES: RefCell<Vec<(f32, String)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// The most spans a thread holds before they are taken ([`take_raw`]): a worker thread
 /// that records spans (`lod_reduce`, `lt_*`) while they are on for every thread is never
 /// taken from, so it drops what it held instead of growing for as long as they stay on.
 const UNTAKEN_MAX: usize = 1 << 14;
-
-/// The shortest step a [`note`] keeps, in milliseconds.
-pub const NOTE_MS: f32 = 10.0;
-/// The notes a thread keeps between two [`take_notes`]: its slowest steps.
-const NOTES_KEPT: usize = 3;
 
 /// A named timing: wall milliseconds and the thread's CPU milliseconds in it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -60,8 +47,8 @@ pub fn record_here(on: bool) {
 pub fn recording_here() -> bool {
     ENABLED.load(Ordering::Relaxed) || HERE.with(Cell::get) || timeline::on()
 }
-/// The thread's CPU time when spans are on for every thread (`HORIZON_SPIKES`): only they
-/// print it.
+/// The thread's CPU time when spans are on for every thread (`HORIZON_SPIKES`): spans recorded
+/// by `record_here` alone keep wall time only.
 #[inline]
 fn cpu_if_enabled() -> Option<Duration> {
     if ENABLED.load(Ordering::Relaxed) {
@@ -134,52 +121,6 @@ fn push(span: Span) {
         }
         s.push(span);
     });
-}
-/// Attach per-tick counts without interpreting them as durations.
-pub fn counters(counts: &[(&str, u64)]) {
-    if !enabled() {
-        return;
-    }
-    NOTES.with(|n| {
-        n.borrow_mut().push((
-            0.0,
-            counts
-                .iter()
-                .map(|(name, count)| format!("{name}={count}"))
-                .collect::<Vec<_>>()
-                .join(", "),
-        ))
-    });
-}
-/// Notes that one step inside a span took `ms` milliseconds doing `what` (one player's
-/// packets, say), when this thread records spans and the step took at least [`NOTE_MS`]: a
-/// span says where a slow tick went, its notes whose doing it was. Only the slowest few are
-/// kept, and `what` is built only for a step that is.
-pub fn note(ms: f32, what: impl FnOnce() -> String) {
-    if ms < NOTE_MS || !recording_here() {
-        return;
-    }
-    NOTES.with(|n| {
-        let mut n = n.borrow_mut();
-        if n.len() >= NOTES_KEPT {
-            let Some((i, _)) = n
-                .iter()
-                .enumerate()
-                .filter(|(_, (kept, _))| *kept < ms)
-                .min_by(|a, b| a.1.0.total_cmp(&b.1.0))
-            else {
-                return;
-            };
-            n.swap_remove(i);
-        }
-        n.push((ms, what()));
-    });
-}
-/// This thread's notes ([`note`]), slowest first; clears them.
-pub fn take_notes() -> Vec<(f32, String)> {
-    let mut notes = NOTES.with(|n| std::mem::take(&mut *n.borrow_mut()));
-    notes.sort_by(|a, b| b.0.total_cmp(&a.0));
-    notes
 }
 /// Consecutive steps of one function timed as spans: each [`Laps::lap`] records the time since
 /// the previous one (or since [`laps`]) under its name. Nothing is read while spans are off.
@@ -294,23 +235,6 @@ pub fn merge(spans: &[Span]) -> Vec<Span> {
     sums.sort_by(|a, b| b.ms.total_cmp(&a.ms));
     sums
 }
-/// `name wall` for spans of at least 0.5 ms, with `/cpu` when the thread
-/// worked for less than nine tenths of it: the slow-frame and slow-tick lines.
-pub fn describe(spans: &[Span]) -> String {
-    let list: Vec<String> = spans
-        .iter()
-        .filter(|s| s.ms >= 0.5)
-        .map(|s| {
-            if s.cpu_ms < s.ms * 0.9 {
-                format!("{} {:.1}/{:.1}", s.name, s.ms, s.cpu_ms)
-            } else {
-                format!("{} {:.1}", s.name, s.ms)
-            }
-        })
-        .collect();
-    list.join(", ")
-}
-
 /// The run's timeline: every span on every thread, kept in per-thread buffers until a capture drains them as `timeline` chunks.
 pub mod timeline {
     use std::{
@@ -725,34 +649,7 @@ mod tests {
         assert_eq!(named + plain, spans.len(), "no other span id");
     }
 
-    /// A slow tick's notes are its slowest steps, slowest first; short steps and steps on a
-    /// thread that records no spans leave none.
-    #[test]
-    fn notes_keep_the_slowest_steps() {
-        let _switch = spans_switch();
-        super::record_here(false);
-        super::note(500.0, || "unrecorded".into());
-        assert!(super::take_notes().is_empty());
-        super::record_here(true);
-        for (ms, what) in [
-            (12.0, "a"),
-            (900.0, "b"),
-            (3.0, "short"),
-            (40.0, "c"),
-            (11.0, "d"),
-            (60.0, "e"),
-        ] {
-            super::note(ms, || what.into());
-        }
-        let notes: Vec<(f32, String)> = super::take_notes();
-        super::record_here(false);
-        let names: Vec<&str> = notes.iter().map(|(_, w)| w.as_str()).collect();
-        assert_eq!(names, ["b", "e", "c"]);
-        assert!(super::take_notes().is_empty(), "taking them clears them");
-    }
-
-    /// Spans of one name add up; a span the thread spent mostly waiting
-    /// shows its CPU time after the wall time, short ones are left out.
+    /// Spans of one name add up, the slowest first; a span that waited keeps its small CPU time.
     #[test]
     fn spans_sum_by_name_and_show_waits() {
         super::SPANS.with(|s| {
@@ -794,7 +691,6 @@ mod tests {
             }
         );
         assert_eq!((spans[1].name, spans[1].ms), ("tick", 5.0));
-        assert_eq!(super::describe(&spans), "submit 30.0/0.2, tick 5.0");
         assert!(super::take().is_empty());
     }
 

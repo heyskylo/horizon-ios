@@ -150,6 +150,7 @@ passes on without checking it).
 | Waits and events | (all) | yes | yes | yes | yes | `wait`, `wait-for`, `events` |
 | Effects, experience, enchantments, potions, fill | (cheats) | part | no | yes | yes | `effect`, `effects`, `xp`, `enchant`, `potion`, `fill` |
 | Benchmarks and frame stats | (all) | yes | part | yes | yes | `bench`, `stats` were CLI-only; `fly` |
+| Performance captures | F3+O | no | no | yes | yes | `profile [client\|server] start\|stop\|status\|mark`, `trace`; the file is read with `horizon-perf` or `horizon-perf mcp` ([perf-platform.md](perf-platform.md)), and its slow ring (the last 256 slow frames or ticks) rides in it; none of them is logged |
 
 ## No AI
 
