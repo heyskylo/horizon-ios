@@ -151,8 +151,11 @@ fn an_archive_with_an_empty_shaderpacks_folder_is_not_a_shader_pack() {
             .unwrap();
         zip.write_all(br#"{"name":"Empty","overrides":"overrides","files":[]}"#)
             .unwrap();
-        zip.add_directory("overrides/shaderpacks/", zip::write::SimpleFileOptions::default())
-            .unwrap();
+        zip.add_directory(
+            "overrides/shaderpacks/",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
         zip.finish().unwrap();
     }
     let report = imported(&src, &t.work()).unwrap();
