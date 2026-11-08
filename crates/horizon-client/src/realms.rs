@@ -29,6 +29,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const HEADER_HEIGHT: f32 = 44.0;
 const CONTENT_WIDTH: f32 = 308.0;
+/// `CommonLinks.REALMS_TERMS`: the Realms terms page the terms screen's link opens.
+const REALMS_TERMS_URL: &str = "https://aka.ms/MinecraftRealmsTerms";
 /// `RealmsPdpScreen`'s list: the row width and the text's width beside the picture.
 const PDP_ROW_WIDTH: f32 = 290.0;
 const PDP_TEXT_WIDTH: f32 = 182.0;
@@ -1290,6 +1292,17 @@ pub enum SubScreen {
     Connecting {
         server: RealmServer,
         error: Option<String>,
+        /// `GetServerDetailsTask.lastScreen`: where a 6002 answer returns
+        /// (`RealmsTermsScreen`'s Disagree and Escape).
+        last: Box<SubScreen>,
+    },
+    /// `RealmsTermsScreen`: a new account must agree to the Realms terms before its first
+    /// join (the service answers 6002).
+    Terms {
+        server: RealmServer,
+        last: Box<SubScreen>,
+        /// `RealmsClient.agreeToTos` on a worker; the join runs again when it succeeds.
+        agree: Option<Job<Result<(), RealmsError>>>,
     },
     /// `RealmsGenericErrorScreen`: a service failure replaces the screen; OK and Escape
     /// return to `next` (`nextScreen`).
@@ -1337,6 +1350,9 @@ pub struct Screen {
     /// `ConfirmLinkScreen`'s three buttons as last drawn (`Choice::new` lays them out from
     /// the message's width).
     link_buttons: std::cell::Cell<[(f32, f32); 3]>,
+    /// `RealmsTermsScreen`'s terms link as last drawn: its hit box follows the text's
+    /// rendered width (`extractRenderState`'s `onLink`).
+    terms_link: std::cell::Cell<[f32; 4]>,
     /// `RealmsMainScreen.notifications`: the service's messages; the first `visitUrl`
     /// becomes the list's top entry (`NotificationMessageEntry`).
     notifications: Vec<RealmsNotification>,
@@ -1728,6 +1744,7 @@ impl Screen {
             pdp_row: None,
             list_clicked: false,
             link_buttons: std::cell::Cell::new([(0.0, 0.0); 3]),
+            terms_link: std::cell::Cell::new([0.0; 4]),
             notifications: Vec::new(),
             notifications_job: None,
             handled_seen: Vec::new(),
@@ -2705,6 +2722,7 @@ impl Screen {
                 }
             }
             SubScreen::Connecting { .. } => return self.poll_join(),
+            SubScreen::Terms { .. } => return self.poll_terms(),
             _ => {}
         }
         if let Some(detail) = task_error {
@@ -2885,13 +2903,22 @@ impl Screen {
             return Outcome::None;
         };
         self.joining = None;
-        let SubScreen::Connecting { server, .. } = &self.subscreen else {
+        let SubScreen::Connecting { server, last, .. } = self.subscreen.clone() else {
             return Outcome::None;
         };
-        let server = server.clone();
         let address = match result {
             Ok(address) => address,
             Err(e) => {
+                // 6002: a new account has not agreed to the Realms terms yet; vanilla
+                // shows `RealmsTermsScreen` over the screen that started the join.
+                if e.code() == 6002 {
+                    self.subscreen = SubScreen::Terms {
+                        server,
+                        last,
+                        agree: None,
+                    };
+                    return Outcome::None;
+                }
                 // 6006: the world is out of date; only its owner can reset it.
                 let owner = session().is_some_and(|s| server.owned_by(s.uuid));
                 let detail = if e.code() == 6006 && !owner {
@@ -2933,6 +2960,40 @@ impl Screen {
             _ => {
                 self.subscreen = SubScreen::Main;
                 Outcome::Connect(target)
+            }
+        }
+    }
+
+    /// `RealmsTermsScreen.agreedToTos`: the service's answer, then the join again.
+    fn poll_terms(&mut self) -> Outcome {
+        let result = {
+            let SubScreen::Terms { agree, .. } = &self.subscreen else {
+                return Outcome::None;
+            };
+            let Some(job) = agree else {
+                return Outcome::None;
+            };
+            take(job)
+        };
+        let Some(result) = result else {
+            return Outcome::None;
+        };
+        let SubScreen::Terms { server, last, .. } = self.subscreen.clone() else {
+            return Outcome::None;
+        };
+        match result {
+            // `RealmsTermsScreen.agreedToTos`: a new `GetServerDetailsTask` with the same
+            // `lastScreen`.
+            Ok(()) => self.start_join_from(server, last),
+            // Vanilla logs the failure and stays on the terms screen.
+            Err(e) => {
+                log::warn!("Horizon: couldn't agree to the Realms terms: {}", e.text());
+                self.subscreen = SubScreen::Terms {
+                    server,
+                    last,
+                    agree: None,
+                };
+                Outcome::None
             }
         }
     }
@@ -3218,6 +3279,11 @@ impl Screen {
     /// the title (true). The reset screens keep vanilla's parents: the configuration screen
     /// for the reset screen, the reset screen for the two lists.
     pub fn escape(&mut self) -> bool {
+        // `RealmsTermsScreen.keyPressed`: Escape is Disagree, the screen that asked returns.
+        if let SubScreen::Terms { last, .. } = &self.subscreen {
+            self.subscreen = *last.clone();
+            return false;
+        }
         // `ConfirmLinkScreen`'s no (Escape too) returns to the screen that asked.
         if let SubScreen::Popup(Popup::OpenLink { parent, .. }) = &self.subscreen {
             self.subscreen = *parent.clone();
@@ -3480,6 +3546,15 @@ impl Screen {
         if !server.is_open() {
             return Outcome::None;
         }
+        // `RealmsMainScreen.play(server, cancelScreen)`: the screen that asked is the
+        // one `RealmsTermsScreen` returns to.
+        let last = Box::new(self.subscreen.clone());
+        self.start_join_from(server, last)
+    }
+
+    /// `GetServerDetailsTask` from `last`, the screen its failures and the terms screen
+    /// return to.
+    fn start_join_from(&mut self, server: RealmServer, last: Box<SubScreen>) -> Outcome {
         let Some(client) = client() else {
             return Outcome::None;
         };
@@ -3491,6 +3566,7 @@ impl Screen {
         self.subscreen = SubScreen::Connecting {
             server,
             error: None,
+            last,
         };
         Outcome::None
     }
@@ -4567,19 +4643,8 @@ impl Screen {
     /// initialized: the address request without the list's Play gate (the list has not
     /// reloaded the Realm yet).
     fn start_join_after_create(&mut self, server: RealmServer) -> Outcome {
-        let Some(client) = client() else {
-            return Outcome::None;
-        };
-        let aborted = Arc::new(AtomicBool::new(false));
-        let flag = Arc::clone(&aborted);
-        let id = server.id;
-        let job = spawn(move || fetch_address(&client, id, &flag));
-        self.joining = Some((job, aborted));
-        self.subscreen = SubScreen::Connecting {
-            server,
-            error: None,
-        };
-        Outcome::None
+        let last = Box::new(self.subscreen.clone());
+        self.start_join_from(server, last)
     }
 
     /// `new RealmsSelectFileToUploadScreen`: the game's own worlds (`WorldSelectionList`), as the
@@ -4610,6 +4675,14 @@ impl Screen {
 
     pub fn click(&mut self, hit: Option<u8>, x: f32, y: f32, (w, h): (f32, f32)) -> Outcome {
         self.list_clicked = false;
+        // `RealmsTermsScreen.mouseClicked`: a click on the underlined link opens
+        // `CommonLinks.REALMS_TERMS` (the draw recorded the text's box).
+        if hit.is_none() && matches!(self.subscreen, SubScreen::Terms { .. }) {
+            let [x1, y1, x2, y2] = self.terms_link.get();
+            if x1 <= x && x <= x2 && y1 <= y && y <= y2 {
+                return Outcome::OpenUri(REALMS_TERMS_URL.to_owned());
+            }
+        }
         match hit {
             Some(1) => self.play_selected(),
             Some(2) => Outcome::Back,
@@ -5020,6 +5093,23 @@ impl Screen {
                     } else if let Some(group) = TemplateGroup::ALL.get(usize::from(tile - 72)) {
                         self.open_template_list(server, slot, kind, creation, Some(*group));
                     }
+                }
+                Outcome::None
+            }
+            // `RealmsTermsScreen.init`: Agree posts the terms, then the join runs again.
+            Some(23) => {
+                if let SubScreen::Terms { agree, .. } = &mut self.subscreen
+                    && agree.is_none()
+                    && let Some(client) = client()
+                {
+                    *agree = Some(spawn(move || client.agree_to_tos()));
+                }
+                Outcome::None
+            }
+            // `RealmsTermsScreen.init`: Disagree is the screen that asked.
+            Some(24) => {
+                if let SubScreen::Terms { last, .. } = &self.subscreen {
+                    self.subscreen = *last.clone();
                 }
                 Outcome::None
             }
@@ -7590,6 +7680,29 @@ impl Screen {
             SubScreen::Error { .. } => {
                 // `RealmsGenericErrorScreen.init`: OK, 200 wide at h - 52.
                 buttons.push((cx - 100.0, h - 52.0, 200.0, t("gui.ok"), true, 91, None));
+            }
+            SubScreen::Terms { .. } => {
+                // `RealmsTermsScreen.init`: (width / 4 - 2)-wide Agree and Disagree at
+                // (width / 4, row(12)) and (width / 2 + 4, row(12)).
+                let column = (w / 4.0).floor() - 2.0;
+                buttons.push((
+                    (w / 4.0).floor(),
+                    196.0,
+                    column,
+                    t("mco.terms.buttons.agree"),
+                    true,
+                    23,
+                    None,
+                ));
+                buttons.push((
+                    (w / 2.0).floor() + 4.0,
+                    196.0,
+                    column,
+                    t("mco.terms.buttons.disagree"),
+                    true,
+                    24,
+                    None,
+                ));
             }
             SubScreen::ResetWorld { reset, .. } => {
                 if reset.is_some() {
@@ -10272,6 +10385,33 @@ impl Screen {
                     centered(batch, atlas, line, cx, 100.0 + i as f32 * 9.0, 0xFF50_50DF);
                 }
             }
+            SubScreen::Terms { .. } => {
+                // `RealmsTermsScreen.extractRenderState`: the title at 17, the page's
+                // first sentence at (width/2 - 120, row(5)), the underlined link after it.
+                centered(batch, atlas, &t("mco.terms.title"), cx, 17.0, u32::MAX);
+                let y = 105.0;
+                let x = cx - 120.0;
+                let first = t("mco.terms.sentence.1");
+                batch.text(atlas, &first, x, y, u32::MAX, true);
+                let first_width = HudBatch::text_width(atlas, &first);
+                // `TERMS_LINK_TEXT`: a space, then the underlined second sentence.
+                let link = format!(" {}", t("mco.terms.sentence.2"));
+                let link_x = x + first_width;
+                let x1 = cx - 121.0 + first_width;
+                let x2 = x1 + HudBatch::text_width(atlas, &link) + 1.0;
+                self.terms_link.set([x1, y, x2, y + 10.0]);
+                let (mx, my) = cursor;
+                let on_link = x1 <= mx && mx <= x2 && y <= my && my <= y + 10.0;
+                let color = if on_link { 0xFF6C_71C4 } else { 0xFF33_66BB };
+                batch.text_styled(
+                    atlas,
+                    &Text::literal(link).underlined(),
+                    link_x,
+                    y,
+                    color,
+                    true,
+                );
+            }
             SubScreen::ResetWorld {
                 kind, reset, error, ..
             } => {
@@ -11715,6 +11855,7 @@ mod tests {
             pdp_row: None,
             list_clicked: false,
             link_buttons: std::cell::Cell::new([(0.0, 0.0); 3]),
+            terms_link: std::cell::Cell::new([0.0; 4]),
             notifications: Vec::new(),
             notifications_job: None,
             handled_seen: Vec::new(),
@@ -11905,6 +12046,7 @@ mod tests {
             screen.subscreen = SubScreen::Connecting {
                 server: server(7, None),
                 error: None,
+                last: Box::new(SubScreen::Main),
             };
             screen.poll()
         };
@@ -11948,6 +12090,37 @@ mod tests {
         ));
     }
 
+    /// `GetServerDetailsTask`: a 6002 answer shows `RealmsTermsScreen`, and Disagree
+    /// returns to the screen the join started from.
+    #[test]
+    fn a_6002_join_shows_the_terms_and_disagree_goes_back() {
+        let mut screen = listed(vec![server(7, None)]);
+        let job = Arc::new(Mutex::new(Some(Err(RealmsError::Service {
+            status: 400,
+            code: Some(6002),
+            reason: None,
+            message: None,
+        }))));
+        screen.joining = Some((job, Arc::new(AtomicBool::new(false))));
+        screen.subscreen = SubScreen::Connecting {
+            server: server(7, None),
+            error: None,
+            last: Box::new(SubScreen::Main),
+        };
+        assert!(matches!(screen.poll(), Outcome::None));
+        assert!(matches!(screen.subscreen, SubScreen::Terms { .. }));
+        // `RealmsTermsScreen.init`: Agree and Disagree are 23 and 24; Disagree is the
+        // screen the join started from.
+        let buttons = screen.buttons(800.0, 600.0);
+        assert!(buttons.iter().any(|b| b.5 == 23));
+        assert!(buttons.iter().any(|b| b.5 == 24));
+        assert!(matches!(
+            screen.click(Some(24), 0.0, 0.0, (800.0, 600.0)),
+            Outcome::None
+        ));
+        assert!(matches!(screen.subscreen, SubScreen::Main));
+    }
+
     #[test]
     fn cancelling_a_join_aborts_its_worker() {
         let mut screen = listed(vec![server(7, None)]);
@@ -11956,6 +12129,7 @@ mod tests {
         screen.subscreen = SubScreen::Connecting {
             server: server(7, None),
             error: None,
+            last: Box::new(SubScreen::Main),
         };
         let _ = screen.click(Some(52), 0.0, 0.0, (800.0, 600.0));
         assert!(aborted.load(Ordering::Relaxed));
@@ -12173,6 +12347,7 @@ mod tests {
             pdp_row: None,
             list_clicked: false,
             link_buttons: std::cell::Cell::new([(0.0, 0.0); 3]),
+            terms_link: std::cell::Cell::new([0.0; 4]),
             notifications: Vec::new(),
             notifications_job: None,
             handled_seen: Vec::new(),
