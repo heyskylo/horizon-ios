@@ -763,9 +763,8 @@ mod tests {
             selected: None,
         };
         let selection = game.title.as_ref().unwrap().screen_key();
-        assert!(
-            !game.run_debug_action(horizon_client::debug_keys::DebugAction::DebugOptions, false)
-        );
+        game.debug_key(KeyCode::F6, KeyAction::Release);
+        game.debug_key(KeyCode::F6, KeyAction::Press);
         assert!(game.debug_options.is_none());
         assert_eq!(game.title.as_ref().unwrap().screen_key(), selection);
     }
