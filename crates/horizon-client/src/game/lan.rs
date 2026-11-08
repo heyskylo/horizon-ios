@@ -4524,7 +4524,6 @@ mod world_spawn_sync_tests {
     }
 }
 
-
 #[cfg(test)]
 mod mob_pickup_sync_tests {
     use super::super::pickups::{Collector, Taken};
