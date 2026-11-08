@@ -83,7 +83,7 @@ def check_ctl(bins, resources):
         assert [m['name'] for m in marks] == ['checkpoint one'], marks
         assert RUN_S <= marks[0]['t'] <= RUN_S + 1.5, marks
         assert [m['name'] for m in perf('query', 'marks', file, '--side', 'server')['rows']] == ['checkpoint one']
-        series = perf('query', 'series', 'h:fps', file, '--every', '1', '--from', '0')['rows'][0]['values']
+        series = perf('query', 'series', 'h:fps', file, '--side', 'client', '--every', '1', '--from', '0')['rows'][0]['values']
         counted = sum(v for v in series if v is not None)
         drawn = after - before
         # The first and last second of a capture are partial, so they are not counted.

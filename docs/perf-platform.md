@@ -536,8 +536,9 @@ horizon-ctl profile mark NAME
   mob costs and `tick` thread samples, and its own `Stop`, and the window finishes the file once both are in. A bare
   `profile start` before a world opens, `HORIZON_PROFILE` and F3+O are joined by the server when it comes up (once per
   capture). `profile server start` makes a file of the server thread alone; with no single-player world it is refused
-  until R1a gives it a remote server to reach. `stop`, `status` and `mark` apply to the sides that run, and `--side`
-  narrows them. Replies list `sides`, server first.
+  until R1a gives it a remote server to reach. `stop` ends the capture with every side it holds (a `--side` it does not hold is an error), `status` lists
+  the sides that run, and `mark` goes to every running side or the one `--side` names. Replies list `sides`, server first. With `--threads all`
+  the window's sampler claims every opted-in thread, the server thread included, so the server side has no samples of its own.
 - **As built (C1):** `profile client` captures the window only. A client capture without `--seconds` stops at the 600 s window cap with
   `STOP_REASON_WINDOW_CAP`, so `HORIZON_PROFILE` records the first 10 minutes of a run. The client's slow ring takes
   frames over `HORIZON_SPIKES`, else 50 ms. The health gauges (process and machine probes) are read on a thread of their
