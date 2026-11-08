@@ -93,6 +93,9 @@ pub(super) struct Boat {
     /// left, right, up, down
     pub input: [bool; 4],
     pub on_ground: bool,
+    /// `Entity.fallDistance`: counted by `AbstractBoat.checkFallDamage`, saved
+    /// and loaded (`fall_distance`).
+    pub fall_distance: f64,
     /// `Entity.stuckSpeedMultiplier`: set where the boat sits in powder snow
     /// (`PowderSnowBlock.entityInside`), spent by the next move.
     stuck: Vec3,
@@ -213,6 +216,7 @@ impl Boat {
             paddle_controller: false,
             input: [false; 4],
             on_ground: false,
+            fall_distance: 0.0,
             stuck: Vec3::ZERO,
             chest: false,
             items: Vec::new(),
@@ -249,6 +253,7 @@ impl Boat {
             self.position,
             self.velocity,
             [self.yaw, self.pitch],
+            (self.on_ground, self.fall_distance),
             uuid,
             raw,
             self.chest.then_some(&self.items[..]),
@@ -670,6 +675,26 @@ impl Game<'_> {
         }
     }
     /// `AbstractBoat.tick` for one boat (`controlled` when the player rides it).
+    /// `AbstractBoat.checkFallDamage` after a move that went `moved_y` (with
+    /// `b` already where it landed): on the ground the fall resets; a move
+    /// down over anything but water (the block under its `blockPosition`)
+    /// adds to it.
+    pub(super) fn boat_fall(&self, b: &Boat, moved_y: f64) -> f64 {
+        if b.on_ground {
+            return 0.0;
+        }
+        if moved_y < 0.0 {
+            let below = self.res.facts().get(self.world.block(
+                b.position.x.floor() as i32,
+                b.position.y.floor() as i32 - 1,
+                b.position.z.floor() as i32,
+            ));
+            if below.fluid != Fluid::Water {
+                return b.fall_distance - f64::from(moved_y as f32);
+            }
+        }
+        b.fall_distance
+    }
     pub(super) fn tick_boat(&mut self, mut b: Boat, controlled: bool) -> Boat {
         b.previous = b.position;
         b.previous_yaw = b.yaw;
@@ -697,7 +722,10 @@ impl Game<'_> {
         }
         // `Entity.baseTick`: the boat is immersed and pushed by the current it
         // sits in (`isPushedByFluid`), before `floatBoat` scales the velocity.
-        let _ = b.push_by_fluid(&self.world, &self.res.motion().fluids);
+        // updateFluidInteraction: in water the fall resets.
+        if b.push_by_fluid(&self.world, &self.res.motion().fluids).0 > 0.0 {
+            b.fall_distance = 0.0;
+        }
         // floatBoat
         // `-getGravity()`: none with NoGravity.
         let mut vspeed = 0.0 - b.get_gravity();
@@ -802,6 +830,7 @@ impl Game<'_> {
                 b.position.z + moved.z,
             );
             b.on_ground = movement.y < 0.0 && moved.y > movement.y;
+            b.fall_distance = self.boat_fall(&b, moved.y);
             if (moved.x - movement.x).abs() > 1.0e-7 {
                 b.velocity.x = 0.0;
             }
