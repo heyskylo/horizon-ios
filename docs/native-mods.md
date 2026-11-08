@@ -4199,6 +4199,26 @@ These are what Create's drill, saw, harvester and deployer need.
   afterwards. Call it from a block entity's tick, not from inside a player's hook: while a player acts, it answers
   `None`.
 
+### Breaking as a player
+
+`crates/horizon-client/src/game/native_player_break.rs`: `native_player_break_block(uuid, pos, into_inventory)`
+(`Host::player_break_block`) breaks a block as the player `uuid` breaks it, for vein miners and area tools such as
+FTB Ultimine, which calls `ServerPlayerGameMode.destroyBlock` from NeoForge's `BlockEvent.BreakEvent`.
+
+- It runs the game's own player break, so the player's checks hold (spectator, adventure `can_break`, an item that
+  can't break blocks, game master blocks, a dedicated server's spawn protection), `native_destroy_block` hears it
+  and can cancel it, and the drops are rolled for the player's held item and its enchantments. The item wears as it
+  would, the mined statistic, exhaustion and experience count, and the other players see the particles and hear
+  the sound. The player's own client is left out of the break event (`Block.playerWillDestroy`), as in vanilla.
+- With `into_inventory`, the block's own drops go to the player's inventory and what doesn't fit is dropped from
+  them. What else the break sets loose (a torch losing its support, a container's contents) drops in the world.
+- The answer is whether the block was removed. False, with nothing broken, for air, an unloaded block, a block a
+  survival player can't break (bedrock), a player who isn't online or is dead, another player than the one whose
+  action is running, and off a server. Reach and line of sight are not checked: that is the mod's choice.
+- Call it from the player's `native_destroy_block` (they act there), or with any online player's UUID from a hook
+  where no player acts, such as `native_server_tick`. Inside `native_destroy_block`, each block the mod breaks is
+  heard by that hook too: keep a guard (an `AtomicBool`) so those breaks don't start more veins.
+
 ### Column reads
 
 `crates/horizon-client/src/game/native_world_columns.rs`: helpers for server mods, for the level in place, on a server
