@@ -458,6 +458,12 @@ fn left_out() -> TerrainOut {
 // Binding 19: visbuffer.wgsl, in the same module, takes 2 to 18 of its own group 1.
 @group(1) @binding(19) var<storage, read> arena_page: array<vec2<u32>>;
 const PACKED_BASE: u32 = 0x10000000u;
+// Far tiles' own compact layout (`lod/packed.rs`), read apart from a section's by the base
+// its draws use: from FAR_BASE on, a corner of the quad whose far record is at that slot.
+const FAR_BASE: u32 = 0x20000000u;
+// `TerrainVertex::tiled`: a far tile's UVs are in blocks from the face's corner, this many
+// fixed-point steps each (`mesher::TILED_UV_STEPS`).
+const TILED_UV_STEPS: f32 = 32.0;
 // A vertex's words: position bits, then UV, layer with light, colour.
 struct ArenaCorner {
     p: vec3<u32>,
@@ -518,6 +524,39 @@ fn packed_corner(lo: vec3<u32>, hi: vec3<u32>, corner: u32) -> ArenaCorner {
     return ArenaCorner(bitcast<vec3<u32>>(vec3<f32>(pos)),
         vec3((u << 10u) | (v << 26u), (hi.x & 0xffffu) | (packed_light << 16u), color));
 }
+// `lod::packed::Face::vertices`: corner `corner` of the far record whose words are lo (0 to
+// 2) and hi (3 to 5). A far quad is a rectangle in an axis-aligned plane with one colour,
+// one light and one layer, so the record holds the rectangle and this rebuilds the four
+// corners and the UVs `lod::mesh::emit_quad` derived from them. The two have to agree, and
+// `lod::mesh`'s `every_quad_the_mesher_emits_packs_and_comes_back` is what holds them to it.
+fn far_corner(lo: vec3<u32>, hi: vec3<u32>, corner: u32) -> ArenaCorner {
+    let axis = hi.z & 3u;
+    let reversed = (hi.z >> 2u) & 1u;
+    let plane = f32(bitcast<i32>(lo.z));
+    let u0 = f32(bitcast<i32>(hi.x));
+    let v0 = f32(bitcast<i32>(hi.y));
+    let u1 = u0 + f32((hi.z >> 3u) & 0x7ffu);
+    let v1 = v0 + f32((hi.z >> 14u) & 0x7ffu);
+    // `points.reverse()`, which is what the mesher does for Down, South and East.
+    let c = select(corner, 3u - corner, reversed == 1u);
+    let far_v = select(v0, v1, c <= 1u);
+    // Axis X runs its u the other way round, as that function's `points` do.
+    let first = c == 0u || c == 3u;
+    let far_u = select(select(u1, u0, first), select(u0, u1, first), axis == 2u);
+    // 0: the plane is y, u is x and v is z. 1: the plane is z, u is x, v is y.
+    // 2: the plane is x, u is z and v is y.
+    var pos = vec3(far_u, plane, far_v);
+    if axis == 1u {
+        pos = vec3(far_u, far_v, plane);
+    } else if axis == 2u {
+        pos = vec3(plane, far_v, far_u);
+    }
+    // The UV is `[u, -v]` of the face counted from its corner, which is `[u0, -v1]`: every
+    // coordinate is whole, so the mesher's `floor` of the least corner is the corner itself.
+    let uv = vec2<u32>(vec2(far_u - u0, v1 - far_v) * TILED_UV_STEPS);
+    // Word 1 is the layer with the light, word 0 the colour, as a vertex holds them.
+    return ArenaCorner(bitcast<vec3<u32>>(pos), vec3(uv.x | (uv.y << 16u), lo.y, lo.x));
+}
 // A solid draw's vertex `vertex`, and the slot its block is found by (`block_slots`, 256
 // slots a block): the vertex's own, or its quad's record's. `packed`: it has a record.
 struct SectionCorner {
@@ -528,6 +567,18 @@ struct SectionCorner {
 fn section_corner(vertex: u32) -> SectionCorner {
     if vertex < PACKED_BASE {
         return SectionCorner(arena_vertex(vertex), vertex, false);
+    }
+    if vertex >= FAR_BASE {
+        let far_slot = (vertex - FAR_BASE) >> 2u;
+        let a = arena_page[far_slot * 3u];
+        let b = arena_page[far_slot * 3u + 1u];
+        let c = arena_page[far_slot * 3u + 2u];
+        // `FULL`: the quad's four vertices, word 0 slots on, as a section's spill.
+        if (c.y & 0x80000000u) != 0u {
+            return SectionCorner(arena_vertex(far_slot + a.x + (vertex & 3u)), far_slot, true);
+        }
+        return SectionCorner(far_corner(vec3(a.x, a.y, b.x), vec3(b.y, c.x, c.y), vertex & 3u),
+            far_slot, true);
     }
     let slot = (vertex - PACKED_BASE) >> 2u;
     let corner = vertex & 3u;
