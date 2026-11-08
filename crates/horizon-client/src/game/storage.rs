@@ -91,7 +91,9 @@ impl Game<'_> {
         let Some(default_key) = horizon_client::containers::default_name_key(name) else {
             return false;
         };
-        let hand = self.held().cloned();
+        // `LockCode.canUnlock` reads `Player.getMainHandItem`, whichever
+        // hand the click came from.
+        let hand = self.stack_in(self.selected).cloned();
         let spectator = self.spectator();
         // The halves in `DoubleBlockCombiner` order: the right half first.
         let halves = match self.chest_partner(key) {
@@ -649,8 +651,20 @@ mod lock_tests {
             "no `container.isLocked` action bar"
         );
 
-        // The lock's own item in the acting hand opens it.
+        // `LockCode.canUnlock` reads the main hand: the key in the off hand
+        // does not open it.
+        game.inventory[0] = None;
+        game.offhand = Some(ItemStack::new("minecraft:gold_ingot", 1));
+        game.titles.overlay = None;
+        game.open_menu([8, 64, 8]);
+        assert_eq!(
+            game.container, None,
+            "an off-hand key opened a locked chest"
+        );
+
+        // The lock's own item in the main hand opens it.
         game.inventory[0] = Some(ItemStack::new("minecraft:gold_ingot", 1));
+        game.offhand = None;
         game.selected = 0;
         game.titles.overlay = None;
         game.open_menu([8, 64, 8]);
