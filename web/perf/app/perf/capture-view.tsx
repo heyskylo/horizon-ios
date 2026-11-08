@@ -96,7 +96,7 @@ export function CaptureView({ reader, capture, showSide, onClose }: Props) {
   const exportCapture = (kind: string) => {
     try {
       const bytes = reader.export(capture.handle, { kind });
-      const url = URL.createObjectURL(new Blob([bytes as unknown as BlobPart], { type: "application/octet-stream" }));
+      const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: "application/octet-stream" }));
       const anchor = document.createElement("a");
       anchor.href = url;
       anchor.download = `${capture.name}.${kind === "perfetto" ? "pb" : kind === "folded" ? "folded" : "pprof"}`;

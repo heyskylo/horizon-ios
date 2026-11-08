@@ -47,23 +47,25 @@ export function TreeToolbar(props: Props) {
           ]}
         />
       </div>
-      <label className={tree.control}>
-        <span className={tree.controlLabel}>{t("tree.selection")}</span>
-        <select
-          className={styles.select}
-          value={selection}
-          onChange={(event) => {
-            const next = options.selections.find((id) => id === event.target.value);
-            if (next) props.onSelection(next);
-          }}
-        >
-          {options.selections.map((id) => (
-            <option key={id} value={id}>
-              {t(`tree.selection.${id}${id === "all" || id === "slow" ? pace : ""}`)}
-            </option>
-          ))}
-        </select>
-      </label>
+      {options.selections.length > 1 ? (
+        <label className={tree.control}>
+          <span className={tree.controlLabel}>{t("tree.selection")}</span>
+          <select
+            className={styles.select}
+            value={selection}
+            onChange={(event) => {
+              const next = options.selections.find((id) => id === event.target.value);
+              if (next) props.onSelection(next);
+            }}
+          >
+            {options.selections.map((id) => (
+              <option key={id} value={id}>
+                {t(`tree.selection.${id}${id === "all" || id === "slow" ? pace : ""}`)}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
       {options.groups.length > 1 ? (
         <label className={tree.control}>
           <span className={tree.controlLabel}>{t("tree.groupBy")}</span>
