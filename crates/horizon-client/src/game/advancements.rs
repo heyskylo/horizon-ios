@@ -286,6 +286,20 @@ impl Game<'_> {
         !adv::can_unlock(&lock, spectator, hand.as_ref(), &View(self))
     }
 }
+/// `MinMaxBounds.Doubles.matchesSqr`: `sqr` against the bounds squared
+/// (a missing one matches anything).
+fn matches_sqr(v: &Value, sqr: f64) -> bool {
+    let (min, max) = match v {
+        Value::Null => (None, None),
+        Value::Number(n) => (n.as_f64(), n.as_f64()),
+        Value::Object(o) => (
+            o.get("min").and_then(Value::as_f64),
+            o.get("max").and_then(Value::as_f64),
+        ),
+        _ => return false,
+    };
+    !min.is_some_and(|m| m * m > sqr) && !max.is_some_and(|m| m * m < sqr)
+}
 pub(super) fn item_view(s: &ItemStack) -> ItemView {
     ItemView {
         id: s.item.to_string(),
@@ -1468,6 +1482,23 @@ impl Game<'_> {
                 block_pos: None,
             };
             adv::conditions(&c["player"], &pctx, w) && adv::item(&c["item"], &it, w)
+        });
+    }
+    /// `UsedEnderEyeTrigger.trigger`: the player threw an eye of ender toward
+    /// a structure `sqr_distance` (squared, horizontal) away.
+    pub(super) fn trigger_used_ender_eye(&mut self, sqr_distance: f64) {
+        if self.remote.is_some() || self.no_player_here() {
+            return;
+        }
+        let me = self.player_entity_for("minecraft:used_ender_eye");
+        self.trigger("minecraft:used_ender_eye", move |c, w| {
+            let pctx = adv::Entities {
+                this: Some(&me),
+                origin: me.position,
+                tool: None,
+                block_pos: None,
+            };
+            adv::conditions(&c["player"], &pctx, w) && matches_sqr(&c["distance"], sqr_distance)
         });
     }
     /// The entity a 100 block ray from the eyes meets first, if no block is
