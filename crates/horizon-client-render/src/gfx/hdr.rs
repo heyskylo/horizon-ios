@@ -85,8 +85,8 @@ struct Targets {
 }
 
 /// The float frame with HUD coverage (`hud_coverage::supported`, docs/design/hdr-linear-light.md
-/// "The HUD and menus"): the world's marks become light once, after the world and the hand
-/// (`resolve`); the tone curve eases it into the peak after the post effects (`tonemap`); the
+/// "The HUD and menus"): the default world draws write light directly; marked fallback frames
+/// turn their marks into light after the world and the hand (`resolve`); the tone curve eases it into the peak after the post effects (`tonemap`); the
 /// camera overlays draw on that light; the HUD draws on a target of its own,
 /// the world clipped to white (`keep_world`); and the last pass composites the HUD over the
 /// world's light by its coverage (`fs_hdr_layered`), as the menu blur does before it blurs
@@ -836,6 +836,11 @@ impl Hdr {
         })
     }
 
+    pub(super) fn draw_params(&self, world: bool) -> ([f32; 4], [f32; 4]) {
+        let p = self.params(world, false);
+        ([p[1], p[7], p[2], p[3]], p[8..12].try_into().unwrap())
+    }
+
     /// hdr.wgsl's `Params`.
     fn params(&self, world: bool, pq: bool) -> [f32; 16] {
         let paper = self.paper_white.max(1.0);
@@ -1125,14 +1130,18 @@ var<private> params: ReferenceParams;
         }
     }
 
-    fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
+    pub(super) fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
         let instance = crate::gfx::test_gpu::instance();
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
         pollster::block_on(adapter.request_device(&Default::default())).ok()
     }
 
     /// Clears all of `texture` to `color`.
-    fn fill(encoder: &mut wgpu::CommandEncoder, texture: &wgpu::Texture, color: [f64; 4]) {
+    pub(super) fn fill(
+        encoder: &mut wgpu::CommandEncoder,
+        texture: &wgpu::Texture,
+        color: [f64; 4],
+    ) {
         let view = texture.create_view(&Default::default());
         let mut attachment = super::super::hud_coverage::attachment(&view);
         let [r, g, b, a] = color;
@@ -1145,7 +1154,7 @@ var<private> params: ReferenceParams;
 
     /// The first texel of `texture` once `encoder` ran: four half floats, or 10-bit PQ codes
     /// for HDR10.
-    fn texel(
+    pub(super) fn texel(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         mut encoder: wgpu::CommandEncoder,
@@ -1387,12 +1396,12 @@ var<private> params: ReferenceParams;
 
     #[test]
     fn hdr_shaders_validate() {
-        let entity = crate::overlay::wgsl_constants() + include_str!("../entity.wgsl");
+        let entity = super::super::entity_shader();
         for source in [
             &super::shader(),
-            include_str!("../terrain.wgsl"),
+            &super::super::terrain_shader(),
             include_str!("../hdr_stats.wgsl"),
-            include_str!("stars.wgsl"),
+            &(include_str!("../hdr_light.wgsl").to_owned() + include_str!("stars.wgsl")),
             &entity,
         ] {
             let module = naga::front::wgsl::parse_str(source).unwrap();
@@ -1456,3 +1465,7 @@ mod lighting_tests {
         assert_eq!(scene_gain(200.0, 480.0), 1.0);
     }
 }
+
+#[cfg(test)]
+#[path = "hdr_written_tests.rs"]
+mod written_tests;

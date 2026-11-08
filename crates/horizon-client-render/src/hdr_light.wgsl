@@ -1,3 +1,5 @@
+override HDR_WRITE_LIGHT: bool = false;
+
 // The light of colour `f` under the world's mark `a` (the alpha the world left, hdr_mark) where
 // the world `shows`, else the colour clipped at white; and whether a light source lifted it.
 // `eased` for the last pass, which eases it into the peak itself; the layered frame leaves that
