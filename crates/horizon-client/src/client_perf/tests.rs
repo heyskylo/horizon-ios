@@ -169,6 +169,75 @@ fn the_first_second_of_a_capture_counts_only_frames_after_it_began() {
 }
 
 #[test]
+fn a_trace_of_two_seconds_writes_a_timeline_capture_at_its_file() {
+    let _timeline = crate::server_perf::timeline::test_lock();
+    let scratch = Scratch::new("trace");
+    let reports = scratch.0.join("reports");
+    fs::create_dir_all(&reports).unwrap();
+    for day in 1..=31 {
+        fs::write(reports.join(files::file_name(86_400 * day)), b"old").unwrap();
+    }
+    let file = scratch.0.join("somewhere").join("frame.hzperf");
+    let mut perf = ClientPerf::new(SLOW_FRAME_MS);
+    let options = StartOptions {
+        seconds: Some(2),
+        timeline: true,
+        file: Some(file.clone()),
+        ..no_samples()
+    };
+    let started = begin(&mut perf, 0.0, &reports, &options);
+    assert_eq!(started, file);
+    let render = || {
+        std::thread::Builder::new()
+            .name("render".into())
+            .spawn(|| crate::spans::time("draw", || crate::spans::time("terrain", || ())))
+            .unwrap()
+            .join()
+            .unwrap();
+    };
+    for i in 0..40 {
+        render();
+        perf.frame(
+            f64::from(i) * 0.1,
+            16.0,
+            5.0,
+            None,
+            None,
+            WorldCounts::default,
+        );
+    }
+    assert!(!perf.capturing(), "the 2 s window ended the capture");
+    let saved = perf.take_saved(true).pop().unwrap().unwrap();
+
+    assert_eq!(saved.path, file);
+    assert!(
+        saved.deleted.is_empty(),
+        "a capture of its own path is no one's to trim"
+    );
+    assert_eq!(fs::read_dir(&reports).unwrap().count(), 31);
+    let c = read(&file);
+    assert_eq!(c.start[0].options.as_ref().unwrap().window_s, Some(2.0));
+    assert!(c.start[0].options.as_ref().unwrap().timeline);
+    let chunks: Vec<_> = c
+        .timeline
+        .iter()
+        .filter(|chunk| text(&c, chunk.thread) == "render")
+        .collect();
+    assert_eq!(chunks.len(), 2, "a chunk for each of the two seconds");
+    let names: Vec<_> = chunks
+        .iter()
+        .flat_map(|chunk| chunk.name.iter().map(|&id| text(&c, id)))
+        .collect();
+    assert_eq!(names.iter().filter(|&&n| n == "draw").count(), 21);
+    assert_eq!(names.iter().filter(|&&n| n == "terrain").count(), 21);
+    assert!(
+        chunks
+            .iter()
+            .all(|chunk| chunk.side() == Side::Client && chunk.depth.iter().all(|&d| d <= 1))
+    );
+}
+
+#[test]
 fn a_window_ends_the_capture_and_the_longest_one_is_a_cap() {
     let scratch = Scratch::new("window");
     let mut perf = ClientPerf::new(SLOW_FRAME_MS);

@@ -140,6 +140,8 @@ impl ClientPerf {
             levels: Vec::new(),
             wire: Wire::new(),
             gpu: options.gpu.mode(),
+            timeline: options.timeline.then(Default::default),
+            file: options.file.clone(),
         };
         let path = self.perf.start_capture(t, dir, capture)?;
         self.window = Some(match options.seconds {

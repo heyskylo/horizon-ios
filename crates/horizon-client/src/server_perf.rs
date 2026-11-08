@@ -22,6 +22,7 @@ mod tests;
 mod samples;
 pub mod spans;
 mod system;
+pub mod timeline;
 pub mod traffic;
 pub mod world;
 pub use samples::MAX_WINDOW_S;
@@ -31,6 +32,7 @@ use system::{BackgroundProbe, SystemProbe};
 pub use system::{
     build, game_rules, hardware, hardware_now, horizon_options, machine, settings, warm_hardware,
 };
+use timeline::{Drained, TimelineRecorder};
 use traffic::{TrafficRecorder, Wire};
 use world::{LevelCounts, MobCosts, WorkerJobs};
 
@@ -110,6 +112,10 @@ pub struct CaptureOptions {
     pub wire: Wire,
     /// Whether the GPU's pass timings are recorded: unspecified on a side without a GPU.
     pub gpu: GpuMode,
+    /// Records every thread's spans as `timeline` chunks within these caps, unless another capture already does.
+    pub timeline: Option<timeline::Caps>,
+    /// Write the capture at exactly this path, kept by no retention, instead of into the folder given to `start_capture`.
+    pub file: Option<PathBuf>,
 }
 
 /// What the game gathers as a capture ends.
@@ -145,7 +151,8 @@ struct Session {
     writer: WriterThread<File>,
     tx: FieldSender,
     path: PathBuf,
-    dir: PathBuf,
+    /// The folder retention trims; none for a capture written to a path of its own.
+    dir: Option<PathBuf>,
     /// The recorder's clock reading when the capture began.
     origin: f64,
     cursor: u64,
@@ -156,6 +163,7 @@ struct Session {
     spans: SpanRecorder,
     traffic: TrafficRecorder,
     gpu: GpuMode,
+    timeline: Option<TimelineRecorder>,
 }
 
 enum Ending {
@@ -289,6 +297,7 @@ impl ServerPerf {
         if let Some(session) = &mut self.session {
             session.span_tick(t, self.ticks, wall_ms, detail.as_ref());
             session.pump(&self.health, t);
+            session.timeline_tick(t);
         }
     }
 
@@ -303,7 +312,10 @@ impl ServerPerf {
             return Err(std::io::Error::other("a capture is already running"));
         }
         let now_ms = unix_ms();
-        let (file, path) = files::create(dir, now_ms.div_euclid(1000))?;
+        let (file, path) = match &options.file {
+            Some(path) => (files::create_at(path)?, path.clone()),
+            None => files::create(dir, now_ms.div_euclid(1000))?,
+        };
         let writer = WriterThread::spawn(file)?;
         let tx = writer.sender();
         let sampling = options
@@ -320,13 +332,16 @@ impl ServerPerf {
         self.health.advance(t);
         let (_, pushed) = self.health.samples_since(u64::MAX, t);
         let partial = (t - self.base).fract() > 1e-9;
+        let timeline = options
+            .timeline
+            .and_then(|caps| TimelineRecorder::start(self.role.side, caps));
         let mut session = Session {
             side: self.role.side,
             unit: self.role.unit,
             writer,
             tx,
             path: path.clone(),
-            dir: dir.to_owned(),
+            dir: options.file.is_none().then(|| dir.to_owned()),
             origin: t,
             cursor: pushed + u64::from(partial),
             strings: Interner::default(),
@@ -336,6 +351,7 @@ impl ServerPerf {
             spans: SpanRecorder::new(self.role.span_thread, self.role.side, self.role.unit),
             traffic: TrafficRecorder::new(options.wire),
             gpu: options.gpu,
+            timeline,
         };
         let mut start = options.start;
         start.side = self.role.side as i32;
@@ -361,6 +377,7 @@ impl ServerPerf {
             wall: sampled && options.sampler.wall,
             samples: sampled,
             gpu: options.gpu as i32,
+            timeline: session.timeline.is_some(),
             ..start.options.unwrap_or_default()
         });
         if sampled && let Some(build) = &mut start.build {
@@ -509,7 +526,12 @@ impl Session {
 
     /// Writes the spans, workers, net and world as the capture ends; returns what recording cost.
     fn close(&mut self, rel: f64, end: CaptureEnd) -> Overhead {
-        let overhead = overhead(&self.spans, &end);
+        let mut overhead = overhead(&self.spans, &end);
+        if let Some(timeline) = self.timeline.take() {
+            let (drained, stopped_t) = timeline.finish(rel, &mut self.strings);
+            self.send_timeline(drained);
+            overhead.timeline_stopped_t = stopped_t;
+        }
         self.traffic.sample(rel, &end.wire);
         let (last_block, summary) = std::mem::take(&mut self.spans).finish(&mut self.strings);
         let mut traffic = std::mem::take(&mut self.traffic).finish(rel);
@@ -555,6 +577,25 @@ impl Session {
         }
         for gpu in sections {
             self.tx.send(Field::Gpu(gpu));
+        }
+    }
+
+    fn timeline_tick(&mut self, t: f64) {
+        let Some(timeline) = self.timeline.as_mut() else {
+            return;
+        };
+        if let Some(drained) = timeline.tick(t - self.origin, &mut self.strings) {
+            self.send_timeline(drained);
+        }
+    }
+
+    fn send_timeline(&mut self, drained: Drained) {
+        self.entries();
+        for chunk in drained.chunks {
+            self.tx.send(Field::Timeline(chunk));
+        }
+        if let Some(warning) = drained.warning {
+            self.tx.send(Field::Warning(warning));
         }
     }
 
@@ -609,6 +650,7 @@ impl Session {
                 spans_share: overhead.spans_share,
                 mob_timing_ms_per_tick: overhead.mob_timing_ms_per_tick,
                 mob_timing_share: overhead.mob_timing_share,
+                timeline_stopped_t: overhead.timeline_stopped_t,
                 ..done.overhead
             };
         }
@@ -627,7 +669,10 @@ impl Session {
         } = self;
         drop(tx);
         writer.finish()?;
-        let deleted = files::retain(&dir, &path, files::KEEP_FILES, files::KEEP_BYTES)?;
+        let deleted = match dir {
+            Some(dir) => files::retain(&dir, &path, files::KEEP_FILES, files::KEEP_BYTES)?,
+            None => Vec::new(),
+        };
         Ok(Saved { path, deleted })
     }
 }

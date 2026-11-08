@@ -118,7 +118,7 @@ The memory cost is the headers (16 bytes a block, 32 or more for larger alignmen
 The game times its work in named spans (`crates/horizon-client-render/src/spans.rs`). Three tools read them:
 
 - `HORIZON_SPIKES=MS` logs the spans of every frame slower than MS milliseconds, with the render thread's CPU time in the frame.
-- `horizon-ctl trace FILE [SECONDS]` writes every span of every thread to FILE as Chrome trace events for the given time (or until `horizon-ctl trace stop`); `HORIZON_TRACE=FILE` writes one from the start, so startup is traced too. Open the file in [ui.perfetto.dev](https://ui.perfetto.dev).
+- `horizon-ctl trace FILE [SECONDS]` writes every span of every thread to FILE, a `.hzperf` capture, for the given time (or until `horizon-ctl trace stop`; the spans stop at 60 s); `HORIZON_TRACE=FILE` writes one from the first frame. The startup steps stay in `HORIZON_STARTUP_TRACE`.
 - `horizon-ctl stats [reset] [raw]`, `horizon-ctl bench SECONDS` and `horizon-ctl fly ... SECONDS [PITCH [raw]]` reply with the frame-time summary: frame, CPU and GPU time percentiles and the average of each phase of the frame. They carry no memory figures, except `alloc` in an `alloc-count` build.
 
 See [Graphics](graphics.md) for how the spans are used to chase a slow frame.

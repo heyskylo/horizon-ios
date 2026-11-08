@@ -5,7 +5,7 @@ use horizon_client::client_perf::{
     self, ClientPerf,
     request::{
         self, Failed, GpuSwitch, Marked, ProfileSide, Request, StartOptions, Started, Status,
-        Stopped,
+        Stopped, Traced,
     },
 };
 use horizon_client::server_perf::{self, TickDetail, WorldCounts};
@@ -20,6 +20,8 @@ use std::sync::mpsc::Sender;
 
 /// The folder `HORIZON_PROFILE` names; captures go there instead of the game home's `reports/`.
 const ENV_DIR: &str = "HORIZON_PROFILE";
+/// The file `HORIZON_TRACE` names: a timeline-only capture written there.
+const ENV_TRACE: &str = "HORIZON_TRACE";
 
 /// The game's capture state: the health history, the running capture and who is waiting on it.
 pub(super) struct Profile {
@@ -29,6 +31,8 @@ pub(super) struct Profile {
     /// `profile stop` waits for the file to be whole.
     reply: Option<Sender<String>>,
     spans_were_on: bool,
+    /// The file the running capture was asked to write by `trace` or `HORIZON_TRACE`.
+    trace_file: Option<String>,
     hardware_warmed: bool,
     env_tried: bool,
     /// What the running capture asks the renderer to time.
@@ -43,6 +47,7 @@ impl Profile {
             stopped_by_key: false,
             reply: None,
             spans_were_on: false,
+            trace_file: None,
             hardware_warmed: false,
             env_tried: false,
             gpu: GpuSwitch::Off,
@@ -98,8 +103,15 @@ impl Game<'_> {
         }
         match parsed.request {
             Request::Start(options) => {
-                let started = self.start_profile(&options, Trigger::Ctl)?;
-                json_of(&started)
+                let path = self.start_profile(&options, Trigger::Ctl)?;
+                json_of(&Started {
+                    ok: true,
+                    side: ProfileSide::Client,
+                    path: shown(&path),
+                    seconds: options.seconds,
+                    samples: options.samples,
+                    gpu: options.gpu,
+                })
             }
             Request::Stop => {
                 self.stop_profile(StopReason::Normal)?;
@@ -128,7 +140,52 @@ impl Game<'_> {
         }
     }
 
-    fn start_profile(&mut self, options: &StartOptions, trigger: Trigger) -> Result<Started> {
+    /// `trace [FILE [SECONDS] | stop]`: a timeline-only capture written to FILE; None while a `stop` waits for its file.
+    pub(super) fn trace_command(
+        &mut self,
+        words: &[&str],
+        reply: &Sender<String>,
+    ) -> Result<Option<serde_json::Value>> {
+        const USAGE: &str = "trace [FILE [SECONDS] | stop]";
+        match words {
+            [] => json_of(&Traced {
+                ok: true,
+                tracing: self.profile.trace_file.is_some(),
+                file: self.profile.trace_file.clone(),
+            }),
+            ["stop"] => {
+                if self.profile.trace_file.is_none() {
+                    return Err("no trace is being written".into());
+                }
+                self.stop_profile(StopReason::Normal)?;
+                self.profile.reply = Some(reply.clone());
+                Ok(None)
+            }
+            [file, rest @ ..] if rest.len() <= 1 => {
+                let seconds = match rest.first() {
+                    None => None,
+                    Some(s) => Some(s.parse::<u32>().map_err(|_| USAGE)?),
+                };
+                let options = StartOptions {
+                    seconds,
+                    samples: false,
+                    timeline: true,
+                    file: Some(PathBuf::from(file)),
+                    ..StartOptions::default()
+                };
+                self.start_profile(&options, Trigger::Ctl)
+                    .map_err(|e| format!("trace {file}: {e}"))?;
+                json_of(&Traced {
+                    ok: true,
+                    tracing: true,
+                    file: Some((*file).to_owned()),
+                })
+            }
+            _ => Err(USAGE.into()),
+        }
+    }
+
+    fn start_profile(&mut self, options: &StartOptions, trigger: Trigger) -> Result<PathBuf> {
         if self.profile.perf.capturing() || self.profile.perf.saving() {
             return Err("a capture is already running or still being saved".into());
         }
@@ -143,17 +200,11 @@ impl Game<'_> {
                 .start(t, &reports_dir(), trigger, options, start, Vec::new())?;
         self.profile.started_by = trigger;
         self.profile.gpu = options.gpu;
+        self.profile.trace_file = options.file.as_ref().map(|f| f.display().to_string());
         self.profile.spans_were_on = spans::recording_here();
         spans::record_here(true);
         log::info!("Horizon: profiling the client to {}", path.display());
-        Ok(Started {
-            ok: true,
-            side: ProfileSide::Client,
-            path: shown(&path),
-            seconds: options.seconds,
-            samples: options.samples,
-            gpu: options.gpu,
-        })
+        Ok(path)
     }
 
     fn stop_profile(&mut self, reason: StopReason) -> Result<()> {
@@ -227,20 +278,32 @@ impl Game<'_> {
         }
         if !self.profile.env_tried && server_perf::hardware().is_some() {
             self.profile.env_tried = true;
+            let named = |var: &str| std::env::var_os(var).filter(|v| !v.is_empty());
             let gpu = client_perf::env_gpu(
                 std::env::var_os(client_perf::ENV_PASS_TIMING).as_deref(),
                 std::env::var_os(client_perf::ENV_PASS_DETAIL).as_deref(),
             );
-            if (std::env::var_os(ENV_DIR).is_some_and(|d| !d.is_empty()) || gpu != GpuSwitch::Off)
-                && let Err(e) = self.start_profile(
-                    &StartOptions {
+            let (var, options) = if named(ENV_DIR).is_some() || gpu != GpuSwitch::Off {
+                (
+                    ENV_DIR,
+                    StartOptions {
                         gpu,
                         ..StartOptions::default()
                     },
-                    Trigger::Env,
                 )
-            {
-                log::warn!("Horizon: {ENV_DIR}: {e}");
+            } else if let Some(file) = named(ENV_TRACE) {
+                let options = StartOptions {
+                    samples: false,
+                    timeline: true,
+                    file: Some(PathBuf::from(file)),
+                    ..StartOptions::default()
+                };
+                (ENV_TRACE, options)
+            } else {
+                return;
+            };
+            if let Err(e) = self.start_profile(&options, Trigger::Env) {
+                log::warn!("Horizon: {var}: {e}");
             }
         }
     }
@@ -264,6 +327,7 @@ impl Game<'_> {
 
     fn profile_saved(&mut self, saved: std::io::Result<horizon_client::server_perf::Saved>) {
         spans::record_here(self.profile.spans_were_on);
+        self.profile.trace_file = None;
         let reply = self.profile.reply.take();
         let by_key = std::mem::take(&mut self.profile.stopped_by_key)
             || (self.profile.started_by == Trigger::Key && reply.is_none());
