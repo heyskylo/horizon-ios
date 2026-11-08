@@ -295,6 +295,7 @@ impl WorldRequest {
         .fast_lava;
         world.game_time = level.time;
         world.day_time = options.time.unwrap_or(level.day_time);
+        world.end_clock = level.end_clock.unwrap_or(level.time);
         world.weather = level.weather;
         if let Some(w) = options.weather.as_deref() {
             // /weather: clear, rain or thunder for a long duration.

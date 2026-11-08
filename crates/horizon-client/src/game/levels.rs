@@ -485,6 +485,7 @@ impl Game<'_> {
             };
             p.world.game_time = self.world.game_time;
             p.world.day_time = self.world.day_time;
+            p.world.end_clock = self.world.end_clock;
             p.world.weather = self.world.weather;
             // The game rules and the difficulty are the server's, not a
             // level's: natural regeneration holds in every dimension.
