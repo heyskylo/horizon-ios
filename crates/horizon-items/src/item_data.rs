@@ -145,8 +145,10 @@ impl StackData {
         self.set_other(id, Some(tag));
     }
     /// `SetComponentsFunction`: one component of a loot patch, in its JSON
-    /// form. Trim is modelled; the rest keep their saved components.
-    /// A null value removes the component.
+    /// form. A component Horizon models is read into its field as a saved
+    /// stack's is, so a rolled potion's contents are the effects it gives;
+    /// the rest keep their saved components. A null value removes the
+    /// component.
     pub fn set_loot_component(&mut self, id: &str, value: &serde_json::Value) {
         let tag = (!value.is_null()).then(|| horizon_client_core::scoreboard::json_to_tag(value));
         match id {
@@ -157,6 +159,23 @@ impl StackData {
                     }
                     _ => None,
                 };
+            }
+            // The stack's damage is outside its data; a name keeps its own reading.
+            "minecraft:damage" | "minecraft:custom_name" => self.set_other(id, tag),
+            _ if MODELLED.contains(&id) => {
+                let mut saved = match components_tag(0, Some(self)) {
+                    Some(Tag::Compound(c)) => c,
+                    _ => Default::default(),
+                };
+                saved.remove(&JavaString::from(id));
+                if let Some(tag) = tag {
+                    saved.insert(JavaString::from(id), tag);
+                }
+                // A damage set before stays where it was: reading would take it.
+                let damage = self.other("minecraft:damage").cloned();
+                let (_, read) = decode_components(Some(&Tag::Compound(saved)));
+                *self = read.map_or_else(Default::default, |data| *data);
+                self.set_other("minecraft:damage", damage);
             }
             _ => self.set_other(id, tag),
         }
@@ -2012,6 +2031,49 @@ mod tests {
             .data_mut()
             .set_loot_component("minecraft:custom_name", &serde_json::Value::Null);
         assert!(stack.custom_name().is_none());
+    }
+
+    /// A chest's `set_components` patch: a potion's contents land where
+    /// drinking and splashing read them, not only in its saved form, and the
+    /// components Horizon keeps as saved stay so.
+    #[test]
+    fn a_loot_component_horizon_models_lands_in_its_field() {
+        use serde_json::json;
+        let mut swift = ItemStack::new("minecraft:splash_potion", 1);
+        swift.data_mut().set_loot_component(
+            "minecraft:potion_contents",
+            &json!({"potion": "minecraft:swiftness"}),
+        );
+        assert_eq!(swift.potion(), Some("minecraft:swiftness"));
+        let mut custom = ItemStack::new("minecraft:potion", 1);
+        let data = custom.data_mut();
+        data.set_loot_component("minecraft:custom_data", &json!({"page": 3}));
+        data.set_loot_component("minecraft:damage", &json!(5));
+        let effects = json!({"custom_effects": [{"id": "minecraft:resistance", "amplifier": 1, "duration": 1800}]});
+        data.set_loot_component("minecraft:potion_contents", &effects);
+        assert_eq!(
+            custom.custom_potion_effects(),
+            [("minecraft:resistance".to_owned(), 1800, 1)]
+        );
+        let data = custom.data().unwrap();
+        assert!(data.other("minecraft:custom_data").is_some());
+        assert!(
+            data.other("minecraft:damage").is_some(),
+            "a damage set before stays"
+        );
+        // Saved as before: the patch's contents, with the codec's icon flag.
+        let saved = encode_components(&custom).unwrap();
+        assert_eq!(
+            horizon_client_core::scoreboard::tag_to_json(
+                saved.get("minecraft:potion_contents").unwrap()
+            ),
+            json!({"custom_effects": [{"id": "minecraft:resistance", "amplifier": 1, "duration": 1800, "show_icon": true}]})
+        );
+        // A null value takes the potion away again.
+        swift
+            .data_mut()
+            .set_loot_component("minecraft:potion_contents", &serde_json::Value::Null);
+        assert_eq!(swift.potion(), None);
     }
 
     #[test]
