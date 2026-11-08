@@ -137,7 +137,10 @@ impl PackResources {
         light: Arc<LightTables>,
     ) -> Result<Self> {
         let visibility = models::load_visibility(root, assets.registry)?;
-        let tables = Arc::new(MeshTables::new(&assets, &render, facts, visibility)?);
+        let tables = Arc::new(
+            MeshTables::new(&assets, &render, facts, visibility)?
+                .with_polytone_colormaps(root, assets.registry),
+        );
         let item_renderer = horizon_client::item_render::ItemRenderer::load_with_library(
             root,
             render.model_library.clone(),

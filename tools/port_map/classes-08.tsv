@@ -144,8 +144,8 @@ SetItemCountFunction.run	port	crates/horizon-world/src/loot.rs::Context::run	set
 SetItemCountFunction.setCount	skip:java		builder factory
 SetItemDamageFunction.run	port	crates/horizon-world/src/loot.rs::Context::run	set_damage arm
 SetItemDamageFunction.setDamage	skip:java		builder factory
-SetLoreFunction.run	port	crates/horizon-client/src/game/commands/items.rs::Game::apply_item_modifier	gap: minor: only /item modify runs set_lore; no loot table uses it
-SetLoreFunction.updateLore	inline	crates/horizon-client/src/game/commands/items.rs::Game::apply_item_modifier	set_lore arm, list_operation
+SetLoreFunction.run	port	crates/horizon-world/src/loot.rs::Context::run	set_lore arm: the lines go through the function's list operation over the minecraft:lore component; the item layer reads the component from other for the tooltip
+SetLoreFunction.updateLore	inline	crates/horizon-world/src/loot.rs::list_operation	the set_lore arm builds the lore list through the shared list operation
 SetLoreFunction.getReferencedContextParams	skip:data		validation of referenced context params
 SetLoreFunction.Builder	skip:java		builder
 SetOminousBottleAmplifierFunction.run	port	crates/horizon-world/src/loot.rs::Context::run	set_ominous_bottle_amplifier arm

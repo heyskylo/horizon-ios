@@ -66,7 +66,6 @@ pub(super) struct Parked {
     bolts: Vec<lightning::Bolt>,
     crystals: Vec<dragon::Crystal>,
     dragon: Option<dragon::Dragon>,
-    dragon_fireballs: Vec<dragon::DragonFireball>,
     breath_clouds: Vec<dragon::Breath>,
     tridents: horizon_client::join_seq::JoinList<trident::ThrownTrident>,
     rockets: horizon_client::join_seq::JoinList<fireworks::Rocket>,
@@ -274,7 +273,6 @@ impl Game<'_> {
             bolts: Vec::new(),
             crystals: Vec::new(),
             dragon: None,
-            dragon_fireballs: Vec::new(),
             breath_clouds: Vec::new(),
             tridents: Default::default(),
             rockets: Default::default(),
@@ -425,7 +423,6 @@ impl Game<'_> {
         swap(&mut self.bolts, &mut p.bolts);
         swap(&mut self.crystals, &mut p.crystals);
         swap(&mut self.dragon, &mut p.dragon);
-        swap(&mut self.dragon_fireballs, &mut p.dragon_fireballs);
         swap(&mut self.breath_clouds, &mut p.breath_clouds);
         swap(&mut self.tridents, &mut p.tridents);
         swap(&mut self.rockets, &mut p.rockets);
@@ -864,14 +861,16 @@ impl Game<'_> {
     }
 
     /// The areas the level in place's portal tickets keep streamed: around each
-    /// exit its entity-ticking chunks and their neighbours, and at least the
-    /// chunks its expiry waits for (`portal_ticket_can_expire`).
+    /// exit its block-ticking chunks and their neighbours, the ring vanilla
+    /// keeps `FULL` (level 33), so the outer block-ticking ring is a ticking
+    /// chunk too; and at least the chunks its expiry waits for
+    /// (`portal_ticket_can_expire`).
     pub(super) fn portal_ticket_areas(&self) -> Vec<((i32, i32), i32)> {
-        let entity_ticking = i32::from(horizon_client::ticket_levels::ENTITY_TICKING);
+        let block_ticking = i32::from(horizon_client::ticket_levels::BLOCK_TICKING);
         self.tickets
             .portal_tickets()
             .iter()
-            .map(|t| (t.chunk, (entity_ticking - t.level).max(1)))
+            .map(|t| (t.chunk, (block_ticking - t.level).max(1)))
             .collect()
     }
 
