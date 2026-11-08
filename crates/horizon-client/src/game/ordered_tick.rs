@@ -198,6 +198,10 @@ impl Game<'_> {
                     let Some(i) = find_join(&self.orbs, join) else {
                         continue;
                     };
+                    let at = self.orbs[i].position;
+                    if !entity_ticking(at.x.floor() as i32, at.z.floor() as i32) {
+                        continue;
+                    }
                     // ExperienceOrb.tick runs scanForMerges before it moves.
                     // An orb absorbed here is gone before its own turn's
                     // find_join finds it.

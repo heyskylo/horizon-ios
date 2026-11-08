@@ -262,9 +262,10 @@ mod tests {
                     let template = Arc::new(template);
                     resources
                         .templates
+                        .loaded
                         .write()
                         .unwrap()
-                        .insert(name.clone(), Some(template.clone()));
+                        .insert(name.clone(), template.clone());
                     let mut pivot = [0; 3];
                     let mut mirror_value = Mirror::None;
                     let mut ignore = vec!["minecraft:structure_block".into()];
