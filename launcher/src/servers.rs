@@ -394,18 +394,28 @@ pub fn run_streamed(dir: &Path, args: &[&str], line: &dyn Fn(String)) -> Result<
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| Problem::plain(format!("Couldn't run horizon-server: {e}")))?;
+    let (tx_err, rx_err) = std::sync::mpsc::channel();
     let mut err = child.stderr.take();
-    let errors = std::thread::spawn(move || {
+    std::thread::spawn(move || {
         let mut text = String::new();
         if let Some(e) = &mut err {
             let _ = e.read_to_string(&mut text);
         }
-        text
+        let _ = tx_err.send(text);
     });
-    let mut out = String::new();
+    let (tx_line, rx_line) = std::sync::mpsc::channel();
     if let Some(stdout) = child.stdout.take() {
-        // `start` prints a dot every half second on one line: those aren't lines worth showing.
-        for l in BufReader::new(stdout).lines().map_while(Result::ok) {
+        std::thread::spawn(move || {
+            for l in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if tx_line.send(l).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    let mut out = String::new();
+    let status = loop {
+        while let Ok(l) = rx_line.try_recv() {
             let shown = l
                 .trim_start_matches(['.', ' '])
                 .trim_start_matches("Starting");
@@ -416,9 +426,29 @@ pub fn run_streamed(dir: &Path, args: &[&str], line: &dyn Fn(String)) -> Result<
             out.push_str(&l);
             out.push('\n');
         }
-    }
-    let status = child.wait().map_err(|e| Problem::plain(e.to_string()))?;
-    let err = errors.join().unwrap_or_default();
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| Problem::plain(e.to_string()))?
+        {
+            std::thread::sleep(Duration::from_millis(100));
+            while let Ok(l) = rx_line.try_recv() {
+                let shown = l
+                    .trim_start_matches(['.', ' '])
+                    .trim_start_matches("Starting");
+                let shown = shown.trim_start_matches('.').trim();
+                if !shown.is_empty() {
+                    line(shown.to_string());
+                }
+                out.push_str(&l);
+                out.push('\n');
+            }
+            break status;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let err = rx_err
+        .recv_timeout(Duration::from_millis(200))
+        .unwrap_or_default();
     if status.success() {
         Ok(())
     } else {
