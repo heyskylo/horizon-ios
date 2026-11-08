@@ -6364,6 +6364,10 @@ def groups():
     except ImportError:
         from potion_effect_icon_corpus import cases as potion_effect_icons
     try:
+        from .trader_llama_delay_corpus import llama_delay
+    except ImportError:
+        from trader_llama_delay_corpus import llama_delay
+    try:
         from .transmute_patch_corpus import cases as transmute_patches
     except ImportError:
         from transmute_patch_corpus import cases as transmute_patches
@@ -6576,4 +6580,5 @@ def groups():
         (player_food.GROUP, player_food.cases(cmd, setup)),
     ]
     result.insert(1, ('vehicle kill contents', vehicle_kill_contents(cmd)))
+    result.insert(1, ('trader llama NoAI delay', llama_delay(cmd)))
     return result
