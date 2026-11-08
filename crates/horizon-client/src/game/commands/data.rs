@@ -145,6 +145,8 @@ impl Game<'_> {
                 let i = self.boats.iter().position(|b| b.id == id)?;
                 let b = &self.boats[i];
                 let mut tag = b.to_nbt(uuid, self.persist.raw.get(&id));
+                // Entity.saveWithoutId: the actual runtime passenger tree.
+                self.put_mob_passengers(&mut tag, id);
                 // AbstractBoat.addAdditionalSaveData: the live or pending leash.
                 self.write_boat_leash(&mut tag, i);
                 tag
@@ -331,6 +333,18 @@ impl Game<'_> {
     /// `TypedEntityData.loadInto` is: a spawn egg's data on the mob it spawned.
     pub(in crate::game) fn apply_entity_nbt(&mut self, t: Target, mut tag: Tag) -> R<()> {
         let stale = || err("commands.data.merge.failed", &[]);
+        // Entity.load does not read Passengers: the riders stay, and so do the
+        // passengers the load kept raw (none, when it kept none).
+        let kept_passengers = match t {
+            Target::Mob(id) | Target::Boat(id) | Target::Cart(id) | Target::Tnt(id) => Some(
+                self.persist
+                    .raw
+                    .get(&id)
+                    .and_then(|raw| raw.get("Passengers"))
+                    .cloned(),
+            ),
+            _ => None,
+        };
         match t {
             // EntityDataAccessor.setData: players can't be modified, guests neither.
             Target::Player | Target::Guest(_) => {
@@ -624,6 +638,18 @@ impl Game<'_> {
         | Target::Other(id)
         | Target::Fangs(id) = t
         {
+            if let Some(kept) = kept_passengers
+                && let Tag::Compound(c) = &mut tag
+            {
+                match kept {
+                    Some(passengers) => {
+                        c.insert("Passengers".into(), passengers);
+                    }
+                    None => {
+                        c.remove(&"Passengers".into());
+                    }
+                }
+            }
             self.persist.raw.insert(id, tag);
         }
         Ok(())
@@ -1382,6 +1408,15 @@ impl Game<'_> {
             set_key(&mut tag, "home_pos", Tag::IntArray(home.to_vec()));
         }
         place_summoned(&mut tag, pos);
+        // ServerLevel.tryAddFreshEntityWithPassengers: a UUID of the tree that
+        // an entity in the level holds refuses the whole tree, before any of
+        // it joins (players are not looked at here).
+        if self.summon_tree_uuids(&tag).into_iter().any(|u| {
+            self.target_with_uuid(u)
+                .is_some_and(|t| t != Target::Player)
+        }) {
+            return Err(err("commands.summon.failed.uuid", &[]));
+        }
         let from = self.mobs.len();
         let canceled = self.persist.joins_canceled;
         let target = self.spawn_entity_from_nbt(tag);
@@ -1572,6 +1607,159 @@ mod wolf_live_anger_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod boat_passenger_tree_tests {
+    use super::*;
+    use crate::game::native_machines::tests::server_game;
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn actual_boat_getter_projects_runtime_children_and_existing_bookkeeping() {
+        let mut game = server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        assert!(game.run_command("forceload add 0 0 15 15"));
+        assert!(game.world.loaded(8, 8));
+        assert!(game.run_command("setblock 8 199 8 stone"));
+        assert!(game.run_command("summon oak_boat 8.5 200 8.5 {UUID:[I;7,151,1,1],NoGravity:1b,Silent:1b,CustomName:\"Hull\"}"));
+        let bi = game.boats.iter().position(|b| b.position.x == 8.5).unwrap();
+        let bid = game.boats[bi].id;
+        let child = game
+            .spawn_mob_reason("minecraft:cow", [8.5, 200.0, 8.5], true, true, false)
+            .unwrap();
+        let ci = game.mobs.iter().position(|m| m.id == child).unwrap();
+        game.mobs[ci].no_ai = true;
+        game.mobs[ci].no_gravity = true;
+        assert!(
+            !game.persist.raw.contains_key(&child),
+            "fresh actual runtime child has no raw NBT"
+        );
+        assert_eq!(
+            game.mobs[ci].extra.anger_end, 0,
+            "unprimed constructor state"
+        );
+        game.ride_mount(Target::Mob(child), Target::Boat(bid))
+            .unwrap();
+        assert_eq!(game.mobs[ci].extra.mount, Some(bid));
+        let clock = game.world.game_time;
+        let chunks = game.world.chunks.len();
+        let raw = game.persist.raw.get(&bid).cloned();
+        assert!(raw.as_ref().unwrap().get("Passengers").is_none());
+        let before = (
+            game.persist.uuids.len(),
+            game.persist.uuid_of(child),
+            game.mobs[ci].extra.anger_end,
+            game.mobs[ci].extra.angry_at,
+        );
+        let first = game.entity_nbt(Target::Boat(bid)).unwrap();
+        let after = (
+            game.persist.uuids.len(),
+            game.persist.uuid_of(child),
+            game.mobs[ci].extra.anger_end,
+            game.mobs[ci].extra.angry_at,
+        );
+        println!("parent-first bookkeeping before={before:?} after={after:?}");
+        let mut failures = Vec::new();
+        if after.2 != -1 {
+            failures.push("first parent must use existing 0->-1 normalization".to_owned());
+        }
+        if after.1.is_none() || after.0 != before.0 + usize::from(before.1.is_none()) {
+            failures.push("first parent must use existing UUID registration once".into());
+        }
+        let control = game
+            .spawn_mob_reason("minecraft:cow", [12.5, 200.0, 8.5], true, true, false)
+            .unwrap();
+        let di = game.mobs.iter().position(|m| m.id == control).unwrap();
+        game.mobs[di].no_ai = true;
+        game.mobs[di].no_gravity = true;
+        assert!(!game.persist.raw.contains_key(&control));
+        assert_eq!(game.mobs[di].extra.anger_end, 0);
+        let direct_before = (
+            game.persist.uuids.len(),
+            game.persist.uuid_of(control),
+            game.mobs[di].extra.anger_end,
+        );
+        let direct_control = game.entity_nbt(Target::Mob(control)).unwrap();
+        let direct_after = (
+            game.persist.uuids.len(),
+            game.persist.uuid_of(control),
+            game.mobs[di].extra.anger_end,
+        );
+        println!(
+            "existing child-getter bookkeeping before={direct_before:?} after={direct_after:?}"
+        );
+        assert_eq!(direct_after.2, -1);
+        assert_eq!(
+            direct_after.0,
+            direct_before.0 + usize::from(direct_before.1.is_none())
+        );
+        assert!(direct_after.1.is_some());
+        assert_eq!(
+            direct_control.get("UUID"),
+            Some(&Tag::IntArray(direct_after.1.unwrap().to_vec()))
+        );
+        let direct_child = game.entity_nbt(Target::Mob(child)).unwrap();
+        let saved_child = |tag: &Tag| match tag.get("Passengers") {
+            Some(Tag::List(v)) if v.len() == 1 => Some(v[0].clone()),
+            _ => None,
+        };
+        if saved_child(&first).as_ref() != Some(&direct_child) {
+            failures.push("first parent typed child must equal actual child getter".into());
+        }
+        let stable = game.persist.uuids.len();
+        for _ in 0..2 {
+            let again = game.entity_nbt(Target::Boat(bid)).unwrap();
+            if saved_child(&again).as_ref() != Some(&direct_child) {
+                failures.push("repeated parent must keep exactly one actual child".into());
+            }
+            assert_eq!(game.persist.uuids.len(), stable);
+            assert_eq!(game.mobs[ci].extra.anger_end, -1);
+            assert_eq!(game.mobs[ci].extra.mount, Some(bid));
+        }
+        assert!(game.run_command("scoreboard objectives add h151 dummy"));
+        assert!(game.run_command("scoreboard players set #r h151 91"));
+        assert!(game.run_command("scoreboard players set #s h151 17"));
+        let accepted=game.run_command("execute store result score #r h151 store success score #s h151 run data get entity @e[nbt={UUID:[I;7,151,1,1]},limit=1] Passengers[0].UUID");
+        let score = |name| game.score.board.score(name, "h151").unwrap().value;
+        if (accepted, score("#r"), score("#s")) != (true, 4, 1) {
+            failures.push("registered data command must reach live tree".into());
+        }
+        game.boats[bi].leash = Some(horizon_client::mobs::leash::Holder::Mob(control));
+        let leashed = game.entity_nbt(Target::Boat(bid)).unwrap();
+        assert_eq!(
+            leashed.get("leash").and_then(|t| t.get("UUID")),
+            direct_control.get("UUID")
+        );
+        assert_eq!(leashed.get("CustomName"), Some(&Tag::String("Hull".into())));
+        assert_eq!(leashed.get("Silent"), Some(&Tag::Byte(1)));
+        game.dismount_mob(child);
+        assert!(
+            game.entity_nbt(Target::Boat(bid))
+                .unwrap()
+                .get("Passengers")
+                .is_none()
+        );
+        game.ride_mount(Target::Mob(child), Target::Boat(bid))
+            .unwrap();
+        let remount_child = game.entity_nbt(Target::Mob(child)).unwrap();
+        if saved_child(&game.entity_nbt(Target::Boat(bid)).unwrap()).as_ref()
+            != Some(&remount_child)
+        {
+            failures.push("actual remount tree".into());
+        }
+        assert_eq!(
+            game.persist.raw.get(&bid),
+            raw.as_ref(),
+            "getter must not replay/mutate raw passenger input"
+        );
+        assert_eq!(game.world.chunks.len(), chunks, "no chunk loading");
+        assert_eq!(game.world.game_time, clock, "no scene ticks");
+        assert!(
+            failures.is_empty(),
+            "actual boat passenger getter mismatches: {failures:?}"
+        );
     }
 }
 
