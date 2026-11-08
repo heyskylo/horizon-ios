@@ -706,6 +706,18 @@ impl PalettedContainer {
     /// re-encoded for the saved bit width.
     pub fn pack(&self) -> Packed {
         let entries = self.strategy.entries();
+        // One value in every cell (air, stone, a filled section): the packed
+        // form is that value and no indices, which `uniform` reads off the
+        // stored words. Unpacking the 4,096 cells first to discover the same
+        // thing is most of a section's save cost, and most sections of a
+        // column hold one value.
+        if let Some(value) = self.uniform() {
+            return Packed {
+                palette: vec![value],
+                bits: 0,
+                data: None,
+            };
+        }
         let mut values = vec![0u32; entries];
         self.unpack(&mut values);
         let (palette, ids) = palette_ids(&values);
@@ -1496,6 +1508,130 @@ mod tests {
             let (base, new) = (times[0][times[0].len() / 2], times[1][times[1].len() / 2]);
             println!(
                 "palette_ids {name}: baseline {base:.2} us, new {new:.2} us, {:.2}x",
+                base / new
+            );
+        }
+    }
+    /// `pack` as it was before a section of one value was answered from its
+    /// words: every cell unpacked, then the distinct values found again.
+    fn baseline_pack(c: &PalettedContainer) -> Packed {
+        let entries = c.strategy.entries();
+        let mut values = vec![0u32; entries];
+        c.unpack(&mut values);
+        let (palette, ids) = palette_ids(&values);
+        let bits = match c.strategy.config(ceil_log2(palette.len())) {
+            Config::Single => 0,
+            Config::List(bits) => bits,
+            Config::Global => ceil_log2(palette.len()),
+        };
+        let data = (bits != 0).then(|| pack_words(bits, entries, ids.iter().copied()));
+        Packed {
+            palette,
+            bits,
+            data,
+        }
+    }
+    /// A container holding `value` in every cell while stored in the global
+    /// palette's width, which `set` keeps once a section has used it.
+    fn global_uniform(value: u32) -> PalettedContainer {
+        let bits = BLOCKS.global_bits;
+        let width = usize::from(bits);
+        let per = 64 / width;
+        let pattern = (0..per).fold(0u64, |word, slot| word | u64::from(value) << (slot * width));
+        PalettedContainer {
+            strategy: BLOCKS,
+            bits,
+            palette: Palette::Global,
+            words: vec![pattern; BLOCKS.entries().div_ceil(per)],
+        }
+    }
+    /// Sections saved from a column: one value (a single palette, and a list
+    /// palette whose other entry died), mixed terrain, the global palette
+    /// holding one value, and biomes.
+    fn pack_cases() -> Vec<(&'static str, PalettedContainer)> {
+        let mixed: Vec<u32> = (0..4096).map(|i| (i % 12) as u32).collect();
+        let mut dead = PalettedContainer::new(BLOCKS, 5);
+        dead.set(100, 9);
+        dead.set(100, 5);
+        let biomes: Vec<u32> = (0..64).map(|i| (i % 6) as u32 * 2).collect();
+        vec![
+            ("single", PalettedContainer::new(BLOCKS, 5)),
+            ("dead slot", dead),
+            ("mixed", PalettedContainer::from_values(BLOCKS, &mixed)),
+            (
+                "terrain",
+                PalettedContainer::from_values(BLOCKS, &palette_cases()[0].1),
+            ),
+            ("global uniform", global_uniform(3000)),
+            ("biomes", PalettedContainer::from_values(BIOMES, &biomes)),
+        ]
+    }
+    #[test]
+    fn pack_matches_unpacking_every_section() {
+        for (name, container) in pack_cases() {
+            assert_eq!(container.pack(), baseline_pack(&container), "{name}");
+        }
+    }
+    /// A section of one value saves as that value and no indices, whatever its
+    /// stored palette looks like: a single palette, a list whose other entry was
+    /// overwritten, or the global palette.
+    #[test]
+    fn uniform_sections_pack_as_one_entry() {
+        let mut dead = PalettedContainer::new(BLOCKS, 5);
+        dead.set(100, 9);
+        dead.set(100, 5);
+        for (name, container, value) in [
+            ("single", PalettedContainer::new(BLOCKS, 5), 5),
+            ("dead slot", dead, 5),
+            ("global", global_uniform(3000), 3000),
+        ] {
+            assert_eq!(
+                container.pack(),
+                Packed {
+                    palette: vec![value],
+                    bits: 0,
+                    data: None,
+                },
+                "{name}"
+            );
+        }
+    }
+    /// `pack` against the unpacking implementation, over the cases above. 25
+    /// measured rounds alternate order and report the median microseconds per
+    /// call.
+    #[test]
+    #[ignore = "microbenchmark; run with --ignored --nocapture"]
+    fn benchmark_pack() {
+        use std::{hint::black_box, time::Instant};
+        for (name, container) in pack_cases() {
+            let reps = if container.uniform().is_some() {
+                2000
+            } else {
+                200
+            };
+            let mut times = [Vec::new(), Vec::new()];
+            for round in 0..25 {
+                for optimized in [round % 2 == 0, round % 2 != 0] {
+                    let started = Instant::now();
+                    for _ in 0..reps {
+                        if optimized {
+                            black_box(container.pack());
+                        } else {
+                            black_box(baseline_pack(black_box(&container)));
+                        }
+                    }
+                    if round > 0 {
+                        times[usize::from(optimized)]
+                            .push(started.elapsed().as_secs_f64() * 1e6 / f64::from(reps));
+                    }
+                }
+            }
+            for t in &mut times {
+                t.sort_by(f64::total_cmp);
+            }
+            let (base, new) = (times[0][times[0].len() / 2], times[1][times[1].len() / 2]);
+            println!(
+                "pack {name}: baseline {base:.2} us, new {new:.2} us, {:.2}x",
                 base / new
             );
         }
