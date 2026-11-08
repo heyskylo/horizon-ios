@@ -482,18 +482,30 @@ impl GameLevel<'_> {
             .filter(|_| machine)
             .and_then(|(_, tool)| tool.as_ref());
         let silk = tool.is_some_and(|t| t.enchantment_level("minecraft:silk_touch") > 0);
+        let breaker = self.drop_breaker_at == Some(pos);
         let drops = match self.items.block_loot_sequence(self.registry, state) {
             Some(sequence) => {
                 let random = self.rand_sequences.get(&sequence, self.seed);
-                self.items
-                    .block_drops_with(self.registry, state, tool, &dynamic, random)
+                self.items.block_drops_exploded(
+                    self.registry,
+                    state,
+                    tool,
+                    &dynamic,
+                    random,
+                    None,
+                    None,
+                    breaker,
+                )
             }
-            None => self.items.block_drops_with(
+            None => self.items.block_drops_exploded(
                 self.registry,
                 state,
                 tool,
                 &dynamic,
                 &mut self.world.random,
+                None,
+                None,
+                breaker,
             ),
         };
         for mut stack in drops {
