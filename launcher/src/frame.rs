@@ -383,7 +383,13 @@ impl Launcher {
                         .flex()
                         .items_baseline()
                         .justify_between()
-                        .child(ui::text(14., FontWeight::SEMIBOLD, ink::FULL).child(title))
+                        // The title wraps within the card: a long translation takes a second line.
+                        .child(
+                            ui::text(14., FontWeight::SEMIBOLD, ink::FULL)
+                                .flex_1()
+                                .min_w_0()
+                                .child(title),
+                        )
                         .children(
                             right.map(|r| ui::text(13., FontWeight::NORMAL, ink::NOTE).child(r)),
                         ),
@@ -510,7 +516,11 @@ impl Launcher {
                     .justify_center()
                     .gap(px(10.))
                     .mt(px(12.))
-                    .h(px(40.))
+                    // At least 40 high: a long translation wraps onto a second line, which grows the
+                    // button instead of spilling out of it.
+                    .min_h(px(40.))
+                    .px(px(12.))
+                    .py(px(8.))
                     .rounded(px(radius::ROW))
                     .bg(ui::color(horizon_theme::glass::DISCORD))
                     .hover(|s| s.bg(ui::color(horizon_theme::glass::DISCORD_HOVER)))
@@ -518,6 +528,8 @@ impl Launcher {
                     .child(ui::icon("discord", 18., gpui::white()))
                     .child(
                         ui::text(14., FontWeight::SEMIBOLD, ink::FULL)
+                            .min_w_0()
+                            .text_center()
                             .child(tr("Join the Discord")),
                     )
                     .on_click(move |_, _, cx| cx.open_url(&url)),
