@@ -1990,6 +1990,20 @@ impl Game<'_> {
                 {
                     return None;
                 }
+                // Likewise a block's menu (crafting table, furnace, chest)
+                // opens once the server's open-screen packet comes: wait for
+                // it while nothing else came of the click yet.
+                if !*place
+                    && pos.is_some()
+                    && !changed
+                    && self.remote.is_some()
+                    && self.screen == Screen::Playing
+                    && *inventory == self.inventory_counts()
+                    && self.ticks < *report_tick + 20
+                    && !timed_out
+                {
+                    return None;
+                }
                 let after = pos.map(|p| self.block_json(p));
                 let used = delta(inventory, &self.inventory_counts());
                 let mut v = json!({
