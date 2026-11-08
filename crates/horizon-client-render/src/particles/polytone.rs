@@ -1562,7 +1562,7 @@ mod tests {
                 .all(|v| v.layer == crate::gfx::TRANSLUCENT_PARTICLE_OVERLAY)
         );
         for _ in 0..3 {
-            engine.tick(&level);
+            engine.tick(&level, |_| None);
         }
         assert_eq!(
             engine.polytone_gpu_records(),

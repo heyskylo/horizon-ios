@@ -1191,6 +1191,27 @@ pub struct QuadSnapshot {
     pub light: u32,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TrackingTarget {
+    LocalPlayer,
+    Entity(i32),
+}
+
+/// The entity position and current dimensions that `getX/Y/Z(double)` use.
+#[derive(Clone, Copy)]
+pub struct TrackingBody {
+    pub feet: [f64; 3],
+    pub width: f64,
+    pub height: f64,
+}
+
+struct TrackingEmitter {
+    options: ParticleOptions,
+    target: Option<TrackingTarget>,
+    body: TrackingBody,
+    remaining: u32,
+}
+
 /// World access for particle physics.
 pub struct ParticleLevel<'a> {
     pub world: &'a World,
@@ -1298,8 +1319,7 @@ pub struct ParticleEngine {
     polytone_ticks: u64,
     /// The last frame's additively blended quads (`take_additive`).
     additive: std::sync::Mutex<Vec<Vertex>>,
-    /// `TrackingEmitter`s: particle type, entity feet position, width, height, ticks left.
-    emitters: Vec<(ParticleOptions, [f64; 3], f64, f64, u32)>,
+    emitters: Vec<TrackingEmitter>,
     /// Camera position for the 32-block spawn limiter.
     pub camera: [f64; 3],
     /// The Particles option (`ParticleStatus`): 0 all, 1 decreased, 2 minimal.
@@ -1910,27 +1930,51 @@ impl ParticleEngine {
     pub fn tracking_emitter(
         &mut self,
         options: ParticleOptions,
-        feet: [f64; 3],
-        width: f64,
-        height: f64,
+        target: TrackingTarget,
+        body: TrackingBody,
     ) {
-        self.tracking_emitter_for(options, feet, width, height, 3);
+        self.tracking_emitter_for(options, target, body, 3);
     }
     /// `createTrackingEmitter(entity, type, lifetime)`.
     pub fn tracking_emitter_for(
         &mut self,
         options: ParticleOptions,
-        feet: [f64; 3],
-        width: f64,
-        height: f64,
+        target: TrackingTarget,
+        body: TrackingBody,
         life: u32,
     ) {
-        self.emit(&options, feet, width, height);
+        self.emit(&options, body);
         if life > 1 {
-            self.emitters.push((options, feet, width, height, life - 1));
+            self.emitters.push(TrackingEmitter {
+                options,
+                target: Some(target),
+                body,
+                remaining: life - 1,
+            });
         }
     }
-    fn emit(&mut self, options: &ParticleOptions, feet: [f64; 3], width: f64, height: f64) {
+    /// Vanilla keeps the old entity reference until the emitter expires. Keep
+    /// its final body if it leaves the level, even when the id is paired again.
+    pub fn detach_tracking_target(
+        &mut self,
+        target: TrackingTarget,
+        mut last_body: impl FnMut() -> Option<TrackingBody>,
+    ) {
+        for emitter in &mut self.emitters {
+            if emitter.target == Some(target) {
+                emitter.body = last_body().unwrap_or(emitter.body);
+                emitter.target = None;
+            }
+        }
+    }
+    /// `TrackingEmitter.tick`: the spawn attempts use the tracked entity's
+    /// current feet and dimensions.
+    fn emit(&mut self, options: &ParticleOptions, body: TrackingBody) {
+        let TrackingBody {
+            feet,
+            width,
+            height,
+        } = body;
         for _ in 0..16 {
             let r = &mut self.random;
             let xa = f64::from(r.next_float() * 2.0 - 1.0);
@@ -1938,9 +1982,9 @@ impl ParticleEngine {
             let za = f64::from(r.next_float() * 2.0 - 1.0);
             if xa * xa + ya * ya + za * za <= 1.0 {
                 let p = [
-                    feet[0] + width * xa / 4.0,
+                    feet[0] + width * (xa / 4.0),
                     feet[1] + height * (0.5 + ya / 4.0),
-                    feet[2] + width * za / 4.0,
+                    feet[2] + width * (za / 4.0),
                 ];
                 self.add(options, p, [xa, ya + 0.2, za]);
             }
@@ -3793,7 +3837,11 @@ impl ParticleEngine {
             }
         }
     }
-    pub fn tick(&mut self, level: &ParticleLevel) {
+    pub fn tick(
+        &mut self,
+        level: &ParticleLevel,
+        mut tracking_body: impl FnMut(TrackingTarget) -> Option<TrackingBody>,
+    ) {
         self.polytone_ticks += 1;
         for store in &mut self.polytone_gpu {
             store.expire(self.polytone_ticks);
@@ -3804,12 +3852,19 @@ impl ParticleEngine {
         }
         self.tick_starters();
         self.tick_explosions(level);
-        for (options, feet, width, height, life) in std::mem::take(&mut self.emitters) {
-            self.emit(&options, feet, width, height);
-            if life > 1 {
-                self.emitters.push((options, feet, width, height, life - 1));
+        let mut emitters = std::mem::take(&mut self.emitters);
+        emitters.retain_mut(|emitter| {
+            if let Some(target) = emitter.target {
+                match tracking_body(target) {
+                    Some(body) => emitter.body = body,
+                    None => emitter.target = None,
+                }
             }
-        }
+            self.emit(&emitter.options, emitter.body);
+            emitter.remaining -= 1;
+            emitter.remaining > 0
+        });
+        self.emitters = emitters;
         let mut particles = std::mem::take(&mut self.particles);
         for p in &mut particles {
             self.tick_particle(p, level);

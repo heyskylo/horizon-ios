@@ -3173,14 +3173,27 @@ impl Game<'_> {
         height: f64,
         magic: bool,
     ) {
-        use horizon_client::particles::{ParticleOptions, ParticleType};
+        use horizon_client::particles::{
+            ParticleOptions, ParticleType, TrackingBody, TrackingTarget,
+        };
         let particle = if magic {
             ParticleType::EnchantedHit
         } else {
             ParticleType::Crit
         };
-        self.particles
-            .tracking_emitter(ParticleOptions::simple(particle), feet, width, height);
+        let body = self.mob_index.get(&self.mobs, id as u32).map_or(
+            TrackingBody {
+                feet,
+                width,
+                height,
+            },
+            super::render_tick::mob_tracking_body,
+        );
+        self.particles.tracking_emitter(
+            ParticleOptions::simple(particle),
+            TrackingTarget::Entity(id),
+            body,
+        );
         if self.audio.capture.is_some() {
             self.lan_critical_hits.push((attacker, id, magic));
         }

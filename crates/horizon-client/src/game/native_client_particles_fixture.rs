@@ -26,7 +26,7 @@ impl Game<'_> {
             collision: self.collision,
             player: None,
         };
-        self.particles.tick(&level);
+        self.particles.tick(&level, |_| None);
     }
 
     pub(super) fn run_native_client_particles_fixture(&mut self, directory: &Path) -> Result<()> {
