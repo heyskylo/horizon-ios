@@ -944,7 +944,10 @@ mod crafter_drop_name_tests {
                 &*game.res.facts().get(game.world.block(x, 199, z)).name,
                 "minecraft:stone"
             );
-            assert_eq!(game.world.block_names.get(&key).map(String::as_str), name);
+            assert_eq!(
+                game.world.block_names.get(&key),
+                name.map(|n| Tag::String(n.into())).as_ref()
+            );
             let entity = game
                 .world
                 .block_entities
