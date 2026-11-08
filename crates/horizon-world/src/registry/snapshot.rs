@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
     io,
+    sync::RwLock,
 };
 
 /// A state: its name and property strings as `strings` indexes.
@@ -190,6 +191,7 @@ pub(crate) fn restore(snapshot: Snapshot) -> io::Result<(BlockRegistry, Vec<(boo
             ids: id_map,
             collided: collided_map,
             defaults: default_map,
+            saved_states: RwLock::new(horizon_core::fast_hash::FxHashMap::default()),
         },
         flags,
     ))
