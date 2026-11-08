@@ -733,6 +733,18 @@
     {
       "name": "player",
       "target": "horizon_client::game::native_hooks::Game<'_>::native_player"
+    },
+    {
+      "name": "force_chunk",
+      "target": "horizon_client::game::native_chunk_tickets::Game<'_>::native_force_chunk"
+    },
+    {
+      "name": "forced_chunks",
+      "target": "horizon_client::game::native_chunk_tickets::Game<'_>::native_forced_chunks"
+    },
+    {
+      "name": "force_chunk_in",
+      "target": "horizon_client::game::native_chunk_tickets::Game<'_>::native_force_chunk_in"
     }
   ],
   "hooks": [

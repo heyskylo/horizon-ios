@@ -12,7 +12,10 @@ struct StaticEntityUniform {
     @location(5) normal: vec4<f32>, @location(6) glint_uv: vec2<f32>,
     @location(7) section_origin: vec3<i32>) -> Out {
     let block_delta = section_origin - static_entity.camera_block.xyz;
+    // [world warp static entity]
+    // (a world warp's pipelines put the vertex through the mod's `world_warp`: gfx/world_warp.rs)
     let camera_relative = vec3<f32>(block_delta) + position - static_entity.camera_fraction.xyz;
+    // [end world warp static entity]
     var out = entity_vertex(camera_relative,
         uv, overlay & 0xffffu, color, light, normal);
     out.glint_uv = glint_uv;

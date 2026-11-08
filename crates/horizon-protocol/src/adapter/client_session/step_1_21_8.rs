@@ -106,13 +106,13 @@ fn explode(payload: &[u8]) -> Result<Vec<u8>> {
     // The pinned read ends with a play-sound flag 1.21.10 does not have: a set one is appended to read it.
     let mut body = payload.to_vec();
     body.push(1);
-    let e = play::Explode::read(&mut Reader::new(&body))?;
-    let mut w = Writer::new();
-    Vec3d::write(&e.center, &mut w);
-    <Opt<Vec3d>>::write(&e.knockback, &mut w);
-    e.particle.write(&mut w);
-    SoundHolder::write(&e.sound, &mut w);
-    Ok(w.data)
+    let e = super::read_in_client_ids(|| play::Explode::read(&mut Reader::new(&body)))?;
+    Ok(super::write_in_client_ids(|w| {
+        Vec3d::write(&e.center, w);
+        <Opt<Vec3d>>::write(&e.knockback, w);
+        e.particle.write(w);
+        SoundHolder::write(&e.sound, w);
+    }))
 }
 
 /// Entity data of a player, 1.21.10's layout to 1.21.8's (translate's `v1_21_8::entity_data`, reversed), after
@@ -152,7 +152,7 @@ mod tests {
 
     /// 1.21.8's packet, read by translate's 1.21.8 reader, then written back by this step.
     fn round_trip(session: &Session, id: i32, body: &[u8]) -> Vec<u8> {
-        let up = translate::v1_21_8::clientbound(session, State::Play, id, body)
+        let up = translate::client_layout_v1_21_8::clientbound(session, State::Play, id, body)
             .unwrap()
             .expect("1.21.8 packet has a 1.21.10 layout");
         clientbound(State::Play, id, &up)
@@ -237,7 +237,7 @@ mod tests {
         assert_eq!(round_trip(&session, id, &body), body);
 
         // And the 1.21.10 side the pinned reader sees: the radius and count it was given, no block particles.
-        let up = translate::v1_21_8::clientbound(&session, State::Play, id, &body)
+        let up = translate::client_layout_v1_21_8::clientbound(&session, State::Play, id, &body)
             .unwrap()
             .unwrap();
         let mut up = up;
@@ -277,7 +277,7 @@ mod tests {
         );
         // The way back, by translate's reader, gives 1.21.10's order again, minus the shoulders.
         let mut back = d.clone();
-        translate::v1_21_8::entity_data(&session, &mut back);
+        translate::client_layout_v1_21_8::entity_data(&session, &mut back);
         assert_eq!(
             back.values,
             vec![

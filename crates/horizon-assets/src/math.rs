@@ -290,12 +290,12 @@ pub fn normalize_quaternion(q: [f32; 4]) -> [f32; 4] {
     [x * inv, y * inv, z * inv, w * inv]
 }
 /// JOML `Math.sin(float)` without fast math.
-fn joml_sin(rad: f32) -> f32 {
+pub fn joml_sin(rad: f32) -> f32 {
     f64::from(rad).sin() as f32
 }
 /// JOML `Math.cosFromSin(float, float)` without fast math: the magnitude from
 /// the sine, the sign from the angle's quadrant (exact zeros at right angles).
-fn cos_from_sin(sin: f32, angle: f32) -> f32 {
+pub fn cos_from_sin(sin: f32, angle: f32) -> f32 {
     let cos = (1.0 - sin * sin).sqrt();
     let tau = (std::f64::consts::PI * 2.0) as f32;
     let a = angle + std::f32::consts::FRAC_PI_2;

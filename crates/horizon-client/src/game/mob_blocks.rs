@@ -543,13 +543,10 @@ impl Game<'_> {
         } else {
             return;
         };
-        // Helmets are drawn by HumanoidArmorLayer, not CustomHeadLayer.
-        if self
-            .res
-            .items()
-            .get(&stack.item)
-            .and_then(|i| i.equip_asset.as_ref())
-            .is_some()
+        // Helmets are drawn by HumanoidArmorLayer, not CustomHeadLayer
+        // (LivingEntityRenderer.extractRenderState: HumanoidArmorLayer.shouldRender).
+        if horizon_client::item_sync::equippable(&stack, self.res.items())
+            .is_some_and(|e| e.asset_id.is_some() && e.slot == "head")
         {
             return;
         }

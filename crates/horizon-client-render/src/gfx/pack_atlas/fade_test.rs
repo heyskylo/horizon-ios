@@ -49,12 +49,12 @@ fn terrain_fade_reaches_pack_pixels_through_real_instances() {
         std::env::temp_dir().join(format!("horizon-terrain-fade-{}", std::process::id())),
     );
     std::fs::create_dir_all(folder.0.join("shaders")).unwrap();
-    // The guard, initializer, varying and integer output are independent probe code.
+    // The initializer, varying and integer output are independent probe code. The program reads
+    // `mc_chunkFade` unguarded: Horizon defines no `IRIS_FEATURE_*` (spec OQ-2).
     let vertex = "#version 330\nout vec4 observation;\n\
-        #ifdef IRIS_FEATURE_FADE_VARIABLE\nfloat first = mc_chunkFade;\n#endif\n\
-        void main() {\n#ifdef IRIS_FEATURE_FADE_VARIABLE\n\
+        float first = mc_chunkFade;\n\
+        void main() {\n\
         observation = vec4(mc_chunkFade, first, gl_Color.a, gl_MultiTexCoord0.x);\n\
-        #else\nobservation = vec4(1.0, 1.0, gl_Color.a, gl_MultiTexCoord0.x);\n#endif\n\
         gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n}";
     let fragment = "#version 330\nin vec4 observation;\nlayout(location = 0) out uvec4 pixel;\n\
         void main() { pixel = floatBitsToUint(observation); }";
@@ -157,8 +157,10 @@ fn terrain_fade_reaches_pack_pixels_through_real_instances() {
                             flat,
                             geometry,
                             origin,
+                            0x80ffffff,
                         );
-                        let fade = if requested { expected } else { 1.0 };
+                        // The fade reaches the program whether the pack requested it or not.
+                        let fade = expected;
                         let expected = [
                             fade,
                             if geometry { 0.8125 } else { fade },
@@ -182,6 +184,96 @@ fn terrain_fade_reaches_pack_pixels_through_real_instances() {
     assert_eq!(count, 98);
 }
 
+/// `horizonTier`: the HDR tier the mesher marks a light source's faces with (`mesher::emitting`),
+/// read by a pack's terrain program, flat or instanced.
+#[test]
+fn terrain_tier_reaches_pack_pixels() {
+    let instance = crate::gfx::test_gpu::instance();
+    let adapter = match pollster::block_on(instance.request_adapter(&Default::default())) {
+        Ok(adapter) => adapter,
+        Err(error) => {
+            eprintln!("SKIP terrain tier GPU control: no adapter: {error}");
+            return;
+        }
+    };
+    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+    let array = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d {
+            width: 2,
+            height: 2,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    let atlas = PackAtlas::new(&device, &mut encoder, &[array], 1, 1, 2).unwrap();
+    queue.submit([encoder.finish()]);
+    let folder = ProbePack(
+        std::env::temp_dir().join(format!("horizon-terrain-tier-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(folder.0.join("shaders")).unwrap();
+    std::fs::write(
+        folder.0.join("shaders/gbuffers_terrain.vsh"),
+        "#version 330\nin float horizonTier;\nout vec4 observation;\n\
+         void main() {\nobservation = vec4(horizonTier, 0.0, 0.0, 0.0);\n\
+         gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n}",
+    )
+    .unwrap();
+    std::fs::write(
+        folder.0.join("shaders/gbuffers_terrain.fsh"),
+        "#version 330\nin vec4 observation;\nlayout(location = 0) out uvec4 pixel;\n\
+         void main() { pixel = floatBitsToUint(observation); }",
+    )
+    .unwrap();
+    let pack = horizon_shaders::Pack::open(&folder.0).unwrap();
+    let mut macros = horizon_shaders::Macros::standard();
+    let (properties, _) = horizon_shaders::read_properties(&pack, &mut macros);
+    use crate::mesher::{BRIGHT, LOW, VERY_BRIGHT, WHOLE, emitting};
+    // No light, low, very bright, and bright all over (4 more).
+    let cases = [
+        (0, 0.0),
+        (LOW, 1.0),
+        (VERY_BRIGHT, 4.0),
+        (BRIGHT | WHOLE, 7.0),
+    ];
+    for flat in [false, true] {
+        let post = horizon_shaders::load_post(
+            &pack,
+            "",
+            &properties,
+            &macros,
+            &horizon_shaders::GameInputs {
+                terrain: Some(atlas.terrain_inputs(flat)),
+                ..Default::default()
+            },
+        );
+        let program = post
+            .terrain
+            .as_ref()
+            .unwrap_or_else(|| panic!("{:?}", post.notes));
+        for (tier, expected) in cases {
+            let origin = section_instance([0.0; 3], 0, 1.0);
+            let pixel = sample(
+                &device,
+                &queue,
+                &atlas,
+                program.program.as_ref().unwrap(),
+                flat,
+                false,
+                origin,
+                emitting(0xffff_ffff, tier),
+            );
+            assert_eq!(pixel[0], expected, "tier {tier} flat={flat}");
+        }
+    }
+}
+
 fn sample(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -190,6 +282,7 @@ fn sample(
     flat: bool,
     geometry: bool,
     origin: [f32; 4],
+    color: u32,
 ) -> [f32; 4] {
     let buffer = |bytes: &[u8], usage| {
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -209,7 +302,7 @@ fn sample(
     let slots = buffer(bytemuck::bytes_of(&0u32), wgpu::BufferUsages::STORAGE);
     let vertices: Vec<_> = [[0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.]]
         .into_iter()
-        .map(|pos| TerrainVertex::new(pos, [0.25, 0.75], 0, 0x80ffffff, 0))
+        .map(|pos| TerrainVertex::new(pos, [0.25, 0.75], 0, color, 0))
         .collect();
     let data = buffer(
         bytemuck::cast_slice(&vertices),

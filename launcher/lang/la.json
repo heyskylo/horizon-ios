@@ -1250,5 +1250,15 @@
   "Use a different Microsoft account": "Aliam Microsoft rationem adhibe",
   "Buy": "Eme",
   "Gift": "Dona",
-  "Looks": "Habitus"
+  "Found on this computer": "In hoc computatro inventa",
+  "Looks": "Habitus",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Clavium anulus systematis tui intra {seconds} secunda non respondit. Fac ut currat et reseratus sit, deinde launcher iterum incipe.",
+  "Can't read {name}'s sign-in: {why}": "Ingressus {name} legi non potest: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: versio {version} adhibetur, facta pro Horizon quo ludis",
+  "Recommended": "Commendata",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "Versio vetustior, {version}, in Horizon quo ludis aedificatur: institutio eam eligit",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: versio {version} non aedificata est, {older} temptatur",
+  "Use recommended (kept at {version})": "Commendatam adhibe (ad {version} retenta)"
 }

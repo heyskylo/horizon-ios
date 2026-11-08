@@ -290,10 +290,46 @@ impl LiveFeatures {
         let Some(feature) = self.configured(name) else {
             return false;
         };
+        self.place_definition(&feature, name, world, random, origin)
+    }
+    /// An inline feature value (`ResourceOrHolderArgument`), decoded by the
+    /// same codec as a named feature; it is not cached. `None` when it does
+    /// not decode.
+    pub fn configured_inline(&self, json: &str) -> Option<FeatureDefinition> {
+        match self.decode_inline(json) {
+            Ok(feature) => Some(feature),
+            Err(e) => {
+                eprintln!("Horizon: inline feature cannot be placed: {e}");
+                None
+            }
+        }
+    }
+    /// The `ConfiguredFeature` codec on an inline value, over the same
+    /// catalog and block bindings as [`Self::configured_inline`]: nothing is
+    /// placed, logged or cached.
+    pub fn decode_inline(
+        &self,
+        json: &str,
+    ) -> Result<FeatureDefinition, crate::worldgen::DecodeError> {
+        self.catalog.feature_with_blocks(json, &self.bindings)
+    }
+    /// `Feature.place` for a decoded feature; `label` names it in errors.
+    /// Execution errors report failure.
+    pub fn place_definition<W: FeatureWorld + PlacementContext>(
+        &self,
+        feature: &FeatureDefinition,
+        label: &str,
+        world: &mut W,
+        random: &mut impl RandomSource,
+        origin: [i32; 3],
+    ) -> bool
+    where
+        W::Error: std::fmt::Display,
+    {
         match feature.place(world, random, origin, self.blocks) {
             Ok(placed) => placed,
             Err(e) => {
-                eprintln!("Horizon: placing {name} failed: {e}");
+                eprintln!("Horizon: placing {label} failed: {e}");
                 false
             }
         }

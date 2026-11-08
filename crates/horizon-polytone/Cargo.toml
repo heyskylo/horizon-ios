@@ -7,6 +7,7 @@ rust-version.workspace = true
 description = "Polytone-format resource pack files: targets, and the biome and dimension modifiers' environment attribute layers"
 
 [dependencies]
+log = "0.4"
 regex = { version = "1", default-features = false, features = ["std", "unicode-perl"] }
 serde_json = "1"
 

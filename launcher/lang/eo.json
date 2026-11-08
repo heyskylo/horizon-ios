@@ -1250,5 +1250,15 @@
   "Use a different Microsoft account": "Uzi alian Microsoft-konton",
   "Buy": "Aĉeti",
   "Gift": "Donaci",
-  "Looks": "Aspektoj"
+  "Found on this computer": "Trovitaj en ĉi tiu komputilo",
+  "Looks": "Aspektoj",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "La ŝlosilaro de via sistemo ne respondis dum {seconds} sekundoj. Certigu, ke ĝi funkcias kaj estas malŝlosita, kaj poste restartigu la lanĉilon.",
+  "Can't read {name}'s sign-in: {why}": "Ne eblas legi la ensaluton de {name}: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: uzas version {version}, faritan por la Horizon, kiun vi ludas",
+  "Recommended": "Rekomendata",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "Pli malnova versio, {version}, konstruiĝas sur la Horizon, kiun vi ludas: instalado elektas ĝin",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: versio {version} ne konstruiĝis, provante {older}",
+  "Use recommended (kept at {version})": "Uzi la rekomendatan (tenita ĉe {version})"
 }

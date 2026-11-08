@@ -33,7 +33,7 @@ pub(super) fn pipeline(
         multisample: Default::default(),
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            entry_point: Some("fs_entity"),
+            entry_point: Some("fs_entity_unmarked"),
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
@@ -67,7 +67,7 @@ struct Out { @builtin(position) pos:vec4<f32>, @location(0) color:vec4<f32> }
 @vertex fn vs_entity(@location(0) pos:vec3<f32>, @location(3) color:vec4<f32>)->Out {
  return Out(vec4(pos,1.0),color);
 }
-@fragment fn fs_entity(v:Out)->@location(0) vec4<f32> { return v.color; }
+@fragment fn fs_entity_unmarked(v:Out)->@location(0) vec4<f32> { return v.color; }
 "#
                 .into(),
             ),

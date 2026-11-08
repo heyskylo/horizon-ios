@@ -53,6 +53,8 @@ pub(super) struct Stage<'p> {
     pub(super) attributes: Vec<(String, String, String)>,
     /// A gbuffers-style program: the matrices are the frame's, not the quad's.
     pub(super) gbuffers: bool,
+    /// `normals` and `specular` are paged maps (`GbuffersInputs::paged_maps`).
+    pub(super) paged_maps: bool,
     /// The pack's fragment outputs, declared again with their locations.
     pub(super) frag_outs: Vec<(u32, String)>,
     /// Narrow outputs copied into their vec4 after the pack's `main`.
@@ -343,6 +345,7 @@ impl<'p> Stage<'p> {
             outputs: BTreeSet::new(),
             frag_coord: false,
             gbuffers: false,
+            paged_maps: false,
             replaced: HashMap::new(),
             inits: Vec::new(),
             globals: BTreeSet::new(),

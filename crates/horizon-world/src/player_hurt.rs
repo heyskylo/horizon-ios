@@ -25,20 +25,20 @@ fn min(a: f32, b: f32) -> f32 {
         a.min(b)
     }
 }
-pub fn player_hurt_server<W: PlayerHurtWorld>(
+fn player_hurt_start<W: PlayerHurtWorld>(
     s: &mut HurtState<W::Source>,
     w: &mut W,
     mut damage: f32,
-) -> Result<bool, W::Error> {
+) -> Result<Option<f32>, W::Error> {
     if w.invulnerable(s)? {
-        return Ok(false);
+        return Ok(None);
     }
     if w.ability_invulnerable() && !w.bypasses_invulnerability(s)? {
-        return Ok(false);
+        return Ok(None);
     }
     s.no_action_time = 0;
     if w.dead_or_dying(s)? {
-        return Ok(false);
+        return Ok(None);
     }
     w.remove_shoulders(s)?;
     if w.scales_with_difficulty(s)? {
@@ -53,9 +53,29 @@ pub fn player_hurt_server<W: PlayerHurtWorld>(
         }
     }
     if damage == 0.0 {
-        return Ok(false);
+        return Ok(None);
     }
-    living_hurt::hurt_server(s, w, damage)
+    Ok(Some(damage))
+}
+pub fn player_hurt_server<W: PlayerHurtWorld>(
+    s: &mut HurtState<W::Source>,
+    w: &mut W,
+    damage: f32,
+) -> Result<bool, W::Error> {
+    match player_hurt_start(s, w, damage)? {
+        Some(damage) => living_hurt::hurt_server(s, w, damage),
+        None => Ok(false),
+    }
+}
+pub fn prepare_player_hurt_server<W: PlayerHurtWorld>(
+    s: &mut HurtState<W::Source>,
+    w: &mut W,
+    damage: f32,
+) -> Result<Option<living_hurt::PreparedHurt<W::UseItem>>, W::Error> {
+    match player_hurt_start(s, w, damage)? {
+        Some(damage) => living_hurt::prepare_hurt_server(s, w, damage),
+        None => Ok(None),
+    }
 }
 #[derive(Clone, Copy, Debug)]
 pub enum CausingEntity<P, A> {
@@ -81,10 +101,10 @@ pub trait ServerPlayerHurtWorld: PlayerHurtWorld {
         player: Self::Player,
     ) -> Result<bool, Self::Error>;
 }
-pub fn server_player_hurt_server<W: ServerPlayerHurtWorld>(
+fn server_player_hurt_start<W: ServerPlayerHurtWorld>(
     s: &mut HurtState<W::Source>,
     w: &mut W,
-    damage: f32,
+    _damage: f32,
 ) -> Result<bool, W::Error> {
     if w.invulnerable(s)? {
         return Ok(false);
@@ -104,5 +124,26 @@ pub fn server_player_hurt_server<W: ServerPlayerHurtWorld>(
         }
         CausingEntity::Other => {}
     }
+    Ok(true)
+}
+
+pub fn server_player_hurt_server<W: ServerPlayerHurtWorld>(
+    s: &mut HurtState<W::Source>,
+    w: &mut W,
+    damage: f32,
+) -> Result<bool, W::Error> {
+    if !server_player_hurt_start(s, w, damage)? {
+        return Ok(false);
+    }
     player_hurt_server(s, w, damage)
+}
+pub fn prepare_server_player_hurt_server<W: ServerPlayerHurtWorld>(
+    s: &mut HurtState<W::Source>,
+    w: &mut W,
+    damage: f32,
+) -> Result<Option<living_hurt::PreparedHurt<W::UseItem>>, W::Error> {
+    if !server_player_hurt_start(s, w, damage)? {
+        return Ok(None);
+    }
+    prepare_player_hurt_server(s, w, damage)
 }

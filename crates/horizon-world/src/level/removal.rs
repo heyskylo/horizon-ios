@@ -76,13 +76,27 @@ pub struct Spilled {
 /// with triangular motions, all from the level random. An empty stack still
 /// draws the spot.
 pub fn drop_item_stack<R: RandomSource>(random: &mut R, pos: BlockPos, count: u32) -> Vec<Spilled> {
+    drop_item_stack_at(
+        random,
+        [f64::from(pos.x), f64::from(pos.y), f64::from(pos.z)],
+        count,
+    )
+}
+
+/// `Containers.dropItemStack(Level, double, double, double, ItemStack)`:
+/// entity origins are floored before the same per-slot random draws.
+pub fn drop_item_stack_at<R: RandomSource>(
+    random: &mut R,
+    pos: [f64; 3],
+    count: u32,
+) -> Vec<Spilled> {
     // EntityTypes.ITEM is 0.25 wide.
     let size = f64::from(0.25f32);
     let center_range = 1.0 - size;
     let half = size / 2.0;
-    let x = f64::from(pos.x) + random.next_double() * center_range + half;
-    let y = f64::from(pos.y) + random.next_double() * center_range;
-    let z = f64::from(pos.z) + random.next_double() * center_range + half;
+    let x = pos[0].floor() + random.next_double() * center_range + half;
+    let y = pos[1].floor() + random.next_double() * center_range;
+    let z = pos[2].floor() + random.next_double() * center_range + half;
     let mut left = count;
     let mut out = Vec::new();
     while left > 0 {
@@ -160,4 +174,123 @@ pub fn orb_value(value: u32) -> u32 {
         .into_iter()
         .find(|&v| value >= v)
         .unwrap_or(1)
+}
+
+#[cfg(test)]
+mod spill_tests {
+    use super::*;
+    use horizon_core::random::LegacyRandom;
+
+    #[test]
+    fn vehicle_origin_preserves_integer_spill_bits_and_random_continuation() {
+        // Frozen original BlockPos algorithm: seed42, position(-17,200,9).
+        // Empty slots consume their three position draws as well.
+        type PieceBits = (u32, [u64; 3], [u64; 3]);
+        let cases: &[(u32, &[PieceBits], i32)] = &[
+            (0, &[], 1190043011),
+            (
+                1,
+                &[(
+                    1,
+                    [
+                        13848661551541477446,
+                        4641258920073644451,
+                        4621456881581977702,
+                    ],
+                    [
+                        4589765516860676734,
+                        4596661836512424656,
+                        13799270309886868587,
+                    ],
+                )],
+                -7822877,
+            ),
+            (
+                64,
+                &[
+                    (
+                        18,
+                        [
+                            13848661551541477446,
+                            4641258920073644451,
+                            4621456881581977702,
+                        ],
+                        [
+                            4589765516860676734,
+                            4596661836512424656,
+                            13799270309886868587,
+                        ],
+                    ),
+                    (
+                        12,
+                        [
+                            13848661551541477446,
+                            4641258920073644451,
+                            4621456881581977702,
+                        ],
+                        [
+                            4588152557045053524,
+                            4597877244100785626,
+                            13810434414601853344,
+                        ],
+                    ),
+                    (
+                        12,
+                        [
+                            13848661551541477446,
+                            4641258920073644451,
+                            4621456881581977702,
+                        ],
+                        [
+                            13802106296524966419,
+                            4595895776758635733,
+                            4589326486915945234,
+                        ],
+                    ),
+                    (
+                        10,
+                        [
+                            13848661551541477446,
+                            4641258920073644451,
+                            4621456881581977702,
+                        ],
+                        [
+                            4590632042105960365,
+                            4594470851206265552,
+                            13812640691644606296,
+                        ],
+                    ),
+                    (
+                        12,
+                        [
+                            13848661551541477446,
+                            4641258920073644451,
+                            4621456881581977702,
+                        ],
+                        [
+                            13809167752421256496,
+                            4594816442179630634,
+                            13805308362606670037,
+                        ],
+                    ),
+                ],
+                585935003,
+            ),
+        ];
+        for &(count, expected, next) in cases {
+            for origin in [None, Some([-17.0, 200.0, 9.0]), Some([-16.75, 200.5, 9.75])] {
+                let mut random = LegacyRandom::new(42);
+                let pieces = match origin {
+                    None => drop_item_stack(&mut random, BlockPos::new(-17, 200, 9), count),
+                    Some(pos) => drop_item_stack_at(&mut random, pos, count),
+                };
+                let bits: Vec<_> = pieces
+                    .iter()
+                    .map(|p| (p.count, p.pos.map(f64::to_bits), p.motion.map(f64::to_bits)))
+                    .collect();
+                assert_eq!(bits, expected, "count={count}, origin={origin:?}");
+                assert_eq!(random.next_int(), next, "count={count}, origin={origin:?}");
+            }
+        }
+    }
 }

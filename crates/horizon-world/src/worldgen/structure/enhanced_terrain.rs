@@ -328,6 +328,7 @@ mod tests {
             structure: 0,
             name: "test".into(),
             chunk: ChunkPos::new(0, 0),
+            references: 0,
             pieces: vec![
                 piece(&rigid, 0, [5, 64, 5]),
                 piece(&matching, 10, [12, 65, 5]),

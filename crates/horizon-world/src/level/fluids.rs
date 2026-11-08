@@ -176,6 +176,12 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let index = self.b.facts(state).shape;
         match self.b.collision_shape(state) {
             Some(shape) => (index, shape),
+            // `getCollisionShape(level, pos)` runs with `CollisionContext.empty()`,
+            // under which scaffolding is above the block and not descending: it
+            // reads as the stable shape. The other dynamic shapes stay empty.
+            None if self.b.data(state).is(Class::Scaffolding) => {
+                (-1, crate::dynamic_support::scaffolding_stable_shape_ref())
+            }
             None => (-1, VoxelShape::empty_ref()),
         }
     }

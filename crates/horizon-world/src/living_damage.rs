@@ -81,6 +81,14 @@ pub(crate) fn actually_hurt_after_immunity_check<W: DamageWorld>(
     player: bool,
 ) -> Result<(), W::Error> {
     let damage = world.after_armor(damage)?;
+    actually_hurt_after_armor(world, damage, player)
+}
+/// Resume an inner hit after synchronous equipment wear and armor reduction.
+pub(crate) fn actually_hurt_after_armor<W: DamageWorld>(
+    world: &mut W,
+    damage: f32,
+    player: bool,
+) -> Result<(), W::Error> {
     let damage = world.after_magic(damage)?;
     let mut remaining = positive(damage - world.absorption()?);
     let absorption = world.absorption()? - (damage - remaining);

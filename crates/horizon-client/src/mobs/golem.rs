@@ -245,10 +245,14 @@ impl Goal for DefendVillage {
         // A position inside `b` puts the box's bottom face there (one block
         // wider, as the box test is strict).
         let near = b.inflate(Vec3::new(1.0, 1.0, 1.0));
+        // Villager.getPlayerReputation of the player this golem sees: the
+        // villager's gossips about that player's own UUID.
         let bad = cx.w.others_near(near).any(|s| {
             s.species == Species::Villager
                 && s.alive
-                && s.player_rep <= -100
+                && s.villager
+                    .as_ref()
+                    .is_some_and(|v| v.gossips.reputation(p.uuid) <= -100)
                 && b.contains(s.position)
                 && s.position.distance_squared(m.position) <= 64.0 * 64.0
         });
@@ -523,7 +527,7 @@ fn snowball_attack(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
     let mut p = Projectile::new(ProjectileKind::Snowball, start, Some(Who::Mob(m.id)));
     // SnowGolem.rangedAttackUncertainty: 12 on every difficulty.
     p.shoot(
-        &mut crate::projectiles::own_random(m),
+        &mut crate::random_source::entity(),
         [xd, yd + yo - start.y, zd],
         1.6,
         12.0,
@@ -545,7 +549,7 @@ pub fn snow_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         m.position.z.floor() as i32,
     );
     // EnvironmentAttributes.SNOW_GOLEM_MELTS: the hot biomes and the Nether.
-    if w.nether || w.temperature(x, y, z) > 1.0 {
+    if w.dimension_type.snow_golem_melts || w.temperature(x, y, z) > 1.0 {
         events.push(MobEvent::HurtSelf {
             mob: m.id,
             kind: super::DamageKind::OnFire,

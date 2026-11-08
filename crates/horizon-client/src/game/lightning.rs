@@ -13,10 +13,11 @@ use super::{
 };
 use horizon_client::advancements::EntityView;
 use horizon_client::mobs::{Damage, DamageKind, MobEvent, SpawnSetup, Species};
+use horizon_client::random_source;
 use horizon_core::{
     geometry::{Aabb, Vec3},
     position::BlockPos,
-    random::RandomSource,
+    random::{LegacyRandom, RandomSource},
 };
 
 pub(super) struct Bolt {
@@ -26,6 +27,9 @@ pub(super) struct Bolt {
     life: i32,
     flashes: i32,
     seed: i64,
+    /// The bolt's own random (`Entity.random`): its seed, flashes, flash
+    /// timing, fire spots and thunder pitch draw from it, never the level's.
+    random: LegacyRandom,
     visual_only: bool,
     /// Mooshrooms and copper golems change once per bolt.
     converted: Vec<u32>,
@@ -48,6 +52,7 @@ fn thunder_mob_spawn_setup(m: &horizon_client::mobs::Mob) -> SpawnSetup {
         baby: m.is_baby(),
         yaw: m.yaw,
         persistent: true,
+        skip_finalize: true,
         ..Default::default()
     }
 }
@@ -114,7 +119,7 @@ impl Game<'_> {
             if trap {
                 let at = [f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2])];
                 // ServerLevel.tickChunk: a trap horse waits for a player.
-                if let Some(id) = self.spawn_mob("minecraft:skeleton_horse", at, false)
+                if let Some(id) = self.spawn_mob_raw("minecraft:skeleton_horse", at, false)
                     && let Some(h) = self.mobs.iter_mut().find(|m| m.id == id)
                 {
                     h.extra.trap = true;
@@ -246,9 +251,10 @@ impl Game<'_> {
             let ctx = horizon_client::sculk::Context::default();
             self.post_game_event("minecraft:lightning_strike", at, ctx);
         }
-        let r = &mut self.world.random;
-        let seed = r.next_long();
-        let flashes = r.next_int_bound(3).unwrap_or(0) + 1;
+        // The LightningBolt constructor: `seed`, then `flashes`.
+        let mut random = random_source::entity();
+        let seed = random.next_long();
+        let flashes = random.next_int_bound(3).unwrap_or(0) + 1;
         self.lightning_seen[0] += 1;
         let id = self.take_entity_id();
         self.bolts.push(Bolt {
@@ -257,6 +263,7 @@ impl Game<'_> {
             life: 2,
             flashes,
             seed,
+            random,
             visual_only,
             converted: Vec::new(),
             hit: Vec::new(),
@@ -280,9 +287,10 @@ impl Game<'_> {
     /// only flashes, sounds and draws (`LightningBolt.tick` off the server).
     pub(super) fn spawn_remote_bolt(&mut self, id: u32, at: [f64; 3]) {
         self.bolts.retain(|b| b.id != id);
-        let r = &mut self.world.random;
-        let seed = r.next_long();
-        let flashes = r.next_int_bound(3).unwrap_or(0) + 1;
+        // The client's own copy, constructed as on the server.
+        let mut random = random_source::entity();
+        let seed = random.next_long();
+        let flashes = random.next_int_bound(3).unwrap_or(0) + 1;
         self.lightning_seen[0] += 1;
         self.bolts.push(Bolt {
             id,
@@ -290,6 +298,7 @@ impl Game<'_> {
             life: 2,
             flashes,
             seed,
+            random,
             visual_only: true,
             converted: Vec::new(),
             hit: Vec::new(),
@@ -299,11 +308,11 @@ impl Game<'_> {
             cause: None,
         });
     }
-    /// `spawnFire`: fire at the strike point and `extra` random neighbours,
-    /// wherever `BaseFireBlock.getState` fire can survive, when a player is
-    /// within the fire-spread radius. Returns how many
-    /// blocks it set on fire.
-    fn bolt_fire(&mut self, at: [f64; 3], extra: i32) -> i32 {
+    /// `spawnFire`: fire at the strike point and `extra` random neighbours
+    /// (from the bolt's own `random`), wherever `BaseFireBlock.getState` fire
+    /// can survive, when a player is within the fire-spread radius. Returns how
+    /// many blocks it set on fire.
+    fn bolt_fire(&mut self, at: [f64; 3], extra: i32, random: &mut LegacyRandom) -> i32 {
         let mut set = 0;
         let base = [
             at[0].floor() as i32,
@@ -320,8 +329,7 @@ impl Game<'_> {
         }
         let mut spots = vec![base];
         for _ in 0..extra {
-            let r = &mut self.world.random;
-            let mut d = || r.next_int_bound(3).unwrap_or(1) - 1;
+            let mut d = || random.next_int_bound(3).unwrap_or(1) - 1;
             spots.push([base[0] + d(), base[1] + d(), base[2] + d()]);
         }
         for p in spots {
@@ -350,14 +358,16 @@ impl Game<'_> {
         let mut bolts = std::mem::take(&mut self.bolts);
         bolts.retain_mut(|b| {
             if b.life == 2 {
-                let pitch = 0.8 + self.world.random.next_float() * 0.2;
+                // A client's bolt draws the pitches from its own random. Here one
+                // bolt stands for both copies, and both randoms are unseeded.
+                let pitch = 0.8 + b.random.next_float() * 0.2;
                 self.audio.play(
                     "minecraft:entity.lightning_bolt.thunder",
                     Some(b.at),
                     10000.0,
                     pitch,
                 );
-                let pitch = 0.5 + self.world.random.next_float() * 0.2;
+                let pitch = 0.5 + b.random.next_float() * 0.2;
                 self.audio.play(
                     "minecraft:entity.lightning_bolt.impact",
                     Some(b.at),
@@ -367,7 +377,8 @@ impl Game<'_> {
                 if !b.visual_only {
                     // Only Normal and Hard start fires with the strike itself.
                     if self.ui.difficulty >= 2 {
-                        b.fires += self.bolt_fire(b.at, 4);
+                        let set = self.bolt_fire(b.at, 4, &mut b.random);
+                        b.fires += set;
                     }
                     self.strike_rod(b.at);
                 }
@@ -385,12 +396,13 @@ impl Game<'_> {
                     self.lightning_strike_triggers(b);
                     return false;
                 }
-                if b.life < -self.world.random.next_int_bound(10).unwrap_or(0) {
+                if b.life < -b.random.next_int_bound(10).unwrap_or(0) {
                     b.flashes -= 1;
                     b.life = 1;
-                    b.seed = self.world.random.next_long();
+                    b.seed = b.random.next_long();
                     if !b.visual_only {
-                        b.fires += self.bolt_fire(b.at, 0);
+                        let set = self.bolt_fire(b.at, 0, &mut b.random);
+                        b.fires += set;
                     }
                 }
             }
@@ -607,7 +619,12 @@ impl Game<'_> {
                     events.push(MobEvent::SpawnKind {
                         kind: "minecraft:witch".into(),
                         at,
-                        setup: setup(m),
+                        // Villager.thunderHit: the witch's convertTo runs
+                        // finalizeSpawn(CONVERSION); the zombified piglin's does not.
+                        setup: SpawnSetup {
+                            skip_finalize: false,
+                            ..setup(m)
+                        },
                     });
                     continue;
                 }
@@ -800,11 +817,14 @@ mod tests {
                 .unwrap(),
             );
             let random = game.world.random.clone();
-            let set = game.bolt_fire(bolt, 4);
+            let mut bolt_random = LegacyRandom::new(0);
+            let set = game.bolt_fire(bolt, 4, &mut bolt_random);
             let burning = game.world.block(8, 65, 8) != air;
             assert_eq!((set > 0, burning), (fires, fires), "radius {radius}");
             if !fires {
-                // No offset draws either.
+                // No offset draws either: the bolt's own random is untouched,
+                // and a bolt never draws from the level's.
+                assert_eq!(bolt_random.next_long(), LegacyRandom::new(0).next_long());
                 let mut before = random;
                 assert_eq!(game.world.random.next_long(), before.next_long());
             }

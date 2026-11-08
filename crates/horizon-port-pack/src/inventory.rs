@@ -21,8 +21,8 @@ pub struct Record {
     pub path: String,
     pub class: String,
     pub tier: String,
-    /// `known` (reviewed table), `sides`, `categories`, `jar`, `kind`,
-    /// `guess` or `unknown`.
+    /// `known` (reviewed table), `sides`, `categories`, `jar`, `loaders`,
+    /// `kind`, `guess` or `unknown`.
     pub confidence: String,
     /// `modrinth`, `curseforge` or `file`.
     pub source: String,
@@ -73,6 +73,12 @@ pub fn build(pack: &Pack, cache: &Cache, work: &Path) -> Vec<Record> {
             })
             .filter_map(|c| c.as_str().map(str::to_owned))
             .collect();
+        let project_loaders: Vec<String> = project
+            .and_then(|p| p["loaders"].as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|l| l.as_str().map(str::to_owned))
+            .collect();
         let stem = f.file_name().trim_end_matches(".jar").to_owned();
         let key = info
             .as_ref()
@@ -91,8 +97,10 @@ pub fn build(pack: &Pack, cache: &Cache, work: &Path) -> Vec<Record> {
             client: &client,
             server: &server,
             categories: &categories,
+            project_loaders: &project_loaders,
             classes: census.map(|c| c.classes),
-            has_content: census.is_some_and(|c| c.blockstates + c.item_models + c.recipes > 0),
+            has_content: census
+                .is_some_and(|c| c.blockstates + c.item_models + c.recipes + c.data_files > 0),
         };
         let name = info
             .as_ref()

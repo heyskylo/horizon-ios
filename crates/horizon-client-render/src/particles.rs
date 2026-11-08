@@ -28,6 +28,8 @@ use std::{
 pub use horizon_client_core::particle_type::ParticleType;
 pub use horizon_items::firework::{DYE_FIREWORK_COLORS, FireworkExplosion, FireworkShape};
 mod native;
+pub mod polytone;
+mod polytone_gpu;
 pub use native::{ParticleController, ParticleUpdate};
 
 /// `ParticleOptions` with the parameters of the option classes used here.
@@ -58,6 +60,14 @@ pub struct ParticleOptions {
     /// A native mod's own particle type, by its namespaced name (`mymod:spark`):
     /// `SimpleParticleType` plus the provider `particles/<name>.json` names.
     pub mod_particle: Option<String>,
+    /// Pre-1.20.5 entity-effect providers use spawn velocity as RGB; true is the ambient provider.
+    pub legacy_entity_effect: Option<bool>,
+    /// A pre-1.21.4 server's trail, which had no duration: TrailParticle.Provider chose
+    /// `nextInt(40) + 10` after constructing the particle. Set by the client for an older
+    /// server only, never read from the wire.
+    pub legacy_trail_lifetime: bool,
+    /// What the Polytone emitter that spawned this custom particle sets on it.
+    pub polytone_seed: Option<std::sync::Arc<polytone::Seed>>,
 }
 impl ParticleOptions {
     pub fn simple(ty: ParticleType) -> Self {
@@ -72,6 +82,9 @@ impl ParticleOptions {
             geyser: None,
             vibration: None,
             mod_particle: None,
+            legacy_entity_effect: None,
+            legacy_trail_lifetime: false,
+            polytone_seed: None,
         }
     }
     /// A native mod's `SimpleParticleType`: the sprite set of
@@ -514,6 +527,12 @@ pub struct Particle {
     /// `Particle.random`: the particle's own generator (`RandomSource.create()`).
     random: LegacyRandom,
     controller: Option<Box<dyn native::Controller>>,
+    /// A resource pack's Polytone custom particle type, for its `limit`.
+    polytone_type: Option<std::sync::Arc<str>>,
+    /// How a Polytone custom particle's quad turns (`rotation_mode`).
+    orientation: polytone_gpu::Orientation,
+    /// Blended additively (a Polytone `additive_translucent` particle).
+    additive: bool,
 }
 fn aabb_at(p: [f64; 3], w: f32, h: f32) -> Aabb {
     let w = f64::from(w) / 2.0;
@@ -875,6 +894,9 @@ impl Particle {
             frame_ticks: 0,
             random: LegacyRandom::new(0),
             controller: None,
+            polytone_type: None,
+            orientation: polytone_gpu::Orientation::Camera,
+            additive: false,
         }
     }
     /// The normal age/removal test and previous pose, without vanilla motion.
@@ -1269,6 +1291,13 @@ pub struct ParticleEngine {
     /// A native mod's sprite sets, by namespaced particle name.
     mod_sets: HashMap<String, (u32, Option<ModBehaviour>)>,
     set_sprites: Vec<Vec<u32>>,
+    /// Resource packs' Polytone custom particle types (#11486).
+    polytone: Option<std::sync::Arc<polytone::Registry>>,
+    /// The packs' GPU particles' records, one store per type, and the ticks they count in.
+    polytone_gpu: Vec<polytone_gpu::Store>,
+    polytone_ticks: u64,
+    /// The last frame's additively blended quads (`take_additive`).
+    additive: std::sync::Mutex<Vec<Vertex>>,
     /// `TrackingEmitter`s: particle type, entity feet position, width, height, ticks left.
     emitters: Vec<(ParticleOptions, [f64; 3], f64, f64, u32)>,
     /// Camera position for the 32-block spawn limiter.
@@ -1461,6 +1490,10 @@ impl ParticleEngine {
             sets: HashMap::new(),
             mod_sets: HashMap::new(),
             set_sprites: Vec::new(),
+            polytone: None,
+            polytone_gpu: Vec::new(),
+            polytone_ticks: 0,
+            additive: std::sync::Mutex::default(),
             emitters: Vec::new(),
             starters: Vec::new(),
             tracked_explosions: Vec::new(),
@@ -1680,6 +1713,28 @@ impl ParticleEngine {
         particle.behaviour = Behaviour::Controlled { translucent };
         particle.controller = Some(Box::new(controller));
         Some(particle)
+    }
+    /// Sets (or clears) the resource packs' Polytone custom particle types.
+    pub fn set_polytone(&mut self, registry: Option<std::sync::Arc<polytone::Registry>>) {
+        let registry = registry.filter(|r| !r.is_empty());
+        let same = match (&self.polytone, &registry) {
+            (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            self.polytone_gpu.clear();
+        }
+        self.polytone = registry;
+    }
+    /// The quads the last render blends additively (`RenderPipelines` additive, src alpha and
+    /// one), for the frame's additive pass.
+    pub fn take_additive(&self) -> Vec<Vertex> {
+        std::mem::take(&mut *self.additive.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+    /// Live GPU particle records (spawns, before `area` spreads them), for tests and status.
+    pub fn polytone_gpu_records(&self) -> usize {
+        self.polytone_gpu.iter().map(polytone_gpu::Store::len).sum()
     }
     /// Choose a frame from this particle's declared sprite set.
     pub fn set_sprite_frame(&self, particle: &mut Particle, frame: usize) {
@@ -2084,6 +2139,27 @@ impl ParticleEngine {
         let ty = o.ty;
         // A native mod's SimpleParticleType: vanilla's TextureSheetParticle with
         // the sprite set its particles/<name>.json names, no tint, 20..40 ticks.
+        if let Some(name) = &o.mod_particle
+            && let Some(registry) = &self.polytone
+            && let Some(def) = registry.get(name)
+        {
+            let (registry, def) = (registry.clone(), def.clone());
+            let particle = polytone::make(self, &registry, name, &def, o, p, v, seed)?;
+            if def.gpu.is_some() {
+                // A GPU particle is only a record: it never becomes an engine particle.
+                let now = self.polytone_ticks;
+                let store = match self.polytone_gpu.iter().position(|s| s.is(&def)) {
+                    Some(i) => &mut self.polytone_gpu[i],
+                    None => {
+                        self.polytone_gpu.push(polytone_gpu::Store::new(&def)?);
+                        self.polytone_gpu.last_mut()?
+                    }
+                };
+                store.spawn(&particle, now, seed as u64);
+                return None;
+            }
+            return Some(particle);
+        }
         if let Some(name) = &o.mod_particle {
             let (set, behaviour) = *self.mod_sets.get(name)?;
             let mut r = LegacyRandom::new(seed);
@@ -3167,8 +3243,16 @@ impl ParticleEngine {
                         q.set_color(b, 0.0, b);
                     }
                     T::EntityEffect => {
-                        q.set_color(o.color[0], o.color[1], o.color[2]);
-                        q.rgba[3] = o.color[3];
+                        if let Some(ambient) = o.legacy_entity_effect {
+                            q.set_color(v[0] as f32, v[1] as f32, v[2] as f32);
+                            // AmbientMobProvider overrides constructor alpha; MobProvider only sets RGB.
+                            if ambient {
+                                q.rgba[3] = 0.15;
+                            }
+                        } else {
+                            q.set_color(o.color[0], o.color[1], o.color[2]);
+                            q.rgba[3] = o.color[3];
+                        }
                     }
                     T::Effect | T::InstantEffect => {
                         q.set_color(o.color[0], o.color[1], o.color[2]);
@@ -3177,7 +3261,12 @@ impl ParticleEngine {
                     _ => {}
                 }
                 q.behaviour = Behaviour::Spell {
-                    original_alpha: q.rgba[3],
+                    // The old SpellParticle.tick always eased back to 1, including ambient effects.
+                    original_alpha: if o.legacy_entity_effect.is_some() {
+                        1.0
+                    } else {
+                        q.rgba[3]
+                    },
                 };
                 q.set = set;
                 q
@@ -3469,7 +3558,11 @@ impl ParticleEngine {
                     scaled(o.color[2], jb),
                 );
                 q.size = 0.26;
-                q.lifetime = duration;
+                q.lifetime = if o.legacy_trail_lifetime {
+                    self.level_random.next_int_bound(40).unwrap_or(0) + 10
+                } else {
+                    duration
+                };
                 q.has_physics = false;
                 q.free_move = true;
                 q.light = Light::FullBright;
@@ -3701,6 +3794,14 @@ impl ParticleEngine {
         }
     }
     pub fn tick(&mut self, level: &ParticleLevel) {
+        self.polytone_ticks += 1;
+        for store in &mut self.polytone_gpu {
+            store.expire(self.polytone_ticks);
+        }
+        // The sounds the packs' custom particles played last tick.
+        if let Some(registry) = &self.polytone {
+            self.sounds.extend(registry.take_sounds());
+        }
         self.tick_starters();
         self.tick_explosions(level);
         for (options, feet, width, height, life) in std::mem::take(&mut self.emitters) {
@@ -4693,6 +4794,8 @@ impl ParticleEngine {
         let base = Quat::from_rotation_y(std::f32::consts::PI - yaw.to_radians())
             * Quat::from_rotation_x(-pitch.to_radians());
         let mut light_cache = ParticleLightCache::default();
+        let mut additive = self.additive.lock().unwrap_or_else(|e| e.into_inner());
+        additive.clear();
         let mut section_cache =
             (CULL && frustum.is_some()).then(ParticleSectionFrustumCache::default);
         for p in &self.particles {
@@ -4764,7 +4867,15 @@ impl ParticleEngine {
                 ) - camera;
                 (pos.as_vec3(), p.quad_size(partial))
             });
-            let rotation = if p.roll != 0.0 {
+            let rotation = if p.orientation != polytone_gpu::Orientation::Camera {
+                let velocity = FVec3::new(
+                    p.velocity[0] as f32,
+                    p.velocity[1] as f32,
+                    p.velocity[2] as f32,
+                );
+                let roll = p.o_roll + (p.roll - p.o_roll) * partial;
+                polytone_gpu::orient(p.orientation, center, velocity, roll, base)
+            } else if p.roll != 0.0 {
                 base * Quat::from_rotation_z(p.o_roll + (p.roll - p.o_roll) * partial)
             } else {
                 base
@@ -4846,6 +4957,7 @@ impl ParticleEngine {
                 r.u0 + du * p.uv[2],
                 r.v0 + dv * p.uv[3],
             );
+            let target: &mut Vec<Vertex> = if p.additive { &mut additive } else { &mut *out };
             for rotation in rotations.into_iter().flatten() {
                 for (n, uv) in [
                     ((1.0, -1.0), [u1, v1]),
@@ -4854,7 +4966,7 @@ impl ParticleEngine {
                     ((-1.0, -1.0), [u0, v1]),
                 ] {
                     let v = center + rotation * FVec3::new(n.0, n.1, 0.0) * size;
-                    out.push(Vertex {
+                    target.push(Vertex {
                         normal: [0; 4],
                         pos: v.to_array(),
                         uv,
@@ -4870,6 +4982,19 @@ impl ParticleEngine {
                     });
                 }
             }
+        }
+        for store in &self.polytone_gpu {
+            store.render(
+                &self.atlas,
+                camera,
+                base,
+                self.polytone_ticks,
+                partial,
+                &mut light_cache,
+                light_at,
+                out,
+                &mut additive,
+            );
         }
     }
 }
@@ -4940,6 +5065,45 @@ const CREEPER: [[f64; 2]; 12] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_spell_providers_use_velocity_rgb_and_their_original_alpha_rules() {
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        let velocity = [0.25, 0.5, 0.75];
+        for scoped in [false, true] {
+            engine.set_scope_eye(scoped.then_some([0.0; 3]));
+            for ambient in [false, true] {
+                let mut options =
+                    ParticleOptions::colored(ParticleType::EntityEffect, [1.0, 0.0, 0.0, 0.8]);
+                options.legacy_entity_effect = Some(ambient);
+                let particle = engine.make(&options, [0.0; 3], velocity, 7).unwrap();
+                let alpha = if ambient {
+                    0.15
+                } else if scoped {
+                    0.0
+                } else {
+                    1.0
+                };
+                assert_eq!(particle.rgba, [0.25, 0.5, 0.75, alpha]);
+                assert_eq!(
+                    particle.behaviour,
+                    Behaviour::Spell {
+                        original_alpha: 1.0
+                    }
+                );
+            }
+            let options =
+                ParticleOptions::colored(ParticleType::EntityEffect, [1.0, 0.0, 0.0, 0.8]);
+            let current = engine.make(&options, [0.0; 3], velocity, 7).unwrap();
+            assert_eq!(current.rgba, options.color);
+            assert_eq!(
+                current.behaviour,
+                Behaviour::Spell {
+                    original_alpha: 0.8
+                }
+            );
+        }
+    }
 
     #[test]
     fn particle_light_cache_reuses_exact_blocks_and_fails_open_on_collisions() {
@@ -5698,6 +5862,40 @@ mod tests {
         let s =
             (p.velocity[0].powi(2) + (p.velocity[1] - 0.1).powi(2) + p.velocity[2].powi(2)).sqrt();
         assert!((0.15 * 0.4 - 1e-6..=0.45 * 0.4 + 1e-6).contains(&s));
+    }
+    #[test]
+    fn legacy_trails_choose_a_lifetime_for_each_particle_from_the_level_random() {
+        let mut engine = ParticleEngine::new(Path::new(""), &HashMap::new(), &HashSet::new());
+        engine.seed_randoms(1, 42, 2);
+        let legacy = ParticleOptions {
+            legacy_trail_lifetime: true,
+            ..ParticleOptions::trail([1.0, 2.0, 3.0], 0x7f3f1f, -1)
+        };
+        for _ in 0..5 {
+            engine.create(&legacy, [0.0; 3], [0.0; 3]);
+        }
+        // java.util.Random(42).nextInt(40) + 10, as vanilla 1.21.3 TrailParticle.Provider does.
+        assert_eq!(
+            engine
+                .pending
+                .iter()
+                .map(|p| p.lifetime)
+                .collect::<Vec<_>>(),
+            [20, 13, 18, 14, 20]
+        );
+        engine.create(
+            &ParticleOptions::trail([1.0, 2.0, 3.0], 0x7f3f1f, 37),
+            [0.0; 3],
+            [0.0; 3],
+        );
+        assert_eq!(engine.pending.last().unwrap().lifetime, 37);
+        // A current server's -1 is a lifetime like any other, not the old marker.
+        engine.create(
+            &ParticleOptions::trail([1.0, 2.0, 3.0], 0x7f3f1f, -1),
+            [0.0; 3],
+            [0.0; 3],
+        );
+        assert_eq!(engine.pending.last().unwrap().lifetime, -1);
     }
     #[test]
     fn sizes_follow_vanilla_curves() {

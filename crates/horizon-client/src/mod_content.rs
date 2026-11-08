@@ -18,7 +18,7 @@ use crate::{Result, blocks::MAP_COLORS};
 use horizon_core::geometry::{Aabb, Axis, ShapeOp, Vec3, VoxelShape};
 use horizon_mods::content::{
     Block, BlockShapes, Content, CreativeTab, EntityType, MenuType, MobEffect, Rarity,
-    StateProperty,
+    StateProperty, StateValues,
 };
 use horizon_world::nbt::{self, Compound, JavaString, Limits, Tag};
 use serde::{Deserialize, Serialize, de};
@@ -492,50 +492,11 @@ fn set_nbt_properties(state: &mut Tag, combo: &[(String, String)]) {
 
 // DiscreteVoxelShape.forAllEdges: merge consecutive boundary edges.
 fn shape_edges(shape: &VoxelShape) -> Vec<J> {
-    let sizes = shape.sizes();
-    let mut result = Vec::new();
-    for axis in [2, 0, 1] {
-        let a = (axis + 1) % 3;
-        let b = (axis + 2) % 3;
-        for u in 0..=sizes[a] {
-            for v in 0..=sizes[b] {
-                let mut start = None;
-                for t in 0..=sizes[axis] {
-                    let mut count = 0;
-                    let mut odd = 0;
-                    for du in 0..=1 {
-                        for dv in 0..=1 {
-                            let mut p = [0i32; 3];
-                            p[axis] = t as i32;
-                            p[a] = u as i32 + du - 1;
-                            p[b] = v as i32 + dv - 1;
-                            if shape.is_full(p[0], p[1], p[2]) {
-                                count += 1;
-                                odd ^= du ^ dv;
-                            }
-                        }
-                    }
-                    let edge = count == 1 || count == 3 || (count == 2 && odd == 0);
-                    if edge {
-                        if start.is_none() {
-                            start = Some(t);
-                        }
-                    } else if let Some(first) = start.take() {
-                        let mut from = [0.0; 3];
-                        let mut to = [0.0; 3];
-                        from[a] = shape.coordinates(Axis::ALL[a])[u];
-                        from[b] = shape.coordinates(Axis::ALL[b])[v];
-                        to[a] = from[a];
-                        to[b] = from[b];
-                        from[axis] = shape.coordinates(Axis::ALL[axis])[first];
-                        to[axis] = shape.coordinates(Axis::ALL[axis])[t];
-                        result.push(J::Arr(from.into_iter().chain(to).map(J::f64).collect()));
-                    }
-                }
-            }
-        }
-    }
-    result
+    shape
+        .edges()
+        .into_iter()
+        .map(|edge| J::Arr(edge.into_iter().map(J::f64).collect()))
+        .collect()
 }
 
 fn encode_shape(shape: &VoxelShape) -> Tag {
@@ -575,17 +536,17 @@ fn encode_shape(shape: &VoxelShape) -> Tag {
     Tag::Compound(c)
 }
 
-fn resolve_shapes<'a>(
-    spec: &BlockShapes,
+fn resolve_state_values<'a, 's, T>(
+    spec: &'s StateValues<T>,
     block: &str,
     states: &Range<u32>,
     order: &[(u32, u32)],
     combos: &[Vec<(String, String)>],
     properties: impl Fn(u32) -> Option<&'a J>,
-) -> Result<Vec<VoxelShape>> {
+) -> Result<Vec<&'s T>> {
     let names = spec.property_names();
     let mut used = BTreeSet::new();
-    let mut shapes = Vec::with_capacity(order.len());
+    let mut selected = Vec::with_capacity(order.len());
     for &(state, combo) in order {
         let values = names
             .iter()
@@ -600,34 +561,50 @@ fn resolve_shapes<'a>(
                             _ => None,
                         }
                     })
-                    .ok_or_else(|| format!("{block}: state lacks shape property {name}"))
+                    .ok_or_else(|| format!("{block}: state lacks property {name}"))
             })
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let key = values.join(",");
-        let boxes = if let Some(boxes) = spec.values.get(&key) {
+        let value = if let Some(value) = spec.values.get(&key) {
             used.insert(key);
-            boxes
+            value
         } else {
             spec.default
                 .as_ref()
-                .ok_or_else(|| format!("{block}: no shape for {key}"))?
+                .ok_or_else(|| format!("{block}: no state value for {key}"))?
         };
-        let mut shape = VoxelShape::empty();
-        for bounds in boxes {
-            let part = VoxelShape::from_box(Aabb::new(
-                Vec3::new(bounds[0], bounds[1], bounds[2]),
-                Vec3::new(bounds[3], bounds[4], bounds[5]),
-            ))?;
-            shape = shape.join_unoptimized(&part, ShapeOp::OR)?;
-        }
-        shapes.push(shape);
+        selected.push(value);
     }
     if used.len() != spec.values.len() {
         return Err(
-            format!("{block}: shape values include an unknown property value tuple").into(),
+            format!("{block}: state values include an unknown property value tuple").into(),
         );
     }
-    Ok(shapes)
+    Ok(selected)
+}
+
+fn resolve_shapes<'a>(
+    spec: &BlockShapes,
+    block: &str,
+    states: &Range<u32>,
+    order: &[(u32, u32)],
+    combos: &[Vec<(String, String)>],
+    properties: impl Fn(u32) -> Option<&'a J>,
+) -> Result<Vec<VoxelShape>> {
+    resolve_state_values(spec, block, states, order, combos, properties)?
+        .into_iter()
+        .map(|boxes| {
+            let mut shape = VoxelShape::empty();
+            for bounds in boxes {
+                let part = VoxelShape::from_box(Aabb::new(
+                    Vec3::new(bounds[0], bounds[1], bounds[2]),
+                    Vec3::new(bounds[3], bounds[4], bounds[5]),
+                ))?;
+                shape = shape.join_unoptimized(&part, ShapeOp::OR)?;
+            }
+            Ok(shape)
+        })
+        .collect()
 }
 
 /// A block being added: its declaration and where its states go.
@@ -638,6 +615,8 @@ struct NewBlock<'a> {
     item: Option<String>,
     shapes: Option<Vec<VoxelShape>>,
     collision_shapes: Option<Vec<VoxelShape>>,
+    context_shapes: BTreeMap<String, Vec<VoxelShape>>,
+    state_light: Option<Vec<u8>>,
     default: u32,
     /// The declared state properties' combinations, every property at its
     /// default first (one empty combination when the block declares none):
@@ -1105,6 +1084,26 @@ impl<'a> Plan<'a> {
                     })
                 };
                 let collision_shapes = decl.collision_shapes.as_ref().map(resolve).transpose()?;
+                let mut context_shapes = BTreeMap::new();
+                for (channel, specs) in [
+                    ("outline", &decl.outline_context_shapes),
+                    ("collision", &decl.collision_context_shapes),
+                ] {
+                    for (kind, spec) in specs {
+                        context_shapes.insert(format!("{channel}_{}", kind.name()), resolve(spec)?);
+                    }
+                }
+                if let Some(spec) = &decl.interaction_shapes {
+                    context_shapes.insert("interaction".into(), resolve(spec)?);
+                }
+                let state_light = decl
+                    .state_light
+                    .as_ref()
+                    .map(|spec| {
+                        resolve_state_values(spec, &decl.id, &states, &order, &combos, properties)
+                            .map(|values| values.into_iter().copied().collect())
+                    })
+                    .transpose()?;
                 // The lookup from (template state, combination) to the state's row.
                 let mut rows = vec![0; order.len()];
                 for (position, &(state, combo)) in order.iter().enumerate() {
@@ -1130,6 +1129,8 @@ impl<'a> Plan<'a> {
                     item: None,
                     shapes,
                     collision_shapes,
+                    context_shapes,
+                    state_light,
                     default,
                     combos,
                     order,
@@ -1285,7 +1286,7 @@ impl<'a> Plan<'a> {
                     if !b.decl.item && b.wall_of.is_none() {
                         row.set("item", J::Str("minecraft:air".into()));
                     }
-                    self.override_gameplay(b, combo, &mut row);
+                    self.override_gameplay(b, state_index, combo, &mut row);
                     if let Some(shapes) = &b.shapes {
                         let shape = &shapes[state_index];
                         let boxes = shape
@@ -1325,7 +1326,13 @@ impl<'a> Plan<'a> {
     }
 
     /// The declared properties, on a gameplay row.
-    fn override_gameplay(&self, b: &NewBlock, combo: &[(String, String)], row: &mut J) {
+    fn override_gameplay(
+        &self,
+        b: &NewBlock,
+        state_index: usize,
+        combo: &[(String, String)],
+        row: &mut J,
+    ) {
         let p = &b.decl.properties;
         if let Some(ticks) = &p.random_ticks {
             row.set("random_ticks", J::Bool(ticks.applies(combo)));
@@ -1353,6 +1360,9 @@ impl<'a> Plan<'a> {
         }
         if let Some(v) = p.light {
             row.set("emission", J::Num(v.into()));
+        }
+        if let Some(values) = &b.state_light {
+            row.set("emission", J::Num(values[state_index].into()));
         }
         if let Some(v) = p.requires_tool {
             row.set("requires_tool", J::Bool(v));
@@ -1712,6 +1722,49 @@ impl<'a> Plan<'a> {
                     indices.push((block.rename.first as usize + offset, id));
                 }
             }
+        }
+        // Variant references live in the same checked per-state table as the defaults.
+        // No runtime content scan, callback, or world-dependent registration is needed.
+        let mut contexts = Vec::new();
+        for block in &self.blocks {
+            if block.context_shapes.is_empty() {
+                continue;
+            }
+            let mut encoded = BTreeMap::new();
+            for offset in 0..block.order.len() {
+                let mut row = Compound::new();
+                row.insert(
+                    "state".into(),
+                    Tag::Int((block.rename.first as usize + offset) as i32),
+                );
+                for (channel, variants) in &block.context_shapes {
+                    let shape = &variants[offset];
+                    let key: Vec<_> = shape
+                        .boxes()
+                        .iter()
+                        .map(|bounds| {
+                            [
+                                bounds.min(Axis::X),
+                                bounds.min(Axis::Y),
+                                bounds.min(Axis::Z),
+                                bounds.max(Axis::X),
+                                bounds.max(Axis::Y),
+                                bounds.max(Axis::Z),
+                            ]
+                            .map(f64::to_bits)
+                        })
+                        .collect();
+                    let id = *encoded.entry(key).or_insert_with(|| {
+                        entries.push(encode_shape(shape));
+                        entries.len() as i32 - 1
+                    });
+                    row.insert(channel.as_str().into(), Tag::Int(id));
+                }
+                contexts.push(Tag::Compound(row));
+            }
+        }
+        if !contexts.is_empty() {
+            root.insert("context_shapes".into(), Tag::List(contexts));
         }
         let Some(Tag::IntArray(mapping)) = root.get_mut(&JavaString::from("cached_shapes")) else {
             return Err("collision table has no mapping".into());
@@ -2201,6 +2254,19 @@ impl Overlay<'_> {
         fs::write(path, bytes)?;
         Ok(())
     }
+    /// `write` with a file's own bytes, copied without reading them (a clone on APFS).
+    fn copy(&self, rel: &str, from: &Path) -> Result<()> {
+        let rel = Path::new(rel);
+        if let Some(parent) = rel.parent() {
+            self.dir(parent)?;
+        }
+        let path = self.out.join(rel);
+        if fs::symlink_metadata(&path).is_ok() {
+            fs::remove_file(&path)?;
+        }
+        fs::copy(from, path)?;
+        Ok(())
+    }
 }
 fn out_path(overlay: &Overlay<'_>, rel: &str) -> PathBuf {
     overlay.out.join(rel)
@@ -2499,8 +2565,20 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
         let declarations = format!("data/{}/horizon/", m.id);
         let mut reader = m.content.reader()?;
         for file in &m.content.files {
-            let bytes = reader.read(file)?;
             let is_tag = file.starts_with("data/") && file.contains("/tags/");
+            // Most files (textures, models...) only go into the overlay: copied, not read and
+            // written again, they take a fraction of the time (Chipped alone has 10k textures).
+            let plain = !(is_tag && file.ends_with(".json"))
+                && !(file.starts_with("assets/minecraft/atlases/") && file.ends_with(".json"))
+                && !file.starts_with(&declarations)
+                && !biomes::is_modifier(file)
+                && worldgen_entry(file).is_none()
+                && !(file.starts_with("data/") && file.contains("/structure/"));
+            if plain && let Some(from) = reader.path(file)? {
+                overlay.copy(file, &from)?;
+                continue;
+            }
+            let bytes = reader.read(file)?;
             if is_tag && file.ends_with(".json") {
                 let doc: J = serde_json::from_slice(&bytes).map_err(|e| format!("{file}: {e}"))?;
                 let Some(J::Arr(values)) = doc.get("values") else {
@@ -2753,8 +2831,9 @@ pub fn resource_root(base: &Path, mods: &[ContentMod], cache: &Path) -> Result<P
         // A reused root warns as the build did.
         let warnings = fs::read_to_string(out.join(WARNINGS)).unwrap_or_default();
         warnings.lines().for_each(|w| log::warn!("Horizon: {w}"));
-        // Used again: kept another day.
-        let _ = fs::write(out.join(STAMP), &stamp);
+        // Used again: kept another day. Marked beside the root, not in it: the pack overlay
+        // laid over the root reads its files, and a rewritten one would rebuild it (#12403).
+        let _ = fs::write(used_path(&out), b"");
         return Ok(out);
     }
     for warning in build(base, mods, &out)? {
@@ -2769,6 +2848,10 @@ pub fn resource_root(base: &Path, mods: &[ContentMod], cache: &Path) -> Result<P
 const ROOT_NAME: usize = 16;
 /// How long a root no start or switch used is kept.
 const KEEP_ROOTS: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+/// The file beside `root` whose time is its last reuse (`<root>.used`).
+fn used_path(root: &Path) -> PathBuf {
+    root.with_extension("used")
+}
 
 /// Removes from `roots` the roots other than `current` whose stamp is older
 /// than `keep`, and what an older game left there (one root built straight in
@@ -2792,11 +2875,18 @@ fn prune_roots(roots: &Path, current: &Path, keep: std::time::Duration) {
                 .bytes()
                 .all(|b| b.is_ascii_hexdigit())
             && path.is_dir();
-        let stale = match is_root {
-            true => fs::metadata(path.join(STAMP))
+        let age = |file: PathBuf| {
+            fs::metadata(file)
                 .and_then(|m| m.modified())
                 .ok()
                 .and_then(|t| t.elapsed().ok())
+        };
+        let stale = match is_root {
+            // Its build (the stamp) or its last reuse, whichever is newer.
+            true => [age(path.join(STAMP)), age(used_path(&path))]
+                .into_iter()
+                .flatten()
+                .min()
                 .is_none_or(|age| age > keep),
             // The old single root's files and folders.
             false => old_layout,
@@ -2805,7 +2895,9 @@ fn prune_roots(roots: &Path, current: &Path, keep: std::time::Duration) {
             continue;
         }
         let removed = match path.is_dir() {
-            true => fs::remove_dir_all(&path),
+            true => fs::remove_dir_all(&path).inspect(|_| {
+                let _ = fs::remove_file(used_path(&path));
+            }),
             false => fs::remove_file(&path),
         };
         if let Err(e) = removed {

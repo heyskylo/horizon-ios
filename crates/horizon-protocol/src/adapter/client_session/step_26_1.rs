@@ -82,7 +82,7 @@ fn login(payload: &[u8]) -> Result<Vec<u8>> {
     for _ in 0..3 {
         r.bool()?;
     }
-    translate::spawn_info(&mut r)?;
+    translate::spawn_info(&mut r, crate::adapter::ServerVersion::V26_2)?;
     let at = r.position();
     r.bool()?;
     let mut body = payload[..at].to_vec();

@@ -156,6 +156,7 @@ max_expect_seconds = 60      # the longest the proxy may ask for
 max_expected = 64            # players waited for at once
 max_freeze_seconds = 30      # the longest a player stays frozen while it is handed over
 max_hold_seconds = 60        # the longest a player arriving from another server is held before it is dropped
+stop_wait_seconds = 10       # a stop with players on waits this long for the proxy to move them out (0 to 60; 0: no wait)
 ```
 
 The supervisor passes the section to the engine as `--transfers expect_seconds=10,...`, beside
@@ -438,6 +439,26 @@ player must not arrive on a server that is about to close. The proxy drops the h
 source. A retry after the commit is still answered, and `player-export`, `player-release` and `player-drop` stay
 open: they are the way out.
 
+With players placed, the stop then waits `stop_wait_seconds` (10 by default; 0 stops at once, as vanilla does) so a
+proxy can move them out first. A proxy that moves them one at a time, as Meridian's `evacuate` does, takes about
+2 s a player over a real network (1.4 to 2.3 s measured): 10 s is room for about four, and a fuller server needs
+more (60 at most, about 25 players). The log says `Stopping in 10 s: a proxy may move the players out first`, and
+horizon-server sends `server/stopping` on the management protocol then, for a stop from the game as for its own.
+During the wait every login is refused as `multiplayer.disconnect.server_shutdown`, and the server ticks on and
+answers the proxy. The wait ends as soon as no player is placed, at `stop_wait_seconds` when no hand-over is frozen,
+and at the latest a freeze's length later, so a hand-over started in time finishes (the `N s` of the log line is
+then longer); the whole wait is cut at 90 s, which leaves the saves time before horizon-server kills a game that has
+not stopped within 120 s, so `stop_wait_seconds` and `max_freeze_seconds` may add up to 90 at most when the stop
+waits. A freeze lasts `max_freeze_seconds` worth of ticks (20 a second), so its length in time is reckoned at the
+tick length of the moment, the rate's or longer when the server is slower than its rate: at 10 ticks a second it
+lasts twice as long. `player-export ... freeze` is refused (`no hand-over starts this late`) once a freeze that
+starts then would end past the limit, unless the player is frozen already: a hand-over the limit cut would leave
+the player saved by the source after the target placed it. That holds at the tick rate of the moment the freeze
+starts: a server that slows down after it can still reach the limit with it. A hand-over still frozen at the limit
+is logged as a warning, and its player saved here. Then the stop goes on as vanilla's (`Stopping server`, the
+saves, the kicks). A second `stop` during the wait stops at once, with the saves; a second stop signal ends the
+process, as without `[transfer]`.
+
 **In the log.** Each `player-*` request writes one line with what became of it: `INFO` and what it did
 (`player-import Alex (<uuid>): ok, parts inventory,experience, placed false, announced true, recentered false,
 hand-over <id>`), or `WARN` and the reason it was refused (`player-export Alex (<uuid>): refused: that player is
@@ -699,7 +720,8 @@ runtime or new dependency. Server-sent events can replace the polling later if a
   `HttpOnly; SameSite=Strict` session cookie. Anyone who can read the server folder can manage the server,
   and no one else can. Sessions end when the supervisor stops.
 - **Protection.** The `Host` header must name the panel itself: its address, `localhost` on loopback, or a
-  tailnet name (a MagicDNS short name or `*.ts.net`). That stops DNS rebinding. Changes (POST, PATCH, DELETE) need
+  tailnet name (a MagicDNS short name or `*.ts.net`); bound to every interface (`0.0.0.0` or `::`), any IP
+  address with the panel's port. That stops DNS rebinding. Changes (POST, PATCH, DELETE) need
   the `X-Horizon: 1` header, which stops CSRF. After 10 failed logins in a minute, logins are refused for a
   while. The page is served with a strict Content-Security-Policy (nothing from elsewhere) and can't be
   framed.
@@ -834,9 +856,10 @@ runtime or new dependency. Server-sent events can replace the polling later if a
   - notifications: the supervisor pushes them to every connected client as vanilla's `JsonRpcNotificationService`
     does (a JSON-RPC request without an `id`, its one parameter in an array), through a queue and a thread so a slow
     client never holds the game's output. Built: `server/started` (the game's `Done`) and `server/stopping`
-    (when the supervisor or the game's own `stop` begins the shutdown, once per run), `server/saving` and
-    `server/saved` (around every world save of the running game: `save-all`, the autosave, the pause when
-    empty; a save the game makes while it stops is after the last one the supervisor hears of), and
+    (when the supervisor or the game's own `stop` begins the shutdown, once per run; with `[transfer]` on and
+    players placed, at the start of the wait, `Stopping in N s`, so a proxy has that long to move them),
+    `server/saving` and `server/saved` (around every world save of the running game: `save-all`, the autosave, the
+    pause when empty; a save the game makes while it stops is after the last one the supervisor hears of), and
     `players/joined` and `players/left` (from the game's typed events, within a quarter of a second), and
     `operators/*`, `allowlist/*`, `bans/*` and `ip_bans/*` `added`/`removed`: each of the game's lists tells a
     watcher what `add`, `remove` and `clear` do, as vanilla's `StoredUserList` tells its `NotificationService`,

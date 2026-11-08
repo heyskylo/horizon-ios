@@ -86,6 +86,9 @@ impl Context<'_> {
         let mut rule = o.get("surface_rule").cloned().unwrap_or(json!({
             "type": "minecraft:sequence", "sequence": []}));
         states(&mut rule);
+        if undefined_biomes(&mut rule, &self.biomes) {
+            report.lossy("surface rule: biomes nothing defines");
+        }
         let veins = o
             .get("ore_veins_enabled")
             .and_then(Value::as_bool)
@@ -249,4 +252,39 @@ fn ore_veins(toggle: &Value, ridged: &Value, gap: &Value) -> Vec<Value> {
                 "filler_gap": {"type": "minecraft:sub", "left": -0.3, "right": gap}})
         })
         .collect()
+}
+
+/// Drops the biomes of other namespaces than vanilla's that the pack does
+/// not define from the rule's biome conditions: 1.21.1 read `biome_is` as
+/// keys, so such a name (another mod's biome, a "comment") never matched,
+/// and 26.3 resolves the names and refuses a pack that has one. Returns
+/// whether it dropped any.
+fn undefined_biomes(v: &mut Value, defined: &std::collections::BTreeSet<String>) -> bool {
+    let mut dropped = false;
+    match v {
+        Value::Object(o) => {
+            if kind(&Value::Object(o.clone())) == Some("biome")
+                && let Some(Value::Array(names)) = o.get_mut("biome_is")
+            {
+                let before = names.len();
+                names.retain(|n| {
+                    n.as_str().is_none_or(|n| {
+                        let n = super::full_id(n);
+                        n.starts_with("minecraft:") || defined.contains(&n)
+                    })
+                });
+                dropped |= names.len() != before;
+            }
+            for x in o.values_mut() {
+                dropped |= undefined_biomes(x, defined);
+            }
+        }
+        Value::Array(a) => {
+            for x in a {
+                dropped |= undefined_biomes(x, defined);
+            }
+        }
+        _ => {}
+    }
+    dropped
 }

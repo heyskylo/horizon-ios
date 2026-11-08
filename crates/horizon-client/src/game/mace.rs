@@ -237,6 +237,7 @@ impl Game<'_> {
             damage_type: Some(match source.kind {
                 horizon_client::mobs::DamageKind::MaceSmash => "minecraft:mace_smash",
                 horizon_client::mobs::DamageKind::Spear => "minecraft:spear",
+                horizon_client::mobs::DamageKind::Thorns => "minecraft:thorns",
                 _ => "minecraft:player_attack",
             }),
             items: Some(world_items!(self)),
