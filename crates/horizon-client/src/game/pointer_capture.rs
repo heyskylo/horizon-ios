@@ -157,6 +157,7 @@ impl Game<'_> {
         self.reset_inventory_clicks();
         if !capture {
             self.stop_mining();
+            self.studio_rmb_down = false;
         }
         // The real pointer takes over from an agent's.
         self.agent_pointer = false;
@@ -325,6 +326,12 @@ impl Game<'_> {
     /// click. A screen that is open keeps it free, as releasing the pointer
     /// for that screen did: it is the screen, not the focus, that shows it.
     pub(super) fn regrab_on_refocus(&mut self) {
+        if self.studio_replay.is_some() || self.studio_freecam.active {
+            self.regrab_on_refocus = false;
+            self.studio_rmb_down = false;
+            self.capture(false);
+            return;
+        }
         if std::mem::take(&mut self.regrab_on_refocus) && self.screen == Screen::Playing {
             self.capture(true);
         }
