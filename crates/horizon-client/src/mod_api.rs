@@ -45,7 +45,7 @@ pub use crate::gamerules::Value as GameRuleValue;
 pub use crate::gfx::WorldHold;
 pub use crate::gfx::native_render::{
     BlockSpriteArrays, RenderHooks, RenderNeeds, RenderNeedsEvent, WorldDrawn, WorldDrawnEvent,
-    wgpu,
+    WorldWarp, WorldWarpEvent, wgpu,
 };
 pub use crate::hud::HudBatch;
 pub use crate::hud_layout::{GuiDraw, HealthHud, HealthInputs};
@@ -76,6 +76,9 @@ pub use horizon_core::{
     position::BlockPos,
     random::{LegacyRandom, RandomSource},
 };
+/// A firework explosion (the `firework_explosion` component), for
+/// `native_client_fireworks`.
+pub use horizon_items::firework::{FireworkExplosion, FireworkShape};
 /// A synched entity data value (`ClientboundSetEntityDataPacket`'s), as `entity_data_to` hands
 /// them over.
 pub use horizon_protocol::entity_data::Value as EntityDataValue;
@@ -529,6 +532,23 @@ pub struct NativeMobCost {
     pub nanos: u64,
     /// The mob ticks timed.
     pub mob_ticks: u64,
+}
+
+/// Where a fishing bobber outside water floats and fishes, as a mod's
+/// `native_fishing_medium` answers it: lava, the void under an island, a
+/// cloud. Below `surface` the bobber floats and fishes as in still water,
+/// above it it falls as anywhere else. API @API:fishing_medium@.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NativeFishingMedium {
+    /// The height the bobber floats at (world Y), as water's surface is.
+    pub surface: f64,
+    /// The loot table a catch from here rolls (`mymod:gameplay/lava_fishing`);
+    /// None rolls vanilla's `minecraft:gameplay/fishing`.
+    pub loot_table: Option<String>,
+    /// The ticks a fish takes to come, drawn from `min..=max` when the bobber
+    /// starts waiting, less the rod's Lure as in water (vanilla draws 100 to
+    /// 600). None keeps vanilla's draw.
+    pub lure_ticks: Option<(i32, i32)>,
 }
 
 /// A player on the server, as a server hook sees them.

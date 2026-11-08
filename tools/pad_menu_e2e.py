@@ -44,10 +44,25 @@ Cases:
 - pause_icon: the pause menu's icons are targets, and A presses one.
 - studio_rows: the D-pad walks Replay Studio's recordings to its buttons, and B leaves.
 - erase_checkbox: the D-pad reaches Optimize World's Erase Cached Data box, and A ticks it.
+- controller_settings_pad: Controller Settings on the settings shell, by the pad alone: its pages, the D-pad through
+  every page and its rows, the strip describing the focused row, A changing Vibration, X undoing it, B leaving.
+- controller_bind: A on Bindings' Jump waits for a button (the row and the strip say so, Start cancels and leaves no
+  Undo), the next button binds and saves it with an Undo, Right and A reset it and the Undo goes.
+- controller_settings_keys: the keys: Tab to the search, typing finds a row by what it does, the focus off and back
+  keeps the search, a pad press gives the keys back, Escape leaves.
 - controller_nintendo_buttons: with Nintendo glyphs, A on Device's Nintendo Buttons picks By Letter and saves it, and
   again goes back to By Position.
+- nintendo_letters: a Nintendo pad going by its letters shows the letter of the button that acts on the title's
+  declared buttons (Options is X, Quit Game's B), and by places Y and A, and the guide's Jump is A or B; the guide
+  and a connected pad's notice are shot in both modes.
 - extras_shell: Horizon Extras on the settings shell: the D-pad walks its rows and scrolls through the hidden ones, past
   a greyed row, the right stick scrolls it, A changes and saves a toggle, the strip follows the row, B leaves.
+- graphics_shell: the Graphics screen on the settings shell: the D-pad goes from its Quality page into the rows, A
+  turns Fog off and saves it, X presses the Undo that appears, which puts it back, and B leaves.
+- shell_choice_step: on Graphics, Left and Right on a focused choice (Preset) step it back and on, from the D-pad
+  and the arrow keys alike, and the focus stays; up and down leave the row, and LB goes to the page list.
+- shader_screens: Shaders with a pack of more screens than its page list has rows for: they collapse into one
+  `‹ Name ›` strip, RB walks every one and round to the pack list, LB from the first goes back to it.
 - extras_shell_edges: on Extras, which has no page list, down from the search field lands on the first row, not Done;
   a row the right stick leaves mostly hidden scrolls back into view when A presses it, and A changes it.
 Needs built fast binaries (`cargo build --profile fast -p horizon-client -p horizon-client-lib --bins`)
@@ -1367,6 +1382,9 @@ def open_controller(game, page=None):
             game.pad('rb')
 
 
+VIBRATION_ABOUT = 'Rumble when something happens to you.'
+
+
 def controller_saved(game):
     path = game.game_home / 'horizon-controller.txt'
     return path.read_text() if path.exists() else ''
@@ -1425,6 +1443,7 @@ def controller_settings_pad(args, name):
                 break
             game.pad('down')
         check('vibration' in (game.focused_label() or '').lower(), f'never reached Vibration: {game.focused_label()}')
+        check(has_label(game, VIBRATION_ABOUT), f'the strip does not describe the focused row: {labels(game)}')
         game.pad('south')
         check(has_label(game, 'Undo'), 'no Undo after a change')
         check('vibration:false' in controller_saved(game), f'not saved: {controller_saved(game)}')
@@ -1454,16 +1473,22 @@ def controller_bind(args, name):
         check('jump' in (game.focused_label() or '').lower(), f'never reached Jump: {game.focused_label()}')
         game.pad('south')
         check(has_label(game, '> '), f'A did not start the wait: {labels(game)}')
+        check(has_label(game, 'cancels'), f'the strip does not say what cancels the wait: {labels(game)}')
+        shot(game, 'controller-waiting')
         game.pad('start')
         check(not has_label(game, '> '), 'Start did not cancel the wait')
         check(has_label(game, 'Editing:'), 'Start left the screen instead of cancelling')
+        check(not has_label(game, 'Undo'), 'a cancelled wait left an Undo')
         game.pad('south')
         game.pad('rs')
         check('key.jump' in controller_saved(game), f'the binding was not saved: {controller_saved(game)}')
+        check(has_label(game, 'Undo'), 'no Undo after a binding')
+        check(has_label(game, 'This button also does'), f'the strip does not say the button is shared: {labels(game)}')
         shot(game, 'controller-bound')
         game.pad('right')
         game.pad('south')
         check('key.jump' not in controller_saved(game), f'reset did not clear it: {controller_saved(game)}')
+        check(not has_label(game, 'Undo'), 'Undo stayed with the binding back on its default')
         check((game.menu()['focus'] or {}).get('kind') != 'field', f'reset sent the focus to the search: {game.menu()["focus"]}')
     finally:
         game.quit()
@@ -1520,6 +1545,16 @@ def controller_settings_keys(args, name):
         game.ctl('key', 'up', 'tap')
         time.sleep(SETTLE)
         check(not has_label(game, 'Look Sensitivity'), 'coming back to the search cleared it')
+        # The pad moves the focus off the field (its first press lands it), which gives the keys back: typing
+        # changes nothing.
+        for _ in range(3):
+            game.pad('down')
+            if (game.menu()['focus'] or {}).get('kind') not in (None, 'field'):
+                break
+        check((game.menu()['focus'] or {}).get('kind') not in (None, 'field'), f"the pad stayed on the field: {game.menu()['focus']}")
+        game.ctl('type', 'zzz')
+        time.sleep(SETTLE)
+        check(has_label(game, 'Vibration'), f'the search kept the keys after the pad left it: {labels(game)}')
         game.ctl('key', 'esc', 'tap')
         time.sleep(SETTLE)
         check(not has_label(game, 'Editing:'), 'Escape did not leave the screen')
@@ -1633,6 +1668,114 @@ def extras_shell(args, name):
     return check.failures
 
 
+FOG = 'Fog'
+GRAPHICS_PAGES = ('General', 'Quality', 'Performance', 'Shaders', 'Advanced', 'HDR')
+
+
+def graphics_saved(game):
+    path = game.game_home / 'horizon-graphics.txt'
+    return path.read_text() if path.exists() else ''
+
+
+def graphics_shell(args, name):
+    game = Game(args, name)
+    check = Check()
+    try:
+        game.press_through('west')
+        game.ctl('options', 'graphics')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        check(declared(game).get('Done') is True, f'Graphics declares {declared(game)}')
+        check('Apply' not in declared(game), f'Undo shows with nothing changed: {declared(game)}')
+        # Down the page list from the search field to Quality, which opens it, and right into its rows.
+        for _ in range(len(GRAPHICS_PAGES)):
+            game.pad('down')
+            if game.focused_label() == 'Quality':
+                break
+        game.pad('south')
+        check(label_of(game, FOG) is not None, f'the Quality page has no {FOG} row: {labels(game)}')
+        game.pad('right')
+        for _ in range(ROW_WALK):
+            if (game.focused_label() or '').startswith(FOG):
+                break
+            game.pad('down')
+        label = game.focused_label() or ''
+        check(label.startswith(FOG) and label.endswith('On'), f'the D-pad never reached {FOG} On: {label}')
+        game.pad('south')
+        label = game.focused_label() or ''
+        check(label.endswith('Off'), f'A left {FOG} as {label}')
+        check('fog:false' in graphics_saved(game), 'Fog off was not saved to horizon-graphics.txt')
+        check(declared(game).get('Apply') is True, f'Undo did not appear: {declared(game)}')
+        game.pad('west')
+        check(label_of(game, FOG) and label_of(game, FOG)['label'].endswith('On'), f'X did not undo: {labels(game)}')
+        check('Apply' not in declared(game), f'Undo stayed after undoing: {declared(game)}')
+        game.pad('east')
+        game.wait_targets()
+        check(label_of(game, FOG) is None, f'B did not leave Graphics: {labels(game)}')
+    finally:
+        game.quit()
+    return check.failures
+
+
+PRESET = 'Preset'
+
+
+def shell_choice_step(args, name):
+    # In a world: the arrow keys go through `horizon-ctl key`, which needs one.
+    game = Game(args, name, world=True)
+    check = Check()
+    try:
+        game.ctl('options', 'graphics')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        # Down to the General page (the first press lands the focus), and across into its first row.
+        for _ in range(3):
+            if game.focused_label() == 'General':
+                break
+            game.pad('down')
+        check(game.focused_label() == 'General', f"down never reached General: {game.menu()['focus']}")
+        game.pad('right')
+        start = game.focused_label() or ''
+        row = game.focus()
+        check(start.startswith(PRESET), f'right from General went to {start}, not {PRESET}')
+        if not start.startswith(PRESET):
+            return check.failures
+
+        def reads():
+            return next((w.get('label') or '' for w in game.widgets() if tuple(w['bounds']) == row), '')
+        game.pad('right')
+        on = reads()
+        check(on != start and on.startswith(PRESET), f'D-pad right left {PRESET} as {on}')
+        check(game.focus() == row, f'D-pad right moved the focus off {PRESET} to {game.focus()}')
+        check(declared(game).get('Apply') is True, f'a step showed no Undo: {declared(game)}')
+        shot(game, 'shell-choice-right')
+        game.pad('left')
+        check(reads() == start, f'D-pad left did not step {PRESET} back: {reads()}, not {start}')
+        check(game.focus() == row, f'D-pad left moved the focus off {PRESET} to {game.focus()}')
+        # The arrow keys do what the D-pad does.
+        game.ctl('key', 'right', 'tap')
+        time.sleep(SETTLE)
+        check(reads() == on, f'the Right key left {PRESET} as {reads()}, not {on}')
+        game.ctl('key', 'left', 'tap')
+        time.sleep(SETTLE)
+        check(reads() == start, f'the Left key left {PRESET} as {reads()}, not {start}')
+        check(game.focus() == row, f'the arrow keys moved the focus off {PRESET} to {game.focus()}')
+        # Up and down leave the row; LB goes to the page list, on the page before.
+        game.pad('down')
+        check(game.focus() != row, 'down did not leave the choice')
+        game.pad('up')
+        check(game.focus() == row, f'up did not come back to {PRESET}: {game.focused_label()}')
+        game.pad('rb')
+        focus = game.menu()['focus'] or {}
+        check(str(focus.get('kind')).startswith('tab') and game.focused_label() == 'Quality',
+              f'RB from {PRESET} went to {game.focused_label()} ({focus})')
+        check(label_of(game, FOG) is not None, f'RB did not open Quality: {labels(game)}')
+        shot(game, 'shell-choice-pages')
+    finally:
+        game.quit()
+    return check.failures
+
+
 ZOOM_INSTALL = 'Zoom: install from Mods'
 # How far a group's name sits over its first row (`graphics_style::GROUP_ROW`): the list's top from the Mods note.
 GROUP_NAME_H = 14
@@ -1676,6 +1819,55 @@ def extras_shell_edges(args, name):
         check(after and after != before and after.split(':')[0] == before.split(':')[0],
               f'A on the half-hidden row left it {before} -> {after}')
         shot(game, 'extras-revealed')
+    finally:
+        game.quit()
+    return check.failures
+
+
+# A shader pack with more screens than Shaders' page list has rows for in a 427x240 GUI view.
+MANY_SCREENS = [f'S{i:02}' for i in range(12)]
+
+
+def seed_many_screens(game_home):
+    pack = game_home / 'shaderpacks' / 'ManyScreens' / 'shaders'
+    pack.mkdir(parents=True)
+    options = [f'O_{name}' for name in MANY_SCREENS]
+    (pack / 'final.fsh').write_text('#version 120\n' + ''.join(f'#define {o}\n#ifdef {o}\n#endif\n' for o in options)
+                                    + 'void main() { gl_FragColor = vec4(1.0); }\n')
+    (pack / 'shaders.properties').write_text(
+        'screen = ' + ' '.join(f'[{name}]' for name in MANY_SCREENS) + '\n'
+        + ''.join(f'screen.{name} = {o}\n' for name, o in zip(MANY_SCREENS, options)))
+
+
+def open_tab(game):
+    """The label of the page list's lit tab."""
+    lit = [tuple(t['rect']) for t in game.menu()['targets'] if t['kind'] == 'tab*']
+    return next((w.get('label') for w in game.widgets() if tuple(w['bounds']) in lit), None)
+
+
+def shader_screens(args, name):
+    game = Game(args, name, seed=seed_many_screens)
+    check = Check()
+    try:
+        game.press_through('west')
+        game.ctl('options', 'shader-packs')
+        time.sleep(SETTLE)
+        game.wait_targets()
+        pack = next((w for w in game.widgets() if w.get('label') == 'ManyScreens'), None)
+        check(pack is not None, f'no ManyScreens pack: {labels(game)}')
+        game.ctl('click', pack['id'])
+        time.sleep(SETTLE)
+        # RB from the pack list through every screen, none left out, and round to the pack list.
+        walked = []
+        for _ in range(len(MANY_SCREENS) + 2):
+            game.pad('rb')
+            walked.append(open_tab(game))
+        packs = walked[-1]
+        check(walked[1:-1] == MANY_SCREENS, f'RB walked {walked}')
+        # LB back from the first screen leaves the strip for the pack list.
+        game.pad('rb')
+        game.pad('lb')
+        check(open_tab(game) == packs, f'LB from {walked[0]} went to {open_tab(game)}')
     finally:
         game.quit()
     return check.failures
@@ -2738,6 +2930,46 @@ def glyph_art_world(args, name):
     return check.failures
 
 
+def nintendo_letters(args, name):
+    check = Check()
+    # By letters the pad's X (on top) plays West and its B (at the bottom) East; by places Y and A.
+    for letters, west, east in ((True, 'X', 'B'), (False, 'Y', 'A')):
+        mode = 'letters' if letters else 'places'
+        seed = seed_controller(f'nintendoLetters:{str(letters).lower()}\n')
+        game = Game(args, f'{name}-{mode}', seed=seed)
+        try:
+            game.ctl('pad', 'family', 'nintendo')
+            game.wait_targets()
+            game.pad('down')
+            shown = {g['button']: g for g in game.menu()['glyphs']}
+            for part, label in (('West', west), ('East', east)):
+                glyph = shown.get(part) or {}
+                check(glyph.get('label') == label, f'{mode} {part}: {glyph.get("label")}, not {label}')
+                sprite = f'horizon:gui/controller/nx_{label.lower()}'
+                check(glyph.get('sprite') == sprite, f'{mode} {part}: {glyph.get("sprite")}, not {sprite}')
+            shot(game, f'nintendo_{mode}_title')
+        finally:
+            game.quit()
+        game = Game(args, f'{name}-{mode}-world', world=True, seed=seed)
+        try:
+            game.ctl('pad', 'family', 'nintendo')
+            game.pad('lb')
+            left, right = guide(game)
+            check(left or right, f'{mode}: no gameplay guide rows')
+            # Jump is South: the A on the right by letters, the B at the bottom by places.
+            labels = {r['caption']: r['label'] for r in game.ctl('pad', 'status')['guide']['left']}
+            jump = 'A' if letters else 'B'
+            check(labels.get('key.jump') == jump, f'{mode}: jump shows {labels.get("key.jump")}, not {jump}')
+            shot(game, f'nintendo_{mode}_guide')
+            game.ctl('pad', 'connection', 'connected', 'nintendo')
+            time.sleep(1)
+            check(game.ctl('pad', 'status').get('notice'), f'{mode}: no notice for the connected pad')
+            shot(game, f'nintendo_{mode}_notice')
+        finally:
+            game.quit()
+    return check.failures
+
+
 def controller_trigger_threshold(args, name):
     game = Game(args, name)
     check = Check()
@@ -3064,8 +3296,12 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'erase_checkbox': erase_checkbox,
          'extras_shell': extras_shell,
          'extras_shell_edges': extras_shell_edges,
+         'graphics_shell': graphics_shell,
+         'shell_choice_step': shell_choice_step,
+         'shader_screens': shader_screens,
          'glyph_art': glyph_art,
          'glyph_art_world': glyph_art_world,
+         'nintendo_letters': nintendo_letters,
          'key_row_a_x': key_row_a_x,
          'prompt_dialog': prompt_dialog,
          'prompt_dialog_field': prompt_dialog_field,

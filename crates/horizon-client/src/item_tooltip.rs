@@ -250,7 +250,11 @@ pub fn name_line(stack: &ItemStack, translate: &dyn Fn(&str) -> Option<String>) 
     if let Some(name) = stack.custom_name() {
         return name.to_owned();
     }
-    if let Some(name) = stack.item_name() {
+    // A potion's or tipped arrow's own name comes before its `item_name`.
+    let contents = crate::brewing::contents_name_key(stack);
+    if contents.is_none()
+        && let Some(name) = stack.item_name()
+    {
         return name;
     }
     if stack.data().is_some_and(|d| d.ominous_banner) {
@@ -260,8 +264,8 @@ pub fn name_line(stack: &ItemStack, translate: &dyn Fn(&str) -> Option<String>) 
     if let Some(head) = player_head_name(stack) {
         return head.title(translate);
     }
-    let key = if is_potion_item(&stack.item) {
-        Some(crate::brewing::potion_name_key(&stack.item, stack.potion()))
+    let key = if contents.is_some() {
+        contents
     } else if let Some(pattern) = path.strip_suffix("_armor_trim_smithing_template") {
         Some(format!("trim_pattern.minecraft.{pattern}"))
     } else if path == "netherite_upgrade_smithing_template" {
@@ -997,7 +1001,10 @@ pub fn detail_lines(
     }
     lines.extend(jukebox_line(stack, info, &display, translate));
     // Trim.addToTooltip.
-    if let Some((material, pattern)) = data.and_then(|d| d.trim.as_ref()) {
+    if let Some((material, pattern)) = data
+        .and_then(|d| d.trim.as_ref())
+        .and_then(crate::item_data::trim::named)
+    {
         let short = |s: &str| s.trim_start_matches("minecraft:").to_owned();
         lines.push(text("item.minecraft.smithing_template.upgrade"));
         lines.push(format!(
@@ -1200,7 +1207,10 @@ pub fn styled_name(stack: &ItemStack, fallback: impl FnOnce() -> String) -> crat
             ..Default::default()
         });
     }
-    if let Some(component) = stack.data().and_then(|d| d.other("minecraft:item_name")) {
+    // A potion or tipped arrow is named by its contents, not its `item_name`.
+    if crate::brewing::contents_name_key(stack).is_none()
+        && let Some(component) = stack.data().and_then(|d| d.other("minecraft:item_name"))
+    {
         return crate::entity_nbt::name_text(component);
     }
     crate::text::Text::legacy(&fallback())
@@ -1561,6 +1571,35 @@ mod tests {
         assert_eq!(lore[0].spans[0].style.italic, Some(false));
         assert_eq!(lore[0].spans[0].style.color, Some(crate::text::DARK_PURPLE));
         assert!(TooltipDisplay::for_stack(&stack).shows("minecraft:lore"));
+    }
+
+    /// `PotionItem.getName`: the hotbar's and the tooltip's name of a potion
+    /// with an `item_name` is its contents', and an arrow's the same.
+    #[test]
+    fn a_potion_with_an_item_name_is_named_by_its_contents() {
+        let comp = horizon_items::item_data::command_components(
+            r#"[item_name="Bottle",potion_contents={potion:"minecraft:long_swiftness"}]"#,
+        )
+        .unwrap();
+        let (damage, extra) = horizon_items::item_data::decode_components(Some(&comp));
+        let mut stack = ItemStack {
+            item: "minecraft:potion".into(),
+            count: 1,
+            damage,
+            extra,
+        };
+        let translate = |key: &str| match key {
+            "item.minecraft.potion.effect.swiftness" => Some("Potion of Swiftness".to_owned()),
+            "item.minecraft.tipped_arrow.effect.swiftness" => Some("Arrow of Swiftness".to_owned()),
+            _ => None,
+        };
+        let name = styled_name(&stack, || name_line(&stack, &translate));
+        assert_eq!(name.plain(), "Potion of Swiftness");
+        stack.item = "minecraft:tipped_arrow".into();
+        assert_eq!(name_line(&stack, &translate), "Arrow of Swiftness");
+        // Any other item keeps its item_name.
+        stack.item = "minecraft:stick".into();
+        assert_eq!(styled_name(&stack, || "fallback".into()).plain(), "Bottle");
     }
 
     #[test]

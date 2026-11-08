@@ -10,8 +10,8 @@
 //! second pass, draws the sections whose box was seen; the others' draws have
 //! an instance count of 0.
 //!
-//! The picture stays the one without culling: the boxes (grown by a block,
-//! the farthest a block model reaches out of its cell) are drawn front faces
+//! The picture stays the one without culling: the boxes around the mesh's
+//! geometry (padded by a block) are drawn front faces
 //! only, so a fragment is the box's nearest point on its pixel, and the
 //! fragment shader runs only where the depth test passes (forced early), so a
 //! section is left out only where all of its fragments would fail the depth
@@ -27,11 +27,13 @@
 //! as many draws as without culling: drivers that unroll an indirect
 //! multi-draw on the CPU (Mesa's on Intel Gen9) pay per entry. Phase 2's
 //! counts come from the GPU, which reads them from the draws themselves:
-//! Vulkan's native multi-draw, and Metal's, which wgpu replays as one
-//! indirect draw per entry. Translucent draws are not culled.
+//! Vulkan's native multi-draw, DirectX 12's `ExecuteIndirect`, and Metal's,
+//! which wgpu replays as one indirect draw per entry. Translucent draws are
+//! not culled.
 //!
 //! Metal cannot force the depth test before a fragment shader that writes
-//! storage (naga writes no `[[early_fragment_tests]]`), so there the boxes
+//! storage (naga writes no `[[early_fragment_tests]]`), nor can DirectX 12
+//! (`[earlydepthstencil]`, which wgpu doesn't offer there), so there the boxes
 //! are drawn in a pass of their own between the phases, which reads phase
 //! 1's depth as a texture and makes the same comparison in the shader: the
 //! fragment's depth against the stored one, greater or equal passing. The
@@ -45,6 +47,15 @@ use std::sync::{
 const WORDS: u64 = 5 * 4;
 /// A tested section's box, around its origin: its cell grown by a block.
 pub const SECTION_BOX: [[f32; 3]; 2] = [[-1.0; 3], [17.0; 3]];
+/// Mesh bounds already contain `BOUNDS_PAD`; grow them to a block of padding
+/// in total, keeping the box's faces off the geometry. Without mesh bounds,
+/// keep the section cell grown by a block, as before.
+pub fn section_box(bounds: Option<[glam::Vec3; 2]>) -> [[f32; 3]; 2] {
+    bounds.map_or(SECTION_BOX, |[low, high]| {
+        let pad = glam::Vec3::splat(1.0 - crate::mesher::SectionMesh::BOUNDS_PAD);
+        [(low - pad).to_array(), (high + pad).to_array()]
+    })
+}
 /// The bit that marks a far tile's slot (`Renderer::tile_cull_slot`): tiles
 /// count their slots apart from the sections' resident ones.
 pub const TILE: u32 = 1 << 31;
@@ -215,9 +226,9 @@ impl Cull {
         adapter.features() & wgpu::Features::SHADER_EARLY_DEPTH_TEST
     }
     /// Where the device can run the test, if it can: Vulkan with early
-    /// depth tests, or Metal, both drawing an indirect multi-draw's entries
-    /// with the instance counts the GPU wrote, with fragment shaders that
-    /// write storage.
+    /// depth tests, or Metal and DirectX 12 with the test in the shader, all
+    /// drawing an indirect multi-draw's entries with the instance counts the
+    /// GPU wrote, with fragment shaders that write storage.
     pub fn supported(adapter: &wgpu::Adapter, device: &wgpu::Device) -> Option<DepthTest> {
         let depth_test = match adapter.get_info().backend {
             wgpu::Backend::Vulkan | wgpu::Backend::Gl
@@ -227,7 +238,9 @@ impl Cull {
             {
                 DepthTest::Early
             }
-            wgpu::Backend::Metal => DepthTest::InShader,
+            // DirectX 12 has no forced early depth test in wgpu either: the test runs in the
+            // shader there too.
+            wgpu::Backend::Metal | wgpu::Backend::Dx12 => DepthTest::InShader,
             _ => return None,
         };
         (device

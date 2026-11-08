@@ -93,17 +93,24 @@ impl Game<'_> {
     /// below taking the disc): the song stops, the block loses its record,
     /// and the neighbours and comparators hear it.
     pub(super) fn jukebox_taken(&mut self, pos: [i32; 3]) {
+        let mut was_playing = false;
         if let Some(BlockEntity::Jukebox(j)) =
             self.world.block_entities.get_mut(&(pos[0], pos[1], pos[2]))
         {
             if j.record().is_some() {
                 return;
             }
+            was_playing = j.playing;
             j.playing = false;
             j.song_clock_present = false;
             j.ticks = 0;
         }
-        self.stop_song(pos);
+        // `JukeboxSongPlayer.stop` posts only while a song plays.
+        if was_playing {
+            self.stop_song_heard(pos);
+        } else {
+            self.stop_song(pos);
+        }
         self.set_has_record(pos, false);
         self.jukebox_changed(pos);
     }
@@ -126,7 +133,7 @@ impl Game<'_> {
         self.set_has_record(pos, has_record);
         match song {
             Some(song) => self.start_song(pos, &song),
-            None if was_playing => self.stop_song(pos),
+            None if was_playing => self.stop_song_heard(pos),
             None => {}
         }
         self.jukebox_changed(pos);
@@ -258,6 +265,17 @@ impl Game<'_> {
             self.lan_songs.push((pos, None));
         }
     }
+    /// `JukeboxSongPlayer.stop` of a jukebox whose record left it, taken out by
+    /// hand, pulled by a hopper or finished: the song stops and the
+    /// `JUKEBOX_STOP_PLAY` vibration goes to the listeners around it. A broken
+    /// jukebox is not this path: its removal posts the same event from the
+    /// world's spill, so it must not post it here as well.
+    fn stop_song_heard(&mut self, pos: [i32; 3]) {
+        self.stop_song(pos);
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        self.post_block_game_event("minecraft:jukebox_stop_play", pos, None, Some(state));
+    }
+
     /// `LevelEventHandler.notifyNearbyEntities` (level events 1010 and 1011):
     /// parrots within three blocks of the jukebox start or stop dancing.
     pub(super) fn notify_record_playing(&mut self, pos: [i32; 3], playing: bool) {
@@ -275,8 +293,10 @@ impl Game<'_> {
     /// `popOutTheItem`: the disc above the jukebox, and the song stops.
     fn eject_record(&mut self, pos: [i32; 3]) {
         let key = (pos[0], pos[1], pos[2]);
+        let mut was_playing = false;
         let record = match self.world.block_entities.get_mut(&key) {
             Some(BlockEntity::Jukebox(j)) => {
+                was_playing = j.playing;
                 j.playing = false;
                 j.song_clock_present = false;
                 j.ticks = 0;
@@ -284,7 +304,13 @@ impl Game<'_> {
             }
             _ => None,
         };
-        self.stop_song(pos);
+        // `JukeboxSongPlayer.stop` posts only while a song plays: a disc
+        // taken out after its song ended is silent.
+        if was_playing {
+            self.stop_song_heard(pos);
+        } else {
+            self.stop_song(pos);
+        }
         if let Some(record) = record {
             // atLowerCornerWithOffset(pos, 0.5, 1.01, 0.5).offsetRandomXZ(random, 0.7);
             // `new ItemEntity` moves it with its own random.
@@ -292,7 +318,7 @@ impl Game<'_> {
                 &mut self.world.random,
                 horizon_core::position::BlockPos::new(pos[0], pos[1], pos[2]),
             );
-            self.spawn_item(record, at, super::dispenser::new_item_motion(), 10);
+            self.spawn_item_own(record, at, 10);
         }
         self.set_has_record(pos, false);
         self.jukebox_changed(pos);
@@ -323,7 +349,7 @@ impl Game<'_> {
                 j.song_clock_present = false;
                 j.ticks = 0;
             }
-            self.stop_song(pos);
+            self.stop_song_heard(pos);
             self.jukebox_changed(pos);
             return;
         }
@@ -339,7 +365,7 @@ impl Game<'_> {
             let color = f64::from(self.world.random.next_int_bound(4).unwrap_or(0)) / 24.0;
             let at = [
                 f64::from(pos[0]) + 0.5,
-                f64::from(pos[1]) + 1.2,
+                f64::from(pos[1]) + f64::from(1.2_f32), // add(0.0, 1.2F, 0.0)
                 f64::from(pos[2]) + 0.5,
             ];
             self.particles.add(

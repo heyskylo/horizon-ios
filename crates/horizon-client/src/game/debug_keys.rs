@@ -120,10 +120,11 @@ impl Game<'_> {
             || (self.screen == Screen::Creative && self.creative_screen.tab().search)
             || self.recipe_search_focused()
             || self.station_typing()
-            || self
-                .title
-                .as_mut()
-                .is_some_and(|t| t.focused_field().is_some());
+            || (self.title_input_active()
+                && self
+                    .title
+                    .as_mut()
+                    .is_some_and(|t| t.focused_field().is_some()));
         // Container screens use Escape, the inventory key and the hotbar and
         // drop keys first; any other screen closes on Escape.
         let screen_key = match self.screen {
@@ -307,10 +308,9 @@ impl Game<'_> {
     /// the overlay is open. F1 hides it unless a screen is open. Horizon paints
     /// it 20 times a second and copies those vertices in between.
     pub(super) fn draw_debug_overlay_under(&self, batch: &mut HudBatch, size: [u32; 2]) {
-        let screen_open = self.screen != Screen::Playing;
+        let screen_open = self.title.is_some() || self.screen != Screen::Playing;
         let reduced = self.reduced_debug_info();
-        if self.title.is_some()
-            || !self.debug_entries.any_enabled(self.debug, reduced)
+        if !self.debug_entries.any_enabled(self.debug, reduced)
             || (self.ui.hide_gui && !screen_open)
         {
             // Nothing reads the server's lines now: it stops computing them each tick.
@@ -759,9 +759,14 @@ impl Game<'_> {
                 self.debug_charts.toggle_lightmap(&mut self.debug);
                 true
             }
-            // The debug options screen is not wired over the title screen yet:
-            // leave F6 unhandled there rather than half-open it.
-            DebugAction::DebugOptions if self.title.is_some() => false,
+            // Other title submenus still need their own interruption/close policy.
+            DebugAction::DebugOptions
+                if self.title.as_ref().is_some_and(|title| {
+                    !matches!(title.mode, horizon_client::title::Mode::Main)
+                }) =>
+            {
+                false
+            }
             DebugAction::DebugOptions => {
                 self.toggle_debug_options();
                 true
@@ -1162,7 +1167,7 @@ impl Game<'_> {
                     (0.3125, 0.265_625)
                 }
                 K::WindCharge | K::BreezeWindCharge => (0.3125, 0.0),
-                K::LargeFireball { .. } => (1.0, 0.85),
+                K::LargeFireball { .. } | K::DragonFireball => (1.0, 0.85),
             };
             g.hitbox(
                 at(p.previous, p.position),

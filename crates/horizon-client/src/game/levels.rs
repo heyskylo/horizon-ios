@@ -18,9 +18,15 @@ use super::{
     ominous_item_spawner, persist, raids::Raiding, sculk::SculkState, tnt, trident,
 };
 use horizon_client::{
-    Result, block_entity_anim::BlockEntityAnims, random_tick_sections::RandomTickSections,
-    save::SaveDir, streaming::Streaming, tick_chunk_membership::TickChunkMembership,
-    ticket_levels::ChunkTickets, vanillagen::VanillaTerrain, world::World,
+    Result,
+    block_entity_anim::BlockEntityAnims,
+    random_tick_sections::RandomTickSections,
+    save::SaveDir,
+    streaming::Streaming,
+    tick_chunk_membership::TickChunkMembership,
+    ticket_levels::{ChunkTickets, PortalTicket},
+    vanillagen::VanillaTerrain,
+    world::World,
 };
 use horizon_world::level::{LevelEvent, Ticks};
 use std::{
@@ -60,7 +66,6 @@ pub(super) struct Parked {
     bolts: Vec<lightning::Bolt>,
     crystals: Vec<dragon::Crystal>,
     dragon: Option<dragon::Dragon>,
-    dragon_fireballs: Vec<dragon::DragonFireball>,
     breath_clouds: Vec<dragon::Breath>,
     tridents: horizon_client::join_seq::JoinList<trident::ThrownTrident>,
     rockets: horizon_client::join_seq::JoinList<fireworks::Rocket>,
@@ -243,6 +248,7 @@ impl Game<'_> {
         world.attachments = save.load_attachments();
         world.shape = self.level_shapes.get(dim.id());
         world.fast_lava = self.dimension_type_of(dim).fast_lava;
+        let tickets = ChunkTickets::with_saved_portal(save.load_portal_tickets());
         Ok(Parked {
             world,
             streaming,
@@ -250,7 +256,7 @@ impl Game<'_> {
             save,
             block_ticks: Ticks::new(self.level.seed as i32),
             tick_chunks: Default::default(),
-            tickets: Default::default(),
+            tickets,
             random_tick_sections: Default::default(),
             level_events: Vec::new(),
             portal_states: HashMap::new(),
@@ -267,7 +273,6 @@ impl Game<'_> {
             bolts: Vec::new(),
             crystals: Vec::new(),
             dragon: None,
-            dragon_fireballs: Vec::new(),
             breath_clouds: Vec::new(),
             tridents: Default::default(),
             rockets: Default::default(),
@@ -298,6 +303,30 @@ impl Game<'_> {
         })
     }
 
+    /// `MinecraftServer.prepareLevels` activates every level's saved tickets:
+    /// a level holding saved `PORTAL` tickets opens with the world and ticks
+    /// while they hold it (`shouldKeepDimensionActive`).
+    pub(super) fn open_saved_portal_levels(&mut self) -> Result<()> {
+        if self.options.execution_role.is_client() {
+            return Ok(());
+        }
+        let back = self.dim;
+        for dim in [Dim::Overworld, Dim::Nether, Dim::End] {
+            if dim == back || self.levels.parked.contains_key(&dim) {
+                continue;
+            }
+            let save = SaveDir::new(
+                horizon_client::save::dimension_dir(&self.world_root, dim.id()),
+                self.level_shapes.get(dim.id()),
+            );
+            if !save.load_portal_tickets().is_empty() {
+                self.enter_level(None, dim)?;
+                self.enter_level(None, back)?;
+            }
+        }
+        Ok(())
+    }
+
     /// `MinecraftServer.prepareLevels`: before the first tick, the chunks the
     /// open levels' restored tickets hold (forced chunks, a native mod's) are
     /// loaded (`ChunkLoadCounter`). The first tick then finds them ticking
@@ -326,8 +355,16 @@ impl Game<'_> {
     /// Stream the level in place until each chunk its tickets make block
     /// ticking is a ticking chunk (lit, with its neighbours loaded).
     fn wait_for_ticket_chunks(&mut self, deadline: Instant) {
-        // A `PORTAL` ticket reaches block ticking two chunks out, a forced one one.
-        const REACH: i32 = 2;
+        // Forced chunks are checked two chunks out (their ticket block ticks one).
+        // A `PORTAL` ticket's chunks are streamed as an area of their own (the
+        // network tick does it, which hasn't run yet), whose chunks out to its
+        // radius can become ticking chunks: those are waited for.
+        let portal = self.portal_ticket_areas();
+        for area in &portal {
+            if !self.streaming.extra.contains(area) {
+                self.streaming.extra.push(*area);
+            }
+        }
         loop {
             self.update_chunk_tickets();
             let levels = self.tickets.levels();
@@ -336,11 +373,11 @@ impl Game<'_> {
                 .forced
                 .iter()
                 .chain(&streaming.mod_forced)
-                .copied()
-                .chain(self.tickets.portal_chunks())
-                .all(|(cx, cz)| {
-                    (cz - REACH..=cz + REACH).all(|z| {
-                        (cx - REACH..=cx + REACH).all(|x| {
+                .map(|&c| (c, 2))
+                .chain(portal.iter().copied())
+                .all(|((cx, cz), reach)| {
+                    (cz - reach..=cz + reach).all(|z| {
+                        (cx - reach..=cx + reach).all(|x| {
                             !levels.loaded_ticking(x, z) || super::ticking_chunk(&self.world, x, z)
                         })
                     })
@@ -386,7 +423,6 @@ impl Game<'_> {
         swap(&mut self.bolts, &mut p.bolts);
         swap(&mut self.crystals, &mut p.crystals);
         swap(&mut self.dragon, &mut p.dragon);
-        swap(&mut self.dragon_fireballs, &mut p.dragon_fireballs);
         swap(&mut self.breath_clouds, &mut p.breath_clouds);
         swap(&mut self.tridents, &mut p.tridents);
         swap(&mut self.rockets, &mut p.rockets);
@@ -501,11 +537,15 @@ impl Game<'_> {
         };
         let uuid = p.persist.uuids.remove(&id);
         let raw = p.persist.raw.remove(&id);
+        let slots = p.persist.passenger_slots.remove(&id);
         if let Some(u) = uuid {
             self.persist.uuids.insert(id, u);
         }
         if let Some(r) = raw {
             self.persist.raw.insert(id, r);
+        }
+        if let Some(s) = slots {
+            self.persist.passenger_slots.insert(id, s);
         }
     }
 
@@ -799,7 +839,7 @@ impl Game<'_> {
                     || !self.arrival_chunks(*d).is_empty()
                     // A portal ticket keeps its dimension active
                     // (`TicketType.shouldKeepDimensionActive`).
-                    || !self.portal_ticket_chunks(*d).is_empty()
+                    || !self.portal_tickets_in(*d).is_empty()
             })
             .collect();
         if dims.is_empty() {
@@ -808,16 +848,30 @@ impl Game<'_> {
         dims
     }
 
-    /// The chunks holding a portal ticket in `dim`'s level (`placePortalTicket`).
-    pub(super) fn portal_ticket_chunks(&self, dim: Dim) -> Vec<(i32, i32)> {
+    /// The portal tickets of `dim`'s level (`placePortalTicket`, or saved).
+    pub(super) fn portal_tickets_in(&self, dim: Dim) -> &[PortalTicket] {
         if dim == self.dim {
-            self.tickets.portal_chunks().collect()
+            self.tickets.portal_tickets()
         } else {
             self.levels
                 .parked
                 .get(&dim)
-                .map_or_else(Vec::new, |p| p.tickets.portal_chunks().collect())
+                .map_or(&[], |p| p.tickets.portal_tickets())
         }
+    }
+
+    /// The areas the level in place's portal tickets keep streamed: around each
+    /// exit its block-ticking chunks and their neighbours, the ring vanilla
+    /// keeps `FULL` (level 33), so the outer block-ticking ring is a ticking
+    /// chunk too; and at least the chunks its expiry waits for
+    /// (`portal_ticket_can_expire`).
+    pub(super) fn portal_ticket_areas(&self) -> Vec<((i32, i32), i32)> {
+        let block_ticking = i32::from(horizon_client::ticket_levels::BLOCK_TICKING);
+        self.tickets
+            .portal_tickets()
+            .iter()
+            .map(|t| (t.chunk, (block_ticking - t.level).max(1)))
+            .collect()
     }
 
     /// Count the parked levels' empty ticks, and save and close the ones
@@ -978,5 +1032,167 @@ mod tests {
         assert_eq!(game.border.size(), 1000.0);
         let nether = game.levels.parked_border(Dim::Nether).unwrap();
         assert_eq!(nether.size(), 100.0);
+    }
+
+    /// A game on a scratch world folder, the way `dedicated.rs` opens one
+    /// (`load_world` with an absolute folder).
+    fn open_game(
+        root: &std::path::Path,
+        home: &std::path::Path,
+        world: &std::path::Path,
+    ) -> Game<'static> {
+        use crate::game::{Audio, Options, Progress, Settings, load_resources};
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.to_path_buf(),
+            None,
+            root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        // The game keeps a reference to its resources for the whole test.
+        let resources: &'static _ = Box::leak(Box::new(loaded.resources));
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.to_path_buf();
+        options.game_dir = Some(home.to_path_buf());
+        // A fixed name: no generated horizon-player.txt in the working directory.
+        options.player_name = Some("H260".into());
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let folder = world.to_string_lossy().into_owned();
+        game.load_world(
+            crate::game::world_loading::WorldRequest::new(
+                &folder,
+                Some("h260"),
+                Some(260),
+                true,
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        game
+    }
+
+    /// Expected values from the official 26.3 dedicated server restarted on the
+    /// same world: each level's `world_border` SavedData is read when the level
+    /// is made, so the Overworld's saved border is in place for the first
+    /// command, and a first `/worldborder set` is not overwritten later.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and a scratch HORIZON_HOME"]
+    fn a_reopened_world_has_each_levels_saved_border_from_the_start() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let home = std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap()).join("h260");
+        let world = home.join("saves/h260");
+        {
+            let mut game = open_game(&root, &home, &world);
+            // A server ticks before it saves.
+            game.tick_world(true).unwrap();
+            assert!(game.run_command("worldborder set 50"));
+            assert!(game.run_command("execute in minecraft:the_nether run worldborder set 100"));
+            game.save_game().unwrap();
+        }
+        let mut game = open_game(&root, &home, &world);
+        let mut failures = Vec::new();
+        if game.border.size() != 50.0 {
+            failures.push(format!("in place after the open: {}", game.border.size()));
+        }
+        assert!(game.run_command("worldborder set 70"));
+        game.tick_world(true).unwrap();
+        assert!(game.run_command("execute in minecraft:the_nether run worldborder get"));
+        assert!(game.run_command("execute in minecraft:the_end run worldborder get"));
+        assert_eq!(game.dim, Dim::Overworld);
+        let sizes = (
+            game.border.size(),
+            game.levels.parked_border(Dim::Nether).map(|b| b.size()),
+            game.levels.parked_border(Dim::End).map(|b| b.size()),
+        );
+        if sizes != (70.0, Some(100.0), Some(59_999_968.0)) {
+            failures.push(format!("after the first set and a tick: {sizes:?}"));
+        }
+        assert!(failures.is_empty(), "reopened borders: {failures:#?}");
+    }
+
+    /// Added controls (H260, after the baseline): a new world, and a read and a
+    /// set before the first tick that survive a tick, a save and another reopen.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and a scratch HORIZON_HOME"]
+    fn reopened_borders_keep_through_a_tick_and_a_save_and_a_new_world_has_defaults() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let home = std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+            .join("h260-controls");
+        let world = home.join("saves/h260");
+        let sizes = |game: &mut Game<'_>| {
+            assert!(game.run_command("execute in minecraft:overworld run worldborder get"));
+            assert!(game.run_command("execute in minecraft:the_nether run worldborder get"));
+            assert!(game.run_command("execute in minecraft:the_end run worldborder get"));
+            let parked = |d| game.levels.parked_border(d).map(|b| b.size());
+            let size = |d: Dim| {
+                if game.dim == d {
+                    Some(game.border.size())
+                } else {
+                    parked(d)
+                }
+            };
+            (size(Dim::Overworld), size(Dim::Nether), size(Dim::End))
+        };
+        const DEFAULT: f64 = 59_999_968.0;
+        let mut failures = Vec::new();
+        {
+            let mut game = open_game(&root, &home, &world);
+            // A new world: every level at the default.
+            if game.border.size() != DEFAULT {
+                failures.push(format!("new world in place: {}", game.border.size()));
+            }
+            game.tick_world(true).unwrap();
+            let got = sizes(&mut game);
+            if got != (Some(DEFAULT), Some(DEFAULT), Some(DEFAULT)) {
+                failures.push(format!("new world: {got:?}"));
+            }
+            assert!(game.run_command("worldborder set 50"));
+            assert!(game.run_command("execute in minecraft:the_nether run worldborder set 100"));
+            game.save_game().unwrap();
+        }
+        {
+            let mut game = open_game(&root, &home, &world);
+            // Before the first tick: the read, then the set.
+            if game.border.size() != 50.0 {
+                failures.push(format!("first read before a tick: {}", game.border.size()));
+            }
+            assert!(game.run_command("worldborder set 70"));
+            if game.border.size() != 70.0 {
+                failures.push(format!("first set before a tick: {}", game.border.size()));
+            }
+            game.tick_world(true).unwrap();
+            let got = sizes(&mut game);
+            if got != (Some(70.0), Some(100.0), Some(DEFAULT)) {
+                failures.push(format!("after a tick: {got:?}"));
+            }
+            game.save_game().unwrap();
+        }
+        {
+            let mut game = open_game(&root, &home, &world);
+            let got = sizes(&mut game);
+            if got != (Some(70.0), Some(100.0), Some(DEFAULT)) {
+                failures.push(format!("after the save and another reopen: {got:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "reopened borders: {failures:#?}");
     }
 }

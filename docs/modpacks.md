@@ -932,9 +932,15 @@ templates miss; **not yet** with the API tier it waits for, or the dependency; *
 for libraries, performance mods, pack tooling and what Horizon has built in. Unclassified mods
 (the 20 CurseForge-only rows the reviewed table only guesses) count as not yet. A mod made for
 1.20 or older (its `recipes/` and `loot_tables/` folders named as before 1.21, which 26.3 does
-not read) is not carried, as `check` doesn't carry it either: not yet, and not one Port can
-carry over. Prominence II (Fabric 1.20.1, 445 jars) had 149 such mods counted as come over,
-with 28,948 recipes and 8,784 loot tables that would not load.
+not read) is carried with its data files moved to 1.21's folder names (`recipe/`, `loot_table/`,
+`tags/block/`..., counted as `folders_renamed`); a file the jar also holds under the new name
+keeps that copy. Their JSON stays 1.20's: a recipe result naming its item as `item` (before
+1.20.5), which 26.3 skips, is kept as it is and counted as `recipes_old_result`, and NBT in loot
+functions, ingredients and predicates is not upgraded yet (#10262). In the game each such file
+fails alone and the rest load: those recipes are skipped, `set_nbt` and `copy_nbt` drop their item
+without the NBT, an advancement's NBT predicate matches any item, a template's block renamed since
+1.20 is air, and a 1.20 command in a function fails. Such a mod is partial whatever its harness
+says, with that in its reason. `check` still says it doesn't run.
 
 Both files open with a plain headline for players, counted from the rows' own status, class and
 tier: how many of the mods that need porting came over (ported or partial, as content: blocks,

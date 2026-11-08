@@ -581,6 +581,27 @@ impl Game<'_> {
             }
             "simulation" => {
                 self.require_world()?;
+                // `simulation blocks X1 Y1 Z1 X2 Y2 Z2`: the server's own blocks in a box. `blocks` reads this
+                // window's copy, which the server's changes reach in the next tick's broadcast.
+                if words.get(1) == Some(&"blocks") {
+                    let mut c = [0i32; 6];
+                    for (i, v) in c.iter_mut().enumerate() {
+                        *v = arg(i + 2)?.parse()?;
+                    }
+                    let lo = [0, 1, 2].map(|i| c[i].min(c[i + 3]));
+                    let hi = [0, 1, 2].map(|i| c[i].max(c[i + 3]));
+                    let volume: i64 = (0..3).map(|i| i64::from(hi[i] - lo[i] + 1)).product();
+                    if volume > 32768 {
+                        return Err(format!("{volume} blocks; at most 32768 per request").into());
+                    }
+                    return Ok(Some(if let Some(server) = &self.integrated {
+                        server
+                            .call(move |g| g.in_owner_level(move |g| g.blocks_json(lo, hi)))
+                            .ok_or(super::integrated::NO_ANSWER)?
+                    } else {
+                        self.blocks_json(lo, hi)
+                    }));
+                }
                 let value = if let Some(server) = &self.integrated {
                     server
                         .call(|g| {
@@ -1360,6 +1381,7 @@ impl Game<'_> {
             Screen::DebugOptions => "debug-options",
             Screen::Mod => "mod",
             Screen::HudEditor => "hud-editor",
+            Screen::Studio => "studio",
         }
     }
 

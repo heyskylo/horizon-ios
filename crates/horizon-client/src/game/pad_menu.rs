@@ -1123,7 +1123,36 @@ impl Game<'_> {
             self.pad_nudge(event_loop, focus, sign * step);
             return;
         }
+        if self.pad_step_value(event_loop, button, focus) {
+            return;
+        }
         self.pad_focus_move(event_loop, button, focus, targets);
+    }
+
+    /// Left or right on a focused value the screen steps with them (`widgets::steps_value`: the
+    /// settings shell's choices): Right presses it, Left presses it with Shift, the screen's own
+    /// step back. Whether it did; anything else moves the focus.
+    fn pad_step_value(
+        &mut self,
+        event_loop: &dyn EventLoopCtl,
+        button: Button,
+        focus: Target,
+    ) -> bool {
+        if !matches!(button, Button::DPadLeft | Button::DPadRight)
+            || !widgets::last_steps_value(focus.rect)
+        {
+            return false;
+        }
+        let focus = self.pad_reveal(focus);
+        self.pad.menu.focus = Some(focus);
+        if button == Button::DPadLeft {
+            self.pad_with_modifier(KeyCode::ShiftLeft, |game| {
+                game.pad_click_at(event_loop, focus.center(), false)
+            });
+        } else {
+            self.pad_click_at(event_loop, focus.center(), false);
+        }
+        true
     }
 
     /// Left and right are the focused slider's, after A took hold of it. Until then they move the
@@ -2079,7 +2108,9 @@ impl Game<'_> {
                 self.pad.menu.slider_edit = key_focus::slider_edit_on_focus(nav);
             }
             (Act::Step(button), Some(focus)) => {
-                self.pad_focus_move(event_loop, button, focus, &targets);
+                if !self.pad_step_value(event_loop, button, focus) {
+                    self.pad_focus_move(event_loop, button, focus, &targets);
+                }
             }
             (Act::Press, Some(focus)) => {
                 let focus = self.pad_reveal(focus);
@@ -2511,7 +2542,7 @@ impl Game<'_> {
                 || self.screen == Screen::Chat;
             let mut ui = horizon_client::ui_theme::Ui::new(&self.gui.atlas, batch, self.cursor);
             let options = &self.ui.options;
-            keyboard.draw(&mut ui, at_top, options.pad_style, options.pad_by_letter);
+            keyboard.draw(&mut ui, at_top, options.pad_glyphs);
             ui.finish();
             return;
         }

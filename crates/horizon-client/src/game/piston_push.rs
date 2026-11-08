@@ -18,9 +18,9 @@ use horizon_client::motion::MotionWorld;
 use horizon_core::geometry::{Aabb, Axis, Direction, ShapeOp, Vec3, border::BorderGeometry};
 use horizon_core::position::BlockPos;
 use horizon_world::{
-    block_collision_scan::BlockCollisionWorld, level::data::PushReaction::IgnoreEntity,
-    level::pistons::MovingPiston, piston_movement::PistonMovement, piston_push,
-    world_movement::EntityMovementWorld,
+    block_collision_scan::BlockCollisionWorld, collision_context::CollisionContext,
+    level::data::PushReaction::IgnoreEntity, level::pistons::MovingPiston,
+    piston_movement::PistonMovement, piston_push, world_movement::EntityMovementWorld,
 };
 
 /// What one piston asks for this tick: where it is, its state, and the progress
@@ -137,6 +137,7 @@ impl Game<'_> {
                 // `Entity.move(MoverType.SHULKER_BOX, ...)`: steps and reads the ground flag,
                 body.step_height,
                 body.on_ground,
+                None,
             ) else {
                 return;
             };
@@ -490,14 +491,35 @@ impl Game<'_> {
         };
         // `limitPistonMovement` returns zero once the tick's budget is spent.
         if limited == Vec3::ZERO {
+            // `Entity.move` stops there; `moveEntityByPiston` still applies
+            // the block effects.
+            if let Target::Entity(EntityHandle::Tnt(i)) = target {
+                let from = self.tnts[i].position;
+                self.tnt_piston_block_effects(i, from);
+            }
             return;
         }
+        // Primed TNT: a `PISTON` move uses up a pending stuck multiplier
+        // without scaling the push, and powder snow reads its fall.
+        let tnt = match target {
+            Target::Entity(EntityHandle::Tnt(i)) => {
+                let t = &mut self.tnts[i];
+                t.take_stuck();
+                Some((
+                    i,
+                    t.position,
+                    t.powder_snow_subject(),
+                    t.collision_context(),
+                ))
+            }
+            _ => None,
+        };
         let resolved = with_piston_noclip(piston_direction, || {
             pushed_movement(
                 SceneCollisions {
                     world: &self.world,
                     binding: self.collision,
-                    subject: None,
+                    subject: tnt.as_ref().map(|t| t.2),
                 },
                 self.border.geometry(),
                 at,
@@ -505,6 +527,7 @@ impl Game<'_> {
                 limited,
                 step_height,
                 on_ground,
+                tnt.as_ref().map(|t| t.3),
             )
             .unwrap_or(Vec3::ZERO)
         });
@@ -539,12 +562,14 @@ impl Game<'_> {
         // entities still loses its velocity into walls and ceilings and
         // bounces on slime (#12022).
         self.restitute_piston(target, limited, resolved);
-        if resolved.length_squared() <= 1.0e-7
-            && limited.length_squared() - resolved.length_squared() >= 1.0e-7
+        if resolved.length_squared() > 1.0e-7
+            || limited.length_squared() - resolved.length_squared() < 1.0e-7
         {
-            return;
+            self.apply_push(target, resolved);
         }
-        self.apply_push(target, resolved);
+        if let Some((i, from, ..)) = tnt {
+            self.finish_tnt_piston_move(i, from, resolved);
+        }
     }
 
     /// `Entity.restituteMovementAfterCollisions` after a block's push, for a
@@ -707,15 +732,19 @@ fn pushed_movement<W>(
     movement: Vec3,
     step_height: f32,
     on_ground: bool,
+    context: Option<CollisionContext<'_>>,
 ) -> horizon_client::Result<Vec3>
 where
     W: BlockCollisionWorld<Error = std::io::Error> + EntityMovementWorld<Error = std::io::Error>,
 {
-    EntityCollisions::with_border(blocks, border, at).resolve(
+    // Without the entity's own context, the one `resolve` reads at its feet.
+    let context = context.unwrap_or_else(|| CollisionContext::position(before.min_position().y));
+    EntityCollisions::with_border(blocks, border, at).resolve_with_context(
         before,
         movement,
         step_height,
         on_ground,
+        context,
     )
 }
 
@@ -744,6 +773,7 @@ mod tests {
             Vec3::new(0.51, 0.0, 0.0),
             0.0,
             false,
+            None,
         )
         .expect("the push resolves");
         // The wall stops the body 0.4 blocks short of the whole push.
@@ -766,6 +796,7 @@ mod tests {
             Vec3::new(0.51, 0.0, 0.0),
             0.0,
             false,
+            None,
         )
         .expect("the push resolves");
         assert!(

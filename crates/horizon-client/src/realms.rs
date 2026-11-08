@@ -29,6 +29,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const HEADER_HEIGHT: f32 = 44.0;
 const CONTENT_WIDTH: f32 = 308.0;
+/// `CommonLinks.REALMS_TERMS`: the Realms terms page the terms screen's link opens.
+const REALMS_TERMS_URL: &str = "https://aka.ms/MinecraftRealmsTerms";
 /// `RealmsPdpScreen`'s list: the row width and the text's width beside the picture.
 const PDP_ROW_WIDTH: f32 = 290.0;
 const PDP_TEXT_WIDTH: f32 = 182.0;
@@ -517,6 +519,59 @@ fn template_image(encoded: &str) -> Option<Vec<u8>> {
     resample_icon(width, height, &rgba)
 }
 
+/// A cheap identity for a base64 picture, so two images of the same length never share
+/// a cache entry.
+fn encoded_key(encoded: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    encoded.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// `RealmsWorldSlotButton.State`'s picture, in `extractContents`' order: a minigame's
+/// image (or `presets/isles.png` when it has none), the empty frame, a template's own
+/// image, or the slot's title panorama.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SlotPicture<'a> {
+    Image(&'a str),
+    Preset,
+    Empty,
+    Panorama(&'static str),
+}
+
+/// `RealmsWorldSlotButton.State`: `image` is the minigame's `minigameImage` for slot 4
+/// and the slot's `templateImage` otherwise (only when its `templateId` is not -1).
+fn slot_picture(slot: i32, empty: bool, image: Option<&str>) -> SlotPicture<'_> {
+    if slot == 4 {
+        return image.map_or(SlotPicture::Preset, SlotPicture::Image);
+    }
+    if empty {
+        return SlotPicture::Empty;
+    }
+    if let Some(image) = image {
+        return SlotPicture::Image(image);
+    }
+    match slot {
+        1 => SlotPicture::Panorama("panorama_0"),
+        2 => SlotPicture::Panorama("panorama_2"),
+        3 => SlotPicture::Panorama("panorama_3"),
+        _ => SlotPicture::Empty,
+    }
+}
+
+/// `TextRenderingUtils.decompose(I18n.get("mco.template.select.none", "%link"), link)`:
+/// the translated message's lines, the one holding the `%s` argument split into
+/// `before`/`link`/`after`; every other line is whole (`link` is None).
+fn template_none_lines(text: &str, link: &str) -> Vec<(String, Option<String>, String)> {
+    text.replacen("%s", "%link", 1)
+        .split('\n')
+        .map(|line| match line.split_once("%link") {
+            Some((before, after)) => (before.to_owned(), Some(link.to_owned()), after.to_owned()),
+            None => (line.to_owned(), None, String::new()),
+        })
+        .collect()
+}
+
 fn resample_icon(width: u32, height: u32, rgba: &[u8]) -> Option<Vec<u8>> {
     let (w, h) = (width as usize, height as usize);
     if w == 0 || h == 0 || rgba.len() < w * h * 4 {
@@ -922,6 +977,34 @@ pub enum TemplateGroup {
     Inspiration,
 }
 
+/// `RealmsCreateWorldFlow.createWorld`'s target: the reset screen's Generate New World
+/// tile asks the title for the Create New World screen, whose settings upload into
+/// `slot`.
+#[derive(Clone, Debug)]
+pub struct CreateWorldRequest {
+    pub server: RealmServer,
+    pub slot: i32,
+    pub kind: ResetKind,
+    /// `RealmCreationTask`'s name and description, for `ResetKind::NewRealm`.
+    pub creation: Option<(String, String)>,
+}
+
+/// What the Create New World screen decided, for the temporary world
+/// `RealmsCreateWorldFlow.createTemporaryWorldFolder` writes before the upload.
+#[derive(Clone, Debug)]
+pub struct CreatedWorld {
+    /// The world's level data, its name, game type, difficulty, game rules and features.
+    pub level: crate::save::Level,
+    pub world_gen: crate::save::WorldGen,
+    pub flat_settings: Option<horizon_world::nbt::Tag>,
+    pub single_biome: Option<String>,
+    /// level.dat's `DataPacks`: enabled and disabled ids.
+    pub data_packs: (Vec<String>, Vec<String>),
+    /// The Create World screen's temporary pack folder, moved into the world
+    /// (`Files.move(tempDataPackDir, worldFolder.resolve("datapacks"))`).
+    pub pack_dir: Option<PathBuf>,
+}
+
 impl TemplateGroup {
     const ALL: [Self; 4] = [
         Self::Normal,
@@ -955,9 +1038,9 @@ impl TemplateGroup {
     }
 }
 
-/// `RealmsSelectWorldTemplateScreen`'s list: a page fetched on a worker, and the next one
-/// (`0` once the service answered an empty page).
-type TemplatePages = Job<Result<(Vec<WorldTemplate>, i32), RealmsError>>;
+/// `RealmsSelectWorldTemplateScreen`'s list: one page fetched on a worker, the number of
+/// the page after it, and whether it was the last (the list shows each page as it lands).
+type TemplatePages = Job<Result<(Vec<WorldTemplate>, i32, bool), RealmsError>>;
 
 #[derive(Clone, Debug)]
 pub enum SubScreen {
@@ -1182,6 +1265,14 @@ pub enum SubScreen {
         /// When the screen opened: the dots' blink (`tickCount / 10` at 20 ticks a second).
         started: Instant,
     },
+    /// `RealmsCreateWorldFlow.createWorld`: the temporary world the Create New World
+    /// screen described is packed and uploaded, under `AlertScreen`
+    /// (`mco.create.world.reset.title`) with Cancel.
+    CreateWorldUpload {
+        request: CreateWorldRequest,
+        progress: Arc<upload::UploadProgress>,
+        job: Option<Job<Result<(), upload::UploadError>>>,
+    },
     /// `RealmsPdpScreen`: the product page behind Add Realm, its picture rows and scroll.
     AddRealm {
         scroll: crate::ui::Scroll,
@@ -1201,6 +1292,17 @@ pub enum SubScreen {
     Connecting {
         server: RealmServer,
         error: Option<String>,
+        /// `GetServerDetailsTask.lastScreen`: where a 6002 answer returns
+        /// (`RealmsTermsScreen`'s Disagree and Escape).
+        last: Box<SubScreen>,
+    },
+    /// `RealmsTermsScreen`: a new account must agree to the Realms terms before its first
+    /// join (the service answers 6002).
+    Terms {
+        server: RealmServer,
+        last: Box<SubScreen>,
+        /// `RealmsClient.agreeToTos` on a worker; the join runs again when it succeeds.
+        agree: Option<Job<Result<(), RealmsError>>>,
     },
     /// `RealmsGenericErrorScreen`: a service failure replaces the screen; OK and Escape
     /// return to `next` (`nextScreen`).
@@ -1248,6 +1350,9 @@ pub struct Screen {
     /// `ConfirmLinkScreen`'s three buttons as last drawn (`Choice::new` lays them out from
     /// the message's width).
     link_buttons: std::cell::Cell<[(f32, f32); 3]>,
+    /// `RealmsTermsScreen`'s terms link as last drawn: its hit box follows the text's
+    /// rendered width (`extractRenderState`'s `onLink`).
+    terms_link: std::cell::Cell<[f32; 4]>,
     /// `RealmsMainScreen.notifications`: the service's messages; the first `visitUrl`
     /// becomes the list's top entry (`NotificationMessageEntry`).
     notifications: Vec<RealmsNotification>,
@@ -1355,6 +1460,9 @@ pub enum Outcome {
     OpenUri(String),
     /// `KeyboardHandler.setClipboard` for the title's own clipboard.
     Copy(String),
+    /// `RealmsResetWorldScreen`'s Generate New World tile: `RealmsCreateWorldFlow`
+    /// opens Create World and uploads the world it describes.
+    CreateWorld(CreateWorldRequest),
 }
 
 impl Default for Screen {
@@ -1385,6 +1493,97 @@ fn fetch_address(
         }
     }
     Err(RealmsError::Timeout)
+}
+
+/// `RealmsCreateWorldFlow.createWorld`'s worker: `createTemporaryWorldFolder`, then
+/// `RealmCreationTask` → `SwitchSlotTask` → `packAndUpload`, as an upload's worker does.
+fn upload_created_world(
+    client: &RealmsClient,
+    server: &RealmServer,
+    slot: i32,
+    creation: Option<&(String, String)>,
+    world: &CreatedWorld,
+    progress: &upload::UploadProgress,
+) -> Result<(), upload::UploadError> {
+    let dir = create_temporary_world(world).map_err(upload::UploadError::Failed)?;
+    let result = (|| {
+        if let Some((name, description)) = creation {
+            client
+                .initialize_realm(server.id, name, description)
+                .map_err(|e| upload::UploadError::Failed(e.text()))?;
+        }
+        if slot != server.active_slot {
+            client
+                .switch_slot(server.id, slot)
+                .map_err(|e| upload::UploadError::Failed(e.text()))?;
+        }
+        // `RealmsWorldOptions.createFromSettings`: the world's own settings, the game's
+        // version as the world version.
+        let options = RealmWorldOptions {
+            spawn_protection: 0,
+            force_game_mode: false,
+            difficulty: i32::from(world.level.difficulty_id()),
+            game_mode: if world.level.creative { 1 } else { 0 },
+            slot_name: world.level.name.clone(),
+            version: crate::save::VERSION_NAME.into(),
+            compatibility: "UNVERIFIABLE".into(),
+            template_id: -1,
+            template_image: None,
+            empty: false,
+        };
+        let realm_slot = RealmSlot {
+            slot_id: slot,
+            options,
+            settings: vec![RealmSetting {
+                name: "hardcore".into(),
+                value: world.level.hardcore.to_string(),
+            }],
+        };
+        upload::upload_world(client, server.id, &realm_slot, &dir, progress)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+/// `RealmsCreateWorldFlow.createTemporaryWorldFolder`: level.dat as
+/// `WorldData.createTag(null)` writes it (no `singleplayer_uuid`), the world generation
+/// and game rules, and the Create World screen's data packs moved into the world. No
+/// chunks: the Realm generates them when the world first opens.
+fn create_temporary_world(world: &CreatedWorld) -> std::result::Result<PathBuf, String> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "horizon-realms-world-upload-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let result = (|| {
+        let mut level = world.level.clone();
+        level.data_packs = Some(world.data_packs.clone());
+        level.write_upload(&dir).map_err(|e| e.to_string())?;
+        crate::save::write_world_gen_settings_with(
+            &dir,
+            level.seed,
+            world.world_gen,
+            world.flat_settings.clone(),
+            world.single_biome.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
+        if let Some(pack_dir) = &world.pack_dir {
+            // `Files.move(tempDataPackDir, worldFolder.resolve("datapacks"))`; the
+            // Create World screen's temporary folder is gone afterwards.
+            crate::datapack::install(pack_dir, &dir, &world.data_packs.0)?;
+            let _ = std::fs::remove_dir_all(pack_dir);
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => Ok(dir),
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            Err(e)
+        }
+    }
 }
 
 /// `RealmsPdpScreen`'s list: the trial header (no picture) and the three features, each
@@ -1434,26 +1633,26 @@ fn pdp_row_narration(row: usize, trial: bool) -> String {
     crate::screen_narrator::translate("narrator.select", &[&pdp_row_lines(row, trial).join("\n")])
 }
 
-/// `RealmsSelectWorldTemplateScreen.fetchTemplatesAsync`: the pages after `start`, up to the
-/// first empty one (vanilla keeps asking until a page comes back empty).
-fn fetch_template_pages(
+/// `RealmsSelectWorldTemplateScreen.fetchTemplates`: one page at a time; the list shows it
+/// as it arrives and the screen chains the next page until the last or an empty one.
+fn fetch_template_page(
     client: &RealmsClient,
     world_type: &str,
-    start: i32,
+    page: i32,
     page_size: i32,
-) -> Result<(Vec<WorldTemplate>, i32), RealmsError> {
-    let mut templates = Vec::new();
-    let mut page = start;
-    // Vanilla's loop has no bound; 20 pages (200 templates) is far past any world type's list.
-    for _ in 0..20 {
-        let answer = client.fetch_world_templates(page, page_size, world_type)?;
-        if answer.templates.is_empty() {
-            return Ok((templates, 0));
-        }
-        templates.extend(answer.templates);
-        page += 1;
-    }
-    Ok((templates, page))
+) -> Result<(Vec<WorldTemplate>, i32, bool), RealmsError> {
+    let answer = client.fetch_world_templates(page, page_size, world_type)?;
+    let empty = answer.templates.is_empty();
+    Ok((
+        answer.templates,
+        page + 1,
+        empty || last_template_page(answer.page, answer.size, answer.total),
+    ))
+}
+
+/// `WorldTemplatePaginatedList.isLastPage`.
+fn last_template_page(page: i32, size: i32, total: i32) -> bool {
+    page > 0 && size > 0 && total > 0 && page * size >= total
 }
 
 fn wrap_lines(text: &str, atlas: &HudAtlas, width: f32) -> Vec<String> {
@@ -1545,6 +1744,7 @@ impl Screen {
             pdp_row: None,
             list_clicked: false,
             link_buttons: std::cell::Cell::new([(0.0, 0.0); 3]),
+            terms_link: std::cell::Cell::new([0.0; 4]),
             notifications: Vec::new(),
             notifications_job: None,
             handled_seen: Vec::new(),
@@ -1686,7 +1886,7 @@ impl Screen {
             };
             profile.textures()?
         };
-        let textures = crate::skins::unpack(&value, signature, &crate::skins::TEXTURE_URIS);
+        let textures = crate::skins::unpack(&value, signature, crate::skins::texture_uris());
         let url = textures.skin?;
         let location = crate::skins::skin_location(&crate::skins::texture_hash(&url)?);
         let mut downloads = self.skin_workers.downloads.lock().ok()?;
@@ -2414,6 +2614,7 @@ impl Screen {
                 server,
                 templates,
                 job,
+                group,
                 select,
                 error,
                 ..
@@ -2421,7 +2622,19 @@ impl Screen {
                 if let Some(result) = job.as_ref().and_then(take) {
                     *job = None;
                     match result {
-                        Ok((page, _next)) => templates.extend(page),
+                        // `fetchTemplatesAsync`: each page joins the list as it arrives;
+                        // the next one is asked for while the answer is not the last page.
+                        Ok((page, next_page, last)) => {
+                            templates.extend(page);
+                            if !last && let Some(client) = client() {
+                                let world_type = group
+                                    .map_or("MINIGAME", TemplateGroup::world_type)
+                                    .to_owned();
+                                *job = Some(spawn(move || {
+                                    fetch_template_page(&client, &world_type, next_page, 10)
+                                }));
+                            }
+                        }
                         // `fetchTemplatesAsync`: a page failure keeps the list and shows
                         // `mco.template.select.failure` when nothing arrived.
                         Err(e) => *error = Some(e.text()),
@@ -2456,6 +2669,36 @@ impl Screen {
                     }
                 }
             }
+            SubScreen::CreateWorldUpload { request, job, .. } => {
+                if let Some(result) = job.as_ref().and_then(take) {
+                    let request = request.clone();
+                    *job = None;
+                    match result {
+                        // `RealmsCreateWorldFlow.createWorld`'s success: the return screen
+                        // (the configuration screen) — or, for a Realm just created, it is
+                        // played (`RealmsMainScreen.play(server, returnScreen, true)`).
+                        Ok(()) => {
+                            if request.creation.is_some() {
+                                return self.start_join_after_create(request.server);
+                            }
+                            self.back_to_configure_worlds(request.server);
+                        }
+                        // `RealmsUploadCanceledException`: the reset screen it started from.
+                        Err(upload::UploadError::Cancelled) => {
+                            self.subscreen = Self::reset_screen(request);
+                        }
+                        // `RealmsGenericErrorScreen(mco.create.world.failed, lastScreen)`:
+                        // the generic title over that message.
+                        Err(_) => {
+                            self.subscreen = SubScreen::Error {
+                                title: crate::lang::get("mco.errorMessage.generic"),
+                                detail: crate::lang::get("mco.create.world.failed"),
+                                next: Box::new(Self::reset_screen(request)),
+                            };
+                        }
+                    }
+                }
+            }
             SubScreen::EditCode {
                 server,
                 code,
@@ -2479,6 +2722,7 @@ impl Screen {
                 }
             }
             SubScreen::Connecting { .. } => return self.poll_join(),
+            SubScreen::Terms { .. } => return self.poll_terms(),
             _ => {}
         }
         if let Some(detail) = task_error {
@@ -2659,13 +2903,22 @@ impl Screen {
             return Outcome::None;
         };
         self.joining = None;
-        let SubScreen::Connecting { server, .. } = &self.subscreen else {
+        let SubScreen::Connecting { server, last, .. } = self.subscreen.clone() else {
             return Outcome::None;
         };
-        let server = server.clone();
         let address = match result {
             Ok(address) => address,
             Err(e) => {
+                // 6002: a new account has not agreed to the Realms terms yet; vanilla
+                // shows `RealmsTermsScreen` over the screen that started the join.
+                if e.code() == 6002 {
+                    self.subscreen = SubScreen::Terms {
+                        server,
+                        last,
+                        agree: None,
+                    };
+                    return Outcome::None;
+                }
                 // 6006: the world is out of date; only its owner can reset it.
                 let owner = session().is_some_and(|s| server.owned_by(s.uuid));
                 let detail = if e.code() == 6006 && !owner {
@@ -2707,6 +2960,40 @@ impl Screen {
             _ => {
                 self.subscreen = SubScreen::Main;
                 Outcome::Connect(target)
+            }
+        }
+    }
+
+    /// `RealmsTermsScreen.agreedToTos`: the service's answer, then the join again.
+    fn poll_terms(&mut self) -> Outcome {
+        let result = {
+            let SubScreen::Terms { agree, .. } = &self.subscreen else {
+                return Outcome::None;
+            };
+            let Some(job) = agree else {
+                return Outcome::None;
+            };
+            take(job)
+        };
+        let Some(result) = result else {
+            return Outcome::None;
+        };
+        let SubScreen::Terms { server, last, .. } = self.subscreen.clone() else {
+            return Outcome::None;
+        };
+        match result {
+            // `RealmsTermsScreen.agreedToTos`: a new `GetServerDetailsTask` with the same
+            // `lastScreen`.
+            Ok(()) => self.start_join_from(server, last),
+            // Vanilla logs the failure and stays on the terms screen.
+            Err(e) => {
+                log::warn!("Horizon: couldn't agree to the Realms terms: {}", e.text());
+                self.subscreen = SubScreen::Terms {
+                    server,
+                    last,
+                    agree: None,
+                };
+                Outcome::None
             }
         }
     }
@@ -2992,6 +3279,11 @@ impl Screen {
     /// the title (true). The reset screens keep vanilla's parents: the configuration screen
     /// for the reset screen, the reset screen for the two lists.
     pub fn escape(&mut self) -> bool {
+        // `RealmsTermsScreen.keyPressed`: Escape is Disagree, the screen that asked returns.
+        if let SubScreen::Terms { last, .. } = &self.subscreen {
+            self.subscreen = *last.clone();
+            return false;
+        }
         // `ConfirmLinkScreen`'s no (Escape too) returns to the screen that asked.
         if let SubScreen::Popup(Popup::OpenLink { parent, .. }) = &self.subscreen {
             self.subscreen = *parent.clone();
@@ -3165,6 +3457,7 @@ impl Screen {
                 slot,
                 kind,
                 creation,
+                group,
                 select,
                 ..
             } => {
@@ -3172,6 +3465,10 @@ impl Screen {
                     // The minigame switch runs in the task screen: Escape cancels it.
                     task.abort.store(true, Ordering::Relaxed);
                     Escape::CancelTask(server.clone())
+                } else if group.is_none() {
+                    // `RealmsWorldsTab.switchToMinigame`'s callback: the list belongs to
+                    // the configuration screen, not to a reset screen.
+                    Escape::Configure(server.clone())
                 } else {
                     Escape::Reset(server.clone(), *slot, *kind, creation.clone())
                 }
@@ -3197,6 +3494,9 @@ impl Screen {
                     return false;
                 }
             }
+            // `AlertScreen.shouldCloseOnEsc` is false: Escape does nothing while the
+            // generated world uploads.
+            SubScreen::CreateWorldUpload { .. } => return false,
             _ => Escape::List,
         };
         match action {
@@ -3246,6 +3546,15 @@ impl Screen {
         if !server.is_open() {
             return Outcome::None;
         }
+        // `RealmsMainScreen.play(server, cancelScreen)`: the screen that asked is the
+        // one `RealmsTermsScreen` returns to.
+        let last = Box::new(self.subscreen.clone());
+        self.start_join_from(server, last)
+    }
+
+    /// `GetServerDetailsTask` from `last`, the screen its failures and the terms screen
+    /// return to.
+    fn start_join_from(&mut self, server: RealmServer, last: Box<SubScreen>) -> Outcome {
         let Some(client) = client() else {
             return Outcome::None;
         };
@@ -3257,6 +3566,7 @@ impl Screen {
         self.subscreen = SubScreen::Connecting {
             server,
             error: None,
+            last,
         };
         Outcome::None
     }
@@ -4048,7 +4358,7 @@ impl Screen {
             let world_type = group
                 .map_or("MINIGAME", TemplateGroup::world_type)
                 .to_owned();
-            spawn(move || fetch_template_pages(&client, world_type.as_str(), next_page, page_size))
+            spawn(move || fetch_template_page(&client, world_type.as_str(), next_page, page_size))
         });
         self.subscreen = SubScreen::TemplateList {
             server,
@@ -4270,6 +4580,73 @@ impl Screen {
         };
     }
 
+    /// `RealmsCreateWorldFlow.createWorld`: the Create New World screen's settings become
+    /// a temporary world (`createTemporaryWorldFolder`) that is packed and uploaded into
+    /// the slot; `AlertScreen` (`mco.create.world.reset.title`) shows while it runs.
+    pub fn start_create_world_upload(&mut self, request: CreateWorldRequest, world: CreatedWorld) {
+        let progress = Arc::new(upload::UploadProgress::default());
+        let job = client().map(|client| {
+            let progress = Arc::clone(&progress);
+            let server = request.server.clone();
+            let slot = request.slot;
+            let creation = request.creation.clone();
+            spawn(move || {
+                upload_created_world(&client, &server, slot, creation.as_ref(), &world, &progress)
+            })
+        });
+        if job.is_none() {
+            // The upload cannot run without the account's session: the same failure the
+            // service's refusal would show, back to the reset screen.
+            self.subscreen = SubScreen::Error {
+                title: crate::lang::get("mco.errorMessage.generic"),
+                detail: crate::lang::get("mco.create.world.failed"),
+                next: Box::new(Self::reset_screen(request)),
+            };
+            return;
+        }
+        self.subscreen = SubScreen::CreateWorldUpload {
+            request,
+            progress,
+            job,
+        };
+    }
+
+    /// The Create New World screen's Back for the Generate New World tile
+    /// (`CreateWorldScreen.openFresh`'s cancel): the screen the reset screen was opened
+    /// from — the configuration screen, or the list for a Realm being created.
+    pub fn cancel_create_world(&mut self, request: CreateWorldRequest) {
+        match request.kind {
+            ResetKind::NewRealm => {
+                self.subscreen = SubScreen::Main;
+                self.selected = None;
+                self.refresh();
+            }
+            ResetKind::Reset | ResetKind::Empty => self.back_to_configure_worlds(request.server),
+        }
+    }
+
+    /// `RealmsResetWorldScreen` again, as the reset's own tasks return to it.
+    fn reset_screen(request: CreateWorldRequest) -> SubScreen {
+        SubScreen::ResetWorld {
+            server: request.server,
+            slot: request.slot,
+            kind: request.kind,
+            creation: request.creation,
+            templates: None,
+            job: None,
+            reset: None,
+            error: None,
+        }
+    }
+
+    /// `RealmsMainScreen.play(server, returnScreen, true)` for a Realm that was just
+    /// initialized: the address request without the list's Play gate (the list has not
+    /// reloaded the Realm yet).
+    fn start_join_after_create(&mut self, server: RealmServer) -> Outcome {
+        let last = Box::new(self.subscreen.clone());
+        self.start_join_from(server, last)
+    }
+
     /// `new RealmsSelectFileToUploadScreen`: the game's own worlds (`WorldSelectionList`), as the
     /// title screen lists them.
     fn open_upload_select(
@@ -4298,6 +4675,14 @@ impl Screen {
 
     pub fn click(&mut self, hit: Option<u8>, x: f32, y: f32, (w, h): (f32, f32)) -> Outcome {
         self.list_clicked = false;
+        // `RealmsTermsScreen.mouseClicked`: a click on the underlined link opens
+        // `CommonLinks.REALMS_TERMS` (the draw recorded the text's box).
+        if hit.is_none() && matches!(self.subscreen, SubScreen::Terms { .. }) {
+            let [x1, y1, x2, y2] = self.terms_link.get();
+            if x1 <= x && x <= x2 && y1 <= y && y <= y2 {
+                return Outcome::OpenUri(REALMS_TERMS_URL.to_owned());
+            }
+        }
         match hit {
             Some(1) => self.play_selected(),
             Some(2) => Outcome::Back,
@@ -4680,10 +5065,9 @@ impl Screen {
                 self.reset_button();
                 Outcome::None
             }
-            // RealmsResetWorldScreen's tiles: Upload (71) and the four template groups (72..=75).
-            // Generate New World (70) needs the create-world flow the port does not feed into
-            // an upload yet, so the tile is drawn disabled and does nothing.
-            Some(tile @ 71..=75) => {
+            // `RealmsResetWorldScreen.init`'s tiles: Generate New World (70), Upload (71)
+            // and the four template groups (72..=75).
+            Some(tile @ 70..=75) => {
                 if let SubScreen::ResetWorld {
                     server,
                     slot,
@@ -4694,11 +5078,38 @@ impl Screen {
                 {
                     let (server, slot, kind) = (server.clone(), *slot, *kind);
                     let creation = creation.clone();
+                    if tile == 70 {
+                        // `RealmsCreateWorldFlow.createWorld`: the title opens its Create
+                        // New World screen; the settings come back for the upload.
+                        return Outcome::CreateWorld(CreateWorldRequest {
+                            server,
+                            slot,
+                            kind,
+                            creation,
+                        });
+                    }
                     if tile == 71 {
                         self.open_upload_select(server, slot, kind, creation);
                     } else if let Some(group) = TemplateGroup::ALL.get(usize::from(tile - 72)) {
                         self.open_template_list(server, slot, kind, creation, Some(*group));
                     }
+                }
+                Outcome::None
+            }
+            // `RealmsTermsScreen.init`: Agree posts the terms, then the join runs again.
+            Some(23) => {
+                if let SubScreen::Terms { agree, .. } = &mut self.subscreen
+                    && agree.is_none()
+                    && let Some(client) = client()
+                {
+                    *agree = Some(spawn(move || client.agree_to_tos()));
+                }
+                Outcome::None
+            }
+            // `RealmsTermsScreen.init`: Disagree is the screen that asked.
+            Some(24) => {
+                if let SubScreen::Terms { last, .. } = &self.subscreen {
+                    self.subscreen = *last.clone();
                 }
                 Outcome::None
             }
@@ -4753,21 +5164,29 @@ impl Screen {
                     slot,
                     kind,
                     creation,
+                    group,
                     ..
                 } = &self.subscreen
                 {
-                    let (server, slot, kind) = (server.clone(), *slot, *kind);
+                    let (server, slot, kind, group) = (server.clone(), *slot, *kind, *group);
                     let creation = creation.clone();
-                    self.subscreen = SubScreen::ResetWorld {
-                        server,
-                        slot,
-                        kind,
-                        creation,
-                        templates: None,
-                        job: None,
-                        reset: None,
-                        error: None,
-                    };
+                    // `RealmsWorldsTab.switchToMinigame`'s callback sends a cancelled
+                    // minigame list back to the configuration screen; the reset screen's
+                    // own list returns to the reset screen (`realmCreationTask` kept).
+                    if group.is_none() {
+                        self.back_to_configure_worlds(server);
+                    } else {
+                        self.subscreen = SubScreen::ResetWorld {
+                            server,
+                            slot,
+                            kind,
+                            creation,
+                            templates: None,
+                            job: None,
+                            reset: None,
+                            error: None,
+                        };
+                    }
                 }
                 Outcome::None
             }
@@ -4878,6 +5297,14 @@ impl Screen {
                 if let SubScreen::Uploading { server, .. } = &self.subscreen {
                     let server = server.clone();
                     self.back_to_configure_worlds(server);
+                }
+                Outcome::None
+            }
+            // `RealmsCreateWorldFlow`'s `AlertScreen` Cancel: `realmsWorldUpload.cancel()`.
+            // The worker's cancelled answer returns to the reset screen (`poll`).
+            Some(93) => {
+                if let SubScreen::CreateWorldUpload { progress, .. } = &self.subscreen {
+                    progress.cancel();
                 }
                 Outcome::None
             }
@@ -5756,6 +6183,11 @@ impl Screen {
 
     /// `ConfirmLinkScreen.confirmLink`'s press: the confirm, over the screen that asked.
     fn open_link(&mut self, url: String) {
+        // `ConfirmLinkScreen.confirmLink`: no link, no question. An empty URI would be
+        // handed to the desktop's opener, which opens the game directory.
+        if url.trim().is_empty() {
+            return;
+        }
         let parent = self.subscreen.clone();
         self.subscreen = SubScreen::Popup(Popup::OpenLink {
             url,
@@ -7249,6 +7681,29 @@ impl Screen {
                 // `RealmsGenericErrorScreen.init`: OK, 200 wide at h - 52.
                 buttons.push((cx - 100.0, h - 52.0, 200.0, t("gui.ok"), true, 91, None));
             }
+            SubScreen::Terms { .. } => {
+                // `RealmsTermsScreen.init`: (width / 4 - 2)-wide Agree and Disagree at
+                // (width / 4, row(12)) and (width / 2 + 4, row(12)).
+                let column = (w / 4.0).floor() - 2.0;
+                buttons.push((
+                    (w / 4.0).floor(),
+                    196.0,
+                    column,
+                    t("mco.terms.buttons.agree"),
+                    true,
+                    23,
+                    None,
+                ));
+                buttons.push((
+                    (w / 2.0).floor() + 4.0,
+                    196.0,
+                    column,
+                    t("mco.terms.buttons.disagree"),
+                    true,
+                    24,
+                    None,
+                ));
+            }
             SubScreen::ResetWorld { reset, .. } => {
                 if reset.is_some() {
                     // `RealmsLongRunningMcoTaskScreen`: the tasks' screen only offers Cancel.
@@ -7383,6 +7838,12 @@ impl Screen {
                         None,
                     ));
                 }
+            }
+            SubScreen::CreateWorldUpload { .. } => {
+                // `AlertScreen.init`: Cancel is the 150-wide button at
+                // `clamp(90 + textHeight + 12, h / 6 + 96, h - 24)`, the message empty.
+                let y = (h / 6.0 + 96.0).max(102.0_f32.min(h - 24.0));
+                buttons.push((cx - 75.0, y, 150.0, t("gui.cancel"), true, 93, None));
             }
             SubScreen::Main => {
                 let signed_in = session().is_some();
@@ -8390,29 +8851,75 @@ impl Screen {
                                         entry.is_some_and(|slot| slot.is_hardcore()),
                                     )
                                 };
-                                // A template's image is a runtime dynamic texture the port
-                                // has no decoder for; 26.3's panoramas are solid grey.
-                                let image = if empty {
-                                    "gui/realms/empty_frame"
+                                // `RealmsWorldSlotButton.State`'s picture: the minigame's
+                                // image or `isles.png`, the empty frame, the slot's own
+                                // template image, or the slot's panorama (the atlas keeps
+                                // the four slot pictures at full size).
+                                let image = if slot == 4 {
+                                    server.minigame_image.as_deref()
                                 } else {
-                                    match slot {
-                                        1 => "gui/title/background/panorama_0",
-                                        2 => "gui/title/background/panorama_2",
-                                        3 => "gui/title/background/panorama_3",
-                                        _ => "gui/title/background/panorama_0",
-                                    }
+                                    entry.and_then(|entry| {
+                                        (entry.options.template_id != -1)
+                                            .then_some(entry.options.template_image.as_deref())
+                                            .flatten()
+                                    })
                                 };
                                 let tint = if active { u32::MAX } else { 0xFF8E_8E8E };
-                                crate::ui::blit_sprite(
-                                    batch,
-                                    atlas,
-                                    image,
-                                    x + 1.0,
-                                    y + 1.0,
-                                    size - 2.0,
-                                    size - 2.0,
-                                    tint,
-                                );
+                                match slot_picture(slot, empty, image) {
+                                    SlotPicture::Empty => crate::ui::blit_sprite(
+                                        batch,
+                                        atlas,
+                                        "gui/realms/empty_frame",
+                                        x + 1.0,
+                                        y + 1.0,
+                                        size - 2.0,
+                                        size - 2.0,
+                                        tint,
+                                    ),
+                                    SlotPicture::Image(encoded) => {
+                                        let key = format!("slot-{slot}-{}", encoded_key(encoded));
+                                        let pixels = {
+                                            let mut cache = self.template_images.borrow_mut();
+                                            cache
+                                                .entry(key)
+                                                .or_insert_with(|| template_image(encoded))
+                                                .clone()
+                                        };
+                                        if let Some(sprite) = pixels.as_deref().and_then(|rgba| {
+                                            icon_sprite(batch, atlas, slot as usize - 1, rgba)
+                                        }) {
+                                            batch.sprite_scaled(
+                                                atlas,
+                                                &sprite,
+                                                x + 1.0,
+                                                y + 1.0,
+                                                size - 2.0,
+                                                size - 2.0,
+                                                tint,
+                                            );
+                                        }
+                                    }
+                                    SlotPicture::Preset => crate::ui::blit_sprite(
+                                        batch,
+                                        atlas,
+                                        "gui/presets/isles",
+                                        x + 1.0,
+                                        y + 1.0,
+                                        size - 2.0,
+                                        size - 2.0,
+                                        tint,
+                                    ),
+                                    SlotPicture::Panorama(panorama) => crate::ui::blit_sprite(
+                                        batch,
+                                        atlas,
+                                        &format!("gui/title/background/{panorama}"),
+                                        x + 1.0,
+                                        y + 1.0,
+                                        size - 2.0,
+                                        size - 2.0,
+                                        tint,
+                                    ),
+                                }
                                 // `RealmsWorldSlotButton.extractContents`: a switchable slot
                                 // shows the white frame while hovered, the active one its
                                 // 0.8 grey, the rest 0.56 grey.
@@ -9878,6 +10385,33 @@ impl Screen {
                     centered(batch, atlas, line, cx, 100.0 + i as f32 * 9.0, 0xFF50_50DF);
                 }
             }
+            SubScreen::Terms { .. } => {
+                // `RealmsTermsScreen.extractRenderState`: the title at 17, the page's
+                // first sentence at (width/2 - 120, row(5)), the underlined link after it.
+                centered(batch, atlas, &t("mco.terms.title"), cx, 17.0, u32::MAX);
+                let y = 105.0;
+                let x = cx - 120.0;
+                let first = t("mco.terms.sentence.1");
+                batch.text(atlas, &first, x, y, u32::MAX, true);
+                let first_width = HudBatch::text_width(atlas, &first);
+                // `TERMS_LINK_TEXT`: a space, then the underlined second sentence.
+                let link = format!(" {}", t("mco.terms.sentence.2"));
+                let link_x = x + first_width;
+                let x1 = cx - 121.0 + first_width;
+                let x2 = x1 + HudBatch::text_width(atlas, &link) + 1.0;
+                self.terms_link.set([x1, y, x2, y + 10.0]);
+                let (mx, my) = cursor;
+                let on_link = x1 <= mx && mx <= x2 && y <= my && my <= y + 10.0;
+                let color = if on_link { 0xFF6C_71C4 } else { 0xFF33_66BB };
+                batch.text_styled(
+                    atlas,
+                    &Text::literal(link).underlined(),
+                    link_x,
+                    y,
+                    color,
+                    true,
+                );
+            }
             SubScreen::ResetWorld {
                 kind, reset, error, ..
             } => {
@@ -9909,9 +10443,9 @@ impl Screen {
                             centered(batch, atlas, line, cx, h - 56.0 + i as f32 * 10.0, RED);
                         }
                     }
-                    // `RealmsResetWorldScreen.init`'s tiles: Generate New World, Upload, the four
-                    // groups. Generate New World needs the create-world flow wired to an upload
-                    // and is drawn disabled (vanilla's own tile opens CreateWorldScreen).
+                    // `RealmsResetWorldScreen.init`'s tiles: Generate New World, Upload, the
+                    // four groups. Generate New World opens Create New World
+                    // (`RealmsCreateWorldFlow.createWorld`) and uploads what it made.
                     let tiles = [
                         ("mco.reset.world.generate", "gui/realms/new_world"),
                         ("mco.upload.select.world.title", "gui/realms/upload"),
@@ -9923,14 +10457,9 @@ impl Screen {
                     let content_y = reset_content_y(h);
                     for (i, (label, image)) in tiles.iter().enumerate() {
                         let (x, y) = reset_tile(cx, content_y, i);
-                        let enabled = i != 0;
                         // The control is 60x69: the frame plus its label.
-                        let hover = enabled && crate::ui::hovered(cursor, x, y, 60.0, 69.0);
-                        let frame = if enabled {
-                            if hover { 0xFF90_9090 } else { u32::MAX }
-                        } else {
-                            0xFF60_6060
-                        };
+                        let hover = crate::ui::hovered(cursor, x, y, 60.0, 69.0);
+                        let frame = if hover { 0xFF90_9090 } else { u32::MAX };
                         batch.fill(atlas, x + 2.0, y + 2.0, 56.0, 56.0, 0xFF20_2020);
                         // `FrameButton`: the picture inside `widget/slot_frame`.
                         crate::ui::blit_sprite(
@@ -9953,13 +10482,7 @@ impl Screen {
                             60.0,
                             frame,
                         );
-                        let color = if !enabled {
-                            0xFF50_5050
-                        } else if hover {
-                            GREY
-                        } else {
-                            u32::MAX
-                        };
+                        let color = if hover { GREY } else { u32::MAX };
                         let text = t(label);
                         let width = HudBatch::text_width(atlas, &text);
                         // `FrameButton.extractContents`: `centeredText(..., x + 28, y - 14)`.
@@ -10195,35 +10718,41 @@ impl Screen {
                         } else if job.is_some() {
                             centered(batch, atlas, loading_dots(), cx, top + 10.0, GREY);
                         } else {
-                            // `mco.template.select.none` decomposed at `%link`
-                            // (`TextRenderingUtils.decompose`): the link segment in
-                            // -13408581 (0xFF3366BB), the rest white, each line centred;
-                            // hovering the link shows its URL and a click asks first.
-                            let none = t("mco.template.select.none");
-                            let link = t("mco.template.select.none.linkTitle");
+                            // `RealmsSelectWorldTemplateScreen` asks
+                            // `I18n.get("mco.template.select.none", "%link")` and decomposes
+                            // the result (`TextRenderingUtils.decompose`): only the line with
+                            // the `%s` argument carries the link (the raw translation has
+                            // `%s`, not `%link`), in -13408581 (0xFF3366BB), the rest white,
+                            // each line centred; hovering the link shows its URL.
+                            let lines = template_none_lines(
+                                &t("mco.template.select.none"),
+                                &t("mco.template.select.none.linkTitle"),
+                            );
                             let mut link_rect = [0.0; 4];
-                            for (i, line) in none.split('\n').enumerate() {
-                                let (before, after) = line
-                                    .split_once("%link")
-                                    .map_or((line, ""), |(before, after)| (before, after));
+                            for (i, (before, link, after)) in lines.iter().enumerate() {
                                 let y = 92.0 + i as f32 * 13.0;
-                                let width =
-                                    HudBatch::text_width(atlas, &format!("{before}{link}{after}"));
+                                let width = HudBatch::text_width(atlas, before)
+                                    + link
+                                        .as_deref()
+                                        .map_or(0.0, |link| HudBatch::text_width(atlas, link))
+                                    + HudBatch::text_width(atlas, after);
                                 let mut x = cx - (width / 2.0).floor();
                                 batch.text(atlas, before, x, y, u32::MAX, true);
                                 x += HudBatch::text_width(atlas, before);
-                                batch.text(atlas, &link, x, y, 0xFF33_66BB, true);
-                                let link_w = HudBatch::text_width(atlas, &link);
-                                if crate::ui::hovered(cursor, x, y - 3.0, link_w, 11.0) {
-                                    crate::ui::tooltip(
-                                        batch,
-                                        atlas,
-                                        &[Text::literal(REALMS_CONTENT_CREATION)],
-                                        cursor,
-                                    );
-                                    link_rect = [x, y - 3.0, link_w, 11.0];
+                                if let Some(link) = link {
+                                    batch.text(atlas, link, x, y, 0xFF33_66BB, true);
+                                    let link_w = HudBatch::text_width(atlas, link);
+                                    if crate::ui::hovered(cursor, x, y - 3.0, link_w, 11.0) {
+                                        crate::ui::tooltip(
+                                            batch,
+                                            atlas,
+                                            &[Text::literal(REALMS_CONTENT_CREATION)],
+                                            cursor,
+                                        );
+                                        link_rect = [x, y - 3.0, link_w, 11.0];
+                                    }
+                                    x += link_w;
                                 }
-                                x += link_w;
                                 batch.text(atlas, after, x, y, u32::MAX, true);
                             }
                             self.template_link_rect.set(link_rect);
@@ -10542,6 +11071,18 @@ impl Screen {
                         RED,
                     );
                 }
+            }
+            SubScreen::CreateWorldUpload { .. } => {
+                // `AlertScreen.extractRenderState`: the title at 70 over an empty message;
+                // the Cancel button is drawn with the screen's buttons.
+                centered(
+                    batch,
+                    atlas,
+                    &t("mco.create.world.reset.title"),
+                    cx,
+                    70.0,
+                    u32::MAX,
+                );
             }
             SubScreen::Main => self.draw_main(batch, atlas, cursor, w, h, list_focused),
         }
@@ -11314,6 +11855,7 @@ mod tests {
             pdp_row: None,
             list_clicked: false,
             link_buttons: std::cell::Cell::new([(0.0, 0.0); 3]),
+            terms_link: std::cell::Cell::new([0.0; 4]),
             notifications: Vec::new(),
             notifications_job: None,
             handled_seen: Vec::new(),
@@ -11504,6 +12046,7 @@ mod tests {
             screen.subscreen = SubScreen::Connecting {
                 server: server(7, None),
                 error: None,
+                last: Box::new(SubScreen::Main),
             };
             screen.poll()
         };
@@ -11547,6 +12090,37 @@ mod tests {
         ));
     }
 
+    /// `GetServerDetailsTask`: a 6002 answer shows `RealmsTermsScreen`, and Disagree
+    /// returns to the screen the join started from.
+    #[test]
+    fn a_6002_join_shows_the_terms_and_disagree_goes_back() {
+        let mut screen = listed(vec![server(7, None)]);
+        let job = Arc::new(Mutex::new(Some(Err(RealmsError::Service {
+            status: 400,
+            code: Some(6002),
+            reason: None,
+            message: None,
+        }))));
+        screen.joining = Some((job, Arc::new(AtomicBool::new(false))));
+        screen.subscreen = SubScreen::Connecting {
+            server: server(7, None),
+            error: None,
+            last: Box::new(SubScreen::Main),
+        };
+        assert!(matches!(screen.poll(), Outcome::None));
+        assert!(matches!(screen.subscreen, SubScreen::Terms { .. }));
+        // `RealmsTermsScreen.init`: Agree and Disagree are 23 and 24; Disagree is the
+        // screen the join started from.
+        let buttons = screen.buttons(800.0, 600.0);
+        assert!(buttons.iter().any(|b| b.5 == 23));
+        assert!(buttons.iter().any(|b| b.5 == 24));
+        assert!(matches!(
+            screen.click(Some(24), 0.0, 0.0, (800.0, 600.0)),
+            Outcome::None
+        ));
+        assert!(matches!(screen.subscreen, SubScreen::Main));
+    }
+
     #[test]
     fn cancelling_a_join_aborts_its_worker() {
         let mut screen = listed(vec![server(7, None)]);
@@ -11555,6 +12129,7 @@ mod tests {
         screen.subscreen = SubScreen::Connecting {
             server: server(7, None),
             error: None,
+            last: Box::new(SubScreen::Main),
         };
         let _ = screen.click(Some(52), 0.0, 0.0, (800.0, 600.0));
         assert!(aborted.load(Ordering::Relaxed));
@@ -11695,6 +12270,52 @@ mod tests {
         assert_eq!(boxes[3].1, 50.0);
     }
 
+    /// `RealmsWorldSlotButton.State`'s texture order: the minigame's image (or
+    /// `isles.png`), the empty frame, the slot's template image, the panoramas.
+    #[test]
+    fn the_slot_picture_follows_vanillas_order() {
+        assert_eq!(
+            slot_picture(4, true, Some("img")),
+            SlotPicture::Image("img")
+        );
+        assert_eq!(slot_picture(4, true, None), SlotPicture::Preset);
+        assert_eq!(slot_picture(4, false, None), SlotPicture::Preset);
+        assert_eq!(slot_picture(2, true, Some("img")), SlotPicture::Empty);
+        assert_eq!(
+            slot_picture(2, false, Some("img")),
+            SlotPicture::Image("img")
+        );
+        assert_eq!(
+            slot_picture(1, false, None),
+            SlotPicture::Panorama("panorama_0")
+        );
+        assert_eq!(
+            slot_picture(2, false, None),
+            SlotPicture::Panorama("panorama_2")
+        );
+        assert_eq!(
+            slot_picture(3, false, None),
+            SlotPicture::Panorama("panorama_3")
+        );
+    }
+
+    /// `RealmsSelectWorldTemplateScreen`'s empty message: vanilla passes `"%link"` as the
+    /// translation's `%s` argument, so only that line carries the link.
+    #[test]
+    fn the_empty_template_message_links_one_line() {
+        let lines = template_none_lines("Oops.\nPlease check back,\n%s.", "submit something");
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], ("Oops.".into(), None, String::new()));
+        assert_eq!(lines[1], ("Please check back,".into(), None, String::new()));
+        assert_eq!(
+            lines[2],
+            ("".into(), Some("submit something".into()), ".".into())
+        );
+        // The Chinese translation's third line is `%s。`.
+        let zh = template_none_lines("抱歉。\n请稍后再来，\n%s。", "提交内容");
+        assert_eq!(zh[2], ("".into(), Some("提交内容".into()), "。".into()));
+    }
+
     /// `RealmsInviteScreen.onInvite`: a blank name and one already invited are refused
     /// before any request.
     #[test]
@@ -11726,6 +12347,7 @@ mod tests {
             pdp_row: None,
             list_clicked: false,
             link_buttons: std::cell::Cell::new([(0.0, 0.0); 3]),
+            terms_link: std::cell::Cell::new([0.0; 4]),
             notifications: Vec::new(),
             notifications_job: None,
             handled_seen: Vec::new(),
@@ -12055,6 +12677,125 @@ mod tests {
                 "mco.reset.world.inspiration"
             ]
         );
+    }
+
+    /// `RealmsResetWorldScreen`'s Generate New World tile: `RealmsCreateWorldFlow` gets
+    /// the Realm, slot and reset kind to upload into.
+    #[test]
+    fn the_generate_tile_asks_for_the_create_world_screen() {
+        let mut screen = listed(vec![server(7, None)]);
+        screen.subscreen = SubScreen::ResetWorld {
+            server: server(7, None),
+            slot: 2,
+            kind: ResetKind::Empty,
+            creation: None,
+            templates: None,
+            job: None,
+            reset: None,
+            error: None,
+        };
+        match screen.click(Some(70), 0.0, 0.0, (854.0, 480.0)) {
+            Outcome::CreateWorld(request) => {
+                assert_eq!((request.server.id, request.slot), (7, 2));
+                assert_eq!(request.kind, ResetKind::Empty);
+                assert!(request.creation.is_none());
+            }
+            _ => panic!("the Generate New World tile asks for Create World"),
+        }
+    }
+
+    /// `RealmsCreateWorldFlow.createTemporaryWorldFolder`: level.dat without
+    /// `singleplayer_uuid`, the world generation and game rules, and no player file or
+    /// weather/clocks (the Realm's server makes those on its own).
+    #[test]
+    fn a_generated_upload_world_carries_only_what_the_realm_needs() {
+        let mut level = crate::save::Level {
+            name: "New World".into(),
+            seed: 4242,
+            day_time: 0,
+            health: 20.0,
+            food: 20,
+            saturation: 5.0,
+            ..Default::default()
+        };
+        level.difficulty = "normal".into();
+        level.enabled_features = vec!["minecraft:vanilla".into()];
+        level.data_packs = Some((vec!["vanilla".into()], Vec::new()));
+        let world = CreatedWorld {
+            level,
+            world_gen: crate::save::WorldGen::default(),
+            flat_settings: None,
+            single_biome: None,
+            data_packs: (vec!["vanilla".into()], Vec::new()),
+            pack_dir: None,
+        };
+        let dir = create_temporary_world(&world).unwrap();
+        let data = crate::save::read_dat(&dir.join("level.dat")).unwrap();
+        let level = data.get("Data").expect("the level's data");
+        assert_eq!(
+            crate::save::text(level.get("LevelName")).as_deref(),
+            Some("New World")
+        );
+        assert!(level.get("singleplayer_uuid").is_none());
+        assert!(!dir.join("players").exists());
+        assert!(dir.join("data/minecraft/world_gen_settings.dat").is_file());
+        assert!(dir.join("data/minecraft/game_rules.dat").is_file());
+        assert!(!dir.join("data/minecraft/weather.dat").exists());
+        assert!(!dir.join("data/minecraft/world_clocks.dat").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `WorldTemplatePaginatedList.isLastPage`: page*size >= total, all three set.
+    #[test]
+    fn a_template_page_knows_when_it_is_the_last() {
+        assert!(!last_template_page(1, 10, 11));
+        assert!(last_template_page(2, 10, 11));
+        assert!(last_template_page(1, 10, 10));
+        assert!(!last_template_page(1, 10, 0));
+        assert!(!last_template_page(0, 10, 10));
+    }
+
+    /// `RealmsWorldsTab.switchToMinigame`'s list returns to the Worlds tab when cancelled
+    /// (Back and Escape); a reset screen's template list still cancels back to the reset
+    /// screen.
+    #[test]
+    fn leaving_the_minigame_template_list_returns_to_the_worlds_tab() {
+        let mut screen = listed(vec![server(7, None)]);
+        let template_list = |group: Option<TemplateGroup>| SubScreen::TemplateList {
+            server: server(7, None),
+            slot: 1,
+            kind: ResetKind::Reset,
+            creation: None,
+            group,
+            templates: Vec::new(),
+            selected: None,
+            scroll: crate::ui::Scroll::default(),
+            job: None,
+            select: None,
+            icons: std::cell::RefCell::new(Vec::new()),
+            error: None,
+        };
+        screen.subscreen = template_list(None);
+        let _ = screen.click(Some(78), 0.0, 0.0, (800.0, 600.0));
+        assert!(matches!(
+            &screen.subscreen,
+            SubScreen::Configure {
+                tab: ConfigureTab::Worlds,
+                ..
+            }
+        ));
+        screen.subscreen = template_list(None);
+        assert!(!screen.escape());
+        assert!(matches!(
+            &screen.subscreen,
+            SubScreen::Configure {
+                tab: ConfigureTab::Worlds,
+                ..
+            }
+        ));
+        screen.subscreen = template_list(Some(TemplateGroup::ALL[0]));
+        let _ = screen.click(Some(78), 0.0, 0.0, (800.0, 600.0));
+        assert!(matches!(&screen.subscreen, SubScreen::ResetWorld { .. }));
     }
 
     fn backups_screen(server: RealmServer, list: Vec<Backup>) -> Screen {

@@ -14,7 +14,7 @@
 //! Whatever has no faithful 26.3 form is kept as it is and listed in the
 //! report.
 mod density;
-mod features;
+pub(crate) mod features;
 mod noise;
 mod registries;
 mod settings;
@@ -460,6 +460,39 @@ mod tests {
     }
 
     #[test]
+    fn weird_scaled_samplers_become_vanilla_s_interval_select() {
+        // 1.21.1's spaghetti caves: the noise sampled at 1/s and scaled by s,
+        // s picked from the rarity input (26.3's overworld/caves/entrances).
+        let n = |s: f64| {
+            json!({"type": "minecraft:mul", "left": {"type": "minecraft:noise",
+            "noise": "minecraft:spaghetti_3d_1", "xz_scale": 1.0 / s, "y_scale": 1.0 / s}, "right": s})
+        };
+        let (v, r) = up(
+            "data/x/worldgen/density_function/f.json",
+            json!({"type": "minecraft:weird_scaled_sampler", "rarity_value_mapper": "type_1",
+                "noise": "minecraft:spaghetti_3d_1", "input": {"type": "minecraft:cache_once",
+                    "argument": "x:rarity"}}),
+        );
+        assert_eq!(
+            v,
+            json!({"type": "minecraft:abs", "input": {"type": "minecraft:interval_select",
+                "input": {"type": "minecraft:cache", "input": "x:rarity"},
+                "thresholds": [-0.5, 0.0, 0.5], "functions": [n(0.75), n(1.0), n(1.5), n(2.0)]}})
+        );
+        assert!(r.unknown.is_empty(), "{:?}", r.unknown);
+        let (v, _) = up(
+            "data/x/worldgen/density_function/g.json",
+            json!({"type": "minecraft:weird_scaled_sampler", "rarity_value_mapper": "type_2",
+                "noise": "minecraft:spaghetti_3d_1", "input": 0.0}),
+        );
+        assert_eq!(v["input"]["thresholds"], json!([-0.75, -0.5, 0.5, 0.75]));
+        assert_eq!(
+            v["input"]["functions"],
+            json!([n(0.5), n(0.75), n(1.0), n(2.0), n(3.0)])
+        );
+    }
+
+    #[test]
     fn flat_cache_slices_at_y_zero_only_what_depends_on_y() {
         let flat = |argument: Value| {
             up(
@@ -519,6 +552,53 @@ mod tests {
         assert_eq!(
             s["noise_router"]["final_density"]["right"],
             json!({"type": "minecraft:beardifier"})
+        );
+    }
+
+    /// A world pack's 1.21.1 `lithostitched:weighted_selector` (Regions
+    /// Unexplored's tree groups) comes out as 26.3's weighted selector.
+    #[test]
+    fn world_pack_weighted_selectors_are_vanillas() {
+        let old = json!({"type": "lithostitched:weighted_selector", "config": {"features": [
+            {"data": {"feature": "ru:tree/oak", "placement": []}, "weight": 2},
+            {"feature": "ru:tree/big_oak", "placement": []}]}});
+        let new = features::feature(&old, &mut Report::default());
+        assert_eq!(new["type"], "minecraft:weighted_random_selector");
+        assert_eq!(new["features"][0]["weight"], 2);
+        assert_eq!(
+            new["features"][1],
+            json!({"data": {"feature": "ru:tree/big_oak", "placement": []}, "weight": 1})
+        );
+    }
+
+    #[test]
+    fn surface_rules_drop_biomes_nothing_defines() {
+        // 1.21.1 read `biome_is` as keys, so a name nothing defines (Terralith's
+        // "comment" biome) never matched; 26.3 resolves them and refuses the pack.
+        let rule = json!({"type": "minecraft:condition", "if_true": {"type": "minecraft:biome",
+            "biome_is": ["x:b", "x:comment_not_a_biome", "y:other_mods", "minecraft:plains"]},
+            "then_run": {"type": "minecraft:block", "result_state": {"Name": "minecraft:dirt"}}});
+        let settings = json!({"noise": {"min_y": -64, "height": 384, "size_horizontal": 1,
+            "size_vertical": 2}, "noise_router": {}, "surface_rule": rule});
+        let files = BTreeMap::from([
+            (
+                "data/x/worldgen/noise_settings/s.json".to_owned(),
+                serde_json::to_vec(&settings).unwrap(),
+            ),
+            ("data/x/worldgen/biome/b.json".to_owned(), b"{}".to_vec()),
+        ]);
+        let (out, r) = upgrade_pack(&files);
+        let rule: Value = serde_json::from_slice(
+            &out["data/x/worldgen/material_rule/s/upgraded/material_rule.json"],
+        )
+        .unwrap();
+        assert_eq!(
+            rule["if_true"]["biome_is"],
+            json!(["x:b", "minecraft:plains"])
+        );
+        assert_eq!(
+            r.lossy.get("surface rule: biomes nothing defines"),
+            Some(&1)
         );
     }
 
@@ -593,6 +673,95 @@ mod tests {
     }
 
     #[test]
+    fn random_patches_become_a_counted_offset_placement() {
+        // 1.21.1's random_patch (and flower) tries its placed feature around
+        // the origin; 26.3 spells that as count + trapezoid offset modifiers.
+        let trap =
+            |n: i64| json!({"type": "minecraft:trapezoid", "min": -n, "max": n, "plateau": 0});
+        let (v, r) = up(
+            "data/x/worldgen/configured_feature/f.json",
+            json!({"type": "minecraft:flower", "config": {"tries": 64, "xz_spread": 6, "y_spread": 2,
+                "feature": {"feature": {"type": "minecraft:simple_block", "config": {"to_place": {
+                    "type": "minecraft:simple_state_provider", "state": {"Name": "minecraft:poppy"}}}},
+                "placement": [{"type": "minecraft:block_predicate_filter", "predicate": {
+                    "type": "minecraft:matching_blocks", "blocks": "minecraft:air"}}]}}}),
+        );
+        assert_eq!(
+            v,
+            json!({"type": "minecraft:simple_random_selector", "features": [{
+                "feature": {"type": "minecraft:simple_block", "to_place": {"id": "minecraft:poppy"}},
+                "placement": [{"type": "minecraft:count", "count": 64},
+                    {"type": "minecraft:offset", "x": trap(6), "y": trap(2), "z": trap(6)},
+                    {"type": "minecraft:block_predicate_filter", "predicate": {
+                        "type": "minecraft:matching_blocks", "blocks": "minecraft:air"}}]}]})
+        );
+        assert!(r.unknown.is_empty(), "{:?}", r.unknown);
+        // A patch of a placed feature by id, with the default spread.
+        let (v, _) = up(
+            "data/x/worldgen/configured_feature/g.json",
+            json!({"type": "minecraft:random_patch", "config": {"feature": "x:grass"}}),
+        );
+        assert_eq!(
+            v,
+            json!({"type": "minecraft:simple_random_selector", "features": [{
+                "feature": {"type": "minecraft:simple_random_selector", "features": ["x:grass"]},
+                "placement": [{"type": "minecraft:count", "count": 128},
+                    {"type": "minecraft:offset", "x": trap(7), "y": trap(3), "z": trap(7)}]}]})
+        );
+    }
+
+    #[test]
+    fn biome_effects_of_1_21_1_become_attributes_and_carvers_a_list() {
+        // A 1.21.1 biome: the air carvers by step, and sky, fog, music and
+        // sounds among its effects, colours as integers.
+        let (v, r) = up(
+            "data/x/worldgen/biome/b.json",
+            json!({"temperature": 0.7, "downfall": 0.8, "has_precipitation": true,
+                "carvers": {"air": ["minecraft:cave", "minecraft:canyon"]},
+                "effects": {"sky_color": 7972607, "fog_color": 12638463, "water_color": 9614049,
+                    "water_fog_color": 329011, "grass_color": 10400481, "foliage_color": 8177813,
+                    "grass_color_modifier": "dark_forest",
+                    "mood_sound": {"block_search_extent": 8, "offset": 2.0,
+                        "sound": "minecraft:ambient.cave", "tick_delay": 6000},
+                    "ambient_sound": "minecraft:ambient.crimson_forest.loop",
+                    "additions_sound": {"sound": "minecraft:ambient.crimson_forest.additions",
+                        "tick_chance": 0.0111},
+                    "particle": {"options": {"type": "minecraft:white_ash"}, "probability": 0.1},
+                    "music": {"sound": "minecraft:music.overworld.forest", "min_delay": 12000,
+                        "max_delay": 24000, "replace_current_music": false}},
+                "features": []}),
+        );
+        assert_eq!(v["carvers"], json!(["minecraft:cave", "minecraft:canyon"]));
+        assert_eq!(
+            v["effects"],
+            json!({"water_color": "#92b2e1", "grass_color": "#9eb2e1", "foliage_color": "#7cc895",
+                "grass_color_modifier": "dark_forest"})
+        );
+        let a = &v["attributes"];
+        assert_eq!(a["minecraft:visual/sky_color"], json!("#79a6ff"));
+        assert_eq!(a["minecraft:visual/fog_color"], json!("#c0d8ff"));
+        assert_eq!(a["minecraft:visual/water_fog_color"], json!("#050533"));
+        assert_eq!(
+            a["minecraft:audio/background_music"],
+            json!({"default": {"sound": "minecraft:music.overworld.forest", "min_delay": 12000,
+                "max_delay": 24000}})
+        );
+        assert_eq!(
+            a["minecraft:audio/ambient_sounds"],
+            json!({"mood": {"block_search_extent": 8, "offset": 2.0,
+                    "sound": "minecraft:ambient.cave", "tick_delay": 6000},
+                "loop": "minecraft:ambient.crimson_forest.loop",
+                "additions": {"sound": "minecraft:ambient.crimson_forest.additions", "tick_chance": 0.0111}})
+        );
+        assert_eq!(
+            a["minecraft:visual/ambient_particles"],
+            json!({"modifier": "append", "argument": [{"particle": {"type": "minecraft:white_ash"},
+                "probability": 0.1}]})
+        );
+        assert!(r.lossy.is_empty(), "{:?}", r.lossy);
+    }
+
+    #[test]
     fn biome_spawns_become_attributes() {
         let (v, _) = up(
             "data/x/worldgen/biome/b.json",
@@ -657,5 +826,40 @@ mod tests {
             json!({"type": "minecraft:canyon", "probability": 0.01,
                 "shape": {"width_smoothness": 3, "y_scale": 3.0}})
         );
+    }
+
+    #[test]
+    fn nether_forest_vegetation_becomes_a_spread_simple_block() {
+        // 1.21.1's feature tried spread_width² times at nextInt(w) - nextInt(w)
+        // (y: spread_height) on nylium; 26.3 writes crimson_forest_vegetation as
+        // a simple_block whose placed feature counts, offsets and filters.
+        let trap =
+            |n: i64| json!({"type": "minecraft:trapezoid", "min": -n, "max": n, "plateau": 0});
+        let (v, r) = up(
+            "data/x/worldgen/configured_feature/f.json",
+            json!({"type": "minecraft:nether_forest_vegetation", "config": {
+                "spread_width": 8, "spread_height": 4, "state_provider": {
+                    "type": "minecraft:weighted_state_provider", "entries": [
+                        {"data": {"Name": "minecraft:crimson_roots"}, "weight": 87}]}}}),
+        );
+        let tag = |offset: Option<[i64; 3]>, tag: &str| {
+            let mut p = json!({"type": "minecraft:matching_block_tag", "tag": tag});
+            if let Some(o) = offset {
+                p["offset"] = json!(o);
+            }
+            json!({"type": "minecraft:block_predicate_filter", "predicate": p})
+        };
+        assert_eq!(
+            v,
+            json!({"type": "minecraft:simple_random_selector", "features": [{
+                "feature": {"type": "minecraft:simple_block", "to_place": {
+                    "type": "minecraft:weighted", "entries": [
+                        {"data": "minecraft:crimson_roots", "weight": 87}]}},
+                "placement": [tag(Some([0, -1, 0]), "minecraft:nylium"),
+                    {"type": "minecraft:count", "count": 64},
+                    {"type": "minecraft:offset", "x": trap(7), "y": trap(3), "z": trap(7)},
+                    tag(None, "minecraft:air")]}]})
+        );
+        assert!(r.unknown.is_empty(), "{:?}", r.unknown);
     }
 }

@@ -56,6 +56,35 @@ pub(super) enum Outcome {
     Fail,
 }
 
+#[derive(Clone)]
+struct FunctionCall {
+    functions: Vec<Function>,
+    args: Option<Tag>,
+}
+/// One owned call for the still-live parsed invocation, not a generic queue.
+/// The context address is compared only, never dereferenced or persisted.
+pub(in crate::game) struct PreparedFunctionCall {
+    invocation: usize,
+    source: Source,
+    call: std::sync::Arc<FunctionCall>,
+}
+impl PreparedFunctionCall {
+    fn matches(&self, ctx: &Context, source: Source) -> bool {
+        let s = self.source;
+        self.invocation == ctx as *const Context as usize
+            && s.entity == source.entity
+            && s.pos.map(f64::to_bits) == source.pos.map(f64::to_bits)
+            && s.rot.map(f32::to_bits) == source.rot.map(f32::to_bits)
+            && s.eyes == source.eyes
+            && s.silent == source.silent
+            && s.store == source.store
+            && s.dimension == source.dimension
+            && s.level == source.level
+            && s.block == source.block
+            && s.cart == source.cart
+    }
+}
+
 /// The world's pack stack: the built-in pack (unless disabled), the packs
 /// of `<world>/datapacks` and the resources root's feature packs, with the
 /// enabled ids from `datapacks.json` (`PackRepository.reload`).
@@ -216,6 +245,8 @@ impl Game<'_> {
         // The candidate's named predicates/modifiers must also be available to
         // argument codecs before any of its functions can be exposed.
         self.sync_enchantment_registries();
+        // A function's `loot ... loot <id>` names the reloaded packs' tables.
+        self.sync_loot_table_ids();
         let mut registries = self.ui.registries.clone();
         registries.permission = self.fns.command_level();
         registries.functions = store.functions.keys().cloned().collect();
@@ -408,7 +439,9 @@ impl Game<'_> {
 
     // ---- ticking -----------------------------------------------------------------
 
-    /// `ServerFunctionManager.tick` and the scheduled events.
+    /// `ServerFunctionManager.tick`: the `#minecraft:load` functions after a
+    /// reload, then the `#minecraft:tick` ones, before the levels tick (and
+    /// before the game time moves on).
     pub(super) fn tick_functions(&mut self) {
         self.ensure_datapacks();
         if self.remote.is_some() {
@@ -422,6 +455,19 @@ impl Game<'_> {
                 self.run_function_by_id(&f, None, source);
             }
         }
+        for f in self.fns.store.tag_functions("minecraft:tick") {
+            self.run_function_by_id(&f, None, source);
+        }
+    }
+    /// `ServerLevel.tickTime`'s `getScheduledEvents().tick`: the scheduled
+    /// functions due at the game time this tick has just reached.
+    pub(super) fn run_scheduled_functions(&mut self) {
+        self.ensure_datapacks();
+        if self.remote.is_some() {
+            return;
+        }
+        self.exec = ExecState::default();
+        let source = self.server_source();
         let now = self.world.game_time;
         loop {
             let due = self
@@ -442,9 +488,6 @@ impl Game<'_> {
                 }
                 None => self.run_function_by_id(&event.id, None, source),
             }
-        }
-        for f in self.fns.store.tag_functions("minecraft:tick") {
-            self.run_function_by_id(&f, None, source);
         }
     }
     fn run_function_by_id(&mut self, id: &str, args: Option<&Tag>, source: Source) {
@@ -590,10 +633,30 @@ impl Game<'_> {
 
     // ---- commands ------------------------------------------------------------------
 
-    /// `FunctionCommand.decorateOutputIfNeeded`: report returned values even for failure.
+    /// `FunctionCommand.decorateOutputIfNeeded`: consume only this invocation's
+    /// prepared call before its body can invoke another function.
     pub(super) fn cmd_function(&mut self, ctx: &Context) -> R<i32> {
+        let source = self.command_source.unwrap_or_else(|| self.player_source());
+        let call = if self
+            .exec
+            .prepared_function
+            .as_ref()
+            .is_some_and(|p| p.matches(ctx, source))
+        {
+            std::sync::Arc::unwrap_or_clone(self.exec.prepared_function.take().unwrap().call)
+        } else {
+            let Some(call) = self.prepare_function_call(ctx)? else {
+                return Ok(0);
+            };
+            self.start_function_call(&call.functions);
+            call
+        };
+        self.execute_function_call(call)
+    }
+    /// `FunctionCommand.getArgumentTag`: retain the existing resolution and argument validation.
+    fn prepare_function_call(&mut self, ctx: &Context) -> R<Option<FunctionCall>> {
         let Some(Arg::Resource(name)) = ctx.get("name").cloned() else {
-            return Ok(0);
+            return Ok(None);
         };
         let functions = self.functions_named(&name)?;
         if functions.is_empty() {
@@ -632,6 +695,10 @@ impl Game<'_> {
         } else {
             None
         };
+        Ok(Some(FunctionCall { functions, args }))
+    }
+    /// `FunctionCommand.FunctionCustomExecutor.runGuarded`: send the existing start reply.
+    fn start_function_call(&mut self, functions: &[Function]) {
         let message = if functions.len() == 1 {
             Text::translate(
                 "commands.function.scheduled.single",
@@ -649,6 +716,10 @@ impl Game<'_> {
             )
         };
         self.feedback(message);
+    }
+    /// `FunctionCommand.decorateOutputIfNeeded`: retain body, result and callback delivery.
+    fn execute_function_call(&mut self, call: FunctionCall) -> R<i32> {
+        let FunctionCall { functions, args } = call;
         let source = self.command_source.unwrap_or_else(|| self.player_source());
         let mut sum: i32 = 0;
         let mut any = false;
@@ -683,6 +754,51 @@ impl Game<'_> {
             None
         });
         Ok(sum)
+    }
+    /// `FunctionCommand.queueFunctionsNoReturn`: starts are emitted while the
+    /// eligible direct plain-function calls are prepared, before their bodies.
+    pub(in crate::game) fn prepare_function_batch(
+        &mut self,
+        ctx: &Context,
+        sources: &[Source],
+    ) -> Option<Vec<PreparedFunctionCall>> {
+        if !self.fns.loaded
+            || sources.len() < 2
+            || self.exec.function_depth != 0
+            || self.exec.prepared_function.is_some()
+            || sources.iter().any(|s| s.silent)
+            || ctx.has("with")
+            || ctx.get("arguments").is_some()
+        {
+            return None;
+        }
+        let Some(Arg::Resource(name)) = ctx.get("name") else {
+            return None;
+        };
+        if name.starts_with('#') || self.fns.store.functions.get(name)?.is_macro() {
+            return None;
+        }
+        let limit = self.ui.rules.int("max_command_sequence_length").max(1) as u32;
+        if sources.len() > limit.saturating_sub(self.exec.commands) as usize {
+            return None;
+        }
+        // No start or slot is published until the existing validation succeeds.
+        let call = self
+            .with_source(sources[0], |g| g.prepare_function_call(ctx))
+            .ok()??;
+        let call = std::sync::Arc::new(call);
+        let tasks: Vec<_> = sources
+            .iter()
+            .map(|&source| PreparedFunctionCall {
+                invocation: ctx as *const Context as usize,
+                source,
+                call: call.clone(),
+            })
+            .collect();
+        for task in &tasks {
+            self.with_source(task.source, |g| g.start_function_call(&task.call.functions));
+        }
+        Some(tasks)
     }
     /// `return <value>` and `return fail` (`return run` is a chain).
     pub(super) fn cmd_return(&mut self, id: &str, ctx: &Context) -> R<i32> {
@@ -1091,6 +1207,466 @@ const FEATURE_PACKS: &[(&str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "needs prepared resources and scratch homes/cwd"]
+    fn prepared_function_calls_keep_causality_and_fallback_boundaries() {
+        use crate::game::native_machines::tests::server_game;
+        use horizon_client::motion::PlayerMotion;
+        use horizon_core::geometry::Vec3;
+        let mut game = server_game();
+        game.options.dedicated = None;
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(4.5, 202.0, 4.5)).unwrap());
+        game.creative = true;
+        game.world_root = std::env::current_dir().unwrap().join("h155-causal-world");
+        let pack = game.world_root.join("datapacks/h155_causal");
+        let dir = pack.join("data/h155c/function");
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = horizon_core::version::DATA_PACK_FORMAT;
+        std::fs::write(pack.join("pack.mcmeta"), serde_json::json!({"pack":{"description":"H155 causal controls","pack_format":f.0,"min_format":[f.0,f.1],"max_format":[f.0,f.1]}}).to_string()).unwrap();
+        let body = "execute if score @s h155c_id matches 1 run scoreboard players operation #seen_a h155c = #r h155c\nexecute if score @s h155c_id matches 2 run scoreboard players operation #seen_b h155c = #r h155c\nscoreboard players add #calls h155c 1\nscoreboard players operation #trace h155c *= #ten h155c\nscoreboard players operation #trace h155c += @s h155c_id\n";
+        for (name, tail) in [
+            ("zero", "return 0\n"),
+            ("five", "return 5\n"),
+            ("fail", "return fail\n"),
+            ("none", ""),
+        ] {
+            std::fs::write(
+                dir.join(format!("{name}.mcfunction")),
+                format!("{body}{tail}"),
+            )
+            .unwrap();
+        }
+        for (name, text) in [
+            (
+                "early",
+                "scoreboard players add #early h155c 1\nreturn 0\nscoreboard players add #late h155c 1\n",
+            ),
+            ("inner", "scoreboard players add #inner h155c 1\nreturn 0\n"),
+            (
+                "outer",
+                "function h155c:inner\nscoreboard players add #outer h155c 1\nreturn 5\n",
+            ),
+            (
+                "nested",
+                "execute as @e[type=pig,tag=h155c,sort=nearest,limit=2] run function h155c:inner\nreturn 0\n",
+            ),
+            (
+                "macro",
+                "$scoreboard players add #macro h155c $(amount)\nreturn 0\n",
+            ),
+        ] {
+            std::fs::write(dir.join(format!("{name}.mcfunction")), text).unwrap();
+        }
+        std::fs::create_dir_all(pack.join("data/h155c/tags/function")).unwrap();
+        std::fs::write(
+            pack.join("data/h155c/tags/function/pair.json"),
+            r#"{"values":["h155c:zero","h155c:five"]}"#,
+        )
+        .unwrap();
+        game.reload_datapacks(false);
+        game.build_registries();
+        game.set_allow_commands(true);
+        assert_eq!(game.fns.store.tag_functions("h155c:pair").len(), 2);
+        assert!(
+            game.fns
+                .store
+                .functions
+                .get("h155c:macro")
+                .unwrap()
+                .is_macro()
+        );
+        assert!(game.run_command("forceload add 0 0 15 15"));
+        assert!(game.world.loaded(4, 4));
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        for (n, x) in [(1, 4.5), (2, 8.5)] {
+            assert!(game.run_command(&format!("summon pig {x} 200 4.5 {{UUID:[I;155,2,0,{n}],Tags:[\"h155c\"],NoAI:1b,NoGravity:1b,Health:10f}}")));
+            assert!(game.run_command(&format!("execute if entity @e[type=pig,nbt={{UUID:[I;155,2,0,{n}],Health:10f,NoAI:1b,NoGravity:1b,Pos:[{x}d,200d,4.5d]}}]")));
+        }
+        assert!(game.run_command("scoreboard objectives add h155c dummy"));
+        assert!(game.run_command("scoreboard objectives add h155c_id dummy"));
+        for (holder, id) in [
+            ("@s".to_owned(), 3),
+            ("@e[nbt={UUID:[I;155,2,0,1]},limit=1]".to_owned(), 1),
+            ("@e[nbt={UUID:[I;155,2,0,2]},limit=1]".to_owned(), 2),
+        ] {
+            assert!(game.run_command(&format!("scoreboard players set {holder} h155c_id {id}")));
+        }
+        assert!(game.run_command("scoreboard players set #ten h155c 10"));
+        fn score(g: &Game<'_>, h: &str) -> i32 {
+            g.score.board.score(h, "h155c").unwrap().value
+        }
+        fn reset(g: &mut Game<'_>) {
+            for h in [
+                "#calls", "#trace", "#seen_a", "#seen_b", "#early", "#late", "#inner", "#outer",
+                "#macro",
+            ] {
+                assert!(g.run_command(&format!("scoreboard players set {h} h155c 0")));
+            }
+            assert!(g.run_command("scoreboard players set #r h155c 91"));
+            assert!(g.run_command("scoreboard players set #s h155c 17"));
+        }
+        fn capture(g: &mut Game<'_>, line: &str) -> (Vec<String>, Vec<(bool, i32)>) {
+            g.chat_capture = Some(Vec::new());
+            g.cmds.results = Some(Vec::new());
+            assert!(g.run_command(line));
+            let texts = g.chat_capture.take().unwrap();
+            let callbacks = g.cmds.results.take().unwrap();
+            println!("causal raw {line}: {texts:?} callbacks={callbacks:?}");
+            assert!(
+                g.exec.prepared_function.is_none(),
+                "no prepared call after command/error/return"
+            );
+            (
+                texts
+                    .iter()
+                    .map(|m| m.translation_key().unwrap_or("literal").to_owned())
+                    .collect(),
+                callbacks,
+            )
+        }
+        let start = "commands.function.scheduled.single".to_owned();
+        let result = "commands.function.result".to_owned();
+        let prefix = "execute store result score #r h155c store success score #s h155c as @e[type=pig,tag=h155c,sort=nearest,limit=2] run ";
+        let clock = game.world.game_time;
+        let chunks = game.world.chunks.len();
+        for (name, value, success) in [
+            ("zero", Some(0), true),
+            ("five", Some(5), true),
+            ("fail", Some(0), false),
+            ("none", None, false),
+        ] {
+            reset(&mut game);
+            let (keys, callbacks) = capture(&mut game, &format!("{prefix}function h155c:{name}"));
+            let mut expected = vec![start.clone(); 2];
+            if value.is_some() {
+                expected.extend(vec![result.clone(); 2]);
+            }
+            assert_eq!(keys, expected);
+            assert_eq!(
+                callbacks,
+                value.map_or_else(Vec::new, |v| vec![(success, v); 2])
+            );
+            assert_eq!((score(&game, "#calls"), score(&game, "#trace")), (2, 12));
+            assert_eq!(score(&game, "#seen_a"), 91);
+            assert_eq!(
+                score(&game, "#seen_b"),
+                value.unwrap_or(91),
+                "first source callback/store precedes second body"
+            );
+            assert_eq!(score(&game, "#r"), value.unwrap_or(91));
+            assert_eq!(
+                score(&game, "#s"),
+                if value.is_some() {
+                    i32::from(success)
+                } else {
+                    17
+                }
+            );
+        }
+        // Each actual actor owns its leaf store; shared ancestors still deliver oldest first.
+        reset(&mut game);
+        for n in [1, 2] {
+            assert!(game.run_command(&format!(
+                "scoreboard players set @e[nbt={{UUID:[I;155,2,0,{n}]}},limit=1] h155c 91"
+            )));
+        }
+        let (keys, callbacks) = capture(
+            &mut game,
+            "execute store result score #chain h155c as @e[type=pig,tag=h155c,sort=nearest,limit=2] store success score #chain h155c store result score @s h155c run function h155c:five",
+        );
+        assert_eq!(
+            keys,
+            vec![start.clone(), start.clone(), result.clone(), result.clone()]
+        );
+        assert_eq!(callbacks, vec![(true, 5); 2]);
+        assert_eq!(
+            score(&game, "#chain"),
+            1,
+            "ancestor result then child success"
+        );
+        assert_eq!((score(&game, "#calls"), score(&game, "#trace")), (2, 12));
+        for n in [1, 2] {
+            let (_, callbacks) = capture(
+                &mut game,
+                &format!("scoreboard players get @e[nbt={{UUID:[I;155,2,0,{n}]}},limit=1] h155c"),
+            );
+            assert_eq!(
+                callbacks,
+                vec![(true, 5)],
+                "actual actor's own result store"
+            );
+        }
+        // These ineligible variants preserve the legacy path, not a Java-order parity claim.
+        for line in [
+            "execute as @e[type=pig,tag=h155c,sort=nearest,limit=2] if entity @s run function h155c:zero",
+            "execute run execute as @e[type=pig,tag=h155c,sort=nearest,limit=2] run function h155c:zero",
+            "execute as @e[type=pig,tag=h155c,sort=nearest,limit=2] run function h155c:macro {amount:1}",
+        ] {
+            reset(&mut game);
+            let (keys, callbacks) = capture(&mut game, line);
+            assert_eq!(
+                keys,
+                vec![start.clone(), result.clone(), start.clone(), result.clone()],
+                "unchanged ineligible path"
+            );
+            assert_eq!(callbacks, vec![(true, 0); 2]);
+        }
+        reset(&mut game);
+        let (keys, callbacks) = capture(
+            &mut game,
+            "execute as @e[type=pig,tag=h155c,sort=nearest,limit=2] run function #h155c:pair",
+        );
+        assert_eq!(
+            keys,
+            vec![
+                "commands.function.scheduled.multiple".to_owned(),
+                result.clone(),
+                result.clone(),
+                "commands.function.scheduled.multiple".to_owned(),
+                result.clone(),
+                result.clone()
+            ]
+        );
+        assert_eq!(callbacks, vec![(true, 5); 2]);
+        assert_eq!(score(&game, "#calls"), 4);
+        reset(&mut game);
+        let source = Source {
+            silent: true,
+            ..game.player_source()
+        };
+        let (keys, callbacks) = game.with_source(source, |g| {
+            capture(g, &format!("{prefix}function h155c:zero"))
+        });
+        assert!(keys.is_empty());
+        assert_eq!(callbacks, vec![(true, 0); 2]);
+        assert_eq!(score(&game, "#trace"), 12);
+        reset(&mut game);
+        let (keys, callbacks) = capture(&mut game, &format!("{prefix}function h155c:missing"));
+        assert!(keys.is_empty());
+        assert_eq!(callbacks, vec![(false, 0); 2]);
+        assert_eq!(score(&game, "#calls"), 0);
+        for line in [
+            "function h155c:five",
+            "execute as @e[type=pig,tag=h155c,sort=nearest,limit=1] run function h155c:five",
+        ] {
+            reset(&mut game);
+            let (keys, callbacks) = capture(&mut game, line);
+            assert_eq!(keys, vec![start.clone(), result.clone()]);
+            assert_eq!(callbacks, vec![(true, 5)]);
+        }
+        reset(&mut game);
+        let (keys, callbacks) = capture(&mut game, &format!("{prefix}function h155c:outer"));
+        assert_eq!(
+            keys,
+            vec![start.clone(), start.clone(), result.clone(), result.clone()]
+        );
+        assert_eq!(callbacks, vec![(true, 5); 2]);
+        assert_eq!((score(&game, "#inner"), score(&game, "#outer")), (2, 2));
+        reset(&mut game);
+        let (keys, callbacks) = capture(&mut game, "function h155c:nested");
+        assert_eq!(keys, vec![start.clone(), result.clone()]);
+        assert_eq!(callbacks, vec![(true, 0)]);
+        assert_eq!(score(&game, "#inner"), 2);
+        reset(&mut game);
+        let (_, callbacks) = capture(&mut game, &format!("{prefix}function h155c:early"));
+        assert_eq!(callbacks, vec![(true, 0); 2]);
+        assert_eq!((score(&game, "#early"), score(&game, "#late")), (2, 0));
+        // These are preservation/cleanup controls, not a Java limit-parity claim.
+        for budget in [1, 4] {
+            reset(&mut game);
+            assert!(game.run_command(&format!("gamerule max_command_sequence_length {budget}")));
+            let (keys, callbacks) = capture(&mut game, &format!("{prefix}function h155c:early"));
+            if budget == 1 {
+                assert!(keys.is_empty() && callbacks.is_empty());
+                assert_eq!(score(&game, "#early"), 0);
+            } else {
+                assert_eq!(callbacks, vec![(true, 0)]);
+                assert_eq!((score(&game, "#early"), score(&game, "#late")), (1, 0));
+                assert_eq!(keys.iter().filter(|k| **k == start).count(), 2);
+            }
+            assert!(game.run_command("gamerule max_command_sequence_length 65536"));
+            reset(&mut game);
+            let (keys, callbacks) = capture(&mut game, &format!("{prefix}function h155c:five"));
+            assert_eq!(
+                keys,
+                vec![start.clone(), start.clone(), result.clone(), result.clone()]
+            );
+            assert_eq!(callbacks, vec![(true, 5); 2]);
+            assert_eq!(score(&game, "#seen_b"), 5);
+        }
+        assert_eq!(game.world.game_time, clock);
+        assert_eq!(game.world.chunks.len(), chunks);
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources and scratch homes/cwd"]
+    fn forked_function_replies_keep_task_order_and_actual_callbacks() {
+        use crate::game::native_machines::tests::server_game;
+        use horizon_client::motion::PlayerMotion;
+        use horizon_core::geometry::Vec3;
+        let mut game = server_game();
+        game.options.dedicated = None;
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(4.5, 202.0, 4.5)).unwrap());
+        game.creative = true;
+        game.world_root = std::env::current_dir().unwrap().join("h155-world");
+        let pack = game.world_root.join("datapacks/h155_unit");
+        let dir = pack.join("data/h155/function");
+        std::fs::create_dir_all(&dir).unwrap();
+        let format = horizon_core::version::DATA_PACK_FORMAT;
+        std::fs::write(
+            pack.join("pack.mcmeta"),
+            serde_json::json!({"pack": {
+                "description":"H155 actual Game regression", "pack_format":format.0,
+                "min_format":[format.0,format.1], "max_format":[format.0,format.1]
+            }})
+            .to_string(),
+        )
+        .unwrap();
+        let body = "scoreboard players add #calls h155 1\nscoreboard players add @s h155 1\nscoreboard players operation #trace h155 *= #ten h155\nscoreboard players operation #trace h155 += @s h155_id\n";
+        for (name, tail) in [
+            ("zero", "return 0\n"),
+            ("five", "return 5\n"),
+            ("fail", "return fail\n"),
+            ("fallthrough", ""),
+        ] {
+            std::fs::write(
+                dir.join(format!("{name}.mcfunction")),
+                format!("{body}{tail}"),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            dir.join("admit.mcfunction"),
+            "scoreboard players add #pack h155 1\nreturn 1\n",
+        )
+        .unwrap();
+        game.reload_datapacks(false);
+        game.build_registries();
+        game.set_allow_commands(true);
+        for name in ["zero", "five", "fail", "fallthrough", "admit"] {
+            assert!(
+                game.fns
+                    .store
+                    .functions
+                    .contains_key(&format!("h155:{name}"))
+            );
+            assert!(
+                game.ui
+                    .registries
+                    .functions
+                    .contains(&format!("h155:{name}"))
+            );
+        }
+        assert!(game.run_command("forceload add 0 0 15 15"));
+        assert!(game.world.loaded(4, 4));
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        for (n, x) in [(1, 4.5), (2, 8.5)] {
+            assert!(game.run_command(&format!("summon pig {x} 200 4.5 {{UUID:[I;155,1,0,{n}],Tags:[\"h155u\"],NoAI:1b,NoGravity:1b,Silent:1b,PersistenceRequired:1b,Health:10f}}")));
+            assert!(game.run_command(&format!("execute if entity @e[type=pig,nbt={{UUID:[I;155,1,0,{n}],Health:10f,NoAI:1b,NoGravity:1b,Pos:[{x}d,200d,4.5d]}}]")));
+        }
+        assert!(game.run_command("scoreboard objectives add h155 dummy"));
+        assert!(game.run_command("scoreboard objectives add h155_id dummy"));
+        assert!(game.run_command("scoreboard players set #ten h155 10"));
+        assert!(game.run_command("scoreboard players set @s h155_id 3"));
+        let actor = |n| format!("@e[nbt={{UUID:[I;155,1,0,{n}]}},limit=1]");
+        for n in [1, 2] {
+            assert!(game.run_command(&format!("scoreboard players set {} h155_id {n}", actor(n))));
+        }
+        assert!(game.run_command("scoreboard players set #pack h155 0"));
+        assert!(game.run_command("function h155:admit"));
+        assert_eq!(game.score.board.score("#pack", "h155").unwrap().value, 1);
+        let clock = game.world.game_time;
+        let chunks = game.world.chunks.len();
+        let mut mismatches = Vec::new();
+        for (name, value, success) in [
+            ("zero", Some(0), true),
+            ("five", Some(5), true),
+            ("fail", Some(0), false),
+            ("fallthrough", None, false),
+        ] {
+            for route in ["direct", "one", "two", "nonfork"] {
+                for holder in [
+                    "#calls".to_owned(),
+                    "#trace".to_owned(),
+                    "@s".to_owned(),
+                    actor(1),
+                    actor(2),
+                ] {
+                    assert!(game.run_command(&format!("scoreboard players set {holder} h155 0")));
+                }
+                assert!(game.run_command("scoreboard players set #r h155 91"));
+                assert!(game.run_command("scoreboard players set #s h155 17"));
+                let middle = match route {
+                    "one" => "as @e[type=pig,tag=h155u,sort=nearest,limit=1] ",
+                    "two" => "as @e[type=pig,tag=h155u,sort=nearest,limit=2] ",
+                    "nonfork" => "positioned 4.5 202 4.5 ",
+                    _ => "",
+                };
+                game.chat_capture = Some(Vec::new());
+                game.cmds.results = Some(Vec::new());
+                let accepted = game.run_command(&format!("execute store result score #r h155 store success score #s h155 {middle}run function h155:{name}"));
+                let messages = game.chat_capture.take().unwrap();
+                let callbacks = game.cmds.results.take().unwrap();
+                assert!(accepted, "actual registered function command");
+                let count = if route == "two" { 2 } else { 1 };
+                assert_eq!(
+                    game.score.board.score("#calls", "h155").unwrap().value,
+                    count
+                );
+                assert_eq!(
+                    game.score.board.score("#trace", "h155").unwrap().value,
+                    match route {
+                        "two" => 12,
+                        "one" => 1,
+                        _ => 3,
+                    }
+                );
+                assert_eq!(
+                    callbacks,
+                    value.map_or_else(Vec::new, |v| vec![(success, v); count as usize])
+                );
+                assert_eq!(
+                    game.score.board.score("#r", "h155").unwrap().value,
+                    value.unwrap_or(91)
+                );
+                assert_eq!(
+                    game.score.board.score("#s", "h155").unwrap().value,
+                    if value.is_some() {
+                        i32::from(success)
+                    } else {
+                        17
+                    }
+                );
+                let keys: Vec<_> = messages
+                    .iter()
+                    .map(|m| m.translation_key().unwrap_or("literal").to_owned())
+                    .collect();
+                let mut expected =
+                    vec!["commands.function.scheduled.single".to_owned(); count as usize];
+                if value.is_some() {
+                    expected.extend(vec!["commands.function.result".to_owned(); count as usize]);
+                }
+                if keys != expected {
+                    mismatches.push((name, route, keys, expected));
+                }
+            }
+        }
+        assert!(game.run_command("scoreboard players set #plain h155 0"));
+        game.cmds.results = Some(Vec::new());
+        assert!(game.run_command("execute as @e[type=pig,tag=h155u,sort=nearest,limit=2] run scoreboard players add #plain h155 1"));
+        assert_eq!(
+            game.cmds.results.take().unwrap(),
+            vec![(true, 1), (true, 2)]
+        );
+        assert_eq!(game.score.board.score("#plain", "h155").unwrap().value, 2);
+        assert_eq!(game.world.game_time, clock);
+        assert_eq!(game.world.chunks.len(), chunks);
+        assert!(
+            mismatches.is_empty(),
+            "actual fork function feedback order mismatches: {mismatches:?}"
+        );
+    }
 
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
@@ -1909,5 +2485,262 @@ mod required_tag_tests {
             failures.is_empty(),
             "required tag partial execution: {failures:#?}"
         );
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn named_predicates_resolve_loaded_references_for_actual_sources() {
+        use crate::game::{Audio, Options, Settings, load_resources};
+        use std::time::Instant;
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &crate::game::Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-predicate-reference-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pack = dir.join("datapacks/references");
+        let folder = pack.join("data/h121/predicate");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(pack.join("pack.mcmeta"), r#"{"pack":{"description":"Predicate references","pack_format":121,"min_format":[121,0],"max_format":[121,0]}}"#).unwrap();
+        let write = |name: &str, value: serde_json::Value| {
+            std::fs::write(folder.join(format!("{name}.json")), value.to_string()).unwrap();
+        };
+        write(
+            "pig",
+            serde_json::json!({"type":"minecraft:entity_properties","entity":"this","predicate":{"minecraft:entity_type":"minecraft:pig"}}),
+        );
+        write(
+            "cow",
+            serde_json::json!({"type":"minecraft:entity_properties","entity":"this","predicate":{"minecraft:entity_type":"minecraft:cow"}}),
+        );
+        write(
+            "reference",
+            serde_json::json!({"type":"minecraft:all_of","terms":["h121:pig"]}),
+        );
+        write(
+            "inverted",
+            serde_json::json!({"type":"minecraft:inverted","term":"h121:pig"}),
+        );
+        write(
+            "conjunction",
+            serde_json::json!({"type":"minecraft:all_of","terms":["h121:pig",{"type":"minecraft:inverted","term":"h121:cow"}]}),
+        );
+        write(
+            "both",
+            serde_json::json!({"type":"minecraft:all_of","terms":["h121:pig","h121:cow"]}),
+        );
+        write(
+            "either",
+            serde_json::json!({"type":"minecraft:any_of","terms":["h121:pig","h121:cow"]}),
+        );
+        write(
+            "repeated",
+            serde_json::json!({"type":"minecraft:all_of","terms":["h121:pig","h121:pig"]}),
+        );
+        for index in 0..33 {
+            let next = if index == 32 {
+                "h121:pig".to_owned()
+            } else {
+                format!("h121:chain_{}", index + 1)
+            };
+            write(
+                &format!("chain_{index}"),
+                serde_json::json!({"type":"minecraft:all_of","terms":[next]}),
+            );
+        }
+        game.world_root = dir.clone();
+        game.reload_datapacks(false);
+        assert!(game.fns.store.predicates.contains_key("h121:reference"));
+        assert!(
+            game.ui
+                .registries
+                .predicates
+                .contains(&"h121:reference".into())
+        );
+        let run = |game: &mut Game<'_>, line: &str| {
+            game.exec = ExecState::default();
+            let source = game.player_source();
+            game.execute_line(line, source).unwrap();
+        };
+        run(&mut game, "scoreboard objectives add h121 dummy");
+        let mut actors = Vec::new();
+        for (index, kind) in ["pig", "cow"].into_iter().enumerate() {
+            let uuid = [121, 20, 30, index as i32 + 1];
+            let tag = Tag::compound([
+                (
+                    "id",
+                    Tag::String(format!("minecraft:{kind}").as_str().into()),
+                ),
+                ("UUID", Tag::IntArray(uuid.to_vec())),
+                (
+                    "Pos",
+                    Tag::List(vec![
+                        Tag::Double((4.5 + index as f64 * 4.0).to_bits()),
+                        Tag::Double(200.0_f64.to_bits()),
+                        Tag::Double(4.5_f64.to_bits()),
+                    ]),
+                ),
+                ("Health", Tag::Float(10.0_f32.to_bits())),
+                ("NoAI", Tag::Byte(1)),
+                ("NoGravity", Tag::Byte(1)),
+            ]);
+            let id = game.load_mob(tag, None).unwrap();
+            assert_eq!(game.persist.uuids.get(&id), Some(&uuid));
+            assert_eq!(
+                game.entity_view_of(Target::Mob(id)).kind,
+                format!("minecraft:{kind}")
+            );
+            actors.push((id, save::uuid_text(uuid), kind));
+        }
+        let clock = game.world.game_time;
+        for (_, uuid, kind) in &actors {
+            let pig = *kind == "pig";
+            for (name, expected) in [
+                ("pig", pig),
+                ("cow", !pig),
+                ("reference", pig),
+                ("inverted", !pig),
+                ("conjunction", pig),
+                ("both", false),
+                ("either", true),
+                ("repeated", pig),
+                ("chain_0", pig),
+            ] {
+                for sign in ["if", "unless"] {
+                    run(&mut game, "scoreboard players set branch h121 -99");
+                    run(
+                        &mut game,
+                        &format!(
+                            "execute as {uuid} {sign} predicate h121:{name} run scoreboard players set branch h121 1"
+                        ),
+                    );
+                    // The intended old failure is the real loaded reference on the pig.
+                    assert_eq!(
+                        game.score.board.score("branch", "h121").unwrap().value,
+                        if expected == (sign == "if") { 1 } else { -99 },
+                        "{kind} {sign} {name}"
+                    );
+                }
+            }
+        }
+        let previous = game.command_source;
+        let server = game.server_source();
+        assert!(server.entity.is_none());
+        game.command_source = Some(server);
+        assert!(!game.check_predicate("h121:pig").unwrap());
+        assert!(!game.check_predicate("h121:reference").unwrap());
+        assert!(game.check_predicate("h121:inverted").unwrap());
+        assert!(game.check_predicate("h121:absent").is_err());
+        game.command_source = previous;
+        // Defensive evaluator controls only. Java rejects these graphs at
+        // world load, so this does not establish startup/availability parity.
+        write(
+            "missing",
+            serde_json::json!({"type":"minecraft:all_of","terms":["h121:absent"]}),
+        );
+        write(
+            "nested_missing",
+            serde_json::json!({"type":"minecraft:all_of","terms":["h121:missing"]}),
+        );
+        write(
+            "not_missing",
+            serde_json::json!({"type":"minecraft:inverted","term":"h121:absent"}),
+        );
+        write(
+            "cycle_a",
+            serde_json::json!({"type":"minecraft:all_of","terms":["h121:cycle_b"]}),
+        );
+        write(
+            "cycle_b",
+            serde_json::json!({"type":"minecraft:all_of","terms":["h121:cycle_a"]}),
+        );
+        write(
+            "not_cycle",
+            serde_json::json!({"type":"minecraft:inverted","term":"h121:cycle_a"}),
+        );
+        for invalid in ["h121:absent", "h121:cycle_a"] {
+            for (label, kind, first) in [
+                ("any_skip", "minecraft:any_of", "h121:pig"),
+                ("any_reach", "minecraft:any_of", "h121:cow"),
+                ("all_skip", "minecraft:all_of", "h121:cow"),
+                ("all_reach", "minecraft:all_of", "h121:pig"),
+            ] {
+                write(
+                    &format!("{label}_{}", invalid.split(':').next_back().unwrap()),
+                    serde_json::json!({"type":kind,"terms":[first,invalid]}),
+                );
+            }
+        }
+        let canonical = pack.join("data/minecraft/predicate/h121_canonical.json");
+        std::fs::create_dir_all(canonical.parent().unwrap()).unwrap();
+        std::fs::write(
+            canonical,
+            r#"{"type":"minecraft:all_of","terms":["h121_canonical"]}"#,
+        )
+        .unwrap();
+        game.reload_datapacks(false);
+        let mut source = game.player_source();
+        source.entity = Some(Target::Mob(actors[0].0));
+        source.pos = game.target_position(Target::Mob(actors[0].0)).unwrap();
+        game.command_source = Some(source);
+        for name in [
+            "missing",
+            "nested_missing",
+            "not_missing",
+            "cycle_a",
+            "not_cycle",
+            "any_skip_absent",
+            "any_reach_absent",
+            "all_skip_absent",
+            "all_reach_absent",
+            "any_skip_cycle_a",
+            "any_reach_cycle_a",
+            "all_skip_cycle_a",
+            "all_reach_cycle_a",
+        ] {
+            assert!(
+                game.fns
+                    .store
+                    .predicates
+                    .contains_key(&format!("h121:{name}"))
+            );
+            assert!(
+                !game.check_predicate(&format!("h121:{name}")).unwrap(),
+                "{name}"
+            );
+        }
+        assert!(!game.check_predicate("minecraft:h121_canonical").unwrap());
+        assert!(game.check_predicate("h121:reference").unwrap());
+        game.command_source = previous;
+        assert_eq!(game.world.game_time, clock);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

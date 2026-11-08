@@ -431,12 +431,9 @@ impl Game<'_> {
             }
             for _ in 0..count {
                 // spawnSlimeOffspring: a size 2 slime half a block up.
-                if let Some(id) = self.spawn_mob_for(
-                    "minecraft:slime",
-                    [feet.x, feet.y + 0.5, feet.z],
-                    false,
-                    true,
-                ) && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
+                if let Some(id) =
+                    self.spawn_mob_raw("minecraft:slime", [feet.x, feet.y + 0.5, feet.z], false)
+                    && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
                 {
                     horizon_client::mobs::cube::set_size(m, 2);
                 }
@@ -514,7 +511,7 @@ impl Game<'_> {
     /// (`horizon_client::mobs::infested_silverfish`).
     pub(super) fn spawn_infested(&mut self, at: [f64; 3], velocities: Vec<Vec3>) {
         for velocity in velocities {
-            if let Some(id) = self.spawn_mob_for("minecraft:silverfish", at, false, true)
+            if let Some(id) = self.spawn_mob_raw("minecraft:silverfish", at, false)
                 && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
             {
                 m.velocity = velocity;
@@ -1392,7 +1389,7 @@ impl Game<'_> {
     /// the boxes of all of them. Until the potion has left it, none can be hit
     /// (`canHitEntity`: `isPassengerOfSameVehicle`) and any one near keeps it
     /// from leaving (`isOutsideOwnerCollisionRange`).
-    fn thrown_ridden(
+    pub(super) fn thrown_ridden(
         &self,
         owner: Option<Who>,
         players: &[(Who, Aabb)],
@@ -1444,7 +1441,13 @@ impl Game<'_> {
         };
         let mut landed = Vec::new();
         let mut deflected: Vec<u32> = Vec::new();
+        // ServerLevel.tick: only entities in entity-ticking chunks tick.
+        let ticking = self.entity_ticking_area();
         thrown.retain_mut(|t| {
+            if !ticking(t.position.x.floor() as i32, t.position.z.floor() as i32) {
+                t.previous = t.position;
+                return true;
+            }
             t.age += 1;
             // Projectile.tick: whether it has left its thrower's vehicle tree,
             // before it moves.
@@ -1611,7 +1614,13 @@ impl Game<'_> {
             .filter(|p| p.alive)
             .collect();
         let mut clouds = std::mem::take(&mut self.breath_clouds);
-        clouds.retain_mut(|c| c.potion.is_none() || self.tick_potion_cloud(c, &players));
+        // ServerLevel.tick: only entities in entity-ticking chunks tick.
+        let ticking = self.entity_ticking_area();
+        clouds.retain_mut(|c| {
+            c.potion.is_none()
+                || !ticking(c.at[0].floor() as i32, c.at[2].floor() as i32)
+                || self.tick_potion_cloud(c, &players)
+        });
         self.breath_clouds.append(&mut clouds);
     }
     /// `AreaEffectCloud.serverTick`: configured lifetime/radius changes and

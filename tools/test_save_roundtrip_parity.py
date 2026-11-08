@@ -596,7 +596,7 @@ def compare_worlds(vanilla, horizon):
     chunks = {(k[1], k[2]) for k in load_regions(va / 'region')}
     compare_entities(load_regions(va / 'entities'), load_regions(ha / 'entities'), report, chunks)
     for rel in ['level.dat'] + sorted(
-            str(p.relative_to(vanilla)) for pattern in ('data/**/*.dat', 'players/**/*.dat')
+            p.relative_to(vanilla).as_posix() for pattern in ('data/**/*.dat', 'players/**/*.dat')
             for p in vanilla.glob(pattern)):
         a, b = vanilla / rel, horizon / rel
         if not b.exists():

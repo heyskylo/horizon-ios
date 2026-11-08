@@ -22,6 +22,10 @@ import net.minecraft.world.attribute.EnvironmentAttributeSystem;
 import net.minecraft.world.attribute.GaussianSampler;
 import net.minecraft.world.attribute.SpatialAttributeInterpolator;
 import net.minecraft.world.attribute.WeatherAttributes;
+import net.minecraft.world.attribute.modifier.AttributeModifier;
+import net.minecraft.world.timeline.AttributeTrack;
+import net.minecraft.util.KeyframeTrackSampler;
+import java.util.Optional;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Vector3fc;
 import org.joml.Vector4fc;
@@ -35,6 +39,8 @@ public final class VanillaEnvironmentSystemOracle {
     private static final Set<String> PORTED = Set.of(
         "minecraft:boolean", "minecraft:float", "minecraft:angle_degrees", "minecraft:rgb_color", "minecraft:argb_color");
     private static final Map<String, EnvironmentAttributeMap> MAPS = new HashMap<>();
+    /** The dimension's timelines in tag order, as JSON (their clocks need registries to parse). */
+    private static final List<JsonObject> TIMELINES = new ArrayList<>();
 
     public static void main(String[] args) throws Exception {
         SharedConstants.tryDetectVersion();
@@ -42,6 +48,10 @@ public final class VanillaEnvironmentSystemOracle {
         var lines = Files.readAllLines(Path.of(args[0]));
         var data = JsonParser.parseString(lines.getFirst()).getAsJsonObject();
         for (var entry : data.entrySet()) {
+            if (entry.getKey().startsWith("timeline:")) {
+                TIMELINES.add(entry.getValue().getAsJsonObject());
+                continue;
+            }
             // Attributes of types not ported (music, sounds, mob spawns) need registries to parse
             // and don't affect the others: they are left out.
             var ported = new JsonObject();
@@ -89,6 +99,20 @@ public final class VanillaEnvironmentSystemOracle {
                     ? weights.applyAttributeLayer(attribute, base)
                     : here.applyModifier(attribute, base));
         }
+        if (c.get("timelines").getAsBoolean()) {
+            long ticks = c.get("ticks").getAsLong();
+            for (var timeline : TIMELINES) {
+                Optional<Integer> period = timeline.has("period_ticks")
+                    ? Optional.of(timeline.get("period_ticks").getAsInt()) : Optional.empty();
+                for (var entry : timeline.getAsJsonObject("tracks").entrySet()) {
+                    var attribute = (EnvironmentAttribute<Object>) BuiltInRegistries.ENVIRONMENT_ATTRIBUTE.getValue(Identifier.parse(entry.getKey()));
+                    if (!PORTED.contains(BuiltInRegistries.ATTRIBUTE_TYPE.getKey(attribute.type()).toString())) {
+                        continue;
+                    }
+                    addTrack(builder, attribute, entry.getValue(), period, ticks);
+                }
+            }
+        }
         if (c.get("weather").getAsBoolean()) {
             WeatherAttributes.addBuiltinLayers(builder, new WeatherAttributes.WeatherAccess() {
                 @Override
@@ -118,6 +142,19 @@ public final class VanillaEnvironmentSystemOracle {
             output.add(BuiltInRegistries.ENVIRONMENT_ATTRIBUTE.getKey(raw) + "\t" + format(system.getValue(attribute, position, blend))
                 + "\t" + format(system.getDimensionValue(attribute)));
         }
+    }
+
+    /**
+     * Timeline.Builder.addTimelineLayer's layer for one track: what AttributeTrackSampler does,
+     * with the clock's total ticks given.
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static void addTrack(EnvironmentAttributeSystem.Builder builder, EnvironmentAttribute<Object> attribute,
+            com.google.gson.JsonElement json, Optional<Integer> period, long ticks) {
+        AttributeTrack track = AttributeTrack.createCodec(attribute).parse(JsonOps.INSTANCE, json).getOrThrow();
+        AttributeModifier modifier = track.modifier();
+        KeyframeTrackSampler sampler = track.argumentTrack().bakeSampler(period, modifier.argumentKeyframeLerp(attribute));
+        builder.addTimeBasedLayer(attribute, (base, cacheTickId) -> modifier.apply(base, sampler.sample(ticks)));
     }
 
     private static String bits(float f) {

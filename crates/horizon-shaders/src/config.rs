@@ -190,6 +190,9 @@ pub struct Config {
     pub shadow: Shadow,
     /// `noiseTextureResolution`: the side of the `noisetex` Horizon makes when the pack gives none.
     pub noise_resolution: Option<u32>,
+    /// The smoothed uniforms' half-lives in ticks, in [`HALF_LIVES`] order, when the pack sets
+    /// them (`const float wetnessHalflife = 30.0;`...).
+    pub half_lives: [Option<f32>; 4],
     /// Conflicting or unreadable settings, as `file:line: message`.
     pub notes: Vec<String>,
     /// Each setting read so far and its value, to report a later file changing it.
@@ -202,6 +205,7 @@ impl Default for Config {
             buffers: std::array::from_fn(|_| Buffer::default()),
             shadow: Shadow::default(),
             noise_resolution: None,
+            half_lives: [None; 4],
             notes: Vec::new(),
             seen: Vec::new(),
         }
@@ -322,6 +326,12 @@ impl Config {
         if !others && !format {
             return;
         }
+        if let Some(i) = HALF_LIVES.iter().position(|n| *n == name) {
+            if others && let Some(n) = number(value).filter(|n| *n >= 0.0) {
+                self.half_lives[i] = Some(n);
+            }
+            return;
+        }
         let settings = [
             ("Format", "int"),
             ("ClearColor", "vec4"),
@@ -367,6 +377,15 @@ impl Config {
         }
     }
 }
+
+/// The `const float` half-lives (ShaderDoc, OptiFine's shaders.txt) of `wetness` rising and
+/// falling, `eyeBrightnessSmooth` and `centerDepthSmooth`, in ticks.
+pub const HALF_LIVES: [&str; 4] = [
+    "wetnessHalflife",
+    "drynessHalflife",
+    "eyeBrightnessHalflife",
+    "centerDepthHalflife",
+];
 
 /// Shadow settings a vertex stage's `const` doesn't set: Iris 1.11.7 ignored each declared only in
 /// `final.vsh`, `gbuffers_textured.vsh` or `shadow.vsh` of probe packs of ours (#10490), with
@@ -614,6 +633,16 @@ mod tests {
         // Iris 1.11.7 kept RGBA8 for `gdepth` (colortex1) with no format given, in probe pack
         // p9063b of ours; OptiFine's RGBA32F rule doesn't apply.
         assert_eq!(b[1].format, Format::RGBA8, "gdepth");
+        assert!(config.notes.is_empty(), "{:?}", config.notes);
+    }
+
+    #[test]
+    fn half_lives_are_read_from_consts() {
+        let text = "const float wetnessHalflife = 30.0f;\nconst float drynessHalflife = 50;\n\
+                    const int eyeBrightnessHalflife = 4;\n";
+        let mut config = Config::default();
+        config.read(&stage(text));
+        assert_eq!(config.half_lives, [Some(30.0), Some(50.0), Some(4.0), None]);
         assert!(config.notes.is_empty(), "{:?}", config.notes);
     }
 
