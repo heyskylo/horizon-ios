@@ -4,6 +4,7 @@
 //! reconnects, a solo game's controller coming and going) decides that for itself.
 use crate::gamepad::{Button, GlyphStyle};
 use crate::hud::{HudAtlas, HudBatch, rgba};
+use crate::hud_kit::plate::{self, Plate};
 use crate::pad_glyph;
 use crate::toasts::Slide;
 use std::time::{Duration, Instant};
@@ -117,7 +118,8 @@ impl NoticeSlot {
         }
         !finished
     }
-    /// The notice under `top` on a view: a strip in the middle, its words wrapped to the view (a
+    /// The notice under `top` (GUI px; the caller keeps it below the boss bars with the HUD's
+    /// `Room`) on a view: a strip in the middle, its words wrapped to the view (a
     /// toast is as wide as its longest line: off a narrow view's edge), sliding down from the
     /// view's edge.
     pub fn draw(&mut self, batch: &mut HudBatch, atlas: &HudAtlas, top: f32, shown_for: Duration) {
@@ -142,7 +144,7 @@ impl NoticeSlot {
         let (pw, ph) = (inner.min(max) + 16.0, 20.0 + 10.0 * lines.len() as f32);
         let px = ((w - pw) / 2.0).floor();
         let py = (top - (1.0 - notice.slide.portion) * (top + ph)).floor();
-        panel(batch, atlas, [px, py, pw, ph]);
+        plate::draw(batch, atlas, Plate::Notice, [px, py, pw, ph]);
         let white = rgba(255, 255, 255, 255);
         let tx = (px + (pw - width(&notice.title)) / 2.0).floor();
         batch.text(atlas, &notice.title, tx, py + 6.0, white, true);
@@ -154,20 +156,6 @@ impl NoticeSlot {
             }
             batch.text(atlas, line, lx + indent, y, rgba(200, 200, 200, 255), false);
         }
-    }
-}
-
-/// The prompts' and notices' box: dark, a faint edge.
-pub fn panel(batch: &mut HudBatch, atlas: &HudAtlas, [px, py, pw, ph]: [f32; 4]) {
-    batch.fill(atlas, px, py, pw, ph, rgba(0, 0, 0, 210));
-    let edge = rgba(255, 255, 255, 90);
-    for [x, y, fw, fh] in [
-        [px, py, pw, 1.0],
-        [px, py + ph - 1.0, pw, 1.0],
-        [px, py, 1.0, ph],
-        [px + pw - 1.0, py, 1.0, ph],
-    ] {
-        batch.fill(atlas, x, y, fw, fh, edge);
     }
 }
 
