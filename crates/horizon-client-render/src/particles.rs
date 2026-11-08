@@ -3837,7 +3837,12 @@ impl ParticleEngine {
             }
         }
     }
-    pub fn tick(
+    /// A tick where no emitter follows an entity's live body (tests, fixtures, benches).
+    pub fn tick(&mut self, level: &ParticleLevel) {
+        self.tick_tracking(level, |_| None);
+    }
+    /// A tick whose tracking emitters read each followed entity's live body.
+    pub fn tick_tracking(
         &mut self,
         level: &ParticleLevel,
         mut tracking_body: impl FnMut(TrackingTarget) -> Option<TrackingBody>,

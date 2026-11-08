@@ -685,7 +685,7 @@ impl Game<'_> {
         let mob_index = &mut self.mob_index;
         let lan = self.lan.as_ref();
         let dimension = self.dim.id();
-        self.particles.tick(&level, |target| match target {
+        self.particles.tick_tracking(&level, |target| match target {
             TrackingTarget::LocalPlayer => player.map(player_tracking_body),
             TrackingTarget::Entity(id) => {
                 if let Some(guest) = lan.and_then(|host| {
