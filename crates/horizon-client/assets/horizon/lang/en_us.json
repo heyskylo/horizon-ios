@@ -1008,6 +1008,7 @@
   "Editing: %s": "Editing: %s",
   "Press the button for this. %s cancels.": "Press the button for this. %s cancels.",
   "This button also does: %s": "This button also does: %s",
+  "Not bound: press this row, then the button that should do it.": "Not bound: press this row, then the button that should do it.",
   "horizon.pad.notice.connected.press": "Press to use it",
   "horizon.recipe_transfer.missing": "Missing Items",
   "horizon.recipe_transfer.no_room": "Inventory full",
