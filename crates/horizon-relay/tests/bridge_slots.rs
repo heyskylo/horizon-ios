@@ -2,7 +2,7 @@
 //! join gives the slot back, spoken to the relay over raw sockets.
 use horizon_friends::wire::{self, ErrorCode, FromRelay, ToRelay};
 use horizon_relay::{Config, Relay};
-use std::io::BufReader;
+use std::io::{BufReader, Read};
 use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
 
@@ -149,6 +149,13 @@ fn a_bridge_gives_its_slot_back_when_either_end_closes() {
     assert!(matches!(answer(&mut attach), FromRelay::Bridged { .. }));
     assert_eq!(relay.counts().bridges, 1);
     guest.shutdown(Shutdown::Both).unwrap();
+    // Windows doesn't wake the relay's read already blocked on the host's side when the guest's
+    // copy shuts it down: that read returns once the host closes, so only there the slot waits.
+    #[cfg(not(windows))]
+    settles_to_zero(&relay);
+    // The relay ends the host's side too, and the host closes it then, as a host's pump does.
+    assert_eq!(attach.read(&mut [0u8; 1]).unwrap(), 0);
+    drop(attach);
     settles_to_zero(&relay);
 }
 

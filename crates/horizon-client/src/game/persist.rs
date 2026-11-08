@@ -550,6 +550,7 @@ impl Game<'_> {
                         | "minecraft:experience_bottle"
                         | "minecraft:fireball"
                         | "minecraft:small_fireball"
+                        | "minecraft:dragon_fireball"
                         | "minecraft:wind_charge"
                         | "minecraft:breeze_wind_charge"
                         | "minecraft:wither_skull"
@@ -893,6 +894,8 @@ impl Game<'_> {
             b.no_gravity = entity_nbt::flag(&tag, "NoGravity");
             b.fire_ticks = super::boats::saved_fire(&tag);
             b.pitch = entity_nbt::rotation(&tag)[1];
+            // Entity.load: OnGround and fall_distance, as saved.
+            (b.on_ground, b.fall_distance) = entity_nbt::ground_from_nbt(&tag);
             if chest {
                 b = b.with_chest();
                 b.items =
