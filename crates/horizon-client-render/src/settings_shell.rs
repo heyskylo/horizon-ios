@@ -4,8 +4,9 @@
 //!
 //! A new screen implements [`Screen`], describing its rows from the settings, and [`Shell`] does
 //! everything else: drawing, clicks, one scroll path, a controller's focus and its declared
-//! buttons, keys and each row's description (`extras_ui` is the smallest). `graphics_ui`,
-//! `controller_ui` and `shader_ui` still drive the parts below by hand.
+//! buttons, keys and each row's description (`extras_ui` is the smallest; `graphics_ui` has
+//! pages, sliders, costs and Undo). `controller_ui` and `shader_ui` still drive the parts below
+//! by hand.
 use crate::{
     graphics_style as style,
     hud::{HudAtlas, HudBatch},
@@ -754,7 +755,6 @@ pub(crate) enum Value {
     Choice(String),
     /// A slider: left and right step it (`steps`: its stops, else a pixel of the track), a press
     /// on the track sets it (a controller's focus does the same).
-    #[allow(dead_code)] // No screen on the shell has one yet; `controller_ui` will (#11487).
     Slider {
         position: f32,
         steps: Option<u32>,
@@ -808,13 +808,11 @@ impl<R> Row<R> {
         self
     }
     /// Greyed, saying why, while there is a reason it can't be used.
-    #[allow(dead_code)] // The graphics screen's rows will (#11487).
     pub(crate) fn blocked(mut self, why: Option<String>) -> Self {
         self.live = why.is_none();
         self.why = why;
         self
     }
-    #[allow(dead_code)] // The graphics screen's rows will (#11487).
     pub(crate) fn cost(mut self, cost: style::Cost) -> Self {
         self.cost = Some(cost);
         self
@@ -1007,6 +1005,9 @@ pub(crate) trait Hosted {
     fn typing(&self) -> bool;
     /// A key or the pad moved the focus away: the search field stops taking the keys.
     fn blur_search(&mut self);
+    /// Nothing has the focus: a touch moved off it, say.
+    #[allow(dead_code)] // For #11846's `OptionsUi::touch_start`, which cleared Graphics' focus.
+    fn clear_focus(&mut self);
     /// Text typed into the search field (the keyboard, a controller's on-screen keyboard).
     fn type_text(&mut self, text: &str);
     /// Ctrl+A/C/V/X in the search field.
@@ -1165,7 +1166,6 @@ impl<S: Screen> Shell<S> {
         vec![CLICK, Output::Event(crate::options_ui::Event::Changed)]
     }
     /// Open at `page`.
-    #[allow(dead_code)] // The graphics screen, opened at its HDR page, will (#11487).
     pub(crate) fn show(&mut self, page: S::Page) {
         self.page = Some(page);
     }
@@ -1788,6 +1788,10 @@ impl<S: Screen + Default> Hosted for Shell<S> {
             self.focus = None;
         }
     }
+    fn clear_focus(&mut self) {
+        self.focus = None;
+        self.can_change_value = false;
+    }
     fn type_text(&mut self, text: &str) {
         if !text.is_empty() {
             self.search.insert_text(text);
@@ -1835,9 +1839,66 @@ impl<S: Screen> Shell<S> {
     pub(crate) fn focused(&self) -> Option<Target<S::Page, S::Row>> {
         self.focus
     }
+    /// Put the focus there, as a key would.
+    pub(crate) fn set_focus(&mut self, focus: Option<Target<S::Page, S::Row>>) {
+        self.focus = focus;
+        self.keyed = true;
+    }
+    /// Left and Right move the focused slider.
+    pub(crate) fn changes_value(&self) -> bool {
+        self.can_change_value
+    }
     /// Undo shows: the screen changed something since it opened.
     pub(crate) fn changed(&self) -> bool {
         self.changed
+    }
+    /// The scrollbar is held.
+    pub(crate) fn scroller_held(&self) -> bool {
+        self.scroll.held()
+    }
+    /// What the search field holds now, set as typing would.
+    pub(crate) fn set_search(&mut self, text: &str) {
+        self.search.set_value(text);
+        self.searched();
+    }
+    /// The page shown while nothing is searched, as opened or picked.
+    pub(crate) fn open_page(&self) -> Option<S::Page> {
+        self.page
+    }
+    /// The list's lines, in order, and its content's height.
+    pub(crate) fn lines_at(
+        &mut self,
+        s: &Settings,
+        size: (f32, f32),
+    ) -> (Vec<Line<S::Page, usize>>, f32) {
+        let view = self.view(s, size);
+        (view.lines.clone(), view.content)
+    }
+    /// Each row of the list, in order, with its page.
+    pub(crate) fn listed(&mut self, s: &Settings, size: (f32, f32)) -> Vec<(S::Page, S::Row)> {
+        let view = self.view(s, size);
+        let lines = view.lines.iter();
+        lines
+            .filter_map(|l| Some((l.page, view.rows[l.setting?].id)))
+            .collect()
+    }
+    /// The page the plate is headed with.
+    pub(crate) fn current_page(&mut self, s: &Settings, size: (f32, f32)) -> Option<S::Page> {
+        let view = self.view(s, size);
+        self.current(&view)
+    }
+    /// Whether `row` is all in the list's view now.
+    pub(crate) fn in_view(&mut self, s: &Settings, size: (f32, f32), row: S::Row) -> bool {
+        let view = self.view(s, size);
+        let cols = view.cols;
+        let mut placed = self.placed(&view);
+        placed.any(|(r, y)| r.id == row && y >= cols.top && y + style::ROW <= cols.bottom)
+    }
+    /// Whether Tab reaches `row` now.
+    pub(crate) fn tab_reaches(&mut self, s: &Settings, size: (f32, f32), row: S::Row) -> bool {
+        let view = self.view(s, size);
+        let focusables = self.focusables(&view, false);
+        focusables.iter().any(|(t, _)| *t == Target::Row(row))
     }
     /// The row the shell's own focus is on.
     pub(crate) fn focused_row(&self) -> Option<S::Row> {
@@ -2113,6 +2174,19 @@ mod tests {
             strip(&mut batch, &mut shell, choice).as_deref(),
             Some(CHOICES[0].1)
         );
+    }
+
+    #[test]
+    fn growing_the_window_keeps_the_scroll_within_the_list() {
+        let s = Settings::default();
+        let mut shell = Shell::<Probe>::default();
+        shell.scroll(&s, SIZE, -1000.0);
+        assert!(shell.scroll.amount > 0.0);
+        let tall = (SIZE.0, 4000.0);
+        let view = shell.view(&s, tall);
+        assert_eq!(shell.scroll.amount, 0.0);
+        let first = shell.placed(&view).next().map(|(_, y)| y).unwrap();
+        assert!(first >= view.cols.top);
     }
 
     #[test]

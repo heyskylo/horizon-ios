@@ -7614,7 +7614,7 @@ impl Game<'_> {
             items.retain_mut(|item| {
                 // The server decides entity collisions. This copy predicts block movement.
                 let (_, discarded) =
-                    self.tick_item_with_block_contacts(item, false, &[], true, &mut |splash| {
+                    self.tick_item_with_block_contacts(item, None, &[], true, &mut |splash| {
                         entered.push(splash);
                     });
                 !discarded
