@@ -12,29 +12,35 @@
     in {
       packages = forAllSystems (pkgs:
         let
-          version = "0.2.47";
+          version = "0.2.0";
           pname = "horizon-launcher";
 
-          unwrapped = pkgs.stdenvNoCC.mkDerivation {
+          unwrapped = pkgs.rustPlatform.buildRustPackage {
             pname = "${pname}-unwrapped";
             inherit version;
 
-            src = pkgs.fetchurl {
-              url = "https://github.com/horizon-rust/horizon/releases/download/launcher@${version}/horizon-launcher-linux-x86_64.tar.gz";
-              hash = "sha256-PcSpQHJGwB4OB2ybRfpDZWZmAopELUn00PauYQ4FWuo=";
+            src = self;
+            cargoRoot = "launcher";
+            buildAndTestSubdir = "launcher";
+            cargoLock = {
+              lockFile = ./launcher/Cargo.lock;
             };
 
-            sourceRoot = ".";
-            dontConfigure = true;
-            dontBuild = true;
-            dontStrip = true;
-            dontPatchELF = true;
+            nativeBuildInputs = with pkgs; [
+              pkg-config
+            ];
 
-            installPhase = ''
-              runHook preInstall
-              install -Dm755 horizon-launcher $out/bin/horizon-launcher
-              runHook postInstall
-            '';
+            buildInputs = with pkgs; [
+              libxkbcommon
+              wayland
+              libx11
+              libxcb
+              fontconfig
+              vulkan-loader
+              alsa-lib
+            ];
+
+            doCheck = false;
           };
 
           desktopItem = pkgs.makeDesktopItem {
@@ -114,7 +120,7 @@
               description = "Launcher for Horizon, Minecraft: Java Edition rewritten in Rust";
               homepage = "https://playhorizon.dev";
               license = licenses.mit;
-              platforms = [ "x86_64-linux" ];
+              platforms = [ "x86_64-linux" "aarch64-linux" ];
               mainProgram = pname;
             };
           };
@@ -131,6 +137,10 @@
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
           nativeBuildInputs = with pkgs; [
+            coreutils
+            findutils
+            gnused
+            gnugrep
             pkg-config
             rustc
             cargo
