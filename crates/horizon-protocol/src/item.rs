@@ -67,6 +67,8 @@ pub mod component {
     pub const LORE: i32 = 11;
     pub const RARITY: i32 = 12;
     pub const ENCHANTMENTS: i32 = 13;
+    /// `AdventureModePredicate`: the blocks an adventure player may place on.
+    pub const CAN_PLACE_ON: i32 = 14;
     /// `AdventureModePredicate`: the blocks an adventure player may break.
     pub const CAN_BREAK: i32 = 15;
     /// `ItemAttributeModifiers`: a list of entries, each with a display from 1.21.6 on.
@@ -96,6 +98,7 @@ pub mod component {
     pub const TRIM: i32 = 58;
     pub const INSTRUMENT: i32 = 63;
     pub const PROVIDES_TRIM_MATERIAL: i32 = 64;
+    pub const PROVIDES_BANNER_PATTERNS: i32 = 67;
     pub const DAMAGE_TYPE: i32 = 8;
     pub const CHICKEN_VARIANT: i32 = 104;
     pub const ZOMBIE_NAUTILUS_VARIANT: i32 = 106;
