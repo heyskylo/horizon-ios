@@ -2954,6 +2954,7 @@ pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemE
 /// `OminousItemSpawner.addAdditionalSaveData`: its item (left out when
 /// empty) and `spawn_item_after_ticks`. Its tick count is the entity's
 /// `tickCount`, which isn't saved: a reloaded spawner counts from 0 again.
+/// It never moves, so the `Motion` it was loaded with is what it saves.
 pub fn ominous_item_spawner_to_nbt(
     item: &crate::items::ItemStack,
     position: Vec3,
@@ -2965,7 +2966,7 @@ pub fn ominous_item_spawner_to_nbt(
         id: "minecraft:ominous_item_spawner",
         uuid,
         position,
-        motion: Vec3::ZERO,
+        motion: raw.map_or(Vec3::ZERO, loaded_motion),
         rotation: [0.0, 0.0],
         on_ground: false,
         fall_distance: 0.0,
