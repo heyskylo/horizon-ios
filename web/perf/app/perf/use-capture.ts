@@ -5,6 +5,9 @@ import type { HorizonPerf } from "@/lib/generated/horizon_perf";
 import type { Envelope, MetaRow, QueryRequest, Side } from "@/lib/types";
 import { t } from "@/lib/i18n";
 
+/** What queries call the open capture: the replies echo it, so it is never the real file name. */
+export const QUERY_FILE = "capture";
+
 export interface LoadedCapture {
   handle: number;
   name: string;
@@ -59,20 +62,19 @@ export function useReader() {
       }
       setLoading(true);
       setError(null);
+      let handle: number | null = null;
       try {
         const bytes = await file.arrayBuffer();
-        const handle = reader.open(bytes);
-        const meta = reader.query<MetaRow>(handle, { op: "meta", file: name });
-        if (!meta.ok) {
-          reader.close(handle);
-          throw new Error(meta.error ? replyError(meta.error) : t("error.metaFailed"));
-        }
+        handle = reader.open(bytes);
+        const meta = reader.query<MetaRow>(handle, { op: "meta", file: QUERY_FILE });
+        if (!meta.ok) throw new Error(meta.error ? replyError(meta.error) : t("error.metaFailed"));
         const sides = meta.rows.map((row) => row.side);
         const side: Side = sides.includes("server") ? "server" : (sides[0] ?? "client");
         if (openHandle.current !== null) reader.close(openHandle.current);
         openHandle.current = handle;
         setCapture({ handle, name, meta, side, sides });
       } catch (failure) {
+        if (handle !== null) reader.close(handle);
         setCapture(null);
         setError(message(failure));
       } finally {
@@ -96,21 +98,24 @@ export function useReader() {
   return { reader, readerError, capture, loading, error, open, close, showSide };
 }
 
-/** One query's rows for the side on show; `filters` compare by value, and `enabled` false skips it. */
+/** One query's rows for the side on show; `filters` and `args` compare by value, and `enabled` false skips it. */
 export function useRows<R>(
   reader: HorizonPerf,
   capture: LoadedCapture,
   op: string,
   filters: QueryRequest["filters"] = {},
   enabled = true,
+  args: readonly string[] = [],
 ): { rows: R[]; error: string | null; reply: Envelope<R> | null } {
   const key = JSON.stringify(filters);
+  const argsKey = JSON.stringify(args);
   return useMemo(() => {
     if (!enabled) return { rows: [], error: null, reply: null };
     try {
       const reply = reader.query<R>(capture.handle, {
         op,
-        file: capture.name,
+        file: QUERY_FILE,
+        args: JSON.parse(argsKey) as string[],
         filters: { side: capture.side, ...(JSON.parse(key) as QueryRequest["filters"]) },
       });
       return reply.ok
@@ -119,5 +124,5 @@ export function useRows<R>(
     } catch (failure) {
       return { rows: [], error: message(failure), reply: null };
     }
-  }, [reader, capture.handle, capture.name, capture.side, op, key, enabled]);
+  }, [reader, capture.handle, capture.side, op, key, argsKey, enabled]);
 }

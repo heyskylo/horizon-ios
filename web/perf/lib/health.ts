@@ -1,39 +1,9 @@
-// Reading the health series the wasm computed. This module only picks values out of `series` rows
-// and orders them; min, median, p95 and max of a returned series are presentation, not a second
-// implementation of the capture's statistics.
+// Picks values out of the wasm's `series` rows; every statistic comes in the row's own `stats`.
 import type { SeriesRow, Side } from "./types";
-
-export interface Stats {
-  min: number;
-  mean: number;
-  median: number;
-  p95: number;
-  max: number;
-  last: number;
-  count: number;
-}
 
 /** The finite values of a series, in time order (the last one is `last`). */
 export function finite(values: (number | null)[]): number[] {
   return values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-}
-
-export function stats(values: (number | null)[]): Stats | null {
-  const seen = finite(values);
-  if (seen.length === 0) return null;
-  const sorted = [...seen].sort((a, b) => a - b);
-  const at = (fraction: number) =>
-    sorted[Math.min(sorted.length - 1, Math.floor(fraction * (sorted.length - 1)))];
-  const sum = seen.reduce((total, value) => total + value, 0);
-  return {
-    min: sorted[0],
-    mean: sum / seen.length,
-    median: at(0.5),
-    p95: at(0.95),
-    max: sorted[sorted.length - 1],
-    last: seen[seen.length - 1],
-    count: seen.length,
-  };
 }
 
 export function byField(rows: SeriesRow[]): Map<string, SeriesRow> {

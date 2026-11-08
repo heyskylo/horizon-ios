@@ -106,6 +106,8 @@ fn request(parsed: &Parsed) -> Result<QueryRequest, CliError> {
         matching: text(Flag::Match),
         depth: parsed.number(Flag::Depth)?,
         min_pct: parsed.number(Flag::MinPct)?,
+        self_share: false,
+        stats: false,
     })
 }
 

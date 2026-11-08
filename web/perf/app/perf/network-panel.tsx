@@ -1,7 +1,7 @@
 "use client";
 
 import type { HorizonPerf } from "@/lib/generated/horizon_perf";
-import { num } from "@/lib/format";
+import { grouped, num } from "@/lib/format";
 import { t } from "@/lib/i18n";
 import type { NetPlayerRow, NetTotalRow } from "@/lib/types";
 import { useRows } from "./use-capture";
@@ -20,19 +20,21 @@ export function NetworkPanel({ reader, capture }: Props) {
   const total = rows.find((row): row is NetTotalRow => "players" in row);
   const players = rows.filter((row): row is NetPlayerRow => "index" in row);
   if (!total) return <p className={styles.empty}>{t("meta.noNetwork")}</p>;
+  const packets = players.some((row) => row.packets_out + row.packets_in > 0);
   return (
     <div className={styles.metadata}>
+      <p className={styles.cardNote}>{t("net.note")}</p>
       <dl className={styles.kv}>
         <div className={styles.kvRow}>
-          <dt>{t("summary.out")}</dt>
+          <dt>{t("net.out")}</dt>
           <dd>{num(total.out_kib_s)} KiB/s</dd>
         </div>
         <div className={styles.kvRow}>
-          <dt>{t("summary.in")}</dt>
+          <dt>{t("net.in")}</dt>
           <dd>{num(total.in_kib_s)} KiB/s</dd>
         </div>
         <div className={styles.kvRow}>
-          <dt>{t("health.players")}</dt>
+          <dt>{t("net.players")}</dt>
           <dd>{total.players}</dd>
         </div>
       </dl>
@@ -40,19 +42,23 @@ export function NetworkPanel({ reader, capture }: Props) {
         <table className={styles.table}>
           <thead>
             <tr>
-              <th>{t("summary.player")}</th>
-              <th>{t("summary.out")}</th>
-              <th>{t("summary.in")}</th>
-              <th>{t("summary.peak")}</th>
+              <th>{t("net.player")}</th>
+              <th>{t("net.out")}</th>
+              <th>{t("net.in")}</th>
+              <th>{t("net.peakOut")}</th>
+              {packets ? <th>{t("net.packetsOut")}</th> : null}
+              {packets ? <th>{t("net.packetsIn")}</th> : null}
             </tr>
           </thead>
           <tbody>
             {players.map((row) => (
               <tr key={row.id}>
-                <td>{row.index}</td>
+                <td>{t("net.playerN", { n: row.index })}</td>
                 <td>{num(row.out_kib_s)} KiB/s</td>
                 <td>{num(row.in_kib_s)} KiB/s</td>
                 <td>{num(row.peak_out_kib_s)} KiB/s</td>
+                {packets ? <td>{grouped(row.packets_out)}</td> : null}
+                {packets ? <td>{grouped(row.packets_in)}</td> : null}
               </tr>
             ))}
           </tbody>

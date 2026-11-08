@@ -1,21 +1,63 @@
-// The shapes `horizon_perf.wasm` replies with (docs/perf-platform.md §6.3), typed for the UI. Only
-// the fields the UI reads are listed; the wasm owns the full reply.
+// The shapes the wasm replies with (docs/perf-platform.md §6.3); only the fields the UI reads are listed.
 
 export type Side = "server" | "client" | "unspecified";
+
+/** Where a capture was recorded, as the wasm names it. */
+export type CaptureKind = "dedicated" | "integrated" | "client" | "unknown";
+
+export type Trigger = "unspecified" | "console" | "ctl" | "key" | "env" | "benchmark" | "remote";
+
+export type StopReason = "unspecified" | "normal" | "window_cap" | "disconnected" | "shutdown";
+
+export type GpuMode = "unspecified" | "off" | "passes" | "detail";
+
+export type ThreadSelection = "unspecified" | "main" | "all";
+
+export type SymbolsKind = "unspecified" | "dwarf" | "symtab" | "none";
+
+export type ModKind = "unspecified" | "content" | "native";
 
 export interface CaptureInfo {
   file: string;
   sides: Side[];
-  kind: string;
+  kind: CaptureKind;
   seconds: number;
+}
+
+/** What a reply's rows are measured in; the samples queries answer in the first eight. */
+export type Unit =
+  | "ms_per_tick"
+  | "ms_per_frame"
+  | "ms_per_slow_tick"
+  | "ms_per_slow_frame"
+  | "bytes_per_tick"
+  | "bytes_per_frame"
+  | "bytes_per_slow_tick"
+  | "bytes_per_slow_frame"
+  | "kib_per_s"
+  | "count"
+  | "series"
+  | "meta"
+  | "marks"
+  | "warnings"
+  | "memory"
+  | "memory_diff"
+  | "bench";
+
+/** What a samples query looked at: the thread it chose and how many ticks and samples it covered. */
+export interface Selection {
+  side: Side | null;
+  thread: string | null;
+  ticks: number | null;
+  samples: number | null;
 }
 
 export interface Envelope<R> {
   ok: boolean;
   op: string;
-  unit?: string;
+  unit?: Unit;
   captures?: CaptureInfo[];
-  selection?: Record<string, unknown>;
+  selection?: Selection;
   rows: R[];
   warnings: string[];
   error?: string | { code: string; message: string };
@@ -27,7 +69,7 @@ export interface BuildInfo {
   profile: string;
   target: string;
   features: string[];
-  symbols: string;
+  symbols: SymbolsKind;
 }
 
 export interface MachineInfo {
@@ -45,20 +87,20 @@ export interface MachineInfo {
 
 export interface OptionsInfo {
   hz: number;
-  threads: string;
+  threads: ThreadSelection;
   ticks_over_ms: number | null;
   wall: boolean;
   timeline: boolean;
-  gpu: string;
+  gpu: GpuMode;
   samples: boolean;
   window_s: number | null;
 }
 
 export interface SettingsInfo {
-  view_distance: number;
-  simulation_distance: number;
-  max_players: number;
-  network_compression_threshold: number;
+  view_distance: number | null;
+  simulation_distance: number | null;
+  max_players: number | null;
+  network_compression_threshold: number | null;
 }
 
 export interface GameRulesInfo {
@@ -81,8 +123,9 @@ export interface HorizonOptionsInfo {
 export interface ModInfo {
   id: string;
   version: string;
-  kind: string;
-  crate_name: string;
+  kind: ModKind;
+  /** The mod's crate; the wasm names the field `crate`. */
+  crate: string;
 }
 
 /** What the profiler itself cost, as `Stop.overhead` records it (the summary's `cost` line). */
@@ -100,8 +143,8 @@ export interface MetaRow {
   side: Side;
   seconds: number;
   sections: Record<string, number>;
-  kind: string;
-  trigger: string;
+  kind: CaptureKind;
+  trigger: Trigger;
   started_unix_ms: number;
   uptime_s: number;
   same_process: boolean;
@@ -115,7 +158,7 @@ export interface MetaRow {
   game_rules?: GameRulesInfo | null;
   horizon_options?: HorizonOptionsInfo | null;
   mods: ModInfo[];
-  stop?: { t: number; reason: string; overhead?: OverheadInfo } | null;
+  stop?: { t: number; reason: StopReason; overhead?: OverheadInfo } | null;
 }
 
 export interface SeriesRow {
@@ -124,6 +167,19 @@ export interface SeriesRow {
   step_s: number;
   t: number[];
   values: (number | null)[];
+  /** Asked for with `filters.stats`: the wasm's own min, mean, median, p95, max and last. */
+  stats?: SeriesStats;
+}
+
+/** The statistics of a series' points; `mean` covers the whole window. */
+export interface SeriesStats {
+  min: number;
+  mean: number;
+  median: number;
+  p95: number;
+  max: number;
+  last: number;
+  points: number;
 }
 
 export interface MemoryRow {
@@ -170,12 +226,21 @@ export interface MarkRow {
   name: string;
 }
 
+/** What a warning is about, as the wasm names it; `args` carry its numbers. */
+export type WarningCode =
+  | "WARNING_CODE_UNSPECIFIED"
+  | "WARNING_CODE_SERVER_NOT_HORIZON"
+  | "WARNING_CODE_SERVER_DENIED"
+  | "WARNING_CODE_SERVER_ALREADY_RUNNING"
+  | "WARNING_CODE_SERVER_PART_INCOMPLETE"
+  | "WARNING_CODE_TIMELINE_CAPPED"
+  | "WARNING_CODE_GPU_UNAVAILABLE";
+
 export interface WarningRow {
   side: Side;
   t: number;
-  code: string;
+  code: WarningCode;
   args: number[];
-  text: string;
 }
 
 export interface SpanRow {
@@ -205,9 +270,12 @@ export interface TreeRow {
   id: string;
   function: string;
   name: string;
+  /** The crate the function belongs to, when the capture recorded it. */
+  crate?: string | null;
   total: number;
-  self_ms?: number | null;
+  self?: number | null;
   pct: number;
+  self_pct?: number | null;
   samples: number;
   children?: TreeRow[];
   folded?: { rows: number; total: number } | null;
@@ -253,9 +321,80 @@ export interface QueryRequest {
   filters?: Record<string, unknown>;
 }
 
+/** A benchmark metric over a run's repeats. */
+export interface BenchMetric {
+  n: number;
+  mean: number;
+  stdev: number | null;
+  min: number;
+  max: number;
+  ci95: number | null;
+}
+
+/** One measured phase of one repeat. */
+export interface BenchFrames {
+  phase: string;
+  repeat: number;
+  frames: number;
+  seconds: number;
+  avg_fps: number;
+  low_1pct_fps: number;
+  low_01pct_fps: number;
+  p50_ms: number;
+  p95_ms: number;
+  p99_ms: number;
+  p999_ms: number;
+  max_ms: number;
+  cpu_p50_ms?: number | null;
+  gpu_p50_ms?: number | null;
+  histogram: number[];
+}
+
+export type BenchVerdict = "too_few_pairs" | "within_noise" | "negligible" | "slower" | "faster";
+
+/** B against A over paired blocks; lower milliseconds are better. */
+export interface BenchPaired {
+  pairs: number;
+  a: number;
+  b: number;
+  diff: number;
+  diff_pct: number | null;
+  ci95: [number, number] | null;
+  confidence: number | null;
+  noise: number | null;
+  verdict: BenchVerdict;
+}
+
+export interface BenchAb {
+  switch: string;
+  a: string;
+  b: string;
+  pairs: number;
+  block_s: number;
+  warmup_s: number;
+  first_block_outside_range: boolean;
+  result: Record<string, BenchPaired>;
+}
+
+/** A benchmark report a capture embeds, as the report holds it. */
+export interface BenchRow {
+  id: string;
+  side: Side;
+  format: string;
+  corpus_id: string | null;
+  scenario: string | null;
+  app_version: string | null;
+  created: string | null;
+  metrics: Record<string, BenchMetric>;
+  frames: BenchFrames[];
+  ab: BenchAb | null;
+}
+
 /** One row of a comparison: A is the first capture, B the second. */
 export interface DiffRow {
   id: string;
+  /** A function's short name, on the `f:` rows of a diff that asked for calls. */
+  name?: string;
   a: number | null;
   b: number | null;
   diff: number | null;

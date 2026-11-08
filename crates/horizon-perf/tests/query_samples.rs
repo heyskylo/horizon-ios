@@ -380,6 +380,85 @@ fn group_by_mod_charges_each_sample_to_the_innermost_mod_frame() {
 }
 
 #[test]
+fn tree_callers_and_callees_rows_carry_their_crate() {
+    let dir = TempDir::new("tree-crate");
+    let mut b = Builder::new(50, &[25, 25]);
+    let root = b.node(None, "plain_frame");
+    let hook = b.node(Some(root), "my_mod::on_tick");
+    let helper = b.node(Some(hook), "horizon_world::helper");
+    b.func_in("my_mod::on_tick", "my_mod");
+    b.func_in("horizon_world::helper", "horizon_world");
+    b.weight(root, 10, W::default());
+    b.weight(hook, 20, W::default());
+    b.weight(helper, 5, W::default());
+    let file = save(&dir, "crate.hzperf", &b.fields());
+    let crates = |rows: &[TreeRow]| -> Vec<Option<String>> {
+        rows.iter().map(|r| r.crate_name.clone()).collect()
+    };
+    let tree = owned(tree_rows(&query(&["tree", "--depth", "9", &file])));
+    let [top] = tree.as_slice() else {
+        panic!("{tree:?}")
+    };
+    assert_eq!(top.crate_name, None);
+    let [hook_row] = top.children.as_slice() else {
+        panic!("{top:?}")
+    };
+    assert_eq!(hook_row.crate_name.as_deref(), Some("my_mod"));
+    assert_eq!(crates(&hook_row.children), [Some("horizon_world".into())]);
+    let helper_id = hook_row.children[0].function.clone();
+    let callers = owned(tree_rows(&query(&["callers", &helper_id, &file])));
+    assert_eq!(crates(&callers), [Some("my_mod".into())]);
+    let callees = owned(tree_rows(&query(&["callees", &hook_row.function, &file])));
+    assert_eq!(
+        crates(&callees),
+        [Some("horizon_world".into()), Some("my_mod".into())]
+    );
+    assert_eq!(callees[1].name, "(self)");
+    // The command line never asks for own-time shares, so its rows stay as they were.
+    assert_eq!(top.self_pct, None);
+}
+
+#[test]
+fn a_request_for_self_share_gives_each_tree_row_its_own_time_as_a_percent() {
+    use horizon_perf::query::{Loaded, Row};
+    use horizon_perf::request::QueryRequest;
+    use horizon_perf::wire::Op;
+    let mut b = Builder::new(50, &[25, 25]);
+    let root = b.node(None, "plain_frame");
+    let hook = b.node(Some(root), "hook");
+    let helper = b.node(Some(hook), "helper");
+    b.weight(root, 10, W::default());
+    b.weight(hook, 20, W::default());
+    b.weight(helper, 5, W::default());
+    let capture = horizon_perf::read_capture(&common::write_capture(&b.fields()).bytes).unwrap();
+    let loaded = [Loaded {
+        file: "shares.hzperf".into(),
+        capture: std::sync::Arc::new(capture),
+    }];
+    let ask = |self_share| {
+        let request = QueryRequest {
+            depth: Some(9),
+            self_share,
+            ..QueryRequest::default()
+        };
+        let reply = horizon_perf::ops::query_loaded(
+            &request.into_query(Op::Tree, vec![]).unwrap(),
+            &loaded,
+        );
+        let Some(Row::Tree(top)) = reply.envelope.rows().first().cloned() else {
+            panic!("no tree row")
+        };
+        top
+    };
+    // 35 samples in all: the root keeps 10, the hook 20 and the helper 5.
+    let top = ask(true);
+    assert_eq!(top.self_pct, Some(28.571));
+    assert_eq!(top.children[0].self_pct, Some(57.143));
+    assert_eq!(top.children[0].children[0].self_pct, Some(14.286));
+    assert_eq!(ask(false).self_pct, None);
+}
+
+#[test]
 fn a_time_window_counts_the_blocks_that_start_inside_it() {
     let dir = TempDir::new("window");
     let file = standard(&dir);

@@ -354,6 +354,10 @@
   outline-offset: -2px;
 }
 
+.panel :is(button, summary, select, input, textarea, [tabindex]) {
+  scroll-margin-top: 56px;
+}
+
 .panel {
   min-height: 240px;
   min-width: 0;
@@ -575,6 +579,7 @@
 }
 
 .meterName {
+  position: relative;
   display: flex;
   align-items: center;
   min-width: 0;
@@ -664,6 +669,123 @@
   margin-right: 2px;
 }
 
+/* Row tools: the info marker sits after a name, the copy control appears over the name cell's end */
+
+.nameText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.info {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-left: 4px;
+  border: 0;
+  border-radius: 50%;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+  opacity: 0.55;
+  cursor: help;
+  transition:
+    opacity 120ms ease,
+    color 120ms ease;
+}
+
+.info:hover,
+.info:focus-visible {
+  color: var(--ink);
+  opacity: 1;
+}
+
+.tip {
+  position: fixed;
+  z-index: 50;
+  max-width: min(320px, calc(100vw - 16px));
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--plate);
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  line-height: 1.45;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.4);
+}
+
+.tipTitle {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.copyId {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  height: 22px;
+  border: 0;
+  border-radius: 6px;
+  padding: 0 5px;
+  background: var(--plate-soft);
+  box-shadow: -10px 0 8px var(--plate-soft);
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+
+:is(.meterRow, .meterRowStrong, .tickSpan):hover .copyId,
+:is(.meterRow, .meterRowStrong, .tickSpan):has(:focus-visible) .copyId,
+.tickRow:hover > .tickTools .copyId,
+.tickRow:has(> .tickHead:focus-visible) > .tickTools .copyId,
+.tickRow:has(> details > summary:focus-visible) > .tickTools .copyId,
+.copyId:focus-visible,
+.copyId:not([data-state="idle"]) {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.copyId:focus-visible,
+.info:focus-visible {
+  outline-offset: -2px;
+}
+
+.copyId:hover {
+  color: var(--ink);
+}
+
+.copyId[data-state="done"] {
+  color: var(--success);
+}
+
+.copyId[data-state="failed"] {
+  color: var(--danger);
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 /* Ticks */
 
 .histogram {
@@ -713,8 +835,9 @@
 }
 
 .tickHead {
+  box-sizing: border-box;
   display: grid;
-  grid-template-columns: 84px 76px minmax(0, 1fr);
+  grid-template-columns: 84px 76px minmax(0, 1fr) 16px;
   gap: 12px;
   align-items: center;
   width: 100%;
@@ -729,8 +852,14 @@
   cursor: pointer;
 }
 
-.tickHead[aria-pressed="true"] {
-  background: var(--plate);
+.tickChevron {
+  display: flex;
+  color: var(--muted);
+  transition: transform 150ms ease;
+}
+
+.tick[open] .tickChevron {
+  transform: rotate(180deg);
 }
 
 .tickMs {
@@ -750,13 +879,6 @@
   font-size: 12px;
 }
 
-.tickSpans {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  min-width: 0;
-}
-
 .tickBody {
   display: grid;
   gap: 1px;
@@ -765,15 +887,29 @@
 
 .tickSpan {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 72px;
+  grid-template-columns: minmax(0, 1fr) 72px 72px;
   gap: 12px;
   font-size: 13px;
 }
 
 .tickSpanName {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.tickRow {
+  position: relative;
+}
+
+.tickTools {
+  position: absolute;
+  top: 0;
+  right: 36px;
+  height: 28px;
 }
 
 .tickSpanMs {
@@ -800,10 +936,10 @@
   }
 
   .tickHead {
-    grid-template-columns: 84px minmax(0, 1fr);
+    grid-template-columns: 84px minmax(0, 1fr) 16px;
   }
 
-  .tickAt {
+  .tickHead > .meterTrack {
     display: none;
   }
 }
@@ -898,6 +1034,92 @@
   text-align: right;
 }
 
+/* Benchmark */
+
+.benchReport {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 32px;
+  min-width: 0;
+}
+
+.benchHeading {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.tableScroll {
+  margin-top: 8px;
+  overflow-x: auto;
+}
+
+.benchTable {
+  min-width: 760px;
+}
+
+.benchMetrics {
+  min-width: 560px;
+}
+
+.benchTable th,
+.benchTable td,
+.benchMetrics th,
+.benchMetrics td {
+  white-space: nowrap;
+}
+
+.benchTable th:nth-child(2) {
+  text-align: left;
+}
+
+.table td.benchPhase {
+  max-width: 280px;
+  overflow: hidden;
+  color: var(--ink);
+  text-align: left;
+  text-overflow: ellipsis;
+}
+
+.benchTrack {
+  position: relative;
+  display: block;
+  min-width: 96px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--rule);
+}
+
+.benchTail,
+.benchTypical {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+}
+
+.benchTail {
+  background: var(--bar);
+  opacity: 0.45;
+}
+
+.benchTypical {
+  background: var(--ink-soft);
+  transition: background 120ms ease;
+}
+
+.table tbody tr:hover .benchTypical {
+  background: var(--accent);
+}
+
+.table td.verdictCell[data-tone="better"] {
+  color: var(--success);
+}
+
+.table td.verdictCell[data-tone="worse"] {
+  color: var(--danger);
+}
+
 /* Text panes */
 
 .pre,
@@ -942,6 +1164,145 @@
 
 .raw .button {
   justify-self: start;
+}
+
+/* Changes against a second capture */
+
+.split .stack {
+  --track: minmax(56px, 0.8fr);
+}
+
+.meterList[data-delta] {
+  --delta-width: 168px;
+}
+
+.meterList[data-delta="value"] :is(.meterHead, .meterRow, .meterRowStrong) {
+  grid-template-columns: minmax(0, 1fr) var(--track, minmax(88px, 1.4fr)) 84px var(--delta-width) 68px;
+}
+
+.meterList[data-delta="last"] :is(.meterHead, .meterRow, .meterRowStrong) {
+  grid-template-columns: minmax(0, 1fr) var(--track, minmax(88px, 1.4fr)) 84px 68px var(--delta-width);
+}
+
+.delta {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  justify-content: flex-end;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.deltaChange,
+.deltaPct {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.deltaPct {
+  opacity: 0.75;
+}
+
+.deltaTag {
+  flex: none;
+  width: 48px;
+  text-align: left;
+}
+
+.delta[data-tone="better"] {
+  color: var(--success);
+}
+
+.delta[data-tone="worse"] {
+  color: var(--danger);
+}
+
+.delta[data-tone="edge"] {
+  color: var(--ink-soft);
+}
+
+.onlyThere {
+  margin-top: 24px;
+}
+
+.onlyTitle {
+  margin: 0 0 8px;
+  color: var(--ink-soft);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.meterOnly {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 84px 168px;
+  gap: 16px;
+  align-items: center;
+  min-height: 26px;
+  padding: 2px 8px;
+  border-radius: 8px;
+  transition: background 120ms ease;
+}
+
+.meterOnly:hover {
+  background: var(--plate-soft);
+}
+
+.meterOnly:hover .copyId,
+.meterOnly:has(:focus-visible) .copyId {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.compareStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  margin: -8px 0 16px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.compareStrip .error {
+  margin: 0;
+}
+
+/* A narrow screen shows the change alone; the colour and the row's hover title carry the verdict. */
+@media (max-width: 720px) {
+  .meterList[data-delta] {
+    --delta-width: 64px;
+  }
+
+  .meterList[data-delta="value"] :is(.meterHead, .meterRow, .meterRowStrong) {
+    grid-template-columns: minmax(0, 1fr) 76px var(--delta-width);
+  }
+
+  .meterList[data-delta="value"] :is(.meterHead, .meterRow, .meterRowStrong) > :nth-child(5),
+  .meterList[data-delta="last"] :is(.meterHead, .meterRow, .meterRowStrong) > :nth-child(3) {
+    display: none;
+  }
+
+  .meterList[data-delta="last"] :is(.meterHead, .meterRow, .meterRowStrong) {
+    grid-template-columns: minmax(0, 1fr) 76px var(--delta-width);
+  }
+
+  .meterOnly {
+    grid-template-columns: minmax(0, 1fr) 76px 64px;
+    gap: 8px;
+  }
+
+  .deltaPct,
+  .deltaTag {
+    display: none;
+  }
+
+  .delta[data-tone="edge"] .deltaTag {
+    display: block;
+    width: auto;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -48,7 +48,7 @@ pub fn usage() -> String {
 usage:
   horizon-perf summary [FILE|latest] [--baseline FILE] [--budget TOKENS] [--side client|server] [--thread T] [--slow|--all] [--dir DIR]
   horizon-perf query   OP [ARGS] [FILE...] [FILTERS]   JSON always
-  horizon-perf diff    A B [--min-ms X] [--side client|server] [--thread T] [--limit N] [--json] [--dir DIR]
+  horizon-perf diff    A B [--min-ms X] [--calls] [--side client|server] [--thread T] [--limit N] [--json] [--dir DIR]
   horizon-perf list    [DIR]
   horizon-perf follow  [FILE|latest] [--every S] [--json] [--dir DIR]
   horizon-perf attach  FILE --name NAME --body JSONFILE   adds the JSON file to a finished capture as an attachment
@@ -64,7 +64,7 @@ FILTERS: --side client|server --thread T --from T --to T (seconds; negative coun
     split [ID] --by {split}   group --by {group}   frames NAME... [FILE...] (an f: id, a function name or /regex/)
 
 export writes stdout unless --out is given. pprof carries every kind of sample; folded counts --select (cpu by default); perfetto is the timeline.
-diff compares B against A (A is the earlier run): two captures, or two benchmark reports (benchmarks/*.json). summary --baseline FILE compares against an earlier capture.
+diff compares B against A (A is the earlier run): two captures, or two benchmark reports (benchmarks/*.json). --calls adds the sampled functions (f:) and call paths (p:). summary --baseline FILE compares against an earlier capture.
 FILE defaults to latest: the newest finished .hzperf in --dir, else in $HORIZON_HOME/reports, else in ./reports.
 follow's latest is the newest .hzperf, finished or not.",
         ops = Op::answered()
@@ -100,6 +100,7 @@ vocab! {
         All = "all",
         Diff = "diff",
         Json = "json",
+        Calls = "calls",
         Out = "out",
         Pprof = "pprof",
         Folded = "folded",
@@ -115,6 +116,7 @@ impl Flag {
             | Flag::All
             | Flag::Diff
             | Flag::Json
+            | Flag::Calls
             | Flag::Pprof
             | Flag::Folded
             | Flag::Perfetto => true,

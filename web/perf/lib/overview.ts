@@ -1,22 +1,18 @@
-// What the Summary tab reads from the wasm, and the two things it derives for drawing: the span
-// tree (from the `parent` ids `query spans` returns) and bar lengths (a value against the largest
-// one). No performance number is computed here; every value is a wasm reply.
+// What the Summary tab reads from the wasm; it derives only drawing (span tree, bar lengths), never a performance number.
 import type { HorizonPerf } from "./generated/horizon_perf";
 import { fieldsFor, stepFor } from "./health";
+import { windowsWithin } from "./trailing";
 import type {
   CostRow,
   Envelope,
   GroupRow,
   HotRow,
   MetaRow,
+  Selection,
   SeriesRow,
   Side,
   SpanRow,
-  TickRow,
 } from "./types";
-
-/** The trailing TPS windows the summary's health line prints, in seconds. */
-export const TRAILING_WINDOWS = [60, 300, 900];
 
 export interface Overview {
   seconds: number;
@@ -24,26 +20,21 @@ export interface Overview {
   ticks: number | null;
   samples: number | null;
   series: SeriesRow[];
-  /** The last point of each trailing window, in the same order as `TRAILING_WINDOWS`. */
+  /** The last point of each trailing window the capture can fill, in the order of `windowsWithin`. */
   trailing: (number | null)[];
   spans: SpanRow[];
   hot: HotRow[];
-  worst: TickRow[];
   entities: GroupRow[];
   blocks: GroupRow[];
   costs: CostRow[];
 }
 
-function count(selection: Record<string, unknown> | undefined, key: string): number | null {
+function count(selection: Selection | undefined, key: "ticks" | "samples"): number | null {
   const value = selection?.[key];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-/**
- * Every reply the Summary tab draws (docs/perf-platform.md §7.2). A capture that lacks a section
- * (no samples, no world snapshot, no spans) answers with an error there; that section's rows are
- * empty and the panel leaves the card out, so one missing section never hides the rest.
- */
+/** Every reply the Summary tab draws; a section the capture lacks has empty rows and its card is left out. */
 export function loadOverview(
   reader: HorizonPerf,
   handle: number,
@@ -60,14 +51,13 @@ export function loadOverview(
   const rows = <R,>(reply: Envelope<R>): R[] => (reply.ok ? reply.rows : []);
 
   const seconds = meta.rows.find((row) => row.side === side)?.seconds ?? 0;
-  const series = ask<SeriesRow>("series", fieldsFor(side), { every: stepFor(seconds) });
+  const series = ask<SeriesRow>("series", fieldsFor(side), { every: stepFor(seconds), stats: true });
   const spans = ask<SpanRow>("spans", [], { limit: 40 });
   const hot = ask<HotRow>("hot", [], { limit: 12 });
-  const worst = ask<TickRow>("ticks", [], { worst: 5 });
 
   const trailing =
     side === "server" && seconds > 0
-      ? TRAILING_WINDOWS.map((window) => {
+      ? windowsWithin(seconds).map(({ seconds: window }) => {
           const reply = ask<SeriesRow>("series", ["h:tps"], {
             from: Math.max(0, seconds - window),
             every: Math.min(window, seconds),
@@ -84,7 +74,6 @@ export function loadOverview(
     trailing,
     spans: rows(spans),
     hot: rows(hot),
-    worst: rows(worst),
     entities: rows(ask<GroupRow>("group", [], { by: "entity", limit: 6 })),
     blocks: rows(ask<GroupRow>("group", [], { by: "block", limit: 6 })),
     costs: rows(ask<CostRow>("world", [], { by: "cost", limit: 6 })),
@@ -104,10 +93,7 @@ export interface PhaseNode {
   children: PhaseNode[];
 }
 
-/**
- * The span rows as the tree they came from: `parent` names the caller's id, and a row whose parent
- * fell outside the reply's limit is a root. Children are tallest first, as the CLI's phase table is.
- */
+/** The span rows as a tree by `parent`; a row whose parent fell outside the reply's limit is a root, children tallest first. */
 export function phaseTree(rows: SpanRow[]): PhaseNode[] {
   const byId = new Map<string, PhaseNode>();
   for (const row of rows) {
@@ -160,17 +146,4 @@ export function largest(values: number[]): number {
 /** Groups with no context (`key === null`: the CLI's omitted "(none)" row) dropped. */
 export function attributed(rows: GroupRow[]): GroupRow[] {
   return rows.filter((row) => row.key !== null);
-}
-
-/** The spans that made a tick slow: the root's children, tallest first, as the CLI lists them. */
-export function topSpans(tick: TickRow, count = 3) {
-  const depths = tick.spans.map((span) => span[1]);
-  const shallowest = Math.min(...depths);
-  const deeper = depths.filter((depth) => depth > shallowest);
-  const from = deeper.length > 0 ? Math.min(...deeper) : shallowest;
-  return tick.spans
-    .filter((span) => span[1] === from)
-    .slice()
-    .sort((a, b) => b[2] - a[2])
-    .slice(0, count);
 }

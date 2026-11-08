@@ -5,6 +5,9 @@ import type { HorizonPerf } from "@/lib/generated/horizon_perf";
 import { num } from "@/lib/format";
 import { t } from "@/lib/i18n";
 import type { GroupRow, HotRow } from "@/lib/types";
+import { useChanges } from "./comparison";
+import { Delta, NewRows } from "./delta";
+import { RowTools } from "./row-tools";
 import { Segmented } from "./segmented";
 import { useRows } from "./use-capture";
 import type { LoadedCapture } from "./use-capture";
@@ -30,6 +33,7 @@ export function HotPanel({ reader, capture }: Props) {
   const view: Mode = hasMods ? mode : "flat";
 
   const { rows, error } = useRows<HotRow>(reader, capture, "hot", { limit: 250, by: sort });
+  const compare = useChanges();
   const mods = useRows<GroupRow>(reader, capture, "group", { by: "mod", limit: 100 }, view === "mods");
   const max = largest(rows.map((row) => row[sort]));
   const modMax = largest(mods.rows.map((row) => row.value));
@@ -64,31 +68,42 @@ export function HotPanel({ reader, capture }: Props) {
         ) : null}
       </div>
       {view === "flat" ? (
-        <div className={styles.meterList}>
+        <>
+        <div className={styles.meterList} data-delta={compare ? "last" : undefined}>
           <div className={styles.meterHead}>
             <span>{t("hot.function")}</span>
             <span />
             <span>{t("hot.self")}</span>
             <span>{t("hot.total")}</span>
+            {compare ? <span>{t("compare.columnTotalChange")}</span> : null}
           </div>
           {rows.map((row) => (
             <div key={row.id} className={styles.meterRow} title={row.full}>
-              <span className={styles.meterName}>{row.name}</span>
+              <span className={styles.meterName}>
+                <span className={styles.nameText}>{row.name}</span>
+                <RowTools id={row.id} name={row.name} />
+              </span>
               <span className={styles.meterTrack} aria-hidden="true">
                 <span className={styles.meterFill} style={{ width: `${(row[sort] / max) * 100}%` }} />
               </span>
               <span className={styles.meterValue}>{num(row.self, 2)} ms</span>
               <span className={styles.meterExtra}>{num(row.total, 2)} ms</span>
+              {compare ? <Delta row={compare.changes.get(row.id)} /> : null}
             </div>
           ))}
         </div>
+        {compare ? <NewRows rows={compare.rows} prefix="f:" shown={new Set(rows.map((row) => row.id))} /> : null}
+        </>
       ) : (
         <div className={styles.meterList}>
           {mods.rows.map((row) => {
             const label = row.key === null ? t("hot.game") : row.label;
             return (
               <div key={row.key ?? ""} className={styles.meterRow} title={label}>
-                <span className={styles.meterName}>{label}</span>
+                <span className={styles.meterName}>
+                  <span className={styles.nameText}>{label}</span>
+                  <RowTools id={row.key} name={label} />
+                </span>
                 <span className={styles.meterTrack} aria-hidden="true">
                   <span className={styles.meterFill} style={{ width: `${(row.value / modMax) * 100}%` }} />
                 </span>

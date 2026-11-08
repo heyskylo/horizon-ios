@@ -1,14 +1,17 @@
 "use client";
 
-import { createElement, useEffect, useMemo, useRef, useState } from "react";
+import { createElement, useMemo, useState } from "react";
 import type { ComponentType } from "react";
 import type { HorizonPerf } from "@/lib/generated/horizon_perf";
+import { exportsFor } from "@/lib/exports";
+import type { Export } from "@/lib/exports";
 import { t } from "@/lib/i18n";
 import { tabsFor } from "@/lib/tabs";
 import type { Tab } from "@/lib/tabs";
 import type { NetPlayerRow, NetTotalRow, Side } from "@/lib/types";
 import { GpuPanel } from "./gpu-panel";
 import { ComparePanel } from "./compare-panel";
+import { ComparisonProvider, useComparison } from "./comparison";
 import { MetadataPanel } from "./metadata-panel";
 import { RawPanel } from "./raw-panel";
 import { Segmented } from "./segmented";
@@ -18,11 +21,13 @@ import { TicksPanel } from "./ticks-panel";
 import { WorldPanel } from "./world-panel";
 import { NetworkPanel } from "./network-panel";
 import { MemoryPanel } from "./memory-panel";
+import { BenchPanel } from "./bench-panel";
 import { MarksPanel } from "./marks-panel";
 import { WarningsPanel } from "./warnings-panel";
 import { HotPanel } from "./hot-panel";
 import { TreePanel } from "./tree-panel";
-import type { CaptureRef, LoadedCapture } from "./use-capture";
+import { QUERY_FILE } from "./use-capture";
+import type { LoadedCapture } from "./use-capture";
 import styles from "./page.module.css";
 
 const PANELS: Record<Exclude<Tab, "compare">, ComponentType<{ reader: HorizonPerf; capture: LoadedCapture }>> = {
@@ -34,6 +39,7 @@ const PANELS: Record<Exclude<Tab, "compare">, ComponentType<{ reader: HorizonPer
   world: WorldPanel,
   net: NetworkPanel,
   memory: MemoryPanel,
+  bench: BenchPanel,
   marks: MarksPanel,
   warnings: WarningsPanel,
   hot: HotPanel,
@@ -48,18 +54,38 @@ interface Props {
   onClose: () => void;
 }
 
+/** What is said under the tabs while the views show changes against a second capture. */
+function CompareStrip() {
+  const { clear, error } = useComparison();
+  return (
+    <div className={styles.compareStrip}>
+      {error ? <p className={styles.error}>{error}</p> : <span>{t("compare.active")}</span>}
+      <button type="button" className={styles.buttonSmall} onClick={clear}>
+        {t("compare.stop")}
+      </button>
+    </div>
+  );
+}
+
 /** Everything shown for an open capture. */
 export function CaptureView({ reader, capture, showSide, onClose }: Props) {
+  return (
+    <ComparisonProvider reader={reader} base={capture}>
+      <Shown reader={reader} capture={capture} showSide={showSide} onClose={onClose} />
+    </ComparisonProvider>
+  );
+}
+
+function Shown({ reader, capture, showSide, onClose }: Props) {
   const [picked, setPicked] = useState<Tab>("summary");
-  const [compareCapture, setCompareCapture] = useState<CaptureRef | null>(null);
-  const compareHandle = useRef<number | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const { other } = useComparison();
 
   const sides = capture.sides.filter((side) => side !== "unspecified");
   const tabs = useMemo(() => {
-    const ask = <R,>(op: string) => {
+    const ask = <R,>(op: string, limit?: number) => {
       try {
-        const reply = reader.query<R>(capture.handle, { op, file: capture.name, filters: { side: capture.side } });
+        const reply = reader.query<R>(capture.handle, { op, file: QUERY_FILE, filters: { side: capture.side, ...(limit ? { limit } : {}) } });
         return reply.ok ? reply.rows : [];
       } catch {
         return [];
@@ -68,36 +94,18 @@ export function CaptureView({ reader, capture, showSide, onClose }: Props) {
     const hasTraffic = ask<NetTotalRow | NetPlayerRow>("net").some(
       (row) => "players" in row && row.out_kib_s + row.in_kib_s > 0,
     );
-    return tabsFor((query) => ask(query).length > 0, hasTraffic);
-  }, [reader, capture.handle, capture.name, capture.side]);
+    return tabsFor((query) => ask(query, 1).length > 0, hasTraffic);
+  }, [reader, capture.handle, capture.side]);
   const tab = tabs.includes(picked) ? picked : "summary";
+  const exports = useMemo(() => exportsFor(capture.meta.rows), [capture.meta]);
 
-  const chooseCompare = async (file: File) => {
+  const exportCapture = (picked: Export) => {
     try {
-      const handle = reader.open(await file.arrayBuffer());
-      if (compareHandle.current !== null) reader.close(compareHandle.current);
-      compareHandle.current = handle;
-      setCompareCapture({ handle, name: file.name });
-    } catch (failure) {
-      setActionError(failure instanceof Error ? failure.message : String(failure));
-    }
-  };
-
-  useEffect(
-    () => () => {
-      if (compareHandle.current !== null) reader.close(compareHandle.current);
-      compareHandle.current = null;
-    },
-    [reader],
-  );
-
-  const exportCapture = (kind: string) => {
-    try {
-      const bytes = reader.export(capture.handle, { kind });
-      const url = URL.createObjectURL(new Blob([bytes as unknown as BlobPart], { type: "application/octet-stream" }));
+      const bytes = reader.export(capture.handle, { kind: picked.kind });
+      const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: "application/octet-stream" }));
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = `${capture.name}.${kind === "perfetto" ? "pb" : kind === "folded" ? "folded" : "pprof"}`;
+      anchor.download = `${capture.name}.${picked.extension}`;
       anchor.click();
       URL.revokeObjectURL(url);
     } catch (failure) {
@@ -123,19 +131,24 @@ export function CaptureView({ reader, capture, showSide, onClose }: Props) {
               onChange={showSide}
             />
           ) : null}
-          <select
-            className={styles.select}
-            aria-label={t("tab.export")}
-            value=""
-            onChange={(event) => {
-              if (event.target.value) exportCapture(event.target.value);
-            }}
-          >
-            <option value="">{t("tab.export")}</option>
-            <option value="pprof">pprof</option>
-            <option value="folded">folded</option>
-            <option value="perfetto">Perfetto</option>
-          </select>
+          {exports.length > 0 ? (
+            <select
+              className={styles.select}
+              aria-label={t("tab.export")}
+              value=""
+              onChange={(event) => {
+                const picked = exports.find((item) => item.kind === event.target.value);
+                if (picked) exportCapture(picked);
+              }}
+            >
+              <option value="">{t("tab.export")}</option>
+              {exports.map((item) => (
+                <option key={item.kind} value={item.kind}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+          ) : null}
           <button type="button" className={styles.buttonSmall} onClick={onClose}>
             {t("app.close")}
           </button>
@@ -156,9 +169,11 @@ export function CaptureView({ reader, capture, showSide, onClose }: Props) {
         ))}
       </nav>
 
+      {other && tab !== "compare" ? <CompareStrip /> : null}
+
       <section key={tab} className={styles.panel}>
         {tab === "compare" ? (
-          <ComparePanel reader={reader} base={capture} side={capture.side} other={compareCapture} onPick={(file) => void chooseCompare(file)} />
+          <ComparePanel base={capture} />
         ) : (
           createElement(PANELS[tab], { reader, capture })
         )}

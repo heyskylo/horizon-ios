@@ -1,6 +1,4 @@
-// Translation-ready strings (docs/perf-platform.md §7.1): the UI shows these keys, never text from
-// the wasm except the summary. Add a language by adding a file beside en_us.json and calling
-// setMessages with it.
+// Translation-ready strings (docs/perf-platform.md §7.1): the UI shows these keys, never text from the wasm except the summary.
 import en from "@/lang/en_us.json";
 
 export type Messages = Record<string, string>;
@@ -10,6 +8,11 @@ let messages: Messages = fallback;
 
 export function setMessages(next: Messages): void {
   messages = { ...fallback, ...next };
+}
+
+/** Whether the language has text for `key`. */
+export function has(key: string): boolean {
+  return key in messages;
 }
 
 /** `t("health.tps")`, with `{name}` placeholders filled from `vars`. */

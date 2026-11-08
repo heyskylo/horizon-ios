@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { HorizonPerf } from "@/lib/generated/horizon_perf";
 import { t } from "@/lib/i18n";
 import type { QueryRequest } from "@/lib/types";
+import { QUERY_FILE } from "./use-capture";
 import type { LoadedCapture } from "./use-capture";
 import styles from "./page.module.css";
 
@@ -17,10 +18,7 @@ const DEFAULT_REQUEST = `{
   "filters": { "limit": 25 }
 }`;
 
-/**
- * The raw bridge of the W1 skeleton: a query request as JSON, the wasm's reply as JSON. Every
- * panel's numbers can be checked here against `horizon-perf query --json`.
- */
+/** A query request as JSON and its reply as JSON: any number on screen can be checked here. */
 export function RawPanel({ reader, capture }: Props) {
   const [request, setRequest] = useState(DEFAULT_REQUEST);
   const [reply, setReply] = useState("");
@@ -30,7 +28,7 @@ export function RawPanel({ reader, capture }: Props) {
     setError(null);
     try {
       const parsed = JSON.parse(request) as QueryRequest;
-      parsed.file = capture.name;
+      parsed.file = QUERY_FILE;
       parsed.filters = { side: capture.side, ...parsed.filters };
       setReply(JSON.stringify(reader.query(capture.handle, parsed), null, 2));
     } catch (failure) {

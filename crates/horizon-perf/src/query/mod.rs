@@ -96,6 +96,10 @@ pub struct Query {
     pub matching: Option<String>,
     pub depth: Option<usize>,
     pub min_pct: Option<f64>,
+    /// `tree`: give every row its own time as a share of the selection.
+    pub self_share: bool,
+    /// `series`: add each series' statistics.
+    pub stats: bool,
 }
 
 impl Query {
@@ -116,6 +120,8 @@ impl Query {
             matching: None,
             depth: None,
             min_pct: None,
+            self_share: false,
+            stats: false,
         }
     }
 }

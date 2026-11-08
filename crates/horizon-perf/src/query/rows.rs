@@ -77,6 +77,23 @@ pub struct SeriesRow {
     pub step_s: f64,
     pub t: Vec<f64>,
     pub values: Vec<Option<f64>>,
+    /// Present when the request asked for `stats`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats: Option<SeriesStats>,
+}
+
+/// What a series' points add up to. `mean` is the whole window's mean (time-weighted for health fields); the rest read the finite points.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SeriesStats {
+    pub min: f64,
+    pub mean: f64,
+    pub median: f64,
+    /// The point at index floor(0.95 * (n - 1)) of the sorted points.
+    pub p95: f64,
+    pub max: f64,
+    pub last: f64,
+    pub points: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -460,10 +477,14 @@ pub struct TreeRow {
     pub id: String,
     pub function: String,
     pub name: String,
+    #[serde(rename = "crate", default, skip_serializing_if = "Option::is_none")]
+    pub crate_name: Option<String>,
     pub total: f64,
     #[serde(rename = "self", default, skip_serializing_if = "Option::is_none")]
     pub self_ms: Option<f64>,
     pub pct: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_pct: Option<f64>,
     pub samples: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<TreeRow>,
