@@ -117,8 +117,10 @@ fn join(code: &str, relay: Option<&str>, path: PathMode) -> Result<guest::Tunnel
 /// What the game's client does: connect to the loopback port, send, read
 /// the echo back.
 fn round_trip(tunnel: guest::Tunnel, payload: &[u8]) {
-    let (port, done) = tunnel.serve_loopback().unwrap();
+    let loopback = tunnel.serve_loopback().unwrap();
+    let (port, done) = (loopback.port, loopback.thread);
     let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    s.write_all(&loopback.token).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
     let mut w = s.try_clone().unwrap();
     let send = payload.to_vec();
@@ -175,6 +177,37 @@ fn the_code_alone_connects_without_any_server() {
         join(&code, None, PathMode::RelayOnly),
         Err(JoinError::NotReachable)
     ));
+}
+
+#[test]
+fn the_loopback_port_takes_only_the_client_with_its_token() {
+    let host = start(None, PathMode::Auto);
+    let (code, _) = invite_of(&host, false);
+    let tunnel = join(&code, None, PathMode::Auto).unwrap();
+    let loopback = tunnel.serve_loopback().unwrap();
+    // Another local process first: a wrong token, then one that sends nothing (a page's fetch
+    // sends HTTP, which is no token either). Neither gets the session.
+    let refused = |send: &[u8]| {
+        let mut s = TcpStream::connect(("127.0.0.1", loopback.port)).unwrap();
+        s.write_all(send).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut buf = [0u8; 1];
+        // Closed without a byte of the host's server.
+        assert!(matches!(s.read(&mut buf), Ok(0) | Err(_)));
+    };
+    refused(&[0u8; guest::TOKEN_LEN]);
+    refused(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+    // The game's client, with the token, still gets it.
+    let mut s = TcpStream::connect(("127.0.0.1", loopback.port)).unwrap();
+    s.write_all(&loopback.token).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+    let sent = payload(10_000);
+    s.write_all(&sent).unwrap();
+    let mut got = vec![0u8; sent.len()];
+    s.read_exact(&mut got).unwrap();
+    assert!(got == sent, "echo differs");
+    drop(s);
+    loopback.thread.join().unwrap();
 }
 
 #[test]

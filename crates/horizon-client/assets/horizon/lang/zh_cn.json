@@ -195,6 +195,7 @@
   "horizon.pages.shader_options": "光影选项",
   "horizon.pages.split_profiles": "谁在玩？",
   "horizon.pages.split_profiles.tooltip": "谁在玩：保存在此游戏文件夹中的一份档案。",
+  "horizon.plain.official": "带启动器、模组和更新的官方 Horizon：playhorizon.dev",
   "horizon.shader_options.profile": "档案",
   "General": "常规",
   "Advanced": "高级",

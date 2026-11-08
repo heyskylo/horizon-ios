@@ -1,7 +1,7 @@
 DedicatedServer.readCodeOfConducts	port	crates/horizon-client/src/lan/code_of_conduct.rs::read	with enable-code-of-conduct the folder's files are read at startup (game/dedicated.rs::run_dedicated_inner) and handed to a joining player, whose client shows the prompt (game/code_of_conduct.rs)
 DedicatedServer.setEnforceWhitelist	port	crates/horizon-client/src/game/dedicated.rs::Game::set_enforce_whitelist	management stores enforce-whitelist and kicks unlisted players when enforcement is enabled
 DedicatedServer.setUsingWhitelist	port	crates/horizon-client/src/game/dedicated.rs::Game::console_whitelist	console whitelist on|off; store_property writes white-list back
-DedicatedServer.saveAllChunks	port	crates/horizon-client/src/game.rs::Game::save_game	gap: minor: no save notifications to the JSON-RPC management API
+DedicatedServer.saveAllChunks	port	crates/horizon-client/src/game/autosave.rs::Game::save_game	gap: minor: no save notifications to the JSON-RPC management API
 DedicatedServer.sendLowDiskSpaceWarning	port	crates/horizon-client/src/lan/hub.rs::Hub::send_low_disk_space_warning	chunk_io reports the low disk space and the operators are told (game/dedicated.rs); a client shows the toast (game/remote.rs)
 DedicatedServer.setAllowFlight	port	crates/horizon-client/src/game/dedicated/management.rs::Game::management	updates the live movement check and server.properties through management
 DedicatedServer.setDifficulty	port	crates/horizon-client/src/game/commands.rs::Game::cmd_difficulty	the /difficulty command; gap: minor: the new value is not written back to server.properties

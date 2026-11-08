@@ -3,8 +3,9 @@
 //! decorated pots, conduits, enchanting-table and lectern books and copper
 //! golem statues, End portals and End gateways. Models are vanilla's baked `LayerDefinitions` layers
 //! (`entity-models.json`); transforms, animation and textures follow each
-//! vanilla renderer. Faces are lit like the `entity` shader: the lightmap at
-//! the block plus `minecraft_mix_light` with the level's two diffuse lights.
+//! vanilla renderer. Faces carry their tint and world normal: the entity
+//! shader (and a shader pack) applies `minecraft_mix_light` from the normal, as
+//! vanilla's does.
 use crate::{
     Result,
     bidi::visual,
@@ -128,6 +129,14 @@ fn pack_color(rgb: u32, alpha: u32, brightness: f32) -> u32 {
     let c = |shift: u32| (((rgb >> shift) & 255) as f32 * brightness) as u32;
     alpha << 24 | c(0) << 16 | c(8) << 8 | c(16)
 }
+/// A world normal as `Vertex::normal` holds it: RGBA8_SNORM, `w` positive so
+/// the entity shader and a shader pack both shade by it. Block-entity models
+/// carry no normals of their own (vanilla computes each face's from its
+/// polygon, then `minecraft_mix_light` uses it in the shader).
+fn pack_normal(normal: Vec3) -> [i8; 4] {
+    let c = |v: f32| (v.clamp(-1.0, 1.0) * 127.0).round() as i8;
+    [c(normal.x), c(normal.y), c(normal.z), 127]
+}
 
 /// Everything a draw call needs besides the geometry.
 #[derive(Clone, Copy)]
@@ -165,6 +174,7 @@ pub fn draw_part(
         light,
         lights,
         glow,
+        ..
     } = paint;
     for poly in &part.polygons {
         let pos = poly.map(|v| m.transform_point3(Vec3::new(v[0], v[1], v[2]) / 16.0));
@@ -177,11 +187,21 @@ pub fn draw_part(
         } else {
             normal
         };
-        let color = pack_color(tint, 255, diffuse(normal, lights));
+        // The colour is the tint alone when the caller shades by the level's
+        // lights: the entity shader applies `minecraft_mix_light` from the
+        // normal, as vanilla does, so a shader pack receives the unshaded
+        // colour Iris gives it (a baked shade would be applied a second time
+        // by the pack's lighting). Other lights (an item preview's
+        // `Lighting.Entry`) are not the shader's to know, so those stay baked
+        // into the colour, as before.
+        let baked = !(lights == diffuse_lights(false) || lights == diffuse_lights(true));
+        let brightness = if baked { diffuse(normal, lights) } else { 1.0 };
+        let color = pack_color(tint, 255, brightness);
+        let normal = if baked { [0; 4] } else { pack_normal(normal) };
         for (r, light) in std::iter::once((r, light)).chain(glow.map(|g| (g, FULL_BRIGHT))) {
             for (v, position) in poly.iter().zip(pos) {
                 out.push(Vertex {
-                    normal: [0; 4],
+                    normal,
                     pos: position.to_array(),
                     uv: [r.u0 + (r.u1 - r.u0) * v[3], r.v0 + (r.v1 - r.v0) * v[4]],
                     layer: 0,
@@ -653,15 +673,16 @@ fn sign_text_calls(
     let line_height = data.line_height();
     let midpoint = (4.0 * line_height / 2.0).floor();
     let dark = 0xFF00_0000 | text.dark_color();
-    let (color, outline, light) = if text.glowing {
+    let (color, outline, light, tier) = if text.glowing {
         let c = text.text_color();
         (
             0xFF00_0000 | c,
             if c == 0 || near { dark } else { 0 },
             240 | 240 << 8,
+            crate::mesher::LOW,
         )
     } else {
-        (dark, 0, vertex_light(packed))
+        (dark, 0, vertex_light(packed), 0)
     };
     let advance = |c: char| (scene.glyph)(c).advance;
     let mut calls: Vec<TextCall> = Vec::with_capacity(text.lines.len());
@@ -693,6 +714,7 @@ fn sign_text_calls(
                     color: run,
                     outline,
                     light,
+                    tier,
                 }),
             }
             pen += span.text.chars().map(advance).sum::<f32>();
@@ -707,6 +729,7 @@ fn sign_text_calls(
                 color,
                 outline,
                 light,
+                tier,
             });
         }
     }
@@ -761,7 +784,7 @@ pub fn text_vertices(glyph: &dyn Fn(char) -> Glyph, call: &TextCall, out: &mut V
                             .transform_point3(Vec3::new(cx, cy, z))
                             .to_array(),
                         uv,
-                        layer: 0,
+                        layer: u32::from(call.tier) << 16,
                         color: c,
                         light: call.light,
 
@@ -830,6 +853,9 @@ pub struct TextCall {
     pub outline: u32,
     /// Horizon packed light (sky*16 | block*16 << 8).
     pub light: u32,
+    /// HDR emission tier of its glyphs (`mesher::hdr_tier`), 0 for none: glowing sign text
+    /// shines in HDR output and in shader packs (`horizonTier`), as full-bright text does in SDR.
+    pub tier: u8,
 }
 
 /// Inputs from the game for one frame of block-entity rendering.
@@ -3774,6 +3800,105 @@ mod tests {
         // Straight down: ambient only.
         assert!((diffuse(-Vec3::Y, lights) - 0.4).abs() < 1e-6);
     }
+    /// A face's colour carries its tint alone and its normal carries the
+    /// shading: the entity shader applies `minecraft_mix_light` from it, as a
+    /// shader pack's lighting does, so a baked shade would be applied twice.
+    #[test]
+    fn a_face_keeps_its_tint_and_normal_for_the_shader_to_shade() {
+        let quad = |y: f32, z0: f32, z1: f32| {
+            [
+                [0.0, y, z0, 0.0, 0.0],
+                [0.0, y, z1, 0.0, 1.0],
+                [16.0, y, z1, 1.0, 1.0],
+                [16.0, y, z0, 1.0, 0.0],
+            ]
+        };
+        // Opposite windings: the first faces up, the second down.
+        let part = ModelPart {
+            pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            polygons: vec![quad(0.0, 0.0, 16.0), quad(16.0, 16.0, 0.0)],
+            children: vec![],
+        };
+        let mut out = Vec::new();
+        draw_part(
+            &part,
+            "root",
+            Mat4::IDENTITY,
+            &|_, _| {},
+            Paint {
+                sprite: Rect {
+                    u0: 0.0,
+                    v0: 0.0,
+                    u1: 1.0,
+                    v1: 1.0,
+                    w: 16,
+                    h: 16,
+                },
+                tint: 0x123456,
+                light: 0,
+                lights: diffuse_lights(false),
+                glow: None,
+            },
+            &mut out,
+        );
+        assert_eq!(out.len(), 8);
+        // The same tint on both faces: no directional shade baked in (`pack_color`
+        // stores the tint in the vertex colour's BGR byte order).
+        let tint = pack_color(0x12_3456, 255, 1.0);
+        assert!(out.iter().all(|v| v.color == tint));
+        let (up, down) = (&out[0], &out[4]);
+        assert_eq!(up.normal, [0, 127, 0, 127]);
+        assert_eq!(down.normal, [0, -127, 0, 127]);
+        // The shader still gets the difference the old baked colours held.
+        let lights = diffuse_lights(false);
+        let up_normal = Vec3::new(0.0, f32::from(up.normal[1]) / 127.0, 0.0);
+        let down_normal = Vec3::new(0.0, f32::from(down.normal[1]) / 127.0, 0.0);
+        assert!(diffuse(up_normal, lights) > diffuse(down_normal, lights));
+    }
+    /// Lights the entity shader does not know (an item preview's
+    /// `Lighting.Entry`) stay baked into the colour, and `normal.w` 0 tells
+    /// the shader to keep it: `game/item_draw` passes those for block-entity
+    /// items in inventories and hands.
+    #[test]
+    fn lights_other_than_the_levels_stay_baked() {
+        let part = ModelPart {
+            pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            polygons: vec![[
+                [0.0, 0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 16.0, 0.0, 1.0],
+                [16.0, 0.0, 16.0, 1.0, 1.0],
+                [16.0, 0.0, 0.0, 1.0, 0.0],
+            ]],
+            children: vec![],
+        };
+        let lights = (Vec3::X, Vec3::Z);
+        let mut out = Vec::new();
+        draw_part(
+            &part,
+            "root",
+            Mat4::IDENTITY,
+            &|_, _| {},
+            Paint {
+                sprite: Rect {
+                    u0: 0.0,
+                    v0: 0.0,
+                    u1: 1.0,
+                    v1: 1.0,
+                    w: 16,
+                    h: 16,
+                },
+                tint: 0x12_3456,
+                light: 0,
+                lights,
+                glow: None,
+            },
+            &mut out,
+        );
+        let baked = pack_color(0x12_3456, 255, diffuse(Vec3::Y, lights));
+        assert!(out.iter().all(|v| v.color == baked));
+        assert!(out.iter().all(|v| v.normal == [0; 4]));
+        assert_ne!(baked, pack_color(0x12_3456, 255, 1.0));
+    }
     #[test]
     fn part_poses_compose_like_model_part() {
         let part = ModelPart {
@@ -3917,6 +4042,7 @@ mod tests {
             color: 0xFFFF_FF00,
             outline: 0xFF33_3300,
             light: 240 | 240 << 8,
+            tier: 0,
         };
         let mut out = Vec::new();
         draw_text(&scene, &call, &mut out);
@@ -3990,6 +4116,7 @@ mod tests {
             color: 0xFF00_0000,
             outline: 0,
             light: 240 | 240 << 8,
+            tier: 0,
         };
         let mut out = Vec::new();
         draw_text(&scene, &call, &mut out);
