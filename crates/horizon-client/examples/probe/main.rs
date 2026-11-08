@@ -67,6 +67,7 @@ mod input_probe;
 mod interaction_input_fixture;
 mod lan_probe;
 mod late_entity_pair_fixture;
+mod lava_cauldron_item_fixture;
 mod light_parity;
 mod lore_tooltip_fixture;
 mod marker_particles_probe;
@@ -145,6 +146,7 @@ probes! {
     stack_mining_probe,
     cushion_placement_probe,
     cauldron_fixture,
+    lava_cauldron_item_fixture,
     chat_screen_fixture,
     chest_pair_fixture,
     chest_load_fixture,
