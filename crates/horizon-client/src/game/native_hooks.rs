@@ -6654,6 +6654,14 @@ impl Game<'_> {
         );
     }
 
+    /// A mob (`entity`, its `kind`) killed by a player is about to drop `xp`
+    /// experience points, in total: `LivingEntity.dropExperience`, before the
+    /// orbs are split and spawned. Change `xp`; zero or less drops no orbs.
+    /// Not asked for a mob that drops none. Server-side. Pending API
+    /// @API:living_experience_drop@.
+    pub(super) fn native_living_experience_drop(&mut self, entity: u32, kind: &str, xp: &mut i32) {
+        mod_api::dispatch_living_experience_drop(self, mod_api::mods(), entity, kind, xp);
+    }
     /// A mob or server player is about to die (NeoForge's `LivingDeathEvent`,
     /// vanilla's `LivingEntity.die`): its health has run out, and the loot,
     /// experience and death message have not run. `entity` is its id and
@@ -6729,6 +6737,13 @@ impl Game<'_> {
         );
     }
 
+    /// A thrown splash or lingering potion is about to apply its hit effects
+    /// at `pos`. Set `cancel` to leave the effects and the cloud out, and
+    /// `native_potion_splash` is not told. Server-side. Pending API
+    /// @API:potion_splash_v2@.
+    pub(super) fn native_potion_splash_v2(&mut self, item: &str, pos: [f64; 3], cancel: &mut bool) {
+        mod_api::dispatch_potion_splash_v2(self, mod_api::mods(), item, pos, cancel);
+    }
     /// A thrown splash or lingering potion applied its hit effects.
     /// 287.
     pub(super) fn native_potion_splash(&mut self, item: &str, pos: [f64; 3]) {
@@ -8872,6 +8887,13 @@ impl Game<'_> {
     pub(super) fn native_player_died(&mut self, player: u128, cause: Option<&str>) {
         mod_api::dispatch_player_died(self, mod_api::mods(), player, cause);
     }
+    /// `player` (`name`) died, with the message the game rendered for them
+    /// (`message`, the death screen's and the team's line), whether or not
+    /// death messages are shown. Only hears: the message is not changed
+    /// here. Server-side. Pending API @API:player_died_v2@.
+    pub(super) fn native_player_died_v2(&mut self, player: u128, name: &str, message: &Text) {
+        mod_api::dispatch_player_died_v2(self, mod_api::mods(), player, name, message);
+    }
     /// A new mob of `kind` joined `dimension` at `pos`: `natural` when the
     /// world's spawning made it, false when something else did (a breed, a
     /// raid, a spawner, a conversion, `/summon`, and the second mob of a
@@ -8913,13 +8935,13 @@ impl Game<'_> {
     /// kind in the game's entity lists (items, orbs, mobs, boats, minecarts,
     /// armor stands, primed TNT, falling blocks, projectiles, rockets,
     /// tridents, end crystals, the dragon, cushions, paintings, item frames),
-    /// once each, in the order they were created; check `kind`. A drop, an
-    /// orb, a mob, a `/summon` and a chunk's entities are told at once, any
-    /// other spawn between the tick's phases (it is checked after the blocks,
-    /// the vehicles, the projectiles, the items and the mobs, and at the
-    /// tick's end). A mod that cancels one of the others sees it removed
-    /// before it ticks again. Not told: the entities Horizon keeps without
-    /// simulating (displays, markers, interactions). Server-side.
+    /// and the entities Horizon keeps without simulating (block, item and text
+    /// displays, markers, interactions), once each, in the order they were
+    /// created; check `kind`. A drop, an orb, a mob, a `/summon` and a chunk's
+    /// entities are told at once, any other spawn between the tick's phases
+    /// (it is checked after the blocks, the vehicles, the projectiles, the
+    /// items and the mobs, and at the tick's end). A mod that cancels one of
+    /// the others sees it removed before it ticks again. Server-side.
     pub(super) fn native_entity_join_level(
         &mut self,
         dimension: &str,

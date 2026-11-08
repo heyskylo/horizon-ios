@@ -474,6 +474,7 @@ mod zombie_villagers;
 use event_loop::EventLoopCtl;
 use horizon_client::random_source;
 // `Action` here is the title screen's buttons (`title::Action`).
+pub use advancements::AdvancementDisplay;
 use horizon_client::actions::Action as Mapping;
 use horizon_client::held::Source;
 use horizon_client::spans::startup;
