@@ -739,7 +739,7 @@ impl Game<'_> {
             // client menu only clears them without an enchantable item.
             Kind::Enchanting if self.remote.is_some() => {
                 let enchantable = s.inputs[0].as_ref().is_some_and(|i| {
-                    data.enchantments.enchantable(&i.item) > 0 && i.enchantments().is_empty()
+                    data.enchantments.enchantable_of(i) > 0 && i.enchantments().is_empty()
                 });
                 if !enchantable {
                     s.offers = Default::default();

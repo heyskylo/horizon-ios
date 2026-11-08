@@ -581,8 +581,14 @@ impl BecomeAngryTarget {
             NearestTarget::player(true)
                 .interval(10)
                 .gate(can_target)
-                // NeutralMob.isAngryAt: the persistent anger target.
-                .when(|m, _| get(m).is_some_and(|b| b.angry_at == Some(Who::Player))),
+                // NeutralMob.isAngryAt: the persistent anger target, or
+                // every player under the `universal_anger` rule.
+                .when(|m, w| {
+                    get(m).is_some_and(|b| {
+                        b.angry_at == Some(Who::Player)
+                            || (w.universal_anger && b.angry_at.is_none() && angry(m, w))
+                    })
+                }),
         )
     }
 }
@@ -1378,6 +1384,39 @@ mod tests {
                     ..
                 }
             )));
+        });
+    }
+
+    /// `NeutralMob.isAngryAtAllPlayers`: with `universal_anger` on and no
+    /// persistent anger target left, a bee still angry at the player targets
+    /// them; with the rule off it targets no one.
+    #[test]
+    fn universal_anger_lets_an_angry_bee_pick_the_player() {
+        with_test_world(&[], |w, _| {
+            for rule in [false, true] {
+                let mut w = w.clone();
+                w.player = Some(crate::mobs::world::test_player(Vec3::new(1.0, 0.0, 0.0)));
+                w.universal_anger = rule;
+                let mut m = bee();
+                let b = super::st(&mut m);
+                b.angry_at = None;
+                b.anger_end = w.game_time + 400;
+                m.ai.goals.add(1, super::BecomeAngryTarget::new());
+                let mut random = LegacyRandom::new(1);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w: &w,
+                    lr: &mut random,
+                    events: &mut events,
+                };
+                let mut goals = std::mem::take(&mut m.ai.goals);
+                for _ in 0..200 {
+                    goals.tick(&mut m, &mut cx);
+                }
+                let targeted = m.ai.target == Some(Who::Player);
+                m.ai.goals = goals;
+                assert_eq!(targeted, rule, "universal_anger {rule}");
+            }
         });
     }
 }

@@ -41,7 +41,7 @@ Level: preview ([stability.md](stability.md)). Schema 1.
 | `summary`, `description` | One line for lists; Markdown for the project's page. |
 | `owners` | GitHub logins allowed to publish updates. |
 | `license`, `source` | An SPDX expression and an `https://` address of the source code: both required. |
-| `icon` | `https://`, optional. |
+| `icon` | `https://`, optional. An icon kept in the registry is listed as its address on the registry's site with `?v=` and the first 12 hex digits of its SHA-256, so a changed icon gets a new address and caches that keep images by address (the launcher's, for a week) fetch it again. |
 | `categories` | 1 to 3 of the kind's list (`horizon_mods::index::page::categories`, [the lists](../design/registry-v2.md#categories)). |
 | `tags` | Free-form: at most 10, each `[a-z0-9][a-z0-9-]{0,23}`, nothing about gambling. Optional. |
 | `screenshots` | `https://` addresses of PNG or JPEG images, in order, at most 8. Optional. |
@@ -226,6 +226,7 @@ API line are its facts. A new kind gets its own check before it opens.
 
 ## Changelog
 
+- 2026-11-08: a registry icon's address ends in `?v=<first 12 hex digits of its SHA-256>`: a new icon is a new address, so the launcher shows it at once instead of after its week-long image cache. The index's schema is unchanged.
 - 2026-11-05: `projects[].stars`, the GitHub stars of a project's source repository, refreshed every hour. The index's schema is unchanged: readers from before ignore it.
 - 2026-11-05: every listed project needs a description of 50 characters or more, 1 to 3 categories and an icon kept in the registry (`icons/<id>.png`); screenshots are kept in the registry too (`registry build` refuses https:// images in entries).
 - 2026-11-05: the registry follows no repository any more: `registry review` refuses a new entry with `repo` (and an entry turning into one); entries from before keep theirs until they are pinned. The form uploads the icon and up to 8 screenshots into the registry and takes "Edit project" (an owner's page change, no version: pull request `edit/<id>-<time>`, label `owner-edit`).
