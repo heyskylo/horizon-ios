@@ -4,10 +4,6 @@
 //! the gossips about that player's UUID), and a player at -100 or below
 //! becomes the target (tools/test_golem_defense_guest_parity.py measures the
 //! same on vanilla 26.3 with two real players).
-//! `TestCommand.showPos` under `execute as <guest>`: the source player is
-//! the guest, and its own `pick` (eyes and view) finds the block, while the
-//! message goes to the command's issuer
-//! (tools/test_test_pos_guest_parity.py measures the same on vanilla 26.3).
 use super::*;
 use horizon_client::{
     chunk::Chunk,
@@ -126,7 +122,6 @@ fn run(game: &mut Game<'_>, command: &str) -> (bool, Vec<String>) {
     )
 }
 
-const GOLEM: &str = "00000901-0000-0000-0000-000000000001";
 const VILLAGER: &str = "00000901-0000-0000-0000-000000000002";
 
 /// The golem, and a villager whose gossips put the guest (UUID 2) at `value`
@@ -175,7 +170,6 @@ fn a_golem_targets_the_guest_its_villager_hates() {
         targets_guest(&mut game, 40),
         "a reputation of -100 makes the selected guest the target"
     );
-    let _ = GOLEM;
 }
 
 #[test]
