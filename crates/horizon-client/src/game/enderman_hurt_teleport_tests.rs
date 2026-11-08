@@ -169,3 +169,119 @@ fn an_infested_endermans_silverfish_come_out_where_it_was_hurt() {
         assert!(p.distance(at) < 3.0, "silverfish at {p:?}, hurt at {at:?}");
     }
 }
+
+fn shulker(game: &Game, id: u32, at: Vec3, seed: i64) -> Mob {
+    let kind = game
+        .res
+        .mob_types()
+        .get("minecraft:shulker")
+        .unwrap()
+        .clone();
+    let mut mob = Mob::new(id, kind, at, 0.0);
+    mob.random = LegacyRandom::new(seed);
+    mob.persistent = true;
+    mob
+}
+
+/// `ShulkerBullet.onHitEntity` -> `Shulker.hurtServer`: an open shulker a
+/// bullet hurts runs `hitByShulkerBullet` (its teleport) inside the hurt, so
+/// it has moved when the hit returns, and the levitation still lands on it.
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_shulker_bullets_hit_teleports_an_open_shulker_before_it_returns() {
+    use horizon_client::projectiles::{Hit, Projectile, ProjectileKind};
+    let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+    let mut game = floored_game(&root);
+    let at = Vec3::new(8.5, 4.0, 8.5);
+    let mut moved = 0;
+    // On a flat floor one try in 17 finds a block to cling to: some seeds teleport.
+    for seed in 0..40 {
+        let id = 700 + seed as u32;
+        let mut mob = shulker(&game, id, at, seed);
+        // Open: hitByShulkerBullet is for an open shell only.
+        mob.extra.counter = 100;
+        game.mobs.push(mob);
+        let bullet = Projectile::new(
+            ProjectileKind::ShulkerBullet {
+                target: None,
+                dir: None,
+                steps: 0,
+                delta: [0.0, 0.0, 0.0],
+                seed: 0,
+            },
+            Vec3::new(at.x, at.y + 0.5, at.z - 1.0),
+            None,
+        );
+        game.projectile_hit(
+            &bullet,
+            Hit::Entity {
+                who: horizon_client::mobs::Who::Mob(id),
+                at: Vec3::new(at.x, at.y + 0.5, at.z),
+            },
+        )
+        .unwrap();
+        let m = game.mobs.iter().find(|m| m.id == id).unwrap();
+        assert!(
+            !m.extra.flag && !m.extra.flag2,
+            "seed {seed}: a teleport left for the AI step"
+        );
+        assert!(
+            m.has_effect("minecraft:levitation"),
+            "seed {seed}: no levitation"
+        );
+        if m.position.distance(at) > 0.5 {
+            moved += 1;
+        }
+        game.mobs.clear();
+    }
+    assert!(moved > 0, "no shulker teleported");
+}
+
+/// `Shulker.teleportSomewhere` -> `Entity.unRide`: a mob riding the shulker
+/// gets off where the shulker stood (`ejectPassengers`) instead of being
+/// carried to where it teleports.
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_teleporting_shulker_leaves_its_rider_behind() {
+    let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+    let mut game = floored_game(&root);
+    let at = Vec3::new(8.5, 4.0, 8.5);
+    let mut teleported = 0;
+    for seed in 0..40 {
+        let (id, rider) = (800 + 2 * seed as u32, 801 + 2 * seed as u32);
+        let mut mob = shulker(&game, id, at, seed);
+        // What `after_hurt` leaves after a low-health roll.
+        mob.extra.flag = true;
+        game.mobs.push(mob);
+        let mut zombie = enderman(&game, rider, at, 0);
+        zombie.kind = game
+            .res
+            .mob_types()
+            .get("minecraft:zombie")
+            .unwrap()
+            .clone();
+        game.mobs.push(zombie);
+        horizon_client::mobs::riders::link(&mut game.mobs, rider, id);
+        game.settle_hurt_teleports().unwrap();
+        let s = game.mobs.iter().find(|m| m.id == id).unwrap();
+        let z = game.mobs.iter().find(|m| m.id == rider).unwrap();
+        if s.position.distance(at) > 0.5 {
+            teleported += 1;
+            assert_eq!(z.extra.mount, None, "seed {seed}: still riding");
+            assert_eq!(s.extra.rider, None, "seed {seed}: still carrying");
+            assert!(
+                z.position.distance(at) < 2.0,
+                "seed {seed}: rider at {:?}, shulker left {at:?}",
+                z.position
+            );
+        } else {
+            assert_eq!(
+                z.extra.mount,
+                Some(id),
+                "seed {seed}: thrown off without a teleport"
+            );
+        }
+        game.mobs.clear();
+    }
+    assert!(teleported > 0, "no shulker teleported");
+}
