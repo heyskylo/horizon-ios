@@ -760,7 +760,11 @@ fn solid_color(in: TerrainOut) -> vec4<f32> {
 }
 // The rest of a solid pixel's colour once it is kept: emission and fog.
 fn solid_finish(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>) -> vec4<f32> {
-    let finished = solid_finish_at(in, texel, color, dpdx(in.uv), dpdy(in.uv));
+    return solid_light(solid_finish_at(in, texel, color, dpdx(in.uv), dpdy(in.uv)));
+}
+// A finished solid pixel as the frame keeps it: its mark in alpha, or on the written lane its
+// light, alpha 1.
+fn solid_light(finished: vec4<f32>) -> vec4<f32> {
     if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 {
         return vec4(hdr_written(finished.rgb, finished.a, globals.hdr_settings, globals.hdr_shares), 1.0);
     }
