@@ -18820,6 +18820,8 @@ mod sulfur_bucket_tests;
 #[cfg(test)]
 mod test_pos_guest_tests;
 #[cfg(test)]
+mod vibration_source_tests;
+#[cfg(test)]
 mod vibration_tests;
 
 #[cfg(test)]
