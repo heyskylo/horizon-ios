@@ -476,7 +476,15 @@ impl Launcher {
                 let _ = lines.send(Event::Line(l));
             };
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&log)))
-                .unwrap_or_else(|_| Err(Problem::plain("An internal error occurred.")));
+                .unwrap_or_else(|panic| {
+                    let error = (panic.downcast_ref::<&str>().map(|s| s.to_string()))
+                        .or_else(|| panic.downcast_ref::<String>().cloned())
+                        .unwrap_or_default();
+                    Err(Problem::plain(trf(
+                        "Could not run {program}: {error}",
+                        &[("program", "horizon-server"), ("error", &error)],
+                    )))
+                });
             let _ = tx.send(Event::Done(result));
         });
     }
@@ -862,13 +870,15 @@ impl Launcher {
         let Some(dir) = self.servers.open.clone() else {
             return;
         };
-        self.server_job("Stopping", move |_log| {
-            if let Some(api) = servers::Api::open(&dir) {
-                let _ = api.call("POST", "/api/v1/stop", None);
-            } else {
-                let _ = servers::run_streamed(&dir, &["stop"], &|_| {});
+        self.server_job("Stopping", move |log| {
+            // The running server's API first; when it can't be reached or refuses, the CLI,
+            // whose error is the job's.
+            let via_api = servers::Api::open(&dir)
+                .is_some_and(|api| api.call("POST", "/api/v1/stop", None).is_ok());
+            if via_api {
+                return Ok(String::new());
             }
-            Ok(String::new())
+            servers::run_streamed(&dir, &["stop"], log).map(|_| String::new())
         });
     }
 
@@ -876,13 +886,15 @@ impl Launcher {
         let Some(dir) = self.servers.open.clone() else {
             return;
         };
-        self.server_job("Restarting", move |_log| {
-            if let Some(api) = servers::Api::open(&dir) {
-                let _ = api.call("POST", "/api/v1/restart", None);
-            } else {
-                let _ = servers::run_streamed(&dir, &["restart"], &|_| {});
+        self.server_job("Restarting", move |log| {
+            // The running server's API first; when it can't be reached or refuses, the CLI,
+            // whose error is the job's.
+            let via_api = servers::Api::open(&dir)
+                .is_some_and(|api| api.call("POST", "/api/v1/restart", None).is_ok());
+            if via_api {
+                return Ok(String::new());
             }
-            Ok(String::new())
+            servers::run_streamed(&dir, &["restart"], log).map(|_| String::new())
         });
     }
 
