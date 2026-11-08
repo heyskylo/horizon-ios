@@ -6,10 +6,13 @@
 
 use horizon_client::camera::CameraFluid;
 use horizon_client::gfx::pack_uniforms::{PackInputs, PlayerStatus};
+use horizon_client::mod_list::ModList;
 use horizon_client::shader_options::ShaderOptions;
 use horizon_client::text::Text;
+use horizon_shader_api::Api;
 use horizon_shaders::{BlockIds, Macros, Pack, Properties, dimension_folder_named, load_post};
 
+use super::native_shaders::{fingerprint, outcome, refused, remember};
 use super::{Dim, Game};
 use horizon_client::gfx::pack_draw::EntitySpan;
 use std::cell::RefCell;
@@ -74,7 +77,7 @@ pub(super) fn write_shader_options(options: &ShaderOptions) {
 
 /// The pack that runs over the world ("": none): `HORIZON_SHADER_PACK`, else the pick
 /// (`active_pack`).
-fn dev_pack() -> Option<&'static str> {
+pub(super) fn dev_pack() -> Option<&'static str> {
     static DEV_PACK: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     DEV_PACK
         .get_or_init(|| std::env::var("HORIZON_SHADER_PACK").ok())
@@ -88,15 +91,14 @@ pub(super) fn picked_pack(settings: &horizon_client::settings::Settings) -> &str
     )
 }
 
-/// What a renderer made now readies for the pack picked (`picked_pack`) before the first world
-/// frame loads it (`Renderer::new`).
+/// What a renderer readies for the pick, unless it was refused, is missing or its owner is off.
 #[derive(Clone, Copy)]
 pub(crate) struct PickedPack {
     /// It draws flat where the device can (`pack_draws_flat`): the sections are laid out so.
     pub draws_flat: bool,
     /// It is a shader API 0.2 pack under `HORIZON_HDR_FRAME=float`: the frame is float.
     pub linear: bool,
-    /// No pack runs (none picked, or its mod is off), and HDR is on under `HORIZON_HDR_FRAME=float`:
+    /// No pack is available, and HDR is on under `HORIZON_HDR_FRAME=float`:
     /// the frame is float where HDR output is offered (docs/design/hdr-linear-light.md, step 3).
     pub hdr_float: bool,
 }
@@ -110,6 +112,8 @@ pub(super) fn picked_pack_shape(settings: &horizon_client::settings::Settings) -
         horizon_client::shader_pack_list::resolve(&dir, picked).1
     };
     let active = !picked.is_empty()
+        && (!super::native_shaders::linear_frame_switch()
+            || (path.exists() && outcome(&path) != Some(None)))
         && path
             .file_name()
             .is_none_or(|f| !active_pack(&f.to_string_lossy(), &settings.mods).is_empty());
@@ -136,7 +140,7 @@ fn pack_draws_flat(path: &std::path::Path) -> bool {
 }
 
 // A native mod can bundle a pack as `native-<mod-id>`; its Mods toggle controls it too.
-fn active_pack<'a>(picked: &'a str, mods: &horizon_client::mod_list::ModList) -> &'a str {
+pub(super) fn active_pack<'a>(picked: &'a str, mods: &ModList) -> &'a str {
     if picked.strip_prefix("native-").is_some_and(|id| {
         mods.installed
             .iter()
@@ -250,6 +254,7 @@ impl Game<'_> {
         {
             match report {
                 Ok(Some((programs, notes))) => {
+                    remember(&path, fingerprint(&path), Some(Api::V0_1));
                     for note in notes {
                         log::warn!("shader pack {name}: {note}");
                     }
@@ -260,7 +265,7 @@ impl Game<'_> {
                         started.elapsed().as_millis()
                     );
                 }
-                Ok(None) => {}
+                Ok(None) => remember(&path, fingerprint(&path), None),
                 // Stopped because it isn't wanted any more: not the pack's failure.
                 Err(refused) if refused.is_cancelled() => {}
                 Err(refused) => {
@@ -292,6 +297,7 @@ impl Game<'_> {
             self.tick_native_shader_pack(&path);
         } else if let Some(renderer) = &mut self.renderer
             && renderer.shader_pack_dimension() != Some(dimension)
+            && !(super::native_shaders::linear_frame_switch() && refused(&path, fingerprint(&path)))
         {
             let name = name.as_str();
             let started = std::time::Instant::now();
@@ -403,6 +409,7 @@ impl Game<'_> {
                         renderer.load_shader_pack(dimension, post, table, name.to_owned(), started);
                     }
                     Err(e) => {
+                        remember(&path, fingerprint(&path), None);
                         self.pack_ids = None;
                         log::warn!("shader pack {name}: {e}");
                         // Without a pack this can't fail.
@@ -546,6 +553,8 @@ impl Game<'_> {
     /// it is no longer the picked pack (so the next start does not load it again), and the chat
     /// says so.
     fn shader_pack_failed(&mut self, name: &str, dimension: i32, error: &str) {
+        let path = Self::shader_packs_dir().join(name);
+        remember(&path, fingerprint(&path), None);
         log::error!("shader pack {name}: turned off: {error}");
         self.pack_ids = None;
         if let Some(renderer) = &mut self.renderer {
@@ -1102,8 +1111,63 @@ mod rendered_item_tests {
 
 #[cfg(test)]
 mod native_pack_tests {
-    use super::{active_pack, pack_draws_flat};
+    use super::{active_pack, pack_draws_flat, picked_pack_shape};
     use horizon_client::mod_list::{Installed, ModList, NativePage};
+
+    #[test]
+    fn unknown_pack_is_optimistic_but_refusal_owner_and_presence_override_it() {
+        use crate::game::native_shaders::{fingerprint, remember};
+        use horizon_client::settings::Settings;
+        use horizon_shader_api::Api;
+        let mut settings = Settings::default();
+        settings.horizon.hdr = horizon_client_render::graphics::HdrMode::On;
+        settings.mods.installed.push(Installed {
+            id: "frame_owner".into(),
+            title: "Frame Owner".into(),
+            description: String::new(),
+            problem: None,
+            dev: false,
+            native: Some(NativePage::default()),
+        });
+        let root =
+            std::env::temp_dir().join(format!("horizon-frame-policy-{}", std::process::id()));
+        let path = root.join("native-frame_owner");
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join(horizon_shader_api::MANIFEST),
+            "schema = 1\nid = \"fixture\"\nname = \"Fixture\"\nversion = \"1\"\napi = \"0.2\"\n[[post]]\nfile = \"p.wgsl\"\n").unwrap();
+        settings.horizon.shader_pack = path.to_string_lossy().into_owned();
+        let switch = crate::game::native_shaders::linear_frame_switch();
+        let shape = picked_pack_shape(&settings);
+        assert_eq!(shape.linear, switch);
+        assert!(!shape.hdr_float);
+        for api in [Api::V0_1, Api::V0_2] {
+            let manifest = path.join(horizon_shader_api::MANIFEST);
+            let text = std::fs::read_to_string(&manifest).unwrap();
+            std::fs::write(
+                &manifest,
+                text.replace("api = \"0.2\"", &format!("api = \"{api}\""))
+                    .replace("api = \"0.1\"", &format!("api = \"{api}\"")),
+            )
+            .unwrap();
+            remember(&path, fingerprint(&path), Some(api));
+            let shape = picked_pack_shape(&settings);
+            assert_eq!(shape.linear, switch && api == Api::V0_2);
+            assert!(!shape.hdr_float);
+        }
+        settings.mods.disabled.insert("frame_owner".into());
+        let shape = picked_pack_shape(&settings);
+        assert!(!shape.linear);
+        assert_eq!(shape.hdr_float, switch);
+        settings.mods.disabled.clear();
+        assert_eq!(picked_pack_shape(&settings).linear, switch);
+        remember(&path, fingerprint(&path), None);
+        assert_eq!(picked_pack_shape(&settings).hdr_float, switch);
+        remember(&path, fingerprint(&path), Some(Api::V0_2));
+        std::fs::remove_dir_all(root).unwrap();
+        let missing = picked_pack_shape(&settings);
+        assert!(!missing.linear);
+        assert_eq!(missing.hdr_float, switch);
+    }
 
     #[test]
     fn shaders_packs_and_packs_with_a_shadow_pass_draw_flat() {
