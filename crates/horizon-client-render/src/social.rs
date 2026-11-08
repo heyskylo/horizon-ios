@@ -578,12 +578,8 @@ fn update_friend_data() {
 /// `None` means the answer said nothing new (304, an empty body or a failure); the
 /// handler keeps its last presence then.
 fn post_presence(status: PresenceStatus) -> Option<Vec<Presence>> {
-    let Some(session) = session() else {
-        return None;
-    };
-    let Some(url) = url("updatePresence") else {
-        return None;
-    };
+    let session = session()?;
+    let url = url("updatePresence")?;
     let body = json!({"status": status.wire()}).to_string();
     let etag = lock().service.presence_etag.clone();
     let answer = send_json(&session, "POST", &url, &body, etag.as_deref()).ok()?;
