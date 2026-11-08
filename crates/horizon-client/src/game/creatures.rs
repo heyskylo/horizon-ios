@@ -1208,11 +1208,7 @@ impl Game<'_> {
         };
         let mut guest_events = Vec::new();
         // The block writes since the last tick: mobs re-path around them.
-        let path_writes = self
-            .world
-            .path_writes
-            .get_or_insert_with(Vec::new)
-            .split_off(0);
+        let path_writes = std::mem::take(self.world.path_writes.get_or_insert_with(Vec::new));
         // The mobs whose bodies go this tick: (id, feet, width, height, split).
         // 🤖 Agent: the last field is the grown slime, magma cube or sulfur
         // cube the body leaves behind (`AbstractCubeMob.remove`), captured as
