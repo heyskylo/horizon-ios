@@ -1358,7 +1358,9 @@ impl Game<'_> {
                 6.0,
                 interaction,
                 false,
-                super::explosion::ExplosionSource::default().with_silence(self.entity_silent(c.id)),
+                super::explosion::ExplosionSource::default()
+                    .with_silence(self.entity_silent(c.id))
+                    .with_entity(c.id, "minecraft:end_crystal"),
             );
             self.combat.explosion_in_water = false;
             self.fight.blast_by = None;
@@ -4408,7 +4410,8 @@ impl Game<'_> {
                     super::explosion::BlockInteraction::Keep,
                     false,
                     super::explosion::ExplosionSource::default()
-                        .with_silence(self.entity_silent(c.id)),
+                        .with_silence(self.entity_silent(c.id))
+                        .with_entity(c.id, "minecraft:end_crystal"),
                 );
             }
         }

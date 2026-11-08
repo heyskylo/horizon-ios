@@ -98,10 +98,16 @@ pub(super) enum BlockInteraction {
 #[derive(Clone, Copy, Default)]
 pub(super) struct ExplosionSource {
     silent: bool,
+    /// The entity that exploded and its kind (`Explosion.getDirectSourceEntity`), when known.
+    entity: Option<(u32, &'static str)>,
 }
 impl ExplosionSource {
     pub(super) fn with_silence(mut self, silent: bool) -> Self {
         self.silent = silent;
+        self
+    }
+    pub(super) fn with_entity(mut self, id: u32, kind: &'static str) -> Self {
+        self.entity = Some((id, kind));
         self
     }
 }
@@ -964,7 +970,7 @@ impl Game<'_> {
         self.post_game_event("minecraft:explode", center, ctx);
         let mut targets = self.exploded_positions(center, radius, resists);
         let dimension = self.dim.id();
-        self.native_explosion_detonate(dimension, center, &mut targets);
+        self.native_explosion_detonate(dimension, center, source.entity, &mut targets);
         let pushed =
             self.explosion_hurt_entities(center, radius, damage_type, interaction, &targets);
         if interaction != BlockInteraction::Keep {
