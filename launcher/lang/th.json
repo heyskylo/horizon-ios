@@ -1257,5 +1257,8 @@
   "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
   "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
   "{mod}: using version {version}, made for the Horizon you play": "{mod}: ใช้เวอร์ชัน {version} ที่ทำมาสำหรับ Horizon ที่คุณเล่น",
-  "Recommended": "แนะนำ"
+  "Recommended": "แนะนำ",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "เวอร์ชันเก่ากว่า {version} บิลด์ได้บน Horizon ที่คุณเล่น: การติดตั้งจะเลือกเวอร์ชันนั้น",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: เวอร์ชัน {version} บิลด์ไม่ผ่าน กำลังลอง {older}",
+  "Use recommended (kept at {version})": "ใช้ที่แนะนำ (คงไว้ที่ {version})"
 }
