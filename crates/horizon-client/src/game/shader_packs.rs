@@ -797,11 +797,11 @@ fn terrain_state_ids(
                 return [-1, -1];
             };
             let fluid = FluidState::from_block(state).unwrap_or(FluidState::EMPTY);
-            let name = match fluid.kind() {
-                FluidKind::Water | FluidKind::FlowingWater => "minecraft:water",
-                FluidKind::Lava | FluidKind::FlowingLava => "minecraft:lava",
-                FluidKind::Empty => return [material(state), -1],
-            };
+            if fluid.kind() == FluidKind::Empty {
+                return [material(state), -1];
+            }
+            // The liquid block is named after its source fluid.
+            let name = fluid.kind().source().name();
             let fluid = if state.name == name {
                 Some(state)
             } else {
