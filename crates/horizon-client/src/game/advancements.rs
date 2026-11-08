@@ -802,6 +802,7 @@ impl Game<'_> {
             let mut tag = horizon_client::entity_nbt::mob_to_nbt(m, uuid, raw, registry, |other| {
                 self.persist.uuid_of(other)
             });
+            self.put_last_hurt_by_mob(m, &mut tag);
             let riders = passengers.iter().filter_map(|r| r.nbt.clone()).collect();
             super::persist::add_passengers(&mut tag, riders);
             tag

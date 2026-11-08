@@ -19158,6 +19158,8 @@ mod kill_die_cancel_tests;
 #[cfg(test)]
 mod kill_die_vibration_tests;
 #[cfg(test)]
+mod last_hurt_by_mob_tests;
+#[cfg(test)]
 mod loot_kill_guest_tests;
 #[cfg(test)]
 mod mannequin_save_tests;
