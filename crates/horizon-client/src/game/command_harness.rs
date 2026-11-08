@@ -133,6 +133,9 @@ impl Game<'_> {
             {
                 return Ok((guest.conn, menu.slot_count() - 36, *window));
             }
+            if let Some(station) = host.play.get(&guest.conn).and_then(|p| p.station.as_ref()) {
+                return Ok((guest.conn, station.menu.slot_count() - 36, station.window));
+            }
             Ok((guest.conn, 0, 0))
         })
     }

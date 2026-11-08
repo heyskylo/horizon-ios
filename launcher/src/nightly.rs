@@ -81,7 +81,10 @@ pub fn after_update(version: &str) {
         &pinned,
         backend::auto_installed,
     ) {
-        let _ = backend::remove(&old);
+        // A removal stops at the first running program, with half the version already gone.
+        if !backend::in_use(&old) {
+            let _ = backend::remove(&old);
+        }
     }
 }
 
