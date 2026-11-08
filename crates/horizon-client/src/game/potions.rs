@@ -357,37 +357,17 @@ impl Game<'_> {
                 p.position.z,
             ];
             let look = super::view_vector(self.yaw, self.pitch);
-            self.infested_hurt(at, look, None);
+            // The player's draws come from the world's random.
+            let velocities =
+                horizon_client::mobs::infested_silverfish(&mut self.world.random, look);
+            self.spawn_infested(at, velocities);
         }
     }
-    /// A living mob's own random (`Entity.random`), else the world's.
-    fn bearer_random(&mut self, bearer: Option<u32>) -> &mut LegacyRandom {
-        match bearer.and_then(|id| self.mobs.iter().position(|m| m.id == id)) {
-            Some(i) => &mut self.mobs[i].random,
-            None => &mut self.world.random,
-        }
-    }
-    /// `InfestedMobEffect.onMobHurt`: a 10% chance of one or two silverfish at
-    /// `at` (half the bearer's height up), thrown along its look direction.
-    /// The draws are the bearer's (`mob.getRandom()`): `bearer` is the mob,
-    /// none for the player (the world's random).
-    pub(super) fn infested_hurt(&mut self, at: [f64; 3], look: [f64; 3], bearer: Option<u32>) {
-        if self.bearer_random(bearer).next_float() > 0.1 {
-            return;
-        }
-        let count = 1 + self.bearer_random(bearer).next_int_bound(2).unwrap_or(0);
-        for _ in 0..count {
-            // Mth.randomBetween(-PI / 2, PI / 2), then the look direction
-            // scaled by (0.3, 0.45, 0.3) and turned about the y axis.
-            let half = std::f32::consts::FRAC_PI_2;
-            let angle = self.bearer_random(bearer).next_float() * (2.0 * half) - half;
-            let (sin, cos) = angle.sin_cos();
-            let (x, z) = (look[0] * 0.3, look[2] * 0.3);
-            let velocity = Vec3::new(
-                f64::from(x as f32 * cos + z as f32 * sin),
-                look[1] * 0.3 * 1.5,
-                f64::from(-x as f32 * sin + z as f32 * cos),
-            );
+    /// `InfestedMobEffect.spawnSilverfish`: a silverfish at `at` (half the
+    /// bearer's height up) for each of the velocities the bearer's random drew
+    /// (`horizon_client::mobs::infested_silverfish`).
+    pub(super) fn spawn_infested(&mut self, at: [f64; 3], velocities: Vec<Vec3>) {
+        for velocity in velocities {
             if let Some(id) = self.spawn_mob_for("minecraft:silverfish", at, false, true)
                 && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
             {
@@ -1135,8 +1115,19 @@ impl Game<'_> {
     /// The effects' attribute modifiers, armor protection and status flags
     /// on `self.player`.
     pub(super) fn apply_effect_status(&mut self) {
+        // LivingEntity.onEffectAdded, onEffectUpdated and onEffectsRemoved
+        // change the attributes on a server only. A server's client has the
+        // modifiers its ClientboundUpdateAttributesPacket sends, which comes a
+        // tick after the effect's own packet when the effect starts or ends in
+        // the player's tick (ServerPlayer.doTick runs after the tick's
+        // sendDirtyEntityData). Its own would slow it a tick before the
+        // server's player when Speed runs out (#12040).
+        if self.remote.is_some() {
+            self.potions.applied.clear();
+        }
         let modifiers = self.potions.effects.modifiers();
-        if modifiers != self.potions.applied
+        if self.remote.is_none()
+            && modifiers != self.potions.applied
             && let Some(p) = self.player.as_mut()
         {
             for (attr, id, _, op) in &self.potions.applied {
@@ -1155,6 +1146,16 @@ impl Game<'_> {
         {
             let _ = p.set_health(0.0, true);
         }
+        self.refresh_armor_protection();
+        let mut status = self.potions.effects.status();
+        if let Some(p) = self.player.as_mut() {
+            status.protection = std::mem::take(&mut p.status.protection);
+            p.status = status;
+        }
+    }
+    /// `EnchantmentHelper.getDamageProtection` after equipment changes. This
+    /// does not tick effects or clear absorption while a hit is in progress.
+    pub(super) fn refresh_armor_protection(&mut self) {
         // EnchantmentHelper.getDamageProtection per damage type, recomputed on armor change.
         let armor: Vec<Option<ItemStack>> = self.armor.to_vec();
         if !self
@@ -1196,11 +1197,6 @@ impl Game<'_> {
             if let Some(p) = self.player.as_mut() {
                 p.status.protection = table;
             }
-        }
-        let mut status = self.potions.effects.status();
-        if let Some(p) = self.player.as_mut() {
-            status.protection = std::mem::take(&mut p.status.protection);
-            p.status = status;
         }
     }
     /// The players a thrown potion can hit (`Projectile.canHitEntity`): the
@@ -1366,6 +1362,7 @@ impl Game<'_> {
                     t.age,
                     t.owner.clone(),
                     t.guest,
+                    self.entity_silent(t.id),
                     t.velocity,
                 ));
                 return false;
@@ -1394,7 +1391,7 @@ impl Game<'_> {
                 );
             }
         }
-        for (stack, at, mob, block, age, owner, guest, motion) in landed {
+        for (stack, at, mob, block, age, owner, guest, silent, motion) in landed {
             // Projectile.onHit (super.onHit of AbstractThrownPotion): a block
             // is heard at its centre, an entity at the hit.
             let heard = if mob.is_some() {
@@ -1412,7 +1409,7 @@ impl Game<'_> {
                 attacker: None,
                 guest,
             };
-            self.splash(&stack, at, mob, block, age, &owner, motion);
+            self.splash(&stack, at, mob, block, age, &owner, silent, motion);
             if item != "minecraft:experience_bottle" {
                 self.native_potion_splash(&item, [at.x, at.y, at.z]);
             }
@@ -1916,7 +1913,7 @@ impl Game<'_> {
     /// `AbstractThrownPotion.onHit` with `ThrownSplashPotion.onHitAsPotion`, or
     /// `ThrownLingeringPotion.onHitAsPotion` for a lingering potion, read from
     /// the stack's `potion_contents`; `mob` is where it hit a mob, `hit` the
-    /// block and face it hit, `age` its age, `motion` its motion as it hit.
+    /// block and face it hit, `age` its age, `silent` its Silent flag, `motion` its motion as it hit.
     pub(super) fn splash(
         &mut self,
         stack: &ItemStack,
@@ -1925,6 +1922,7 @@ impl Game<'_> {
         hit: Option<([i32; 3], Direction)>,
         age: u32,
         owner: &PotionOwner,
+        silent: bool,
         motion: Vec3,
     ) {
         let block = [at.x, at.y, at.z].map(|v| v.floor() as i32);
@@ -1932,7 +1930,9 @@ impl Game<'_> {
             // ThrownExperienceBottle.onHit: the water-coloured splash (level
             // event 2002, its sound 1053) and 3 to 11 experience.
             self.level_event_at(2002, block, 0xFF38_5DC6u32 as i32);
-            self.level_event_at(1053, block, 0);
+            if !silent {
+                self.level_event_at(1053, block, 0);
+            }
             let r = &mut self.world.random;
             let value = 3 + r.next_int_bound(5).unwrap_or(0) + r.next_int_bound(5).unwrap_or(0);
             // awardWithDirection: away from the face it hit, or back along
@@ -1962,7 +1962,9 @@ impl Game<'_> {
         });
         let color = brewing::potion_color(stack.potion());
         self.level_event_at(if instant { 2007 } else { 2002 }, block, color as i32);
-        self.level_event_at(if instant { 1054 } else { 1053 }, block, 0);
+        if !silent {
+            self.level_event_at(if instant { 1054 } else { 1053 }, block, 0);
+        }
         // AbstractThrownPotion.affectEntitiesAround: a water potion (the only
         // #rehydrates_axolotls) refills the air of the axolotls in the
         // projectile's box inflated by 4, 2 and 4 (Axolotl.rehydrate, 1800).
@@ -2534,7 +2536,16 @@ mod xp_bottle_tests {
             (None, Vec3::new(0.0, 0.0, 1.0), 2, -1.0),
         ] {
             game.orbs.clear();
-            game.splash(&bottle, at, None, face, 0, &PotionOwner::default(), motion);
+            game.splash(
+                &bottle,
+                at,
+                None,
+                face,
+                0,
+                &PotionOwner::default(),
+                false,
+                motion,
+            );
             assert!(!game.orbs.is_empty());
             let at = [at.x, at.y, at.z];
             for o in game.orbs.iter() {
@@ -2544,5 +2555,262 @@ mod xp_bottle_tests {
                 assert!(v[axis] * sign >= 0.0, "{v:?}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod depleted_absorption_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, commands::Target, load_resources};
+    use horizon_client::{chunk::Chunk, motion::PlayerMotion};
+    use horizon_core::{geometry::Vec3, position::ChunkPos};
+    use std::sync::Arc;
+
+    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+                .join(format!("h204-{:?}", std::thread::current().id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
+        game.creative = true;
+        test(&mut game);
+    }
+    /// The mob in the level with UUID word `n`.
+    fn pig(game: &Game<'_>, n: i32) -> usize {
+        let i: Vec<usize> = (0..game.mobs.len())
+            .filter(|&i| game.persist.uuid_of(game.mobs[i].id) == Some([204, 0, 0, n]))
+            .collect();
+        assert_eq!(i.len(), 1, "one live pig with UUID {n}");
+        i[0]
+    }
+    /// Absorption's remaining ticks on the mob, if it has the effect.
+    fn absorption(game: &Game<'_>, i: usize) -> Option<i32> {
+        game.mobs[i]
+            .extra
+            .effects
+            .iter()
+            .find(|e| e.0 == "minecraft:absorption")
+            .map(|e| e.1)
+    }
+
+    /// Expected values from the official 26.3 server:
+    /// AbsorptionMobEffect.applyEffectTick is false once the amount is 0, so
+    /// MobEffectInstance.tickServer drops the effect on the mob's next tick,
+    /// before the duration counts down; with any amount left it stays.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and a scratch HORIZON_HOME"]
+    fn a_mob_loses_absorption_on_the_tick_after_it_is_used_up() {
+        with_game(|game| {
+            // name, UUID word, extra NBT, effect, hit
+            let cases = [
+                ("depleted", 1, "NoAI:1b", true, Some(4)),
+                ("kept", 2, "NoAI:1b", true, None),
+                ("partial", 3, "NoAI:1b", true, Some(2)),
+                ("none", 4, "NoAI:1b", false, Some(4)),
+                ("refused", 5, "NoAI:1b,Invulnerable:1b", true, Some(4)),
+                ("ai", 6, "", true, Some(4)),
+            ];
+            for (name, n, extra, effect, _) in cases {
+                let extra = if extra.is_empty() {
+                    String::new()
+                } else {
+                    format!(",{extra}")
+                };
+                assert!(game.run_command(&format!(
+                    "summon minecraft:pig {}.5 200 4.5 {{UUID:[I;204,0,0,{n}],Tags:[\"h204_{name}\"],PersistenceRequired:1b,Silent:1b,Health:10f{extra}}}",
+                    2 * n
+                )));
+                if effect {
+                    assert!(game.run_command(&format!(
+                        "effect give @e[tag=h204_{name},limit=1] minecraft:absorption 100 0"
+                    )));
+                }
+            }
+            for (name, _, _, _, hit) in cases {
+                if let Some(hit) = hit {
+                    let accepted = game.run_command(&format!(
+                        "damage @e[tag=h204_{name},limit=1] {hit} minecraft:generic"
+                    ));
+                    assert_eq!(accepted, name != "refused", "{name}: damage result");
+                }
+            }
+            // Setup controls, independent of the tick: amount, health, effect.
+            for (name, n, _, effect, hit) in cases {
+                let i = pig(game, n);
+                let m = &game.mobs[i];
+                let amount = match (effect, hit) {
+                    (false, _) => 0.0,
+                    (true, Some(h)) if name != "refused" => 4.0 - h as f32,
+                    _ => 4.0,
+                };
+                assert_eq!(m.absorption, amount, "{name}: absorption after the hit");
+                let health = if !effect && hit.is_some() { 6.0 } else { 10.0 };
+                assert_eq!(m.health, health, "{name}: health after the hit");
+                assert_eq!(
+                    absorption(game, i),
+                    effect.then_some(2000),
+                    "{name}: effect before the tick"
+                );
+            }
+
+            // One level tick (`tick_world` runs after `tick` has advanced the
+            // clock): the kept effect counting 2000 -> 1999 shows the mobs ticked once.
+            let time = game.world.game_time;
+            game.tick_world(true).unwrap();
+            assert_eq!(
+                game.world.game_time, time,
+                "the level tick leaves the clock to `tick`"
+            );
+            assert_eq!(
+                absorption(game, pig(game, 2)),
+                Some(1999),
+                "the mobs ticked exactly once"
+            );
+            let mut failures = Vec::new();
+            for (name, n, _, effect, _) in cases {
+                let i = pig(game, n);
+                let expected = match name {
+                    "depleted" | "ai" => None,
+                    _ if effect => Some(1999),
+                    _ => None,
+                };
+                if absorption(game, i) != expected {
+                    failures.push(format!(
+                        "{name}: effect {:?}, expected {expected:?}",
+                        absorption(game, i)
+                    ));
+                }
+                let saved = game.entity_nbt(Target::Mob(game.mobs[i].id)).unwrap();
+                let listed = matches!(saved.get("active_effects"), Some(horizon_world::nbt::Tag::List(l)) if !l.is_empty());
+                if listed != expected.is_some() {
+                    failures.push(format!("{name}: saved active_effects {listed}"));
+                }
+            }
+            for (name, n, _, _, _) in [cases[0], cases[5]] {
+                let i = pig(game, n);
+                if game.mobs[i].absorption != 0.0 || game.mobs[i].health != 10.0 {
+                    failures.push(format!("{name}: amount/health changed by the removal"));
+                }
+            }
+            assert!(failures.is_empty(), "depleted absorption: {failures:#?}");
+        });
+    }
+
+    /// The same for infinite effects (`MobEffectInstance.tickServer` asks
+    /// `applyEffectTick` by the mob's tickCount): a used-up infinite
+    /// Absorption goes, an unused one stays infinite, and another infinite
+    /// effect is untouched.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and a scratch HORIZON_HOME"]
+    fn infinite_absorption_goes_only_once_used_up() {
+        with_game(|game| {
+            // name, UUID word, infinite effects, hit
+            let cases: [(&str, i32, &[&str], bool); 4] = [
+                ("inf_depleted", 11, &["absorption"], true),
+                ("inf_kept", 12, &["absorption"], false),
+                ("inf_other", 13, &["speed"], true),
+                ("inf_both", 14, &["speed", "absorption"], true),
+            ];
+            for (name, n, effects, _) in cases {
+                assert!(game.run_command(&format!(
+                    "summon minecraft:pig {}.5 200 8.5 {{UUID:[I;204,0,0,{n}],Tags:[\"h204_{name}\"],PersistenceRequired:1b,Silent:1b,Health:10f,NoAI:1b}}",
+                    n - 9
+                )));
+                for effect in effects {
+                    assert!(game.run_command(&format!(
+                        "effect give @e[tag=h204_{name},limit=1] minecraft:{effect} infinite 0"
+                    )));
+                }
+            }
+            for (name, _, _, hit) in cases {
+                if hit {
+                    assert!(game.run_command(&format!(
+                        "damage @e[tag=h204_{name},limit=1] 4 minecraft:generic"
+                    )));
+                }
+            }
+            let effect = |game: &Game<'_>, i: usize, id: &str| {
+                game.mobs[i]
+                    .extra
+                    .effects
+                    .iter()
+                    .find(|e| e.0 == id)
+                    .map(|e| e.1)
+            };
+            for (name, n, effects, hit) in cases {
+                let i = pig(game, n);
+                let has = effects.contains(&"absorption");
+                assert_eq!(
+                    game.mobs[i].absorption,
+                    if has && !hit { 4.0 } else { 0.0 },
+                    "{name}: amount"
+                );
+                assert_eq!(
+                    game.mobs[i].health,
+                    if hit && !has { 6.0 } else { 10.0 },
+                    "{name}: health"
+                );
+                assert_eq!(
+                    effect(game, i, "minecraft:absorption"),
+                    has.then_some(-1),
+                    "{name}: before"
+                );
+            }
+            let mut failures = Vec::new();
+            for tick in 1..=2 {
+                game.tick_world(true).unwrap();
+                for (name, n, effects, hit) in cases {
+                    let i = pig(game, n);
+                    let absorption = (effects.contains(&"absorption") && !hit).then_some(-1);
+                    let speed = effects.contains(&"speed").then_some(-1);
+                    let got = (
+                        effect(game, i, "minecraft:absorption"),
+                        effect(game, i, "minecraft:speed"),
+                    );
+                    if got != (absorption, speed) {
+                        failures.push(format!(
+                            "{name} tick {tick}: (absorption, speed) {got:?}, expected {:?}",
+                            (absorption, speed)
+                        ));
+                    }
+                }
+            }
+            assert!(failures.is_empty(), "infinite absorption: {failures:#?}");
+        });
     }
 }
