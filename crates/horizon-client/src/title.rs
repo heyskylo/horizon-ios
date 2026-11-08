@@ -2520,17 +2520,17 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         }
         // CommonButtons and FriendsButton narrate their `.narration`, and
         // read their tooltip as a hint.
-        let icon = |narration: &str, tooltip: &str| {
-            Narratable::named(narration_text(narration, &[]), rect, b.enabled)
-                .hint(narration_text(tooltip, &[]))
+        let icon = |narration: &str| {
+            let named = Narratable::named(narration_text(narration, &[]), rect, b.enabled);
+            match self.button_tooltip(b.id) {
+                Some(tooltip) => named.hint(narration_text(tooltip, &[])),
+                None => named,
+            }
         };
         let narratable = match b.id {
-            5 => icon("gui.friends.open.narration", "gui.friends.open.tooltip"),
-            6 => icon("options.language.narration", "options.language.tooltip"),
-            7 => icon(
-                "accessibility.onboarding.accessibility.button.narration",
-                "options.accessibility.tooltip",
-            ),
+            5 => icon("gui.friends.open.narration"),
+            6 => icon("options.language.narration"),
+            7 => icon("accessibility.onboarding.accessibility.button.narration"),
             _ => Narratable::button(b.label.clone(), rect, b.enabled),
         };
         // TitleScreen.init adds the icon row after Minecraft Realms and before
@@ -2540,6 +2540,23 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             2 | 3 => 2,
             _ => 0,
         })
+    }
+
+    /// The `Tooltip` vanilla sets on a button of the open screen, as its key:
+    /// `CommonButtons.language` and `accessibility` on the title's icon row and
+    /// the onboarding screen, and `FriendsButton` while friends are available
+    /// (always, for Horizon's Join a Friend).
+    fn button_tooltip(&self, id: u8) -> Option<&'static str> {
+        match (&self.mode, id) {
+            (Mode::Main, 5) => Some("gui.friends.open.tooltip"),
+            (Mode::Main, 6) | (Mode::Onboarding(_), onboarding::LANGUAGE) => {
+                Some("options.language.tooltip")
+            }
+            (Mode::Main, 7) | (Mode::Onboarding(_), onboarding::ACCESSIBILITY) => {
+                Some("options.accessibility.tooltip")
+            }
+            _ => None,
+        }
     }
 
     pub fn draw(
@@ -3275,6 +3292,8 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 self.focused_button.is_none(),
             ),
         }
+        // The hovered button's `Tooltip`, drawn once the widgets are.
+        let mut button_tooltip = None;
         for b in self.buttons(w, h) {
             crate::widgets::record(&b.label, [b.x, b.y, b.w, 20.0], b.enabled);
             // Realms' icon buttons have no label to record.
@@ -3288,6 +3307,9 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 cursor.0 >= b.x && cursor.0 < b.x + b.w && cursor.1 >= b.y && cursor.1 < b.y + 20.0;
             crate::widgets::narratable(|| self.button_narration(&b).hovered(inside));
             crate::widgets::widget_cursor(inside, b.enabled);
+            if inside && let Some(key) = self.button_tooltip(b.id) {
+                button_tooltip = Some((key, [b.x, b.y, b.w, 20.0]));
+            }
             let is_focused = self.focused_button == Some(b.id);
             let hover = b.enabled && (inside || is_focused);
             let sprite = if !b.enabled {
@@ -3364,6 +3386,14 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         }
         if let Mode::Realms(screen) = &self.mode {
             screen.draw_tooltip(atlas, batch, cursor, (w, h));
+        }
+        // WidgetTooltipHolder.refreshTooltipForNextRenderPass: beside the
+        // pointer and kept by its button (`MenuTooltipPositioner`), split at
+        // `Tooltip`'s 170. It comes after the onboarding fade: vanilla fades
+        // the widgets, not the tooltip.
+        if let Some((key, rect)) = button_tooltip {
+            let lines = atlas.font.split(&Text::translate(key, &[]), 170.0);
+            crate::ui::tooltip_menu(batch, atlas, &lines, cursor, rect);
         }
         if let Some((slide, toast)) = &self.toast {
             let (title, message) = toast.text();
