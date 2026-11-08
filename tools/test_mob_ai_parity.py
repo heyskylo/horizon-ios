@@ -155,6 +155,14 @@ def scenarios():
     add('shulker_poison_teleport', 330, ['mob minecraft:shulker 0.5 -60 0.5 0 356 persistent effect=poison:4'])
     add('shulker_poison_teleport_noai', 330,
         ['mob minecraft:shulker 0.5 -60 0.5 0 357 persistent noai effect=poison:4'])
+    # Enderman.hurtServer draws and teleports inside each hurt, even one the hurt cooldown turns
+    # away: strong poison and wither hurt it twice a tick (MobEffect.applyEffectTick), so it may
+    # teleport twice a tick, the second draw after the first teleport; also without AI. (The NoAI
+    # enderman's tick 6 teleport lands past the probe's loaded chunks.)
+    add('enderman_two_hurts_a_tick', 12,
+        ['mob minecraft:enderman 0.5 -60 0.5 0 358 persistent effect=poison:5 effect=wither:5'])
+    add('enderman_two_hurts_a_tick_noai', 5,
+        ['mob minecraft:enderman 0.5 -60 0.5 0 359 persistent noai effect=poison:5 effect=wither:5'])
     # RandomStandGoal (rearing, with the ambient sound) of every equine, left alone for 800 ticks.
     for i, species in enumerate(['horse', 'donkey', 'mule', 'zombie_horse', 'skeleton_horse', 'llama']):
         # The zombie horse at night: by day it burns, and a burning horse's hurts are another matter.
