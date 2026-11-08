@@ -306,11 +306,44 @@ fn watched_outgoing(player: u128, body: Vec<u8>, watched: u8) -> Option<Vec<u8>>
     })
 }
 
+/// The packets (and their bytes) a connection's network thread has handed the hub and the hub hasn't
+/// taken from its channel yet. The hub's inbox caps apply only as it drains that channel, at the start
+/// of a tick: while a tick runs long (an autosave, chunk generation) a client could otherwise queue
+/// tiny packets without bound, each a boxed `Serverbound` many times its size on the wire.
+#[derive(Debug, Default)]
+pub struct Undrained {
+    packets: AtomicUsize,
+    bytes: AtomicUsize,
+}
+impl Undrained {
+    /// Twice the hub's inbox caps: a client within them never comes near.
+    pub const MAX_PACKETS: usize = 2 * super::hub::INBOX_LIMIT;
+    pub const MAX_BYTES: usize = 2 * super::hub::INBOX_BYTES;
+    /// Count a packet of `bytes` handed to the hub, or `false` (counting nothing) when that would
+    /// pass a cap: the network thread disconnects the client then.
+    pub fn handed(&self, bytes: usize) -> bool {
+        let packets = self.packets.fetch_add(1, Ordering::AcqRel);
+        let total = self.bytes.fetch_add(bytes, Ordering::AcqRel);
+        if packets >= Self::MAX_PACKETS || total.saturating_add(bytes) > Self::MAX_BYTES {
+            self.taken(bytes);
+            return false;
+        }
+        true
+    }
+    /// The hub took a packet of `bytes` from its channel.
+    pub fn taken(&self, bytes: usize) {
+        self.packets.fetch_sub(1, Ordering::AcqRel);
+        self.bytes.fetch_sub(bytes, Ordering::AcqRel);
+    }
+}
+
 /// The sending half given to the game thread.
 #[derive(Clone)]
 pub struct PlayerSender {
     /// The player it sends to, for the hooks on what it sends ([`outgoing`]); 0 for a test's.
     player: u128,
+    /// What the player's network thread has handed the hub and the hub hasn't taken yet.
+    pub undrained: Arc<Undrained>,
     /// The bytes of the bodies sent and not framed yet.
     pub pending: Arc<AtomicUsize>,
     held: Arc<Mutex<Vec<Vec<u8>>>>,
@@ -331,6 +364,7 @@ impl PlayerSender {
     pub fn new(tx: Sender<Out>, pending: Arc<AtomicUsize>) -> Self {
         Self {
             player: 0,
+            undrained: Arc::default(),
             pending,
             held: Arc::default(),
             to: To::Channel(tx),
@@ -1426,6 +1460,20 @@ fn pack_rejected(shared: &Shared, name: &str, pack: u128) -> (horizon_world::nbt
 /// RateKickingConnection: a player whose packets a second passed rate-limit
 /// is disconnected ("disconnect.exceeded_packet_rate") with a WARN, as
 /// vanilla's kick logs it.
+/// The kick for a client whose packets wait past [`Undrained`]'s caps: the same message as the
+/// hub's own inbox check, and a line in the log.
+fn undrained_exceeded(shared: &Shared, name: &str) -> (horizon_world::nbt::Tag, String) {
+    let reason = translatable("disconnect.exceeded_packet_rate", &[]);
+    let Some(log) = &shared.config.log else {
+        return (reason, String::new());
+    };
+    let line =
+        format!("{name} sent more packets than the server handles before its tick took them");
+    (log.write)("Server thread", "WARN", &line);
+    let text = horizon_protocol::text::plain(&reason, &log.lang);
+    (reason, text)
+}
+
 fn rate_exceeded(shared: &Shared, average: f32) -> (horizon_world::nbt::Tag, String) {
     let reason = translatable("disconnect.exceeded_packet_rate", &[]);
     let Some(log) = &shared.config.log else {
@@ -1573,8 +1621,10 @@ fn play(
         start: Instant::now(),
         alive: Arc::new(AtomicI64::new(-1)),
     });
+    let undrained = Arc::<Undrained>::default();
     let sender = PlayerSender {
         player: parts.uuid,
+        undrained: undrained.clone(),
         pending,
         held: Arc::default(),
         to: To::Pool(outbox.clone(), watch.clone()),
@@ -1597,6 +1647,7 @@ fn play(
         next_keep_alive: watch.start + KEEP_ALIVE_EVERY,
         watch,
         counted,
+        undrained,
     };
     let joined = Joined {
         conn,
@@ -1641,6 +1692,8 @@ struct PlayConn {
     next_keep_alive: Instant,
     /// The connection's place among the server's, given back once closed.
     counted: Option<super::Counted>,
+    /// Shared with the player's [`PlayerSender`]: what the hub hasn't taken yet.
+    undrained: Arc<Undrained>,
 }
 impl io_pool::Session for PlayConn {
     /// Forward the player's packet, or say why it ends the connection: a
@@ -1674,6 +1727,10 @@ impl io_pool::Session for PlayConn {
                 kick(pack_rejected(&self.shared, &self.name, r.id))
             }
             Ok(p) => {
+                // Bounded here, where packets are made, not only where the hub drains them.
+                if !self.undrained.handed(payload.len()) {
+                    return kick(undrained_exceeded(&self.shared, &self.name));
+                }
                 let event = NetEvent::Packet(self.conn, Box::new(p), payload.len());
                 match self.shared.events.send(event) {
                     Ok(()) => Verdict::Go,
@@ -1926,6 +1983,28 @@ impl KeepAliveWatch {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn undrained_packets_stop_at_twice_the_inbox() {
+        let u = Undrained::default();
+        // Up to the cap, counted; one more is refused and counts nothing.
+        for _ in 0..Undrained::MAX_PACKETS {
+            assert!(u.handed(3));
+        }
+        assert!(!u.handed(3));
+        // The hub taking one gives its place back.
+        u.taken(3);
+        assert!(u.handed(3));
+        // Bytes too: a few large packets reach the byte cap long before the count.
+        let big = Undrained::default();
+        let size = Undrained::MAX_BYTES / 4;
+        for _ in 0..4 {
+            assert!(big.handed(size));
+        }
+        assert!(!big.handed(1));
+        big.taken(size);
+        assert!(big.handed(size));
+    }
     use super::*;
 
     /// Having tables for Horizon to join an old server does not make the reverse direction supported.

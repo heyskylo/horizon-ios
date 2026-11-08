@@ -233,8 +233,8 @@ the player's screen. To fill the ring, generate the world ahead of the players w
 
 The far ring goes after everything else: its chunks wait behind the ones inside `view_distance`, are paced
 by how fast each player's game takes them, and aren't read while the world's saves are behind. When the
-average tick goes over 40 ms, the ring pulls in by two chunks a second, never inside `view_distance`; after
-30 s of ticks under 25 ms, it grows back by one chunk every 5 s. What it sent is kept in memory for 5
+average tick goes over 50 ms, the ring pulls in by two chunks a second, never inside `view_distance`; after
+30 s of ticks under 45 ms, it grows back by one chunk every 5 s. What it sent is kept in memory for 5
 minutes (96 MB at most), so a player walking back isn't sent the save again.
 
 Already have a vanilla server? Run `horizon-server init` in its folder, or `horizon-server import
@@ -421,7 +421,9 @@ only. To reach it from your other devices:
 - forward the port over SSH: `ssh -L 8130:127.0.0.1:8130 your-server`, then open the link on your computer.
 
 Any other address, such as `0.0.0.0` or a public IP, is refused unless you set `allow_public = true`, and
-even then the panel warns at every start. It has no passwords to leak: whoever can read the server folder can
+even then the panel warns at every start. With `bind = "0.0.0.0:8130"` it answers on every address of this
+computer, so a LAN whose router hands out a new IP keeps working: open `http://<its LAN IP>:8130`, and the
+login link names that IP. It has no passwords to leak: whoever can read the server folder can
 make a login link, and no one else can. Never put it on the open internet.
 
 ### A bot or a tool of your own
