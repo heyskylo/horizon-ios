@@ -1108,14 +1108,6 @@
   background: var(--accent);
 }
 
-.table td.benchVerdict[data-tone="good"] {
-  color: var(--success);
-}
-
-.table td.benchVerdict[data-tone="bad"] {
-  color: var(--danger);
-}
-
 .table td.verdictCell[data-tone="better"] {
   color: var(--success);
 }

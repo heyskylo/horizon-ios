@@ -52,8 +52,8 @@ export function ComparePanel({ base }: { base: LoadedCapture }) {
           <thead>
             <tr>
               <th>{t("compare.metric")}</th>
-              <th>A</th>
-              <th>B</th>
+              <th>{t("compare.columnA")}</th>
+              <th>{t("compare.columnB")}</th>
               <th>{t("compare.change")}</th>
               <th>{t("compare.verdict")}</th>
             </tr>

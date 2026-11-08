@@ -98,9 +98,9 @@ test("A/B results list the frame time first, then CPU, then GPU", () => {
 });
 
 test("only a faster or slower verdict has a colour", () => {
-  assert.equal(verdictTone("faster"), "good");
-  assert.equal(verdictTone("slower"), "bad");
-  assert.equal(verdictTone("within_noise"), "neutral");
-  assert.equal(verdictTone("negligible"), "neutral");
-  assert.equal(verdictTone("too_few_pairs"), "neutral");
+  assert.equal(verdictTone("faster"), "better");
+  assert.equal(verdictTone("slower"), "worse");
+  assert.equal(verdictTone("within_noise"), "same");
+  assert.equal(verdictTone("negligible"), "same");
+  assert.equal(verdictTone("too_few_pairs"), "same");
 });

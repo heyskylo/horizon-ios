@@ -59,20 +59,19 @@ export function useReader() {
       }
       setLoading(true);
       setError(null);
+      let handle: number | null = null;
       try {
         const bytes = await file.arrayBuffer();
-        const handle = reader.open(bytes);
+        handle = reader.open(bytes);
         const meta = reader.query<MetaRow>(handle, { op: "meta", file: name });
-        if (!meta.ok) {
-          reader.close(handle);
-          throw new Error(meta.error ? replyError(meta.error) : t("error.metaFailed"));
-        }
+        if (!meta.ok) throw new Error(meta.error ? replyError(meta.error) : t("error.metaFailed"));
         const sides = meta.rows.map((row) => row.side);
         const side: Side = sides.includes("server") ? "server" : (sides[0] ?? "client");
         if (openHandle.current !== null) reader.close(openHandle.current);
         openHandle.current = handle;
         setCapture({ handle, name, meta, side, sides });
       } catch (failure) {
+        if (handle !== null) reader.close(handle);
         setCapture(null);
         setError(message(failure));
       } finally {

@@ -3,6 +3,8 @@
 import { createElement, useMemo, useState } from "react";
 import type { ComponentType } from "react";
 import type { HorizonPerf } from "@/lib/generated/horizon_perf";
+import { exportsFor } from "@/lib/exports";
+import type { Export } from "@/lib/exports";
 import { t } from "@/lib/i18n";
 import { tabsFor } from "@/lib/tabs";
 import type { Tab } from "@/lib/tabs";
@@ -80,9 +82,9 @@ function Shown({ reader, capture, showSide, onClose }: Props) {
 
   const sides = capture.sides.filter((side) => side !== "unspecified");
   const tabs = useMemo(() => {
-    const ask = <R,>(op: string) => {
+    const ask = <R,>(op: string, limit?: number) => {
       try {
-        const reply = reader.query<R>(capture.handle, { op, file: capture.name, filters: { side: capture.side } });
+        const reply = reader.query<R>(capture.handle, { op, file: capture.name, filters: { side: capture.side, ...(limit ? { limit } : {}) } });
         return reply.ok ? reply.rows : [];
       } catch {
         return [];
@@ -91,17 +93,18 @@ function Shown({ reader, capture, showSide, onClose }: Props) {
     const hasTraffic = ask<NetTotalRow | NetPlayerRow>("net").some(
       (row) => "players" in row && row.out_kib_s + row.in_kib_s > 0,
     );
-    return tabsFor((query) => ask(query).length > 0, hasTraffic);
+    return tabsFor((query) => ask(query, 1).length > 0, hasTraffic);
   }, [reader, capture.handle, capture.name, capture.side]);
   const tab = tabs.includes(picked) ? picked : "summary";
+  const exports = useMemo(() => exportsFor(capture.meta.rows), [capture.meta]);
 
-  const exportCapture = (kind: string) => {
+  const exportCapture = (picked: Export) => {
     try {
-      const bytes = reader.export(capture.handle, { kind });
+      const bytes = reader.export(capture.handle, { kind: picked.kind });
       const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: "application/octet-stream" }));
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = `${capture.name}.${kind === "perfetto" ? "pb" : kind === "folded" ? "folded" : "pprof"}`;
+      anchor.download = `${capture.name}.${picked.extension}`;
       anchor.click();
       URL.revokeObjectURL(url);
     } catch (failure) {
@@ -127,19 +130,24 @@ function Shown({ reader, capture, showSide, onClose }: Props) {
               onChange={showSide}
             />
           ) : null}
-          <select
-            className={styles.select}
-            aria-label={t("tab.export")}
-            value=""
-            onChange={(event) => {
-              if (event.target.value) exportCapture(event.target.value);
-            }}
-          >
-            <option value="">{t("tab.export")}</option>
-            <option value="pprof">pprof</option>
-            <option value="folded">folded</option>
-            <option value="perfetto">Perfetto</option>
-          </select>
+          {exports.length > 0 ? (
+            <select
+              className={styles.select}
+              aria-label={t("tab.export")}
+              value=""
+              onChange={(event) => {
+                const picked = exports.find((item) => item.kind === event.target.value);
+                if (picked) exportCapture(picked);
+              }}
+            >
+              <option value="">{t("tab.export")}</option>
+              {exports.map((item) => (
+                <option key={item.kind} value={item.kind}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+          ) : null}
           <button type="button" className={styles.buttonSmall} onClick={onClose}>
             {t("app.close")}
           </button>

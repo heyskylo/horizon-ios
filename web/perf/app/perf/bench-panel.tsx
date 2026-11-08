@@ -143,8 +143,8 @@ function Paired({ ab }: { ab: BenchAb }) {
                 <td>
                   {signed(p.diff, 2)} ms{p.diff_pct == null ? "" : ` (${signed(p.diff_pct, 1)}%)`}
                 </td>
-                <td>{p.ci95 ? `${signed(p.ci95[0], 2)} to ${signed(p.ci95[1], 2)} ms` : "—"}</td>
-                <td className={styles.benchVerdict} data-tone={verdictTone(p.verdict)}>
+                <td>{p.ci95 ? t("bench.abRange", { low: signed(p.ci95[0], 2), high: signed(p.ci95[1], 2) }) : "—"}</td>
+                <td className={styles.verdictCell} data-tone={verdictTone(p.verdict)}>
                   {t(`bench.verdict.${p.verdict}`)}
                 </td>
               </tr>

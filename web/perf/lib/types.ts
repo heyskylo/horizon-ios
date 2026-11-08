@@ -1,5 +1,4 @@
-// The shapes `horizon_perf.wasm` replies with (docs/perf-platform.md §6.3), typed for the UI. Only
-// the fields the UI reads are listed; the wasm owns the full reply.
+// The shapes the wasm replies with (docs/perf-platform.md §6.3); only the fields the UI reads are listed.
 
 export type Side = "server" | "client" | "unspecified";
 

@@ -43,7 +43,9 @@ function TreeView({ reader, capture, options }: ViewProps) {
   const [selected, select] = useState<Target | null>(null);
   const [focused, setFocused] = useState<Target | null>(null);
 
-  const filters = useMemo(() => sampleFilters(selection, thread), [selection, thread]);
+  // Grouping by thread shows every thread, so a thread picked earlier must not narrow it.
+  const only = group === "thread" ? null : thread;
+  const filters = useMemo(() => sampleFilters(selection, only), [selection, only]);
   const meta = capture.meta.rows.find((row) => row.side === capture.side);
   const mods = useMemo(() => modCrates(meta?.mods ?? []), [meta]);
   const whole = useRows<TreeRow>(reader, capture, "tree", { ...filters, ...TREE_SHAPE });

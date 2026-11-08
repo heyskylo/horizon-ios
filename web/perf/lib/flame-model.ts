@@ -46,10 +46,7 @@ export function zoomPath(rows: readonly TreeRow[], zoom: string | null): { key: 
   return path;
 }
 
-/**
- * Frames side by side as wide as their time. A zoomed frame fills the width and is drawn at depth 0; a frame
- * narrower than `minWidth` and everything under it is left out. The time a frame spent in no child is the gap at its end.
- */
+/** Frames as wide as their time; a zoomed frame fills the width at depth 0, and one under `minWidth` is left out with all below it. */
 export function layoutFlame(rows: readonly TreeRow[], zoom: string | null, minWidth: number): FlameLayout {
   const byKey = new Map<string, FlameFrame>();
   const levels: FlameFrame[][] = [];

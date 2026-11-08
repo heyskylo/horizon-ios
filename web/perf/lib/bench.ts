@@ -1,5 +1,6 @@
 // Drawing helpers for a benchmark report: they order and scale what the reader returned and never compute a performance number.
 
+import type { Tone } from "./compare.ts";
 import type { BenchAb, BenchFrames, BenchVerdict } from "./types.ts";
 
 /** A phase block with the widths of its bar, as fractions of the slowest block's 99th percentile. */
@@ -68,11 +69,9 @@ export function abMetrics<T>(result: Record<string, T>): [string, T][] {
   return Object.entries(result).sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b));
 }
 
-export type Tone = "good" | "bad" | "neutral";
-
-/** Lower milliseconds are better: faster is good, slower is bad, the rest is no news. */
+/** Lower milliseconds are better: faster is better, slower is worse, the rest is no news. */
 export function verdictTone(verdict: BenchVerdict): Tone {
-  if (verdict === "faster") return "good";
-  if (verdict === "slower") return "bad";
-  return "neutral";
+  if (verdict === "faster") return "better";
+  if (verdict === "slower") return "worse";
+  return "same";
 }
