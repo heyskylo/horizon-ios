@@ -252,6 +252,9 @@ pub struct UiState {
     pub show_hand_when_hidden: bool,
     /// Death message key set by the cause of death (e.g. /kill).
     pub death_cause: Option<String>,
+    /// What this frame's HUD shows that Horizon's overlays keep clear of (`Game::hud_room`),
+    /// set by `hud_layers` before anything draws.
+    pub room: horizon_client::hud_kit::room::Room,
     /// Path of an F2 screenshot waiting for its frame.
     pub screenshot_message: Option<std::path::PathBuf>,
     /// The options screens.

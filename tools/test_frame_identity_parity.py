@@ -18,6 +18,8 @@ Sessions, each a fresh game and world (seed 7) per build:
   and with HDR on.
 - oit, hdr_oit: Improved Transparency with HDR off, and with HDR on the 16-bit frame.
 - visbuffer, hdr_visbuffer: the visibility buffer (HORIZON_VISBUFFER=1) with HDR off, and with HDR on the 16-bit frame.
+- float_hdr, float_oit, float_visbuffer: the float frame (HORIZON_HDR_FRAME=float) with HDR on, drawn forward, with
+  Improved Transparency and with the visibility buffer.
 
 Both builds draw on the same adapter: Mesa's lavapipe where its Vulkan driver is installed (Linux), else the machine's
 default. When the base and the change differ only in files no game binary is built from (tools/, tests/, .github/,
@@ -331,15 +333,19 @@ def shoot(game, out, scene):
 def set_hdr(game, on):
     """Turn HDR output on or off from its settings page, as a player does."""
     game.ctl('options', 'graphics-hdr')
-    widgets = game.ctl('ui')
-    widgets = widgets.get('widgets', widgets) if isinstance(widgets, dict) else widgets
-    # 🤖 Agent: The page's tab is labelled HDR too: the switch is the button reading "HDR: On" or "HDR: Off".
-    switch = next((w for w in widgets if w.get('kind') == 'button' and str(w.get('label', '')).startswith('HDR: ')),
-                  None)
-    if switch is None:
-        raise RuntimeError(f'no HDR switch on the HDR page: {json.dumps(widgets)[:600]}')
-    if switch['label'].endswith(': On') != on:
-        game.ctl('click', switch['id'])
+    # 🤖 Agent: Both the base's switch and the three-state choice reach an explicit On or Off.
+    for _ in range(3):
+        widgets = game.ctl('ui')
+        widgets = widgets.get('widgets', widgets) if isinstance(widgets, dict) else widgets
+        choice = next((w for w in widgets if w.get('kind') == 'button'
+                       and str(w.get('label', '')).startswith('HDR: ')), None)
+        if choice is None:
+            raise RuntimeError(f'no HDR control on the HDR page: {json.dumps(widgets)[:600]}')
+        if choice['label'].endswith(': On' if on else ': Off'):
+            break
+        game.ctl('click', choice['id'])
+    else:
+        raise RuntimeError('HDR control did not reach the requested setting')
     game.ctl('close')
     game.ctl('close', check=False)
     game.settle(60)
@@ -348,6 +354,8 @@ def set_hdr(game, on):
 SESSIONS = {
     # 🤖 Agent: name: (horizon-graphics.txt, extra environment, scenes, HDR turned off after the first shots)
     'vanilla': ('', {}, list(SCENES), False),
+    # 🤖 Agent: An offered HDR output without a system report must leave Auto in SDR.
+    'auto_unknown': ('hdr:auto\n', {'HORIZON_HDR_OUTPUT': 'pq'}, ['day_water', 'night_lights'], False),
     'golden_hour': ('', {'HORIZON_SHADER_PACK': 'golden_hour'}, list(SCENES), False),
     'golden_hour_hdr': ('hdr:true\n', {'HORIZON_SHADER_PACK': 'golden_hour', 'HORIZON_HDR_OUTPUT': 'pq'},
                         ['day_water', 'night_lights'], False),
@@ -360,11 +368,14 @@ SESSIONS = {
     'hdr_oit': ('hdr:true\n', {'HORIZON_HDR_OUTPUT': 'pq'},
                         ['day_water', 'night_lights'], False),
     # 🤖 Agent: The visibility buffer draws only frames drawn flat, which frames without a pack are by default only on
-    # Metal and some Intel drivers. On the float frame it writes light, so it's in these sessions with HDR off and on
-    # the 16-bit frame.
+    # Metal and some Intel drivers.
     'visbuffer': ('', {'HORIZON_VISBUFFER': '1', 'HORIZON_FLAT_DRAWS': '1'}, ['day_water', 'night_lights'], False),
     'hdr_visbuffer': ('hdr:true\n', {'HORIZON_HDR_OUTPUT': 'pq', 'HORIZON_VISBUFFER': '1', 'HORIZON_FLAT_DRAWS': '1'},
                       ['day_water', 'night_lights'], False),
+    'float_hdr': ('hdr:true\n', {'HORIZON_HDR_FRAME': 'float', 'HORIZON_HDR_OUTPUT': 'pq'}, list(SCENES), False),
+    'float_oit': ('hdr:true\n', {'HORIZON_HDR_FRAME': 'float', 'HORIZON_HDR_OUTPUT': 'pq'}, list(SCENES), False),
+    'float_visbuffer': ('hdr:true\n', {'HORIZON_HDR_FRAME': 'float', 'HORIZON_HDR_OUTPUT': 'pq',
+                        'HORIZON_VISBUFFER': '1', 'HORIZON_FLAT_DRAWS': '1'}, list(SCENES), False),
 }
 # 🤖 Agent: Auto paper white and peak are 203 and 1000 offscreen; written out so a change of Auto doesn't move the
 # pictures. TAA and frame generation build on earlier frames, which HORIZON_STILL doesn't cover: off, as by default.
@@ -389,7 +400,7 @@ def run_session(name, label, bin_dir, out, env_base, args):
     started = time.monotonic()
     try:
         game.launch()
-        if name in ('oit', 'hdr_oit'):
+        if name in ('oit', 'hdr_oit', 'float_oit'):
             # 🤖 Agent: Old unversioned options run through the graphics-mode migration, which resets this switch.
             game.ctl('options-set', 'improvedTransparency', 'true')
             option = game.ctl('options-get', 'improvedTransparency')
@@ -432,7 +443,7 @@ def session_checks(shots, sessions):
                     problems.append(f'{prefix}.{scene}: HDR output was {"off" if on else "on"}')
         # 🤖 Agent: the pack's pictures against the same scenes without it: vanilla's, or with HDR on hdr_toggle's
         # first shots (the same settings), sidecars included.
-        without = 'hdr_toggle' if hdr else 'vanilla'
+        without = 'float_hdr' if name == 'float_oit' else ('hdr_toggle' if hdr else 'vanilla')
         if 'HORIZON_SHADER_PACK' in extra and without in sessions:
             same = [s for s in scenes if any(
                 compare(shots / f'{without}.{s}{x}', shots / f'{name}.{s}{x}', None) is None
@@ -445,7 +456,7 @@ def session_checks(shots, sessions):
         if 'HORIZON_VISBUFFER' in extra and not built:
             problems.append(f'{name}: the visibility buffer didn\'t run')
         # 🤖 Agent: Improved Transparency needs blendable float targets; without them the option changes nothing.
-        if name in ('oit', 'hdr_oit') and without in sessions and all(
+        if name in ('oit', 'hdr_oit', 'float_oit') and without in sessions and all(
                 compare(shots / f'{without}.{s}{x}', shots / f'{name}.{s}{x}', None) is None
                 for s in scenes for x in ('.png', '-hdr.png') if (shots / f'{name}.{s}{x}').exists()):
             problems.append(f'{name}: the same as without Improved Transparency: it didn\'t run')

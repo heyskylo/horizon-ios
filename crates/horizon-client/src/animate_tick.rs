@@ -8,7 +8,7 @@ use crate::{
     blocks::{BlockFacts, Fluid},
     command::args::GameMode,
     items::ItemStack,
-    particles::{ParticleEngine, ParticleOptions, ParticleType as T, along_axis},
+    particles::{ParticleEngine, ParticleLevel, ParticleOptions, ParticleType as T, along_axis},
     world::World,
 };
 use horizon_core::{
@@ -600,6 +600,14 @@ fn do_animate_tick(
     }
     let state = ctx.state(pos);
     block_animate_tick(tables, engine, ctx, state, pos, center);
+    // Resource packs' Polytone block emitters (#11486): nothing without such a pack.
+    let level = ParticleLevel {
+        world: ctx.world,
+        facts: ctx.facts,
+        collision: ctx.collision,
+        player: None,
+    };
+    engine.polytone_animate(&level, pos);
     let facts = ctx.facts.get(state);
     if facts.fluid != Fluid::None {
         fluid_animate_tick(

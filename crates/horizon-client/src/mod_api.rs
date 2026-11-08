@@ -41,11 +41,11 @@ pub use crate::game::{
     NativeStructureTemplate, NativeWorldDraw,
 };
 pub use crate::gamerules::Value as GameRuleValue;
-/// What a mod asks of the terrain's picture each frame (`native_world_hold`). API @API:world_hold@.
+/// What a mod asks of the terrain's picture each frame (`native_world_hold`). API 414.
 pub use crate::gfx::WorldHold;
 pub use crate::gfx::native_render::{
     BlockSpriteArrays, RenderHooks, RenderNeeds, RenderNeedsEvent, WorldDrawn, WorldDrawnEvent,
-    wgpu,
+    WorldWarp, WorldWarpEvent, wgpu,
 };
 pub use crate::hud::HudBatch;
 pub use crate::hud_layout::{GuiDraw, HealthHud, HealthInputs};
@@ -76,6 +76,9 @@ pub use horizon_core::{
     position::BlockPos,
     random::{LegacyRandom, RandomSource},
 };
+/// A firework explosion (the `firework_explosion` component), for
+/// `native_client_fireworks`.
+pub use horizon_items::firework::{FireworkExplosion, FireworkShape};
 /// A synched entity data value (`ClientboundSetEntityDataPacket`'s), as `entity_data_to` hands
 /// them over.
 pub use horizon_protocol::entity_data::Value as EntityDataValue;

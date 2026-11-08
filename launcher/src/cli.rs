@@ -1397,21 +1397,36 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
             for line in horizon_launcher::browser::horizon::fit_versions(&target) {
                 println!("{line}");
             }
-            let built = native_mods::build(
-                &base,
-                &folder,
-                &target,
-                allow_version_mismatch,
-                ignore_pins,
-                profile,
-                steps,
-            )
-            .map_err(|e| match e.starts_with(native_mods::MISMATCH) {
-                true => {
-                    format!("{e} They often still build: pass --allow-version-mismatch to try.")
+            let build = || {
+                native_mods::build(
+                    &base,
+                    &folder,
+                    &target,
+                    allow_version_mismatch,
+                    ignore_pins,
+                    profile,
+                    steps,
+                )
+                .map_err(|e| match e.starts_with(native_mods::MISMATCH) {
+                    true => {
+                        format!("{e} They often still build: pass --allow-version-mismatch to try.")
+                    }
+                    false => e,
+                })
+            };
+            let mut built = build()?;
+            // A mod the build left out though its version said it builds here: its next older
+            // version that says so, and one more build.
+            let left: Vec<String> = native_mods::about(&built)
+                .map(|about| about.left_out.into_iter().map(|l| l.id).collect())
+                .unwrap_or_default();
+            let older = horizon_launcher::browser::horizon::try_older(&target, &left);
+            if !older.is_empty() {
+                for line in &older {
+                    println!("{line}");
                 }
-                false => e,
-            })?;
+                built = build()?;
+            }
             println!(
                 "{built} built and selected for its instance ({:.0} s).",
                 started.elapsed().as_secs_f64()

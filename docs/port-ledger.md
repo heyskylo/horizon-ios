@@ -88,6 +88,7 @@ type where it is known (`self`, a parameter, a `let`, a struct field, a trait to
 | `seam` | A vanilla method ported on more than one path (the shared game code the server runs for its players, the server-client side in `game/remote*.rs`, the server's network side in `game/lan*.rs` and `src/lan/`), where one path reaches the port of a callee and another doesn't. Single player runs on the server thread, so this is where most player-visible bugs sit. | `remote_use` ported `Minecraft.startUseItem` without `LocalPlayer.itemUsed`: the held block never dipped after a placement on a server |
 | `client` | A vanilla method with an effect only the client's copy of the world shows (`addParticle`, `playLocalSound`, `itemUsed`, an `isClientSide()` branch), whose port nothing in `game/remote*.rs` reaches. | `AbstractHorse.handleEating`'s happy-villager particle, drawn only on the server's level |
 | `drift` | A port that never names a sound, particle, item, block, effect or game event its vanilla method uses, or lacks one of its rare numbers. Names count however Rust spells them (`Sound::AnvilLand`, `"block.anvil.land"`). | `throw_ender_eye`, the port of `EnderEyeItem.use`, names neither the `used_ender_eye` trigger nor the `projectile_shoot` game event (a lead, not yet checked) |
+| `float` | A vanilla method widens a float literal to double (`vec.add(0.0, -0.04F, 0.0)`: javac folds it to -0.03999999910593033) and its port spells the literal as a double (`-0.04`) and nowhere as the float (`f64::from(0.04_f32)`, `0.04_f32 as f64`, or the widened value written out). The difference is in the eighth digit: invisible in play, but every exact parity trace that reaches it diverges, and it compounds per tick in motion. | `Blaze.customServerAiStep` rises by `(0.3F - y) * 0.3F`; `blaze_server_ai_step` used `(0.3 - y) * 0.3` |
 | `class` | A whole class nothing ports while most of its package is ported. Renderers, sound instances and goals are reached by registration, so no call graph shows them. | `ShulkerBulletRenderer`, `ElytraOnPlayerSoundInstance` |
 | `callee` | A ported method whose ported callee its port never reaches. Noisier: a port may get the value as an argument instead. | `Projectile.shootFromRotation` without `Entity.getKnownMovement`: throws added a stale server velocity; `ServerPlayer.getKnownMovement` without `getVehicle`: a spear's charge ignored the horse |
 | `stale` | A citation whose class or method the pinned version doesn't have (renamed, removed, or a typo). | |
@@ -122,6 +123,26 @@ survive edits around them; a row whose class, method or fn doesn't exist shows u
 at a time, with each class's Java source, home files, and Rust functions in them with similar names: the input
 for whoever (or whichever agent) writes the next batch file. Set `PORT_LEDGER_OUT` to build into another
 directory, so several people can check their own rows at once.
+
+## From a parity trace to the code: `blame`
+
+A parity harness that traces an entity tick by tick (`test_mob_ai_parity.py`: position `p`, motion `v`,
+rotations `r`, `g`, `hp`, `target`, `in`, `move`, `look`) tells where a run first differs from vanilla, not which
+code computed the differing value. `blame ENTITY FIELD...` answers that from the bytecode: the vanilla methods
+an entity's tick runs (its class's `tick` with overrides resolved, and the goals its `registerGoals` builds)
+that write the field, directly or through its setter, the entity's own class first, each with its Rust port and
+the ledger's gaps on it:
+
+```sh
+python3 tools/port_ledger.py blame blaze v      # what writes a blaze's deltaMovement, and where Horizon does it
+```
+
+`test_mob_ai_parity.py` prints these under each mob's first divergence when a ledger has been built (and the
+port of the vanilla frame that drew a random number, when the first difference is a draw). With `--writers` the
+oracle runs under a JFR method trace of the fields' setters (JDK 25), so the list starts with what vanilla
+actually ran: first the methods that set the field at the divergent tick and not at the tick before, then the
+rest that set it that tick. On #542 put back (FloatGoal users not marked as floaters) that puts
+`Mob.jumpInLiquid -> jump_in_liquid` second, after the `LivingEntity.jumpInLiquid` it overrides.
 
 ## Parity harness coverage
 

@@ -18,6 +18,10 @@ pub struct StackData {
     pub stored_enchantments: Levels,
     /// `minecraft:repair_cost` (anvil prior-work penalty).
     pub repair_cost: u32,
+    /// An explicit `minecraft:damage` of zero. The damage is outside
+    /// `StackData`, and a non-damageable item's prototype has no such
+    /// component, so its presence is part of the stack's components.
+    pub explicit_zero_damage: bool,
     /// The original `minecraft:custom_name` component; plain text is derived
     /// when gameplay needs it, so styled names have one source of truth.
     pub custom_name: Option<Tag>,
@@ -1110,6 +1114,7 @@ pub fn decode_components(components: Option<&Tag>) -> (u32, Option<Box<StackData
             .and_then(int)
             .unwrap_or(0)
             .max(0) as u32,
+        explicit_zero_damage: damage == 0 && c.get("minecraft:damage").is_some(),
         custom_name: c
             .get("minecraft:custom_name")
             .filter(|tag| read_text(tag).is_some())
@@ -1275,6 +1280,8 @@ pub fn command_components(text: &str) -> Result<Tag, String> {
                 JavaString::from(id.as_str()),
                 Tag::compound([] as [(&str, Tag); 0]),
             );
+        } else {
+            return Err("expected '='".to_string());
         }
         rest = rest.trim_start();
         rest = rest.strip_prefix(',').unwrap_or(rest).trim_start();
@@ -2277,6 +2284,18 @@ mod tests {
         );
         assert_eq!(explosions[0].colors, vec![0xFF0000]);
         assert!(explosions[0].twinkle && !explosions[0].trail);
+    }
+
+    #[test]
+    fn command_components_rejects_bare_component_without_equals() {
+        assert_eq!(
+            command_components("[custom_data]"),
+            Err("expected '='".to_string())
+        );
+        assert_eq!(
+            command_components("[!tool,custom_data]"),
+            Err("expected '='".to_string())
+        );
     }
 
     #[test]

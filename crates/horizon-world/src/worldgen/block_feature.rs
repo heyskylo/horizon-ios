@@ -56,6 +56,29 @@ impl BoundTags {
         }))
     }
 }
+/// The registry-derived integer property classification used by feature block-state codecs.
+/// Shared by generator loading and bounded startup leaf validation.
+pub(super) fn integer_properties(registry: &BlockRegistry) -> BTreeSet<(String, String)> {
+    let mut values = BTreeMap::<(String, String), bool>::new();
+    for i in 0..registry.len() {
+        let state = registry.state(BlockStateId(i as u32)).unwrap();
+        for (key, value) in &state.properties {
+            let integer = !value.is_empty()
+                && value
+                    .trim_start_matches('-')
+                    .bytes()
+                    .all(|b| b.is_ascii_digit());
+            *values
+                .entry((state.name.clone(), key.clone()))
+                .or_insert(true) &= integer;
+        }
+    }
+    values
+        .into_iter()
+        .filter_map(|(key, integer)| integer.then_some(key))
+        .collect()
+}
+
 pub struct FeatureBlockBindings<'r> {
     registry: &'r BlockRegistry,
     pub(crate) simple_blocks: Option<(

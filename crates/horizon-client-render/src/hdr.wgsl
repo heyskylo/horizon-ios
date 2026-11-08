@@ -34,7 +34,7 @@ struct Params {
 // Horizon's logo, 1 inside, 0 outside, for calibration's test pictures.
 @group(0) @binding(3) var logo: texture_2d<f32>;
 // The float frame with HUD coverage (Hdr::layered): the frame keeps the world as light
-// (fs_resolve), the HUD draws on a picture of its own (`hud`, fs_keep), and `coverage` says how
+// directly from its writers; the HUD draws on a picture of its own (`hud`, fs_keep), and `coverage` says how
 // much of the world it hides there (gfx/hud_coverage.rs).
 @group(0) @binding(4) var coverage: texture_2d<f32>;
 @group(0) @binding(5) var hud: texture_2d<f32>;
@@ -211,16 +211,6 @@ fn display(light: vec3<f32>) -> vec4<f32> {
     return display(light);
 }
 
-// Hdr::resolve, after the world and the hand: the marks they left (`world` holds the frame as
-// they drew it) become light in the frame, in gamma as the frame stores it, alpha 1, past the
-// peak if they lift it there (the tone curve eases it in). What draws after it (camera overlays,
-// the menu blur) draws on light, and nothing is lifted later.
-@fragment fn fs_resolve(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-    let w = frame_texel(textureLoad(world, vec2<i32>(pos.xy), 0));
-    let shows = params.world > 0.5 && params.peak > 1.0;
-    return vec4(pow(lit(w.rgb, w.a, shows, false).light, vec3(1.0 / 2.2)), 1.0);
-}
-
 // The tone curve's knee: up to it light stays as it is. Where HDR lighting eased into the peak
 // before the curve (`lit`), 60% of it, so bright textures keep their detail; at least paper white.
 fn tone_knee(headroom: f32) -> f32 {
@@ -292,6 +282,38 @@ fn layered(at: vec2<i32>) -> vec3<f32> {
 // Hdr::composite: the picture so far, stored as the frame stores light, for the menu blur.
 @fragment fn fs_composite(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     return vec4(layered(vec2<i32>(pos.xy)), 1.0);
+}
+
+// Screenshots keep midtones at their drawn brightness, with a shoulder starting at 0.6
+// paper white in linear light. Unlike the display curve (whose knee is at least white),
+// this has an unbounded source range: k + (1-k)*(top-k)/(top+1-2*k) approaches SDR
+// white smoothly, with slope 1 at k. One scale keeps the world's linear RGB ratios.
+fn screenshot_world(w: vec3<f32>) -> vec3<f32> {
+    let top = pow(max(w.r, max(w.g, w.b)), 2.2);
+    if top <= 0.6 {
+        return w;
+    }
+    let mapped = 0.6 + 0.4 * (top - 0.6) / (top - 0.2);
+    return w * pow(mapped / top, 1.0 / 2.2);
+}
+
+override screenshot_world_only: bool = false;
+// Off with HDR Lighting off: Horizon lifts nothing, so the world is clipped at white as SDR draws it.
+override screenshot_shoulder: bool = true;
+
+// The ordinary PNG, or the world's icon before the HUD: H as drawn, at 100%, over
+// the SDR world's light. This never changes the targets used by HDR output or its copy.
+@fragment fn fs_sdr_screenshot(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let at = vec2<i32>(pos.xy);
+    let w = max(textureLoad(frame, at, 0).rgb, vec3(0.0));
+    let mapped = select(min(w, vec3(1.0)), screenshot_world(w), screenshot_shoulder);
+    if screenshot_world_only {
+        return vec4(mapped, 1.0);
+    }
+    let p = clamp(textureLoad(hud, at, 0).rgb, vec3(0.0), vec3(1.0));
+    let c = textureLoad(coverage, at, 0).r;
+    let h = max(p - (1.0 - c) * min(w, vec3(1.0)), vec3(0.0));
+    return vec4(h + (1.0 - c) * mapped, 1.0);
 }
 
 @fragment fn fs_hdr_layered(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
