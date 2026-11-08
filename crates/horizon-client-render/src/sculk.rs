@@ -165,7 +165,7 @@ pub struct Context {
     pub spectator: bool,
     /// `isSteppingCarefully` (sneaking).
     pub stepping_carefully: bool,
-    /// `dampensVibrations` (a warden).
+    /// `dampensVibrations` (a warden or a wool item).
     pub dampens: bool,
     /// The source is a living entity wardens may target.
     pub targetable: bool,
@@ -187,11 +187,10 @@ pub fn valid_vibration(listens: bool, event: &str, ctx: &Context) -> bool {
         if ctx.stepping_carefully && ignored_when_sneaking(event) {
             return false;
         }
-        if ctx.dampens {
-            return false;
-        }
     }
-    !ctx.dampening_state
+    // Nonliving sources have no Who handle, but ItemEntity still carries its
+    // stack's dampensVibrations flag (including after Entity.kill removes it).
+    !ctx.dampens && !ctx.dampening_state
 }
 
 impl Selector {

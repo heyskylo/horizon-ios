@@ -1,6 +1,10 @@
 //! HUD coverage beside its unchanged colour and alpha, only on the float HDR lane.
 
 pub(crate) const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
+/// The HUD's own target on the layered frame (`Hdr::hud`): 8-bit, so each HUD draw clips at
+/// white and rounds as on vanilla's frame. The coverage pipelines are the only ones that draw
+/// on it.
+pub(crate) const HUD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 pub(crate) fn supported(
     attachments: u32,
@@ -73,8 +77,9 @@ impl Pipeline {
     }
 }
 
-/// Keep the primary output and all its blend factors, including destination alpha. Wrap the
-/// final shader result, so pack text's alpha, early returns and discard all apply to coverage.
+/// Keep the primary output and all its blend factors, including destination alpha, on the
+/// HUD's target (`HUD_FORMAT`). Wrap the final shader result, so pack text's alpha, early
+/// returns and discard all apply to coverage.
 /// `None` for a fragment shader without a colour output at location 0.
 pub(super) fn pipeline(
     device: &wgpu::Device,
@@ -88,7 +93,8 @@ pub(super) fn pipeline(
         wgpu::ShaderSource::Naga(m) => m.into_owned(),
         _ => return None,
     };
-    let primary = fragment.targets.first()?.clone()?;
+    let mut primary = fragment.targets.first()?.clone()?;
+    primary.format = HUD_FORMAT;
     let blend = primary.blend.unwrap_or(wgpu::BlendState::REPLACE).color;
     let additive = matches!(
         (blend.src_factor, blend.dst_factor),
