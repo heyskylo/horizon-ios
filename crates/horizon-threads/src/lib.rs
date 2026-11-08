@@ -29,6 +29,109 @@ pub fn worker_count() -> usize {
     })
 }
 
+/// `HORIZON_SERIAL_TICK=all`: every [`par_chunks_mut`] keeps its chunks on the
+/// calling thread, in order — the serial reference a parallel phase of the
+/// tick is checked against, tick by tick (#8158).
+fn serial_tick_all() -> bool {
+    static ALL: OnceLock<bool> = OnceLock::new();
+    *ALL.get_or_init(|| {
+        std::env::var("HORIZON_SERIAL_TICK").is_ok_and(|v| v.eq_ignore_ascii_case("all"))
+    })
+}
+
+/// Runs `f` over `items` in chunks of `chunk`, in place. Helper threads take
+/// the next chunk as they finish one under a scope, the calling thread working
+/// too; a helper the system refuses to start leaves its chunks to the others,
+/// and the calling thread does all of it at worst (the region writer's
+/// `share_out` shape). A chunk runs on whatever thread takes it, so `f` must
+/// not depend on the order; nothing is shared out while one chunk is the
+/// whole slice, or while [`serial_tick_all`] holds the tick serial. The
+/// thread-locals the tick relies on do not follow a helper: set them in `f`,
+/// as `block_contact::in_level` wraps a level's own.
+pub fn par_chunks_mut<T: Send>(items: &mut [T], chunk: usize, f: impl Fn(&mut [T]) + Send + Sync) {
+    par_chunks_mut_with(items, chunk, f, !serial_tick_all());
+}
+
+/// [`par_chunks_mut`] with whether the work is shared out (its test).
+pub fn par_chunks_mut_with<T: Send>(
+    items: &mut [T],
+    chunk: usize,
+    f: impl Fn(&mut [T]) + Send + Sync,
+    parallel: bool,
+) {
+    let chunk = chunk.max(1);
+    let count = items.len().div_ceil(chunk);
+    if !parallel || count < 2 {
+        for slice in items.chunks_mut(chunk) {
+            f(slice);
+        }
+        return;
+    }
+    // A helper takes a chunk whole, so no thread sees another's half of one;
+    // the lock is only held while a chunk is taken, never while it runs.
+    let pending: std::sync::Mutex<Vec<&mut [T]>> =
+        std::sync::Mutex::new(items.chunks_mut(chunk).collect());
+    let work = || {
+        while let Some(slice) = pending.lock().unwrap_or_else(|e| e.into_inner()).pop() {
+            f(slice);
+        }
+    };
+    std::thread::scope(|scope| {
+        let helpers = worker_count().saturating_sub(1).clamp(1, count - 1);
+        let threads: Vec<_> = (0..helpers)
+            .filter_map(|_| std::thread::Builder::new().spawn_scoped(scope, work).ok())
+            .collect();
+        work();
+        for t in threads {
+            t.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
+        }
+    });
+}
+
+#[cfg(test)]
+mod par_chunks_tests {
+    use super::par_chunks_mut_with;
+
+    /// Every item is visited exactly once, in parallel and on the caller
+    /// alone: each adds one to itself, whatever thread its chunk ran on.
+    #[test]
+    fn every_item_runs_once_shared_out_or_not() {
+        for parallel in [true, false] {
+            let mut items: Vec<usize> = (0..10_000).collect();
+            par_chunks_mut_with(
+                &mut items,
+                16,
+                |chunk| {
+                    for i in chunk {
+                        *i += 1;
+                    }
+                },
+                parallel,
+            );
+            assert_eq!(items, (1..=10_000).collect::<Vec<_>>(), "{parallel}");
+        }
+    }
+
+    /// A slice one chunk long never starts a helper, whichever way it is
+    /// asked for.
+    #[test]
+    fn one_chunk_stays_whole() {
+        let mut items = vec![0usize; 3];
+        par_chunks_mut_with(
+            &mut items,
+            16,
+            |chunk| {
+                assert_eq!(chunk.len(), 3);
+                for i in chunk {
+                    *i = 7;
+                }
+            },
+            true,
+        );
+        assert_eq!(items, vec![7, 7, 7]);
+    }
+}
+
 /// The chunk worker pool's automatic size (`jobs::default_threads`, Graphics > Worker
 /// threads on Auto): every core but one, as vanilla's `Util.maxAllowedExecutorThreads`,
 /// counting on Apple silicon only its performance cores. Its efficiency cores are slower,
