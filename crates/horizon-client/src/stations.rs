@@ -26,12 +26,13 @@ pub struct StationData {
 }
 impl StationData {
     pub fn load(root: &Path, items: &Items, overlay: &PackOverlay) -> Self {
+        let defaults = horizon_world::item_defaults::shared(root).ok();
         Self {
             enchantments: std::sync::Arc::clone(&items.enchantments),
-            recipes: StationRecipes::load(root, items, overlay),
+            recipes: StationRecipes::load_with_defaults(root, items, overlay, defaults.as_deref()),
             brewing: crate::brewing::Brewing::load(root, items, overlay),
             trades: crate::merchant::Trades::load(root, overlay),
-            banners: crate::banner::Banners::load(root),
+            banners: crate::banner::Banners::load_with_defaults(root, defaults.as_deref()),
             recipe_index: crate::recipe_book::RecipeIndex::load(root, overlay),
         }
     }
@@ -693,6 +694,14 @@ fn ingredient(v: &Value, items: &Items) -> Ingredient {
 }
 impl StationRecipes {
     pub fn load(root: &Path, items: &Items, overlay: &PackOverlay) -> Self {
+        Self::load_with_defaults(root, items, overlay, None)
+    }
+    pub(crate) fn load_with_defaults(
+        root: &Path,
+        items: &Items,
+        overlay: &PackOverlay,
+        defaults: Option<&horizon_world::item_defaults::Defaults>,
+    ) -> Self {
         // Vanilla's recipes, then the content mods' (docs/modpacks.md).
         let mut files = Vec::new();
         let namespaces =
@@ -742,7 +751,14 @@ impl StationRecipes {
         // Registration order, not the game's files before the packs': the
         // stonecutter lists its recipes in it and smithing takes the first match.
         sources.sort_by_cached_key(|(id, _)| crate::crafting::registration_key(id));
-        let defaults = horizon_world::item_defaults::shared(root).unwrap_or_default();
+        let owned_defaults;
+        let defaults = match defaults {
+            Some(defaults) => defaults,
+            None => {
+                owned_defaults = horizon_world::item_defaults::shared(root).unwrap_or_default();
+                &owned_defaults
+            }
+        };
         let mut smithing = Vec::new();
         let mut stonecutting = Vec::new();
         for (id, v) in sources {
@@ -758,7 +774,7 @@ impl StationRecipes {
                         parse_optional("template"),
                         Ingredient::parse(&v["base"], items),
                         parse_optional("addition"),
-                        SmithingResult::parse(&v["result"], &defaults),
+                        SmithingResult::parse(&v["result"], defaults),
                     ) {
                         smithing.push(Smithing::Transform {
                             id,
