@@ -451,6 +451,17 @@ pub trait LevelAccess {
     /// component then takes that signal (one equal to `old` keeps it as it is). The
     /// default leaves it.
     fn redstone_change(&self, _pos: BlockPos, _old: i32, _new: &mut i32) {}
+    /// A crop, stem, cactus, sugar cane, bamboo, mushroom or vine grows or
+    /// spreads from `from` to `to` at `pos` (the block there now). Set `cancel`
+    /// to leave it as it is. The default allows it.
+    fn block_grow(
+        &mut self,
+        _pos: BlockPos,
+        _from: BlockStateId,
+        _to: BlockStateId,
+        _cancel: &mut bool,
+    ) {
+    }
     /// `BlockState.randomTick` from `ServerLevel.tickChunk`, before the block
     /// handles it. The level may change the block (`Behaviours::set_block`
     /// with `ticks`); setting `handled` skips the block's own random tick. A

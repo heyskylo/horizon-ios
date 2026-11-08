@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "tnt_primed_v2",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_tnt_primed_v2",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "TNT primed with its dimension (`native_tnt_primed_v2`).",
+  "doc_summary": "`native_tnt_primed_v2(player, dimension, pos, cancel)` is asked when TNT is primed at `pos` in `dimension`; set `cancel` to leave the block unlit. `native_tnt_primed` (v1) is still asked, unchanged. Bundles need \"hooks\": @API:tnt_primed_v2@.",
+  "comments": []
+}

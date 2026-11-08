@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "entities_in", "target": "horizon_client::game::native_world_edit::Game<'_>::native_entities_in"}
+  ],
+  "rust_summary": "`native_entities_in(dimension, min, max)`: the ids of the entities of any loaded level inside a box.",
+  "doc_summary": "`native_entities_in(dimension, min, max)` gives the ids of the entities of the loaded level `dimension` inside the box from `min` to `max` (both corners included), players the hub holds included; empty for a level not loaded and on a client. It walks every entity of the level, so call it for a few boxes, not every tick. Bundles need \"hooks\": @API:entities_in@.",
+  "comments": ["crates/horizon-client/src/game/native_world_edit.rs"]
+}

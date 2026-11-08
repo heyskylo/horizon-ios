@@ -839,7 +839,7 @@ impl Hub {
         }
         let body = packet.encode();
         for g in self.guests.iter().filter(|g| g.placed) {
-            g.sender.send_shared(&body);
+            g.sender.send(body.clone());
         }
     }
     /// [`Self::broadcast`] to the held players as well, which keep a picture of
@@ -847,7 +847,7 @@ impl Hub {
     pub fn broadcast_watching(&self, packet: &C) {
         let body = packet.encode();
         for g in self.guests.iter().filter(|g| g.placed || g.held) {
-            g.sender.send_shared(&body);
+            g.sender.send(body.clone());
         }
     }
     /// MinecraftServer.onGameRuleChanged: every player is told when
@@ -1018,7 +1018,7 @@ impl Hub {
     pub fn broadcast_level(&self, packet: &C) {
         let body = packet.encode();
         for g in self.guests.iter().filter(|g| self.watches(g)) {
-            g.sender.send_shared(&body);
+            g.sender.send(body.clone());
         }
     }
     /// `DedicatedServer.sendLowDiskSpaceWarning`: the players with
@@ -1026,13 +1026,13 @@ impl Hub {
     pub fn send_low_disk_space_warning(&self) {
         let body = C::LowDiskSpaceWarning(horizon_protocol::packets::Empty).encode();
         for g in self.guests.iter().filter(|g| g.placed && g.permission >= 3) {
-            g.sender.send_shared(&body);
+            g.sender.send(body.clone());
         }
     }
     pub fn broadcast_except(&self, conn: u32, packet: &C) {
         let body = packet.encode();
         for g in self.guests.iter().filter(|g| g.placed && g.conn != conn) {
-            g.sender.send_shared(&body);
+            g.sender.send(body.clone());
         }
     }
     /// PlayerList.broadcastSystemMessage.
@@ -1051,7 +1051,7 @@ impl Hub {
         })
         .encode();
         for g in self.guests.iter().filter(|g| g.placed && hears(&g.name)) {
-            g.sender.send_shared(&body);
+            g.sender.send(body.clone());
         }
     }
     /// `ServerPlayer.sendSystemMessage` to the guest with `uuid`, in any
@@ -1063,7 +1063,7 @@ impl Hub {
         })
         .encode();
         for g in self.guests.iter().filter(|g| g.placed && g.uuid == uuid) {
-            g.sender.send_shared(&body);
+            g.sender.send(body.clone());
         }
     }
     /// `ServerPlayer.sendOverlayMessage` to every guest (the action bar).
@@ -2276,8 +2276,8 @@ impl Hub {
     }
 
     /// ServerClockManager.createFullSyncPacket: every clock. Horizon keeps the
-    /// overworld clock (the day time); the End's clock runs with the game
-    /// time. Clocks do not advance without the advance_time rule.
+    /// overworld clock (the day time) and the End's (`end_clock`). Clocks do not
+    /// advance without the advance_time rule.
     fn time_packet(&self, world: &World, rate: f32) -> C {
         let overworld = self
             .sync
@@ -2299,7 +2299,7 @@ impl Hub {
                     } else {
                         play::ClockState {
                             clock: id,
-                            total_ticks: world.game_time,
+                            total_ticks: world.end_clock,
                             partial_tick: 0.0,
                             rate: if rate > 0.0 { 1.0 } else { 0.0 },
                         }
@@ -3110,7 +3110,7 @@ impl Hub {
             };
             let body = self.encoder.light_update(chunk, sections);
             for &i in &viewers {
-                self.guests[i].sender.send_shared(&body);
+                self.guests[i].sender.send(body.clone());
             }
         }
     }
@@ -3161,7 +3161,7 @@ impl Hub {
                 }
                 let body = self.encoder.body_in(chunk, world);
                 for &i in &viewers {
-                    self.guests[i].sender.send_shared(&body);
+                    self.guests[i].sender.send(body.clone());
                 }
                 if recording {
                     // The prediction's replay excuses a client near the column: any of its blocks may have
@@ -3247,7 +3247,7 @@ impl Hub {
             };
             let body = packet.encode();
             for &i in &viewers {
-                self.guests[i].sender.send_shared(&body);
+                self.guests[i].sender.send(body.clone());
             }
             if recording {
                 for &i in &viewers {
@@ -3289,7 +3289,7 @@ impl Hub {
                 })
                 .encode();
                 for &i in &viewers {
-                    self.guests[i].sender.send_shared(&body);
+                    self.guests[i].sender.send(body.clone());
                 }
             }
         }

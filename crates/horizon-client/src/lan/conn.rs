@@ -256,9 +256,6 @@ pub const WATCH_ALL: u8 = 1;
 /// decoded for it.
 pub const WATCH_ENTITY_DATA: u8 = 2;
 
-/// A body about to be sent to `player`, past the hooks a mod asked for ([`WATCHED`]): None
-/// when one canceled it. Bytes that don't decode, and a packet no hook changed, go out as they
-/// were; a changed one is encoded again.
 /// Whether a fake player (a bot with no client) still takes the packet `body`: the few it must answer
 /// (teleport, knockback, chunk batch, keep-alive, ping, death, respawn). Anything else would only be
 /// dropped unread.
@@ -280,6 +277,9 @@ pub fn fake_wants_id(id: i32) -> bool {
     ]
     .contains(&id)
 }
+/// A body about to be sent to `player`, past the hooks a mod asked for ([`WATCHED`]): None
+/// when one canceled it. Bytes that don't decode, and a packet no hook changed, go out as they
+/// were; a changed one is encoded again.
 fn outgoing(player: u128, body: Vec<u8>) -> Option<Vec<u8>> {
     let watched = WATCHED.load(Ordering::Relaxed);
     if watched == 0 {
@@ -453,14 +453,6 @@ impl PlayerSender {
     /// Whether this sender is a fake player's.
     pub fn is_fake(&self) -> bool {
         self.fake.load(Ordering::Relaxed)
-    }
-    /// [`Self::send`] of a copy of `body`, made only if this sender wants it: one encoded packet
-    /// for many players costs a copy for each one that takes it.
-    pub fn send_shared(&self, body: &[u8]) {
-        if self.fake.load(Ordering::Relaxed) && !fake_wants(body) {
-            return;
-        }
-        self.send(body.to_vec());
     }
     /// Several packets in order, as [`Self::send`] each: under one lock
     /// while the tick holds them.
