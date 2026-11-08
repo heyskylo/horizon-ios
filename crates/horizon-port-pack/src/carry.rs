@@ -407,7 +407,20 @@ pub fn renamed_assets(v: &mut Value) -> bool {
                     t.entry("bottom").or_insert(dirt);
                 }
             }
-            o.values_mut().fold(farmland, |c, x| renamed_assets(x) | c)
+            // A block state variant: 1.21.1's Gson read `"true"` and `"90"`, 26.3's codec does not.
+            let mut typed = false;
+            if o.contains_key("model") {
+                for (key, v) in o.iter_mut() {
+                    let new = match (key.as_str(), v.as_str()) {
+                        ("uvlock", Some(s)) => s.parse::<bool>().ok().map(Value::from),
+                        ("x" | "y" | "weight", Some(s)) => s.parse::<i64>().ok().map(Value::from),
+                        _ => None,
+                    };
+                    typed |= new.map(|new| *v = new).is_some();
+                }
+            }
+            o.values_mut()
+                .fold(farmland | typed, |c, x| renamed_assets(x) | c)
         }
         _ => false,
     }
@@ -3035,6 +3048,22 @@ mod tests {
                 "2": "pulley:block/chain", "3": "minecraft:block/chain_command_block_back"}})
         );
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Tom's Simple Storage writes `"uvlock": "true"`: 1.21.1 read a block state variant with Gson, which
+    /// took strings for booleans and numbers; 26.3's codec does not, and the whole block state failed.
+    #[test]
+    fn block_state_variants_take_strings_as_their_booleans_and_numbers() {
+        let mut state = json!({"multipart": [{"apply": {"uvlock": "true", "x": "90",
+            "model": "t:block/cable"}, "when": {"x": "1", "down": "false"}}],
+            "variants": {"": [{"model": "t:a", "y": 180, "weight": "3"}]}});
+        assert!(renamed_assets(&mut state));
+        assert_eq!(
+            state,
+            json!({"multipart": [{"apply": {"uvlock": true, "x": 90, "model": "t:block/cable"},
+                "when": {"x": "1", "down": "false"}}],
+                "variants": {"": [{"model": "t:a", "y": 180, "weight": 3}]}})
+        );
     }
 
     /// 1.21.1's farmland template (`dirt` and `top`) is 26.3's `template_cube_bottom_top_indented`, whose
