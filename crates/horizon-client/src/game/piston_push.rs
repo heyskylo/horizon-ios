@@ -513,6 +513,31 @@ impl Game<'_> {
         if let Target::Entity(EntityHandle::ArmorStand(i)) = target {
             self.armor_stands[i].on_ground = limited.y < 0.0 && limited.y != resolved.y;
         }
+
+        // Entity.move updates ground before its tiny-collision return. This
+        // native slice covers only unoccupied server NoAI horizontal moves.
+        if let Target::Entity(EntityHandle::Mob(i)) = target {
+            let m = &self.mobs[i];
+            let eligible = !self.options.execution_role.is_client()
+                && self.remote.is_none()
+                && limited.y == 0.0
+                && m.no_ai
+                && !m.extra.passenger
+                && m.extra.mount.is_none()
+                && m.rider.is_none()
+                && m.extra.rider.is_none()
+                && self.riding != Some(m.id)
+                && self.lan.as_ref().is_none_or(|host| {
+                    !host
+                        .hub
+                        .guests
+                        .iter()
+                        .any(|g| host.hub.here(g) && g.vehicle == Some(m.id))
+                });
+            if eligible {
+                self.mobs[i].on_ground = limited.y < 0.0 && limited.y != resolved.y;
+            }
+        }
         if resolved.length_squared() <= 1.0e-7
             && limited.length_squared() - resolved.length_squared() >= 1.0e-7
         {
@@ -803,5 +828,298 @@ mod order_tests {
             moved[0]
         );
         assert!(moved[1] < 0.02, "far stone still in the way: {}", moved[1]);
+    }
+}
+
+#[cfg(test)]
+mod h255_mob_piston_ground_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use horizon_client::{chunk::Chunk, motion::PlayerMotion};
+    use horizon_core::{geometry::Vec3, position::ChunkPos, random::LegacyRandom};
+    use std::sync::Arc;
+    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
+        with_role_game(
+            crate::game::execution_role::ExecutionRole::IntegratedServer,
+            test,
+        );
+    }
+    fn with_role_game(
+        role: crate::game::execution_role::ExecutionRole,
+        test: impl FnOnce(&mut Game<'_>),
+    ) {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+                .join(format!("h255-{:?}", std::thread::current().id())),
+        );
+        options.execution_role = role;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+
+        let mut center = Chunk::empty(0, 0);
+        center.lit = true;
+        game.world.chunks.insert((0, 0), Arc::new(center));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("difficulty normal"));
+        assert!(game.run_command("forceload add 0 0"));
+        for x in -1..=1 {
+            for z in -1..=1 {
+                if x == 0 && z == 0 {
+                    continue;
+                }
+                let mut chunk = Chunk::empty(x, z);
+                chunk.lit = true;
+                game.world.chunks.insert((x, z), Arc::new(chunk));
+                game.block_ticks
+                    .add_empty_chunk(ChunkPos::new(x, z))
+                    .unwrap();
+            }
+        }
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
+        game.creative = true;
+        assert!(game.run_command("fill 0 199 0 31 199 31 stone"));
+        game.world.random = LegacyRandom::new(255);
+        game.update_chunk_tickets();
+        assert!(crate::game::ticking_chunk(&game.world, 0, 0));
+        assert!(game.tickets.levels().block_ticking(0, 0));
+        test(&mut game);
+    }
+    fn mob_index(game: &Game<'_>, n: i32) -> usize {
+        let id = game
+            .persist
+            .uuids
+            .iter()
+            .find_map(|(id, u)| (*u == [255, 1, 0, n]).then_some(*id))
+            .unwrap();
+        game.mobs.iter().position(|m| m.id == id).unwrap()
+    }
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn h255_real_honey_piston_lifecycle_clears_mob_ground_before_second_drag() {
+        with_game(|game| {
+            game.world.game_time = 0;
+            for cmd in [
+                "gamerule spawn_mobs false",
+                "gamerule random_tick_speed 0",
+                "gamerule advance_time false",
+                "setblock 3 201 4 piston[facing=east]",
+                "setblock 4 201 4 honey_block",
+                "setblock 4 201 12 honey_block",
+                "setblock 12 200 12 piston[facing=up]",
+                "setblock 12 201 12 stone",
+                "summon husk 4.5 202 4.5 {UUID:[I;255,1,0,1],Health:10f,NoAI:1b,NoGravity:1b,OnGround:1b,Motion:[0d,0d,0d]}",
+                "summon husk 4.5 202 12.5 {UUID:[I;255,1,0,2],Health:10f,NoAI:1b,NoGravity:1b,OnGround:1b,Motion:[0d,0d,0d]}",
+                "summon husk 12.5 202 12.5 {UUID:[I;255,1,0,3],Health:10f,NoAI:1b,NoGravity:1b,OnGround:0b,Motion:[0d,0d,0d]}",
+            ] {
+                assert!(game.run_command(cmd), "{cmd}");
+            }
+            let main = mob_index(game, 1);
+            let idle = mob_index(game, 2);
+            let vertical = mob_index(game, 3);
+            let id = game.mobs[main].id;
+            let age = game.mobs[main].age;
+            assert!(game.mobs[main].on_ground);
+            assert!(game.mobs[idle].on_ground);
+            assert!(!game.mobs[vertical].on_ground);
+            assert_eq!(game.mobs[main].position, Vec3::new(4.5, 202.0, 4.5));
+            assert_eq!(
+                game.res
+                    .facts()
+                    .get(game.world.block(4, 201, 4))
+                    .name
+                    .as_ref(),
+                "minecraft:honey_block"
+            );
+            assert!(game.run_command("setblock 3 201 5 redstone_block"));
+            assert!(game.run_command("setblock 13 200 12 redstone_block"));
+            let mut failures = Vec::new();
+            for tick in 1..=2 {
+                game.world.game_time += 1;
+                game.update_chunk_tickets();
+                assert!(game.entity_ticking_area()(4, 4));
+                game.tick_blocks().unwrap();
+                game.tick_creature_entities().unwrap();
+                // Real block-entity ticker generates and drains the piston pushes.
+                game.tick_moving_pistons().unwrap();
+                let p = game
+                    .block_ticks
+                    .moving_pistons
+                    .iter()
+                    .find(|(p, _)| *p == BlockPos::new(5, 201, 4))
+                    .expect("real moving honey block");
+                assert_eq!(p.1.progress, 0.5 * tick as f32);
+                assert_eq!(
+                    p.1.moved_state,
+                    game.pack
+                        .assets
+                        .registry
+                        .default_state("minecraft:honey_block")
+                        .unwrap()
+                );
+                assert_eq!(game.mobs[main].id, id);
+                assert_eq!(game.uuid_for(id), [255, 1, 0, 1]);
+                assert_eq!(game.mobs[main].age, age + tick);
+                assert!(game.mobs[main].no_ai);
+                assert_eq!(game.mobs[main].health, 10.0);
+                assert_eq!(game.mobs[main].velocity, Vec3::ZERO);
+                if game.mobs[main].on_ground {
+                    failures.push(format!("tick{tick}: actual Mob still grounded"));
+                }
+                if game.mobs[main].position != Vec3::new(5.0, 202.0, 4.5) {
+                    failures.push(format!(
+                        "tick{tick}: position {:?}",
+                        game.mobs[main].position
+                    ));
+                }
+                if game.mob_tree_nbt(main).get("OnGround")
+                    != Some(&horizon_world::nbt::Tag::Byte(0))
+                {
+                    failures.push(format!("tick{tick}: saved ground is stale"));
+                }
+                assert_eq!(game.mobs[idle].position, Vec3::new(4.5, 202.0, 12.5));
+                assert!(game.mobs[idle].on_ground);
+                assert_eq!(
+                    game.mobs[vertical].position,
+                    Vec3::new(12.5, if tick == 1 { 202.51 } else { 203.01 }, 12.5)
+                );
+                assert!(!game.mobs[vertical].on_ground);
+            }
+            assert!(
+                failures.is_empty(),
+                "actual lifecycle failures: {failures:#?}"
+            );
+        });
+    }
+    // Added source/unit controls; these do not extend the Java live contract.
+    fn added_mob(game: &mut Game<'_>, n: i32, kind: &str, no_ai: bool, x: f64) -> usize {
+        let tame = if kind == "horse" { ",Tame:1b" } else { "" };
+        assert!(game.run_command(&format!("summon {kind} {x} 202 4.5 {{UUID:[I;255,1,0,{n}],Health:10f,NoAI:{}b,NoGravity:1b,OnGround:1b,Motion:[0d,0d,0d]{tame}}}",i32::from(no_ai))));
+        let i = mob_index(game, n);
+        assert_eq!(game.mobs[i].no_ai, no_ai);
+        assert!(game.mobs[i].on_ground);
+        assert_eq!(game.uuid_for(game.mobs[i].id), [255, 1, 0, n]);
+        i
+    }
+    fn added_push(game: &mut Game<'_>, i: usize, movement: Vec3) {
+        let m = &game.mobs[i];
+        let (bounds, at, step, ground) = (
+            m.bounds(),
+            [m.position.x, m.position.z],
+            m.kind.step_height as f32,
+            m.on_ground,
+        );
+        // Mob owns its actual piston budget; the map is for other entity kinds.
+        game.move_pushed(
+            Target::Entity(EntityHandle::Mob(i)),
+            bounds,
+            at,
+            step,
+            ground,
+            movement,
+            Direction::East,
+            &mut std::collections::HashMap::new(),
+        );
+    }
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn h255_added_no_request_and_exhausted_budget_keep_state() {
+        with_game(|game| {
+            let i = added_mob(game, 20, "horse", true, 8.5);
+            added_push(game, i, Vec3::ZERO);
+            assert!(game.mobs[i].on_ground);
+            assert_eq!(game.mobs[i].position, Vec3::new(8.5, 202.0, 4.5));
+            assert!(game.run_command("ride @s mount 000000ff-0000-0001-0000-000000000014"));
+            assert_eq!(game.riding, Some(game.mobs[i].id));
+            added_push(game, i, Vec3::new(0.51, 0.0, 0.0));
+            assert!(game.mobs[i].on_ground, "occupied path remains excluded");
+            assert_eq!(game.mobs[i].position, Vec3::new(9.01, 202.0, 4.5));
+            assert!(game.run_command("ride @s dismount"));
+            assert!(game.riding.is_none());
+            assert!(game.mobs[i].rider.is_none());
+            assert!(game.mobs[i].extra.rider.is_none());
+            assert!(game.mobs[i].extra.mount.is_none());
+            assert!(!game.mobs[i].extra.passenger);
+            let before = game.mobs[i].position;
+            added_push(game, i, Vec3::new(0.25, 0.0, 0.0));
+            assert_eq!(
+                game.mobs[i].position, before,
+                "real same-tick piston budget is exhausted"
+            );
+            assert!(
+                game.mobs[i].on_ground,
+                "limitedZERO precedes the ground update"
+            );
+        });
+    }
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn h255_added_blocked_request_updates_ground_before_tiny_return() {
+        with_game(|game| {
+            assert!(game.run_command("fill 9 202 4 9 204 4 stone"));
+            // Match the existing Mob::bounds_at f32 width boundary exactly.
+            let width = game.res.mob_types().get("minecraft:husk").unwrap().width as f32;
+            let x = 9.0 - f64::from(width) * 0.5;
+            let i = added_mob(game, 21, "husk", true, x);
+            assert_eq!(game.mobs[i].bounds().max_position().x, 9.0);
+            let before = game.mobs[i].position;
+            added_push(game, i, Vec3::new(0.25, 0.0, 0.0));
+            assert_eq!(
+                game.mobs[i].position, before,
+                "actual loaded wall blocks the nonzero request"
+            );
+            assert!(
+                !game.mobs[i].on_ground,
+                "Entity.move ground ordering, source/unit-only coverage"
+            );
+        });
+    }
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn h255_added_client_role_ai_and_vertical_paths_keep_native_state() {
+        use crate::game::execution_role::ExecutionRole as Role;
+        for (role, no_ai, movement) in [
+            (Role::Client, true, Vec3::new(0.25, 0.0, 0.0)),
+            (Role::IntegratedServer, false, Vec3::new(0.25, 0.0, 0.0)),
+            (Role::IntegratedServer, true, Vec3::new(0.0, 0.25, 0.0)),
+        ] {
+            with_role_game(role, |game| {
+                let i = added_mob(game, 22, "husk", no_ai, 8.5);
+                let before = game.mobs[i].position;
+                added_push(game, i, movement);
+                assert_eq!(game.mobs[i].position, before.add_vector(movement));
+                assert!(
+                    game.mobs[i].on_ground,
+                    "excluded native path remains unchanged; not Java parity"
+                );
+            });
+        }
     }
 }

@@ -147,7 +147,7 @@ impl Game<'_> {
             }
             KeyCode::KeyL if self.screen == Screen::Advancements => self.close_advancements(),
             // key.emote (Horizon's): the emote wheel, a tap again closes it.
-            KeyCode::KeyB if self.screen == Screen::Playing && horizon_cosmetics::enabled() => {
+            KeyCode::KeyB if self.screen == Screen::Playing && super::cosmetics::enabled() => {
                 self.open_emote_wheel();
             }
             KeyCode::KeyB if self.screen == Screen::EmoteWheel => self.close_emote_wheel(None),

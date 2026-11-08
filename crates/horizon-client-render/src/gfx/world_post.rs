@@ -55,6 +55,13 @@ pub struct Post {
     sampler: wgpu::Sampler,
     copy: wgpu::RenderPipeline,
     fxaa: wgpu::RenderPipeline,
+    /// Contrast-adaptive sharpening of TAA's upscaled picture: the jittered frames are
+    /// spread over more output pixels, and the blend softens edges.
+    sharpen: wgpu::RenderPipeline,
+    /// The strength `sharpen` was built with (`set_sharpness`), and what rebuilding it takes.
+    sharpness: f32,
+    shader: wgpu::ShaderModule,
+    pipeline_layout: wgpu::PipelineLayout,
     format: wgpu::TextureFormat,
     /// World resolution relative to the window (0.5..=2.0).
     pub scale: f32,
@@ -232,8 +239,12 @@ impl Post {
             ..Default::default()
         });
         Self {
+            shader: shader.clone(),
+            pipeline_layout: pipeline_layout.clone(),
             copy: pipeline("fs_copy", &pipeline_layout, format),
             fxaa: pipeline("fs_fxaa", &pipeline_layout, format),
+            sharpen: sharpen_pipeline(device, &shader, &pipeline_layout, format, 0.85),
+            sharpness: 0.85,
             layout,
             sampler,
             format,
@@ -474,6 +485,21 @@ impl Post {
         }
     }
 
+    /// The Upscaling Sharpness setting, 0..=1: rebuilds the sharpen pipeline when it changed.
+    pub fn set_sharpness(&mut self, device: &wgpu::Device, sharpness: f32) {
+        let sharpness = sharpness.clamp(0.0, 1.0);
+        if sharpness != self.sharpness {
+            self.sharpen = sharpen_pipeline(
+                device,
+                &self.shader,
+                &self.pipeline_layout,
+                self.format,
+                sharpness,
+            );
+            self.sharpness = sharpness;
+        }
+    }
+
     /// The size of the world's own target, when it has one.
     pub fn size(&self) -> Option<[u32; 2]> {
         self.target.as_ref().map(|t| t.size)
@@ -535,7 +561,12 @@ impl Post {
         pass.set_bind_group(0, &taa.resolve[i], &[]);
         pass.draw(0..3, 0..1);
         drop(pass);
-        self.finish_with(encoder, screen, &taa.show[i], timing);
+        let pipeline = if self.upscale > 1.0 {
+            &self.sharpen
+        } else {
+            &self.copy
+        };
+        self.draw_onto(encoder, screen, &taa.show[i], pipeline, timing);
     }
 
     /// Draw what `group` binds (`bind`) onto `screen`.
@@ -544,6 +575,23 @@ impl Post {
         encoder: &mut wgpu::CommandEncoder,
         screen: &wgpu::TextureView,
         group: &wgpu::BindGroup,
+        timing: Option<&mut super::pack_timing::PassTiming>,
+    ) {
+        let pipeline = if self.antialias {
+            &self.fxaa
+        } else {
+            &self.copy
+        };
+        self.draw_onto(encoder, screen, group, pipeline, timing);
+    }
+
+    /// Draw what `group` binds onto `screen` through `pipeline`.
+    fn draw_onto(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        screen: &wgpu::TextureView,
+        group: &wgpu::BindGroup,
+        pipeline: &wgpu::RenderPipeline,
         timing: Option<&mut super::pack_timing::PassTiming>,
     ) {
         let attachments = [Some(wgpu::RenderPassColorAttachment {
@@ -561,14 +609,49 @@ impl Post {
             color_attachments: &attachments,
             ..Default::default()
         });
-        pass.set_pipeline(if self.antialias {
-            &self.fxaa
-        } else {
-            &self.copy
-        });
+        pass.set_pipeline(pipeline);
         pass.set_bind_group(0, group, &[]);
         pass.draw(0..3, 0..1);
     }
+}
+
+/// `fs_sharpen` at `sharpness` (its override), drawing onto `format`.
+fn sharpen_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    sharpness: f32,
+) -> wgpu::RenderPipeline {
+    let constants = [("sharpness", f64::from(sharpness))];
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Horizon sharpen"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_post"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: Default::default(),
+        depth_stencil: None,
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_sharpen"),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &constants,
+                ..Default::default()
+            },
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 /// This frame's clip space to the previous frame's, for camera-relative projections:
