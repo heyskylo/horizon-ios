@@ -11,7 +11,8 @@
 //!   drawn since a point.
 //! - `motion`: quiet tweens as pure functions of the frame's clock.
 //! - `icon`: a sprite, an item, a glyph or the player's face as a small picture.
-//! - `tabs`: a collapsed page strip, the name between arrows with a pip per page.
+//! - `tabs`: a page strip of named tabs, and the collapsed strip (the name between arrows with a
+//!   pip per page) it falls back to when the tabs don't fit.
 //!
 //! Vanilla's own display lists (`hud_layout`, `screen_draw`) never use the kit: they stay
 //! exactly vanilla's.
