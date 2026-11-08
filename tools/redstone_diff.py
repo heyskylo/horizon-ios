@@ -28,6 +28,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
+import lab  # noqa: E402
 
 ORIGIN = (200, 250, 200)
 SPACING = 24
@@ -375,7 +376,7 @@ def run_horizon(batch, args, work):
     import shutil
     shutil.rmtree(game_dir, ignore_errors=True)
     game_dir.mkdir(parents=True)
-    env = dict(os.environ, HORIZON_HOME=str(game_dir), HORIZON_TELEMETRY_URL='off', HORIZON_NO_AUDIO='1')
+    env = lab.game_env(HORIZON_HOME=str(game_dir), HORIZON_TELEMETRY_URL='off')
     ctl = Ctl(ctl_path, sock)
     launch = subprocess.run([str(ctl_path), '--socket', str(sock), 'launch', '--world', WORLD, '--seed', str(SEED),
                              '--creative', '--wait', '--offscreen', '--resources', str(args.resources),
