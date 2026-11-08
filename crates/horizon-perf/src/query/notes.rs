@@ -32,6 +32,9 @@ pub fn warning_text(w: &Warning) -> String {
             arg(0),
             arg(1) / MIB
         ),
+        WarningCode::GpuUnavailable => {
+            "GPU pass timing was asked for, but this device or run gave no pass times".into()
+        }
         WarningCode::Unspecified => format!("unknown warning {:?}", w.args),
     }
 }

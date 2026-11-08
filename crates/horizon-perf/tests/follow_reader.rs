@@ -134,3 +134,27 @@ fn the_end_only_samples_field_arrives_whole() {
     let mut follower = Follower::new();
     assert_eq!(follower.push(&file).unwrap(), expected);
 }
+
+#[test]
+fn the_end_only_gpu_field_arrives_whole() {
+    use horizon_perf_format::Field;
+    use horizon_perf_format::v1::{GpuCounter, GpuCounts, GpuPasses};
+    let gpu = GpuPasses {
+        side: Side::Client as i32,
+        counters: vec![GpuCounter {
+            pass: 3,
+            total: Some(GpuCounts {
+                fragment_shader_invocations: 6_300_000,
+                ..Default::default()
+            }),
+            pixels: 2_073_600,
+            parts: Vec::new(),
+        }],
+        ..Default::default()
+    };
+    let fields = vec![Field::Gpu(gpu)];
+    let expected = expected_entries(&fields);
+    let file = write_capture(&fields).bytes;
+    let mut follower = Follower::new();
+    assert_eq!(follower.push(&file).unwrap(), expected);
+}

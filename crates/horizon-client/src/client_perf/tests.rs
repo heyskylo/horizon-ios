@@ -1,7 +1,7 @@
 use super::*;
 use crate::spans::Span;
 use horizon_perf_format::files;
-use horizon_perf_format::v1::{Capture, Kind, Side, StopReason as R, Unit};
+use horizon_perf_format::v1::{Capture, GpuMode, Kind, Side, StopReason as R, Unit, WarningCode};
 use std::fs;
 
 struct Scratch(PathBuf);
@@ -215,6 +215,171 @@ fn one_capture_runs_at_a_time_and_nothing_marks_or_stops_without_one() {
     assert!(perf.stop(0.0, R::Shutdown));
     perf.take_saved(true).pop().unwrap().unwrap();
     assert_eq!(fs::read_dir(&scratch.0).unwrap().count(), 1);
+}
+
+fn adapter() -> wgpu::AdapterInfo {
+    wgpu::AdapterInfo {
+        name: "Test GPU".into(),
+        vendor: 0,
+        device: 0,
+        device_type: wgpu::DeviceType::DiscreteGpu,
+        device_pci_bus_id: String::new(),
+        driver: "NVIDIA".into(),
+        driver_info: "570.1".into(),
+        backend: wgpu::Backend::Vulkan,
+        subgroup_min_size: 0,
+        subgroup_max_size: 0,
+        transient_saves_memory: None,
+        limit_bucket: None,
+    }
+}
+
+/// The World pass of a 1920 x 1080 frame that shaded 6,300,000 pixels, and a HUD pass.
+fn readout() -> GpuReadout {
+    use crate::gfx::pack_timing::{
+        Counters, DetailSupport, FragmentUnit, PartsMode, PassCounters, Readings,
+    };
+    GpuReadout {
+        adapter: adapter(),
+        own: Some(Readings {
+            passes: vec![("World".into(), 1.5), ("HUD".into(), 0.25)],
+            parts: Vec::new(),
+            counters: vec![(
+                "World".into(),
+                PassCounters {
+                    total: Counters {
+                        fragment_shader_invocations: 6_300_000,
+                        ..Counters::default()
+                    },
+                    pixels: 2_073_600,
+                    parts: Vec::new(),
+                },
+            )],
+            support: DetailSupport {
+                parts: PartsMode::InsidePasses,
+                encoder_stamps: true,
+                counters: true,
+                fragment_unit: Some(FragmentUnit::Pixel),
+            },
+        }),
+        pack: None,
+    }
+}
+
+fn gpu_options(gpu: GpuSwitch) -> StartOptions {
+    StartOptions {
+        gpu,
+        ..no_samples()
+    }
+}
+
+fn gpu_query(path: &Path) -> Vec<horizon_perf::query::Row> {
+    let q = horizon_perf::query::Query::new(horizon_perf::wire::Op::Gpu);
+    let answer = horizon_perf::ops::query(&[path.to_owned()], &q).unwrap();
+    assert!(answer.error.is_none(), "{:?}", answer.error);
+    answer.envelope.rows().to_vec()
+}
+
+#[test]
+fn a_gpu_capture_reads_back_its_pass_times_and_fragments_per_pixel() {
+    use horizon_perf::query::Row;
+    let scratch = Scratch::new("gpu");
+    let mut perf = ClientPerf::new(SLOW_FRAME_MS);
+    begin(&mut perf, 0.0, &scratch.0, &gpu_options(GpuSwitch::Detail));
+    run(&mut perf, 0, 2, 30, 16.0);
+    assert!(perf.stop_with_gpu(2.0, R::Normal, Some(readout())));
+    let saved = perf.take_saved(true).pop().unwrap().unwrap();
+
+    let c = read(&saved.path);
+    assert_eq!(c.start[0].options.as_ref().unwrap().gpu(), GpuMode::Detail);
+    assert!(c.warnings.is_empty());
+    let rows = gpu_query(&saved.path);
+    let Row::GpuDevice(device) = &rows[0] else {
+        panic!("{rows:?}");
+    };
+    assert_eq!(
+        (device.adapter.as_str(), device.driver.as_str()),
+        ("Test GPU", "NVIDIA 570.1")
+    );
+    let passes: Vec<_> = rows[1..]
+        .iter()
+        .map(|r| match r {
+            Row::GpuPass(p) => p,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        passes
+            .iter()
+            .map(|p| (p.name.as_str(), p.ms))
+            .collect::<Vec<_>>(),
+        [("World", Some(1.5)), ("HUD", Some(0.25))]
+    );
+    // 6,300,000 / 2,073,600 = 3.038..., shown to two decimals.
+    assert_eq!(
+        passes[0].counters.as_ref().unwrap().fragments_per_pixel,
+        Some(3.04)
+    );
+}
+
+#[test]
+fn a_gpu_capture_with_no_timings_says_so_and_one_without_gpu_ignores_them() {
+    let scratch = Scratch::new("gpu-none");
+    let mut perf = ClientPerf::new(SLOW_FRAME_MS);
+    begin(&mut perf, 0.0, &scratch.0, &gpu_options(GpuSwitch::Passes));
+    perf.stop(1.0, R::Normal);
+    let c = read(&perf.take_saved(true).pop().unwrap().unwrap().path);
+    assert!(c.gpu.is_empty());
+    assert_eq!(c.start[0].options.as_ref().unwrap().gpu(), GpuMode::Passes);
+    assert_eq!(c.warnings.len(), 1);
+    assert_eq!(c.warnings[0].code(), WarningCode::GpuUnavailable);
+    assert_eq!((c.warnings[0].side(), c.warnings[0].t), (Side::Client, 1.0));
+
+    begin(&mut perf, 10.0, &scratch.0, &no_samples());
+    perf.stop_with_gpu(11.0, R::Normal, Some(readout()));
+    let c = read(&perf.take_saved(true).pop().unwrap().unwrap().path);
+    assert!(c.gpu.is_empty() && c.warnings.is_empty());
+    assert_eq!(c.start[0].options.as_ref().unwrap().gpu(), GpuMode::Off);
+}
+
+#[test]
+fn the_window_asks_for_the_timings_once_when_it_ends_the_capture() {
+    let scratch = Scratch::new("gpu-window");
+    let mut perf = ClientPerf::new(SLOW_FRAME_MS);
+    let options = StartOptions {
+        seconds: Some(1),
+        ..gpu_options(GpuSwitch::Passes)
+    };
+    begin(&mut perf, 0.0, &scratch.0, &options);
+    let mut asked = 0;
+    for i in 0..30 {
+        perf.frame_with_gpu(
+            f64::from(i) / 20.0,
+            16.0,
+            5.0,
+            None,
+            None,
+            WorldCounts::default,
+            || {
+                asked += 1;
+                Some(readout())
+            },
+        );
+    }
+    assert!(!perf.capturing());
+    assert_eq!(asked, 1);
+    let c = read(&perf.take_saved(true).pop().unwrap().unwrap().path);
+    assert_eq!(c.gpu.len(), 1);
+    assert_eq!(c.gpu[0].passes.len(), 2);
+}
+
+#[test]
+fn the_timing_variables_ask_for_passes_and_the_detail_one_for_more() {
+    let set = Some(std::ffi::OsStr::new("1"));
+    assert_eq!(env_gpu(None, None), GpuSwitch::Off);
+    assert_eq!(env_gpu(set, None), GpuSwitch::Passes);
+    assert_eq!(env_gpu(None, set), GpuSwitch::Detail);
+    assert_eq!(env_gpu(set, set), GpuSwitch::Detail);
 }
 
 #[test]

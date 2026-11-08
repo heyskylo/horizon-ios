@@ -366,7 +366,7 @@ message SampleProfile {
   Weights weights = 9;                     // columnar: node, thread, kind, state, slow, context, block, count
 }
 
-message GpuPasses { Side side = 1; GpuDevice device = 2; repeated GpuPass passes = 3; repeated GpuCounter counters = 4; }
+message GpuPasses { Side side = 1; GpuDevice device = 2; repeated GpuPass passes = 3; repeated GpuCounter counters = 4; GpuSource source = 5; }
 message NetTraffic { Side side = 1; float block_s = 2; repeated PlayerTraffic players = 3; }
 message WorldSnapshot { Side side = 1; double t = 2; uint32 label = 3; repeated DimensionCounts dims = 4; repeated EntityCost entity_costs = 5; }
 message BenchResult { Side side = 1; string format = 2; string report_json = 3; string corpus_id = 4; }
@@ -419,6 +419,13 @@ Notes on fields:
 - `GpuPasses` holds `PassTiming` medians, C's dispatch parts and counters, `parts_mode` and `fragment_unit` (as
   `perf/gpu-pass-detail-output:…/pack_timing.rs:852`), plus adapter, backend and driver. The per-frame GPU time is the
   `frame_gpu_ms_p50` health field.
+  - **As built (G1):** one `GpuPasses` per timer (`source`: Horizon's own passes or the shader pack's), written at stop
+    from the medians over each timer's last 15 timed frames. A pass has `ms` (unset when only its parts or counters
+    were seen), its `parts`, and `GpuCounter`s with the totals, the target's `pixels` and the segments. The device
+    carries `fragment_unit` and `fragments_per_pixel` is derived when reading (`query gpu`), so the unit travels
+    with the counts. `--gpu` without a device that times passes writes `WARNING_CODE_GPU_UNAVAILABLE` and no field.
+    `Options.gpu` records `--gpu` as asked. `HORIZON_SHADER_PACK_TIMING` and `HORIZON_GPU_PASS_DETAIL` start a capture
+    (`--gpu`, `--gpu=detail`) at launch; the renderer no longer reads them.
 - `Mark.name` is the only free text in a capture. It is typed by the person profiling (`profile mark NAME`).
   `Warning`s are codes with numbers, so tools render them in their own language.
 - `BenchResult.report_json` embeds a `horizon-benchmark-report` v1 verbatim (or `scene_replay --json`, with

@@ -137,6 +137,64 @@ def check_env(bins, resources):
         return False
 
 
+def check_gpu(bins, resources):
+    """profile start --gpu: the capture holds the passes' GPU times, or says the device gave none."""
+    work, env = ac.scratch('profile-gpu', resources)
+    ctl, perf, socket = commands(bins, work, env)
+    try:
+        ctl('launch', '--world', 'ProfGpu', '--creative', '--offscreen', '--wait')
+        started = ctl('profile', 'start', '--gpu', '--no-samples')
+        assert started['gpu'] == 'passes', started
+        time.sleep(RUN_S)
+        stopped = ctl('profile', 'stop')
+        file = work / stopped['path']
+        options = perf('query', 'meta', file)['rows'][0]['options']
+        assert options['gpu'] == 'passes', options
+        warnings = [w['code'] for w in perf('query', 'warnings', file)['rows']]
+        if 'WARNING_CODE_GPU_UNAVAILABLE' in warnings:
+            print('PASS: --gpu on a device that gives no pass times writes the warning')
+            return True
+        rows = perf('query', 'gpu', file)['rows']
+        passes = [r for r in rows if r['id'] != 'g:device']
+        assert passes and all(r['ms'] > 0 for r in passes if r['ms'] is not None), rows
+        print(f'PASS: --gpu recorded {len(passes)} passes on {rows[0]["adapter"]}, the biggest {passes[0]["name"]} at {passes[0]["ms"]} ms')
+        return True
+    except (ac.Failed, AssertionError) as e:
+        print(f'FAIL: {e!r}')
+        return False
+    finally:
+        try:
+            ctl('quit')
+        except Exception:
+            pass
+        time.sleep(2)
+
+
+def check_gpu_env(bins, resources):
+    """HORIZON_SHADER_PACK_TIMING starts a capture with the passes timed, written to reports/."""
+    work, env = ac.scratch('profile-gpu-env', resources)
+    env['HORIZON_SHADER_PACK_TIMING'] = '1'
+    ctl, perf, _ = commands(bins, work, env)
+    try:
+        ctl('launch', '--world', 'ProfGpuEnv', '--creative', '--offscreen', '--wait')
+        time.sleep(RUN_S)
+        assert ctl('profile', 'status')['capturing'] is True
+        stopped = ctl('profile', 'stop')
+        options = perf('query', 'meta', work / stopped['path'])['rows'][0]['options']
+        assert options['gpu'] == 'passes' and options['window_s'] is None, options
+        print('PASS: HORIZON_SHADER_PACK_TIMING started a --gpu capture')
+        return True
+    except (ac.Failed, AssertionError) as e:
+        print(f'FAIL: {e!r}')
+        return False
+    finally:
+        try:
+            ctl('quit')
+        except Exception:
+            pass
+        time.sleep(2)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--bin-dir', help='prebuilt horizon-client, horizon-ctl and horizon-perf (default: build with the fast profile)')
@@ -152,7 +210,7 @@ def main():
     resources = lab.RESOURCES.resolve()
     if not (resources / 'horizon-resources.json').exists():
         sys.exit(f'no prepared resources in {resources}')
-    passed = [check_ctl(bins, resources), check_env(bins, resources)]
+    passed = [check_ctl(bins, resources), check_env(bins, resources), check_gpu(bins, resources), check_gpu_env(bins, resources)]
     sys.exit(0 if all(passed) else 1)
 
 

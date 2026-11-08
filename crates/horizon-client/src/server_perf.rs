@@ -1,8 +1,11 @@
 //! A side's .hzperf capture (docs/perf-platform.md §3, §4.1), the dedicated server's or the client's, and the always-on health history and slow ring behind it.
+use crate::gfx::pack_timing::GpuReadout;
 use crate::spans::Span;
+use horizon_client_render::perf_gpu;
 use horizon_perf_format::files;
 use horizon_perf_format::v1::{
-    Kind, Mark, Options, Overhead, Side, Start, Stop, StopReason, ThreadSelection, Trigger, Unit,
+    GpuMode, Kind, Mark, Options, Overhead, Side, Start, Stop, StopReason, ThreadSelection,
+    Trigger, Unit, Warning, WarningCode,
 };
 use horizon_perf_format::{
     CounterReporter, Field, FieldSender, Gauges, HealthRecorder, Interner, SlowRecord, SlowRing,
@@ -105,6 +108,8 @@ pub struct CaptureOptions {
     pub levels: Vec<LevelCounts>,
     /// The connections as the capture begins.
     pub wire: Wire,
+    /// Whether the GPU's pass timings are recorded: unspecified on a side without a GPU.
+    pub gpu: GpuMode,
 }
 
 /// What the game gathers as a capture ends.
@@ -117,6 +122,8 @@ pub struct CaptureEnd {
     /// What timing one span and one mob costs on this machine, in nanoseconds.
     pub span_ns: f64,
     pub mob_ns: f64,
+    /// The GPU pass timings, when the capture asked for them.
+    pub gpu: Option<GpuReadout>,
 }
 
 /// A finished capture: where it is and the older files retention removed.
@@ -148,6 +155,7 @@ struct Session {
     block_names: Vec<String>,
     spans: SpanRecorder,
     traffic: TrafficRecorder,
+    gpu: GpuMode,
 }
 
 enum Ending {
@@ -327,6 +335,7 @@ impl ServerPerf {
             block_names: options.block_names,
             spans: SpanRecorder::new(self.role.span_thread, self.role.side, self.role.unit),
             traffic: TrafficRecorder::new(options.wire),
+            gpu: options.gpu,
         };
         let mut start = options.start;
         start.side = self.role.side as i32;
@@ -351,6 +360,7 @@ impl ServerPerf {
             ticks_over_ms: options.sampler.over_ms.filter(|_| sampled),
             wall: sampled && options.sampler.wall,
             samples: sampled,
+            gpu: options.gpu as i32,
             ..start.options.unwrap_or_default()
         });
         if sampled && let Some(build) = &mut start.build {
@@ -521,8 +531,31 @@ impl Session {
         self.tx.send(Field::Spans(summary));
         self.tx.send(Field::Workers(workers));
         self.tx.send(Field::Net(traffic));
+        self.gpu(rel, end.gpu.as_ref());
         self.tx.send(Field::World(world));
         overhead
+    }
+
+    /// Writes the GPU timings the capture asked for, or a warning when there were none.
+    fn gpu(&mut self, rel: f64, readout: Option<&GpuReadout>) {
+        if matches!(self.gpu, GpuMode::Unspecified | GpuMode::Off) {
+            return;
+        }
+        let sections = readout.map_or_else(Vec::new, |r| {
+            perf_gpu::gpu_passes(r, self.side, &mut self.strings)
+        });
+        self.entries();
+        if sections.is_empty() {
+            self.tx.send(Field::Warning(Warning {
+                side: self.side as i32,
+                t: rel,
+                code: WarningCode::GpuUnavailable as i32,
+                args: Vec::new(),
+            }));
+        }
+        for gpu in sections {
+            self.tx.send(Field::Gpu(gpu));
+        }
     }
 
     fn slow(&mut self, record: &SlowRecord) {
