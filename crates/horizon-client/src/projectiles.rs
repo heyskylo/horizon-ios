@@ -213,6 +213,10 @@ pub struct Projectile {
     pub previous_pitch: f32,
     pub age: u32,
     pub stuck: bool,
+    /// `Entity.stuckSpeedMultiplier`: set by a cobweb or powder snow its box
+    /// passed through on a block's push (`makeStuckInBlock`); the next push
+    /// (`Entity.move`) then stops it dead. Zero: not stuck.
+    pub stuck_speed: Vec3,
     /// Whether the projectile has left its owner's box (Projectile.leftOwner).
     pub left_owner: bool,
     /// Non-arrow Projectile.hasBeenShot, independent of entity age.
@@ -265,6 +269,15 @@ pub enum Hit {
 }
 /// The world a projectile flies through: block ray clipping, water, and
 /// the boxes of entities it could hit.
+/// The speed multiplier `makeStuckInBlock` gives an entity in block `name`
+/// (`WebBlock.entityInside`, `PowderSnowBlock.entityInside`), if any.
+pub fn stuck_speed_of(name: &str) -> Option<Vec3> {
+    match name {
+        "minecraft:cobweb" => Some(Vec3::new(0.25, f64::from(0.05_f32), 0.25)),
+        "minecraft:powder_snow" => Some(Vec3::new(f64::from(0.9_f32), 1.5, f64::from(0.9_f32))),
+        _ => None,
+    }
+}
 pub trait ProjectileWorld {
     fn clip(&self, from: Vec3, to: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])>;
     /// `Entity.isInWater` as `updateFluidInteraction` sets it: some water
@@ -293,6 +306,11 @@ pub trait ProjectileWorld {
     /// column's `drag`, and whether nothing is above it (its surface, where
     /// it throws harder); None for any other block.
     fn bubble_column(&self, _p: [i32; 3]) -> Option<(bool, bool)> {
+        None
+    }
+    /// `entityInside`'s `makeStuckInBlock` for the block at `p`: a cobweb's
+    /// or powder snow's speed multiplier, None for any other block.
+    fn stuck_speed(&self, _p: [i32; 3]) -> Option<Vec3> {
         None
     }
 }
@@ -416,6 +434,7 @@ impl Projectile {
             previous_pitch: 0.0,
             age: 0,
             stuck: false,
+            stuck_speed: Vec3::ZERO,
             left_owner: false,
             has_been_shot: false,
             shoot_event: None,
@@ -1163,10 +1182,38 @@ impl Projectile {
             self.bounds(),
         );
         self.fire_tick(w);
+        self.stuck_tick(w, from);
         if !base_first {
             self.tick_shoot_event();
         }
         result
+    }
+    /// `applyEffectsFromBlocks` after the tick's move, for its cobwebs and
+    /// powder snow (`makeStuckInBlock`): the last such block its box (deflated
+    /// by 1e-5, `checkInsideBlocks`) met between `from` and where it is now
+    /// sets `stuck_speed`, which the next block's push (`Entity.move`) spends.
+    fn stuck_tick(&mut self, w: &impl ProjectileWorld, from: Vec3) {
+        let end = self.bounds();
+        let start = end.move_by(from.subtract(self.position));
+        let lo = Vec3::new(
+            start.min_position().x.min(end.min_position().x) + 1.0e-5,
+            start.min_position().y.min(end.min_position().y) + 1.0e-5,
+            start.min_position().z.min(end.min_position().z) + 1.0e-5,
+        );
+        let hi = Vec3::new(
+            start.max_position().x.max(end.max_position().x) - 1.0e-5,
+            start.max_position().y.max(end.max_position().y) - 1.0e-5,
+            start.max_position().z.max(end.max_position().z) - 1.0e-5,
+        );
+        for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
+            for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
+                for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
+                    if let Some(stuck) = w.stuck_speed([x, y, z]) {
+                        self.stuck_speed = stuck;
+                    }
+                }
+            }
+        }
     }
     /// The first-tick notification branch of vanilla's base projectile tick.
     /// Arrows own this state in ArrowState and follow their separate tick path.

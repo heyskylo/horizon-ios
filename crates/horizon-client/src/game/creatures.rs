@@ -207,6 +207,12 @@ impl ProjectileWorld for ProjWorld<'_, '_> {
     fn empty(&self, p: [i32; 3]) -> bool {
         self.w.facts.is_air(self.w.world.block(p[0], p[1], p[2]))
     }
+    /// `WebBlock.entityInside` and `PowderSnowBlock.entityInside`.
+    fn stuck_speed(&self, p: [i32; 3]) -> Option<Vec3> {
+        horizon_client::projectiles::stuck_speed_of(
+            &self.w.facts.get(self.w.world.block(p[0], p[1], p[2])).name,
+        )
+    }
     fn bubble_column(&self, p: [i32; 3]) -> Option<(bool, bool)> {
         horizon_client::motion::bubble_column_at(
             self.w.world,
