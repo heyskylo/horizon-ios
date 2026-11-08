@@ -15245,7 +15245,15 @@ impl Game<'_> {
                     }
                 }
                 let centre = self.streaming.center;
-                let far = |k: &(i32, i32, i32)| (k.0 - centre.0).pow(2) + (k.2 - centre.1).pow(2);
+                // Section keys count from the world's bottom (`origin`'s min_y + y * 16).
+                let bottom = f64::from(self.world.bottom_y());
+                let cam_y = self
+                    .player
+                    .as_ref()
+                    .map_or(4, |p| ((p.position.y - bottom) / 16.0).floor() as i32);
+                let far = |k: &(i32, i32, i32)| {
+                    (k.0 - centre.0).pow(2) + (k.1 - cam_y).pow(2) + (k.2 - centre.1).pow(2)
+                };
                 pending.sort_unstable_by_key(|(k, _)| std::cmp::Reverse(far(k)));
                 let (limit, budget) = if budgeted {
                     (

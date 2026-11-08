@@ -8673,7 +8673,7 @@ impl Renderer {
                 let mut boxed = Vec::new();
                 self.sections
                     .visible(camera, radius, &light, |_| true, |_, _| false, &mut boxed);
-                let seen: std::collections::HashSet<_> =
+                let seen: crate::fast_hash::FxHashSet<_> =
                     shadow_visible.iter().map(|s| s.key).collect();
                 shadow_visible.extend(boxed.into_iter().filter(|s| !seen.contains(&s.key)));
             });
@@ -12730,11 +12730,8 @@ impl Frustum {
     /// Whether the camera-relative box `min..max` is at least partly inside.
     pub fn intersects(&self, min: Vec3, max: Vec3) -> bool {
         !self.planes.iter().any(|p| {
-            let v = Vec3::new(
-                if p.x >= 0.0 { max.x } else { min.x },
-                if p.y >= 0.0 { max.y } else { min.y },
-                if p.z >= 0.0 { max.z } else { min.z },
-            );
+            let sign = p.truncate().cmpge(Vec3::ZERO);
+            let v = Vec3::select(sign, max, min);
             p.truncate().dot(v) + p.w < 0.0
         })
     }
@@ -12757,11 +12754,8 @@ impl Frustum {
             return true;
         }
         !self.planes[4..].iter().any(|p| {
-            let v = Vec3::new(
-                if p.x >= 0.0 { max.x } else { min.x },
-                if p.y >= 0.0 { max.y } else { min.y },
-                if p.z >= 0.0 { max.z } else { min.z },
-            );
+            let sign = p.truncate().cmpge(Vec3::ZERO);
+            let v = Vec3::select(sign, max, min);
             p.truncate().dot(v) + p.w < 0.0
         })
     }
@@ -12771,11 +12765,8 @@ impl Frustum {
     /// rounding keeps that order.
     pub fn contains(&self, min: Vec3, max: Vec3) -> bool {
         self.planes.iter().all(|p| {
-            let v = Vec3::new(
-                if p.x >= 0.0 { min.x } else { max.x },
-                if p.y >= 0.0 { min.y } else { max.y },
-                if p.z >= 0.0 { min.z } else { max.z },
-            );
+            let sign = p.truncate().cmpge(Vec3::ZERO);
+            let v = Vec3::select(sign, min, max);
             p.truncate().dot(v) + p.w >= 0.0
         })
     }
