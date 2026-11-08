@@ -1004,9 +1004,9 @@ use horizon_client::mod_api::EntityDataValue;
 use horizon_client::mod_api::WorldHold;
 use horizon_client::mod_api::{
     self, BlockProperties, HudMode, NativeBossBar, NativeCamera, NativeCommand, NativeDispensed,
-    NativeFluidAction, NativeFluidDrain, NativeFluidStack, NativeFluidTankView,
-    NativeLifecycleContext, NativeNoteBlockChange, NativeServerPlayer, RecipeBookCategory,
-    ServerTickPhase, TickSpan, WorldPhase,
+    NativeFishingMedium, NativeFluidAction, NativeFluidDrain, NativeFluidStack,
+    NativeFluidTankView, NativeLifecycleContext, NativeNoteBlockChange, NativeServerPlayer,
+    RecipeBookCategory, ServerTickPhase, TickSpan, WorldPhase,
 };
 use horizon_client::mod_api::{AttachmentResult, Attachments, Holder, LayerDefinition, Suggestion};
 pub(crate) use horizon_client::mod_api::{
@@ -3888,6 +3888,35 @@ impl Game<'_> {
             canceled,
         );
     }
+    /// `native_screen_mouse_dragged_pre` with the game lent mutably, so a
+    /// mod can act on the drag where it happens (click the slot it entered,
+    /// as Mouse Tweaks-style mods do), where v1 can only read and cancel.
+    /// The view can't be lent with the game: `screen` is its `id` and
+    /// `mouse` its pointer in GUI pixels; read the rest from the game.
+    /// `button`, `delta` and `modifiers` are v1's. Heard at the same point,
+    /// just before v1, for the same drags; set `canceled` and no screen drag
+    /// handler runs and v1 hears nothing of this move. v1 keeps its
+    /// signature and firing point. @API:screen_mouse_input_v2@.
+    pub(super) fn native_screen_mouse_dragged_pre_v2(
+        &mut self,
+        screen: &str,
+        mouse: [f32; 2],
+        button: i32,
+        delta: [f32; 2],
+        modifiers: u32,
+        canceled: &mut bool,
+    ) {
+        mod_api::dispatch_screen_mouse_dragged_pre_v2(
+            self,
+            mod_api::mods(),
+            screen,
+            mouse,
+            button,
+            delta,
+            modifiers,
+            canceled,
+        );
+    }
     /// The wheel turned over the open screen (`ScreenEvent.MouseScrolled.Pre`,
     /// vanilla's `Screen.mouseScrolled`): `screen` is the screen it is,
     /// `screen.mouse` where the pointer is (so there is no position of its
@@ -3924,6 +3953,33 @@ impl Game<'_> {
             self,
             mod_api::mods(),
             screen,
+            scroll,
+            modifiers,
+            canceled,
+        );
+    }
+    /// `native_screen_mouse_scrolled_pre` with the game lent mutably, so a
+    /// mod can act on the wheel where it turns (move items between slots,
+    /// one per notch), where v1 can only read and cancel. The view can't be
+    /// lent with the game: `screen` is its `id` and `mouse` its pointer in
+    /// GUI pixels; read the rest from the game. `scroll` and `modifiers` are
+    /// v1's. Heard at the same point, just before v1, for the same wheel
+    /// turns; set `canceled` and nothing the screen would scroll moves (the
+    /// bundle under the pointer included) and v1 hears nothing of this turn.
+    /// v1 keeps its signature and firing point. @API:screen_mouse_input_v2@.
+    pub(super) fn native_screen_mouse_scrolled_pre_v2(
+        &mut self,
+        screen: &str,
+        mouse: [f32; 2],
+        scroll: [f64; 2],
+        modifiers: u32,
+        canceled: &mut bool,
+    ) {
+        mod_api::dispatch_screen_mouse_scrolled_pre_v2(
+            self,
+            mod_api::mods(),
+            screen,
+            mouse,
             scroll,
             modifiers,
             canceled,
@@ -4101,7 +4157,7 @@ impl Game<'_> {
         // left down, right down, left up sends no drag while right is still held.
         self.drag_button = pressed.then_some(button);
     }
-    pub(super) fn screen_mouse_dragged(&self, previous: (f32, f32)) -> bool {
+    pub(super) fn screen_mouse_dragged(&mut self, previous: (f32, f32)) -> bool {
         if self.pad_synthetic_input() || self.cursor == previous {
             return false;
         }
@@ -4111,17 +4167,24 @@ impl Game<'_> {
         else {
             return false;
         };
+        let Some((id, mouse)) = self.screen_view_now().map(|s| (s.id, s.mouse)) else {
+            return false;
+        };
+        let (button, modifiers) = (
+            super::glfw_button(button),
+            super::glfw_modifiers(self.modifiers),
+        );
+        let delta = [self.cursor.0 - previous.0, self.cursor.1 - previous.1];
+        let mut canceled = false;
+        self.native_screen_mouse_dragged_pre_v2(id, mouse, button, delta, modifiers, &mut canceled);
+        if canceled {
+            return true;
+        }
+        // v2 may have changed or closed the screen: v1 hears it as it is now.
         let Some(screen) = self.screen_view_now() else {
             return false;
         };
-        let mut canceled = false;
-        self.native_screen_mouse_dragged_pre(
-            &screen,
-            super::glfw_button(button),
-            [self.cursor.0 - previous.0, self.cursor.1 - previous.1],
-            super::glfw_modifiers(self.modifiers),
-            &mut canceled,
-        );
+        self.native_screen_mouse_dragged_pre(&screen, button, delta, modifiers, &mut canceled);
         canceled
     }
     /// A screen the native mods' input hooks are for is open: the window has a
@@ -7793,6 +7856,33 @@ impl Game<'_> {
             face,
         );
     }
+    /// Whether the fishing bobber `hook` (its entity id) at `position` in the level
+    /// `dimension`, flying or floating and not in water, is over something a mod lets it fish
+    /// in: lava, the void below an island, a cloud. `owner` is where the player who cast it
+    /// stands (their feet), when known. The first mod to answer `Some` makes the spot a
+    /// medium: below its `surface` the bobber floats and fishes as in still water, and a catch
+    /// rolls its `loot_table`. No answer leaves vanilla's: the bobber falls. Asked each tick on
+    /// the server, with the player's state swapped in, and on each client that draws the
+    /// bobber (`owner` None for another player's when they are out of sight), so both move it
+    /// alike; answer from the world and `owner`, the same on both. @API:fishing_medium@.
+    pub(super) fn native_fishing_medium(
+        &mut self,
+        dimension: &str,
+        hook: u32,
+        position: [f64; 3],
+        owner: Option<[f64; 3]>,
+        medium: &mut Option<NativeFishingMedium>,
+    ) {
+        mod_api::dispatch_fishing_medium(
+            self,
+            mod_api::mods(),
+            dimension,
+            hook,
+            position,
+            owner,
+            medium,
+        );
+    }
     /// `native_living_incoming_damage` with who the hit names (NeoForge's
     /// `LivingIncomingDamageEvent`, Bukkit's `EntityDamageEvent` and `EntityDamageByEntityEvent`):
     /// `LivingEntity.hurtServer`, past its guards, is about to hurt `victim` (its entity id) of
@@ -7848,6 +7938,48 @@ impl Game<'_> {
         slots: &mut Vec<Option<ItemStack>>,
     ) {
         mod_api::dispatch_menu_input_closed(self, mod_api::mods(), uuid, window, slots);
+    }
+    /// Recipe placement into the crafting grid of a mod menu type
+    /// (`crafting`, docs/mods.md) open at `pos`, the recipe book's or a
+    /// recipe viewer's (`native_place_recipe`, `native_transfer_recipe`), by
+    /// `player`: push the positions of block containers the placement may
+    /// also take ingredients from onto `sources`, as a crafting station takes
+    /// them from the chests beside it. `menu` is the menu type (`<id>:<name>`).
+    /// Chests, barrels, shulker boxes, hoppers, dispensers, droppers and mod
+    /// containers in the player's level count; others, the menu's own block
+    /// and repeats are passed by, and at most 64 are used. The placement takes
+    /// from the player's inventory first, then the sources in order; what the
+    /// grid held goes back to the player as vanilla's does. No answer keeps
+    /// vanilla's placement. Server-side. API @API:recipe_sources@.
+    pub(super) fn native_recipe_sources(
+        &mut self,
+        player: u128,
+        menu: &str,
+        pos: [i32; 3],
+        sources: &mut Vec<[i32; 3]>,
+    ) {
+        mod_api::dispatch_recipe_sources(self, mod_api::mods(), player, menu, pos, sources);
+    }
+    /// The containers whose slots the linked slots (`links`, docs/mods.md)
+    /// of a mod menu type open at `pos` show to `player`: push their
+    /// positions onto `links`, in order, as a crafting station shows the
+    /// chests beside it. `menu` is the menu type (`<id>:<name>`). Asked on
+    /// the server each tick while the menu is open, so what it links may
+    /// change (a tab the player picked, a chest placed or broken). Chests,
+    /// barrels, shulker boxes, hoppers, dispensers, droppers and mod
+    /// containers in the player's level count; others, the menu's own block
+    /// and repeats are passed by, and at most 64 are used. Their slots fill
+    /// the linked slots in order (a double chest's two halves: push both,
+    /// the first half first); linked slots past them hold nothing and take
+    /// nothing. Server-side. API @API:menu_links@.
+    pub(super) fn native_menu_links(
+        &mut self,
+        player: u128,
+        menu: &str,
+        pos: [i32; 3],
+        links: &mut Vec<[i32; 3]>,
+    ) {
+        mod_api::dispatch_menu_links(self, mod_api::mods(), player, menu, pos, links);
     }
     /// Once a server tick, after `ServerTickEnd`, the play packets one
     /// player's connection sent (`outbound`) or received since the last tick
@@ -11432,14 +11564,15 @@ impl Game<'_> {
         self.known_displays()
     }
     /// Places a recipe in the open screen's grid as a click in the recipe
-    /// book does (`ServerboundPlaceRecipePacket`): the inventory's grid or a
-    /// crafting table's. `all` places as many as the items allow, as with
+    /// book does (`ServerboundPlaceRecipePacket`): the inventory's grid, a
+    /// crafting table's or a mod menu type's crafting grid. `all` places as many as the items allow, as with
     /// Shift. Refused while no such screen is open and for a recipe the
     /// player's book doesn't hold; one missing items shows as a ghost.
     pub(super) fn native_place_recipe(&mut self, book_id: i32, all: bool) -> Result<(), String> {
         self.recipe_place(book_id, all)
     }
-    /// Move ingredients for a viewer recipe into the open crafting grid.
+    /// Move ingredients for a viewer recipe into the open crafting grid (the
+    /// inventory's, a crafting table's or a mod menu type's).
     /// Unlike the recipe book click, this doesn't require learning the recipe.
     pub(super) fn native_transfer_recipe(&mut self, book_id: i32) {
         self.transfer_viewer_recipe(book_id);
@@ -12293,6 +12426,12 @@ impl Game<'_> {
     }
     /// A native mod's command.
     pub(super) fn client_mod_command(&mut self, command: &str) -> bool {
+        // A guest's turn never reaches these: client-side mod commands belong
+        // to the local player, and vanilla has no path for a remote player to
+        // run them (a guest's commands run at their permission level instead).
+        if self.lan_acting.is_some() {
+            return false;
+        }
         let mut ran = false;
         self.native_command(command, &mut ran);
         ran

@@ -144,8 +144,6 @@ struct EndFlash {
     old_intensity: f32,
     x_angle: f32,
     y_angle: f32,
-    /// Ticks until the delayed weather.end_flash sound.
-    sound_in: Option<u32>,
 }
 impl EndFlash {
     fn tick(&mut self, clock: i64) {
@@ -169,9 +167,10 @@ impl EndFlash {
         } else {
             0.0
         };
-        if self.intensity > 0.0 && self.old_intensity <= 0.0 {
-            self.sound_in = Some(30);
-        }
+    }
+    /// `EndFlashState.flashStartedThisTick`.
+    fn started_this_tick(&self) -> bool {
+        self.intensity > 0.0 && self.old_intensity <= 0.0
     }
     fn intensity(&self, partial: f32) -> f32 {
         self.old_intensity + (self.intensity - self.old_intensity) * partial
@@ -298,6 +297,17 @@ impl EyeOfEnder {
 }
 
 impl Game<'_> {
+    /// The environment attributes the frame draws: the packs' Polytone layers over the
+    /// current dimension's, when a pack has some. Gameplay keeps `dim_environment`.
+    pub(super) fn view_environment(&self) -> &Environment {
+        match (&self.pack.environments, self.dim) {
+            (Some(e), Dim::Overworld) => &e[0],
+            (Some(e), Dim::Nether) => &e[1],
+            (Some(e), Dim::End) => &e[2],
+            (None, _) => self.dim_environment(),
+        }
+    }
+
     /// The environment attributes of the current dimension.
     pub(super) fn dim_environment(&self) -> &Environment {
         match self.dim {
@@ -509,6 +519,31 @@ impl Game<'_> {
         None
     }
 
+    /// `ClientLevel.tick`'s End flash, on every client in the End:
+    /// `EndFlashState.tick`, and when a flash starts (not under the credits)
+    /// its `DirectionalSoundInstance`, played 30 ticks later from the camera
+    /// toward the flash.
+    pub(super) fn tick_end_flash(&mut self) {
+        if self.dimension_type().skybox != horizon_world::dimension_type::Skybox::End {
+            return;
+        }
+        // getDefaultClockTime: the End's own clock (the client keeps the
+        // dimension's default clock in day_time), not the game time.
+        self.end.flash.tick(self.world.day_time);
+        if self.end.flash.started_this_tick() && self.win.is_none() {
+            let flash = &self.end.flash;
+            let instance = horizon_client::sound_engine::SoundInstance::directional(
+                "minecraft:weather.end_flash",
+                horizon_client::sound_engine::WEATHER,
+                horizon_client::random_source::create(),
+                self.audio.listener,
+                flash.x_angle,
+                flash.y_angle,
+            );
+            self.audio.play_instance_after(instance, 30);
+        }
+    }
+
     /// End portals, End gateways and the exit portal, once per tick.
     pub(super) fn tick_end(&mut self) -> Result<()> {
         self.end.gateway_cooldown = self.end.gateway_cooldown.saturating_sub(1);
@@ -524,17 +559,6 @@ impl Game<'_> {
         self.native_joins_flush(false, 0);
         self.tick_crystals();
         self.tick_eyes();
-        if self.dimension_type().skybox == horizon_world::dimension_type::Skybox::End {
-            self.end.flash.tick(self.world.game_time);
-            if let Some(n) = self.end.flash.sound_in.as_mut() {
-                *n = n.saturating_sub(1);
-                if *n == 0 {
-                    self.end.flash.sound_in = None;
-                    self.audio
-                        .play("minecraft:weather.end_flash", None, 1.0, 1.0);
-                }
-            }
-        }
         if self.dimension_type().has_ender_dragon_fight {
             self.ensure_exit_portal()?;
         }
@@ -1223,6 +1247,12 @@ impl Game<'_> {
         let pitch = 0.33 + r * (0.5 - 0.33);
         self.audio
             .play("minecraft:entity.ender_eye.launch", Some(at), 1.0, pitch);
+        // CriteriaTriggers.USED_ENDER_EYE, against the feature's block.
+        let (dx, dz) = (
+            at[0] - f64::from(nearest.x * 16),
+            at[2] - f64::from(nearest.z * 16),
+        );
+        self.trigger_used_ender_eye(dx * dx + dz * dz);
         self.consume_held();
         self.award_stat("used", "minecraft:ender_eye", 1);
         self.swing_arm();
@@ -1348,7 +1378,10 @@ impl Game<'_> {
     /// `EndGatewayBlock.entityInside` for the items, mobs and thrown ender
     /// pearls in the End: the gateway blocks their box swept through. A
     /// gateway that is cooling down (`TheEndGatewayBlockEntity.triggerCooldown`)
-    /// takes nobody in.
+    /// takes nobody in. `entityInside` comes from the entity's own tick
+    /// (`applyEffectsFromBlocks`), and `ServerLevel.tick` ticks only the
+    /// entities in entity-ticking chunks: one past the simulation distance
+    /// enters none (and costs nothing here, however many lie there).
     pub(super) fn find_end_gateway_portals(&mut self) {
         if self.remote.is_some() || self.dim != Dim::End {
             return;
@@ -1356,20 +1389,23 @@ impl Game<'_> {
         let is_gateway = |game: &Self, p: BlockPos| {
             &*game.res.facts().get(game.world.block(p.x, p.y, p.z)).name == "minecraft:end_gateway"
         };
+        let ticking = self.entity_ticking_area();
+        let ticks = |at: Vec3| ticking(at.x.floor() as i32, at.z.floor() as i32);
         let items: Vec<(u32, Vec3, f32, f32)> = self
             .dropped
             .iter()
+            .filter(|e| ticks(e.position))
             .map(|e| (e.id, e.position, 0.25, 0.25))
             .collect();
         let mobs: Vec<(u32, Vec3, f32, f32)> = self
             .mobs
             .iter()
-            .filter(|m| self.mob_can_use_portal(m))
+            .filter(|m| ticks(m.position) && self.mob_can_use_portal(m))
             .map(|m| (m.id, m.position, m.width(), m.height()))
             .chain(
                 self.boats
                     .iter()
-                    .filter(|b| self.vehicle_can_use_portal(b.id))
+                    .filter(|b| ticks(b.position) && self.vehicle_can_use_portal(b.id))
                     .map(|b| {
                         (
                             b.id,
@@ -1382,7 +1418,7 @@ impl Game<'_> {
             .chain(
                 self.carts
                     .iter()
-                    .filter(|c| self.vehicle_can_use_portal(c.id))
+                    .filter(|c| ticks(c.position) && self.vehicle_can_use_portal(c.id))
                     .map(|c| {
                         (
                             c.id,
@@ -1408,6 +1444,7 @@ impl Game<'_> {
             .creatures
             .projectiles
             .iter()
+            .filter(|p| ticks(p.position))
             .filter_map(|p| {
                 let pos = horizon_client::end_gateway::pearl_gateway(p, |b| is_gateway(self, b))?;
                 Some((p.id, p.owner, p.guest, pos))
@@ -1451,33 +1488,43 @@ impl Game<'_> {
     /// `Entity.handlePortal` for the entities in an End gateway: they go
     /// through to the gateway's exit, where they wait for its chunks.
     pub(super) fn handle_end_gateway_portals(&mut self) {
-        if self.remote.is_some() || self.dim != Dim::End {
+        // Nobody in a gateway (nearly always): nothing to look up.
+        if self.remote.is_some() || self.dim != Dim::End || self.end.gateways.is_empty() {
             return;
         }
-        let ids: Vec<(u32, bool)> = self
+        // `handlePortal` runs in the entity's tick: one past the simulation
+        // distance waits in its gateway, its state kept as it is.
+        let ticking = self.entity_ticking_area();
+        let ticks = |at: Vec3| ticking(at.x.floor() as i32, at.z.floor() as i32);
+        let ids: Vec<(u32, bool, bool)> = self
             .dropped
             .iter()
-            .map(|e| (e.id, true))
-            .chain(self.mobs.iter().map(|m| (m.id, self.mob_can_use_portal(m))))
+            .map(|e| (e.id, true, ticks(e.position)))
+            .chain(
+                self.mobs
+                    .iter()
+                    .map(|m| (m.id, self.mob_can_use_portal(m), ticks(m.position))),
+            )
             .chain(
                 self.boats
                     .iter()
-                    .map(|b| (b.id, self.vehicle_can_use_portal(b.id))),
+                    .map(|b| (b.id, self.vehicle_can_use_portal(b.id), ticks(b.position))),
             )
             .chain(
                 self.carts
                     .iter()
-                    .map(|c| (c.id, self.vehicle_can_use_portal(c.id))),
+                    .map(|c| (c.id, self.vehicle_can_use_portal(c.id), ticks(c.position))),
             )
             .chain(
                 self.creatures
                     .projectiles
                     .iter()
                     .filter(|p| matches!(p.kind, ProjectileKind::EnderPearl))
-                    .map(|p| (p.id, true)),
+                    .map(|p| (p.id, true, ticks(p.position))),
             )
             .collect();
-        let mut present: std::collections::HashSet<u32> = ids.iter().map(|(id, _)| *id).collect();
+        let mut present: std::collections::HashSet<u32> =
+            ids.iter().map(|(id, _, _)| *id).collect();
         // A pearl waiting for its exit keeps its portal cooldown.
         present.extend(self.end.arrivals.iter().map(|a| match &a.traveller {
             Arriving::Pearl(p) => p.id,
@@ -1485,7 +1532,10 @@ impl Game<'_> {
         }));
         self.end.gateways.retain(|id, _| present.contains(id));
         let mut leaving: Vec<(u32, BlockPos)> = Vec::new();
-        for (id, allowed) in ids {
+        for (id, allowed, ticking) in ids {
+            if !ticking {
+                continue;
+            }
             let Some(state) = self.end.gateways.get_mut(&id) else {
                 continue;
             };
@@ -1674,6 +1724,10 @@ fn eye_quad(
         glint_uv: [0.0, 0.0],
     })
 }
+
+#[cfg(test)]
+#[path = "end_gateway_ticking_tests.rs"]
+mod ticking_tests;
 
 #[cfg(test)]
 mod tests {

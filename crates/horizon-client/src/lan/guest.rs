@@ -958,6 +958,330 @@ pub fn stack_to_network(
 ) -> Option<Stack> {
     network_stack(&item_id, &synced_id, s)
 }
+/// `ProvidesTrimMaterial.STREAM_CODEC`, `ProvidesBannerPatterns.STREAM_CODEC` and
+/// `AdventureModePredicate.STREAM_CODEC`: encode supported typed saved forms.
+/// A failed child discards this entire local buffer, including its prefix.
+fn builtin_component(
+    name: &str,
+    value: &horizon_world::nbt::Tag,
+    ids: &dyn Fn(&str, &str) -> Option<i32>,
+) -> Option<horizon_protocol::item::Component> {
+    use horizon_protocol::buf::Writer;
+    use horizon_world::nbt::Tag;
+    let mut w = Writer::new();
+    match name {
+        "minecraft:provides_trim_material" => match value {
+            Tag::String(name) => {
+                let name = name.to_string().ok()?;
+                let id = ids(
+                    "minecraft:trim_material",
+                    &horizon_world::datafix::dynamic::namespaced(&name),
+                )?;
+                if id < 0 {
+                    return None;
+                }
+                w.varint(id.checked_add(1)?);
+            }
+            Tag::Compound(map) => {
+                if map.keys().any(|k| {
+                    !matches!(
+                        k.to_string().ok().as_deref(),
+                        Some("palette_id" | "description")
+                    )
+                }) {
+                    return None;
+                }
+                let Tag::String(palette) = value.get("palette_id")? else {
+                    return None;
+                };
+                let description @ Tag::String(_) = value.get("description")? else {
+                    return None;
+                };
+                w.varint(0);
+                w.string(&horizon_world::datafix::dynamic::namespaced(
+                    &palette.to_string().ok()?,
+                ));
+                w.bytes(&horizon_world::nbt::write_network(description, Default::default()).ok()?);
+            }
+            _ => return None,
+        },
+        "minecraft:provides_banner_patterns" => {
+            write_holder_set("minecraft:banner_pattern", value, ids, &mut w)?
+        }
+        "minecraft:can_place_on" | "minecraft:can_break" => {
+            let predicates = match value {
+                Tag::List(list) if !list.is_empty() => list.as_slice(),
+                Tag::Compound(_) => std::slice::from_ref(value),
+                _ => return None,
+            };
+            w.varint(i32::try_from(predicates.len()).ok()?);
+            for predicate in predicates {
+                write_block_predicate(predicate, ids, &mut w)?;
+            }
+        }
+        _ => return None,
+    }
+    Some(horizon_protocol::item::Component::Raw(w.data))
+}
+
+/// `ByteBufCodecs.holderSet`: tags or direct registry entries, without item-id remapping.
+fn write_holder_set(
+    registry: &str,
+    value: &horizon_world::nbt::Tag,
+    ids: &dyn Fn(&str, &str) -> Option<i32>,
+    w: &mut horizon_protocol::buf::Writer,
+) -> Option<()> {
+    use horizon_world::nbt::Tag;
+    if let Tag::String(name) = value {
+        let name = name.to_string().ok()?;
+        if let Some(tag) = name.strip_prefix('#') {
+            if tag.is_empty() {
+                return None;
+            }
+            w.varint(0);
+            w.string(&horizon_world::datafix::dynamic::namespaced(tag));
+            return Some(());
+        }
+    }
+    let entries = match value {
+        Tag::List(list) => list.as_slice(),
+        Tag::String(_) => std::slice::from_ref(value),
+        _ => return None,
+    };
+    w.varint(i32::try_from(entries.len()).ok()?.checked_add(1)?);
+    for entry in entries {
+        let Tag::String(name) = entry else {
+            return None;
+        };
+        let name = name.to_string().ok()?;
+        if name.starts_with('#') {
+            return None;
+        }
+        let id = ids(
+            registry,
+            &horizon_world::datafix::dynamic::namespaced(&name),
+        )?;
+        if id < 0 {
+            return None;
+        }
+        w.varint(id);
+    }
+    Some(())
+}
+
+/// `BlockPredicate.STREAM_CODEC`: every admitted field is a conjunction.
+fn write_block_predicate(
+    value: &horizon_world::nbt::Tag,
+    ids: &dyn Fn(&str, &str) -> Option<i32>,
+    w: &mut horizon_protocol::buf::Writer,
+) -> Option<()> {
+    use horizon_world::nbt::Tag;
+    let Tag::Compound(map) = value else {
+        return None;
+    };
+    if map.keys().any(|k| {
+        !matches!(
+            k.to_string().ok().as_deref(),
+            Some("blocks" | "state" | "nbt" | "components" | "predicates")
+        )
+    }) {
+        return None;
+    }
+    w.bool(value.get("blocks").is_some());
+    if let Some(blocks) = value.get("blocks") {
+        write_holder_set("minecraft:block", blocks, ids, w)?;
+    }
+    w.bool(value.get("state").is_some());
+    if let Some(Tag::Compound(state)) = value.get("state") {
+        // StatePropertiesPredicate's codec iterates a Java HashMap. Keep the
+        // existing map implementation and a private UTF-16 String key adapter.
+        #[derive(PartialEq, Eq)]
+        struct Key<'a>(&'a horizon_world::nbt::JavaString);
+        impl horizon_world::java_hash_map::JavaKey for Key<'_> {
+            fn java_hash(&self) -> i32 {
+                self.0
+                    .0
+                    .iter()
+                    .fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(*c as i32))
+            }
+            fn comparable_compare(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                Some(self.0.cmp(other.0))
+            }
+            fn tie_break(&self, other: &Self) -> std::cmp::Ordering {
+                self.0.cmp(other.0)
+            }
+        }
+        let mut ordered = horizon_world::java_hash_map::JavaHashMap::default();
+        for (key, matcher) in state {
+            ordered.put(Key(key), matcher);
+        }
+        w.varint(i32::try_from(state.len()).ok()?);
+        let mut cursor = ordered.cursor();
+        while let Some((key, matcher)) = ordered.next_entry(&mut cursor).ok()? {
+            w.string(&key.0.to_string().ok()?);
+            match matcher {
+                Tag::String(exact) => {
+                    w.bool(true);
+                    w.string(&exact.to_string().ok()?);
+                }
+                Tag::Compound(range) => {
+                    if range
+                        .keys()
+                        .any(|k| !matches!(k.to_string().ok().as_deref(), Some("min" | "max")))
+                    {
+                        return None;
+                    }
+                    w.bool(false);
+                    for bound in ["min", "max"] {
+                        w.bool(matcher.get(bound).is_some());
+                        if let Some(v) = matcher.get(bound) {
+                            let Tag::String(v) = v else {
+                                return None;
+                            };
+                            w.string(&v.to_string().ok()?);
+                        }
+                    }
+                }
+                _ => return None,
+            }
+        }
+    } else if value.get("state").is_some() {
+        return None;
+    }
+    w.bool(value.get("nbt").is_some());
+    if let Some(nbt) = value.get("nbt") {
+        let parsed;
+        let nbt = if let Tag::String(text) = nbt {
+            let text = text.to_string().ok()?;
+            let (tag, end) = horizon_world::nbt::parse_snbt(&text).ok()?;
+            if !text[end..].trim().is_empty() {
+                return None;
+            }
+            parsed = tag;
+            &parsed
+        } else {
+            nbt
+        };
+        if !matches!(nbt, Tag::Compound(_)) {
+            return None;
+        }
+        w.bytes(&horizon_world::nbt::write_network(nbt, Default::default()).ok()?);
+    }
+    write_matchers(value, ids, w)
+}
+
+/// `DataComponentMatchers.STREAM_CODEC`: bounded exact-name and partial custom-data forms.
+fn write_matchers(
+    value: &horizon_world::nbt::Tag,
+    ids: &dyn Fn(&str, &str) -> Option<i32>,
+    w: &mut horizon_protocol::buf::Writer,
+) -> Option<()> {
+    use horizon_world::nbt::Tag;
+    for (field, expected, registry) in [
+        (
+            "components",
+            "minecraft:custom_name",
+            "minecraft:data_component_type",
+        ),
+        (
+            "predicates",
+            "minecraft:custom_data",
+            "minecraft:data_component_predicate_type",
+        ),
+    ] {
+        let Some(matchers) = value.get(field) else {
+            w.varint(0);
+            continue;
+        };
+        let Tag::Compound(map) = matchers else {
+            return None;
+        };
+        w.varint(i32::try_from(map.len()).ok()?);
+        for (name, matcher) in map {
+            let name = horizon_world::datafix::dynamic::namespaced(&name.to_string().ok()?);
+            if name != expected {
+                return None;
+            }
+            let id = ids(registry, &name)?;
+            if id < 0 {
+                return None;
+            }
+            if field == "components" {
+                let Tag::String(_) = matcher else {
+                    return None;
+                };
+                w.varint(id);
+                w.bytes(&horizon_world::nbt::write_network(matcher, Default::default()).ok()?);
+            } else {
+                let parsed;
+                let compound = if let Tag::String(text) = matcher {
+                    let text = text.to_string().ok()?;
+                    let (tag, end) = horizon_world::nbt::parse_snbt(&text).ok()?;
+                    if !text[end..].trim().is_empty() {
+                        return None;
+                    }
+                    parsed = tag;
+                    &parsed
+                } else {
+                    matcher
+                };
+                if !matches!(compound, Tag::Compound(_)) {
+                    return None;
+                }
+                // The official partial-matcher stream codec consumes a TAG String
+                // here, unlike BlockPredicate's COMPOUND_TAG above.
+                let text = crate::snbt::to_snbt(compound);
+                w.bool(true);
+                w.varint(id);
+                w.bytes(
+                    &horizon_world::nbt::write_network(
+                        &Tag::String(text.as_str().into()),
+                        Default::default(),
+                    )
+                    .ok()?,
+                );
+            }
+        }
+    }
+    Some(())
+}
+
+/// Project actual model holders; a direct definition never needs a registry id.
+fn trim_component(
+    trim: &crate::item_data::Trim,
+    synced_id: &dyn Fn(&str, &str) -> Option<i32>,
+) -> Option<horizon_protocol::item::Component> {
+    use crate::item_data::trim::Holder;
+    use horizon_protocol::item::{Component, TrimHolder, TrimMaterial, TrimPattern};
+    let id = |registry: &str, name: &str| {
+        if name.contains(':') {
+            synced_id(registry, name)
+        } else {
+            synced_id(registry, &format!("minecraft:{name}"))
+        }
+    };
+    let material = match &trim.0 {
+        Holder::Named(name) => TrimHolder::Id(id("minecraft:trim_material", name)?),
+        Holder::Direct(value) => TrimHolder::Direct(TrimMaterial {
+            palette_id: value.palette_id.to_string(),
+            description: value.description.clone(),
+        }),
+    };
+    let pattern = match &trim.1 {
+        Holder::Named(name) => TrimHolder::Id(id("minecraft:trim_pattern", name)?),
+        Holder::Direct(value) => TrimHolder::Direct(TrimPattern {
+            asset_id: value.asset_id.to_string(),
+            description: value.description.clone(),
+            decal: value.decal,
+        }),
+    };
+    Some(match (material, pattern) {
+        (TrimHolder::Id(material), TrimHolder::Id(pattern)) => {
+            Component::Trim { material, pattern }
+        }
+        (material, pattern) => Component::TrimDirect { material, pattern },
+    })
+}
 fn network_stack(
     item_id: &dyn Fn(&str) -> i32,
     synced_id: &dyn Fn(&str, &str) -> Option<i32>,
@@ -1010,6 +1334,33 @@ fn network_stack(
                 horizon_protocol::item::Component::Unit,
             ));
         }
+        // These built-ins use their own stream codecs, not the custom NBT route.
+        for (name, kind) in [
+            (
+                "minecraft:provides_trim_material",
+                horizon_protocol::item::component::PROVIDES_TRIM_MATERIAL,
+            ),
+            (
+                "minecraft:provides_banner_patterns",
+                horizon_protocol::item::component::PROVIDES_BANNER_PATTERNS,
+            ),
+            (
+                "minecraft:can_place_on",
+                horizon_protocol::item::component::CAN_PLACE_ON,
+            ),
+            (
+                "minecraft:can_break",
+                horizon_protocol::item::component::CAN_BREAK,
+            ),
+        ] {
+            if d.other(&format!("!{name}")).is_some() {
+                stack.removed.push(kind);
+            } else if let Some(value) = d.other(name)
+                && let Some(component) = builtin_component(name, value, synced_id)
+            {
+                stack.added.push((kind, component));
+            }
+        }
         for (name, value) in &d.other {
             let (removed, kind) = match name.strip_prefix('!') {
                 Some(kind) => (true, kind),
@@ -1035,24 +1386,12 @@ fn network_stack(
                 horizon_protocol::item::Component::Int(rgb),
             ));
         }
-        // ArmorTrim: both holders as references into the synced registries.
-        if let Some((material, pattern)) = &d.trim {
-            let id = |registry: &str, name: &str| {
-                if name.contains(':') {
-                    synced_id(registry, name)
-                } else {
-                    synced_id(registry, &format!("minecraft:{name}"))
-                }
-            };
-            if let (Some(material), Some(pattern)) = (
-                id("minecraft:trim_material", material),
-                id("minecraft:trim_pattern", pattern),
-            ) {
-                stack.added.push((
-                    horizon_protocol::item::component::TRIM,
-                    horizon_protocol::item::Component::Trim { material, pattern },
-                ));
-            }
+        if let Some(trim) = &d.trim
+            && let Some(component) = trim_component(trim, synced_id)
+        {
+            stack
+                .added
+                .push((horizon_protocol::item::component::TRIM, component));
         }
         // BannerPatternLayers: each pattern a reference into the synced registry;
         // a layer that has none leaves the stack without the component.
@@ -1469,6 +1808,99 @@ mod tests {
     use horizon_protocol::buf::{Codec, Reader, Writer};
     use horizon_protocol::item::{Component, component};
     use horizon_world::nbt::Tag;
+
+    #[test]
+    fn builtin_predicate_streams_keep_typed_conjunctions_and_reject_whole_unknown_forms() {
+        let ids = |registry: &str, name: &str| match (registry, name) {
+            ("minecraft:block", "minecraft:chest") => Some(245),
+            ("minecraft:data_component_type", "minecraft:custom_name") => Some(6),
+            ("minecraft:data_component_predicate_type", "minecraft:custom_data") => Some(4),
+            _ => None,
+        };
+        // Original value boundaries independently consumed by the pinned Java codecs.
+        for (input, expected) in [
+            (
+                r#"{blocks:"minecraft:chest",nbt:"{Lock:{}}"}"#,
+                "010102f50100010a0a00044c6f636b00000000",
+            ),
+            (
+                r#"{blocks:"minecraft:chest",components:{"minecraft:custom_name":"Box"}}"#,
+                "010102f50100000106080003426f7800",
+            ),
+            (
+                r#"{blocks:"minecraft:chest",predicates:{"minecraft:custom_data":{a:1}}}"#,
+                "010102f5010000000101040800057b613a317d",
+            ),
+        ] {
+            let tag = horizon_world::nbt::parse_snbt(input).unwrap().0;
+            let encoded = builtin_component("minecraft:can_break", &tag, &ids).unwrap();
+            let Component::Raw(bytes) = encoded else {
+                panic!("fresh encoding")
+            };
+            let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+            assert_eq!(hex, expected, "{input}");
+            let mut stack = horizon_protocol::item::Stack::new(1, 1);
+            stack
+                .added
+                .push((component::CAN_BREAK, Component::Raw(bytes)));
+            let mut w = Writer::new();
+            horizon_protocol::item::Slot::write(&Some(stack), &mut w);
+            let mut r = Reader::new(&w.data);
+            let decoded = horizon_protocol::item::Slot::read(&mut r).unwrap().unwrap();
+            assert!(decoded.component(component::CAN_BREAK).is_some());
+            assert_eq!(r.remaining(), 0);
+        }
+        for input in [
+            r#"{blocks:"minecraft:chest",unknown:1}"#,
+            r#"{blocks:"minecraft:chest",state:{age:{min:"3",unknown:"7"}}}"#,
+            r#"{blocks:"minecraft:chest",components:{"minecraft:custom_name":"Box","minecraft:damage":1}}"#,
+            r#"{blocks:"minecraft:chest",predicates:{"minecraft:custom_data":{a:1},"minecraft:damage":{}}}"#,
+            r#"[{blocks:"minecraft:chest"},{blocks:"minecraft:missing"}]"#,
+            r#"{blocks:"minecraft:chest",nbt:"{a:1} trailing"}"#,
+        ] {
+            let tag = horizon_world::nbt::parse_snbt(input).unwrap().0;
+            assert!(
+                builtin_component("minecraft:can_break", &tag, &ids).is_none(),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn builtin_removal_markers_survive_actual_saved_stack_adoption() {
+        for (name, kind) in [
+            (
+                "minecraft:provides_trim_material",
+                component::PROVIDES_TRIM_MATERIAL,
+            ),
+            (
+                "minecraft:provides_banner_patterns",
+                component::PROVIDES_BANNER_PATTERNS,
+            ),
+            ("minecraft:can_place_on", component::CAN_PLACE_ON),
+            ("minecraft:can_break", component::CAN_BREAK),
+        ] {
+            let input = Tag::compound([
+                ("id", Tag::String("minecraft:stone".into())),
+                ("count", Tag::Int(1)),
+                (
+                    "components",
+                    Tag::Compound(
+                        [(
+                            format!("!{name}").as_str().into(),
+                            Tag::Compound(Default::default()),
+                        )]
+                        .into(),
+                    ),
+                ),
+            ]);
+            let actual = horizon_items::item_nbt::item_from_nbt(&input).unwrap();
+            assert!(actual.data().unwrap().other(&format!("!{name}")).is_some());
+            let sent = stack_to_network(|_| 1, |_, _| None, &Some(actual)).unwrap();
+            assert_eq!(sent.removed, [kind]);
+            assert!(sent.added.is_empty());
+        }
+    }
 
     #[test]
     fn lore_lines_reach_the_client() {

@@ -171,6 +171,25 @@ impl MobWorld<'_> {
         self.clear_between_for(None, from, to, fluids_block)
     }
     /// The same for an entity whose `getY()` is `feet_y`: `ClipContext` hands
+    #[inline]
+    fn cached_block<'b>(
+        &'b self,
+        cached: &mut Option<((i32, i32), Option<&'b crate::chunk::Chunk>)>,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> BlockStateId {
+        let (cx, cz) = (x >> 4, z >> 4);
+        let chunk = match *cached {
+            Some(((ccx, ccz), c)) if ccx == cx && ccz == cz => c,
+            _ => {
+                let c = self.world.chunks.get(&(cx, cz)).map(|c| c.as_ref());
+                *cached = Some(((cx, cz), c));
+                c
+            }
+        };
+        chunk.map_or(self.world.air, |c| c.block(x & 15, y, z & 15))
+    }
     /// its `CollisionContext.of(entity)` to every block, so scaffolding is
     /// solid for a viewer above it and open for one below.
     fn clear_between_for(
@@ -186,8 +205,9 @@ impl MobWorld<'_> {
             binding: self.collision,
             subject: None,
         };
+        let mut cached = None;
         let result = traverse_blocks(from, to, 512, |p: BlockPos| {
-            let state = self.world.block(p.x, p.y, p.z);
+            let state = self.cached_block(&mut cached, p.x, p.y, p.z);
             if fluids_block && self.facts.get(state).fluid != Fluid::None {
                 return Some(());
             }
@@ -222,7 +242,19 @@ impl MobWorld<'_> {
             binding: self.collision,
             subject: None,
         };
-        let state = |x, y, z| self.world.block(x, y, z);
+        let cached = std::cell::Cell::new(None);
+        let state = |x, y, z| {
+            let (cx, cz) = (x >> 4, z >> 4);
+            let chunk = match cached.get() {
+                Some(((ccx, ccz), c)) if ccx == cx && ccz == cz => c,
+                _ => {
+                    let c = self.world.chunks.get(&(cx, cz)).map(|c| c.as_ref());
+                    cached.set(Some(((cx, cz), c)));
+                    c
+                }
+            };
+            chunk.map_or(self.world.air, |c| c.block(x & 15, y, z & 15))
+        };
         visual_clip(self.facts, self.collision, &mut scene, &state, from, to)
     }
     /// Level.clip with COLLIDER shapes and no fluids: where the segment
@@ -233,8 +265,9 @@ impl MobWorld<'_> {
             binding: self.collision,
             subject: None,
         };
+        let mut cached = None;
         let result = traverse_blocks(from, to, 512, |p: BlockPos| {
-            let state = self.world.block(p.x, p.y, p.z);
+            let state = self.cached_block(&mut cached, p.x, p.y, p.z);
             if self.facts.is_air(state) {
                 return None;
             }
@@ -254,8 +287,9 @@ impl MobWorld<'_> {
             binding: self.collision,
             subject: None,
         };
+        let mut cached = None;
         let result = traverse_blocks(from, to, 512, |p: BlockPos| {
-            let state = self.world.block(p.x, p.y, p.z);
+            let state = self.cached_block(&mut cached, p.x, p.y, p.z);
             if self.facts.is_air(state) {
                 return None;
             }

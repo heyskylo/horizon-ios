@@ -3,6 +3,7 @@
 use super::*;
 use horizon_launcher::browser::horizon::pack as horizon_pack;
 use horizon_launcher::modpacks::{self, Imported};
+use horizon_launcher::other_launchers::Found;
 use horizon_port_pack::report::Status;
 use std::path::PathBuf;
 
@@ -132,9 +133,27 @@ impl Launcher {
         self.start_client(tag);
     }
 
-    /// Reads the imported packs, once (the sidebar and the Modpacks tab both show them).
+    /// Looks for other launchers' modpacks on a thread: their folders can be slow to read.
+    fn scan_found_packs(&mut self) {
+        if self.found_scanning {
+            return;
+        }
+        self.found_scanning = true;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            use horizon_launcher::sources::{Folders, Os};
+            let found = Folders::current()
+                .map(|f| modpacks::found_on_this_computer(Os::current(), &f))
+                .unwrap_or_default();
+            let _ = tx.send(Msg::FoundPacks(found));
+        });
+    }
+
+    /// Reads the imported packs, once (the sidebar and the Modpacks tab both show them), and
+    /// looks again for other launchers' modpacks.
     pub(super) fn load_packs(&mut self) {
         if self.packs_loaded.is_none() {
+            self.scan_found_packs();
             self.mods.report_list.reset();
             self.packs = modpacks::list();
             self.registry_packs = horizon_pack::list();
@@ -174,10 +193,11 @@ impl Launcher {
                  Horizon ports what it can on this computer, from your own downloads, and plays \
                  the pack as its own profile. Nothing is uploaded or shared.",
             )));
-        let mut page = div()
-            .flex()
-            .flex_col()
-            .gap(px(16.))
+        let mut page = div().flex().flex_col().gap(px(16.));
+        if !self.found_packs.is_empty() {
+            page = page.child(self.found_pack_rows(cx));
+        }
+        page = page
             .child(section_title("Your modpacks", "archive", &t))
             .child(actions);
         if busy || !self.pack_log.is_empty() {
@@ -227,6 +247,50 @@ impl Launcher {
             Some(detail) => page.child(detail),
             None => page,
         }
+    }
+
+    /// Other launchers' modpacks on this computer, each imported with one click the way "Import
+    /// an instance folder…" imports it, or opened once it is.
+    fn found_pack_rows(&self, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let mut list = div().flex().flex_col();
+        for (i, found) in self.found_packs.iter().enumerate() {
+            let slug = modpacks::found_slug(found);
+            let id = format!("found-{i}");
+            let right = if self.packs.iter().any(|p| p.slug == slug) {
+                button(id, "Open", Kind::Ghost, &t).on_click(cx.listener(
+                    move |this, _: &ClickEvent, _, cx| {
+                        this.pack_open = Some(slug.clone());
+                        this.mods.report_list.reset();
+                        cx.notify();
+                    },
+                ))
+            } else if self.pack_busy {
+                disabled(button(id, "Import", Kind::Secondary, &t))
+            } else {
+                let folder = modpacks::found_folder(found);
+                button(id, "Import", Kind::Secondary, &t).on_click(cx.listener(
+                    move |this, _: &ClickEvent, _, cx| {
+                        let folder = folder.clone();
+                        this.pack_job(move |log| modpacks::import(&folder, log));
+                        cx.notify();
+                    },
+                ))
+            };
+            list = list.child(index_row(
+                i + 1,
+                found.name.clone(),
+                Some(found_detail(found, &t).into_any_element()),
+                Some(right.into_any_element()),
+                &t,
+            ));
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(section_title("Found on this computer", "folder", &t))
+            .child(list)
     }
 
     /// The modpacks installed from Horizon's registry: each plays its own profile.
@@ -561,4 +625,11 @@ impl Launcher {
                 .child(list),
         )
     }
+}
+
+/// A found modpack's app, Minecraft version and loader, under its name.
+fn found_detail(found: &Found, t: &Theme) -> Div {
+    text(theme::CAPTION)
+        .text_color(t.muted)
+        .child(modpacks::found_summary(found))
 }

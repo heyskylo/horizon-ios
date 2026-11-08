@@ -8,7 +8,7 @@ use crate::{
     blocks::{BlockFacts, Fluid},
     command::args::GameMode,
     items::ItemStack,
-    particles::{ParticleEngine, ParticleOptions, ParticleType as T, along_axis},
+    particles::{ParticleEngine, ParticleLevel, ParticleOptions, ParticleType as T, along_axis},
     world::World,
 };
 use horizon_core::{
@@ -321,7 +321,7 @@ pub struct AnimateTables {
     pale_oak_logs: Vec<bool>,
     /// `FireBlock.canBurn`: states with ignite odds above zero (none waterlogged).
     burnable: Vec<bool>,
-    /// Biome id -> ambient particles and probabilities (`minecraft:visual/ambient_particles`).
+    /// Biome id -> ambient particles and probabilities from the prepared pack.
     ambient: Vec<Vec<(T, f32)>>,
     /// Per state: 1 for a pointed dripstone, 2 for one whose tip points down.
     dripstone: Vec<u8>,
@@ -600,6 +600,14 @@ fn do_animate_tick(
     }
     let state = ctx.state(pos);
     block_animate_tick(tables, engine, ctx, state, pos, center);
+    // Resource packs' Polytone block emitters (#11486): nothing without such a pack.
+    let level = ParticleLevel {
+        world: ctx.world,
+        facts: ctx.facts,
+        collision: ctx.collision,
+        player: None,
+    };
+    engine.polytone_animate(&level, pos);
     let facts = ctx.facts.get(state);
     if facts.fluid != Fluid::None {
         fluid_animate_tick(
@@ -632,23 +640,16 @@ fn do_animate_tick(
             .chunks
             .get(&(x >> 4, z >> 4))
             .map_or(0, |c| c.biome(x, y, z));
-        // A data pack's biome: its own particles (the tables have the
-        // built-in biomes' files). A type Horizon lacks still draws, so the
-        // others keep their place in the random sequence.
         let info = ctx.biomes.get(biome);
-        let (builtin, pack) = match ctx.biomes.pack_file(&info.name) {
-            Some(_) => (&[][..], &info.ambient_particles[..]),
-            None => (
-                tables
-                    .ambient
-                    .get(biome as usize)
-                    .map_or(&[][..], |l| &l[..]),
-                &[][..],
-            ),
+        let particles: &[(T, f32)] = if ctx.biomes.pack_file(&info.name).is_some() {
+            &info.ambient_particles
+        } else {
+            tables
+                .ambient
+                .get(biome as usize)
+                .map_or(&[][..], Vec::as_slice)
         };
-        let entries = (builtin.iter().map(|&(ty, p)| (Some(ty), p)))
-            .chain(pack.iter().map(|(name, p)| (T::from_name(name), *p)));
-        for (ty, probability) in entries {
+        for &(ty, probability) in particles {
             // AmbientParticle.canSpawn: random.nextFloat() <= probability.
             let random = engine.random();
             if random.next_float() <= probability {
@@ -657,9 +658,7 @@ fn do_animate_tick(
                     f64::from(y) + random.next_double(),
                     f64::from(z) + random.next_double(),
                 ];
-                if let Some(ty) = ty {
-                    add(engine, ty, p, [0.0; 3]);
-                }
+                add(engine, ty, p, [0.0; 3]);
             }
         }
     }

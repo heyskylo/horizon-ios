@@ -764,8 +764,10 @@ impl Mob {
         match who {
             Who::Player => self.spares_players(w),
             Who::Mob(id) => {
-                self.species() == Species::IronGolem
-                    && w.seen(id).is_some_and(|s| s.species == Species::Creeper)
+                // `Mob.canAttack` refuses a Ghast for every mob.
+                w.seen(id).is_some_and(|s| s.species == Species::Ghast)
+                    || (self.species() == Species::IronGolem
+                        && w.seen(id).is_some_and(|s| s.species == Species::Creeper))
             }
         }
     }
@@ -1421,7 +1423,17 @@ impl Goal for MeleeAttack {
         if !self.follow_unseen {
             return !m.ai.nav.is_done();
         }
-        !(t.is_player && t.creative)
+        // `MeleeAttackGoal.canContinueToUse`'s follow branch re-checks
+        // `isWithinHome(target.blockPosition())` and refuses a spectator or
+        // creative player.
+        let target_block = [
+            t.position.x.floor() as i32,
+            t.position.y.floor() as i32,
+            t.position.z.floor() as i32,
+        ];
+        m.ai.home
+            .is_none_or(|(center, radius)| within_home(center, radius, target_block))
+            && !(t.is_player && (t.creative || cx.w.player.as_ref().is_some_and(|p| p.spectator)))
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         let path = m.ai.pending_path.take();
@@ -1866,6 +1878,11 @@ impl Goal for HurtByTarget {
         if m.ai.last_hurt_by_time == self.timestamp {
             return false;
         }
+        // `HurtByTargetGoal.canUse`: with universal anger on, a player's hit
+        // is left to the anger goals, never a direct retaliation.
+        if by == Who::Player && cx.w.universal_anger {
+            return false;
+        }
         if let Who::Mob(id) = by
             && cx
                 .w
@@ -2262,9 +2279,12 @@ impl Goal for Breed {
         }
         let llama = super::llama::is_llama(species);
         let equine = matches!(species, Species::Horse | Species::Donkey) || llama;
+        // Camel.canMate asks AbstractHorse.canParent of both sides: not a
+        // vehicle or a passenger and at full health (a camel is always tame).
+        let camel = species == Species::Camel;
         // AbstractHorse.canParent: tame, an adult, not a vehicle or passenger
         // and at full health.
-        if equine
+        if (equine || camel)
             && (!m.extra.tame
                 || m.is_baby()
                 || m.rider.is_some()
@@ -2287,7 +2307,7 @@ impl Goal for Breed {
                     // Wolf.canMate: a sitting wolf is no partner.
                     && !(species == Species::Wolf && s.sitting)
                     // AbstractHorse.canParent of the partner.
-                    && (!equine || s.tame && !s.ridden && s.health >= s.stats[0] as f32)
+                    && (!(equine || camel) || s.tame && !s.ridden && s.health >= s.stats[0] as f32)
                     && (!sniffer || super::sniffer::can_mate_state(s.variant))
             })
             .map(|s| s.id)
@@ -3259,6 +3279,45 @@ mod peaceful_targets_tests {
             assert!(!wolf.can_keep_target_player(&peaceful, 16.0), "peaceful");
         });
     }
+
+    /// `Mob.canAttack` refuses a Ghast, and `HurtByTargetGoal.canUse` ends
+    /// with `canAttack(lastHurtByMob)`: a ghast's fireball is not retaliated.
+    #[test]
+    fn a_hurt_mob_does_not_retaliate_against_a_ghast() {
+        let mut seen = None;
+        with_test_world(&[], |_, types| {
+            let mob = |id: u32, name: &str, at: Vec3| {
+                Mob::new(id, Arc::new(types.types[name].clone()), at, 0.0)
+            };
+            let ghast = mob(2, "minecraft:ghast", Vec3::new(2.5, 64.0, 0.5));
+            let zombie = mob(3, "minecraft:zombie", Vec3::new(3.5, 64.0, 0.5));
+            seen = Some([ghast.seen(None), zombie.seen(None)]);
+        });
+        let Some(seen) = seen else { return };
+        with_test_world(&seen, |w, types| {
+            let kind = Arc::new(types.types["minecraft:cow"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            let mut lr = LegacyRandom::new(0);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w,
+                lr: &mut lr,
+                events: &mut events,
+            };
+            m.ai.last_hurt_by = Some(Who::Mob(2));
+            m.ai.last_hurt_by_time = 5;
+            assert!(
+                !HurtByTarget::default().can_use(&mut m, &mut cx),
+                "a ghast is not a valid attacker to retaliate against"
+            );
+            m.ai.last_hurt_by = Some(Who::Mob(3));
+            m.ai.last_hurt_by_time = 6;
+            assert!(
+                HurtByTarget::default().can_use(&mut m, &mut cx),
+                "a zombie attacker is retaliated against"
+            );
+        });
+    }
 }
 #[cfg(test)]
 mod move_to_block_tests {
@@ -3490,6 +3549,84 @@ mod melee_range_tests {
 }
 
 #[cfg(test)]
+mod melee_continue_tests {
+    use super::*;
+    use crate::mobs::world::{test_player, with_test_world};
+    use horizon_core::geometry::Vec3;
+    use std::sync::Arc;
+
+    /// Tick one `<MeleeAttack>` goal through the real selector.
+    fn tick(goals: &mut GoalSelector, m: &mut Mob, world: &MobWorld) {
+        let mut lr = LegacyRandom::new(0);
+        let mut events = Vec::new();
+        let mut cx = Cx {
+            w: world,
+            lr: &mut lr,
+            events: &mut events,
+        };
+        goals.tick(m, &mut cx);
+    }
+
+    /// `MeleeAttackGoal.canContinueToUse`'s follow branch refuses a target
+    /// outside the mob's home (`isWithinHome(target.blockPosition())`).
+    #[test]
+    fn a_chase_stops_outside_the_mobs_home() {
+        let mut outcomes = None;
+        let ran = with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:iron_golem"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            m.ai.home = Some(([0, 64, 0], 8));
+            m.ai.target = Some(Who::Player);
+            let mut world = w.clone();
+            world.player = Some(test_player(Vec3::new(0.5, 64.0, 0.5)));
+            let mut goals = GoalSelector::default();
+            goals.add(1, MeleeAttack::new(1.0, true));
+            tick(&mut goals, &mut m, &world);
+            let started = goals.is_running("MeleeAttack");
+            world.player.as_mut().unwrap().position = Vec3::new(100.5, 64.0, 0.5);
+            tick(&mut goals, &mut m, &world);
+            outcomes = Some((started, goals.is_running("MeleeAttack")));
+        });
+        if !ran {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            Some((true, false)),
+            "the chase starts at home and stops when the target leaves its radius"
+        );
+    }
+
+    /// The same branch refuses a spectator (`!(player.isSpectator() || player.isCreative())`).
+    #[test]
+    fn a_chase_stops_when_the_target_is_a_spectator() {
+        let mut outcomes = None;
+        let ran = with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:iron_golem"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            m.ai.target = Some(Who::Player);
+            let mut world = w.clone();
+            world.player = Some(test_player(Vec3::new(0.5, 64.0, 0.5)));
+            let mut goals = GoalSelector::default();
+            goals.add(1, MeleeAttack::new(1.0, true));
+            tick(&mut goals, &mut m, &world);
+            let started = goals.is_running("MeleeAttack");
+            world.player.as_mut().unwrap().spectator = true;
+            tick(&mut goals, &mut m, &world);
+            outcomes = Some((started, goals.is_running("MeleeAttack")));
+        });
+        if !ran {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            Some((true, false)),
+            "a mob chases a survival player and stops when they become a spectator"
+        );
+    }
+}
+
+#[cfg(test)]
 mod breath_air_tests {
     use super::BreathAir;
 
@@ -3510,5 +3647,52 @@ mod breath_air_tests {
         }
         // One block above the 9-block columns: not searched.
         assert_eq!(BreathAir::air_position(origin, |p| p == [10, 29, 30]), None);
+    }
+}
+
+#[cfg(test)]
+mod hurt_by_anger_tests {
+    use super::*;
+    use crate::mobs::world::{test_player, with_test_world};
+    use horizon_core::geometry::Vec3;
+    use std::sync::Arc;
+
+    /// `HurtByTargetGoal.canUse` refuses a player when the `universal_anger`
+    /// game rule is on: the anger target goals handle that hit instead.
+    #[test]
+    fn universal_anger_leaves_the_players_hit_to_the_anger_goals() {
+        let mut outcomes = None;
+        if !with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:cow"].clone());
+            let mut truth = Vec::new();
+            for rule in [false, true] {
+                let mut world = w.clone();
+                world.player = Some(test_player(Vec3::new(2.5, 64.0, 0.5)));
+                world.universal_anger = rule;
+                let mut m = Mob::new(1, kind.clone(), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                m.ai.last_hurt_by = Some(Who::Player);
+                m.ai.last_hurt_by_time = 1;
+                m.ai.goals.add(1, HurtByTarget::new());
+                let mut lr = LegacyRandom::new(0);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w: &world,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                let mut goals = std::mem::take(&mut m.ai.goals);
+                goals.tick(&mut m, &mut cx);
+                truth.push(goals.is_running("HurtByTarget"));
+                m.ai.goals = goals;
+            }
+            outcomes = Some(truth);
+        }) {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            Some(vec![true, false]),
+            "a hit is retaliated with the rule off and left to the anger goals with it on"
+        );
     }
 }

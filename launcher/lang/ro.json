@@ -1250,5 +1250,15 @@
   "Use a different Microsoft account": "Folosiți alt cont Microsoft",
   "Buy": "Cumpără",
   "Gift": "Dăruiește",
-  "Looks": "Ținute"
+  "Found on this computer": "Găsite pe acest computer",
+  "Looks": "Ținute",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Inelul de chei al sistemului nu a răspuns în {seconds} secunde. Asigură-te că rulează și este deblocat, apoi repornește launcherul.",
+  "Can't read {name}'s sign-in: {why}": "Nu se poate citi conectarea lui {name}: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: se folosește versiunea {version}, făcută pentru Horizon-ul pe care îl joci",
+  "Recommended": "Recomandată",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "O versiune mai veche, {version}, se compilează pe Horizon-ul pe care îl joci: instalarea o alege",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: versiunea {version} nu s-a compilat, se încearcă {older}",
+  "Use recommended (kept at {version})": "Folosește recomandata (păstrată la {version})"
 }

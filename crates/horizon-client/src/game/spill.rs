@@ -3,7 +3,7 @@
 //! block drops (`Block.dropResources`), drawn from the level random at the
 //! moment vanilla draws them. The item entities they make are added to the
 //! world as soon as the behaviour returns, within the same tick.
-use super::{Game, GameLevel, Screen, dispenser::new_item_motion, storage::is_shulker_box};
+use super::{Game, GameLevel, Screen, storage::is_shulker_box};
 use horizon_client::{
     block_entity_item, block_entity_nbt,
     containers::{Banner, BlockEntity},
@@ -32,7 +32,7 @@ pub(super) struct Pending {
     pub(super) shulker: HashMap<[i32; 3], Vec<(u8, ItemStack)>>,
     pub(super) banner: HashMap<[i32; 3], Banner>,
     /// The block's item and the custom name.
-    pub(super) names: HashMap<[i32; 3], (String, String)>,
+    pub(super) names: HashMap<[i32; 3], (String, Tag)>,
     /// A decorated pot's sherds (back, left, right, front).
     pub(super) pot: HashMap<[i32; 3], [Option<ItemStack>; 4]>,
     /// A head's profile, note block sound and name, or a hive's bees: the
@@ -46,7 +46,7 @@ impl Pending {
         pos: [i32; 3],
         entity: &BlockEntity,
         block: &str,
-        name: Option<String>,
+        name: Option<Tag>,
     ) {
         if let BlockEntity::Banner(banner) = entity {
             self.banner.insert(pos, banner.clone());
@@ -110,8 +110,7 @@ impl Pending {
             .is_some_and(|(item, _)| **item == *stack.item)
             && let Some((_, name)) = self.names.remove(&pos)
         {
-            stack.data_mut().custom_name =
-                Some(horizon_world::nbt::Tag::String(name.as_str().into()));
+            stack.data_mut().custom_name = Some(name);
         }
         if self
             .copied
@@ -482,18 +481,30 @@ impl GameLevel<'_> {
             .filter(|_| machine)
             .and_then(|(_, tool)| tool.as_ref());
         let silk = tool.is_some_and(|t| t.enchantment_level("minecraft:silk_touch") > 0);
+        let breaker = self.drop_breaker_at == Some(pos);
         let drops = match self.items.block_loot_sequence(self.registry, state) {
             Some(sequence) => {
                 let random = self.rand_sequences.get(&sequence, self.seed);
-                self.items
-                    .block_drops_with(self.registry, state, tool, &dynamic, random)
+                self.items.block_drops_exploded(
+                    self.registry,
+                    state,
+                    tool,
+                    &dynamic,
+                    random,
+                    None,
+                    None,
+                    breaker,
+                )
             }
-            None => self.items.block_drops_with(
+            None => self.items.block_drops_exploded(
                 self.registry,
                 state,
                 tool,
                 &dynamic,
                 &mut self.world.random,
+                None,
+                None,
+                breaker,
             ),
         };
         for mut stack in drops {
@@ -551,6 +562,11 @@ impl GameLevel<'_> {
         side_effects: bool,
     ) -> u8 {
         let key = (pos.x, pos.y, pos.z);
+        // A replacement is a new block entity, even at the same position.
+        // Headless servers cannot rely on renderer visibility to discard this state.
+        if &*self.facts.get(old).name == "minecraft:end_gateway" {
+            self.gateway_servers.remove(&[pos.x, pos.y, pos.z]);
+        }
         if self.remove_saved_entity(pos, old, side_effects) {
             return 0;
         }
@@ -799,8 +815,7 @@ impl Game<'_> {
             self.native_use_drops(used.table, origin, block, None, tool.as_ref(), drops);
         });
         for s in spill.spawns {
-            let motion = s.motion.unwrap_or_else(new_item_motion);
-            self.spawn_item(s.stack, s.pos, motion, s.delay);
+            self.add_item_entity(s.stack, s.pos, s.motion, s.delay);
         }
         for (at, value, merge_id) in spill.orbs {
             self.award_orb(at, value, merge_id);
@@ -945,7 +960,10 @@ mod crafter_drop_name_tests {
                 &*game.res.facts().get(game.world.block(x, 199, z)).name,
                 "minecraft:stone"
             );
-            assert_eq!(game.world.block_names.get(&key).map(String::as_str), name);
+            assert_eq!(
+                game.world.block_names.get(&key),
+                name.map(|n| Tag::String(n.into())).as_ref()
+            );
             let entity = game
                 .world
                 .block_entities

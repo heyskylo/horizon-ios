@@ -113,6 +113,8 @@ pub(super) struct Opened {
 pub(super) struct ProjectVersion {
     version: Version,
     verdict: Option<horizon_port_pack::check::Verdict>,
+    /// A registry native mod's fit with the Horizon played, and whether it is the one to pick.
+    fitted: Option<browser::horizon::Fitted>,
 }
 
 /// The project page, filters and images' share of the Mods page's state.
@@ -199,6 +201,12 @@ impl Launcher {
             let _ = tx.send(Event::Loaded(Loaded::Details(key.clone(), d)));
             let v = source.versions(&p).map(|versions| {
                 let home = backend::game_home();
+                let mut fitted = match p.source {
+                    SourceId::Horizon => {
+                        browser::horizon::fitted(&p.id, &horizon_launcher::instances::selected())
+                    }
+                    _ => HashMap::new(),
+                };
                 versions
                     .into_iter()
                     .map(|version| {
@@ -208,7 +216,12 @@ impl Launcher {
                                 .flatten()
                                 .map(|check| check.verdict)
                         });
-                        ProjectVersion { version, verdict }
+                        let fitted = fitted.remove(&version.id);
+                        ProjectVersion {
+                            version,
+                            verdict,
+                            fitted,
+                        }
                     })
                     .collect()
             });
@@ -683,6 +696,7 @@ impl Launcher {
         let details = o.details.clone();
         let versions = o.versions.clone();
         let version_list = o.version_list.clone();
+        let installed_version = self.mods.entry(&p).map(|e| e.version.clone());
         let mut meta = vec![trf(
             "{count} downloads",
             &[("count", &thousands(p.downloads))],
@@ -914,6 +928,15 @@ impl Launcher {
                     |_| false,
                     |i| {
                         let v = &list[i].version;
+                        if let Some(fitted) = &list[i].fitted {
+                            return self.mods_native_version_row(
+                                &p,
+                                v,
+                                fitted,
+                                installed_version.as_deref() == Some(v.id.as_str()),
+                                cx,
+                            );
+                        }
                         let file = v.file();
                         let mut detail = vec![
                             v.published.get(..10).unwrap_or_default().to_string(),
@@ -950,6 +973,65 @@ impl Launcher {
 }
 
 impl Launcher {
+    /// A registry native mod's version on its Versions tab: its number (and Recommended on the one
+    /// the launcher would pick), its date and how it fits the Horizon played, and Install, or
+    /// Installed on the one in the instance.
+    fn mods_native_version_row(
+        &self,
+        p: &Project,
+        v: &Version,
+        fitted: &browser::horizon::Fitted,
+        installed: bool,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let t = self.theme;
+        let name = match fitted.recommended {
+            true => format!("{} · {}", v.number, tr("Recommended")),
+            false => v.number.clone(),
+        };
+        let mut detail = vec![v.published.get(..10).unwrap_or_default().to_string()];
+        detail.extend(fitted.fit.clone());
+        let changelog = fitted.changelog.trim();
+        if !changelog.is_empty() {
+            detail.push(
+                changelog
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+        }
+        let right = match installed {
+            true => caps(tr("Installed")).text_color(t.muted).into_any_element(),
+            false => {
+                let (id, version) = (p.id.clone(), v.id.clone());
+                button(
+                    format!("mods-version-install-{}", v.id),
+                    "Install",
+                    if fitted.recommended {
+                        Kind::Primary
+                    } else {
+                        Kind::Ghost
+                    },
+                    &t,
+                )
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.mods_install_version(id.clone(), version.clone());
+                    cx.notify();
+                }))
+                .into_any_element()
+            }
+        };
+        index_row(
+            0,
+            name,
+            Some(detail.join(" · ").into_any_element()),
+            Some(right),
+            &t,
+        )
+    }
+
     /// A gallery: image `shot` large, the previous and next ones a click away, and every image
     /// as a strip of thumbnails that picks the large one.
     fn mods_gallery(&mut self, gallery: &[Image], shot: usize, cx: &mut Context<Self>) -> Div {

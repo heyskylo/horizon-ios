@@ -1604,6 +1604,14 @@ impl Audio {
         let id = self.engine.add(instance, false);
         self.engine.play_delayed(id, ticks);
     }
+    /// `SoundManager.playDelayed` of an instance the caller made: it starts
+    /// `ticks` sound-engine ticks from now.
+    pub fn play_instance_after(&mut self, instance: SoundInstance, ticks: i32) {
+        *self.heard.entry(instance.identifier.clone()).or_default() += 1;
+        self.sync_volumes();
+        let id = self.engine.add(instance, false);
+        self.engine.play_delayed(id, ticks);
+    }
     /// `play` for this client only: a sound a packet's handler plays
     /// (`playLocalSound`), which the guests play from that packet themselves.
     pub fn play_unshared(&mut self, event: &str, at: Option<[f64; 3]>, volume: f32, pitch: f32) {

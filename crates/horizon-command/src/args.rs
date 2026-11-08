@@ -145,30 +145,49 @@ pub enum ArgType {
 
 /// FilenameUtils.wildcardMatch (case-sensitive) of `*` and `?` patterns.
 pub fn wildcard_match(text: &str, pattern: &str) -> bool {
-    let t: Vec<char> = text.chars().collect();
-    let p: Vec<char> = pattern.chars().collect();
+    // Keep the backtracking cursors as UTF-8 byte offsets.  The old port
+    // materialised both strings as `Vec<char>` for indexing, which made every
+    // resource id allocate during a selector scan.  `chars().next()` keeps
+    // the same Unicode scalar semantics for `?` while avoiding those copies.
     let (mut ti, mut pi) = (0, 0);
-    let (mut star, mut mark) = (None, 0);
-    while ti < t.len() {
-        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
-            ti += 1;
-            pi += 1;
-        } else if pi < p.len() && p[pi] == '*' {
-            star = Some(pi);
-            mark = ti;
-            pi += 1;
-        } else if let Some(s) = star {
-            pi = s + 1;
-            mark += 1;
-            ti = mark;
-        } else {
-            return false;
+    let mut star: Option<(usize, usize)> = None;
+    while ti < text.len() {
+        let tc = text[ti..]
+            .chars()
+            .next()
+            .expect("cursor always stays on a char boundary");
+        if pi < pattern.len() {
+            let pc = pattern[pi..]
+                .chars()
+                .next()
+                .expect("cursor always stays on a char boundary");
+            if pc == '?' || pc == tc {
+                ti += tc.len_utf8();
+                pi += pc.len_utf8();
+                continue;
+            }
+            if pc == '*' {
+                star = Some((pi, ti));
+                pi += 1;
+                continue;
+            }
         }
+        if let Some((s, mark)) = &mut star {
+            pi = *s + 1;
+            let c = text[*mark..]
+                .chars()
+                .next()
+                .expect("backtracking cursor stays before text end");
+            *mark += c.len_utf8();
+            ti = *mark;
+            continue;
+        }
+        return false;
     }
-    while pi < p.len() && p[pi] == '*' {
+    while pi < pattern.len() && pattern.as_bytes()[pi] == b'*' {
         pi += 1;
     }
-    pi == p.len()
+    pi == pattern.len()
 }
 /// ResourceSelectorArgument: the registry ids a pattern selects.
 pub fn select_resources<'a>(ids: &'a [String], pattern: &str) -> Vec<&'a String> {

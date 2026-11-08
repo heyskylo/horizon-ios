@@ -23,17 +23,18 @@ mod fixes_flat;
 mod fixes_legacy;
 mod fixes_mid;
 mod fixes_old;
-mod flat_tables;
 mod items;
 pub mod json;
 pub mod progress;
 pub mod schema;
+mod tables;
 mod text;
 pub mod world_upgrader;
 
 use crate::nbt::Tag;
 use dynamic::{as_str, string};
 use schema::{Key, Ty, key, walk};
+pub use tables::{available as tables_available, set_resources};
 
 /// The DataVersion of the game.
 pub const CURRENT: i32 = crate::DATA_VERSION;
