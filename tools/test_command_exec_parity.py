@@ -105,6 +105,8 @@ def main():
                         help='retain the immediate-load powered sulfur cube H249 diagnostic')
     parser.add_argument('--merchant-gate-fixture', action='store_true')
     parser.add_argument('--binary', type=Path, help='use an already built Horizon game instead of building it')
+    parser.add_argument('--level-world-border-fixture', action='store_true',
+                        help='each builtin level keeps its own world border (H260)')
     parser.add_argument('--slot-codec-diagnostic', action='store_true',
                         help='retain the separate invalid inline slot-range codec diagnostic')
     parser.add_argument('--work-dir', type=Path, help='isolated scratch output directory')
@@ -193,6 +195,8 @@ def main():
 
     groups = corpus_module.groups()
     if not args.only:
+        groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_FUNCTION_FEEDBACK]
+    if not args.only:
         groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_JUKEBOX_CLOCK]
     if args.macro_source_type_fixture or args.only == "macro source type error":
         groups = [(name, ops) for name, ops in groups if name == "macro source type error"]
@@ -273,6 +277,12 @@ def main():
     if args.sulfur_power_load_diagnostic:
         groups = [('setup', corpus_module.group_setup()),
                   ('sulfur powered-load diagnostic', corpus_module.sulfur_cube_fuse_ticks(True))]
+    if args.level_world_border_fixture:
+        try:
+            from .level_world_border_corpus import level_world_border
+        except ImportError:
+            from level_world_border_corpus import level_world_border
+        groups = [('setup', corpus_module.group_setup()), ('level world border', level_world_border())]
     if args.map_decoration_namespace_fixture:
         try:
             from .map_decoration_namespace_corpus import map_decoration_namespaces
@@ -336,6 +346,8 @@ def main():
         groups = [("pufferfish player contact", contact_fixture(args.pufferfish_body_diagnostic))]
     if args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
+    if args.only in corpus_module.ISOLATED_FUNCTION_FEEDBACK:
+        groups = [g for g in groups if g[0] == args.only]
     if args.only in corpus_module.ISOLATED_JUKEBOX_CLOCK:
         groups = [g for g in groups if g[0] == args.only]
     if args.vehicle_kill_diagnostic:

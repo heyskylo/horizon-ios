@@ -1030,4 +1030,166 @@ mod tests {
         let nether = game.levels.parked_border(Dim::Nether).unwrap();
         assert_eq!(nether.size(), 100.0);
     }
+
+    /// A game on a scratch world folder, the way `dedicated.rs` opens one
+    /// (`load_world` with an absolute folder).
+    fn open_game(
+        root: &std::path::Path,
+        home: &std::path::Path,
+        world: &std::path::Path,
+    ) -> Game<'static> {
+        use crate::game::{Audio, Options, Progress, Settings, load_resources};
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.to_path_buf(),
+            None,
+            root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        // The game keeps a reference to its resources for the whole test.
+        let resources: &'static _ = Box::leak(Box::new(loaded.resources));
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.to_path_buf();
+        options.game_dir = Some(home.to_path_buf());
+        // A fixed name: no generated horizon-player.txt in the working directory.
+        options.player_name = Some("H260".into());
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let folder = world.to_string_lossy().into_owned();
+        game.load_world(
+            crate::game::world_loading::WorldRequest::new(
+                &folder,
+                Some("h260"),
+                Some(260),
+                true,
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        game
+    }
+
+    /// Expected values from the official 26.3 dedicated server restarted on the
+    /// same world: each level's `world_border` SavedData is read when the level
+    /// is made, so the Overworld's saved border is in place for the first
+    /// command, and a first `/worldborder set` is not overwritten later.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and a scratch HORIZON_HOME"]
+    fn a_reopened_world_has_each_levels_saved_border_from_the_start() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let home = std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap()).join("h260");
+        let world = home.join("saves/h260");
+        {
+            let mut game = open_game(&root, &home, &world);
+            // A server ticks before it saves.
+            game.tick_world(true).unwrap();
+            assert!(game.run_command("worldborder set 50"));
+            assert!(game.run_command("execute in minecraft:the_nether run worldborder set 100"));
+            game.save_game().unwrap();
+        }
+        let mut game = open_game(&root, &home, &world);
+        let mut failures = Vec::new();
+        if game.border.size() != 50.0 {
+            failures.push(format!("in place after the open: {}", game.border.size()));
+        }
+        assert!(game.run_command("worldborder set 70"));
+        game.tick_world(true).unwrap();
+        assert!(game.run_command("execute in minecraft:the_nether run worldborder get"));
+        assert!(game.run_command("execute in minecraft:the_end run worldborder get"));
+        assert_eq!(game.dim, Dim::Overworld);
+        let sizes = (
+            game.border.size(),
+            game.levels.parked_border(Dim::Nether).map(|b| b.size()),
+            game.levels.parked_border(Dim::End).map(|b| b.size()),
+        );
+        if sizes != (70.0, Some(100.0), Some(59_999_968.0)) {
+            failures.push(format!("after the first set and a tick: {sizes:?}"));
+        }
+        assert!(failures.is_empty(), "reopened borders: {failures:#?}");
+    }
+
+    /// Added controls (H260, after the baseline): a new world, and a read and a
+    /// set before the first tick that survive a tick, a save and another reopen.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and a scratch HORIZON_HOME"]
+    fn reopened_borders_keep_through_a_tick_and_a_save_and_a_new_world_has_defaults() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let home = std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+            .join("h260-controls");
+        let world = home.join("saves/h260");
+        let sizes = |game: &mut Game<'_>| {
+            assert!(game.run_command("execute in minecraft:overworld run worldborder get"));
+            assert!(game.run_command("execute in minecraft:the_nether run worldborder get"));
+            assert!(game.run_command("execute in minecraft:the_end run worldborder get"));
+            let parked = |d| game.levels.parked_border(d).map(|b| b.size());
+            let size = |d: Dim| {
+                if game.dim == d {
+                    Some(game.border.size())
+                } else {
+                    parked(d)
+                }
+            };
+            (size(Dim::Overworld), size(Dim::Nether), size(Dim::End))
+        };
+        const DEFAULT: f64 = 59_999_968.0;
+        let mut failures = Vec::new();
+        {
+            let mut game = open_game(&root, &home, &world);
+            // A new world: every level at the default.
+            if game.border.size() != DEFAULT {
+                failures.push(format!("new world in place: {}", game.border.size()));
+            }
+            game.tick_world(true).unwrap();
+            let got = sizes(&mut game);
+            if got != (Some(DEFAULT), Some(DEFAULT), Some(DEFAULT)) {
+                failures.push(format!("new world: {got:?}"));
+            }
+            assert!(game.run_command("worldborder set 50"));
+            assert!(game.run_command("execute in minecraft:the_nether run worldborder set 100"));
+            game.save_game().unwrap();
+        }
+        {
+            let mut game = open_game(&root, &home, &world);
+            // Before the first tick: the read, then the set.
+            if game.border.size() != 50.0 {
+                failures.push(format!("first read before a tick: {}", game.border.size()));
+            }
+            assert!(game.run_command("worldborder set 70"));
+            if game.border.size() != 70.0 {
+                failures.push(format!("first set before a tick: {}", game.border.size()));
+            }
+            game.tick_world(true).unwrap();
+            let got = sizes(&mut game);
+            if got != (Some(70.0), Some(100.0), Some(DEFAULT)) {
+                failures.push(format!("after a tick: {got:?}"));
+            }
+            game.save_game().unwrap();
+        }
+        {
+            let mut game = open_game(&root, &home, &world);
+            let got = sizes(&mut game);
+            if got != (Some(70.0), Some(100.0), Some(DEFAULT)) {
+                failures.push(format!("after the save and another reopen: {got:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "reopened borders: {failures:#?}");
+    }
 }

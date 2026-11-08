@@ -2025,6 +2025,12 @@ def advancement_reward_fixtures(group_names):
 
 def function_return_fixtures(group_names):
     functions = {}
+    if 'fork function feedback' in group_names:
+        try:
+            from .fork_function_feedback_corpus import functions as fork_functions
+        except ImportError:
+            from fork_function_feedback_corpus import functions as fork_functions
+        functions.update(fork_functions())
     if 'function condition fallthrough' in group_names:
         try:
             from .function_condition_corpus import functions as condition_functions
@@ -2132,6 +2138,14 @@ def function_return_feedback():
                   cmd('/execute if score #clock audit = #after audit', expect_result=1),
                   cmd('/scoreboard objectives remove audit')])
     return lines
+
+
+def fork_function_feedback_cases():
+    try:
+        from .fork_function_feedback_corpus import cases
+    except ImportError:
+        from fork_function_feedback_corpus import cases
+    return cases(cmd)
 
 
 def function_condition_fallthrough():
@@ -6106,7 +6120,8 @@ ISOLATED_ORB_UUID = frozenset({'orb saved UUID'})
 ISOLATED_STAND_FALL = frozenset({'stand saved fall distance'})
 ISOLATED_POTION_ICONS = frozenset({'potion custom effect icons'})
 ISOLATED_JUKEBOX_CLOCK = frozenset({'jukebox saved clock'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK
+ISOLATED_FUNCTION_FEEDBACK = frozenset({'fork function feedback'})
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK
 
 
 def groups():
@@ -6307,6 +6322,7 @@ def groups():
         ('mob full resistance hits', mob_full_resistance_hits()),
         ('sulfur cube loaded health', sulfur_cube_loaded_health()),
         ('function return feedback', function_return_feedback()),
+        ('fork function feedback', fork_function_feedback_cases()),
         ('function condition fallthrough', function_condition_fallthrough()),
         ('ticking and random', ticking()),
         ('compute', compute()),
