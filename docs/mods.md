@@ -128,6 +128,22 @@ ticks still grows: `"random_ticks": true` for every state (or `false`, to stop a
 `state_properties`) is one of the values. The block's native `native_random_tick` hook then fires as it does
 for a vanilla block that ticks, and its sections count it.
 
+`state_light` selects emission by the template's or declared state properties. It has the same
+`property` or ordered `properties`, `values` and optional `default` selection as a shape table;
+every value is an integer from 0 to 15:
+
+```json
+{ "template": "minecraft:glass", "state_properties": { "lit": { "type": "boolean" } },
+  "state_light": { "properties": ["lit"], "values": { "false": 0, "true": 15 } } }
+```
+
+Unknown properties, unreachable tuples, repeated property names and uncovered states without a
+`default` reject the declaration. A selected value takes precedence over `properties.light`,
+including zero. Without `state_light`, scalar light and template emission stay unchanged. The
+compiler resolves the table once into the normal per-state emission facts, shared by the client,
+server and saved resource cache. Light propagation uses those facts when a block changes state;
+it performs no declaration lookup or mod callback.
+
 `render_shape` says how a block is drawn whatever its template does, as vanilla's `getRenderShape`:
 `"MODEL"` puts its block model in the chunk mesh, `"ENTITYBLOCK_ANIMATED"` leaves the model out for a block whose
 moving parts its block entity draws every frame (a turning shaft, a machine's arm), and `"INVISIBLE"` draws nothing.
