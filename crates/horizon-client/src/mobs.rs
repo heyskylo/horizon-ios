@@ -1294,6 +1294,10 @@ pub struct Extra {
     /// attachment (`getPassengerRidingPosition(this).y` is its feet plus this)
     /// and the vehicle's box (`Mob.getAttackBoundingBox`, `getHitbox`).
     pub seat: Option<(u32, f64, Aabb)>,
+    /// The living vehicle `positionRider` last seated this rider on, with
+    /// its `yBodyRotO` and `yBodyRot`: a rider of a living vehicle is drawn
+    /// from that body (`LivingEntityRenderer.solveBodyRot`), not its own.
+    pub vehicle_body: Option<(u32, f32, f32)>,
     /// `Entity.boardingCooldown`: ticks after leaving a boat before a boat
     /// can pick this mob up again.
     pub boarding_cooldown: i32,

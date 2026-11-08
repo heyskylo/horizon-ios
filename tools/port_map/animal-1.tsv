@@ -127,7 +127,7 @@ Chicken.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_
 Chicken.get	port	crates/horizon-client/src/mobs/finalize.rs::variant_component	gap: chicken/variant only, no chicken/sound_variant
 Chicken.applyImplicitComponents	port	crates/horizon-client/src/entity_nbt.rs::apply_item_components	chicken/variant and chicken/sound_variant from the stack that spawns or buckets it
 Chicken.applyImplicitComponent	port	crates/horizon-client/src/entity_nbt.rs::apply_item_components	the same fn reads both components
-Chicken.positionRider	inline	crates/horizon-client/src/game/passengers.rs::Game::position_riders	every mob rider copies its vehicle's body yaw, not only chicken riders
+Chicken.positionRider	port	crates/horizon-client/src/mobs/riders.rs::takes_vehicle_body	gap: minor: a riding player's own body yaw is not copied (its model is drawn by solveBodyRot); mob riders take the chicken's body yaw
 ChickenVariants	skip:data		chicken variants come from the registry data files
 AbstractCow.registerGoals	port	crates/horizon-client/src/mobs/farm.rs::register	
 AbstractCow.mobInteract	port	crates/horizon-client/src/game/creatures.rs::Game::interact_mob	the Cow/Mooshroom bucket arm gives milk
