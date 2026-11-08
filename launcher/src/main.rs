@@ -2008,6 +2008,10 @@ impl Launcher {
 
     fn begin_sign_in(&mut self, target: Option<account::Account>) {
         self.cancel_sign_in();
+        // The code page offers a private window: find the default browser meanwhile.
+        std::thread::spawn(|| {
+            horizon_launcher::private_window::detected();
+        });
         self.sign_in = Some(match &target {
             Some(account) => SignIn::start_for(account.clone()),
             None => SignIn::start(),
@@ -4561,7 +4565,22 @@ impl Launcher {
                         .font_family(theme::MONO)
                         .text_color(t.ink)
                         .child(code.user_code.clone()),
-                ),
+                )
+                .when(!microsoft::has_private_window(), |col| {
+                    col.child(tr("Open this link in a private window to pick another account."))
+                })
+                .child({
+                    let uri = code.verification_uri.clone();
+                    div().flex().child(
+                        button(
+                            "sign-in-other",
+                            "Use a different Microsoft account",
+                            Kind::Ghost,
+                            &t,
+                        )
+                        .on_click(move |_, _, cx| microsoft::use_different_account(&uri, cx)),
+                    )
+                }),
             Some(SignInState::Done(Ok(a))) => {
                 div().child(trf("Signed in as {name}.", &[("name", &a.name)]))
             }
@@ -4597,6 +4616,23 @@ impl Launcher {
             None
         } else if let Some(SignInState::Code(code)) = &self.sign_in_state {
             let (uri, user_code) = (code.verification_uri.clone(), code.user_code.clone());
+            let (private_uri, link_uri) = (uri.clone(), uri.clone());
+            // A private window picks the account; without one the link is for the player to carry over.
+            let private = if microsoft::has_private_window() {
+                button(
+                    "sign-in-private",
+                    "Open in private window",
+                    Kind::Secondary,
+                    &t,
+                )
+                .on_click(move |_, _, cx| microsoft::open_private(&private_uri, cx))
+            } else {
+                button("sign-in-copy-link", "Copy link", Kind::Secondary, &t).on_click(
+                    move |_, _, cx| {
+                        copy_to_clipboard(cx, gpui::ClipboardItem::new_string(link_uri.clone()))
+                    },
+                )
+            };
             Some(
                 div()
                     .flex()
@@ -4611,6 +4647,7 @@ impl Launcher {
                             },
                         ),
                     )
+                    .child(private)
                     .child(
                         button("sign-in-open", "Open link", Kind::Secondary, &t)
                             .on_click(move |_, _, cx| cx.open_url(&uri)),
@@ -5261,6 +5298,7 @@ impl Render for Launcher {
         self.sky.free_replaced(window);
         self.pictures.free_retired(window);
         self.wardrobe_marks.free_replaced(window);
+        self.shop.free_replaced(window);
         // The new page fades in and rises a few pixels, as the website's tabs do (`hzl-pop`).
         let content = div()
             .relative()
