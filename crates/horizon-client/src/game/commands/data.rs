@@ -395,9 +395,10 @@ impl Game<'_> {
                             st.liked_player_ttl = was.liked_player_ttl;
                         }
                     }
-                    // Entity.load mutates the existing living entity; its
-                    // previous-hit amount is not read from saved NBT (its hurt
-                    // immunity is, as `invulnerable_time`).
+                    // Entity.load mutates the existing living entity; its hurt
+                    // cooldown and previous-hit amount are not read from saved NBT
+                    // (`invulnerable_time` is another field, and is).
+                    slot.invulnerable = old.invulnerable;
                     slot.last_hurt = old.last_hurt;
                     // Entity.isInPowderSnow isn't saved data either: a skeleton in
                     // powder snow stays afflicted through a merge.
