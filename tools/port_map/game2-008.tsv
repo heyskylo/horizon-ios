@@ -15,7 +15,7 @@ MerchantResultSlot.checkTakeAchievements	port	crates/horizon-client/src/menu.rs:
 MerchantResultSlot.onTake	inline	crates/horizon-client/src/menu.rs::Menu::on_take	the Merchant result arm checks achievements before merchant_take; quick move passes the actual remaining stack
 ResultSlot.remove	port	crates/horizon-client/src/menu.rs::Menu::remove	gap: minor: the removeCount tally for the crafted statistic is not kept
 ResultSlot.safeClone	skip:other		onCraftedBy only matters for MAP_POST_PROCESSING, which only cartography results carry; map_crafted covers that take
-ResultSlot.checkTakeAchievements	port	crates/horizon-client/src/game.rs::Game::award_crafted	gap: minor: the recipe is awarded; the crafted statistic count from onCraftedBy is not added on this take
+ResultSlot.checkTakeAchievements	port	crates/horizon-client/src/game/inventory_slots.rs::Game::award_crafted	gap: minor: the recipe is awarded; the crafted statistic count from onCraftedBy is not added on this take
 ResultSlot.copyAllInputItems	inline	crates/horizon-client/src/crafting.rs::Recipes::remainders	gap: minor: vanilla copies every input when no recipe matches on the server; remainders returns none for an unmatched recipe
 ResultSlot.getRemainingItems	port	crates/horizon-client/src/crafting.rs::Recipes::remainders	container remainders and the special banner and book copies
 Slot.safeTake	port	crates/horizon-client/src/menu.rs::Menu::safe_take	
@@ -66,7 +66,7 @@ FireworkRocketItem.getEntityJustOutsideOfBlockPos	port	crates/horizon-client/src
 HangingEntityItem.mayPlace	port	crates/horizon-client/src/game/paintings.rs::Game::place_painting	paintings take no vertical face; an item frame (ItemFrameItem.mayPlace) may go on one and only needs the build height, which place_item_frame checks
 HangingEntityItem.appendHoverText	port	crates/horizon-client/src/game/stations.rs::Game::stack_tooltip_lines	
 Item.getDestroySpeed	port	crates/horizon-items/src/items.rs::Items::mining_speed	
-Item.finishUsingItem	port	crates/horizon-client/src/game.rs::Game::consume_held	the consumable effects are applied by apply_consume_effect
+Item.finishUsingItem	port	crates/horizon-client/src/game/using_item.rs::Game::consume_held	the consumable effects are applied by apply_consume_effect
 Item.getBarColor	port	crates/horizon-client-render/src/hud_overlays.rs::damage_bar	width and hue from the damage fraction
 Item.mineBlock	port	crates/horizon-client/src/game.rs::Game::mine_block_with_held	
 Item.isCorrectToolForDrops	port	crates/horizon-items/src/items.rs::Items::correct_for_drops	
@@ -104,7 +104,7 @@ ItemStack.processDurabilityChange	port	crates/horizon-client/src/game/enchant_ef
 ItemStack.applyDamage	port	crates/horizon-client/src/game.rs::Game::damage_held	gap: minor: no item durability advancement trigger fires
 ItemStack.hurtAndConvertOnBreak	port	crates/horizon-client/src/game/mounts.rs::stick_on_break	`FoodOnAStickItem.use` wears the steering stick through `hurtAndBreak` (so `processDurabilityChange` gets its say) and leaves a transmuted fishing rod - the components carry over and the rod starts whole - rather than a fresh plain one
 ItemStack.hurtEnemy	port	crates/horizon-client/src/game/mace.rs::Game::weapon_wear	the per-hit durability loss of a weapon
-ItemStack.interactLivingEntity	port	crates/horizon-client/src/game.rs::Game::interact_entity	equip-on-interact is in the mob paths (nautili.rs, ghasts.rs)
+ItemStack.interactLivingEntity	port	crates/horizon-client/src/game/item_actions.rs::Game::interact_entity	equip-on-interact is in the mob paths (nautili.rs, ghasts.rs)
 ItemStack.copy	skip:java		value copy
 ItemStack.copyWithCount	skip:java		value copy with a count
 ItemStack.transmuteCopyIgnoreEmpty	port	crates/horizon-items/src/item_data.rs::ItemStack::transmute	keeps the components, changes the item

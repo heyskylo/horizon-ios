@@ -23,7 +23,7 @@ use horizon_core::{
 pub use library::MaterialRuleLibrary;
 pub use noise::MaterialNoiseSources;
 use rule::CompiledRule;
-pub use rule::{CompiledSurfaceRule, SurfaceVariants};
+pub use rule::{BandRule, CompiledSurfaceRule, SurfaceFill, SurfaceVariants};
 pub use rule::{MaterialRule, MaterialRuleError};
 use std::{
     collections::{BTreeMap, BTreeSet},
