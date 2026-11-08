@@ -24,6 +24,8 @@ method-by-method reading misses:
   reaches;
 - class: a whole vanilla class nothing ports while most of its package is ported (a renderer, a sound
   instance, a goal: the game reaches those by registration, so no call graph shows them);
+- float: a port that spells a float literal its vanilla method widens to double (`0.3F` in a double sum is
+  0.30000001192092896) as the double 0.3;
 - drift: a port that never names what its vanilla method uses: a sound, particle, item, block, effect or
   game event, or a rare number (a missing sound or a changed constant);
 - stale: a citation whose class or method doesn't exist in the pinned version;
@@ -612,7 +614,7 @@ def parse_class_bytes(item):
         if access & 0x1000 and not owner.startswith("lambda$") or mname in ("$values", "values", "valueOf"):
             continue  # synthetic, and an enum's generated members
         m = cls["methods"].setdefault(target, {"name": target, "lines": [], "calls": set(), "tokens": set(),
-                                               "client": False, "size": 0, "touches": set()})
+                                               "client": False, "size": 0, "touches": set(), "promoted": set()})
         if code is None:
             m["abstract"] = not m["size"]
             continue
@@ -674,6 +676,15 @@ def parse_class_bytes(item):
                 elif rest.startswith("d:"):
                     import struct as _s
                     v = _s.unpack(">d", bytes.fromhex(rest[2:]))[0]
+                    # A float literal widened to double (`vec.add(0.0, -0.04F, 0.0)`): javac folds it to the
+                    # float's value as a double, -0.03999999910593033, not -0.04. A double literal (0.04D)
+                    # is no float, and one a float holds exactly (0.5) is the same either way.
+                    if math.isfinite(v) and 1e-30 < abs(v) < 1e30 and _s.unpack(">f", _s.pack(">f", v))[0] == v:
+                        # The float's shortest spelling (0.04F): a double literal of it is another number.
+                        spelled = next(t for t in (f"{v:.{p}g}" for p in range(1, 10))
+                                       if _s.unpack(">f", _s.pack(">f", float(t)))[0] == v)
+                        if float(spelled) != v:
+                            m["promoted"].add(canonical_float(float(spelled)).lstrip("-"))  # `y - 0.04`: no sign
                     t2 = number_token(canonical_float(v))
                     if t2:
                         m["tokens"].add(t2)
@@ -689,6 +700,7 @@ def parse_class_bytes(item):
         m["calls"] = sorted(m["calls"])
         m["tokens"] = sorted(m["tokens"])
         m["touches"] = sorted(m["touches"])
+        m["promoted"] = sorted(m["promoted"])
     return cls
 
 
@@ -819,6 +831,28 @@ def parse_rust(path):
             if body[m.start(1) + len(name):m.start(1) + len(name) + 1] == "!":
                 continue
             calls.add(name)
+        # Float literals by the type their line gives them: `0.2_f32` and `f64::from(0.2_f32)` are a float's
+        # value, a bare `0.2` on a line that names f64 (or none) a double's.
+        f32s, f64s = set(), set()
+        for m in NUMBER.finditer(body):
+            lit = m.group(0)
+            if "." not in lit or lit.lower().startswith(("0x", "-0x")):
+                continue
+            try:
+                spelled = canonical_float(float(re.sub(r"_?(f32|f64|[fFdD])$", "", lit).replace("_", ""))).lstrip("-")
+            except ValueError:
+                continue
+            digits = len(re.sub(r"[^0-9]", "", re.split(r"[eE]", lit)[0]).strip("0"))
+            if lit.endswith("f32") or digits > 7:
+                # 0.2_f32, or the widened value written out (0.800000011920929, 9.9999997e-6).
+                f32s.add(spelled)
+                continue
+            line_text = body[body.rfind("\n", 0, m.start()) + 1:body.find("\n", m.end()) % (len(body) + 1)]
+            if lit.endswith("f64") or "f32" not in line_text and "next_float(" not in line_text:
+                f64s.add(spelled)
+            else:
+                f32s.add(spelled)
+        fn["f32"], fn["f64"] = sorted(f32s), sorted(f64s)
         # Typed calls: the receiver's type through self, params, lets and struct fields (resolved in build,
         # once every file's structs are known): [receiver path, method] with the path's root and fields.
         lets = {v: (core_type(t) if t else ty) for v, t, ty in RUST_LET.findall(body)}
@@ -894,6 +928,21 @@ def parse_rust(path):
         fn.pop("body", None)
         fn.pop("body_end", None)
     consts = {}
+    float_consts = {}  # NAME -> {"f32": [...], "f64": [...]}: what a fn naming it holds, for `float` gaps
+    for m in re.finditer(r"\b(?:const|static)\s+([A-Z][A-Z0-9_]*)\s*:\s*([^=;]+)=\s*([^;]+);", code):
+        floats = {"f32": [], "f64": []}
+        for n in NUMBER.finditer(m.group(3)):
+            lit = n.group(0)
+            if "." in lit and not lit.lower().startswith(("0x", "-0x")):
+                try:
+                    v = canonical_float(float(re.sub(r"_?(f32|f64|[fFdD])$", "", lit).replace("_", ""))).lstrip("-")
+                except ValueError:
+                    continue
+                digits = len(re.sub(r"[^0-9]", "", re.split(r"[eE]", lit)[0]).strip("0"))
+                is32 = lit.endswith("f32") or digits > 7 or "f32" in m.group(2) and not lit.endswith("f64")
+                floats["f32" if is32 else "f64"].append(v)
+        if floats["f32"] or floats["f64"]:
+            float_consts[m.group(1)] = floats
     for m in re.finditer(r"\b(?:const|static)\s+([A-Z][A-Z0-9_]*)\s*:\s*[^=;]+=\s*([^;]+);", code):
         toks = set()
         for n in NUMBER.finditer(m.group(2)):
@@ -906,7 +955,7 @@ def parse_rust(path):
         if toks:
             consts[m.group(1)] = sorted(toks)
     return {"file": path, "fns": fns, "file_comments": file_comments, "structs": structs, "trait_impls": trait_impls,
-            "consts": consts, "struct_lines": struct_lines}
+            "consts": consts, "float_consts": float_consts, "struct_lines": struct_lines}
 
 
 def rust_files():
@@ -1142,6 +1191,7 @@ def build(sources, jars, jobs):
                 "size": m.get("size") or sum((b or a) - a + 1 for a, b in m["lines"]),
                 "bytecode": bool(c.get("bytecode")), "anonymous": bool(c.get("anonymous")),
                 "touches": [snake_case(f) for f in m.get("touches", ())],
+                "promoted": m.get("promoted", []),
             }
     defined = defaultdict(set)
     for k, m in methods.items():
@@ -1283,6 +1333,11 @@ def build(sources, jars, jobs):
     for f in rust:
         for cname, toks in f["consts"].items():
             global_consts[cname].append(toks)
+    file_float_consts = {f["file"]: f["float_consts"] for f in rust}
+    global_float_consts = defaultdict(list)
+    for f in rust:
+        for cname, v in f["float_consts"].items():
+            global_float_consts[cname].append(v)
     for fn in fns:
         extra = set()
         for cname in fn.get("const_refs", ()):
@@ -1291,6 +1346,11 @@ def build(sources, jars, jobs):
                 toks = global_consts[cname][0]
             if toks:
                 extra.update(toks)
+            fc = file_float_consts.get(fn["file"], {}).get(cname)
+            if fc is None and len(global_float_consts.get(cname, ())) == 1:
+                fc = global_float_consts[cname][0]
+            for typ, vals in (fc or {}).items():
+                fn[typ] = sorted(set(fn.get(typ, ())) | set(vals))
         if extra:
             fn["tokens"] = sorted(set(fn["tokens"]) | extra)
         fn.pop("const_refs", None)
@@ -1828,6 +1888,29 @@ def build(sources, jars, jobs):
             main = max(fids, key=lambda f: fns[f]["end"] - fns[f]["line"])
             gaps.append({"kind": "drift", "vanilla": k, "fn": main, "ids": missing_ids, "numbers": missing_nums})
 
+    # Float: a port that spells a float literal vanilla widens to double as the double (0.3 for 0.3F).
+    ports = defaultdict(list)
+    for k, fids in ported.items():
+        ports[k] += [f for f in fids if not fns[f].get("test")]
+    for k, v in mapped.items():
+        if v["verdict"] in ("port", "inline") and v["fn"] not in ports[k]:
+            ports[k].append(v["fn"])
+    for k in set(ports) | set(mentioned):
+        m = methods.get(k)
+        if not m or not m["promoted"]:
+            continue
+        # A fn that names the method in a comment inside it (`// ItemEntity.setUnderwaterMovement`) often holds
+        # that part inline; its literals are the method's too.
+        fids = ports.get(k) or [f for f in mentioned.get(k, ()) if not fns[f].get("test")]
+        if fids:
+            # Look one call deep: the port often hands the motion to a helper.
+            near = set(fids) | {c for f in fids for c in edges.get(f, ()) if not fns[c].get("test")}
+            as32 = {v for f in near for v in fns[f].get("f32", ())}
+            wrong = [v for v in m["promoted"] if v not in as32 and any(v in fns[f].get("f64", ()) for f in near)]
+            if wrong:
+                where = next(f for f in sorted(near, key=lambda f: f not in fids) if set(wrong) & set(fns[f].get("f64", ())))
+                gaps.append({"kind": "float", "vanilla": k, "fn": where, "values": wrong})
+
     for s in stale:
         gaps.append({"kind": "stale", **s})
     for row in map_problems:
@@ -1887,6 +1970,8 @@ def build(sources, jars, jobs):
         fn.pop("locals", None)
         fn.pop("params", None)
         fn.pop("words", None)
+        fn.pop("f32", None)
+        fn.pop("f64", None)
         fn["callees"] = sorted(edges.get(fn["id"], ()))
     OUT.mkdir(parents=True, exist_ok=True)
     LEDGER.write_text(json.dumps(ledger))
@@ -2112,6 +2197,10 @@ def gap_text(led, g):
         if g["numbers"]:
             parts.append("lacks the constants " + ", ".join(t[2:] for t in g["numbers"][:8]))
         return f"drift: the port of {name(g['vanilla'])} ({fn_ref(led, g['fn'])}) " + " and ".join(parts)
+    if g["kind"] == "float":
+        vals = ", ".join(g["values"][:6])
+        return (f"float: {name(g['vanilla'])} widens the float literals {vals} to double; {fn_ref(led, g['fn'])} "
+                f"spells them as doubles (f64::from({g['values'][0]}_f32) is vanilla's value)")
     if g["kind"] == "class":
         return (f"class: nothing ports {short(g['vanilla_class'])} ({g['methods']} methods), though "
                 f"{round(100 * g['package_ported'])}% of {g['vanilla_class'].rsplit('/', 1)[0]} is ported")
@@ -2122,7 +2211,7 @@ def gap_text(led, g):
     return json.dumps(g)
 
 
-GAP_ORDER = {"map": -1, "seam": 0, "client": 1, "drift": 2, "class": 3, "callee": 4, "stale": 5}
+GAP_ORDER = {"map": -1, "seam": 0, "client": 1, "float": 2, "drift": 3, "class": 4, "callee": 5, "stale": 6}
 
 
 def gap_rank(g):
@@ -2761,7 +2850,7 @@ def main():
     c.add_argument("--package")
     c.add_argument("--depth", type=int, default=2)
     g = sub.add_parser("gaps")
-    g.add_argument("--kind", choices=["seam", "client", "drift", "class", "callee", "stale", "map", "unported", "untested"])
+    g.add_argument("--kind", choices=["seam", "client", "float", "drift", "class", "callee", "stale", "map", "unported", "untested"])
     g.add_argument("--package")
     g.add_argument("--limit", type=int, default=50)
     sub.add_parser("report")
