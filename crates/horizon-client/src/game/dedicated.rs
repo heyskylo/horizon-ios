@@ -21,7 +21,7 @@ use horizon_client::{
     },
     text::Text,
 };
-use horizon_perf_format::v1::StopReason;
+use horizon_perf_format::v1::{StopReason, Trigger};
 use horizon_protocol::text::translatable;
 use horizon_world::nbt::{JavaString, Tag};
 use std::{
@@ -1304,6 +1304,18 @@ impl Game<'_> {
             max_players: props.max_players.max(0) as usize,
         };
         horizon_client::server_perf::warm_hardware();
+        if let Some(file) = std::env::var_os("HORIZON_TRACE").filter(|f| !f.is_empty()) {
+            self.record_report(
+                &mut state,
+                &report::Plan {
+                    seconds: report::MAX_SECONDS,
+                    samples: false,
+                    timeline: true,
+                    file: Some(file.into()),
+                    trigger: Trigger::Env,
+                },
+            );
+        }
         let mut next = Instant::now();
         // The panic that ended the tick loop, when one did.
         let mut crashed: Option<String> = None;
@@ -1403,14 +1415,6 @@ impl Game<'_> {
                 self.finish_perf_capture(&mut state, StopReason::Normal);
             }
             report::log_saved(&mut state.perf, false);
-            if horizon_client::spans::trace::due()
-                && let Some(events) = horizon_client::spans::trace::stop()
-            {
-                log(
-                    "INFO",
-                    &format!("Trace written: {events} events (reports/)"),
-                );
-            }
             // DedicatedServer.sendLowDiskSpaceWarning: the operators hear of it
             // (no window drains the toasts here).
             if horizon_client::chunk_io::take().low_disk_space
@@ -1694,65 +1698,62 @@ impl Game<'_> {
                 state.lists.lock().unwrap().stop = true;
             }
             // Horizon's own, on the console only: a performance report (report.rs).
-            "horizon-report" => match report::parse(&rest) {
-                Err(()) => log(
-                    "INFO",
-                    &format!(
-                        "horizon-report [SECONDS | stop | status] [--no-samples]: 1 to {} seconds, 60 by default",
-                        report::MAX_SECONDS
-                    ),
-                ),
-                Ok(report::Command::Stop) if state.report.is_some() => {
-                    log("INFO", "Stopping the performance report: writing it now");
-                    self.finish_perf_capture(state, StopReason::Normal);
-                }
-                Ok(report::Command::Stop) => log("INFO", "No performance report is being recorded"),
-                Ok(report::Command::Status) => match &state.report {
-                    Some(recording) => log("INFO", &recording.status()),
-                    None => log("INFO", "No performance report is being recorded"),
-                },
-                Ok(report::Command::Record { seconds, samples }) if state.report.is_none() => {
-                    state.report = Some(report::Recording::start(seconds));
-                    self.start_perf_capture(state, seconds, samples);
-                    log(
-                        "INFO",
-                        &format!("Recording a performance report for {seconds} s (reports/)"),
-                    );
-                }
-                Ok(report::Command::Record { .. }) => {
-                    log("INFO", "A performance report is already being recorded")
-                }
-            },
-            // Horizon's own, on the console only: every thread's spans as a timeline (report.rs).
-            "horizon-trace" if rest.first() == Some(&"stop") => {
-                match horizon_client::spans::trace::stop() {
-                    Some(events) => log("INFO", &format!("Trace stopped: {events} events written")),
-                    None => log("INFO", "No trace is being written"),
-                }
-            }
-            "horizon-trace" => {
-                let seconds = match rest.first().map(|s| s.parse::<u32>()) {
-                    None => Some(30),
-                    Some(Ok(s)) if (1..=report::TRACE_MAX_SECONDS).contains(&s) => Some(s),
-                    Some(_) => None,
+            "horizon-report" | "horizon-trace" => {
+                let trace = command == "horizon-trace";
+                let parsed = if trace {
+                    report::parse_trace(&rest)
+                } else {
+                    report::parse(&rest)
                 };
-                match seconds.map(report::start_trace) {
-                    None => log(
+                match parsed {
+                    Err(()) if trace => log(
                         "INFO",
                         &format!(
                             "horizon-trace [SECONDS | stop]: 1 to {} seconds, 30 by default",
-                            report::TRACE_MAX_SECONDS
+                            report::MAX_SECONDS
                         ),
                     ),
-                    Some(Ok(path)) => log(
+                    Err(()) => log(
                         "INFO",
                         &format!(
-                            "Writing a trace for {} s to {} (open it in ui.perfetto.dev)",
-                            seconds.unwrap_or_default(),
-                            path.display()
+                            "horizon-report [SECONDS | stop | status] [--no-samples] [--timeline]: 1 to {} seconds, 60 by default",
+                            report::MAX_SECONDS
                         ),
                     ),
-                    Some(Err(e)) => log("ERROR", &format!("Could not start a trace: {e}")),
+                    Ok(report::Command::Stop) if state.report.is_some() => {
+                        log("INFO", "Stopping the performance report: writing it now");
+                        self.finish_perf_capture(state, StopReason::Normal);
+                    }
+                    Ok(report::Command::Stop) => {
+                        log("INFO", "No performance report is being recorded")
+                    }
+                    Ok(report::Command::Status) => match &state.report {
+                        Some(recording) => log("INFO", &recording.status()),
+                        None => log("INFO", "No performance report is being recorded"),
+                    },
+                    Ok(report::Command::Record {
+                        seconds,
+                        samples,
+                        timeline,
+                    }) if state.report.is_none() => {
+                        self.record_report(
+                            state,
+                            &report::Plan {
+                                seconds,
+                                samples,
+                                timeline,
+                                file: None,
+                                trigger: Trigger::Console,
+                            },
+                        );
+                        log(
+                            "INFO",
+                            &format!("Recording a performance report for {seconds} s (reports/)"),
+                        );
+                    }
+                    Ok(report::Command::Record { .. }) => {
+                        log("INFO", "A performance report is already being recorded")
+                    }
                 }
             }
             "save-all" => {

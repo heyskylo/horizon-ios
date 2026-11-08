@@ -2,6 +2,8 @@ use super::*;
 use horizon_perf_format::v1::{Capture, Kind as K, Side as S, StopReason as R};
 use std::fs;
 
+mod timeline_capture;
+
 struct Scratch(PathBuf);
 
 impl Scratch {
@@ -34,6 +36,8 @@ fn options(window_s: f64) -> CaptureOptions {
         levels: Vec::new(),
         wire: Vec::new(),
         gpu: GpuMode::Unspecified,
+        timeline: None,
+        file: None,
     }
 }
 

@@ -1,4 +1,4 @@
-//! `horizon-report [SECONDS]` on the dedicated server's console: records a window of ticks into `reports/profile-<time>Z.hzperf`.
+//! `horizon-report [SECONDS]` and `horizon-trace [SECONDS]` on the dedicated server's console, and `HORIZON_TRACE`: record a window of ticks into `reports/profile-<time>Z.hzperf`.
 use super::super::{Dim, Game, tick_profile};
 use horizon_client::server_perf::{
     self, CaptureEnd, CaptureOptions, ServerPerf, WorldCounts,
@@ -23,18 +23,58 @@ pub(super) const MAX_SECONDS: u32 = 600;
 /// What `horizon-report` was asked.
 #[derive(Debug, PartialEq)]
 pub(super) enum Command {
-    Record { seconds: u32, samples: bool },
+    Record {
+        seconds: u32,
+        samples: bool,
+        timeline: bool,
+    },
     Stop,
     Status,
 }
 
-/// The words after `horizon-report`: `[SECONDS | stop | status] [--no-samples] [--profile]`, flags anywhere.
+/// What a capture is asked to record, and how it was asked.
+pub(super) struct Plan {
+    pub seconds: u32,
+    pub samples: bool,
+    pub timeline: bool,
+    /// Where the capture is written when it is not `reports/`.
+    pub file: Option<PathBuf>,
+    pub trigger: Trigger,
+}
+
+/// The longest `horizon-trace` records when no seconds are given.
+const TRACE_DEFAULT_SECONDS: u32 = 30;
+
+/// The words after `horizon-trace`: `[SECONDS | stop]`, a timeline-only capture.
+pub(super) fn parse_trace(words: &[&str]) -> Result<Command, ()> {
+    match words {
+        [] => Ok(Command::Record {
+            seconds: TRACE_DEFAULT_SECONDS,
+            samples: false,
+            timeline: true,
+        }),
+        ["stop"] => Ok(Command::Stop),
+        [seconds] => match seconds.parse::<u32>() {
+            Ok(seconds) if (1..=MAX_SECONDS).contains(&seconds) => Ok(Command::Record {
+                seconds,
+                samples: false,
+                timeline: true,
+            }),
+            _ => Err(()),
+        },
+        _ => Err(()),
+    }
+}
+
+/// The words after `horizon-report`: `[SECONDS | stop | status] [--no-samples] [--timeline] [--profile]`, flags anywhere.
 pub(super) fn parse(words: &[&str]) -> Result<Command, ()> {
     let mut samples = true;
+    let mut timeline = false;
     let mut positional = Vec::new();
     for &word in words {
         match word {
             "--no-samples" => samples = false,
+            "--timeline" => timeline = true,
             // Samples are on by default now; the old switch is accepted and does nothing.
             "--profile" => {}
             flag if flag.starts_with("--") => return Err(()),
@@ -45,13 +85,16 @@ pub(super) fn parse(words: &[&str]) -> Result<Command, ()> {
         [] => Ok(Command::Record {
             seconds: 60,
             samples,
+            timeline,
         }),
         ["stop"] => Ok(Command::Stop),
         ["status"] => Ok(Command::Status),
         [seconds] => match seconds.parse::<u32>() {
-            Ok(seconds) if (1..=MAX_SECONDS).contains(&seconds) => {
-                Ok(Command::Record { seconds, samples })
-            }
+            Ok(seconds) if (1..=MAX_SECONDS).contains(&seconds) => Ok(Command::Record {
+                seconds,
+                samples,
+                timeline,
+            }),
             _ => Err(()),
         },
         _ => Err(()),
@@ -149,18 +192,18 @@ fn span_cost_nanos() -> f64 {
 }
 
 impl Game<'_> {
+    /// Starts a report: the recording the game side needs and the capture beside it.
+    pub(super) fn record_report(&self, state: &mut super::ServerState, plan: &Plan) {
+        state.report = Some(Recording::start(plan.seconds));
+        self.start_perf_capture(state, plan);
+    }
+
     /// Opens the `.hzperf` that records beside a report, and logs where it goes.
-    pub(super) fn start_perf_capture(
-        &self,
-        state: &mut super::ServerState,
-        seconds: u32,
-        samples: bool,
-    ) {
+    pub(super) fn start_perf_capture(&self, state: &mut super::ServerState, plan: &Plan) {
         let options = self.capture_options(
-            seconds,
+            plan,
             (state.view, state.max_players, state.compression),
             state.horizon,
-            samples,
         );
         let t = state.perf_epoch.elapsed().as_secs_f64();
         match state.perf.start_capture(t, Path::new("reports"), options) {
@@ -177,13 +220,12 @@ impl Game<'_> {
             .collect()
     }
 
-    /// What a capture of `seconds` records of the server as it starts: the typed allowlists, the world and the connections.
+    /// What a capture of `plan` records of the server as it starts: the typed allowlists, the world and the connections.
     fn capture_options(
         &self,
-        seconds: u32,
+        plan: &Plan,
         (view, max_players, compression): ((u32, u32), usize, i32),
         horizon: HorizonOptions,
-        samples: bool,
     ) -> CaptureOptions {
         let start = Start {
             build: Some(server_perf::build()),
@@ -200,15 +242,17 @@ impl Game<'_> {
             ..Start::default()
         };
         CaptureOptions {
-            window_s: Some(f64::from(seconds)),
-            trigger: Trigger::Console,
+            window_s: Some(f64::from(plan.seconds)),
+            trigger: plan.trigger,
             start,
-            samples,
+            samples: plan.samples,
             sampler: Default::default(),
             block_names: self.block_names(),
             levels: self.level_counts(),
             wire: self.wire_bytes(),
             gpu: GpuMode::Unspecified,
+            timeline: plan.timeline.then(Default::default),
+            file: plan.file.clone(),
         }
     }
 
@@ -334,32 +378,32 @@ impl Game<'_> {
     }
 }
 
-/// The longest `horizon-trace` writes for.
-pub(super) const TRACE_MAX_SECONDS: u32 = 300;
-
-/// `horizon-trace SECONDS`: every thread's spans for `seconds`, to `reports/trace-<time>.json`
-/// (Perfetto opens it).
-pub(super) fn start_trace(seconds: u32) -> std::io::Result<PathBuf> {
-    let dir = Path::new("reports");
-    std::fs::create_dir_all(dir)?;
-    let stamp = chrono::Utc::now().format("%Y-%m-%d_%H-%M-%SZ");
-    let path = dir.join(format!("trace-{stamp}.json"));
-    spans::trace::start(&path, Some(seconds))?;
-    Ok(path)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn report_words_pick_the_window_and_the_samples() {
-        let record = |seconds, samples| Ok(Command::Record { seconds, samples });
+        let record = |seconds, samples| {
+            Ok(Command::Record {
+                seconds,
+                samples,
+                timeline: false,
+            })
+        };
         assert_eq!(parse(&[]), record(60, true));
         assert_eq!(parse(&["120"]), record(120, true));
         assert_eq!(parse(&["--no-samples", "30"]), record(30, false));
         assert_eq!(parse(&["30", "--no-samples"]), record(30, false));
         assert_eq!(parse(&["--profile"]), record(60, true));
+        assert_eq!(
+            parse(&["--timeline", "10"]),
+            Ok(Command::Record {
+                seconds: 10,
+                samples: true,
+                timeline: true
+            })
+        );
         assert_eq!(parse(&["stop"]), Ok(Command::Stop));
         assert_eq!(parse(&["status", "--no-samples"]), Ok(Command::Status));
         for bad in [
@@ -371,6 +415,24 @@ mod tests {
             &["stop", "5"],
         ] {
             assert_eq!(parse(bad), Err(()), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn trace_words_pick_a_timeline_only_window() {
+        let trace = |seconds| {
+            Ok(Command::Record {
+                seconds,
+                samples: false,
+                timeline: true,
+            })
+        };
+        assert_eq!(parse_trace(&[]), trace(30));
+        assert_eq!(parse_trace(&["45"]), trace(45));
+        assert_eq!(parse_trace(&["600"]), trace(600));
+        assert_eq!(parse_trace(&["stop"]), Ok(Command::Stop));
+        for bad in [&["0"][..], &["601"], &["x"], &["10", "20"], &["stop", "1"]] {
+            assert_eq!(parse_trace(bad), Err(()), "{bad:?}");
         }
     }
 
@@ -474,7 +536,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let mut perf = server_perf::ServerPerf::new(0.0, 250.0);
         let horizon = server_perf::horizon_options(12, 0, true);
-        let options = game.capture_options(2, ((10, 8), 20, 256), horizon, true);
+        let plan = Plan {
+            seconds: 2,
+            samples: true,
+            timeline: false,
+            file: None,
+            trigger: Trigger::Console,
+        };
+        let options = game.capture_options(&plan, ((10, 8), 20, 256), horizon);
         perf.start_capture(0.0, &dir, options).unwrap();
         for i in 0..40 {
             let detail = server_perf::TickDetail {

@@ -33,7 +33,8 @@ message Capture {
   repeated SpanBlock span_blocks = 13;
   // live: start, every 10 s, stop.
   repeated MemorySnapshot memory = 14;
-  // Number 15 (timeline) is allocated in §3.5 to piece T1.
+  // live: one per second per thread while the timeline is on.
+  repeated TimelineChunk timeline = 15;
   // end
   repeated SpanSummary spans = 16;
   // end
@@ -394,6 +395,20 @@ message SpanBlock {
   repeated float cpu_ms = 10;
   // Units of the block in which the span ran.
   repeated uint32 seen = 11;
+}
+
+// Columnar spans of one thread over about one second, in start order; the arrays are parallel.
+message TimelineChunk {
+  Side side = 1;
+  // String id of the thread name.
+  uint32 thread = 2;
+  // String ids of the span names.
+  repeated uint32 name = 3;
+  // Microseconds since the side's capture began.
+  repeated uint64 start_us = 4;
+  repeated uint32 dur_us = 5;
+  // Spans this one ran inside on its thread; 0 for an outermost span.
+  repeated uint32 depth = 6;
 }
 
 // A span's totals over the whole capture; ms per unit is wall_ms / SpanSummary.count.

@@ -117,6 +117,18 @@ fn a_second_capture_in_the_same_second_gets_the_next_name() {
 }
 
 #[test]
+fn a_capture_at_a_path_of_its_own_makes_the_folders_and_replaces_what_was_there() {
+    let scratch = Scratch::new("create-at");
+    let path = scratch.0.join("a").join("b").join("trace.hzperf");
+    let mut first = files::create_at(&path).unwrap();
+    std::io::Write::write_all(&mut first, b"old contents").unwrap();
+    drop(first);
+    assert_eq!(fs::metadata(&path).unwrap().len(), 12);
+    drop(files::create_at(&path).unwrap());
+    assert_eq!(fs::metadata(&path).unwrap().len(), 0);
+}
+
+#[test]
 fn the_saved_line_names_the_path_and_the_address() {
     let line = files::saved_line(Path::new("reports/profile-20251107-143844Z.hzperf"));
     assert!(

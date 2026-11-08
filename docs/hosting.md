@@ -376,9 +376,11 @@ chunk); `--no-samples` leaves that out. Finishing the file after the window can 
 ticks. The old `perf-<time>.json` and `.txt` files are no
 longer written; the ones already in `reports/` stay.
 
-To see a slow stretch tick by tick, `horizon-trace [SECONDS]` (30 by default, up to 300) writes every thread's timed
-steps to `reports/trace-<time>.json`; [ui.perfetto.dev](https://ui.perfetto.dev) opens it as a timeline, one row per
-thread. `horizon-trace stop` ends it early. It holds step names and times only.
+To see a slow stretch tick by tick, `horizon-trace [SECONDS]` (30 by default, up to 600) writes a capture with every
+thread's timed steps to `reports/profile-<time>Z.hzperf`, one row per thread. `horizon-trace stop` ends it early, and
+`horizon-report --timeline` adds the same steps to a report. The steps are recorded for the first 60 seconds of a
+capture, or until they pass 256 MiB; the capture then says when they stopped. `HORIZON_TRACE=FILE` in the server's
+environment writes such a capture to FILE from the first tick. It holds step names and times only.
 
 Between reports, the log keeps the spikes: a tick slower than 250 ms writes a `Horizon: slow tick` line with
 its phases (`HORIZON_SPIKES=MS` in the engine's environment sets another threshold), and a server more than

@@ -69,6 +69,14 @@ pub fn create(dir: &Path, unix_secs: i64) -> io::Result<(File, PathBuf)> {
     Err(io::Error::other("no free capture file name"))
 }
 
+/// Creates the folder and the capture file at exactly `path`, replacing a file that is there.
+pub fn create_at(path: &Path) -> io::Result<File> {
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        fs::create_dir_all(dir)?;
+    }
+    File::create(path)
+}
+
 /// Deletes the oldest captures beyond `max_files` or `max_bytes` together, never `keep` or a file that isn't named like a capture.
 pub fn retain(
     dir: &Path,

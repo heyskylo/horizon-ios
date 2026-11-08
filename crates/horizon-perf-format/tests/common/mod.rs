@@ -98,6 +98,7 @@ pub fn push(expected: &mut Capture, field: Field) {
         Field::World(m) => expected.world.push(m),
         Field::SpanBlock(m) => expected.span_blocks.push(m),
         Field::Memory(m) => expected.memory.push(m),
+        Field::Timeline(m) => expected.timeline.push(m),
         Field::Spans(m) => expected.spans.push(m),
         Field::Workers(m) => expected.workers.push(m),
         Field::Samples(m) => expected.samples.push(m),

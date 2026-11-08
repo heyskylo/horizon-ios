@@ -35,6 +35,7 @@ impl Entry {
             Entry::Field(Field::Slow(m)) => capture.slow.push(m),
             Entry::Field(Field::SpanBlock(m)) => capture.span_blocks.push(m),
             Entry::Field(Field::Memory(m)) => capture.memory.push(m),
+            Entry::Field(Field::Timeline(m)) => capture.timeline.push(m),
             Entry::Field(Field::Spans(m)) => capture.spans.push(m),
             Entry::Field(Field::Workers(m)) => capture.workers.push(m),
             Entry::Field(Field::Samples(m)) => capture.samples.push(m),
@@ -154,6 +155,8 @@ fn decode_entry(number: u32, bytes: &[u8]) -> Result<Entry, Error> {
         Field::SpanBlock(m)
     } else if let Some(m) = c.memory.pop() {
         Field::Memory(m)
+    } else if let Some(m) = c.timeline.pop() {
+        Field::Timeline(m)
     } else if let Some(m) = c.spans.pop() {
         Field::Spans(m)
     } else if let Some(m) = c.workers.pop() {

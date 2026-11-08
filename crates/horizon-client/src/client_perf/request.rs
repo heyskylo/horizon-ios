@@ -2,6 +2,7 @@
 use horizon_perf_format::v1::GpuMode;
 use serde::{Deserialize, Serialize};
 use std::ops::RangeInclusive;
+use std::path::PathBuf;
 use std::str::FromStr;
 
 /// The longest name a mark takes; it is the one free text in a capture.
@@ -115,6 +116,10 @@ pub struct StartOptions {
     pub wall: bool,
     pub samples: bool,
     pub gpu: GpuSwitch,
+    /// Also record every thread's spans (`--timeline`), for 60 s at most.
+    pub timeline: bool,
+    /// Write the capture here instead of into the reports folder: `trace` and `HORIZON_TRACE` only, never a profile switch.
+    pub file: Option<PathBuf>,
 }
 
 impl Default for StartOptions {
@@ -127,6 +132,8 @@ impl Default for StartOptions {
             wall: false,
             samples: true,
             gpu: GpuSwitch::Off,
+            timeline: false,
+            file: None,
         }
     }
 }
@@ -145,7 +152,7 @@ pub struct Parsed {
     pub request: Request,
 }
 
-const USAGE: &str = "profile [client|server] start [--seconds S] [--hz N] [--over MS] [--threads main|all] [--wall] [--gpu[=detail]] [--no-samples] | stop | status | mark NAME";
+const USAGE: &str = "profile [client|server] start [--seconds S] [--hz N] [--over MS] [--threads main|all] [--wall] [--gpu[=detail]] [--no-samples] [--timeline] | stop | status | mark NAME";
 
 /// The words after `profile`; the side comes first or as `--side`, and the switches follow `start`.
 pub fn parse(words: &[&str]) -> Result<Parsed, String> {
@@ -192,6 +199,7 @@ pub fn parse(words: &[&str]) -> Result<Parsed, String> {
             }
             _ if word.starts_with("--gpu=") => options.gpu = word["--gpu=".len()..].parse()?,
             "--no-samples" => options.samples = false,
+            "--timeline" => options.timeline = true,
             other => return Err(format!("unexpected {other}; usage: {USAGE}")),
         }
         switched |= word != "--side";
@@ -275,6 +283,14 @@ pub struct Failed {
     pub error: String,
 }
 
+/// The reply to `trace`: whether a timeline capture runs, and where it writes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Traced {
+    pub ok: bool,
+    pub tracing: bool,
+    pub file: Option<String>,
+}
+
 /// The reply to `profile mark`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Marked {
@@ -308,7 +324,7 @@ mod tests {
     #[test]
     fn every_start_switch_lands_in_its_field() {
         let Request::Start(o) = p(
-            "start --hz 500 --over 12.5 --threads all --wall --gpu=detail --no-samples --seconds 9",
+            "start --hz 500 --over 12.5 --threads all --wall --gpu=detail --no-samples --timeline --seconds 9",
         )
         .unwrap()
         .request
@@ -325,6 +341,8 @@ mod tests {
                 wall: true,
                 samples: false,
                 gpu: GpuSwitch::Detail,
+                timeline: true,
+                file: None,
             }
         );
     }
