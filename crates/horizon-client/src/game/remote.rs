@@ -273,6 +273,11 @@ impl ChunkGenerator for NoTerrain {
 struct Tracked {
     kind: String,
     position: [f64; 3],
+    /// `Entity.getPositionCodec`'s base: the position the server last
+    /// reported (AddEntity, MoveEntity, EntityPositionSync), which a move
+    /// packet's delta counts from. A TeleportEntity moves the entity but not
+    /// this base, so the server's next delta still lands where it means.
+    codec_base: [f64; 3],
     silent: bool,
     /// `Entity.vehicle`: the entity it rides (`SetPassengers`), whatever
     /// either one's type.
@@ -3089,6 +3094,7 @@ impl Game<'_> {
                 Tracked {
                     kind: kind.to_owned(),
                     position,
+                    codec_base: position,
                     silent: false,
                     vehicle: None,
                 },
@@ -3949,11 +3955,13 @@ impl Game<'_> {
             C::MoveEntityPos(play::MoveEntityPos(m))
             | C::MoveEntityPosRot(play::MoveEntityPosRot(m))
             | C::MoveEntityRot(play::MoveEntityRot(m)) => {
+                // handleMoveEntity: the delta counts from the position codec's
+                // base, which then moves to the delta's end.
                 let base = self
                     .remote
                     .as_ref()
                     .and_then(|r| r.entities.get(&m.id))
-                    .map(|t| t.position);
+                    .map(|t| t.codec_base);
                 let Some(base) = base else { return Ok(()) };
                 // VecDeltaCodec.decode: each step's position from the last.
                 let path = m.delta.as_ref().map(|d| match d {
@@ -3977,6 +3985,12 @@ impl Game<'_> {
                         horizon_protocol::buf::unpack_degrees(x),
                     )
                 });
+                if let (Some(path), Some(t)) = (
+                    &path,
+                    self.remote.as_mut().and_then(|r| r.entities.get_mut(&m.id)),
+                ) {
+                    t.codec_base = path.end();
+                }
                 self.move_entity(m.id, path, rotation, m.on_ground, MovePacket::Move);
             }
             C::EntityPositionSync(p) => {
@@ -3984,6 +3998,10 @@ impl Game<'_> {
                     play::PositionPath::Linear(at) => Path::Linear(at),
                     play::PositionPath::Stepped(steps) => Path::Stepped(steps),
                 };
+                // handleEntityPositionSync: the position codec's base is set.
+                if let Some(t) = self.remote.as_mut().and_then(|r| r.entities.get_mut(&p.id)) {
+                    t.codec_base = path.end();
+                }
                 self.move_entity(
                     p.id,
                     Some(path),
@@ -12946,6 +12964,7 @@ mod tests {
         let tracked = |kind: &str| super::Tracked {
             kind: kind.to_owned(),
             position: [0.0, 64.0, 0.0],
+            codec_base: [0.0, 64.0, 0.0],
             silent: false,
             vehicle: None,
         };
@@ -12983,6 +13002,7 @@ mod tests {
             super::Tracked {
                 kind: "minecraft:cow".to_owned(),
                 position: [8.5, 64.0, -3.5],
+                codec_base: [8.5, 64.0, -3.5],
                 silent: false,
                 vehicle: None,
             },
@@ -13026,6 +13046,7 @@ mod tests {
             super::Tracked {
                 kind: "minecraft:arrow".to_owned(),
                 position: [8.5, 64.0, -3.5],
+                codec_base: [8.5, 64.0, -3.5],
                 silent: true,
                 vehicle: None,
             },
