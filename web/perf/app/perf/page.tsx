@@ -41,6 +41,7 @@ export default function PerfPage() {
   return (
     <main
       className={styles.page}
+      data-tip-root=""
       onDragOver={(event) => {
         event.preventDefault();
         setDragging(true);

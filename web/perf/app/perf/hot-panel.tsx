@@ -5,6 +5,7 @@ import type { HorizonPerf } from "@/lib/generated/horizon_perf";
 import { num } from "@/lib/format";
 import { t } from "@/lib/i18n";
 import type { GroupRow, HotRow } from "@/lib/types";
+import { RowTools } from "./row-tools";
 import { Segmented } from "./segmented";
 import { useRows } from "./use-capture";
 import type { LoadedCapture } from "./use-capture";
@@ -73,7 +74,10 @@ export function HotPanel({ reader, capture }: Props) {
           </div>
           {rows.map((row) => (
             <div key={row.id} className={styles.meterRow} title={row.full}>
-              <span className={styles.meterName}>{row.name}</span>
+              <span className={styles.meterName}>
+                <span className={styles.nameText}>{row.name}</span>
+                <RowTools id={row.id} name={row.name} />
+              </span>
               <span className={styles.meterTrack} aria-hidden="true">
                 <span className={styles.meterFill} style={{ width: `${(row[sort] / max) * 100}%` }} />
               </span>
@@ -88,7 +92,10 @@ export function HotPanel({ reader, capture }: Props) {
             const label = row.key === null ? t("hot.game") : row.label;
             return (
               <div key={row.key ?? ""} className={styles.meterRow} title={label}>
-                <span className={styles.meterName}>{label}</span>
+                <span className={styles.meterName}>
+                  <span className={styles.nameText}>{label}</span>
+                  <RowTools id={row.key} name={label} />
+                </span>
                 <span className={styles.meterTrack} aria-hidden="true">
                   <span className={styles.meterFill} style={{ width: `${(row.value / modMax) * 100}%` }} />
                 </span>

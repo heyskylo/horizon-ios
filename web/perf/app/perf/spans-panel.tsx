@@ -5,6 +5,7 @@ import type { HorizonPerf } from "@/lib/generated/horizon_perf";
 import { grouped, num } from "@/lib/format";
 import { t } from "@/lib/i18n";
 import type { SpanRow } from "@/lib/types";
+import { RowTools } from "./row-tools";
 import { useRows } from "./use-capture";
 import type { LoadedCapture } from "./use-capture";
 import styles from "./page.module.css";
@@ -36,7 +37,8 @@ export function SpansPanel({ reader, capture }: Props) {
         <div key={row.id}>
           <div className={styles.meterRow}>
             <span className={styles.meterName} title={row.name} style={{ paddingLeft: depth * 14 }}>
-              {row.name}
+              <span className={styles.nameText}>{row.name}</span>
+              <RowTools id={row.id} name={row.name} />
             </span>
             <span className={styles.meterTrack} aria-hidden="true">
               <span className={styles.meterFill} style={{ width: `${(value / max) * 100}%` }} />

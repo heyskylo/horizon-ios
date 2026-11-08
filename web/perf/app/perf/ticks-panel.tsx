@@ -6,8 +6,10 @@ import { at, num } from "@/lib/format";
 import { stats } from "@/lib/health";
 import { t } from "@/lib/i18n";
 import type { TickRow } from "@/lib/types";
+import { RowTools } from "./row-tools";
 import { useRows } from "./use-capture";
 import type { LoadedCapture } from "./use-capture";
+import { spanId } from "@/lib/info";
 import { topSpans } from "@/lib/overview";
 import { Spark } from "./spark";
 import styles from "./page.module.css";
@@ -84,26 +86,33 @@ export function TicksPanel({ reader, capture }: Props) {
       </div>
       <div className={styles.ticks}>
         {worst.map((tick) => (
-          <button
-            key={tick.id}
-            type="button"
-            className={styles.tickHead}
-            aria-pressed={tick.id === selected}
-            onClick={() => setSelected(tick.id)}
-          >
-            <span className={styles.tickMs} data-over={tick.wall_ms > 50}>{num(tick.wall_ms, 2)} ms</span>
-            <span className={styles.tickAt}>{at(tick.t)}</span>
-            <span className={styles.meterTrack} aria-hidden="true">
-              <span className={styles.meterFill} style={{ width: `${(tick.wall_ms / worstMs) * 100}%` }} />
+          <div key={tick.id} className={styles.tickRow}>
+            <button
+              type="button"
+              className={styles.tickHead}
+              aria-pressed={tick.id === selected}
+              onClick={() => setSelected(tick.id)}
+            >
+              <span className={styles.tickMs} data-over={tick.wall_ms > 50}>{num(tick.wall_ms, 2)} ms</span>
+              <span className={styles.tickAt}>{at(tick.t)}</span>
+              <span className={styles.meterTrack} aria-hidden="true">
+                <span className={styles.meterFill} style={{ width: `${(tick.wall_ms / worstMs) * 100}%` }} />
+              </span>
+            </button>
+            <span className={styles.tickTools}>
+              <RowTools id={tick.id} name={at(tick.t)} />
             </span>
-          </button>
+          </div>
         ))}
       </div>
       {selectedTick ? (
         <div className={styles.meterList}>
           {topSpans(selectedTick).map((span, idx) => (
             <div key={idx} className={styles.meterRow}>
-              <span className={styles.meterName}>{span[0]}</span>
+              <span className={styles.meterName}>
+                <span className={styles.nameText}>{span[0]}</span>
+                <RowTools id={spanId(span[0])} name={span[0]} />
+              </span>
               <span />
               <span className={styles.meterValue}>{num(span[2], 2)} ms</span>
               <span className={styles.meterExtra}>{num(span[3], 2)} cpu</span>
