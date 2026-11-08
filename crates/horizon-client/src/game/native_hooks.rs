@@ -8668,21 +8668,27 @@ impl Game<'_> {
     pub(super) fn native_net_from_client(&mut self, player: u128, channel: &str, data: &[u8]) {
         mod_api::dispatch_net_from_client(self, mod_api::mods(), player, channel, data);
     }
-    /// Plays a block of a mod's own audio: `samples` are mono, -1 to 1, at
-    /// `sample_rate` hertz. `at` is where they were spoken, for distance and
-    /// direction; none plays them centred. The call queues and returns; the
-    /// output callback mixes them with the game's sounds, so a mod can carry
-    /// voice without the game shipping one. Queued samples are capped at two
-    /// seconds, and a burst past that is refused rather than delayed. False
-    /// when nothing was queued: no audio device, nothing to play, or the cap.
-    /// API 360.
+    /// Plays a block of a mod's own audio (client, `host.push_voice`): `samples` are mono,
+    /// -1 to 1, at `sample_rate` hertz. `source` is the mod's own id for the speaker (a
+    /// player's UUID, say): each source's blocks play one after another in the order they were
+    /// pushed, and different sources play at once. `at` is where they were spoken, for
+    /// direction and a linear fade to silence at 48 blocks; none plays them centred. The call
+    /// queues and returns; the output callback mixes them with the game's sounds. A source
+    /// holds at most two seconds, and a burst past that is refused rather than delayed; at
+    /// most 64 sources play at once. False when nothing was queued: on a server, without an
+    /// audio device, nothing to play, or a cap. API @API:push_voice@.
     pub(super) fn native_push_voice(
         &mut self,
+        mod_id: &str,
+        source: u128,
         samples: &[f32],
         sample_rate: u32,
         at: Option<[f64; 3]>,
     ) -> bool {
-        self.audio.push_voice(samples, sample_rate, at)
+        self.native_window()
+            && self
+                .audio
+                .push_voice(mod_id, source, samples, sample_rate, at)
     }
     /// A message from the server on `channel` (`mod_id:name`), whose `data`
     /// is the sender's own bytes. The window's game only. API 40.
