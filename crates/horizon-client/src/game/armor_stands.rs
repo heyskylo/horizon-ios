@@ -953,6 +953,30 @@ impl Game<'_> {
         }
         Ok(())
     }
+    /// `Ravager.roar` with `mob_griefing` on: every armor stand in `area` (the
+    /// ravager's box grown by 4) takes `strongKnockback` from the ravager at
+    /// `from`. Its `mobAttack` leaves the stand whole (`ArmorStand.hurtServer`:
+    /// not a damage type that breaks one).
+    pub(super) fn roar_pushes_armor_stands(&mut self, area: Aabb, from: [f64; 3]) {
+        for a in self.armor_stands.iter_mut() {
+            let (width, height) = stand_box(a);
+            let half = f64::from(width) / 2.0;
+            let p = a.position;
+            let bounds = Aabb::new(
+                Vec3::new(p.x - half, p.y, p.z - half),
+                Vec3::new(p.x + half, p.y + f64::from(height), p.z + half),
+            );
+            if a.health <= 0.0 || !bounds.intersects(area) {
+                continue;
+            }
+            let (xd, zd) = (p.x - from[0], p.z - from[2]);
+            let dd = (xd * xd + zd * zd).max(0.001);
+            // Entity.push.
+            a.velocity = a
+                .velocity
+                .add_vector(Vec3::new(xd / dd * 4.0, 0.2, zd / dd * 4.0));
+        }
+    }
     /// `ArmorStand.pushEntities`: a plain minecart (`RIDABLE_MINECARTS`,
     /// `AbstractMinecart.isRideable`) whose box meets the stand's is shoved
     /// when `distanceToSqr` is at most 0.2. `AbstractMinecart.push` of a
