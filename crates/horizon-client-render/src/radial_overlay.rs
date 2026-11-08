@@ -12,14 +12,17 @@
 use crate::{
     hud::{HudAtlas, HudBatch},
     hud_kit::{
-        colour,
+        colour, fit,
+        hint::{self, HintRow},
         icon::{self, Icon, IconPainter},
         motion::{self, Clock, Tween},
+        plate::{self, Plate},
         room::Room,
         shapes::{self, Stop},
+        tabs::{self, TabStrip},
     },
     lang,
-    pad_glyph::Glyph,
+    pad_glyph::{self, Glyph},
     radial::{Page, PageName, Pages, RadialAction, SLOTS, Slot},
 };
 use std::f32::consts::{FRAC_1_SQRT_2, FRAC_PI_4, FRAC_PI_8, TAU};
@@ -227,9 +230,12 @@ const HUB_RIM: u32 = colour(0xFFFFFF, 56);
 const SECTOR: u32 = colour(horizon_theme::night::NIGHT.accent, 140);
 const SECTOR_HI: u32 = colour(horizon_theme::night::NIGHT.accent_hi, 255);
 const TILE_BACK: u32 = colour(0x000000, 184);
+const INK: u32 = colour(0xF2F3F7, 255);
 const MUTED: u32 = colour(horizon_theme::BACKDROP_MUTED, 255);
 /// The chips' backing when the player's Text Background Opacity is at its default (0 to 1).
 pub const CHIP_BACKING: f32 = 0.8;
+#[cfg(test)]
+const CHIP_FILL: u32 = colour(DARK, 204);
 const SLASH: u32 = colour(0xE05050, 255);
 const PIP_COLOUR: u32 = colour(0xFFFFFF, 102);
 const FLASH: u32 = colour(0xFFFFFF, 153);
@@ -537,10 +543,61 @@ impl Layout {
     fn track(&self) -> [f32; 2] {
         [self.hub + 1.0, self.r + self.tile / 2.0 + TRACK_OUT]
     }
+
+    /// A chip `text_w` wide under slot `slot`'s tile (over it at the ring's top three; beside the
+    /// ring's middle reaching outwards), if it fits there clear of every other tile, the hub,
+    /// the header and the view's edges.
+    pub fn chip(&self, slot: usize, text_w: f32) -> Option<[f32; 4]> {
+        if !self.chips {
+            return None;
+        }
+        let [x, y, t, _] = self.tile_rect(slot);
+        let w = (text_w + 2.0 * CHIP_PAD).min(CHIP_MAX).ceil();
+        // Under a tile, or over one at the ring's top, away from the hub.
+        let upper = matches!(slot, 7 | 0 | 1);
+        let chip_y = if upper {
+            y - GROW - CHIP_GAP - CHIP_H
+        } else {
+            y + t + GROW + CHIP_GAP
+        };
+        // Beside the ring's middle it reaches outwards, away from the hub.
+        let chip_x = match slot {
+            1..=3 => x - GROW,
+            5..=7 => x + t + GROW - w,
+            _ => (x + t / 2.0 - w / 2.0).floor(),
+        };
+        let rect = [chip_x, chip_y, w, CHIP_H];
+        let clear = (0..SLOTS)
+            .filter(|other| *other != slot)
+            .all(|other| !overlaps(rect, grown(self.tile_rect(other), GROW)));
+        let inside = rect[0] >= 0.0
+            && rect[0] + rect[2] <= self.w
+            && rect[1] >= self.header_y + self.tab_h
+            && rect[1] + rect[3] <= self.bottom;
+        (clear && inside && !meets_disc(rect, [self.cx, self.cy], self.hub)).then_some(rect)
+    }
+
+    /// The Cancel hint `w` wide, `[x, y, w, h]`: beside the ring at the lower right, or in the
+    /// view's corner when that is off the view or meets a tile or one of `chips`; `None` when
+    /// neither is clear or the view isn't roomy.
+    pub fn hint(&self, w: f32, chips: &[[f32; 4]]) -> Option<[f32; 4]> {
+        if !self.cancel {
+            return None;
+        }
+        let x = (self.cx + self.r + self.tile / 2.0 + HINT_GAP).floor();
+        let y = (self.cy + self.r * HINT_DROP).floor();
+        let beside = [x, y, w, HINT_H];
+        let corner = [self.w - SIDE_MARGIN - w, self.bottom - HINT_H, w, HINT_H];
+        let clear = |rect: [f32; 4]| {
+            rect[0] + rect[2] <= self.w - SIDE_MARGIN
+                && (0..SLOTS).all(|slot| !overlaps(rect, grown(self.tile_rect(slot), GROW)))
+                && chips.iter().all(|chip| !overlaps(rect, *chip))
+        };
+        [beside, corner].into_iter().find(|rect| clear(*rect))
+    }
 }
 
 /// Whether two `[x, y, w, h]` areas overlap (touching isn't).
-#[cfg(test)]
 fn overlaps(a: [f32; 4], b: [f32; 4]) -> bool {
     a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3]
 }
@@ -550,7 +607,6 @@ fn grown([x, y, w, h]: [f32; 4], by: f32) -> [f32; 4] {
 }
 
 /// Whether an area reaches inside a disc.
-#[cfg(test)]
 fn meets_disc([x, y, w, h]: [f32; 4], [cx, cy]: [f32; 2], r: f32) -> bool {
     let nx = cx.clamp(x, x + w);
     let ny = cy.clamp(y, y + h);
@@ -606,7 +662,14 @@ pub fn draw_overlay(
     let slide = look.slide(clock);
     batch.translate_since(tiles, slide, 0.0);
     batch.alpha_since(tiles, 1.0 - slide.abs() / TURN_FADE_PX);
+    draw_hub(batch, atlas, painter, &lay, dial, page);
     batch.scale_since(start, lay.cx, lay.cy, scale, scale);
+    // The header and the hint are rectangles: kept inside the view (a glyph's art reaches past
+    // a small view's row). The ring's fans aren't clipped, which would seam them.
+    let header = batch.vertices.len();
+    draw_header(batch, atlas, &lay, dial, look, clock);
+    draw_hint(batch, atlas, &lay, dial, page);
+    batch.clip_since(header, 0.0, 0.0, lay.w, lay.h);
     batch.alpha_since(start, alpha);
 }
 
@@ -749,9 +812,233 @@ fn draw_tiles(
             );
         }
     }
+    for (slot, text, rect) in chips(atlas, lay, dial, page) {
+        let lit = dial.seen.selected == Some(slot) && !dial.seen.waiting;
+        draw_chip(batch, atlas, rect, &text, lit, dial.backing);
+    }
+}
+
+/// The state chips this page shows: the slot, its text cut to fit, and where it goes. A chip
+/// that fits nowhere clear is left out.
+fn chips(
+    atlas: &HudAtlas,
+    lay: &Layout,
+    dial: &Dial,
+    page: &Page,
+) -> Vec<(usize, String, [f32; 4])> {
+    (0..SLOTS)
+        .filter_map(|slot| {
+            let Slot::Action(action) = page.slot(slot) else {
+                return None;
+            };
+            let (now, _) = toggle_state(*action, dial.toggles)?;
+            let text =
+                fit::ellipsize(atlas, &lang::get(now), CHIP_MAX - 2.0 * CHIP_PAD).into_owned();
+            let rect = lay.chip(slot, atlas.font.width(&text).ceil())?;
+            Some((slot, text, rect))
+        })
+        .collect()
+}
+
+/// A chip: its plate and its text, lit under the selected tile.
+fn draw_chip(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    [x, y, w, h]: [f32; 4],
+    text: &str,
+    lit: bool,
+    backing: u8,
+) {
+    batch.fill(atlas, x, y, w, h, colour(DARK, backing));
+    let tw = atlas.font.width(text).ceil();
+    let tx = (x + (w - tw) / 2.0).floor();
+    batch.text(
+        atlas,
+        text,
+        tx,
+        y + 1.0,
+        if lit { INK } else { MUTED },
+        true,
+    );
+}
+
+/// The hub: the large icon where there's room, the selection's name and what it says (a
+/// toggle's state and next, why it can't run); or that the stick must be let go first.
+fn draw_hub(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    painter: &dyn IconPainter,
+    lay: &Layout,
+    dial: &Dial,
+    page: &Page,
+) {
+    let width = fit::chord(lay.hub, LINE_STEP + LINE_H / 2.0) - 2.0 * HUB_TEXT_INSET;
+    let (lines, picture) = hub_lines(atlas, width, dial, page);
+    let lines: Vec<(String, u32)> = lines.into_iter().take(lay.lines).collect();
+    // The large icon over a name and at most one more line; three lines fill the hub alone.
+    let picture = picture.filter(|_| lay.big_icon && lines.len() <= ICON_LINES_MAX);
+    if lines.is_empty() && picture.is_none() {
+        return;
+    }
+    let text_h = lines.len() as f32 * LINE_STEP - (LINE_STEP - LINE_H);
+    // Under an icon the text sits a little below the centre, where the hub is widest, and the
+    // icon right over it.
+    let middle = if picture.is_some() {
+        lay.cy + ICON_TEXT_DROP
+    } else {
+        lay.cy
+    };
+    let mut y = (middle - text_h / 2.0).floor();
+    if let Some((picture, dim)) = picture {
+        let area = [lay.cx - BIG_ICON / 2.0, y - ICON_GAP - BIG_ICON, BIG_ICON];
+        icon::draw(batch, atlas, painter, picture, area, dim);
+    }
+    for (text, colour) in lines {
+        // As wide as the hub's chord through the line's middle.
+        let text = fit::fit_in_circle(atlas, &text, lay.hub, y - lay.cy, LINE_H, HUB_TEXT_INSET);
+        let tw = atlas.font.width(&text).ceil();
+        batch.text(atlas, &text, (lay.cx - tw / 2.0).floor(), y, colour, true);
+        y += LINE_STEP;
+    }
+}
+
+/// The hub's lines and its large icon (with its alpha) for what is selected.
+/// A phrase that may take two lines is wrapped to `width` GUI px.
+fn hub_lines(
+    atlas: &HudAtlas,
+    width: f32,
+    dial: &Dial,
+    page: &Page,
+) -> (Vec<(String, u32)>, Option<(Icon, f32)>) {
+    if dial.seen.waiting {
+        let words = lang::get(RELEASE_STICK);
+        let lines = fit::wrap(&words, width, |line| atlas.font.width(line));
+        return (lines.into_iter().map(|l| (l, INK)).collect(), None);
+    }
+    let Some(slot) = dial.seen.selected else {
+        return (Vec::new(), None);
+    };
+    match page.slot(slot) {
+        Slot::Empty => (vec![(lang::get(EMPTY), MUTED)], None),
+        Slot::Missing(id) => (
+            vec![
+                (lang::get(MISSING), INK),
+                (lang::get(WHY_MISSING), MUTED),
+                (id.clone(), MUTED),
+            ],
+            None,
+        ),
+        Slot::Action(action) => {
+            let mut lines = vec![(action_label(*action), INK)];
+            let more = |text: String, lines: &mut Vec<(String, u32)>| {
+                // A reason or a state that is too wide for one line takes two.
+                for line in fit::wrap(&text, width, |l| atlas.font.width(l)) {
+                    lines.push((line, MUTED));
+                }
+            };
+            let live = dial.available[slot];
+            if let Some(why) = dial.why[slot].filter(|_| !live) {
+                more(lang::get(why), &mut lines);
+            } else if let Some((now, next)) = toggle_state(*action, dial.toggles) {
+                lines.push((lang::get(now), MUTED));
+                lines.push((lang::tr(NEXT, &[&lang::get(next)]), MUTED));
+            }
+            (lines, Some((icon(*action), if live { 1.0 } else { DIM })))
+        }
+    }
+}
+
+/// The page header: the tab strip between the bumpers that turn it; collapsed, the bumpers
+/// carry the neighbouring pages' names. With one page, only its name.
+fn draw_header(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    lay: &Layout,
+    dial: &Dial,
+    look: &Look,
+    clock: Clock,
+) {
+    let pages = dial.pages;
+    let names: Vec<String> = (0..pages.len())
+        .map(|i| page_label(pages.page(i)))
+        .collect();
+    let [_, y, w, h] = lay.header();
+    let paged = names.len() > 1;
+    let keys = if paged { dial.page_keys } else { [None, None] };
+    let key_w = keys.map(|k| k.map_or(0.0, |g| pad_glyph::width(atlas, g) + GLYPH_GAP));
+    // The strip keeps the same margin both sides, so its middle is the view's.
+    // As wide as the row needs (`tabs::span`), up to the view less the bumpers, centred; the
+    // bumpers sit against its ends.
+    let side = SIDE_MARGIN + key_w[0].max(key_w[1]);
+    let room = (w - 2.0 * side).max(0.0);
+    let width = tabs::span(atlas, &names).min(room);
+    let left = ((w - width) / 2.0).floor();
+    let right = left + width;
+    // The row's text line, and the glyphs on it (a glyph reaches over its line).
+    let text_y = y + ((h - LINE_H + 1.0) / 2.0).floor();
+    // Scrolled in from where the new page's tab was.
+    let scroll = look.turn.map_or(0.0, |(at, _, from)| {
+        let distance = tabs::distance(atlas, &names, from, dial.seen.page);
+        motion::slide(TURN, clock, at, distance)
+    });
+    let area = [left, y, width, h];
+    let mut strip = tabs::tab_strip(atlas, &names, dial.seen.page, area, scroll);
+    // The bumpers turn round past either end, so both arrows lead somewhere.
+    if let TabStrip::Collapsed(folded) = &mut strip {
+        (folded.has_prev, folded.has_next) = (paged, paged);
+    }
+    tabs::draw_tabs(batch, atlas, &strip, 1.0);
+    if let Some(back) = keys[0] {
+        pad_glyph::draw(batch, atlas, back, left - key_w[0] + 1.0, text_y);
+    }
+    if let Some(on) = keys[1] {
+        pad_glyph::draw(batch, atlas, on, right + GLYPH_GAP + 1.0, text_y);
+    }
+    // Collapsed, the bumpers name the pages they turn to.
+    if let TabStrip::Collapsed(tabs::Strip {
+        arrows: [[before, _], [after, _]],
+        ..
+    }) = strip
+    {
+        let n = names.len();
+        let page = dial.seen.page;
+        if keys[0].is_some() {
+            let room = before - GLYPH_GAP - left;
+            let name = fit::ellipsize(atlas, &names[(page + n - 1) % n], room);
+            batch.text(atlas, &name, left, text_y, MUTED, true);
+        }
+        if keys[1].is_some() {
+            let start = after + atlas.font.width("›") + GLYPH_GAP;
+            let name = fit::ellipsize(atlas, &names[(page + 1) % n], right - start);
+            let nw = atlas.font.width(&name).ceil();
+            batch.text(atlas, &name, right - nw, text_y, MUTED, true);
+        }
+    }
+}
+
+/// B's Cancel on a plate at the lower right, when the view is roomy.
+fn draw_hint(batch: &mut HudBatch, atlas: &HudAtlas, lay: &Layout, dial: &Dial, page: &Page) {
+    let row = HintRow::new([dial.cancel], lang::get("gui.cancel"));
+    let w = (HINT_PAD + row.measure(atlas, &HINT_LOOK) + HINT_PAD).ceil();
+    let chips: Vec<[f32; 4]> = chips(atlas, lay, dial, page)
+        .into_iter()
+        .map(|c| c.2)
+        .collect();
+    let Some([x, y, w, h]) = lay.hint(w, &chips) else {
+        return;
+    };
+    plate::draw(batch, atlas, Plate::Notice, [x, y, w, h]);
+    let ty = y + ((h - LINE_H + 1.0) / 2.0).floor();
+    hint::draw_hint(batch, atlas, &row, &HINT_LOOK, x + HINT_PAD, ty);
 }
 
 /// The Cancel hint's row: a muted caption with its shadow, as the hub's second lines.
+const HINT_LOOK: hint::Look = hint::Look {
+    color: MUTED,
+    shadow: true,
+    ..hint::NOTICE
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -872,6 +1159,47 @@ mod tests {
         }
     }
 
+    #[test]
+    fn chips_and_the_hint_stay_clear_of_the_tiles_and_inside_the_view() {
+        for (w, h) in [(427.0, 240.0), (640.0, 360.0), (854.0, 480.0)] {
+            for room in rooms(w, h) {
+                let lay = Layout::new(w, h, &room);
+                for slot in 0..SLOTS {
+                    // The widest chip.
+                    if let Some(chip) = lay.chip(slot, CHIP_MAX) {
+                        assert!(inside(chip, w, h), "{w}x{h} chip {slot}");
+                        assert!(!meets_disc(chip, [lay.cx, lay.cy], lay.hub));
+                        for other in 0..SLOTS {
+                            let tile = grown(lay.tile_rect(other), GROW);
+                            assert!(!overlaps(chip, tile), "{w}x{h}: chip {slot} on {other}");
+                        }
+                    }
+                }
+                let hint = lay.hint(60.0, &[]).expect("a roomy view has the hint");
+                assert!(inside(hint, w, h), "{w}x{h} hint {hint:?}");
+                // With every chip at its widest, the hint moves or goes, never over one.
+                let chips: Vec<[f32; 4]> =
+                    (0..SLOTS).filter_map(|s| lay.chip(s, CHIP_MAX)).collect();
+                if let Some(hint) = lay.hint(60.0, &chips) {
+                    assert!(inside(hint, w, h), "{w}x{h} hint {hint:?}");
+                    for chip in &chips {
+                        assert!(!overlaps(hint, *chip), "{w}x{h}: the hint on a chip");
+                    }
+                }
+            }
+        }
+        // The full size view has a chip under every cardinal tile.
+        let lay = Layout::new(427.0, 240.0, &Room::new(427.0, 240.0));
+        for slot in [0, 2, 4, 6] {
+            assert!(lay.chip(slot, 40.0).is_some(), "no chip under {slot}");
+        }
+        assert!(
+            Layout::new(213.0, 120.0, &Room::new(213.0, 120.0))
+                .hint(60.0, &[])
+                .is_none()
+        );
+    }
+
     fn dial<'a>(
         pages: &'a Pages,
         room: &'a Room,
@@ -938,6 +1266,126 @@ mod tests {
         }
     }
 
+    /// The colours drawn in a tile's square.
+    fn colours_in(batch: &HudBatch, [x, y, w, h]: [f32; 4]) -> Vec<u32> {
+        batch
+            .vertices
+            .iter()
+            .filter(|v| (x..=x + w).contains(&v.pos[0]) && (y..=y + h).contains(&v.pos[1]))
+            .map(|v| v.color)
+            .collect()
+    }
+
+    #[test]
+    fn an_action_that_can_t_run_is_slashed_and_the_hub_says_why() {
+        let pages = Pages::default();
+        let page = pages.page(0);
+        let slot = (0..SLOTS).find(|i| !page.slot(*i).is_empty()).unwrap();
+        let room = Room::new(427.0, 240.0);
+        let seen = Seen {
+            page: 0,
+            selected: Some(slot),
+            waiting: false,
+        };
+        let mut available = ALL;
+        let live = draw(
+            [427, 240],
+            &dial(&pages, &room, seen, available),
+            &shown(seen),
+        );
+        available[slot] = false;
+        let mut blocked = dial(&pages, &room, seen, available);
+        blocked.why[slot] = Some("horizon.radial.why.cosmetics");
+        let dimmed = draw([427, 240], &blocked, &shown(seen));
+        let lay = Layout::new(427.0, 240.0, &room);
+        let rect = lay.tile_rect(slot);
+        assert!(!colours_in(&live, rect).contains(&SLASH));
+        assert!(colours_in(&dimmed, rect).contains(&SLASH));
+        // The hub's second line is the reason, in the muted colour.
+        let (lines, _) = hub_lines(&atlas(), 60.0, &blocked, page);
+        assert_eq!(lines[1], (lang::get("horizon.radial.why.cosmetics"), MUTED));
+    }
+
+    #[test]
+    fn a_toggle_shows_its_state_and_next_and_the_waiting_hub_says_let_go() {
+        let mut pages = Pages::default();
+        pages.set_slot(0, 0, Slot::Action(RadialAction::SmoothCamera));
+        let room = Room::new(427.0, 240.0);
+        let seen = Seen {
+            page: 0,
+            selected: Some(0),
+            waiting: false,
+        };
+        let mut d = dial(&pages, &room, seen, ALL);
+        let (lines, picture) = hub_lines(&atlas(), 60.0, &d, pages.page(0));
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[1].0, lang::get("horizon.radial.state.off"));
+        assert_eq!(
+            lines[2].0,
+            lang::tr(NEXT, &[&lang::get("horizon.radial.state.on")])
+        );
+        assert_eq!(picture, Some((Icon::Item("minecraft:feather"), 1.0)));
+        d.toggles.cinematic = true;
+        assert_eq!(
+            hub_lines(&atlas(), 60.0, &d, pages.page(0)).0[1].0,
+            lang::get("horizon.radial.state.on")
+        );
+        d.seen.waiting = true;
+        let (lines, picture) = hub_lines(&atlas(), 60.0, &d, pages.page(0));
+        assert_eq!(
+            lines
+                .iter()
+                .map(|l| l.0.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
+            lang::get(RELEASE_STICK)
+        );
+        assert!(picture.is_none());
+    }
+
+    #[test]
+    fn the_hub_s_text_stays_inside_the_hub() {
+        let english = lang::Language::load(&[], "en_us");
+        let mut pages = Pages::default();
+        pages.set_slot(0, 0, Slot::Action(RadialAction::Advancements));
+        pages.set_slot(0, 2, Slot::Action(RadialAction::TogglePerspective));
+        let ((), _) = lang::scoped(english, || {
+            for (w, h) in VIEWS {
+                let room = Room::new(w, h);
+                let lay = Layout::new(w, h, &room);
+                for slot in [0, 2] {
+                    let seen = Seen {
+                        page: 0,
+                        selected: Some(slot),
+                        waiting: false,
+                    };
+                    let batch = draw(
+                        [w as u32 * 3, h as u32 * 3],
+                        &dial(&pages, &room, seen, ALL),
+                        &shown(seen),
+                    );
+                    // Text only, and nowhere near a tile's chip: inside the hub's disc.
+                    let inner = lay.hub + 1.0;
+                    for v in batch.vertices.iter().filter(|v| v.text != 0) {
+                        let d = ((v.pos[0] - lay.cx).powi(2) + (v.pos[1] - lay.cy).powi(2)).sqrt();
+                        let on_tile = (0..SLOTS).any(|t| {
+                            let [x, y, w, h] = grown(lay.tile_rect(t), GROW);
+                            (x..=x + w).contains(&v.pos[0]) && (y..=y + h).contains(&v.pos[1])
+                        });
+                        if d < lay.r - lay.tile / 2.0 {
+                            assert!(!on_tile || d > lay.hub, "{w}x{h}: hub text under a tile");
+
+                            assert!(
+                                d <= inner,
+                                "{w}x{h} slot {slot}: hub text at {d} of {inner}"
+                            );
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     #[test]
     fn perspective_cycles_through_its_three_views() {
         let t = |view| {
@@ -962,6 +1410,99 @@ mod tests {
             t(View::FirstPerson).unwrap().0
         );
         assert_eq!(toggle_state(RadialAction::Chat, Toggles::default()), None);
+    }
+
+    #[test]
+    fn a_missing_slot_shows_its_mark_and_the_hub_names_its_id() {
+        let pages = Pages::parse([("radial_0_slots", "mymod:dash,,,,,,,")].into_iter()).unwrap();
+        let room = Room::new(427.0, 240.0);
+        let seen = Seen {
+            page: 0,
+            selected: Some(0),
+            waiting: false,
+        };
+        let mut available = ALL;
+        available[0] = false;
+        let d = dial(&pages, &room, seen, available);
+        let english = lang::Language::load(&[], "en_us");
+        let ((lines, _), _) =
+            lang::scoped(english, || hub_lines(&atlas(), 60.0, &d, pages.page(0)));
+        let lines: Vec<&str> = lines.iter().map(|l| l.0.as_str()).collect();
+        assert_eq!(lines, ["Missing", "Unknown action", "mymod:dash"]);
+        let batch = draw([427, 240], &d, &shown(seen));
+        let lay = Layout::new(427.0, 240.0, &room);
+        let rect = lay.tile_rect(0);
+        // Its mark, not the slash of an action that can't run, and no chip under it.
+        let colours = colours_in(&batch, rect);
+        assert!(!colours.contains(&SLASH), "a slash on a missing slot");
+        assert!(colours.contains(&MUTED), "no mark in the missing slot");
+        assert!(
+            !batch.vertices.iter().any(|v| v.color == CHIP_FILL),
+            "a chip under it"
+        );
+    }
+
+    #[test]
+    fn the_bumpers_sit_against_the_strip_and_only_those_that_turn_it() {
+        let atlas = atlas();
+        let room = Room::new(427.0, 240.0);
+        let lay = Layout::new(427.0, 240.0, &room);
+        // The header alone: how far it reaches left and right.
+        let reach = |pages: &Pages, keys: [bool; 2]| {
+            let seen = Seen::default();
+            let mut d = dial(pages, &room, seen, ALL);
+            for (key, on) in d.page_keys.iter_mut().zip(keys) {
+                if !on {
+                    *key = None;
+                }
+            }
+            let mut batch = HudBatch::new([427, 240]);
+            draw_header(
+                &mut batch,
+                &atlas,
+                &lay,
+                &d,
+                &shown(seen),
+                Clock::new(Instant::now(), true),
+            );
+            batch
+                .vertices
+                .iter()
+                .fold((f32::MAX, f32::MIN), |(lo, hi), v| {
+                    (lo.min(v.pos[0]), hi.max(v.pos[0]))
+                })
+        };
+        let two = Pages::default();
+        let names: Vec<String> = (0..two.len()).map(|i| page_label(two.page(i))).collect();
+        let span = tabs::span(&atlas, &names);
+        let (strip_l, strip_r) = (
+            ((427.0 - span) / 2.0).floor(),
+            ((427.0 - span) / 2.0).floor() + span,
+        );
+        let glyph_w = pad_glyph::width(&atlas, Glyph::menu(MenuJob::PagePrev, Glyphs::default()));
+        // Both bumpers, against the strip's ends rather than the view's corners.
+        let (lo, hi) = reach(&two, [true, true]);
+        assert!(
+            (lo - (strip_l - GLYPH_GAP - glyph_w)).abs() <= 3.0,
+            "LB at {lo}, strip at {strip_l}"
+        );
+        assert!(
+            (hi - (strip_r + GLYPH_GAP + glyph_w)).abs() <= 3.0,
+            "RB to {hi}, strip to {strip_r}"
+        );
+        // A bumper opener: only the other.
+        let (lo, hi) = reach(&two, [false, true]);
+        assert!(lo >= strip_l - 1.0 && hi > strip_r + GLYPH_GAP, "{lo} {hi}");
+        // One page: none.
+        let mut one = Pages::default();
+        one.remove(1);
+        let names = vec![page_label(one.page(0))];
+        let span = tabs::span(&atlas, &names);
+        let (lo, hi) = reach(&one, [true, true]);
+        assert!(
+            lo >= ((427.0 - span) / 2.0).floor() - 1.0 && hi <= (427.0 + span) / 2.0 + 1.0,
+            "{lo} {hi}"
+        );
     }
 
     #[test]
