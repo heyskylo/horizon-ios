@@ -111,3 +111,36 @@ fn a_warmed_cube_primes_on_the_first_powered_tick() {
     step(&mut game);
     assert_eq!(fuse(&game), 120);
 }
+
+// Controls added after the baseline: the old pass's gates still hold for the
+// cubes whose body was adopted when the tick started.
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn control_an_adopted_cube_without_power_stays_unprimed() {
+    let mut game = game();
+    cube_on(&mut game, "stone");
+    for _ in 0..10 {
+        step(&mut game);
+    }
+    assert_eq!(fuse(&game), -1);
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn control_a_primed_cube_on_power_is_not_primed_again() {
+    let mut game = game();
+    assert!(game.run_command("forceload add 0 0"));
+    assert!(game.run_command("fill 0 98 0 15 99 15 stone"));
+    assert!(game.run_command("setblock 4 99 8 redstone_block"));
+    assert!(game.run_command("tick freeze"));
+    assert!(game.run_command(
+        "summon sulfur_cube 4.5 100 8.5 {NoAI:1b,Silent:1b,fuse:50,UUID:[I;45641,0,0,1],\
+         equipment:{body:{id:\"minecraft:tnt\",count:1}}}"
+    ));
+    assert_eq!(fuse(&game), 50);
+    for expected in [49, 48, 47] {
+        step(&mut game);
+        assert_eq!(fuse(&game), expected, "the countdown goes on, no new fuse");
+    }
+}
