@@ -62,6 +62,9 @@ mod shadow_faces_tests;
 mod r11f_image_tests;
 
 #[cfg(test)]
+mod work_group_fold_tests;
+
+#[cfg(test)]
 mod forced_flip_tests;
 
 #[cfg(test)]
@@ -3784,6 +3787,16 @@ impl PackPost {
             [n(0), n(1), 1]
         });
         let (pipeline, groups) = (pipeline.clone(), groups);
+        // wgpu panics on a dispatch over its limit. The translator reshapes a large
+        // `workGroups`; a `workGroupsRender` that large is not run.
+        let most = device.limits().max_compute_workgroups_per_dimension;
+        if groups.iter().any(|&n| n > most) {
+            log::warn!(
+                "shader pack: {}: {groups:?} work groups is over {most} per dimension; not run",
+                pass.name
+            );
+            return;
+        }
         for image in (0..self.images.len()).filter(|k| pass.snapshots & 1 << k != 0) {
             pack_images::snapshot(encoder, &self.images[image]);
         }
