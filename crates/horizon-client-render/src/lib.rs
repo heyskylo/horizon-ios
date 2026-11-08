@@ -55,6 +55,7 @@ pub mod graphics_style;
 pub mod graphics_ui;
 pub mod hdr_calibration;
 pub mod hud;
+pub mod hud_kit;
 pub mod hud_layout;
 pub mod hud_overlays;
 pub mod inventory_effects;

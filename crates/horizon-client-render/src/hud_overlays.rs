@@ -571,6 +571,41 @@ pub fn boss_overlay(w: i32, h: i32, bars: &[BossBar], font: &Font) -> Vec<GuiDra
     out
 }
 
+/// `BossHealthOverlay`'s first bar's top edge, in GUI px (its name sits 9 px above).
+pub const BOSS_BAR_TOP: i32 = 12;
+/// `BossHealthOverlay`'s step from one bar to the next, in GUI px (`10 + 9`).
+pub const BOSS_BAR_STEP: i32 = 10 + 9;
+/// A boss bar's sprite height, in GUI px.
+pub const BOSS_BAR_HEIGHT: i32 = 5;
+/// A boss bar's sprite width, in GUI px; it is centred on the view.
+pub const BOSS_BAR_WIDTH: i32 = 182;
+
+/// How many of `n` boss bars `BossHealthOverlay.extractRenderState` draws on a view `h` GUI px
+/// tall: it stops once the next bar's top reaches a third of the height (integer division,
+/// as vanilla's `guiHeight() / 3`), but always draws the first.
+pub fn boss_bars_drawn(h: i32, n: usize) -> usize {
+    let mut drawn = 0;
+    let mut y = BOSS_BAR_TOP;
+    while drawn < n {
+        drawn += 1;
+        y += BOSS_BAR_STEP;
+        if y >= h / 3 {
+            break;
+        }
+    }
+    drawn
+}
+
+/// The bottom edge, in GUI px from the view's top, of the last of `n` boss bars a view `h` GUI
+/// px tall shows (`boss_overlay`'s layout); 0 when there are none. Names sit above their bar,
+/// so nothing of the overlay reaches below this.
+pub fn boss_bars_bottom(h: i32, n: usize) -> i32 {
+    match boss_bars_drawn(h, n) {
+        0 => 0,
+        k => BOSS_BAR_TOP + BOSS_BAR_STEP * (k as i32 - 1) + BOSS_BAR_HEIGHT,
+    }
+}
+
 /// `JumpableVehicleBar.extractBackground`: `cooldown` is the mount's jump
 /// cooldown and `scale` the player's `getJumpRidingScale()`.
 pub fn jump_bar(w: i32, h: i32, cooldown: i32, scale: f32) -> Vec<GuiDraw> {
@@ -1379,5 +1414,66 @@ mod text_position_tests {
             _ => None,
         });
         assert_eq!(relative, Some(-4));
+    }
+}
+
+#[cfg(test)]
+mod boss_bar_room_tests {
+    use super::*;
+
+    /// `BossHealthOverlay.extractRenderState` worked by hand: bars at y 12, 31, 50, 69, 88...,
+    /// each 5 tall, until the next top reaches `guiHeight() / 3`.
+    #[test]
+    fn boss_bars_end_where_vanillas_overlay_stops() {
+        assert_eq!(boss_bars_bottom(300, 0), 0);
+        assert_eq!(boss_bars_bottom(300, 1), 17);
+        assert_eq!(boss_bars_bottom(300, 2), 36);
+        assert_eq!(boss_bars_bottom(300, 3), 55);
+        // A third of 300 is 100: the fifth bar is the last (its next top would be 107).
+        assert_eq!(boss_bars_drawn(300, 9), 5);
+        assert_eq!(boss_bars_bottom(300, 9), 93);
+        // A short view still draws the first.
+        assert_eq!(boss_bars_bottom(60, 3), 17);
+        // `guiHeight() / 3` is integer division: 152 / 3 = 50 stops at two, 153 / 3 = 51 not.
+        assert_eq!(boss_bars_drawn(152, 3), 2);
+        assert_eq!(boss_bars_drawn(153, 3), 3);
+    }
+
+    #[test]
+    fn boss_bars_bottom_is_below_every_drawn_bar() {
+        // The missing-glyph metrics: no game assets needed.
+        let font = Font::load(
+            std::path::Path::new("/nonexistent-horizon-hud-test-resources"),
+            &std::collections::HashMap::new(),
+            &[],
+            (1, 1),
+            (0, 0),
+            crate::hud::Rect {
+                u0: 0.0,
+                v0: 0.0,
+                u1: 1.0,
+                v1: 1.0,
+                w: 1,
+                h: 1,
+            },
+        );
+        let bars: Vec<BossBar> = (0..6)
+            .map(|_| BossBar {
+                name: Text::literal(""),
+                progress: 1.0,
+                color: 0,
+                overlay: 0,
+            })
+            .collect();
+        for h in [60, 120, 152, 153, 240, 300, 600] {
+            let bottom = boss_overlay(400, h, &bars, &font)
+                .iter()
+                .filter_map(|d| match d {
+                    GuiDraw::Sprite { y, h, .. } => Some(y + h),
+                    _ => None,
+                })
+                .max();
+            assert_eq!(bottom, Some(boss_bars_bottom(h, bars.len())), "height {h}");
+        }
     }
 }
