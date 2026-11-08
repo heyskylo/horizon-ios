@@ -241,6 +241,40 @@ def front_state(states, rng, name):
     return states.get(name)
 
 
+VEHICLES = ['oak_chest_boat', 'cherry_chest_boat', 'bamboo_chest_raft', 'chest_minecart', 'hopper_minecart']
+
+
+def vehicle_cases(states, seed, only):
+    """A dropper in front of container entities (`HopperBlockEntity.getContainerAt`'s entity half): centred in the
+    space in front, reaching into it from beyond, just past it, two at once (the random pick), behind a chest
+    block that wins, or not a container at all. A random stream of their own keeps the other cases as they are."""
+    rng = random.Random(seed ^ 0x5EED_B0A7)
+    for n in range(48):
+        item = rng.choice([plain('stone', 5), plain('diamond'), plain('stick', 64), plain('oak_sapling', 3)])
+        if only and only not in item:
+            continue
+        facing = DIRECTIONS[n % len(DIRECTIONS)]
+        dx, dy, dz = STEP[facing]
+        cells = [[0, 0, 0, states.get('dropper', facing=facing, triggered='false')]]
+        scene = rng.choice(['centre', 'centre', 'reach', 'past', 'two', 'chest', 'plain'])
+        shift = {'reach': 0.7, 'past': 1.5}.get(scene, 0.0)
+        at = [dx + 0.5 + dx * shift, dy + dy * shift, dz + 0.5 + dz * shift]
+        kind = rng.choice(VEHICLES)
+        entities = [{'type': 'minecraft:' + kind, 'pos': at, 'yaw': rng.choice([0.0, 90.0, 180.0])}]
+        if scene == 'two':
+            entities.append({'type': 'minecraft:' + kind, 'pos': [at[0] + 0.25, at[1], at[2] - 0.25], 'yaw': 0.0})
+        elif scene == 'chest':
+            h.put(cells, (dx, dy, dz), states.get('chest'))
+        elif scene == 'plain':
+            entities[0]['type'] = 'minecraft:' + rng.choice(['oak_boat', 'minecart'])
+        items = [[0, 0, 0, slot, item] for slot in rng.sample(range(9), rng.choice([1, 1, 2]))]
+        case = {**h.environment(rng), 'mode': 'dispense', 'pos': [0, 0, 0], 'cells': cells, 'items': items,
+                'entities': entities}
+        case.pop('raining', None)
+        case.pop('thundering', None)
+        yield case
+
+
 def cases(facts, count, seed, only):
     rng = random.Random(seed)
     states = States(facts)
@@ -257,6 +291,7 @@ def cases(facts, count, seed, only):
             case.pop('raining', None)
             case.pop('thundering', None)
             yield case
+    yield from vehicle_cases(states, seed, only)
     kinds = list(ITEMS)
     for n in range(count):
         kind = kinds[n % len(kinds)]

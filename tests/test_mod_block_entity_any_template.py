@@ -31,6 +31,7 @@ impl Blocks { fn has_flag(&self, s: BlockStateId, _f: u32) -> bool { self.templa
 impl std::ops::Deref for Entities { type Target = std::collections::HashMap<(i32, i32, i32), BlockEntity>; fn deref(&self) -> &Self::Target { &self.0 } }
 // BlockEntities::mods_near has its own test in horizon-client-render; here every mod entity is near.
 impl Entities {
+    fn stateful_entity(&self, state: u32) -> bool { state == 2 }
     fn has_mods(&self) -> bool { self.0.values().any(|e| matches!(e, BlockEntity::Mod(_))) }
     fn mods_near(&self, _x: f64, _z: f64, _r: f64) -> impl Iterator<Item = &(i32, i32, i32)> {
         self.0.iter().filter(|(_, e)| matches!(e, BlockEntity::Mod(_))).map(|(p, _)| p)
@@ -43,6 +44,7 @@ impl World { fn block(&self, x: i32, y: i32, z: i32) -> BlockStateId { BlockStat
 struct GameLevel { world: World }
 impl GameLevel {
     HAS_MOD
+    HAS_NATIVE
 }
 struct Game { world: World, res: Res }
 impl Game {
@@ -81,6 +83,9 @@ fn a_mod_block_entity_on_a_template_without_one_is_removed_and_not_pushed() {
     // a template that has one still removes it, as before
     assert!(sim.removes(true, BlockStateId(1), BlockStateId(9), at(6)));
     assert!(!sim.pushable_tail(BlockStateId(1), at(6)));
+    // A state with a native factory is also protected before its entity has loaded.
+    assert!(sim.removes(true, BlockStateId(2), BlockStateId(9), at(6)));
+    assert!(!sim.pushable_tail(BlockStateId(2), at(6)));
     // a vanilla entity on a template without the flag is not a mod's
     let sim = Sim { b: Blocks { templated: vec![] }, level: level(&[(5, BlockEntity::Chest(0))]) };
     assert!(!sim.removes(true, stone, BlockStateId(9), at(5)));
@@ -110,10 +115,10 @@ class ModBlockEntityAnyTemplateTests(unittest.TestCase):
         removal = between(update, "} else if block_changed\n", "        {\n            // BlockEntity.preRemoveSideEffects")
         tail = between(pistons, "        } else if b.table.bool(state, b.props.extended) {\n            return false;\n        }\n", "    }\n    fn is_slime_or_honey")
         fixture = (FIXTURE.replace("HAS_MOD", method(game, "has_mod_block_entity"))
+                   .replace("HAS_NATIVE", method(game, "has_native_block_entity"))
                    .replace("UNTEMPLATED", method(draw.replace("pub(super) fn", "fn"), "untemplated_mod_block_entities"))
                    .replace("REMOVAL", removal.replace("self.b.has_flag(old, super::data::state_flags::BLOCK_ENTITY)", "self.b.has_flag(old, state_flags::BLOCK_ENTITY)"))
                    .replace("PISTON", tail.replace("super::data::state_flags::", "state_flags::")))
-        fixture = fixture.replace("fn has_mod_block_entity(&self, pos: BlockPos)", "fn has_mod_block_entity(&self, pos: BlockPos)")
         with tempfile.TemporaryDirectory() as folder:
             src, exe = Path(folder) / "mbe.rs", Path(folder) / "mbe.exe"
             src.write_text(fixture, encoding="utf-8")

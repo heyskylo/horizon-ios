@@ -9,6 +9,7 @@ use crate::{
 };
 pub mod cache;
 mod mesh;
+pub mod packed;
 use horizon_world::registry::BlockStateId;
 use std::{
     collections::VecDeque,
@@ -559,7 +560,8 @@ pub(crate) fn state_kinds(facts: &BlockFacts) -> Vec<u8> {
 }
 /// Blocks that fill their cell but neither draw solid nor collide as a full
 /// block: far terrain draws them as blocks, or patches of powder snow leave
-/// holes in mountains (and paths and fields dips).
+/// holes in mountains (and paths and fields dips). Slabs use the same
+/// full-cell approximation as stairs, so distant slab builds remain visible.
 fn nearly_full(name: &str) -> bool {
     matches!(
         name,
@@ -568,6 +570,7 @@ fn nearly_full(name: &str) -> bool {
             | "minecraft:farmland"
             | "minecraft:honey_block"
     ) || name.ends_with("_stairs")
+        || name.ends_with("_slab")
         || name.contains("fence")
         || name.contains("_wall")
         || name.contains("bars")
@@ -1414,7 +1417,13 @@ impl Lod {
                                     &edges,
                                     &input.finer,
                                 );
+                                // Sorts the quads by facing side, and clears
+                                // the compact layout: a far tile has no tints
+                                // for `mesher::packed`, so its own records
+                                // (`lod::packed`) are laid out here, from the
+                                // quads in the order the sort left them.
                                 mesh.sort_solid();
+                                crate::lod::packed::lay_out(&mut mesh);
                                 let [ox, _, oz] = job.key.origin();
                                 let size = job.key.size();
                                 mesh.keep = keep_finer
@@ -3974,6 +3983,73 @@ mod tests {
             [tile(1), tile(5), tile(6), tile(7)]
         );
         assert!(resampled_over(&ready, &FxHashSet::default(), (40, 40)).is_empty());
+    }
+    #[test]
+    #[ignore = "requires prepared models/textures in HORIZON_TEST_RESOURCES"]
+    fn slab_materials_survive_chunk_summaries_and_draw_far_faces() -> crate::Result<()> {
+        use crate::{assets::Assets, biome::Biomes, light::LightTables, mesher::MeshTables};
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("HORIZON_TEST_RESOURCES"),
+        );
+        let assets = Arc::new(Assets::load(&root)?);
+        let render = Arc::new(assets.reload(&root)?);
+        let facts = BlockFacts::load(&root, assets.registry)?;
+        let context = WorkerContext {
+            light: Arc::new(LightTables::load(&root, assets.registry, &facts)?),
+            tables: Arc::new(MeshTables::new(
+                &assets,
+                &render,
+                &facts,
+                crate::models::load_visibility(&root, assets.registry)?,
+            )?),
+            assets: assets.clone(),
+            render,
+            biomes: Arc::new(Biomes::load(&root)?),
+        };
+        let kinds = state_kinds(&facts);
+        let mut chunk = Chunk::empty(0, 0);
+        let mut mesher = mesh::Mesher::default();
+        let mut materials = FxHashSet::default();
+        // Real top, bottom, double and waterlogged states: a waterlogged slab
+        // must keep its material rather than become a column of plain water.
+        for (i, f) in facts.states.iter().enumerate() {
+            if !f.name.ends_with("_slab") {
+                continue;
+            }
+            materials.insert(f.name.as_ref());
+            let state = BlockStateId(i as u32);
+            chunk.set(3, 90, 3, state.0);
+            let columns = summarize(&chunk, &kinds);
+            let column = &columns[3 * 16 + 3];
+            assert_eq!(column.spans.len(), 1, "{} state {i}", f.name);
+            assert_eq!(column.spans[0].state, state, "{} state {i}", f.name);
+            assert_eq!((column.spans[0].min, column.spans[0].max), (90, 91));
+            assert_eq!(Column::reduced(&columns, 0, 0, 4).spans, column.spans);
+            let mesh = mesher.mesh(
+                TileKey {
+                    x: 0,
+                    z: 0,
+                    level: 0,
+                },
+                &columns.iter().collect::<Vec<_>>(),
+                &FxHashSet::default(),
+                None,
+                &context,
+                &std::array::from_fn(|_| Vec::new()),
+                &[],
+            );
+            // Like stairs, far slabs use the existing full-cell approximation.
+            assert_eq!(mesh.solid.len(), 6 * 4, "{} state {i}", f.name);
+            assert!(mesh.translucent.is_empty(), "{} state {i}", f.name);
+        }
+        for name in [
+            "minecraft:smooth_stone_slab",
+            "minecraft:oak_slab",
+            "minecraft:cut_copper_slab",
+        ] {
+            assert!(materials.contains(name), "missing fixture {name}");
+        }
+        Ok(())
     }
     #[test]
     #[ignore = "requires prepared models/textures in HORIZON_TEST_RESOURCES"]
