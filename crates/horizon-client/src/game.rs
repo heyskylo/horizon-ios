@@ -19069,6 +19069,8 @@ fn write_level_for_role(
 }
 
 #[cfg(test)]
+mod allay_pickup_cooldown_tests;
+#[cfg(test)]
 mod golem_defense_tests;
 #[cfg(test)]
 mod inline_feature_parse_tests;
