@@ -109,6 +109,106 @@ fn glider_and_slot(
     (glider, slot)
 }
 
+/// The parts of a stack's `equippable` component (`Equippable`) the client
+/// draws with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Equippable {
+    /// `slot`: `EquipmentSlot`'s serialized name.
+    pub slot: String,
+    /// `assetId`: the equipment asset drawn when worn (`minecraft:iron`).
+    pub asset_id: Option<String>,
+    /// `cameraOverlay`: the texture drawn over the screen when worn
+    /// (`minecraft:misc/pumpkinblur`).
+    pub camera_overlay: Option<String>,
+}
+
+/// `stack.get(DataComponents.EQUIPPABLE)`: the item's own, replaced or removed
+/// by the saved components (a command's, a save's), then by the server's patch.
+pub fn equippable(stack: &ItemStack, items: &crate::items::Items) -> Option<Equippable> {
+    let mut out = item_equippable(&stack.item, items);
+    let Some(data) = stack.data() else {
+        return out;
+    };
+    if data.other("!minecraft:equippable").is_some() {
+        out = None;
+    } else if let Some(e) = data.other("minecraft:equippable") {
+        let string = |key: &str| match e.get(key) {
+            Some(Tag::String(s)) => Some(s.to_string_lossy()),
+            _ => None,
+        };
+        out = string("slot").map(|slot| Equippable {
+            slot,
+            asset_id: string("asset_id").map(namespaced),
+            camera_overlay: string("camera_overlay").map(namespaced),
+        });
+    }
+    let Some((added, removed)) = data
+        .wire
+        .patch()
+        .and_then(|p| horizon_protocol::item::WirePatch::decode(p).ok())
+    else {
+        return out;
+    };
+    if removed.contains(&component::EQUIPPABLE) {
+        out = None;
+    }
+    for (kind, c) in &added {
+        if let (component::EQUIPPABLE, Component::Raw(bytes)) = (*kind, c) {
+            out = decode_equippable(bytes);
+        }
+    }
+    out
+}
+
+/// The `equippable` component `item`'s prototype has.
+pub fn item_equippable(item: &str, items: &crate::items::Items) -> Option<Equippable> {
+    let info = items.get(item)?;
+    Some(Equippable {
+        slot: info.equip_slot.clone()?,
+        asset_id: info.equip_asset.clone(),
+        camera_overlay: info.equip_camera_overlay.clone(),
+    })
+}
+
+/// `Identifier.parse`: an id without a namespace is `minecraft`'s.
+fn namespaced(id: String) -> String {
+    if id.contains(':') {
+        id
+    } else {
+        format!("minecraft:{id}")
+    }
+}
+
+/// `Equippable.STREAM_CODEC` up to the camera overlay: the slot, the equip
+/// sound, the asset id and the camera overlay.
+fn decode_equippable(bytes: &[u8]) -> Option<Equippable> {
+    let mut r = Reader::new(bytes);
+    let slot = equipment_slot_name(r.varint().ok()?)?.to_owned();
+    // SoundEvent.STREAM_CODEC (ByteBufCodecs.holder): a registry id + 1, or 0
+    // then the direct event, its id and optional fixed range.
+    if r.varint().ok()? == 0 {
+        r.string(32767).ok()?;
+        if r.bool().ok()? {
+            r.f32().ok()?;
+        }
+    }
+    let asset_id = if r.bool().ok()? {
+        Some(r.string(32767).ok()?)
+    } else {
+        None
+    };
+    let camera_overlay = if r.bool().ok()? {
+        Some(r.string(32767).ok()?)
+    } else {
+        None
+    };
+    Some(Equippable {
+        slot,
+        asset_id,
+        camera_overlay,
+    })
+}
+
 /// `EquipmentSlot.byId`'s serialized names.
 fn equipment_slot_name(id: i32) -> Option<&'static str> {
     Some(match id {
@@ -187,6 +287,14 @@ fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag>
                     continue;
                 };
                 text
+            }
+            // AdventureModePredicate: the blocks an adventure player may break
+            // or place on, which this client matches as the server does.
+            Component::Raw(bytes) if matches!(*kind, component::CAN_BREAK | CAN_PLACE_ON) => {
+                let Some(predicate) = adventure_predicate_tag(bytes, builtin) else {
+                    continue;
+                };
+                predicate
             }
             // Read past, not decoded: the item keeps its prototype's value.
             Component::Raw(_) => continue,
@@ -420,6 +528,90 @@ fn block_entity_data_tag(bytes: &[u8], builtin: &Builtin) -> Option<Tag> {
     };
     data.insert("id".into(), Tag::String(kind.into()));
     Some(Tag::Compound(data))
+}
+
+/// `DataComponents.CAN_PLACE_ON`'s registry id (26.3); `CAN_BREAK` follows it.
+const CAN_PLACE_ON: i32 = 14;
+
+/// `AdventureModePredicate.STREAM_CODEC` (a list of `BlockPredicate`s) as
+/// `AdventureModePredicate.CODEC` saves it: one predicate, or a list of them
+/// (`ExtraCodecs.compactListCodec`). Each keeps its `blocks` (a `#tag`, one
+/// block id or a list), `state` and `nbt`; `DataComponentMatchers` are read
+/// past (`BlockPredicate.matches(BlockInWorld)` does not test them), and a
+/// predicate with exact components, whose values this side cannot read, gives
+/// up on the whole component.
+fn adventure_predicate_tag(bytes: &[u8], builtin: &Builtin) -> Option<Tag> {
+    let blocks = builtin.get("minecraft:block")?;
+    let mut r = Reader::new(bytes);
+    let n = r.count(r.remaining()).ok()?;
+    let mut predicates = Vec::with_capacity(n.min(64));
+    for _ in 0..n {
+        let mut p: Vec<(&str, Tag)> = Vec::new();
+        // ByteBufCodecs.holderSet: 0 and a tag id, or the size plus one and the ids.
+        if r.bool().ok()? {
+            let set = match r.varint().ok()? {
+                0 => Tag::String(format!("#{}", r.string(32767).ok()?).as_str().into()),
+                size => {
+                    let size = usize::try_from(size).ok()?.checked_sub(1)?;
+                    if size > r.remaining() {
+                        return None;
+                    }
+                    let mut ids = (0..size)
+                        .map(|_| Some(Tag::String(blocks.name(r.varint().ok()?)?.into())))
+                        .collect::<Option<Vec<_>>>()?;
+                    if ids.len() == 1 {
+                        ids.pop()?
+                    } else {
+                        Tag::List(ids)
+                    }
+                }
+            };
+            p.push(("blocks", set));
+        }
+        // StatePropertiesPredicate: each property an exact value, or a range.
+        if r.bool().ok()? {
+            let mut state: Vec<(String, Tag)> = Vec::new();
+            for _ in 0..r.count(r.remaining()).ok()? {
+                let name = r.string(32767).ok()?;
+                let matcher = if r.bool().ok()? {
+                    Tag::String(r.string(32767).ok()?.as_str().into())
+                } else {
+                    let mut range = Vec::new();
+                    for bound in ["min", "max"] {
+                        if r.bool().ok()? {
+                            range.push((bound, Tag::String(r.string(32767).ok()?.as_str().into())));
+                        }
+                    }
+                    Tag::compound(range)
+                };
+                state.push((name, matcher));
+            }
+            p.push((
+                "state",
+                Tag::compound(state.iter().map(|(k, v)| (k.as_str(), v.clone()))),
+            ));
+        }
+        // NbtPredicate.STREAM_CODEC: a compound.
+        if r.bool().ok()? {
+            p.push(("nbt", r.nbt().ok()?));
+        }
+        // DataComponentExactPredicate: typed component values.
+        if r.count(r.remaining()).ok()? != 0 {
+            return None;
+        }
+        // DataComponentPredicate: a type id and the predicate as NBT.
+        for _ in 0..r.count(r.remaining()).ok()? {
+            r.bool().ok()?;
+            r.varint().ok()?;
+            r.nbt().ok()?;
+        }
+        predicates.push(Tag::compound(p));
+    }
+    if predicates.len() == 1 {
+        predicates.pop()
+    } else {
+        Some(Tag::List(predicates))
+    }
 }
 
 /// `SignText.STREAM_CODEC` as `SignText.CODEC` saves it: the four messages,

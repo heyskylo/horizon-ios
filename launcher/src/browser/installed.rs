@@ -341,8 +341,18 @@ pub fn remove(home: &Path, name: &str) -> Result<Entry, String> {
     Ok(entry)
 }
 
-/// The newer version `entry` can be updated to, if any.
-pub fn update_for(source: &dyn Source, entry: &Entry) -> Result<Option<Version>, String> {
+/// The newer version `entry`, installed in game folder `home`, can be updated to, if any. A
+/// registry native mod's is the newest that builds on the Horizon `home` plays.
+pub fn update_for(
+    source: &dyn Source,
+    entry: &Entry,
+    home: &Path,
+) -> Result<Option<Version>, String> {
+    if entry.source == SourceId::Horizon {
+        if let Some(update) = super::horizon::fitting_update(&entry.project, &entry.version, home) {
+            return Ok(update);
+        }
+    }
     let project = source.project(&entry.project)?;
     let versions = source.versions(&project)?;
     Ok(pick(project.kind, &versions, true)
@@ -420,11 +430,9 @@ pub fn install_datapack(
     let result = fetched.and_then(|(zip, number)| {
         let coverage = crate::datapacks::coverage(&zip)?;
         if coverage.read.is_empty() {
-            return Err(format!(
-                "{} would change nothing in Horizon yet: it has no functions, predicates or item \
-                 modifiers, and Horizon doesn't read its {} yet.",
-                project.title,
-                coverage.not_read()
+            return Err(crate::i18n::trf(
+                "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
+                &[("title", &project.title), ("files", &coverage.not_read())],
             ));
         }
         let pack = crate::datapacks::add(world, &zip)?;

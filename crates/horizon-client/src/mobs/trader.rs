@@ -110,7 +110,7 @@ impl Goal for DrinkItem {
         // Level.isDarkOutside / isBrightOutside: a dimension with a fixed
         // time (the Nether and the End) is neither dark nor bright outside,
         // so neither potion is drunk.
-        if cx.w.nether || cx.w.end {
+        if cx.w.dimension_type.has_fixed_time {
             return false;
         }
         if self.dark {
@@ -152,6 +152,7 @@ impl Goal for DrinkItem {
             // LivingEntity.completeUsingItem: the potion or the milk takes effect.
             if self.dark {
                 m.extra.effects.retain(|e| e.0 != INVISIBILITY);
+                m.extra.effect_fallbacks.retain(|h| h.id != INVISIBILITY);
                 m.extra.effects.push((INVISIBILITY, 3600, 0));
                 cx.events.push(MobEvent::Sound(
                     "entity.wandering_trader.drink_potion",
@@ -160,7 +161,16 @@ impl Goal for DrinkItem {
                     1.0,
                 ));
             } else {
+                let had_absorption = m.has_effect("minecraft:absorption");
+                let had_boost = m.has_effect("minecraft:health_boost");
                 m.extra.effects.clear();
+                m.extra.effect_fallbacks.clear();
+                if had_absorption {
+                    m.absorption = m.absorption.min(super::armor::max_absorption(m));
+                }
+                if had_boost {
+                    super::finalize::health_boost_changed(m);
+                }
                 cx.events.push(MobEvent::Sound(
                     "entity.wandering_trader.drink_milk",
                     m.center(),
@@ -180,8 +190,19 @@ impl Goal for TradeWithPlayer {
     fn flags(&self) -> u8 {
         MOVE | JUMP
     }
-    fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
-        m.extra.flag2 && m.alive() && !m.fluids.in_water && m.on_ground
+    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        // `TradeWithPlayerGoal.canUse`: alive, dry, on the ground, not hurt
+        // recently, and within four blocks of the trading player.
+        m.extra.flag2
+            && m.alive()
+            && m.hurt_time <= 0
+            && !m.fluids.in_water
+            && m.on_ground
+            && cx
+                .w
+                .player
+                .as_ref()
+                .is_some_and(|p| m.distance_sqr(p.position) <= 16.0)
     }
     fn start(&mut self, m: &mut Mob, _: &mut Cx) {
         m.nav_stop();
@@ -325,6 +346,7 @@ pub fn ai_step(m: &mut Mob, _w: &MobWorld) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horizon_world::dimension_type::DimensionFacts;
 
     #[test]
     fn despawn_delay_is_two_days() {
@@ -367,14 +389,13 @@ mod tests {
                 };
             let mut night = w.clone();
             night.daylight = false;
-            night.end = false;
-            night.nether = false;
+            night.dimension_type = DimensionFacts::overworld();
             assert_eq!(
                 decide(&night, &mut m, &mut potion, &mut milk),
                 (true, false)
             );
             let mut end_dark = night.clone();
-            end_dark.end = true;
+            end_dark.dimension_type = DimensionFacts::vanilla("minecraft:the_end").unwrap();
             assert_eq!(
                 decide(&end_dark, &mut m, &mut potion, &mut milk),
                 (false, false)
@@ -382,15 +403,65 @@ mod tests {
             m.extra.effects.push((INVISIBILITY, 3600, 0));
             let mut day = w.clone();
             day.daylight = true;
-            day.end = false;
-            day.nether = false;
+            day.dimension_type = DimensionFacts::overworld();
             assert_eq!(decide(&day, &mut m, &mut potion, &mut milk), (false, true));
             let mut end_bright = day.clone();
-            end_bright.end = true;
+            end_bright.dimension_type = DimensionFacts::vanilla("minecraft:the_end").unwrap();
             assert_eq!(
                 decide(&end_bright, &mut m, &mut potion, &mut milk),
                 (false, false)
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod trade_start_tests {
+    use super::*;
+    use crate::mobs::world::{test_player, with_test_world};
+    use horizon_core::{geometry::Vec3, random::LegacyRandom};
+    use std::sync::Arc;
+
+    /// `TradeWithPlayerGoal.canUse`: alive, dry, on the ground, not hurt
+    /// recently and within four blocks of the trading player. A hurt trader,
+    /// or one whose customer walked away, must not start the stand-still goal.
+    #[test]
+    fn a_trader_stops_trading_when_hurt_or_out_of_reach() {
+        let mut outcomes = Vec::new();
+        let ran = with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:wandering_trader"].clone());
+            for (label, hurt_time, distance) in [
+                ("trading", 0, 2.0),
+                ("hurt", 5, 2.0),
+                ("out of reach", 0, 5.0),
+            ] {
+                let mut m = Mob::new(1, kind.clone(), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                m.extra.flag2 = true;
+                m.on_ground = true;
+                m.hurt_time = hurt_time;
+                m.ai.goals.add(1, TradeWithPlayer);
+                let mut world = w.clone();
+                world.player = Some(test_player(Vec3::new(0.5 + distance, 64.0, 0.5)));
+                let mut lr = LegacyRandom::new(0);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w: &world,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                let mut goals = std::mem::take(&mut m.ai.goals);
+                goals.tick(&mut m, &mut cx);
+                outcomes.push((label, goals.is_running("TradeWithPlayer")));
+                m.ai.goals = goals;
+            }
+        });
+        if !ran {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            vec![("trading", true), ("hurt", false), ("out of reach", false)],
+            "TradeWithPlayerGoal starts only for an unhurt trader within four blocks"
+        );
     }
 }
