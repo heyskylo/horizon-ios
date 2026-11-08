@@ -412,10 +412,11 @@ pub fn to_text_with(
                             .collect()
                     })
                     .unwrap_or_default();
-                let translated = Text::translate(key, &args);
+                // TranslatableContents.decompose: Language.getOrDefault(key, fallback), so the
+                // fallback is the template itself, never looked up as another key.
                 match o.get("fallback").and_then(Value::as_str) {
-                    Some(fallback) if translated.plain() == key => Text::translate(fallback, &args),
-                    _ => translated,
+                    Some(fallback) => Text::translate_with_fallback(key, fallback, &args),
+                    None => Text::translate(key, &args),
                 }
             } else if let Some(sel) = o.get("selector").and_then(Value::as_str) {
                 resolve(sel)
@@ -513,6 +514,43 @@ pub fn name_text(tag: &Tag) -> Text {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lang::{self, Language, ResourceSource};
+
+    struct Mem(std::collections::HashMap<String, Vec<u8>>);
+    impl ResourceSource for Mem {
+        fn read(&self, path: &str) -> Option<Vec<u8>> {
+            self.0.get(path).cloned()
+        }
+    }
+
+    /// TranslatableContents.decompose: Language.getOrDefault(key, fallback). A missing key
+    /// shows the fallback as written, even when the fallback is another key the language has.
+    #[test]
+    fn a_translatable_fallback_stays_literal() {
+        let pack = Mem([(
+            "assets/minecraft/lang/en_us.json".to_owned(),
+            br#"{"real.key": "Translated", "greet": "Hello %s"}"#.to_vec(),
+        )]
+        .into());
+        let ((), _) = lang::scoped(Language::load(&[&pack], "en_us"), || {
+            let parse = |v: Value| to_text(&v, &mut |_| Text::empty()).plain();
+            let missing = serde_json::json!({"translate": "missing.key", "fallback": "real.key"});
+            assert_eq!(parse(missing), "real.key");
+            // The fallback is a template: its arguments are filled in.
+            let args = serde_json::json!({"translate": "missing.key", "fallback": "Hi %s", "with": ["Steve"]});
+            assert_eq!(parse(args), "Hi Steve");
+            // A key the language has wins over its fallback.
+            let found =
+                serde_json::json!({"translate": "greet", "fallback": "real.key", "with": ["Alex"]});
+            assert_eq!(parse(found), "Hello Alex");
+            // A component built with the constructor keeps its meaning through its JSON.
+            let built = Text::translate_with_fallback("missing.key", "real.key", &[]);
+            let again = to_text(&built.component(), &mut |_| Text::empty());
+            assert_eq!(again.plain(), built.plain());
+            assert_eq!(again.component(), built.component());
+        });
+    }
+
     /// SnbtGrammar: a compound or list may end with one comma; two in a row
     /// stay an error.
     #[test]

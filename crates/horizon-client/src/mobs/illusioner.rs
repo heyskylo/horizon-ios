@@ -168,6 +168,7 @@ impl Goal for Spell {
 /// in for the effect the server holds, which draws the mirror images.
 pub fn set_invisible(m: &mut Mob, on: bool) {
     m.extra.effects.retain(|e| e.0 != INVISIBILITY);
+    m.extra.effect_fallbacks.retain(|h| h.id != INVISIBILITY);
     if on {
         m.extra.effects.push((INVISIBILITY, i32::MAX, 0));
     }

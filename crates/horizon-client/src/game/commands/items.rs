@@ -779,7 +779,78 @@ impl Game<'_> {
         if count > max_stack {
             return Err(err("arguments.item.overstacked", &[&id, &max_stack]));
         }
+        // ItemInput.createItemStack validates effective components after count.
+        // Materialization currently discards removals, so inspect the validated
+        // command patch itself without changing the stack or its saved patch.
+        let components = self.item_validation_components(&id, components.as_deref())?;
+        if components.get(&"minecraft:max_damage".to_owned()).is_some()
+            && horizon_world::datafix::dynamic::as_int(
+                components.get(&"minecraft:max_stack_size".to_owned()),
+                1,
+            ) > 1
+        {
+            return Err(err(
+                "arguments.item.malformed",
+                &[&"Item cannot be both damageable and stackable"],
+            ));
+        }
         Ok(Some(stack))
+    }
+    /// ItemInput.createItemStack: read-only view of the two prototype components used by this command
+    /// validation, with all typed patch operations (including removals).
+    fn item_validation_components(
+        &self,
+        id: &str,
+        components: Option<&str>,
+    ) -> R<horizon_world::component_patch::ComponentMap<String, Tag>> {
+        use horizon_client::command::{Reader, args::read_identifier, snbt::parse_tag_argument};
+        use horizon_world::component_patch::{ComponentMap, Patch, Prototype};
+        let mut prototype = Vec::new();
+        if let Some(item) = self.items().get(id) {
+            for (key, value) in [
+                ("minecraft:max_damage", item.max_damage),
+                ("minecraft:max_stack_size", item.max_stack),
+            ] {
+                if item.components.iter().any(|component| component == key) {
+                    prototype.push((key.to_owned(), Tag::Int(value as i32)));
+                }
+            }
+        }
+        let mut patch = Vec::new();
+        if let Some(components) = components {
+            // ItemInput has already validated IDs, values and duplicates. Reuse
+            // its token/value parsers; do not derive removals from saved output.
+            let mut reader = Reader::new(components);
+            reader.expect('[')?;
+            reader.skip_whitespace();
+            while reader.can_read() && reader.peek() != ']' {
+                let removed = reader.peek() == '!';
+                if removed {
+                    reader.skip();
+                }
+                let key = read_identifier(&mut reader)?;
+                reader.skip_whitespace();
+                let value = if removed {
+                    None
+                } else {
+                    reader.expect('=')?;
+                    reader.skip_whitespace();
+                    Some(parse_tag_argument(&mut reader)?)
+                };
+                patch.push((key, value));
+                reader.skip_whitespace();
+                if reader.peek() == ']' {
+                    break;
+                }
+                reader.expect(',')?;
+                reader.skip_whitespace();
+            }
+            reader.expect(']')?;
+        }
+        Ok(ComponentMap::from_patch(
+            Prototype::new(prototype),
+            &Patch::new(patch),
+        ))
     }
     /// One item modifier (a typed object, a list or a datapack reference)
     /// applied to a stack; `None` when the stack ends up empty.
@@ -1663,6 +1734,93 @@ mod mob_equipment_command_tests {
         test(&mut game);
     }
 
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn world_pack_enchantments_reach_actual_game_catalog() {
+        use horizon_client::enchant::EffectContext;
+        use horizon_core::random::LegacyRandom;
+        with_game(|game| {
+            let clock = game.world.game_time;
+            game.world_root = std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+                .join("enchantment-catalog-world");
+            let pack = game.world_root.join("datapacks/catalog");
+            let definitions = pack.join("data/wpenchant/enchantment");
+            std::fs::create_dir_all(&definitions).unwrap();
+            std::fs::write(
+                pack.join("pack.mcmeta"),
+                r#"{"pack":{"description":"World enchantment catalog fixture"}}"#,
+            )
+            .unwrap();
+            let definition = serde_json::json!({
+                "description": "World catalog loaded", "supported_items": "minecraft:diamond_sword",
+                "weight": 1, "max_level": 1,
+                "min_cost": {"base": 1, "per_level_above_first": 0},
+                "max_cost": {"base": 1, "per_level_above_first": 0},
+                "anvil_cost": 1, "slots": ["mainhand"],
+                "effects": {"minecraft:damage": [{"effect": {"type": "minecraft:add", "value": 2.0}}]}
+            });
+            std::fs::write(
+                definitions.join("loaded.json"),
+                serde_json::to_vec(&definition).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                game.world_root.join("datapacks.json"),
+                r#"{"enabled":["file/catalog"]}"#,
+            )
+            .unwrap();
+            let functions = pack.join("data/wpenchant/function");
+            std::fs::create_dir_all(&functions).unwrap();
+            std::fs::write(functions.join("ready.mcfunction"), "return 1\n").unwrap();
+            game.reload_datapacks(false);
+            assert!(game.fns.store.functions.contains_key("wpenchant:ready"));
+            game.reload_world_tables();
+            let raw_present = game
+                .pack_files()
+                .kind("enchantment")
+                .any(|(id, files)| id == "wpenchant:loaded" && !files.is_empty());
+            assert!(
+                raw_present,
+                "pack function admitted, but enchantment raw file absent; actual catalog entry present={}",
+                game.enchantments().get("wpenchant:loaded").is_some()
+            );
+            assert!(std::sync::Arc::ptr_eq(
+                &game.items().enchantments,
+                &game.stations().enchantments
+            ));
+            assert!(game.enchantments().get("minecraft:mending").is_some());
+            assert!(game.enchantments().get("wpenchant:missing").is_none());
+            let entry = game
+                .enchantments()
+                .get("wpenchant:loaded")
+                .expect("the active Game catalog must adopt the loaded world-pack definition");
+            assert_eq!(entry.description, "World catalog loaded");
+            assert_eq!(entry.max_level, 1);
+            assert!(game.enchantments().can_enchant(
+                game.items(),
+                "wpenchant:loaded",
+                "minecraft:diamond_sword"
+            ));
+            assert!(!game.enchantments().can_enchant(
+                game.items(),
+                "wpenchant:loaded",
+                "minecraft:stone"
+            ));
+            assert_eq!(
+                game.enchantments().modify_value_with(
+                    "wpenchant:loaded",
+                    1,
+                    "minecraft:damage",
+                    &EffectContext::default(),
+                    &mut LegacyRandom::new(0),
+                    1.0
+                ),
+                3.0
+            );
+            assert_eq!(game.world.game_time, clock);
+        });
+    }
+
     fn actor(game: &mut Game<'_>, kind: &str, n: i32) -> (String, u32) {
         let uuid = format!("00000019-0000-0000-0000-{n:012x}");
         assert!(game.run_command(&format!("summon {kind} 4.5 200 5.5 {{UUID:[I;25,0,0,{n}],NoAI:1b,NoGravity:1b,Silent:1b,h025_raw:7,Tags:[h025]}}")), "{kind}/{n}: {:?}", game.ui.chat.recent_lines(3));
@@ -1790,6 +1948,90 @@ mod mob_equipment_command_tests {
                 assert!(game.run_command(&format!("item replace entity {uuid} saddle with air")));
                 assert!(game.slot_get(&Slot::Mob(id, "saddle")).is_none());
             }
+        });
+    }
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn effective_item_composition_rejects_before_destination_mutation() {
+        use super::Slot;
+        with_game(|game| {
+            assert!(game.run_command("setblock 4 200 4 chest"));
+            let slot = Slot::Block([4, 200, 4], 0);
+            for item in [
+                "iron_helmet[max_stack_size=2]",
+                "iron_helmet[max_stack_size=99]",
+                "stone[max_damage=10,max_stack_size=2]",
+            ] {
+                assert!(game.run_command("item replace block 4 200 4 container.0 with emerald[custom_data={sentinel:86}] 4"));
+                let before = game.slot_get(&slot).unwrap();
+                assert!(
+                    !game.run_command(&format!(
+                        "item replace block 4 200 4 container.0 with {item}"
+                    )),
+                    "invalid effective composition must reject {item}"
+                );
+                assert_eq!(game.slot_get(&slot), Some(before));
+            }
+            for item in [
+                "iron_helmet",
+                "stone[max_stack_size=2]",
+                "stone[max_stack_size=99]",
+                "iron_helmet[!max_damage,max_stack_size=2]",
+            ] {
+                assert!(
+                    game.run_command(&format!(
+                        "item replace block 4 200 4 container.0 with {item}"
+                    )),
+                    "valid effective composition must accept {item}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn effective_item_validation_view_uses_loaded_prototypes_and_typed_removals() {
+        use horizon_world::nbt::Tag;
+        with_game(|game| {
+            let damage = "minecraft:max_damage".to_owned();
+            let size = "minecraft:max_stack_size".to_owned();
+            let helmet = game.items().get("minecraft:iron_helmet").unwrap();
+            assert!(helmet.components.contains(&damage));
+            let plain = game
+                .item_validation_components("minecraft:iron_helmet", None)
+                .unwrap();
+            assert_eq!(
+                plain.get(&damage),
+                Some(&Tag::Int(helmet.max_damage as i32))
+            );
+            assert_eq!(plain.get(&size), Some(&Tag::Int(helmet.max_stack as i32)));
+            let removed = game
+                .item_validation_components(
+                    "minecraft:iron_helmet",
+                    Some("[!max_damage,max_stack_size=2,custom_data={keep:86}]"),
+                )
+                .unwrap();
+            assert!(removed.get(&damage).is_none());
+            assert_eq!(removed.get(&size), Some(&Tag::Int(2)));
+            assert!(removed.get(&"minecraft:custom_data".to_owned()).is_some());
+            let fallback = game
+                .item_validation_components("minecraft:iron_helmet", Some("[!max_stack_size]"))
+                .unwrap();
+            assert!(fallback.get(&damage).is_some());
+            assert_eq!(
+                horizon_world::datafix::dynamic::as_int(fallback.get(&size), 1),
+                1
+            );
+            let stone = game
+                .item_validation_components("minecraft:stone", None)
+                .unwrap();
+            assert!(stone.get(&damage).is_none());
+            assert_eq!(
+                stone.get(&size),
+                Some(&Tag::Int(
+                    game.items().get("minecraft:stone").unwrap().max_stack as i32
+                ))
+            );
         });
     }
 }
@@ -1978,5 +2220,220 @@ mod mob_equipment_stack_tests {
             assert!(game.run_command(&format!("item replace entity {uuid} armor.head with air")));
             assert!(game.slot_get(&Slot::Mob(id, "head")).is_none());
         });
+    }
+}
+
+#[cfg(test)]
+mod builtin_component_delivery_tests {
+    use crate::game::{Game, lan::LanHost};
+    use horizon_client::{
+        items::ItemStack,
+        lan::{Joined, NetConfig, Out, PlayerSender, guest::Guest, hub::HubConfig},
+    };
+    use horizon_core::position::ChunkPos;
+    use horizon_protocol::{
+        buf::{Codec, Reader, Writer},
+        item::{Slot, component},
+        packets::{configuration::ClientInformation, play},
+    };
+    use horizon_world::nbt::Tag;
+    use std::sync::{Arc, atomic::AtomicI32, mpsc};
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn h283_actual_command_inventory_bridge_encodes_four_builtin_components() {
+        let mut game = crate::game::native_machines::tests::server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        assert!(game.world.loaded(8, 8));
+        game.lan_host(
+            crate::game::lan::LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            NetConfig {
+                announce: false,
+                ..NetConfig::loopback(0, "component-wire-test".into(), 2)
+            },
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: "minecraft:overworld".into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 2,
+                integrated: false,
+                levels: Default::default(),
+            },
+        )
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut guest = Guest::new(
+            Joined {
+                conn: 2,
+                uuid: 283,
+                name: "ComponentGuest".into(),
+                properties: Vec::new(),
+                info: ClientInformation::new(2),
+                brand: "test".into(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
+            },
+            2,
+            [8.5, 200.0, 8.5],
+            2,
+        );
+        guest.dimension = "minecraft:overworld".into();
+        guest.placed = true;
+        guest.loaded = true;
+        guest.selected = 1;
+        guest.permission = 2;
+        let mut host = game.lan.take().unwrap();
+        host.hub.guests.push(guest);
+        let clock = game.world.game_time;
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let registries: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("registries.json")).unwrap()).unwrap();
+        let id = |registry: &str, name: &str| {
+            registries[registry]["entries"][name]["protocol_id"]
+                .as_i64()
+                .unwrap() as i32
+        };
+        let command = |game: &mut Game<'_>, host: &mut LanHost, input: &str| {
+            assert!(
+                game.as_guest(host, 2, |g| g.run_command(input)).unwrap(),
+                "{input}"
+            );
+        };
+        let capture = |host: &mut LanHost| {
+            while rx.try_recv().is_ok() {}
+            host.hub.send_inventory(0);
+            let mut packets = Vec::new();
+            for out in rx.try_iter() {
+                match out {
+                    Out::Packet(body) => packets.push(body),
+                    Out::Packets(bodies) => packets.extend(bodies),
+                    Out::Disconnect(_) => panic!("unexpected disconnect"),
+                }
+            }
+            let mut contents = Vec::new();
+            for body in packets {
+                let mut r = Reader::new(&body);
+                let packet = r.varint().unwrap();
+                if packet == horizon_protocol::ids::play::clientbound::CONTAINER_SET_CONTENT {
+                    let content = play::ContainerSetContent::read(&mut r).unwrap();
+                    assert_eq!(r.remaining(), 0, "complete enclosing content payload");
+                    assert_eq!(content.container, 0);
+                    assert_eq!(content.items.len(), 46);
+                    assert!(content.carried.is_none());
+                    contents.push(content);
+                }
+            }
+            assert_eq!(contents.len(), 1, "one actual inventory content packet");
+            contents.pop().unwrap().items[9].clone().unwrap()
+        };
+        command(
+            &mut game,
+            &mut host,
+            "item replace entity @s inventory.0 with stone[minecraft:custom_name=\"H283 control\"] 3",
+        );
+        let control = capture(&mut host);
+        assert_eq!(control.item, id("minecraft:item", "minecraft:stone"));
+        assert_eq!(control.count, 3);
+        assert!(control.component(component::CUSTOM_NAME).is_some());
+        command(
+            &mut game,
+            &mut host,
+            "item replace entity @s inventory.0 with gold_ingot",
+        );
+        let plain = capture(&mut host);
+        assert!(
+            plain
+                .component(id(
+                    "minecraft:data_component_type",
+                    "minecraft:provides_trim_material"
+                ))
+                .is_none()
+        );
+        assert!(plain.removed.is_empty());
+        let mut failures = Vec::new();
+        for (name, item, value, expected) in [
+            (
+                "minecraft:provides_trim_material",
+                "minecraft:diamond",
+                "\"minecraft:gold\"",
+                Tag::String("minecraft:gold".into()),
+            ),
+            (
+                "minecraft:provides_banner_patterns",
+                "minecraft:paper",
+                "\"#minecraft:pattern_item/globe\"",
+                Tag::String("#minecraft:pattern_item/globe".into()),
+            ),
+            (
+                "minecraft:can_place_on",
+                "minecraft:stone",
+                "{blocks:\"minecraft:dirt\"}",
+                Tag::compound([("blocks", Tag::String("minecraft:dirt".into()))]),
+            ),
+            (
+                "minecraft:can_break",
+                "minecraft:diamond_pickaxe",
+                "{blocks:\"minecraft:stone\",state:{}}",
+                Tag::compound([
+                    ("blocks", Tag::String("minecraft:stone".into())),
+                    ("state", Tag::compound(std::iter::empty::<(&str, Tag)>())),
+                ]),
+            ),
+        ] {
+            command(
+                &mut game,
+                &mut host,
+                &format!("item replace entity @s inventory.0 with {item}[{name}={value}]"),
+            );
+            let source: ItemStack = host.hub.guest(2).unwrap().inventory[9].clone().unwrap();
+            assert_eq!(source.item.as_ref(), item);
+            assert_eq!(source.count, 1);
+            assert_eq!(
+                source.data().unwrap().other(name),
+                Some(&expected),
+                "actual registered command adoption"
+            );
+            assert!(source.wire_patch().is_none(), "no cached wire fallback");
+            let received = capture(&mut host);
+            assert_eq!(received.item, id("minecraft:item", item));
+            assert_eq!(received.count, 1);
+            assert!(received.removed.is_empty());
+            let kind = id("minecraft:data_component_type", name);
+            let mut w = Writer::new();
+            Slot::write(&Some(received.clone()), &mut w);
+            let mut r = Reader::new(&w.data);
+            let reread = Slot::read(&mut r).unwrap().unwrap();
+            assert_eq!(r.remaining(), 0, "complete nested slot payload");
+            assert_eq!(reread.component(kind), received.component(kind));
+            if received.component(kind).is_none() {
+                failures.push((name, received));
+            }
+            assert_eq!(host.hub.guest(2).unwrap().uuid, 283);
+            assert_eq!(host.hub.guest(2).unwrap().health, 20.0);
+            assert_eq!(host.hub.guest(2).unwrap().position, [8.5, 200.0, 8.5]);
+            assert_eq!(game.world.game_time, clock);
+        }
+        assert!(
+            failures.is_empty(),
+            "actual command -> network_stack -> full protocol packet missing builtin components: {failures:?}"
+        );
     }
 }

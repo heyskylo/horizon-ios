@@ -107,9 +107,10 @@ mod tests {
         let id = packet_ids::play::serverbound::PLAYER_COMMAND;
         for action in 0..=6 {
             let pinned = command(9, action, 0);
-            let (_, older) = translate::v1_21_5::player_command(&session, id, &pinned)
-                .unwrap()
-                .unwrap();
+            let (_, older) =
+                translate::client_layout_v1_21_5::player_command(&session, id, &pinned)
+                    .unwrap()
+                    .unwrap();
             assert_eq!(
                 serverbound(State::Play, id, &older).unwrap(),
                 Out::Rewritten(pinned)

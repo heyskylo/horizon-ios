@@ -52,14 +52,10 @@ impl Launcher {
             .pt(px(8.))
             .pb(px(4.))
             // At its own size the strip leaves room for `glass::tabbed`'s notch; on a narrow
-            // window it takes the panel's width and scrolls sideways instead.
+            // window it takes the panel's width and its tabs wrap onto a further row, so every
+            // tab stays in reach from the panel's left padding and nothing scrolls sideways.
             .when(!compact, |d| d.flex_none())
-            .when(compact, |d| {
-                d.w_full()
-                    .min_w_0()
-                    .overflow_x_scroll()
-                    .on_scroll(|_, _, cx| cx.stop_propagation())
-            })
+            .when(compact, |d| d.flex_wrap().w_full().min_w_0())
             .child(crate::glass::measure(self.home_strip.clone()))
             .children(tabs.into_iter().map(|(tab, count)| {
                 let (name, icon) = match tab {
