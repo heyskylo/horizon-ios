@@ -1248,6 +1248,7 @@ mod tests {
 
     #[test]
     fn disc_fragment_shows_music_disc_line_first() {
+        let enchantments = Enchantments::default();
         let translate = |k: &str| {
             (k == "item.minecraft.disc_fragment_5.desc").then(|| "Music Disc - 5".to_owned())
         };
@@ -1256,12 +1257,12 @@ mod tests {
             disc_fragment_line(&stack, &translate).as_deref(),
             Some("Music Disc - 5")
         );
-        let lines = detail_lines(&stack, None, &translate);
+        let lines = detail_lines(&stack, None, &enchantments, &translate);
         assert_eq!(lines.first().map(String::as_str), Some("Music Disc - 5"));
         let other = ItemStack::new("minecraft:stick", 1);
         assert_eq!(disc_fragment_line(&other, &translate), None);
         assert!(
-            !detail_lines(&other, None, &translate)
+            !detail_lines(&other, None, &enchantments, &translate)
                 .iter()
                 .any(|l| l == "Music Disc - 5")
         );
@@ -1455,6 +1456,7 @@ mod tests {
 
     #[test]
     fn ominous_bottle_lists_bad_omen_at_its_amplifier_for_100_minutes() {
+        let enchantments = Enchantments::default();
         let lang = |key: &str| {
             Some(
                 match key {
@@ -1482,9 +1484,10 @@ mod tests {
             Some((format!("Bad Omen IV ({duration})"), blue))
         );
         assert!(
-            lines(&bottle, None, &lang).contains(&format!("Bad Omen IV ({duration})")),
+            lines(&bottle, None, &enchantments, &lang)
+                .contains(&format!("Bad Omen IV ({duration})")),
             "{:?}",
-            lines(&bottle, None, &lang)
+            lines(&bottle, None, &enchantments, &lang)
         );
         // A numbered template, as some languages write it.
         let numbered = |key: &str| match key {
