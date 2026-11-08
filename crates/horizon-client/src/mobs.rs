@@ -1162,6 +1162,9 @@ pub struct Extra {
     /// The body item (`getItemBySlot(BODY)`): a horse's armour, a llama's
     /// carpet, a wolf's armour, a harness, a sulfur cube's swallowed block.
     pub body: Option<Arc<str>>,
+    /// The body a sulfur cube's archetype attribute modifiers came from
+    /// (`LivingEntity.lastEquipmentItems` for `BODY`).
+    pub adopted_body: Option<Arc<str>>,
     /// Worn armour below the head (humanoid mobs).
     pub chest: Option<Arc<str>>,
     pub legs: Option<Arc<str>>,

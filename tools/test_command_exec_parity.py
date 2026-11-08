@@ -156,6 +156,9 @@ def main():
     parser.add_argument('--mob-absorption-max-raw-diagnostic', action='store_true', help='add each mob\'s whole entity data')
     parser.add_argument('--mob-health-boost-fixture', action='store_true', help='Health Boost on a mob: heal to its maximum, clamp on removal')
     parser.add_argument('--mob-health-boost-raw-diagnostic', action='store_true', help='add each mob\'s whole entity data')
+    parser.add_argument('--sulfur-body-attributes-fixture', action='store_true', help='a sulfur cube\'s body archetype attribute modifiers through /attribute')
+    parser.add_argument('--sulfur-body-replace-fixture', action='store_true', help='a sulfur cube\'s body replaced and removed through /data')
+    parser.add_argument('--sulfur-body-attributes-raw-diagnostic', action='store_true', help='add the whole attributes lists and entity data')
     parser.add_argument('--mob-absorption-fixture', action='store_true', help='a mob\'s Absorption effect once the absorption is used up')
     parser.add_argument('--mob-absorption-infinite-fixture', action='store_true', help='infinite Absorption used up, kept, and beside another infinite effect')
     parser.add_argument('--mob-absorption-raw-diagnostic', action='store_true', help='add each mob\'s whole entity data')
@@ -359,6 +362,12 @@ def main():
     if args.mob_health_boost_fixture:
         from mob_health_boost_corpus import mob_health_boost
         groups = [('setup', corpus_module.group_setup()), ('mob health boost', mob_health_boost(args.mob_health_boost_raw_diagnostic))]
+    if args.sulfur_body_attributes_fixture:
+        from sulfur_body_attributes_corpus import sulfur_body_attributes
+        groups = [('setup', corpus_module.group_setup()), ('sulfur body attributes', sulfur_body_attributes(args.sulfur_body_attributes_raw_diagnostic))]
+    if args.sulfur_body_replace_fixture:
+        from sulfur_body_attributes_corpus import sulfur_body_replace
+        groups = [('setup', corpus_module.group_setup()), ('sulfur body replace', sulfur_body_replace())]
     if args.mob_absorption_fixture:
         from mob_absorption_corpus import mob_absorption
         groups = [('setup', corpus_module.group_setup()), ('mob depleted absorption', mob_absorption(args.mob_absorption_raw_diagnostic))]

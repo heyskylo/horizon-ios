@@ -1220,8 +1220,9 @@ impl Game<'_> {
                 }
             }
             Target::Mob(_) | Target::Stand(_)
-                if !(matches!(target, Target::Mob(_))
-                    && finalize::command_attr(short.as_str()).is_some()) =>
+                if self.sulfur_archetype_attribute(target, attribute)
+                    || !(matches!(target, Target::Mob(_))
+                        && finalize::command_attr(short.as_str()).is_some()) =>
             {
                 let op = ctx
                     .literals
@@ -1373,10 +1374,10 @@ impl Game<'_> {
         attribute: &str,
     ) -> Option<&mut horizon_world::attributes::entity::EntityAttributes> {
         if let Target::Mob(id) = t
-            && matches!(
+            && (matches!(
                 attribute,
                 "minecraft:armor" | "minecraft:armor_toughness" | "minecraft:max_absorption"
-            )
+            ) || self.sulfur_archetype_attribute(t, attribute))
         {
             let mob = self.mobs.iter_mut().find(|m| m.id == id)?;
             if mob.extra.armor_attributes.is_none() {
@@ -1391,6 +1392,60 @@ impl Game<'_> {
             self.cmds.attributes.insert(t, map);
         }
         self.cmds.attributes.get_mut(&t)
+    }
+    /// A sulfur cube's body archetype attributes live on its own map, beside
+    /// the archetype's transient modifiers.
+    fn sulfur_archetype_attribute(&self, t: Target, attribute: &str) -> bool {
+        let Target::Mob(id) = t else {
+            return false;
+        };
+        horizon_client::mobs::sulfur_cube::ARCHETYPE_ATTRIBUTES.contains(&attribute)
+            && self
+                .mobs
+                .iter()
+                .any(|m| m.id == id && m.species() == horizon_client::mobs::Species::SulfurCube)
+    }
+    /// A sulfur cube's command-set knockback base and permanent modifiers also
+    /// go to the `finalize` store its physics read without a body (never the
+    /// archetype's transient modifiers).
+    fn mirror_sulfur_knockback(
+        &mut self,
+        target: Target,
+        id: &str,
+        attribute: &str,
+        (value_arg, modifier_id, op): (f64, &str, &str),
+    ) {
+        let Target::Mob(mob_id) = target else {
+            return;
+        };
+        if attribute != "minecraft:knockback_resistance"
+            || !self.sulfur_archetype_attribute(target, attribute)
+        {
+            return;
+        }
+        let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob_id) else {
+            return;
+        };
+        let Some(attr) = finalize::command_attr("knockback_resistance") else {
+            return;
+        };
+        match id {
+            "attribute.base.set" => finalize::set_base(m, attr, value_arg),
+            "attribute.base.reset" => {
+                let default = finalize::default_value(m, attr).unwrap_or_default();
+                finalize::set_base(m, attr, default);
+            }
+            "attribute.modifier.add" => {
+                let op = match op {
+                    "add_multiplied_base" => finalize::Op::AddMultipliedBase,
+                    "add_multiplied_total" => finalize::Op::AddMultipliedTotal,
+                    _ => finalize::Op::AddValue,
+                };
+                finalize::add_modifier(m, attr, modifier_id.to_string(), value_arg, op);
+            }
+            "attribute.modifier.remove" => finalize::remove_modifier(m, attr, modifier_id),
+            _ => {}
+        }
     }
     /// AttributeCommand on a living entity through its generic attribute map.
     fn generic_attribute(
@@ -1544,6 +1599,7 @@ impl Game<'_> {
                 )
             }
         };
+        self.mirror_sulfur_knockback(target, id, attribute, (value_arg, modifier_id, op));
         Ok((result, Text::translate(message, &args)))
     }
 

@@ -1406,6 +1406,7 @@ pub fn mob_to_nbt(
     if let Some(a) = m.extra.attributes.as_deref() {
         put_attributes(map, m, a);
     }
+    put_sulfur_attributes(map, m);
     // The attribute their load makes, which AttributeMap.pack then saves:
     // Zombie and Piglin.setBaby (even for an adult) the speed, Rabbit.setVariant
     // the attack damage.
@@ -1624,6 +1625,68 @@ fn put_attributes(map: &mut Compound, m: &Mob, a: &crate::mobs::finalize::Attrib
         }
     }
     map.insert("attributes".into(), Tag::List(list));
+}
+/// `AttributeMap.pack` of a sulfur cube's body archetype attributes: the
+/// base and permanent modifiers of each instance its own map holds (the
+/// archetype's transient modifiers are not saved).
+fn put_sulfur_attributes(map: &mut Compound, m: &Mob) {
+    use horizon_world::attributes::Operation;
+    if m.species() != crate::mobs::Species::SulfurCube {
+        return;
+    }
+    let Some(attributes) = m.extra.armor_attributes.as_deref() else {
+        return;
+    };
+    let mut list = match map.get(&"attributes".into()) {
+        Some(Tag::List(l)) => l.clone(),
+        _ => Vec::new(),
+    };
+    let mut changed = false;
+    for id in crate::mobs::sulfur_cube::ARCHETYPE_ATTRIBUTES {
+        let Some(instance) = attributes
+            .catalog()
+            .id(id)
+            .and_then(|k| attributes.instance(k))
+        else {
+            continue;
+        };
+        let packed = instance.pack();
+        let mut entry = vec![
+            ("id", string(id)),
+            ("base", Tag::Double(packed.base.to_bits())),
+        ];
+        if !packed.modifiers.is_empty() {
+            let modifiers = packed
+                .modifiers
+                .iter()
+                .map(|x| {
+                    let op = match x.operation() {
+                        Operation::AddValue => "add_value",
+                        Operation::AddMultipliedBase => "add_multiplied_base",
+                        Operation::AddMultipliedTotal => "add_multiplied_total",
+                    };
+                    Tag::compound([
+                        ("id", string(x.id())),
+                        ("amount", Tag::Double(x.amount().to_bits())),
+                        ("operation", string(op)),
+                    ])
+                })
+                .collect();
+            entry.push(("modifiers", Tag::List(modifiers)));
+        }
+        let entry = Tag::compound(entry);
+        match list
+            .iter_mut()
+            .find(|t| text(t.get("id")).as_deref() == Some(id))
+        {
+            Some(t) => *t = entry,
+            None => list.push(entry),
+        }
+        changed = true;
+    }
+    if changed {
+        map.insert("attributes".into(), Tag::List(list));
+    }
 }
 /// `Brain.Packed`: the memories finalizeSpawn set, over the saved ones.
 pub fn put_brain(map: &mut Compound, m: &Mob, dimension: &str) {
@@ -9419,6 +9482,115 @@ mod carrier_inventory_tests {
                 .get("Inventory")
                 .is_none()
         );
+    }
+}
+
+/// Added controls (H192): the sulfur cube's saved archetype attributes are
+/// its map's base and permanent modifiers, replacing a stale entry of the
+/// same id once, never its transient modifiers.
+#[cfg(test)]
+mod sulfur_attribute_save_tests {
+    use super::*;
+    use horizon_world::attributes::{Modifier, Operation};
+
+    #[test]
+    fn the_save_writes_base_and_permanent_modifiers_and_replaces_stale_entries() {
+        let mut m = crate::mobs::sulfur_cube::adopt_body_tests::cube(None);
+        let map = m.extra.armor_attributes.as_deref_mut().unwrap();
+        let kr = map.catalog().id("minecraft:knockback_resistance").unwrap();
+        let friction = map.catalog().id("minecraft:friction_modifier").unwrap();
+        map.edit(kr, |i, o| {
+            i.set_base_value(0.5, o).unwrap();
+            i.add_permanent(
+                Modifier::new(
+                    "minecraft:bouncy_add_knockback_resistance",
+                    0.25,
+                    Operation::AddValue,
+                )
+                .unwrap(),
+                o,
+            )
+            .unwrap();
+            // The archetype's transient modifier of the same id shadows it.
+            i.add_or_update_transient(
+                Modifier::new(
+                    "minecraft:bouncy_add_knockback_resistance",
+                    -2.0,
+                    Operation::AddValue,
+                )
+                .unwrap(),
+                o,
+            )
+            .unwrap();
+        });
+        map.edit(friction, |i, o| {
+            i.add_or_update_transient(
+                Modifier::new(
+                    "minecraft:bouncy_mul_friction_modifier",
+                    -0.7,
+                    Operation::AddMultipliedTotal,
+                )
+                .unwrap(),
+                o,
+            )
+            .unwrap();
+        });
+        let stale =
+            |id: &str| Tag::compound([("id", string(id)), ("base", Tag::Double(9.0f64.to_bits()))]);
+        let mut nbt = Compound::new();
+        nbt.insert(
+            "attributes".into(),
+            Tag::List(vec![
+                stale("minecraft:max_health"),
+                stale("minecraft:knockback_resistance"),
+            ]),
+        );
+        put_sulfur_attributes(&mut nbt, &m);
+        let Some(Tag::List(list)) = nbt.get(&"attributes".into()) else {
+            panic!("no attributes");
+        };
+        let ids: Vec<_> = list.iter().map(|t| text(t.get("id")).unwrap()).collect();
+        assert_eq!(
+            ids,
+            [
+                "minecraft:max_health",
+                "minecraft:knockback_resistance",
+                "minecraft:friction_modifier"
+            ]
+        );
+        let base = |t: &Tag| match t.get("base") {
+            Some(Tag::Double(b)) => f64::from_bits(*b),
+            other => panic!("base {other:?}"),
+        };
+        assert_eq!(base(&list[0]), 9.0);
+        assert_eq!(base(&list[1]), 0.5);
+        let Some(Tag::List(modifiers)) = list[1].get("modifiers") else {
+            panic!("no modifiers");
+        };
+        assert_eq!(modifiers.len(), 1);
+        assert_eq!(
+            modifiers[0].get("amount"),
+            Some(&Tag::Double(0.25f64.to_bits()))
+        );
+        assert_eq!(
+            text(modifiers[0].get("operation")).as_deref(),
+            Some("add_value")
+        );
+        // Friction holds only a transient modifier: its base, no modifiers.
+        assert_eq!(base(&list[2]), 1.0);
+        assert!(list[2].get("modifiers").is_none());
+    }
+
+    #[test]
+    fn another_species_map_is_not_saved_by_the_bridge() {
+        let mut m = crate::mobs::sulfur_cube::adopt_body_tests::cube(None);
+        std::sync::Arc::make_mut(&mut m.kind).species = crate::mobs::Species::Slime;
+        let map = m.extra.armor_attributes.as_deref_mut().unwrap();
+        let kr = map.catalog().id("minecraft:knockback_resistance").unwrap();
+        map.edit(kr, |i, o| i.set_base_value(0.5, o).unwrap());
+        let mut nbt = Compound::new();
+        put_sulfur_attributes(&mut nbt, &m);
+        assert!(!nbt.contains_key(&"attributes".into()));
     }
 }
 
