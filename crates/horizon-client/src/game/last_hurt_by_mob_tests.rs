@@ -122,3 +122,70 @@ fn a_mob_saves_the_mob_that_hurt_it_for_100_ticks() {
         "the read value ended"
     );
 }
+
+// Added controls (after the frozen baseline above): the save-time projection.
+use horizon_world::nbt::Tag;
+
+fn index(game: &mut Game<'_>, uuid: &str) -> usize {
+    match game.target_with_uuid(horizon_client::save::uuid_from_text(uuid).unwrap()) {
+        Some(super::commands::Target::Mob(id)) => {
+            game.mobs.iter().position(|m| m.id == id).unwrap()
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+fn fields(game: &mut Game<'_>, i: usize) -> (Option<Tag>, Option<Tag>) {
+    let tag = game.mob_tree_nbt(i);
+    (
+        tag.get("last_hurt_by_mob").cloned(),
+        tag.get("ticks_since_last_hurt_by_mob").cloned(),
+    )
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn the_saved_hurt_by_mob_follows_the_live_record_only() {
+    use horizon_client::mobs::Who;
+    let mut game = game();
+    let victim = index(&mut game, VICTIM);
+    let a_index = index(&mut game, A);
+    let a = game.mobs[a_index].id;
+    // No record, no raw copy: nothing.
+    assert_eq!(fields(&mut game, victim), (None, None), "no record");
+    // A raw copy from the summon, no live record: both keys go.
+    let echo = index(&mut game, ECHO);
+    assert_eq!(fields(&mut game, echo), (None, None), "stale raw copy");
+    // A live record of a resident mob: both keys, at 100 ticks still.
+    let age = game.mobs[victim].age as i32;
+    game.mobs[victim].ai.last_hurt_by = Some(Who::Mob(a));
+    game.mobs[victim].ai.last_hurt_by_time = age - 100;
+    assert_eq!(
+        fields(&mut game, victim),
+        (
+            Some(Tag::IntArray(vec![24724, 0, 0, 2])),
+            Some(Tag::Int(100))
+        ),
+        "100 ticks"
+    );
+    // 101 ticks: gone.
+    game.mobs[victim].ai.last_hurt_by_time = age - 101;
+    assert_eq!(fields(&mut game, victim), (None, None), "101 ticks");
+    // An attacker that is not in the level: nothing.
+    game.mobs[victim].ai.last_hurt_by_time = age;
+    game.mobs[victim].ai.last_hurt_by = Some(Who::Mob(u32::MAX));
+    assert_eq!(
+        fields(&mut game, victim),
+        (None, None),
+        "unresolved attacker"
+    );
+    // A player: not written (unsupported here).
+    game.mobs[victim].ai.last_hurt_by = Some(Who::Player);
+    assert_eq!(fields(&mut game, victim), (None, None), "player attacker");
+    // A dead attacker: nothing.
+    game.mobs[victim].ai.last_hurt_by = Some(Who::Mob(a));
+    let ai = index(&mut game, A);
+    game.mobs[ai].health = 0.0;
+    assert!(!game.mobs[ai].alive());
+    assert_eq!(fields(&mut game, victim), (None, None), "dead attacker");
+}

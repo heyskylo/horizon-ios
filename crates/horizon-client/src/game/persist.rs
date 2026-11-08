@@ -1504,6 +1504,13 @@ impl Game<'_> {
         {
             self.uuid_for(target);
         }
+        // The mob that last hurt it, still resident, gets its UUID now, as the
+        // anger target does, so `put_last_hurt_by_mob` can name it.
+        if let Some(horizon_client::mobs::Who::Mob(attacker)) = self.mobs[i].ai.last_hurt_by
+            && self.mobs.iter().any(|m| m.id == attacker)
+        {
+            self.uuid_for(attacker);
+        }
         let mut tag = entity_nbt::mob_to_nbt(
             &self.mobs[i],
             uuid,
@@ -1511,6 +1518,7 @@ impl Game<'_> {
             Some(self.pack.assets.registry),
             |other| self.persist.uuid_of(other),
         );
+        self.put_last_hurt_by_mob(&self.mobs[i], &mut tag);
         if horizon_client::mobs::camel::is_camel(self.mobs[i].species())
             && let Tag::Compound(c) = &mut tag
         {
@@ -1521,6 +1529,42 @@ impl Game<'_> {
         self.write_leash(&mut tag, i);
         self.put_mob_passengers(&mut tag, id);
         tag
+    }
+    /// `LivingEntity.addAdditionalSaveData`'s `last_hurt_by_mob` and
+    /// `ticks_since_last_hurt_by_mob`, a PARTIAL projection at save time: both
+    /// from `ai.last_hurt_by` while the attacker is a living mob in the level
+    /// with a registered UUID and at most 100 ticks have passed (`baseTick`
+    /// drops the record after that, or once the attacker is dead). Otherwise
+    /// both keys go, a copy read from loaded data included. A player attacker
+    /// is not written. This is not `baseTick`'s cleanup itself, the AI's
+    /// record, `#no_anger`, or reading the keys back.
+    pub(super) fn put_last_hurt_by_mob(&self, m: &horizon_client::mobs::Mob, tag: &mut Tag) {
+        let Tag::Compound(c) = tag else { return };
+        let since = i64::from(m.age) - i64::from(m.ai.last_hurt_by_time);
+        let reference = match m.ai.last_hurt_by {
+            Some(horizon_client::mobs::Who::Mob(attacker))
+                if (0..=100).contains(&since)
+                    && self.mobs.iter().any(|a| a.id == attacker && a.alive()) =>
+            {
+                self.persist.uuid_of(attacker)
+            }
+            _ => None,
+        };
+        match reference {
+            Some(uuid) => {
+                c.insert("last_hurt_by_mob".into(), Tag::IntArray(uuid.to_vec()));
+                c.insert(
+                    "ticks_since_last_hurt_by_mob".into(),
+                    Tag::Int(since as i32),
+                );
+            }
+            None => {
+                c.remove(&horizon_world::nbt::JavaString::from("last_hurt_by_mob"));
+                c.remove(&horizon_world::nbt::JavaString::from(
+                    "ticks_since_last_hurt_by_mob",
+                ));
+            }
+        }
     }
     /// Forget an entity that left the world (its UUID and loaded compound).
     pub(super) fn forget_entity(&mut self, id: u32) {
