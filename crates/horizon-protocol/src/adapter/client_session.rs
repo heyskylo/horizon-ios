@@ -79,6 +79,8 @@ pub struct ClientSession {
     /// The entities the client was sent, by network id: their pinned type and UUID, for the older
     /// releases' entity data and 26.1's spectating by UUID.
     entities: Mutex<HashMap<i32, (i32, u128)>>,
+    /// The hotbar slot the client holds (0..=8), for the swap a 1.21.3 client's `pick_item` becomes.
+    held: AtomicU8,
 }
 
 /// A position, yaw and pitch.
@@ -166,8 +168,46 @@ impl ClientSession {
             place: Mutex::new(Place::default()),
             teleports: Mutex::new(VecDeque::new()),
             entities: Mutex::new(HashMap::new()),
+            held: AtomicU8::new(0),
         }
     }
+    fn hold(&self, slot: i32) {
+        if let Ok(slot @ 0..=8) = u8::try_from(slot) {
+            self.held.store(slot, Ordering::Release);
+        }
+    }
+
+    /// A 1.21.3 (or older) client's `pick_item`: it found the picked block's item at `slot` of its inventory and
+    /// asks for it in its hand. 26.3 has no such packet (its client names the block or entity instead), so it
+    /// becomes the swap of that slot with the held hotbar slot, a `container_click` on the inventory. Its state id
+    /// is 0: the server applies the click and sends the inventory's full state back.
+    fn pick_item(&self, payload: &[u8]) -> Result<Option<(i32, Vec<u8>)>> {
+        let slot = Reader::new(payload).varint()?;
+        // Inventory index to the inventory menu's slot: the hotbar (0..=8) is 36..=44, the rest 9..=35 alike.
+        let slot = match slot {
+            0..=8 => slot + 36,
+            9..=35 => slot,
+            _ => return Ok(None),
+        };
+        let held = self.held.load(Ordering::Acquire);
+        if slot == 36 + i32::from(held) {
+            return Ok(None);
+        }
+        let click = play::Serverbound::ContainerClick(play::ContainerClick {
+            container: 0,
+            state: 0,
+            slot: slot as i16,
+            button: held as i8,
+            input: 2,
+            changed: Vec::new(),
+            carried: None,
+        });
+        Ok(Some((
+            packet_ids::play::serverbound::CONTAINER_CLICK,
+            strip_id(click.encode()),
+        )))
+    }
+
     pub fn reading(&self) -> State {
         from_u8(self.reading.load(Ordering::Acquire))
     }
@@ -183,6 +223,9 @@ impl ClientSession {
         if state == State::Play && id == swing_id(self.version) {
             let hand = Reader::new(&payload).varint()?;
             return Ok((hand == 0).then_some((packet_ids::play::serverbound::PUNCH, Vec::new())));
+        }
+        if state == State::Play && Some(id) == old_pick_item_id(self.version) {
+            return self.pick_item(&payload);
         }
         let Some(pinned) = self.version.serverbound_id_up(state, id) else {
             return Ok(None);
@@ -211,6 +254,10 @@ impl ClientSession {
                 w.varint(if action == 0 { 0 } else { action + 1 });
                 w.bytes(r.rest());
                 w.data
+            }
+            (State::Play, sb::SET_CARRIED_ITEM) => {
+                self.hold(i32::from(Reader::new(&payload).i16()?));
+                payload
             }
             (State::Play, sb::MOVE_PLAYER_POS | sb::MOVE_PLAYER_POS_ROT | sb::MOVE_PLAYER_ROT) => {
                 self.moved(pinned, &payload)?;
@@ -278,6 +325,9 @@ impl ClientSession {
         }
         if (state, id) == (State::Play, packet_ids::play::clientbound::PLAYER_POSITION) {
             self.teleporting(payload)?;
+        }
+        if (state, id) == (State::Play, packet_ids::play::clientbound::SET_HELD_SLOT) {
+            self.hold(Reader::new(payload).varint()?);
         }
         let tracked;
         let payload = match self.track_entities(state, id, payload)? {
@@ -622,6 +672,17 @@ enum Sent {
     Dropped,
 }
 
+/// The id of `pick_item` (1.21.3 and older) for a client of `version`, from each release's packets report.
+fn old_pick_item_id(version: ServerVersion) -> Option<i32> {
+    if version.at_most(ServerVersion::V1_21_1) {
+        Some(32)
+    } else if version.at_most(ServerVersion::V1_21_3) {
+        Some(34)
+    } else {
+        None
+    }
+}
+
 fn strip_id(body: Vec<u8>) -> Vec<u8> {
     let mut r = Reader::new(&body);
     match r.varint() {
@@ -854,6 +915,35 @@ mod tests {
             play::Clientbound::RemoveMobEffect(play::RemoveMobEffect { id: 1, effect: 39 })
                 .encode();
         assert_eq!(s.clientbound(&removed).unwrap(), None);
+    }
+
+    #[test]
+    fn a_1_21_3_pick_item_swaps_the_slot_into_the_held_hotbar_slot() {
+        let s = ClientSession::new(ServerVersion::V1_21_3);
+        s.reading.store(to_u8(State::Play), Ordering::Release);
+        s.writing.store(to_u8(State::Play), Ordering::Release);
+        // The server put the hand on hotbar slot 2.
+        let mut w = Writer::new();
+        w.varint(2);
+        s.clientbound(&body(packet_ids::play::clientbound::SET_HELD_SLOT, &w.data))
+            .unwrap();
+        // pick_item (34 in 1.21.3) of inventory index 20.
+        let mut w = Writer::new();
+        w.varint(20);
+        let (id, payload) = s.serverbound(34, w.data).unwrap().unwrap();
+        assert_eq!(id, packet_ids::play::serverbound::CONTAINER_CLICK);
+        let click = play::Serverbound::decode(id, &payload).unwrap();
+        let play::Serverbound::ContainerClick(c) = click else {
+            panic!("{click:?}");
+        };
+        assert_eq!((c.container, c.slot, c.button, c.input), (0, 20, 2, 2));
+        // A hotbar index is the menu's 36 + index; the held one itself is nothing to swap.
+        let mut w = Writer::new();
+        w.varint(2);
+        assert_eq!(s.serverbound(34, w.data).unwrap(), None);
+        // 1.21.4 clients send no pick_item: 34 is not taken over for them.
+        assert_eq!(old_pick_item_id(ServerVersion::V1_21_4), None);
+        assert_eq!(old_pick_item_id(ServerVersion::V1_20_6), Some(32));
     }
 
     #[test]
