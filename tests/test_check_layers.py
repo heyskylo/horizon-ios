@@ -3,7 +3,7 @@ import unittest
 from tools import check_layers
 
 CONFIG = {
-    "order": ["engine", "platform", "horizon"],
+    "may_depend": {"engine": ["engine"], "platform": ["engine", "platform"], "horizon": ["platform", "horizon"]},
     "crates": {
         "core": "engine",
         "game": "engine",
@@ -32,7 +32,7 @@ def run(*packages, allowed=(), base=None, crates=None):
 
 class CheckLayersTests(unittest.TestCase):
     def test_downward_and_same_layer_dependencies_pass(self):
-        problems, notes = run(package("mod-api", "core"), package("launcher", "game", "mod-api", "cosmetics"))
+        problems, notes = run(package("mod-api", "core"), package("launcher", "mod-api", "cosmetics"))
         self.assertEqual((problems, notes), ([], []))
 
     def test_engine_may_not_depend_on_platform_or_horizon(self):
@@ -45,7 +45,13 @@ class CheckLayersTests(unittest.TestCase):
         problems, _ = run(package("mod-api", "cosmetics"))
         self.assertIn("docs/layers.md#platform", problems[0])
 
-    def test_allowed_upward_dependency_passes(self):
+    def test_horizon_uses_the_platform_not_the_engine(self):
+        # The Horizon layer builds against the platform's public API, so it can live in its own repository.
+        problems, _ = run(package("launcher", "game"))
+        self.assertIn("launcher -> game: horizon may not depend on engine", problems[0])
+        self.assertIn("docs/layers.md#horizon", problems[0])
+
+    def test_an_allowed_exception_passes(self):
         self.assertEqual(run(package("game", "cosmetics"), allowed=["game -> cosmetics"]), ([], []))
 
     def test_build_dependencies_count_and_dev_dependencies_do_not(self):
