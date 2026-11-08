@@ -40,19 +40,49 @@ pub(super) type Brushing = HashMap<[i32; 3], BrushState>;
 impl Game<'_> {
     /// `BrushItem.onUseTick` for a brush used `ticks` ticks so far, the
     /// hand of `slot` acting.
-    pub(super) fn tick_brush(&mut self, slot: usize, ticks: u32) {
-        // No block under the crosshair: releaseUsingItem.
+    pub(super) fn tick_brush(
+        &mut self,
+        stack: &horizon_client::items::ItemStack,
+        slot: usize,
+        ticks: u32,
+    ) {
+        // No block under the crosshair: vanilla calls releaseUsingItem, which
+        // stops the use and causes the interaction vibration.
         let Some(hit) = self.pick() else {
-            self.using = None;
+            self.stop_using_item(stack);
             return;
         };
+        // `BrushItem.onUseTick` aims with `getHitResultOnViewVector` out to the
+        // block interaction range, for mobs too: a mob between the player and
+        // the block is nearer, so the hit is not a block and the use releases
+        // the same way. A guest acts on its client's targeted block, whose view
+        // we cannot trace here, so only the local aim runs the entity test.
+        if self.forced_hit.is_none()
+            && let Some((eye, _)) = self.aim()
+            && let Some((_, mob, _)) = self.mob_hit_within(self.block_reach)
+        {
+            let block = (
+                hit.point[0] - eye[0],
+                hit.point[1] - eye[1],
+                hit.point[2] - eye[2],
+            );
+            if mob <= (block.0 * block.0 + block.1 * block.1 + block.2 * block.2).sqrt() {
+                self.stop_using_item(stack);
+                return;
+            }
+        }
         let elapsed = ticks + 1;
         // The last tick before the backswing.
         if elapsed % 10 == 5 {
             self.brush_stroke(&hit, slot);
         }
-        // The use ends after 200 ticks; the held button starts it again.
-        self.using = (elapsed < USE_DURATION).then_some((slot, elapsed));
+        // The use ends after USE_DURATION; stopUsingItem causes the vibration
+        // (vanilla's tickUsingItem), the held button starts it again.
+        if elapsed < USE_DURATION {
+            self.using = Some((slot, elapsed));
+        } else {
+            self.stop_using_item(stack);
+        }
     }
 
     /// One stroke on the block aimed at: dust (this window only), the brush

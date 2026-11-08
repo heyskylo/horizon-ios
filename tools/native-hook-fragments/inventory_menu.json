@@ -1,0 +1,8 @@
+{
+  "hooks": [],
+  "rust_summary": "another player's inventory in a server menu whose clicks move their items by vanilla's click rules, live or on their file (`native_open_inventory_menu`).",
+  "doc_summary": "`native_open_inventory_menu(viewer, rows, title, (target, kind), layout)` opens a chest menu that shows another player's inventory or ender chest by a slot layout, live when they are on the server and on their file when they are away; clicks on its shown slots move the target's own items by vanilla's click rules (Bukkit's `openInventory(target.getInventory())`), and it closes once the target leaves, dies or comes back. A mixin helper, not on `Host` (it takes `NativeInventoryKind`, as `native_inventory` does). Bundles need \"hooks\": @API:inventory_menu@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_inventories.rs"
+  ]
+}

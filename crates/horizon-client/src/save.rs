@@ -655,6 +655,7 @@ pub fn encode_block_entity(
     }
     let components = match e {
         BlockEntity::Banner(b) => b.components.clone(),
+        BlockEntity::CopperGolemStatue(components) => components.clone(),
         _ => Compound::new(),
     };
     let mut entries = vec![
@@ -798,7 +799,8 @@ pub fn encode_block_entity(
             }
         }
         // Encoded above.
-        BlockEntity::DaylightDetector | BlockEntity::Mod(_) => {}
+        BlockEntity::DaylightDetector | BlockEntity::CopperGolemStatue(_) | BlockEntity::Mod(_) => {
+        }
         // PotentSulfurBlockEntity.saveAdditional.
         BlockEntity::PotentSulfur(sulfur) => {
             entries.push(("countdown", Tag::Int(sulfur.waiting_countdown)))
@@ -1123,6 +1125,13 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
         | BlockEntity::Skull(_)
         | BlockEntity::DaylightDetector
         | BlockEntity::Mod(_) => {}
+        // `BlockEntity.loadAdditional`: the components the block entity keeps.
+        BlockEntity::CopperGolemStatue(components) => {
+            *components = match tag.get("components") {
+                Some(Tag::Compound(c)) => c.clone(),
+                _ => Compound::new(),
+            };
+        }
         BlockEntity::Spawner(s) => **s = crate::mobs::spawner::Spawner::load(tag),
         BlockEntity::TrialSpawner(s) => **s = crate::mobs::trial_spawner::TrialSpawner::load(tag),
         BlockEntity::Vault(v) => **v = crate::vault::Vault::load(tag),
@@ -1925,70 +1934,91 @@ pub fn load_light(tag: &Tag, chunk: &mut Chunk, sky_light: bool) {
         };
         layers[si] = (layer("SkyLight"), layer("BlockLight"));
     }
-    // Uniform saved layers need no expanded allocation. Both nibbles of
-    // each byte must match, not merely the bytes across the layer.
+    // A saved layer is already the resident `Light::Sky`/`Light::Block`
+    // layer: byte `i` holds block `2i` in its low nibble and `2i + 1` in its
+    // high one. Both nibbles of each byte must match for a layer to be
+    // uniform; only then is the whole section one value.
     let uniform_layer = |layer: &[u8]| {
         let first = layer[0];
         (first & 15 == first >> 4 && layer.iter().all(|&v| v == first)).then_some(first & 15)
     };
+    let copy_layer = |layer: &[u8]| {
+        let mut out = Box::new([0u8; 2048]);
+        out.copy_from_slice(layer);
+        out
+    };
     let mut above = [if sky_light { 15 } else { 0 }; 256];
     for (si, (sky, block)) in layers.into_iter().enumerate().rev() {
         let sky = sky.filter(|_| sky_light);
-        let sky_uniform = sky.map_or_else(
-            || above.iter().all(|&v| v == above[0]).then_some(above[0]),
-            uniform_layer,
-        );
-        let block_uniform = block.map_or(Some(0), uniform_layer);
+        let sky_uniform = sky.and_then(uniform_layer);
+        let sky_varies = match sky {
+            Some(_) => sky_uniform.is_none(),
+            None => above.iter().any(|&v| v != above[0]),
+        };
+        let block_uniform = block.and_then(uniform_layer);
+        let block_varies = block.is_some() && block_uniform.is_none();
+        let sky_first = sky.map_or(above[0], |layer| layer[0] & 15);
+        let block_first = block.map_or(0, |layer| layer[0] & 15);
         let section = Arc::make_mut(&mut chunk.sections[si]);
-        if let (Some(s), Some(b)) = (sky_uniform, block_uniform) {
-            section.light = Light::Uniform(s << 4 | b);
-            above.fill(s);
-        } else {
-            let mut data = Box::new([0u8; 4096]);
-            match (sky, block) {
-                (Some(sky), Some(block)) => {
-                    for ((pair, &s), &b) in
-                        data.as_chunks_mut::<2>().0.iter_mut().zip(sky).zip(block)
-                    {
-                        pair[0] = s << 4 | (b & 15);
-                        pair[1] = (s & 0xf0) | (b >> 4);
+        section.compact();
+        // The saved layer decides the resident variant directly: expand
+        // only when both nibbles vary (which keeps `Light::Full`).
+        section.light = match (sky_varies, block_varies) {
+            (false, false) => Light::Uniform(sky_first << 4 | block_first),
+            (false, true) => Light::Block(copy_layer(block.expect("block layer")), sky_first),
+            (true, false) => {
+                let layer = match sky {
+                    Some(layer) => copy_layer(layer),
+                    // No stored sky: the same 256-byte bottom row over and
+                    // over, which is exactly `Light::packed`'s layer here.
+                    None => {
+                        let mut layer = Box::new([0u8; 2048]);
+                        for row in layer.as_chunks_mut::<128>().0 {
+                            for (out, v) in
+                                row.iter_mut().zip(above.as_chunks::<2>().0.iter().cycle())
+                            {
+                                *out = v[0] | v[1] << 4;
+                            }
+                        }
+                        layer
                     }
-                }
-                (Some(sky), None) => {
-                    for (pair, &s) in data.as_chunks_mut::<2>().0.iter_mut().zip(sky) {
-                        pair[0] = s << 4;
-                        pair[1] = s & 0xf0;
-                    }
-                }
-                (None, Some(block)) => {
-                    for (i, (pair, &b)) in data
-                        .as_chunks_mut::<2>()
-                        .0
-                        .iter_mut()
-                        .zip(block)
-                        .enumerate()
-                    {
-                        pair[0] = above[(i * 2) & 255] << 4 | (b & 15);
-                        pair[1] = above[(i * 2 + 1) & 255] << 4 | (b >> 4);
-                    }
-                }
-                (None, None) => {
-                    for layer in data.as_chunks_mut::<256>().0 {
-                        for (v, &s) in layer.iter_mut().zip(&above) {
-                            *v = s << 4;
+                };
+                Light::Sky(layer, block_first)
+            }
+            (true, true) => {
+                let mut data = Box::new([0u8; 4096]);
+                match (sky, block) {
+                    (Some(sky), Some(block)) => {
+                        for ((pair, &s), &b) in
+                            data.as_chunks_mut::<2>().0.iter_mut().zip(sky).zip(block)
+                        {
+                            pair[0] = s << 4 | (b & 15);
+                            pair[1] = (s & 0xf0) | (b >> 4);
                         }
                     }
+                    (None, Some(block)) => {
+                        for (i, (pair, &b)) in data
+                            .as_chunks_mut::<2>()
+                            .0
+                            .iter_mut()
+                            .zip(block)
+                            .enumerate()
+                        {
+                            pair[0] = above[(i * 2) & 255] << 4 | (b & 15);
+                            pair[1] = above[(i * 2 + 1) & 255] << 4 | (b >> 4);
+                        }
+                    }
+                    _ => unreachable!("both light kinds vary"),
                 }
+                Light::Full(data)
             }
-            if let Some(sky) = sky {
-                for (pair, &s) in above.as_chunks_mut::<2>().0.iter_mut().zip(sky) {
-                    pair[0] = s & 15;
-                    pair[1] = s >> 4;
-                }
+        };
+        if let Some(sky) = sky {
+            for (pair, &s) in above.as_chunks_mut::<2>().0.iter_mut().zip(sky) {
+                pair[0] = s & 15;
+                pair[1] = s >> 4;
             }
-            section.light = Light::Full(data);
         }
-        section.compact();
     }
     chunk.lit = true;
     chunk.light_loaded = true;
@@ -3686,11 +3716,11 @@ pub struct Level {
     pub previous_game_mode: Option<i32>,
     pub time: i64,
     pub day_time: i64,
-    /// Where the player respawns when it has no bed or anchor: its forced
-    /// Overworld point (`spawnpoint`), or the world spawn.
+    /// The world spawn or a legacy bare Overworld spawn column. Personal
+    /// points use `respawn_elsewhere` so their blocks are checked on death.
     pub spawn: Option<[f64; 3]>,
     /// A respawn point resolved through its block when the player respawns
-    /// (a bed, a respawn anchor, a forced point outside the Overworld):
+    /// (a bed, a respawn anchor, a forced point in any dimension):
     /// dimension, block, yaw and `forced`.
     pub respawn_elsewhere: Option<(String, [i32; 3], f32, bool)>,
     pub position: Option<[f64; 3]>,
@@ -3712,8 +3742,9 @@ pub struct Level {
     pub post_effects: Vec<String>,
     /// Player.lastDeathLocation: the dimension and block of the last death.
     pub last_death: Option<(String, [i32; 3])>,
-    /// Player.active_effects: (id, duration, amplifier, ambient, show_particles).
-    pub active_effects: Vec<(String, i32, i32, bool, bool)>,
+    /// Player.active_effects: (id, duration, amplifier, ambient,
+    /// show_particles, show_icon).
+    pub active_effects: Vec<crate::effects::SavedEffect>,
     /// Player.EnderItems: the ender chest inventory (27 slots).
     pub ender_items: Vec<Option<crate::items::ItemStack>>,
     /// The `recipeBook` compound: open/filter settings and unlocked recipes.
@@ -4032,18 +4063,13 @@ impl Level {
             let dimension =
                 text(respawn.get("dimension")).unwrap_or_else(|| "minecraft:overworld".into());
             let forced = number(respawn.get("forced")).is_some_and(|v| v != 0);
-            // A forced point in the Overworld (`spawnpoint`) is where the
-            // player respawns; anything else (a bed, an anchor) is resolved
-            // through its block then.
-            if dimension == "minecraft:overworld" && forced {
-                self.spawn = Some([f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2])]);
-            } else {
-                let yaw = match respawn.get("yaw") {
-                    Some(Tag::Float(b)) => f32::from_bits(*b),
-                    _ => 0.0,
-                };
-                self.respawn_elsewhere = Some((dimension, [pos[0], pos[1], pos[2]], yaw, forced));
-            }
+            // Forced points, including Overworld ones, are validated through
+            // their blocks on death, just like beds and respawn anchors.
+            let yaw = match respawn.get("yaw") {
+                Some(Tag::Float(b)) => f32::from_bits(*b),
+                _ => 0.0,
+            };
+            self.respawn_elsewhere = Some((dimension, [pos[0], pos[1], pos[2]], yaw, forced));
         }
         let mut inventory = Vec::new();
         let mut inventory_components = HashMap::new();
@@ -4086,26 +4112,7 @@ impl Level {
         self.active_effects = match p.get("active_effects") {
             Some(Tag::List(list)) => list
                 .iter()
-                .filter_map(|e| {
-                    let id = text(e.get("id"))?;
-                    let get = |k: &str| number(e.get(k));
-                    // `MobEffectInstance.Details` stores `amplifier` as
-                    // `ExtraCodecs.UNSIGNED_BYTE`: the NBT byte is signed, and
-                    // `UnsignedBytes.toInt` maps it back to 0..=255. A plain
-                    // sign-extend turns 255 (byte -1) into -1, which
-                    // `EffectInstance::new` then clamps to the lowest level.
-                    let amplifier = match e.get("amplifier") {
-                        Some(Tag::Byte(v)) => i32::from(*v as u8),
-                        other => number(other).unwrap_or(0) as i32,
-                    };
-                    Some((
-                        id,
-                        get("duration").unwrap_or(0) as i32,
-                        amplifier,
-                        get("ambient").unwrap_or(0) != 0,
-                        get("show_particles").is_none_or(|v| v != 0),
-                    ))
-                })
+                .filter_map(|e| Some(read_effect_details(e, &text(e.get("id"))?)))
                 .collect(),
             _ => Vec::new(),
         };
@@ -4219,28 +4226,9 @@ impl Level {
                 Tag::List(
                     self.active_effects
                         .iter()
-                        .map(|(id, duration, amplifier, ambient, particles)| {
-                            let mut effect =
-                                vec![("id", string(id)), ("duration", Tag::Int(*duration))];
-                            // MobEffectInstance.Details: amplifier defaults to zero.
-                            if *amplifier != 0 {
-                                // Same unsigned byte the codec writes:
-                                // `Mth.clamp` to 0..=255, then `byteValue`.
-                                effect.push((
-                                    "amplifier",
-                                    Tag::Byte((*amplifier).clamp(0, 255) as u8 as i8),
-                                ));
-                            }
-                            // optionalFieldOf("ambient", false) and
-                            // ("show_particles", true): defaults are not written;
-                            // show_icon is always written.
-                            if *ambient {
-                                effect.push(("ambient", Tag::Byte(1)));
-                            }
-                            if !*particles {
-                                effect.push(("show_particles", Tag::Byte(0)));
-                            }
-                            effect.push(("show_icon", Tag::Byte(i8::from(*particles))));
+                        .map(|e| {
+                            let mut effect = vec![("id", string(&e.id))];
+                            effect.extend(effect_details(e));
                             Tag::compound(effect)
                         })
                         .collect(),
@@ -5060,6 +5048,14 @@ impl SaveDir {
 impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
     type Worker = G::Worker;
     fn worker(&self) -> G::Worker {
+        let save = self.save.clone();
+        self.inner.set_saved_starts(Arc::new(move |pos| {
+            let root = save.raw_chunk(pos.x, pos.z)?;
+            match root.tag.get("structures")?.get("starts")? {
+                Tag::Compound(starts) => Some(starts.clone()),
+                _ => None,
+            }
+        }));
         self.inner.worker()
     }
     fn lod_sampler(self: Arc<Self>) -> Box<dyn crate::streaming::LodSampler> {
@@ -5202,6 +5198,59 @@ fn record_is_old(root: &NamedTag) -> bool {
     };
     before_blending || root.tag.get("blending_data").is_some()
 }
+
+/// `MobEffectInstance.Details` read under its effect's `id`, the
+/// `hidden_effect` chain included.
+fn read_effect_details(e: &Tag, id: &str) -> crate::effects::SavedEffect {
+    let get = |k: &str| number(e.get(k));
+    // `Details` stores `amplifier` as `ExtraCodecs.UNSIGNED_BYTE`: the NBT
+    // byte is signed, and `UnsignedBytes.toInt` maps it back to 0..=255. A
+    // plain sign-extend turns 255 (byte -1) into -1, which
+    // `EffectInstance::new` then clamps to the lowest level.
+    let amplifier = match e.get("amplifier") {
+        Some(Tag::Byte(v)) => i32::from(*v as u8),
+        other => number(other).unwrap_or(0) as i32,
+    };
+    let particles = get("show_particles").is_none_or(|v| v != 0);
+    crate::effects::SavedEffect {
+        id: id.to_owned(),
+        duration: get("duration").unwrap_or(0) as i32,
+        amplifier,
+        ambient: get("ambient").unwrap_or(0) != 0,
+        particles,
+        // Details.CODEC: `show_icon` defaults to `show_particles`.
+        icon: get("show_icon").map_or(particles, |v| v != 0),
+        hidden: e
+            .get("hidden_effect")
+            .map(|h| Box::new(read_effect_details(h, id))),
+    }
+}
+/// `MobEffectInstance.Details.MAP_CODEC`'s fields, `hidden_effect` nested.
+fn effect_details(e: &crate::effects::SavedEffect) -> Vec<(&'static str, Tag)> {
+    let mut details = vec![("duration", Tag::Int(e.duration))];
+    // Amplifier defaults to zero; when written it is the codec's unsigned
+    // byte: `Mth.clamp` to 0..=255, then `byteValue`.
+    if e.amplifier != 0 {
+        details.push((
+            "amplifier",
+            Tag::Byte(e.amplifier.clamp(0, 255) as u8 as i8),
+        ));
+    }
+    // optionalFieldOf("ambient", false) and ("show_particles", true):
+    // defaults are not written; show_icon is always written.
+    if e.ambient {
+        details.push(("ambient", Tag::Byte(1)));
+    }
+    if !e.particles {
+        details.push(("show_particles", Tag::Byte(0)));
+    }
+    details.push(("show_icon", Tag::Byte(i8::from(e.icon))));
+    if let Some(hidden) = &e.hidden {
+        details.push(("hidden_effect", Tag::compound(effect_details(hidden))));
+    }
+    details
+}
+
 #[cfg(test)]
 mod tests {
     use crate::mobs::spawner::SpawnDataExt;
@@ -5399,6 +5448,82 @@ mod tests {
         save.save_attachments(&map).unwrap();
         assert_eq!(save.load_attachments().get(&key), Ok(7));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn loaded_chunk_uses_saved_jigsaw_from_its_referenced_start_chunk() {
+        let Some(root) = std::env::var_os("HORIZON_TEST_RESOURCES") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let assets = Arc::new(crate::assets::Assets::load(&root).expect("assets"));
+        let biomes = Arc::new(Biomes::load(&root).expect("biomes"));
+        let inner = Arc::new(
+            crate::vanillagen::VanillaTerrain::new(
+                &root.join("worldgen"),
+                assets.registry,
+                &biomes,
+                12345,
+            )
+            .unwrap(),
+        );
+        let mut original = inner
+            .structure_start("minecraft:ancient_city", 2, -3)
+            .unwrap();
+        Arc::get_mut(&mut original).unwrap().references = 4;
+        let starts = Tag::compound([
+            ("minecraft:ancient_city", original.save().unwrap()),
+            (
+                "minecraft:mineshaft",
+                Tag::compound([("id", string("INVALID"))]),
+            ),
+        ]);
+        let mut saved = encode(&Chunk::empty(2, -3), assets.registry, &biomes);
+        let Tag::Compound(root) = &mut saved.tag else {
+            panic!("chunk root")
+        };
+        let Some(Tag::Compound(structures)) = root.get_mut(&"structures".into()) else {
+            panic!("structures")
+        };
+        structures.insert("starts".into(), starts.clone());
+        let loaded = decode(&saved, assets.registry, &biomes).expect("chunk");
+        let Tag::Compound(expected) = &starts else {
+            unreachable!()
+        };
+        assert_eq!(loaded.saved_structure_starts(), Some(expected));
+        let again = encode(&loaded, assets.registry, &biomes);
+        assert_eq!(
+            again.tag.get("structures").and_then(|s| s.get("starts")),
+            Some(&starts)
+        );
+        let save = Arc::new(SaveDir::new(
+            std::env::temp_dir().join(format!("horizon-saved-starts-{}", std::process::id())),
+            LevelShape::OVERWORLD,
+        ));
+        // A pending record is authoritative even before any region file exists.
+        save.pending
+            .lock()
+            .unwrap()
+            .insert((Folder::Region, 2, -3), (0, Record::Tag(Arc::new(saved))));
+        let generator = Persistent {
+            inner: inner.clone(),
+            save,
+            registry: assets,
+            biomes,
+        };
+        let mut worker = generator.worker();
+        let mut referring = Chunk::empty(3, -3);
+        referring
+            .structure_refs
+            .push(("minecraft:ancient_city".into(), (2, -3)));
+        generator.prepare_loaded(&mut worker, &referring);
+        let starts = inner.starts_at(2, -3);
+        let restored = starts
+            .iter()
+            .find(|s| s.name == original.name)
+            .expect("referenced saved start");
+        assert_eq!(restored.save(), original.save());
+        assert_eq!(format!("{restored:?}"), format!("{original:?}"));
     }
 
     #[test]
@@ -6516,6 +6641,36 @@ mod tests {
         assert_eq!(again.update_tag(), spawner.update_tag());
     }
     #[test]
+    fn transient_client_update_fields_are_not_saved_or_restored() {
+        use crate::containers::{BlockEntity, ModBlockEntity, ModBlockEntityFields};
+        let saved = horizon_world::nbt::parse_snbt(
+            r#"{id:"test:machine",x:5,y:-60,z:12,progress:7,unknown:{value:2b}}"#,
+        )
+        .unwrap()
+        .0;
+        let (pos, mut entity) = decode_block_entity(&saved).unwrap();
+        let BlockEntity::Mod(machine) = &mut entity else {
+            panic!("not a mod's");
+        };
+        let revision = machine.revision();
+        let pending = Compound::from([("effects".into(), Tag::Int(23))]);
+        machine.set_client_update_fields(pending.clone());
+        assert_eq!(encode_block_entity(pos, &entity, "test:machine"), saved);
+        let (_, cold) = decode_block_entity(&saved).unwrap();
+        let BlockEntity::Mod(cold) = cold else {
+            panic!("not a mod's");
+        };
+        assert!(cold.take_client_update_fields().is_empty());
+        let BlockEntity::Mod(machine) = &entity else {
+            unreachable!();
+        };
+        assert_eq!(machine.take_client_update_fields(), pending);
+        assert_eq!(machine.revision(), revision);
+        let fresh = ModBlockEntity::new(ModBlockEntityFields::default());
+        assert!(fresh.take_client_update_fields().is_empty());
+    }
+
+    #[test]
     fn mod_block_entity_round_trips() {
         let saved = horizon_world::nbt::parse_snbt(
             r#"{id:"gtmod:macerator",x:5,y:-60,z:12,energy:1200L,progress:7,Items:[{Slot:0b,id:"minecraft:iron_ore",count:3}]}"#,
@@ -6569,6 +6724,59 @@ mod tests {
             decode_block_entity(&ender),
             Some((_, crate::containers::BlockEntity::Mod(_)))
         ));
+    }
+    /// `CopperGolemStatueBlockEntity.createStatue`: the golem's styled custom
+    /// name lives in the statue's components, through every weathering stage,
+    /// a save and its item.
+    #[test]
+    fn copper_golem_statue_keeps_the_golem_name() {
+        use crate::containers::BlockEntity;
+        let name = Tag::compound([
+            ("text", string("Bob")),
+            ("color", string("gold")),
+            ("bold", Tag::Byte(1)),
+        ]);
+        let components: Compound = [("minecraft:custom_name".into(), name.clone())].into();
+        for block in [
+            "minecraft:copper_golem_statue",
+            "minecraft:exposed_copper_golem_statue",
+            "minecraft:weathered_copper_golem_statue",
+            "minecraft:oxidized_copper_golem_statue",
+            "minecraft:waxed_oxidized_copper_golem_statue",
+        ] {
+            // Scraping and waxing swap the block, so every stage keeps the entity.
+            let entity = BlockEntity::for_block(block).expect(block);
+            assert!(entity.fits(block), "{block}");
+            let BlockEntity::CopperGolemStatue(_) = entity else {
+                panic!("{block}: not a statue");
+            };
+        }
+        let entity = BlockEntity::CopperGolemStatue(components.clone());
+        let tag = encode_block_entity((1, 2, 3), &entity, "minecraft:oxidized_copper_golem_statue");
+        assert_eq!(
+            tag.get("id"),
+            Some(&string("minecraft:copper_golem_statue"))
+        );
+        let (pos, back) = decode_block_entity(&tag).expect("statue");
+        assert_eq!(pos, (1, 2, 3));
+        let BlockEntity::CopperGolemStatue(back) = back else {
+            panic!("not a statue");
+        };
+        assert_eq!(back, components);
+        // The statue item carries the name (`getItem`: collectComponents).
+        let saved = crate::block_entity_nbt::canonical(&tag).expect("canonical statue");
+        let patch = crate::block_entity_item::pick(&saved);
+        assert_eq!(patch.get(&"minecraft:custom_name".into()), Some(&name));
+        // Placing that item gives the entity the name back.
+        let fresh = crate::block_entity_nbt::canonical(&encode_block_entity(
+            (1, 2, 3),
+            &BlockEntity::CopperGolemStatue(Compound::new()),
+            "minecraft:copper_golem_statue",
+        ))
+        .expect("canonical statue");
+        let placed = crate::block_entity_item::place(&fresh, &patch, false);
+        let (_, placed) = decode_block_entity(&placed).expect("placed statue");
+        assert!(matches!(placed, BlockEntity::CopperGolemStatue(c) if c == components));
     }
     #[test]
     fn banner_block_entity_round_trips() {
@@ -6772,6 +6980,34 @@ mod tests {
         assert_eq!(nibbles(&light, false)[0], 0x23);
         assert_eq!(nibbles(&light, true)[0], 0x5F);
     }
+    /// The independent reference: parse the saved layers and let
+    /// `crate::light::light_from_layers` expand and repack them.
+    fn reference(tag: &Tag, chunk: &mut Chunk, sky_light: bool) {
+        if tag.get("isLightOn") != Some(&Tag::Byte(1)) {
+            return;
+        }
+        let Some(Tag::List(sections)) = tag.get("sections") else {
+            return;
+        };
+        let mut layers: Vec<(Option<&[u8]>, Option<&[u8]>)> = vec![(None, None); SECTIONS];
+        for section in sections {
+            let Some(y) = number(section.get("Y")) else {
+                continue;
+            };
+            let si = y as i32 - (MIN_Y >> 4);
+            if !(0..SECTIONS as i32).contains(&si) {
+                continue;
+            }
+            let layer = |name: &str| match section.get(name) {
+                Some(Tag::ByteArray(a)) if a.len() == 2048 => Some(&a[..]),
+                _ => None,
+            };
+            layers[si as usize] = (layer("SkyLight"), layer("BlockLight"));
+        }
+        let above = [if sky_light { 15 } else { 0 }; 256];
+        crate::light::light_from_layers(chunk, &layers, above, sky_light);
+    }
+
     #[test]
     fn stored_light_loads_with_vanilla_defaults() {
         let mut sky = vec![0u8; 2048];
@@ -6820,32 +7056,6 @@ mod tests {
     }
     #[test]
     fn saved_light_matches_reference_for_layers_and_metadata() {
-        fn reference(tag: &Tag, chunk: &mut Chunk, sky_light: bool) {
-            if tag.get("isLightOn") != Some(&Tag::Byte(1)) {
-                return;
-            }
-            let Some(Tag::List(sections)) = tag.get("sections") else {
-                return;
-            };
-            let mut layers: Vec<(Option<&[u8]>, Option<&[u8]>)> = vec![(None, None); SECTIONS];
-            for section in sections {
-                let Some(y) = number(section.get("Y")) else {
-                    continue;
-                };
-                let si = y as i32 - (MIN_Y >> 4);
-                if !(0..SECTIONS as i32).contains(&si) {
-                    continue;
-                }
-                let layer = |name: &str| match section.get(name) {
-                    Some(Tag::ByteArray(a)) if a.len() == 2048 => Some(&a[..]),
-                    _ => None,
-                };
-                layers[si as usize] = (layer("SkyLight"), layer("BlockLight"));
-            }
-            let above = [if sky_light { 15 } else { 0 }; 256];
-            crate::light::light_from_layers(chunk, &layers, above, sky_light);
-        }
-
         let section = |y: Tag, sky: Option<Tag>, block: Option<Tag>| {
             let mut entries = vec![("Y", y)];
             if let Some(v) = sky {
@@ -6962,6 +7172,37 @@ mod tests {
             ),
             section(Tag::Byte(0), None, Some(Tag::ByteArray(varied))),
         ]));
+    }
+    /// A saved sky layer is the resident `Light::Sky` layer byte for byte,
+    /// so a section whose block light is uniformly zero can adopt it.
+    #[test]
+    fn a_varying_sky_layer_is_adopted_without_expansion() {
+        let saved: Vec<u8> = (0..2048).map(|i| (i as u8).wrapping_mul(29)).collect();
+        let tag = Tag::compound([
+            ("isLightOn", Tag::Byte(1)),
+            (
+                "sections",
+                Tag::List(vec![Tag::compound([
+                    ("Y", Tag::Byte(3)),
+                    ("SkyLight", Tag::ByteArray(saved.clone())),
+                ])]),
+            ),
+        ]);
+        let mut chunk = Chunk::empty(0, 0);
+        let mut expected = chunk.clone();
+        load_light(&tag, &mut chunk, true);
+        reference(&tag, &mut expected, true);
+        for i in 0..4096 {
+            assert_eq!(chunk.sections[7].light(i), expected.sections[7].light(i));
+        }
+        let Light::Sky(layer, 0) = &chunk.sections[7].light else {
+            panic!("varying sky with no block light is Light::Sky(_, 0)");
+        };
+        assert_eq!(
+            &layer[..],
+            &saved[..],
+            "resident layer equals the saved one"
+        );
     }
     /// #2571: the difficulty is a property of the world: the level data
     /// holds it, so a world that was set to hard is hard when it is opened
@@ -7100,7 +7341,11 @@ mod tests {
         assert_eq!(back.dimension, "minecraft:the_nether");
         assert_eq!(back.world_spawn, Some([8, 64, 8]));
         assert_eq!(back.world_spawn_angle, [45.0, -10.0]);
-        assert_eq!(back.spawn, Some([20.0, 70.0, 20.0]));
+        assert_eq!(back.spawn, Some([8.0, 64.0, 8.0]));
+        assert_eq!(
+            back.respawn_elsewhere,
+            Some(("minecraft:overworld".into(), [20, 70, 20], 0.0, true))
+        );
         assert!(back.difficulty_locked);
         assert!(back.weather.raining);
         assert_eq!(back.weather.rain_time, 500);
@@ -7152,12 +7397,111 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    fn eff(
+        id: &str,
+        duration: i32,
+        amplifier: i32,
+        ambient: bool,
+        particles: bool,
+        icon: bool,
+    ) -> crate::effects::SavedEffect {
+        crate::effects::SavedEffect {
+            ambient,
+            particles,
+            icon,
+            ..crate::effects::SavedEffect::new(id, duration, amplifier)
+        }
+    }
+
+    #[test]
+    fn a_player_keeps_the_effects_hidden_under_a_stronger_one() {
+        // MobEffectInstance.Details.CODEC nests `hidden_effect` (no id of its
+        // own): Poison II for 6 s over Poison I for 30 s over Poison I
+        // forever, as `/effect give` leaves them.
+        let tag = Tag::compound([(
+            "active_effects",
+            Tag::List(vec![Tag::compound([
+                ("id", string("minecraft:poison")),
+                ("duration", Tag::Int(120)),
+                ("amplifier", Tag::Byte(1)),
+                ("show_icon", Tag::Byte(1)),
+                (
+                    "hidden_effect",
+                    Tag::compound([
+                        ("duration", Tag::Int(600)),
+                        ("ambient", Tag::Byte(1)),
+                        ("show_icon", Tag::Byte(1)),
+                        (
+                            "hidden_effect",
+                            Tag::compound([
+                                ("duration", Tag::Int(-1)),
+                                ("show_particles", Tag::Byte(0)),
+                                ("show_icon", Tag::Byte(0)),
+                            ]),
+                        ),
+                    ]),
+                ),
+            ])]),
+        )]);
+        let mut level = Level::default();
+        level.read_player(&tag);
+        let expected = crate::effects::SavedEffect {
+            hidden: Some(Box::new(crate::effects::SavedEffect {
+                hidden: Some(Box::new(eff(
+                    "minecraft:poison",
+                    -1,
+                    0,
+                    false,
+                    false,
+                    false,
+                ))),
+                ..eff("minecraft:poison", 600, 0, true, true, true)
+            })),
+            ..eff("minecraft:poison", 120, 1, false, true, true)
+        };
+        assert_eq!(level.active_effects, [expected]);
+        // Written back, the chain is the same compound.
+        assert_eq!(
+            level.player_tag().get("active_effects"),
+            tag.get("active_effects")
+        );
+    }
+
+    #[test]
+    fn a_saved_effect_without_show_icon_takes_show_particles() {
+        // MobEffectInstance.Details.CODEC: `show_icon` defaults to
+        // `show_particles`; an explicit one is kept apart from it.
+        let effect = |extra: Vec<(&'static str, Tag)>| {
+            let mut e = vec![
+                ("id", string("minecraft:darkness")),
+                ("duration", Tag::Int(260)),
+            ];
+            e.extend(extra);
+            Tag::compound(e)
+        };
+        let mut level = Level::default();
+        level.read_player(&Tag::compound([(
+            "active_effects",
+            Tag::List(vec![
+                effect(vec![("show_particles", Tag::Byte(0))]),
+                effect(vec![]),
+                effect(vec![("show_icon", Tag::Byte(0))]),
+            ]),
+        )]));
+        let flags: Vec<_> = level
+            .active_effects
+            .iter()
+            .map(|e| (e.particles, e.icon))
+            .collect();
+        assert_eq!(flags, [(false, false), (true, true), (true, false)]);
+    }
+
     #[test]
     fn effects_that_ended_are_not_saved_again() {
         // A player loaded with an effect that has since run out: the loaded
         // compound still holds it, but the save writes only what is active.
         let mut level = Level {
-            active_effects: vec![("minecraft:speed".into(), 200, 1, false, true)],
+            active_effects: vec![eff("minecraft:speed", 200, 1, false, true, true)],
             ..Level::default()
         };
         let loaded = level.player_tag();
@@ -7170,10 +7514,10 @@ mod tests {
     #[test]
     fn effect_amplifier_default_is_omitted_from_saved_players() {
         let effects = vec![
-            ("minecraft:luck".into(), -1, 0, false, false),
-            ("minecraft:speed".into(), 200, 1, true, false),
-            ("minecraft:regeneration".into(), 40, 128, false, true),
-            ("minecraft:strength".into(), -1, 255, false, true),
+            eff("minecraft:luck", -1, 0, false, false, false),
+            eff("minecraft:speed", 200, 1, true, false, true),
+            eff("minecraft:regeneration", 40, 128, false, true, false),
+            eff("minecraft:strength", -1, 255, false, true, true),
         ];
         for raw in [
             None,
@@ -7210,19 +7554,16 @@ mod tests {
                     Some(Tag::Byte(-1))
                 ],
             );
-            for (entry, (id, duration, _, ambient, particles)) in entries.iter().zip(&effects) {
-                assert_eq!(entry.get("id"), Some(&string(id)));
-                assert_eq!(entry.get("duration"), Some(&Tag::Int(*duration)));
+            for (entry, e) in entries.iter().zip(&effects) {
+                assert_eq!(entry.get("id"), Some(&string(&e.id)));
+                assert_eq!(entry.get("duration"), Some(&Tag::Int(e.duration)));
                 // MobEffectInstance.Details.MAP_CODEC leaves out ambient false
                 // and show_particles true.
-                let ambient_tag = ambient.then_some(Tag::Byte(1));
+                let ambient_tag = e.ambient.then_some(Tag::Byte(1));
                 assert_eq!(entry.get("ambient"), ambient_tag.as_ref());
-                let particles_tag = (!*particles).then_some(Tag::Byte(0));
+                let particles_tag = (!e.particles).then_some(Tag::Byte(0));
                 assert_eq!(entry.get("show_particles"), particles_tag.as_ref());
-                assert_eq!(
-                    entry.get("show_icon"),
-                    Some(&Tag::Byte(i8::from(*particles)))
-                );
+                assert_eq!(entry.get("show_icon"), Some(&Tag::Byte(i8::from(e.icon))));
             }
             assert_eq!(
                 level.active_effects, effects,
@@ -7241,9 +7582,9 @@ mod tests {
         // it with `ExtraCodecs.UNSIGNED_BYTE`: `255.byteValue()` is -1 and
         // `128.byteValue()` is -128; `UnsignedBytes.toInt` restores both.
         let effects = vec![
-            ("minecraft:strength".into(), -1, 255, false, true),
-            ("minecraft:regeneration".into(), -1, 128, false, true),
-            ("minecraft:speed".into(), 40, 1, false, true),
+            eff("minecraft:strength", -1, 255, false, true, true),
+            eff("minecraft:regeneration", -1, 128, false, true, true),
+            eff("minecraft:speed", 40, 1, false, true, true),
         ];
         let level = Level {
             active_effects: effects.clone(),
@@ -7267,6 +7608,31 @@ mod tests {
         let mut loaded = Level::default();
         loaded.read_player(&tag);
         assert_eq!(loaded.active_effects, effects);
+    }
+
+    #[test]
+    fn forced_overworld_spawnpoint_reloads_as_a_configuration() {
+        // A personal point coinciding with the world spawn must still keep
+        // its forced flag and yaw, rather than turning into a world fallback.
+        for pos in [[5, 64, 5], [0, 80, 0]] {
+            let point = ("minecraft:overworld".to_owned(), pos, 37.0, true);
+            let level = Level {
+                respawn_elsewhere: Some(point.clone()),
+                ..Level::default()
+            };
+            let mut loaded = Level {
+                spawn: Some([0.0, 80.0, 0.0]),
+                world_spawn: Some([0, 80, 0]),
+                ..Level::default()
+            };
+            loaded.read_player(&level.player_tag());
+            assert_eq!(loaded.respawn_elsewhere, Some(point));
+            assert_eq!(loaded.spawn, Some([0.0, 80.0, 0.0]));
+            assert_eq!(
+                loaded.player_tag().get("respawn"),
+                level.player_tag().get("respawn")
+            );
+        }
     }
 
     #[test]
@@ -7543,7 +7909,7 @@ mod tests {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, text).unwrap();
         };
-        write("p", "pack.mcmeta", "{}");
+        write("p", "pack.mcmeta", r#"{"pack":{"description":"fixture"}}"#);
         // A pack's dimension of another id is not vanilla-like.
         write(
             "p",

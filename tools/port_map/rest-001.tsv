@@ -150,4 +150,4 @@ EnchantmentPredicate.containedIn	port	crates/horizon-client/src/advancements.rs:
 EnchantmentPredicate.matchesEnchantment	inline	crates/horizon-client/src/advancements.rs::item	one enchantment and its level
 FluidPredicate.matches	port	crates/horizon-client/src/advancements.rs::location	gap: minor: the fluid id and tags only; fluid state properties are not checked; no vanilla advancement uses fluid
 FluidPredicate.Builder.of	skip:data		datagen builder
-FoodPredicate.matches	missing		minor: no food level or saturation condition; no vanilla advancement uses one
+FoodPredicate.matches	inline	crates/horizon-client/src/advancements.rs::player_facts	the food key of a player predicate: the level, then the saturation as a double

@@ -656,9 +656,10 @@ impl Game<'_> {
         // where it lands for the server to place it and remove it.
         let mut falling = std::mem::take(&mut self.falling);
         for f in &mut falling {
-            if let Ok(FallStep::Landed(_)) = self.fall_step(f, false) {
-                // Block.updateEntityMovementAfterFallOn, then the air drag.
-                f.velocity = Vec3::new(f.velocity.x * 0.98, 0.0, f.velocity.z * 0.98);
+            if let Ok(FallStep::Landed(_)) = self.fall_step(f, false, &[]) {
+                // Block.updateEntityMovementAfterFallOn, then getAirDrag 0.98F.
+                let drag = f64::from(0.98_f32);
+                f.velocity = Vec3::new(f.velocity.x * drag, 0.0, f.velocity.z * drag);
             }
         }
         self.falling = falling;
