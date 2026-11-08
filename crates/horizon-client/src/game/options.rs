@@ -198,7 +198,6 @@ impl Game<'_> {
             device: self.pad.device_or_virtual(),
             detected: detected_controller_style(self.pad.device.as_ref(), self.pad.style),
             style: self.ui.options.pad_style,
-            by_letter: self.ui.options.pad_by_letter,
         }
     }
     /// HDR calibration's test picture to the renderer, full screen while it runs: the

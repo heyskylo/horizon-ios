@@ -93,10 +93,12 @@ again. The controls options can make it hold-to-sneak.
 A Nintendo pad's face buttons can go by their places, as the table and SDL's
 layout have them (B, at the bottom, jumps and confirms), or by their letters,
 as a Switch's own menus and keyboard do: A (right) jumps and confirms, B goes
-back and drops, X swaps the offhand, Y opens the inventory, and the binds list
-and the on-screen keyboard's hints show those letters (splitscreen's join and
-lost-controller prompts, which a controller nobody holds yet answers, stay by
-places). Controller Settings > Device > Nintendo Buttons picks one: By
+back and drops, X swaps the offhand, Y opens the inventory, and every glyph
+shows those letters: the binds list, the gameplay guide, the glyphs on declared
+buttons, notices and the on-screen keyboard's hints. Letter mode is part of the
+player's resolved glyph style, so nothing that draws a glyph handles it
+([ui-kit.md](ui-kit.md)). Splitscreen's join and lost-controller prompts, which
+a controller nobody holds yet answers, stay by places. Controller Settings > Device > Nintendo Buttons picks one: By
 Position or By Letter, saved as `nintendoLetters:true|false` in
 `horizon-controller.txt`. By position unless changed (a build for the Switch
 itself goes by letters). The row is always there, like the DualSense rows
@@ -435,7 +437,9 @@ book's page text), the pad drives the pointer instead.
 
 A button is drawn as Horizon's own art where its family has a picture, and otherwise as the label
 printed on the pad, in its colour, on a dark key (`pad_glyph.rs`; no Mojang assets, nothing from the
-player's jar). Whatever draws or measures a glyph goes through that module.
+player's jar). Whatever draws or measures a glyph goes through that module, asking for it by what the button
+does (a bound action or a menu job), never by a button: a rebinding or a pad's letters reach every glyph
+([ui-kit.md](ui-kit.md)).
 
 | Family | Art | Text |
 |---|---|---|

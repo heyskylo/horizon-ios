@@ -5,7 +5,7 @@ use super::hud::tr;
 use super::*;
 use crate::game::pad::{PadEvent, PadId};
 use horizon_client::controller_notice::{Notice, NoticeId, Priority};
-use horizon_client::gamepad::{Button, PadState};
+use horizon_client::gamepad::{Button, MenuJob, PadState};
 
 /// How long a controller's offer to join stays up.
 const OFFER: Duration = Duration::from_secs(10);
@@ -425,11 +425,11 @@ impl Split<'_> {
             [(id, _)] => tr("join.one", &[&self.pads.name(*id)]),
             offers => tr("join.many", &[&offers.len()]),
         };
-        let mut choices = vec![(Button::South, tr("join.yes", &[]))];
+        let mut choices = vec![(MenuJob::Confirm, tr("join.yes", &[]))];
         if self.p1_pad.owner.is_none() && self.host.settings.controller.enabled {
-            choices.push((Button::North, tr("join.as_p1", &[])));
+            choices.push((MenuJob::Extra, tr("join.as_p1", &[])));
         }
-        choices.push((Button::East, tr("join.no", &[])));
+        choices.push((MenuJob::Back, tr("join.no", &[])));
         self.prompt_join(Some(Prompt {
             ask: Ask::Join,
             title,

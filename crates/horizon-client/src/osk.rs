@@ -4,7 +4,8 @@
 //! A types the key, X deletes, Y is a space, Start is Enter, B closes it.
 //! It only produces [`Output`]s; the game feeds them to the focused field
 //! the way typed keys reach it.
-use crate::gamepad::{Button, GlyphStyle};
+use crate::gamepad::{Button, GlyphStyle, MenuJob};
+use crate::pad_glyph::Glyph;
 use crate::ui_theme::{self, Face, Ui, color};
 
 /// A label of the keyboard: the language table's, or the English text.
@@ -272,9 +273,8 @@ impl Keyboard {
     }
 
     /// Draw the keyboard across the bottom of the screen, or the top when
-    /// the field it types into is in the lower half. `by_letter`: the pad goes by its letters
-    /// and the glyphs are Nintendo's, so a hint names the button playing its part.
-    pub fn draw(&self, ui: &mut Ui, at_top: bool, glyphs: GlyphStyle, by_letter: bool) {
+    /// the field it types into is in the lower half.
+    pub fn draw(&self, ui: &mut Ui, at_top: bool, glyphs: GlyphStyle) {
         const UNIT: f32 = 50.0;
         const GAP: f32 = 6.0;
         const KEY_H: f32 = 38.0;
@@ -338,20 +338,17 @@ impl Keyboard {
             }
         }
         let hints = [
-            (Button::South, tr("horizon.osk.type", "Type")),
-            (Button::West, tr("horizon.osk.delete", "Delete")),
-            (Button::North, tr("horizon.osk.space", "Space")),
-            (Button::LeftTrigger, tr("horizon.osk.shift", "Shift")),
-            (Button::RightBumper, tr("horizon.osk.symbols", "Symbols")),
-            (Button::Start, tr("gui.done", "Done")),
-            (Button::East, tr("horizon.osk.close", "Close")),
+            (MenuJob::Confirm, tr("horizon.osk.type", "Type")),
+            (MenuJob::Alternate, tr("horizon.osk.delete", "Delete")),
+            (MenuJob::Extra, tr("horizon.osk.space", "Space")),
+            (MenuJob::GroupPrev, tr("horizon.osk.shift", "Shift")),
+            (MenuJob::PageNext, tr("horizon.osk.symbols", "Symbols")),
+            (MenuJob::Start, tr("gui.done", "Done")),
+            (MenuJob::Back, tr("horizon.osk.close", "Close")),
         ];
         let line: Vec<String> = hints
             .iter()
-            .map(|(b, what)| {
-                let b = if by_letter { b.by_letter() } else { *b };
-                format!("{} {what}", b.label(glyphs))
-            })
+            .map(|(job, what)| format!("{} {what}", Glyph::menu(*job, glyphs).label()))
             .collect();
         ui.text_centered(
             Face::Regular,

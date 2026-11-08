@@ -2,7 +2,7 @@
 //! notices.
 use super::*;
 use horizon_client::controller_notice::{NoticeSlot, panel};
-use horizon_client::gamepad::Button;
+use horizon_client::gamepad::MenuJob;
 use horizon_client::hud::{HudBatch, rgba};
 use horizon_client::pad_glyph;
 use std::time::Duration;
@@ -25,7 +25,8 @@ pub(in crate::game) struct Hud {
 pub(super) struct Prompt {
     pub(super) ask: Ask,
     pub(super) title: String,
-    pub(super) choices: Vec<(Button, String)>,
+    /// Each answer: the menu job whose button gives it, and its words.
+    pub(super) choices: Vec<(MenuJob, String)>,
 }
 
 /// What a prompt asks: a controller may join (every view, a strip at the top: nobody stops
@@ -48,8 +49,8 @@ pub(super) fn lost_prompt(name: &str) -> Prompt {
         ask: Ask::Lost,
         title: tr("lost", &[&name]),
         choices: vec![
-            (Button::South, tr("lost.use_another", &[])),
-            (Button::East, tr("lost.leave", &[])),
+            (MenuJob::Confirm, tr("lost.use_another", &[])),
+            (MenuJob::Back, tr("lost.leave", &[])),
         ],
     }
 }
@@ -86,6 +87,8 @@ impl Game<'_> {
         }
         // A question: centred over the view dimmed, or a strip at the top (a controller joining).
         if let Some(prompt) = &self.split_hud.prompt {
+            // Join and lost-controller questions are answered by a controller nobody holds yet,
+            // whose letter mode isn't known: by places (`Glyph::unheld`; docs/controllers.md).
             let style = self.ui.options.pad_style;
             let dim = prompt.ask != Ask::Join;
             if dim {
@@ -94,7 +97,10 @@ impl Game<'_> {
             let glyphs: Vec<_> = prompt
                 .choices
                 .iter()
-                .map(|(b, what)| (*b, pad_glyph::width(atlas, *b, style), what.as_str()))
+                .map(|(job, what)| {
+                    let glyph = pad_glyph::Glyph::unheld(*job, style);
+                    (glyph, pad_glyph::width(atlas, glyph), what.as_str())
+                })
                 .collect();
             let line: f32 = glyphs
                 .iter()
@@ -119,8 +125,8 @@ impl Game<'_> {
             );
             let mut x = (px + (pw - line) / 2.0).floor();
             let y = py + 20.0;
-            for (button, gw, what) in glyphs {
-                pad_glyph::draw(batch, atlas, button, style, x, y);
+            for (glyph, gw, what) in glyphs {
+                pad_glyph::draw(batch, atlas, glyph, x, y);
                 x += gw + 4.0;
                 batch.text(atlas, what, x, y, rgba(220, 220, 220, 255), false);
                 x += width(what) + gap(what);

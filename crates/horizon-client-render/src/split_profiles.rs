@@ -5,10 +5,11 @@
 //! game fills the list when the page opens (`filled`), takes the choice, and says why a pick
 //! can't play (`refused`). Built from vanilla's widgets.
 use crate::{
-    gamepad::{Button as PadButton, GlyphStyle},
+    gamepad::{GlyphStyle, MenuJob},
     graphics_style,
     hud::{HudAtlas, HudBatch, rgba},
-    lang, pad_glyph,
+    lang,
+    pad_glyph::{self, Glyph},
     text::Text,
     ui,
 };
@@ -410,14 +411,14 @@ impl SplitProfiles {
             .replacen("%s", place, 1),
             None => tr("horizon.splitscreen.profiles.move", "Move where you play"),
         };
-        let keys = [PadButton::LeftBumper, PadButton::RightBumper];
-        let key_width = |b: PadButton| pad_glyph::width(atlas, b, style);
+        let keys = [MenuJob::PagePrev, MenuJob::PageNext].map(|job| Glyph::menu(job, style));
+        let key_width = |b: Glyph| pad_glyph::width(atlas, b);
         let total = keys.iter().map(|&b| key_width(b) + 4.0).sum::<f32>() + 2.0 + width(&words);
         let (mut x, y) = (((batch.width - total) / 2.0).floor(), 30.0);
         for b in keys {
             let kw = key_width(b);
             // A light edge around a dark key: it stands out on the menu's dark background.
-            if pad_glyph::art(atlas, b, style).is_none() {
+            if pad_glyph::art(atlas, b).is_none() {
                 batch.fill(
                     atlas,
                     x - 2.0,
@@ -427,7 +428,7 @@ impl SplitProfiles {
                     rgba(170, 170, 170, 255),
                 );
             }
-            pad_glyph::draw(batch, atlas, b, style, x, y);
+            pad_glyph::draw(batch, atlas, b, x, y);
             x += kw + 4.0;
         }
         batch.text(atlas, &words, x + 2.0, y, rgba(240, 240, 240, 255), true);

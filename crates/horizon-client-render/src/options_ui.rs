@@ -865,7 +865,9 @@ impl Opt {
                 GlyphStyle::Auto => "horizon.options.glyphs.auto",
                 GlyphStyle::Xbox => "horizon.options.glyphs.xbox",
                 GlyphStyle::PlayStation => "horizon.options.glyphs.playstation",
-                GlyphStyle::Nintendo => "horizon.options.glyphs.nintendo",
+                GlyphStyle::Nintendo | GlyphStyle::NintendoLetters => {
+                    "horizon.options.glyphs.nintendo"
+                }
             }),
             Opt::PadNintendoButtons => tr(if s.controller.nintendo_letters {
                 "horizon.options.nintendo_buttons.letter"
@@ -1612,11 +1614,9 @@ pub struct OptionsUi {
     selected_native_key: Option<(usize, usize)>,
     /// Bindings: the action waiting for a pad button.
     pub selected_pad_action: Option<&'static str>,
-    /// The glyphs the binds list shows (the setting, else the pad's family).
+    /// The glyphs menus show (`PadSettings::glyph_style`: the setting, else the pad's family, and
+    /// a Nintendo pad's letters when it goes by them).
     pub pad_style: GlyphStyle,
-    /// The pad goes by its letters (`PadSettings::nintendo_letters`) and the glyphs are
-    /// Nintendo's: each part shows the letter of the button playing it.
-    pub pad_by_letter: bool,
     /// The pad's focus drives the page: its hidden pointer sits mid-widget, so a tooltip goes
     /// under the widget instead of beside the pointer.
     pub pad_driving: bool,
@@ -1716,7 +1716,6 @@ impl Default for OptionsUi {
             selected_native_key: None,
             selected_pad_action: None,
             pad_style: GlyphStyle::Xbox,
-            pad_by_letter: false,
             pad_driving: false,
             languages: Vec::new(),
             language_choice: None,
