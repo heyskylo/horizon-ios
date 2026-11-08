@@ -56,7 +56,7 @@ impl Game<'_> {
             // and the candidate window's place belong to the old one.
             self.ime_area = None;
             if !want {
-                preedit::set_preedit(None);
+                preedit::reset();
             }
         }
     }
@@ -64,11 +64,15 @@ impl Game<'_> {
     /// `WindowEvent::Ime(Preedit)`: `KeyboardHandler.textEditing`. The text
     /// still being composed is shown under the focused field's caret.
     pub(super) fn ime_preedit(&mut self, text: &str, cursor: Option<(usize, usize)>) {
-        preedit::set_preedit(
-            self.text_field_focused()
-                .then(|| PreeditEvent::from_winit(text, cursor))
-                .flatten(),
-        );
+        if !self.text_field_focused() {
+            preedit::reset();
+            return;
+        }
+        if text.is_empty() {
+            preedit::set_preedit(None);
+            return;
+        }
+        preedit::set_preedit(PreeditEvent::from_winit(text, cursor));
     }
 
     /// With the frame's GUI built: draw the composition over it and move the
@@ -101,7 +105,10 @@ impl Game<'_> {
 
     /// Text the input method committed (`WindowEvent::Ime(Commit)`).
     pub(super) fn ime_commit(&mut self, text: &str) {
-        preedit::set_preedit(None);
+        preedit::mark_committed();
+        if text.is_empty() {
+            return;
+        }
         // Dialogs have their own fields; the other topmost prompts take no text.
         if self.prompt_open() && !self.dialog_open() {
             return;

@@ -382,8 +382,16 @@ impl Game<'_> {
         } else {
             self.rocket_targets()
         };
+        let ticking = self.entity_ticking_area();
         let mut i = 0;
         while i < self.rockets.len() {
+            // ServerLevel.tick: only entities in entity-ticking chunks tick.
+            let at = self.rockets[i].position;
+            if !ticking(at.x.floor() as i32, at.z.floor() as i32) {
+                self.rockets[i].previous = at;
+                i += 1;
+                continue;
+            }
             let mut r = self.rockets.remove(i);
             r.previous = r.position;
             // Projectile.tick: whether it has left its owner, before it moves.
