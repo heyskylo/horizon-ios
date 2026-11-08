@@ -139,6 +139,29 @@ pub(super) fn pack_infos(vanilla: &Path, server: &[Pack]) -> Vec<PackInfo> {
     infos.push(vanilla_info(vanilla));
     infos
 }
+/// The folder packs' Polytone config entries (#11486), by pack id, for those that have some:
+/// what the Pack Options page edits.
+pub(super) fn pack_configs(vanilla: &Path) -> std::collections::BTreeMap<String, packs::Configs> {
+    packs::discover(vanilla, &packs_dir())
+        .into_iter()
+        .filter(|p| !p.polytone_configs.entries().is_empty())
+        .map(|p| (p.id, p.polytone_configs))
+        .collect()
+}
+/// The player changed Pack Options: `chosen` replaces their choices for `entries`, kept in
+/// `polytone-configs.json`.
+pub(super) fn save_pack_options(
+    entries: &[String],
+    chosen: std::collections::BTreeMap<String, packs::ConfigValue>,
+) {
+    let mut all = packs::polytone_choices();
+    all.retain(|id, _| !entries.contains(id));
+    all.extend(chosen);
+    if let Err(e) = packs::save_polytone_choices(&packs::polytone_choices_file(), &all) {
+        log::warn!("could not save the pack options: {e}");
+    }
+    packs::set_polytone_choices(all);
+}
 impl Game<'_> {
     pub(super) fn vanilla_root(&self) -> PathBuf {
         if self.ui.vanilla_root.as_os_str().is_empty() {
@@ -168,10 +191,12 @@ impl Game<'_> {
     /// (`PackSelectionScreen` makes its `PackSelectionModel` from them).
     pub(super) fn refresh_pack_lists(&mut self) {
         let infos = pack_infos(&self.vanilla_root(), &self.server_packs.active);
+        let configs = pack_configs(&self.vanilla_root());
         let browsing = self.settings.extras.pack_browser;
         let o = &mut self.ui.options;
         o.pack_browser = browsing;
         o.pack_infos = infos;
+        o.pack_configs = configs;
         o.pack_selection = self.settings.resource_packs.clone();
         o.pack_screen = None;
     }
@@ -215,6 +240,7 @@ impl Game<'_> {
             let selection = self.settings.resource_packs.clone();
             let infos = pack_infos(&self.vanilla_root(), &self.server_packs.active);
             self.ui.options.pack_infos = infos;
+            self.ui.options.pack_configs = pack_configs(&self.vanilla_root());
             self.ui.options.pack_selection = selection;
             self.ui.options.pack_screen = None;
         }

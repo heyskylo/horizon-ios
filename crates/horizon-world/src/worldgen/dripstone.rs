@@ -86,10 +86,26 @@ impl Speleothem {
             return Ok(None);
         }
         // Column.scan: up to range - 1 empty blocks from pos, then the edge.
+        // pos is known empty, and the block that ended the walk was read
+        // by it: neither is read again.
         let mut scan = |step: i32| -> TreeResult<Option<i32>, W::Error> {
-            let y = scan_column(world, pos, step, range - 1, |s| self.empty_or_water(s))?;
-            let p = [pos[0], y, pos[2]];
-            Ok(edge(self, read(world, p)?).then_some(y))
+            let (start, limit) = match range - 1 {
+                ..=0 => (pos, 0),
+                n => ([pos[0], pos[1].wrapping_add(step), pos[2]], n - 1),
+            };
+            let mut stop = None;
+            let y = scan_column(world, start, step, limit, |s| {
+                let keep = self.empty_or_water(s);
+                if !keep {
+                    stop = Some(s);
+                }
+                keep
+            })?;
+            let state = match stop {
+                Some(state) => state,
+                None => read(world, [pos[0], y, pos[2]])?,
+            };
+            Ok(edge(self, state).then_some(y))
         };
         let ceiling = scan(1)?;
         let floor = scan(-1)?;

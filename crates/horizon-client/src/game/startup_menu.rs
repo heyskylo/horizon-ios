@@ -522,6 +522,7 @@ impl Loading {
         self.menu.options.open_at(false, page);
         self.menu.options.languages = horizon_client::lang::available(&[&self.menu.root]);
         self.menu.options.pack_infos = packs::pack_infos(&self.vanilla_root, &[]);
+        self.menu.options.pack_configs = packs::pack_configs(&self.vanilla_root);
         self.menu.options.pack_selection = self.settings.resource_packs.clone();
         self.menu.options.pack_screen = None;
         self.menu.options_open = true;
@@ -552,6 +553,11 @@ impl Loading {
                 }
                 Event::Packs(_) => {
                     self.save_menu_settings();
+                    self.menu.reload_packs = true;
+                }
+                Event::PackOptions { entries, chosen } => {
+                    packs::save_pack_options(&entries, chosen);
+                    self.menu.options.pack_configs = packs::pack_configs(&self.vanilla_root);
                     self.menu.reload_packs = true;
                 }
                 Event::OpenPackFolder => {

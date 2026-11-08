@@ -1495,6 +1495,9 @@ pub struct Mob {
     pub hurt_time: i32,
     pub invulnerable: i32,
     pub death_time: i32,
+    /// `LivingEntity.currentImpulseContextResetGraceTime`: ticks left to keep
+    /// the impulse context after a wind charge or mace impulse.
+    pub impulse_grace_time: i32,
     pub age: u32,
     pub limb_position: f32,
     pub limb_speed: f32,
@@ -1554,6 +1557,9 @@ pub struct Mob {
     pub on_climbable: bool,
     pub fire_ticks: i32,
     pub ticks_frozen: i32,
+    /// `Entity.isInPowderSnow` as of the last mob tick, for the skeleton's
+    /// freezing tracker read at save time.
+    pub in_powder_snow: bool,
     pub glowing: bool,
     pub air: i32,
     pub last_hurt: f32,
@@ -2030,6 +2036,12 @@ pub enum MobEvent {
     },
     /// Set another mob's attack target (HurtByTargetGoal alerts).
     SetTarget {
+        mob: u32,
+        target: Who,
+    },
+    /// `HoglinAi.broadcastAttackTarget` to one visible adult hoglin: its
+    /// `setAttackTargetIfCloserThanCurrent` (`piglin::receive_attack_target`).
+    HoglinAttackTarget {
         mob: u32,
         target: Who,
     },
@@ -3318,6 +3330,7 @@ impl Mob {
             hurt_time: 0,
             invulnerable: 0,
             death_time: 0,
+            impulse_grace_time: 0,
             age: 0,
             limb_position: 0.0,
             limb_speed: 0.0,
@@ -3349,6 +3362,7 @@ impl Mob {
             on_climbable: false,
             fire_ticks: 0,
             ticks_frozen: 0,
+            in_powder_snow: false,
             glowing: false,
             air: 300,
             last_hurt: 0.0,
