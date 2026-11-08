@@ -1181,68 +1181,7 @@ impl<R: RandomSource> Context<'_, R> {
     }
     /// EntityPredicate.matches (false without an entity).
     fn entity_matches(&self, p: &Value, e: Option<&LootEntity>) -> bool {
-        let Some(e) = e else { return false };
-        let Some(parts) = p.as_object() else {
-            return true;
-        };
-        let data = self.data;
-        parts.iter().all(|(key, v)| match key.as_str() {
-            "minecraft:entity_type" => match v.as_str() {
-                Some(s) => match s.strip_prefix('#') {
-                    Some(tag) => data.in_tag("entity_type", tag, &e.kind),
-                    None => s == e.kind,
-                },
-                None => v
-                    .as_array()
-                    .is_some_and(|a| a.iter().any(|x| x.as_str() == Some(&e.kind))),
-            },
-            "minecraft:flags" => v.as_object().into_iter().flatten().all(|(flag, want)| {
-                let want = want.as_bool().unwrap_or(false);
-                match flag.as_str() {
-                    "is_on_fire" => e.on_fire == want,
-                    // EntityFlagsPredicate: only living entities have an age.
-                    "is_baby" => !e.living || e.baby == want,
-                    "is_fall_flying" => !e.living || !want,
-                    _ => !want,
-                }
-            }),
-            "minecraft:equipment" => {
-                e.living
-                    && v.as_object().into_iter().flatten().all(|(slot, item)| {
-                        e.item(slot)
-                            .is_some_and(|stack| self.item_matches(item, stack))
-                    })
-            }
-            "minecraft:components" => v.as_object().into_iter().flatten().all(|(c, want)| match c
-                .as_str()
-            {
-                "minecraft:sheep/color" => e
-                    .sheep
-                    .as_ref()
-                    .is_some_and(|(color, _)| want.as_str() == Some(color)),
-                "minecraft:frog/variant" => {
-                    e.frog_variant.is_some() && want.as_str() == e.frog_variant.as_deref()
-                }
-                "minecraft:chicken/variant" => {
-                    e.chicken_variant.is_some() && want.as_str() == e.chicken_variant.as_deref()
-                }
-                _ => false,
-            }),
-            "minecraft:type_specific/sheep" => e
-                .sheep
-                .as_ref()
-                .is_some_and(|(_, sheared)| v["sheared"].as_bool().is_none_or(|w| w == *sheared)),
-            "minecraft:type_specific/cube_mob" => {
-                e.cube_size.is_some_and(|size| int_bounds(&v["size"], size))
-            }
-            // RaiderPredicate: no raid is running here.
-            "minecraft:type_specific/raider" => e.captain.is_some_and(|captain| {
-                !v["has_raid"].as_bool().unwrap_or(false)
-                    && captain == v["is_captain"].as_bool().unwrap_or(false)
-            }),
-            "minecraft:vehicle" => self.entity_matches(v, e.vehicle.as_deref()),
-            _ => false,
-        })
+        self.data.entity_matches(p, e)
     }
     /// A number provider. An unknown type gives 0, as in items.rs `number`
     /// (a data pack's typo yields nothing rather than a full roll).
@@ -1647,36 +1586,7 @@ impl<R: RandomSource> Context<'_, R> {
     }
     /// ItemPredicate subset used by filtered modifiers and equipment.
     fn item_matches(&self, p: &Value, stack: &LootStack) -> bool {
-        if !p["items"].is_null() && !self.data.item_in(&stack.item, &p["items"]) {
-            return false;
-        }
-        if !int_bounds(&p["count"], stack.count) {
-            return false;
-        }
-        if p["predicates"].get("minecraft:map_id").is_some() && !stack.map {
-            return false;
-        }
-        // EnchantmentsPredicate: every entry must hold.
-        if let Some(list) = p["predicates"]["minecraft:enchantments"].as_array() {
-            let data = self.data;
-            let ok = list.iter().all(|e| {
-                let levels = &e["levels"];
-                match &e["enchantments"] {
-                    Value::Null => stack
-                        .enchantments
-                        .iter()
-                        .any(|(_, l)| int_bounds(levels, *l)),
-                    set => data.holder_set("enchantment", set).iter().any(|name| {
-                        let level = item_level(stack, name);
-                        level != 0 && int_bounds(levels, level)
-                    }),
-                }
-            });
-            if !ok {
-                return false;
-            }
-        }
-        true
+        self.data.item_matches(p, stack)
     }
     /// EnchantmentHelper.selectEnchantment.
     fn select_enchantments(
@@ -2425,5 +2335,105 @@ mod location_check_biome_tests {
         assert!(drops(&data, Some("minecraft:bamboo_jungle")));
         assert!(drops(&data, Some("minecraft:desert")));
         assert!(!drops(&data, Some("minecraft:savanna")));
+    }
+}
+
+impl LootData {
+    /// `EntityPredicate.matches`: the existing pure matcher shared by loot contexts.
+    pub fn entity_matches(&self, p: &Value, e: Option<&LootEntity>) -> bool {
+        let Some(e) = e else { return false };
+        let Some(parts) = p.as_object() else {
+            return true;
+        };
+        let data = self;
+        parts.iter().all(|(key, v)| match key.as_str() {
+            "minecraft:entity_type" => match v.as_str() {
+                Some(s) => match s.strip_prefix('#') {
+                    Some(tag) => data.in_tag("entity_type", tag, &e.kind),
+                    None => s == e.kind,
+                },
+                None => v
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|x| x.as_str() == Some(&e.kind))),
+            },
+            "minecraft:flags" => v.as_object().into_iter().flatten().all(|(flag, want)| {
+                let want = want.as_bool().unwrap_or(false);
+                match flag.as_str() {
+                    "is_on_fire" => e.on_fire == want,
+                    // EntityFlagsPredicate: only living entities have an age.
+                    "is_baby" => !e.living || e.baby == want,
+                    "is_fall_flying" => !e.living || !want,
+                    _ => !want,
+                }
+            }),
+            "minecraft:equipment" => {
+                e.living
+                    && v.as_object().into_iter().flatten().all(|(slot, item)| {
+                        e.item(slot)
+                            .is_some_and(|stack| self.item_matches(item, stack))
+                    })
+            }
+            "minecraft:components" => v.as_object().into_iter().flatten().all(|(c, want)| match c
+                .as_str()
+            {
+                "minecraft:sheep/color" => e
+                    .sheep
+                    .as_ref()
+                    .is_some_and(|(color, _)| want.as_str() == Some(color)),
+                "minecraft:frog/variant" => {
+                    e.frog_variant.is_some() && want.as_str() == e.frog_variant.as_deref()
+                }
+                "minecraft:chicken/variant" => {
+                    e.chicken_variant.is_some() && want.as_str() == e.chicken_variant.as_deref()
+                }
+                _ => false,
+            }),
+            "minecraft:type_specific/sheep" => e
+                .sheep
+                .as_ref()
+                .is_some_and(|(_, sheared)| v["sheared"].as_bool().is_none_or(|w| w == *sheared)),
+            "minecraft:type_specific/cube_mob" => {
+                e.cube_size.is_some_and(|size| int_bounds(&v["size"], size))
+            }
+            // RaiderPredicate: no raid is running here.
+            "minecraft:type_specific/raider" => e.captain.is_some_and(|captain| {
+                !v["has_raid"].as_bool().unwrap_or(false)
+                    && captain == v["is_captain"].as_bool().unwrap_or(false)
+            }),
+            "minecraft:vehicle" => self.entity_matches(v, e.vehicle.as_deref()),
+            _ => false,
+        })
+    }
+    fn item_matches(&self, p: &Value, stack: &LootStack) -> bool {
+        if !p["items"].is_null() && !self.item_in(&stack.item, &p["items"]) {
+            return false;
+        }
+        if !int_bounds(&p["count"], stack.count) {
+            return false;
+        }
+        if p["predicates"].get("minecraft:map_id").is_some() && !stack.map {
+            return false;
+        }
+        // EnchantmentsPredicate: every entry must hold.
+        if let Some(list) = p["predicates"]["minecraft:enchantments"].as_array() {
+            let data = self;
+            let ok = list.iter().all(|e| {
+                let levels = &e["levels"];
+                match &e["enchantments"] {
+                    Value::Null => stack
+                        .enchantments
+                        .iter()
+                        .any(|(_, l)| int_bounds(levels, *l)),
+                    set => data.holder_set("enchantment", set).iter().any(|name| {
+                        let level = item_level(stack, name);
+                        level != 0 && int_bounds(levels, level)
+                    }),
+                }
+            });
+            if !ok {
+                return false;
+            }
+        }
+        true
     }
 }

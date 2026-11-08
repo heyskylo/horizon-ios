@@ -381,7 +381,7 @@ fn data_packs_go_into_a_world_when_something_in_them_runs() {
         "terrain",
         "1.0",
         &[],
-        &datapack_zip(&["data/t/worldgen/biome/b.json"]),
+        &datapack_zip(&["data/t/worldgen/world_preset/w.json"]),
         false,
     );
     let tools = fake.project("tools").unwrap();
@@ -393,7 +393,7 @@ fn data_packs_go_into_a_world_when_something_in_them_runs() {
     assert_eq!(done.number, "2.0");
     assert_eq!(
         done.coverage.summary(),
-        "Runs its 2 functions, 1 function tag. Not read yet: 1 recipe."
+        "Runs its 2 functions, 1 function tag, 1 recipe."
     );
     assert!(world.join("datapacks/tools-2.0.zip").is_file());
     // Nothing of it in the browser's own list.
@@ -409,9 +409,24 @@ fn data_packs_go_into_a_world_when_something_in_them_runs() {
         .unwrap();
     assert_eq!(
         refused,
-        "Pack terrain would change nothing in Horizon yet: it has no functions, predicates or \
-         item modifiers, and Horizon doesn't read its 1 worldgen yet."
+        "Pack terrain would change nothing in Horizon yet: Horizon doesn't read its 1 worldgen \
+         world preset."
     );
+    // A pack of only recipes, or only worldgen, now does something.
+    for (slug, file) in [
+        ("recipes", "data/t/recipe/r.json"),
+        ("biomes", "data/t/worldgen/biome/b.json"),
+    ] {
+        let mut only = project(slug, Kind::DataPack);
+        only.loaders = vec!["datapack".into()];
+        fake.add(only);
+        fake.release(slug, "1", &[], &datapack_zip(&[file]), false);
+        let only = fake.project(slug).unwrap();
+        assert!(
+            install_datapack(&fake, &only, false, &world, off).is_ok(),
+            "{slug}"
+        );
+    }
     let jar = fake.project("jar").unwrap();
     assert!(install_datapack(&fake, &jar, false, &world, off).is_err());
 
@@ -425,6 +440,6 @@ fn data_packs_go_into_a_world_when_something_in_them_runs() {
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
-    assert_eq!(names.len(), 2, "{names:?}");
+    assert_eq!(names.len(), 4, "{names:?}");
     fs::remove_dir_all(world.parent().unwrap().parent().unwrap()).unwrap();
 }

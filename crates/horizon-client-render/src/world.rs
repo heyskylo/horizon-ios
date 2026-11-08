@@ -86,7 +86,7 @@ pub struct World {
     /// interaction range.
     pub chest_openers: FxHashMap<(i32, i32, i32), (i32, f64)>,
     /// `BaseContainerBlockEntity.name`: custom names of container block entities.
-    pub block_names: FxHashMap<(i32, i32, i32), String>,
+    pub block_names: FxHashMap<(i32, i32, i32), horizon_world::nbt::Tag>,
     /// States (by id) whose writes are recorded in `watched_writes` (sculk
     /// blocks, which need a block entity).
     pub watched: Vec<bool>,

@@ -55,7 +55,7 @@ pub struct OceanRuinConfig {
     pub large_probability: f32,
     pub cluster_probability: f32,
 }
-fn processors(
+pub(super) fn processors(
     resources: &StructureResources,
     bindings: &FeatureBlockBindings<'_>,
     integrity: f32,
@@ -534,6 +534,7 @@ mod tests {
         let template = StructureTemplate::from_nbt(&tag, registry, &StateTransforms::default());
         TemplatePiece {
             type_name: "minecraft:ocean_ruin",
+            gen_depth: 0,
             template_name: "ocean_ruin/cold/brick_1".into(),
             template: Arc::new(template),
             position: [8, 0, 8],
