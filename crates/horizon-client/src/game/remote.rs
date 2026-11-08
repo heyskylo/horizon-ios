@@ -7178,28 +7178,31 @@ impl Game<'_> {
                 p.position.z,
             ]
         });
-        let looks: Vec<_> = self
-            .mobs
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| {
-                matches!(m.species(), Species::Guardian | Species::ElderGuardian) && m.alive()
-            })
-            .filter_map(|(i, m)| {
-                let look = match m.ai.target.filter(|_| m.extra.flag) {
-                    Some(Who::Mob(id)) => self
-                        .mobs
-                        .iter()
-                        .find(|t| t.id == id)
-                        .map(|t| [t.position.x, t.eye_y(), t.position.z]),
-                    _ => camera,
-                };
-                look.map(|look| (i, look))
-            })
-            .collect();
-        for (i, look) in looks {
+        let mut looks = std::mem::take(&mut self.guardian_look_scratch);
+        looks.clear();
+        looks.extend(
+            self.mobs
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| {
+                    matches!(m.species(), Species::Guardian | Species::ElderGuardian) && m.alive()
+                })
+                .filter_map(|(i, m)| {
+                    let look = match m.ai.target.filter(|_| m.extra.flag) {
+                        Some(Who::Mob(id)) => self
+                            .mobs
+                            .iter()
+                            .find(|t| t.id == id)
+                            .map(|t| [t.position.x, t.eye_y(), t.position.z]),
+                        _ => camera,
+                    };
+                    look.map(|look| (i, look))
+                }),
+        );
+        for &(i, look) in &looks {
             guardian::look_at(&mut self.mobs[i], look);
         }
+        self.guardian_look_scratch = looks;
     }
     fn tick_remote_entities(&mut self, running: bool) {
         if running {

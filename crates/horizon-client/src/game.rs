@@ -2745,6 +2745,8 @@ struct Game<'a> {
     bee_sounds: HashMap<u32, bool>,
     /// Guardians whose attack hum is playing.
     guardian_sounds: HashSet<u32>,
+    /// Remote guardian eye targets reused between ticks.
+    guardian_look_scratch: Vec<(usize, [f64; 3])>,
     dropped: horizon_client::join_seq::JoinList<ItemEntity>,
     next_entity: u32,
     /// The last entity id when this level's entity pass began: an item with a
@@ -17395,6 +17397,7 @@ impl<'a> Game<'a> {
             was_fall_flying: false,
             bee_sounds: HashMap::new(),
             guardian_sounds: HashSet::new(),
+            guardian_look_scratch: Vec::new(),
             dropped: Default::default(),
             next_entity: 0,
             ticked_entities_through: u32::MAX,
