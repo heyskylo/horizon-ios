@@ -91,7 +91,7 @@ impl Game {
     fn pick(&self) -> Option<Hit> { Some(self.hit) }
     fn held(&self) -> Option<&Stack> { None }
     // Player.blockActionRestricted: adventure without a can_break item.
-    fn remote_break_restricted(&self) -> bool { self.restricted }
+    fn remote_break_restricted(&self, _: [i32; 3]) -> bool { self.restricted }
     // Game::destroy_progress (hand.rs) for a harvestable block on the ground.
     fn destroy_progress(&self, _: [i32; 3]) -> f32 {
         self.res.speed / self.res.facts.hardness / 30.0

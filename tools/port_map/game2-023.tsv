@@ -120,7 +120,7 @@ LevelStorageSource.LevelStorageAccess.saveDataTag	inline	crates/horizon-client/s
 LevelStorageSource.LevelStorageAccess.saveLevelData	port	crates/horizon-client/src/save.rs::write_dat	the temp file, the level.dat_old swap and the write are in write_dat
 LevelStorageSource.LevelStorageAccess.getIconFile	port	crates/horizon-client/src/title.rs::Title::icon	gap: minor: no session-lock check; Horizon reads icon.png whenever it is there
 LevelStorageSource.LevelStorageAccess.renameLevel	port	crates/horizon-client/src/title/world_management.rs::rename	-
-LevelStorageSource.LevelStorageAccess.renameAndDropPlayer	skip:other	-	no caller in the decompiled sources
+LevelStorageSource.LevelStorageAccess.renameAndDropPlayer	port	crates/horizon-client/src/realms/download.rs::rename_and_drop_player	when a downloaded Realms world has no links: level.dat's LevelName becomes the folder's name and singleplayer_uuid is dropped; a failure only logs
 LevelStorageSource.LevelStorageAccess.modifyLevelDataWithoutDatafix	inline	crates/horizon-client/src/title/world_management.rs::rename	read, change the Data compound and write back; rename is the only edit Horizon makes
 LevelStorageSource.LevelStorageAccess.makeWorldBackup	port	crates/horizon-client/src/title/world_management.rs::backup	-
 LevelStorageSource.LevelStorageAccess.hasWorldData	inline	crates/horizon-client/src/title.rs::list_worlds	gap: minor: a folder counts as a world only when its level.dat reads; level.dat_old is not checked

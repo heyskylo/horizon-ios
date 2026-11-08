@@ -1163,6 +1163,7 @@ def table(labels):
 
 
 def main():
+    global SEED
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--game", choices=["horizon", "vanilla", "vanilla-mods", "neoforge"], default="horizon")
     p.add_argument("--label", help="result name (default <game>-<host>)")
@@ -1179,6 +1180,8 @@ def main():
     p.add_argument("--resources", default=str(lab.RESOURCES))
     p.add_argument("--build", default=str(ROOT / "target/release"))
     p.add_argument("--repeats", type=int, default=3, help="games per render distance; the report gives means and 95%% CIs")
+    p.add_argument("--seed", type=int, default=SEED,
+                   help="the world seed (default %(default)s; the stress scenes are laid out for that one). The world a game saves is compared with tools/world_compare.py")
     p.add_argument("--port-work", help="horizon: also load the mods carried over in this horizon-port-pack work folder")
     p.add_argument("--warm", action="store_true",
                    help="horizon: measure a later start, after one start to the title screen built the caches")
@@ -1193,6 +1196,7 @@ def main():
     p.add_argument("--bots-build", help="--server-bots: horizon-bots' folder (default --build)")
     p.add_argument("--table", nargs="+", metavar="LABEL", help="compare saved runs with matching recorded conditions, and exit")
     args = p.parse_args()
+    SEED = args.seed
     if args.table:
         try:
             table(args.table)

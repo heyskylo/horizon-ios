@@ -98,7 +98,9 @@ impl Compression {
                 Ok(())
             }
             Self::Zlib => zlib_into(bytes, max_output, output),
-            Self::Lz4 => decode_lz4(bytes, max_output, output),
+            Self::Lz4 => {
+                LZ4_BUFFER.with_borrow_mut(|buffer| decode_lz4(bytes, max_output, output, buffer))
+            }
         }
     }
 
@@ -124,6 +126,8 @@ thread_local! {
     /// This thread's zlib inflater, reset for each chunk instead of a new
     /// one (and its window) allocated every time.
     static INFLATER: std::cell::RefCell<Option<Decompress>> = const { std::cell::RefCell::new(None) };
+    /// This thread's LZ4 compressed-block scratch, retained between chunk reads.
+    static LZ4_BUFFER: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// The zlib stream in `bytes` decoded onto `output`, at most `max_output`
@@ -202,11 +206,20 @@ fn checksum(bytes: &[u8]) -> u32 {
     xxhash_rust::xxh32::xxh32(bytes, 0x9747_b28c) & 0x0fff_ffff
 }
 
-fn decode_lz4(mut bytes: &[u8], max_output: usize, output: &mut Vec<u8>) -> io::Result<()> {
+fn decode_lz4(
+    mut bytes: &[u8],
+    max_output: usize,
+    output: &mut Vec<u8>,
+    buffer: &mut Vec<u8>,
+) -> io::Result<()> {
     // `LZ4BlockInputStream.compressedBuffer`: each header is read into it,
     // and a block's bytes over its start; it grows by half when too small.
     // The decompressor may read up to its end, past the block.
-    let mut buffer = vec![0; 21];
+    // Each stream starts from 21 zero bytes, as a new buffer would: the
+    // decompressor may read past a short block into them, so the last
+    // stream's bytes must not be left there. The allocation is kept.
+    buffer.clear();
+    buffer.resize(21, 0);
     loop {
         let header = bytes
             .get(..21)
@@ -247,12 +260,12 @@ fn decode_lz4(mut bytes: &[u8], max_output: usize, output: &mut Vec<u8>) -> io::
             Ok(())
         } else {
             if buffer.len() < compressed {
-                buffer = vec![0; compressed.max(buffer.len() * 3 / 2)];
+                buffer.resize(compressed.max(buffer.len() * 3 / 2), 0);
             }
             buffer[..compressed].copy_from_slice(block);
             output.resize(start + raw, 0);
             // `refill`: the block must be read to its last byte, no further.
-            if decompress_lz4_java(&buffer, &mut output[start..]) == Some(compressed) {
+            if decompress_lz4_java(buffer, &mut output[start..]) == Some(compressed) {
                 Ok(())
             } else {
                 Err(invalid("LZ4 stream is corrupted"))

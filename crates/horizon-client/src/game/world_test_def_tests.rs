@@ -111,6 +111,12 @@ fn a_test_instance_from_an_enabled_world_pack_is_found_and_runs() {
         Some("Running 1 test(s)..."),
         "{said:?}"
     );
+    // TestBatchSummaryDisplayer tells the command's source as the batch starts.
+    assert_eq!(
+        said.get(1).map(String::as_str),
+        Some("Starting environment minecraft:default batch 0"),
+        "{said:?}"
+    );
     let _ = std::fs::remove_dir_all(&world);
 }
 

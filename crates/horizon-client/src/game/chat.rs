@@ -252,6 +252,9 @@ pub struct UiState {
     pub show_hand_when_hidden: bool,
     /// Death message key set by the cause of death (e.g. /kill).
     pub death_cause: Option<String>,
+    /// What this frame's HUD shows that Horizon's overlays keep clear of (`Game::hud_room`),
+    /// set by `hud_layers` before anything draws.
+    pub room: horizon_client::hud_kit::room::Room,
     /// Path of an F2 screenshot waiting for its frame.
     pub screenshot_message: Option<std::path::PathBuf>,
     /// The options screens.
@@ -457,7 +460,6 @@ mod hud_mode_tests {
 /// instead of at every world opening (thousands of files).
 struct ResourceIds {
     recipes: Vec<String>,
-    loot_tables: Vec<String>,
     templates: Vec<String>,
     /// `entity-types.json`'s keys, sorted (empty when the file is missing).
     entity_types: Vec<String>,
@@ -549,8 +551,6 @@ fn resource_ids(root: &Path) -> Arc<ResourceIds> {
     let ids = Arc::new(ResourceIds {
         // `/recipe <id>` must suggest a content mod's recipes too.
         recipes: json_ids_of_every_namespace(root, "recipe"),
-        // `/loot ... loot <id>` must find a content mod's tables too.
-        loot_tables: json_ids_of_every_namespace(root, "loot_table"),
         templates: templates_under(&root.join("worldgen/structure")),
         entity_types,
         enchantments: json_ids_in(&data.join("enchantment")),
@@ -817,6 +817,13 @@ impl Game<'_> {
             .or_default()
             .ids = ids;
     }
+    /// `ResourceOrIdArgument`'s loot tables are the server's: every table the
+    /// world plays with, the game's, the content mods' and its packs'.
+    pub(super) fn sync_loot_table_ids(&mut self) {
+        let mut ids: Vec<String> = self.items().loot_table_ids().map(str::to_owned).collect();
+        ids.sort();
+        self.ui.registries.loot_tables = ids;
+    }
     /// Registry contents for argument parsing (built when a world opens).
     pub(super) fn build_registries(&mut self) {
         let permission = owner_permission(self.allow_commands());
@@ -830,7 +837,24 @@ impl Game<'_> {
             .entries()
             .map(|(_, d)| d.name.clone())
             .collect();
-        self.ui.registries.loot_tables = ids.loot_tables.clone();
+        self.sync_loot_table_ids();
+        // ResourceOrIdArgument decodes an inline feature while the command is
+        // parsed, with the codec and blocks placement uses (the live features
+        // never change once installed).
+        self.ui.registries.inline_feature =
+            self.res
+                .behaviours()
+                .live_features()
+                .cloned()
+                .map(|features| {
+                    horizon_client_core::registries::InlineFeatureCheck::new(move |tag| {
+                        let json = horizon_client::scoreboard::tag_to_json(tag).to_string();
+                        features
+                            .decode_inline(&json)
+                            .map(drop)
+                            .map_err(|e| e.to_string())
+                    })
+                });
         self.ui.registries.templates = ids.templates.clone();
         self.ui.registries.sounds = self.audio.event_names();
         self.ui.registries.attributes = [
@@ -2088,30 +2112,8 @@ mod tests {
         std::fs::write(recipe.join("notes.txt"), "").unwrap();
         let first = resource_ids(&root);
         assert_eq!(first.recipes, ["minecraft:b", "minecraft:sub/a"]);
-        assert!(first.loot_tables.is_empty());
         std::fs::write(recipe.join("c.json"), "{}").unwrap();
         assert!(Arc::ptr_eq(&first, &resource_ids(&root)));
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// A content mod's loot tables are listed with vanilla's, so `/loot`
-    /// finds them.
-    #[test]
-    fn loot_tables_of_every_namespace_are_listed() {
-        let root = std::env::temp_dir().join(format!("horizon-loot-ids-{}", std::process::id()));
-        for dir in [
-            "data/minecraft/loot_table/chests",
-            "data/mymod/loot_table/rooms",
-        ] {
-            std::fs::create_dir_all(root.join(dir)).unwrap();
-        }
-        std::fs::write(root.join("data/minecraft/loot_table/chests/a.json"), "{}").unwrap();
-        std::fs::write(root.join("data/mymod/loot_table/rooms/b.json"), "{}").unwrap();
-        std::fs::write(root.join("data/mymod/loot_table/notes.txt"), "").unwrap();
-        assert_eq!(
-            resource_ids(&root).loot_tables,
-            ["minecraft:chests/a", "mymod:rooms/b"]
-        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -217,6 +217,25 @@ pub fn blit_sprite(
         draw_sprite(batch, *r, nine_slice_metadata(sprite), [x, y, w, h], color);
     }
 }
+/// `GuiGraphicsExtractor.blit(location, x, y, u, v, width, height, textureWidth,
+/// textureHeight)`: a `src` region of a sprite — in its own texture's units, as the
+/// u/v/width/height arguments are — stretched over `w` × `h`.
+pub fn blit_sprite_region(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    sprite: &str,
+    src: [f32; 4],
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    color: u32,
+) {
+    if let Some(r) = atlas.sprites.get(sprite) {
+        let size = [r.w as f32, r.h as f32];
+        batch.rect_uv(x, y, w, h, sub(*r, size, src), color);
+    }
+}
 fn draw_sprite(
     batch: &mut HudBatch,
     r: Rect,
@@ -575,6 +594,7 @@ pub fn action_button(
         label,
         active,
         hover,
+        false,
         room,
         |rect| crate::widgets::Narratable::button(label.plain(), rect, active),
     );
@@ -602,8 +622,44 @@ pub fn button_as(
         label,
         active,
         hover,
+        false,
         0.0,
         narration,
+    );
+}
+/// An options button whose focus highlights it without changing the mouse cursor.
+/// `AbstractWidget.handleCursor` tests hover, not `isHoveredOrFocused`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn focused_button(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    rect: [f32; 4],
+    label: &Text,
+    active: bool,
+    hover: bool,
+    focused: bool,
+    action: Option<crate::widgets::Action>,
+) {
+    let room = if let Some(action) = action {
+        crate::widgets::declare_action(action, rect, active);
+        if active {
+            crate::widgets::action_glyph_room()
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+    button_with_room(
+        batch,
+        atlas,
+        rect,
+        label,
+        active,
+        hover,
+        focused,
+        room,
+        |rect| crate::widgets::Narratable::button(label.plain(), rect, active),
     );
 }
 /// A button whose label keeps `room` free at its left.
@@ -615,6 +671,7 @@ fn button_with_room(
     label: &Text,
     active: bool,
     hover: bool,
+    focused: bool,
     room: f32,
     narration: impl FnOnce([f32; 4]) -> crate::widgets::Narratable,
 ) {
@@ -624,11 +681,11 @@ fn button_with_room(
     if active && plain.trim().is_empty() {
         crate::widgets::target([x, y, w, h]);
     }
-    crate::widgets::narratable(|| narration([x, y, w, h]).hovered(hover));
+    crate::widgets::narratable(|| narration([x, y, w, h]).hovered(hover || focused));
     crate::widgets::widget_cursor(hover, active);
     let sprite = if !active {
         "gui/sprites/widget/button_disabled"
-    } else if hover {
+    } else if hover || focused {
         "gui/sprites/widget/button_highlighted"
     } else {
         "gui/sprites/widget/button"
@@ -1000,9 +1057,9 @@ pub fn tooltip(batch: &mut HudBatch, atlas: &HudAtlas, lines: &[Text], cursor: (
     }
     tooltip_box(batch, atlas, lines, x, y, w, h);
 }
-/// `WidgetTooltipHolder.createTooltipPositioner`'s focused branch
-/// (`MenuTooltipPositioner`): a widget with the keyboard focus keeps the
-/// pointer where it is, and its tooltip stays against the widget at `rect`.
+/// `WidgetTooltipHolder.createTooltipPositioner` for a hovered widget
+/// (`MenuTooltipPositioner`): the tooltip follows the pointer's x and keeps
+/// 3 to 5 px from the widget at `rect`.
 pub fn tooltip_menu(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
@@ -1075,14 +1132,16 @@ pub fn menu_tooltip_position(
     }
     pos
 }
-/// `MenuTooltipPositioner.getOffset`: how far the tooltip keeps from the
-/// widget's top (or bottom) edge, from `MAX_DISTANCE_TO_WIDGET` 5 to
-/// `MAX_OVERLAP_WITH_WIDGET` 3 as the pointer nears the edge.
-/// The distance over the height is an int division in vanilla, so the lerp
-/// is `height - 3` until the pointer is a whole height away, then 5.
+/// `MenuTooltipPositioner.getOffset`: how far the tooltip goes past the
+/// widget's top (or bottom) edge, `height - 3` (`MAX_OVERLAP_WITH_WIDGET`)
+/// with the pointer on the edge, down to `MAX_DISTANCE_TO_WIDGET` 5 a whole
+/// height away. The distance over the height is a float division (`i2f`,
+/// `fdiv` in 26.3's bytecode), so the offset moves smoothly with the pointer;
+/// then `Mth.lerp` and Java's float rounding.
 fn widget_offset(at: i32, edge: i32, height: i32) -> i32 {
-    let d = ((at - edge).unsigned_abs().min(height as u32) / height as u32) as f32;
-    ((height as f32 - 3.0) + d * (5.0 - (height as f32 - 3.0))).round() as i32
+    let distance = (at - edge).unsigned_abs().min(height as u32) as f32;
+    let start = (height - 3) as f32;
+    horizon_core::jmath::round_f32(start + distance / height as f32 * (5.0 - start))
 }
 fn tooltip_size(atlas: &HudAtlas, lines: &[Text]) -> (f32, f32) {
     let w = lines
@@ -1259,6 +1318,29 @@ impl Caret {
         focused: bool,
         focused_at: Instant,
     ) {
+        self.draw_color(
+            batch,
+            atlas,
+            (id, value, max),
+            rect,
+            focused,
+            focused_at,
+            rgba(224, 224, 224, 255),
+        );
+    }
+    /// [`Self::draw`] with the text in `color` (`EditBox.setTextColor`): the
+    /// settings tab turns an invalid Realm name red.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_color(
+        &mut self,
+        batch: &mut HudBatch,
+        atlas: &HudAtlas,
+        (id, value, max): (crate::clipboard::FieldId, &str, usize),
+        rect: [f32; 4],
+        focused: bool,
+        focused_at: Instant,
+        color: u32,
+    ) {
         let mut idle;
         let edit = if focused {
             self.sync(id, value, max)
@@ -1270,6 +1352,7 @@ impl Caret {
         };
         [edit.x, edit.y, edit.width, edit.height] = rect;
         edit.focused = focused;
+        edit.text_color = color;
         if edit.focused_at < focused_at {
             edit.focused_at = focused_at;
         }
@@ -2406,16 +2489,21 @@ mod tests {
         let screen = (427, 240);
         let widget = [100, 100, 150, 20];
         let size = (80, 10);
-        // Pointer at the widget's top edge: the tooltip drops 3 px, then
-        // `getOffset`'s int division gives `height - 3` = 17 more.
+        // Pointer at the widget's top edge: the tooltip drops 3 px to 103,
+        // then `getOffset` adds round(lerp(3 / 20, 17, 5)) = round(15.2) = 15.
         assert_eq!(
             menu_tooltip_position(screen, (100, 100), widget, size),
-            (112, 120)
+            (112, 118)
         );
         // Near the right edge its left side mirrors to the pointer's left.
         assert_eq!(
             menu_tooltip_position(screen, (400, 100), widget, size),
-            (308, 120)
+            (308, 118)
+        );
+        // Halfway down the offset follows the pointer: 113 + round(9.2).
+        assert_eq!(
+            menu_tooltip_position(screen, (100, 110), widget, size),
+            (112, 122)
         );
         // A whole widget height from the edge, the offset is 5.
         assert_eq!(
@@ -2423,10 +2511,10 @@ mod tests {
             (112, 125)
         );
         // A widget too close to the bottom: the tooltip goes above it,
-        // 203 - (10 + 6) - 17.
+        // 203 - (10 + 6) - round(lerp(17 / 20, 17, 5)) = 203 - 16 - 7.
         assert_eq!(
             menu_tooltip_position(screen, (100, 200), [100, 200, 150, 20], size),
-            (112, 170)
+            (112, 180)
         );
     }
 }

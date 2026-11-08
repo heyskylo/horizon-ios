@@ -6,8 +6,8 @@
 //! keeps 7 archives a day, the newest with the highest index.
 //!
 //! Messages go through the `log` facade. Horizon's own still print their plain text on stderr,
-//! as they did before the log existed; other crates' errors only reach the file (their
-//! warnings are mostly the Vulkan loader's startup chatter).
+//! as they did before the log existed. Other crates, including native mods and their helper
+//! crates, reach the file through INFO too, with their target prefixed to identify the source.
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -424,14 +424,18 @@ fn ours(target: &str) -> bool {
 impl log::Log for Logger {
     fn enabled(&self, meta: &log::Metadata) -> bool {
         meta.level() <= log::Level::Info
-            && (ours(meta.target()) || meta.level() <= log::Level::Error)
     }
 
     fn log(&self, record: &log::Record) {
         if !self.enabled(record.metadata()) {
             return;
         }
-        let message = record.args().to_string();
+        let horizon = ours(record.target());
+        let message = if horizon {
+            record.args().to_string()
+        } else {
+            format!("[{}] {}", record.target(), record.args())
+        };
         let current = std::thread::current();
         let thread = match current.name() {
             Some("main") => self.main_thread,
@@ -460,7 +464,7 @@ impl log::Log for Logger {
             ),
             _ => {}
         }
-        let stderr = ours(record.target()).then(|| message.clone());
+        let stderr = horizon.then(|| message.clone());
         self.send(thread, level, &message, stderr);
         if gate == Gate::Last {
             self.write(
@@ -651,6 +655,91 @@ pub fn newest_crash_report(home: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_mod_records_reach_the_file_with_their_targets() {
+        use log::Log;
+        let dir =
+            std::env::temp_dir().join(format!("horizon-native-log-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let (out, receive) = mpsc::channel();
+        let writer = Writer {
+            file: Some(open_latest(&dir).unwrap().unwrap()),
+            dir: dir.clone(),
+            date: Local::now().date_naive(),
+        };
+        let handle = std::thread::spawn(move || writer.run(receive));
+        let logger = Logger {
+            out,
+            recent: Mutex::new(VecDeque::new()),
+            main_thread: "Render thread",
+            floods: Mutex::new(Floods::default()),
+        };
+        for (target, level, message) in [
+            ("meridian_horizon::save", log::Level::Warn, "save failed"),
+            ("meridian_core::map", log::Level::Info, "map opened"),
+            ("wgpu_core::device", log::Level::Error, "device lost"),
+            ("meridian_core::map", log::Level::Debug, "debug detail"),
+            ("meridian_core::map", log::Level::Trace, "trace detail"),
+        ] {
+            logger.log(
+                &log::Record::builder()
+                    .args(format_args!("{message}"))
+                    .level(level)
+                    .target(target)
+                    .build(),
+            );
+        }
+        logger.flush();
+        drop(logger);
+        handle.join().unwrap();
+        let text = fs::read_to_string(dir.join("latest.log")).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+        assert!(
+            text.contains("[meridian_horizon::save] save failed"),
+            "{text}"
+        );
+        assert!(text.contains("[meridian_core::map] map opened"), "{text}");
+        assert!(text.contains("[wgpu_core::device] device lost"), "{text}");
+        assert!(!text.contains("debug detail"));
+        assert!(!text.contains("trace detail"));
+    }
+
+    #[test]
+    fn horizon_stderr_and_external_file_records_stay_separate() {
+        use log::Log;
+        let (out, receive) = mpsc::channel();
+        let logger = Logger {
+            out,
+            recent: Mutex::new(VecDeque::new()),
+            main_thread: "Render thread",
+            floods: Mutex::new(Floods::default()),
+        };
+        for target in ["horizon_client::game", "meridian_core", "wgpu_hal::vulkan"] {
+            logger.log(
+                &log::Record::builder()
+                    .args(format_args!("diagnostic"))
+                    .level(log::Level::Info)
+                    .target(target)
+                    .build(),
+            );
+            let Out::Write {
+                stderr,
+                record: (_, _, message),
+                ..
+            } = receive.try_recv().unwrap()
+            else {
+                panic!("a diagnostic must write a record")
+            };
+            if ours(target) {
+                assert_eq!(stderr.as_deref(), Some("diagnostic"));
+                assert_eq!(message, "diagnostic");
+            } else {
+                assert!(stderr.is_none());
+                assert_eq!(message, format!("[{target}] diagnostic"));
+            }
+        }
+    }
 
     #[test]
     fn a_player_dir_keeps_the_shared_files_in_the_game_folder() {

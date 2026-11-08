@@ -8,6 +8,44 @@ impl Game<'_> {
     /// `Screen.keyPressed` hears the raw one, and only a raw key settles what
     /// the container's hotbar keys are now (`checkHotbarKeyPressed`).
     pub(super) fn key_pressed(&mut self, key: KeyCode, raw: KeyCode) -> Result<()> {
+        self.direct_craft_stop();
+        if self.screen == Screen::Playing && self.studio_replay.is_some() {
+            match key {
+                KeyCode::Escape => {
+                    self.close_studio_replay();
+                    return Ok(());
+                }
+                KeyCode::KeyP => {
+                    self.pause_focus = None;
+                    self.screen = Screen::Paused;
+                    self.pause_menu = true;
+                    self.capture(false);
+                }
+                KeyCode::KeyF => self.handle_studio_timeline_action(
+                    horizon_client::studio::TimelineAction::ToggleFreecam,
+                ),
+                KeyCode::KeyT => self.studio_timeline.visible = !self.studio_timeline.visible,
+                KeyCode::KeyM => self.add_studio_marker(),
+                KeyCode::Home => self.handle_studio_topbar_action(
+                    horizon_client::studio::TopBarAction::ResetCameraToPlayer,
+                ),
+                KeyCode::KeyL => {
+                    self.studio_freecam.locked_to_path = !self.studio_freecam.locked_to_path;
+                }
+                KeyCode::KeyK => self.handle_studio_timeline_action(
+                    horizon_client::studio::TimelineAction::AddCameraKeyframe,
+                ),
+                KeyCode::Delete => {
+                    if let Some(index) = self.studio_timeline.selected_keyframe {
+                        self.handle_studio_timeline_action(
+                            horizon_client::studio::TimelineAction::RemoveCameraKeyframe(index),
+                        );
+                    }
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
         // `CreativeModeInventoryScreen.keyPressed` clears `ignoreTextInput` on
         // every key, before it decides anything.
         self.creative_ignore_text = false;
@@ -85,6 +123,7 @@ impl Game<'_> {
                 Screen::Win => self.close_win_screen()?,
                 Screen::DebugOptions => self.close_debug_options(),
                 Screen::Mod => self.close_mod_screen(),
+                Screen::Studio => self.close_studio_screen(),
                 Screen::HudEditor => self.close_hud_editor(),
             },
             // `checkHotbarKeyPressed`: the keys the controls bind to the off

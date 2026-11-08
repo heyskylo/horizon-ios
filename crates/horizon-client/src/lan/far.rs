@@ -27,8 +27,8 @@ const MISSING_FOR: Duration = Duration::from_secs(30);
 const WRITE_BACKLOG: usize = 512;
 /// The brake: the average tick above which the ring pulls in, the one below which it may grow, the
 /// seconds of short ticks before it does, and then the seconds between its steps out.
-const HOT_MS: f64 = 40.0;
-const CALM_MS: f64 = 25.0;
+const HOT_MS: f64 = 50.0;
+const CALM_MS: f64 = 45.0;
 const CALM_SECONDS: u32 = 30;
 const GROW_EVERY: u32 = 5;
 const READERS: usize = 2;
@@ -333,7 +333,7 @@ mod tests {
         assert_eq!(b.limit, 10);
         // Between the two marks it holds.
         for _ in 0..100 {
-            assert_eq!(step(&mut b, 30.0), 10);
+            assert_eq!(step(&mut b, 47.0), 10);
         }
         for _ in 0..CALM_SECONDS - 1 {
             assert_eq!(step(&mut b, 5.0), 10);
@@ -344,7 +344,7 @@ mod tests {
         }
         assert_eq!(step(&mut b, 5.0), 12);
         // One long second starts the wait again.
-        assert_eq!(step(&mut b, 45.0), 10);
+        assert_eq!(step(&mut b, 55.0), 10);
         for _ in 0..CALM_SECONDS + 100 * GROW_EVERY {
             step(&mut b, 5.0);
         }
