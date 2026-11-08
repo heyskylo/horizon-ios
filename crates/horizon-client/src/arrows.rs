@@ -172,6 +172,8 @@ pub struct ArrowState {
     pub pickup: Pickup,
     /// Its entity type is `SpectralArrow` (the type is its own, not the pickup item's).
     pub spectral: bool,
+    /// `SpectralArrow` saved duration; its constructor default is 200.
+    pub spectral_duration: i32,
     /// `pickupItemStack`: what picking the arrow up gives.
     pub pickup_item: crate::items::ItemStack,
     /// `AbstractArrow.firedFromWeapon`: the crossbow or bow it was shot from.
@@ -240,6 +242,7 @@ impl ArrowState {
             last_state: None,
             pickup: Pickup::Disallowed,
             spectral: false,
+            spectral_duration: 200,
             pickup_item: crate::items::ItemStack::new("minecraft:arrow", 1),
             fired_from_weapon: None,
             no_physics: false,

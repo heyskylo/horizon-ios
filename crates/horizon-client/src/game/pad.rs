@@ -62,6 +62,9 @@ pub(super) struct Pads {
     last_hardware: PadState,
     /// The pad drove the game last (the mouse and keyboard hand control back).
     pub(super) in_use: bool,
+    /// A key or mouse button was pressed in play since the pad was last touched: the keyboard and
+    /// mouse have it, though only moving the mouse takes the pad out of use.
+    pub(super) keyboard_took_over: bool,
     pub(super) style: GlyphStyle,
     /// The controller driving this player, or else the first one its own reader sees.
     pub(super) device: Option<Device>,
@@ -78,6 +81,10 @@ pub(super) struct Pads {
     pub(super) drop_stack: bool,
     /// The player's health between polls (a drop is damage taken).
     health: HealthWatch,
+    /// The gameplay guide's facts and the tick they were read in.
+    guide_facts: Option<(u64, horizon_client::gameplay_guide::Facts)>,
+    /// The guide's rows as last drawn.
+    pub(super) guide_shown: Vec<guide::Shown>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -90,11 +97,15 @@ struct Context {
     enabled: bool,
 }
 
+mod guide;
 #[cfg(feature = "controllers")]
 mod hardware;
 #[cfg(test)]
 mod parity_tests;
 pub(super) use hardware::{PadId, PadRouter};
+
+/// How long the death screen's confirm ignores cancelling (`ConfirmScreen`).
+const DEATH_CONFIRM_WAIT: Duration = Duration::from_secs(1);
 
 /// A controller coming or going, for this player's notice (`pad_connection_notice`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,6 +160,7 @@ mod hardware {
         }
         pub(in crate::game) fn lend_output(&mut self, _: &mut Pads, _: PadId) {}
         pub(in crate::game) fn reclaim_output(&mut self, _: &mut Pads) {}
+        pub(in crate::game) fn play_rumbles(&mut self, _: &mut Pads, _: Option<PadId>) {}
         pub(in crate::game) fn report_status(&self, _: &mut Pads, _: Option<PadId>) {}
         pub(in crate::game) fn connected(&self, _: PadId) -> bool {
             false
@@ -329,6 +341,7 @@ impl Game<'_> {
         if activity && self.pad_focused() {
             self.last_input = Instant::now();
             self.pad.in_use = true;
+            self.pad.keyboard_took_over = false;
         }
         self.pad.state = state;
         self.pad_drop_frame();
@@ -428,7 +441,19 @@ impl Game<'_> {
     /// Input from the pad counts while the window has focus, or always for
     /// the virtual pad (a script can't focus the window).
     fn pad_focused(&self) -> bool {
-        self.focused || self.pad.virtual_input
+        self.pad_has_window() || self.pad.virtual_input
+    }
+
+    /// The window has focus, or the player lets the pad play without it (Play in Background).
+    pub(super) fn pad_has_window(&self) -> bool {
+        self.focused || self.settings.controller.play_in_background
+    }
+
+    /// Losing focus doesn't pause a game the pad is playing in the background.
+    pub(super) fn pad_keeps_playing_unfocused(&self) -> bool {
+        self.settings.controller.enabled
+            && self.settings.controller.play_in_background
+            && self.pad.in_use
     }
 
     fn pad_button(
@@ -577,6 +602,14 @@ impl Game<'_> {
 
     /// B and Start: what Escape does where the pad is.
     pub(super) fn pad_back(&mut self) -> Result<()> {
+        // The death confirm's buttons wait a second, as its Escape does.
+        if self
+            .ui
+            .death_confirm
+            .is_some_and(|shown| shown.elapsed() < DEATH_CONFIRM_WAIT)
+        {
+            return Ok(());
+        }
         if self.prompt_open() {
             return self.pad_prompt_back();
         }
@@ -668,6 +701,10 @@ impl Game<'_> {
     /// notice. Nothing here decides what the controller drives; a player who turned controllers
     /// off isn't told about them.
     fn pad_connection_notice(&mut self, change: Connection) {
+        // The pad that was playing is gone: nothing is driving until another is touched.
+        if matches!(change, Connection::Disconnected { active: true }) {
+            self.pad.in_use = false;
+        }
         if !self.settings.controller.enabled {
             return;
         }
@@ -732,6 +769,7 @@ impl Game<'_> {
                         json!({ "title": title, "body": body })
                     }),
                     "menu": self.pad_menu_status(),
+                    "guide": self.pad_guide_status(),
                     "held": held,
                     "left": s.left,
                     "right": s.right,
