@@ -4759,6 +4759,7 @@ impl Renderer {
             // and cave culling can drop the listed count below MIN_SECTIONS on a normal view:
             // so Metal draws vanilla terrain flat at any count.
             let min_sections = if flat::is_broken_intel_vulkan(&info)
+                || flat::is_adreno_dx12(&info)
                 || info.backend == wgpu::Backend::Metal
                 || std::env::var("HORIZON_FLAT_DRAWS").as_deref() == Ok("1")
             {
