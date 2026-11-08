@@ -991,6 +991,19 @@ impl Game<'_> {
     fn agent_mouse(&mut self, button: MouseButton, pressed: bool) -> Result<()> {
         self.mouse_mapping(button, pressed, Source::Agent)
     }
+    /// Ends the running agent command (and a turn) with `why`, so the agent
+    /// hears why rather than the socket just closing (the window closing
+    /// while it waits, say).
+    pub(super) fn agent_cancel(&mut self, why: &str) {
+        let reply = json!({ "error": why, "cancelled": true }).to_string();
+        if let Some(t) = self.agent.task.take() {
+            let _ = t.reply.send(reply.clone());
+        }
+        if let Some(g) = self.agent.glide.take() {
+            let _ = g.reply.send(reply);
+        }
+        self.release_agent_keys();
+    }
     fn release_agent_keys(&mut self) {
         for k in MOVE_KEYS {
             self.keys.release(&k, Source::Agent);
