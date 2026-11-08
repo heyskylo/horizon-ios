@@ -537,7 +537,8 @@ fn debug_options_interrupts(screen: Screen, playing_overlay: bool) -> bool {
         | Screen::Dead
         | Screen::Win
         | Screen::DebugOptions
-        | Screen::HudEditor => false,
+        | Screen::HudEditor
+        | Screen::Studio => false,
     }
 }
 
