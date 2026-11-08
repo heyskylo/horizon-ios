@@ -5017,6 +5017,7 @@ mod summon_uuid_conflict_tests {
     /// vanilla adds a tree's members in order and skips one whose UUID an earlier member took;
     /// that one still rides its vehicle and saves under its Passengers (#11807).
     #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and a scratch HORIZON_HOME"]
     fn summon_skips_a_uuid_taken_earlier_in_the_same_tree() {
         with_game(|game, _| {
             let mut failures = Vec::new();
