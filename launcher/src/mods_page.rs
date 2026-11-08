@@ -284,12 +284,13 @@ fn count(n: u64) -> String {
 }
 
 /// A registry project's rating: five pixel stars, the mean's nearest whole number of them lit, the
-/// mean and how many; None while the ratings aren't known.
+/// mean and how many; then its GitHub stars ([`github_stars`]). "No ratings yet" only when it has
+/// neither; None while the ratings aren't known and it has no GitHub stars.
 pub(super) fn stars(id: &str, t: &theme::Theme) -> Option<Div> {
+    let github = github_stars(id, t);
     let row = div().flex().items_center().gap(px(2.));
-    Some(match horizon::rating(id)? {
-        None => row.text_color(t.muted).child(tr("No ratings yet")),
-        Some(r) => {
+    let row = match horizon::rating(id) {
+        Some(Some(r)) => {
             let lit = r.average.round() as usize;
             row.children((0..5).map(|i| {
                 blocks::icon(
@@ -308,7 +309,31 @@ pub(super) fn stars(id: &str, t: &theme::Theme) -> Option<Div> {
                 count(r.count)
             )))
         }
-    })
+        Some(None) if github.is_none() => row.text_color(t.muted).child(tr("No ratings yet")),
+        _ => row,
+    };
+    match github {
+        Some(g) => Some(row.gap(px(8.)).child(g)),
+        None if horizon::rating(id).is_some() => Some(row),
+        None => None,
+    }
+}
+
+/// A registry project's GitHub stars: GitHub's mark, a star and how many, as its repository
+/// shows them; None when it has none (`horizon::github_stars`).
+pub(super) fn github_stars(id: &str, t: &theme::Theme) -> Option<Div> {
+    let n = horizon::github_stars(id)?;
+    Some(
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(4.))
+            .text_color(t.muted)
+            .child(blocks::icon("glass/github", 12., t.muted))
+            .child(blocks::icon("star", 12., t.warn))
+            .child(count(n)),
+    )
 }
 
 /// A checksum as the page shows it: the algorithm and the first and last hex digits.

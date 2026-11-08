@@ -329,7 +329,6 @@
   "by {author}": "Yazar: {author}",
   "{count} downloads": "{count} indirme",
   "{count} followers": "{count} takipçi",
-  "{count} stars on GitHub": "GitHub'da {count} yıldız",
   "updated {date}": "güncellenme tarihi: {date}",
   "Back to results": "Sonuçlara dön",
   "Sign in with GitHub to rate": "Değerlendirmek için GitHub ile oturum aç",
