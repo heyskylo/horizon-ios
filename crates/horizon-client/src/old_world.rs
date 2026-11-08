@@ -84,6 +84,16 @@ impl SavedOldWorld {
         let name = &self.biomes.get(id).name;
         self.data.biome_id(name).unwrap_or(BiomeId(0))
     }
+    /// The data `blending` already calculated for an old chunk, from the cache
+    /// alone: it never calculates (the save writes what the generation made).
+    pub fn calculated(&self, x: i32, z: i32) -> Option<Arc<BlendingData>> {
+        self.blending
+            .lock()
+            .unwrap()
+            .get(&(x, z))
+            .cloned()
+            .flatten()
+    }
     /// The packed `blending_data` of a saved chunk.
     fn packed(&self, x: i32, z: i32) -> Option<BlendingData> {
         let root = self.save.raw_chunk(x, z)?;

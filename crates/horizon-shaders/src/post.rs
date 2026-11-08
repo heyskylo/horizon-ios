@@ -460,10 +460,14 @@ pub struct Post {
     pub entities: Option<PostProgram>,
     /// What draws block entities, after terrain.
     pub block: Option<PostProgram>,
+    /// An authored translucent block variant; absent or failed keeps the ordinary block path.
+    pub block_translucent: Option<PostProgram>,
     /// What draws translucent entities (name tags, shadows), after the others.
     pub entities_translucent: Option<PostProgram>,
     /// What draws particles.
     pub particles: Option<PostProgram>,
+    /// The translucent particle variant for explicit mixed ordering, when it loads.
+    pub particles_translucent: Option<PostProgram>,
     /// What draws beacon and End gateway beams (after deferred, blended).
     pub beacon_beam: Option<PostProgram>,
     pub damaged_block: Option<PostProgram>,
@@ -471,11 +475,9 @@ pub struct Post {
     pub clouds: Option<PostProgram>,
     /// What draws lines (the block outline), with the pack's own transform and look.
     pub lines: Option<PostProgram>,
-    /// What draws rain and snow, after deferred.
+    /// What draws rain and snow, after deferred. They never write depth, whatever `rain.depth`
+    /// says: Iris 1.11.7 left none of either in `depthtex0` (probe packs of ours, #10492).
     pub weather: Option<PostProgram>,
-    /// `rain.depth`: whether rain and snow write depth. Without an explicit false, retain
-    /// Horizon's existing writes; the inspected packs do not establish the external default.
-    pub rain_depth: bool,
     /// What draws the first-person hand and held items.
     pub hand: Option<PostProgram>,
     /// What draws their translucent parts (stained glass, ice...), after deferred and blended.
@@ -536,8 +538,10 @@ impl Post {
             &self.sky_textured,
             &self.entities,
             &self.block,
+            &self.block_translucent,
             &self.entities_translucent,
             &self.particles,
+            &self.particles_translucent,
             &self.damaged_block,
             &self.clouds,
             &self.weather,
@@ -673,16 +677,15 @@ pub fn load_post(
         sky_textured: None,
         entities: None,
         block: None,
+        block_translucent: None,
         entities_translucent: None,
         particles: None,
+        particles_translucent: None,
         beacon_beam: None,
         damaged_block: None,
         clouds: None,
         lines: None,
         weather: None,
-        rain_depth: properties
-            .get("rain.depth")
-            .is_none_or(|v| v.trim() != "false"),
         hand: None,
         hand_water: None,
         clouds_off: false,
@@ -866,6 +869,13 @@ pub fn load_post(
     let mut gbuffers_dyn = |names: &[&str], i: &GbuffersInputs| gbuffers(names, Group::Gbuffers, i);
     let entities_translucent = translucent(&ENTITIES_TRANSLUCENT, 0.0, &mut gbuffers_dyn);
     let particles = translucent(&PARTICLES, 0.1, &mut gbuffers_dyn);
+    // Optional slots deliberately have no fallback chain: an absent, disabled or rejected
+    // variant must leave the legacy material grouping and state intact.
+    let block_translucent = translucent(&["gbuffers_block_translucent"], 0.0, &mut gbuffers_dyn);
+    let mixed = properties.get("particles.ordering").map(str::trim) == Some("mixed");
+    let particles_translucent = mixed
+        .then(|| translucent(&["gbuffers_particles_translucent"], 0.1, &mut gbuffers_dyn))
+        .flatten();
     let beacon_beam = translucent(&BEACON_BEAM, 0.0, &mut gbuffers_dyn);
     // Clouds blend, as vanilla's do (OQ-23).
     let clouds = inputs
@@ -982,7 +992,15 @@ pub fn load_post(
             },
         };
         // gbuffers_water falls back to gbuffers_terrain's chain (2.3).
-        let water = gbuffers(&WATER, Group::Translucent, terrain);
+        // Water discards what lies behind the boats' water patches (`GbuffersInputs::water_mask`).
+        let water = gbuffers(
+            &WATER,
+            Group::Translucent,
+            &GbuffersInputs {
+                water_mask: true,
+                ..terrain.clone()
+            },
+        );
         loader.post.notes.extend(lone);
         loader.post.terrain_undrawn = !has_solid && !has_cutout;
         loader.post.water_undrawn = !WATER.iter().any(|n| loader.has(n));
@@ -1012,8 +1030,10 @@ pub fn load_post(
     loader.post.sky_textured = sky_textured;
     loader.post.entities = entities;
     loader.post.block = block;
+    loader.post.block_translucent = block_translucent;
     loader.post.entities_translucent = entities_translucent;
     loader.post.particles = particles;
+    loader.post.particles_translucent = particles_translucent;
     loader.post.beacon_beam = beacon_beam;
     loader.post.damaged_block = damaged_block;
     loader.post.clouds_off = properties.get("clouds").is_some_and(|v| v.trim() == "off");
@@ -1024,8 +1044,8 @@ pub fn load_post(
     loader.post.hand_water = hand_water;
     let flag = |key: &str| properties.get(key).map(|v| v.trim() == "true");
     loader.post.translucent_late = flag("separateEntityDraws").unwrap_or(false);
-    // `after` when the pack has a deferred program, else `mixed`; ours are all translucent, so
-    // `mixed` draws them after deferred too.
+    // Keep the legacy timing here. The renderer moves ordinary mixed particles earlier
+    // only after it has successfully built their translucent variant.
     loader.post.particles_late = match properties.get("particles.ordering").map(str::trim) {
         Some("before") => false,
         Some(_) => true,
@@ -1060,8 +1080,10 @@ fn load_shadow(
         &post.sky_textured,
         &post.entities,
         &post.block,
+        &post.block_translucent,
         &post.entities_translucent,
         &post.particles,
+        &post.particles_translucent,
         &post.beacon_beam,
         &post.damaged_block,
         &post.clouds,
@@ -1160,8 +1182,20 @@ fn load_shadow(
     let shadow = keep("shadowTerrain")
         .then(|| load(&["shadow"], terrain, true, true))
         .flatten();
+    // Its water keeps out of the boats' water patches (`GbuffersInputs::water_patches`).
+    let water_inputs = terrain.map(|t| GbuffersInputs {
+        water_patches: true,
+        ..t.clone()
+    });
     let water = keep("shadowTranslucent")
-        .then(|| load(&["shadow_water", "shadow"], terrain, true, false))
+        .then(|| {
+            load(
+                &["shadow_water", "shadow"],
+                water_inputs.as_ref(),
+                true,
+                false,
+            )
+        })
         .flatten();
     let shadow_entities = (keep("shadowEntities") || only_player)
         .then(|| load(&["shadow_entities", "shadow"], entities, false, true))
@@ -2813,8 +2847,10 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
         assert!(off.clouds.is_none() && off.clouds_off);
     }
 
+    /// Without `gbuffers_weather` or the textured programs, rain and snow draw with
+    /// `gbuffers_basic`, blended, whatever `rain.depth` says.
     #[test]
-    fn rain_depth_follows_live_properties_independently_of_weather_fallback() {
+    fn weather_falls_back_to_basic_whatever_rain_depth_says() {
         let pack = Pack::from_zip_bytes(
             "original-weather-depth",
             crate::pack::tests::zip(&[
@@ -2834,23 +2870,9 @@ blend.composite1.colortex3 = ONE ONE ONE ONE
             weather: Some(GbuffersInputs::default()),
             ..Default::default()
         };
-        for (text, writes) in [
-            ("rain.depth = true", true),
-            ("rain.depth = false", false),
-            (
-                "#if 0\nrain.depth=true\n#else\nrain.depth = false\n#endif",
-                false,
-            ),
-            ("rain.depth=true\nrain.depth=false", false),
-            ("rain.depth=false\nrain.depth=true", true),
-            // These defaults preserve accepted main as a compatibility choice, not a claim
-            // about the external default contract, which the permitted packs don't establish.
-            ("", true),
-            ("rain.depth=invalid", true),
-        ] {
+        for text in ["", "rain.depth = true", "rain.depth = false"] {
             let properties = Properties::parse(text, &macros);
             let post = load_post(&pack, "", &properties, &macros, &inputs);
-            assert_eq!(post.rain_depth, writes, "{text:?}");
             let weather = post.weather.expect("weather fallback loads");
             assert_eq!(weather.name, "gbuffers_basic");
             assert_eq!(weather.group, Group::Translucent);
@@ -3383,3 +3405,6 @@ mod buffer_blend_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod material_variant_tests;

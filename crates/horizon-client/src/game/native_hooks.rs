@@ -6,6 +6,10 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 415 adds a world warp (`native_world_warp`): WGSL every terrain and entity vertex goes through, with an optional per-pixel stage for terrain.
+//!
+//! API 414 adds a held world (`native_world_hold`): the terrain kept drawn as it stands while the world changes under it, and every change shown on one frame when let go.
+//!
 //! API 413 adds chunk tickets in a level nobody is in (`native_force_chunk_in`).
 //!
 //! API 412 adds chunks a mod keeps loaded and ticking (`native_force_chunk`, `native_forced_chunks`).
@@ -1172,9 +1176,25 @@ pub(super) use horizon_world::level::flags;
 
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
-pub(crate) const NATIVE_HOOKS_API: u32 = 413;
+pub(crate) const NATIVE_HOOKS_API: u32 = 415;
 
 impl GameLevel<'_> {
+    /// A crop, stem, cactus, sugar cane, bamboo, mushroom or vine on an
+    /// authoritative server grows or spreads at `pos` in `dimension`: the block
+    /// there changes from `from` to `to` (block names, state properties
+    /// included). Set `cancel` to leave it as it is. Covers crop, stem, cactus,
+    /// sugar cane and bamboo growth, grass spreading onto dirt, mushroom and
+    /// vine spread. Server-side. Pending API @API:block_grow@.
+    pub(super) fn native_block_grow(
+        &self,
+        dimension: &str,
+        pos: [i32; 3],
+        from: &str,
+        to: &str,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_block_grow(self, mod_api::mods(), dimension, pos, from, to, cancel);
+    }
     /// `EntityBlock.newBlockEntity` with the actual placed state. The first
     /// entity supplied owns the result. No response means no new entity.
     /// This is a creation callback, not a validity test: an existing entity
@@ -2547,6 +2567,15 @@ impl Game<'_> {
     pub(super) fn native_server_stopping(&mut self, dedicated: bool) {
         mod_api::dispatch_server_stopping(self, mod_api::mods(), dedicated);
     }
+    /// The server has stopped: its players are disconnected and its worlds
+    /// saved and closed (the end of a dedicated server's stop, after
+    /// `native_server_stopping`). Nothing reaches a player now; the last
+    /// place for a mod's own shutdown work that needs no player. Server-side;
+    /// `dedicated` tells a dedicated server from the single player one.
+    /// API @API:server_stopped@.
+    pub(super) fn native_server_stopped(&mut self, dedicated: bool) {
+        mod_api::dispatch_server_stopped(self, mod_api::mods(), dedicated);
+    }
     /// The config files native mods keep (NeoForge's `registerConfig`):
     /// push yours, each of a kind, with the text written to `config/` when
     /// the file is missing. Asked by the window when the game starts (its
@@ -2809,6 +2838,23 @@ impl Game<'_> {
     /// does one killed earlier in the same tick. API 31.
     pub(super) fn native_player_tick(&mut self) {
         mod_api::dispatch_player_tick(self, mod_api::mods());
+    }
+    /// A server player's inventory changed (`InventoryChangeTrigger`'s
+    /// moment: the per-tick check found another item or count in a slot),
+    /// with the player's state swapped in, so the helpers read that player.
+    /// `stacks` are the 41 slots in `Inventory` numbering: 0..36 the main
+    /// inventory (0..9 the hotbar), 36..40 the armour (feet, legs, chest,
+    /// head), 40 the off hand. It also fires at a player's first check after
+    /// joining, so a mod sees the inventory they log in with. Fires for the
+    /// single player, LAN guests and a dedicated server's players, never on a
+    /// client of a remote server. Server-side. API
+    /// @API:player_inventory_changed@.
+    pub(super) fn native_player_inventory_changed(
+        &mut self,
+        player: u128,
+        stacks: &[Option<ItemStack>],
+    ) {
+        mod_api::dispatch_player_inventory_changed(self, mod_api::mods(), player, stacks);
     }
     /// The player-health HUD rows, once a frame the HUD draws them
     /// (`HealthHud::layout`, not under F1): `inputs` carries the health,
@@ -3205,7 +3251,7 @@ impl Game<'_> {
     /// radius)` for only the sections inside circles. Not asking lets go, and every change
     /// shows on that frame. Asked once a frame while a world is shown, before the frame's
     /// section uploads, by each player's game (splitscreen: each its own). Client only.
-    /// API @API:world_hold@.
+    /// API 414.
     pub(super) fn native_world_hold(&self, hold: &mut WorldHold) {
         mod_api::dispatch_world_hold(self, mod_api::mods(), hold);
     }
@@ -4899,6 +4945,28 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_hanging_break(self, mod_api::mods(), player, kind, pos, cancel);
     }
+    /// A hanging entity (painting, item frame...) of `kind` at `pos` in
+    /// `dimension` is about to break. Set `cancel` to keep it. Same moment as
+    /// `native_hanging_break`, which still fires unchanged. Server-side.
+    /// Pending API @API:hanging_break_v2@.
+    pub(super) fn native_hanging_break_v2(
+        &mut self,
+        player: Option<u128>,
+        dimension: &str,
+        kind: &str,
+        pos: [i32; 3],
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_hanging_break_v2(
+            self,
+            mod_api::mods(),
+            player,
+            dimension,
+            kind,
+            pos,
+            cancel,
+        );
+    }
     /// A server player empties a bucket at `pos` (`fluid`: `minecraft:water`,
     /// `minecraft:lava`, `minecraft:powder_snow`; a fish or axolotl bucket
     /// empties `minecraft:water`): where `BucketItem.use` has found the block
@@ -4937,6 +5005,18 @@ impl Game<'_> {
         cancel: &mut bool,
     ) {
         mod_api::dispatch_tnt_primed(self, mod_api::mods(), player, pos, cancel);
+    }
+    /// A server player (or none) primes TNT at `pos` in `dimension`. Set
+    /// `cancel` to leave the block unlit. Same moment as `native_tnt_primed`,
+    /// which still fires unchanged. Server-side. Pending API @API:tnt_primed_v2@.
+    pub(super) fn native_tnt_primed_v2(
+        &mut self,
+        player: Option<u128>,
+        dimension: &str,
+        pos: [i32; 3],
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_tnt_primed_v2(self, mod_api::mods(), player, dimension, pos, cancel);
     }
     /// A server player selected a new hotbar slot. The player's state is not
     /// swapped in, and helpers that look them up through `self.lan` may find
@@ -6654,6 +6734,14 @@ impl Game<'_> {
         );
     }
 
+    /// A mob (`entity`, its `kind`) killed by a player is about to drop `xp`
+    /// experience points, in total: `LivingEntity.dropExperience`, before the
+    /// orbs are split and spawned. Change `xp`; zero or less drops no orbs.
+    /// Not asked for a mob that drops none. Server-side. Pending API
+    /// @API:living_experience_drop@.
+    pub(super) fn native_living_experience_drop(&mut self, entity: u32, kind: &str, xp: &mut i32) {
+        mod_api::dispatch_living_experience_drop(self, mod_api::mods(), entity, kind, xp);
+    }
     /// A mob or server player is about to die (NeoForge's `LivingDeathEvent`,
     /// vanilla's `LivingEntity.die`): its health has run out, and the loot,
     /// experience and death message have not run. `entity` is its id and
@@ -6729,6 +6817,13 @@ impl Game<'_> {
         );
     }
 
+    /// A thrown splash or lingering potion is about to apply its hit effects
+    /// at `pos`. Set `cancel` to leave the effects and the cloud out, and
+    /// `native_potion_splash` is not told. Server-side. Pending API
+    /// @API:potion_splash_v2@.
+    pub(super) fn native_potion_splash_v2(&mut self, item: &str, pos: [f64; 3], cancel: &mut bool) {
+        mod_api::dispatch_potion_splash_v2(self, mod_api::mods(), item, pos, cancel);
+    }
     /// A thrown splash or lingering potion applied its hit effects.
     /// 287.
     pub(super) fn native_potion_splash(&mut self, item: &str, pos: [f64; 3]) {
@@ -6791,6 +6886,31 @@ impl Game<'_> {
         );
     }
 
+    /// A mob (`entity`, its `kind`) is about to change the block at `pos` from
+    /// `from` to `to` (an enderman's block, a ravager's, a snow golem's, a
+    /// wither's). Set `cancel` to leave the block as it is: nothing changes and
+    /// `native_entity_change_block` is not told. Server-side. Pending API
+    /// @API:entity_change_block_v3@.
+    pub(super) fn native_entity_change_block_v3(
+        &mut self,
+        entity: u32,
+        kind: &str,
+        pos: [i32; 3],
+        from: &str,
+        to: &str,
+        cancel: &mut bool,
+    ) {
+        mod_api::dispatch_entity_change_block_v3(
+            self,
+            mod_api::mods(),
+            entity,
+            kind,
+            pos,
+            from,
+            to,
+            cancel,
+        );
+    }
     /// A mob changed a block at `pos`, after the new state was applied.
     /// 214.
     pub(super) fn native_entity_change_block(
@@ -7240,6 +7360,15 @@ impl Game<'_> {
             default_level,
             result,
         );
+    }
+    /// The permission groups a player belongs to (LuckPerms' groups, the ranks a permissions
+    /// mod keeps), as the mods name them: each mod adds names to `groups` in turn, sharing the
+    /// list, and nothing is named for a player with no groups. Asked through `&self`, like
+    /// `native_permission_check`; a provider reads what it knows and changes nothing. The first
+    /// name is the player's primary group (`native_primary_group`). Server-side.
+    /// API @API:permission_groups@.
+    pub(super) fn native_permission_groups(&self, player: u128, groups: &mut Vec<String>) {
+        mod_api::dispatch_permission_groups(self, mod_api::mods(), player, groups);
     }
     /// `native_player_commands_sent` with what the player's level leaves
     /// out: heard right after v1, at the same times, with `names` as v1 left
@@ -8460,14 +8589,24 @@ impl Game<'_> {
     /// about to break `blocks`: `ServerExplosion.explode` with its `toBlow`,
     /// before any block is hit. Take out the positions to spare; they keep
     /// their block and get no fire. Entities are hurt as before. Server-side.
-    /// API 22.
+    /// `source` is the entity that exploded (TNT, a minecart of TNT, a
+    /// creeper, a large fireball, an end crystal) with its kind, when the
+    /// engine knows it; `None` for the other blasts. API 22.
     pub(super) fn native_explosion_detonate(
         &mut self,
         dimension: &str,
         center: [f64; 3],
+        source: Option<(u32, &str)>,
         blocks: &mut Vec<[i32; 3]>,
     ) {
-        mod_api::dispatch_explosion_detonate(self, mod_api::mods(), dimension, center, blocks);
+        mod_api::dispatch_explosion_detonate(
+            self,
+            mod_api::mods(),
+            dimension,
+            center,
+            source,
+            blocks,
+        );
     }
     /// An explosion at `center` in `dimension`, about to break `blocks`, pushes
     /// `entity` (None for a player, whom `native_acting_player` names):
@@ -8528,6 +8667,28 @@ impl Game<'_> {
     /// arrives, with no player's state swapped in. Server-side. API 40.
     pub(super) fn native_net_from_client(&mut self, player: u128, channel: &str, data: &[u8]) {
         mod_api::dispatch_net_from_client(self, mod_api::mods(), player, channel, data);
+    }
+    /// Plays a block of a mod's own audio (client, `host.push_voice`): `samples` are mono,
+    /// -1 to 1, at `sample_rate` hertz. `source` is the mod's own id for the speaker (a
+    /// player's UUID, say): each source's blocks play one after another in the order they were
+    /// pushed, and different sources play at once. `at` is where they were spoken, for
+    /// direction and a linear fade to silence at 48 blocks; none plays them centred. The call
+    /// queues and returns; the output callback mixes them with the game's sounds. A source
+    /// holds at most two seconds, and a burst past that is refused rather than delayed; at
+    /// most 64 sources play at once. False when nothing was queued: on a server, without an
+    /// audio device, nothing to play, or a cap. API @API:push_voice@.
+    pub(super) fn native_push_voice(
+        &mut self,
+        mod_id: &str,
+        source: u128,
+        samples: &[f32],
+        sample_rate: u32,
+        at: Option<[f64; 3]>,
+    ) -> bool {
+        self.native_window()
+            && self
+                .audio
+                .push_voice(mod_id, source, samples, sample_rate, at)
     }
     /// A message from the server on `channel` (`mod_id:name`), whose `data`
     /// is the sender's own bytes. The window's game only. API 40.
@@ -8895,6 +9056,14 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_player_leave_message(self, mod_api::mods(), player, name, line);
     }
+
+    /// `player` (`name`) died, with the message the game rendered for them
+    /// (`message`, the death screen's and the team's line), whether or not
+    /// death messages are shown. Only hears: the message is not changed
+    /// here. Server-side. Pending API @API:player_died_v2@.
+    pub(super) fn native_player_died_v2(&mut self, player: u128, name: &str, message: &Text) {
+        mod_api::dispatch_player_died_v2(self, mod_api::mods(), player, name, message);
+    }
     /// A new mob of `kind` joined `dimension` at `pos`: `natural` when the
     /// world's spawning made it, false when something else did (a breed, a
     /// raid, a spawner, a conversion, `/summon`, and the second mob of a
@@ -8936,13 +9105,13 @@ impl Game<'_> {
     /// kind in the game's entity lists (items, orbs, mobs, boats, minecarts,
     /// armor stands, primed TNT, falling blocks, projectiles, rockets,
     /// tridents, end crystals, the dragon, cushions, paintings, item frames),
-    /// once each, in the order they were created; check `kind`. A drop, an
-    /// orb, a mob, a `/summon` and a chunk's entities are told at once, any
-    /// other spawn between the tick's phases (it is checked after the blocks,
-    /// the vehicles, the projectiles, the items and the mobs, and at the
-    /// tick's end). A mod that cancels one of the others sees it removed
-    /// before it ticks again. Not told: the entities Horizon keeps without
-    /// simulating (displays, markers, interactions). Server-side.
+    /// and the entities Horizon keeps without simulating (block, item and text
+    /// displays, markers, interactions), once each, in the order they were
+    /// created; check `kind`. A drop, an orb, a mob, a `/summon` and a chunk's
+    /// entities are told at once, any other spawn between the tick's phases
+    /// (it is checked after the blocks, the vehicles, the projectiles, the
+    /// items and the mobs, and at the tick's end). A mod that cancels one of
+    /// the others sees it removed before it ticks again. Server-side.
     pub(super) fn native_entity_join_level(
         &mut self,
         dimension: &str,
@@ -10040,7 +10209,7 @@ pub(super) fn viewer_changes(
     changes
 }
 
-fn dimension_id(dimension: LevelDimension) -> &'static str {
+pub(super) fn dimension_id(dimension: LevelDimension) -> &'static str {
     match dimension {
         LevelDimension::Overworld => "minecraft:overworld",
         LevelDimension::Nether => "minecraft:the_nether",
@@ -10919,6 +11088,37 @@ impl Game<'_> {
     /// This `Game` is the window's, not a server's.
     pub(super) fn native_window(&self) -> bool {
         self.options.execution_role == ExecutionRole::Client
+    }
+    /// Queues a toast of the mod's own in the toast slots the advancement
+    /// toasts use, drawn as an `AdvancementToast`: item `icon` (16 pixels; an
+    /// unknown item draws none), `title` in the frame label's place, yellow
+    /// (pink, and the challenge sound as it shows, with `challenge`), and
+    /// `description` as its white line, wrapped and faded in after the label
+    /// as an advancement's long title is. `native_toast_add` is asked first
+    /// with kind `mod` and `id` (the mod's own name for the toast, such as
+    /// `mymod:quest/first_steps`): a cancelled one isn't queued. True when
+    /// queued; false on a server, without a window and when cancelled. API
+    /// @API:add_toast@.
+    pub(super) fn native_add_toast(
+        &mut self,
+        id: &str,
+        icon: &str,
+        title: Text,
+        description: Text,
+        challenge: bool,
+    ) -> bool {
+        if !self.native_window() || !self.toast_allowed("mod", id) {
+            return false;
+        }
+        self.adv
+            .toasts
+            .push_back(super::advancements::Toast::of_mod(
+                icon,
+                title,
+                description,
+                challenge,
+            ));
+        true
     }
     /// Plays sound event `sound` (`minecraft:entity.generic.explode`, or a
     /// mod's own from its `assets/<id>/sounds.json`) at `at` for this

@@ -68,6 +68,15 @@ pub fn is_native_mod(id: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The GitHub stars of the registry's project `id`, by the index already read (never the
+/// network): None when it has none, when its source isn't a GitHub repository, or when no index
+/// was read.
+pub fn github_stars(id: &str) -> Option<u64> {
+    let index = known_index()?;
+    let p = index.project(id)?;
+    (p.stars > 0 && github_repo(&p.source).is_some()).then_some(p.stars)
+}
+
 /// The index: the one fetched in the last ten minutes, else fetched again (and kept in the game
 /// folder), else the copy kept last time.
 pub fn index() -> Result<Arc<Index>, String> {
@@ -466,6 +475,15 @@ pub const SORTS: [super::details::Sort; 3] = [
 /// most downloaded first, or the newest (first published) or most recently updated (latest
 /// version) when the query asks, ties by downloads.
 fn search(index: &Index, query: &Query) -> Vec<Project> {
+    search_where(index, query, |_| true)
+}
+
+/// [`search`], keeping only the projects `keep` takes.
+fn search_where(
+    index: &Index,
+    query: &Query,
+    keep: impl Fn(&index::Project) -> bool,
+) -> Vec<Project> {
     use super::details::Sort;
     let mut found: Vec<&index::Project> = index
         .projects
@@ -482,6 +500,7 @@ fn search(index: &Index, query: &Query) -> Vec<Project> {
         .filter(|p| query.everything || p.versions.iter().any(|v| v.game == GAME))
         // A WebAssembly mod stays in the index for the modpacks that need it, not in the browser.
         .filter(|p| !p.versions.iter().filter(|v| v.game == GAME).all(needs_port))
+        .filter(|p| keep(p))
         .collect();
     let day = |p: &index::Project, newest: bool| {
         let days = p.versions.iter().map(|v| v.published.as_str());
@@ -536,7 +555,14 @@ impl Source for Registry {
     }
 
     fn search(&self, query: &Query) -> Result<Vec<Project>, String> {
-        let found = search(&*index()?, query);
+        let index = index()?;
+        let found = match query.filters.works_on {
+            true => {
+                let works = works_on(&index, &crate::instances::selected());
+                search_where(&index, query, |p| works(p).is_none_or(|(works, _)| works))
+            }
+            false => search(&index, query),
+        };
         refresh_ratings();
         Ok(found)
     }
@@ -793,9 +819,107 @@ fn fitting<'a>(
         .find(|i| i.home == home)?;
     let plays = crate::native_fit::plays(&instance)?;
     let pins = crate::native_fit::pins(home);
-    crate::native_fit::best(p, &plays, &pins, |v| {
-        v.game == GAME && index.revoked(&p.id, &v.file.sha256).is_none() && !needs_newer(v, level)
-    })
+    crate::native_fit::best(p, &plays, &pins, |v| usable(index, p, v, level))
+}
+
+/// A version of `p` an install may pick: made for this game, not taken down, and not needing a
+/// newer mod API than `level`.
+fn usable(index: &Index, p: &index::Project, v: &index::Version, level: Option<u32>) -> bool {
+    v.game == GAME && index.revoked(&p.id, &v.file.sha256).is_none() && !needs_newer(v, level)
+}
+
+/// How a registry native mod works on `instance`: whether a version of it does, with the line its
+/// best version (else its newest) reads there ([`crate::native_fit::describe`]). None for other
+/// kinds, and when the Horizon played isn't known.
+pub fn works_on<'a>(
+    index: &'a Index,
+    instance: &crate::instances::Instance,
+) -> impl Fn(&index::Project) -> Option<(bool, String)> + 'a {
+    let plays = crate::native_fit::plays(instance);
+    let pins = crate::native_fit::pins(&instance.home);
+    let level = crate::backend::game_mod_api_level();
+    move |p| {
+        let plays = plays
+            .as_ref()
+            .filter(|_| p.kind == index::Kind::NativeMod)?;
+        let best = crate::native_fit::best(p, plays, &pins, |v| usable(index, p, v, level));
+        let v = best.or_else(|| p.versions.iter().find(|v| v.game == GAME))?;
+        let pin = crate::native_fit::pin_of(v);
+        let fit = crate::native_fit::fit(&p.id, v.hooks, pin, plays, &pins, &v.broken_on)?;
+        Some((best.is_some(), crate::native_fit::describe(&fit, plays)))
+    }
+}
+
+/// Where a native mod turned on in an instance stands, for its row on the instance's Mods tab.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Standing {
+    /// In the instance's native build, on the Horizon the instance plays.
+    Built(String),
+    /// In the build, which moved to the commit mods made for another one needed.
+    Moved(String),
+    /// Left out of the build, and why.
+    LeftOut(String),
+    /// No build yet: whether it should build there, and how ([`works_on`]).
+    Expected(bool, String),
+}
+
+/// [`Standing`] of the native mods `ids` (manifest ids) in `instance`, by id: from its native
+/// build's record when it plays one, else from the registry's versions.
+pub fn standings(
+    instance: &crate::instances::Instance,
+    ids: &[String],
+) -> HashMap<String, Standing> {
+    let plays = instance.resolve_version(None).ok();
+    if let Some(about) = plays.as_deref().and_then(crate::native_mods::about) {
+        let on = crate::native_status::horizon_label(&about.base);
+        let moved =
+            !about.pinned_by.is_empty() && about.base_horizon.as_ref() != Some(&about.horizon);
+        return ids
+            .iter()
+            .map(|id| {
+                let standing = match about.left_out.iter().find(|l| &l.id == id) {
+                    Some(left) => Standing::LeftOut(left.label()),
+                    None if moved => Standing::Moved(crate::i18n::trf(
+                        "In the last build, on Horizon {commit} for {mods}, not on {horizon}",
+                        &[
+                            ("commit", &about.horizon[..about.horizon.len().min(7)]),
+                            ("mods", &about.pinned_by.join(", ")),
+                            ("horizon", &on),
+                        ],
+                    )),
+                    None => Standing::Built(crate::i18n::trf(
+                        "In the last build, on {horizon}",
+                        &[("horizon", &on)],
+                    )),
+                };
+                (id.clone(), standing)
+            })
+            .collect();
+    }
+    let Ok(index) = index() else {
+        return HashMap::new();
+    };
+    let works = works_on(&index, instance);
+    ids.iter()
+        .filter_map(|id| {
+            let (fits, line) = works(index.project(id)?)?;
+            Some((id.clone(), Standing::Expected(fits, line)))
+        })
+        .collect()
+}
+
+/// [`works_on`] for the projects `ids` in `instance`, by id.
+pub fn works_lines(
+    ids: &[String],
+    instance: &crate::instances::Instance,
+) -> HashMap<String, (bool, String)> {
+    let Ok(index) = index() else {
+        return HashMap::new();
+    };
+    let works = works_on(&index, instance);
+    ids.iter()
+        .filter_map(|id| Some((id.clone(), works(index.project(id)?)?)))
+        .collect()
 }
 
 /// The native mod versions the player picked on a project's Versions page, by mod id: the launcher
@@ -833,6 +957,8 @@ fn set_chosen(home: &Path, id: &str, version: Option<&str>) -> Result<(), String
 #[derive(Clone, Debug, PartialEq)]
 pub struct Fitted {
     pub fit: Option<String>,
+    /// It builds on the Horizon played, or moves the build to its own commit without a clash.
+    pub works: bool,
     pub recommended: bool,
     /// What the version's author wrote changed (Markdown, as the index keeps it).
     pub changelog: String,
@@ -867,8 +993,13 @@ pub fn fitted(id: &str, instance: &crate::instances::Instance) -> HashMap<String
                 &pins,
                 &v.broken_on,
             );
+            let works = matches!(
+                fit,
+                Some(crate::native_fit::Fit::Fits | crate::native_fit::Fit::MovesTo { .. })
+            );
             let fitted = Fitted {
                 fit: fit.map(|f| crate::native_fit::describe(&f, &plays)),
+                works,
                 recommended: best.as_deref() == Some(v.version.as_str()),
                 changelog: v.changelog.clone(),
             };
