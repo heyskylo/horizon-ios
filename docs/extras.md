@@ -189,7 +189,7 @@ and the container screen tests are unchanged).
 
 ### Scroll wheel changes settings (`wheelCyclesListSettings`, default off)
 - Off, as in vanilla, the wheel scrolls the list under the cursor, on every settings page, Video's
-  included (`AbstractScrollArea.mouseScrolled`, `OptionsUi::wheel`, `GraphicsUi::wheel`). Scrolling
+  included (`AbstractScrollArea.mouseScrolled`, `OptionsUi::wheel`, `GraphicsScreen::wheel_step`). Scrolling
   through a long page can't change an option that passes under the cursor (#5455, #9633). A cycle
   button outside a list, such as a world's Difficulty, still steps
   (`CycleButton.mouseScrolled`).
