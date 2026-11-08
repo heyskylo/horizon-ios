@@ -50,7 +50,7 @@ ShulkerBullet.onHitBlock	port	crates/horizon-client/src/game/creatures.rs::Game:
 ShulkerBullet.destroy	inline	crates/horizon-client/src/game/creatures.rs::Game::tick_projectiles	the bullet is dropped from the flight list on any hit; the game event is not sent
 ShulkerBullet.hurtServer	port	crates/horizon-client/src/game/deflect.rs::Game::hit_shulker_bullet	
 ThrowableProjectile.applyInertia	port	crates/horizon-client/src/projectiles.rs::Projectile::tick	default arm: gravity, then drag 0.8 in water and 0.99 in air; gap: minor: no bubble particles in water
-ThrowableProjectile.handleFirstTickBubbleColumn	missing		a thrown item spawned inside a bubble column is not pushed on its first tick: `game/creatures.rs` has bubble-column particles and the pearl's own column hooks, nothing for a throwable's first tick
+ThrowableProjectile.handleFirstTickBubbleColumn	port	crates/horizon-client/src/projectiles.rs::Projectile::first_tick_bubble_column	the column blocks in the box on the first tick, before the tick's gravity and inertia; `Projectile::tick` runs it for a server too, where it used to be `tick_remote`'s alone
 AbstractArrow.<init>	port	crates/horizon-client/src/arrows.rs::ArrowState::new	arrow defaults: pickup, pickup item, shake, pierce; the owner and drawn ammo come from set_owner and set_item
 AbstractArrow.defineSynchedData	skip:java		flags, pierce level and in-ground sync fields; Horizon keeps them on ArrowState and Projectile
 AbstractArrow.lerpMotion	skip:other		client interpolation of a server motion packet; Horizon's remote arrows take the server position each update

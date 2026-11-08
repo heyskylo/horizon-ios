@@ -320,7 +320,7 @@ pub const COMMANDS: &[Cmd] = &[
         &[flag("world", Ty::Str, "world folder to open or create"), flag("seed", Ty::Str, "seed for a new world"), flag("creative", Ty::Bool, "creative mode for a new world"),
           flag("version", Ty::Str, "an installed launcher version tag such as v2026.10.13"), flag("game", Ty::Str, "path to a horizon-client binary"),
           flag("wait", Ty::Bool, "also wait until the world is ready (default in MCP)"),
-          flag("offscreen", Ty::Bool, "render without showing a window (screenshots still work): locked or headless sessions"),
+          flag("offscreen", Ty::Bool, "render without showing a window, splitscreen's too (screenshots still work): locked or headless sessions"),
           flag("headless", Ty::Bool, "no display, window or GPU: a player that plays through these commands only (no screenshots)")],
         mcp: true, local: true),
     cmd!("wait-for", Session, "wait-for screen NAME|widget ID|loaded|chat TEXT|event KIND [--timeout S] [--since SEQ]", "wait until the game reaches a state, then reply",
