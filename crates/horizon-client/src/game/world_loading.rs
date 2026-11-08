@@ -8,6 +8,9 @@ pub(super) struct WorldRequest {
     pub seed: Option<i64>,
     pub creative: bool,
     pub create: Option<horizon_client::title::WorldOptions>,
+    /// The account the world opens under, for an integrated server
+    /// (`IntegratedServer.getSingleplayerProfile`): its name and UUID.
+    owner: Option<(String, u128)>,
 }
 
 pub(super) struct PreparedWorld {
@@ -21,6 +24,9 @@ pub(super) struct PreparedWorld {
     pub session_lock: horizon_client::save::SessionLock,
     pub rand_sequences: horizon_client::random_sequences::RandomSequences,
     pub locator: Option<Arc<VanillaTerrain>>,
+    /// The owner's offline UUID and the account's, when an older world moved its
+    /// owner at open (`playerdata::migrate_owner`): entities migrate as they load.
+    pub owner_migration: Option<(u128, u128)>,
 }
 
 impl WorldRequest {
@@ -38,7 +44,16 @@ impl WorldRequest {
             seed,
             creative,
             create: create.cloned(),
+            owner: None,
         })
+    }
+
+    /// The account this world opens under (`IntegratedServer.getSingleplayerProfile`):
+    /// a world older builds made under the offline profile moves its owner to it at
+    /// open. A dedicated server has no single-player owner and leaves it unset.
+    pub fn owned_by(mut self, player: &str, owner: u128) -> Self {
+        self.owner = Some((player.to_owned(), owner));
+        self
     }
 
     pub fn prepare(
@@ -97,6 +112,7 @@ impl WorldRequest {
             seed,
             creative,
             create,
+            owner,
         } = self;
         let name = name.as_deref();
         let create = create.as_ref();
@@ -165,6 +181,28 @@ impl WorldRequest {
             ..Level::default()
         });
         let mut level = level;
+        // `IntegratedServer.setSingleplayerProfile`: a world older Horizon builds made
+        // under the offline profile moves its owner to the account at open — the player
+        // file, its `UUID` and level.dat's `singleplayer_uuid`. Its entities follow as
+        // their chunks load (`owner_migration`, `entity_nbt::migrate_player_uuid`).
+        let owner_migration = owner.and_then(|(player, account)| {
+            let old = horizon_protocol::crypto::offline_uuid(&player);
+            (old != account).then(|| {
+                if created {
+                    // `IntegratedServer.initServer` saves with the profile before the first
+                    // tick: a world made under the account names it from its first level.dat.
+                    level.player_uuid = Some(horizon_client::lan::playerdata::uuid_ints(account));
+                } else if horizon_client::lan::playerdata::migrate_owner(
+                    &save_root, &mut level, old, account,
+                ) {
+                    log::info!(
+                        "Horizon: \"{folder}\" was made under the offline profile; \
+                         its owner moved to the account's UUID"
+                    );
+                }
+                (old, account)
+            })
+        });
         // CreateWorldScreen's choices, before streaming reads the generator.
         if created && let Some(o) = create {
             level.hardcore = o.hardcore;
@@ -277,6 +315,7 @@ impl WorldRequest {
             session_lock,
             rand_sequences,
             locator,
+            owner_migration,
         })
     }
 }

@@ -3,7 +3,7 @@
 //! block drops (`Block.dropResources`), drawn from the level random at the
 //! moment vanilla draws them. The item entities they make are added to the
 //! world as soon as the behaviour returns, within the same tick.
-use super::{Game, GameLevel, Screen, dispenser::new_item_motion, storage::is_shulker_box};
+use super::{Game, GameLevel, Screen, storage::is_shulker_box};
 use horizon_client::{
     block_entity_item, block_entity_nbt,
     containers::{Banner, BlockEntity},
@@ -562,6 +562,11 @@ impl GameLevel<'_> {
         side_effects: bool,
     ) -> u8 {
         let key = (pos.x, pos.y, pos.z);
+        // A replacement is a new block entity, even at the same position.
+        // Headless servers cannot rely on renderer visibility to discard this state.
+        if &*self.facts.get(old).name == "minecraft:end_gateway" {
+            self.gateway_servers.remove(&[pos.x, pos.y, pos.z]);
+        }
         if self.remove_saved_entity(pos, old, side_effects) {
             return 0;
         }
@@ -810,8 +815,7 @@ impl Game<'_> {
             self.native_use_drops(used.table, origin, block, None, tool.as_ref(), drops);
         });
         for s in spill.spawns {
-            let motion = s.motion.unwrap_or_else(new_item_motion);
-            self.spawn_item(s.stack, s.pos, motion, s.delay);
+            self.add_item_entity(s.stack, s.pos, s.motion, s.delay);
         }
         for (at, value, merge_id) in spill.orbs {
             self.award_orb(at, value, merge_id);

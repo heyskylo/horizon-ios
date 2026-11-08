@@ -2624,3 +2624,66 @@ fn native_field_visitor_excludes_preparing_and_game_rule_editors() {
             .edit_focused_text_field(|field| assert_eq!(field.value, "safe"))
     );
 }
+
+/// `RealmsCreateWorldFlow.createWorld`: the reset screen's Generate New World tile opens
+/// Create New World; its Create uploads instead of making a local world.
+#[test]
+fn a_realms_new_world_uploads_instead_of_creating_locally() {
+    let mut f = Fixture::new();
+    f.title.mode = Mode::Create {
+        name: "New World".into(),
+        seed: String::new(),
+        creative: false,
+        focus: 0,
+        options: WorldOptions::default(),
+    };
+    f.title.realms_create = Some(crate::realms::CreateWorldRequest {
+        server: crate::realms::client::RealmServer::default(),
+        slot: 1,
+        kind: crate::realms::ResetKind::Empty,
+        creation: None,
+    });
+    let action = f.title.create_or_upload();
+    assert!(matches!(action, Action::None), "no local world is entered");
+    assert!(f.title.realms_create.is_none());
+    // Without the account's session the upload cannot start: the failure the service's
+    // refusal would show, over the reset screen.
+    let Mode::Realms(screen) = &f.title.mode else {
+        panic!("the upload is a Realms screen");
+    };
+    assert!(matches!(
+        screen.subscreen,
+        crate::realms::SubScreen::Error { .. }
+    ));
+    assert!(!f.title.saves.join("New World").exists());
+    let _ = fs::remove_dir_all(&f.root);
+}
+
+/// `CreateWorldScreen.openFresh`'s cancel for the tile: the screen the reset screen was
+/// opened from (the configuration screen), not the world list.
+#[test]
+fn cancelling_a_realms_new_world_returns_to_the_realm() {
+    let mut f = Fixture::new();
+    f.title.mode = Mode::Create {
+        name: "New World".into(),
+        seed: String::new(),
+        creative: false,
+        focus: 0,
+        options: WorldOptions::default(),
+    };
+    f.title.realms_create = Some(crate::realms::CreateWorldRequest {
+        server: crate::realms::client::RealmServer::default(),
+        slot: 1,
+        kind: crate::realms::ResetKind::Empty,
+        creation: None,
+    });
+    f.title.cancel_create();
+    let Mode::Realms(screen) = &f.title.mode else {
+        panic!("the reset's Realm returns");
+    };
+    assert!(matches!(
+        screen.subscreen,
+        crate::realms::SubScreen::Configure { .. }
+    ));
+    let _ = fs::remove_dir_all(&f.root);
+}

@@ -79,6 +79,7 @@ pub struct Post {
     /// The last TAA frame's unjittered `view_proj` and camera, `None` once a frame ran without it.
     taa_previous: Option<(DMat4, DVec3)>,
     taa_this_frame: TaaUniform,
+    light_key: Option<([f32; 4], [f32; 4], [[f32; 4]; 2])>,
 }
 
 impl Post {
@@ -258,6 +259,19 @@ impl Post {
             taa_frame: 0,
             taa_previous: None,
             taa_this_frame: bytemuck::Zeroable::zeroed(),
+            light_key: None,
+        }
+    }
+
+    // History stores the baked gain as well as the picture. Reject it before jitter records
+    // the next frame whenever that gain or the frame's representation changes.
+    pub(super) fn light_representation(
+        &mut self,
+        key: Option<([f32; 4], [f32; 4], [[f32; 4]; 2])>,
+    ) {
+        if self.light_key != key {
+            self.taa_previous = None;
+            self.light_key = key;
         }
     }
 
@@ -727,6 +741,42 @@ mod tests {
             assert_eq!(post.taa_render_size(window), expected);
             post.taa_on = true;
             assert_eq!(post.sizes(window).0, expected);
+        }
+    }
+
+    #[test]
+    fn written_light_changes_reject_history_before_the_next_jitter() {
+        let Some((device, _)) = test_device() else {
+            return;
+        };
+        let mut post = Post::new(&device, wgpu::TextureFormat::Rgba16Float);
+        post.taa = true;
+        if !post.supports_taa() {
+            return;
+        }
+        let key = (
+            [5.0, 4.0, 1.0, 0.0],
+            [0.2, 0.5, 0.6, 1.0],
+            [[0.1; 4], [0.4; 4]],
+        );
+        for key in [Some(key), None, Some(key)] {
+            post.light_representation(key);
+            post.jitter([32, 32], true, Mat4::IDENTITY, DVec3::ZERO);
+            assert_eq!(post.taa_this_frame.jitter[2], 1.0);
+            post.light_representation(key);
+            post.jitter([32, 32], true, Mat4::IDENTITY, DVec3::ZERO);
+            assert_eq!(post.taa_this_frame.jitter[2], 0.0);
+        }
+        for field in 0..16 {
+            let mut changed = key;
+            match field {
+                0..=3 => changed.0[field] += 0.01,
+                4..=7 => changed.1[field - 4] += 0.01,
+                _ => changed.2[(field - 8) / 4][(field - 8) % 4] += 0.01,
+            }
+            post.light_representation(Some(changed));
+            post.jitter([32, 32], true, Mat4::IDENTITY, DVec3::ZERO);
+            assert_eq!(post.taa_this_frame.jitter[2], 1.0);
         }
     }
 

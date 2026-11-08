@@ -14,6 +14,10 @@ Sessions, each a fresh game and world (seed 7) per build:
 - golden_hour: the Golden Hour example pack (shader API 0.1) in SDR, the same scenes.
 - golden_hour_hdr: Golden Hour with offscreen HDR output on (HORIZON_HDR_OUTPUT=pq): each screenshot and its -hdr.png.
 - hdr_toggle: vanilla started with HDR on (the 16-bit frame), shot, HDR turned off from its settings page, shot.
+- golden_hour_0_2, golden_hour_0_2_hdr: the Golden Hour 0.2 pack (shader API 0.2) on HORIZON_HDR_FRAME=float, in SDR
+  and with HDR on.
+- oit, hdr_oit: Improved Transparency with HDR off, and with HDR on the 16-bit frame.
+- visbuffer, hdr_visbuffer: the visibility buffer (HORIZON_VISBUFFER=1) with HDR off, and with HDR on the 16-bit frame.
 
 Both builds draw on the same adapter: Mesa's lavapipe where its Vulkan driver is installed (Linux), else the machine's
 default. When the base and the change differ only in files no game binary is built from (tools/, tests/, .github/,
@@ -348,6 +352,19 @@ SESSIONS = {
     'golden_hour_hdr': ('hdr:true\n', {'HORIZON_SHADER_PACK': 'golden_hour', 'HORIZON_HDR_OUTPUT': 'pq'},
                         ['day_water', 'night_lights'], False),
     'hdr_toggle': ('hdr:true\n', {'HORIZON_HDR_OUTPUT': 'pq'}, ['day_water', 'night_lights'], True),
+    'golden_hour_0_2': ('', {'HORIZON_SHADER_PACK': 'golden_hour_0_2', 'HORIZON_HDR_FRAME': 'float'},
+                        ['day_water', 'night_lights'], False),
+    'golden_hour_0_2_hdr': ('hdr:true\n', {'HORIZON_SHADER_PACK': 'golden_hour_0_2',
+                        'HORIZON_HDR_FRAME': 'float', 'HORIZON_HDR_OUTPUT': 'pq'}, ['day_water', 'night_lights'], False),
+    'oit': ('', {}, ['day_water', 'night_lights'], False),
+    'hdr_oit': ('hdr:true\n', {'HORIZON_HDR_OUTPUT': 'pq'},
+                        ['day_water', 'night_lights'], False),
+    # 🤖 Agent: The visibility buffer draws only frames drawn flat, which frames without a pack are by default only on
+    # Metal and some Intel drivers. On the float frame it writes light, so it's in these sessions with HDR off and on
+    # the 16-bit frame.
+    'visbuffer': ('', {'HORIZON_VISBUFFER': '1', 'HORIZON_FLAT_DRAWS': '1'}, ['day_water', 'night_lights'], False),
+    'hdr_visbuffer': ('hdr:true\n', {'HORIZON_HDR_OUTPUT': 'pq', 'HORIZON_VISBUFFER': '1', 'HORIZON_FLAT_DRAWS': '1'},
+                      ['day_water', 'night_lights'], False),
 }
 # 🤖 Agent: Auto paper white and peak are 203 and 1000 offscreen; written out so a change of Auto doesn't move the
 # pictures. TAA and frame generation build on earlier frames, which HORIZON_STILL doesn't cover: off, as by default.
@@ -361,15 +378,24 @@ def run_session(name, label, bin_dir, out, env_base, args):
     folder.mkdir(parents=True)
     (folder / 'horizon-graphics.txt').write_text(GRAPHICS + graphics)
     # 🤖 Agent: No chat, no tutorial toasts, no pause when the offscreen window has no focus.
-    (folder / 'options.txt').write_text('chatVisibility:2\ntutorialStep:none\npauseOnLostFocus:false\n')
+    options = 'chatVisibility:2\ntutorialStep:none\npauseOnLostFocus:false\n'
+    (folder / 'options.txt').write_text(options)
     if 'HORIZON_SHADER_PACK' in extra:
-        shutil.copytree(ROOT / 'crates/horizon-shader-api/packs/golden_hour', folder / 'shaderpacks/golden_hour')
+        pack = extra['HORIZON_SHADER_PACK']
+        shutil.copytree(ROOT / 'crates/horizon-shader-api/packs' / pack, folder / 'shaderpacks' / pack)
     env = lab.game_env(env_base, HORIZON_STILL='1', **extra)
     out.mkdir(parents=True, exist_ok=True)
     game = Game(bin_dir, folder, env, args)
     started = time.monotonic()
     try:
         game.launch()
+        if name in ('oit', 'hdr_oit'):
+            # 🤖 Agent: Old unversioned options run through the graphics-mode migration, which resets this switch.
+            game.ctl('options-set', 'improvedTransparency', 'true')
+            option = game.ctl('options-get', 'improvedTransparency')
+            if option.get('options', {}).get('improvedTransparency', {}).get('value') is not True:
+                raise RuntimeError(f'Improved Transparency was not requested: {option}')
+            lab.write_json(out / f'{name}.option.json', option)
         prepare(game)
         for scene in scenes:
             shoot_named(game, out, name, scene)
@@ -413,6 +439,16 @@ def session_checks(shots, sessions):
                 for x in ('.png', '-hdr.png')
                 if (shots / f'{without}.{s}{x}').exists() and (shots / f'{name}.{s}{x}').exists())]
             problems += [f'{name}.{s}: the same as without the pack: it didn\'t run' for s in same]
+        # 🤖 Agent: the log says whether the visibility buffer was built; with HORIZON_FLAT_DRAWS=1 it draws every frame.
+        log = shots / f'{name}.log'
+        built = log.exists() and 'through a visibility buffer' in log.read_text(encoding='utf-8')
+        if 'HORIZON_VISBUFFER' in extra and not built:
+            problems.append(f'{name}: the visibility buffer didn\'t run')
+        # 🤖 Agent: Improved Transparency needs blendable float targets; without them the option changes nothing.
+        if name in ('oit', 'hdr_oit') and without in sessions and all(
+                compare(shots / f'{without}.{s}{x}', shots / f'{name}.{s}{x}', None) is None
+                for s in scenes for x in ('.png', '-hdr.png') if (shots / f'{name}.{s}{x}').exists()):
+            problems.append(f'{name}: the same as without Improved Transparency: it didn\'t run')
     return problems
 
 

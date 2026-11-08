@@ -5,7 +5,7 @@
 mod pufferfish_player;
 
 use super::{
-    Dim, Game, Hand, InteractTarget, dispenser, entity_culling::EntityCullDecision,
+    Dim, Game, Hand, InteractTarget, entity_culling::EntityCullDecision,
     native_mob_draw::NativePlayerRender, native_projectiles::Impact, view_vector,
 };
 use horizon_assets::item_model::DisplayContext;
@@ -108,6 +108,8 @@ pub(super) struct Creatures {
     /// The snapshot's buffer between ticks, empty: ~400 bytes a mob, so
     /// thousands of mobs would allocate and free megabytes every tick.
     seen_buf: Vec<Seen>,
+    /// Per-tick scratch retained between creature ticks.
+    event_buf: Vec<MobEvent>,
     /// The targets the mobs had before their ticks, kept between ticks
     /// (empty) as `seen_buf` is: `native_living_change_target` hears a change.
     target_buf: Vec<Option<Who>>,
@@ -507,6 +509,16 @@ impl Game<'_> {
     pub(super) fn spawn_mob(&mut self, kind: &str, at: [f64; 3], persistent: bool) -> Option<u32> {
         self.spawn_mob_for(kind, at, persistent, false)
     }
+    /// Create a mob of `kind` at a position without `finalizeSpawn`'s rolls,
+    /// matching vanilla `EntityType.create(level, reason)`.
+    pub(super) fn spawn_mob_raw(
+        &mut self,
+        kind: &str,
+        at: [f64; 3],
+        persistent: bool,
+    ) -> Option<u32> {
+        self.spawn_mob_internal(kind, at, persistent, false, false, false)
+    }
     /// `SummonCommand` and `SpawnEggItem`: vanilla spawns the mob, but it
     /// never calls `Mob.setPersistenceRequired` for it, so the mob is not
     /// persistent: the despawn rule holds it like any other mob, and only
@@ -548,6 +560,17 @@ impl Game<'_> {
         scripted: bool,
         natural: bool,
     ) -> Option<u32> {
+        self.spawn_mob_internal(kind, at, persistent, scripted, natural, true)
+    }
+    fn spawn_mob_internal(
+        &mut self,
+        kind: &str,
+        at: [f64; 3],
+        persistent: bool,
+        scripted: bool,
+        natural: bool,
+        finalize: bool,
+    ) -> Option<u32> {
         let kind = if kind.contains(':') {
             kind.to_owned()
         } else {
@@ -558,20 +581,22 @@ impl Game<'_> {
         let yaw = self.world.random.next_float() * 360.0;
         let mut mob = Mob::new(self.next_entity, t, Vec3::new(at[0], at[1], at[2]), yaw);
         mob.persistent = persistent;
-        let facts = self.biome_facts(
-            at[0].floor() as i32,
-            at[1].floor() as i32,
-            at[2].floor() as i32,
-        );
-        let difficulty = self.local_difficulty(at);
-        spawning::finalize(&mut mob, &facts, &difficulty);
-        if !scripted {
-            let reason = if persistent {
-                horizon_client::mobs::raider::Reason::Other
-            } else {
-                horizon_client::mobs::raider::Reason::Natural
-            };
-            horizon_client::mobs::raider::finalize(&mut mob, reason);
+        if finalize {
+            let facts = self.biome_facts(
+                at[0].floor() as i32,
+                at[1].floor() as i32,
+                at[2].floor() as i32,
+            );
+            let difficulty = self.local_difficulty(at);
+            spawning::finalize(&mut mob, &facts, &difficulty);
+            if !scripted {
+                let reason = if persistent {
+                    horizon_client::mobs::raider::Reason::Other
+                } else {
+                    horizon_client::mobs::raider::Reason::Natural
+                };
+                horizon_client::mobs::raider::finalize(&mut mob, reason);
+            }
         }
         let id = mob.id;
         self.mobs.push(mob);
@@ -579,10 +604,12 @@ impl Game<'_> {
         if !self.mobs.iter().any(|m| m.id == id) {
             return None;
         }
-        self.enchant_spawn_equipment(id);
-        self.halloween_spawn_head(id);
-        if !persistent && !scripted {
-            self.spawn_jockeys(id, natural);
+        if finalize {
+            self.enchant_spawn_equipment(id);
+            self.halloween_spawn_head(id);
+            if !persistent && !scripted {
+                self.spawn_jockeys(id, natural);
+            }
         }
         Some(id)
     }
@@ -1141,7 +1168,8 @@ impl Game<'_> {
         let level_id = self.dim.id();
         let mut snapshot = std::mem::take(&mut self.creatures.seen_buf);
         snapshot.extend(self.mobs.iter().map(|m| seen(m, uuid)));
-        let mut events = Vec::new();
+        let mut events = std::mem::take(&mut self.creatures.event_buf);
+        events.clear();
         let mut mobs = std::mem::take(&mut self.mobs);
         // Each mob's target as the mods last heard it, by its place in `mobs`
         // (`native_living_change_target`).
@@ -1425,7 +1453,7 @@ impl Game<'_> {
                     let mut k = from;
                     while k < events.len() {
                         if super::lan_mobs::acts_on_player(&events[k]) {
-                            guest_events.push((conn, events.remove(k)));
+                            guest_events.push((conn, m.id, events.remove(k)));
                         } else {
                             k += 1;
                         }
@@ -1550,7 +1578,9 @@ impl Game<'_> {
             let bounds = m.bounds();
             self.effects_on_death(&names, bounds, false, Some(m.id), Some(&mut m.random));
         }
-        self.handle_mob_events(events)?;
+        let event_result = self.handle_mob_events_reusable(&mut events);
+        self.creatures.event_buf = events;
+        event_result?;
         self.lan_guest_mob_events(guest_events);
         laps.lap("creature_events");
         self.ordered_before(super::ordered_tick::Batch::Projectiles)?;
@@ -1628,7 +1658,7 @@ impl Game<'_> {
         cancel
     }
     /// LivingEntity.die / dropAllDeathLoot.
-    fn mob_died(&mut self, m: &Mob) {
+    pub(super) fn mob_died(&mut self, m: &Mob) {
         if self.mob_death_canceled(m) {
             return;
         }
@@ -1697,7 +1727,9 @@ impl Game<'_> {
                 self.credit_kill(m);
             }
         }
-        self.score_entity_removed(m.id);
+        // The body keeps its scores until it is removed (`ServerLevel.
+        // EntityCallbacks.onDestroyed` → `Scoreboard.entityRemoved`, run by
+        // `score_destroyed_entities`): LivingEntity.die does not reset them.
         // Raider.die's hero and Villager.tellWitnessesThatIWasMurdered go to
         // the causing entity, not the credited player: a tame wolf's kill is
         // neither its owner's heroism nor a murder by them.
@@ -1756,7 +1788,7 @@ impl Game<'_> {
                 m.position.y + 0.5,
                 m.position.z + off(k / 2),
             ];
-            if let Some(id) = self.spawn_mob(&m.kind.id, at, m.persistent)
+            if let Some(id) = self.spawn_mob_raw(&m.kind.id, at, m.persistent)
                 && let Some(c) = self.mobs.iter_mut().find(|c| c.id == id)
             {
                 horizon_client::mobs::cube::set_size(c, size / 2);
@@ -2015,7 +2047,7 @@ impl Game<'_> {
             // the drops land stacked at the mob's centre, without disturbing
             // the level random that the orbs' merge ids and block ticks read
             // next).
-            self.spawn_item(item, pos, dispenser::new_item_motion(), 10);
+            self.spawn_item_own(item, pos, 10);
         }
         for d in rest {
             match d {
@@ -2030,7 +2062,7 @@ impl Game<'_> {
                         Some((&mut self.rand_sequences, self.level.seed)),
                     );
                     for item in stacks {
-                        self.spawn_item(item, pos, dispenser::new_item_motion(), 10);
+                        self.spawn_item_own(item, pos, 10);
                     }
                 }
                 drops::Drop::Orb(value) if !consumed => self.spawn_orbs(pos, value as u32),
@@ -2185,7 +2217,7 @@ impl Game<'_> {
         for d in stacks {
             // The ItemEntity constructor's motion, from the entity's own
             // random (not the level's).
-            self.spawn_item(d, at, dispenser::new_item_motion(), 10);
+            self.spawn_item_own(d, at, 10);
         }
         dropped
     }
@@ -2285,8 +2317,12 @@ impl Game<'_> {
             self.projectile_event("minecraft:projectile_shoot", owner, at);
         }
     }
-    pub(super) fn handle_mob_events(&mut self, events: Vec<MobEvent>) -> Result<()> {
-        for e in events {
+    pub(super) fn handle_mob_events(&mut self, mut events: Vec<MobEvent>) -> Result<()> {
+        self.handle_mob_events_reusable(&mut events)
+    }
+
+    fn handle_mob_events_reusable(&mut self, events: &mut Vec<MobEvent>) -> Result<()> {
+        for e in events.drain(..) {
             match e {
                 MobEvent::BubbleColumnParticles { pos } => {
                     self.bubble_column_particles(BlockPos::new(pos[0], pos[1], pos[2]))
@@ -2928,7 +2964,12 @@ impl Game<'_> {
                     self.native_mobs_joined(self.mobs.len() - 1, false);
                 }
                 MobEvent::SpawnKind { kind, at, setup } => {
-                    if let Some(id) = self.spawn_mob(&kind, at, setup.persistent) {
+                    let id = if setup.skip_finalize {
+                        self.spawn_mob_raw(&kind, at, setup.persistent)
+                    } else {
+                        self.spawn_mob(&kind, at, setup.persistent)
+                    };
+                    if let Some(id) = id {
                         self.apply_setup(id, &setup);
                     }
                 }
@@ -2965,7 +3006,7 @@ impl Game<'_> {
                 }
                 MobEvent::DropStack { mob, stack, at } => {
                     self.native_entity_drop_item(mob, &stack.item, stack.count as i32, at);
-                    self.spawn_item(stack, at, dispenser::new_item_motion(), 10);
+                    self.spawn_item_own(stack, at, 10);
                 }
                 MobEvent::DropItem {
                     mob,
@@ -2974,7 +3015,11 @@ impl Game<'_> {
                     at,
                 } => {
                     self.native_entity_drop_item(mob, &item, count as i32, at);
-                    self.spawn_item(
+                    // The ItemEntity constructor's motion, from the entity's
+                    // own random (not the level's), so spawnAtLocation drops
+                    // (a fox's berries, a panda's held food, a goat's horn)
+                    // land apart.
+                    self.spawn_item_own(
                         ItemStack {
                             item,
                             count,
@@ -2982,11 +3027,6 @@ impl Game<'_> {
                             extra: None,
                         },
                         at,
-                        // The ItemEntity constructor's motion, from the entity's
-                        // own random (not the level's), so spawnAtLocation drops
-                        // (a fox's berries, a panda's held food, a goat's horn)
-                        // land apart.
-                        dispenser::new_item_motion(),
                         10,
                     );
                 }
@@ -3015,7 +3055,7 @@ impl Game<'_> {
                     for stack in stacks {
                         // The ItemEntity constructor's motion, from the
                         // entity's own random (not the level's).
-                        self.spawn_item(stack, at, dispenser::new_item_motion(), 10);
+                        self.spawn_item_own(stack, at, 10);
                     }
                 }
                 // `Level.setBlockAndUpdate`: neighbour and shape updates, so a crop
@@ -3155,7 +3195,7 @@ impl Game<'_> {
                             f64::from(pos[1]),
                             f64::from(pos[2]) + 0.5,
                         ];
-                        if let Some(id) = self.spawn_mob("minecraft:silverfish", at, false) {
+                        if let Some(id) = self.spawn_mob_raw("minecraft:silverfish", at, false) {
                             self.mob_poof(id);
                         }
                     }
@@ -3517,7 +3557,7 @@ impl Game<'_> {
                 f64::from(pos[1]),
                 f64::from(pos[2]) + 0.3,
             ];
-            if let Some(id) = self.spawn_mob("minecraft:turtle", at, true)
+            if let Some(id) = self.spawn_mob_raw("minecraft:turtle", at, true)
                 && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
             {
                 m.extra.age = -24000;
@@ -3753,7 +3793,8 @@ impl Game<'_> {
             }
             _ => p.kind.id.clone(),
         };
-        if let Some(id) = self.spawn_mob(&kind, [p.position.x, p.position.y, p.position.z], true)
+        if let Some(id) =
+            self.spawn_mob_raw(&kind, [p.position.x, p.position.y, p.position.z], true)
             && let Some(child) = self.mobs.iter_mut().find(|m| m.id == id)
         {
             child.extra.age = -24000;
@@ -4030,6 +4071,7 @@ impl Game<'_> {
     ) -> bool {
         let post_attack_if_alive = std::mem::take(&mut self.combat.post_attack_if_alive);
         let rocket = std::mem::take(&mut self.combat.rocket_hit);
+        let melee = self.combat.melee_mob.take();
         // ServerPlayer.canHarmPlayer refused another player's projectile.
         if self.creative || self.combat.refuse_player_hit {
             self.combat.forget_noted(false);
@@ -4048,6 +4090,7 @@ impl Game<'_> {
         // Melee: the attacker stands at `from` (another player's hit has no mob behind it).
         let attacker = match known {
             Some(known) => known,
+            None if melee.is_some() => melee,
             None => from
                 .filter(|_| !projectile && damage_type != "minecraft:player_attack")
                 .and_then(|from| {
@@ -4184,7 +4227,7 @@ impl Game<'_> {
         if outcome.hurt || outcome.sound {
             let source = attacker
                 .or(owner)
-                .and_then(|id| self.mobs.iter().find(|m| m.id == id))
+                .and_then(|id| self.mob_index.get(&self.mobs, id))
                 .map(|m| self.mob_entity(m));
             self.trigger_entity_hurt_player(&horizon_client::advancements::DamageView {
                 kind: damage_type.to_owned(),
@@ -4846,8 +4889,9 @@ impl Game<'_> {
     /// (`#impact_projectiles`) breaks the block when `Projectile.mayInteract`
     /// and `Projectile.mayBreak` allow it, which takes the
     /// `projectiles_can_break_blocks` rule and a shooter that may break blocks
-    /// (`canBreakBlockInAdventureMode`: never a mob, never an
-    /// adventure player). A pot is cracked first (flags 260), so it shatters.
+    /// (`canBreakBlockInAdventureMode`: a resolved mob's arrow needs its
+    /// actual projectile predicate and mob_griefing). Other owner/kind paths
+    /// retain their existing policy. A pot is cracked first (flags 260).
     fn projectile_breaks_block(&mut self, p: &Projectile, pos: [i32; 3]) {
         use horizon_client::command::args::GameMode;
         let impact = matches!(
@@ -4866,7 +4910,17 @@ impl Game<'_> {
         use horizon_client::arrows::OwnerLookup;
         let shooter_may_break = match p.owner {
             Some(Who::Player) => self.mode != GameMode::Adventure,
-            Some(Who::Mob(_)) => false,
+            Some(Who::Mob(_)) => {
+                matches!(p.kind, ProjectileKind::Arrow { .. })
+                    && self.ui.rules.bool("mob_griefing")
+                    && p.arrow
+                        .as_ref()
+                        .and_then(|a| a.can_break.as_ref())
+                        .is_some_and(|predicate| {
+                            super::game_mode::projectile_predicate_supported(predicate)
+                                && self.adventure_predicate_at(predicate, pos)
+                        })
+            }
             None => !p.owner_uuid.is_some_and(|u| self.non_player_entity(u)),
         };
         if !impact || !shooter_may_break || !self.ui.rules.bool("projectiles_can_break_blocks") {
@@ -5631,7 +5685,7 @@ impl Game<'_> {
                         1
                     };
                     for _ in 0..n {
-                        if let Some(id) = self.spawn_mob("minecraft:chicken", atp, true)
+                        if let Some(id) = self.spawn_mob_raw("minecraft:chicken", atp, true)
                             && let Some(c) = self.mobs.iter_mut().find(|m| m.id == id)
                         {
                             c.extra.age = -24000;
@@ -5700,7 +5754,7 @@ impl Game<'_> {
                         && let Some(pl) = self.player.as_ref()
                     {
                         let from = pl.position;
-                        self.spawn_mob("minecraft:endermite", [from.x, from.y, from.z], false);
+                        self.spawn_mob_raw("minecraft:endermite", [from.x, from.y, from.z], false);
                     }
                     // ServerPlayer.teleport: removeVehicle before the placement.
                     self.stop_riding();
@@ -6422,6 +6476,7 @@ impl Game<'_> {
                 let setup = SpawnSetup {
                     yaw: m.yaw,
                     persistent: true,
+                    skip_finalize: true,
                     ..Default::default()
                 };
                 let pos = [m.position.x, m.position.y, m.position.z];
@@ -6990,25 +7045,29 @@ impl Game<'_> {
                 // `setDefaultPickUpDelay`. Sheep.shear adds its spread on top;
                 // MushroomCow.shear builds the entity by hand instead, so its
                 // mushrooms keep the constructor's motion and no pickup delay.
-                let mut v = dispenser::new_item_motion();
+                let mut spread = [0.0; 3];
                 if wool {
-                    v[0] += (self.world.random.next_float() - self.world.random.next_float())
+                    spread[0] = (self.world.random.next_float() - self.world.random.next_float())
                         as f64
                         * 0.1;
-                    v[1] += self.world.random.next_float() as f64 * 0.05;
-                    v[2] += (self.world.random.next_float() - self.world.random.next_float())
+                    spread[1] = self.world.random.next_float() as f64 * 0.05;
+                    spread[2] = (self.world.random.next_float() - self.world.random.next_float())
                         as f64
                         * 0.1;
                 }
-                self.spawn_item(
+                self.spawn_item_own(
                     ItemStack {
                         count: 1,
                         ..stack.clone()
                     },
                     [feet[0], feet[1] + 1.0, feet[2]],
-                    v,
                     if wool { 10 } else { 0 },
                 );
+                if let Some(e) = self.just_spawned_item() {
+                    e.velocity = e
+                        .velocity
+                        .add_vector(Vec3::new(spread[0], spread[1], spread[2]));
+                }
             }
         }
         Ok(true)
@@ -7216,28 +7275,14 @@ impl Game<'_> {
         );
         let (species, variant, color) =
             (parent.species(), parent.extra.variant, parent.extra.color);
-        let mob_type = parent.kind.clone();
         let target = self.mob_entity(&self.mobs[index]);
-        let id = if species == Species::Piglin {
-            // SpawnEggItem.spawnOffspringFromSpawnEgg: a non-AgeableMob is
-            // constructed, then setBaby(true), without finalizeSpawn. Giving
-            // it adult spawn gear first leaves the baby holding a weapon.
-            self.next_entity += 1;
-            let id = self.next_entity;
-            self.mobs
-                .push(Mob::new(id, mob_type, Vec3::new(at[0], at[1], at[2]), 0.0));
-            id
-        } else {
-            let Some(id) = self.spawn_mob_spawned(&kind, at) else {
-                return false;
-            };
-            id
+        // SpawnEggItem.spawnOffspringFromSpawnEgg: `type.create(level, SPAWN_ITEM_USE)`
+        // creates the baby without finalizeSpawn.
+        let Some(id) = self.spawn_mob_raw(&kind, at, false) else {
+            return false;
         };
         if let Some(child) = self.mobs.iter_mut().find(|m| m.id == id) {
             horizon_client::mobs::finalize::spawn_egg_offspring(child, species, variant, color);
-        }
-        if species == Species::Piglin {
-            self.native_mobs_joined(self.mobs.len() - 1, false);
         }
         // `Mob.checkAndHandleImportantInteractions` then calls
         // `onOffspringSpawnedFromEgg`: `Fox`'s makes the baby trust the player
@@ -8288,8 +8333,21 @@ pub(super) fn damage_type(kind: horizon_client::mobs::DamageKind, caused: bool) 
         K::WitherSkull => "minecraft:wither_skull",
     }
 }
-/// A Horizon item stack as a loot stack (id, count, damage, enchantments).
+/// A Horizon item stack as a loot stack (id, count, damage, enchantments,
+/// and its custom data as SNBT for `minecraft:custom_data` predicates).
 fn to_loot(stack: &ItemStack) -> horizon_world::loot::LootStack {
+    let components = stack
+        .custom_data()
+        .map(|data| {
+            let snbt =
+                horizon_world::snbt_text::to_snbt(&horizon_world::nbt::Tag::Compound(data.clone()));
+            (
+                "minecraft:custom_data".to_owned(),
+                serde_json::Value::String(snbt),
+            )
+        })
+        .into_iter()
+        .collect();
     horizon_world::loot::LootStack {
         item: stack.item.to_string(),
         count: stack.count as i32,
@@ -8305,7 +8363,7 @@ fn to_loot(stack: &ItemStack) -> horizon_world::loot::LootStack {
         ominous_amplifier: None,
         stew_effects: Vec::new(),
         names: Vec::new(),
-        components: Vec::new(),
+        components,
     }
 }
 /// A generated loot stack as a Horizon item stack.
@@ -10105,5 +10163,165 @@ mod loaded_arrow_shot_tests {
                 vec![("minecraft:projectile_shoot", at, Some(Who::Player))]
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod loaded_mob_arrow_permission_tests {
+    use super::*;
+    use crate::game::native_machines::tests::server_game;
+    use horizon_client::{entity_nbt, save};
+    use horizon_core::position::BlockPos;
+    use horizon_world::nbt::Tag;
+
+    fn parse(text: &str) -> Tag {
+        let (tag, used) = horizon_world::nbt::parse_snbt(text).unwrap();
+        assert_eq!(used, text.len());
+        tag
+    }
+
+    #[test]
+    #[ignore = "prepared resources; actual registered summon, collision, permission and drops"]
+    fn loaded_mob_arrow_predicate_survives_model_and_controls_actual_block_hit() {
+        let mut game = server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.block_ticks
+            .add_empty_chunk(BlockPos::new(0, 0, 0).chunk())
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        assert!(game.world.loaded(3, 1));
+        assert!(game.ui.rules.bool("projectiles_can_break_blocks"));
+        assert!(game.ui.rules.bool("block_drops"));
+        assert!(game.run_command(
+            "summon pig 14.5 200 14.5 {UUID:[I;197,0,0,1],NoAI:1b,NoGravity:1b,Health:10f}"
+        ));
+        let owner = game
+            .mobs
+            .iter()
+            .find(|m| game.persist.uuid_of(m.id) == Some([197, 0, 0, 1]))
+            .unwrap()
+            .id;
+        assert_eq!(
+            game.mobs.iter().find(|m| m.id == owner).unwrap().health,
+            10.0
+        );
+        let clock = game.world.game_time;
+        let expected = parse("{blocks:\"minecraft:chorus_flower\"}");
+        let stale = parse("{can_break:{blocks:\"minecraft:stone\"},marker:37}");
+        let mut missing = Vec::new();
+        for (n, predicate, griefing, breaks) in [
+            (1, Some("chorus_flower"), true, true),
+            (2, Some("stone"), true, false),
+            (3, None, true, false),
+            (4, Some("chorus_flower"), false, false),
+            (5, Some("stone"), false, false),
+            (6, None, false, false),
+        ] {
+            let x = if n <= 3 { 3 } else { 11 };
+            let z = 1 + 4 * ((n - 1) % 3);
+            if game.ui.rules.bool("mob_griefing") != griefing {
+                assert!(game.run_command(&format!("gamerule mob_griefing {griefing}")));
+            }
+            assert_eq!(game.ui.rules.bool("mob_griefing"), griefing);
+            assert!(game.run_command(&format!("setblock {x} 199 {z} end_stone")));
+            assert!(game.run_command(&format!("setblock {x} 200 {z} chorus_flower[age=0]")));
+            let field = predicate.map_or(String::new(), |p| {
+                format!(",can_break:{{blocks:\"minecraft:{p}\"}}")
+            });
+            assert!(game.run_command(&format!("summon arrow {} 200.5 {} {{UUID:[I;197,0,{n},2],NoGravity:1b,HasBeenShot:1b,Motion:[2d,0d,0d],Owner:[I;197,0,0,1],item:{{id:\"minecraft:arrow\",count:1}}{field}}}", f64::from(x)-1.5, f64::from(z)+0.5)));
+            let p = game
+                .creatures
+                .projectiles
+                .iter()
+                .find(|p| game.persist.uuid_of(p.id) == Some([197, 0, n, 2]))
+                .unwrap()
+                .clone();
+            assert_eq!(p.owner_uuid, Some([197, 0, 0, 1]));
+            assert_eq!(
+                p.owner,
+                Some(Who::Mob(owner)),
+                "actual resolved loaded Mob, not raw Owner alone"
+            );
+            assert!(matches!(p.kind, ProjectileKind::Arrow { .. }));
+            assert!(p.no_gravity);
+            assert_eq!(p.velocity, Vec3::new(2.0, 0.0, 0.0));
+            assert!(!p.arrow.as_ref().unwrap().in_ground);
+            game.persist.raw.remove(&p.id);
+            for (route, raw) in [("no-raw", None), ("stale-raw", Some(&stale))] {
+                let saved =
+                    entity_nbt::arrow_to_nbt(&p, [197, 0, n, 2], p.owner_uuid, None, raw).unwrap();
+                let want = predicate.map(|id| parse(&format!("{{blocks:\"minecraft:{id}\"}}")));
+                if saved.get("can_break") != want.as_ref() {
+                    missing.push(format!(
+                        "{n} cloned loaded model {route}: {:?} != {want:?}",
+                        saved.get("can_break")
+                    ));
+                }
+                if raw.is_some() {
+                    assert_eq!(save::number(saved.get("marker")), Some(37));
+                }
+            }
+            if n == 1 {
+                assert_eq!(game.persist.uuid_of(p.id), Some([197, 0, n, 2]));
+                // The expected value is the actual admitted input, never an injected model field.
+                assert_eq!(expected, parse("{blocks:\"minecraft:chorus_flower\"}"));
+            }
+            let drops_before = game.dropped.len();
+            game.tick_projectiles().unwrap();
+            let after = game
+                .creatures
+                .projectiles
+                .iter()
+                .find(|a| a.id == p.id)
+                .unwrap();
+            assert!(
+                after.arrow.as_ref().unwrap().in_ground,
+                "actual air-to-ground block collision"
+            );
+            let block = &*game.res.facts().get(game.world.block(x, 200, z)).name;
+            let want = if breaks {
+                "minecraft:air"
+            } else {
+                "minecraft:chorus_flower"
+            };
+            if block != want {
+                missing.push(format!("{n} actual hit block {block} != {want}"));
+            }
+            let dropped: Vec<_> = game
+                .dropped
+                .iter()
+                .skip(drops_before)
+                .map(|e| (&*e.stack.item, e.stack.count, e.position, e.velocity))
+                .collect();
+            println!("actual collision {n}: block={block}, unfiltered new drops={dropped:?}");
+            if !breaks {
+                assert!(dropped.is_empty(), "denied hits cannot create drops");
+            }
+        }
+        assert!(game.run_command("setblock 13 200 12 dirt"));
+        let before = game.dropped.len();
+        game.destroy_block_dropping([13, 200, 12]).unwrap();
+        assert_eq!(
+            &*game.res.facts().get(game.world.block(13, 200, 12)).name,
+            "minecraft:air"
+        );
+        let direct: Vec<_> = game.dropped.iter().skip(before).collect();
+        assert_eq!(
+            direct.len(),
+            1,
+            "independent actual destruction/drop callback"
+        );
+        assert_eq!(&*direct[0].stack.item, "minecraft:dirt");
+        assert_eq!(direct[0].stack.count, 1);
+        assert_eq!(
+            game.world.game_time, clock,
+            "one projectile step per scene; no fabricated world ticks"
+        );
+        assert!(
+            missing.is_empty(),
+            "actual loaded Mob arrow model/permission mismatches: {missing:?}"
+        );
     }
 }

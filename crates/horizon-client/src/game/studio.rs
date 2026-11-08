@@ -3,7 +3,7 @@
 //! Provides in-game and control-socket commands to record network packet streams
 //! into standard `.mcpr` containers and drive timeline-based replay playback.
 
-use super::{Game, PendingWorldEntry, Screen};
+use super::{Game, PendingWorldEntry, Screen, packs};
 use horizon_client::{
     Result,
     studio::{Metadata, ReplayDriver},
@@ -391,7 +391,7 @@ impl Game<'_> {
     /// Reconstruct replay state at a target timestamp. Standalone replays can
     /// safely reset their synthetic remote; an in-world replay can only seek
     /// forward because its pre-replay world must remain intact.
-    fn seek_studio_replay(&mut self, target_ms: u32) -> std::io::Result<()> {
+    pub(super) fn seek_studio_replay(&mut self, target_ms: u32) -> std::io::Result<()> {
         let current_ms = self
             .studio_replay
             .as_ref()
@@ -547,7 +547,214 @@ impl Game<'_> {
         } else if let Some(m) = self.player_model.as_mut() {
             m.previous_limb_speed = m.limb_speed;
         }
+        if let Some((position, duration, paused, markers)) =
+            self.studio_replay.as_ref().map(|replay| {
+                (
+                    replay.position_ms(),
+                    replay.duration_ms(),
+                    replay.is_paused(),
+                    replay.markers().to_vec(),
+                )
+            })
+        {
+            self.studio_timeline.current_time_ms = u64::from(position);
+            self.studio_timeline.duration_ms = u64::from(duration);
+            self.studio_timeline.playing = !paused;
+            self.studio_timeline.markers = markers;
+        }
         Ok(())
+    }
+
+    /// Apply a menu action from the Studio top bar.
+    pub(super) fn handle_studio_topbar_action(
+        &mut self,
+        action: horizon_client::studio::TopBarAction,
+    ) {
+        use horizon_client::studio::TopBarAction;
+        match action {
+            TopBarAction::None => {}
+            TopBarAction::OpenPauseMenu => {
+                self.pause_focus = None;
+                self.screen = Screen::Paused;
+                self.pause_menu = true;
+                self.capture(false);
+            }
+            TopBarAction::ExitStudio => {
+                if self.studio_replay.is_some() {
+                    self.close_studio_replay();
+                } else {
+                    self.studio_freecam.deactivate();
+                    self.capture(false);
+                }
+            }
+            TopBarAction::OpenRecordingsFolder => {
+                let directory = PathBuf::from("recordings");
+                if let Err(error) = std::fs::create_dir_all(&directory) {
+                    log::warn!("Studio: could not create recordings folder: {error}");
+                } else {
+                    packs::open_folder(&directory);
+                }
+            }
+            TopBarAction::ResetCameraToPlayer => {
+                let (position, yaw, pitch) = if let Some(player) = &self.player {
+                    (
+                        glam::DVec3::new(
+                            player.position.x,
+                            player.position.y + 1.62,
+                            player.position.z,
+                        ),
+                        self.yaw,
+                        self.pitch,
+                    )
+                } else {
+                    (glam::DVec3::ZERO, 0.0, 0.0)
+                };
+                self.studio_freecam
+                    .activate(position, yaw, pitch, self.settings.fov);
+            }
+            TopBarAction::ToggleLockToPath => {
+                self.studio_freecam.locked_to_path = !self.studio_freecam.locked_to_path;
+            }
+            TopBarAction::ToggleFreecam => {
+                if self.studio_freecam.active {
+                    self.studio_freecam.deactivate();
+                    self.capture(false);
+                } else {
+                    let (position, yaw, pitch) =
+                        self.camera_view(0.0)
+                            .unwrap_or((glam::DVec3::ZERO, 0.0, 0.0));
+                    self.studio_freecam
+                        .activate(position, yaw, pitch, self.settings.fov);
+                    self.capture(true);
+                }
+            }
+            TopBarAction::AddKeyframe => {
+                self.studio_freecam
+                    .add_keyframe_at_current(self.studio_timeline.current_time_ms as u32);
+                self.studio_camera_track_dirty = true;
+            }
+            TopBarAction::AddMarker => self.add_studio_marker(),
+            TopBarAction::ClearKeyframes => {
+                self.studio_freecam.track.keyframes.clear();
+                self.studio_timeline.selected_keyframe = None;
+                self.studio_camera_track_dirty = true;
+            }
+            TopBarAction::ToggleTimeline => {
+                self.studio_timeline.visible = !self.studio_timeline.visible;
+            }
+            TopBarAction::SplitClip => {
+                self.studio_timeline
+                    .split_at(self.studio_timeline.current_time_ms);
+            }
+        }
+    }
+
+    /// Apply an action from the replay timeline HUD.
+    pub(super) fn handle_studio_timeline_action(
+        &mut self,
+        action: horizon_client::studio::TimelineAction,
+    ) {
+        use horizon_client::studio::TimelineAction;
+        match action {
+            TimelineAction::PauseForSeek => {
+                self.studio_timeline.playing = false;
+                if let Some(replay) = self.studio_replay.as_mut() {
+                    replay.set_paused(true);
+                }
+            }
+            TimelineAction::Seek(time_ms) => {
+                let time_ms = if self.studio_replay_standalone {
+                    time_ms
+                } else {
+                    let current =
+                        self.studio_replay
+                            .as_ref()
+                            .map_or(0, ReplayDriver::position_ms) as u64;
+                    time_ms.max(current)
+                };
+                self.studio_timeline.current_time_ms = time_ms;
+                if let Err(error) = self.seek_studio_replay(time_ms.min(u32::MAX as u64) as u32) {
+                    log::warn!("Studio timeline seek failed: {error}");
+                }
+            }
+            TimelineAction::TogglePlay => {
+                self.studio_timeline.playing = !self.studio_timeline.playing;
+                if let Some(replay) = self.studio_replay.as_mut() {
+                    replay.set_paused(!self.studio_timeline.playing);
+                }
+            }
+            TimelineAction::StepBack => {
+                let time_ms = self.studio_timeline.current_time_ms.saturating_sub(1000);
+                self.handle_studio_timeline_action(TimelineAction::Seek(time_ms));
+            }
+            TimelineAction::StepForward => {
+                let time_ms = self
+                    .studio_timeline
+                    .current_time_ms
+                    .saturating_add(1000)
+                    .min(self.studio_timeline.duration_ms);
+                self.handle_studio_timeline_action(TimelineAction::Seek(time_ms));
+            }
+            TimelineAction::SeekStart => {
+                self.handle_studio_timeline_action(TimelineAction::Seek(0))
+            }
+            TimelineAction::SeekEnd => self.handle_studio_timeline_action(TimelineAction::Seek(
+                self.studio_timeline.duration_ms,
+            )),
+            TimelineAction::SetSpeed(speed) => {
+                self.studio_timeline.speed = speed;
+                if let Some(replay) = self.studio_replay.as_mut() {
+                    replay.set_speed(speed);
+                }
+            }
+            TimelineAction::ToggleFreecam => {
+                if self.studio_freecam.active {
+                    self.studio_freecam.deactivate();
+                } else {
+                    let (position, yaw, pitch) =
+                        self.camera_view(0.0)
+                            .unwrap_or((glam::DVec3::ZERO, 0.0, 0.0));
+                    self.studio_freecam
+                        .activate(position, yaw, pitch, self.settings.fov);
+                }
+            }
+            TimelineAction::AddCameraKeyframe => {
+                self.studio_freecam
+                    .add_keyframe_at_current(self.studio_timeline.current_time_ms as u32);
+                self.studio_camera_track_dirty = true;
+            }
+            TimelineAction::RemoveCameraKeyframe(index) => {
+                if index < self.studio_freecam.track.keyframes.len() {
+                    self.studio_freecam.track.keyframes.remove(index);
+                    self.studio_camera_track_dirty = true;
+                }
+                self.studio_timeline.selected_keyframe = None;
+            }
+            TimelineAction::SelectKeyframe(index) => {
+                self.studio_timeline.selected_keyframe = Some(index);
+            }
+            TimelineAction::KeyframeMoved => {
+                self.studio_camera_track_dirty = true;
+            }
+            TimelineAction::SplitClip(time_ms) => self.studio_timeline.split_at(time_ms),
+            TimelineAction::None => {}
+        }
+    }
+
+    /// Add a bookmark at the replay playhead and save it in the `.mcpr` archive.
+    pub(super) fn add_studio_marker(&mut self) {
+        let Some(replay) = self.studio_replay.as_mut() else {
+            return;
+        };
+        let label = Text::translate(
+            "horizon.studio.timeline.marker",
+            &[Text::literal((replay.markers().len() + 1).to_string())],
+        )
+        .plain();
+        match replay.add_marker(label) {
+            Ok(_) => self.studio_timeline.markers = replay.markers().to_vec(),
+            Err(error) => log::warn!("Studio: could not save replay marker: {error}"),
+        }
     }
 
     /// Control socket command handler for `studio`.
@@ -752,6 +959,10 @@ impl Game<'_> {
 
         let duration_ms = driver.duration_ms();
         let packets = driver.packet_count();
+        self.studio_timeline.duration_ms = u64::from(duration_ms);
+        self.studio_timeline.current_time_ms = 0;
+        self.studio_timeline.playing = !driver.is_paused();
+        self.studio_timeline.markers = driver.markers().to_vec();
         self.studio_freecam.track = driver.camera_track().cloned().unwrap_or_default();
         self.studio_camera_track_dirty = false;
         if self.studio_replay.is_none() {
@@ -801,6 +1012,11 @@ impl Game<'_> {
             self.camera_type = camera_type;
         }
         self.last_replay_tick = None;
+        self.studio_timeline.current_time_ms = 0;
+        self.studio_timeline.playing = false;
+        self.studio_timeline.markers.clear();
+        self.studio_timeline.split_points.clear();
+        self.studio_timeline.selected_keyframe = None;
         self.studio_freecam.deactivate();
         self.studio_virtual_tick_ms = 0.0;
         self.capture(false);

@@ -1057,6 +1057,10 @@ impl Launcher {
         let profile = native_mods::Profile::chosen(&self.settings);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
+            let swapped = horizon_launcher::browser::horizon::fit_versions(&instance);
+            for line in &swapped {
+                let _ = tx.send(Msg::NativeProgress(line.clone()));
+            }
             let result = native_mods::build(
                 &base,
                 &folder,
@@ -1068,6 +1072,13 @@ impl Launcher {
                     let _ = tx.send(Msg::NativeProgress(step.label()));
                 },
             );
+            // The build's last line is what the player reads: it says which versions were swapped.
+            if result.is_ok() && !swapped.is_empty() {
+                let _ = tx.send(Msg::NativeProgress(swapped.join(
+                    "
+",
+                )));
+            }
             let _ = tx.send(Msg::Native(result));
         });
     }

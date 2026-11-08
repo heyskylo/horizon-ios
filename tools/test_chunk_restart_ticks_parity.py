@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Saved scheduled ticks fire when their saved delay says, after a restart and after a frozen reload.
+"""A chunk's saved ticks and block entities after a restart and after a frozen reload.
 
 Real dedicated servers, vanilla and Horizon, on the same scene: in a forceloaded chunk of a frozen
 world, repeaters of delay 1 to 4 are powered and a water source is placed, so their block and fluid
@@ -12,7 +12,10 @@ ticks are pending (due 2, 4, 6, 8 and 5 ticks on). Then either
 
 A datapack's tick function records the first game time it runs and the game time each repeater is
 first seen powered and the water first seen flowing; the harness compares those times relative to the
-first run. After the restart, vanilla skips the chunk's ticks until its entity section has loaded
+first run. A lit furnace shows when block entities start ticking: a chunk's block entities wait for its
+entity section to load (`LevelChunk.isTicking`, `ServerLevel.areEntitiesLoaded`), which completes at the end
+of a level tick (`PersistentEntitySectionManager.processPendingLoads`), frozen or not. So after the restart
+the furnace does not burn in the first tick; after the frozen reload it does. After the restart, vanilla skips the chunk's ticks until its entity section has loaded
 (`isPositionTickingWithEntitiesLoaded`), which can still be pending on the second tick, so the delay-1
 repeater (due on the second tick) is left out of that comparison.
 
@@ -41,10 +44,13 @@ except ImportError:
 X0, Z0, Y = 512, 512, 101
 REPEATERS = [(f'r{d}', X0 + 2 + 3 * d, Z0 + 4, d) for d in (1, 2, 3, 4)]
 WATER = ('w', X0 + 4, Z0 + 10)
+FURNACE = (X0 + 12, Z0 + 12)
 KEYS = [name for name, *_ in REPEATERS] + [WATER[0]]
 # Ticks after the first tick-function run: a repeater's delay d is 2d ticks, water flows after 5.
-EXPECTED = {'r1': 2, 'r2': 4, 'r3': 6, 'r4': 8, 'w': 5}
-COMPARED = {'restart': ['r2', 'r3', 'r4', 'w'], 'frozen': KEYS}
+# `burnt`: how much the furnace burnt in the first tick.
+TIMES = {'r1': 2, 'r2': 4, 'r3': 6, 'r4': 8, 'w': 5}
+EXPECTED = {'restart': {**{k: TIMES[k] for k in ('r2', 'r3', 'r4', 'w')}, 'burnt': 0},
+            'frozen': {**TIMES, 'burnt': 1}}
 MESSAGE = re.compile(r'\[Server thread/INFO\]: (?:System chat: )?(.*)$')
 
 
@@ -59,8 +65,13 @@ def install_recorder(world, jar):
         'description': 'Saved tick recorder', 'pack_format': fmt[0], 'min_format': fmt, 'max_format': fmt}}))
     (pack / 'data/minecraft/tags/function/tick.json').write_text(json.dumps({'values': ['saved_ticks:tick']}))
     unset = 'execute unless score {} st matches -2147483648..'
+    fx, fz = FURNACE
+    lit = f'data get block {fx} {Y} {fz} lit_time_remaining'
     lines = ['execute unless score armed st matches 1 run return 0',
-             unset.format('start') + ' store result score start st run time query gametime']
+             unset.format('start') + ' store result score start st run time query gametime',
+             'scoreboard players add runs st 1',
+             f'execute if score runs st matches 1 store result score f0 st run {lit}',
+             f'execute if score runs st matches 2 store result score f1 st run {lit}']
     for name, x, z, _ in REPEATERS:
         lines.append(unset.format(name) + f' if block {x} {Y} {z} repeater[powered=true]'
                      f' store result score {name} st run time query gametime')
@@ -118,12 +129,14 @@ def run_case(command, out, label, case, jar):
         deadline = time.monotonic() + 120
         while True:
             scores = {}
-            for key in ['start'] + KEYS:
+            for key in ['start', 'f0', 'f1'] + KEYS:
                 found = [re.search(r'has (-?\d+)', line) for line in reply(f'scoreboard players get {key} st')]
                 scores[key] = next((int(m.group(1)) for m in found if m), None)
             if all(v is not None for v in scores.values()) or time.monotonic() > deadline:
-                return {k: None if scores[k] is None or scores['start'] is None else scores[k] - scores['start']
-                        for k in KEYS}
+                times = {k: None if scores[k] is None or scores['start'] is None else scores[k] - scores['start']
+                         for k in KEYS}
+                burnt = None if scores['f0'] is None or scores['f1'] is None else scores['f0'] - scores['f1']
+                return {**times, 'burnt': burnt}
             time.sleep(0.5)
 
     server, reply, until = start('setup')
@@ -142,6 +155,7 @@ def run_case(command, out, label, case, jar):
         reply(f'fill {X0} {Y} {Z0} {X0 + 15} {Y + 2} {Z0 + 15} air')
         for _, x, z, d in REPEATERS:
             reply(f'setblock {x} {Y} {z} repeater[facing=east,delay={d}]')
+        reply(f'setblock {FURNACE[0]} {Y} {FURNACE[1]} furnace[lit=true]{{lit_time_remaining:200,lit_total_time:200}}')
         saved_at = game_time(server)
         for _, x, z, _ in REPEATERS:
             reply(f'setblock {x + 1} {Y} {z} redstone_block')
@@ -191,23 +205,23 @@ def main():
     cp = os.pathsep.join(map(str, [jars['server'], *libraries]))
     commands = {'vanilla': ['java', '-Xmx2g', '-cp', cp, 'net.minecraft.server.Main', 'nogui'],
                 'horizon': [binary, '--resources', lab.RESOURCES.resolve(), '--dedicated', '--nogui']}
-    results = {label: {case: run_case(command, out, label, case, jars['server']) for case in COMPARED}
+    results = {label: {case: run_case(command, out, label, case, jars['server']) for case in EXPECTED}
                for label, command in commands.items()}
     lab.write_json(out / 'records.json', results)
     failures = []
-    for case, keys in COMPARED.items():
+    for case, keys in EXPECTED.items():
         expected, actual = results['vanilla'][case], results['horizon'][case]
         for key in keys:
-            assert expected[key] == EXPECTED[key], f'vanilla {case} {key}: {expected[key]}, not {EXPECTED[key]}'
+            assert expected[key] == keys[key], f'vanilla {case} {key}: {expected[key]}, not {keys[key]}'
             if actual[key] != expected[key]:
                 failures.append({'case': case, 'tick': key, 'vanilla': expected[key], 'horizon': actual[key]})
         matched = len(keys) - sum(f['case'] == case for f in failures)
-        print(f'{case}: {matched}/{len(keys)} saved ticks fire on time', flush=True)
+        print(f'{case}: {matched}/{len(keys)} observations match', flush=True)
     lab.write_json(out / 'report.json', {'schema': 1, 'minecraft': lock['minecraft']['version'],
                                          'results': results, 'failures': failures})
     for failure in failures:
         print(json.dumps(failure), flush=True)
-    assert not failures, f'{len(failures)} saved ticks fire at other times; see {out}'
+    assert not failures, f'{len(failures)} observations differ; see {out}'
 
 
 if __name__ == '__main__':
