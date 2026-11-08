@@ -2157,11 +2157,17 @@ impl Game<'_> {
             _ => u32::MAX,
         }
     }
-    /// `ItemStack.getHoverName`: the custom name, a written book's title, the
-    /// item name component, else the item's or potion's name.
+    /// `ItemStack.getHoverName`: the custom name, a potion's or tipped
+    /// arrow's contents, a written book's title, the item name component,
+    /// else the item's name.
     fn stack_hover_name(&self, stack: &ItemStack) -> String {
         if let Some(n) = stack.custom_name() {
             n.to_owned()
+        } else if let Some(key) = brewing::contents_name_key(stack) {
+            self.pack
+                .names
+                .display_get(&key)
+                .unwrap_or_else(|| self.pack.names.display_item(&stack.item))
         } else if let Some(title) = stack
             .data()
             .and_then(|d| d.written.as_ref())
@@ -2173,15 +2179,6 @@ impl Game<'_> {
             n
         } else if stack.data().is_some_and(|d| d.ominous_banner) {
             self.translate("block.minecraft.ominous_banner", "Ominous Banner")
-        } else if stack.data().and_then(|d| d.potion.as_ref()).is_some()
-            || stack.item.ends_with("potion")
-            || &*stack.item == "minecraft:tipped_arrow"
-        {
-            let key = brewing::potion_name_key(&stack.item, stack.potion());
-            self.pack
-                .names
-                .display_get(&key)
-                .unwrap_or_else(|| self.pack.names.display_item(&stack.item))
         } else if let Some(head) = horizon_client::item_tooltip::player_head_name(stack) {
             head.title(&|key| self.pack.names.display_get(key))
         } else {

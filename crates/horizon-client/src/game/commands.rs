@@ -1373,6 +1373,9 @@ impl Game<'_> {
         let custom = s.data().and_then(|data| data.custom_name.as_ref());
         let hover = if let Some(c) = custom {
             horizon_client::component::name_text(c)
+        } else if let Some(key) = horizon_client::brewing::contents_name_key(s) {
+            // A potion's or tipped arrow's own name, over its `item_name`.
+            Text::translate(&key, &[])
         } else if let Some(name) = s.data().and_then(|d| d.other("minecraft:item_name")) {
             // `ItemStack.getItemName`: the `item_name` component wins over the
             // item's own name (`Item.getName`), so a datapack's or a server's
@@ -1385,18 +1388,6 @@ impl Game<'_> {
             .filter(|t| !t.trim().is_empty())
         {
             Text::literal(title)
-        } else if matches!(
-            item,
-            "minecraft:potion"
-                | "minecraft:splash_potion"
-                | "minecraft:lingering_potion"
-                | "minecraft:tipped_arrow"
-        ) && s.potion().is_some()
-        {
-            Text::translate(
-                &horizon_client::brewing::potion_name_key(item, s.potion()),
-                &[],
-            )
         } else if item == "minecraft:shield"
             && let Some(color) = s.data().and_then(|d| d.base_color.as_deref())
         {

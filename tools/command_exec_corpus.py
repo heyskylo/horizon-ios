@@ -3024,6 +3024,24 @@ def summoned_potions():
     return ops
 
 
+def potion_contents_names():
+    """`PotionItem.getName` and `TippedArrowItem.getName`: a potion or a tipped arrow is
+    named by its contents (`PotionContents.getName`: their own `custom_name`, the potion,
+    else `empty`), over its `item_name`; without contents it takes the item's own name, and a
+    custom name still wins."""
+    stacks = [
+        'minecraft:potion[minecraft:item_name="Bottle",minecraft:potion_contents={potion:"minecraft:long_swiftness"}]',
+        'minecraft:potion',
+        'minecraft:splash_potion[minecraft:potion_contents={custom_effects:[{id:"minecraft:speed",duration:600}]}]',
+        'minecraft:lingering_potion[minecraft:item_name="Cloud",minecraft:potion_contents={potion:"minecraft:poison"}]',
+        'minecraft:tipped_arrow[minecraft:item_name="Dart",minecraft:potion_contents={potion:"minecraft:poison"}]',
+        'minecraft:potion[minecraft:potion_contents={potion:"minecraft:water",custom_name:"swiftness"}]',
+        'minecraft:potion[!minecraft:potion_contents,minecraft:item_name="Bottle"]',
+        'minecraft:potion[minecraft:custom_name="Mine",minecraft:potion_contents={potion:"minecraft:swiftness"}]',
+    ]
+    return [*setup('/clear @s'), *[cmd(f'/give @s {s}') for s in stacks], *setup('/clear @s')]
+
+
 def trial_spawner_passengers():
     """Configured passengers must exist as entities with a vehicle (#7254)."""
     ops = [*setup('/fill 1 219 1 13 219 8 stone',
@@ -6525,6 +6543,7 @@ def groups():
         ('piglin pickups', piglin_pickups()),
         ('experience orb stuck', experience_orb_stuck()),
         ('summoned potions', summoned_potions()),
+        ('potion contents names', potion_contents_names()),
         ('creeper cloud selectors', creeper_cloud_selectors()),
         # Last: it leaves the player in other food than it found.
         (player_food.GROUP, player_food.cases(cmd, setup)),
