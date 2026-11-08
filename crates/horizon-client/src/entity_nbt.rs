@@ -688,6 +688,12 @@ pub fn mob_to_nbt(
         "Invulnerable".into(),
         Tag::Byte(i8::from(m.invulnerable_flag)),
     );
+    // Entity.saveWithoutId: the hurt immunity left, only while there is some.
+    if m.invulnerable > 0 {
+        map.insert("invulnerable_time".into(), Tag::Int(m.invulnerable));
+    } else {
+        map.remove(&horizon_world::nbt::JavaString::from("invulnerable_time"));
+    }
     map.insert(
         "LeftHanded".into(),
         Tag::Byte(i8::from(m.extra.left_handed)),
@@ -2025,7 +2031,12 @@ pub fn mob_from_nbt(
             };
             let effect = crate::brewing::namespaced(def.id);
             let duration = number(e.get("duration")).unwrap_or(0) as i32;
-            let amplifier = number(e.get("amplifier")).unwrap_or(0) as i32;
+            // `MobEffectInstance.Details`: Codec.BYTE uses boxed Number.byteValue,
+            // then UNSIGNED_BYTE interprets the resulting byte as 0..255.
+            let amplifier = e
+                .get("amplifier")
+                .and_then(horizon_world::datafix::dynamic::as_number)
+                .map_or(0, |n| i32::from(n.byte_value() as u8));
             m.extra.effects.retain(|x| x.0 != effect);
             m.extra.effects.push((effect, duration, amplifier));
             // Details.CODEC: `show_particles` defaults to true.
@@ -2048,6 +2059,8 @@ pub fn mob_from_nbt(
     }
     m.silent = flag(tag, "Silent");
     m.invulnerable_flag = flag(tag, "Invulnerable");
+    // Entity.load: `getIntOr("invulnerable_time", 0)`.
+    m.invulnerable = number(tag.get("invulnerable_time")).unwrap_or(0) as i32;
     if m.species() == crate::mobs::Species::Bat {
         // Bat.readAdditionalSaveData: BatFlags bit 0, resting.
         m.extra.flag = number(tag.get("BatFlags")).unwrap_or(0) & 1 != 0;
@@ -2730,6 +2743,28 @@ pub fn evoker_fangs_to_nbt(
 fn item_uuid_from_tag(tag: Option<&Tag>) -> Option<[i32; 4]> {
     let values = horizon_world::datafix::dynamic::as_int_stream(tag)?;
     values.get(..4)?.try_into().ok()
+}
+
+/// The `Entity` fields a saved non-mob entity carries (`Base::tag`), for a
+/// caller that writes its own kind's fields around them.
+pub fn entity_base_tag(
+    id: &str,
+    position: Vec3,
+    motion: Vec3,
+    rotation: [f32; 2],
+    uuid: [i32; 4],
+    raw: Option<&Tag>,
+) -> Tag {
+    Base {
+        id,
+        uuid,
+        position,
+        motion,
+        rotation,
+        on_ground: raw.is_some_and(|t| flag(t, "OnGround")),
+        fall_distance: 0.0,
+    }
+    .tag(raw)
 }
 
 /// `ItemEntity.readAdditionalSaveData`: Health uses NumericTag's short conversion;
@@ -9664,6 +9699,109 @@ mod mob_hidden_speed_tests {
         for raw in [None, Some(&input)] {
             let actual = mob_to_nbt(&m, [202, 0, 0, 1], raw, None, |_| None);
             assert!(first(&actual).get("hidden_effect").is_none());
+        }
+    }
+}
+
+#[cfg(test)]
+mod mob_effect_amplifier_codec {
+    use super::*;
+
+    fn types() -> HashMap<String, Arc<MobType>> {
+        let kind = crate::mobs::sensor_scan_tests::kind();
+        HashMap::from([(kind.id.clone(), kind)])
+    }
+
+    fn input(amplifier: Option<Tag>) -> Tag {
+        let mut effect = Tag::compound([
+            ("id", string("minecraft:night_vision")),
+            ("duration", Tag::Int(200)),
+            ("ambient", Tag::Byte(1)),
+            ("show_particles", Tag::Byte(0)),
+            ("show_icon", Tag::Byte(0)),
+        ]);
+        if let Some(value) = amplifier {
+            put(&mut effect, "amplifier", value);
+        }
+        Tag::compound([
+            ("id", string("minecraft:cow")),
+            ("Pos", doubles(&[6.5, 200.0, 6.5])),
+            ("Health", Tag::Float(10.0f32.to_bits())),
+            ("NoAI", Tag::Byte(1)),
+            ("NoGravity", Tag::Byte(1)),
+            ("Tags", Tag::List(vec![string("amplifier-control")])),
+            ("active_effects", Tag::List(vec![effect])),
+        ])
+    }
+
+    fn saved_effect(tag: &Tag) -> &Tag {
+        let Some(Tag::List(effects)) = tag.get("active_effects") else {
+            panic!("actual effect missing: {tag:?}");
+        };
+        assert_eq!(effects.len(), 1);
+        &effects[0]
+    }
+
+    #[test]
+    fn decoded_numeric_amplifiers_roundtrip_without_raw_input() {
+        let cases = [
+            (None, 0),
+            (Some(Tag::Byte(0)), 0),
+            (Some(Tag::Int(1)), 1),
+            (Some(Tag::Byte(127)), 127),
+            (Some(Tag::Byte(-128)), 128),
+            (Some(Tag::Byte(-1)), 255),
+            (Some(Tag::Int(256)), 0),
+            (Some(Tag::Int(-1)), 255),
+            (Some(Tag::Long(9007199254740993)), 1),
+            (Some(Tag::Long(-4294967297)), 255),
+            (Some(Tag::Float(1.75f32.to_bits())), 1),
+            (Some(Tag::Float((-0.5f32).to_bits())), 0),
+            (Some(Tag::Double((-1.75f64).to_bits())), 255),
+            (Some(Tag::Double(256.75f64.to_bits())), 0),
+            (Some(Tag::Double(1e20f64.to_bits())), 255),
+            (Some(Tag::Double((-1e20f64).to_bits())), 0),
+        ];
+        let types = types();
+        for (value, expected) in cases {
+            let raw = input(value.clone());
+            let mob = mob_from_nbt(&raw, &types, 7, None).unwrap();
+            assert_eq!(
+                mob.extra.effects,
+                [("minecraft:night_vision", 200, expected)],
+                "{value:?}"
+            );
+            for source in [None, Some(&raw)] {
+                let saved = mob_to_nbt(&mob, [158, 0, 0, 1], source, None, |_| None);
+                let effect = saved_effect(&saved);
+                let expected_tag = (expected != 0).then_some(Tag::Byte(expected as u8 as i8));
+                assert_eq!(effect.get("amplifier"), expected_tag.as_ref(), "{value:?}");
+                assert_eq!(effect.get("duration"), Some(&Tag::Int(200)));
+                assert_eq!(effect.get("ambient"), Some(&Tag::Byte(1)));
+                assert_eq!(effect.get("show_particles"), Some(&Tag::Byte(0)));
+                assert_eq!(effect.get("show_icon"), Some(&Tag::Byte(0)));
+                let back = mob_from_nbt(&saved, &types, 8, None).unwrap();
+                assert_eq!(back.extra.effects, mob.extra.effects);
+            }
+        }
+    }
+
+    #[test]
+    fn modeled_amplifier_mutation_overrides_stale_raw_and_omits_zero() {
+        let raw = input(Some(Tag::Byte(12)));
+        let mut mob = mob_from_nbt(&raw, &types(), 7, None).unwrap();
+        for amplifier in [0, 128, 255, 1] {
+            mob.extra.effects[0].2 = amplifier;
+            for source in [None, Some(&raw)] {
+                let saved = mob_to_nbt(&mob, [158, 0, 0, 2], source, None, |_| None);
+                let expected = (amplifier != 0).then_some(Tag::Byte(amplifier as u8 as i8));
+                assert_eq!(saved_effect(&saved).get("amplifier"), expected.as_ref());
+                assert_eq!(saved.get("Health"), Some(&Tag::Float(10.0f32.to_bits())));
+                assert_eq!(saved.get("NoAI"), Some(&Tag::Byte(1)));
+                if source.is_some() {
+                    assert_eq!(saved.get("Tags"), raw.get("Tags"));
+                }
+            }
         }
     }
 }
