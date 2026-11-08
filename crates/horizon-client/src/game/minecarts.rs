@@ -24,7 +24,7 @@ use horizon_client::{
 };
 use horizon_core::{
     geometry::{Aabb, Vec3, trig},
-    random::RandomSource,
+    random::{LegacyRandom, RandomSource},
 };
 use horizon_world::registry::BlockStateId;
 use std::{collections::HashMap, sync::Arc};
@@ -173,6 +173,7 @@ pub(super) struct Minecart {
     pub custom_display: Option<horizon_world::nbt::Tag>,
     /// `AbstractMinecart.customDisplayOffset` (`DisplayOffset`), in sixteenths.
     pub custom_offset: Option<i32>,
+    pub random: LegacyRandom,
 }
 /// `EntityType.MINECART`'s `sized(0.98F, 0.7F)`: float dimensions, widened.
 pub(super) const WIDTH: f64 = 0.98_f32 as f64;
@@ -510,6 +511,7 @@ impl Minecart {
             synced_output: String::new(),
             custom_display: None,
             custom_offset: None,
+            random: random_source::entity(),
         }
     }
     pub fn bounds(&self) -> Aabb {
@@ -1481,7 +1483,7 @@ impl Game<'_> {
                 if c.fuel <= 0 {
                     c.push = Vec3::ZERO;
                 }
-                if c.fuel > 0 && self.world.random.next_int_bound(4).unwrap_or(1) == 0 {
+                if c.fuel > 0 && c.random.next_int_bound(4).unwrap_or(1) == 0 {
                     let at = [c.position.x, c.position.y + 0.8, c.position.z];
                     self.particles.add(
                         &ParticleOptions::simple(ParticleType::LargeSmoke),
@@ -1596,12 +1598,12 @@ impl Game<'_> {
             c.fuse = 80;
         }
     }
-    fn explode_cart(&mut self, c: &Minecart, speed_sqr: f64) {
+    fn explode_cart(&mut self, c: &mut Minecart, speed_sqr: f64) {
         if !self.ui.rules.bool("tnt_explodes") {
             return;
         }
         let speed = speed_sqr.sqrt().min(5.0);
-        let r = self.world.random.next_double();
+        let r = c.random.next_double();
         let power = (4.0 + r * 1.5 * speed) as f32;
         let at = [c.position.x, c.position.y, c.position.z];
         // The cart is the explosion's source: it is gone before the blast
@@ -2475,8 +2477,8 @@ impl Game<'_> {
             self.eject_cart_mobs(i);
             let id = self.carts[i].id;
             self.release_vehicle_container(id);
-            let c = self.carts.remove(i);
-            self.explode_cart(&c, arrow_velocity.length_squared());
+            let mut c = self.carts.remove(i);
+            self.explode_cart(&mut c, arrow_velocity.length_squared());
             return;
         }
         self.hurt_cart(i, damage, creative, false);
@@ -2561,8 +2563,8 @@ impl Game<'_> {
                 // MinecartTNT.destroy: prime instead of breaking.
                 if c.fuse < 0 {
                     self.prime_cart(&mut c);
-                    let r = &mut self.world.random;
-                    c.fuse = r.next_int_bound(20).unwrap_or(0) + r.next_int_bound(20).unwrap_or(0);
+                    c.fuse = c.random.next_int_bound(20).unwrap_or(0)
+                        + c.random.next_int_bound(20).unwrap_or(0);
                 }
                 self.carts.insert(i, c);
             } else {
