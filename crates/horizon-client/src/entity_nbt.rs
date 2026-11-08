@@ -970,9 +970,11 @@ pub fn mob_to_nbt(
             }
         }
         "minecraft:piglin" | "minecraft:piglin_brute" | "minecraft:hoglin" => {
-            // Only Piglin.addAdditionalSaveData writes CannotHunt.
+            // Only Piglin.addAdditionalSaveData writes CannotHunt, always.
             if id == "minecraft:piglin_brute" {
                 map.remove(&"CannotHunt".into());
+            } else if id == "minecraft:piglin" {
+                map.entry("CannotHunt".into()).or_insert(Tag::Byte(0));
             }
             map.insert(
                 "IsImmuneToZombification".into(),
@@ -1440,6 +1442,10 @@ pub fn mob_to_nbt(
             map.entry("ExplosionPower".into()).or_insert(Tag::Byte(1));
         }
         _ => {}
+    }
+    // Bogged.addAdditionalSaveData: whether its mushrooms were sheared.
+    if m.species() == S::Bogged {
+        map.insert("sheared".into(), Tag::Byte(i8::from(m.extra.sheared)));
     }
     // Zombie.addAdditionalSaveData: CanBreakDoors.
     if crate::mobs::doors::is_zombie(m.species()) {
@@ -2144,7 +2150,15 @@ pub fn mob_from_nbt(
             ))
         };
     }
-    m.extra.pick_up_loot = flag(tag, "CanPickUpLoot");
+    // AbstractPiglin.readAdditionalSaveData: getBooleanOr("CanPickUpLoot", true).
+    let piglin = matches!(
+        m.species(),
+        crate::mobs::Species::Piglin | crate::mobs::Species::PiglinBrute
+    );
+    m.extra.pick_up_loot = tag
+        .get("CanPickUpLoot")
+        .and_then(int_value)
+        .map_or(piglin, |value| value as i8 != 0);
     m.custom_name = custom_name(tag);
     m.custom_name_text = tag.get("CustomName").map(name_text);
     m.extra.left_handed = flag(tag, "LeftHanded");
@@ -2644,6 +2658,10 @@ pub fn mob_from_nbt(
             m.extra.home = Some([v[0], v[1], v[2]]);
         }
         m.extra.egg_time = number(tag.get("life_ticks")).map_or(-1, |v| v as i32);
+    }
+    // Bogged.readAdditionalSaveData: unsheared when absent.
+    if m.species() == crate::mobs::Species::Bogged {
+        m.extra.sheared = flag(tag, "sheared");
     }
     // Sheep.readAdditionalSaveData: white and unsheared when absent.
     if m.species() == crate::mobs::Species::Sheep {
@@ -7798,6 +7816,29 @@ mod sheep_nbt_tests {
             assert_eq!(number(tag.get(conversion)), Some(-1), "{kind}");
             assert_eq!(number(tag.get(affliction)), Some(-1), "{kind}");
         }
+        // AbstractPiglin: a piglin or brute saved without CanPickUpLoot picks up
+        // loot. Piglin always writes CannotHunt, the brute never does.
+        for (kind, hunt) in [
+            ("minecraft:piglin", Some(0)),
+            ("minecraft:piglin_brute", None),
+        ] {
+            let back = mob_from_nbt(&empty(kind), &types, 5, None).unwrap();
+            assert!(back.can_pick_up_loot(), "{kind}");
+            let tag = mob_to_nbt(&back, [1, 2, 3, 4], None, Some(&registry), |_| None);
+            assert_eq!(number(tag.get("CannotHunt")), hunt, "{kind}");
+        }
+        let mut saved = empty("minecraft:piglin");
+        put(&mut saved, "CanPickUpLoot", Tag::Byte(0));
+        let back = mob_from_nbt(&saved, &types, 6, None).unwrap();
+        assert!(!back.can_pick_up_loot());
+        // Bogged: whether it was sheared comes back, and a fresh one saves false.
+        let (_, tag) = round_trip(&new("minecraft:bogged"));
+        assert_eq!(number(tag.get("sheared")), Some(0));
+        let mut bogged = new("minecraft:bogged");
+        bogged.extra.sheared = true;
+        let (back, tag) = round_trip(&bogged);
+        assert_eq!(number(tag.get("sheared")), Some(1));
+        assert!(back.extra.sheared);
         // A saved conversion time starts one: `startConversion`.
         let saved = Tag::compound([
             ("id", string("minecraft:zombie")),
