@@ -2258,10 +2258,14 @@ impl Streaming {
         world.dirty_light.extend(columns);
     }
     /// Sections whose meshes sample a changed light value (faces and corners
-    /// read light from neighbouring blocks).
+    /// read light from neighbouring blocks). Every column whose stored light
+    /// changed is saved again (`ChunkHolder.sectionLightChanged` marks the
+    /// chunk unsaved): an edit's light reaches up to 15 blocks into columns
+    /// the edit itself did not mark, which may already have been saved.
     fn mark_light_changes(world: &mut World, changed: &LightChanges) {
-        if let Some(log) = &mut world.light_log {
-            for (x, sy, z) in changed.sections() {
+        for (x, sy, z) in changed.sections() {
+            world.modified.insert((x, z));
+            if let Some(log) = &mut world.light_log {
                 log.entry((x, z)).or_default().insert(sy as usize);
             }
         }
@@ -4361,6 +4365,38 @@ mod tests {
                 -40 + dz
             );
         }
+    }
+
+    /// An edit's light change in a neighbouring column marks that column
+    /// unsaved too, or a column saved before the edit keeps its old light on
+    /// disk.
+    #[test]
+    fn light_spilling_into_a_saved_neighbour_marks_it_unsaved() {
+        use crate::light::tests::{AIR, TORCH, tables, world};
+        let tables = tables();
+        let mut w = World::new(horizon_world::registry::BlockStateId(0), 0);
+        for (key, chunk) in world(|c| {
+            c.set(14, 0, 8, TORCH);
+        }) {
+            w.chunks.insert(key, chunk);
+        }
+        assert!(w.modified.is_empty());
+        Arc::make_mut(w.chunks.get_mut(&(0, 0)).unwrap()).set(14, 0, 8, AIR);
+        let mut changed = crate::light::LightChanges::default();
+        crate::light::relight(
+            &mut w.chunks,
+            &tables,
+            true,
+            &[(14, 0, 8)],
+            false,
+            &mut changed,
+        );
+        assert_eq!(w.chunks[&(1, 0)].light(0, 0, 8) & 15, 0); // was 12
+        Streaming::mark_light_changes(&mut w, &changed);
+        assert!(w.modified.contains(&(1, 0)));
+        assert!(w.modified.contains(&(0, 0)));
+        // The torch never reached x -1: that column's light is unchanged.
+        assert!(!w.modified.contains(&(-1, 0)));
     }
 
     fn resident_column(world: &mut World, light: u8) -> Chunk {

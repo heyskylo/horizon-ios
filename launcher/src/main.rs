@@ -1057,27 +1057,45 @@ impl Launcher {
         let profile = native_mods::Profile::chosen(&self.settings);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let swapped = horizon_launcher::browser::horizon::fit_versions(&instance);
+            let mut swapped = horizon_launcher::browser::horizon::fit_versions(&instance);
             for line in &swapped {
                 let _ = tx.send(Msg::NativeProgress(line.clone()));
             }
-            let result = native_mods::build(
-                &base,
-                &folder,
-                &instance,
-                anyway,
-                on_base,
-                profile,
-                |step| {
-                    let _ = tx.send(Msg::NativeProgress(step.label()));
-                },
-            );
+            let build = || {
+                native_mods::build(
+                    &base,
+                    &folder,
+                    &instance,
+                    anyway,
+                    on_base,
+                    profile,
+                    |step| {
+                        let _ = tx.send(Msg::NativeProgress(step.label()));
+                    },
+                )
+            };
+            let mut result = build();
+            // A mod the build left out though its version said it builds here: its next older
+            // version that says so, and one more build.
+            let left: Vec<String> = result
+                .as_ref()
+                .ok()
+                .and_then(|version| native_mods::about(version))
+                .map(|about| about.left_out.into_iter().map(|l| l.id).collect())
+                .unwrap_or_default();
+            if !left.is_empty() {
+                let older = horizon_launcher::browser::horizon::try_older(&instance, &left);
+                if !older.is_empty() {
+                    for line in &older {
+                        let _ = tx.send(Msg::NativeProgress(line.clone()));
+                    }
+                    swapped.extend(older);
+                    result = build();
+                }
+            }
             // The build's last line is what the player reads: it says which versions were swapped.
             if result.is_ok() && !swapped.is_empty() {
-                let _ = tx.send(Msg::NativeProgress(swapped.join(
-                    "
-",
-                )));
+                let _ = tx.send(Msg::NativeProgress(swapped.join("\n")));
             }
             let _ = tx.send(Msg::Native(result));
         });

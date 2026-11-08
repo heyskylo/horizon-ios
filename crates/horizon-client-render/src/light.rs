@@ -1283,7 +1283,7 @@ fn relight_layer(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::chunk::{HEIGHT, MIN_Y, SECTIONS};
 
@@ -1312,13 +1312,13 @@ mod tests {
         assert_eq!(dirty(&[(0, 0, 0)]).len(), 8);
     }
 
-    const AIR: u32 = 0;
+    pub(crate) const AIR: u32 = 0;
     const STONE: u32 = 1;
-    const TORCH: u32 = 2;
+    pub(crate) const TORCH: u32 = 2;
     const SLAB: u32 = 3;
     /// Air, stone, torch and a bottom slab (full bottom face, half sides,
     /// empty top), with a third face shape for the half sides.
-    fn tables() -> LightTables {
+    pub(crate) fn tables() -> LightTables {
         let cell = |dampening, emission, faces: [u16; 6]| Cell {
             dampening,
             emission,
@@ -1337,7 +1337,7 @@ mod tests {
             3,
         )
     }
-    fn world(edit: impl Fn(&mut Chunk)) -> HashMap<(i32, i32), Arc<Chunk>> {
+    pub(crate) fn world(edit: impl Fn(&mut Chunk)) -> HashMap<(i32, i32), Arc<Chunk>> {
         world_of(crate::chunk::ColumnLayout::VANILLA, edit)
     }
     /// Lit chunks around (0, 0) of `layout`, stone up to y 0.

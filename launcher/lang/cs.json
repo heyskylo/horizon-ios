@@ -1257,5 +1257,8 @@
   "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon spouští z datového balíčku funkce, značky funkcí, predikáty, modifikátory předmětů, recepty, tabulky kořisti (loot tables), pokroky, obchody s vesničany, typy poškození, většinu značek a většinu generování světa (biomy, prvky, struktury, dimenze). Ostatní soubory, jako jsou předvolby světa, zatím načítány nejsou.",
   "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "Položka {title} by v Horizonu zatím nic nezměnila: Horizon totiž nenačítá její soubory ({files}).",
   "{mod}: using version {version}, made for the Horizon you play": "{mod}: používá se verze {version}, vytvořená pro Horizon, který hrajete",
-  "Recommended": "Doporučeno"
+  "Recommended": "Doporučeno",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "Starší verze {version} se sestaví na Horizonu, který hraješ: instalace vybere ji",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: verze {version} se nesestavila, zkouší se {older}",
+  "Use recommended (kept at {version})": "Použít doporučenou (ponecháno na {version})"
 }
