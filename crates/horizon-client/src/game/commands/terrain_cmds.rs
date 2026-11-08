@@ -235,7 +235,7 @@ impl Game<'_> {
                         continue;
                     };
                     let current = chunk.biome(x, y, z);
-                    let current_name = &world_biomes!(self).list[usize::from(current)].name;
+                    let current_name = world_biomes!(self).name(current);
                     if let Some(f) = &filter
                         && !self.biome_matches(f, current_name)
                     {

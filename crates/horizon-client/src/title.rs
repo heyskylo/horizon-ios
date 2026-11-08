@@ -418,6 +418,9 @@ pub struct Title {
     caret: RefCell<crate::ui::Caret>,
     scroll: Cell<crate::ui::Scroll>,
     create_return_to_main: bool,
+    /// The Generate New World tile's request while the title shows Create New World
+    /// (`RealmsCreateWorldFlow.createWorld`): its settings upload into the Realm's slot.
+    realms_create: Option<crate::realms::CreateWorldRequest>,
     message_lines: Cell<usize>,
     /// The SafetyScreen's checkbox as last drawn: x, y, width, height.
     warning_check: Cell<[f32; 4]>,
@@ -820,6 +823,7 @@ impl Title {
             caret: RefCell::default(),
             scroll: Cell::default(),
             create_return_to_main: false,
+            realms_create: None,
             message_lines: Cell::new(1),
             warning_check: Cell::new([0.0; 4]),
             credits_button: Cell::new([0.0; 4]),
@@ -918,6 +922,14 @@ impl Title {
             && let Some(dir) = &options.pack_dir
         {
             let _ = std::fs::remove_dir_all(dir);
+        }
+        if let Some(request) = self.realms_create.take() {
+            // `CreateWorldScreen.openFresh`'s cancel: the screen the reset screen was
+            // opened from (the configuration screen, or the list for a new Realm).
+            let mut screen = crate::realms::Screen::with_saves(Some(self.saves.clone()));
+            screen.cancel_create_world(request);
+            self.mode = Mode::Realms(screen);
+            return;
         }
         if self.create_return_to_main {
             self.mode = Mode::Main;
@@ -1768,6 +1780,69 @@ impl Title {
             creative: *creative,
             options: options.clone(),
         }
+    }
+    /// Create New World's Create: a local world normally; while the Realms screen's
+    /// Generate New World tile asked for the screen, its settings go back to that screen
+    /// and upload there (`RealmsCreateWorldFlow.createWorld`), no local world made.
+    fn create_or_upload(&mut self) -> Action {
+        let Some(request) = self.realms_create.take() else {
+            return self.create_action();
+        };
+        let Mode::Create {
+            name,
+            seed,
+            creative,
+            options,
+            ..
+        } = &self.mode
+        else {
+            return Action::None;
+        };
+        let (name, seed, creative, options) =
+            (name.clone(), seed.clone(), *creative, options.clone());
+        let enabled_features = options.enabled_features(&self.resources);
+        let disabled: Vec<String> = crate::datapack::feature_packs(&self.resources)
+            .iter()
+            .map(|pack| pack.id.clone())
+            .filter(|id| !options.data_packs.contains(id))
+            .collect();
+        // `WorldOptions.randomSeed` when no seed was entered.
+        let seed = parse_seed(&seed).unwrap_or_else(|| {
+            let t = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos() as u64);
+            (t ^ (t >> 29)).wrapping_mul(0x9E37_79B9_7F4A_7C15) as i64
+        });
+        let mut level = Level {
+            name,
+            seed,
+            creative,
+            day_time: 0,
+            health: 20.0,
+            food: 20,
+            saturation: 5.0,
+            ..Level::default()
+        };
+        level.hardcore = options.hardcore;
+        level.difficulty = DIFFICULTIES[options.difficulty()].into();
+        level.allow_commands = Some(options.commands(creative));
+        level.enabled_features = enabled_features.clone();
+        level.game_rules = options
+            .rules
+            .copy_with_features(&enabled_features)
+            .by_name();
+        let world = crate::realms::CreatedWorld {
+            level,
+            world_gen: options.world_gen(),
+            flat_settings: options.flat_settings(),
+            single_biome: options.single_biome().map(str::to_owned),
+            data_packs: (options.data_packs.clone(), disabled),
+            pack_dir: options.pack_dir.clone(),
+        };
+        let mut screen = crate::realms::Screen::with_saves(Some(self.saves.clone()));
+        screen.start_create_world_upload(request, world);
+        self.mode = Mode::Realms(screen);
+        Action::None
     }
     /// The folder a new world named `name` gets (`findResultFolder`).
     fn target_folder(&self, name: &str) -> String {
@@ -3645,6 +3720,14 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     },
                     crate::realms::Outcome::OpenUri(uri) => Action::OpenUri(uri),
                     crate::realms::Outcome::Copy(text) => Action::CopyText(text),
+                    crate::realms::Outcome::CreateWorld(request) => {
+                        // `RealmsCreateWorldFlow.createWorld`: Create New World's settings
+                        // upload into the Realm's slot instead of a local world.
+                        self.realms_create = Some(request);
+                        self.create_return_to_main = false;
+                        self.mode = Self::new_world();
+                        Action::None
+                    }
                     crate::realms::Outcome::None => Action::None,
                 }
             }
@@ -3971,7 +4054,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 *self.experiments.get_mut() = Some(experiments::ExperimentsScreen::new(flags));
                 Action::None
             }
-            (Mode::Create { .. }, Some(21)) => self.create_action(),
+            (Mode::Create { .. }, Some(21)) => self.create_or_upload(),
             (Mode::Create { options, .. }, Some(31)) => {
                 if options.pack_dir.is_none() {
                     match crate::datapack::temp_folder() {
@@ -4207,12 +4290,14 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             }
             return (Action::None, false);
         }
+        if matches!(self.mode, Mode::Create { .. }) {
+            let upload = self.realms_create.is_some();
+            let action = self.create_or_upload();
+            // A press on Create is a button click: the local world, or the upload.
+            let sound = upload || matches!(action, Action::Create { .. });
+            return (action, sound);
+        }
         match &self.mode {
-            Mode::Create { .. } => {
-                let action = self.create_action();
-                let sound = matches!(action, Action::Create { .. });
-                (action, sound)
-            }
             Mode::Multiplayer(screen) => match screen.confirm() {
                 crate::multiplayer::Outcome::Connect { address, lan } => {
                     if matches!(screen, crate::multiplayer::Screen::Direct { .. }) {

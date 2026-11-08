@@ -1252,6 +1252,28 @@ fn enforce_guest_game_mode(
 }
 
 impl Game<'_> {
+    /// The level's default point, independently of the acting player's bed or spawnpoint.
+    pub(super) fn world_spawn_position(&self) -> [f64; 3] {
+        self.level
+            .world_spawn
+            .map_or([0.5, 80.0, 0.5], |[x, y, z]| {
+                [f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5]
+            })
+    }
+
+    /// MinecraftServer.setRespawnData: every placed player hears a changed world spawn.
+    pub(super) fn lan_broadcast_world_spawn(&self) {
+        if let Some(host) = &self.lan {
+            for guest in host.hub.guests.iter().filter(|guest| guest.placed) {
+                guest.send(&host.hub.default_spawn(
+                    guest.uuid,
+                    self.world_spawn_position(),
+                    self.level.world_spawn_angle,
+                ));
+            }
+        }
+    }
+
     /// `horizon-ctl lan ...`.
     pub(super) fn lan_control(&mut self, words: &[&str]) -> Result<Option<serde_json::Value>> {
         use serde_json::json;
@@ -2393,7 +2415,7 @@ impl Game<'_> {
         // Last tick's tracked entities: enough for place collision and joins
         // before this tick moves anyone.
         let entities = std::mem::take(&mut host.states);
-        let spawn = self.spawn.map_or([0.5, 80.0, 0.5], |s| [s.x, s.y, s.z]);
+        let spawn = self.world_spawn_position();
         let events = {
             let clock_rate = self.network_clock_rate();
             let mut ctx = TickCtx {
@@ -2401,6 +2423,7 @@ impl Game<'_> {
                 entities: entities.as_slice(),
                 next_entity: &mut self.next_entity,
                 spawn,
+                spawn_angle: self.level.world_spawn_angle,
                 difficulty: i32::from(self.ui.difficulty),
                 difficulty_locked: self.level.difficulty_locked,
                 clock_rate,
@@ -2726,7 +2749,7 @@ impl Game<'_> {
                 host.hub.entity_event(id, event, at);
             }
             host.hub.far_level(&self.save);
-            let spawn = self.spawn.map_or([0.5, 80.0, 0.5], |s| [s.x, s.y, s.z]);
+            let spawn = self.world_spawn_position();
             let events = {
                 let clock_rate = self.network_clock_rate();
                 let mut ctx = TickCtx {
@@ -2734,6 +2757,7 @@ impl Game<'_> {
                     entities,
                     next_entity: &mut self.next_entity,
                     spawn,
+                    spawn_angle: self.level.world_spawn_angle,
                     difficulty: i32::from(self.ui.difficulty),
                     difficulty_locked: self.level.difficulty_locked,
                     clock_rate,
@@ -2981,6 +3005,7 @@ impl Game<'_> {
             entities,
             next_entity: &mut self.next_entity,
             spawn,
+            spawn_angle: self.level.world_spawn_angle,
             difficulty: i32::from(self.ui.difficulty),
             difficulty_locked: self.level.difficulty_locked,
             clock_rate,
@@ -4199,6 +4224,268 @@ mod tests {
             [
                 "mainhand", "offhand", "head", "chest", "legs", "feet", "body", "saddle"
             ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod world_spawn_sync_tests {
+    use super::*;
+    use horizon_client::lan::{Joined, Out, PlayerSender, guest::Guest};
+    use horizon_protocol::packets::play::{self, Clientbound as C};
+    use std::sync::{Arc, atomic::AtomicI32, mpsc};
+
+    fn host(game: &mut Game<'_>) -> mpsc::Receiver<Out> {
+        game.lan_host(
+            LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            NetConfig {
+                listen: false,
+                announce: false,
+                ..NetConfig::loopback(0, String::new(), 2)
+            },
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: "minecraft:overworld".into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 20,
+                integrated: true,
+                levels: Default::default(),
+            },
+        )
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut guest = Guest::new(
+            Joined {
+                conn: 1,
+                uuid: 1,
+                name: "SpawnTest".into(),
+                properties: Vec::new(),
+                info: horizon_protocol::packets::configuration::ClientInformation::new(2),
+                brand: String::new(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:1".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
+            },
+            1,
+            [0.5, 80.0, 0.5],
+            2,
+        );
+        guest.placed = true;
+        guest.dimension = "minecraft:the_nether".into();
+        game.lan.as_mut().unwrap().hub.guests.push(guest);
+        rx
+    }
+
+    fn spawns(rx: &mpsc::Receiver<Out>) -> Vec<play::SetDefaultSpawnPosition> {
+        rx.try_iter()
+            .flat_map(|out| match out {
+                Out::Packet(body) => vec![body],
+                Out::Packets(bodies) => bodies,
+                Out::Disconnect(_) => panic!("unexpected disconnect"),
+            })
+            .filter_map(|body| {
+                let mut r = horizon_protocol::buf::Reader::new(&body);
+                let id = r.varint().unwrap();
+                match C::decode(id, r.rest()).unwrap() {
+                    C::SetDefaultSpawnPosition(p) => Some(p),
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources and scratch homes/cwd"]
+    fn join_and_respawn_contexts_use_world_spawn_not_a_personal_spawn() {
+        let mut game = super::super::native_machines::tests::server_game();
+        game.level.world_spawn = Some([100, 140, -20]);
+        game.spawn = Some(horizon_core::geometry::Vec3::new(96.5, 145.0, -31.5));
+        let ctx = game.server_ctx();
+        let block = ctx.spawn.map(|v| v.floor() as i32);
+        println!(
+            "world-spawn\tcontext\tminecraft:overworld\t{}\t{}\t{}",
+            block[0], block[1], block[2]
+        );
+        assert_eq!(ctx.spawn, [100.5, 140.0, -19.5]);
+        game.level.world_spawn_angle = [45.0, -10.0];
+        assert_eq!(game.server_ctx().spawn_angle, [45.0, -10.0]);
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources and scratch homes/cwd"]
+    fn setworldspawn_reaches_guests_in_other_dimensions_and_keeps_compass_overrides() {
+        let mut game = super::super::native_machines::tests::server_game();
+        game.build_registries();
+        game.level.world_spawn = None;
+        let personal = horizon_core::geometry::Vec3::new(96.5, 145.0, -31.5);
+        game.spawn = Some(personal);
+        for (x, z) in [(6, -2), (-1, 0)] {
+            game.world
+                .chunks
+                .insert((x, z), Arc::new(horizon_client::chunk::Chunk::empty(x, z)));
+        }
+        let rx = host(&mut game);
+        // Materializing the effective fallback does not change the packet data.
+        game.as_console(|game| assert!(game.run_command("setworldspawn 0 80 0")));
+        assert!(spawns(&rx).is_empty());
+        game.as_console(|game| assert!(game.run_command("setworldspawn 100 140 -20")));
+        assert_eq!(
+            game.spawn,
+            Some(personal),
+            "a personal respawn point stays personal"
+        );
+        let sent = spawns(&rx);
+        assert_eq!(
+            sent.len(),
+            1,
+            "a placed Nether guest must hear the world spawn change"
+        );
+        assert_eq!(sent[0].pos.dimension, "minecraft:overworld");
+        assert_eq!(sent[0].pos.pos, [100, 140, -20]);
+        println!(
+            "world-spawn\tchanged\t{}\t{}\t{}\t{}",
+            sent[0].pos.dimension, sent[0].pos.pos[0], sent[0].pos.pos[1], sent[0].pos.pos[2]
+        );
+        game.as_console(|game| assert!(game.run_command("setworldspawn 100 140 -20")));
+        assert!(
+            spawns(&rx).is_empty(),
+            "unchanged respawn data is not broadcast again"
+        );
+        let target = play::GlobalPos {
+            dimension: "minecraft:the_end".into(),
+            pos: [9, 70, -4],
+        };
+        game.lan
+            .as_mut()
+            .unwrap()
+            .hub
+            .compass_targets
+            .insert(1, target.clone());
+        game.as_console(|game| assert!(game.run_command("setworldspawn -7 90 12")));
+        let sent = spawns(&rx);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].pos.dimension, target.dimension);
+        assert_eq!(sent[0].pos.pos, target.pos);
+        println!(
+            "world-spawn\toverride\t{}\t{}\t{}\t{}",
+            sent[0].pos.dimension, sent[0].pos.pos[0], sent[0].pos.pos[1], sent[0].pos.pos[2]
+        );
+        game.lan.as_mut().unwrap().hub.compass_targets.clear();
+        // Rotation alone is a changed RespawnData, even at the same block.
+        game.as_console(|game| assert!(game.run_command("setworldspawn -7 90 12 45 -10")));
+        let sent = spawns(&rx);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].pos.pos, [-7, 90, 12]);
+        assert_eq!([sent[0].yaw, sent[0].pitch], [45.0, -10.0]);
+        println!(
+            "world-spawn\tangle\t{}\t{}\t{}\t{}\t{:.1}\t{:.1}",
+            sent[0].pos.dimension,
+            sent[0].pos.pos[0],
+            sent[0].pos.pos[1],
+            sent[0].pos.pos[2],
+            sent[0].yaw,
+            sent[0].pitch
+        );
+        game.as_console(|game| assert!(game.run_command("setworldspawn -7 90 12 45 -10")));
+        assert!(spawns(&rx).is_empty());
+        // RespawnData.of wraps yaw and clamps pitch before storing or comparing.
+        game.as_console(|game| assert!(game.run_command("setworldspawn -7 90 12 405 100")));
+        let sent = spawns(&rx);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(game.level.world_spawn_angle, [45.0, 90.0]);
+        assert_eq!([sent[0].yaw, sent[0].pitch], [45.0, 90.0]);
+        println!(
+            "world-spawn\tnormalized\t{}\t{}\t{}\t{}\t{:.1}\t{:.1}",
+            sent[0].pos.dimension,
+            sent[0].pos.pos[0],
+            sent[0].pos.pos[1],
+            sent[0].pos.pos[2],
+            sent[0].yaw,
+            sent[0].pitch
+        );
+        for command in [
+            "setworldspawn -7 90 12 45 90",
+            "setworldspawn -7 90 12 405 100",
+        ] {
+            game.as_console(|game| assert!(game.run_command(command)));
+            assert!(
+                spawns(&rx).is_empty(),
+                "equivalent normalized rotations are unchanged"
+            );
+        }
+        // Clamp raw pitch: wrapping -270 first would incorrectly produce +90.
+        game.as_console(|game| assert!(game.run_command("setworldspawn -7 90 12 405 -270")));
+        let sent = spawns(&rx);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(game.level.world_spawn_angle, [45.0, -90.0]);
+        assert_eq!([sent[0].yaw, sent[0].pitch], [45.0, -90.0]);
+        println!(
+            "world-spawn\tclamped\t{}\t{}\t{}\t{}\t{:.1}\t{:.1}",
+            sent[0].pos.dimension,
+            sent[0].pos.pos[0],
+            sent[0].pos.pos[1],
+            sent[0].pos.pos[2],
+            sent[0].yaw,
+            sent[0].pitch
+        );
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources and scratch homes/cwd"]
+    fn guest_respawn_without_a_known_world_spawn_never_advertises_the_hosts_personal_point() {
+        let mut game = super::super::native_machines::tests::server_game();
+        game.level.world_spawn = None;
+        game.level.world_spawn_angle = [45.0, -10.0];
+        let host_personal = horizon_core::geometry::Vec3::new(96.5, 145.0, -31.5);
+        let guest_personal = [5.5, 81.0, 5.5];
+        game.spawn = Some(host_personal);
+        let rx = host(&mut game);
+        let mut host = game.lan.take().unwrap();
+        let guest = &mut host.hub.guests[0];
+        guest.dimension = "minecraft:overworld".into();
+        guest.spawn = Some(guest_personal);
+        guest.health = 0.0;
+        guest.dead = true;
+        guest.loaded = true;
+        game.guest_respawn(&mut host, 1);
+        let guest = &host.hub.guests[0];
+        assert_eq!(
+            guest.position, guest_personal,
+            "the guest's landing stays personal"
+        );
+        assert!(!guest.dead);
+        assert_eq!(game.spawn, Some(host_personal));
+        let sent = spawns(&rx);
+        assert_eq!(sent.len(), 2, "respawn and level info both send world data");
+        for point in &sent {
+            assert_eq!(point.pos.dimension, "minecraft:overworld");
+            assert_eq!(
+                point.pos.pos,
+                [0, 80, 0],
+                "the host's personal point is not world data"
+            );
+            assert_eq!([point.yaw, point.pitch], [45.0, -10.0]);
+        }
+        println!(
+            "world-spawn\trespawn\t{}\t{}\t{}\t{}\t{:.1}\t{:.1}",
+            sent[0].pos.dimension,
+            sent[0].pos.pos[0],
+            sent[0].pos.pos[1],
+            sent[0].pos.pos[2],
+            sent[0].yaw,
+            sent[0].pitch
         );
     }
 }

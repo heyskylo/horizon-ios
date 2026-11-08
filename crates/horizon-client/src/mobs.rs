@@ -1131,6 +1131,9 @@ pub struct Extra {
     pub party_jukebox: Option<[i32; 3]>,
     /// The owner's UUID (tamed animals).
     pub owner: Option<[i32; 4]>,
+    /// `Vindicator.isJohnny`: a custom name that was ever `Johnny`, which
+    /// `setCustomName` latches and nothing clears.
+    pub johnny: bool,
     /// Slime/magma cube size (0 = not sized).
     pub size: i32,
     /// Sheep eat-grass / iron golem attack / ravager animation ticks.
@@ -2447,6 +2450,8 @@ pub struct SpawnSetup {
     pub owner_mob: Option<u32>,
     pub home: Option<[i32; 3]>,
     pub life: Option<i32>,
+    /// Whether to skip `finalizeSpawn`'s rolls (e.g. conversions or EntityType.create).
+    pub skip_finalize: bool,
 }
 /// A snapshot of another entity mobs can see this tick.
 #[derive(Clone, Debug)]
@@ -6596,6 +6601,21 @@ mod hidden_speed_mob_tick_tests {
         assert!(m.extra.hidden_effects.contains(&"minecraft:speed"));
         assert!(!m.extra.effect_fallbacks[0].ambient);
         assert!(m.extra.effect_fallbacks[0].visible);
+    }
+
+    #[test]
+    fn health_boost_death_effect_clear_clamps_health() {
+        let mut kind = (*sensor_scan_tests::kind()).clone();
+        kind.id = "minecraft:pig".into();
+        kind.species = Species::Pig;
+        let mut m = Mob::new(202, Arc::new(kind), Vec3::ZERO, 0.0);
+        finalize::set_base(&mut m, finalize::Attr::MaxHealth, 10.0);
+        m.add_effect("health_boost", 200, 1);
+        assert_eq!(m.attrs.max_health, 18.0);
+        m.health = 18.0;
+        m.apply_death_effect(&crate::items::ConsumeEffect::ClearAllEffects);
+        assert_eq!(m.attrs.max_health, 10.0);
+        assert_eq!(m.health, 10.0);
     }
 
     #[test]

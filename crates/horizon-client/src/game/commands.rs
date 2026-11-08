@@ -2574,6 +2574,7 @@ impl Game<'_> {
                         count: 1,
                         ticks: 0,
                         health: 5,
+                        following: None,
                     });
                     // tryAddFreshEntityWithPassengers refused: ERROR_DUPLICATE_UUID.
                     if !self.native_joins_flush(false, self.next_entity) {
@@ -3204,10 +3205,115 @@ impl Game<'_> {
         self.feedback(Text::tr("commands.fill.success", &[&count]));
         Ok(count)
     }
+    /// `CloneCommands`: `from <sourceDimension>` is resolved as `begin` is
+    /// read, `to <targetDimension>` as `destination` is
+    /// (`DimensionArgument.getDimension`), each position checked loaded in its
+    /// own level (`BlockPosArgument.getLoadedBlockPos`): an unknown source fails
+    /// before an unknown target. The blocks are read in the source level and
+    /// placed in the target level. The command's own level is back in place,
+    /// whatever happened, before the command reports.
     fn cmd_clone(&mut self, ctx: &Context) -> R<i32> {
-        let a = self.block_pos_arg(ctx, "begin")?;
-        let b = self.block_pos_arg(ctx, "end")?;
-        let dest = self.block_pos_arg(ctx, "destination")?;
+        let here = self.dim;
+        let result = self.clone_levels(ctx);
+        if self.dim != here {
+            self.enter_command_level(here);
+        }
+        if self.dim != here {
+            log::error!("/clone could not return to {}", here.id());
+            return Err(err("commands.clone.failed", &[]));
+        }
+        let count = result?;
+        self.feedback(Text::tr("commands.clone.success", &[&count]));
+        Ok(count)
+    }
+    fn clone_levels(&mut self, ctx: &Context) -> R<i32> {
+        let here = self.dim;
+        let source_level = self.command_source.map_or(self.dim, |s| s.dimension);
+        // The coordinates, from the command's own source, before any level moves.
+        let position = |name: &str| -> R<[i32; 3]> {
+            let c = self
+                .coords(ctx, name)
+                .ok_or_else(|| err("argument.pos.missing.int", &[]))?;
+            Ok(self.resolve_coords(&c).map(|v| v.floor() as i32))
+        };
+        let (a, b, dest) = (
+            position("begin")?,
+            position("end")?,
+            position("destination")?,
+        );
+        let from_dim = self.clone_dimension(ctx, "sourceDimension")?;
+        self.clone_loaded(from_dim, here, source_level, a)?;
+        self.clone_loaded(from_dim, here, source_level, b)?;
+        let to_dim = self.clone_dimension(ctx, "targetDimension")?;
+        self.clone_loaded(to_dim, here, source_level, dest)?;
+        self.clone_between(
+            ctx,
+            a,
+            b,
+            dest,
+            from_dim.unwrap_or(here),
+            to_dim.unwrap_or(here),
+        )
+    }
+    /// `BlockPosArgument.getLoadedBlockPos` in the level a dimension argument
+    /// names, or, without one, the command's own (as `block_pos_arg` checks it).
+    fn clone_loaded(
+        &mut self,
+        dim: Option<Dim>,
+        here: Dim,
+        source_level: Dim,
+        p: [i32; 3],
+    ) -> R<()> {
+        match dim {
+            Some(dim) => self.clone_enter(dim)?,
+            None => {
+                self.clone_enter(here)?;
+                if source_level != self.dim {
+                    return Err(err("argument.pos.unloaded", &[]));
+                }
+            }
+        }
+        if !self.world.chunks.contains_key(&(p[0] >> 4, p[2] >> 4)) {
+            return Err(err("argument.pos.unloaded", &[]));
+        }
+        if p[1] < self.world.bottom_y() || p[1] >= self.world.top_y() {
+            return Err(err("argument.pos.outofworld", &[]));
+        }
+        Ok(())
+    }
+    /// `DimensionArgument.getDimension`: a built-in dimension, or
+    /// `argument.dimension.invalid`; None when the argument is absent.
+    fn clone_dimension(&self, ctx: &Context, name: &str) -> R<Option<Dim>> {
+        let Some(Arg::Resource(id)) = ctx.get(name) else {
+            return Ok(None);
+        };
+        if !matches!(
+            id.as_str(),
+            "minecraft:overworld" | "minecraft:the_nether" | "minecraft:the_end"
+        ) {
+            return Err(err("argument.dimension.invalid", &[id]));
+        }
+        Ok(Some(Dim::from_id(id)))
+    }
+    /// Put `dim`'s level in place for the clone, or fail it when it cannot be.
+    fn clone_enter(&mut self, dim: Dim) -> R<()> {
+        if self.dim != dim {
+            self.enter_command_level(dim);
+        }
+        if self.dim != dim {
+            return Err(err("commands.clone.failed", &[]));
+        }
+        Ok(())
+    }
+    fn clone_between(
+        &mut self,
+        ctx: &Context,
+        a: [i32; 3],
+        b: [i32; 3],
+        dest: [i32; 3],
+        from_dim: Dim,
+        to_dim: Dim,
+    ) -> R<i32> {
         let min = [a[0].min(b[0]), a[1].min(b[1]), a[2].min(b[2])];
         let max = [a[0].max(b[0]), a[1].max(b[1]), a[2].max(b[2])];
         let size = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
@@ -3215,7 +3321,7 @@ impl Game<'_> {
         let overlap = (0..3).all(|i| dest[i] <= max[i] && dmax[i] >= min[i]);
         let moving = ctx.has("move");
         // Mode.canOverlap: only the normal mode refuses overlapping regions.
-        if !ctx.has("force") && !moving && overlap {
+        if !ctx.has("force") && !moving && from_dim == to_dim && overlap {
             return Err(err("commands.clone.overlap", &[]));
         }
         let area = (0..3).map(|i| i64::from(size[i] + 1)).product::<i64>();
@@ -3223,6 +3329,7 @@ impl Game<'_> {
         if area > i64::from(limit) {
             return Err(err("commands.clone.toobig", &[&limit, &area]));
         }
+        self.clone_enter(to_dim)?;
         for p in [dest, dmax] {
             if !self.world.chunks.contains_key(&(p[0] >> 4, p[2] >> 4)) {
                 return Err(err("argument.pos.unloaded", &[]));
@@ -3238,6 +3345,7 @@ impl Game<'_> {
         };
         let air = self.world.air;
         let masked = ctx.has("masked");
+        self.clone_enter(from_dim)?;
         let mut copies = Vec::new();
         for y in min[1]..=max[1] {
             for z in min[2]..=max[2] {
@@ -3270,6 +3378,7 @@ impl Game<'_> {
                 self.place_state(*from, air, true, false)?;
             }
         }
+        self.clone_enter(to_dim)?;
         let strict = ctx.has("strict");
         // CloneCommands.clone sets every destination to a barrier first, so
         // each copied state but a barrier counts as placed.
@@ -3306,7 +3415,6 @@ impl Game<'_> {
         if count == 0 {
             return Err(err("commands.clone.failed", &[]));
         }
-        self.feedback(Text::tr("commands.clone.success", &[&count]));
         Ok(count)
     }
     /// Player.giveExperiencePoints including negative amounts.
@@ -3734,9 +3842,16 @@ impl Game<'_> {
             Some(Arg::Coords(c)) => c.rotation(self.source_rotation()),
             _ => [0.0, 0.0],
         };
+        // SetWorldSpawnCommand uses RespawnData.of before storing or comparing.
+        let rot = [wrap_degrees(rot[0]), rot[1].clamp(-90.0, 90.0)];
         // LevelData.setRespawnData: the world's spawn (level.dat `spawn`).
+        let previous_point = self.world_spawn_position().map(|v| v.floor() as i32);
         let old = self.level.world_spawn.replace(pos);
+        let old_angle = self.level.world_spawn_angle;
         self.level.world_spawn_angle = rot;
+        if previous_point != pos || old_angle.map(f32::to_bits) != rot.map(f32::to_bits) {
+            self.lan_broadcast_world_spawn();
+        }
         self.native_spawn_change(pos, rot);
         // A player whose fallback is the world spawn (no spawnpoint of its
         // own; a bed or an anchor that is gone falls back to it) respawns at

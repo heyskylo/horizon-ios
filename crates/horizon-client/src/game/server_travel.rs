@@ -1065,13 +1065,14 @@ impl Game<'_> {
 
     /// The hub's view of the server for packets sent outside its own tick.
     pub(super) fn server_ctx(&mut self) -> TickCtx<'_> {
-        let spawn = self.spawn.map_or([0.5, 80.0, 0.5], |s| [s.x, s.y, s.z]);
+        let spawn = self.world_spawn_position();
         let clock_rate = self.network_clock_rate();
         TickCtx {
             world: &mut self.world,
             entities: &[],
             next_entity: &mut self.next_entity,
             spawn,
+            spawn_angle: self.level.world_spawn_angle,
             difficulty: i32::from(self.ui.difficulty),
             difficulty_locked: self.level.difficulty_locked,
             clock_rate,

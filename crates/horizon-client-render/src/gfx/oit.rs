@@ -253,7 +253,14 @@ impl Oit {
                 ..Default::default()
             })
         };
-        let constants = [("SPRITE_ARRAYS", sprites[0]), ("SPRITE_SPLIT", sprites[1])];
+        let constants = [
+            ("SPRITE_ARRAYS", sprites[0]),
+            ("SPRITE_SPLIT", sprites[1]),
+            (
+                "HDR_WRITE_LIGHT",
+                f64::from(u8::from(format == super::LINEAR_FRAME)),
+            ),
+        ];
         let add = wgpu::BlendOperation::Add;
         let depth = |write| {
             Some(wgpu::DepthStencilState {
@@ -464,7 +471,10 @@ impl Oit {
                 fragment: Some(wgpu::FragmentState {
                     module: &cloud_shader,
                     entry_point: Some(fragment),
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &constants[2..],
+                        ..Default::default()
+                    },
                     targets: &stage_targets(stage),
                 }),
                 multiview_mask: None,
@@ -488,7 +498,14 @@ impl Oit {
                 Stage::Accumulate,
             ),
         ];
-        let features = Features::new(device, &layouts, features[0], features[1], features[2]);
+        let features = Features::new(
+            device,
+            &layouts,
+            features[0],
+            features[1],
+            features[2],
+            format,
+        );
         Self {
             uniform,
             layouts,
