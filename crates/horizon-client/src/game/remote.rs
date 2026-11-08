@@ -23,6 +23,7 @@ use horizon_client::{
     mobs::{Mob, MobType, Who},
     motion::{MotionWorld, PlayerMotion},
     net::{Event, Session},
+    random_source,
     save::SaveDir,
     screen_effects,
     sprint::Keys,
@@ -2652,10 +2653,9 @@ impl Game<'_> {
         if self.studio_replay.is_some() {
             return true;
         }
-        self.remote.as_ref().is_none_or(|r| {
-            let range = r.view_distance.max(2) + 3;
-            (x - r.chunk_center.0).abs() <= range && (z - r.chunk_center.1).abs() <= range
-        })
+        self.remote
+            .as_ref()
+            .is_none_or(|r| in_storage_range(r.view_distance, r.chunk_center, x, z))
     }
     /// The columns a moved or resized storage no longer holds.
     fn drop_remote_chunks_out_of_range(&mut self) {
@@ -2843,8 +2843,20 @@ impl Game<'_> {
         // LevelChunk.setBlockState: another block's block entity goes, even
         // one of the same type (a mod's blocks may share one).
         let other_block = previous.is_some_and(|p| self.res.facts().get(p).name != name);
-        // A mod block's is the mod's own (`native_block_entity`), as on the server.
-        match self.new_block_entity(&name) {
+        self.ensure_stateful_entity_table();
+        // State-aware factories decide creation only. A valid same-block
+        // instance survives even when the new state would create none.
+        if !other_block
+            && self.world.block_entities.stateful_entity(state.0)
+            && matches!(
+                self.world.block_entities.get(&pos),
+                Some(BlockEntity::Mod(_))
+            )
+        {
+            return;
+        }
+        // A mod block's is the mod's own, as on the server.
+        match self.new_block_entity_for_state(state) {
             Some(entity) => {
                 let same = self.world.block_entities.get(&pos).is_some_and(|e| {
                     e.id() == entity.id() && !(other_block && matches!(e, BlockEntity::Mod(_)))
@@ -2934,6 +2946,7 @@ impl Game<'_> {
         let context = horizon_world::collision_context::CollisionContext::for_entity(
             horizon_world::collision_context::CollisionEntity {
                 identity: horizon_world::entity_obstruction::EntityIdentity(0),
+                kind: horizon_world::collision_context::EntityContextKind::Player,
                 y: player.position.y,
                 descending: player.shift_key_down,
                 main_hand: None,
@@ -3634,8 +3647,11 @@ impl Game<'_> {
                     r.reduced_debug_info = p.reduced_debug_info;
                     r.do_limited_crafting = p.limited_crafting;
                 }
-                self.streaming.radius =
-                    self.settings.render_distance.min(p.chunk_radius + 1).max(2);
+                self.streaming.radius = self
+                    .settings
+                    .render_distance
+                    .min(p.chunk_radius.saturating_add(1))
+                    .max(2);
                 // handleLogin: startWaitingForNewLevel(.., Reason.OTHER).
                 self.enter_remote_dimension(
                     &p.spawn,
@@ -5460,7 +5476,11 @@ impl Game<'_> {
                 }
             }
             C::SetChunkCacheRadius(p) => {
-                self.streaming.radius = self.settings.render_distance.min(p.distance + 1).max(2);
+                self.streaming.radius = self
+                    .settings
+                    .render_distance
+                    .min(p.distance.saturating_add(1))
+                    .max(2);
                 if let Some(r) = self.remote.as_mut() {
                     r.view_distance = p.distance;
                 }
@@ -5481,8 +5501,26 @@ impl Game<'_> {
                 let [x, y, z] = p.pos.pos;
                 self.spawn = (p.pos.dimension == "minecraft:overworld")
                     .then(|| Vec3::new(f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5));
+                // 1.20.2 handleSetSpawn notified ReceivingLevelScreen here; the later
+                // LEVEL_CHUNKS_LOAD_START game event did not exist yet.
+                if let Some(r) = self.remote.as_mut()
+                    && r.session
+                        .server_version()
+                        .at_most(horizon_protocol::adapter::ServerVersion::V1_20_2)
+                {
+                    r.level_load.loading_packets_received();
+                }
             }
-            C::ServerData(p) => self.remote_server_data(p.icon.as_deref()),
+            C::ServerData(p) => {
+                if let Some(r) = self.remote.as_mut()
+                    && let Some(enforced) = r.session.legacy_secure_chat_enforcement()
+                    && r.enforces_secure_chat != enforced
+                {
+                    r.enforces_secure_chat = enforced;
+                    r.chat_validators.clear();
+                }
+                self.remote_server_data(p.icon.as_deref());
+            }
             C::MapItemData(p) => self.remote_map_item_data(&p),
             // handleTickingState / handleTickingStep: the level's TickRateManager.
             C::TickingState(p) => {
@@ -6188,10 +6226,25 @@ impl Game<'_> {
             .find(|p| p.id == id as u32)
         {
             p.velocity = v;
+            // AbstractArrow.lerpMotion: the stuck timer restarts, and an
+            // arrow the server set moving leaves the block it was stuck in.
+            if let Some(st) = p.arrow.as_mut() {
+                st.life = 0;
+                if st.in_ground && v.length_squared() > 0.0 {
+                    st.in_ground = false;
+                    p.stuck = false;
+                }
+            }
         } else if let Some(b) = self.dragon_fireballs.iter_mut().find(|b| b.id == id as u32) {
             b.velocity = v;
         } else if let Some(t) = self.tridents.iter_mut().find(|t| t.id == id as u32) {
             t.velocity = v;
+            // AbstractArrow.lerpMotion (ThrownTrident keeps it): `life`
+            // restarts, and a trident set moving leaves its block.
+            t.in_ground_time = 0;
+            if t.in_ground && v.length_squared() > 0.0 {
+                t.in_ground = false;
+            }
         } else if let Some(r) = self.rockets.iter_mut().find(|r| r.id == id as u32) {
             r.velocity = v;
         } else if self.remote_hook_motion(id as u32, v) {
@@ -7428,7 +7481,7 @@ impl Game<'_> {
         let mut lava_random = None;
         let mut next_float = || {
             lava_random
-                .get_or_insert_with(super::dispenser::entity_random)
+                .get_or_insert_with(random_source::entity)
                 .next_float()
         };
         if running {
@@ -8012,6 +8065,7 @@ impl Game<'_> {
             self.mining = Some(Mining {
                 pos: hit.pos,
                 progress: 0.0,
+                per_tick: 0.0,
                 ticks: 0,
             });
             return;
@@ -8059,6 +8113,7 @@ impl Game<'_> {
             self.mining = Some(Mining {
                 pos,
                 progress: done,
+                per_tick: 0.0,
                 ticks,
             });
         }
@@ -8564,14 +8619,23 @@ impl Game<'_> {
             // HoneycombItem.useOn.
             let registry = self.pack.assets.registry;
             let clicked = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
-            let waxes = registry
-                .state(clicked)
+            let old = registry.state(clicked);
+            let waxes = old
                 .and_then(|old| self.res.transformers().waxed(registry, old))
                 .is_some();
             if waxes {
                 self.level_event_at(3003, hit.pos, 0);
                 self.audio
                     .play("minecraft:item.honeycomb.wax_on", Some(at), 1.0, 1.0);
+                // The other half of a double chest: its particles, and a second
+                // sound from the clicked block.
+                if let Some(other) =
+                    old.and_then(|old| super::storage::chest_connected_pos(old, hit.pos))
+                {
+                    self.level_event_at(3003, other, 0);
+                    self.audio
+                        .play("minecraft:item.honeycomb.wax_on", Some(at), 1.0, 1.0);
+                }
             }
             waxes
         } else if let Some((_, sound, _, _, particle, _)) =
@@ -11447,7 +11511,7 @@ impl Remote {
     /// How far the server sends chunks: its view distance and the ring
     /// around (`ChunkTrackingView`), at least two.
     pub(super) fn sent_radius(&self) -> i32 {
-        self.view_distance.max(2) + 1
+        self.view_distance.max(2).saturating_add(1)
     }
     /// A player entity's profile name: the one it was created with, else its
     /// player-list entry's (an entity the list named after it spawned).
@@ -11598,8 +11662,36 @@ fn client_has_level(logged_in: bool, reconfiguring: Option<u64>) -> bool {
     logged_in && reconfiguring.is_none()
 }
 
+/// `ClientChunkCache.Storage.inRange`: whether column `x`, `z` is within `calculateStorageRange`
+/// (the server's radius, at least two, plus three) of the view centre. The radius and the centre
+/// are the server's to send, any `i32`: the distances are taken without overflow, which panicked
+/// a debug build and, wrapping in release, dropped every loaded chunk.
+fn in_storage_range(view_distance: i32, center: (i32, i32), x: i32, z: i32) -> bool {
+    let range = view_distance.max(2).saturating_add(3).unsigned_abs();
+    x.abs_diff(center.0) <= range && z.abs_diff(center.1) <= range
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_chunk_storage_takes_any_radius_and_centre_a_server_sends() {
+        use super::in_storage_range;
+        // Vanilla's storage: radius at least 2, plus 3, each way from the centre.
+        assert!(in_storage_range(10, (0, 0), 13, -13));
+        assert!(!in_storage_range(10, (0, 0), 14, 0));
+        assert!(in_storage_range(-5, (100, 100), 105, 95));
+        assert!(!in_storage_range(0, (100, 100), 106, 100));
+        // Out of i32's range, as a server may send: no overflow, and the sums a wrap got wrong.
+        assert!(in_storage_range(i32::MAX, (0, 0), i32::MAX, i32::MIN + 1));
+        assert!(!in_storage_range(10, (i32::MIN, 0), i32::MAX, 0));
+        assert!(in_storage_range(
+            10,
+            (i32::MIN, i32::MAX),
+            i32::MIN + 13,
+            i32::MAX - 13
+        ));
+    }
+
     use super::{
         boat_interact_passes, client_has_level, hold_server_fire, item_frame_interact_passes,
         keep_client_state, open_hash_order, remote_object_swings, remote_use_swings, shape_meets,
@@ -11750,6 +11842,118 @@ mod tests {
         items::ItemStack,
     };
     use horizon_world::nbt::Tag;
+
+    /// #12040: a server's client moves at the speed the server's attributes give it, never its
+    /// effects' own. Vanilla's server removes a Speed that runs out in ServerPlayer.doTick, after
+    /// the tick's sendDirtyEntityData: ClientboundRemoveMobEffectPacket goes out at once and the
+    /// movement speed without the effect's modifier a tick later, so for that tick the client still
+    /// runs fast (a potion drunk starts the same way). A client a tick off is what GrimAC's
+    /// Simulation flagged.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_servers_client_takes_its_speed_from_the_attributes_not_the_effect() {
+        use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+        use horizon_client::motion::PlayerMotion;
+        use horizon_core::geometry::Vec3;
+        use horizon_protocol::packets::play::{
+            AttributeModifier, AttributeSnapshot, Clientbound as C, RemoveMobEffect,
+            UpdateAttributes, UpdateMobEffect,
+        };
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources required"),
+        );
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.init_remote_for_replay().unwrap();
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 0.5)).unwrap());
+        let me = game.remote.as_ref().unwrap().entity_id;
+        let speed = game.remote_effect_network_id("speed").unwrap();
+        let attribute = {
+            let p = game.player.as_ref().unwrap();
+            let key = p.attributes.key("minecraft:movement_speed").unwrap();
+            key.attribute().registry_id()
+        };
+        // Player.createAttributes: 0.1F.
+        let walking = f64::from(0.1f32);
+        // Speed II: 0.2 (a float) a level, multiplying the total.
+        let amount = f64::from(0.2f32) * 2.0;
+        let attributes = |sped: bool| {
+            C::UpdateAttributes(UpdateAttributes {
+                id: me,
+                values: vec![AttributeSnapshot {
+                    attribute,
+                    base: walking,
+                    modifiers: sped
+                        .then(|| AttributeModifier {
+                            id: "minecraft:effect.speed".into(),
+                            amount,
+                            operation: 2,
+                        })
+                        .into_iter()
+                        .collect(),
+                }],
+            })
+        };
+        // Each step: the packets of one server tick, then a client tick.
+        let mut step = |packets: Vec<C>| {
+            for packet in packets {
+                game.handle_packet(packet).unwrap();
+            }
+            game.tick_client_effects();
+            game.player
+                .as_mut()
+                .unwrap()
+                .attribute("minecraft:movement_speed")
+                .unwrap()
+        };
+        let effect = C::UpdateMobEffect(UpdateMobEffect {
+            id: me,
+            effect: speed,
+            amplifier: 1,
+            duration: 60,
+            flags: 2 | 4,
+        });
+        let fast = walking * (1.0 + amount);
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        let seen = [
+            step(vec![effect]),
+            step(vec![attributes(true)]),
+            step(Vec::new()),
+            step(vec![C::RemoveMobEffect(RemoveMobEffect {
+                id: me,
+                effect: speed,
+            })]),
+            step(vec![attributes(false)]),
+        ];
+        let expected = [walking, fast, fast, fast, walking];
+        assert!(
+            seen.iter().zip(expected).all(|(&s, e)| close(s, e)),
+            "speed on each tick: {seen:?}, vanilla's client: {expected:?}"
+        );
+    }
 
     /// `ItemFrame.interact`, `AbstractBoat.interact`, and `Minecart.interact`:
     /// interactions that pass leave the click to the held item without swinging;
