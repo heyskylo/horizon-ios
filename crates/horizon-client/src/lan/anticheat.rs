@@ -13,8 +13,8 @@ use std::{io::Write, time::Instant};
 
 pub struct Anticheat {
     pub config: Config,
-    /// `log`, opened at the first flag.
-    log: Option<std::fs::File>,
+    /// The thread writing `log`, started at the first flag: the tick only hands it the lines.
+    log: Option<std::sync::mpsc::Sender<String>>,
     /// The players' kicks by check, read from `strikes` at the first kick.
     strikes: Option<Strikes>,
     /// When the previous server tick started, for the timer's balance.
@@ -38,19 +38,35 @@ impl Anticheat {
             return;
         }
         if self.log.is_none() {
-            let path = std::path::Path::new(&self.config.log);
+            let path = std::path::PathBuf::from(&self.config.log);
             if let Some(dir) = path.parent() {
                 let _ = std::fs::create_dir_all(dir);
             }
-            self.log = std::fs::OpenOptions::new()
+            let Ok(mut file) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(path)
-                .ok();
+                .open(&path)
+            else {
+                return;
+            };
+            // A flood of flags (a lagging player, the load-test bots) wrote to the disk on the
+            // tick thread, one line at a time: the lines go to a writer thread instead, in order.
+            let (send, lines) = std::sync::mpsc::channel::<String>();
+            let started = std::thread::Builder::new()
+                .name("anticheat-log".into())
+                .spawn(move || {
+                    for entry in lines {
+                        let _ = file.write_all(entry.as_bytes());
+                    }
+                });
+            if started.is_err() {
+                return;
+            }
+            self.log = Some(send);
         }
-        if let Some(file) = &mut self.log {
+        if let Some(log) = &self.log {
             let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-            let _ = writeln!(file, "[{time}] {line}");
+            let _ = log.send(format!("[{time}] {line}\n"));
         }
     }
 
