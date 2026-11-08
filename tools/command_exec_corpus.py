@@ -6426,6 +6426,10 @@ def groups():
     except ImportError:
         from mob_effect_predicate_corpus import cases as mob_effect_predicates
     try:
+        from .fill_block_nbt_corpus import fill_block_nbt
+    except ImportError:
+        from fill_block_nbt_corpus import fill_block_nbt
+    try:
         from .seed_sync_corpus import cases as seed_sync_proof
     except ImportError:
         from seed_sync_corpus import cases as seed_sync_proof
@@ -6510,6 +6514,7 @@ def groups():
         ('decorated pot data', decorated_pot_data()),
         ('modern data literal values', storage_literals(cmd)),
         ('comparator output data', comparator_output_data()),
+        ('fill block NBT', fill_block_nbt(cmd, setup)),
         ('hopper empty slot limits', hopper_empty_slot_limits()),
         ('End clock commands', end_clock_commands()),
         ('client commands', client_commands()),

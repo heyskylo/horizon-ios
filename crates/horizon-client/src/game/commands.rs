@@ -3108,7 +3108,8 @@ impl Game<'_> {
         // of states, and matching a tag is a name lookup.
         let mut matched: std::collections::HashMap<BlockStateId, bool> =
             std::collections::HashMap::new();
-        let plain = !(destroy || hollow || outline);
+        // A tag can change a block entity whose block is already in place.
+        let plain = !(destroy || hollow || outline) && block.nbt.is_none();
         for y in min[1]..=max[1] {
             for z in min[2]..=max[2] {
                 for x in min[0]..=max[0] {
@@ -3151,7 +3152,8 @@ impl Game<'_> {
                         self.destroy_block_dropping([x, y, z])?;
                         affected = true;
                     }
-                    let target = if (outline || hollow) && !edge {
+                    let core = (outline || hollow) && !edge;
+                    let target = if core {
                         if outline {
                             if affected {
                                 count += 1;
@@ -3168,7 +3170,16 @@ impl Game<'_> {
                         target
                     };
                     let previous = self.world.block(x, y, z);
-                    if self.place_state([x, y, z], target, strict, true)? {
+                    let placed = self.place_state([x, y, z], target, strict, true)?;
+                    // BlockInput.place loads the tag into the block entity now
+                    // there; a tag that changed it counts the block as placed.
+                    // A hollow fill's core is plain air.
+                    let loaded = !core
+                        && block
+                            .nbt
+                            .as_deref()
+                            .is_some_and(|nbt| self.load_block_entity_nbt([x, y, z], nbt));
+                    if placed || loaded {
                         count += 1;
                         if !strict {
                             updated.push(([x, y, z], previous));
