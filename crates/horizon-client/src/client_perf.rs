@@ -6,7 +6,9 @@ use crate::server_perf::{
     ServerPerf, TickDetail, WorldCounts,
 };
 use horizon_perf_format::FieldSender;
-use horizon_perf_format::v1::{BenchResult, Machine, Side, Start, StopReason, Trigger};
+use horizon_perf_format::v1::{
+    BenchResult, Machine, Side, Start, StopReason, Trigger, WarningCode,
+};
 use request::{GpuSwitch, StartOptions, Threads};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -224,6 +226,11 @@ impl ClientPerf {
 
     pub fn mark(&mut self, t: f64, name: &str) -> bool {
         self.perf.mark(t, name)
+    }
+
+    /// Records `code` in the running capture; false when none runs.
+    pub fn warn(&mut self, t: f64, code: WarningCode) -> bool {
+        self.perf.warn(t, code)
     }
 
     pub fn status(&self, t: f64) -> Option<CaptureStatus> {

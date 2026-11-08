@@ -934,3 +934,35 @@ mod sampled {
         assert_eq!(hot(SideName::Server).as_deref(), Some("tick"));
     }
 }
+
+#[test]
+fn a_refused_server_request_is_a_warning_at_its_time_in_the_client_side() {
+    let scratch = Scratch::new("server-warning");
+    let mut perf = ClientPerf::new(SLOW_FRAME_MS);
+    run(&mut perf, 0, 2, 60, 16.0);
+    assert!(
+        !perf.warn(2.0, WarningCode::ServerDenied),
+        "no capture runs"
+    );
+    begin(&mut perf, 2.0, &scratch.0, &no_samples());
+    run(&mut perf, 2, 3, 60, 16.0);
+    assert!(perf.warn(3.0, WarningCode::ServerNotHorizon));
+    run(&mut perf, 3, 5, 60, 16.0);
+    assert!(perf.warn(5.0, WarningCode::ServerAlreadyRunning));
+    assert!(perf.stop(5.0, R::Normal));
+    let saved = perf.take_saved(true).pop().unwrap().unwrap();
+
+    let c = read(&saved.path);
+    let seen: Vec<_> = c
+        .warnings
+        .iter()
+        .map(|w| (w.side(), w.t, w.code()))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            (Side::Client, 1.0, WarningCode::ServerNotHorizon),
+            (Side::Client, 3.0, WarningCode::ServerAlreadyRunning),
+        ]
+    );
+}

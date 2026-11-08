@@ -517,6 +517,20 @@ impl ServerPerf {
         true
     }
 
+    /// Records `code` at `t` in the running capture; false when none runs.
+    pub fn warn(&mut self, t: f64, code: WarningCode) -> bool {
+        let Some(session) = &mut self.session else {
+            return false;
+        };
+        session.tx.send(Field::Warning(Warning {
+            side: session.side as i32,
+            t: t - session.origin,
+            code: code as i32,
+            args: Vec::new(),
+        }));
+        true
+    }
+
     /// The running capture's file, age and size so far; None when none runs.
     pub fn status(&self, t: f64) -> Option<CaptureStatus> {
         let session = self.session.as_ref()?;

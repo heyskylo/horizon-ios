@@ -992,5 +992,10 @@
   "horizon.perf.started": "Profiling started; F3+O stops it and saves the capture.",
   "horizon.perf.saved": "Saved %s",
   "horizon.perf.open_in_browser": "Open it at %s (the file stays on your computer)",
-  "horizon.perf.error": "Profiling: %s"
+  "horizon.perf.error": "Profiling: %s",
+  "horizon.perf.not_horizon": "this server isn't running Horizon",
+  "horizon.perf.denied": "a server profile needs operator level 4",
+  "horizon.perf.already_running": "the server is already running a profile",
+  "horizon.perf.not_running": "no server profile of yours is running",
+  "horizon.perf.failed": "the server could not write the profile; see its log"
 }
