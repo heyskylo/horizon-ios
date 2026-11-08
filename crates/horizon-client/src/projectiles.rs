@@ -588,6 +588,15 @@ impl Projectile {
                 .as_ref()
                 .is_some_and(|a| a.spectral || &*a.pickup_item.item == "minecraft:spectral_arrow")
     }
+    /// Its entity type id (`minecraft:spectral_arrow` for a spectral arrow,
+    /// else its kind's id).
+    pub fn entity_type(&self) -> &'static str {
+        if self.is_spectral_arrow() {
+            "minecraft:spectral_arrow"
+        } else {
+            self.kind.id()
+        }
+    }
     /// `Arrow.ID_EFFECT_COLOR` (`updateColor`): the opaque colour of the
     /// potion the arrow carries, from its tipped pickup item or the effect a
     /// stray, bogged or parched adds; -1 for none.
@@ -1037,29 +1046,13 @@ impl Projectile {
         self.tick_with(w, true)
     }
     /// One tick of a server's projectile on its client: [`tick`](Self::tick)
-    /// with `ThrowableProjectile.tick`'s bubble columns, which push it on the
-    /// client too, so a pearl held in a stasis chamber hovers between the
-    /// server's updates instead of sinking and snapping back. The integrated
-    /// and dedicated servers push their pearls in the creature tick instead.
+    /// with `ThrowableProjectile.tick`'s swept bubble columns, which push it on
+    /// the client too, so a pearl held in a stasis chamber hovers between the
+    /// server's updates instead of sinking and snapping back. The first tick's
+    /// column scan is in [`tick`](Self::tick) itself, for a server too.
     pub fn tick_remote(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
         if !self.is_throwable_projectile() {
             return self.tick(w);
-        }
-        // handleFirstTickBubbleColumn: before gravity, every column block in
-        // the box (`findBlocksIn`, BlockPos.containing of both corners),
-        // entered precisely.
-        if self.age == 0 {
-            let b = self.bounds();
-            let (lo, hi) = (b.min_position(), b.max_position());
-            for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
-                for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
-                    for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
-                        if let Some((drag, surface)) = w.bubble_column([x, y, z]) {
-                            self.bubble_column_push(drag, surface);
-                        }
-                    }
-                }
-            }
         }
         let from = self.position;
         let result = self.tick(w);
@@ -1070,6 +1063,23 @@ impl Projectile {
     /// `Projectile` with its own tick.
     fn is_throwable_projectile(&self) -> bool {
         self.is_thrown() && self.kind != ProjectileKind::LlamaSpit
+    }
+    /// `ThrowableProjectile.handleFirstTickBubbleColumn`: a thrown item that
+    /// spawns inside a bubble column is pushed by every column block in its box
+    /// on its first tick (`findBlocksIn`, the block positions of both corners),
+    /// before it has moved through anything.
+    fn first_tick_bubble_column(&mut self, w: &impl ProjectileWorld) {
+        let b = self.bounds();
+        let (lo, hi) = (b.min_position(), b.max_position());
+        for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
+            for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
+                for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
+                    if let Some((drag, surface)) = w.bubble_column([x, y, z]) {
+                        self.bubble_column_push(drag, surface);
+                    }
+                }
+            }
+        }
     }
     /// `Projectile.onAboveBubbleColumn` / `onInsideBubbleColumn`: unlike
     /// `Entity`'s, a projectile's pushes are not clamped.
@@ -1152,6 +1162,12 @@ impl Projectile {
         );
         if base_first {
             self.tick_shoot_event();
+        }
+        // `ThrowableProjectile.tick` begins with `handleFirstTickBubbleColumn`,
+        // before its gravity and inertia, so the push takes the tick's drag
+        // with it. A server simulates it too, not only a client.
+        if self.age == 0 && self.is_throwable_projectile() {
+            self.first_tick_bubble_column(w);
         }
         let from = self.position;
         let result = self.tick_inner(w, impact);
@@ -1486,6 +1502,71 @@ mod tests {
         });
         let air = f64::from(0.99_f32);
         assert_eq!(p.velocity.y, (0.06 - 0.03) * air + 0.06);
+    }
+    /// `ThrowableProjectile.handleFirstTickBubbleColumn` on a server: the tick
+    /// a snowball is shot in pushes it by the column it spawned in, before its
+    /// gravity and the air drag, and only on that first tick. The client path
+    /// (`tick_remote`) had it and the host's did not, so a throwable in a bubble
+    /// column rose for a guest and sank for the host.
+    #[test]
+    fn a_throwable_spawned_in_a_bubble_column_is_pushed_on_its_first_tick() {
+        let air = f64::from(0.99_f32);
+        for (column, push) in [
+            (
+                Column {
+                    drag: false,
+                    surface: false,
+                },
+                0.06,
+            ),
+            (
+                Column {
+                    drag: false,
+                    surface: true,
+                },
+                0.1,
+            ),
+            (
+                Column {
+                    drag: true,
+                    surface: false,
+                },
+                -0.03,
+            ),
+        ] {
+            let mut p = Projectile::new(ProjectileKind::Snowball, Vec3::new(0.5, 100.5, 0.5), None);
+            p.tick(&column);
+            assert_eq!(
+                p.velocity.y,
+                (push - 0.03) * air,
+                "drag {} surface {}",
+                column.drag,
+                column.surface
+            );
+            p.velocity = Vec3::ZERO;
+            p.tick(&column);
+            // The box is in the column's water after the first move, so the
+            // drag is `getWaterDrag`'s 0.8F; the push was the first tick's only.
+            assert_eq!(
+                p.velocity.y,
+                -0.03 * f64::from(0.8_f32),
+                "drag {} surface {}",
+                column.drag,
+                column.surface
+            );
+        }
+        // A kind that is no `ThrowableProjectile` is not pushed by a column its
+        // box is in: the hurting projectiles apply their own inertia only.
+        let mut p = Projectile::new(
+            ProjectileKind::LargeFireball { power: 1 },
+            Vec3::new(0.5, 100.5, 0.5),
+            None,
+        );
+        p.tick(&Column {
+            drag: false,
+            surface: false,
+        });
+        assert_eq!(p.velocity.y, 0.0);
     }
     #[test]
     fn a_pearl_outside_any_bubble_column_only_falls() {
@@ -2296,6 +2377,26 @@ mod render_light_tests {
         assert_eq!(arrow.light_probe_y(1.0).floor(), 65.0);
         // The old probe, this tick's position, was 65.0 for every frame.
         assert_eq!((arrow.position.y + arrow.kind.eye_height()).floor(), 65.0);
+    }
+
+    #[test]
+    fn projectile_entity_type_parity() {
+        let arrow = shot(ProjectileKind::Arrow {
+            base_damage: 2.0,
+            critical: false,
+            effect: None,
+        });
+        assert_eq!(arrow.entity_type(), "minecraft:arrow");
+        let spectral = shot(ProjectileKind::Arrow {
+            base_damage: 2.0,
+            critical: false,
+            effect: Some(("minecraft:glowing", 200)),
+        });
+        assert_eq!(spectral.entity_type(), "minecraft:spectral_arrow");
+        assert_eq!(
+            shot(ProjectileKind::SmallFireball).entity_type(),
+            "minecraft:small_fireball"
+        );
     }
 }
 crate::impl_joined!(Projectile);
