@@ -224,6 +224,7 @@ def main():
         groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_FUNCTION_FEEDBACK]
     if not args.only:
         groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_JUKEBOX_CLOCK]
+        groups = [g for g in groups if g[0] not in corpus_module.ISOLATED_GUEST_CLOSE]
     if args.vehicle_container_diagnostic:
         try:
             from .vehicle_container_corpus import vehicle_containers
