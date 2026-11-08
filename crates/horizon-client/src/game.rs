@@ -5397,7 +5397,7 @@ impl Game<'_> {
                 );
                 if now != looked {
                     scratch.later.clear();
-                    scratch.later.extend(scratch.rest.drain(..));
+                    scratch.later.append(&mut scratch.rest);
                     scratch.later.extend(scratch.sensing.drain(i..));
                     scratch.later.retain(|p| key(p) > key(&pos));
                     scratch.later.sort_unstable_by_key(key);
