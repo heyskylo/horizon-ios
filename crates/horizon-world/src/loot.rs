@@ -551,6 +551,10 @@ impl LootTables {
     pub fn contains_key(&self, id: &str) -> bool {
         self.0.contains_key(id)
     }
+    /// The tables' ids, in no order.
+    pub fn ids(&self) -> impl Iterator<Item = &str> {
+        self.0.keys().map(String::as_str)
+    }
     pub fn len(&self) -> usize {
         self.0.len()
     }
