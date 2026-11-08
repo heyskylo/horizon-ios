@@ -780,7 +780,28 @@ impl Game<'_> {
                 _ => Vec::new(),
             },
             Some("vehicle") => self.ride_vehicle(entity).into_iter().collect(),
-            Some("controller") | Some("passengers") => match entity {
+            Some("passengers") => {
+                let mut passengers = match entity {
+                    Target::Mob(id)
+                        if self.mobs.iter().any(|m| m.id == id && m.rider.is_some()) =>
+                    {
+                        vec![Target::Player]
+                    }
+                    _ => Vec::new(),
+                };
+                // Direct runtime children only. Complete mount insertion order is
+                // not modeled; retain the existing mob collection order here.
+                if let Target::Mob(id) | Target::Boat(id) = entity {
+                    passengers.extend(
+                        self.mobs
+                            .iter()
+                            .filter(|m| m.extra.mount == Some(id) && m.alive() && !m.removed)
+                            .map(|m| Target::Mob(m.id)),
+                    );
+                }
+                passengers
+            }
+            Some("controller") => match entity {
                 Target::Mob(id) if self.mobs.iter().any(|m| m.id == id && m.rider.is_some()) => {
                     vec![Target::Player]
                 }
@@ -1222,6 +1243,209 @@ mod tests {
         assert!(!is_player_in_place(GUEST, a, Some(OWNER)));
         // No level player at all (a dedicated server): nobody is in place without a guest.
         assert!(!is_player_in_place(OWNER, None, None));
+    }
+}
+
+#[cfg(test)]
+mod passenger_relation_tests {
+    use super::*;
+    use crate::game::native_machines::tests::server_game;
+    use horizon_core::position::BlockPos;
+    use horizon_world::nbt::Tag;
+
+    fn actor(i: usize) -> String {
+        format!("00000096-0000-0002-0000-{i:012x}")
+    }
+    fn value(game: &Game<'_>, i: usize, objective: &str) -> i32 {
+        game.score.board.score(&actor(i), objective).unwrap().value
+    }
+    fn vehicle(game: &mut Game<'_>, child: usize, parent: usize) {
+        assert!(game.run_command("scoreboard players set #r h150u 91"));
+        assert!(game.run_command("scoreboard players set #s h150u 17"));
+        assert!(game.run_command(&format!(
+            "execute store result score #r h150u store success score #s h150u as {} on vehicle if entity @s[nbt={{UUID:[I;150,2,0,{parent}]}}]", actor(child)
+        )));
+        assert_eq!(game.score.board.score("#r", "h150u").unwrap().value, 1);
+        assert_eq!(game.score.board.score("#s", "h150u").unwrap().value, 1);
+    }
+    #[test]
+    #[ignore = "needs prepared resources and scratch homes/cwd"]
+    fn h150_actual_registered_passengers_select_direct_live_mob_and_boat_children() {
+        let mut game = server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.block_ticks
+            .add_empty_chunk(BlockPos::new(0, 0, 0).chunk())
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        for objective in ["h150u", "h150ur", "h150us"] {
+            assert!(game.run_command(&format!("scoreboard objectives add {objective} dummy")));
+        }
+        let clock = game.world.game_time;
+        // 1->2->3 is a nested mob tree; 4->5 a boat; 6->7,8 two direct children.
+        let kinds = [
+            "cow", "pig", "chicken", "oak_boat", "cow", "cow", "pig", "chicken", "pig", "cow",
+        ];
+        let mut ids = Vec::new();
+        for (offset, kind) in kinds.into_iter().enumerate() {
+            let i = offset + 1;
+            let extra = if kind == "oak_boat" {
+                ""
+            } else {
+                ",NoAI:1b,Health:1f"
+            };
+            assert!(game.run_command(&format!(
+                "summon {kind} 8.5 200 8.5 {{UUID:[I;150,2,0,{i}],Tags:[\"h150u\"],NoGravity:1b,Silent:1b,Motion:[0d,0d,0d]{extra}}}"
+            )));
+            let words = [150, 2, 0, i as i32];
+            let id = *game
+                .persist
+                .uuids
+                .iter()
+                .find(|(_, u)| **u == words)
+                .unwrap()
+                .0;
+            let target = if kind == "oak_boat" {
+                Target::Boat(id)
+            } else {
+                Target::Mob(id)
+            };
+            assert_eq!(game.target_type(target), format!("minecraft:{kind}"));
+            assert_eq!(game.target_position(target), Some([8.5, 200.0, 8.5]));
+            let saved = game.entity_nbt(target).unwrap();
+            assert_eq!(saved.get("UUID"), Some(&Tag::IntArray(words.to_vec())));
+            if kind != "oak_boat" {
+                assert_eq!(saved.get("Health"), Some(&Tag::Float(1f32.to_bits())));
+                assert_eq!(saved.get("NoAI"), Some(&Tag::Byte(1)));
+            }
+            assert!(game.world.loaded(8, 8));
+            assert!(game.run_command("execute if block 8 199 8 stone"));
+            // Membership must come from runtime links; no retained Passengers body remains.
+            game.persist.raw.remove(&id);
+            ids.push(id);
+        }
+        for (child, parent) in [(2, 1), (3, 2), (5, 4), (7, 6), (8, 6)] {
+            assert!(game.run_command(&format!("ride {} mount {}", actor(child), actor(parent))));
+            assert_eq!(
+                game.mobs
+                    .iter()
+                    .find(|m| m.id == ids[child - 1])
+                    .unwrap()
+                    .extra
+                    .mount,
+                Some(ids[parent - 1])
+            );
+            vehicle(&mut game, child, parent);
+        }
+        let mut failures = Vec::new();
+        for (phase, parent, depth, selected) in [
+            ("direct", 1, 1, vec![2]),
+            ("nested", 1, 2, vec![3]),
+            ("boat", 4, 1, vec![5]),
+            ("multiple", 6, 1, vec![7, 8]),
+            ("empty", 9, 1, vec![]),
+        ] {
+            for (objective, n) in [("h150u", 0), ("h150ur", 91), ("h150us", 17)] {
+                for i in 1..=10 {
+                    assert!(game.run_command(&format!(
+                        "scoreboard players set {} {objective} {n}",
+                        actor(i)
+                    )));
+                }
+            }
+            let nested = if depth == 2 { " on passengers" } else { "" };
+            game.cmds.results = Some(Vec::new());
+            game.chat_capture = Some(Vec::new());
+            assert!(game.run_command(&format!(
+                "execute as {} on passengers{nested} store result score @s h150ur store success score @s h150us run scoreboard players add @s h150u 1", actor(parent)
+            )));
+            let callbacks = game.cmds.results.take().unwrap();
+            let messages: Vec<_> = game
+                .chat_capture
+                .take()
+                .unwrap()
+                .iter()
+                .map(|t| t.plain())
+                .collect();
+            println!("H150 actual {phase}: callbacks={callbacks:?}, feedback={messages:?}");
+            let expected = vec![(true, 1); selected.len()];
+            if selected.is_empty() {
+                assert_eq!(callbacks, expected, "independent empty parent callback");
+            } else if callbacks != expected {
+                failures.push(format!("{phase} callbacks {callbacks:?} != {expected:?}"));
+            }
+            for i in 1..=10 {
+                let yes = selected.contains(&i);
+                let got = (
+                    value(&game, i, "h150u"),
+                    value(&game, i, "h150ur"),
+                    value(&game, i, "h150us"),
+                );
+                let want = if yes { (1, 1, 1) } else { (0, 91, 17) };
+                if phase == "empty" || !yes {
+                    assert_eq!(
+                        got, want,
+                        "independent empty/unrelated/no-descendant control: {phase} {i}"
+                    );
+                } else if got != want {
+                    failures.push(format!("{phase} {i}: {got:?} != {want:?}"));
+                }
+            }
+        }
+        assert!(game.run_command(&format!("ride {} dismount", actor(2))));
+        assert_eq!(
+            game.mobs
+                .iter()
+                .find(|m| m.id == ids[1])
+                .unwrap()
+                .extra
+                .mount,
+            None
+        );
+        vehicle(&mut game, 3, 2);
+        for phase in ["dismounted", "remounted"] {
+            if phase == "remounted" {
+                assert!(game.run_command(&format!("ride {} mount {}", actor(2), actor(1))));
+                vehicle(&mut game, 2, 1);
+            }
+            for (objective, n) in [("h150u", 0), ("h150ur", 91), ("h150us", 17)] {
+                for i in 1..=10 {
+                    assert!(game.run_command(&format!(
+                        "scoreboard players set {} {objective} {n}",
+                        actor(i)
+                    )));
+                }
+            }
+            assert!(game.run_command(&format!(
+                "execute as {} on passengers store result score @s h150ur store success score @s h150us run scoreboard players add @s h150u 1", actor(1)
+            )));
+            for i in [1, 2, 3, 10] {
+                let got = (
+                    value(&game, i, "h150u"),
+                    value(&game, i, "h150ur"),
+                    value(&game, i, "h150us"),
+                );
+                let want = if phase == "remounted" && i == 2 {
+                    (1, 1, 1)
+                } else {
+                    (0, 91, 17)
+                };
+                if phase == "dismounted" || i != 2 {
+                    assert_eq!(
+                        got, want,
+                        "independent dismount/unrelated control: {phase} {i}"
+                    );
+                } else if got != want {
+                    failures.push(format!("{phase} {i}: {got:?} != {want:?}"));
+                }
+            }
+        }
+        assert_eq!(game.world.game_time, clock, "zero actual observation ticks");
+        assert!(
+            failures.is_empty(),
+            "actual registered direct passenger branch/callback/store failures: {failures:?}"
+        );
     }
 }
 
