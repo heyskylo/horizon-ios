@@ -550,6 +550,8 @@ impl Game<'_> {
                     _ => 80,
                 };
                 tnt.on_ground = matches!(tag.get("OnGround"), Some(Tag::Byte(1)));
+                tnt.fall_distance =
+                    horizon_client::save::float(tag.get("fall_distance")).unwrap_or(0.0);
                 tnt.no_gravity = entity_nbt::flag(&tag, "NoGravity");
                 tnt.power = entity_nbt::tnt_power(&tag);
                 tnt.block_state = block_state;

@@ -507,6 +507,16 @@ impl Game<'_> {
     pub(super) fn spawn_mob(&mut self, kind: &str, at: [f64; 3], persistent: bool) -> Option<u32> {
         self.spawn_mob_for(kind, at, persistent, false)
     }
+    /// Create a mob of `kind` at a position without `finalizeSpawn`'s rolls,
+    /// matching vanilla `EntityType.create(level, reason)`.
+    pub(super) fn spawn_mob_raw(
+        &mut self,
+        kind: &str,
+        at: [f64; 3],
+        persistent: bool,
+    ) -> Option<u32> {
+        self.spawn_mob_internal(kind, at, persistent, false, false, false)
+    }
     /// `SummonCommand` and `SpawnEggItem`: vanilla spawns the mob, but it
     /// never calls `Mob.setPersistenceRequired` for it, so the mob is not
     /// persistent: the despawn rule holds it like any other mob, and only
@@ -548,6 +558,17 @@ impl Game<'_> {
         scripted: bool,
         natural: bool,
     ) -> Option<u32> {
+        self.spawn_mob_internal(kind, at, persistent, scripted, natural, true)
+    }
+    fn spawn_mob_internal(
+        &mut self,
+        kind: &str,
+        at: [f64; 3],
+        persistent: bool,
+        scripted: bool,
+        natural: bool,
+        finalize: bool,
+    ) -> Option<u32> {
         let kind = if kind.contains(':') {
             kind.to_owned()
         } else {
@@ -558,20 +579,22 @@ impl Game<'_> {
         let yaw = self.world.random.next_float() * 360.0;
         let mut mob = Mob::new(self.next_entity, t, Vec3::new(at[0], at[1], at[2]), yaw);
         mob.persistent = persistent;
-        let facts = self.biome_facts(
-            at[0].floor() as i32,
-            at[1].floor() as i32,
-            at[2].floor() as i32,
-        );
-        let difficulty = self.local_difficulty(at);
-        spawning::finalize(&mut mob, &facts, &difficulty);
-        if !scripted {
-            let reason = if persistent {
-                horizon_client::mobs::raider::Reason::Other
-            } else {
-                horizon_client::mobs::raider::Reason::Natural
-            };
-            horizon_client::mobs::raider::finalize(&mut mob, reason);
+        if finalize {
+            let facts = self.biome_facts(
+                at[0].floor() as i32,
+                at[1].floor() as i32,
+                at[2].floor() as i32,
+            );
+            let difficulty = self.local_difficulty(at);
+            spawning::finalize(&mut mob, &facts, &difficulty);
+            if !scripted {
+                let reason = if persistent {
+                    horizon_client::mobs::raider::Reason::Other
+                } else {
+                    horizon_client::mobs::raider::Reason::Natural
+                };
+                horizon_client::mobs::raider::finalize(&mut mob, reason);
+            }
         }
         let id = mob.id;
         self.mobs.push(mob);
@@ -579,10 +602,12 @@ impl Game<'_> {
         if !self.mobs.iter().any(|m| m.id == id) {
             return None;
         }
-        self.enchant_spawn_equipment(id);
-        self.halloween_spawn_head(id);
-        if !persistent && !scripted {
-            self.spawn_jockeys(id, natural);
+        if finalize {
+            self.enchant_spawn_equipment(id);
+            self.halloween_spawn_head(id);
+            if !persistent && !scripted {
+                self.spawn_jockeys(id, natural);
+            }
         }
         Some(id)
     }
@@ -1758,7 +1783,7 @@ impl Game<'_> {
                 m.position.y + 0.5,
                 m.position.z + off(k / 2),
             ];
-            if let Some(id) = self.spawn_mob(&m.kind.id, at, m.persistent)
+            if let Some(id) = self.spawn_mob_raw(&m.kind.id, at, m.persistent)
                 && let Some(c) = self.mobs.iter_mut().find(|c| c.id == id)
             {
                 horizon_client::mobs::cube::set_size(c, size / 2);
@@ -2930,7 +2955,12 @@ impl Game<'_> {
                     self.native_mobs_joined(self.mobs.len() - 1, false);
                 }
                 MobEvent::SpawnKind { kind, at, setup } => {
-                    if let Some(id) = self.spawn_mob(&kind, at, setup.persistent) {
+                    let id = if setup.skip_finalize {
+                        self.spawn_mob_raw(&kind, at, setup.persistent)
+                    } else {
+                        self.spawn_mob(&kind, at, setup.persistent)
+                    };
+                    if let Some(id) = id {
                         self.apply_setup(id, &setup);
                     }
                 }
@@ -3156,7 +3186,7 @@ impl Game<'_> {
                             f64::from(pos[1]),
                             f64::from(pos[2]) + 0.5,
                         ];
-                        if let Some(id) = self.spawn_mob("minecraft:silverfish", at, false) {
+                        if let Some(id) = self.spawn_mob_raw("minecraft:silverfish", at, false) {
                             self.mob_poof(id);
                         }
                     }
@@ -3518,7 +3548,7 @@ impl Game<'_> {
                 f64::from(pos[1]),
                 f64::from(pos[2]) + 0.3,
             ];
-            if let Some(id) = self.spawn_mob("minecraft:turtle", at, true)
+            if let Some(id) = self.spawn_mob_raw("minecraft:turtle", at, true)
                 && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
             {
                 m.extra.age = -24000;
@@ -3754,7 +3784,8 @@ impl Game<'_> {
             }
             _ => p.kind.id.clone(),
         };
-        if let Some(id) = self.spawn_mob(&kind, [p.position.x, p.position.y, p.position.z], true)
+        if let Some(id) =
+            self.spawn_mob_raw(&kind, [p.position.x, p.position.y, p.position.z], true)
             && let Some(child) = self.mobs.iter_mut().find(|m| m.id == id)
         {
             child.extra.age = -24000;
@@ -5645,7 +5676,7 @@ impl Game<'_> {
                         1
                     };
                     for _ in 0..n {
-                        if let Some(id) = self.spawn_mob("minecraft:chicken", atp, true)
+                        if let Some(id) = self.spawn_mob_raw("minecraft:chicken", atp, true)
                             && let Some(c) = self.mobs.iter_mut().find(|m| m.id == id)
                         {
                             c.extra.age = -24000;
@@ -5714,7 +5745,7 @@ impl Game<'_> {
                         && let Some(pl) = self.player.as_ref()
                     {
                         let from = pl.position;
-                        self.spawn_mob("minecraft:endermite", [from.x, from.y, from.z], false);
+                        self.spawn_mob_raw("minecraft:endermite", [from.x, from.y, from.z], false);
                     }
                     // ServerPlayer.teleport: removeVehicle before the placement.
                     self.stop_riding();
@@ -6436,6 +6467,7 @@ impl Game<'_> {
                 let setup = SpawnSetup {
                     yaw: m.yaw,
                     persistent: true,
+                    skip_finalize: true,
                     ..Default::default()
                 };
                 let pos = [m.position.x, m.position.y, m.position.z];
@@ -7234,28 +7266,14 @@ impl Game<'_> {
         );
         let (species, variant, color) =
             (parent.species(), parent.extra.variant, parent.extra.color);
-        let mob_type = parent.kind.clone();
         let target = self.mob_entity(&self.mobs[index]);
-        let id = if species == Species::Piglin {
-            // SpawnEggItem.spawnOffspringFromSpawnEgg: a non-AgeableMob is
-            // constructed, then setBaby(true), without finalizeSpawn. Giving
-            // it adult spawn gear first leaves the baby holding a weapon.
-            self.next_entity += 1;
-            let id = self.next_entity;
-            self.mobs
-                .push(Mob::new(id, mob_type, Vec3::new(at[0], at[1], at[2]), 0.0));
-            id
-        } else {
-            let Some(id) = self.spawn_mob_spawned(&kind, at) else {
-                return false;
-            };
-            id
+        // SpawnEggItem.spawnOffspringFromSpawnEgg: `type.create(level, SPAWN_ITEM_USE)`
+        // creates the baby without finalizeSpawn.
+        let Some(id) = self.spawn_mob_raw(&kind, at, false) else {
+            return false;
         };
         if let Some(child) = self.mobs.iter_mut().find(|m| m.id == id) {
             horizon_client::mobs::finalize::spawn_egg_offspring(child, species, variant, color);
-        }
-        if species == Species::Piglin {
-            self.native_mobs_joined(self.mobs.len() - 1, false);
         }
         // `Mob.checkAndHandleImportantInteractions` then calls
         // `onOffspringSpawnedFromEgg`: `Fox`'s makes the baby trust the player

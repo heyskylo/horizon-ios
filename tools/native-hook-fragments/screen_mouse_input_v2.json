@@ -1,0 +1,28 @@
+{
+  "hooks": [
+    {
+      "name": "screen_mouse_dragged_pre_v2",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_screen_mouse_dragged_pre_v2",
+      "neoforge": "ScreenEvent.MouseDragged.Pre",
+      "side": "client",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "canceled"
+      }
+    },
+    {
+      "name": "screen_mouse_scrolled_pre_v2",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_screen_mouse_scrolled_pre_v2",
+      "neoforge": "ScreenEvent.MouseScrolled.Pre",
+      "side": "client",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "canceled"
+      }
+    }
+  ],
+  "rust_summary": "screen drag and wheel hooks with the game lent mutably (`native_screen_mouse_dragged_pre_v2`, `native_screen_mouse_scrolled_pre_v2`), leaving v1 as it was.",
+  "doc_summary": "`native_screen_mouse_dragged_pre_v2(screen, mouse, button, delta, modifiers, canceled)` and `native_screen_mouse_scrolled_pre_v2(screen, mouse, scroll, modifiers, canceled)`: additive versions of `native_screen_mouse_dragged_pre` and `native_screen_mouse_scrolled_pre` that lend the game mutably, so a mod can click slots right where a drag or a wheel turn happens (Mouse Tweaks-style inventory mods), where v1 can only read and cancel. The view borrows the game, so v2 gets its `id` as `screen` and its pointer as `mouse` (GUI pixels) instead; `button`, `delta`, `scroll` and `modifiers` are v1's. Each is heard at v1's point, for the same inputs, just before v1, which hears the screen as v2 left it and nothing of an input v2 canceled. Cancelling does what cancelling v1 does: no screen drag handler runs, nothing the screen would scroll moves (the bundle under the pointer included). v1 keeps its signature and firing point. Bundles that use them need \"hooks\": @API:screen_mouse_input_v2@."
+}

@@ -478,11 +478,24 @@ impl ItemEntity {
             self.fire_ticks -= 1;
         }
         let mut lava_hurt = false;
-        if fluid == Fluid::Lava && !fire_immune {
-            self.fire_ticks = self.fire_ticks.max(300);
-            if !items.resists_fire(&self.stack, "minecraft:lava") {
-                spilled.extend(self.hurt(4).unwrap_or_default());
-                lava_hurt = true;
+        // LavaCauldronBlock.entityInside applies LAVA_IGNITE and then lavaHurt.
+        // A cauldron is not a lava fluid, and removed items get no block effects.
+        if self.health > 0 && !fire_immune {
+            let contacts = usize::from(fluid == Fluid::Lava)
+                + lava_cauldron_contacts(world, registry, self.bounds());
+            if contacts > 0 {
+                self.fire_ticks = self.fire_ticks.max(300);
+            }
+            // StepBasedCollector coalesces ignition, but keeps each block's
+            // runAfter(lavaHurt) callback. Stop once an item is destroyed.
+            for _ in 0..contacts {
+                if self.health <= 0 {
+                    break;
+                }
+                if !items.resists_fire(&self.stack, "minecraft:lava") {
+                    spilled.extend(self.hurt(4).unwrap_or_default());
+                    lava_hurt = true;
+                }
             }
         }
         let fire_damage = crate::motion::environment::fire_contact(world, registry, self.bounds());
@@ -1016,6 +1029,70 @@ impl ItemEntity {
             && age < 6000
             && self.stack.count < max_stack
     }
+}
+
+/// `LavaCauldronBlock.getEntityInsideCollisionShape`: the cauldron's solid
+/// shape plus its contents (12 pixels wide, from 4 through 15 pixels high).
+/// In particular, the rim and feet count too, but air above the contents does not.
+fn lava_cauldron_contacts(
+    world: &World,
+    registry: &horizon_world::registry::BlockRegistry,
+    bounds: Aabb,
+) -> usize {
+    use horizon_core::geometry::ShapeOp;
+    static SHAPE: std::sync::OnceLock<VoxelShape> = std::sync::OnceLock::new();
+    let epsilon = f64::from(1e-5_f32);
+    let mut contacts = 0;
+    let candidates = bounds.deflate(Vec3::new(epsilon, epsilon, epsilon));
+    for x in candidates.min_position().x.floor() as i32..=candidates.max_position().x.floor() as i32
+    {
+        for y in
+            candidates.min_position().y.floor() as i32..=candidates.max_position().y.floor() as i32
+        {
+            for z in candidates.min_position().z.floor() as i32
+                ..=candidates.max_position().z.floor() as i32
+            {
+                if !registry
+                    .state(world.block(x, y, z))
+                    .is_some_and(|s| s.name == "minecraft:lava_cauldron")
+                {
+                    continue;
+                }
+                let shape = SHAPE.get_or_init(|| {
+                    let cuboid = |x0, y0, z0, x1, y1, z1| {
+                        VoxelShape::from_box(Aabb::new(
+                            Vec3::new(x0 / 16.0, y0 / 16.0, z0 / 16.0),
+                            Vec3::new(x1 / 16.0, y1 / 16.0, z1 / 16.0),
+                        ))
+                        .expect("valid cauldron box")
+                    };
+                    let mut solid = VoxelShape::block();
+                    // AbstractCauldronBlock.SHAPE: the openings under its feet
+                    // and its hollow centre are cut out of the unit block.
+                    for hole in [
+                        cuboid(0.0, 0.0, 4.0, 16.0, 3.0, 12.0),
+                        cuboid(4.0, 0.0, 0.0, 12.0, 3.0, 16.0),
+                        cuboid(2.0, 0.0, 2.0, 14.0, 3.0, 14.0),
+                        cuboid(2.0, 4.0, 2.0, 14.0, 16.0, 14.0),
+                    ] {
+                        solid = solid
+                            .join(&hole, ShapeOp::ONLY_FIRST)
+                            .expect("valid cauldron cutout");
+                    }
+                    solid
+                        .join(&cuboid(2.0, 4.0, 2.0, 14.0, 15.0, 14.0), ShapeOp::OR)
+                        .expect("valid filled cauldron")
+                });
+                let local = bounds.move_by(Vec3::new(-f64::from(x), -f64::from(y), -f64::from(z)));
+                // Only block enumeration uses the deflated box. The actual
+                // shape contact follows Entity.collidedWithShapeMovingFrom.
+                if local.collided_along_vector(Vec3::ZERO, shape.boxes()) {
+                    contacts += 1;
+                }
+            }
+        }
+    }
+    contacts
 }
 /// The boxes that stop a dropped item (boats, minecarts, shulkers, a held-still happy ghast),
 /// binned by 8-block cell, so an item looks only at the ones near it: a farm with many drops and

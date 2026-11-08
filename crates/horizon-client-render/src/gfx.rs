@@ -35,15 +35,8 @@ fn entity_shader() -> String {
     crate::overlay::wgsl_constants() + include_str!("hdr_light.wgsl") + include_str!("entity.wgsl")
 }
 
-fn written_lane(
-    layered: bool,
-    format: wgpu::TextureFormat,
-    pack: bool,
-    world: bool,
-    oit_requested: bool,
-    vis_requested: bool,
-) -> bool {
-    layered && format == LINEAR_FRAME && !pack && world && !oit_requested && !vis_requested
+fn written_lane(layered: bool, format: wgpu::TextureFormat, pack: bool, world: bool) -> bool {
+    layered && format == LINEAR_FRAME && !pack && world
 }
 
 fn terrain_shader() -> String {
@@ -8170,8 +8163,6 @@ impl Renderer {
             self.frame_format,
             self.shader_pack_kind().is_some(),
             !frame.title,
-            self.improved_transparency,
-            std::env::var("HORIZON_VISBUFFER").as_deref() == Ok("1"),
         );
         if self.hdr_written != hdr_written {
             log::info!(
@@ -10914,7 +10905,8 @@ impl Renderer {
                 );
                 pass.set_bind_group(0, &self.group, &[]);
             }
-            if crumbling_quads > 0 && !oit_on {
+            // Cracks multiply the existing light; scalar OIT coverage cannot carry that factor.
+            if crumbling_quads > 0 && (!oit_on || self.hdr_written) {
                 pass.set_pipeline(&self.crumbling_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
@@ -11090,18 +11082,20 @@ impl Renderer {
                             }
                         };
                         quads(pass, &f.text[s], text_quads, entity_quads);
-                        quads(
-                            pass,
-                            &f.crumbling[s],
-                            crumbling_quads,
-                            entity_quads + text_quads,
-                        );
-                        quads(
-                            pass,
-                            &f.crumbling[s],
-                            translucent_crumbling_quads,
-                            entity_quads + text_quads + crumbling_quads,
-                        );
+                        if !self.hdr_written {
+                            quads(
+                                pass,
+                                &f.crumbling[s],
+                                crumbling_quads,
+                                entity_quads + text_quads,
+                            );
+                            quads(
+                                pass,
+                                &f.crumbling[s],
+                                translucent_crumbling_quads,
+                                entity_quads + text_quads + crumbling_quads,
+                            );
+                        }
                         quads(
                             pass,
                             &f.swirl[s],
@@ -11212,7 +11206,7 @@ impl Renderer {
                     // HDR output's mark on what shines in the stages, as the classic
                     // pass marks it after drawing it: eyes, the dragon's eyes and rays,
                     // firework sparks and lightning.
-                    if self.hdr.is_some() {
+                    if self.hdr.is_some() && !self.hdr_written {
                         pass.set_pipeline(&self.hdr_mark_pipeline);
                         pass.set_bind_group(0, &self.entity_group, &[]);
                         pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
@@ -11321,7 +11315,7 @@ impl Renderer {
             if outline_edges > 0 && frame.outline_after_terrain && !pack_draws_outline {
                 self.draw_outline(&mut pass, outline_edges as u32, frame.outline_high_contrast);
             }
-            if translucent_crumbling_quads > 0 && !oit_on {
+            if translucent_crumbling_quads > 0 && (!oit_on || self.hdr_written) {
                 pass.set_pipeline(&self.crumbling_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
@@ -12938,25 +12932,21 @@ mod tests {
     #[test]
     fn written_light_requires_the_entire_default_layered_world_lane() {
         use super::{LINEAR_FRAME, WIDE_FRAME, written_lane};
-        assert!(written_lane(true, LINEAR_FRAME, false, true, false, false));
-        for bits in 0..32 {
+        assert!(written_lane(true, LINEAR_FRAME, false, true));
+        for bits in 0..8 {
             let layered = bits & 1 != 0;
             let pack = bits & 2 != 0;
             let world = bits & 4 != 0;
-            let oit = bits & 8 != 0;
-            let vis = bits & 16 != 0;
             assert_eq!(
-                written_lane(layered, LINEAR_FRAME, pack, world, oit, vis),
-                layered && !pack && world && !oit && !vis
+                written_lane(layered, LINEAR_FRAME, pack, world),
+                layered && !pack && world
             );
-            assert!(!written_lane(layered, WIDE_FRAME, pack, world, oit, vis));
+            assert!(!written_lane(layered, WIDE_FRAME, pack, world));
             assert!(!written_lane(
                 layered,
                 wgpu::TextureFormat::Bgra8Unorm,
                 pack,
                 world,
-                oit,
-                vis
             ));
         }
     }
