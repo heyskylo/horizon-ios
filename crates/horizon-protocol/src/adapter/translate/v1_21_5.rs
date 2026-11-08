@@ -1,5 +1,6 @@
 //! 1.21.5's player commands and hanging-entity metadata, from vanilla's codecs/registrations.
 use super::*;
+use crate::adapter::pinned_ids::entity_type as entity;
 
 pub(super) fn clientbound(
     session: &Session,
@@ -80,10 +81,9 @@ pub(super) fn input(session: &Session, payload: &[u8]) -> Result<()> {
 
 /// HangingEntity added DATA_DIRECTION at index 8; the subclasses' existing fields moved up one.
 pub(super) fn entity_data(session: &Session, data: &mut play::SetEntityData) {
-    // Pinned registry: glow_item_frame, item_frame, painting.
     if matches!(
-        session.kinds.lock().unwrap().get(&data.id),
-        Some(61 | 74 | 94)
+        session.kinds.lock().unwrap().get(&data.id).copied(),
+        Some(entity::GLOW_ITEM_FRAME | entity::ITEM_FRAME | entity::PAINTING)
     ) {
         for (index, _, _) in &mut data.values {
             if *index >= 8 {
