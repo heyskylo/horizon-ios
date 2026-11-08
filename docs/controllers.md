@@ -525,11 +525,13 @@ bind_key.jump:south
 craftOnServers:false
 gameplayGuide:full
 bind_pad.hotbarNext:rb
-bindLayout:1
+bindLayout:2
 ```
 
 Only bindings that differ from the defaults are written. A file without `bindLayout` comes from before the
-current defaults and keeps its buttons where they were.
+current defaults and keeps its buttons where they were. A file below `bindLayout:2` comes from before the radial
+menu's opener: on its first load the opener stays off D-pad Right if the player had put another action there.
+That happens once; from layout 2 on, a conflict the player makes in the binds list stays as they made it.
 
 Deadzones are radial (the stick's length, so diagonals aren't clipped) and the
 remaining range is rescaled to 0..1. Look uses a squared curve for precise

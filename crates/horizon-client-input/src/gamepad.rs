@@ -283,6 +283,12 @@ pub fn opener_refused(stick: RadialStick, button: Button) -> bool {
         || (stick != RadialStick::Right && LEFT_THUMB.contains(&button))
 }
 
+/// The `bindLayout` the settings file is written in. 1: the defaults of the binds list as they
+/// are; 2: the radial menu's opener resolved against the player's own buttons.
+const BIND_LAYOUT: u32 = 2;
+/// The layout from which the file, not the default, says where the opener is.
+const OPENER_LAYOUT: u32 = 2;
+
 /// Bindable actions and their default buttons: vanilla key mappings (the
 /// game acts as their default key) and Horizon's pad-only actions. Start is
 /// always pause / back and isn't listed.
@@ -300,6 +306,7 @@ pub const ACTIONS: &[(&str, Option<Button>)] = &[
     ("key.togglePerspective", Some(Button::Select)),
     ("key.pickItem", Some(Button::DPadLeft)),
     ("key.chat", Some(Button::DPadUp)),
+    (RADIAL, Some(Button::DPadRight)),
     ("key.advancements", None),
     ("key.playerlist", None),
     ("key.command", None),
@@ -349,6 +356,8 @@ pub fn route(action: &str) -> Option<Route> {
     match action {
         HOTBAR_PREVIOUS => Some(Route::HotbarStep { next: false }),
         HOTBAR_NEXT => Some(Route::HotbarStep { next: true }),
+        // Nothing in play reads the opener yet.
+        RADIAL => Some(Route::Held),
         "key.sneak" => Some(Route::Sneak),
         "key.screenshot" => Some(Route::Screenshot),
         "key.smoothCamera" => Some(Route::SmoothCamera),
@@ -363,12 +372,16 @@ pub fn route(action: &str) -> Option<Route> {
     }
 }
 
+/// The radial menu's opener, as the binds list and the gameplay guide name it.
+pub const RADIAL_CAPTION: &str = "horizon.pad.action.radial";
+
 /// An action's name in the binds list: vanilla's translation key, or
 /// Horizon's own English for the pad-only actions.
 pub fn action_caption(action: &str) -> &str {
     match action {
         HOTBAR_PREVIOUS => "Hotbar: Previous Slot",
         HOTBAR_NEXT => "Hotbar: Next Slot",
+        RADIAL => RADIAL_CAPTION,
         other => other,
     }
 }
@@ -734,6 +747,40 @@ pub struct PadSettings {
     pub repeat_interval: f32,
     /// Action name -> button, `None` for unbound; missing means the default.
     bindings: BTreeMap<&'static str, Option<Button>>,
+    /// The radial menu's pages.
+    pub radial: crate::radial::Pages,
+    /// Whether the radial menu's opener is held or pressed once.
+    pub radial_mode: RadialMode,
+    /// The stick that selects in it.
+    pub radial_stick: RadialStick,
+    /// Lines this game doesn't read (a newer Horizon's settings, an action it doesn't have, a
+    /// button it doesn't know), kept as they were so a save here loses nothing.
+    extra: Vec<(String, String)>,
+    /// The newest `bindLayout` the file has been written in: this game's, or a newer Horizon's,
+    /// kept so that one doesn't resolve its file again as older than it is.
+    bind_layout: u32,
+    /// The opener last used with each stick (`RadialStick::ALL` order), so stepping the Selects
+    /// With row and back gives each stick's own opener again.
+    openers: StickOpeners,
+}
+
+/// The opener each stick had, for this session: what the player stepped through, not a setting,
+/// so it is neither saved nor compared.
+#[derive(Clone, Copy, Debug, Default)]
+struct StickOpeners([Option<Button>; 3]);
+impl PartialEq for StickOpeners {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+impl StickOpeners {
+    fn slot(&mut self, stick: RadialStick) -> &mut Option<Button> {
+        let at = RadialStick::ALL
+            .iter()
+            .position(|s| *s == stick)
+            .unwrap_or(0);
+        &mut self.0[at]
+    }
 }
 impl Default for PadSettings {
     fn default() -> Self {
@@ -760,6 +807,12 @@ impl Default for PadSettings {
             repeat_delay: 0.35,
             repeat_interval: 0.09,
             bindings: BTreeMap::new(),
+            radial: Default::default(),
+            radial_mode: RadialMode::Hold,
+            radial_stick: RadialStick::Right,
+            extra: Vec::new(),
+            bind_layout: BIND_LAYOUT,
+            openers: StickOpeners::default(),
         }
     }
 }
@@ -786,6 +839,7 @@ impl PadSettings {
     }
     pub fn parse(text: &str) -> Self {
         let mut s = Self::default();
+        let mut saved_opener = None;
         for line in text.lines() {
             let Some((key, value)) = line.split_once(':') else {
                 continue;
@@ -834,22 +888,85 @@ impl PadSettings {
                 "scrollSpeed" => s.scroll_speed = bounded(s.scroll_speed, 1.0, 36.0),
                 "repeatDelay" => s.repeat_delay = bounded(s.repeat_delay, 0.1, 1.0),
                 "repeatInterval" => s.repeat_interval = bounded(s.repeat_interval, 0.03, 0.3),
+                "radialMode" => s.radial_mode = RadialMode::parse(value),
+                "radialStick" => s.radial_stick = RadialStick::parse(value),
+                // Read after the loop, from the whole text.
+                "bindLayout" => {}
+                // The radial menu's pages (`radial::Pages::parse`).
+                other if other.starts_with("radial_") || other == crate::radial::LAYOUT_KEY => {}
                 other => {
-                    if let Some(action) = other.strip_prefix("bind_") {
-                        let button = if value == "none" {
-                            Some(None)
-                        } else {
-                            Button::parse(value).map(Some)
-                        };
-                        if let Some(button) = button {
-                            s.bind(action, button);
-                        }
+                    let known = other
+                        .strip_prefix("bind_")
+                        .filter(|action| ACTIONS.iter().any(|a| a.0 == *action));
+                    let button = if value == "none" {
+                        Some(None)
+                    } else {
+                        Button::parse(value).map(Some)
+                    };
+                    match (known, button) {
+                        // The opener once the selecting stick is known.
+                        (Some(RADIAL), Some(button)) => saved_opener = Some(button),
+                        (Some(action), Some(button)) => s.bind(action, button),
+                        _ => s.extra.push((other.to_owned(), value.to_owned())),
                     }
                 }
             }
         }
-        // A file from before these defaults: its player's buttons stay where they were.
-        if !text.is_empty() && !text.lines().any(|line| line.starts_with("bindLayout:")) {
+        // An opener on a button it can't be with this stick reads as never saved.
+        let refused_opener = match saved_opener {
+            Some(Some(b)) if opener_refused(s.radial_stick, b) => true,
+            Some(button) => {
+                s.bind(RADIAL, button);
+                false
+            }
+            None => false,
+        };
+        if let Some(pages) = crate::radial::Pages::parse(
+            text.lines()
+                .filter_map(|line| line.split_once(':'))
+                .map(|(key, value)| (key.trim(), value.trim())),
+        ) {
+            s.radial = pages;
+        }
+        let lines = || text.lines().map(str::trim);
+        let saved = |action: &str| {
+            let prefix = format!("bind_{action}:");
+            lines().any(|line| line.starts_with(&prefix))
+        };
+        // The layout the file was written in; none in a file from before these defaults.
+        let layout = lines()
+            .find_map(|line| line.strip_prefix("bindLayout:"))
+            .map(|value| value.trim().parse::<u32>().unwrap_or(0));
+        s.bind_layout = layout.map_or(BIND_LAYOUT, |layout| layout.max(BIND_LAYOUT));
+        // Once, for a file from before the radial menu's opener, or one with the opener on a
+        // button it can no longer be: a button the player bound by hand stays theirs, and the
+        // opener's default doesn't take it. From then on the file says where the opener is, and
+        // a conflict made since stays shown in the binds list.
+        let before_opener = layout.is_none_or(|layout| layout < OPENER_LAYOUT);
+        if !text.is_empty() && (refused_opener || (before_opener && !saved(RADIAL))) {
+            let default_opener = ACTIONS
+                .iter()
+                .find(|(action, _)| *action == RADIAL)
+                .and_then(|(_, button)| *button);
+            let taken = s.bindings.iter().any(|(action, button)| {
+                *action != RADIAL && button.is_some() && *button == default_opener
+            });
+            if taken {
+                s.bindings.insert(RADIAL, None);
+            }
+        }
+        // The default too can be under the selecting thumb (D-pad Right, the left stick
+        // selecting): no button opens the menu until the player picks one.
+        if s.binding(RADIAL)
+            .is_some_and(|b| opener_refused(s.radial_stick, b))
+        {
+            s.bindings.insert(RADIAL, None);
+        }
+        // A file from before these defaults: its player's buttons stay where they were, and
+        // nothing they saved shares a button with the radial menu's opener. They can bind one
+        // in the binds list.
+        if !text.is_empty() && layout.is_none() {
+            s.bindings.entry(RADIAL).or_insert(None);
             for (action, button) in [
                 ("key.drop", Button::East),
                 ("key.togglePerspective", Button::DPadUp),
@@ -858,10 +975,7 @@ impl PadSettings {
                 ("key.advancements", Button::DPadDown),
             ] {
                 // A button saved by hand stays, even one that's now this action's default.
-                if !text
-                    .lines()
-                    .any(|line| line.starts_with(&format!("bind_{action}:")))
-                {
+                if !saved(action) {
                     s.bindings.entry(action).or_insert(Some(button));
                 }
             }
@@ -902,7 +1016,25 @@ impl PadSettings {
             "playInBackground:{}\n",
             bool_text(self.play_in_background)
         ));
-        text.push_str("bindLayout:1\n");
+        text.push_str(&format!(
+            "radialMode:{}\nradialStick:{}\n",
+            self.radial_mode.name(),
+            self.radial_stick.name()
+        ));
+        text.push_str(&format!("bindLayout:{}\n", self.bind_layout));
+        for (key, value) in &self.extra {
+            // A button this game didn't know, for an action the player has bound here since.
+            let rebound = key
+                .strip_prefix("bind_")
+                .is_some_and(|action| self.bindings.contains_key(action));
+            if !rebound {
+                text.push_str(&format!("{key}:{value}\n"));
+            }
+        }
+        // The default pages aren't written: they can improve for a player who never changed them.
+        if self.radial != crate::radial::Pages::default() {
+            text.push_str(&self.radial.serialize());
+        }
         text
     }
     pub fn default_of(action: &str) -> Option<Button> {
@@ -915,11 +1047,53 @@ impl PadSettings {
             None => Self::default_of(action),
         }
     }
-    /// Bind an action (`None` unbinds); unknown actions are ignored.
+    /// Whether `button` can be bound to `action`: anything but the radial menu's opener under
+    /// a thumb that selects, or on B (`opener_refused`).
+    pub fn can_bind(&self, action: &str, button: Button) -> bool {
+        action != RADIAL || !opener_refused(self.radial_stick, button)
+    }
+    /// The stick the radial menu selects with. An opener under the thumb that now selects is
+    /// unbound, and its row in the radial page says so. An unbound opener then takes the one this
+    /// stick had before in this session, or else its default where nothing else has it (D-pad
+    /// Right, back on the right stick).
+    pub fn set_radial_stick(&mut self, stick: RadialStick) {
+        let was = self.radial_stick;
+        *self.openers.slot(was) = self.binding(RADIAL);
+        self.radial_stick = stick;
+        if self
+            .binding(RADIAL)
+            .is_some_and(|b| opener_refused(stick, b))
+        {
+            self.bindings.insert(RADIAL, None);
+        }
+        if self.binding(RADIAL).is_some() {
+            return;
+        }
+        // The player's own, shared or not: they put it there.
+        if let Some(own) = self
+            .openers
+            .slot(stick)
+            .filter(|b| !opener_refused(stick, *b))
+        {
+            self.bind(RADIAL, Some(own));
+            return;
+        }
+        let default = Self::default_of(RADIAL);
+        let free =
+            default.is_some_and(|d| !opener_refused(stick, d) && self.actions_of(d).is_empty());
+        if free {
+            self.bindings.remove(RADIAL);
+        }
+    }
+    /// Put `action` on `button`, or unbind it. An unknown action, or a button it can't take
+    /// (`can_bind`), changes nothing.
     pub fn bind(&mut self, action: &str, button: Option<Button>) {
         let Some((name, default)) = ACTIONS.iter().find(|a| a.0 == action) else {
             return;
         };
+        if button.is_some_and(|b| !self.can_bind(action, b)) {
+            return;
+        }
         if button == *default {
             self.bindings.remove(name);
         } else {
@@ -1771,6 +1945,157 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_new_player_holds_d_pad_right_for_the_radial_menu() {
+        for s in [PadSettings::default(), PadSettings::parse("")] {
+            assert_eq!(s.binding(RADIAL), Some(Button::DPadRight));
+            assert!(!s.conflicts(RADIAL));
+        }
+        let s = PadSettings::parse(&PadSettings::default().serialize());
+        assert_eq!(s, PadSettings::default());
+    }
+
+    #[test]
+    fn a_button_bound_by_hand_stays_with_it_over_the_openers_default() {
+        let s = PadSettings::parse("bindLayout:1\nbind_key.playerlist:right\n");
+        assert_eq!(s.binding("key.playerlist"), Some(Button::DPadRight));
+        assert_eq!(s.binding(RADIAL), None);
+        assert!(!s.conflicts("key.playerlist"));
+        assert_eq!(PadSettings::parse(&s.serialize()), s);
+    }
+
+    #[test]
+    fn a_saved_opener_stays_where_it_was_saved() {
+        let s =
+            PadSettings::parse("bindLayout:1\nbind_pad.radial:right\nbind_key.playerlist:right\n");
+        assert_eq!(s.binding(RADIAL), Some(Button::DPadRight));
+    }
+
+    #[test]
+    fn a_conflict_made_since_the_migration_stays_after_a_restart() {
+        // Bound in the binds list onto the opener's button: both stay, and the list marks it.
+        let mut s = PadSettings::default();
+        s.bind("key.playerlist", Some(Button::DPadRight));
+        let text = s.serialize();
+        assert!(text.contains("bindLayout:2"));
+        let read = PadSettings::parse(&text);
+        assert_eq!(read.binding(RADIAL), Some(Button::DPadRight));
+        assert!(read.conflicts(RADIAL));
+        assert_eq!(read, s);
+        // The same, hand-written with spaces around the lines.
+        let read = PadSettings::parse("  bindLayout:2\n  bind_key.playerlist:right\n");
+        assert_eq!(read.binding(RADIAL), Some(Button::DPadRight));
+    }
+
+    #[test]
+    fn a_layout_one_file_resolves_the_opener_once() {
+        let s = PadSettings::parse("bind_key.chat:up\n bindLayout:1\nbind_key.playerlist:right\n");
+        assert_eq!(s.binding(RADIAL), None, "the player's own button wins");
+        assert_eq!(s.binding("key.playerlist"), Some(Button::DPadRight));
+        assert_eq!(s.binding("key.chat"), Some(Button::DPadUp));
+        let text = s.serialize();
+        assert!(text.contains("bindLayout:2\n") && text.contains("bind_pad.radial:none\n"));
+        assert_eq!(PadSettings::parse(&text), s);
+        // Without a conflict the opener keeps its default.
+        let s = PadSettings::parse("bindLayout:1\nvibration:false\n");
+        assert_eq!(s.binding(RADIAL), Some(Button::DPadRight));
+        // A line with leading spaces is still a saved opener.
+        let s =
+            PadSettings::parse("bindLayout:1\n bind_pad.radial:right\nbind_key.playerlist:right\n");
+        assert_eq!(s.binding(RADIAL), Some(Button::DPadRight));
+    }
+
+    #[test]
+    fn the_opener_never_goes_under_the_selecting_thumb_nor_on_b() {
+        use Button as B;
+        let face = [B::South, B::West, B::North, B::RightStick];
+        let dpad = [
+            B::DPadUp,
+            B::DPadDown,
+            B::DPadLeft,
+            B::DPadRight,
+            B::LeftStick,
+        ];
+        for stick in RadialStick::ALL {
+            let mut s = PadSettings::default();
+            s.set_radial_stick(stick);
+            for button in Button::ALL {
+                let refused = button == B::East
+                    || (stick != RadialStick::Left && face.contains(&button))
+                    || (stick != RadialStick::Right && dpad.contains(&button));
+                assert_eq!(!s.can_bind(RADIAL, button), refused, "{stick:?} {button:?}");
+                // Other actions still take any of them.
+                assert!(s.can_bind("key.chat", button));
+            }
+            // A bumper is always free, and stays one through the file.
+            s.bind(RADIAL, Some(B::LeftBumper));
+            assert_eq!(s.binding(RADIAL), Some(B::LeftBumper), "{stick:?}");
+            assert_eq!(PadSettings::parse(&s.serialize()), s, "{stick:?}");
+        }
+        // A file with a refused opener reads as never saved: the default, unless taken.
+        for button in [B::South, B::East, B::West, B::North, B::RightStick] {
+            let text = format!("bindLayout:2\nbind_pad.radial:{}\n", button.name());
+            let read = PadSettings::parse(&text);
+            assert_eq!(read.binding(RADIAL), Some(B::DPadRight), "{button:?}");
+            let taken = format!("{text}bind_key.playerlist:right\n");
+            assert_eq!(
+                PadSettings::parse(&taken).binding(RADIAL),
+                None,
+                "{button:?}"
+            );
+        }
+        // Read with the stick it was saved for, wherever the stick's line is.
+        let left = PadSettings::parse("bind_pad.radial:north\nbindLayout:2\nradialStick:left\n");
+        assert_eq!(left.binding(RADIAL), Some(B::North));
+    }
+
+    #[test]
+    fn a_stick_that_takes_the_openers_thumb_unbinds_it_and_the_right_gives_it_back() {
+        let mut s = PadSettings::default();
+        s.set_radial_stick(RadialStick::Left);
+        assert_eq!(
+            s.binding(RADIAL),
+            None,
+            "D-pad Right is under the left thumb"
+        );
+        assert_eq!(PadSettings::parse(&s.serialize()).binding(RADIAL), None);
+        s.set_radial_stick(RadialStick::Right);
+        assert_eq!(s.binding(RADIAL), Some(Button::DPadRight));
+        // An opener the player picked that both sticks allow stays.
+        s.bind(RADIAL, Some(Button::RightBumper));
+        s.set_radial_stick(RadialStick::Either);
+        assert_eq!(s.binding(RADIAL), Some(Button::RightBumper));
+    }
+
+    #[test]
+    fn stepping_the_stick_and_back_gives_each_stick_its_own_opener() {
+        // Left with Y, back to the right stick: Y is under the right thumb, D-pad Right opens.
+        let mut s = PadSettings::default();
+        s.set_radial_stick(RadialStick::Left);
+        s.bind(RADIAL, Some(Button::North));
+        s.set_radial_stick(RadialStick::Right);
+        assert_eq!(s.binding(RADIAL), Some(Button::DPadRight));
+        // And Left again has its Y back, shared with Inventory as the player left it.
+        s.set_radial_stick(RadialStick::Left);
+        assert_eq!(s.binding(RADIAL), Some(Button::North));
+        // Right with D-pad Left: the left stick refuses it, and the right gets it back.
+        let mut s = PadSettings::default();
+        s.bind(RADIAL, Some(Button::DPadLeft));
+        s.set_radial_stick(RadialStick::Left);
+        assert_eq!(s.binding(RADIAL), None);
+        s.set_radial_stick(RadialStick::Either);
+        assert_eq!(s.binding(RADIAL), None);
+        s.set_radial_stick(RadialStick::Right);
+        assert_eq!(s.binding(RADIAL), Some(Button::DPadLeft));
+    }
+
+    #[test]
+    fn a_file_from_before_the_radial_menu_binds_no_opener() {
+        let s = PadSettings::parse("vibration:false\nbind_key.chat:up\n");
+        assert_eq!(s.binding(RADIAL), None);
+        assert_eq!(PadSettings::parse(&s.serialize()), s);
+    }
+
+    #[test]
     fn the_radial_menus_ticks_are_felt_and_tell_apart() {
         let tick = Rumble::RadialSlot.pulse().unwrap();
         assert!((40..=50).contains(&tick.millis), "{tick:?}");
@@ -1787,6 +2112,41 @@ mod tests {
             nothing.strong.max(nothing.weak) < 0.3,
             "a soft buzz: {nothing:?}"
         );
+    }
+
+    #[test]
+    fn the_radial_menus_mode_and_stick_survive_the_settings_file() {
+        let s = PadSettings::default();
+        assert_eq!(
+            (s.radial_mode, s.radial_stick),
+            (RadialMode::Hold, RadialStick::Right)
+        );
+        for mode in RadialMode::ALL {
+            for stick in RadialStick::ALL {
+                let mut s = PadSettings {
+                    radial_mode: mode,
+                    ..PadSettings::default()
+                };
+                s.set_radial_stick(stick);
+                assert_eq!(PadSettings::parse(&s.serialize()), s);
+            }
+        }
+        let read = PadSettings::parse("radialMode:sideways\nradialStick:up\n");
+        assert_eq!(
+            (read.radial_mode, read.radial_stick),
+            (RadialMode::Hold, RadialStick::Right)
+        );
+    }
+
+    #[test]
+    fn radial_pages_survive_the_settings_file() {
+        let mut s = PadSettings::default();
+        let pages = "radial_0_label:Mine\nradial_0_slots:key.chat,,,,,,,\n";
+        s.radial =
+            crate::radial::Pages::parse(pages.lines().filter_map(|l| l.split_once(':'))).unwrap();
+        let read = PadSettings::parse(&s.serialize());
+        assert_eq!(read.radial, s.radial);
+        assert_ne!(read.radial, crate::radial::Pages::default());
     }
 
     #[test]
@@ -2043,7 +2403,55 @@ bind_key.hotbar.2:north
         let odd = PadSettings::parse(
             "lookSensitivity:NaN\nbind_key.nope:south\nbind_key.jump:x9\nbindLayout:1\n",
         );
-        assert_eq!(odd, PadSettings::default());
+        assert_eq!(
+            odd.look_sensitivity,
+            PadSettings::default().look_sensitivity
+        );
+        assert_eq!(odd.binding("key.jump"), Some(Button::South));
+        assert_eq!(odd.actions_of(Button::South), ["key.jump"]);
+    }
+
+    #[test]
+    fn lines_this_game_doesnt_read_survive_a_save() {
+        // A newer Horizon's setting, an action this game doesn't have, a button it doesn't know.
+        let text =
+            "bindLayout:2\nhapticStrength:0.4\nbind_horizon:dash:south\nbind_key.jump:paddle1\n";
+        let s = PadSettings::parse(text);
+        assert_eq!(
+            s.binding("key.jump"),
+            Some(Button::South),
+            "the default meanwhile"
+        );
+        let saved = s.serialize();
+        for line in [
+            "hapticStrength:0.4\n",
+            "bind_horizon:dash:south\n",
+            "bind_key.jump:paddle1\n",
+        ] {
+            assert!(saved.contains(line), "{line} lost from\n{saved}");
+        }
+        assert_eq!(PadSettings::parse(&saved), s);
+        // Bound here since, the action's own line is the one written.
+        let mut s = s;
+        s.bind("key.jump", Some(Button::West));
+        let saved = s.serialize();
+        assert!(!saved.contains("paddle1"), "{saved}");
+        assert_eq!(
+            PadSettings::parse(&saved).binding("key.jump"),
+            Some(Button::West)
+        );
+    }
+
+    #[test]
+    fn a_newer_bind_layout_is_kept() {
+        let newer = BIND_LAYOUT + 1;
+        let s = PadSettings::parse(&format!("bindLayout:{newer}\nvibration:false\n"));
+        assert!(s.serialize().contains(&format!("bindLayout:{newer}\n")));
+        let s = PadSettings::parse("bindLayout:1\nvibration:false\n");
+        assert!(
+            s.serialize()
+                .contains(&format!("bindLayout:{BIND_LAYOUT}\n"))
+        );
     }
 
     #[test]
