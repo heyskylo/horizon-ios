@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "player_break_block", "target": "horizon_client::game::native_player_break::Game<'_>::native_player_break_block"}
+  ],
+  "rust_summary": "a mod breaks a block as a player breaks it (`native_player_break_block`), its drops popped or put in the player's inventory, as a vein miner does.",
+  "doc_summary": "`native_player_break_block(uuid, pos, into_inventory)` breaks a block as the player `uuid` breaks it (`ServerPlayerGameMode.destroyBlock`: their checks, `native_destroy_block`, the drops for their held tool, its wear, the statistic and experience), with the drops popped or, with `into_inventory`, given to the player; it returns whether the block broke ([Breaking as a player](#breaking-as-a-player)). Bundles need \"hooks\": @API:player_break@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_player_break.rs"
+  ]
+}

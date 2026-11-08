@@ -125,7 +125,7 @@ impl VegetationPatchFeature {
         let mut surface = self.ground_patch(world, random, origin, x_radius, z_radius)?;
         if self.waterlogged {
             let mut water = PosSet::default();
-            for p in surface.to_vec() {
+            for p in surface.iter() {
                 let mut exposed = false;
                 for direction in [
                     Direction::North,
@@ -152,18 +152,17 @@ impl VegetationPatchFeature {
                 .blocks
                 .default_state("minecraft:water")
                 .ok_or(FeatureExecutionError::InvalidState)?;
-            for p in water.to_vec() {
+            for p in water.iter() {
                 write(world, p, water_state, 2)?;
             }
             surface = water;
         }
-        let positions = surface.to_vec();
-        for p in &positions {
+        for p in surface.iter() {
             if self.vegetation_chance > 0.0 && random.next_float() < self.vegetation_chance {
-                self.place_vegetation(world, random, *p, nested)?;
+                self.place_vegetation(world, random, p, nested)?;
             }
         }
-        Ok(!positions.is_empty())
+        Ok(!surface.is_empty())
     }
     fn place_vegetation<W: FeatureWorld + PlacementContext, R: RandomSource>(
         &self,
@@ -670,20 +669,25 @@ impl MultifaceGrowthFeature {
         if !self.air_or_water(here) {
             return Ok(false);
         }
-        let mut directions = self.directions.clone();
-        tb::shuffle(&mut directions, random)?;
+        debug_assert!(self.directions.len() <= Direction::ALL.len());
+        let direction_count = self.directions.len();
+        let mut directions = [Direction::Up; Direction::ALL.len()];
+        directions[..direction_count].copy_from_slice(&self.directions);
+        tb::shuffle(&mut directions[..direction_count], random)?;
         let here = read(world, origin)?;
-        if self.place_growth(world, random, origin, here, &directions)? {
+        if self.place_growth(world, random, origin, here, &directions[..direction_count])? {
             return Ok(true);
         }
-        for &search in &directions {
-            let mut placement: Vec<Direction> = self
-                .directions
-                .iter()
-                .copied()
-                .filter(|d| *d != search.opposite())
-                .collect();
-            tb::shuffle(&mut placement, random)?;
+        for &search in &directions[..direction_count] {
+            let mut placement = [Direction::Up; Direction::ALL.len()];
+            let mut placement_count = 0;
+            for &direction in &self.directions {
+                if direction != search.opposite() {
+                    placement[placement_count] = direction;
+                    placement_count += 1;
+                }
+            }
+            tb::shuffle(&mut placement[..placement_count], random)?;
             for _ in 0..self.search_range {
                 // Native setWithOffset(origin, ...) revisits the first neighbor.
                 let pos = tb::relative(origin, search, 1);
@@ -691,7 +695,7 @@ impl MultifaceGrowthFeature {
                 if !self.air_or_water(state) && !self.is_block(state) {
                     break;
                 }
-                if self.place_growth(world, random, pos, state, &placement)? {
+                if self.place_growth(world, random, pos, state, &placement[..placement_count])? {
                     return Ok(true);
                 }
             }
