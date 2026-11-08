@@ -133,7 +133,7 @@ impl Goal for GuardianAttack {
                     from,
                     kind: "minecraft:indirect_magic",
                 }),
-                Who::Mob(id) => cx.events.push(MobEvent::AttackMob {
+                Who::Mob(id) => cx.events.push(MobEvent::DamageMob {
                     target: id,
                     amount: magic,
                     source: Damage {
@@ -307,7 +307,7 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
                 from,
                 kind: "minecraft:thorns",
             }),
-            Some(Who::Mob(id)) => events.push(MobEvent::AttackMob {
+            Some(Who::Mob(id)) => events.push(MobEvent::DamageMob {
                 target: id,
                 amount: 2.0,
                 source: Damage {

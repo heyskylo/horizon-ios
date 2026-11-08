@@ -1182,7 +1182,7 @@ pub fn mob_contacts(m: &Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             && other.bounds.intersects(bounds)
             && crate::scoreboard::pushable_by(own_team, w.teams.of(super::Who::Mob(other.id)), true)
         {
-            events.push(MobEvent::AttackMob {
+            events.push(MobEvent::DamageMob {
                 target: other.id,
                 amount,
                 source: Damage::of(DamageKind::SulfurCubeHot),
@@ -1781,7 +1781,7 @@ mod mob_contact_tests {
                     let hits: Vec<_> = events
                         .iter()
                         .filter_map(|event| match event {
-                            MobEvent::AttackMob {
+                            MobEvent::DamageMob {
                                 target,
                                 amount,
                                 source,

@@ -230,17 +230,33 @@ impl Game<'_> {
         } else {
             Vec::new()
         };
-        for m in &mut self.mobs {
-            let ally = allies.contains(&m.id);
-            if m.id != f.owner && !ally && m.alive() && m.bounds().intersects(b) {
-                m.damage(
+        for index in 0..self.mobs.len() {
+            let m = &mut self.mobs[index];
+            let id = m.id;
+            if id != f.owner
+                && !allies.contains(&id)
+                && m.alive()
+                && m.bounds().intersects(b)
+                && m.damage(
                     6.0,
                     horizon_client::mobs::Damage {
-                        kind: horizon_client::mobs::DamageKind::Magic,
+                        kind: if owner.is_some() {
+                            horizon_client::mobs::DamageKind::IndirectMagic
+                        } else {
+                            horizon_client::mobs::DamageKind::Magic
+                        },
                         attacker: owner.map(horizon_client::mobs::Who::Mob),
                         from: Some(f.pos),
                         attacker_species: None,
                     },
+                )
+                && owner.is_some()
+            {
+                self.mob_post_attack(
+                    id,
+                    owner.map(horizon_client::mobs::Who::Mob),
+                    Some("minecraft:evoker_fangs"),
+                    Some("minecraft:indirect_magic"),
                 );
             }
         }

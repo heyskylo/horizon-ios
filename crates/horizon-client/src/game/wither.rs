@@ -200,6 +200,7 @@ impl Game<'_> {
                     from: skull.from,
                     attacker_species: owner_species,
                 };
+                let mut survived_hit = false;
                 let killed = match self.mobs.iter_mut().find(|m| m.id == id) {
                     // `WitherBoss.hurtServer`: nothing from a wither friend.
                     Some(m)
@@ -211,13 +212,28 @@ impl Game<'_> {
                     }
                     Some(m) => {
                         let hit = m.damage(amount, source);
-                        if hit && m.alive() && m.species() != Species::Wither && wither_ticks > 0 {
-                            m.add_effect("minecraft:wither", wither_ticks, 1);
-                        }
+                        survived_hit = hit && m.alive();
                         hit && !m.alive()
                     }
                     None => false,
                 };
+                if survived_hit && live_owner.is_some() {
+                    self.mob_post_attack(
+                        id,
+                        live_owner,
+                        Some("minecraft:wither_skull"),
+                        Some("minecraft:wither_skull"),
+                    );
+                }
+                if survived_hit
+                    && wither_ticks > 0
+                    && let Some(m) = self
+                        .mobs
+                        .iter_mut()
+                        .find(|m| m.id == id && m.species() != Species::Wither)
+                {
+                    m.add_effect("minecraft:wither", wither_ticks, 1);
+                }
                 if killed {
                     self.heal_skull_owner(p, live_owner);
                 }

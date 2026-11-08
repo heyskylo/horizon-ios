@@ -254,7 +254,7 @@ fn roar(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             Species::Pillager | Species::Vindicator | Species::Evoker | Species::Illusioner
         );
         if !illager {
-            events.push(MobEvent::AttackMob {
+            events.push(MobEvent::DamageMob {
                 target: s.id,
                 amount: 6.0,
                 source: Damage::mob(m.id, from),
