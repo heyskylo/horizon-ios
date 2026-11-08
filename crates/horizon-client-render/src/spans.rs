@@ -311,10 +311,7 @@ pub fn describe(spans: &[Span]) -> String {
     list.join(", ")
 }
 
-/// The run's timeline: every span ([`time`], [`guard`], [`Laps::lap`]) on every thread, kept per
-/// thread until a capture takes them ([`drain`](timeline::drain)) as its `timeline` chunks. Each thread
-/// locks only its own buffer, so spans on different threads never wait for each other. Off, a span
-/// costs one relaxed load more.
+/// The run's timeline: every span on every thread, kept in per-thread buffers until a capture drains them as `timeline` chunks.
 pub mod timeline {
     use std::{
         cell::RefCell,
@@ -465,7 +462,7 @@ pub mod timeline {
             return;
         }
         let generation = GENERATION.load(Ordering::Relaxed);
-        MINE.with(|mine| {
+        let _ = MINE.try_with(|mine| {
             let mut mine = mine.borrow_mut();
             if mine.as_ref().is_none_or(|m| m.generation != generation) {
                 *mine = join();

@@ -23,6 +23,36 @@ const ENV_DIR: &str = "HORIZON_PROFILE";
 /// The file `HORIZON_TRACE` names: a timeline-only capture written there.
 const ENV_TRACE: &str = "HORIZON_TRACE";
 
+const TRACE_USAGE: &str = "trace [FILE [SECONDS] | stop]";
+
+/// What the `trace` words ask for.
+#[derive(Debug, PartialEq, Eq)]
+enum Trace<'a> {
+    Status,
+    Stop,
+    Start { file: &'a str, seconds: Option<u32> },
+}
+
+/// The words after `trace`; SECONDS is a whole number in 1..=`MAX_WINDOW_S`, as for `profile --seconds`.
+fn parse_trace<'a>(words: &[&'a str]) -> std::result::Result<Trace<'a>, &'static str> {
+    match words {
+        [] => Ok(Trace::Status),
+        ["stop"] => Ok(Trace::Stop),
+        [file] => Ok(Trace::Start {
+            file,
+            seconds: None,
+        }),
+        [file, seconds] => match seconds.parse::<u32>() {
+            Ok(s) if s >= 1 && f64::from(s) <= server_perf::MAX_WINDOW_S => Ok(Trace::Start {
+                file,
+                seconds: Some(s),
+            }),
+            _ => Err(TRACE_USAGE),
+        },
+        _ => Err(TRACE_USAGE),
+    }
+}
+
 /// The game's capture state: the health history, the running capture and who is waiting on it.
 pub(super) struct Profile {
     perf: ClientPerf,
@@ -146,14 +176,13 @@ impl Game<'_> {
         words: &[&str],
         reply: &Sender<String>,
     ) -> Result<Option<serde_json::Value>> {
-        const USAGE: &str = "trace [FILE [SECONDS] | stop]";
-        match words {
-            [] => json_of(&Traced {
+        match parse_trace(words)? {
+            Trace::Status => json_of(&Traced {
                 ok: true,
                 tracing: self.profile.trace_file.is_some(),
                 file: self.profile.trace_file.clone(),
             }),
-            ["stop"] => {
+            Trace::Stop => {
                 if self.profile.trace_file.is_none() {
                     return Err("no trace is being written".into());
                 }
@@ -161,11 +190,7 @@ impl Game<'_> {
                 self.profile.reply = Some(reply.clone());
                 Ok(None)
             }
-            [file, rest @ ..] if rest.len() <= 1 => {
-                let seconds = match rest.first() {
-                    None => None,
-                    Some(s) => Some(s.parse::<u32>().map_err(|_| USAGE)?),
-                };
+            Trace::Start { file, seconds } => {
                 let options = StartOptions {
                     seconds,
                     samples: false,
@@ -178,10 +203,9 @@ impl Game<'_> {
                 json_of(&Traced {
                     ok: true,
                     tracing: true,
-                    file: Some((*file).to_owned()),
+                    file: Some(file.to_owned()),
                 })
             }
-            _ => Err(USAGE.into()),
         }
     }
 
@@ -377,5 +401,42 @@ impl Game<'_> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn start<'a>(
+        file: &'a str,
+        seconds: Option<u32>,
+    ) -> std::result::Result<Trace<'a>, &'static str> {
+        Ok(Trace::Start { file, seconds })
+    }
+
+    #[test]
+    fn trace_words() {
+        assert_eq!(parse_trace(&[]), Ok(Trace::Status));
+        assert_eq!(parse_trace(&["stop"]), Ok(Trace::Stop));
+        assert_eq!(
+            parse_trace(&["/tmp/a.hzperf"]),
+            start("/tmp/a.hzperf", None)
+        );
+        assert_eq!(parse_trace(&["a", "2"]), start("a", Some(2)));
+        assert_eq!(parse_trace(&["a", "1"]), start("a", Some(1)));
+        assert_eq!(parse_trace(&["a", "600"]), start("a", Some(600)));
+    }
+
+    #[test]
+    fn trace_seconds_out_of_range_are_usage_errors() {
+        for bad in ["0", "601", "99999", "-1", "1.5", "x", ""] {
+            assert_eq!(
+                parse_trace(&["a", bad]),
+                Err(TRACE_USAGE),
+                "seconds {bad:?}"
+            );
+        }
+        assert_eq!(parse_trace(&["a", "2", "3"]), Err(TRACE_USAGE));
     }
 }

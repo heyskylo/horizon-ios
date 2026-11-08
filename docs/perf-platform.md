@@ -536,11 +536,12 @@ horizon-ctl profile mark NAME
   frames over `HORIZON_SPIKES`, else 50 ms. The health gauges (process and machine probes) are read on a thread of their
   own so a frame never waits on `ps`.
 - **As built (T1):** `--timeline` on `profile start` and `horizon-report`, `horizon-ctl trace FILE [SECONDS]`,
-  `HORIZON_TRACE=FILE` (client from its first frame, server from its first tick) and `horizon-trace [SECONDS]` start a
+  `HORIZON_TRACE=FILE` (client once the first hardware probe has finished, server from its first tick) and `horizon-trace [SECONDS]` start a
   timeline-only capture; with FILE it is written exactly there and retention leaves the folder alone. One `timeline`
   chunk per thread per second, `start_us` since the capture began, `thread` a string id of the thread name (threads
   alive together under one name get `#2`, `#3`). The process has one timeline: a second capture asking for it
-  records without. A cap warning carries `[seconds recorded, bytes written]`.
+  records without. A thread keeps at most 262144 spans between two drains (one second); a thread busier than that drops
+  the rest silently, so a very dense second can be incomplete. A cap warning carries `[seconds recorded, bytes written]`.
 - **Dedicated console:** `horizon-report [SECONDS|stop|status] [--no-samples]` and `horizon-server report` capture the
   server side.
 - The `profile` row in `horizon-ctl` stays a trigger; it has no reading subcommands.
