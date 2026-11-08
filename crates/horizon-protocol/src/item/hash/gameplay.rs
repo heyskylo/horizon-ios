@@ -281,6 +281,7 @@ fn block_predicate(r: &mut Reader, names: &dyn Names) -> Option<HashCode> {
     })?;
     // DataComponentExactPredicate: the expected components, by type name.
     let exact = list(r, |r| {
+        let _nested = crate::item::Nested::enter().ok()?;
         let kind = int(r)?;
         let name = entry(names, "minecraft:data_component_type", kind)?;
         let value = Component::read(kind, r).ok()?.code(kind, names)?;

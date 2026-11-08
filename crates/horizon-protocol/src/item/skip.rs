@@ -338,6 +338,7 @@ pub(super) fn block_properties_and_nbt(r: &mut Reader) -> Result<()> {
 pub(super) fn component_matchers(r: &mut Reader) -> Result<()> {
     // DataComponentExactPredicate: TypedDataComponents, a component type id and its value.
     list(r, |r| {
+        let _nested = Nested::enter()?;
         let kind = r.varint()?;
         Component::read(kind, r).map(drop)
     })?;
