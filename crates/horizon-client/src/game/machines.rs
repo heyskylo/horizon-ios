@@ -490,8 +490,11 @@ impl ItemColumns {
 }
 
 /// [`ItemColumns`] for a pass in which items can move (a command, an
-/// explosion's push): rebuilt whenever the item list was written since they
-/// were built (its [`ListStamp`](horizon_client::join_seq::ListStamp)).
+/// explosion's push), kept with the item list's
+/// [`ListStamp`](horizon_client::join_seq::ListStamp): after any write the
+/// first question scans as before (`true`), and the second with nothing
+/// written in between builds the columns. A pass that writes the items
+/// between questions costs no more than the scans did.
 #[derive(Default)]
 pub(super) struct StampedItemColumns {
     stamp: Option<horizon_client::join_seq::ListStamp>,
@@ -508,6 +511,7 @@ impl StampedItemColumns {
         if self.stamp != Some(items.stamp()) {
             self.stamp = Some(items.stamp());
             self.columns = ItemColumns::default();
+            return true;
         }
         self.columns.may_reach_area(items, xs, zs)
     }
@@ -1792,8 +1796,11 @@ mod item_column_tests {
         ]);
         let mut columns = super::StampedItemColumns::default();
         let far = ((100, 100), (100, 100));
+        // The first question for a list scans; the second builds the columns.
+        assert!(columns.may_reach_area(&items, far.0, far.1));
         assert!(!columns.may_reach_area(&items, far.0, far.1));
         items[0].position = horizon_core::geometry::Vec3::new(100.5, 64.0, 100.5);
+        assert!(columns.may_reach_area(&items, far.0, far.1));
         assert!(columns.may_reach_area(&items, far.0, far.1));
         assert!(!columns.may_reach_area(&items, (0, 0), (0, 0)));
     }
