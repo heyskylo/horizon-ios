@@ -130,7 +130,7 @@ SetComponentsFunction.setComponent	skip:java		builder factory
 SetContainerContents.run	missing		minor: no vanilla loot table uses set_contents
 SetContainerContents.Builder	skip:java		builder
 SetContainerLootTable	missing		minor: no vanilla loot table uses set_loot_table
-SetCustomDataFunction.run	port	crates/horizon-client/src/game/commands/items.rs::Game::apply_item_modifier	gap: minor: only /item modify runs it; no loot table uses set_custom_data
+SetCustomDataFunction.run	port	crates/horizon-world/src/loot.rs::Context::run	set_custom_data arm: the tag merges into the minecraft:custom_data component as CompoundTag.merge does; the item layer reads the component from other
 SetCustomModelDataFunction.apply	port	crates/horizon-world/src/loot.rs::list_operation	the four lists' replace_all, replace_section, insert and append, over the component the stack already carries
 SetCustomModelDataFunction.run	port	crates/horizon-world/src/loot.rs::Context::run	the set_custom_model_data arm: floats and colors drawn from their number providers, flags and strings as written
 SetCustomModelDataFunction.validate	skip:data		validation at datapack load
