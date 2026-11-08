@@ -1693,7 +1693,6 @@ fn decode_column(
         }
     }
     let air = registry.default_state("minecraft:air")?.0;
-    let mut cache: HashMap<String, u32> = HashMap::new();
     let Some(Tag::List(sections)) = tag.get("sections") else {
         return Some(chunk);
     };
@@ -1709,30 +1708,7 @@ fn decode_column(
         {
             let palette: Vec<u32> = palette
                 .iter()
-                .map(|p| {
-                    let state = BlockState::from_nbt(p).ok();
-                    let key = state
-                        .as_ref()
-                        .map(|s| format!("{}{:?}", s.name, s.properties))
-                        .unwrap_or_default();
-                    *cache.entry(key).or_insert_with(|| {
-                        state
-                            .and_then(|s| {
-                                registry.id(&s).or_else(|| {
-                                    // Missing properties take the block's defaults.
-                                    let default = registry.default_state(&s.name)?;
-                                    let mut full = registry.state(default)?.clone();
-                                    for (k, v) in &s.properties {
-                                        if full.properties.contains_key(k) {
-                                            full.properties.insert(k.clone(), v.clone());
-                                        }
-                                    }
-                                    registry.id(&full).or(Some(default))
-                                })
-                            })
-                            .map_or(air, |id| id.0)
-                    })
-                })
+                .map(|p| registry.saved_state_id(p).map_or(air, |id| id.0))
                 .collect();
             let target = Arc::make_mut(&mut chunk.sections[si]);
             let data = match states.get("data") {
