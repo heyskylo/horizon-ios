@@ -716,7 +716,7 @@ horizon-perf query   OP [ARGS] [FILE...] [FILTERS]                     JSON alwa
 horizon-perf diff    A B [--min-ms X] [--json]
 horizon-perf list    [DIR]                                             one line per capture
 horizon-perf follow  [FILE|latest] [--every S] [--json]                health and slow events as they are written
-horizon-perf export  FILE --pprof OUT | --folded OUT | --perfetto OUT
+horizon-perf export  [FILE|latest] --pprof|--folded|--perfetto [--out PATH] [--side S] [--thread T] [--select K] [--slow]
 horizon-perf attach  FILE --name NAME --body JSONFILE                  adds an Attachment at the wire level
 horizon-perf mcp                                                       §8
 ```

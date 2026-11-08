@@ -5,13 +5,13 @@ use std::io::Write;
 
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use horizon_perf_format::v1::SampleUnit;
+use horizon_perf_format::v1::{SampleKind, SampleUnit};
 
 use super::{ExportError, ExportOptions, Sampled, sampled, select_of};
 use crate::error::side_name;
 use crate::samples::NO_NODE;
 use crate::view::View;
-use crate::wire::Select;
+use crate::wire::{ContextKey, Select, StateName};
 
 const TYPES: [Select; 3] = [Select::Cpu, Select::Wall, Select::Alloc];
 
@@ -100,7 +100,7 @@ impl Functions {
 }
 
 /// A sample's identity: side, node, thread, context, slow and state.
-type SampleKey = (usize, u32, u32, u32, bool, u32);
+type SampleKey = (usize, u32, u32, u32, bool, StateName);
 
 pub fn encode(view: &View, options: &ExportOptions) -> Result<Vec<u8>, ExportError> {
     let sides = sampled(view, options)?;
@@ -140,7 +140,7 @@ pub fn encode(view: &View, options: &ExportOptions) -> Result<Vec<u8>, ExportErr
         packed(&mut sample, 1, locations);
         packed(&mut sample, 2, values);
         for (key, value) in labels(side, thread, context, slow, state) {
-            strings.label(&mut sample, key, &value);
+            strings.label(&mut sample, key.as_str(), &value.text());
         }
         bytes_field(&mut samples, 2, &sample);
     }
@@ -194,54 +194,116 @@ pub fn encode(view: &View, options: &ExportOptions) -> Result<Vec<u8>, ExportErr
     gzip(&out)
 }
 
+/// The name of a pprof label.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LabelKey {
+    Side,
+    Thread,
+    Slow,
+    State,
+    Context(ContextKey),
+}
+
+impl LabelKey {
+    fn as_str(self) -> &'static str {
+        match self {
+            LabelKey::Side => "side",
+            LabelKey::Thread => "thread",
+            LabelKey::Slow => "slow",
+            LabelKey::State => "state",
+            LabelKey::Context(key) => key.as_str(),
+        }
+    }
+}
+
+/// The value of a pprof label; it becomes text only when the label is written.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum LabelValue {
+    Text(String),
+    Flag(bool),
+    State(StateName),
+}
+
+impl LabelValue {
+    fn text(&self) -> String {
+        match self {
+            LabelValue::Text(text) => text.clone(),
+            LabelValue::Flag(flag) => flag.to_string(),
+            LabelValue::State(state) => state.to_string(),
+        }
+    }
+}
+
 /// The labels of a sample, in a fixed order; a context field that is none has no label.
 fn labels(
     side: &Sampled,
     thread: u32,
     context: u32,
     slow: bool,
-    state: u32,
-) -> Vec<(&'static str, String)> {
+    state: StateName,
+) -> Vec<(LabelKey, LabelValue)> {
     let samples = &side.samples;
     let c = &samples.contexts[context as usize];
     let mut out = vec![
-        ("side", side_name(side.side).to_string()),
-        ("thread", samples.thread_names[thread as usize].clone()),
+        (
+            LabelKey::Side,
+            LabelValue::Text(side_name(side.side).to_string()),
+        ),
+        (
+            LabelKey::Thread,
+            LabelValue::Text(samples.thread_names[thread as usize].clone()),
+        ),
     ];
     let named = [
-        ("span", &c.span),
-        ("entity", &c.entity),
-        ("block", &c.block),
-        ("dim", &c.dim),
+        (ContextKey::Span, &c.span),
+        (ContextKey::Entity, &c.entity),
+        (ContextKey::Block, &c.block),
+        (ContextKey::Dim, &c.dim),
     ];
     for (key, value) in named {
         if let Some(value) = value {
-            out.push((key, value.clone()));
+            out.push((LabelKey::Context(key), LabelValue::Text(value.clone())));
         }
     }
     if let Some((x, z)) = c.chunk {
-        out.push(("chunk", format!("{x},{z}")));
+        out.push((
+            LabelKey::Context(ContextKey::Chunk),
+            LabelValue::Text(format!("{x},{z}")),
+        ));
     }
     if slow {
-        out.push(("slow", "true".to_string()));
+        out.push((LabelKey::Slow, LabelValue::Flag(true)));
     }
-    match state {
-        1 => out.push(("state", "running".to_string())),
-        2 => out.push(("state", "waiting".to_string())),
-        _ => {}
+    if state != StateName::Cpu {
+        out.push((LabelKey::State, LabelValue::State(state)));
     }
     out
 }
 
-/// The first kind's period as pprof states it: its type, its unit and whole units per sample.
-fn period(sides: &[Sampled]) -> Option<(Select, &'static str, u64)> {
-    let kind = sides.first()?.samples.profile.kinds.first()?;
-    let unit = match kind.unit() {
-        SampleUnit::Ms => "milliseconds",
-        SampleUnit::Bytes => "bytes",
+/// A kind's period as pprof states it: its type, its unit and whole units per sample.
+fn kind_period(kind: &SampleKind) -> Option<(Select, &'static str, u64)> {
+    let (unit, scale) = match kind.unit() {
+        SampleUnit::Ms => ("nanoseconds", 1e6),
+        SampleUnit::Bytes => ("bytes", 1.0),
         SampleUnit::Unspecified => return None,
     };
-    Some((select_of(kind.source())?, unit, kind.period.round() as u64))
+    Some((
+        select_of(kind.source())?,
+        unit,
+        (kind.period * scale).round() as u64,
+    ))
+}
+
+/// The first kind's period; none when it rounds to zero or another kind in the same unit has a different one.
+fn period(sides: &[Sampled]) -> Option<(Select, &'static str, u64)> {
+    let kinds: Vec<_> = sides
+        .iter()
+        .flat_map(|s| s.samples.profile.kinds.iter())
+        .filter_map(kind_period)
+        .collect();
+    let first = *kinds.first()?;
+    let agrees = kinds.iter().all(|k| k.1 != first.1 || k.2 == first.2);
+    (first.2 > 0 && agrees).then_some(first)
 }
 
 fn gzip(raw: &[u8]) -> Result<Vec<u8>, ExportError> {

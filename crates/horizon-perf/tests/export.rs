@@ -209,8 +209,8 @@ fn pprof_decodes_and_its_totals_are_the_captures() {
     assert_eq!(types, ["cpu", "wall"]);
     assert_eq!(p.total(0), in_capture(0));
     assert_eq!(p.total(1), in_capture(1));
-    assert_eq!(p.period_type, ("cpu".into(), "milliseconds".into()));
-    assert_eq!(p.period, 10);
+    assert_eq!(p.period_type, ("cpu".into(), "nanoseconds".into()));
+    assert_eq!(p.period, 10_000_000);
     assert_eq!(p.time_nanos, 1_794_580_324_000 * 1_000_000);
     assert_eq!(p.duration_nanos, 10_000_000_000);
 }
@@ -269,6 +269,188 @@ fn pprof_samples_carry_their_stack_and_context_as_labels() {
         "{:?}",
         context_free.labels
     );
+}
+
+const RENDER: &str = "horizon_client::game::Game::render";
+
+/// The standard server tree plus a client whose `LEVEL` is the same function and whose furnace samples carry a block.
+fn both_sides(dir: &TempDir) -> String {
+    let server = waypoints(1, 50);
+    let mut client = Builder::new(30, &[15, 15]);
+    client.side = CLIENT;
+    client.thread = "render".into();
+    for name in [MAIN, SERVER_TICK, LAN, LEVEL] {
+        client.func(name);
+    }
+    let furnace = client.block_ctx("furnace", "overworld", "render_blocks");
+    let main = client.node(None, MAIN);
+    let render = client.node(Some(main), RENDER);
+    let level = client.node(Some(render), LEVEL);
+    client.weight(render, 7, W::default());
+    client.weight(
+        level,
+        5,
+        W {
+            ctx: furnace,
+            ..W::default()
+        },
+    );
+    client.weight(
+        level,
+        3,
+        W {
+            ctx: furnace,
+            state: 2,
+            ..W::default()
+        },
+    );
+    let mut fields = vec![start(SERVER, Kind::Dedicated), start(CLIENT, Kind::Client)];
+    fields.extend(server.sections());
+    fields.extend(client.sections());
+    fields.extend([stop(SERVER, 10.0), stop(CLIENT, 10.0)]);
+    save(dir, "both.hzperf", &fields)
+}
+
+fn side_total(p: &Pprof, side: &str, column: usize) -> u64 {
+    p.samples
+        .iter()
+        .filter(|s| p.has(s, "side", side))
+        .map(|s| s.values[column])
+        .sum()
+}
+
+#[test]
+fn pprof_of_both_sides_shares_functions_and_labels_each_sample_with_its_side() {
+    let dir = TempDir::new("pprof-both");
+    let p = decode(&export(&[&both_sides(&dir), "--pprof"]).unwrap());
+
+    assert_eq!(
+        (side_total(&p, "server", 0), side_total(&p, "server", 1)),
+        (120, 20)
+    );
+    assert_eq!(
+        (side_total(&p, "client", 0), side_total(&p, "client", 1)),
+        (12, 3)
+    );
+    assert_eq!((p.total(0), p.total(1)), (132, 23));
+    for s in &p.samples {
+        let sides = s.labels.iter().filter(|(k, _)| k == "side").count();
+        assert_eq!(sides, 1, "{:?}", s.labels);
+    }
+
+    let mut names: Vec<&str> = p
+        .function_names
+        .values()
+        .map(|&i| p.strings[i as usize].as_str())
+        .collect();
+    names.sort_unstable();
+    let distinct = names.len();
+    names.dedup();
+    assert_eq!(
+        names.len(),
+        distinct,
+        "a function on both sides is one function"
+    );
+    assert_eq!(distinct, 9, "the server's eight and the client's render");
+
+    let innermost = |side: &str, stack: &[&str]| -> u64 {
+        let sample = p
+            .samples
+            .iter()
+            .find(|s| p.has(s, "side", side) && p.stack(s) == stack)
+            .expect("sample");
+        sample.locations[0]
+    };
+    assert_eq!(
+        innermost("server", &[MAIN, SERVER_TICK, LAN, LEVEL]),
+        innermost("client", &[MAIN, RENDER, LEVEL]),
+    );
+
+    let furnace: Vec<&Sample> = p
+        .samples
+        .iter()
+        .filter(|s| p.has(s, "block", "furnace"))
+        .collect();
+    assert_eq!(furnace.len(), 2);
+    for s in &furnace {
+        for (key, value) in [
+            ("side", "client"),
+            ("thread", "render"),
+            ("dim", "overworld"),
+            ("span", "render_blocks"),
+        ] {
+            assert!(p.has(s, key, value), "{:?}", s.labels);
+        }
+        assert_eq!(p.stack(s), [MAIN, RENDER, LEVEL]);
+    }
+    let mut values: Vec<_> = furnace.iter().map(|s| s.values.clone()).collect();
+    values.sort();
+    assert_eq!(values, [vec![0, 3], vec![5, 0]]);
+    assert!(p.has(
+        furnace.iter().find(|s| s.values[1] == 3).unwrap(),
+        "state",
+        "waiting"
+    ));
+    assert!(
+        p.samples
+            .iter()
+            .filter(|s| p.has(s, "side", "server"))
+            .all(|s| !s.labels.iter().any(|(k, _)| k == "block")),
+        "the server's contexts name no block"
+    );
+}
+
+#[test]
+fn pprof_side_filter_keeps_one_side_and_its_functions() {
+    let dir = TempDir::new("pprof-side");
+    let path = both_sides(&dir);
+    let p = decode(&export(&[&path, "--pprof", "--side", "client"]).unwrap());
+    assert_eq!((p.total(0), p.total(1)), (12, 3));
+    assert!(p.samples.iter().all(|s| p.has(s, "side", "client")));
+    assert_eq!(p.function_names.len(), 3);
+    let p = decode(&export(&[&path, "--pprof", "--side", "server"]).unwrap());
+    assert_eq!((p.total(0), p.total(1)), (120, 20));
+    assert!(p.samples.iter().all(|s| p.has(s, "side", "server")));
+}
+
+#[test]
+fn folded_of_both_sides_starts_each_line_with_its_side() {
+    let dir = TempDir::new("folded-both");
+    let path = both_sides(&dir);
+    let out = text(&[&path, "--folded"]);
+    let sum = |prefix: &str| -> u64 {
+        out.lines()
+            .filter(|l| l.starts_with(prefix))
+            .map(|l| l.rsplit_once(' ').unwrap().1.parse::<u64>().unwrap())
+            .sum()
+    };
+    assert_eq!((sum("server;tick;"), sum("client;render;")), (120, 12));
+    assert_eq!(out.lines().count(), 7 + 2);
+
+    let client = format!("client;render;{MAIN};{RENDER}");
+    let only = text(&[&path, "--folded", "--side", "client"]);
+    assert_eq!(only, format!("{client} 7\n{client};{LEVEL} 5\n"));
+    let wall = text(&[&path, "--folded", "--side", "client", "--select", "wall"]);
+    assert_eq!(wall, format!("{client};{LEVEL};[waiting] 3\n"));
+}
+
+#[test]
+fn pprof_period_keeps_sub_millisecond_periods_and_drops_conflicting_ones() {
+    let dir = TempDir::new("pprof-period");
+    let mut fine = waypoints(1, 50);
+    fine.period_ms = 0.25;
+    let p = decode(&export(&[&save(&dir, "fine.hzperf", &fine.fields()), "--pprof"]).unwrap());
+    assert_eq!(p.period_type, ("cpu".into(), "nanoseconds".into()));
+    assert_eq!(p.period, 250_000);
+
+    let mut fields = waypoints(1, 50).fields();
+    for field in &mut fields {
+        if let Field::Samples(profile) = field {
+            profile.kinds[1].period = 20.0;
+        }
+    }
+    let p = decode(&export(&[&save(&dir, "mixed.hzperf", &fields), "--pprof"]).unwrap());
+    assert_eq!((p.period_type, p.period), (Default::default(), 0));
 }
 
 #[test]

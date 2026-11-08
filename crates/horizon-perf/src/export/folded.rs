@@ -6,7 +6,7 @@ use super::{ExportError, ExportOptions, sampled};
 use crate::error::side_name;
 use crate::samples::{NO_NODE, Samples};
 use crate::view::View;
-use crate::wire::Select;
+use crate::wire::{Select, StateName};
 
 const WAITING: &str = "[waiting]";
 
@@ -44,7 +44,7 @@ pub fn encode(view: &View, options: &ExportOptions) -> Result<Vec<u8>, ExportErr
                 frame(&samples.thread_names[hit.thread as usize]),
             ];
             line.extend(stack(samples, hit.node).into_iter().map(frame));
-            if hit.state == 2 {
+            if hit.state == StateName::Waiting {
                 line.push(WAITING.to_string());
             }
             *lines.entry(line.join(";")).or_default() += hit.count;

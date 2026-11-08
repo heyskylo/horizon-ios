@@ -245,6 +245,18 @@ vocab! {
     }
 }
 
+impl StateName {
+    /// The state a weights row's `state` number stands for; none for a number the format does not define.
+    pub fn from_weight(state: u32) -> Option<Self> {
+        match state {
+            0 => Some(StateName::Cpu),
+            1 => Some(StateName::Running),
+            2 => Some(StateName::Waiting),
+            _ => None,
+        }
+    }
+}
+
 vocab! {
     /// Whether a sample belongs to a slow tick or frame.
     PaceName {
