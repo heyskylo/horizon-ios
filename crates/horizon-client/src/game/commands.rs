@@ -100,6 +100,8 @@ pub(in crate::game) struct OtherEntity {
     pub interaction: Option<super::interactions::InteractionState>,
     /// Only explicitly loaded leash knots own this BlockAttachedEntity check counter.
     pub knot_check: Option<u8>,
+    /// A summoned or loaded `minecraft:eye_of_ender`'s flight; None for every other kind.
+    pub eye: Option<super::end::SummonedEye>,
 }
 pub(super) fn err(key: &str, args: &[&dyn std::fmt::Display]) -> CommandError {
     CommandError::tr(key, args)
