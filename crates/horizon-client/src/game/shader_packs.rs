@@ -121,7 +121,9 @@ pub(super) fn picked_pack_shape(settings: &horizon_client::settings::Settings) -
     PickedPack {
         draws_flat: active && pack_draws_flat(&path),
         linear: active && linear(),
-        hdr_float: !active && settings.horizon.hdr && super::native_shaders::linear_frame_switch(),
+        hdr_float: !active
+            && settings.horizon.hdr_wanted()
+            && super::native_shaders::linear_frame_switch(),
     }
 }
 

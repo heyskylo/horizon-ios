@@ -2332,6 +2332,56 @@ fn exploration_maps_skip_the_starts_a_chunk_saved_as_referenced() {
     );
 }
 
+/// A skip check reads each saved chunk's record once: the session keeps every
+/// answer (as vanilla's `StructureCheck` does), so a second map searching past
+/// the same chunks asks the save nothing it asked before (#10255: a chest with
+/// exploration maps took a growing second per open reading them again).
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn a_saved_chunks_record_is_read_once_across_map_searches() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let assets = Assets::load(&base).unwrap();
+    let biomes = crate::biome::Biomes::load(&base).unwrap();
+    let terrain = crate::vanillagen::VanillaTerrain::new(
+        &base.join("worldgen"),
+        assets.registry,
+        &biomes,
+        1234,
+    )
+    .unwrap();
+    let names = ["minecraft:buried_treasure".to_owned()];
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let reads = std::sync::Arc::new(AtomicUsize::new(0));
+    let asked: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<(String, i32, i32)>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Default::default()));
+    let (reads_of, asked_of) = (reads.clone(), asked.clone());
+    terrain.set_saved_references(std::sync::Arc::new(move |n, x, z| {
+        reads_of.fetch_add(1, Ordering::Relaxed);
+        asked_of.lock().unwrap().insert((n.to_owned(), x, z));
+        0
+    }));
+    terrain
+        .locate_for_map(&names, [0, 64, 0], 50, true)
+        .unwrap();
+    // The same search again, now skipping the start the first pointed at:
+    // it passes every chunk the first search read and may reach new ones,
+    // but no chunk's record is read a second time.
+    terrain
+        .locate_for_map(&names, [0, 64, 0], 50, true)
+        .unwrap();
+    assert!(
+        reads.load(Ordering::Relaxed) > 0,
+        "the searches asked the save at all"
+    );
+    assert_eq!(
+        reads.load(Ordering::Relaxed),
+        asked.lock().unwrap().len(),
+        "no saved chunk's record is read twice"
+    );
+}
+
 /// `ChunkGenerator.findNearestMapStructure` with `createReference`: an
 /// exploration map that skips known structures points at a start no map
 /// pointed at before, and a reopened world remembers which.

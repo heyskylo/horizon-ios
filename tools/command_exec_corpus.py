@@ -2955,6 +2955,32 @@ def experience_orb_fall():
     ]
 
 
+def shulker_box_empty_items():
+    """`ShulkerBoxBlockEntity.saveAdditional`: `saveAllItems(output, items,
+    false)` leaves `Items` out for an empty box, placed empty or emptied, and
+    through a chunk unload and reload. A chest (two-argument overload) always
+    writes the list. A box with a loot table keeps it until opened, even one
+    that rolls nothing."""
+    x, z, y = 5184, 5120, 300
+    blocks = [(x, 'shulker_box'), (x + 2, 'red_shulker_box{Items:[{Slot:0b,id:"minecraft:stone",count:1}]}'),
+              (x + 4, 'chest'), (x + 6, 'shulker_box{LootTable:"minecraft:empty"}')]
+
+    def reads():
+        return [cmd(f'/data get block {bx} {y} {z + 8}') for bx, _ in blocks]
+
+    ops = [*setup(f'/forceload add {x} {z}'), {'op': 'wait_chunks', 'chunks': [[x >> 4, z >> 4]]}]
+    ops += [cmd(f'/setblock {bx} {y} {z + 8} {block}', expect_result=1) for bx, block in blocks]
+    ops += reads()
+    ops += [cmd(f'/data remove block {x + 2} {y} {z + 8} Items', expect_result=1)]
+    ops += reads()
+    # Unload the chunk (saving its block entities), then load it again.
+    ops += [*setup(f'/forceload remove {x} {z}'), {'op': 'tick', 'n': 60},
+            cmd(f'/execute unless loaded {x} {y} {z}', expect_result=1),
+            *setup(f'/forceload add {x} {z}'), {'op': 'wait_chunks', 'chunks': [[x >> 4, z >> 4]]}]
+    ops += reads()
+    return ops + setup(f'/fill {x} {y} {z + 8} {x + 6} {y} {z + 8} minecraft:air', f'/forceload remove {x} {z}')
+
+
 def creative_shulker_drops():
     """ShulkerBoxBlock.playerWillDestroy: Creative keeps a filled box as one item,
     even with block_drops off. Empty boxes and survival use the ordinary drop rules."""
@@ -6811,6 +6837,7 @@ def groups():
         ('wither breaks', wither_breaks()),
         ('tnt minecart rails', tnt_minecart_rails()),
         ('creative shulker drops', creative_shulker_drops()),
+        ('shulker box empty Items', shulker_box_empty_items()),
         ('minecart drag', minecart_drag()),
         ('ender dragon', ender_dragon()),
         ('summoned dragon hovers', summoned_dragon_hovers()),
