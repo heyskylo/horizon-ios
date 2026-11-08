@@ -4,10 +4,6 @@
 //! `minecraft:map_cloning`, a transmute recipe with a material count of 1 to 8,
 //! sends eight (tools/test_recipe_book_variants_parity.py measures the same on
 //! vanilla 26.3 with a real client).
-//! `TestCommand.showPos` under `execute as <guest>`: the source player is
-//! the guest, and its own `pick` (eyes and view) finds the block, while the
-//! message goes to the command's issuer
-//! (tools/test_test_pos_guest_parity.py measures the same on vanilla 26.3).
 use super::*;
 use horizon_client::{
     chunk::Chunk,
