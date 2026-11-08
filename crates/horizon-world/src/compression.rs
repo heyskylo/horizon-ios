@@ -215,9 +215,10 @@ fn decode_lz4(
     // `LZ4BlockInputStream.compressedBuffer`: each header is read into it,
     // and a block's bytes over its start; it grows by half when too small.
     // The decompressor may read up to its end, past the block.
-    // Reset the logical length for each stream while retaining the largest
-    // allocation seen by this worker. lz4-java's end checks observe the
-    // buffer length, which starts at the 21-byte header size for every stream.
+    // Each stream starts from 21 zero bytes, as a new buffer would: the
+    // decompressor may read past a short block into them, so the last
+    // stream's bytes must not be left there. The allocation is kept.
+    buffer.clear();
     buffer.resize(21, 0);
     loop {
         let header = bytes
