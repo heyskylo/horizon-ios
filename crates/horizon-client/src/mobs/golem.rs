@@ -519,11 +519,13 @@ fn snowball_attack(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
     let Some(t) = cx.w.target_info(who) else {
         return;
     };
-    let start = Vec3::new(m.position.x, m.eye_y() - 0.1, m.position.z);
+    // ThrowableItemProjectile starts at getEyeY() - 0.1F; the aim uses 1.1F
+    // and 0.2F: all floats widened.
+    let start = Vec3::new(m.position.x, m.eye_y() - f64::from(0.1_f32), m.position.z);
     let xd = t.position.x - m.position.x;
-    let yd = t.eye_y - 1.1;
+    let yd = t.eye_y - f64::from(1.1_f32);
     let zd = t.position.z - m.position.z;
-    let yo = (xd * xd + zd * zd).sqrt() * 0.2;
+    let yo = (xd * xd + zd * zd).sqrt() * f64::from(0.2_f32);
     let mut p = Projectile::new(ProjectileKind::Snowball, start, Some(Who::Mob(m.id)));
     // SnowGolem.rangedAttackUncertainty: 12 on every difficulty.
     p.shoot(

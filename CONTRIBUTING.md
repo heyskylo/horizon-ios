@@ -42,6 +42,9 @@ and compares their outputs.
   [The parity workflow](docs/parity-workflow.md) shows how harnesses run; copy a nearby one.
 - **Horizon's own features** (the launcher, the new menus) follow [the design system](docs/design-system.md) and are
   off by default wherever they would change the vanilla look.
+- **Three layers: engine, platform, Horizon.** Vanilla code never depends on the platform (mods, shader packs,
+  Horizon-only settings) or on Horizon (cosmetics, the shop, official servers, telemetry), and the platform never
+  depends on Horizon. [docs/layers.md](docs/layers.md) says where a new feature goes; CI checks the dependencies.
 - **Everything players run is Rust.** Python and Java are fine for dev tools and harness drivers in `tools/`, never
   for player-facing code.
 - **No game files in the repo.** Never commit game files, decompiled source or prepared resources (`.local/`):
@@ -76,7 +79,9 @@ another project's source may also be read and used, **only when that project's l
 
 User documentation and file formats are fine to read, and packs and mods are fine to run and observe, whatever their
 license. Shader packs are a clean-room rewrite of the pack format, produced from a written description of it (see
-#1561); they carry no foreign source, and the rules above still apply to anything you read while working on them.
+#1561): the [specification and its provenance log](docs/cleanroom/README.md) are public. They carry no foreign
+source, and the rules above still apply to anything you read while working on them. A shader-pack pull request
+names its sources: the sections of that specification, the documentation pages and the packs it ran.
 
 ## Before asking for review
 

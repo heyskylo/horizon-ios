@@ -973,6 +973,11 @@ pub struct Entities {
     /// flag per entity.
     moved: Vec<usize>,
     is_moved: Vec<bool>,
+    /// The entities with nothing to send this tick (idle, not moved, no sync
+    /// asked, leash as sent, paired before): unless a client starts tracking
+    /// them, the send pass skips them without looking their state up again.
+    /// Thousands of items frozen past the simulation distance cost a flag each.
+    quiet: Vec<bool>,
     /// One entity's packets and their bodies, kept between entities.
     packets: Vec<play::Clientbound>,
     bodies: Vec<Vec<u8>>,
@@ -1151,12 +1156,19 @@ impl Entities {
         self.moved.clear();
         self.is_moved.clear();
         self.is_moved.resize(entities.len(), false);
+        self.quiet.clear();
+        self.quiet.resize(entities.len(), false);
+        // The states stamped this tick: when that is all of them, none left.
+        let mut stamped = 0;
         for (index, e) in entities.iter().enumerate() {
             let mut added = false;
             let s = self.states.entry(e.id).or_insert_with(|| {
                 added = true;
                 ServerEntity::new(e, kind(&e.kind), riding)
             });
+            if s.seen != now {
+                stamped += 1;
+            }
             s.seen = now;
             s.index = index;
             // ChunkMap.addEntity, ChunkMap.tick's section change, and a
@@ -1177,6 +1189,8 @@ impl Entities {
                 self.moved.push(index);
                 self.is_moved[index] = true;
             }
+            self.quiet[index] =
+                !self.is_moved[index] && !s.added && e.idle && !e.needs_sync && e.leash == s.leash;
             let at = (
                 (e.position[0].floor() as i32) >> 4,
                 (e.position[2].floor() as i32) >> 4,
@@ -1371,6 +1385,11 @@ impl Entities {
             }
         }
         for (index, e) in entities.iter().enumerate() {
+            // Nothing to send and nobody to pair with: what the pass below
+            // would do with it (an unchanged leash) is nothing.
+            if self.quiet[index] && !self.pairs[index] {
+                continue;
+            }
             let Some(s) = self.states.get_mut(&e.id) else {
                 continue;
             };
@@ -1445,7 +1464,10 @@ impl Entities {
                 }
             }
         }
-        self.states.retain(|_, s| s.seen == now);
+        // ChunkMap.removeEntity for the ones no longer in the level.
+        if self.states.len() > stamped {
+            self.states.retain(|_, s| s.seen == now);
+        }
     }
 }
 
