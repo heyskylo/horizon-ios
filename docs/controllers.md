@@ -304,9 +304,47 @@ Approximations:
 - A = left click, X = right click, Y = quick move, B = back; View and the left
   stick click throw, as in focus mode.
 - LB / RB switch tabs (creative, Statistics, Advancements); with the recipe book
-  open they turn its pages, stopping at the ends, and LT / RT change its category.
-  Right stick scrolls.
+  open they turn its pages, stopping at the ends, and LT / RT change its
+  category. Right stick scrolls.
 - Sliders: hold A on the slider and move the stick, or nudge with the D-pad.
+- **The recipe book's categories**: RT changes to the next category as it goes down. LT changes to the previous one
+  as it goes down on a furnace's, smoker's or blast furnace's book; on the crafting book (the inventory's and the
+  crafting table's), where LT + A crafts, it changes it as it's let go instead, however long it was held, unless A
+  was pressed meanwhile.
+- **Direct crafting**: LT + A on a recipe crafts it once into the inventory.
+  With both still held past the repeat delay it keeps crafting until either is
+  let go, the items run out or the inventory is full. It's the recipe book's
+  own placing and a quick move of the result, one request at a time, each
+  waiting for the server's answer. On any server but single player's own, placements
+  go at most one every 250 ms (`PLACE_GAP`), under Paper's default limit of 5 a second
+  over 4 seconds; on a server that needs **Quick Craft on Servers** (below) every request
+  also waits a tick (`REQUEST_GAP`). A quick tap
+  makes one, whichever button comes up first, and each LT + A on the recipe while one
+  is still in flight makes one more. An LT + A it refuses is plain A. The inventory's guide says so
+  with the pad's own glyphs, on a recipe, while the pad is in use, nothing is in the hand and it's allowed there.
+  Letting go of either button, any other press, the pad going away or focus
+  leaving the window all end it one way: no new craft starts, the one in flight
+  finishes, and what's in the grid goes back, so the grid ends empty unless
+  something can't fit. If the screen itself has gone, the game returns the grid
+  as it does on closing any screen. A result only moves with room for all of
+  it, as the client last heard the inventory, so a full inventory stops the craft with the
+  ingredients back in the inventory. A pickup the client hasn't heard of yet can take
+  that room first, and then the server's quick move drops the rest, as a vanilla
+  shift-click on the result does. What's in the grid goes back first, and
+  what a recipe leaves behind (bottles, buckets) follows the result, or stays
+  in the grid if there's no room. A stack in the hand refuses it. It's on by itself
+  only in single player, a splitscreen guest's join of that world, and on a LAN world
+  joined from the server list's LAN entries (and that world's reconnects). Everywhere else,
+  a server joined by address included, even one on this computer or the local network
+  (it can be a proxy, a tunnel or a relay), and Play with Friends, it's off until **Quick
+  Craft on Servers** is on in Controller Settings > General, as a server's rules may count
+  it as a macro.
+- **When direct crafting stops short**, the craft ends and nothing says so but the grid, in view on the open
+  screen. A result that isn't the recipe's (item and count, as a server with recipes of its own can number the
+  book differently) stops it with nothing moved, as a click on the recipe would leave it. Two seconds with no
+  answer from the server stops it too, and nothing more goes out, as a quick move can't return what a late answer
+  has yet to place: what the server placed stays in the grid. Either way, closing the screen returns the grid, and
+  so does the next LT + A before it places anything.
 
 The cursor is drawn only while the pad is the last-used input.
 
@@ -455,6 +493,7 @@ triggerThreshold:0.4
 toggleSneak:true
 glyphs:auto
 bind_key.jump:south
+craftOnServers:false
 gameplayGuide:full
 bind_pad.hotbarNext:rb
 bindLayout:1
@@ -490,7 +529,7 @@ An inventory or creative screen the pad drives has rows of its own, from its bot
 the same option, and what's under the crosshair decides them: a slot, by whether it holds anything
 and what's carried; a recipe; another of the book's controls. Bottom right, what one face button
 does: Close, always the lowest row, then Take, Put Down, Quick Move, Place Recipe and so on. Bottom
-left, the rest: View and the left stick's drops, the recipe book's pages and categories, and creative's
+left, the rest: LT + A where direct crafting is allowed, View and the left stick's drops, the recipe book's pages and categories, and creative's
 tabs. The creative grid's items aren't slots, so creative has only Close and its tabs.
 
 ## Rumble

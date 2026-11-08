@@ -159,6 +159,11 @@ pub(super) struct MenuCursor {
     repeats: u32,
     /// The on-screen keyboard, open over a text field.
     pub(super) osk: Option<Keyboard>,
+    /// The recipe being crafted straight into the inventory (`pad_craft`).
+    pub(super) craft: Option<super::pad_craft::DirectCraft>,
+    /// LT held over the crafting book: it changes the category as it comes up, unless A was
+    /// pressed meanwhile (LT + A crafts, `pad_craft`).
+    pub(super) trigger: Option<HeldTrigger>,
     /// The keyboard was closed on this screen (it doesn't open by itself again).
     osk_dismissed: bool,
     /// The keyboard drives the focus (`key_focus`: Tab, the arrows, Enter):
@@ -197,7 +202,21 @@ pub(super) struct MenuCursor {
     prompt_crosshair: Option<(Screen, (f32, f32))>,
 }
 
+/// LT held over the crafting book.
+#[derive(Clone, Copy)]
+pub(super) struct HeldTrigger {
+    /// A was pressed while it was held: it was LT + A, not a category change.
+    pressed_a: bool,
+}
+
 impl MenuCursor {
+    /// A running direct craft ends, as cleanly as the server still lets it (`DirectCraft::stop`).
+    pub(super) fn stop_craft(&mut self) {
+        if let Some(craft) = &mut self.craft {
+            craft.stop();
+        }
+    }
+
     /// `Screen.clearFocus`: nothing is focused any more, and no click focus
     /// is kept for the next Tab (`ComponentPath.applyFocus(false)`).
     fn clear_focus(&mut self) {
@@ -738,6 +757,12 @@ impl Game<'_> {
     ) -> Result<()> {
         if !down {
             match button {
+                Button::LeftTrigger if self.pad.menu.trigger.is_some() => {
+                    let pressed_a = self.pad.menu.trigger.take().is_some_and(|t| t.pressed_a);
+                    if !pressed_a && self.pad_recipe_book_showing() {
+                        self.pad_tab(event_loop, false);
+                    }
+                }
                 Button::South if self.pad.menu.armed.is_some() => {
                     let armed = self.pad.menu.armed.take();
                     if let Some(at) = armed_click(armed, self.pad.menu.focus) {
@@ -757,6 +782,17 @@ impl Game<'_> {
         }
         // The pad takes the focus back from the keyboard.
         self.pad.menu.keyboard = false;
+        // A with LT held over the crafting book is LT + A: LT coming up changes no category.
+        if button == Button::South
+            && let Some(trigger) = &mut self.pad.menu.trigger
+        {
+            trigger.pressed_a = true;
+        }
+        // Any press ends a running craft but another LT + A on its recipe, which asks for one
+        // more further down: quick taps while one is in flight each make a craft.
+        if !self.direct_craft_takes_press(button) {
+            self.direct_craft_stop();
+        }
         // A prompt over the screen answers first; no press reaches both.
         let prompt = self.prompt_open();
         // Bindings waiting for a button: this one (Start cancels).
@@ -852,6 +888,21 @@ impl Game<'_> {
                 return Ok(());
             }
         }
+        // LT + A on a recipe crafts it into the inventory.
+        if button == Button::South
+            && !prompt
+            && self.pad.edges.is_held(Button::LeftTrigger)
+            && self.screen == Screen::Inventory
+            && self.title.is_none()
+        {
+            self.pad_take_pointer(event_loop);
+            // Refused, the press is plain A's.
+            if let Some(entry) = self.recipe_under_pointer()
+                && self.direct_craft_start(entry)
+            {
+                return Ok(());
+            }
+        }
         // The book's controls take A alone; X, Y and the throws are for slots and recipes.
         let book_control = !prompt
             && self.screen == Screen::Inventory
@@ -937,6 +988,15 @@ impl Game<'_> {
             // The recipe book open: bumpers turn its pages, triggers change its category.
             Button::LeftBumper | Button::RightBumper if self.pad_recipe_book_showing() => {
                 self.pad_recipe_page(button == Button::RightBumper);
+            }
+            // On the crafting book LT waits for its release, as LT + A crafts there; RT, and
+            // either on a furnace's book, change the category as they go down.
+            Button::LeftTrigger
+                if self.pad_recipe_book_showing()
+                    && self.active_book()
+                        == Some(horizon_client::recipe_book::BookType::Crafting) =>
+            {
+                self.pad.menu.trigger = Some(HeldTrigger { pressed_a: false });
             }
             Button::LeftTrigger | Button::RightTrigger if self.pad_recipe_book_showing() => {
                 self.pad_tab(event_loop, button == Button::RightTrigger);
@@ -1373,11 +1433,13 @@ impl Game<'_> {
             menu.focus = None;
             menu.pending = None;
             menu.stick_scrolled = None;
+            menu.trigger = None;
             menu.anchors = None;
             menu.layout = None;
             menu.nudge = None;
             menu.osk = None;
             menu.osk_dismissed = false;
+            menu.craft = None;
             menu.focus_name = None;
             menu.prompt = None;
             menu.prompt_restart = None;
@@ -1386,6 +1448,7 @@ impl Game<'_> {
             return;
         }
         self.pad.menu.open_polls = self.pad.menu.open_polls.saturating_add(1);
+        self.direct_craft_poll();
         // Once the focus or the screen moved on from a slider it's let go for good, or coming back
         // to it would find it still held.
         if !self.pad_holding_slider() {
@@ -1871,6 +1934,8 @@ impl Game<'_> {
             "holding_slider": self.pad_holding_slider(),
             "pointer": self.pad.menu.pos.map(|_| self.cursor),
             "keyboard": self.pad.menu.osk.is_some(),
+            "crafting": self.pad.menu.craft.is_some(),
+            "craft_hint": self.direct_craft_usable(),
             "targets": self.pad_targets().iter().map(target).collect::<Vec<_>>(),
             "actions": self.pad_actions_status(),
             "glyphs": self.pad_glyphs_status(),
@@ -1898,6 +1963,7 @@ impl Game<'_> {
         self.pad.menu.stick = None;
         self.pad.menu.wheel = [0.0; 2];
         self.pad.menu.moving = false;
+        self.pad.menu.trigger = None;
         self.pad.menu.glide = None;
         self.pad.menu.gesture = None;
         self.pad.menu.pending = None;

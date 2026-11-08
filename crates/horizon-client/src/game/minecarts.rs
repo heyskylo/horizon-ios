@@ -1997,6 +1997,9 @@ impl Game<'_> {
             return;
         }
         self.riding = None;
+        if self.dismount_in_portal(self.carts[i].position) {
+            return;
+        }
         let c = &self.carts[i];
         let (bx, by, bz) = (
             c.position.x.floor() as i32,
@@ -2688,6 +2691,7 @@ impl Game<'_> {
                 continue;
             }
             let entity_start = out.len();
+            self.mark_motion(entity_start, Self::MOTION_OBJECT | u64::from(c.id));
             // The per-entity jitter (offsetSeed) that keeps stacked carts from z-fighting.
             let seed = i64::from(c.id).wrapping_mul(493_286_711);
             let seed = seed
