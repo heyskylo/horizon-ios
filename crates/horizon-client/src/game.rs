@@ -1980,6 +1980,10 @@ impl LevelAccess for GameLevel<'_> {
         )
         .unwrap_or(false)
     }
+    /// `ServerLevel.shouldTickBlocksAt`: only the block-ticking ticket range.
+    fn should_tick_blocks_at(&self, chunk: horizon_core::position::ChunkPos) -> bool {
+        self.tickets.block_ticking(chunk.x, chunk.z)
+    }
     /// `ServerLevel.isPositionTickingWithEntitiesLoaded`: block ticking, and
     /// a ticking chunk.
     fn is_ticking_chunk(&self, chunk: horizon_core::position::ChunkPos) -> bool {

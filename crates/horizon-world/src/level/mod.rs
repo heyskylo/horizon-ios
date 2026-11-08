@@ -760,6 +760,10 @@ pub trait LevelAccess {
     fn count_entities(&self, _area: Aabb, _query: EntityQuery) -> usize {
         0
     }
+    /// `ServerLevel.shouldTickBlocksAt`: ticket range, independent of chunk ticking readiness.
+    fn should_tick_blocks_at(&self, _chunk: ChunkPos) -> bool {
+        true
+    }
     /// `ServerLevel.isPositionTickingWithEntitiesLoaded` for scheduled ticks.
     fn is_ticking_chunk(&self, _chunk: ChunkPos) -> bool {
         true
