@@ -352,6 +352,10 @@ impl Goal for MountPanic {
         self.0.stop(m, cx)
     }
 }
+/// `ZombieHorse.isMobControlled`: a mob on its back keeps it from bolting.
+fn mob_controlled_rider(m: &Mob) -> bool {
+    m.species() == Species::ZombieHorse && m.extra.rider.is_some()
+}
 /// `RunAroundLikeCrazyGoal`: an untamed horse with a rider bolts about until
 /// it is tamed (temper) or throws the rider off.
 #[derive(Clone, Debug)]
@@ -362,7 +366,9 @@ impl Goal for RunAroundLikeCrazy {
         MOVE
     }
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        if m.extra.tame || m.rider.is_none() {
+        // `RunAroundLikeCrazyGoal.canUse`: `!isMobControlled() && !isTamed()
+        // && isVehicle()`; `isVehicle` is any rider, not only the player.
+        if m.extra.tame || mob_controlled_rider(m) || !is_vehicle(m) {
             return false;
         }
         let r = &mut m.random;
@@ -379,7 +385,7 @@ impl Goal for RunAroundLikeCrazy {
         m.nav_move_to(cx.w, t, 1.2)
     }
     fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
-        !m.extra.tame && !m.ai.nav.is_done() && m.rider.is_some()
+        !m.extra.tame && !mob_controlled_rider(m) && !m.ai.nav.is_done() && is_vehicle(m)
     }
     fn every_tick(&self) -> bool {
         true
@@ -1359,6 +1365,78 @@ mod tests {
         let mut horse = equine(2, Species::Horse, "minecraft:horse");
         horse.on_ground = false;
         assert_eq!(swim_volume(&horse, 0.35), 0.35);
+    }
+
+    /// `RunAroundLikeCrazyGoal.canUse`: `isVehicle()` is any rider, so an
+    /// untamed horse with a mob on its back bolts; a zombie horse with a mob
+    /// rider is `isMobControlled()` and does not.
+    #[test]
+    fn a_mob_riding_an_untamed_horse_starts_the_bolt() {
+        use crate::mobs::world::with_built_test_world;
+        let mut horse = horse(Species::Horse);
+        horse.position = Vec3::new(0.5, 1.0, 0.5);
+        horse.on_ground = true;
+        horse.extra.rider = Some(9);
+        let mut zombie = zombie_horse();
+        zombie.extra.rider = Some(9);
+        let mut outcomes = Vec::new();
+        if !with_built_test_world(
+            &[],
+            |world, registry| {
+                for (cx, cz) in [
+                    (-1, -1),
+                    (-1, 0),
+                    (-1, 1),
+                    (0, -1),
+                    (0, 0),
+                    (0, 1),
+                    (1, -1),
+                    (1, 0),
+                    (1, 1),
+                ] {
+                    world
+                        .chunks
+                        .insert((cx, cz), Arc::new(crate::chunk::Chunk::empty(cx, cz)));
+                }
+                let stone = registry.default_state("minecraft:stone").unwrap();
+                for x in -16..32 {
+                    for z in -16..32 {
+                        world.set(x, 0, z, stone).unwrap();
+                    }
+                }
+            },
+            |w, _| {
+                let mut lr = horizon_core::random::LegacyRandom::new(0);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                for m in [&mut horse, &mut zombie] {
+                    m.ai.goals.add(1, RunAroundLikeCrazy);
+                    let mut goals = std::mem::take(&mut m.ai.goals);
+                    goals.tick(m, &mut cx);
+                    outcomes.push(goals.is_running("RunAroundLikeCrazy"));
+                    m.ai.goals = goals;
+                }
+            },
+        ) {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            vec![true, false],
+            "a mob-ridden horse bolts; a mob-ridden zombie horse is controlled"
+        );
+    }
+
+    /// The zombie-horse half of the test above, built like `horse`.
+    fn zombie_horse() -> Mob {
+        let mut m = horse(Species::ZombieHorse);
+        m.position = Vec3::new(0.5, 1.0, 0.5);
+        m.on_ground = true;
+        m
     }
 }
 
