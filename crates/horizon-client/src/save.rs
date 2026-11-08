@@ -628,7 +628,10 @@ fn block_entity_id(e: &crate::containers::BlockEntity, block: &str) -> String {
     match (e, block) {
         (
             crate::containers::BlockEntity::Chest(_),
-            "minecraft:trapped_chest" | "minecraft:barrel" | "minecraft:dropper",
+            "minecraft:trapped_chest"
+            | "minecraft:barrel"
+            | "minecraft:dropper"
+            | "minecraft:ender_chest",
         ) => block.to_owned(),
         (crate::containers::BlockEntity::Chest(_), b) if b.ends_with("shulker_box") => {
             "minecraft:shulker_box".to_owned()
@@ -803,6 +806,7 @@ pub fn encode_block_entity(
         // Encoded above.
         BlockEntity::DaylightDetector
         | BlockEntity::Bell
+        | BlockEntity::EndPortal
         | BlockEntity::CopperGolemStatue(_)
         | BlockEntity::Mod(_) => {}
         // PotentSulfurBlockEntity.saveAdditional.
@@ -1134,6 +1138,7 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
         | BlockEntity::Skull(_)
         | BlockEntity::DaylightDetector
         | BlockEntity::Bell
+        | BlockEntity::EndPortal
         | BlockEntity::Mod(_) => {}
         // `BlockEntity.loadAdditional`: the components the block entity keeps.
         BlockEntity::CopperGolemStatue(components) => {
