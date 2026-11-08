@@ -1220,6 +1220,9 @@ pub struct Backdrop {
     float: Vec<[f32; 3]>,
     /// The accent's tint, laid over a blurred colour as it is read.
     tint: Option<[f64; 3]>,
+    /// No blur: texels are read as squares, since filtering between them would soften the pixel
+    /// art the blur setting is meant to leave sharp (#12062).
+    sharp: bool,
 }
 
 impl Backdrop {
@@ -1270,6 +1273,7 @@ impl Backdrop {
             glass: blurred(blur),
             float: blurred(if blur <= 0. { 0. } else { blur + 24. }),
             tint: None,
+            sharp: blur <= 0.,
         }
     }
 
@@ -1281,10 +1285,16 @@ impl Backdrop {
         changed
     }
 
-    /// The blurred colour at a point in logical pixels (bilinear between texel centres), tinted,
+    /// The blurred colour at a point in logical pixels (bilinear between texel centres, or the
+    /// texel under it with no blur), tinted,
     /// saturated and dimmed as the filters do.
     pub fn at(&self, float: bool, x: f64, y: f64) -> [f32; 3] {
         let grid = if float { &self.float } else { &self.glass };
+        if self.sharp {
+            let x = clamp((x / self.px).floor(), 0., (self.w - 1) as f64) as usize;
+            let y = clamp((y / self.px).floor(), 0., (self.h - 1) as f64) as usize;
+            return self.finish(grid[y * self.w + x], float);
+        }
         let fx = clamp(x / self.px - 0.5, 0., (self.w - 1) as f64);
         let fy = clamp(y / self.px - 0.5, 0., (self.h - 1) as f64);
         let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
@@ -1297,6 +1307,11 @@ impl Backdrop {
             l(px(x0, y1), px(x1, y1), tx),
             ty,
         );
+        self.finish(blurred, float)
+    }
+
+    /// A backdrop colour tinted, saturated and dimmed as the filters do.
+    fn finish(&self, blurred: [f32; 3], float: bool) -> [f32; 3] {
         let mut c = blurred.map(f64::from);
         if let Some(t) = self.tint {
             c = color_blend(c, t);
@@ -1607,5 +1622,29 @@ mod tests {
         for i in 0..3 {
             assert!((tint_then_blur[i] - blur_then_tint[i]).abs() < 1e-9);
         }
+    }
+
+    /// #12062: with the blur at 0 px, a plate shows the scene's texels as squares, not filtered
+    /// into each other; with a blur, it still reads between texel centres.
+    #[test]
+    fn no_blur_reads_texels_as_squares() {
+        let backdrop = |sharp| Backdrop {
+            w: 2,
+            h: 1,
+            px: 4.,
+            glass: vec![[0.; 3], [1.; 3]],
+            float: vec![[0.; 3], [1.; 3]],
+            tint: None,
+            sharp,
+        };
+        let (black, white) = ([0f32; 3], [1f32; 3]);
+        // Just left of the edge between the two texels.
+        assert_eq!(backdrop(true).at(false, 3.9, 2.), black);
+        assert_eq!(backdrop(true).at(false, 4.1, 2.), white);
+        let soft = backdrop(false).at(false, 3.9, 2.);
+        assert!(soft[0] > 0.3 && soft[0] < 0.7, "{soft:?}");
+        // Model::new with blur 0 makes a sharp backdrop.
+        assert!(Backdrop::new(&Model::new(320., 200.), 0., false).sharp);
+        assert!(!Backdrop::new(&Model::new(320., 200.), 24., false).sharp);
     }
 }

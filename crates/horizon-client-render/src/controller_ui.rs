@@ -192,6 +192,10 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "Show the buttons for what you can do, while you play with a controller.",
                         ),
                         option(
+                            Opt::PadCraftOnServers,
+                            "Lets LT + A craft on servers other than your own worlds. Some servers count it as a macro.",
+                        ),
+                        option(
                             Opt::PadTriggerThreshold,
                             "How far a trigger is pulled before it counts as pressed.",
                         ),
@@ -344,6 +348,7 @@ impl Item {
             Item::Option(Opt::PadAdaptiveTriggers) => Some(c.adaptive_triggers),
             Item::Option(Opt::PadInvertX) => Some(c.invert_x),
             Item::Option(Opt::PadInvertY) => Some(c.invert_y),
+            Item::Option(Opt::PadCraftOnServers) => Some(c.craft_on_servers),
             _ => None,
         }
     }
