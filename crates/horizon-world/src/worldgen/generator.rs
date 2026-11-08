@@ -4964,7 +4964,7 @@ mod tests {
     }
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-    fn saved_jigsaw_starts_match_generated_layouts() {
+    fn saved_starts_match_generated_layouts() {
         use super::super::structure::start::Piece;
         use crate::nbt::Compound;
         let root = std::path::PathBuf::from(
@@ -4986,9 +4986,20 @@ mod tests {
                         "ancient_city",
                         "trail_ruins",
                         "trial_chambers",
+                        "shipwreck",
+                        "shipwreck_beached",
+                        "ocean_ruin_warm",
+                        "ocean_ruin_cold",
+                        "igloo",
+                        "ruined_portal",
+                        "mansion",
                     ][..],
                 ),
-                ("minecraft:the_nether", &["bastion_remnant"][..]),
+                (
+                    "minecraft:the_nether",
+                    &["bastion_remnant", "nether_fossil"][..],
+                ),
+                ("minecraft:the_end", &["end_city"][..]),
             ] {
                 let generator = OverworldGenerator::for_dimension(
                     data.clone(),
@@ -5007,10 +5018,15 @@ mod tests {
                 }
                 for (i, name) in names.iter().enumerate() {
                     let name = format!("minecraft:{name}");
-                    let pos = ChunkPos::new(i as i32 * 3, 0);
+                    let pos = if dimension == "minecraft:the_end" {
+                        ChunkPos::new(-15, -76)
+                    } else {
+                        ChunkPos::new(i as i32 * 3, 0)
+                    };
                     originals.push(
-                        worker
-                            .structure_start(&name, pos)
+                        std::iter::once(pos)
+                            .chain((1..64).map(|i| ChunkPos::new(pos.x + i % 8, pos.z + i / 8)))
+                            .find_map(|pos| worker.structure_start(&name, pos))
                             .unwrap_or_else(|| panic!("{seed} {name}")),
                     );
                 }
@@ -5019,7 +5035,19 @@ mod tests {
                 for original in &mut originals {
                     // Locating a generated start can increment its count. A nonzero value also
                     // proves that loading did not silently fall back to seed-identical generation.
-                    if original.pieces.iter().all(|p| matches!(p, Piece::Pool(_))) {
+                    if original.pieces.iter().all(|p| {
+                        matches!(p, Piece::Pool(_))
+                            || matches!(
+                                p.type_name(),
+                                "minecraft:shipwreck"
+                                    | "minecraft:orp"
+                                    | "minecraft:iglu"
+                                    | "minecraft:rupo"
+                                    | "minecraft:wmp"
+                                    | "minecraft:nefos"
+                                    | "minecraft:ecp"
+                            )
+                    }) {
                         Arc::get_mut(original)
                             .expect("uncached placement start")
                             .references = 3;

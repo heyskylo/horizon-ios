@@ -560,7 +560,7 @@ List the instances other launchers keep (Prism Launcher, MultiMC, the official l
 
     horizon-launcher instance others
 
-- `--folder`: Look in this folder instead: a launcher's folder, its instances/ or one instance
+- `--folder`: Look in this folder instead: a launcher's folder, a folder of instances (its instances/, the CurseForge app's Instances) or one instance
 
 MCP: `instance_others`.
 
@@ -571,7 +571,7 @@ Copy another launcher's instance into a new Java instance: its Minecraft version
     horizon-launcher instance copy-from <NAME>
 
 - `NAME`: Its name, as `instance others` lists it
-- `--folder`: Look in this folder instead: a launcher's folder, its instances/ or one instance
+- `--folder`: Look in this folder instead: a launcher's folder, a folder of instances (its instances/, the CurseForge app's Instances) or one instance
 - `--as`: The new instance's name (default: the same)
 - `--minecraft`: The Minecraft version it plays, when its launcher doesn't say (the CurseForge app, the Modrinth App)
 

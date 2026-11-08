@@ -91,11 +91,14 @@ impl Prompt {
 }
 
 impl Game<'_> {
-    /// The server list entry of the joined address, if it has one.
+    /// The server list entry of the joined address, if it has one, shown or
+    /// hidden (`ServerList.get`).
     fn accepted_code_of_conduct(&self) -> Option<i32> {
         let address = self.server_packs.address.as_deref()?;
-        servers::load(&multiplayer::servers_file(&saves()))
+        let (shown, hidden) = servers::load_all(&multiplayer::servers_file(&saves()));
+        shown
             .into_iter()
+            .chain(hidden)
             .find(|s| s.ip == address)
             .map(|s| s.accepted_code_of_conduct)
     }
@@ -106,13 +109,20 @@ impl Game<'_> {
             return;
         };
         let file = multiplayer::servers_file(&saves());
-        let mut list = servers::load(&file);
+        let (mut list, mut hidden) = servers::load_all(&file);
         let mut found = false;
         for entry in list.iter_mut().filter(|s| &s.ip == address) {
             entry.accepted_code_of_conduct = accepted;
             found = true;
         }
-        if found && let Err(e) = servers::save(&file, &list) {
+        // Not among the shown entries: the hidden ones (a Direct Connection's).
+        if !found {
+            for entry in hidden.iter_mut().filter(|s| &s.ip == address) {
+                entry.accepted_code_of_conduct = accepted;
+                found = true;
+            }
+        }
+        if found && let Err(e) = servers::save_all(&file, &list, &hidden) {
             log::warn!("Horizon: could not save {}: {e}", file.display());
         }
     }

@@ -1610,8 +1610,8 @@ impl Game<'_> {
                 let named = self
                     .station
                     .as_ref()
-                    .and_then(|s| self.world.block_names.get(&(s.pos[0], s.pos[1], s.pos[2])));
-                Text::literal(named.cloned().unwrap_or(default)).resolve_legacy()
+                    .and_then(|s| self.block_name_plain((s.pos[0], s.pos[1], s.pos[2])));
+                Text::literal(named.unwrap_or(default)).resolve_legacy()
             });
             super::screen_info::name_container(|| title.plain());
             let tw = atlas.font.width_text(&title);
@@ -2533,6 +2533,26 @@ impl Game<'_> {
                     push(&mut lines, format!(" {desc2}"), rgba(85, 85, 255, 255));
                 }
             }
+        }
+        // AdventureModePredicate.addToTooltip under its header, for
+        // can_break and then can_place_on. A block tag's blocks are listed by
+        // id, as this side keeps tags unordered.
+        for (text, c) in horizon_client::item_tooltip::adventure_lines(
+            stack,
+            &display,
+            &|tag| {
+                let mut blocks: Vec<String> = self
+                    .items()
+                    .block_tags
+                    .get(tag)
+                    .map(|s| s.iter().cloned().collect())
+                    .unwrap_or_default();
+                blocks.sort();
+                blocks
+            },
+            &translate,
+        ) {
+            push(&mut lines, text, c);
         }
         if display.shows("minecraft:damage")
             && let Some(info) = item_info
