@@ -423,5 +423,5 @@ fn vis_corner(position: vec3<u32>, rest: vec3<u32>, origin: vec4<f32>) -> Terrai
     let texel = vis_sprite(t.uv, t.layer & 0x7fffu, du, dv);
     var color = texel * t.color;
     color = mix(globals.fog_color * vec4(1.0, 1.0, 1.0, color.a), color, t.visibility);
-    return solid_finish_at(t, texel, color, du, dv);
+    return solid_light(solid_finish_at(t, texel, color, du, dv));
 }

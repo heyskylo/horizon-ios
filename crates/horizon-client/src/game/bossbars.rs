@@ -13,7 +13,6 @@ use horizon_client::{
     scoreboard_cmd::format_list,
     text::Text,
 };
-use horizon_core::random::RandomSource;
 use horizon_protocol::packets::play::{self, BossAction, Clientbound as C};
 use horizon_world::{identifier::Identifier, java_hash_map::JavaHashMap, nbt::Tag};
 use std::collections::{HashMap, HashSet};
@@ -169,7 +168,9 @@ impl Game<'_> {
                 self.bosses.add_bar(&bar, name);
                 if let Some(b) = self.bosses.bars.get_mut(&bar) {
                     // CustomBossEvents.create: Mth.createInsecureUUID(level.random).
-                    b.uuid = insecure_uuid(&mut self.world.random);
+                    b.uuid = horizon_client::lan::playerdata::ints_uuid(
+                        horizon_client::save::insecure_uuid(&mut self.world.random),
+                    );
                 }
                 let shown = self
                     .bosses
@@ -699,12 +700,6 @@ impl Game<'_> {
     }
 }
 
-/// `Mth.createInsecureUUID`.
-fn insecure_uuid(random: &mut impl RandomSource) -> u128 {
-    let most = random.next_long() & -61441 | 16384;
-    let least = random.next_long() & 4_611_686_018_427_387_903 | i64::MIN;
-    ((most as u64 as u128) << 64) | (least as u64 as u128)
-}
 fn translate_tag(key: &str) -> Tag {
     Tag::compound([("translate", Tag::String(key.into()))])
 }

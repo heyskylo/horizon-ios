@@ -52,6 +52,7 @@ pub mod entity_move;
 pub mod entity_obstruction;
 pub mod environment_attributes;
 pub mod environment_system;
+pub mod environment_timeline;
 pub mod extra_items;
 pub mod fall_damage;
 pub mod fluid;
