@@ -409,6 +409,12 @@ result are the menu's other slots. The grid's slots follow `native_menu_slot_rul
 on the server, so single player, LAN and dedicated servers craft alike; the result a player is shown is made again
 each tick its grid changed, whoever changed it. The grid and result may not be listed in `results`.
 
+Recipe placement works there as in a crafting table: a recipe viewer's `native_place_recipe` (the recipe book's click,
+`ServerboundPlaceRecipePacket`) and `native_transfer_recipe` fill the grid from the player's inventory, giving what was
+in it back, so JEI ports and the Recipes mod fill it unchanged. A native mod can let the placement take ingredients
+from containers beside the block too ([native-mods.md](native-mods.md#recipe-sources)). Not yet: the ghost recipe the server sends for missing
+items is not drawn on a mod's screen.
+
 #### Namespaces and limits
 
 The fence: files go in the mod's own namespaces (`assets/<id>/`,
