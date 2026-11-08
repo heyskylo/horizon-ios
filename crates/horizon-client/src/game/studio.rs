@@ -746,7 +746,11 @@ impl Game<'_> {
         let Some(replay) = self.studio_replay.as_mut() else {
             return;
         };
-        let label = format!("Marker {}", replay.markers().len() + 1);
+        let label = Text::translate(
+            "horizon.studio.timeline.marker",
+            &[Text::literal((replay.markers().len() + 1).to_string())],
+        )
+        .plain();
         match replay.add_marker(label) {
             Ok(_) => self.studio_timeline.markers = replay.markers().to_vec(),
             Err(error) => log::warn!("Studio: could not save replay marker: {error}"),

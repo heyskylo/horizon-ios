@@ -267,14 +267,14 @@ impl TimelineUi {
         let btn_w = 18.0;
         let btn_h = 16.0;
         let buttons = [
-            ("|<<", "Start"),
-            ("<<", "-1s"),
-            (if self.playing { "||" } else { ">" }, "Play/Pause"),
-            (">>", "+1s"),
-            (">>|", "End"),
+            "|<<",
+            "<<",
+            if self.playing { "||" } else { ">" },
+            ">>",
+            ">>|",
         ];
 
-        for (index, (label, _hint)) in buttons.into_iter().enumerate() {
+        for (index, label) in buttons.into_iter().enumerate() {
             let x = layout.transport_x[index];
             let rect = [x, y, btn_w, btn_h];
             let hover = ui::hovered(cursor, x, y, btn_w, btn_h);

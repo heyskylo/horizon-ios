@@ -467,6 +467,7 @@
   "horizon.studio.timeline.add_keyframe_short": "+ Bild",
   "horizon.studio.timeline.delete_keyframe_short": "− Löschen",
   "horizon.studio.timeline.split": "Teilen",
+  "horizon.studio.timeline.marker": "Markierung %s",
   "horizon.studio.timeline.seconds": "%s s",
   "horizon.studio.timeline.scene_count": "%s Szenen",
   "horizon.studio.timeline.scene_title": "Szene %s",
