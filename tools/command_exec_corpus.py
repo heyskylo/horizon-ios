@@ -1012,6 +1012,34 @@ def enderman_command_damage():
     return ops
 
 
+def shulker_command_damage():
+    """DamageCommand -> Shulker.hurtServer: below half health, random.nextInt(4) == 0 teleports
+    the shulker then and there (teleportSomewhere()). The world is frozen, so no AI step does it
+    later. 32 shulkers cling to stone walls between two-block air gaps, where a shell has room
+    to open (canStayAt), so nearly every teleportSomewhere finds a place: one shulker in four
+    moves, and none of the 32 does one time in 10^4."""
+    ops = setup('/forceload add 144 144 207 207', '/fill 159 203 159 192 221 183 minecraft:stone')
+    ops += setup(*[f'/fill {x} 204 160 {x + 1} 220 182 minecraft:air' for x in range(160, 192, 3)])
+    ops += [{'op': 'settle', 'required_chunks': [[x, z] for x in range(9, 13) for z in range(9, 12)]}]
+    ops += setup('/tick freeze', *[f'/scoreboard objectives add sd_{k} dummy' for k in ('x', 'y', 'z', 'x2', 'y2', 'z2')])
+    # Each on the west wall of its gap (AttachFace west), its shell opening east into the gap.
+    ops += setup(*[f'/summon shulker {x}.5 212 {z}.5 {{Tags:["sd"],AttachFace:4b,PersistenceRequired:1b}}'
+                   for x in range(163, 185, 3) for z in (168, 170, 172, 174)])
+    ops += [cmd('/execute if entity @e[tag=sd]', expect_result=32)]
+    def store(suffix):
+        return [f'/execute as @e[tag=sd] store result score @s sd_{k}{suffix} run data get entity @s Pos[{i}] 10'
+                for i, k in enumerate('xyz')]
+    ops += setup(*store(''))
+    ops += setup('/execute as @e[tag=sd] run damage @s 20')
+    ops += setup(*store('2'), *[f'/execute as @e[tag=sd] unless score @s sd_{k} = @s sd_{k}2 run tag @s add sd_moved'
+                                 for k in 'xyz'])
+    ops += [cmd('/execute if entity @e[tag=sd]', expect_result=32),
+            cmd('/execute if entity @e[tag=sd_moved,limit=1]', expect_result=1)]
+    ops += setup('/kill @e[tag=sd]', *[f'/scoreboard objectives remove sd_{k}' for k in ('x', 'y', 'z', 'x2', 'y2', 'z2')],
+                 '/fill 159 203 159 192 221 183 minecraft:air', '/forceload remove 144 144 207 207', '/tick unfreeze')
+    return ops
+
+
 def snbt_trailing_commas():
     """SnbtGrammar: a compound, a list and a typed array may end with a comma; an empty one
     may not hold only a comma, and two commas in a row are an error."""
@@ -5736,15 +5764,15 @@ def scheduled_item_birth():
 
 
 def piston_push_ground():
-    """#12029: `Entity.move(MoverType.PISTON)` ends in `setOnGroundWithMovement`
-    on the server, so a push sets an item's or primed TNT's OnGround to whether
+    """#12029, #12100: `Entity.move(MoverType.PISTON)` ends in `setOnGroundWithMovement`
+    on the server, so a push sets an item's, primed TNT's or experience orb's OnGround to whether
     its downward part was blocked: a sideways push off the stone it rests on
     clears it, and so does a free push down. The entity ticks before the piston
     moves it (#9337), so the reading after each tick is the push's. Only
     OnGround is compared: the float air drags (#11794) shift Motion."""
     ops = []
     for kind, fields in (('item', 'Item:{id:"minecraft:diamond",count:1},PickupDelay:32767s'),
-                         ('tnt', 'fuse:200s')):
+                         ('tnt', 'fuse:200s'), ('experience_orb', 'Value:1s')):
         selector = f'@e[type=minecraft:{kind},tag=piston_ground,limit=1]'
         for case in ('sideways', 'down'):
             ops += setup('/kill @e[type=!player]', '/fill 28 208 28 36 218 34 air',
@@ -6244,6 +6272,7 @@ def groups():
         ('dragon command damage', dragon_command_damage()),
         ('minecart numeric fields', minecart_numeric_fields()),
         ('enderman command damage', enderman_command_damage()),
+        ('shulker command damage', shulker_command_damage()),
         ('SNBT trailing commas', snbt_trailing_commas()),
         ('execute', execute()),
         ('projectile origin', projectile_origin()),
