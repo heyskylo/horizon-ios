@@ -1,8 +1,8 @@
-//! The radial menu (Horizon's own; vanilla 26.3 has no gamepad input; docs/controllers.md):
-//! what the opener, the selecting stick (the right one unless the player picks another) and the
-//! bumpers do while it is open. It knows pages only by their count and slots by their index.
-//! Nothing here draws or acts: the game feeds it the pad, and resolves the slot
-//! `RadialMenu::commit` gives back.
+//! The radial menu (Horizon's own; vanilla 26.3 has no gamepad input; docs/controllers.md): a
+//! player's named pages of eight fixed slots, saved in `horizon-controller.txt`, and what the
+//! opener, the selecting stick (the right one unless the player picks another) and the bumpers do
+//! while it is open. Nothing here draws or acts: the
+//! game feeds it the pad, and resolves the slot `RadialMenu::commit` gives back through its pages.
 //!
 //! Every tuning value of how the menu behaves and feels is here, at the top: tilts, timings and
 //! the haptic pulses. How it looks (sizes, colours, motion) is `radial_overlay`'s, in its own
@@ -98,6 +98,368 @@ pub const A_SETTLE: Duration = Duration::from_millis(90);
 /// selected nothing, does nothing). The stick is followed from the press. A first tuning value.
 pub const DRAW_DELAY: Duration = Duration::from_millis(120);
 
+/// What a slot can hold: actions that do everything on their press. Holding one (attack, jump,
+/// the player list) means nothing for a release-to-commit menu. Anything else in a saved file
+/// stays in its slot as a [`Slot::Missing`], which never runs: a slot can never run an arbitrary
+/// command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RadialAction {
+    Inventory,
+    Chat,
+    Command,
+    Advancements,
+    TogglePerspective,
+    SwapOffhand,
+    Drop,
+    PickItem,
+    Screenshot,
+    ToggleGui,
+    SmoothCamera,
+    SocialInteractions,
+    /// Horizon's emote wheel; it opens only with cosmetics on.
+    Emote,
+    HotbarPrevious,
+    HotbarNext,
+    Fullscreen,
+    /// The server's Quick Actions dialog; it opens only when the server gave one.
+    QuickActions,
+    /// F3's debug screen.
+    DebugOverlay,
+}
+/// Horizon's own actions are named in its namespace; vanilla's by their key mapping.
+#[cfg(test)]
+const HORIZON: &str = "horizon:";
+/// Ids a slot was saved under before, and the action each is now.
+const ALIASES: [(&str, RadialAction); 3] = [
+    ("key.emote", RadialAction::Emote),
+    (
+        crate::gamepad::HOTBAR_PREVIOUS,
+        RadialAction::HotbarPrevious,
+    ),
+    (crate::gamepad::HOTBAR_NEXT, RadialAction::HotbarNext),
+];
+impl RadialAction {
+    /// Every action a slot can hold.
+    pub const ALL: [Self; 18] = [
+        Self::Inventory,
+        Self::Chat,
+        Self::Command,
+        Self::Advancements,
+        Self::TogglePerspective,
+        Self::SwapOffhand,
+        Self::Drop,
+        Self::PickItem,
+        Self::Screenshot,
+        Self::ToggleGui,
+        Self::SmoothCamera,
+        Self::SocialInteractions,
+        Self::Emote,
+        Self::HotbarPrevious,
+        Self::HotbarNext,
+        Self::Fullscreen,
+        Self::QuickActions,
+        Self::DebugOverlay,
+    ];
+    /// Its id in the settings file: a vanilla key mapping's name (`key.chat`), or one of
+    /// Horizon's own in its namespace (`horizon:emote`).
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Emote => "horizon:emote",
+            Self::HotbarPrevious => "horizon:hotbar_previous",
+            Self::HotbarNext => "horizon:hotbar_next",
+            other => other.action(),
+        }
+    }
+    /// The bindable action it runs, as the binds list names it (`gamepad::route`).
+    pub fn action(self) -> &'static str {
+        match self {
+            Self::Inventory => "key.inventory",
+            Self::Chat => "key.chat",
+            Self::Command => "key.command",
+            Self::Advancements => "key.advancements",
+            Self::TogglePerspective => "key.togglePerspective",
+            Self::SwapOffhand => "key.swapOffhand",
+            Self::Drop => "key.drop",
+            Self::PickItem => "key.pickItem",
+            Self::Screenshot => "key.screenshot",
+            Self::ToggleGui => "key.toggleGui",
+            Self::SmoothCamera => "key.smoothCamera",
+            Self::SocialInteractions => "key.socialInteractions",
+            Self::Emote => "key.emote",
+            Self::HotbarPrevious => crate::gamepad::HOTBAR_PREVIOUS,
+            Self::HotbarNext => crate::gamepad::HOTBAR_NEXT,
+            Self::Fullscreen => "key.fullscreen",
+            Self::QuickActions => "key.quickActions",
+            Self::DebugOverlay => "key.debug.overlay",
+        }
+    }
+    /// The action saved under `id`, its own or one it had before (`ALIASES`).
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|action| action.id() == id)
+            .or_else(|| {
+                ALIASES
+                    .into_iter()
+                    .find(|(old, _)| *old == id)
+                    .map(|(_, action)| action)
+            })
+    }
+    /// One of Horizon's own, not a vanilla key mapping.
+    #[cfg(test)]
+    fn is_horizons(self) -> bool {
+        self.id().starts_with(HORIZON)
+    }
+    /// Its short caption for a slot: a slot is narrow, and the binds list's names are long.
+    pub fn caption_key(self) -> &'static str {
+        match self {
+            Self::Inventory => "horizon.radial.action.key_inventory",
+            Self::Chat => "horizon.radial.action.key_chat",
+            Self::Command => "horizon.radial.action.key_command",
+            Self::Advancements => "horizon.radial.action.key_advancements",
+            Self::TogglePerspective => "horizon.radial.action.key_togglePerspective",
+            Self::SwapOffhand => "horizon.radial.action.key_swapOffhand",
+            Self::Drop => "horizon.radial.action.key_drop",
+            Self::PickItem => "horizon.radial.action.key_pickItem",
+            Self::Screenshot => "horizon.radial.action.key_screenshot",
+            Self::ToggleGui => "horizon.radial.action.key_toggleGui",
+            Self::SmoothCamera => "horizon.radial.action.key_smoothCamera",
+            Self::SocialInteractions => "horizon.radial.action.key_socialInteractions",
+            Self::Emote => "horizon.radial.action.key_emote",
+            Self::HotbarPrevious => "horizon.radial.action.pad_hotbarPrevious",
+            Self::HotbarNext => "horizon.radial.action.pad_hotbarNext",
+            Self::Fullscreen => "horizon.radial.action.key_fullscreen",
+            Self::QuickActions => "horizon.radial.action.key_quickActions",
+            Self::DebugOverlay => "horizon.radial.action.key_debug_overlay",
+        }
+    }
+}
+
+/// What a slot holds.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Slot {
+    #[default]
+    Empty,
+    Action(RadialAction),
+    /// An id this game doesn't know (a newer Horizon's action, a mod's, a typo): kept as it was
+    /// saved, shown as missing, and never run.
+    Missing(String),
+}
+impl Slot {
+    /// The slot a saved id reads as.
+    fn read(id: &str) -> Self {
+        match id.trim() {
+            "" => Self::Empty,
+            id => {
+                RadialAction::from_id(id).map_or_else(|| Self::Missing(id.to_owned()), Self::Action)
+            }
+        }
+    }
+    /// What the settings file says for it: nothing for an empty slot.
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Empty => "",
+            Self::Action(action) => action.id(),
+            Self::Missing(id) => id,
+        }
+    }
+    /// The action it runs, if it is one this game knows.
+    pub fn action(&self) -> Option<RadialAction> {
+        match self {
+            Self::Action(action) => Some(*action),
+            _ => None,
+        }
+    }
+    pub fn is_empty(&self) -> bool {
+        *self == Self::Empty
+    }
+}
+impl From<Option<RadialAction>> for Slot {
+    fn from(action: Option<RadialAction>) -> Self {
+        action.map_or(Self::Empty, Self::Action)
+    }
+}
+/// A slot of a page that has none of its own (`PageKind::Hotbar`).
+static EMPTY: Slot = Slot::Empty;
+
+const GENERAL_PAGE_NAME: &str = "horizon.radial.page.general";
+const CAMERA_PAGE_NAME: &str = "horizon.radial.page.camera";
+
+/// What a page holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PageKind {
+    /// Eight slots the player fills.
+    Fixed([Slot; SLOTS]),
+    /// The hotbar's items around the ring. Read and kept, not yet drawn or run: its slots are
+    /// empty here.
+    Hotbar,
+}
+
+/// One of the pages Horizon gives every player, by the id the settings file names it with. A
+/// page the player hasn't changed is saved as its preset, so it follows the defaults as they
+/// improve (docs/controllers.md).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Preset {
+    General,
+    Camera,
+}
+impl Preset {
+    pub const ALL: [Self; 2] = [Self::General, Self::Camera];
+    fn id(self) -> &'static str {
+        match self {
+            Self::General => "general",
+            Self::Camera => "camera",
+        }
+    }
+    fn of_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|preset| preset.id() == id)
+    }
+    /// The page as Horizon makes it now. Only actions with no default button that always run, so
+    /// the menu adds to the pad rather than repeating it: the screens, then the camera, on the
+    /// straight directions, the easiest to flick. `RadialAction::ALL` has the rest.
+    fn page(self) -> Page {
+        use RadialAction as A;
+        let (name, [up, right, down]) = match self {
+            Self::General => (
+                GENERAL_PAGE_NAME,
+                [A::Advancements, A::Command, A::SocialInteractions],
+            ),
+            Self::Camera => (
+                CAMERA_PAGE_NAME,
+                [A::Screenshot, A::ToggleGui, A::SmoothCamera],
+            ),
+        };
+        let mut slots: [Slot; SLOTS] = Default::default();
+        for (at, action) in [(0, up), (2, right), (4, down)] {
+            slots[at] = Slot::Action(action);
+        }
+        Page {
+            name: PageName::Builtin(name),
+            kind: PageKind::Fixed(slots),
+            preset: Some(self),
+            origin: Some(self),
+            extra: Vec::new(),
+            overflow: Vec::new(),
+        }
+    }
+    /// The preset whose name a page has: where it came from.
+    fn named(name: &PageName) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|preset| PageName::Builtin(preset.page_name()) == *name)
+    }
+    fn page_name(self) -> &'static str {
+        match self {
+            Self::General => GENERAL_PAGE_NAME,
+            Self::Camera => CAMERA_PAGE_NAME,
+        }
+    }
+}
+
+/// A named page of slots. Removing an action empties its slot and moves nothing else.
+#[derive(Clone, Debug)]
+pub struct Page {
+    pub name: PageName,
+    pub kind: PageKind,
+    /// The preset it is, as it is now: saved as that, not as its slots.
+    preset: Option<Preset>,
+    /// The preset it came from (by its name): edited back to it, it is that preset again.
+    origin: Option<Preset>,
+    /// Its `radial_<n>_<field>` lines this game doesn't read, kept as they were.
+    extra: Vec<(String, String)>,
+    /// Slot ids past the eighth in its `slots` line (a newer Horizon's ring), kept as they were.
+    overflow: Vec<String>,
+}
+/// What a page is, not where it came from.
+impl PartialEq for Page {
+    fn eq(&self, other: &Self) -> bool {
+        (
+            &self.name,
+            &self.kind,
+            self.preset,
+            &self.extra,
+            &self.overflow,
+        ) == (
+            &other.name,
+            &other.kind,
+            other.preset,
+            &other.extra,
+            &other.overflow,
+        )
+    }
+}
+impl Eq for Page {}
+impl Page {
+    /// The slot at `slot` (clockwise from the top).
+    pub fn slot(&self, slot: usize) -> &Slot {
+        match &self.kind {
+            PageKind::Fixed(slots) => slots.get(slot).unwrap_or(&EMPTY),
+            PageKind::Hotbar => &EMPTY,
+        }
+    }
+    /// Its slots, clockwise from the top.
+    pub fn slots(&self) -> [&Slot; SLOTS] {
+        std::array::from_fn(|slot| self.slot(slot))
+    }
+    #[cfg(test)]
+    fn preset(&self) -> Option<Preset> {
+        self.preset
+    }
+}
+
+/// Pages a file can hold that the menu still reads; more than the editor shows (`MAX_PAGES`) so
+/// a file from a Horizon that shows more keeps them.
+pub const PARSE_MAX: usize = 16;
+
+/// The version of the default pages a file was written against (`radialLayout`). 1: the General
+/// and Camera presets. A change to what a preset holds, or to the default page list, raises it.
+/// A file without the line is read as layout 1, the first.
+pub const RADIAL_LAYOUT: u32 = 1;
+pub const LAYOUT_KEY: &str = "radialLayout";
+
+/// A player's pages: at least one. The menu and the editor see the first `MAX_PAGES`; the rest
+/// (from a file that has more) are kept, and come forward when a page before them goes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pages {
+    pages: Vec<Page>,
+    /// `radial_` lines no page of the first `PARSE_MAX` took, kept as they were.
+    extra: Vec<(String, String)>,
+    /// The newest `radialLayout` the file has been written against: this game's, or a newer
+    /// Horizon's, whose number is kept so it doesn't read the file as older than it is.
+    layout: u32,
+}
+impl Default for Pages {
+    fn default() -> Self {
+        Self {
+            pages: Preset::ALL.map(Preset::page).to_vec(),
+            extra: Vec::new(),
+            layout: RADIAL_LAYOUT,
+        }
+    }
+}
+impl Pages {
+    /// The pages the menu turns through.
+    pub fn len(&self) -> usize {
+        self.pages.len().min(MAX_PAGES)
+    }
+    /// Never true (there's always a page); clippy asks for it beside `len`.
+    pub fn is_empty(&self) -> bool {
+        self.pages.is_empty()
+    }
+    /// A page index that is one: the last page for one past the end (a page was deleted since).
+    /// Every page index is clamped here.
+    pub fn clamp(&self, page: usize) -> usize {
+        page.min(self.len() - 1)
+    }
+    pub fn page(&self, page: usize) -> &Page {
+        &self.pages[self.clamp(page)]
+    }
+    /// A newer Horizon wrote the file, whose presets may hold something else: a page is never
+    /// turned into one of this game's presets, which would read there as its own preset.
+    fn ahead(&self) -> bool {
+        self.layout > RADIAL_LAYOUT
+    }
+}
 /// The slot a stick points at: 0 is up, then clockwise. `None` under `tilt`.
 pub fn slot_at(stick: [f32; 2], tilt: f32) -> Option<usize> {
     let length = stick_length(stick);
@@ -474,6 +836,303 @@ impl<T: Copy + PartialEq> Settle<T> {
     pub fn reset(&mut self) {
         self.pending = None;
         self.said = None;
+    }
+}
+
+/// As many pages as the settings' page list shows beside them on a 240-high GUI, clear of Undo.
+pub const MAX_PAGES: usize = 6;
+/// A page's name at most, in characters.
+pub const NAME_MAX: usize = 32;
+/// A new page's name, a language key like the default pages'.
+pub const NEW_PAGE_NAME: &str = "horizon.radial.page.new";
+/// The names Horizon gives pages, which follow the player's language.
+const BUILTIN_NAMES: [&str; 3] = [GENERAL_PAGE_NAME, CAMERA_PAGE_NAME, NEW_PAGE_NAME];
+
+/// A page's name: one Horizon gave it, a language key the screens translate, or the player's own
+/// text, shown as typed even when it looks like a key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PageName {
+    Builtin(&'static str),
+    Custom(String),
+}
+impl PageName {
+    /// A name as it is kept: one line, not too long; nothing left is a new page's name.
+    pub fn custom(name: &str) -> Self {
+        let name: String = name
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(NAME_MAX)
+            .collect();
+        match name.trim() {
+            "" => Self::Builtin(NEW_PAGE_NAME),
+            name => Self::Custom(name.to_owned()),
+        }
+    }
+    /// A name Horizon gives a page, by its language key.
+    fn builtin(key: &str) -> Option<Self> {
+        BUILTIN_NAMES
+            .into_iter()
+            .find(|name| *name == key)
+            .map(Self::Builtin)
+    }
+}
+
+impl Page {
+    fn empty() -> Self {
+        Self {
+            name: PageName::Builtin(NEW_PAGE_NAME),
+            kind: PageKind::Fixed(Default::default()),
+            preset: None,
+            origin: None,
+            extra: Vec::new(),
+            overflow: Vec::new(),
+        }
+    }
+    /// The player changed it: it is saved by its slots, and a preset it names from a newer
+    /// Horizon goes, which would otherwise take its place when read there.
+    fn touched(&mut self) -> &mut Self {
+        self.preset = None;
+        self.extra.retain(|(field, _)| field != "preset");
+        self
+    }
+    /// Edited back to what the preset it came from is now, it is that preset again, and goes on
+    /// following the defaults; not in a file a newer Horizon wrote (`ahead`).
+    fn settle(&mut self, ahead: bool) {
+        // A preset this game doesn't know keeps its line, and only it says what the page is.
+        if ahead || self.extra.iter().any(|(field, _)| field == "preset") {
+            return;
+        }
+        if let Some(origin) = self.origin {
+            let preset = origin.page();
+            if (&self.name, &self.kind) == (&preset.name, &preset.kind) {
+                self.preset = Some(origin);
+            }
+        }
+    }
+}
+
+/// What the editor does to a player's pages.
+impl Pages {
+    /// Put an action in a slot, or empty it. A page without slots of its own gets them, empty.
+    /// The same action again changes nothing.
+    pub fn set_slot(&mut self, page: usize, slot: usize, to: Slot) {
+        let page = self.clamp(page);
+        let ahead = self.ahead();
+        let page = &mut self.pages[page];
+        let foreign = page.foreign_kind();
+        if slot >= SLOTS
+            || (!foreign && matches!(page.kind, PageKind::Fixed(_)) && *page.slot(slot) == to)
+        {
+            return;
+        }
+        let page = page.touched();
+        if let PageKind::Hotbar = page.kind {
+            page.kind = PageKind::Fixed(Default::default());
+        }
+        // A kind this game doesn't know showed as empty slots: filled here, it is a page of slots.
+        page.extra
+            .retain(|(field, _)| field != KIND_FIELD && field != SLOTS_FIELD);
+        if let PageKind::Fixed(slots) = &mut page.kind {
+            slots[slot] = to;
+        }
+        page.settle(ahead);
+    }
+    /// The same name again changes nothing.
+    pub fn rename(&mut self, page: usize, name: &str) {
+        let page = self.clamp(page);
+        let ahead = self.ahead();
+        let page = &mut self.pages[page];
+        let name = PageName::custom(name);
+        if page.name != name {
+            page.touched().name = name;
+            page.settle(ahead);
+        }
+    }
+    /// Another empty page at the end of those shown; its index, or `None` at `MAX_PAGES`.
+    pub fn add(&mut self) -> Option<usize> {
+        (self.pages.len() < MAX_PAGES).then(|| {
+            self.pages.push(Page::empty());
+            self.pages.len() - 1
+        })
+    }
+    /// Delete a page; the last one stays.
+    pub fn remove(&mut self, page: usize) {
+        if self.pages.len() > 1 && page < self.len() {
+            self.pages.remove(page);
+        }
+    }
+}
+
+/// What the settings file does to a player's pages.
+impl Pages {
+    /// `radial_<page>_<field>` lines into a page list; `None` without any, for the default
+    /// pages. Pages keep their order and gaps in the numbers close: a file numbered 0, 2 and 7
+    /// keeps all three. The first `PARSE_MAX` are read; the lines of any after them are kept as
+    /// they are, as are fields this game doesn't know.
+    ///
+    /// A page is its `preset` (the default page of that id as it is now), or its own: a name
+    /// Horizon gave is written as its language key in `name`, the player's own text in `label`
+    /// (so text that looks like a key stays theirs; a `name` that is no key of Horizon's leaves
+    /// a new page's name), and its `slots` by id (`kind:hotbar` for a hotbar page).
+    ///
+    /// `radialLayout` is the layout the file was written against. One newer than this game's is
+    /// kept, and its pages stay as saved; one older goes through `migrate`.
+    pub fn parse<'a>(lines: impl Iterator<Item = (&'a str, &'a str)>) -> Option<Self> {
+        let mut numbered = std::collections::BTreeMap::<usize, Vec<(&str, &str)>>::new();
+        let mut extra = Vec::new();
+        let mut saved_layout = None;
+        for (key, value) in lines {
+            if key == LAYOUT_KEY {
+                // Unreadable is the first layout: nothing is lost, presets read as they are.
+                saved_layout = Some(value.parse::<u32>().unwrap_or(1));
+                continue;
+            }
+            let Some(rest) = key.strip_prefix("radial_") else {
+                continue;
+            };
+            match rest
+                .split_once('_')
+                .and_then(|(index, field)| Some((index.parse::<usize>().ok()?, field)))
+            {
+                Some((index, field)) => numbered.entry(index).or_default().push((field, value)),
+                None => extra.push((key.to_owned(), value.to_owned())),
+            }
+        }
+        let from = saved_layout.unwrap_or(1);
+        let layout = from.max(RADIAL_LAYOUT);
+        if numbered.is_empty() && extra.is_empty() && layout == RADIAL_LAYOUT {
+            return None;
+        }
+        let ahead = layout > RADIAL_LAYOUT;
+        let mut pages = Vec::new();
+        for (index, fields) in numbered {
+            if pages.len() == PARSE_MAX {
+                extra.extend(
+                    fields.into_iter().map(|(field, value)| {
+                        (format!("radial_{index}_{field}"), value.to_owned())
+                    }),
+                );
+            } else {
+                pages.push(Page::read(fields, ahead));
+            }
+        }
+        // A newer Horizon that wrote only the layout (its pages were its defaults) has ours.
+        if pages.is_empty() {
+            pages = Self::default().pages;
+        }
+        let mut read = Self {
+            pages,
+            extra,
+            layout,
+        };
+        read.migrate(from);
+        Some(read)
+    }
+    /// What a file written against an older `radialLayout` needs to read as this one's. Layout 1
+    /// is the first, so there is nothing yet. A change to a preset adds a step here for the
+    /// layouts before it: a page saved by its slots that is that preset as it was then is the
+    /// preset again (`settle` only knows the preset as it is now).
+    fn migrate(&mut self, from: u32) {
+        debug_assert!(from <= self.layout);
+    }
+    /// The lines `parse` reads, after the layout they were written against.
+    pub fn serialize(&self) -> String {
+        let mut text = format!("{LAYOUT_KEY}:{}\n", self.layout);
+        let mut line = |key: &str, value: &str| text.push_str(&format!("{key}:{value}\n"));
+        for (i, page) in self.pages.iter().enumerate() {
+            let field = |name: &str| format!("radial_{i}_{name}");
+            match (page.preset, &page.kind) {
+                (Some(preset), _) => line(&field("preset"), preset.id()),
+                (None, kind) => {
+                    match &page.name {
+                        PageName::Builtin(key) => line(&field("name"), key),
+                        PageName::Custom(name) => line(&field("label"), name),
+                    }
+                    match kind {
+                        // A kind this game doesn't know keeps its own lines (`extra`).
+                        _ if page.foreign_kind() => {}
+                        PageKind::Fixed(slots) => {
+                            let ids: Vec<&str> = slots
+                                .iter()
+                                .map(Slot::id)
+                                .chain(page.overflow.iter().map(String::as_str))
+                                .collect();
+                            line(&field(SLOTS_FIELD), &ids.join(","));
+                        }
+                        PageKind::Hotbar => line(&field(KIND_FIELD), HOTBAR_KIND),
+                    }
+                }
+            }
+            for (name, value) in &page.extra {
+                line(&field(name), value);
+            }
+        }
+        for (key, value) in &self.extra {
+            line(key, value);
+        }
+        text
+    }
+}
+
+/// `radial_<n>_kind` of a hotbar page.
+const HOTBAR_KIND: &str = "hotbar";
+/// A page's fields that say what it holds.
+const KIND_FIELD: &str = "kind";
+const SLOTS_FIELD: &str = "slots";
+
+impl Page {
+    /// Its `kind` is one this game doesn't know (a newer Horizon's): it shows empty, and its own
+    /// lines say what it is until the player fills a slot.
+    fn foreign_kind(&self) -> bool {
+        self.extra.iter().any(|(field, _)| field == KIND_FIELD)
+    }
+    /// A page from its fields, in the file's order; `ahead` when a newer Horizon wrote them.
+    fn read(fields: Vec<(&str, &str)>, ahead: bool) -> Self {
+        let preset = fields
+            .iter()
+            .find(|(field, _)| *field == "preset")
+            .and_then(|(_, id)| Preset::of_id(id));
+        let mut page = preset.map_or_else(Page::empty, Preset::page);
+        let settle = preset.is_none();
+        let foreign = preset.is_none()
+            && fields
+                .iter()
+                .any(|(field, value)| *field == KIND_FIELD && *value != HOTBAR_KIND);
+        for (field, value) in fields {
+            match field {
+                // A known preset is the whole page; the fields it makes are its own.
+                "preset" if preset.is_some() => {}
+                "name" | "label" | "slots" | "kind" if preset.is_some() => {}
+                "name" => {
+                    if let Some(name) = PageName::builtin(value) {
+                        page.name = name;
+                    }
+                }
+                "label" => page.name = PageName::custom(value),
+                SLOTS_FIELD if !foreign => {
+                    let mut slots: [Slot; SLOTS] = Default::default();
+                    let mut ids = value.split(',');
+                    for (cell, id) in slots.iter_mut().zip(ids.by_ref()) {
+                        *cell = Slot::read(id);
+                    }
+                    page.overflow = ids.map(|id| id.trim().to_owned()).collect();
+                    // Trailing commas hold nothing.
+                    if page.overflow.iter().all(String::is_empty) {
+                        page.overflow.clear();
+                    }
+                    page.kind = PageKind::Fixed(slots);
+                }
+                "kind" if value == HOTBAR_KIND => page.kind = PageKind::Hotbar,
+                _ => page.extra.push((field.to_owned(), value.to_owned())),
+            }
+        }
+        // A page saved by its slots that is its default page as it is now (from a file before
+        // presets, or edited back) follows the defaults again.
+        if settle {
+            page.origin = Preset::named(&page.name);
+            page.settle(ahead);
+        }
+        page
     }
 }
 
@@ -1012,5 +1671,471 @@ mod tests {
         settle.poll(None, t + ms(600));
         settle.poll(Some(2), t + ms(700));
         assert_eq!(settle.poll(Some(2), t + ms(700) + NARRATE_SETTLE), Some(2));
+    }
+
+    #[test]
+    fn the_default_pages_hold_only_actions_without_a_button_on_the_straight_directions() {
+        let pages = Pages::default();
+        assert_eq!(pages.len(), PAGES);
+        for i in 0..pages.len() {
+            for (slot, cell) in pages.page(i).slots().into_iter().enumerate() {
+                let Some(action) = cell.action() else {
+                    assert!(cell.is_empty());
+                    continue;
+                };
+                assert_eq!(
+                    crate::gamepad::PadSettings::default_of(action.action()),
+                    None,
+                    "{action:?} has a button of its own"
+                );
+                assert_eq!(slot % 2, 0, "{action:?} on a diagonal");
+            }
+        }
+        use RadialAction as A;
+        let actions = |page: usize| pages.page(page).slots().map(Slot::action);
+        assert_eq!(
+            actions(0),
+            [
+                Some(A::Advancements),
+                None,
+                Some(A::Command),
+                None,
+                Some(A::SocialInteractions),
+                None,
+                None,
+                None,
+            ]
+        );
+        // Emote runs only with cosmetics on: the picker has it, the defaults don't.
+        assert!(
+            (0..pages.len()).all(|i| !actions(i).contains(&Some(A::Emote))),
+            "a default slot that may not run"
+        );
+        assert!(RadialAction::ALL.contains(&A::Emote));
+    }
+
+    #[test]
+    fn every_action_reaches_the_game_and_has_one_id_in_its_namespace() {
+        for action in RadialAction::ALL {
+            assert!(
+                crate::gamepad::route(action.action()).is_some(),
+                "{action:?}"
+            );
+            assert_eq!(RadialAction::from_id(action.id()), Some(action));
+            // Vanilla's by their key mapping, Horizon's own in its namespace.
+            if !action.is_horizons() {
+                assert_eq!(action.id(), action.action(), "{action:?}");
+                assert!(action.id().starts_with("key."), "{action:?}");
+            }
+        }
+        use RadialAction as A;
+        let horizons: Vec<_> = RadialAction::ALL
+            .into_iter()
+            .filter(|action| action.is_horizons())
+            .collect();
+        assert_eq!(horizons, [A::Emote, A::HotbarPrevious, A::HotbarNext]);
+        // Held actions, the opener itself and anything else aren't slot actions.
+        for id in [
+            "key.attack",
+            crate::gamepad::RADIAL,
+            "/op someone",
+            "horizon:",
+        ] {
+            assert_eq!(RadialAction::from_id(id), None, "{id}");
+        }
+    }
+
+    #[test]
+    fn ids_saved_before_the_namespaces_read_as_their_actions() {
+        use RadialAction as A;
+        let read = Pages::parse(
+            [(
+                "radial_0_slots",
+                "key.emote,pad.hotbarPrevious,pad.hotbarNext,,,,,",
+            )]
+            .into_iter(),
+        )
+        .unwrap();
+        let actions = read.page(0).slots().map(Slot::action);
+        assert_eq!(
+            actions[..3],
+            [Some(A::Emote), Some(A::HotbarPrevious), Some(A::HotbarNext)]
+        );
+        // Written back under their new ids, which read the same.
+        let text = read.serialize();
+        assert!(
+            text.contains("horizon:emote,horizon:hotbar_previous,horizon:hotbar_next"),
+            "{text}"
+        );
+        assert_eq!(Pages::parse(lines(&text)), Some(read));
+    }
+
+    fn lines(text: &str) -> impl Iterator<Item = (&str, &str)> {
+        text.lines().filter_map(|l| l.split_once(':'))
+    }
+
+    #[test]
+    fn pages_survive_their_text_with_empty_slots_where_they_were() {
+        let mut pages = Pages::default();
+        pages.rename(1, "Build: mine");
+        pages.set_slot(1, 0, Slot::Empty);
+        pages.set_slot(1, 7, Slot::Action(RadialAction::Drop));
+        let added = pages.add().unwrap();
+        pages.set_slot(added, 4, Slot::Action(RadialAction::Chat));
+        // A player's text that looks like a key stays their text.
+        let typed = pages.add().unwrap();
+        pages.rename(typed, CAMERA_PAGE_NAME);
+        let text = pages.serialize();
+        assert_eq!(Pages::parse(lines(&text)), Some(pages));
+    }
+
+    #[test]
+    fn what_this_game_doesnt_know_survives_a_save() {
+        let file = [
+            ("radialLayout", "1"),
+            // A slot from a newer Horizon or a mod, a field and a kind it doesn't read.
+            ("radial_0_label", "Mine"),
+            ("radial_0_slots", "key.chat,mymod:dash,,,,,,"),
+            ("radial_0_icon", "minecraft:diamond"),
+            ("radial_1_kind", "items"),
+            ("radial_x_name", "not a number"),
+            ("radial_2_kind", "hotbar"),
+            ("radial_3_preset", "combat"),
+        ];
+        let pages = Pages::parse(file.into_iter()).unwrap();
+        let page = pages.page(0);
+        assert_eq!(page.slot(0), &Slot::Action(RadialAction::Chat));
+        assert_eq!(page.slot(1), &Slot::Missing("mymod:dash".to_owned()));
+        assert_eq!(page.slot(1).action(), None, "never runs");
+        assert_eq!(pages.page(2).kind, PageKind::Hotbar);
+        assert!(pages.page(2).slots().iter().all(|slot| slot.is_empty()));
+        let text = pages.serialize();
+        for (key, value) in file {
+            assert!(
+                text.contains(&format!("{key}:{value}\n")),
+                "{key}:{value} lost from\n{text}"
+            );
+        }
+        assert_eq!(Pages::parse(lines(&text)), Some(pages));
+    }
+
+    #[test]
+    fn a_kind_this_game_doesnt_know_keeps_its_lines_and_gains_none() {
+        let file = [
+            ("radial_0_label", "Loadout"),
+            ("radial_0_kind", "items"),
+            ("radial_0_slots", "minecraft:torch,minecraft:bread"),
+        ];
+        let mut pages = Pages::parse(file.into_iter()).unwrap();
+        assert!(pages.page(0).slots().iter().all(|slot| slot.is_empty()));
+        let text = pages.serialize();
+        let written: Vec<_> = lines(&text)
+            .filter(|(k, _)| k.starts_with("radial_"))
+            .collect();
+        assert_eq!(written, file, "nothing added, nothing lost:\n{text}");
+        // Filled in the editor, it is a page of slots.
+        pages.set_slot(0, 2, Slot::Action(RadialAction::Chat));
+        let text = pages.serialize();
+        assert!(!text.contains("_kind:"), "{text}");
+        assert!(text.contains("radial_0_slots:,,key.chat,,,,,\n"), "{text}");
+    }
+
+    #[test]
+    fn slot_ids_past_the_eighth_are_kept() {
+        let ids = "key.chat,,,,,,,key.drop,mymod:ninth,mymod:tenth";
+        let pages = Pages::parse([("radial_0_label", "Wide"), ("radial_0_slots", ids)].into_iter())
+            .unwrap();
+        assert_eq!(pages.page(0).slot(7), &Slot::Action(RadialAction::Drop));
+        let text = pages.serialize();
+        assert!(text.contains(&format!("radial_0_slots:{ids}\n")), "{text}");
+        // Trailing commas are no slots.
+        let pages = Pages::parse(
+            [
+                ("radial_0_label", "W"),
+                ("radial_0_slots", "key.chat,,,,,,,,,"),
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+        assert!(
+            pages
+                .serialize()
+                .contains("radial_0_slots:key.chat,,,,,,,\n")
+        );
+    }
+
+    #[test]
+    fn the_layout_is_read_and_a_newer_ones_kept() {
+        // This game's layout, and a file from before the line: a page saved by its slots that is a
+        // default page follows the defaults again.
+        let general_by_slots = [
+            ("radial_0_name", GENERAL_PAGE_NAME),
+            (
+                "radial_0_slots",
+                "key.advancements,,key.command,,key.socialInteractions,,,",
+            ),
+        ];
+        for layout in [None, Some("1")] {
+            let file = layout
+                .map(|l| (LAYOUT_KEY, l))
+                .into_iter()
+                .chain(general_by_slots);
+            let pages = Pages::parse(file).unwrap();
+            assert_eq!(pages.page(0).preset(), Some(Preset::General), "{layout:?}");
+            assert!(
+                pages
+                    .serialize()
+                    .starts_with(&format!("{LAYOUT_KEY}:{RADIAL_LAYOUT}\n"))
+            );
+        }
+        // A newer Horizon's: its number stays, and its pages stay as saved, never turned into
+        // this game's presets (which may hold something else there).
+        let newer = RADIAL_LAYOUT + 1;
+        let newer_text = newer.to_string();
+        let file = [(LAYOUT_KEY, newer_text.as_str())]
+            .into_iter()
+            .chain(general_by_slots);
+        let mut pages = Pages::parse(file).unwrap();
+        assert_eq!(pages.page(0).preset(), None);
+        pages.set_slot(0, 6, Slot::Action(RadialAction::Chat));
+        pages.set_slot(0, 6, Slot::Empty);
+        assert_eq!(pages.page(0).preset(), None, "edited back, still its own");
+        let text = pages.serialize();
+        assert!(
+            text.starts_with(&format!("{LAYOUT_KEY}:{newer}\n")),
+            "{text}"
+        );
+        assert!(!text.contains("_preset:"), "{text}");
+        assert_eq!(Pages::parse(lines(&text)), Some(pages));
+        // A newer layout alone (its pages were its defaults) is kept too.
+        let only = Pages::parse([(LAYOUT_KEY, newer_text.as_str())].into_iter()).unwrap();
+        assert!(
+            only.serialize()
+                .starts_with(&format!("{LAYOUT_KEY}:{newer}\n"))
+        );
+        assert_ne!(only, Pages::default(), "so the settings file writes it");
+        // Today's layout alone is the defaults.
+        assert_eq!(Pages::parse([(LAYOUT_KEY, "1")].into_iter()), None);
+    }
+
+    #[test]
+    fn pages_past_the_editors_most_are_read_and_those_past_the_files_most_kept() {
+        let file: Vec<_> = (0..PARSE_MAX + 2)
+            .map(|i| (format!("radial_{i}_label"), format!("Page {i}")))
+            .collect();
+        let pages = Pages::parse(file.iter().map(|(k, v)| (k.as_str(), v.as_str()))).unwrap();
+        assert_eq!(
+            pages.len(),
+            MAX_PAGES,
+            "the menu and the editor show the first ones"
+        );
+        let text = pages.serialize();
+        for (key, value) in &file {
+            assert!(text.contains(&format!("{key}:{value}\n")), "{key} lost");
+        }
+        // A page that goes brings the next one forward.
+        let mut fewer = pages.clone();
+        fewer.remove(0);
+        assert_eq!(
+            page_label(fewer.page(MAX_PAGES - 1)),
+            format!("Page {MAX_PAGES}")
+        );
+        // The editor adds none while more are kept.
+        assert_eq!(fewer.clone().add(), None);
+        assert_eq!(Pages::parse(lines(&text)), Some(pages));
+    }
+
+    fn page_label(page: &Page) -> String {
+        match &page.name {
+            PageName::Builtin(key) => (*key).to_owned(),
+            PageName::Custom(name) => name.clone(),
+        }
+    }
+
+    #[test]
+    fn an_untouched_default_page_is_saved_as_its_preset_and_follows_the_defaults() {
+        let mut pages = Pages::default();
+        pages.set_slot(0, 1, Slot::Action(RadialAction::Chat));
+        let text = pages.serialize();
+        assert!(text.contains("radial_1_preset:camera\n"), "{text}");
+        assert!(!text.contains("radial_1_slots"), "{text}");
+        assert!(
+            text.contains("radial_0_slots:"),
+            "the changed page by its slots"
+        );
+        // Read back, the preset is the default page as it is now, whatever was saved beside it.
+        let read = Pages::parse(
+            [
+                ("radial_0_preset", "camera"),
+                ("radial_0_slots", "key.drop,,,,,,,"),
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+        assert_eq!(read.page(0), Pages::default().page(1));
+        assert_eq!(read.page(0).preset(), Some(Preset::Camera));
+        // Renamed, it is the player's.
+        pages.rename(1, "Shots");
+        assert_eq!(pages.page(1).preset(), None);
+        assert!(pages.serialize().contains("radial_1_slots:key.screenshot"));
+    }
+
+    #[test]
+    fn an_edit_back_to_the_default_keeps_the_page_following_the_defaults() {
+        let mut pages = Pages::default();
+        let chat = Slot::Action(RadialAction::Chat);
+        // The same action again, or the same name, is no change.
+        pages.set_slot(0, 0, Slot::Action(RadialAction::Advancements));
+        assert_eq!(pages.page(0).preset(), Some(Preset::General));
+        pages.rename(1, "Shots");
+        let renamed = pages.clone();
+        pages.rename(1, "Shots");
+        assert_eq!(pages, renamed);
+        // Changed, then changed back.
+        pages.set_slot(0, 1, chat.clone());
+        assert_eq!(pages.page(0).preset(), None);
+        pages.set_slot(0, 1, Slot::Empty);
+        assert_eq!(pages.page(0).preset(), Some(Preset::General));
+        assert_eq!(pages.page(0), Pages::default().page(0));
+        // Read back from its slots too (a file from before presets).
+        let read = Pages::parse(
+            [
+                ("radial_0_name", GENERAL_PAGE_NAME),
+                (
+                    "radial_0_slots",
+                    "key.advancements,,key.command,,key.socialInteractions,,,",
+                ),
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+        assert_eq!(read.page(0).preset(), Some(Preset::General));
+    }
+
+    #[test]
+    fn a_touched_page_drops_a_preset_it_cant_read() {
+        let mut pages =
+            Pages::parse([("radial_0_preset", "combat"), ("radial_0_label", "Fight")].into_iter())
+                .unwrap();
+        assert!(pages.serialize().contains("radial_0_preset:combat"));
+        pages.set_slot(0, 0, Slot::Action(RadialAction::Chat));
+        let text = pages.serialize();
+        assert!(!text.contains("preset"), "{text}");
+        assert!(text.contains("radial_0_slots:key.chat"), "{text}");
+    }
+
+    #[test]
+    fn a_damaged_file_loses_only_the_damaged_parts() {
+        let text = [
+            ("radial_0_label", "Mine\u{7}"),
+            // An unknown action keeps its position; the action after it stays seventh.
+            ("radial_0_slots", "key.chat,/stop,,,,,key.drop,"),
+            (
+                "radial_1_slots",
+                "key.drop,key.drop,key.drop,key.drop,key.drop,key.drop,key.drop,key.drop,key.chat",
+            ),
+            // Only Horizon's keys go in `name`: anything else leaves a new page's name.
+            ("radial_2_name", "Building"),
+        ];
+        let pages = Pages::parse(text.into_iter()).unwrap();
+        assert_eq!(pages.len(), 3);
+        assert_eq!(pages.page(0).name, PageName::Custom("Mine".to_owned()));
+        assert_eq!(pages.page(0).slot(0), &Slot::Action(RadialAction::Chat));
+        assert_eq!(pages.page(0).slot(1), &Slot::Missing("/stop".to_owned()));
+        assert_eq!(pages.page(0).slot(6), &Slot::Action(RadialAction::Drop));
+        assert_eq!(pages.page(1).name, PageName::Builtin(NEW_PAGE_NAME));
+        assert_eq!(pages.page(1).slot(7), &Slot::Action(RadialAction::Drop));
+        assert_eq!(pages.page(2).name, PageName::Builtin(NEW_PAGE_NAME));
+        assert_eq!(Pages::parse(std::iter::empty()), None);
+    }
+
+    #[test]
+    fn page_names_keep_whose_they_are() {
+        let read = [
+            ("radial_0_name", GENERAL_PAGE_NAME),
+            ("radial_1_label", "Building"),
+        ];
+        let pages = Pages::parse(read.into_iter()).unwrap();
+        assert_eq!(pages.page(0).name, PageName::Builtin(GENERAL_PAGE_NAME));
+        assert_eq!(pages.page(1).name, PageName::Custom("Building".to_owned()));
+        // A renamed default page stays the player's, even renamed to a key.
+        let mut pages = Pages::default();
+        pages.rename(0, GENERAL_PAGE_NAME);
+        assert_eq!(
+            pages.page(0).name,
+            PageName::Custom(GENERAL_PAGE_NAME.to_owned())
+        );
+        let read = Pages::parse(lines(&pages.serialize())).unwrap();
+        assert_eq!(
+            read.page(0).name,
+            PageName::Custom(GENERAL_PAGE_NAME.to_owned())
+        );
+        assert_eq!(read.page(1).name, PageName::Builtin(CAMERA_PAGE_NAME));
+        // A name with nothing in it is a new page's.
+        assert_eq!(
+            PageName::custom(" \u{7} "),
+            PageName::Builtin(NEW_PAGE_NAME)
+        );
+    }
+
+    #[test]
+    fn removing_an_action_leaves_the_others_in_place() {
+        let mut pages = Pages::default();
+        let before = pages.page(0).clone();
+        pages.set_slot(0, 2, Slot::Empty);
+        let after = pages.page(0);
+        assert!(after.slot(2).is_empty());
+        for i in (0..SLOTS).filter(|i| *i != 2) {
+            assert_eq!(after.slot(i), before.slot(i));
+        }
+    }
+
+    #[test]
+    fn a_slot_set_on_a_hotbar_page_gives_it_slots() {
+        let mut pages = Pages::parse([("radial_0_kind", "hotbar")].into_iter()).unwrap();
+        pages.set_slot(0, 3, Slot::Action(RadialAction::Chat));
+        assert_eq!(pages.page(0).slot(3), &Slot::Action(RadialAction::Chat));
+        assert!(matches!(pages.page(0).kind, PageKind::Fixed(_)));
+    }
+
+    #[test]
+    fn the_last_page_cant_be_deleted_and_the_count_is_bounded() {
+        let mut pages = Pages::default();
+        pages.remove(1);
+        pages.remove(0);
+        assert_eq!(pages.len(), 1);
+        while pages.add().is_some() {}
+        assert_eq!(pages.len(), MAX_PAGES);
+    }
+
+    #[test]
+    fn page_indices_past_the_end_mean_the_last_page() {
+        let pages = Pages::default();
+        assert_eq!(pages.clamp(5), 1);
+        assert_eq!(pages.page(9), pages.page(1));
+    }
+
+    #[test]
+    fn pages_numbered_with_gaps_close_up_in_order() {
+        let label = |i: usize| (format!("radial_{i}_label"), format!("Page {i}"));
+        let read = |numbers: &[usize]| {
+            let lines: Vec<_> = numbers.iter().map(|i| label(*i)).collect();
+            let pages = Pages::parse(lines.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+            let pages = pages.unwrap();
+            (0..pages.len())
+                .map(|i| pages.page(i).name.clone())
+                .collect::<Vec<_>>()
+        };
+        let named = |numbers: &[usize]| {
+            let names = numbers
+                .iter()
+                .map(|i| PageName::Custom(format!("Page {i}")));
+            names.collect::<Vec<_>>()
+        };
+        // Page 7 was past the most pages, yet only the third: it stays.
+        assert_eq!(read(&[7, 0, 2]), named(&[0, 2, 7]));
+        // Eight pages: the first six by number show.
+        let eight = [9, 1, 30, 4, 12, 0, 6, 2];
+        assert_eq!(read(&eight), named(&[0, 1, 2, 4, 6, 9]));
     }
 }
