@@ -401,7 +401,11 @@ mod tests {
                 bench: Some("/home/a b/games/benchmarks/game-1.json".into())
             }
         );
-        for line in ["stop --bench", "start --bench x.json", "status --bench x.json"] {
+        for line in [
+            "stop --bench",
+            "start --bench x.json",
+            "status --bench x.json",
+        ] {
             assert!(p(line).is_err(), "{line:?} was accepted");
         }
     }

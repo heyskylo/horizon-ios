@@ -126,7 +126,7 @@ fn a_benchmark_reports_local_paths_and_label_stay_out_of_the_capture() {
     report.label = Some("someone's laptop".into());
     report.local = vec!["/home/someone/logs/latest.log".into()];
     let result = bench_result(report.to_json()).unwrap();
-    assert!(perf.stop_with(4.0, R::Normal, vec![result]));
+    assert!(perf.stop_with(4.0, R::Normal, None, vec![result]));
     let saved = perf.take_saved(true).pop().unwrap().unwrap();
 
     let embedded = &read(&saved.path).bench[0].report_json;
