@@ -378,7 +378,6 @@ impl ServerPerf {
             samples: sampled,
             gpu: options.gpu as i32,
             timeline: session.timeline.is_some(),
-            ..start.options.unwrap_or_default()
         });
         if sampled && let Some(build) = &mut start.build {
             build.symbols = Sampling::symbols() as i32;
