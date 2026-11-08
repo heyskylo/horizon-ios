@@ -9,7 +9,10 @@ use horizon_client::{
     containers::BlockEntity,
     furnace::FurnaceCooking,
     items::ItemStack,
-    lan::{guest::Guest, menu::Slots},
+    lan::{
+        guest::Guest,
+        menu::{ModCraft, Slots},
+    },
     menu::{
         Env, Input, Kind, Menu,
         place::{PostPlace, TransferError},
@@ -333,9 +336,19 @@ impl Game<'_> {
         for &slot in &hidden {
             menu.hide_slot(slot);
         }
-        let changed = self.guest_menu_op(host, gi, &mut menu, |menu, env| {
-            for (k, s) in items.iter().enumerate() {
-                menu.set_slot(env, k, s.clone());
+        // A crafting grid's result is what the guest was shown, the mods' say
+        // included, while the grid is as it was then.
+        let shown = Self::lan_mod_craft_shown(host, gi, &items);
+        let mut changed = self.guest_menu_op(host, gi, &mut menu, |menu, env| {
+            if matches!(kind, Kind::Mod(_)) {
+                menu.load_container(env, &items);
+                if let Some((slot, result)) = shown {
+                    menu.set_slot(env, slot, result);
+                }
+            } else {
+                for (k, s) in items.iter().enumerate() {
+                    menu.set_slot(env, k, s.clone());
+                }
             }
             // After the slots: setting a disabled slot (CrafterBlockEntity.setItem) enables it.
             if let Some((disabled, triggered)) = crafter_data {
@@ -372,8 +385,8 @@ impl Game<'_> {
                 if m.items.len() < n {
                     m.items.resize(n, None);
                 }
-                for (k, slot) in m.items.iter_mut().take(n).enumerate() {
-                    *slot = menu.slot(k).cloned();
+                for (slot, stack) in m.items.iter_mut().zip(menu.container_items()) {
+                    *slot = stack;
                 }
             }
             // CrafterBlockEntity.setItem: filling a disabled slot enables it.
@@ -406,6 +419,11 @@ impl Game<'_> {
         // so the chunk is saved and comparators read the block again.
         if changed.iter().any(|&s| s < items.len()) {
             self.container_changed(pos);
+        }
+        if let Some(slot) = self.lan_mod_craft_settle(host, gi, pos, &mut menu)
+            && !changed.contains(&slot)
+        {
+            changed.push(slot);
         }
         host.play.entry(conn).or_default().crafting.machine = Some((p.container, menu));
         host.hub.inventory_clicked(conn, p, &self.world, &changed);
@@ -720,6 +738,81 @@ impl Game<'_> {
             .get(self.world.block(pos[0], pos[1], pos[2]))
             .name;
         &**name == "minecraft:crafting_table" && g.within_block_range(pos, 4.0)
+    }
+
+    /// The result guest `gi`'s mod crafting menu shows, with its slot, while
+    /// the block entity's grid (`items`) is the one it was made from.
+    fn lan_mod_craft_shown(
+        host: &LanHost,
+        gi: usize,
+        items: &[Option<ItemStack>],
+    ) -> Option<(usize, Option<ItemStack>)> {
+        let menu = host.hub.guests[gi].menu.as_ref()?;
+        let c = menu.mod_type?.crafting?;
+        let craft = menu.craft.as_ref()?;
+        (items.get(c.grid_slots()) == Some(&craft.grid[..]))
+            .then(|| (c.result, craft.result.clone()))
+    }
+
+    /// After the menu engine ran on guest `gi`'s mod crafting menu at `pos`:
+    /// the mods have their say on the result (`native_prepare_item_craft`,
+    /// as on a crafting table's), which goes into `menu` and is what the guest
+    /// is shown from now on. The result's slot when the mods changed it.
+    fn lan_mod_craft_settle(
+        &mut self,
+        host: &mut LanHost,
+        gi: usize,
+        pos: (i32, i32, i32),
+        menu: &mut Menu,
+    ) -> Option<usize> {
+        let c = menu.mod_crafting()?;
+        let guest = &host.hub.guests[gi];
+        let (uuid, name) = (guest.uuid, guest.name.clone());
+        let mut result = menu.slot(c.result).cloned();
+        let vanilla = result.clone();
+        self.native_prepare_item_craft(uuid, &name, Some([pos.0, pos.1, pos.2]), &mut result);
+        let grid = c.grid_slots().map(|k| menu.slot(k).cloned()).collect();
+        let changed = result != vanilla;
+        if changed {
+            menu.set_slot(&self.menu_env(), c.result, result.clone());
+        }
+        if let Some(m) = host.hub.guests[gi].menu.as_mut() {
+            m.craft = Some(ModCraft { grid, result });
+        }
+        changed.then_some(c.result)
+    }
+
+    /// `CraftingMenu.slotsChanged` for the guests' mod crafting menus: the
+    /// result each is shown follows its block entity's grid, which another
+    /// player, a hopper or the mod may have changed, made again only when
+    /// the grid changed.
+    pub(super) fn lan_mod_crafting_tick(&mut self, host: &mut LanHost) {
+        for gi in 0..host.hub.guests.len() {
+            let g = &host.hub.guests[gi];
+            let Some((t, pos)) =
+                g.menu.as_ref().filter(|_| host.hub.here(g)).and_then(|m| {
+                    match (m.mod_type, m.slots) {
+                        (Some(t), Slots::Block(pos)) if t.crafting.is_some() => Some((t, pos)),
+                        _ => None,
+                    }
+                })
+            else {
+                continue;
+            };
+            let Some(BlockEntity::Mod(m)) = self.world.block_entities.get(&pos) else {
+                continue;
+            };
+            let mut items = m.items.clone();
+            items.resize(t.slots, None);
+            if Self::lan_mod_craft_shown(host, gi, &items).is_some() {
+                continue;
+            }
+            let mut menu = Menu::new(Kind::Mod(t));
+            self.guest_menu_op(host, gi, &mut menu, |menu, env| {
+                menu.load_container(env, &items);
+            });
+            self.lan_mod_craft_settle(host, gi, pos, &mut menu);
+        }
     }
 
     /// `ServerPlayer.tick`'s `stillValid`: a guest's crafting table closes

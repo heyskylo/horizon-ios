@@ -499,7 +499,7 @@ impl Game<'_> {
     pub(super) fn thorns(&mut self, attacker: u32) {
         self.player_thorns(|g, min, max| {
             // DamageEntity: Mth.randomBetween from the hurt entity's own random.
-            let Some(index) = g.mobs.iter().position(|m| m.id == attacker) else {
+            let Some(index) = g.mob_index.find(&g.mobs, attacker) else {
                 return;
             };
             let damage = g.mobs[index].random.next_float() * (max - min) + min;

@@ -107,6 +107,10 @@ pub(super) struct CombatTracker {
     /// The hit on the player now runs its post-attack effects (thorns) only
     /// if the player lives through it (`WitherSkull.onHitEntity`).
     pub(super) post_attack_if_alive: bool,
+    /// The mob whose swing is being applied, when the caller knows it. Without
+    /// it the attacker is the mob nearest to where the hit came from, which
+    /// walks every mob.
+    pub(super) melee_mob: Option<u32>,
     /// A firework rocket's burst is hurting the player now: the rocket is
     /// the direct entity (`rocket_hurt_player`).
     pub(super) rocket_hit: bool,
@@ -824,5 +828,53 @@ mod stuck_tests {
         // Both timers run 580 ticks.
         assert!(s.tick());
         assert_eq!((s.arrows, s.stingers), (0, 0));
+    }
+}
+
+#[cfg(test)]
+mod guest_hit_tests {
+    use horizon_client::mobs::{Mob, MobEvent};
+    use horizon_client::motion::PlayerMotion;
+    use horizon_core::geometry::Vec3;
+
+    /// A bystander stands exactly under the mob that bites, listed first: the
+    /// search by position ignores height and would have named the bystander.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn an_effect_hit_on_a_guest_credits_the_mob_that_swung() {
+        let mut game = super::super::native_machines::tests::server_game();
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 100.0, 0.5)).unwrap());
+        for (id, kind, y) in [
+            (4, "minecraft:zombie", 90.0),
+            (5, "minecraft:cave_spider", 100.0),
+        ] {
+            let kind = game.res.mob_types().get(kind).cloned().unwrap();
+            game.mobs
+                .push(Mob::new(id, kind, Vec3::new(1.5, y, 0.5), 0.0));
+        }
+        let from = [1.5, 100.0, 0.5];
+        let hits = [
+            MobEvent::AttackPlayerWithEffect {
+                amount: 2.0,
+                from,
+                effect: "minecraft:poison",
+                ticks: 140,
+                amplifier: 0,
+            },
+            MobEvent::StingPlayer {
+                amount: 2.0,
+                from,
+                poison_ticks: 200,
+            },
+        ];
+        for hit in hits {
+            game.combat.pending.clear();
+            game.guest_mob_event(5, hit);
+            let noted: Vec<u32> = (game.combat.pending.iter())
+                .map(|(_, (id, _), _)| *id)
+                .collect();
+            assert_eq!(noted, [5]);
+            assert_eq!(game.combat.melee_mob, None, "the hit used it up");
+        }
     }
 }
