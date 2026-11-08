@@ -4248,6 +4248,7 @@ impl Game<'_> {
         let id = self.next_entity;
         self.dropped.last_mut().filter(|d| d.id == id)
     }
+    /// `new ItemEntity(level, x, y, z, stack, dx, dy, dz)`.
     fn spawn_item(
         &mut self,
         stack: ItemStack,
@@ -4255,14 +4256,42 @@ impl Game<'_> {
         velocity: [f64; 3],
         pickup_delay: u32,
     ) {
+        self.add_item_entity(stack, position, Some(velocity), pickup_delay);
+    }
+    /// `new ItemEntity(level, x, y, z, stack)`: the item leaves with its own
+    /// random's motion, which this returns.
+    pub(super) fn spawn_item_own(
+        &mut self,
+        stack: ItemStack,
+        position: [f64; 3],
+        pickup_delay: u32,
+    ) -> [f64; 3] {
+        self.add_item_entity(stack, position, None, pickup_delay)
+    }
+    fn add_item_entity(
+        &mut self,
+        stack: ItemStack,
+        position: [f64; 3],
+        velocity: Option<[f64; 3]>,
+        pickup_delay: u32,
+    ) -> [f64; 3] {
         let item = stack.item.clone();
         let count = stack.count as i32;
         self.next_entity += 1;
         let p = Vec3::new(position[0], position[1], position[2]);
-        // ItemEntity.bobOffs comes from the entity's own random, not the level's.
-        let bob = self.particles.random().next_float() * std::f32::consts::PI * 2.0;
+        // The item's own random, in vanilla's order: Entity's UUID, ItemEntity's
+        // bobOffs and yaw, then (without a given motion) the constructor's motion.
+        let mut own = random_source::entity();
+        let uuid = horizon_client::save::insecure_uuid(&mut own);
+        self.persist.uuids.insert(self.next_entity, uuid);
+        let bob = own.next_float() * std::f32::consts::PI * 2.0;
+        let yaw = own.next_float() * 360.0;
+        let velocity = velocity.unwrap_or_else(|| {
+            let x = own.next_double() * 0.2 - 0.1;
+            [x, 0.2, own.next_double() * 0.2 - 0.1]
+        });
         self.dropped.push(ItemEntity {
-            rotation: [0.0, 0.0],
+            rotation: [yaw, 0.0],
             join: Default::default(),
             no_gravity: false,
             health: 5,
@@ -4289,6 +4318,7 @@ impl Game<'_> {
         if self.native_joins_flush(false, self.next_entity) {
             self.native_item_spawn(self.next_entity, &item, count, position);
         }
+        velocity
     }
     /// The block entity at `pos` saved with its id and position
     /// (`saveWithFullMetadata`), or the saved one Horizon keeps as loaded:
@@ -4373,8 +4403,7 @@ impl Game<'_> {
         if !self.ui.rules.bool("block_drops") {
             return;
         }
-        let v = dispenser::new_item_motion();
-        self.spawn_item(stack, p, v, 10);
+        self.spawn_item_own(stack, p, 10);
     }
     /// `Block.popResourceFromFace`: the loot leaves the clicked face with the
     /// face's own motion instead of the item's random one.
@@ -6441,14 +6470,13 @@ impl Game<'_> {
         if &*item != "minecraft:air" {
             // new ItemEntity(level, x, y, z, stack): the motion is from the
             // item's own random, not the level's.
-            let v = dispenser::new_item_motion();
             let stack = ItemStack {
                 item,
                 count: 1,
                 damage: 0,
                 extra: None,
             };
-            self.spawn_item(stack, [at.x, at.y, at.z], v, 10);
+            self.spawn_item_own(stack, [at.x, at.y, at.z], 10);
         }
     }
     /// `DecoratedPotBlock.playerWillDestroy`: a pot mined with an item in
@@ -6607,7 +6635,7 @@ impl Game<'_> {
             && let Some(stack) = self.picked_stack(pos, true)
         {
             let at = pos.map(f64::from);
-            self.spawn_item(stack, at, dispenser::new_item_motion(), 10);
+            self.spawn_item_own(stack, at, 10);
         }
         let correct_tool =
             !facts.requires_tool || self.res.items().correct_for_drops(self.held(), &facts.name);

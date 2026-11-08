@@ -2576,8 +2576,7 @@ impl Game<'_> {
                     self.scatter_cart_contents(at, &c.items);
                     if !creative {
                         // `spawnAtLocation`: an ItemEntity's own motion.
-                        let motion = super::dispenser::new_item_motion();
-                        self.spawn_item(ItemStack::new(c.kind.item(), 1), at, motion, 10);
+                        self.spawn_item_own(ItemStack::new(c.kind.item(), 1), at, 10);
                         // `chestVehicleDestroyed` drops the emptied container
                         // again, which only draws each slot's spot.
                         let empty = vec![None; c.items.len()];
