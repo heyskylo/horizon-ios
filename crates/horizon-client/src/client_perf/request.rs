@@ -10,7 +10,7 @@ pub const MARK_NAME_MAX: usize = 100;
 /// The sampler's rate bounds, per second.
 pub const HZ_RANGE: RangeInclusive<u32> = 10..=1000;
 
-/// Which side `profile` addresses; no side means the sides the game can reach.
+/// Which side `profile` addresses; no side means every side the game can reach.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProfileSide {
@@ -266,7 +266,8 @@ fn number(flag: &str, text: &str, range: RangeInclusive<u32>) -> Result<u32, Str
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Started {
     pub ok: bool,
-    pub side: ProfileSide,
+    /// The sides asked for, server first; the server thread's join is confirmed by `status` and `stop`.
+    pub sides: Vec<ProfileSide>,
     pub path: String,
     pub seconds: Option<u32>,
     pub samples: bool,
@@ -277,7 +278,7 @@ pub struct Started {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Stopped {
     pub ok: bool,
-    pub side: ProfileSide,
+    pub sides: Vec<ProfileSide>,
     pub path: String,
     pub open_at: String,
     pub removed: Vec<String>,
@@ -313,6 +314,7 @@ pub struct Traced {
 pub struct Marked {
     pub ok: bool,
     pub name: String,
+    /// Seconds on the game clock, which counts from when the game began, for every side.
     pub t: f64,
 }
 

@@ -5,11 +5,12 @@ use crate::server_perf::{
     self, CaptureEnd, CaptureOptions, CaptureStatus, MAX_WINDOW_S, Role, SamplerOptions, Saved,
     ServerPerf, TickDetail, WorldCounts,
 };
+use horizon_perf_format::FieldSender;
 use horizon_perf_format::v1::{BenchResult, Machine, Side, Start, StopReason, Trigger};
 use request::{GpuSwitch, StartOptions, Threads};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub mod request;
 
@@ -42,6 +43,19 @@ pub fn reports_dir(profile: Option<&OsStr>, home: &Path) -> PathBuf {
     }
 }
 
+/// What a side on another thread needs to write into the running capture's file.
+#[derive(Clone)]
+pub struct Join {
+    pub sender: FieldSender,
+    pub path: PathBuf,
+    /// The instant every `t` of the capture counts from.
+    pub origin: Instant,
+    /// When the capture's window ends, and why it stops then.
+    pub ends: Option<(Instant, StopReason)>,
+    pub options: StartOptions,
+    pub trigger: Trigger,
+}
+
 /// The client's health history, always on, and the capture running from it, if any.
 pub struct ClientPerf {
     perf: ServerPerf,
@@ -50,6 +64,8 @@ pub struct ClientPerf {
     gpu_ms: Vec<f32>,
     /// When the running capture's window ends, and why it stops then.
     window: Option<(f64, StopReason)>,
+    /// The running capture's switches, which a side that joins it follows.
+    running: Option<(StartOptions, Trigger)>,
 }
 
 impl ClientPerf {
@@ -60,6 +76,7 @@ impl ClientPerf {
             cpu_ms: Vec::new(),
             gpu_ms: Vec::new(),
             window: None,
+            running: None,
         }
     }
 
@@ -148,7 +165,23 @@ impl ClientPerf {
             Some(s) => (t + f64::from(s), StopReason::Normal),
             None => (t + MAX_WINDOW_S, StopReason::WindowCap),
         });
+        self.running = Some((options.clone(), trigger));
         Ok(path)
+    }
+
+    /// What the server thread needs to write its side into the running capture; None when none runs.
+    pub fn join(&self) -> Option<Join> {
+        let (sender, path, origin) = self.perf.joinable()?;
+        let (options, trigger) = self.running.clone()?;
+        let at = |t: f64| self.epoch + Duration::from_secs_f64(t.max(0.0));
+        Some(Join {
+            sender,
+            path,
+            origin: at(origin),
+            ends: self.window.map(|(end, reason)| (at(end), reason)),
+            options,
+            trigger,
+        })
     }
 
     /// Ends the running capture; its file is finished off this thread and comes back from [`ClientPerf::take_saved`].
@@ -170,6 +203,7 @@ impl ClientPerf {
         bench: Vec<BenchResult>,
     ) -> bool {
         self.window = None;
+        self.running = None;
         let end = CaptureEnd {
             gpu,
             bench,

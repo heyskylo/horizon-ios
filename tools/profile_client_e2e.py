@@ -50,7 +50,7 @@ def commands(bins, work, env):
 
 
 def check_ctl(bins, resources):
-    """profile start, mark and stop, and the file they leave."""
+    """profile start, mark and stop in single player, and the file they leave: both sides, the window and the server thread."""
     work, env = ac.scratch('profile', resources)
     ctl, perf, socket = commands(bins, work, env)
     try:
@@ -58,25 +58,35 @@ def check_ctl(bins, resources):
         assert ctl('profile', 'status')['capturing'] is False
         before = ctl('status')['frames']
         started = ctl('profile', 'start', '--hz', '250')
-        assert started['side'] == 'client' and started['path'].startswith('reports/profile-'), started
-        assert ctl('profile', 'status')['capturing'] is True
+        assert started['sides'] == ['server', 'client'] and started['path'].startswith('reports/profile-'), started
+        running = ctl('profile', 'status')
+        assert running['capturing'] is True and running['sides'] == ['server', 'client'], running
         time.sleep(RUN_S)
-        ctl('profile', 'mark', 'checkpoint', 'one')
+        client_mark = ctl('profile', 'mark', 'checkpoint', 'one')
+        server_mark = ctl('profile', 'server', 'mark', 'server', 'only')
+        assert RUN_S <= client_mark['t'] <= server_mark['t'] <= client_mark['t'] + 1.5, (client_mark, server_mark)
         time.sleep(RUN_S)
         running = ctl('profile', 'status')
         assert running['elapsed_s'] >= 2 * RUN_S and running['bytes'] > 0, running
         stopped = ctl('profile', 'stop')
         after = ctl('status')['frames']
         assert stopped['path'] == started['path'], (started, stopped)
-        assert stopped['open_at'].startswith('https://'), stopped
+        assert stopped['open_at'].startswith('https://') and stopped['sides'] == ['server', 'client'], stopped
         file = work / stopped['path']
         assert file.exists(), file
         assert ctl('profile', 'status')['capturing'] is False
 
-        marks = perf('query', 'marks', file)['rows']
+        sides = {row['side']: row for row in perf('query', 'meta', file)['rows']}
+        assert set(sides) == {'server', 'client'} and all('stop' in row for row in sides.values()), sides
+        for side, thread in (('client', 'render'), ('server', 'tick')):
+            picked = perf('query', 'hot', file, '--side', side)['selection']
+            assert picked['thread'] == thread and picked['samples'] > 0, (side, picked)
+        marks = [m for m in perf('query', 'marks', file, '--side', 'client')['rows']]
         assert [m['name'] for m in marks] == ['checkpoint one'], marks
         assert RUN_S <= marks[0]['t'] <= RUN_S + 1.5, marks
-        series = perf('query', 'series', 'h:fps', file, '--every', '1', '--from', '0')['rows'][0]['values']
+        server_marks = [m['name'] for m in perf('query', 'marks', file, '--side', 'server')['rows']]
+        assert server_marks == ['checkpoint one', 'server only'], server_marks
+        series = perf('query', 'series', 'h:fps', file, '--side', 'client', '--every', '1', '--from', '0')['rows'][0]['values']
         counted = sum(v for v in series if v is not None)
         drawn = after - before
         # The first and last second of a capture are partial, so they are not counted.
@@ -85,6 +95,39 @@ def check_ctl(bins, resources):
         assert len(series) >= 2 * RUN_S - 1, series
         assert whole(bins, file, work, env)
         print(f'PASS: {counted:.0f} of {drawn} frames in {len(series)} whole seconds, mark at {marks[0]["t"]:.2f} s')
+
+        for side in ('server', 'client'):
+            alone = ctl('profile', side, 'start', '--hz', '250')
+            assert alone['sides'] == [side], alone
+            time.sleep(RUN_S)
+            stopped = ctl('profile', side, 'stop')
+            assert stopped['sides'] == [side] and (work / stopped['path']).exists(), stopped
+            file = work / stopped['path']
+            deadline = time.time() + 120
+            while not whole(bins, file, work, env):
+                assert time.time() < deadline, f'profile {side} saved no whole capture'
+                time.sleep(0.5)
+            rows = perf('query', 'meta', file)['rows']
+            assert [row['side'] for row in rows] == [side], rows
+            print(f'PASS: profile {side} alone wrote {file.name}')
+            ended = ctl('profile', 'status')
+            assert ended['capturing'] is False and ended['path'] is None and ended['elapsed_s'] is None, ended
+            try:
+                ctl('profile', side, 'mark', 'late')
+                raise AssertionError(f'profile {side} mark worked with no capture')
+            except ac.Failed:
+                pass
+
+        for side in ('client', 'server'):
+            ctl('profile', 'start', '--hz', '250')
+            time.sleep(1)
+            stopped = ctl('profile', side, 'stop')
+            assert stopped['sides'] == ['server', 'client'] and (work / stopped['path']).exists(), (side, stopped)
+            deadline = time.time() + 120
+            while not whole(bins, work / stopped['path'], work, env):
+                assert time.time() < deadline, f'profile {side} stop saved no whole capture'
+                time.sleep(0.5)
+            print(f'PASS: profile {side} stop ended the joined capture')
 
         kept = set((work / 'reports').glob(PATTERN))
         f3_o(ctl)
@@ -148,7 +191,7 @@ def check_gpu(bins, resources):
         time.sleep(RUN_S)
         stopped = ctl('profile', 'stop')
         file = work / stopped['path']
-        options = perf('query', 'meta', file)['rows'][0]['options']
+        options = perf('query', 'meta', file, '--side', 'client')['rows'][0]['options']
         assert options['gpu'] == 'passes', options
         warnings = [w['code'] for w in perf('query', 'warnings', file)['rows']]
         if 'WARNING_CODE_GPU_UNAVAILABLE' in warnings:
@@ -180,7 +223,7 @@ def check_gpu_env(bins, resources):
         time.sleep(RUN_S)
         assert ctl('profile', 'status')['capturing'] is True
         stopped = ctl('profile', 'stop')
-        options = perf('query', 'meta', work / stopped['path'])['rows'][0]['options']
+        options = perf('query', 'meta', work / stopped['path'], '--side', 'client')['rows'][0]['options']
         assert options['gpu'] == 'passes' and options['window_s'] is None, options
         print('PASS: HORIZON_SHADER_PACK_TIMING started a --gpu capture')
         return True

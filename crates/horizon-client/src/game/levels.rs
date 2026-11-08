@@ -629,7 +629,7 @@ impl Game<'_> {
         paused: bool,
         record: impl FnOnce(TickTiming),
     ) -> Result<()> {
-        if self.options.spikes.is_none() && !horizon_client::spans::enabled() {
+        if self.options.spikes.is_none() && !horizon_client::spans::recording_here() {
             return self.tick_server(paused);
         }
         // Spans recorded since the last tick ran between ticks (the chunk pump of the wait): they

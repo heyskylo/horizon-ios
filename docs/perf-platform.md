@@ -530,8 +530,16 @@ horizon-ctl profile mark NAME
   time and bytes written.
 - **F3+O** runs `profile start` / `profile stop` with no side. **`HORIZON_PROFILE=DIR`** captures the whole run and
   writes it into DIR at exit.
-- **As built (C1):** `profile client` and a bare `profile` capture the window only; `profile server` is refused until
-  C2 and R1a give it a server to reach. A client capture without `--seconds` stops at the 600 s window cap with
+- **As built (C2):** in single player a bare `profile` writes both sides into the window's file. The server thread
+  (`game/integrated/capture.rs`) is handed the file's writer, a clone of its sender, and the capture's start as an
+  instant, so both sides' `t` count from the same zero; it writes `Start` (kind `INTEGRATED`), its ticks, spans,
+  mob costs and `tick` thread samples, and its own `Stop`, and the window finishes the file once both are in. A bare
+  `profile start` before a world opens, `HORIZON_PROFILE` and F3+O are joined by the server when it comes up (once per
+  capture). `profile server start` makes a file of the server thread alone; with no single-player world it is refused
+  until R1a gives it a remote server to reach. `stop` ends the capture with every side it holds (a `--side` it does not hold is an error), `status` lists
+  the sides that run, and `mark` goes to every running side or the one `--side` names. Replies list `sides`, server first; on `start` they are the sides asked for, and `status` and `stop` confirm which wrote. A `mark` reply's `t` is the window's game clock for every side, while the file stores it from the capture's start. With `--threads all`
+  the window's sampler claims every opted-in thread, the server thread included, so the server side has no samples of its own.
+- **As built (C1):** `profile client` captures the window only. A client capture without `--seconds` stops at the 600 s window cap with
   `STOP_REASON_WINDOW_CAP`, so `HORIZON_PROFILE` records the first 10 minutes of a run. The client's slow ring takes
   frames over `HORIZON_SPIKES`, else 50 ms. The health gauges (process and machine probes) are read on a thread of their
   own so a frame never waits on `ps`.

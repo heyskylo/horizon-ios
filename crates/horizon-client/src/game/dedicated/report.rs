@@ -102,7 +102,7 @@ pub(super) fn parse(words: &[&str]) -> Result<Command, ()> {
 }
 
 /// Logs the captures whose files are done; with `wait`, every one still being finished.
-pub(super) fn log_saved(perf: &mut ServerPerf, wait: bool) {
+pub(in crate::game) fn log_saved(perf: &mut ServerPerf, wait: bool) {
     for saved in perf.take_saved(wait) {
         match saved {
             Ok(saved) => {
@@ -126,8 +126,10 @@ const LOOSE_ENTITIES: [&str; 5] = [
 ];
 
 /// A report being recorded: what the game side needs while the capture runs.
-pub(super) struct Recording {
+pub(in crate::game) struct Recording {
     seconds: u32,
+    /// Whether it turned the spans of every thread on, which it turns off again.
+    all_threads: bool,
     started: Instant,
     ticks: u64,
     /// The ticks whose mobs were timed one by one ([`tick_profile::SAMPLE_EVERY`]).
@@ -137,21 +139,29 @@ pub(super) struct Recording {
 impl Recording {
     pub(super) fn start(seconds: u32) -> Self {
         tick_profile::want_spans(tick_profile::SPANS_REPORT, true);
+        Self::new(seconds, true)
+    }
+    /// A recording beside a window: the calling thread's spans are on already (`spans::record_here`), the other threads' stay off.
+    pub(in crate::game) fn here(seconds: u32) -> Self {
+        Self::new(seconds, false)
+    }
+    fn new(seconds: u32, all_threads: bool) -> Self {
         job_stats::enable(true);
         job_stats::take();
         tick_profile::take();
         Self {
             seconds,
+            all_threads,
             started: Instant::now(),
             ticks: 0,
             sampled_ticks: 0,
         }
     }
     /// Whether the next tick's mobs are timed one by one.
-    pub(super) fn sample_next(&self) -> bool {
+    pub(in crate::game) fn sample_next(&self) -> bool {
         self.ticks.is_multiple_of(tick_profile::SAMPLE_EVERY as u64)
     }
-    pub(super) fn add(&mut self, sampled: bool) {
+    pub(in crate::game) fn add(&mut self, sampled: bool) {
         self.ticks += 1;
         self.sampled_ticks += u64::from(sampled);
     }
@@ -171,7 +181,9 @@ impl Recording {
 
 impl Drop for Recording {
     fn drop(&mut self) {
-        tick_profile::want_spans(tick_profile::SPANS_REPORT, false);
+        if self.all_threads {
+            tick_profile::want_spans(tick_profile::SPANS_REPORT, false);
+        }
         job_stats::enable(false);
     }
 }
@@ -213,7 +225,7 @@ impl Game<'_> {
     }
 
     /// Every block's name by the id the sampler's context holds.
-    fn block_names(&self) -> Vec<String> {
+    pub(in crate::game) fn block_names(&self) -> Vec<String> {
         let table = &self.res.behaviours().table;
         (0..table.block_count() as u16)
             .map(|id| table.info(BlockId(id)).name.to_string())
@@ -257,7 +269,7 @@ impl Game<'_> {
     }
 
     /// What the health samples count: players, chunks and mobs in every level.
-    pub(super) fn perf_world_counts(&self) -> WorldCounts {
+    pub(in crate::game) fn perf_world_counts(&self) -> WorldCounts {
         let (mut chunks, mut entities) = (self.world.chunks.len(), self.mobs.len());
         for dim in self.levels.parked_dims() {
             chunks += self.levels.parked_world(dim).map_or(0, |w| w.chunks.len());
@@ -271,7 +283,7 @@ impl Game<'_> {
     }
 
     /// The level in place and the parked ones: their chunks and their entities and block entities by registry id.
-    pub(super) fn level_counts(&self) -> Vec<LevelCounts> {
+    pub(in crate::game) fn level_counts(&self) -> Vec<LevelCounts> {
         let level = |dim: Dim,
                      world: &horizon_client::world::World,
                      mobs: &[horizon_client::mobs::Mob],
@@ -320,7 +332,7 @@ impl Game<'_> {
     }
 
     /// Each player's wire bytes (in, out) by connection.
-    pub(super) fn wire_bytes(&self) -> Wire {
+    pub(in crate::game) fn wire_bytes(&self) -> Wire {
         self.lan.as_ref().map_or_else(Vec::new, |h| {
             h.hub
                 .guests
@@ -342,11 +354,13 @@ impl Game<'_> {
     }
 
     /// What a finished recording leaves for the capture: the world as it stands, the sampled mob costs and the workers' time.
-    fn capture_end(&self, recording: &Recording) -> CaptureEnd {
+    pub(in crate::game) fn capture_end(&self, recording: &Recording) -> CaptureEnd {
         let span_ns = span_cost_nanos();
         let mob_ns = tick_profile::sample_cost_nanos();
         // Off unless `HORIZON_SPIKES` or a mod (`native_spans`) still wants them.
-        tick_profile::want_spans(tick_profile::SPANS_REPORT, false);
+        if recording.all_threads {
+            tick_profile::want_spans(tick_profile::SPANS_REPORT, false);
+        }
         job_stats::enable(false);
         CaptureEnd {
             levels: self.level_counts(),
@@ -442,6 +456,7 @@ mod tests {
     fn one_tick_in_four_is_sampled() {
         let mut r = Recording {
             seconds: 1,
+            all_threads: false,
             started: Instant::now(),
             ticks: 0,
             sampled_ticks: 0,
@@ -567,6 +582,7 @@ mod tests {
         }
         let recording = Recording {
             seconds: 2,
+            all_threads: false,
             started: Instant::now(),
             ticks: 40,
             sampled_ticks: 10,

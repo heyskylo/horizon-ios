@@ -283,6 +283,9 @@ mod sampled {
 
     #[test]
     fn a_sampled_capture_reads_back_with_the_entity_shares_of_the_work() {
+        let _turn = crate::server_perf::SAMPLED_TESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let scratch = Scratch::new("samples");
         let mut perf = ServerPerf::new(0.0, 250.0);
         let on = CaptureOptions {
