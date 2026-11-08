@@ -83,7 +83,7 @@ pub struct Hit {
     pub node: u32,
     pub thread: u32,
     pub context: u32,
-    pub state: u32,
+    pub state: StateName,
     pub slow: bool,
     /// Count times the kind's period: milliseconds, or bytes for allocation samples.
     pub value: f64,
@@ -272,15 +272,15 @@ impl<'a> Samples<'a> {
         }
     }
 
-    fn takes(&self, select: Select, kind: u32, state: u32) -> bool {
+    fn takes(&self, select: Select, kind: u32, state: StateName) -> bool {
         let Some(k) = self.profile.kinds.get(kind as usize) else {
             return false;
         };
         match (select, k.source()) {
-            (Select::Cpu, SampleSource::Cpu) => state == 0,
-            (Select::Running, SampleSource::Wall) => state == 1,
-            (Select::Waiting, SampleSource::Wall) => state == 2,
-            (Select::Wall, SampleSource::Wall) => state != 0,
+            (Select::Cpu, SampleSource::Cpu) => state == StateName::Cpu,
+            (Select::Running, SampleSource::Wall) => state == StateName::Running,
+            (Select::Waiting, SampleSource::Wall) => state == StateName::Waiting,
+            (Select::Wall, SampleSource::Wall) => state != StateName::Cpu,
             (Select::Alloc, SampleSource::Alloc) => true,
             _ => false,
         }
@@ -322,6 +322,7 @@ impl<'a> Samples<'a> {
             let get = |v: &[u32]| v.get(i).copied();
             let (node, thread, kind, state) =
                 (w.node[i], get(&w.thread)?, get(&w.kind)?, get(&w.state)?);
+            let state = StateName::from_weight(state)?;
             let (context, block) = (get(&w.context)?, get(&w.block)?);
             let slow = w.slow.get(i).copied().unwrap_or(false);
             let count = w.count.get(i).copied()?;
@@ -551,14 +552,7 @@ impl Samples<'_> {
                 Kind::Thread,
                 &Some(self.thread_names[hit.thread as usize].clone()),
             ),
-            SampleBy::State => word(
-                match hit.state {
-                    0 => StateName::Cpu,
-                    1 => StateName::Running,
-                    _ => StateName::Waiting,
-                }
-                .to_string(),
-            ),
+            SampleBy::State => word(hit.state.to_string()),
             SampleBy::Slow => word(
                 if hit.slow {
                     PaceName::Slow

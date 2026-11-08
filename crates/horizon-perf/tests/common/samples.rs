@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use horizon_perf_format::Field;
 use horizon_perf_format::v1::*;
 
-use super::{SERVER, start, stop};
+use super::{CLIENT, SERVER, start, stop};
 
 /// One counted-sample row's extras; the defaults are a CPU sample with no context in block 0.
 #[derive(Clone, Copy, Default)]
@@ -24,6 +24,7 @@ pub struct Builder {
     nodes: Nodes,
     contexts: Contexts,
     weights: Weights,
+    pub side: i32,
     pub thread: String,
     pub period_ms: f64,
     pub ticks: u64,
@@ -44,6 +45,7 @@ impl Builder {
             nodes: Nodes::default(),
             contexts: Contexts::default(),
             weights: Weights::default(),
+            side: SERVER,
             thread: "tick".into(),
             period_ms: 10.0,
             ticks,
@@ -166,7 +168,7 @@ impl Builder {
             }
         }
         let profile = SampleProfile {
-            side: SERVER,
+            side: self.side,
             kinds,
             threads: threads
                 .into_iter()
@@ -191,20 +193,45 @@ impl Builder {
         (profile, self.strings)
     }
 
-    /// A finished server capture holding these samples.
-    pub fn fields(self) -> Vec<Field> {
+    /// The string table and sample sections of this side.
+    pub fn sections(self) -> Vec<Field> {
+        let side = self.side;
         let (profile, strings) = self.profile();
-        let mut fields = vec![start(SERVER, Kind::Dedicated)];
-        for (i, text) in strings.into_iter().enumerate() {
-            fields.push(Field::String(StringEntry {
-                side: SERVER,
-                id: i as u32 + 1,
-                text,
-            }));
-        }
+        let mut fields: Vec<Field> = strings
+            .into_iter()
+            .enumerate()
+            .map(|(i, text)| {
+                Field::String(StringEntry {
+                    side,
+                    id: i as u32 + 1,
+                    text,
+                })
+            })
+            .collect();
         fields.push(Field::Samples(profile));
-        fields.push(stop(SERVER, 10.0));
         fields
+    }
+
+    /// A finished capture of one side holding these samples.
+    pub fn fields(self) -> Vec<Field> {
+        let side = self.side;
+        let kind = if side == CLIENT {
+            Kind::Client
+        } else {
+            Kind::Dedicated
+        };
+        let mut fields = vec![start(side, kind)];
+        fields.extend(self.sections());
+        fields.push(stop(side, 10.0));
+        fields
+    }
+
+    /// A context row like `ctx` that also names a block entity.
+    pub fn block_ctx(&mut self, block: &str, dim: &str, span: &str) -> u32 {
+        let at = self.ctx("", dim, (0, 0), span);
+        let block = self.text(block);
+        self.contexts.block[at as usize] = block;
+        at
     }
 }
 

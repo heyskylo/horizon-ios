@@ -716,7 +716,7 @@ horizon-perf query   OP [ARGS] [FILE...] [FILTERS]                     JSON alwa
 horizon-perf diff    A B [--min-ms X] [--json]
 horizon-perf list    [DIR]                                             one line per capture
 horizon-perf follow  [FILE|latest] [--every S] [--json]                health and slow events as they are written
-horizon-perf export  FILE --pprof OUT | --folded OUT | --perfetto OUT
+horizon-perf export  [FILE|latest] --pprof|--folded|--perfetto [--out PATH] [--side S] [--thread T] [--select K] [--slow]
 horizon-perf attach  FILE --name NAME --body JSONFILE                  adds an Attachment at the wire level
 horizon-perf mcp                                                       §8
 ```
@@ -788,7 +788,10 @@ Numbers are computed unrounded and printed rounded to 3 significant decimals, as
 - `--pprof`: the hand-encoded writer from `perf/sampler-viewer:crates/horizon-threads/src/profile/pprof.rs`, moved to
   `horizon_perf::export`. It carries labels `span`, `entity`, `block`, `chunk`, `dim`, `slow` and `state`, and one
   sample type per kind.
-- `--folded`: one line per stack, for `inferno` and old scripts.
+  Samples also carry `side` and `thread` labels, and both sides share one function table.
+- All three: `horizon-perf export [FILE|latest] --pprof|--folded|--perfetto [--out PATH] [--side] [--thread] [--select] [--slow]`;
+  without `--out` the bytes go to stdout.
+- `--folded`: one line per stack (`side;thread;frame;...;frame count`), for `inferno` and old scripts; it counts `--select` (cpu by default), and waiting wall samples end in `[waiting]`.
 - `--perfetto`: the Chrome trace JSON of `spans.rs:303-454` (the same `{"ph":"X"}` events and thread-name metadata),
   built from the `timeline` chunks. Both sides become separate processes in the trace.
 - The web UI offers the same three, through the same wasm code.

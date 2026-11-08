@@ -11,6 +11,7 @@ use crate::bare;
 use crate::bench_diff::{self, BenchDiff, BenchReply, BenchReport};
 use crate::cli::files::{self, Peek};
 use crate::diff::{Diff, DiffEnvelope, DiffOptions, diff};
+use crate::export::{self, ExportOptions, Format};
 use crate::follow::Follower;
 use crate::query::{self, Loaded, Query, QueryError, Row};
 use crate::read::read_capture;
@@ -102,6 +103,13 @@ pub fn baseline(path: &Path) -> Result<Baseline, String> {
 pub fn summary(path: &Path, options: &SummaryOptions) -> Result<String, String> {
     let capture = read_any(path)?;
     summarize(&capture, &file_name(path), options).map_err(|e| e.to_string())
+}
+
+/// The bytes of `format`'s export of the capture at `path`.
+pub fn export(path: &Path, format: Format, options: &ExportOptions) -> Result<Vec<u8>, String> {
+    let capture =
+        read_capture(&read_bytes(path)?).map_err(|e| format!("{}: {e}", path.display()))?;
+    export::export(&capture, format, options).map_err(|e| e.to_string())
 }
 
 /// A query's reply; a failed query has its error envelope and the message.

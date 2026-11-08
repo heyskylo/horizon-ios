@@ -1,5 +1,6 @@
 mod attach;
 mod diff;
+mod export;
 pub mod files;
 mod query;
 
@@ -51,6 +52,7 @@ usage:
   horizon-perf list    [DIR]
   horizon-perf follow  [FILE|latest] [--every S] [--json] [--dir DIR]
   horizon-perf attach  FILE --name NAME --body JSONFILE   adds the JSON file to a finished capture as an attachment
+  horizon-perf export  [FILE|latest] --pprof|--folded|--perfetto [--out PATH] [--side client|server] [--thread T] [--select KIND] [--slow] [--dir DIR]
   horizon-perf mcp                                     MCP server on stdio: perf_summary, perf_query, perf_diff, perf_list, perf_follow
 
 OPs: {ops}.
@@ -61,6 +63,7 @@ FILTERS: --side client|server --thread T --from T --to T (seconds; negative coun
     hot [--by {hot}] [--match TEXT]   tree [ID] [--depth N] [--min-pct X]   callers ID [--depth N]   callees ID [--depth N]
     split [ID] --by {split}   group --by {group}   frames NAME... [FILE...] (an f: id, a function name or /regex/)
 
+export writes stdout unless --out is given. pprof carries every kind of sample; folded counts --select (cpu by default); perfetto is the timeline.
 diff compares B against A (A is the earlier run): two captures, or two benchmark reports (benchmarks/*.json). summary --baseline FILE compares against an earlier capture.
 FILE defaults to latest: the newest finished .hzperf in --dir, else in $HORIZON_HOME/reports, else in ./reports.
 follow's latest is the newest .hzperf, finished or not.",
@@ -97,6 +100,10 @@ vocab! {
         All = "all",
         Diff = "diff",
         Json = "json",
+        Out = "out",
+        Pprof = "pprof",
+        Folded = "folded",
+        Perfetto = "perfetto",
     }
 }
 
@@ -104,7 +111,13 @@ impl Flag {
     /// A switch stands alone; every other flag takes the value after it.
     fn is_switch(self) -> bool {
         match self {
-            Flag::Slow | Flag::All | Flag::Diff | Flag::Json => true,
+            Flag::Slow
+            | Flag::All
+            | Flag::Diff
+            | Flag::Json
+            | Flag::Pprof
+            | Flag::Folded
+            | Flag::Perfetto => true,
             Flag::Side
             | Flag::Thread
             | Flag::Select
@@ -126,7 +139,8 @@ impl Flag {
             | Flag::Budget
             | Flag::Baseline
             | Flag::Name
-            | Flag::Body => false,
+            | Flag::Body
+            | Flag::Out => false,
         }
     }
 }
@@ -187,6 +201,7 @@ pub fn run(args: &[String], env: &Env, out: &mut dyn Write) -> Result<(), CliErr
         "query" => query::query(rest, env, out),
         "diff" => diff::run(rest, env, out),
         "attach" => attach::run(rest, env, out),
+        "export" => export::run(rest, env, out),
         "mcp" => {
             if !rest.is_empty() {
                 return Err(CliError::Usage("mcp takes no arguments".into()));
