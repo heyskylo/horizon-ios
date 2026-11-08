@@ -743,6 +743,11 @@ pub fn tick(
         if m.species() == Species::GlowSquid {
             aquatic::glow_squid_dark_tick(m);
         }
+        // Shulker.tick after its living tick: a NoAI shell still keeps a
+        // face and eases its lid, pushing what the lid opens into.
+        if m.species() == Species::Shulker {
+            super::shulker::shell_tick(m, w, events);
+        }
     } else {
         ai_step(m, w, level_random, events);
     }

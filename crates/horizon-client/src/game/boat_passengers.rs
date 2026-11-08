@@ -124,7 +124,7 @@ impl Game<'_> {
     }
     /// `getRootVehicle` of mob `j`: the mob or boat at the bottom of what it
     /// rides, None when it rides nothing.
-    fn mob_root_vehicle(&self, mut j: usize) -> Option<u32> {
+    pub(super) fn mob_root_vehicle(&self, mut j: usize) -> Option<u32> {
         let mut root = None;
         for _ in 0..8 {
             let Some(v) = self.mobs[j].extra.mount else {

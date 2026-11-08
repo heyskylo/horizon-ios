@@ -99,19 +99,40 @@ fn block_pos(m: &Mob) -> [i32; 3] {
         m.position.z.floor() as i32,
     ]
 }
-/// `Shulker.getProgressDeltaAabb` at scale 1: the shell's box from `pos`
+/// `Shulker.getProgressDeltaAabb`: the shell's box of side `size` from `pos`
 /// (the bottom centre), grown `from`..`to` along `direction`.
-fn progress_aabb(direction: u8, from: f64, to: f64, pos: Vec3) -> Aabb {
+fn progress_aabb(direction: u8, from: f64, to: f64, pos: Vec3, size: f32) -> Aabb {
     let s = face_step(direction).map(f64::from);
+    let size = f64::from(size);
     let (max, min) = (from.max(to), from.min(to));
-    Aabb::new(Vec3::new(-0.5, 0.0, -0.5), Vec3::new(0.5, 1.0, 0.5))
-        .expand_towards(Vec3::new(s[0] * max, s[1] * max, s[2] * max))
+    let half = size * 0.5;
+    Aabb::new(Vec3::new(-half, 0.0, -half), Vec3::new(half, size, half))
+        .expand_towards(Vec3::new(
+            s[0] * max * size,
+            s[1] * max * size,
+            s[2] * max * size,
+        ))
         .contract(Vec3::new(
-            -s[0] * (1.0 + min),
-            -s[1] * (1.0 + min),
-            -s[2] * (1.0 + min),
+            -s[0] * (1.0 + min) * size,
+            -s[1] * (1.0 + min) * size,
+            -s[2] * (1.0 + min) * size,
         ))
         .move_by(pos)
+}
+/// `Shulker.makeBoundingBox`: the shell's box at `position`, as wide as the
+/// shulker's scale and grown along the lid's open direction by the lid's
+/// lift (`getProgressAabb` up to `getPhysicalPeek(currentPeekAmount)`). The
+/// `1 + currentPeekAmount` height of [`peek_height_scale`] is only the
+/// entity's dimensions (its eye height), not this box.
+pub fn bounds_at(m: &Mob, position: Vec3) -> Aabb {
+    let lift = f64::from(physical_peek(m.anim.v[PEEK]));
+    progress_aabb(
+        opposite(m.extra.variant3),
+        -1.0,
+        lift,
+        position,
+        m.model_scale(),
+    )
 }
 /// Block queries shared by attachment and teleport candidates. Entity overlap
 /// is checked separately, using the nearby-entity index from MobWorld.
@@ -253,6 +274,7 @@ fn attachment_box(p: [i32; 3], face: u8) -> Aabb {
             f64::from(p[1]),
             f64::from(p[2]) + 0.5,
         ),
+        1.0,
     )
     .deflate(Vec3::new(1.0e-6, 1.0e-6, 1.0e-6))
 }
@@ -381,15 +403,28 @@ fn ease_peek(m: &mut Mob) -> (f32, f32) {
     m.anim.v[PEEK] = new;
     (old, new)
 }
-/// `Shulker.tick` additions: keep a face (or teleport), ease the peek
-/// (pushing whatever it opens into), stay still and square on its block.
+/// `Entity.load` on a live shell (`/data merge`): `readAdditionalSaveData`
+/// reads only the raw `Peek`, the lid's target, so `currentPeekAmount` keeps
+/// its eased value from `old` and the lid eases toward the new target.
+pub fn keep_eased_peek(slot: &mut Mob, old: &Mob) {
+    slot.anim.v[PEEK] = old.anim.v[PEEK];
+    slot.anim.vo[PEEK] = old.anim.vo[PEEK];
+}
+/// `Shulker.tick` additions: stay still and square on its block, then
+/// [`shell_tick`].
 pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     m.velocity = Vec3::ZERO;
     m.body_yaw = 0.0;
     m.yaw = 0.0;
     m.head_pitch = 0.0;
+    shell_tick(m, w, events);
+}
+/// `Shulker.tick`'s own part, which runs with or without AI: a shell that
+/// rides nothing keeps a face (or teleports), and the lid eases toward its
+/// raw peek, pushing whatever it opens into.
+pub fn shell_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     let p = block_pos(m);
-    if !can_stay_at(m, w, p, m.extra.variant3) {
+    if m.extra.mount.is_none() && !can_stay_at(m, w, p, m.extra.variant3) {
         match attachable(m, w, p) {
             Some(f) => m.extra.variant3 = f,
             None => {
@@ -403,28 +438,38 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     }
 }
 /// `Shulker.getPhysicalPeek`: the lid's lift for a peek amount.
-fn physical_peek(amount: f32) -> f64 {
-    f64::from(0.5 - ((0.5 + amount) * PI).msin() * 0.5)
+fn physical_peek(amount: f32) -> f32 {
+    0.5 - ((0.5 + amount) * PI).msin() * 0.5
 }
-/// `Shulker.onPeekAmountChange`'s push: the step out of the lid's way and the
-/// box the lid swept, while it opens.
+/// `Shulker.onPeekAmountChange`'s push: the step out of the lid's way (the
+/// lift gained, in float, times the scale) and the box the lid swept, while
+/// it opens.
 fn peek_push(m: &Mob, old: f32, new: f32) -> Option<([f64; 3], Aabb)> {
     let dir = opposite(m.extra.variant3);
-    let s = face_step(dir).map(f64::from);
+    let s = face_step(dir);
+    let size = m.model_scale();
     let (old_p, new_p) = (physical_peek(old), physical_peek(new));
-    let push = new_p - old_p;
+    let push = (new_p - old_p) * size;
     if push <= 0.0 {
         return None;
     }
-    let delta = [push * s[0], push * s[1], push * s[2]];
-    Some((delta, progress_aabb(dir, old_p, new_p, m.position)))
+    let delta = s.map(|step| f64::from(push * step as f32));
+    let area = progress_aabb(dir, f64::from(old_p), f64::from(new_p), m.position, size);
+    Some((delta, area))
 }
 /// `Shulker.onPeekAmountChange`: an opening shell pushes out of its way
-/// every entity that can be collided with (except other shulkers).
+/// every entity that can be collided with (except other shulkers): the
+/// player and the mobs here, the armor stands through
+/// [`MobEvent::LidPush`].
 fn on_peek_change(m: &Mob, w: &MobWorld, old: f32, new: f32, events: &mut Vec<MobEvent>) {
     let Some((delta, area)) = peek_push(m, old, new) else {
         return;
     };
+    events.push(MobEvent::LidPush {
+        shulker: m.id,
+        area,
+        delta,
+    });
     if let Some(p) = &w.player
         && p.alive
         && !p.spectator

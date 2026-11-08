@@ -62,13 +62,14 @@ impl Game<'_> {
     /// The armor stand or kept entity `id` as a vehicle, if it is one.
     pub(super) fn seat(&self, id: u32) -> Option<Seat> {
         if let Some(a) = self.armor_stands.iter().find(|a| a.id == id) {
-            // ArmorStand: sized(0.5, 1.975), half that when small, nothing as a marker.
+            // ArmorStand: sized(0.5F, 1.975F), half that when small, nothing as a
+            // marker; the passenger point is the float height widened to double.
             let (height, width) = if a.marker {
                 (0.0, 0.0)
             } else if a.small {
-                (0.9875, 0.25)
+                (f64::from(0.9875_f32), 0.25)
             } else {
-                (1.975, 0.5)
+                (f64::from(1.975_f32), 0.5)
             };
             return Some(Seat {
                 position: a.position,

@@ -1900,6 +1900,14 @@ pub enum MobEvent {
         target: Who,
         delta: [f64; 3],
     },
+    /// `Shulker.onPeekAmountChange` for the entities kept outside the mob
+    /// list: the opening lid of `shulker` moves every armor stand with
+    /// physics whose box meets `area` (the box the lid swept) by `delta`.
+    LidPush {
+        shulker: u32,
+        area: Aabb,
+        delta: [f64; 3],
+    },
     /// `EvokerWololoSpellGoal`: a blue sheep turns red.
     Wololo {
         mob: u32,
@@ -3429,6 +3437,10 @@ impl Mob {
     }
     /// `Entity.makeBoundingBox(position)`.
     pub fn bounds_at(&self, position: Vec3) -> Aabb {
+        // Shulker.makeBoundingBox: the lid's lift, not the dimensions.
+        if self.kind.species == Species::Shulker {
+            return shulker::bounds_at(self, position);
+        }
         // `width()` and `height()` in one `dims()`: every box asked for (each
         // collision, push and cart test) read the whole size twice.
         let (width, height, _) = self.dims();

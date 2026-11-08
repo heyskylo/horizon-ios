@@ -401,6 +401,9 @@ impl Game<'_> {
                             horizon_client::mobs::villager::ext(&old)
                                 .and_then(|ext| ext.last_traded_player);
                     }
+                    if slot.species() == horizon_client::mobs::Species::Shulker {
+                        horizon_client::mobs::shulker::keep_eased_peek(slot, &old);
+                    }
                     slot.ai = old.ai;
                     // Mob.readAdditionalSaveData updates persistent home fields,
                     // while retaining the rest of the live AI/runtime state.

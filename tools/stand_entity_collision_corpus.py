@@ -4,10 +4,16 @@ ArmorStand.travel moves with Entity.move, whose Entity.collide adds
 EntityGetter.getEntityCollisions: a living shulker (Shulker.canBeCollidedWith)
 and a boat (AbstractBoat.canBeCollidedWith) stop the stand as blocks do. One
 stand falls onto a NoAI shulker, one onto a boat, one slides along the stone
-into a shulker's side, and one falls onto the bare stone as the control. The
-level is frozen and stepped, so each record is at a known tick.
+into a shulker's side, and one falls onto the bare stone as the control. A
+fifth stand rises with a shulker riding it: isPassengerOfSameVehicle leaves its
+rider's box out. Then the first shulker's lid opens under its stand
+(Shulker.onPeekAmountChange moves it up with MoverType.SHULKER, onto the box
+the lid grew, Shulker.makeBoundingBox), opens fully and shuts again. The level
+is frozen and stepped, so each record is at a known tick.
 """
 from command_exec_corpus import cmd, setup
+
+SHULKER = '00002e65-0000-0001-0000-000000000001'
 
 
 def stand_entity_collisions():
@@ -25,35 +31,67 @@ def stand_entity_collisions():
                 cmd(f'/execute if entity 00002e65-0000-0001-0000-00000000000{n}', expect_result=1)]
     ops += [cmd('/summon oak_boat 12.5 200 4.5 {UUID:[I;11877,2,0,1]}', expect_result=1),
             cmd('/execute if entity 00002e65-0000-0002-0000-000000000001', expect_result=1)]
-    # (name, x, y, z, motion x): above the first shulker, above the boat, above
-    # the stone, and on the stone heading east into the second shulker.
-    stands = [('shulker', 4.5, 203, 4.5, 0), ('boat', 12.5, 203, 4.5, 0),
-              ('stone', 8.5, 203, 4.5, 0), ('side', 5.5, 200, 10.5, 1)]
+    # (name, x, y, z, motion x, motion y): above the first shulker, above the
+    # boat, above the stone, on the stone heading east into the second
+    # shulker, and on the stone thrown up with a shulker on its head.
+    stands = [('shulker', 4.5, 203, 4.5, 0, 0), ('boat', 12.5, 203, 4.5, 0, 0),
+              ('stone', 8.5, 203, 4.5, 0, 0), ('side', 5.5, 200, 10.5, 1, 0),
+              ('ridden', 12.5, 200, 10.5, 0, 0.6)]
     uuids = []
-    for n, (name, x, y, z, motion) in enumerate(stands, 1):
+    for n, (name, x, y, z, motion_x, motion_y) in enumerate(stands, 1):
         uuid = f'00002e65-0000-0000-0000-00000000000{n}'
         uuids.append(uuid)
-        ops += [cmd(f'/summon armor_stand {x} {y} {z} {{UUID:[I;11877,0,0,{n}],Tags:["stand_hit_{name}"],Motion:[{motion}d,0d,0d]}}', expect_result=1),
+        ops += [cmd(f'/summon armor_stand {x} {y} {z} {{UUID:[I;11877,0,0,{n}],Tags:["stand_hit_{name}"],Motion:[{motion_x}d,{motion_y}d,0d]}}', expect_result=1),
                 cmd(f'/execute if data entity {uuid} {{Pos:[{x}d,{y}d,{z}d]}}', expect_result=1)]
+    # The rider sits on the stand's head (its passenger point, 1.975 up).
+    rider = '00002e65-0000-0001-0000-000000000003'
+    ops += [cmd('/summon shulker 12.5 201.975 10.5 {UUID:[I;11877,1,0,3],NoAI:1b,PersistenceRequired:1b}', expect_result=1),
+            cmd(f'/ride {rider} mount {uuids[4]}', expect_result=1)]
     ops += setup('/execute store result score start stand_hit run time query gametime')
+
+    def step(n):
+        ops.append(cmd(f'/tick step {n}'))
+        ops.append({'op': 'tick', 'n': n})
+
+    def elapsed(ticks):
+        ops.extend(setup('/execute store result score elapsed stand_hit run time query gametime',
+                         '/scoreboard players operation elapsed stand_hit -= start stand_hit'))
+        ops.append(cmd('/scoreboard players get elapsed stand_hit', expect_result=ticks))
+
+    def motion(uuid, name):
+        return [cmd(f'/execute as {uuid} if entity @s[type=minecraft:armor_stand,tag=stand_hit_{name}]', expect_result=1),
+                cmd(f'/data get entity {uuid} Pos', expect_result=3),
+                cmd(f'/data get entity {uuid} Motion', expect_result=3),
+                cmd(f'/data get entity {uuid} OnGround')]
+
     # A fall from three blocks lands on the shulker (one block high) at tick 8,
     # on the boat at tick 9 and on the stone at tick 10; the side stand meets
-    # the shulker at tick 3.
-    for ticks, step in [(0, 0), (1, 1), (3, 2), (5, 2), (8, 3), (9, 1), (10, 1), (20, 10)]:
-        if step:
-            ops.append(cmd(f'/tick step {step}'))
-            ops.append({'op': 'tick', 'n': step})
-        ops += setup('/execute store result score elapsed stand_hit run time query gametime',
-                     '/scoreboard players operation elapsed stand_hit -= start stand_hit')
-        ops.append(cmd('/scoreboard players get elapsed stand_hit', expect_result=ticks))
+    # the shulker at tick 3; the ridden stand rises until tick 5 or so.
+    for ticks, n in [(0, 0), (1, 1), (3, 2), (5, 2), (8, 3), (9, 1), (10, 1), (20, 10)]:
+        if n:
+            step(n)
+        elapsed(ticks)
         for uuid, (name, *_rest) in zip(uuids, stands):
-            ops += [cmd(f'/execute as {uuid} if entity @s[type=minecraft:armor_stand,tag=stand_hit_{name}]', expect_result=1),
-                    cmd(f'/data get entity {uuid} Pos', expect_result=3),
-                    cmd(f'/data get entity {uuid} Motion', expect_result=3),
-                    cmd(f'/data get entity {uuid} OnGround'),
-                    cmd(f'/data get entity {uuid} fall_distance')]
+            ops += motion(uuid, name)
+            ops.append(cmd(f'/data get entity {uuid} fall_distance'))
+        ops.append(cmd(f'/data get entity {rider} Pos', expect_result=3))
     # The shulkers and the boat stayed where they were.
-    for uuid in ['00002e65-0000-0001-0000-000000000001', '00002e65-0000-0001-0000-000000000002',
+    for uuid in [SHULKER, '00002e65-0000-0001-0000-000000000002',
                  '00002e65-0000-0002-0000-000000000001']:
         ops.append(cmd(f'/data get entity {uuid} Pos', expect_result=3))
+    # The first shulker's lid opens to 30 (ShulkerPeekGoal's idle peek) at
+    # 0.05 a tick, lifting its stand each tick, then all the way and shut
+    # again: the stand rides the lid up and settles back on the shell. The
+    # lid takes 20 ticks to shut. Horizon ticks armor stands before mobs, so
+    # while it shuts the stand lands on the lid of a tick before; the records
+    # wait until the lid is shut.
+    ticks = 20
+    for peek, steps in [(30, [1] * 8), (100, [1, 1, 2, 4, 12]), (0, [21, 4])]:
+        ops.append(cmd(f'/data merge entity {SHULKER} {{Peek:{peek}b}}'))
+        for n in steps:
+            step(n)
+            ticks += n
+            elapsed(ticks)
+            ops += motion(uuids[0], 'shulker')
+            ops.append(cmd(f'/data get entity {SHULKER} Peek'))
     return ops

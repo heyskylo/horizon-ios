@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Armor stands stopped by a shulker and a boat (Entity.collide, #11877).
 
-Stands fall onto a NoAI shulker, onto a boat and onto the stone, and one slides
-into a shulker's side, in a frozen level stepped tick by tick; their Pos,
-Motion, OnGround and fall_distance are compared with vanilla's.
+Stands fall onto a NoAI shulker, onto a boat and onto the stone, one slides
+into a shulker's side and one rises with a shulker riding it, in a frozen level
+stepped tick by tick; then the first shulker's lid opens and shuts under its
+stand (Shulker.onPeekAmountChange). Their Pos, Motion, OnGround and
+fall_distance are compared with vanilla's.
 """
 import argparse
 from pathlib import Path

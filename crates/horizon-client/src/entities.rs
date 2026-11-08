@@ -1101,10 +1101,19 @@ fn lava_cauldron_contacts(
 pub struct ObstacleGrid {
     cells: crate::fast_hash::FxHashMap<(i32, i32, i32), Vec<u32>>,
     boxes: Vec<Aabb>,
+    /// Each box's entity's `getRootVehicle` when it rides something; empty
+    /// when none was given.
+    roots: Vec<Option<u32>>,
 }
 impl ObstacleGrid {
     const CELL: f64 = 8.0;
     pub fn new(boxes: Vec<Aabb>) -> Self {
+        Self::with_roots(boxes, Vec::new())
+    }
+    /// [`Self::new`] with the vehicle at the bottom of what each box's entity
+    /// rides (`roots[i]` for `boxes[i]`), so [`Self::near_except`] can leave a
+    /// mover's own riders out.
+    pub fn with_roots(boxes: Vec<Aabb>, roots: Vec<Option<u32>>) -> Self {
         let mut cells: crate::fast_hash::FxHashMap<(i32, i32, i32), Vec<u32>> = Default::default();
         for (i, b) in boxes.iter().enumerate() {
             let (lo, hi) = Self::span(*b);
@@ -1116,7 +1125,11 @@ impl ObstacleGrid {
                 }
             }
         }
-        Self { cells, boxes }
+        Self {
+            cells,
+            boxes,
+            roots,
+        }
     }
     fn span(b: Aabb) -> ((i32, i32, i32), (i32, i32, i32)) {
         let cell = |v: Vec3| {
@@ -1133,11 +1146,35 @@ impl ObstacleGrid {
     }
     /// The boxes meeting `area` (`getEntityCollisions`'s query box), in the order they were given.
     pub fn near(&self, area: Aabb, out: &mut Vec<Aabb>) {
+        self.near_except(area, None, out);
+    }
+    /// [`Self::near`] without the boxes of what rides `vehicle` (given with
+    /// [`Self::with_roots`]): `Entity.canCollideWith` leaves out
+    /// `isPassengerOfSameVehicle`, so a stand's riders do not stop it.
+    pub fn near_except(&self, area: Aabb, vehicle: Option<u32>, out: &mut Vec<Aabb>) {
         out.clear();
         if self.boxes.is_empty() {
             return;
         }
+        let kept = |i: usize| vehicle.is_none() || self.roots.get(i).copied().flatten() != vehicle;
         let (lo, hi) = Self::span(area);
+        let side = |lo: i32, hi: i32| (i64::from(hi) - i64::from(lo) + 1).max(0);
+        let cells = side(lo.0, hi.0)
+            .saturating_mul(side(lo.1, hi.1))
+            .saturating_mul(side(lo.2, hi.2));
+        // An area over more cells than there are boxes (a stand loaded with a
+        // huge Motion asks for one millions of blocks long): test each box
+        // once rather than walk the cells.
+        if cells > self.boxes.len() as i64 {
+            out.extend(
+                self.boxes
+                    .iter()
+                    .enumerate()
+                    .filter(|&(i, b)| kept(i) && b.intersects(area))
+                    .map(|(_, b)| *b),
+            );
+            return;
+        }
         let mut found: Vec<u32> = Vec::new();
         for x in lo.0..=hi.0 {
             for y in lo.1..=hi.1 {
@@ -1153,6 +1190,7 @@ impl ObstacleGrid {
         out.extend(
             found
                 .into_iter()
+                .filter(|&i| kept(i as usize))
                 .map(|i| self.boxes[i as usize])
                 .filter(|b| b.intersects(area)),
         );
@@ -2538,6 +2576,55 @@ impl ArmorStand {
         }
         self.velocity = velocity;
         Some(StandStep { falling, friction })
+    }
+    /// `Entity.move(MoverType.SHULKER, delta)`: an opening shulker lid
+    /// shoves the stand (one with physics) by `delta`. Blocks, the world
+    /// border and `entities` (the boxes `getEntityCollisions` gives the stand)
+    /// cut the move short, a move cut to almost nothing is not made, and an
+    /// axis that hits something loses its speed
+    /// (`restituteMovementAfterCollisions`: a stand does not bounce).
+    /// `on_ground` stays as the stand's own travel left it: see the game's
+    /// `lid_pushes_armor_stands`.
+    pub fn shove(
+        &mut self,
+        scene: SceneCollisions,
+        delta: Vec3,
+        border: Option<&BorderGeometry>,
+        entities: &[Aabb],
+    ) {
+        let scene = SceneCollisions {
+            subject: self.feet_are_leather_boots().then_some(
+                crate::collisions::PowderSnowSubject {
+                    leather_boots: true,
+                    ..Default::default()
+                },
+            ),
+            ..scene
+        };
+        let Ok(moved) = scene.resolve_in_border_with(
+            self.bounds(),
+            delta,
+            0.0,
+            self.on_ground,
+            border.map(|b| (b, [self.position.x, self.position.z])),
+            entities,
+        ) else {
+            return;
+        };
+        let length = moved.length_squared();
+        if length > 1.0e-7 || delta.length_squared() - length < 1.0e-7 {
+            self.position = self.position.add_vector(moved);
+        }
+        // Mth.equal on x and z; y only when the push had a vertical part.
+        if (delta.x - moved.x).abs() >= f64::from(1.0e-5_f32) {
+            self.velocity.x = 0.0;
+        }
+        if delta.y != 0.0 && moved.y != delta.y {
+            self.velocity.y = 0.0;
+        }
+        if (delta.z - moved.z).abs() >= f64::from(1.0e-5_f32) {
+            self.velocity.z = 0.0;
+        }
     }
     /// `HoneyBlock.entityInside`: side-slide movement after the stand's travel.
     /// `ArmorStand.hasPhysics` / `Entity.isAffectedByBlocks` exclude markers
@@ -4041,6 +4128,40 @@ mod entity_collision_tests {
         let area = Aabb::new(Vec3::new(17.0, 0.0, 0.0), Vec3::new(18.0, 1.0, 1.0));
         grid.near(area, &mut out);
         assert_eq!(out, vec![wide]);
+    }
+
+    #[test]
+    fn obstacle_grid_leaves_out_a_movers_riders_and_answers_a_huge_area_at_once() {
+        let unit = |x: f64| Aabb::new(Vec3::new(x, 64.0, 0.0), Vec3::new(x + 1.0, 65.0, 1.0));
+        // The shulker at x = 2 rides stand 7; the one at x = 0 and the boat
+        // at x = 4 ride nothing.
+        let grid = ObstacleGrid::with_roots(
+            vec![unit(0.0), unit(2.0), unit(4.0)],
+            vec![None, Some(7), None],
+        );
+        let mut out = Vec::new();
+        let area = Aabb::new(Vec3::new(-1.0, 63.0, -1.0), Vec3::new(6.0, 66.0, 2.0));
+        grid.near_except(area, Some(7), &mut out);
+        assert_eq!(out, vec![unit(0.0), unit(4.0)], "stand 7 ignores its rider");
+        grid.near_except(area, Some(8), &mut out);
+        assert_eq!(
+            out,
+            vec![unit(0.0), unit(2.0), unit(4.0)],
+            "stand 8 does not"
+        );
+        // A stand loaded with Motion 1e10 asks for an area 1e10 blocks long
+        // (about 1.25e9 cells): the boxes in it come back in order, at once.
+        let huge = Aabb::new(Vec3::new(-1.0, 63.0, -1.0), Vec3::new(1.0e10, 66.0, 2.0));
+        let start = std::time::Instant::now();
+        grid.near(huge, &mut out);
+        assert_eq!(out, vec![unit(0.0), unit(2.0), unit(4.0)]);
+        let far = Aabb::new(
+            Vec3::new(-1.0e300, 63.0, -1.0),
+            Vec3::new(1.0e300, 66.0, 2.0),
+        );
+        grid.near(far, &mut out);
+        assert_eq!(out.len(), 3);
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
     }
 
     /// A farm: 5000 drops and 1000 separated vehicles. Run with `-- --ignored --nocapture`.
