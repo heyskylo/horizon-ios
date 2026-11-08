@@ -315,6 +315,7 @@
   "How far away mobs and items are drawn, as a share of normal.": "How far away mobs and items are drawn, as a share of normal.",
   "Skips terrain hidden behind closed sections. Off costs a lot.": "Skips terrain hidden behind closed sections. Off costs a lot.",
   "Culls nearby terrain on the GPU: less CPU at high render distance, more GPU.": "Culls nearby terrain on the GPU: less CPU at high render distance, more GPU.",
+  "Auto: tries it where your CPU limits the frame, keeps it if frames get faster.": "Auto: tries it where your CPU limits the frame, keeps it if frames get faster.",
   "Hides entities behind opaque blocks.": "Hides entities behind opaque blocks.",
   "No entity occlusion culling.": "No entity occlusion culling.",
   "CPU occlusion test runs this frame.": "CPU occlusion test runs this frame.",
