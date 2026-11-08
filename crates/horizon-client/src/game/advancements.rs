@@ -2,6 +2,10 @@
 //! events (`CriteriaTriggers`), awarding with rewards, the toast and the
 //! chat announcement, and `players/advancements/<uuid>.json`.
 use super::{Dim, Game};
+
+#[cfg(test)]
+#[path = "mod_toast_tests.rs"]
+mod mod_toast_tests;
 use horizon_client::actions::Action;
 use horizon_client::{
     advancements::{self as adv, EntityView, Frame, ItemView, Progress, Tree},
@@ -24,6 +28,9 @@ pub(super) struct Toast {
     icon: String,
     frame: Frame,
     title: Text,
+    /// A mod's own toast (`native_add_toast`): the line drawn in place of
+    /// the frame's label, `title` then being its description.
+    label: Option<Text>,
     slide: Slide,
     /// `ToastInstance.firstSlotIndex`: the 32-pixel slot it stacks in once it
     /// leaves the queue.
@@ -42,10 +49,31 @@ impl Toast {
             icon: String::new(),
             frame: Frame::Task,
             title: Text::literal(""),
+            label: None,
             slide: Slide::default(),
             slot: None,
             recipes: items,
             changed: true,
+            last_changed: 0,
+        }
+    }
+    /// A mod's own toast (`native_add_toast`, API @API:add_toast@): drawn as an `AdvancementToast`
+    /// with `label` in the frame label's place and `description` as its
+    /// title, yellow (pink, with the challenge sound, for a challenge).
+    pub(super) fn of_mod(icon: &str, label: Text, description: Text, challenge: bool) -> Self {
+        Self {
+            icon: icon.to_owned(),
+            frame: if challenge {
+                Frame::Challenge
+            } else {
+                Frame::Task
+            },
+            title: description,
+            label: Some(label),
+            slide: Slide::default(),
+            slot: None,
+            recipes: Vec::new(),
+            changed: false,
             last_changed: 0,
         }
     }
@@ -1020,6 +1048,7 @@ impl Game<'_> {
                     icon: d.icon.clone(),
                     frame: d.frame,
                     title: text_of(&d.title),
+                    label: None,
                     slide: Slide::default(),
                     slot: None,
                     recipes: Vec::new(),
@@ -2234,6 +2263,7 @@ impl Game<'_> {
         let x = batch.width - 160.0 * t.slide.portion;
         let fully_for = t.slide.fully_for;
         let (title, frame, icon) = (t.title.clone(), t.frame, t.icon.clone());
+        let mod_label = t.label.clone();
         let recipe = t
             .is_recipe()
             .then(|| t.recipes[t.displayed_recipe(fully_for, multiplier)].clone());
@@ -2260,7 +2290,7 @@ impl Game<'_> {
         // the frame's label; a longer one is wrapped at 125, the label fading
         // out first (to 1.5 s) and the lines fading in after it over 0.3 s.
         let lines = atlas.font.split(&title.resolve_legacy(), 125.0);
-        let label = Text::translate(key, &[]);
+        let label = mod_label.unwrap_or_else(|| Text::translate(key, &[]));
         let rgb = color & 0x00FF_FFFF;
         if let [line] = lines.as_slice() {
             batch.text_styled(atlas, &label, x + 30.0, y + 7.0, color, false);
@@ -2489,6 +2519,7 @@ impl Game<'_> {
                     icon: d.icon.clone(),
                     frame: d.frame,
                     title: text_of(&d.title),
+                    label: None,
                     slide: Slide::default(),
                     slot: None,
                     recipes: Vec::new(),
