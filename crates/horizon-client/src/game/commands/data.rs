@@ -391,6 +391,9 @@ impl Game<'_> {
                     // while retaining the rest of the live AI/runtime state.
                     entity_nbt::read_mob_home(slot, &tag);
                     slot.extra.armor_attributes = old.extra.armor_attributes;
+                    // LivingEntity.lastEquipmentItems is runtime state Entity.load
+                    // keeps: the next tick swaps the archetype modifiers.
+                    slot.extra.adopted_body = old.extra.adopted_body;
                     slot.age = old.age;
                     slot.previous = slot.position;
                     // Wolf.readAdditionalSaveData initializes persistent anger at
@@ -799,7 +802,7 @@ impl Game<'_> {
         }
         if let (Some(custom), Tag::Compound(map)) = (self.world.block_names.get(&key), &mut tag) {
             map.entry("CustomName".into())
-                .or_insert_with(|| Tag::String(custom.as_str().into()));
+                .or_insert_with(|| custom.clone());
         }
         self.restore_loot_table(key, &mut tag);
         Some(tag)
@@ -1112,6 +1115,13 @@ impl Game<'_> {
         let mut data = self.data_of(&target)?;
         let changed = data_cmd::modify(op, &mut data, &target_path, &sources)?;
         if changed == 0 {
+            // StorageDataAccessor.getData is the stored compound itself: an
+            // edit that changed it and still counted nothing (a wildcard set
+            // that clears an array, then rejects the value) stays. An entity's
+            // or a block's data is a copy.
+            if let DataRef::Storage(id) = &target {
+                self.score.storage.set_unsaved(id, data);
+            }
             return Err(err("commands.data.merge.failed", &[]));
         }
         self.set_data_of(&target, data)?;

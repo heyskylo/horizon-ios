@@ -2182,7 +2182,31 @@ pub fn wrap(text: &str, width: f32, atlas: &HudAtlas) -> Vec<String> {
                 line = candidate;
             }
         }
-        lines.push(line);
+        // `Font.wordWrap` also breaks a word that does not fit by itself: Chinese has no
+        // spaces, so its text only wraps between characters.
+        if HudBatch::text_width(atlas, &line) > width {
+            let mut rest = std::mem::take(&mut line);
+            while !rest.is_empty() {
+                let mut cut = 0;
+                let mut chunk = String::new();
+                for (at, ch) in rest.char_indices() {
+                    chunk.push(ch);
+                    if HudBatch::text_width(atlas, &chunk) > width && at > 0 {
+                        chunk.pop();
+                        break;
+                    }
+                    cut = at + ch.len_utf8();
+                }
+                if cut == 0 {
+                    // One character wider than the line: it goes out alone.
+                    cut = rest.chars().next().map_or(rest.len(), char::len_utf8);
+                }
+                lines.push(rest[..cut].to_owned());
+                rest = rest[cut..].to_owned();
+            }
+        } else {
+            lines.push(line);
+        }
     }
     lines
 }

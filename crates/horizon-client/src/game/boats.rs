@@ -1739,6 +1739,7 @@ impl Game<'_> {
                 continue;
             }
             let entity_start = out.len();
+            self.mark_motion(entity_start, Self::MOTION_OBJECT | u64::from(b.id));
             let models = if b.chest {
                 &self.boat_models.chest_models
             } else {

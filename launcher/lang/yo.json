@@ -1251,5 +1251,9 @@
   "Buy": "Rà",
   "Gift": "Fi ṣe ẹ̀bùn",
   "Found on this computer": "Tí a rí lórí kọ̀ǹpútà yìí",
-  "Looks": "Ìrísí"
+  "Looks": "Ìrísí",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Òrùka kọ́kọ́rọ́ sístẹ́mù rẹ kò dáhùn láàrín ìṣẹ́jú-àáyá {seconds}. Rí i dájú pé ó ń ṣiṣẹ́ àti pé ó ti ṣí, lẹ́yìn náà tún launcher bẹ̀rẹ̀.",
+  "Can't read {name}'s sign-in: {why}": "A kò lè ka ìwọlé {name}: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}."
 }
