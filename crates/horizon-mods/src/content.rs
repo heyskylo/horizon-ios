@@ -482,6 +482,32 @@ pub struct MenuType {
     /// slots a player takes from but never puts into, each below `slots`.
     #[serde(default)]
     pub results: Vec<u16>,
+    /// a crafting grid over some of the slots, which crafts as vanilla's
+    /// crafting table does (`CraftingMenu`).
+    #[serde(default)]
+    pub crafting: Option<MenuCrafting>,
+}
+
+/// a mod menu type's crafting grid (`crafting`): `size`x`size` slots from
+/// `grid` on, row by row, and the slot that shows what they craft
+/// (`ResultSlot`). The block entity holds the grid; the result is the
+/// menu's, never in the block entity.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MenuCrafting {
+    /// the grid's first slot.
+    pub grid: u16,
+    /// 2 (the inventory's grid) or 3 (a crafting table's); 3 by default.
+    #[serde(default = "MenuCrafting::default_size")]
+    pub size: u16,
+    /// the result slot, outside the grid and not one of `results`.
+    pub result: u16,
+}
+
+impl MenuCrafting {
+    fn default_size() -> u16 {
+        3
+    }
 }
 
 /// the most container or data slots a mod menu type has, as many as a mod
@@ -984,6 +1010,30 @@ impl Content {
                 }
                 if !seen.insert(r) {
                     return Err(format!("{name}: result {r} is listed twice"));
+                }
+            }
+            if let Some(c) = file.crafting {
+                let end = u32::from(c.grid) + u32::from(c.size) * u32::from(c.size);
+                if !matches!(c.size, 2 | 3) {
+                    return Err(format!("{name}: crafting size is 2 or 3"));
+                }
+                if end > u32::from(file.slots) || c.result >= file.slots {
+                    return Err(format!(
+                        "{name}: the crafting grid and result are slots below {}",
+                        file.slots
+                    ));
+                }
+                if (u32::from(c.grid)..end).contains(&u32::from(c.result)) {
+                    return Err(format!("{name}: the crafting result is in its grid"));
+                }
+                if file
+                    .results
+                    .iter()
+                    .any(|&r| r == c.result || (u32::from(c.grid)..end).contains(&u32::from(r)))
+                {
+                    return Err(format!(
+                        "{name}: results lists a crafting slot (the result is take-only already)"
+                    ));
                 }
             }
             self.menu_types.push(MenuType { id: menu, ..file });
@@ -1652,6 +1702,10 @@ capabilities = ["registries"]
                 br#"{"slots": 9, "data_slots": 2, "results": [7, 8]}"#,
             ),
             ("data/ruby/horizon/menu/bag.json", br#"{"slots": 4}"#),
+            (
+                "data/ruby/horizon/menu/station.json",
+                br#"{"slots": 12, "results": [11], "crafting": {"grid": 1, "result": 0}}"#,
+            ),
         ];
         let content = hmod("menus", MANIFEST_TEXT, files).unwrap();
         let menus: Vec<_> = content
@@ -1661,7 +1715,24 @@ capabilities = ["registries"]
             .collect();
         assert_eq!(
             menus,
-            [("ruby:bag", 4, 0, vec![]), ("ruby:press", 9, 2, vec![7, 8])]
+            [
+                ("ruby:bag", 4, 0, vec![]),
+                ("ruby:press", 9, 2, vec![7, 8]),
+                ("ruby:station", 12, 0, vec![11])
+            ]
+        );
+        let crafting: Vec<_> = content.menu_types.iter().map(|m| m.crafting).collect();
+        assert_eq!(
+            crafting,
+            [
+                None,
+                None,
+                Some(super::MenuCrafting {
+                    grid: 1,
+                    size: 3,
+                    result: 0
+                })
+            ]
         );
         for (case, file, why) in [
             ("menu-empty", r#"{"slots": 0}"#, "slots is 1 to 256"),
@@ -1682,6 +1753,36 @@ capabilities = ["registries"]
                 "result 1 is listed twice",
             ),
             ("menu-key", r#"{"slots": 3, "rows": 1}"#, "unknown field"),
+            (
+                "craft-size",
+                r#"{"slots": 20, "crafting": {"grid": 0, "size": 4, "result": 19}}"#,
+                "crafting size is 2 or 3",
+            ),
+            (
+                "craft-past",
+                r#"{"slots": 9, "crafting": {"grid": 1, "result": 0}}"#,
+                "grid and result are slots below 9",
+            ),
+            (
+                "craft-result-past",
+                r#"{"slots": 9, "crafting": {"grid": 0, "size": 2, "result": 9}}"#,
+                "grid and result are slots below 9",
+            ),
+            (
+                "craft-overlap",
+                r#"{"slots": 10, "crafting": {"grid": 0, "result": 4}}"#,
+                "the crafting result is in its grid",
+            ),
+            (
+                "craft-results",
+                r#"{"slots": 10, "results": [2], "crafting": {"grid": 0, "result": 9}}"#,
+                "results lists a crafting slot",
+            ),
+            (
+                "craft-key",
+                r#"{"slots": 10, "crafting": {"grid": 0, "result": 9, "width": 3}}"#,
+                "unknown field",
+            ),
             ("menu-missing", r#"{"data_slots": 1}"#, "missing field"),
         ] {
             let files: &[(&str, &[u8])] = &[("data/ruby/horizon/menu/a.json", file.as_bytes())];

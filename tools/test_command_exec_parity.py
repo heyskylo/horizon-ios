@@ -30,8 +30,10 @@ try:
     from . import lab, test_rust_parity as base
     from .integration_env import run_game
     from . import command_exec_corpus as corpus_module
+    from . import seed_agent
 except ImportError:
     import lab
+    import seed_agent
     from integration_env import run_game
     import test_rust_parity as base
     import command_exec_corpus as corpus_module
@@ -169,6 +171,10 @@ def main():
     parser.add_argument('--mob-name-presentation-diagnostic', action='store_true',
                         help='retain all 312 mob-name records, including ten separate name/saved-text presentation observations')
     parser.add_argument('--potion-effect-icon-fixture', action='store_true')
+    parser.add_argument('--unsynced-randoms', action='store_true',
+                        help='leave out the sync_randoms steps: the control in which their fields differ run to run')
+    parser.add_argument('--seed-sync-gaps-diagnostic', action='store_true',
+                        help='add the synced reads where Horizon draws otherwise than vanilla (tools/seed_sync_corpus.py)')
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -264,6 +270,8 @@ def main():
                   if name == 'potion custom effect icons']
     elif not args.only:
         groups = [(name, ops) for name, ops in groups if name not in corpus_module.ISOLATED_POTION_ICONS]
+    if not args.only:
+        groups = [(name, ops) for name, ops in groups if name not in corpus_module.ISOLATED_SEED_SYNC]
     if args.moving_piston_history_diagnostic:
         groups.append(('moving piston presentation diagnostic',
                        corpus_module.moving_piston_presentation_diagnostic()))
@@ -346,6 +354,9 @@ def main():
         groups = [("pufferfish player contact", contact_fixture(args.pufferfish_body_diagnostic))]
     if args.only:
         groups = [g for g in groups if args.only in g[0] or g[0] == 'setup']
+    if args.seed_sync_gaps_diagnostic:
+        from seed_sync_corpus import cases as seed_sync_proof
+        groups = [('setup', corpus_module.group_setup()), ('seed sync proof', seed_sync_proof(corpus_module.cmd, corpus_module.setup, gaps=True))]
     if args.only in corpus_module.ISOLATED_FUNCTION_FEEDBACK:
         groups = [g for g in groups if g[0] == args.only]
     if args.only in corpus_module.ISOLATED_JUKEBOX_CLOCK:
@@ -409,7 +420,9 @@ def main():
         groups = [('setup', [corpus_module.cmd('/tick freeze', False), *corpus_module.group_setup()]), ('merchant reputation AI gate', cases())]
     script = []
     for _, lines in groups:
-        script.extend(lines)
+        script.extend(op for op in lines if not (args.unsynced_randoms and op['op'] == 'sync_randoms'))
+    # docs/parity-workflow.md "Randoms that repeat": both engines' unseeded randoms repeat for a script that syncs them.
+    synced = any(op['op'] == 'sync_randoms' for op in script)
     script_path = build / 'script.jsonl'
     script_path.write_text(''.join(json.dumps({k: v for k, v in op.items() if k != 'expect_result'},
                                             ensure_ascii=False) + '\n' for op in script), encoding='utf-8')
@@ -454,6 +467,8 @@ def main():
         java_options = ['-Dhorizon.orbWaterArithmetic=' + str(direct_input)]
     if args.function_admission_fixture:
         java_options.append('-Dhorizon.functionAdmissionFixture=true')
+    if synced:
+        java_options.append(seed_agent.java_option(build, lock['minecraft']['java_major']))
     run(['java', '-Xmx3G', '-Duser.timezone=UTC', *(['-Dhorizon.loadedFixture=true'] if args.loaded_fixture else []), *java_options, '-cp', os.pathsep.join([str(classes), str(jars['server']), dependency_path]),
          'dev.horizonlab.parity.VanillaCommandExecOracle', vanilla_dir / 'universe', script_path, build / 'vanilla.jsonl', SEED], 'java', cwd=vanilla_dir)
 
@@ -508,6 +523,8 @@ def main():
     # either, a discovery address that refuses at once, rather than Mojang's over the network.
     env = lab.game_env(HORIZON_PLAYER_NAME="Player", HORIZON_COMMAND_SCRIPT=script_path,
                        HORIZON_COMMAND_OUTPUT=build / 'rust.jsonl', HORIZON_API_DISCOVERY='http://127.0.0.1:9/')
+    if synced:
+        env.update(seed_agent.ENV)
     if args.raid_village_fixture and not args.raid_release_command_diagnostic:
         env['HORIZON_DEV_COMMANDS'] = '1'
     elif args.raid_release_command_diagnostic:

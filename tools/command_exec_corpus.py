@@ -5747,6 +5747,26 @@ def piston_entity_tick_order():
     return ops
 
 
+def item_block_escape():
+    """#12018: an item inside a block falls before it is pushed towards the open side."""
+    ops = setup('/kill @e[type=!player]', '/fill 0 200 0 5 215 5 air',
+                '/fill 0 200 1 2 200 1 stone', '/fill 1 200 0 1 200 2 stone',
+                '/setblock 1 201 1 stone', '/setblock 0 200 1 stone',
+                '/setblock 2 200 1 air',
+                '/summon item 1.5 200.25 1.5 {Item:{id:"minecraft:diamond",count:1},'
+                'PickupDelay:32767s,Tags:["escape"],Motion:[0.0d,0.2d,0.0d]}')
+    item = '@e[tag=escape,limit=1]'
+    # The east speed is random, but for two ticks the item's middle stays in
+    # the stone whatever it is: it escapes east both times, so its height and
+    # vertical motion are exact.
+    for _ in range(2):
+        ops.append({'op': 'tick', 'n': 1})
+        ops.append(cmd(f'/data get entity {item} Pos[1]'))
+        ops.append(cmd(f'/data get entity {item} Motion[1]'))
+    ops += setup('/kill @e[type=!player]', '/fill 0 200 0 5 215 5 air')
+    return ops
+
+
 def scheduled_item_birth():
     """#12017: an item a scheduled block tick drops ticks in that tick's entity pass;
     one an entity's block contact drops does not."""
@@ -6121,7 +6141,9 @@ ISOLATED_STAND_FALL = frozenset({'stand saved fall distance'})
 ISOLATED_POTION_ICONS = frozenset({'potion custom effect icons'})
 ISOLATED_JUKEBOX_CLOCK = frozenset({'jukebox saved clock'})
 ISOLATED_FUNCTION_FEEDBACK = frozenset({'fork function feedback'})
-ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK
+# Its sync turns on fixed seeds for the whole script: the groups after it would draw from them (tools/test_seed_sync_parity.py).
+ISOLATED_SEED_SYNC = frozenset({'seed sync proof'})
+ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK | ISOLATED_SEED_SYNC
 
 
 def groups():
@@ -6157,6 +6179,10 @@ def groups():
         from .mob_effect_predicate_corpus import cases as mob_effect_predicates
     except ImportError:
         from mob_effect_predicate_corpus import cases as mob_effect_predicates
+    try:
+        from .seed_sync_corpus import cases as seed_sync_proof
+    except ImportError:
+        from seed_sync_corpus import cases as seed_sync_proof
     try:
         from .mob_name_predicate_corpus import cases as mob_name_predicates
     except ImportError:
@@ -6259,6 +6285,7 @@ def groups():
         ('aquatic FromBucket', aquatic_from_bucket()),
         ('villager command names', villager_command_names()),
         ('item lifetime counters', item_lifetime_counters()),
+        ('seed sync proof', seed_sync_proof(cmd, setup)),
         ('animal signed InLove', animal_signed_in_love()),
         ('mob fire resistance damage', mob_fire_resistance_damage()),
         ('armor stand climbing', armor_stand_climbing()),
@@ -6270,6 +6297,7 @@ def groups():
         ('wither spawn', wither_spawn()),
         ('riding teleport', riding_teleport()),
         ('piston entity tick order', piston_entity_tick_order()),
+        ('item block escape', item_block_escape()),
         ('scheduled block item birth', scheduled_item_birth()),
         ('piston push ground', piston_push_ground()),
         ('carpet farms', carpet_farms(cmd, setup)),
