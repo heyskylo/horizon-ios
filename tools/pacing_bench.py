@@ -100,7 +100,7 @@ BLOCK_ENTITIES = ["chest", "trapped_chest", "ender_chest", "oak_sign", "oak_hang
                   "sculk_shrieker", "sculk_catalyst", "jukebox", "piston", "copper_golem_statue",
                   "oak_shelf"]
 
-# The slow ring keeps the last 256 frames over the threshold, so a capture holds no more than that.
+# The slow ring keeps the last 256 frames over the threshold.
 SLOW_FRAMES_MAX = 1000
 # A span shorter than this is left out of its frame's line.
 SPAN_MIN_MS = 0.5
@@ -109,8 +109,7 @@ CAPTURE_SECONDS = 120
 
 
 def frame_line(row):
-    """A slow frame of a `ticks` reply as one line, each span with its CPU time after its wall time when the
-    thread worked for less than nine tenths of it: `slow frame 130.0 ms, cpu 18.0 ms: submit 110.0/1.0, tick 12.0`."""
+    """A `ticks` row as a line, spans with cpu after wall when it is under 90%: `slow frame 130.0 ms, cpu 18.0 ms: submit 110.0/1.0`."""
     spans = []
     for name, _depth, wall, cpu in row["spans"]:
         if wall >= SPAN_MIN_MS:
@@ -118,9 +117,10 @@ def frame_line(row):
     return f"slow frame {row['wall_ms']:.1f} ms, cpu {row['cpu_ms']:.1f} ms: " + ", ".join(spans)
 
 
-def slowest_frames(reply, count):
-    """The lines of the `count` slowest frames of a `horizon-perf query ticks` reply, and how many frames it holds."""
-    rows = sorted(reply["rows"], key=lambda row: -row["wall_ms"])
+def slowest_frames(reply, count, over_ms):
+    """Lines of the `count` slowest frames over `over_ms` recorded during the capture, and how many there are."""
+    rows = [row for row in reply["rows"] if not row["before_capture"] and row["wall_ms"] > over_ms]
+    rows.sort(key=lambda row: -row["wall_ms"])
     return [frame_line(row) for row in rows[:count]], len(rows)
 
 
@@ -529,7 +529,7 @@ def play(args, distance, names, result):
                 reply = control("stats raw reset")
                 return reply.get("frame_ms") or [], reply.get("cpu_ms") or []
             (frames, cpu), slow = captured(control, home, perf, run_scenario)
-            slowest, slow_count = slowest_frames(slow, 12)
+            slowest, slow_count = slowest_frames(slow, 12, args.spike_ms)
             entry = stats(frames)
             entry["cpu"] = stats(cpu)
             entry["slowest_spans"] = slowest

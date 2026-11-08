@@ -13,7 +13,20 @@ fn text(name: &str) -> u32 {
 }
 
 fn slow(counter: u64, t: f64, wall_ms: f32, cpu_ms: f32, top: &[(&str, f32, f32, u32)]) -> Field {
-    Field::Slow(SlowEvent {
+    let Field::SlowHistory(event) = history(counter, t, wall_ms, cpu_ms, top) else {
+        unreachable!()
+    };
+    Field::Slow(event)
+}
+
+fn history(
+    counter: u64,
+    t: f64,
+    wall_ms: f32,
+    cpu_ms: f32,
+    top: &[(&str, f32, f32, u32)],
+) -> Field {
+    Field::SlowHistory(SlowEvent {
         side: CLIENT,
         t,
         unit: Unit::Frame as i32,
@@ -32,7 +45,7 @@ fn slow(counter: u64, t: f64, wall_ms: f32, cpu_ms: f32, top: &[(&str, f32, f32,
     })
 }
 
-/// A client capture of five slow frames whose spans are chosen by hand, the one `tools/pacing_bench.py`'s test reads.
+/// A client capture of five slow frames and one from before it whose spans are chosen by hand, the one `tools/pacing_bench.py`'s test reads.
 fn fields() -> Vec<Field> {
     let mut fields = vec![start(CLIENT, Kind::Client)];
     for (i, name) in NAMES.iter().enumerate() {
@@ -43,6 +56,13 @@ fn fields() -> Vec<Field> {
         }));
     }
     fields.extend([
+        history(
+            30,
+            -20.0,
+            300.0,
+            280.0,
+            &[("update_world", 290.0, 270.0, 0)],
+        ),
         slow(
             120,
             1.0,
@@ -88,7 +108,8 @@ fn write_the_pacing_fixture() {
 }
 
 #[test]
-fn the_committed_pacing_fixture_lists_its_slow_frames_slowest_first() {
+fn the_committed_pacing_fixture_lists_its_slow_frames_slowest_first_with_the_ring_from_before_the_capture()
+ {
     let path = committed();
     let reply = query(&[
         "ticks",
@@ -105,6 +126,7 @@ fn the_committed_pacing_fixture_lists_its_slow_frames_slowest_first() {
     assert_eq!(
         frames,
         [
+            ("k:30", 300.0, 280.0),
             ("k:340", 130.0, 18.0),
             ("k:410", 62.5, 60.0),
             ("k:120", 45.0, 12.0),
@@ -112,7 +134,9 @@ fn the_committed_pacing_fixture_lists_its_slow_frames_slowest_first() {
             ("k:520", 15.0, 5.0),
         ]
     );
-    let spans: Vec<_> = tick_rows(&reply)[0]
+    let before: Vec<_> = tick_rows(&reply).iter().map(|t| t.before_capture).collect();
+    assert_eq!(before, [true, false, false, false, false, false]);
+    let spans: Vec<_> = tick_rows(&reply)[1]
         .spans
         .iter()
         .map(|s| (s.0.as_str(), s.1, s.2, s.3))

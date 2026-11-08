@@ -53,17 +53,25 @@ class SlowFrameTests(unittest.TestCase):
                "spans": [["submit", 0, 110.0, 1.0], ["tick", 0, 12.0, 11.0], ["hud", 0, 0.4, 0.4]]}
         self.assertEqual(frame_line(row), "slow frame 130.0 ms, cpu 18.0 ms: submit 110.0/1.0, tick 12.0")
 
-    def test_the_slowest_frames_come_first_and_all_are_counted(self):
-        rows = [{"wall_ms": w, "cpu_ms": 1.0, "spans": [["render", 0, w, w]]} for w in (30.0, 90.0, 60.0, 45.0)]
-        lines, count = slowest_frames({"rows": rows}, 2)
+    def test_the_slowest_frames_over_the_threshold_come_first_and_are_counted(self):
+        rows = [{"wall_ms": w, "cpu_ms": 1.0, "before_capture": False, "spans": [["render", 0, w, w]]}
+                for w in (30.0, 90.0, 60.0, 45.0, 20.0, 5.0)]
+        lines, count = slowest_frames({"rows": rows}, 2, 20.0)
         self.assertEqual(count, 4)
         self.assertEqual([line.split(" ms")[0] for line in lines], ["slow frame 90.0", "slow frame 60.0"])
+
+    def test_frames_from_before_the_capture_are_left_out(self):
+        def row(wall, before):
+            return {"wall_ms": wall, "cpu_ms": 1.0, "before_capture": before, "spans": [["load", 0, wall, wall]]}
+        lines, count = slowest_frames({"rows": [row(900.0, True), row(40.0, False)]}, 5, 20.0)
+        self.assertEqual(count, 1)
+        self.assertEqual(lines, ["slow frame 40.0 ms, cpu 1.0 ms: load 40.0"])
 
     @unittest.skipUnless(perf_binary(), "build horizon-perf (cargo build -p horizon-perf) or set HORIZON_PERF_BIN")
     def test_a_fixture_capture_gives_its_slowest_frames_with_their_spans(self):
         reply = capture_frames(perf_binary(), FIXTURE)
-        lines, count = slowest_frames(reply, 3)
-        self.assertEqual(count, 5)
+        lines, count = slowest_frames(reply, 3, 20.0)
+        self.assertEqual(count, 4)
         self.assertEqual(lines, SLOWEST)
 
 

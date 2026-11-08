@@ -647,6 +647,17 @@ impl Game<'_> {
         } else {
             horizon_client::spans::merge(&[&between[..], &raw[..]].concat())
         };
+        // The spans go to the slow ring; whose packets or events took the tick stays in the owner's log.
+        let notes = horizon_client::spans::take_notes();
+        if let Some(threshold) = self.options.spikes
+            && wall > threshold
+            && !notes.is_empty()
+        {
+            log::info!(
+                "Horizon: {wall:.1} ms tick was busy with: {}",
+                slowest_steps(&notes)
+            );
+        }
         self.native_server_tick_timed(wall, cpu, &spans);
         record(TickTiming {
             wall_ms: wall,
@@ -846,6 +857,15 @@ impl Game<'_> {
         }
         self.enter_level(None, back)
     }
+}
+
+/// The steps a slow tick noted as its slowest (`spans::note`), whose packets or which player's event.
+fn slowest_steps(notes: &[(f32, String)]) -> String {
+    let list: Vec<String> = notes
+        .iter()
+        .map(|(ms, what)| format!("{what} {ms:.1}"))
+        .collect();
+    list.join(", ")
 }
 
 #[cfg(test)]

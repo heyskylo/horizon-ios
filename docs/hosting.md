@@ -393,7 +393,7 @@ Between reports, the server keeps its last 256 slow ticks in memory, each with i
 counts as slow from 250 ms (`HORIZON_SPIKES=MS` in the engine's environment sets another threshold), and every
 capture carries the ring as it stood at its start and adds the slow ticks of its own window. The log no longer has a
 line for them: `horizon-perf query spans --slow` says which steps they spent their time in, and `query ticks --worst 5`
-lists the five worst with their step trees (the newest capture, or name a file last). A server more than two seconds behind still says `Can't keep up!` as
+lists the five worst with their step trees (the newest capture, or name a file last). When a slow tick spent 10 ms or more on one player's packets or one event, the log says so in a `Horizon: … ms tick was busy with:` line with the player's name; the capture never holds names. A server more than two seconds behind still says `Can't keep up!` as
 vanilla's does, at most every 15 seconds.
 
 `config set` changes `server.toml` without opening it: `horizon-server config set world.difficulty=hard
