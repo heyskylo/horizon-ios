@@ -28,7 +28,7 @@ Font.PreparedTextBuilder.bounds	skip:other		bounds of prepared text for vanilla 
 Gui.update	inline	crates/horizon-client/src/game/narrator.rs::Game::narrate_screen	once a turn after the frame's widgets were read: ScreenNarrator::frame runs the narration handleDelayedNarration makes due and a new screen's
 Gui.isPausing	port	crates/horizon-client/src/game/pointer_capture.rs::Game::pauses_game	gap: minor: checks the open screen only, not the overlay part
 Gui.addSocialInteractionsToast	skip:service		social interactions are not offered by Horizon
-Gui.handleKeybinds	port	crates/horizon-client/src/game.rs::Game::key_pressed	gap: minor: the social interactions key has no port (see addSocialInteractionsToast)
+Gui.handleKeybinds	port	crates/horizon-client/src/game/play_keys.rs::Game::key_pressed	gap: minor: the social interactions key has no port (see addSocialInteractionsToast)
 Gui.openChatScreen	port	crates/horizon-client/src/game/chat.rs::Game::open_chat	
 Gui.openChatAndAddText	port	crates/horizon-client/src/game/chat.rs::Game::open_chat	the text is passed as the initial input
 Gui.buildInitialScreens	port	crates/horizon-client/src/title.rs::Title::next_ban_notice	the queue ban_notice::initial_notices fills (from Title::poll_account) is popped one notice at a time, the title last

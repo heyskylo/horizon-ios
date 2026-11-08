@@ -75,6 +75,18 @@ pub fn main() -> horizon_client::Result<()> {
                     .collect::<Vec<_>>()
                     .join(";"),
             },
+            "smith_transform" => {
+                let files = vec![(
+                    "recipe/test:transform".to_owned(),
+                    vec![f[1].as_bytes().to_vec()],
+                )];
+                let stations = StationRecipes::load(root, &items, &PackOverlay { files: &files });
+                let (t, b, a) = (stack(2)?, stack(3)?, stack(4)?);
+                match stations.smithing_result(&enchantments, t.as_ref(), b.as_ref(), a.as_ref()) {
+                    None => "none".to_owned(),
+                    Some(r) => canon_stack(Some(&r)),
+                }
+            }
             "smith" => {
                 let (t, b, a) = (stack(1)?, stack(2)?, stack(3)?);
                 match stations.smithing_result(&enchantments, t.as_ref(), b.as_ref(), a.as_ref()) {

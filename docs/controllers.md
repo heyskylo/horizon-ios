@@ -96,9 +96,12 @@ as a Switch's own menus and keyboard do: A (right) jumps and confirms, B goes
 back and drops, X swaps the offhand, Y opens the inventory, and the binds list
 and the on-screen keyboard's hints show those letters (splitscreen's join and
 lost-controller prompts, which a controller nobody holds yet answers, stay by
-places). `nintendoLetters:true|false` in `horizon-controller.txt`
-picks one; by places unless it says otherwise (a build for the Switch itself
-goes by letters). Bindings name the part, so a rebinding means the same on
+places). Controller Settings > Device > Nintendo Buttons picks one: By
+Position or By Letter, saved as `nintendoLetters:true|false` in
+`horizon-controller.txt`. By position unless changed (a build for the Switch
+itself goes by letters). The row is always there, like the DualSense rows
+beside it, and changes nothing until a Nintendo controller is the one
+playing (the glyph choice alone doesn't turn it on). Bindings name the part, so a rebinding means the same on
 either.
 
 ## Menus and inventories

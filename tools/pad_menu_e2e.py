@@ -34,6 +34,8 @@ Cases:
 - pause_icon: the pause menu's icons are targets, and A presses one.
 - studio_rows: the D-pad walks Replay Studio's recordings to its buttons, and B leaves.
 - erase_checkbox: the D-pad reaches Optimize World's Erase Cached Data box, and A ticks it.
+- controller_nintendo_buttons: with Nintendo glyphs, A on Device's Nintendo Buttons picks By Letter and saves it, and
+  again goes back to By Position.
 - extras_shell: Horizon Extras on the settings shell: the D-pad walks its rows and scrolls through the hidden ones, past
   a greyed row, the right stick scrolls it, A changes and saves a toggle, the strip follows the row, B leaves.
 - extras_shell_edges: on Extras, which has no page list, down from the search field lands on the first row, not Done;
@@ -1456,6 +1458,31 @@ def controller_bind(args, name):
     return check.failures
 
 
+def controller_nintendo_buttons(args, name):
+    # The virtual pad poses as Nintendo through the glyphs, the way the screen shows it.
+    game = Game(args, name, seed=seed_controller('glyphs:nintendo\n'))
+    check = Check()
+    try:
+        open_controller(game, 2)
+        game.pad('right')
+        for _ in range(16):
+            if 'nintendo buttons' in (game.focused_label() or '').lower():
+                break
+            game.pad('down')
+        check('By Position' in (game.focused_label() or ''), f'never reached Nintendo Buttons: {game.focused_label()}')
+        game.pad('south')
+        check('By Letter' in (game.focused_label() or ''), f'A did not pick By Letter: {game.focused_label()}')
+        check('nintendoLetters:true' in controller_saved(game), f'not saved: {controller_saved(game)}')
+        shot(game, 'controller-nintendo-buttons')
+        # The virtual pad joins after a real pad's letters are read, so it still confirms with South.
+        game.pad('south')
+        check('By Position' in (game.focused_label() or ''), f'A did not step back: {game.focused_label()}')
+        check('nintendoLetters:false' in controller_saved(game), f'not saved: {controller_saved(game)}')
+    finally:
+        game.quit()
+    return check.failures
+
+
 def controller_settings_keys(args, name):
     # Keys go through `key`, which needs a world open.
     game = Game(args, name, world=True)
@@ -2568,6 +2595,7 @@ CASES = {'idle_a': idle_a, 'idle_b': idle_b, 'idle_x': idle_x, 'release': releas
          'flat_rows_select': flat_rows_select,
          'controller_settings_pad': controller_settings_pad,
          'controller_bind': controller_bind,
+         'controller_nintendo_buttons': controller_nintendo_buttons,
          'controller_settings_keys': controller_settings_keys,
          'controller_notices': controller_notices,
          'every_screen_has_targets': every_screen_has_targets,
