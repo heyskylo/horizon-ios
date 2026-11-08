@@ -3313,7 +3313,13 @@ impl Game<'_> {
                 && !dead
                 && old.and_then(|o| o.2).is_none_or(|before| time < before)
             {
-                host.hub.swing(m.id as i32, 0, at, None);
+                // The packet names the hand, while the swing records the arm:
+                // the main hand is the right one unless the mob is left-handed.
+                let off_hand = m
+                    .extra
+                    .swing_right_arm
+                    .is_some_and(|right| right == m.main_arm_left());
+                host.hub.swing(m.id as i32, i32::from(off_hand), at, None);
             }
             seen.insert(m.id, (m.hurt_time, dead, swing));
         }
@@ -4501,6 +4507,112 @@ mod world_spawn_sync_tests {
             sent[0].pos.pos[2],
             sent[0].yaw,
             sent[0].pitch
+        );
+    }
+}
+
+#[cfg(test)]
+mod mob_swing_sync_tests {
+    use super::*;
+    use horizon_client::{
+        first_person::SwingAnimation,
+        lan::{Joined, Out, PlayerSender, guest::Guest},
+    };
+    use std::sync::{Arc, atomic::AtomicI32, mpsc};
+
+    /// A server with one placed guest beside the mobs.
+    fn guest_at(game: &mut Game<'_>, at: [f64; 3]) -> mpsc::Receiver<Out> {
+        game.lan_host(
+            LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            NetConfig::loopback(0, String::new(), 2),
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: "minecraft:overworld".into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 20,
+                integrated: false,
+                levels: Default::default(),
+            },
+        )
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut guest = Guest::new(
+            Joined {
+                conn: 1,
+                uuid: 1,
+                name: "SwingGuest".into(),
+                properties: Vec::new(),
+                info: horizon_protocol::packets::configuration::ClientInformation::new(2),
+                brand: String::new(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:1".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
+            },
+            1,
+            at,
+            2,
+        );
+        guest.placed = true;
+        game.lan.as_mut().unwrap().hub.guests.push(guest);
+        rx
+    }
+
+    fn swings(rx: &mpsc::Receiver<Out>) -> Vec<play::SwingAnimation> {
+        rx.try_iter()
+            .flat_map(|out| match out {
+                Out::Packet(body) => vec![body],
+                Out::Packets(bodies) => bodies,
+                Out::Disconnect(_) => panic!("unexpected disconnect"),
+            })
+            .filter_map(|body| {
+                let mut r = horizon_protocol::buf::Reader::new(&body);
+                let id = r.varint().unwrap();
+                match C::decode(id, r.rest()).unwrap() {
+                    C::SwingAnimation(p) => Some(p),
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+
+    /// `LivingEntity.swing` names the hand; the flush reads the arm the swing
+    /// recorded, so an off-hand throw reaches guests as the off hand (#12512).
+    #[test]
+    #[ignore = "needs prepared resources and scratch homes/cwd"]
+    fn an_off_hand_mob_swing_reaches_guests_as_the_off_hand() {
+        let mut game = super::super::native_machines::tests::server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let piglin = "{NoAI:1b,PersistenceRequired:1b}";
+        assert!(game.run_command(&format!("summon piglin 8.5 80 8.5 {piglin}")));
+        assert!(game.run_command(&format!("summon piglin 10.5 80 10.5 {piglin}")));
+        let (off, main) = (game.mobs[0].id, game.mobs[1].id);
+        let rx = guest_at(&mut game, [8.5, 80.0, 8.5]);
+        game.mobs[0].swing_hand_modified(true, SwingAnimation::DEFAULT);
+        game.mobs[1].swing_hand_modified(false, SwingAnimation::DEFAULT);
+        let mut host = game.lan.take().expect("the hub");
+        game.lan_flush_effects(&mut host);
+        game.lan = Some(host);
+        let sent = swings(&rx);
+        assert!(
+            sent.iter().any(|p| p.id == off as i32 && p.hand == 1),
+            "the off hand: {sent:?}"
+        );
+        assert!(
+            sent.iter().any(|p| p.id == main as i32 && p.hand == 0),
+            "the main hand: {sent:?}"
         );
     }
 }
