@@ -18034,7 +18034,15 @@ fn load_world_rest(
         if !draws {
             return Ok(Default::default());
         }
-        let mut renderer = BlockEntityRenderer::load_with_visibility(root, registry, visibility)?;
+        let mut renderer = match entity_models {
+            Some(document) => BlockEntityRenderer::load_with_visibility_and_models(
+                root,
+                registry,
+                visibility,
+                document.value(),
+            )?,
+            None => BlockEntityRenderer::load_with_visibility(root, registry, visibility)?,
+        };
         renderer.add_mod_signs(facts, registry);
         Ok(renderer)
     };

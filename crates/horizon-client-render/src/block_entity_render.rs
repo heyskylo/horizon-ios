@@ -1459,7 +1459,34 @@ impl BlockEntityRenderer {
         registry: &BlockRegistry,
         visibility: FaceVisibility,
     ) -> Result<Self> {
-        let all: Value = serde_json::from_slice(&std::fs::read(root.join("entity-models.json"))?)?;
+        Self::load_with_visibility_inner(root, registry, visibility, None)
+    }
+
+    /// Load from the entity-model document already parsed by the client
+    /// startup batch, avoiding a second read and JSON decode.
+    pub fn load_with_visibility_and_models(
+        root: &Path,
+        registry: &BlockRegistry,
+        visibility: FaceVisibility,
+        models: &Value,
+    ) -> Result<Self> {
+        Self::load_with_visibility_inner(root, registry, visibility, Some(models))
+    }
+
+    fn load_with_visibility_inner(
+        root: &Path,
+        registry: &BlockRegistry,
+        visibility: FaceVisibility,
+        models: Option<&Value>,
+    ) -> Result<Self> {
+        let owned_models = if models.is_none() {
+            Some(serde_json::from_slice(&std::fs::read(
+                root.join("entity-models.json"),
+            )?)?)
+        } else {
+            None
+        };
+        let all = models.or(owned_models.as_ref()).expect("entity models");
         let models = MODELS
             .iter()
             .filter_map(|(key, layer)| all.get(*layer).map(|v| (*key, ModelPart::parse(v))))

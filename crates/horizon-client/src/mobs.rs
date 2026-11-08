@@ -4628,7 +4628,7 @@ impl EntityModelDocument {
     }
 
     /// The parsed document, for loaders that read several keys from it.
-    pub(crate) fn value(&self) -> &Value {
+    pub fn value(&self) -> &Value {
         &self.0
     }
 }
