@@ -2283,14 +2283,27 @@ pub(super) mod initial_history_tests {
             half_lives: [Some(30.0), Some(10.0), None, None],
             ..Default::default()
         };
-        let mut input = PackInputs::default();
+        // A scripted clock, as in `smoothed_uniforms_take_iris_half_lives`: the wall clock's gap
+        // between two updates is not exact on a busy runner.
+        let mut input = PackInputs {
+            frame_timing: Some(FrameTiming::nth(1, 0.0)),
+            ..Default::default()
+        };
         u.update(&f, &input, [800, 450]);
         input.rain = 1.0;
-        u.last = Some(std::time::Instant::now() - std::time::Duration::from_secs(3));
+        input.frame_timing = Some(FrameTiming {
+            counter: 2,
+            elapsed: 3.0,
+            delta: 3.0,
+        });
         u.update(&f, &input, [800, 450]);
         assert!((float(&u, "wetness")[0] - 0.5).abs() < 1e-3);
         input.rain = 0.0;
-        u.last = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        input.frame_timing = Some(FrameTiming {
+            counter: 3,
+            elapsed: 4.0,
+            delta: 1.0,
+        });
         u.update(&f, &input, [800, 450]);
         assert!((float(&u, "wetness")[0] - 0.25).abs() < 1e-3);
     }
