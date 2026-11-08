@@ -105,12 +105,17 @@ impl Goal for BlazeAttack {
                 }
                 if self.step > 1 {
                     let sqd = d2.sqrt().sqrt() * 0.5;
-                    cx.events.push(MobEvent::Sound(
-                        "entity.blaze.shoot",
-                        m.center(),
-                        1.0,
-                        (m.random.next_float() - m.random.next_float()) * 0.2 + 1.0,
-                    ));
+                    // LevelEvent 1018 at the blaze's block: the client plays the
+                    // shot (volume 2, its own pitch); nothing is drawn here.
+                    if !m.silent {
+                        let p = m.position;
+                        cx.events.push(MobEvent::LevelEventSound {
+                            sound: "entity.blaze.shoot",
+                            at: [p.x.floor() + 0.5, p.y.floor() + 0.5, p.z.floor() + 0.5],
+                            volume: 2.0,
+                            spread: 0.2,
+                        });
+                    }
                     let dir = [
                         triangle(m, xd, 2.297 * sqd),
                         yd,
