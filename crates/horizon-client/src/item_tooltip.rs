@@ -1,8 +1,9 @@
 //! Item tooltip formatting: equipment modifiers with a player's base values,
-//! and lines without player context for the recipe book's search tree.
+//! and lines without player context for the recipe book and creative search trees.
 use crate::text::{GRAY, Text};
 use crate::{
     bundle::TooltipLayout,
+    enchant::Enchantments,
     hud::rgba,
     items::{ItemInfo, ItemStack, Items},
 };
@@ -949,11 +950,28 @@ pub fn disc_fragment_line(
     Some(translate(key).unwrap_or_else(|| key.to_owned()))
 }
 
+/// The enchantment components in `ItemStack.addDetailsToTooltip` order.
+pub fn enchantment_lines(
+    stack: &ItemStack,
+    display: &TooltipDisplay,
+    enchantments: &Enchantments,
+) -> Vec<(String, bool)> {
+    let mut lines = Vec::new();
+    if display.shows("minecraft:stored_enchantments") {
+        lines.extend(enchantments.tooltip(stack.stored_enchantments()));
+    }
+    if display.shows("minecraft:enchantments") {
+        lines.extend(enchantments.tooltip(stack.enchantments()));
+    }
+    lines
+}
+
 /// The lines of `stack` below its name that its components give, in
 /// `ItemStack.addDetailsToTooltip` order.
 pub fn detail_lines(
     stack: &ItemStack,
     info: Option<&ItemInfo>,
+    enchantments: &Enchantments,
     translate: &dyn Fn(&str) -> Option<String>,
 ) -> Vec<String> {
     let text = |key: &str| translate(key).unwrap_or_else(|| key.to_owned());
@@ -1016,6 +1034,11 @@ pub fn detail_lines(
             text(&format!("trim_material.minecraft.{}", short(material)))
         ));
     }
+    lines.extend(
+        enchantment_lines(stack, &display, enchantments)
+            .into_iter()
+            .map(|(text, _)| text),
+    );
     lines.extend(dyed_line(stack, &display, false, translate).map(|l| l.0));
     if let Some(info) = info {
         lines.extend(
@@ -1156,13 +1179,14 @@ pub fn container_lines(
 pub fn lines(
     stack: &ItemStack,
     info: Option<&ItemInfo>,
+    enchantments: &Enchantments,
     translate: &dyn Fn(&str) -> Option<String>,
 ) -> Vec<String> {
     let mut lines = vec![name_line(stack, translate)];
     if TooltipDisplay::for_stack(stack).shows("minecraft:lore") {
         lines.extend(lore_texts(stack).into_iter().map(|t| t.plain()));
     }
-    lines.extend(detail_lines(stack, info, translate));
+    lines.extend(detail_lines(stack, info, enchantments, translate));
     lines
 }
 

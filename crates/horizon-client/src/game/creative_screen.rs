@@ -8,6 +8,8 @@ impl Game<'_> {
     /// as the screen's constructor and `containerTick` do.
     pub(super) fn refresh_creative_tabs(&mut self) {
         let permissions = self.can_use_game_master_blocks() && self.settings.operator_items_tab;
+        let enchantments = Arc::clone(self.enchantments());
+        self.creative_screen.set_enchantments(enchantments);
         self.creative_screen
             .set_permissions(permissions, &self.pack.names);
     }

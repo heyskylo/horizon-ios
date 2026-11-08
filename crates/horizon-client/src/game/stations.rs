@@ -2397,31 +2397,9 @@ impl Game<'_> {
             push(&mut lines, format!(" {p}"), rgba(170, 170, 170, 255));
             push(&mut lines, format!(" {m}"), rgba(170, 170, 170, 255));
         }
-        if display.shows("minecraft:stored_enchantments") {
-            for (text, curse) in e.tooltip(stack.stored_enchantments()) {
-                push(
-                    &mut lines,
-                    text,
-                    if curse {
-                        rgba(255, 85, 85, 255)
-                    } else {
-                        rgba(170, 170, 170, 255)
-                    },
-                );
-            }
-        }
-        if display.shows("minecraft:enchantments") {
-            for (text, curse) in e.tooltip(stack.enchantments()) {
-                push(
-                    &mut lines,
-                    text,
-                    if curse {
-                        rgba(255, 85, 85, 255)
-                    } else {
-                        rgba(170, 170, 170, 255)
-                    },
-                );
-            }
+        for (text, curse) in horizon_client::item_tooltip::enchantment_lines(stack, &display, e) {
+            let color = if curse { rgba(255, 85, 85, 255) } else { gray };
+            push(&mut lines, text, color);
         }
         // DyedItemColor.addToTooltip.
         if let Some((text, italic)) =
