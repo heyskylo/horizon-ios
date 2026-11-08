@@ -3712,6 +3712,7 @@ impl Dragon {
             self.position,
             self.velocity,
             [self.yaw, 0.0],
+            (false, 0.0),
             uuid,
             raw,
         );
@@ -3754,6 +3755,7 @@ impl Crystal {
             self.position,
             Vec3::ZERO,
             [0.0, 0.0],
+            (false, 0.0),
             uuid,
             raw,
         );

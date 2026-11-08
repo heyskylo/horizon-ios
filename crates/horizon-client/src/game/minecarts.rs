@@ -771,13 +771,12 @@ impl Game<'_> {
             if moved.y < 0.0 && !c.in_water {
                 c.fall_distance -= f64::from(moved.y as f32);
             }
+            // A move up or none leaves the fall as it is (a saved one too).
             if c.on_ground {
                 if c.kind == CartKind::Tnt && c.fall_distance >= 3.0 {
                     let power = c.fall_distance / 10.0;
                     c.fall_blast = Some(power * power);
                 }
-                c.fall_distance = 0.0;
-            } else if moved.y >= 0.0 {
                 c.fall_distance = 0.0;
             }
         }
@@ -2958,6 +2957,7 @@ impl Minecart {
             self.position,
             self.velocity,
             [self.yaw, self.pitch],
+            (self.on_ground, self.fall_distance),
             uuid,
             raw,
         );
@@ -3078,6 +3078,8 @@ impl Minecart {
             Some(Tag::Double(v)) => f64::from_bits(*v),
             _ => 0.0,
         };
+        // Entity.load: OnGround and fall_distance, as saved.
+        (c.on_ground, c.fall_distance) = horizon_client::entity_nbt::ground_from_nbt(tag);
         c.flipped = flag("FlippedRotation", false);
         c.first_tick = flag("HasTicked", false);
         if kind.slots() > 0 {

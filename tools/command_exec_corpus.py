@@ -986,6 +986,54 @@ def minecart_numeric_fields():
                        '/tick unfreeze', '/forceload remove 0 0 15 15')
 
 
+def vehicle_ground_and_fall():
+    """Entity.load reads OnGround (getBooleanOr) and fall_distance (getDoubleOr) for every entity,
+    and Entity.saveWithoutId writes the live values: boats, rafts and minecarts keep both. Frozen
+    first (the loaded values as they are), then live: a boat at rest on stone is on the ground, and
+    a falling boat (AbstractBoat.checkFallDamage) or minecart counts its fall."""
+    ops = setup('/forceload add 256 256 287 287', '/fill 256 199 256 287 199 287 minecraft:stone')
+    ops += [{'op': 'settle', 'required_chunks': [[x, z] for x in (16, 17) for z in (16, 17)]}]
+    ops += setup('/tick freeze')
+    cases = (
+        ('oak_boat', '{OnGround:1b,fall_distance:2.5d}'),
+        ('cherry_chest_boat', '{OnGround:1b,fall_distance:2.5d}'),
+        ('bamboo_raft', '{OnGround:2b,fall_distance:7.25f}'),
+        ('minecart', '{OnGround:1b,fall_distance:2.5d}'),
+        ('command_block_minecart', '{OnGround:1b,fall_distance:1L}'),
+        ('hopper_minecart', '{OnGround:0.5f,fall_distance:2.5d}'),
+        ('tnt_minecart', '{OnGround:1b,fall_distance:2.5d}'),
+    )
+    for i, (kind, nbt) in enumerate(cases):
+        tag = f'veh_fall_{i}'
+        ops += setup(f'/summon {kind} {258 + i * 3}.5 230 258.5 '
+                     f'{{Tags:["{tag}"],NoGravity:1b,{nbt[1:-1]}}}')
+        ops += [cmd(f'/data get entity @e[tag={tag},limit=1] OnGround'),
+                cmd(f'/data get entity @e[tag={tag},limit=1] fall_distance')]
+    ops += setup(*[f'/kill @e[tag=veh_fall_{i}]' for i in range(len(cases))], '/tick unfreeze')
+    # Live: at rest on the stone, falling from 12 blocks up, and floating (NoGravity: no move
+    # down, so the loaded fall stays; Entity.checkFallDamage counts only a drop).
+    ops += setup('/summon oak_boat 260.5 200 270.5 {Tags:["veh_rest"]}',
+                 '/summon minecart 264.5 200 270.5 {Tags:["veh_rest"]}',
+                 '/summon oak_boat 268.5 212 270.5 {Tags:["veh_drop"]}',
+                 '/summon minecart 272.5 212 270.5 {Tags:["veh_drop"]}',
+                 '/summon oak_boat 276.5 220 270.5 {Tags:["veh_float"],NoGravity:1b,fall_distance:2.5d}',
+                 '/summon minecart 280.5 220 270.5 {Tags:["veh_float"],NoGravity:1b,fall_distance:2.5d}')
+    ops += [{'op': 'tick', 'n': 3}]
+    for sel, x0 in (('veh_rest', 260), ('veh_drop', 268), ('veh_float', 276)):
+        for n in (0, 1):
+            target = f'@e[tag={sel},limit=1,sort=nearest,x={x0 + 4 * n}.5,y=200,z=270.5]'
+            ops += [cmd(f'/data get entity {target} OnGround'),
+                    cmd(f'/data get entity {target} fall_distance')]
+    # A boat dropped into a pool: Entity.baseTick's updateFluidInteraction resets the fall in water.
+    ops += setup('/fill 282 200 280 286 202 284 minecraft:water',
+                 '/summon oak_boat 284.5 209 282.5 {Tags:["veh_pool"]}')
+    ops += [{'op': 'tick', 'n': 30},
+            cmd('/data get entity @e[tag=veh_pool,limit=1] fall_distance')]
+    return ops + setup('/kill @e[tag=veh_rest]', '/kill @e[tag=veh_drop]', '/kill @e[tag=veh_float]',
+                       '/kill @e[tag=veh_pool]', '/fill 282 200 280 286 202 284 minecraft:air',
+                       '/fill 256 199 256 287 199 287 minecraft:air', '/forceload remove 256 256 287 287')
+
+
 def enderman_command_damage():
     """DamageCommand -> Enderman.hurtServer: with no living entity behind the damage,
     random.nextInt(10) != 0 teleports the enderman then and there (teleport()), also when
@@ -6629,6 +6677,7 @@ def groups():
         ('summoned potions', summoned_potions()),
         ('potion contents names', potion_contents_names()),
         ('creeper cloud selectors', creeper_cloud_selectors()),
+        ('vehicle ground and fall', vehicle_ground_and_fall()),
         # Last: it leaves the player in other food than it found.
         (player_food.GROUP, player_food.cases(cmd, setup)),
     ]
