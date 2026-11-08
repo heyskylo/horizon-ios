@@ -4825,6 +4825,81 @@ fn a_symlink_file_is_copied_through() {
     let _ = fs::remove_dir_all(&scratch);
 }
 
+/// The mods' files land in the overlay as copies, over the base's links, in folders
+/// made real; a path two mods give keeps the later mod's file, as copied one by one.
+/// A mod's own folder copied whole (a clone of the folder where the system has one)
+/// holds the same files, and a file the mod's folder has but the copies don't name
+/// stays out.
+#[test]
+fn copied_files_replace_the_base_links_and_the_last_file_wins() {
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-copyall-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let (base, out) = (scratch.join("base"), scratch.join("out"));
+    fs::create_dir_all(base.join("assets/minecraft/textures")).unwrap();
+    fs::write(base.join("assets/minecraft/textures/stone.png"), b"vanilla").unwrap();
+    fs::write(base.join("assets/minecraft/textures/dirt.png"), b"dirt").unwrap();
+    let mut copies = Vec::new();
+    for (i, name) in ["first", "second"].iter().enumerate() {
+        let root = scratch.join(name);
+        let mut add = |rel: String, bytes: String| {
+            fs::create_dir_all(root.join(&rel).parent().unwrap()).unwrap();
+            fs::write(root.join(&rel), bytes).unwrap();
+            copies.push((rel.clone(), root.join(&rel)));
+        };
+        add("assets/minecraft/textures/stone.png".into(), (*name).into());
+        add(
+            format!("assets/ruby{i}/textures/block/own.png"),
+            format!("own{i}"),
+        );
+        add(format!("assets/ruby{i}/models/block/own.json"), "{}".into());
+    }
+    // Not among the second mod's copies (a refused block's files): they stay out, and so
+    // does a folder only they were in.
+    fs::write(scratch.join("second/assets/ruby1/notes.txt"), "notes").unwrap();
+    let refused = scratch.join("second/assets/ruby1/refused/deep");
+    fs::create_dir_all(&refused).unwrap();
+    fs::write(refused.join("model.json"), "{}").unwrap();
+    let overlay = Overlay::new(&base, &out).unwrap();
+    overlay.copy_all(&copies).unwrap();
+    let stone = out.join("assets/minecraft/textures/stone.png");
+    assert!(
+        !fs::symlink_metadata(&stone)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(fs::read(&stone).unwrap(), b"second");
+    assert_eq!(
+        fs::read(out.join("assets/minecraft/textures/dirt.png")).unwrap(),
+        b"dirt"
+    );
+    for i in 0..2 {
+        let own = out.join(format!("assets/ruby{i}/textures/block/own.png"));
+        assert!(!fs::symlink_metadata(&own).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(own).unwrap(), format!("own{i}").as_bytes());
+        let model = out.join(format!("assets/ruby{i}/models/block/own.json"));
+        assert_eq!(fs::read(model).unwrap(), b"{}");
+    }
+    assert!(!out.join("assets/ruby1/notes.txt").exists());
+    assert!(!out.join("assets/ruby1/refused").exists());
+    // A copy, not the mod's file: editing the mod's leaves the overlay's.
+    fs::write(
+        scratch.join("first/assets/ruby0/textures/block/own.png"),
+        "edited",
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read(out.join("assets/ruby0/textures/block/own.png")).unwrap(),
+        b"own0"
+    );
+    // The base is untouched: its file was linked, never written through.
+    assert_eq!(
+        fs::read(base.join("assets/minecraft/textures/stone.png")).unwrap(),
+        b"vanilla"
+    );
+    let _ = fs::remove_dir_all(&scratch);
+}
+
 /// A content mod of recipes, a tag and a name, for vanilla's items: what
 /// switches live (docs/design/mod-hotload.md).
 fn glint_mod(dir: &Path) -> ContentMod {
