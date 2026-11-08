@@ -777,6 +777,23 @@ mod tests {
         );
     }
     #[test]
+    fn an_unknown_declared_render_type_remains_distinct_from_absent() {
+        let json = LIGHTS.replace("minecraft:cutout", "fixture:custom_material");
+        let library = library(&[("block/custom", &json)]);
+        let model = library.resolve("block/custom").unwrap();
+        let quads = crate::bake::bake_block_model(
+            &model,
+            crate::bake::BlockModelTransform::new([0; 3], false),
+        )
+        .unwrap();
+        assert!(!quads.is_empty());
+        assert!(
+            quads
+                .iter()
+                .all(|q| q.render_type == Some(crate::bake::RenderType::Unsupported))
+        );
+    }
+    #[test]
     fn render_type_comes_from_the_leaf_most_model_and_loses_its_prefix() {
         let library = library(&[
             ("block/base", r#"{"render_type":"translucent"}"#),

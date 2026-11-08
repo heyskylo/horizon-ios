@@ -168,6 +168,16 @@ pub(super) fn player_joined(id: u128, name: &str) {
     }
 }
 
+/// A player in the user cache by name (`UserCache::find_by_name`), on a dedicated server.
+pub(super) fn cached_user_by_name(name: &str) -> Option<NameAndId> {
+    USER_CACHE.lock().unwrap().as_ref()?.find_by_name(name)
+}
+
+/// A player in the user cache by id, on a dedicated server.
+pub(super) fn cached_user_by_id(id: u128) -> Option<NameAndId> {
+    USER_CACHE.lock().unwrap().as_mut()?.get_by_id(id)
+}
+
 /// `server.toml`'s `[anticheat]`, beside server.properties when horizon-server runs the game; the
 /// default (on) without the file or the section, off (with an error logged) when the section is wrong.
 fn load_anticheat() -> horizon_anticheat::Config {
@@ -1274,8 +1284,8 @@ impl Game<'_> {
         let mut braked = Instant::now();
         let mut overload_warned: Option<Instant> = None;
         // `/stop`, or a stop signal (the shutdown hook's `halt`): either way the players and levels are
-        // saved below.
-        while !state.lists.lock().unwrap().stop && horizon_threads::stop_requests() == 0 {
+        // saved below, after the wait `[transfer]` may make (transfer.rs).
+        while !self.stop_now(&state) {
             let tick_start = Instant::now();
             if let Some(watchdog) = &watchdog {
                 watchdog.tick_due(next, self.clock.tick_duration());
@@ -1616,6 +1626,15 @@ impl Game<'_> {
     /// server (permission level 4). The dedicated-only commands are here;
     /// everything else goes to the game's dispatcher.
     fn console_command(&mut self, state: &mut ServerState, line: &str) {
+        let (mut cancel, mut replies) = (false, Vec::new());
+        let source = if self.rcon_source { "rcon" } else { "console" };
+        self.native_console_line(source, line, &mut cancel, &mut replies);
+        for reply in replies {
+            self.console_reply(reply);
+        }
+        if cancel {
+            return;
+        }
         let line = line.strip_prefix('/').unwrap_or(line);
         let mut words = line.split_whitespace();
         let Some(command) = words.next() else {

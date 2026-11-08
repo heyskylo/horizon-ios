@@ -355,6 +355,25 @@ pub const NAMES: &[&str] = &[
     "hasSkylight",
     "hasCeiling",
     "cloudTime",
+    // Horizon's own: Horizon Extras' dynamic lights (`dynamic_light.rs`), nearest first: how
+    // many, and each one's camera-relative position and light level (zeros past the count).
+    "horizonDynamicLightCount",
+    "horizonDynamicLight0",
+    "horizonDynamicLight1",
+    "horizonDynamicLight2",
+    "horizonDynamicLight3",
+    "horizonDynamicLight4",
+    "horizonDynamicLight5",
+    "horizonDynamicLight6",
+    "horizonDynamicLight7",
+    "horizonDynamicLight8",
+    "horizonDynamicLight9",
+    "horizonDynamicLight10",
+    "horizonDynamicLight11",
+    "horizonDynamicLight12",
+    "horizonDynamicLight13",
+    "horizonDynamicLight14",
+    "horizonDynamicLight15",
     "isElytraFlying",
     "cloudHeight",
 ];
@@ -709,6 +728,16 @@ fn smooth(value: f32, target: f32, half_life: f32, dt: f32) -> f32 {
 }
 
 impl FrameUniforms {
+    /// Forgets the frames before (the previous camera, smoothed values, the clock and the
+    /// centre depth), keeping the pack's atlas size and shadow settings.
+    pub(super) fn reset_history(&mut self) {
+        *self = Self {
+            atlas: self.atlas,
+            shadow: std::mem::take(&mut self.shadow),
+            ..Self::default()
+        };
+    }
+
     /// This frame's values for a render size of `size` pixels.
     pub fn update(&mut self, frame: &Frame, inputs: &PackInputs, size: [u32; 2]) {
         let now = std::time::Instant::now();
@@ -919,6 +948,12 @@ impl FrameUniforms {
                 "gbufferProjectionInverse" => m4(projection_inverse),
                 "gbufferPreviousModelView" => m4(previous_view),
                 "gbufferPreviousProjection" => m4(previous_projection),
+                "horizonDynamicLightCount" => Value::i(&[frame.dynamic_lights.len() as i32]),
+                n if dynamic_light_index(n).is_some() => Value::f(
+                    &(dynamic_light_index(n).and_then(|k| frame.dynamic_lights.get(k)))
+                        .copied()
+                        .unwrap_or([0.0; 4]),
+                ),
                 "heldItemId" => Value::i(&[inputs.held_items[0]]),
                 "heldItemId2" => Value::i(&[inputs.held_items[1]]),
                 "heldBlockLightValue" => Value::i(&[inputs.held_light[0]]),
@@ -1776,6 +1811,29 @@ pub(super) mod initial_history_tests {
     }
 
     #[test]
+    fn the_dynamic_lights_reach_the_pack_nearest_first() {
+        let hud = HudBatch::new([800, 450]);
+        let mut f = frame(&hud);
+        let lights = [[1.0, 2.0, 3.0, 14.0], [-4.0, 0.5, 6.0, 7.0]];
+        f.dynamic_lights = &lights;
+        let mut u = FrameUniforms::default();
+        u.update(&f, &PackInputs::default(), [800, 450]);
+        let count = index("horizonDynamicLightCount").unwrap();
+        assert_eq!(int(&u, count), 2);
+        assert_eq!(float(&u, "horizonDynamicLight0")[..4], lights[0]);
+        assert_eq!(float(&u, "horizonDynamicLight1")[..4], lights[1]);
+        // Past the count, and the last of the sixteen: zeros.
+        assert_eq!(float(&u, "horizonDynamicLight2")[..4], [0.0; 4]);
+        assert_eq!(float(&u, "horizonDynamicLight15")[..4], [0.0; 4]);
+        assert_eq!(index("horizonDynamicLight16"), None);
+        // Off (no lights): none.
+        f.dynamic_lights = &[];
+        u.update(&f, &PackInputs::default(), [800, 450]);
+        assert_eq!(int(&u, count), 0);
+        assert_eq!(float(&u, "horizonDynamicLight0")[..4], [0.0; 4]);
+    }
+
+    #[test]
     fn environmental_smoothing_starts_at_the_first_inputs_without_resetting_each_frame() {
         let hud = HudBatch::new([800, 450]);
         let f = frame(&hud);
@@ -2367,6 +2425,61 @@ pub(super) mod initial_history_tests {
         assert_eq!((sixty.elapsed, sixty.delta), (1.0, 1.0 / 60.0));
     }
 
+    /// A reset pack draws its next frame as its first: no previous camera, smoothed values
+    /// at their targets, the clock from 0; the atlas size it was given stays.
+    #[test]
+    fn a_reset_forgets_the_uniforms_history_and_keeps_the_pack_s_settings() {
+        let hud = HudBatch::new([16, 16]);
+        let mut f = frame(&hud);
+        let mut uniforms = FrameUniforms {
+            atlas: [256, 128],
+            ..Default::default()
+        };
+        let mut inputs = PackInputs {
+            rain: 1.0,
+            eye_light: [15, 15],
+            frame_timing: Some(FrameTiming {
+                counter: 800,
+                elapsed: 99.0,
+                delta: 1.0,
+            }),
+            ..Default::default()
+        };
+        uniforms.center_depth_raw = Some(0.25);
+        uniforms.update(&f, &inputs, [16, 16]);
+        f.camera = glam::DVec3::new(7.0, 12.0, -30.0);
+        f.yaw = 77.0;
+        inputs.rain = 0.25;
+        inputs.eye_light = [3, 8];
+        inputs.frame_timing = None;
+        uniforms.reset_history();
+        uniforms.update(&f, &inputs, [16, 16]);
+        let float = |name| match uniforms.values[index(name).unwrap()] {
+            Value::F(v) => v,
+            _ => panic!("float uniform expected"),
+        };
+        let int = |name| match uniforms.values[index(name).unwrap()] {
+            Value::I(v) => v,
+            _ => panic!("integer uniform expected"),
+        };
+        assert_eq!(int("frameCounter")[0], 0);
+        assert_eq!(float("frameTime")[0], 0.0);
+        assert_eq!(int("atlasSize")[..2], [256, 128]);
+        assert_eq!(float("wetness")[0], 0.25);
+        assert_eq!(int("eyeBrightnessSmooth")[..2], [48, 128]);
+        assert_eq!(float("centerDepthSmooth")[0], 1.0);
+        for (previous, current) in [
+            ("previousCameraPosition", "cameraPosition"),
+            ("gbufferPreviousModelView", "gbufferModelView"),
+            ("gbufferPreviousProjection", "gbufferProjection"),
+        ] {
+            assert_eq!(
+                float(previous).map(f32::to_bits),
+                float(current).map(f32::to_bits)
+            );
+        }
+    }
+
     /// Iris 1.11.7 (probe pack): `ambientLight` is the dimension type's (0.1 in the Nether,
     /// 0.25 in the End), and `playerMood` and `constantMood` both the cave mood.
     #[test]
@@ -2411,6 +2524,7 @@ pub(super) mod initial_history_tests {
             skybox: false,
             end_sky: false,
             end_sky_sprite: None,
+            boss_world_fog: false,
             environment_fog: None,
             water_fog: [0.0; 3],
             fog: None,
@@ -2466,6 +2580,12 @@ pub(super) mod initial_history_tests {
             post_effects: crate::post_chain::Request::none(),
         }
     }
+}
+
+/// `horizonDynamicLight<k>`'s `k`, for the lights `Frame::dynamic_lights` holds.
+fn dynamic_light_index(name: &str) -> Option<usize> {
+    let k: usize = name.strip_prefix("horizonDynamicLight")?.parse().ok()?;
+    (k < crate::dynamic_light::MAX).then_some(k)
 }
 
 #[cfg(test)]

@@ -97,6 +97,7 @@ pub enum H {
     ResolutionScale,
     Antialiasing,
     Upscaling,
+    UpscalingSharpness,
     ScreenshotQuality,
     FrameGeneration,
     Hdr,
@@ -373,6 +374,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             "Renders the world smaller and rebuilds it with TAA. Faster, softer.",
                         ),
                         h(
+                            H::UpscalingSharpness,
+                            Low,
+                            "Sharpens the upscaled picture. Higher: crisper edges, more shimmer.",
+                        ),
+                        h(
                             H::ScreenshotQuality,
                             None,
                             "F2 screenshots at this many times the game's resolution. Higher takes longer.",
@@ -639,12 +645,20 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
 /// BlueMap download radii, in chunks.
 const BLUE_MAP_RADII: [u32; 5] = [16, 32, 64, 128, 256];
 const UPLOAD_STEPS: [u32; 8] = [0, 256, 512, 1024, 2048, 4096, 8192, 16384];
-/// What the LOD Distance slider stops at, in chunks: off, then each doubling
+/// What the LOD Distance slider stops at, in chunks: off, fine steps up to 256
+/// for a short ring of far terrain past a small render distance (a phone or an
+/// integrated GPU at 8 chunks wants LOD to 12 or 16, not 64), then each doubling
 /// up to the whole world.
-const LOD_STEPS: [u32; 18] = [
+const LOD_STEPS: [u32; 24] = [
     0,
+    16,
+    24,
+    32,
+    48,
     64,
+    96,
     128,
+    192,
     256,
     512,
     1024,
@@ -777,6 +791,7 @@ impl H {
             }
             H::Workers => Some(g.workers as f32 / max_workers() as f32),
             H::ResolutionScale => Some((g.resolution_scale as f32 - 50.0) / 150.0),
+            H::UpscalingSharpness => Some(g.upscaling_sharpness as f32 / 100.0),
             // Auto, then 10..480 by 10.
             H::HdrPaperWhite => Some(g.hdr_paper_white as f32 / 480.0),
             // Auto, then 200..2000 by 50.
@@ -796,6 +811,7 @@ impl H {
             H::UploadBudget => Some((UPLOAD_STEPS.len() - 1) as u32),
             H::Workers => Some(max_workers()),
             H::ResolutionScale => Some(30),
+            H::UpscalingSharpness => Some(20),
             H::HdrPaperWhite => Some(41),
             H::HdrPeak => Some(37),
             H::HdrBlackLevel => Some(100),
@@ -885,6 +901,9 @@ impl H {
                 },
             ),
             H::Upscaling => labelled("Upscaling", g.upscaling.label()),
+            H::UpscalingSharpness => {
+                labelled("Upscaling Sharpness", format!("{}%", g.upscaling_sharpness))
+            }
             H::ScreenshotQuality => {
                 labelled("Screenshot Quality", format!("{}x", g.screenshot_quality))
             }
@@ -957,6 +976,7 @@ impl H {
             }
             H::Workers => g.workers = (v * max_workers() as f32).round() as u32,
             H::ResolutionScale => g.resolution_scale = (50.0 + (v * 30.0).round() * 5.0) as u32,
+            H::UpscalingSharpness => g.upscaling_sharpness = (v * 20.0).round() as u32 * 5,
             H::HdrPaperWhite => g.hdr_paper_white = (v * 48.0).round() as u32 * 10,
             H::HdrPeak => {
                 g.hdr_peak = match (v * 37.0).round() as u32 {
@@ -1655,6 +1675,7 @@ impl GraphicsUi {
             hover,
             focused,
             held: self.dragging == Some(item),
+            key: None,
         };
         shell::row(batch, atlas, cols, y, &view);
     }
@@ -2692,12 +2713,21 @@ mod tests {
             item.label(&s).plain(),
             format!("LOD Distance: {} chunks", crate::lod::MAX_CHUNKS)
         );
-        item.set_slider(&mut s, 5.0 / 17.0);
+        item.set_slider(&mut s, 11.0 / 23.0);
         assert_eq!(s.horizon.lod_distance, 1024);
         assert_eq!(item.label(&s).plain(), "LOD Distance: 1024 chunks");
+        // The fine stops: a ring of far terrain just past a small render
+        // distance, which the doubling steps skipped (#9694).
+        item.set_slider(&mut s, 1.0 / 23.0);
+        assert_eq!(s.horizon.lod_distance, 16);
+        assert_eq!(item.label(&s).plain(), "LOD Distance: 16 chunks");
+        item.set_slider(&mut s, 2.0 / 23.0);
+        assert_eq!(s.horizon.lod_distance, 24);
         // A distance between stops (from the file) sits on the next one.
         s.horizon.lod_distance = 3000;
-        assert_eq!(item.slider(&s), Some(7.0 / 17.0));
+        assert_eq!(item.slider(&s), Some(13.0 / 23.0));
+        s.horizon.lod_distance = 12;
+        assert_eq!(item.slider(&s), Some(1.0 / 23.0));
         assert_eq!(
             Item::Vanilla(Opt::RenderDistance).label(&s).plain(),
             format!("Full Detail Distance: {near} chunks")
@@ -3204,6 +3234,7 @@ mod tests {
             H::UploadBudget,
             H::Workers,
             H::ResolutionScale,
+            H::UpscalingSharpness,
             H::HdrPaperWhite,
             H::HdrPeak,
             H::HdrBlackLevel,

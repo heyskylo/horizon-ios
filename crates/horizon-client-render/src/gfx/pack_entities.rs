@@ -30,7 +30,7 @@ pub fn buffers() -> [Option<wgpu::VertexBufferLayout<'static>>; 1] {
 /// What `gbuffers_entities` and `gbuffers_block` read from an entity vertex: camera-relative
 /// position, the shared atlas's UV, colour, light (block, sky in 16ths) and the world-oriented
 /// normal. The quad's corners, read from the same vertices at set 1, give the face normal where
-/// the vertex has none (block entities) and `at_tangent` along the texture's u, as for terrain.
+/// the vertex has none (custom geometry) and `at_tangent` along the texture's u, as for terrain.
 pub fn inputs() -> horizon_shaders::GbuffersInputs {
     let words = std::mem::size_of::<Vertex>() / 4;
     let mut declarations = "layout(location = 0) in vec3 hz_v_pos;\nlayout(location = 1) in vec2 hz_v_uv;\n\
@@ -107,6 +107,10 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
             "at_velocity",
             "hz_velocity(gbufferModelView, gbufferPreviousModelView)",
         ),
+        // Horizon's own, as for terrain: the HDR tier of a light-giving item, particle or glowing
+        // text (`mesher::hdr_tier`, the overlay's high bits), 0 for none, 1 to 4 for low to very
+        // bright.
+        ("horizonTier", "float((hz_v_overlay >> 16u) & 255u)"),
     ];
     horizon_shaders::GbuffersInputs {
         declarations,
@@ -454,9 +458,31 @@ impl PackEntities {
         let first = spans.first().map_or(entities.len(), |s| s.start as usize);
         extend_without_portals(rest, &entities[..first.min(entities.len())]);
         let (mut other, mut portal_faces, mut beam_faces) = (Vec::new(), Vec::new(), Vec::new());
+        let mut without_fluids = Vec::new();
         for (span, range) in runs(entities.len(), spans) {
             let run_start = range.start as u32;
             let whole = &entities[range];
+            // A native fluid carries sprite-array UVs, not shared-atlas UVs.
+            // Keep it in its own material even when a shader pack draws the
+            // model in the same block-entity run. Do not corrupt either UV space.
+            let whole: &[Vertex] = if whole
+                .chunks(4)
+                .any(|q| super::is_native_terrain(q[0].layer))
+            {
+                without_fluids.clear();
+                for quad in whole.chunks(4) {
+                    if super::is_native_terrain(quad[0].layer) {
+                        if !span.hidden {
+                            rest.extend_from_slice(quad);
+                        }
+                    } else {
+                        without_fluids.extend_from_slice(quad);
+                    }
+                }
+                &without_fluids
+            } else {
+                whole
+            };
             // A block entity's run can hold End portal faces and beams beside plain parts (an End
             // gateway: its cube and its beam): each goes to its own program.
             // Beacon beams come in a run of their own, at stage NONE (game.rs: no stage of 5.4
@@ -1142,6 +1168,83 @@ mod gpu_span_tests {
     use super::*;
     use crate::gfx::entity_skin::{SkinFrame, SkinJob};
     #[test]
+    #[ignore = "requires a Vulkan/Metal/DX12 adapter"]
+    fn native_fluid_stays_native_while_model_uses_pack() {
+        let instance = crate::gfx::test_gpu::instance();
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let layout = super::super::pack_draw::DrawUniforms::new(&device);
+        let mut geometry = PackEntities::new(&device, &layout.layout);
+        for overlay in [
+            super::super::FLUID_OVERLAY,
+            super::super::TERRAIN_MODEL_SOLID_OVERLAY,
+            super::super::TERRAIN_MODEL_CUTOUT_OVERLAY,
+            super::super::TERRAIN_MODEL_CUTOUT_MIPPED_OVERLAY,
+        ] {
+            let mut mixed = vec![
+                Vertex {
+                    layer: 0,
+                    ..bytemuck::Zeroable::zeroed()
+                };
+                8
+            ];
+            for v in &mut mixed[4..] {
+                v.layer = overlay | 279 << 16;
+                v.uv = [0.25, 0.75];
+                v.glint_uv = [17.0, 0.0];
+            }
+            let mut rest = Vec::new();
+            for hidden in [false, true] {
+                geometry.prepare(
+                    &device,
+                    &queue,
+                    &layout.layout,
+                    &mixed,
+                    &[EntitySpan {
+                        start: 0,
+                        id: 77,
+                        stage: render_stage("BLOCK_ENTITIES"),
+                        hidden,
+                        ..Default::default()
+                    }],
+                    [true; PROGRAMS],
+                    ([0.; 4], [1; 2]),
+                    Casters {
+                        blocks: true,
+                        ..Default::default()
+                    },
+                    &mut rest,
+                    None,
+                    (&[], &[]),
+                );
+                assert_eq!(
+                    geometry.scratch.len(),
+                    4,
+                    "the model still uses the shader pack"
+                );
+                assert_eq!(geometry.draws.len(), 1);
+                assert_eq!(
+                    (geometry.draws[0].pack, geometry.draws[0].shadow),
+                    (!hidden, true)
+                );
+                if hidden {
+                    assert!(
+                        rest.is_empty(),
+                        "hidden native fluid must not leak into the visible pass"
+                    );
+                } else {
+                    assert_eq!(
+                        bytemuck::cast_slice::<_, u8>(&rest),
+                        bytemuck::cast_slice::<_, u8>(&mixed[4..]),
+                        "fluid UV/layer payload cannot be sampled from the entity atlas"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn posed_draws_preserve_subject_ids_overlays_and_hidden_shadow_casters() {
         let mut skin = SkinFrame {
             vertices: 24,
@@ -1525,6 +1628,47 @@ mod velocity_translate_tests {
                 who == "entities",
                 "{who}: previous view in the block"
             );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod tier_translate_tests {
+    /// A pack's entity and hand programs may read `horizonTier`, the overlay's HDR tier.
+    #[test]
+    fn a_pack_reading_horizon_tier_translates_for_entities_and_the_hand() {
+        let dir = std::env::temp_dir().join(format!("hz-entity-tier-{}", std::process::id()));
+        let shaders = dir.join("shaders");
+        std::fs::create_dir_all(&shaders).unwrap();
+        std::fs::write(
+            shaders.join("gbuffers_entities.vsh"),
+            "#version 120\nattribute float horizonTier;\nvarying float t;\n\
+             void main() {\n    gl_Position = ftransform();\n    t = horizonTier;\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            shaders.join("gbuffers_entities.fsh"),
+            "#version 120\nvarying float t;\nvoid main() {\n    gl_FragData[0] = vec4(t);\n}\n",
+        )
+        .unwrap();
+        let pack = horizon_shaders::Pack::open(&dir).unwrap();
+        let m = horizon_shaders::Macros::standard();
+        let vsh = horizon_shaders::preprocess(&pack, "gbuffers_entities.vsh", &m);
+        let fsh = horizon_shaders::preprocess(&pack, "gbuffers_entities.fsh", &m);
+        for (who, inputs) in [
+            ("entities", super::inputs()),
+            ("hand", super::super::pack_hand::inputs()),
+        ] {
+            let attribute = inputs.attributes.iter().find(|(n, _)| n == "horizonTier");
+            assert!(attribute.is_some(), "{who}");
+            horizon_shaders::translate_gbuffers(
+                &vsh,
+                &fsh,
+                horizon_shaders::Target::Buffers,
+                &inputs,
+            )
+            .unwrap_or_else(|e| panic!("{who}: {e:?}"));
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

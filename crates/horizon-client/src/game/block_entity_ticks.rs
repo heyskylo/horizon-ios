@@ -21,6 +21,7 @@ impl Game<'_> {
         self.tick_craft_table();
         self.tick_container_reach();
         self.load_entity_types();
+        self.ensure_stateful_entity_table();
         if !self.world.block_entities.has_states() {
             let states = self.ticking_states();
             self.world.block_entities.set_states(states);
