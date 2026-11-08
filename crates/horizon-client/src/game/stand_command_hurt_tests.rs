@@ -179,3 +179,110 @@ fn control_repeated_burning_breaks_the_stand_once() {
     assert!(!game.run_command(&format!("damage {STAND} 1 minecraft:on_fire")));
     assert_eq!(items(&mut game), "Test passed. Count: 1");
 }
+
+// The sources that return true: `#can_break_armor_stand` and
+// `#always_kills_armor_stands` hurt the stand as a hit does, and the command
+// succeeds.
+
+fn with_player(game: &mut Game<'_>) {
+    game.player = Some(
+        horizon_client::motion::PlayerMotion::new(
+            game.motion,
+            horizon_core::geometry::Vec3::new(14.5, 100.0, 14.5),
+        )
+        .unwrap(),
+    );
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_player_attack_from_damage_wobbles_then_breaks_the_stand() {
+    let mut game = game();
+    summon(
+        &mut game,
+        r#",equipment:{head:{id:"minecraft:diamond_helmet",count:1}}"#,
+    );
+    assert!(game.run_command("summon pig 14.5 100 2.5 {NoAI:1b}"));
+    // First hit: hurtServer sets lastHit and returns true; the stand stays.
+    let (ok, said) = say(
+        &mut game,
+        &format!("damage {STAND} 1 minecraft:player_attack by @e[type=pig,limit=1]"),
+    );
+    assert!(ok, "hurtServer returns true: {said}");
+    assert!(said.starts_with("Applied"), "{said}");
+    assert!(game.run_command(&format!("execute if entity {STAND}")));
+    assert_eq!(items(&mut game), "Test failed");
+    assert_eq!(game.armor_stands[0].last_hit, game.world.game_time);
+    // A second hit within five ticks breaks it (brokenByPlayer): the stand
+    // item and its helmet drop.
+    assert!(game.run_command(&format!(
+        "damage {STAND} 1 minecraft:player_attack by @e[type=pig,limit=1]"
+    )));
+    assert!(!game.run_command(&format!("execute if entity {STAND}")));
+    assert_eq!(items(&mut game), "Test passed. Count: 2");
+    assert!(
+        game.run_command(
+            "execute if entity @e[type=item,nbt={Item:{id:\"minecraft:armor_stand\"}}]"
+        )
+    );
+    assert!(game.run_command(
+        "execute if entity @e[type=item,nbt={Item:{id:\"minecraft:diamond_helmet\"}}]"
+    ));
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn an_always_killing_source_breaks_the_stand_on_the_first_hit() {
+    let mut game = game();
+    summon(&mut game, "");
+    // minecraft:arrow is in #always_kills_armor_stands.
+    assert!(game.run_command(&format!("damage {STAND} 1 minecraft:arrow")));
+    assert!(!game.run_command(&format!("execute if entity {STAND}")));
+    assert_eq!(items(&mut game), "Test passed. Count: 1");
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_creative_player_breaks_the_stand_at_once_without_drops() {
+    let mut game = game();
+    with_player(&mut game);
+    summon(
+        &mut game,
+        r#",equipment:{head:{id:"minecraft:diamond_helmet",count:1}}"#,
+    );
+    assert!(game.run_command("gamemode creative @p"));
+    assert!(game.run_command(&format!("damage {STAND} 1 minecraft:player_attack by @p")));
+    assert!(!game.run_command(&format!("execute if entity {STAND}")));
+    assert_eq!(items(&mut game), "Test failed");
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_player_who_may_not_build_cannot_hurt_the_stand() {
+    for mode in ["adventure", "spectator"] {
+        let mut game = game();
+        with_player(&mut game);
+        summon(&mut game, "");
+        assert!(game.run_command(&format!("gamemode {mode} @p")));
+        for _ in 0..2 {
+            assert!(
+                !game.run_command(&format!("damage {STAND} 1 minecraft:arrow by @p")),
+                "{mode}"
+            );
+        }
+        assert!(
+            game.run_command(&format!("execute if entity {STAND}")),
+            "{mode}"
+        );
+        assert_eq!(items(&mut game), "Test failed", "{mode}");
+    }
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn control_a_source_in_neither_tag_still_fails_without_a_hurt() {
+    let mut game = game();
+    summon(&mut game, "");
+    assert!(!game.run_command(&format!("damage {STAND} 1 minecraft:generic")));
+    assert!(game.run_command(&format!("execute if entity {STAND}")));
+}
