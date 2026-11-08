@@ -2996,7 +2996,7 @@ def experience_orb_saved_value():
            *setup(f'/fill {x} {y - 1} {z} {x + 15} {y - 1} {z + 15} minecraft:stone')]
     for n, value, _ in orbs:
         tag = '' if value is None else f',Value:{value}'
-        ops.append(cmd(f'/summon minecraft:experience_orb {x + 3 * n}.5 {y} {z + 8}.5 '
+        ops.append(cmd(f'/summon minecraft:experience_orb {x + 2 * n}.5 {y} {z + 8}.5 '
                        f'{{UUID:[I;49374,0,0,{n}],NoGravity:1b,Motion:[0d,0d,0d]{tag}}}', expect_result=1))
     ops += reads()
     # Unload the chunk (saving its entities), then load it again.
