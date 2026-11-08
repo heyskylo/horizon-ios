@@ -103,7 +103,7 @@ fn main_rs(ids: &[&str], named: bool) -> String {
 #![forbid(unsafe_code)]
 
 #[global_allocator]
-static ALLOCATOR: horizon_threads::Allocator = horizon_threads::ALLOCATOR;
+static ALLOCATOR: horizon_threads::GameAllocator = horizon_threads::GAME_ALLOCATOR;
 
 static MOD_API_LEVEL: [u8; horizon_mods::api_level::MARK.len()] = horizon_mods::api_level::MARK;
 

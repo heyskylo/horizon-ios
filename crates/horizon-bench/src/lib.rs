@@ -14,7 +14,9 @@ use serde::{Deserialize, Serialize};
 pub mod compare;
 mod hardware;
 
-pub use hardware::{cpu_seconds, load_average, power_source, rss_bytes, Display, Gpu, Hardware};
+#[cfg(not(target_arch = "wasm32"))]
+pub use hardware::{cpu_seconds, load_average, power_source, rss_bytes};
+pub use hardware::{Display, Gpu, Hardware};
 
 pub const FORMAT: &str = "horizon-benchmark-report";
 pub const VERSION: u32 = 1;
@@ -248,6 +250,7 @@ pub struct Report {
 
 impl Report {
     /// An empty report for this machine, created now.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(kind: Kind, app: App) -> Report {
         Self::with_hardware(kind, app, Hardware::detect())
     }

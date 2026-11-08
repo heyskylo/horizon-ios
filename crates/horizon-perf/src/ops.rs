@@ -105,11 +105,29 @@ pub fn summary(path: &Path, options: &SummaryOptions) -> Result<String, String> 
     summarize(&capture, &file_name(path), options).map_err(|e| e.to_string())
 }
 
+/// `summary` for a capture already decoded, as the wasm boundary and the tests hold it.
+pub fn summary_capture(
+    capture: &Capture,
+    name: &str,
+    options: &SummaryOptions,
+) -> Result<String, String> {
+    summarize(capture, name, options).map_err(|e| e.to_string())
+}
+
 /// The bytes of `format`'s export of the capture at `path`.
 pub fn export(path: &Path, format: Format, options: &ExportOptions) -> Result<Vec<u8>, String> {
     let capture =
         read_capture(&read_bytes(path)?).map_err(|e| format!("{}: {e}", path.display()))?;
     export::export(&capture, format, options).map_err(|e| e.to_string())
+}
+
+/// `export` for a capture already decoded.
+pub fn export_capture(
+    capture: &Capture,
+    format: Format,
+    options: &ExportOptions,
+) -> Result<Vec<u8>, String> {
+    export::export(capture, format, options).map_err(|e| e.to_string())
 }
 
 /// A query's reply; a failed query has its error envelope and the message.
@@ -142,10 +160,15 @@ pub fn query(paths: &[PathBuf], q: &Query) -> Result<QueryAnswer, String> {
         let capture = read_any(path).map_err(|e| format!("{}: {e}", path.display()))?;
         loaded.push(Loaded {
             file: file_name(path),
-            capture,
+            capture: std::sync::Arc::new(capture),
         });
     }
-    Ok(match query::run(q, &loaded) {
+    Ok(query_loaded(q, &loaded))
+}
+
+/// The query over captures already decoded: `query` without the files, for the wasm boundary.
+pub fn query_loaded(q: &Query, loaded: &[Loaded]) -> QueryAnswer {
+    match query::run(q, loaded) {
         Ok(envelope) => QueryAnswer {
             envelope,
             error: None,
@@ -154,7 +177,7 @@ pub fn query(paths: &[PathBuf], q: &Query) -> Result<QueryAnswer, String> {
             envelope: e.envelope(OpName::Query(q.op)),
             error: Some(e.message),
         },
-    })
+    }
 }
 
 /// A diff reply body: a capture diff or a benchmark report diff.
@@ -197,11 +220,9 @@ impl DiffAnswer {
 pub fn compare(a: &Path, b: &Path, options: &DiffOptions) -> Result<DiffAnswer, String> {
     let (name_a, name_b) = (file_name(a), file_name(b));
     match (load(a)?, load(b)?) {
-        (Report::Capture(x), Report::Capture(y)) => Ok(DiffAnswer::Captures {
-            diff: diff(&x, &y, options).map_err(|e| e.to_string())?,
-            a: name_a,
-            b: name_b,
-        }),
+        (Report::Capture(x), Report::Capture(y)) => {
+            compare_captures((&name_a, &x), (&name_b, &y), options)
+        }
         (Report::Bench(x), Report::Bench(y)) => Ok(DiffAnswer::Bench {
             diff: bench_diff::diff(&x, &y, options),
             a: name_a,
@@ -211,6 +232,19 @@ pub fn compare(a: &Path, b: &Path, options: &DiffOptions) -> Result<DiffAnswer, 
             "cannot compare a capture with a benchmark report: give two of the same kind".into(),
         ),
     }
+}
+
+/// Two captures already decoded, each with the name it is shown under: `compare` without the files.
+pub fn compare_captures(
+    a: (&str, &Capture),
+    b: (&str, &Capture),
+    options: &DiffOptions,
+) -> Result<DiffAnswer, String> {
+    Ok(DiffAnswer::Captures {
+        diff: diff(a.1, b.1, options).map_err(|e| e.to_string())?,
+        a: a.0.to_string(),
+        b: b.0.to_string(),
+    })
 }
 
 /// A capture file in a directory, as `list` shows it.
