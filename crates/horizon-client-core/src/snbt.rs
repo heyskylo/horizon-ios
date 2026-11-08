@@ -14,6 +14,8 @@ pub enum PistonPart {
     Entity,
     State,
     Properties,
+    /// Any other block entity's whole compound (`BlockEntity.saveWithFullMetadata`).
+    BlockEntity,
 }
 
 struct Pretty {
@@ -255,6 +257,20 @@ fn piston_hash_order(
             entries.sort_by_key(|(k, _)| (hash_bucket(c.len(), k), std::cmp::Reverse(*k)));
         }
         PistonPart::State => return java_hash_order(c),
+        PistonPart::BlockEntity => {
+            // saveAdditional's fields, then `components`, then saveMetadata's
+            // id and position; the fields keep the default order among them.
+            const METADATA: [&str; 5] = ["components", "id", "x", "y", "z"];
+            let mut entries = java_hash_order(c);
+            entries.sort_by_key(|(k, _)| {
+                let key = string_of(k);
+                (
+                    hash_bucket(c.len(), k),
+                    METADATA.iter().position(|m| *m == key).map_or(0, |i| i + 1),
+                )
+            });
+            return entries;
+        }
     }
     entries
 }
@@ -440,5 +456,19 @@ mod tests {
         assert!(colors.contains(&text::GOLD));
         let long = parse_snbt("{l:[{a:1},{b:2}]}").unwrap().0;
         assert_eq!(pretty(&long).plain(), "{l: [{a: 1}, {b: 2}]}");
+    }
+    #[test]
+    fn block_entity_metadata_follows_its_fields() {
+        // A conduit's `/data get block`, as vanilla 26.3 printed it: `Target`
+        // and `components` share a bucket, and saveAdditional wrote `Target` first.
+        let tag = parse_snbt(
+            r#"{id:"minecraft:conduit",x:4098,y:300,z:4098,components:{},Target:[I;1,2,3,4]}"#,
+        )
+        .unwrap()
+        .0;
+        assert_eq!(
+            pretty_piston(&tag, PistonPart::BlockEntity).plain(),
+            r#"{Target: [I; 1, 2, 3, 4], components: {}, x: 4098, y: 300, z: 4098, id: "minecraft:conduit"}"#,
+        );
     }
 }
