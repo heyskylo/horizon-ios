@@ -125,7 +125,7 @@ fn terrain_fade_reaches_pack_pixels_through_real_instances() {
                         terrain: Some(atlas.terrain_inputs(flat)),
                         terrain_geometry: geometry.then(|| horizon_shaders::GeometryInputs {
                             inputs: atlas.terrain_inputs(true),
-                            pull: super::PULL.to_owned(),
+                            pull: String::new(),
                             index: "@".to_owned(),
                         }),
                         ..Default::default()
