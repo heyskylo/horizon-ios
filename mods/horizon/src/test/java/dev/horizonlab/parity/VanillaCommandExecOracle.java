@@ -1148,9 +1148,22 @@ public final class VanillaCommandExecOracle {
                         JsonArray p = op.getAsJsonArray("pos");
                         BlockPos pos = new BlockPos(p.get(0).getAsInt(), p.get(1).getAsInt(), p.get(2).getAsInt());
                         var state = player.level().getBlockState(pos);
-                        if (!state.is(net.minecraft.world.level.block.Blocks.CRAFTER))
-                            throw new IllegalStateException("crafter tick without a crafter");
+                        if (!state.is(net.minecraft.world.level.block.Blocks.CRAFTER) && !state.is(net.minecraft.world.level.block.Blocks.DISPENSER))
+                            throw new IllegalStateException("crafter tick without a crafter or dispenser");
                         state.tick(player.level(), pos, player.level().getRandom());
+                    }
+                    case "sync_randoms" -> {
+                        // docs/parity-workflow.md "Randoms that repeat": needs tools/seed_agent.py's -javaagent.
+                        try {
+                            Class.forName("dev.horizonlab.parity.SeedAgent").getMethod("setUniquifier", long.class)
+                                .invoke(null, op.get("uniquifier").getAsLong());
+                            var counter = ServerLevel.class.getDeclaredField("ENTITY_COUNTER");
+                            counter.setAccessible(true);
+                            ((java.util.concurrent.atomic.AtomicInteger) counter.get(null)).set(op.get("entity_id").getAsInt());
+                        } catch (ReflectiveOperationException e) {
+                            throw new IllegalStateException(e);
+                        }
+                        player.level().getRandom().setSeed(op.get("level_seed").getAsLong());
                     }
                     case "break" -> {
                         JsonArray pos = op.getAsJsonArray("pos");
