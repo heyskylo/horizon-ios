@@ -631,6 +631,24 @@ impl Game<'_> {
             host.hub.send_to(g.conn, &packet);
         }
     }
+    /// The open world's folder name, which is the level name the server
+    /// opened (`level-name` in server.properties on a dedicated server).
+    /// None when no world is open. API @API:level_name@.
+    pub(super) fn native_level_name(&self) -> Option<String> {
+        self.world_root.file_name()?.to_str().map(str::to_owned)
+    }
+    /// The dimension a world folder holds: `world` is `minecraft:overworld`,
+    /// `world_nether` `minecraft:the_nether`, `world_the_end` `minecraft:the_end`
+    /// (the folder names Bukkit's default worlds use). None for any other
+    /// name. API @API:level_name@.
+    pub(super) fn native_dimension_of_world(&self, world: &str) -> Option<String> {
+        dimension_of_world(world).map(str::to_owned)
+    }
+    /// The world folder name that holds `dimension` (the reverse of
+    /// `native_dimension_of_world`); None for any other dimension id. API @API:level_name@.
+    pub(super) fn native_world_of_dimension(&self, dimension: &str) -> Option<String> {
+        world_of_dimension(dimension).map(str::to_owned)
+    }
     /// Posts a line to the dedicated server's event stream (`GET /api/v1/events`)
     /// as an `announce` event, which horizon-server's Discord bridge relays when
     /// `[discord] events` lists `announce`: `name` and `uuid` say who it is
@@ -1308,6 +1326,27 @@ impl Game<'_> {
     }
 }
 
+/// The default worlds' folder names and the dimension each holds.
+const DEFAULT_WORLDS: [(&str, &str); 3] = [
+    ("world", "minecraft:overworld"),
+    ("world_nether", "minecraft:the_nether"),
+    ("world_the_end", "minecraft:the_end"),
+];
+
+fn dimension_of_world(world: &str) -> Option<&'static str> {
+    DEFAULT_WORLDS
+        .iter()
+        .find(|(name, _)| *name == world)
+        .map(|(_, dimension)| *dimension)
+}
+
+fn world_of_dimension(dimension: &str) -> Option<&'static str> {
+    DEFAULT_WORLDS
+        .iter()
+        .find(|(_, id)| *id == dimension)
+        .map(|(name, _)| *name)
+}
+
 fn system_chat(line: &Text) -> C {
     C::SystemChat(play::SystemChat {
         content: component_nbt(&line.component()),
@@ -1840,5 +1879,20 @@ mod tests {
         let (ran, lines) = run("time query time", true);
         assert!(ran && lines.is_empty(), "{lines:?}");
         assert!(game.console_broadcast.is_none());
+    }
+
+    #[test]
+    fn default_worlds_map_both_ways() {
+        assert_eq!(
+            dimension_of_world("world_nether"),
+            Some("minecraft:the_nether")
+        );
+        assert_eq!(
+            world_of_dimension("minecraft:the_end"),
+            Some("world_the_end")
+        );
+        assert_eq!(dimension_of_world("frontier"), None);
+        assert_eq!(world_of_dimension("minecraft:overworld"), Some("world"));
+        assert_eq!(world_of_dimension("world"), None);
     }
 }

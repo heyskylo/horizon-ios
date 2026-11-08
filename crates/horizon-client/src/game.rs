@@ -3907,6 +3907,16 @@ impl Game<'_> {
     }
     /// The first block outline hit within `reach` along the unit `dir`.
     fn clip_ray(&self, origin: [f64; 3], dir: [f64; 3], reach: f64) -> Option<Hit> {
+        self.clip_ray_fluids(origin, dir, reach, false)
+    }
+    /// `clip_ray`; with `fluids`, the first fluid block a hit too, at its near face (`ClipContext.Fluid.ANY`).
+    fn clip_ray_fluids(
+        &self,
+        origin: [f64; 3],
+        dir: [f64; 3],
+        reach: f64,
+        fluids: bool,
+    ) -> Option<Hit> {
         let mut pos = origin.map(|v| v.floor() as i32);
         let step = dir.map(|d| if d > 0.0 { 1 } else { -1 });
         let delta = dir.map(|d| {
@@ -4016,6 +4026,21 @@ impl Game<'_> {
                         ],
                     });
                 }
+            }
+            if fluids
+                && f.fluid != Fluid::None
+                && !self.res.facts().is_air(state)
+                && !self.collision.cached_shapes().has_context_shapes(state)
+            {
+                return Some(Hit {
+                    pos,
+                    face,
+                    point: [
+                        origin[0] + dir[0] * t,
+                        origin[1] + dir[1] * t,
+                        origin[2] + dir[2] * t,
+                    ],
+                });
             }
             let axis = if t_max[0] < t_max[1] {
                 if t_max[0] < t_max[2] { 0 } else { 2 }
