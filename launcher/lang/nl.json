@@ -1251,5 +1251,7 @@
   "Buy": "Kopen",
   "Gift": "Cadeau geven",
   "Found on this computer": "Gevonden op deze computer",
-  "Looks": "Looks"
+  "Looks": "Looks",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "De sleutelbos van je systeem heeft niet binnen {seconds} seconden geantwoord. Zorg dat hij draait en ontgrendeld is en start daarna de launcher opnieuw.",
+  "Can't read {name}'s sign-in: {why}": "Kan de aanmelding van {name} niet lezen: {why}"
 }

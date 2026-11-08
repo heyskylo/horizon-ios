@@ -2748,6 +2748,176 @@ mod xp_bottle_tests {
 }
 
 #[cfg(test)]
+mod mob_absorption_max_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_client::{chunk::Chunk, motion::PlayerMotion};
+    use horizon_core::{geometry::Vec3, position::ChunkPos};
+    use std::sync::Arc;
+
+    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+                .join(format!("h203-{:?}", std::thread::current().id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
+        game.creative = true;
+        assert!(game.run_command("scoreboard objectives add h203 dummy"));
+        test(&mut game);
+    }
+    fn pig(game: &Game<'_>, n: i32) -> usize {
+        let i: Vec<usize> = (0..game.mobs.len())
+            .filter(|&i| game.persist.uuid_of(game.mobs[i].id) == Some([203, 0, 0, n]))
+            .collect();
+        assert_eq!(i.len(), 1, "one live pig with UUID {n}");
+        i[0]
+    }
+    /// `/attribute ... max_absorption get`, read back through a score.
+    fn max_absorption(game: &mut Game<'_>, tag: &str) -> i32 {
+        assert!(game.run_command(&format!(
+            "execute store result score #max h203 run attribute @e[tag={tag},limit=1] minecraft:max_absorption get"
+        )));
+        (0..=64)
+            .find(|v| game.run_command_quietly(&format!("execute if score #max h203 matches {v}")))
+            .unwrap_or(-1)
+    }
+
+    /// Expected values from the official 26.3 server: Absorption adds
+    /// 4 * (amplifier + 1) to max_absorption; its add raises the amount to at
+    /// least that much within the maximum; when it goes, the amount is
+    /// clamped to the maximum left (LivingEntity.onAttributeUpdated), so a
+    /// base-20 mob keeps it and a base-0 one loses it.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and a scratch HORIZON_HOME"]
+    fn absorption_follows_the_max_absorption_it_adds_and_leaves() {
+        with_game(|game| {
+            // name, UUID word, base max_absorption, amplifier, duration seconds
+            let cases = [
+                ("b0_clear", 1, None, 1, 100),
+                ("b0_expiry", 2, None, 0, 1),
+                ("b20_clear", 3, Some(20), 1, 100),
+                ("b20_expiry", 4, Some(20), 0, 1),
+                ("b20_upgrade", 5, Some(20), 0, 100),
+            ];
+            for (name, n, base, amp, secs) in cases {
+                let tag = format!("h203_{name}");
+                assert!(game.run_command(&format!(
+                    "summon minecraft:pig {}.5 200 4.5 {{UUID:[I;203,0,0,{n}],Tags:[\"{tag}\"],PersistenceRequired:1b,Silent:1b,NoAI:1b,Health:10f}}",
+                    2 * n
+                )));
+                if let Some(b) = base {
+                    assert!(game.run_command(&format!(
+                        "attribute @e[tag={tag},limit=1] minecraft:max_absorption base set {b}"
+                    )));
+                }
+                assert!(game.run_command(&format!(
+                    "effect give @e[tag={tag},limit=1] minecraft:absorption {secs} {amp}"
+                )));
+            }
+            assert!(game.run_command(
+                "effect give @e[tag=h203_b20_upgrade,limit=1] minecraft:absorption 100 1"
+            ));
+            let mut failures = Vec::new();
+            let mut expect =
+                |game: &mut Game<'_>, phase: &str, rows: [(&str, i32, f32, i32); 5]| {
+                    for (name, n, amount, max) in rows {
+                        let i = pig(game, n);
+                        if game.mobs[i].absorption != amount {
+                            failures.push(format!(
+                                "{phase} {name}: amount {}, expected {amount}",
+                                game.mobs[i].absorption
+                            ));
+                        }
+                        let got = max_absorption(game, &format!("h203_{name}"));
+                        if got != max {
+                            failures.push(format!(
+                                "{phase} {name}: max_absorption {got}, expected {max}"
+                            ));
+                        }
+                    }
+                };
+            expect(
+                game,
+                "added",
+                [
+                    ("b0_clear", 1, 8.0, 8),
+                    ("b0_expiry", 2, 4.0, 4),
+                    ("b20_clear", 3, 8.0, 28),
+                    ("b20_expiry", 4, 4.0, 24),
+                    ("b20_upgrade", 5, 8.0, 28),
+                ],
+            );
+            for tag in ["h203_b0_clear", "h203_b20_clear"] {
+                assert!(game.run_command(&format!(
+                    "effect clear @e[tag={tag},limit=1] minecraft:absorption"
+                )));
+            }
+            expect(
+                game,
+                "cleared",
+                [
+                    ("b0_clear", 1, 0.0, 0),
+                    ("b0_expiry", 2, 4.0, 4),
+                    ("b20_clear", 3, 8.0, 20),
+                    ("b20_expiry", 4, 4.0, 24),
+                    ("b20_upgrade", 5, 8.0, 28),
+                ],
+            );
+            for _ in 0..25 {
+                game.tick_world(true).unwrap();
+            }
+            expect(
+                game,
+                "expired",
+                [
+                    ("b0_clear", 1, 0.0, 0),
+                    ("b0_expiry", 2, 0.0, 0),
+                    ("b20_clear", 3, 8.0, 20),
+                    ("b20_expiry", 4, 4.0, 20),
+                    ("b20_upgrade", 5, 8.0, 28),
+                ],
+            );
+            assert!(failures.is_empty(), "mob absorption maximum: {failures:#?}");
+        });
+    }
+}
+
+#[cfg(test)]
 mod mob_health_boost_tests {
     use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
     use horizon_client::{chunk::Chunk, motion::PlayerMotion};

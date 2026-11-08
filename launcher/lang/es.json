@@ -1251,5 +1251,7 @@
   "Buy": "Comprar",
   "Gift": "Regalar",
   "Found on this computer": "Encontrados en este equipo",
-  "Looks": "Looks"
+  "Looks": "Looks",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "El llavero de tu sistema no respondió en {seconds} segundos. Comprueba que esté funcionando y desbloqueado y luego reinicia el launcher.",
+  "Can't read {name}'s sign-in: {why}": "No se puede leer el inicio de sesión de {name}: {why}"
 }

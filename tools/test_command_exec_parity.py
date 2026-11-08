@@ -151,8 +151,14 @@ def main():
     parser.add_argument("--macro-source-type-fixture", action="store_true")
     parser.add_argument("--stand-fall-fixture", action="store_true")
     parser.add_argument('--orb-uuid-fixture', action='store_true')
+    parser.add_argument('--mob-absorption-max-fixture', action='store_true', help='a mob\'s max_absorption with Absorption added, upgraded, cleared and run out')
+    parser.add_argument('--mob-absorption-max-ops-fixture', action='store_true', help='the Absorption modifier among other max_absorption operations and the range clamp')
+    parser.add_argument('--mob-absorption-max-raw-diagnostic', action='store_true', help='add each mob\'s whole entity data')
     parser.add_argument('--mob-health-boost-fixture', action='store_true', help='Health Boost on a mob: heal to its maximum, clamp on removal')
     parser.add_argument('--mob-health-boost-raw-diagnostic', action='store_true', help='add each mob\'s whole entity data')
+    parser.add_argument('--sulfur-body-attributes-fixture', action='store_true', help='a sulfur cube\'s body archetype attribute modifiers through /attribute')
+    parser.add_argument('--sulfur-body-replace-fixture', action='store_true', help='a sulfur cube\'s body replaced and removed through /data')
+    parser.add_argument('--sulfur-body-attributes-raw-diagnostic', action='store_true', help='add the whole attributes lists and entity data')
     parser.add_argument('--mob-absorption-fixture', action='store_true', help='a mob\'s Absorption effect once the absorption is used up')
     parser.add_argument('--mob-absorption-infinite-fixture', action='store_true', help='infinite Absorption used up, kept, and beside another infinite effect')
     parser.add_argument('--mob-absorption-raw-diagnostic', action='store_true', help='add each mob\'s whole entity data')
@@ -353,9 +359,21 @@ def main():
     if args.selector_bounds_fixture:
         from selector_bounds_corpus import selector_bounds
         groups = [("setup", corpus_module.group_setup()), ("selector entity bounds", selector_bounds())]
+    if args.mob_absorption_max_fixture:
+        from mob_absorption_max_corpus import mob_absorption_max
+        groups = [('setup', corpus_module.group_setup()), ('mob absorption maximum', mob_absorption_max(args.mob_absorption_max_raw_diagnostic))]
+    if args.mob_absorption_max_ops_fixture:
+        from mob_absorption_max_corpus import mob_absorption_max_ops
+        groups = [('setup', corpus_module.group_setup()), ('mob absorption maximum operations', mob_absorption_max_ops())]
     if args.mob_health_boost_fixture:
         from mob_health_boost_corpus import mob_health_boost
         groups = [('setup', corpus_module.group_setup()), ('mob health boost', mob_health_boost(args.mob_health_boost_raw_diagnostic))]
+    if args.sulfur_body_attributes_fixture:
+        from sulfur_body_attributes_corpus import sulfur_body_attributes
+        groups = [('setup', corpus_module.group_setup()), ('sulfur body attributes', sulfur_body_attributes(args.sulfur_body_attributes_raw_diagnostic))]
+    if args.sulfur_body_replace_fixture:
+        from sulfur_body_attributes_corpus import sulfur_body_replace
+        groups = [('setup', corpus_module.group_setup()), ('sulfur body replace', sulfur_body_replace())]
     if args.mob_absorption_fixture:
         from mob_absorption_corpus import mob_absorption
         groups = [('setup', corpus_module.group_setup()), ('mob depleted absorption', mob_absorption(args.mob_absorption_raw_diagnostic))]
