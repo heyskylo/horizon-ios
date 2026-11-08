@@ -92,9 +92,9 @@ mod chiseled_bookshelf;
 mod client_ambient;
 mod clipboard;
 #[cfg(test)]
-mod clone_dimensions_tests;
-#[cfg(test)]
 mod clone_block_ticks_tests;
+#[cfg(test)]
+mod clone_dimensions_tests;
 mod code_of_conduct;
 mod combat;
 mod command_blocks;
