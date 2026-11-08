@@ -85,7 +85,7 @@ AbstractHurtingProjectile.shouldRenderAtSqrDistance	skip:ui		distance culling fo
 AbstractHurtingProjectile.canHitEntity	missing		same as `ShulkerBullet.canHitEntity`: the fireball's target search has no no-physics filter
 WitherSkull.getBlockExplosionResistance	port	crates/horizon-client/src/game/explosion.rs::blast_resistance	a dangerous skull's blast caps a breakable block's resistance at 0.8; `#wither_immune` blocks keep theirs
 WitherSkull.onHit	port	crates/horizon-client/src/game/wither.rs::Game::wither_skull_hit	skull hit damage, wither effect, then the blast at the impact point
-AbstractWindCharge.makeBoundingBox	port	crates/horizon-client/src/projectiles.rs::ProjectileKind::size	gap: minor: gives the width only; the box sits 0.15 below the position in vanilla
+AbstractWindCharge.makeBoundingBox	port	crates/horizon-client/src/projectiles.rs::Projectile::bounds	the square box of `ProjectileKind::size`, 0.15F below the position
 AbstractWindCharge.canHitEntity	missing		the wind charge's target list is `creatures.rs::wind_charge_hitboxes`, which collects the other live, unstuck wind charges as hittable boxes: nothing there drops a wind charge or an end crystal, so the filter `canHitEntity` makes is not applied
 AbstractWindCharge.onHitBlock	port	crates/horizon-client/src/game/wind.rs::Game::wind_charge_hit	a burst a quarter block out along the hit face
 WindCharge.deflect	port	crates/horizon-client/src/game/wind.rs::reverse	gap: minor: turns the charge at half speed; the noDeflectTicks delay is not modelled

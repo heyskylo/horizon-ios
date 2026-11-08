@@ -376,13 +376,20 @@ pub fn water_bubble_at(position: [f64; 3], movement: [f64; 3]) -> ([f64; 3], [f6
     )
 }
 impl Projectile {
-    /// `Entity.getBoundingBox`: its type's square box standing on its position.
+    /// `Entity.getBoundingBox`: its type's square box standing on its position,
+    /// a wind charge's 0.15 lower (`AbstractWindCharge.makeBoundingBox`).
     pub fn bounds(&self) -> Aabb {
         let (p, half) = (self.position, self.kind.size() / 2.0);
         let height = self.kind.size();
+        let bottom = match self.kind {
+            ProjectileKind::WindCharge | ProjectileKind::BreezeWindCharge => {
+                p.y - f64::from(0.15_f32)
+            }
+            _ => p.y,
+        };
         Aabb::new(
-            Vec3::new(p.x - half, p.y, p.z - half),
-            Vec3::new(p.x + half, p.y + height, p.z + half),
+            Vec3::new(p.x - half, bottom, p.z - half),
+            Vec3::new(p.x + half, bottom + height, p.z + half),
         )
     }
     pub fn new(kind: ProjectileKind, position: Vec3, owner: Option<Who>) -> Self {
@@ -434,18 +441,9 @@ impl Projectile {
             }),
         }
     }
-    /// Entity box from the feet (`EntityType.sized` cube of `kind.size()`).
+    /// Entity box (`EntityType.sized` cube of `kind.size()`), as `bounds`.
     pub fn aabb(&self) -> Aabb {
-        let s = self.kind.size();
-        let h = s * 0.5;
-        Aabb::new(
-            Vec3::new(self.position.x - h, self.position.y, self.position.z - h),
-            Vec3::new(
-                self.position.x + h,
-                self.position.y + s,
-                self.position.z + h,
-            ),
-        )
+        self.bounds()
     }
     /// The arrow's own random from now on (`Entity.random`).
     pub fn with_arrow_random(mut self, random: horizon_core::random::LegacyRandom) -> Self {
