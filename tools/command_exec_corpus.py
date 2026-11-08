@@ -1388,6 +1388,39 @@ def loot_set_damage():
     return ops + setup('/setblock 2 220 2 minecraft:air')
 
 
+def loot_set_name_and_components():
+    """SetNameFunction and SetComponentsFunction in /loot's items engine."""
+    import json
+    cases = [
+        ('minecraft:stone', {'type': 'minecraft:set_name', 'name': 'Rock'}),
+        ('minecraft:stone', {'type': 'minecraft:set_name', 'target': 'item_name',
+                             'name': {'text': 'Old Rock', 'italic': False, 'color': 'gold'}}),
+        # No name: the stack stays as it was.
+        ('minecraft:stone', {'type': 'minecraft:set_name'}),
+        ('minecraft:paper', {'type': 'minecraft:set_components', 'components': {
+            'minecraft:lore': [{'text': 'A torn page', 'color': 'gray'}],
+            'minecraft:custom_data': {'page': 3}}}),
+        # The contents make it a potion of swiftness: the feedback names it so.
+        ('minecraft:potion', {'type': 'minecraft:set_components', 'components': {
+            'minecraft:potion_contents': {'potion': 'minecraft:swiftness'}}}),
+        ('minecraft:potion', [
+            {'type': 'minecraft:set_components', 'components': {'minecraft:potion_contents': {
+                'custom_effects': [{'id': 'minecraft:speed', 'duration': 600}]}}},
+            {'type': 'minecraft:set_name', 'name': {'text': 'Potion of Escape', 'italic': False}}]),
+        # A removal patch drops a component the item has by default.
+        ('minecraft:apple', {'type': 'minecraft:set_components', 'components': {'!minecraft:food': {}}}),
+    ]
+    ops = setup('/setblock 2 220 2 minecraft:chest')
+    for item, modifier in cases:
+        table = {'pools': [{'rolls': 1, 'entries': [
+            {'type': 'minecraft:item', 'name': item, 'modifier': modifier}]}]}
+        ops += [
+            cmd('/loot replace block 2 220 2 container.0 loot ' + json.dumps(table)),
+            cmd('/data get block 2 220 2 Items'),
+        ]
+    return ops + setup('/setblock 2 220 2 minecraft:air')
+
+
 def items_and_loot():
     return [
         *setup('/clear @s', '/gamemode survival'),
@@ -6340,6 +6373,7 @@ def groups():
         ('bird flap sensors', bird_flap_sensors()),
         ('entity landing sensors', entity_landing_sensors()),
         ('loot set damage', loot_set_damage()),
+        ('loot set name and components', loot_set_name_and_components()),
         ('item NBT count bounds', item_nbt_count_bounds()),
         ('item block containers', item_block_containers()),
         ('world', world_misc()),
