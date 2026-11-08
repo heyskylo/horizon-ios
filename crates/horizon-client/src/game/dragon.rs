@@ -2873,51 +2873,48 @@ impl Game<'_> {
         self.fight.dirty = true;
         self.save_fight();
     }
+    /// `DragonStrafePlayerPhase`'s shot: `new DragonFireball(level, dragon,
+    /// direction.normalize())`, whose `AbstractHurtingProjectile` constructor
+    /// takes the dragon as its owner and `assignDirectionalMovement`s the
+    /// direction normalized again times `accelerationPower` (0.1), then
+    /// `snapTo` the start. It joins the level's other projectiles.
     fn spawn_dragon_fireball(&mut self, at: Vec3, dir: Vec3) {
-        let l = (dir.x * dir.x + dir.y * dir.y + dir.z * dir.z)
-            .sqrt()
-            .max(1.0e-6);
-        let v = Vec3::new(dir.x / l, dir.y / l, dir.z / l);
+        // Vec3.normalize: a vector shorter than 1e-5 is zero.
+        let normalize = |v: Vec3| {
+            let l = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
+            if l < 1.0e-5 {
+                Vec3::new(0.0, 0.0, 0.0)
+            } else {
+                Vec3::new(v.x / l, v.y / l, v.z / l)
+            }
+        };
+        let n = normalize(normalize(dir));
         self.audio.play(
             "minecraft:entity.ender_dragon.shoot",
             Some([at.x, at.y, at.z]),
             10.0,
             1.0,
         );
-        // assignDirectionalMovement: the direction times the acceleration power 0.1.
-        let velocity = Vec3::new(v.x * 0.1, v.y * 0.1, v.z * 0.1);
-        let id = self.take_entity_id();
-        self.dragon_fireballs.push(DragonFireball {
-            id,
-            position: at,
-            previous: at,
-            velocity,
-            age: 0,
-        });
+        let owner = self.dragon.as_ref().map(|d| Who::Mob(d.id));
+        let mut p = horizon_client::projectiles::Projectile::new(
+            horizon_client::projectiles::ProjectileKind::DragonFireball,
+            at,
+            owner,
+        );
+        p.acceleration = 0.1;
+        p.velocity = Vec3::new(n.x * 0.1, n.y * 0.1, n.z * 0.1);
+        self.add_projectile(p);
     }
-    /// `DragonFireball` (an AbstractHurtingProjectile): accelerating by its
-    /// power, bursting into dragon's breath on impact.
-    pub(super) fn tick_dragon_fireballs(&mut self) {
-        let mut balls = std::mem::take(&mut self.dragon_fireballs);
-        // Projectile.canHitEntity: any player but spectators.
-        let players: Vec<Aabb> = self
-            .fight_players()
+    /// `DragonFireball.onHit` where it burst (`next`): the dragon's breath
+    /// cloud and level event 2006, as the fireballs of the dragon's own list
+    /// burst before they joined the other projectiles.
+    pub(super) fn dragon_fireball_on_hit(&mut self, next: Vec3) {
+        let mobs: Vec<(Aabb, Vec3)> = self
+            .mobs
             .iter()
-            .filter(|p| p.alive && !p.spectator)
-            .map(|p| p.bounds)
+            .filter(|m| m.alive())
+            .map(|m| (m.bounds(), m.position))
             .collect();
-        // The mobs too: they stop it, and DragonFireball.onHit snaps to any
-        // living entity (the players first here). Gathered only while a
-        // fireball flies: this runs every tick in the End, among its endermen.
-        let mobs: Vec<(Aabb, Vec3)> = if balls.is_empty() {
-            Vec::new()
-        } else {
-            self.mobs
-                .iter()
-                .filter(|m| m.alive())
-                .map(|m| (m.bounds(), m.position))
-                .collect()
-        };
         let snap_targets: Vec<(Aabb, Vec3)> = self
             .fight_players()
             .iter()
@@ -2925,77 +2922,37 @@ impl Game<'_> {
             .map(|p| (p.bounds, p.position))
             .chain(mobs.iter().copied())
             .collect();
-        balls.retain_mut(|b| {
-            b.previous = b.position;
-            b.age += 1;
-            let v = b.velocity;
-            let next = Vec3::new(b.position.x + v.x, b.position.y + v.y, b.position.z + v.z);
-            // AbstractHurtingProjectile: accelerate along the motion, inertia 0.95.
-            let l = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt().max(1.0e-9);
-            b.velocity = Vec3::new(
-                (v.x + v.x / l * 0.1) * 0.95,
-                (v.y + v.y / l * 0.1) * 0.95,
-                (v.z + v.z / l * 0.1) * 0.95,
-            );
-            let hit_block = {
-                let p = [
-                    next.x.floor() as i32,
-                    next.y.floor() as i32,
-                    next.z.floor() as i32,
-                ];
-                let f = self.res.facts().get(self.world.block(p[0], p[1], p[2]));
-                f.full_collision || f.legacy_solid
-            };
-            let hit_entity = players.iter().chain(mobs.iter().map(|m| &m.0)).any(|pb| {
-                pb.intersects(Aabb::new(
-                    Vec3::new(next.x - 0.5, next.y - 0.5, next.z - 0.5),
-                    Vec3::new(next.x + 0.5, next.y + 0.5, next.z + 0.5),
-                ))
-            });
-            if hit_block || hit_entity || b.age > 600 {
-                let id = self.take_entity_id();
-                // The cloud starts at the fireball's feet; DragonFireball.onHit
-                // then moves it to the first living entity within 4 blocks.
-                let feet = [next.x, next.y - 0.5, next.z];
-                let at = fireball_cloud_origin(feet, &snap_targets);
-                self.breath_clouds.push(Breath {
-                    id,
-                    at,
-                    radius: 3.0,
-                    age: 0,
-                    duration: 600,
-                    from_dragon: false,
-                    victims: Vec::new(),
-                    potion: None,
-                });
-                // DragonFireball.onHit: level event 2006 (the burst of dragon
-                // breath and the explosion sound) at its block position.
-                self.level_event_at(
-                    2006,
-                    [
-                        next.x.floor() as i32,
-                        next.y.floor() as i32,
-                        next.z.floor() as i32,
-                    ],
-                    1,
-                );
-                return false;
-            }
-            b.position = next;
-            self.particles.add(
-                &ParticleOptions::simple(ParticleType::DragonBreath),
-                [next.x, next.y + 0.5, next.z],
-                [0.0; 3],
-            );
-            true
+        let id = self.take_entity_id();
+        // The cloud starts at the fireball's feet; DragonFireball.onHit
+        // then moves it to the first living entity within 4 blocks.
+        let feet = [next.x, next.y - 0.5, next.z];
+        let at = fireball_cloud_origin(feet, &snap_targets);
+        self.breath_clouds.push(Breath {
+            id,
+            at,
+            radius: 3.0,
+            age: 0,
+            duration: 600,
+            from_dragon: false,
+            victims: Vec::new(),
+            potion: None,
         });
-        self.dragon_fireballs.append(&mut balls);
-        self.tick_breath();
+        // DragonFireball.onHit: level event 2006 (the burst of dragon
+        // breath and the explosion sound) at its block position.
+        self.level_event_at(
+            2006,
+            [
+                next.x.floor() as i32,
+                next.y.floor() as i32,
+                next.z.floor() as i32,
+            ],
+            1,
+        );
     }
     /// The dragon's breath clouds (`AreaEffectCloud` with instant damage at
     /// a quarter duration scale): shrinking, puffing particles, harming the
     /// players and mobs in it.
-    fn tick_breath(&mut self) {
+    pub(super) fn tick_breath(&mut self) {
         // What instant damage reaches: neither creative nor spectator players.
         let players: Vec<FightPlayer> = self
             .fight_players()
@@ -3169,53 +3126,6 @@ impl Game<'_> {
     /// `BossHealthOverlay.shouldPlayMusic`.
     pub(super) fn boss_music(&self) -> bool {
         self.boss_overlay.should_play_music()
-    }
-}
-pub(super) struct DragonFireball {
-    /// Its entity id once a server's players track it (0 until then).
-    pub(super) id: u32,
-    pub(super) position: Vec3,
-    pub(super) previous: Vec3,
-    pub(super) velocity: Vec3,
-    age: i32,
-}
-impl DragonFireball {
-    /// One a server sent (`handleAddEntity`).
-    pub(super) fn remote(id: u32, at: Vec3, velocity: Vec3) -> Self {
-        Self {
-            id,
-            position: at,
-            previous: at,
-            velocity,
-            age: 0,
-        }
-    }
-    /// `AbstractHurtingProjectile.tick` on a server's client: `applyInertia`
-    /// first (power 0.1, inertia 0.95 or 0.8 in water), then the move; only
-    /// the server decides what it hits.
-    pub(super) fn remote_step(&mut self, water: bool) {
-        self.previous = self.position;
-        self.age += 1;
-        let v = self.velocity;
-        // Vec3.normalize: a vector shorter than 1e-5 stays zero.
-        let l = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
-        let n = if l < 1.0e-5 {
-            Vec3::new(0.0, 0.0, 0.0)
-        } else {
-            Vec3::new(v.x / l, v.y / l, v.z / l)
-        };
-        let inertia = f64::from(if water { 0.8f32 } else { 0.95f32 });
-        let v = Vec3::new(
-            (v.x + n.x * 0.1) * inertia,
-            (v.y + n.y * 0.1) * inertia,
-            (v.z + n.z * 0.1) * inertia,
-        );
-        self.velocity = v;
-        self.position = Vec3::new(
-            self.position.x + v.x,
-            self.position.y + v.y,
-            self.position.z + v.z,
-        );
     }
 }
 /// `DragonLandingPhase.doClientTick` and `DragonSittingFlamingPhase.doClientTick`:
@@ -3599,7 +3509,12 @@ impl Game<'_> {
         let forward = glam::DVec3::from_array(super::view_vector(self.yaw, self.pitch));
         let right = forward.cross(glam::DVec3::Y).normalize_or_zero();
         let up = right.cross(forward).normalize_or_zero();
-        for b in &self.dragon_fireballs {
+        for b in self
+            .creatures
+            .projectiles
+            .iter()
+            .filter(|p| p.kind == horizon_client::projectiles::ProjectileKind::DragonFireball)
+        {
             let p = glam::DVec3::new(
                 b.previous.x + (b.position.x - b.previous.x) * alpha,
                 b.previous.y + (b.position.y - b.previous.y) * alpha,
@@ -5753,6 +5668,17 @@ mod dragon_fireball_spawn_tests {
         game
     }
 
+    /// The level's dragon fireballs: its projectiles of that kind.
+    fn dragon_fireballs<'a>(
+        game: &'a Game<'_>,
+    ) -> Vec<&'a horizon_client::projectiles::Projectile> {
+        game.creatures
+            .projectiles
+            .iter()
+            .filter(|p| p.kind == horizon_client::projectiles::ProjectileKind::DragonFireball)
+            .collect()
+    }
+
     /// `(v + normalize(v) × 0.1) × 0.95F`: AbstractHurtingProjectile.tick's new motion.
     fn hurting_motion(v: Vec3) -> Vec3 {
         let l = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
@@ -5770,7 +5696,10 @@ mod dragon_fireball_spawn_tests {
         let mut game = end_game();
         let start = Vec3::new(0.5, 100.0, 0.5);
         game.spawn_dragon_fireball(start, Vec3::new(3.0, 0.0, 4.0));
-        let b = game.dragon_fireballs.last().expect("one fireball");
+        let b = dragon_fireballs(&game)
+            .last()
+            .copied()
+            .expect("one fireball");
         assert_eq!(b.position, start);
         // `Vec3.normalize().scale(0.1)` in doubles: 4 / 5 × 0.1 is 0.08000000000000002.
         assert_eq!(b.velocity, Vec3::new(3.0 / 5.0 * 0.1, 0.0, 4.0 / 5.0 * 0.1));
@@ -5789,14 +5718,13 @@ mod dragon_fireball_spawn_tests {
         game.tick_server(false).unwrap();
         // Back in the End level to read its own list.
         let _ = game.enter_command_level(crate::game::Dim::End);
-        let after: Vec<(Vec3, Vec3)> = game
-            .dragon_fireballs
+        let after: Vec<(Vec3, Vec3)> = dragon_fireballs(&game)
             .iter()
             .map(|b| (b.position, b.velocity))
             .collect();
         eprintln!(
             "H127 after one End tick: fireballs {}, breath clouds {}, dim end {}",
-            game.dragon_fireballs.len(),
+            dragon_fireballs(&game).len(),
             game.breath_clouds.len(),
             game.dimension_type().has_ender_dragon_fight
         );
@@ -5813,6 +5741,24 @@ mod dragon_fireball_spawn_tests {
             after,
             vec![expected],
             "AbstractHurtingProjectile's first tick"
+        );
+    }
+
+    /// The pinned chain normalizes twice (`DragonStrafePlayerPhase` then
+    /// `assignDirectionalMovement`): for (1, 0, -1) one normalization gives
+    /// 0.07071067811865475 and two give 0.07071067811865477.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn the_dragons_fireball_direction_is_normalized_twice() {
+        let mut game = end_game();
+        game.spawn_dragon_fireball(Vec3::new(0.5, 100.0, 0.5), Vec3::new(1.0, 0.0, -1.0));
+        let b = dragon_fireballs(&game)
+            .last()
+            .copied()
+            .expect("one fireball");
+        assert_eq!(
+            b.velocity,
+            Vec3::new(0.07071067811865477, 0.0, -0.07071067811865477)
         );
     }
 }
