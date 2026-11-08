@@ -466,6 +466,7 @@ impl Decoration {
             // WorldGenRegion.isOutsideBuildHeight: the level's range, not the noise's.
             build: (min_y, min_y + height),
             shape_ticks: std::cell::RefCell::new(crate::level::Ticks::new(0)),
+            shape_capture: std::cell::RefCell::new(Vec::new()),
         };
         let mut stats = DecorateStats::default();
         let blocks = self.blocks;
@@ -733,6 +734,8 @@ struct World<'a> {
     build: (i32, i32),
     /// The tick capture `shape_update` passes to `updateShape`.
     shape_ticks: std::cell::RefCell<crate::level::Ticks>,
+    /// Reusable capture storage for shape updates in this decoration region.
+    shape_capture: std::cell::RefCell<Vec<crate::level::ticks::CapturedTick>>,
 }
 /// Read-only `LevelAccess` view of the decoration region for
 /// `BlockState.updateShape` (writes go through `World::set_block`).
@@ -791,7 +794,7 @@ impl World<'_> {
         // capturing, scheduling leaves the rest of `Ticks` untouched, so the
         // region keeps one instead of building one per update.
         let mut ticks = self.shape_ticks.borrow_mut();
-        ticks.capture = Some(Vec::new());
+        ticks.capture = Some(std::mem::take(&mut *self.shape_capture.borrow_mut()));
         let updated = behaviours.update_shape(
             &mut level,
             &mut ticks,
@@ -807,21 +810,26 @@ impl World<'_> {
     fn schedule_captured(
         &mut self,
         behaviours: &crate::level::Behaviours,
-        ticks: Vec<crate::level::ticks::CapturedTick>,
+        mut ticks: Vec<crate::level::ticks::CapturedTick>,
     ) -> Result<(), PlacementQueryError> {
-        for t in ticks {
-            let at = [t.pos.x, t.pos.y, t.pos.z];
-            if t.fluid {
-                let fluid = crate::fluid::FluidKind::ALL[t.kind as usize];
-                self.schedule_fluid_tick(at, fluid, t.delay)?;
-            } else {
-                let state = behaviours
-                    .table
-                    .default_state(crate::level::BlockId(t.kind as u16));
-                self.schedule_block_tick(at, state, t.delay)?;
+        let result = (|| {
+            for t in &ticks {
+                let at = [t.pos.x, t.pos.y, t.pos.z];
+                if t.fluid {
+                    let fluid = crate::fluid::FluidKind::ALL[t.kind as usize];
+                    self.schedule_fluid_tick(at, fluid, t.delay)?;
+                } else {
+                    let state = behaviours
+                        .table
+                        .default_state(crate::level::BlockId(t.kind as u16));
+                    self.schedule_block_tick(at, state, t.delay)?;
+                }
             }
-        }
-        Ok(())
+            Ok(())
+        })();
+        ticks.clear();
+        *self.shape_capture.borrow_mut() = ticks;
+        result
     }
 }
 impl DecorationWorld for World<'_> {
@@ -1077,22 +1085,13 @@ impl PlacementContext for World<'_> {
         position: [i32; 3],
         entity: &str,
     ) -> Result<(), PlacementQueryError> {
-        use crate::nbt::Tag;
         let chunk = self.region.chunk(position[0] >> 4, position[2] >> 4)?;
         let state = chunk.block(position[0], position[1], position[2]);
         let registry = self.decoration.bindings.registry();
         if registry.state(state).map(|s| s.name.as_str()) != Some("minecraft:spawner") {
             return Ok(());
         }
-        let mut mob = crate::nbt::Compound::new();
-        mob.insert("id".into(), Tag::String(entity.into()));
-        let mut data = crate::nbt::Compound::new();
-        data.insert("entity".into(), Tag::Compound(mob));
-        let mut nbt = crate::nbt::Compound::new();
-        nbt.insert("id".into(), Tag::String("minecraft:mob_spawner".into()));
-        nbt.insert("SpawnData".into(), Tag::Compound(data));
-        nbt.insert("SpawnPotentials".into(), Tag::List(Vec::new()));
-        self.set_block_entity(position, nbt)
+        self.set_block_entity(position, super::cave::dungeon_spawner_nbt(entity))
     }
     fn attachment_at(
         &mut self,

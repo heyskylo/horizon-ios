@@ -671,6 +671,84 @@ pub fn unbreakable_line(
     .then(|| translate("item.unbreakable").unwrap_or_else(|| "item.unbreakable".into()))
 }
 
+/// `ItemStack.addDetailsToTooltip`'s adventure lines, `can_break` then
+/// `can_place_on`: each shown one adds an empty line, its gray header
+/// (`AdventureModePredicate.CAN_BREAK_HEADER` / `CAN_PLACE_HEADER`) and
+/// `AdventureModePredicate.computeTooltip`: `item.canUse.unknown` in gray when
+/// some predicate names no blocks, else every distinct block of the
+/// predicates' holder sets by its name (`Block.getName`) in dark gray.
+/// `tag_blocks` lists the blocks of a block tag.
+pub fn adventure_lines(
+    stack: &ItemStack,
+    display: &TooltipDisplay,
+    tag_blocks: &dyn Fn(&str) -> Vec<String>,
+    translate: &dyn Fn(&str) -> Option<String>,
+) -> Vec<(String, u32)> {
+    let text = |key: &str| translate(key).unwrap_or_else(|| key.to_owned());
+    let namespaced = |id: &str| {
+        if id.contains(':') {
+            id.to_owned()
+        } else {
+            format!("minecraft:{id}")
+        }
+    };
+    let (gray, dark_gray) = (rgba(170, 170, 170, 255), rgba(85, 85, 85, 255));
+    let mut lines = Vec::new();
+    for (component, header) in [
+        ("minecraft:can_break", "item.canBreak"),
+        ("minecraft:can_place_on", "item.canPlace"),
+    ] {
+        let Some(tag) = stack.data().and_then(|d| d.other(component)) else {
+            continue;
+        };
+        if !display.shows(component) {
+            continue;
+        }
+        lines.push((String::new(), u32::MAX));
+        lines.push((text(header), gray));
+        let predicates: Vec<&Tag> = match tag {
+            Tag::List(list) => list.iter().collect(),
+            single => vec![single],
+        };
+        if predicates.iter().any(|p| p.get("blocks").is_none()) {
+            lines.push((text("item.canUse.unknown"), gray));
+            continue;
+        }
+        let mut blocks: Vec<String> = Vec::new();
+        for p in predicates {
+            let ids = match p.get("blocks") {
+                Some(Tag::String(entry)) => {
+                    let entry = entry.to_string_lossy();
+                    match entry.strip_prefix('#') {
+                        Some(tag) => tag_blocks(&namespaced(tag)),
+                        None => vec![namespaced(&entry)],
+                    }
+                }
+                Some(Tag::List(entries)) => entries
+                    .iter()
+                    .filter_map(|e| match e {
+                        Tag::String(id) => Some(namespaced(&id.to_string_lossy())),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            for id in ids {
+                if !blocks.contains(&id) {
+                    blocks.push(id);
+                }
+            }
+        }
+        for id in blocks {
+            lines.push((
+                text(&format!("block.{}", id.replacen(':', ".", 1))),
+                dark_gray,
+            ));
+        }
+    }
+    lines
+}
+
 /// `OminousBottleAmplifier.addToTooltip`: the effect the bottle gives,
 /// `MobEffectInstance(BAD_OMEN, 120000, amplifier)`, listed as
 /// `PotionContents.addPotionTooltip` lists it, in the colour of Bad Omen's

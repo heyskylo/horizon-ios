@@ -28,6 +28,41 @@ pub(super) fn mode_from_id(id: i32) -> GameMode {
 pub(super) fn loads_chunks(spectators_generate_chunks: bool, spectator: bool) -> bool {
     !spectator || spectators_generate_chunks
 }
+
+/// Fail closed at the new projectile caller when the existing matcher cannot
+/// evaluate an entire conjunct. This does not change held-item interpretation.
+pub(super) fn projectile_predicate_supported(tag: &horizon_world::nbt::Tag) -> bool {
+    use horizon_world::nbt::Tag;
+    let supported = |p: &Tag| {
+        matches!(p, Tag::Compound(_))
+            && ["nbt", "components", "predicates"]
+                .iter()
+                .all(|key| p.get(key).is_none())
+            && match p.get("blocks") {
+                None | Some(Tag::String(_)) => true,
+                Some(Tag::List(ids)) => ids.iter().all(|id| matches!(id, Tag::String(_))),
+                _ => false,
+            }
+            && match p.get("state") {
+                None => true,
+                Some(Tag::Compound(properties)) => properties.values().all(|value| match value {
+                    Tag::String(_) => true,
+                    Tag::Compound(_) => ["min", "max"].iter().all(|key| {
+                        value
+                            .get(key)
+                            .is_none_or(|bound| matches!(bound, Tag::String(_)))
+                    }),
+                    _ => false,
+                }),
+                _ => false,
+            }
+    };
+    match tag {
+        Tag::Compound(_) => supported(tag),
+        Tag::List(predicates) => !predicates.is_empty() && predicates.iter().all(supported),
+        _ => false,
+    }
+}
 impl Game<'_> {
     pub(super) fn spectator(&self) -> bool {
         self.mode == GameMode::Spectator
@@ -108,10 +143,11 @@ impl Game<'_> {
     /// `ItemStack.canBreakBlockInAdventureMode` / `canPlaceOnBlockInAdventureMode`
     /// for the main-hand stack: some predicate of its `can_break` or
     /// `can_place_on` component (`AdventureModePredicate`: one block predicate
-    /// or a list) matches the block at `pos`. Predicates with `nbt` or
-    /// `components` need the block entity's data and never match.
+    /// or a list) matches the block at `pos`, as `BlockPredicate.matches(BlockInWorld)`
+    /// tests it: the state, then `nbt` against the block entity's
+    /// `saveWithFullMetadata` (no block entity fails). `components` is not
+    /// looked at on this path.
     fn adventure_predicate(&self, component: &str, pos: [i32; 3]) -> bool {
-        use horizon_world::nbt::Tag;
         let Some(tag) = self
             .held()
             .and_then(|s| s.data())
@@ -119,6 +155,16 @@ impl Game<'_> {
         else {
             return false;
         };
+        self.adventure_predicate_at(tag, pos)
+    }
+    /// The existing supported block/state portion of `AdventureModePredicate.test`.
+    /// The held-item wrapper and the projectile caller supply their own live value.
+    pub(super) fn adventure_predicate_at(
+        &self,
+        tag: &horizon_world::nbt::Tag,
+        pos: [i32; 3],
+    ) -> bool {
+        use horizon_world::nbt::Tag;
         let state = self.world.block(pos[0], pos[1], pos[2]);
         let name = &self.res.facts().get(state).name;
         let properties = self
@@ -128,9 +174,6 @@ impl Game<'_> {
             .state(state)
             .map(|s| &s.properties);
         let matches = |p: &Tag| {
-            if p.get("nbt").is_some() || p.get("components").is_some() {
-                return false;
-            }
             let block_ok = match p.get("blocks") {
                 None => true,
                 Some(Tag::String(id)) => self.block_in_holder_set(&id.to_string_lossy(), name),
@@ -169,7 +212,24 @@ impl Game<'_> {
                 }),
                 Some(_) => false,
             };
-            block_ok && state_ok
+            // NbtPredicate (TagParser.LENIENT_CODEC: SNBT or a compound),
+            // NbtUtils.compareNbt(pattern, data, true).
+            let nbt_ok = || match p.get("nbt") {
+                None => true,
+                Some(Tag::String(snbt)) => horizon_world::nbt::parse_snbt(&snbt.to_string_lossy())
+                    .is_ok_and(|(pattern, _)| {
+                        horizon_client::nbt_path::compare_nbt(
+                            &pattern,
+                            self.block_entity_nbt(pos).as_ref(),
+                        )
+                    }),
+                Some(pattern @ Tag::Compound(_)) => horizon_client::nbt_path::compare_nbt(
+                    pattern,
+                    self.block_entity_nbt(pos).as_ref(),
+                ),
+                Some(_) => false,
+            };
+            block_ok && state_ok && nbt_ok()
         };
         match tag {
             Tag::List(list) => list.iter().any(matches),
@@ -221,7 +281,32 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::loads_chunks;
+    use super::{loads_chunks, projectile_predicate_supported};
+
+    // Added after the frozen old Game proof: unsupported conjuncts must not
+    // become permission from their otherwise matching blocks portion.
+    #[test]
+    fn projectile_predicates_require_a_complete_supported_match() {
+        for extra in [
+            "nbt:{marker:1}",
+            "components:{}",
+            "predicates:{}",
+            "state:{age:{min:1}}",
+        ] {
+            let text = format!("{{blocks:\"minecraft:chorus_flower\",{extra}}}");
+            let (tag, _) = horizon_world::nbt::parse_snbt(&text).unwrap();
+            assert!(!projectile_predicate_supported(&tag), "{text}");
+        }
+        for text in ["7", "[]", "{blocks:[7]}"] {
+            let (tag, _) = horizon_world::nbt::parse_snbt(text).unwrap();
+            assert!(!projectile_predicate_supported(&tag), "{text}");
+        }
+        let (tag, _) = horizon_world::nbt::parse_snbt(
+            "{blocks:\"minecraft:chorus_flower\",state:{age:{min:\"0\",max:\"5\"}}}",
+        )
+        .unwrap();
+        assert!(projectile_predicate_supported(&tag));
+    }
 
     /// `ChunkMap.skipPlayer`: only a spectator with `spectators_generate_chunks`
     /// off stops loading chunks around itself.

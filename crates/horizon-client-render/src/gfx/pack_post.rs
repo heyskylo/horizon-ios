@@ -62,6 +62,9 @@ mod shadow_faces_tests;
 mod r11f_image_tests;
 
 #[cfg(test)]
+mod work_group_fold_tests;
+
+#[cfg(test)]
 mod forced_flip_tests;
 
 #[cfg(test)]
@@ -75,6 +78,9 @@ mod custom_type_tests;
 
 #[cfg(test)]
 mod sky_depth_tests;
+
+#[cfg(test)]
+mod end_fan_tests;
 
 #[cfg(test)]
 mod runtime_length_tests;
@@ -378,12 +384,13 @@ impl Gpu {
     }
 }
 
-/// A pass's pipeline: a draw, or a compute dispatch.
+/// A pass's pipeline: a draw, or a compute dispatch. Its slot is filled when the pack's
+/// pipelines are compiled (`compile`), all of them at once once the pack is laid out.
 #[derive(Clone)]
 enum Pipeline {
-    Render(wgpu::RenderPipeline),
+    Render(Slot<wgpu::RenderPipeline>),
     Compute {
-        pipeline: wgpu::ComputePipeline,
+        pipeline: Slot<wgpu::ComputePipeline>,
         /// `workGroups`, else `workGroupsRender` and the local size.
         groups: Option<[u32; 3]>,
         render: [f32; 2],
@@ -398,7 +405,7 @@ struct Pass {
     pipeline: Pipeline,
     /// The same program as vanilla blends the sky's parts (`PostProgram::vanilla_sky_blends`):
     /// without blending for the disc and the void, then with `STARS_BLEND` for the stars.
-    sky_parts: Option<[wgpu::RenderPipeline; 2]>,
+    sky_parts: Option<[Slot<wgpu::RenderPipeline>; 2]>,
     layout: wgpu::BindGroupLayout,
     ubo: wgpu::Buffer,
     block: Vec<u8>,
@@ -426,6 +433,9 @@ struct Pass {
     /// What `texture` reads instead of the block atlas.
     atlas: Option<wgpu::TextureView>,
     material_maps: bool,
+    /// Draws the shared atlas's geometry: `normals` and `specular` are its paged maps
+    /// (`PackPost::set_paged_maps`), as its programs were translated to read them.
+    paged: bool,
     /// Reads `mc_Entity`'s table (`PackPost::block_ids`).
     ids: bool,
     /// Bind groups by the sides read (bits 0–15), the buffers whose mip chain is current (bits
@@ -469,7 +479,7 @@ impl Pass {
 
     fn render(&self) -> &wgpu::RenderPipeline {
         match &self.pipeline {
-            Pipeline::Render(p) => p,
+            Pipeline::Render(p) => p.get().expect("compiled with its pack"),
             Pipeline::Compute { .. } => unreachable!("a compute pass draws nothing"),
         }
     }
@@ -512,6 +522,7 @@ struct Targets {
 }
 
 /// What a pack's gbuffers programs read and draw from the game's world.
+#[derive(Clone)]
 pub(super) struct World<'a> {
     /// The block atlas and its size.
     pub atlas: Option<(wgpu::TextureView, [u32; 2])>,
@@ -669,6 +680,8 @@ pub struct PackPost {
     custom: horizon_shaders::Custom,
     atlas: Option<wgpu::TextureView>,
     material_maps: Option<[wgpu::TextureView; 2]>,
+    /// The shared atlas's normal and specular paged maps (`set_paged_maps`).
+    paged_maps: [Option<wgpu::TextureView>; 2],
     lightmap: wgpu::TextureView,
     deferred_pre: u16,
     composite_pre: u16,
@@ -1240,6 +1253,7 @@ fn block_ids(
 
 /// The game's geometry a gbuffers program draws: its vertex buffers and, for flat draws
 /// (flat.rs), the layout of their bind group 1.
+#[derive(Clone)]
 pub(super) struct Geometry<'a> {
     pub buffers: &'a [Option<wgpu::VertexBufferLayout<'a>>],
     pub table: Option<&'a wgpu::BindGroupLayout>,
@@ -1283,6 +1297,177 @@ struct Resources<'a> {
     /// Bit n: shadowtex n read through a plain sampler filters linearly (`shadowtexNNearest`
     /// unset): the translator's helpers blend a gather of it (`hz_depth_linear`).
     shadow_linear: u8,
+    /// While the pack is laid out for `compile`: the pipelines its programs need. `None`
+    /// compiles each as its program is built.
+    jobs: Option<std::cell::RefCell<Vec<Job>>>,
+}
+
+impl Resources<'_> {
+    /// The slot of the render pipeline `job` makes: filled now, or by `compile` when the pack
+    /// is laid out.
+    fn render_pipeline(&self, device: &wgpu::Device, job: RenderJob) -> Slot<wgpu::RenderPipeline> {
+        let slot = Slot::default();
+        let job = Job::Render(slot.clone(), job);
+        match &self.jobs {
+            Some(jobs) => jobs.borrow_mut().push(job),
+            None => job.create(device),
+        }
+        slot
+    }
+    /// As `render_pipeline`, for a compute pipeline.
+    fn compute_pipeline(
+        &self,
+        device: &wgpu::Device,
+        job: ComputeJob,
+    ) -> Slot<wgpu::ComputePipeline> {
+        let slot = Slot::default();
+        let job = Job::Compute(slot.clone(), job);
+        match &self.jobs {
+            Some(jobs) => jobs.borrow_mut().push(job),
+            None => job.create(device),
+        }
+        slot
+    }
+}
+
+/// A pipeline, made once: `Pipeline`'s, filled by its `Job`.
+type Slot<T> = std::sync::Arc<std::sync::OnceLock<T>>;
+
+/// What a render pipeline of a pack's program is made of, kept to make it later.
+#[derive(Clone)]
+struct RenderJob {
+    label: String,
+    layout: wgpu::PipelineLayout,
+    vs: wgpu::ShaderModule,
+    fs: wgpu::ShaderModule,
+    /// The vertex buffers: stride, step mode and attributes.
+    buffers: Vec<Option<(u64, wgpu::VertexStepMode, Vec<wgpu::VertexAttribute>)>>,
+    primitive: wgpu::PrimitiveState,
+    depth_stencil: Option<wgpu::DepthStencilState>,
+    targets: Vec<Option<wgpu::ColorTargetState>>,
+}
+
+/// What a compute pipeline of a pack's program is made of.
+struct ComputeJob {
+    label: String,
+    layout: wgpu::PipelineLayout,
+    module: wgpu::ShaderModule,
+}
+
+/// A pipeline to make, and the slot it goes in.
+enum Job {
+    Render(Slot<wgpu::RenderPipeline>, RenderJob),
+    Compute(Slot<wgpu::ComputePipeline>, ComputeJob),
+}
+
+impl Job {
+    /// Makes the pipeline (the driver compiles its shaders here) into its slot.
+    fn create(&self, device: &wgpu::Device) {
+        match self {
+            Job::Render(slot, j) => {
+                let buffers: Vec<Option<wgpu::VertexBufferLayout>> = j
+                    .buffers
+                    .iter()
+                    .map(|b| {
+                        b.as_ref()
+                            .map(|(stride, step, attributes)| wgpu::VertexBufferLayout {
+                                array_stride: *stride,
+                                step_mode: *step,
+                                attributes,
+                            })
+                    })
+                    .collect();
+                let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(&j.label),
+                    layout: Some(&j.layout),
+                    vertex: wgpu::VertexState {
+                        module: &j.vs,
+                        entry_point: Some("main"),
+                        compilation_options: Default::default(),
+                        buffers: &buffers,
+                    },
+                    primitive: j.primitive,
+                    depth_stencil: j.depth_stencil.clone(),
+                    multisample: Default::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: &j.fs,
+                        entry_point: Some("main"),
+                        compilation_options: Default::default(),
+                        targets: &j.targets,
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                });
+                let _ = slot.set(pipeline);
+            }
+            Job::Compute(slot, j) => {
+                let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some(&j.label),
+                    layout: Some(&j.layout),
+                    module: &j.module,
+                    entry_point: Some("main"),
+                    compilation_options: Default::default(),
+                    cache: None,
+                });
+                let _ = slot.set(pipeline);
+            }
+        }
+    }
+    fn label(&self) -> &str {
+        match self {
+            Job::Render(_, j) => &j.label,
+            Job::Compute(_, j) => &j.label,
+        }
+    }
+}
+
+/// Makes the pipelines of `jobs` on as many threads as the machine has cores (up to 8): the
+/// driver compiles a big pack's programs for tens of seconds one at a time, on one core. The
+/// first one wgpu or the driver refuses, with why; `None` when all are made.
+///
+/// A refusal doesn't stop the others: every job is made, so that the serial rebuild `new` then
+/// runs finds the driver's shader cache warm instead of compiling the rest cold, one at a time.
+/// `cancel` set stops handing out jobs: the caller then drops the pack (`PackPost::new`).
+fn compile(
+    device: &wgpu::Device,
+    jobs: &[Job],
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Option<(String, String)> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .clamp(1, 8)
+        .min(jobs.len().max(1));
+    let next = AtomicUsize::new(0);
+    let refused = std::sync::Mutex::new(None);
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| {
+                while !cancel.load(Ordering::Relaxed)
+                    && let Some(job) = jobs.get(next.fetch_add(1, Ordering::Relaxed))
+                {
+                    if let Err(e) = checked(device, || job.create(device)) {
+                        let mut refused = refused.lock().unwrap_or_else(|e| e.into_inner());
+                        refused.get_or_insert((job.label().to_owned(), e));
+                    }
+                }
+            });
+        }
+    });
+    refused.into_inner().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Vertex buffer layouts owned, for a `RenderJob`.
+fn owned_buffers(
+    buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
+) -> Vec<Option<(u64, wgpu::VertexStepMode, Vec<wgpu::VertexAttribute>)>> {
+    buffers
+        .iter()
+        .map(|b| {
+            b.as_ref()
+                .map(|b| (b.array_stride, b.step_mode, b.attributes.to_vec()))
+        })
+        .collect()
 }
 
 /// A program's bind group layout (its uniform block, samplers and images) and how each sampler
@@ -1891,60 +2076,47 @@ fn build_pass(
         packed::quantise_outputs(&mut fragment, &packed_outputs);
         packed::bitcast_outputs(&mut fragment, &int_outputs);
         let (vs, fs) = (module(program.vertex), module(fragment));
-        let descriptor = |targets: &[Option<wgpu::ColorTargetState>]| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(&p.name),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &vs,
-                    entry_point: Some("main"),
-                    compilation_options: Default::default(),
-                    // A geometry stage reads its vertices itself.
-                    buffers: geometry
-                        .filter(|_| p.geometry_triangles == 0)
-                        .map_or(&[], |g| g.buffers),
+        let job = RenderJob {
+            label: p.name.clone(),
+            layout: pipeline_layout,
+            vs,
+            fs,
+            // A geometry stage reads its vertices itself.
+            buffers: geometry
+                .filter(|_| p.geometry_triangles == 0)
+                .map_or_else(Vec::new, |g| owned_buffers(g.buffers)),
+            // Rows flipped to GL's turn front faces clockwise.
+            primitive: wgpu::PrimitiveState {
+                front_face: wgpu::FrontFace::Cw,
+                cull_mode: geometry
+                    .filter(|g| g.cull && p.geometry_triangles == 0)
+                    .map(|_| wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: geometry.map(|g| wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(g.depth_write),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: Default::default(),
+                bias: if p.name == "gbuffers_damagedblock" {
+                    wgpu::DepthBiasState {
+                        constant: -10,
+                        slope_scale: -1.0,
+                        clamp: 0.0,
+                    }
+                } else {
+                    Default::default()
                 },
-                // Rows flipped to GL's turn front faces clockwise.
-                primitive: wgpu::PrimitiveState {
-                    front_face: wgpu::FrontFace::Cw,
-                    cull_mode: geometry
-                        .filter(|g| g.cull && p.geometry_triangles == 0)
-                        .map(|_| wgpu::Face::Back),
-                    ..Default::default()
-                },
-                depth_stencil: geometry.map(|g| wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth32Float,
-                    depth_write_enabled: Some(g.depth_write),
-                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                    stencil: Default::default(),
-                    bias: if p.name == "gbuffers_damagedblock" {
-                        wgpu::DepthBiasState {
-                            constant: -10,
-                            slope_scale: -1.0,
-                            clamp: 0.0,
-                        }
-                    } else {
-                        Default::default()
-                    },
-                }),
-                multisample: Default::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &fs,
-                    entry_point: Some("main"),
-                    compilation_options: Default::default(),
-                    targets,
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
+            }),
+            targets: targets.to_vec(),
         };
-        let pipeline = descriptor(&targets);
         // The program's own blend replaced by vanilla's for the part; a buffer's own
         // `blend.<program>.<buffer>` still applies (Iris 1.11.7 blended the sky disc into that
-        // buffer only, with a probe pack of ours).
+        // buffer only, with a probe pack of ours). Two more pipelines of the program, made
+        // with the others (`compile`).
         let sky_parts = p.vanilla_sky_blends.then(|| {
             [None, Some(blend_state(horizon_shaders::STARS_BLEND))].map(|part| {
-                let targets: Vec<_> = (targets.iter().enumerate())
+                let targets: Vec<_> = (job.targets.iter().enumerate())
                     .map(|(l, t)| {
                         let (own, blendable) = own_blends.get(l).copied().unwrap_or((None, false));
                         t.clone().map(|t| wgpu::ColorTargetState {
@@ -1953,10 +2125,16 @@ fn build_pass(
                         })
                     })
                     .collect();
-                descriptor(&targets)
+                pack.render_pipeline(
+                    device,
+                    RenderJob {
+                        targets,
+                        ..job.clone()
+                    },
+                )
             })
         });
-        (layout, pipeline, sky_parts)
+        (layout, pack.render_pipeline(device, job), sky_parts)
     });
     let (layout, pipeline, sky_parts) = match created {
         Ok(created) => created,
@@ -2009,6 +2187,7 @@ fn build_pass(
         draw,
         atlas: geometry.and_then(|g| g.atlas.clone()),
         material_maps: geometry.is_some_and(|g| g.material_maps),
+        paged: false,
         ids: geometry.is_some_and(|g| g.ids.is_some()),
         groups: HashMap::new(),
         portal_groups: HashMap::new(),
@@ -2096,15 +2275,12 @@ fn build_compute(
             label: Some(&name),
             source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
         });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some(&name),
-            layout: Some(&pipeline_layout),
-            module: &module,
-            entry_point: Some("main"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
-        (layout, pipeline)
+        let job = ComputeJob {
+            label: name.clone(),
+            layout: pipeline_layout,
+            module,
+        };
+        (layout, pack.compute_pipeline(device, job))
     });
     let (layout, pipeline) = match created {
         Ok(created) => created,
@@ -2152,6 +2328,7 @@ fn build_compute(
         draw: false,
         atlas: None,
         material_maps: false,
+        paged: false,
         ids: false,
         groups: HashMap::new(),
         portal_groups: HashMap::new(),
@@ -2173,17 +2350,80 @@ pub struct Refused {
     pub notes: Vec<String>,
 }
 
+impl Refused {
+    /// The reason of a build stopped by its `cancel` flag (`PackPost::new`).
+    const CANCELLED: &str = "cancelled";
+    fn cancelled(notes: Vec<String>) -> Self {
+        Self {
+            reason: Self::CANCELLED.into(),
+            notes,
+        }
+    }
+    /// Whether the build was cancelled (another pack or dimension asked for): not the pack's
+    /// fault, so nothing to report to the player.
+    pub fn is_cancelled(&self) -> bool {
+        self.reason == Self::CANCELLED
+    }
+}
+
 impl PackPost {
+    /// The shared atlas's normal and specular paged maps (`paged_maps.rs`), which the programs
+    /// drawing its geometry read as `normals` and `specular`; set before the first frame (a pass's
+    /// bind groups are kept once made). A missing one reads as the dummy (flat, no specular).
+    pub fn set_paged_maps(&mut self, maps: [Option<wgpu::TextureView>; 2]) {
+        self.paged_maps = maps;
+    }
+
     /// Builds the pipelines of `post` for a screen of `screen` format. An error when the pack
     /// can't show anything on the screen: the game turns it off, as a pack that fails to load.
+    ///
+    /// The pack is laid out first and its pipelines are made after, all at once (`compile`).
+    /// When wgpu or the driver refuses one, the pack is built again a program at a time, so that
+    /// the program is skipped with its note as it always was.
+    ///
+    /// `cancel` set (the pack isn't wanted any more) stops the build between programs: a refusal
+    /// whose `is_cancelled` is true.
     pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        adapter: &wgpu::Adapter,
+        post: Post,
+        screen: wgpu::TextureFormat,
+        world: World<'_>,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<Self, Refused> {
+        use std::sync::atomic::Ordering;
+        let spare = (post.clone(), world.clone());
+        let (built, jobs) = Self::build(device, queue, adapter, post, screen, world, true, cancel)?;
+        let refused = compile(device, &jobs, cancel);
+        // Some pipelines may be left unmade: the pack can't draw.
+        if cancel.load(Ordering::Relaxed) {
+            return Err(Refused::cancelled(built.notes));
+        }
+        let Some((program, refused)) = refused else {
+            return Ok(built);
+        };
+        log::warn!(
+            "shader pack: {program} was refused ({refused}): building it again a program at a time"
+        );
+        drop((built, jobs));
+        let (post, world) = spare;
+        Self::build(device, queue, adapter, post, screen, world, false, cancel)
+            .map(|(built, _)| built)
+    }
+
+    /// `new`'s work: with `defer`, the pipelines are left to make (the jobs returned).
+    #[allow(clippy::too_many_arguments)]
+    fn build(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         adapter: &wgpu::Adapter,
         mut post: Post,
         screen: wgpu::TextureFormat,
         world: World<'_>,
-    ) -> Result<Self, Refused> {
+        defer: bool,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<(Self, Vec<Job>), Refused> {
         // What the pack's shaders need of its storage buffers, before its parts move out.
         let minimums = post.buffer_minimums();
         let features = device.features();
@@ -2335,8 +2575,13 @@ impl PackPost {
             shadow_linear: (0..2)
                 .filter(|&n| !shadow_config.nearest[n])
                 .fold(0, |m, n| m | 1 << n),
+            jobs: defer.then(Default::default),
         };
         let mut build = |mut p: horizon_shaders::PostProgram, geometry: Option<&Geometry<'_>>| {
+            // Not wanted any more: the rest is skipped and the build refused below.
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                return None;
+            }
             let in_shadow = p.group.shadow();
             let mut compute = std::mem::take(&mut p.compute);
             if !gpu.compute {
@@ -2552,6 +2797,13 @@ impl PackPost {
             ids: None,
             cull: false,
         });
+        // Programs drawing the shared atlas's geometry read its paged maps (`pack_entities::inputs`).
+        let paged = |pass: Option<Pass>| {
+            pass.map(|mut pass| {
+                pass.paged = true;
+                pass
+            })
+        };
         let entity_passes = programs.map(|p| {
             p.zip(entity_geometry.as_ref()).and_then(|(p, g)| {
                 if p.name == "gbuffers_damagedblock" {
@@ -2564,15 +2816,15 @@ impl PackPost {
                         ids: g.ids,
                         cull: false,
                     };
-                    build(p, Some(&decal))
+                    paged(build(p, Some(&decal)))
                 } else {
-                    build(p, Some(g))
+                    paged(build(p, Some(g)))
                 }
             })
         });
         let shadow_entities = shadow_programs.map(|p| {
             p.zip(entity_geometry.as_ref())
-                .and_then(|(p, g)| build(p, Some(g)))
+                .and_then(|(p, g)| paged(build(p, Some(g))))
         });
         let entities = entity_vertices
             .filter(|_| (entity_passes.iter().chain(&shadow_entities)).any(Option::is_some))
@@ -2615,7 +2867,7 @@ impl PackPost {
                 ids: None,
                 cull: false,
             };
-            build(p, Some(&g)).map(|pass| (pass, geometry))
+            paged(build(p, Some(&g))).map(|pass| (pass, geometry))
         });
         // Translucent held items, drawn from the hand's own buffer.
         let hand_water = post.hand_water.and_then(|p| {
@@ -2629,7 +2881,7 @@ impl PackPost {
                 ids: None,
                 cull: false,
             };
-            build(p, Some(&g))
+            paged(build(p, Some(&g)))
         });
         let weather = post
             .weather
@@ -2685,6 +2937,9 @@ impl PackPost {
             .filter(|p| !skip.split(',').any(|s| s == p.name))
             .filter_map(|p| build(p, None))
             .collect();
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(Refused::cancelled(notes));
+        }
         let stand_ins = pack_images::stand_ins(device, stand_ins.take());
         // Terrain in two parts draws both or neither: one alone would leave the other part's
         // terrain undrawn. Without either, the game draws all terrain, as when the terrain
@@ -3018,7 +3273,10 @@ impl PackPost {
         let white = [255u8; 4];
         let black = [0u8; 4];
         let flat_normal = [128u8, 128, 255, 255];
-        Ok(Self {
+        let jobs = (pack.jobs.as_ref())
+            .map(std::cell::RefCell::take)
+            .unwrap_or_default();
+        let built = Self {
             notes,
             setup_pending: true,
             passes,
@@ -3062,6 +3320,7 @@ impl PackPost {
             custom,
             atlas: world.atlas.as_ref().map(|a| a.0.clone()),
             material_maps: world.material_maps,
+            paged_maps: [None, None],
             lightmap: world.lightmap,
             deferred_pre: mask(&post.deferred_pre),
             composite_pre: mask(&post.composite_pre),
@@ -3187,7 +3446,8 @@ impl PackPost {
                 u
             },
             shadow_cache: Default::default(),
-        })
+        };
+        Ok((built, jobs))
     }
 
     /// `Renderer::finish_sequence_frame`: the centre depth the finished frame copied.
@@ -3421,6 +3681,12 @@ impl PackPost {
                     Source::Dummy if s.dimension == wgpu::TextureViewDimension::D1 => {
                         &self.dummy_1d
                     }
+                    Source::Normals if pass.paged => {
+                        self.paged_maps[0].as_ref().unwrap_or(&self.dummy_normal)
+                    }
+                    Source::Specular if pass.paged => {
+                        self.paged_maps[1].as_ref().unwrap_or(&self.dummy_black)
+                    }
                     Source::Normals => self
                         .material_maps
                         .as_ref()
@@ -3515,11 +3781,22 @@ impl PackPost {
         else {
             return;
         };
+        let pipeline = pipeline.get().expect("compiled with its pack");
         let groups = groups.unwrap_or_else(|| {
             let n = |k: usize| (size[k] as f32 * render[k] / local[k] as f32).ceil() as u32;
             [n(0), n(1), 1]
         });
         let (pipeline, groups) = (pipeline.clone(), groups);
+        // wgpu panics on a dispatch over its limit. The translator reshapes a large
+        // `workGroups`; a `workGroupsRender` that large is not run.
+        let most = device.limits().max_compute_workgroups_per_dimension;
+        if groups.iter().any(|&n| n > most) {
+            log::warn!(
+                "shader pack: {}: {groups:?} work groups is over {most} per dimension; not run",
+                pass.name
+            );
+            return;
+        }
         for image in (0..self.images.len()).filter(|k| pass.snapshots & 1 << k != 0) {
             pack_images::snapshot(encoder, &self.images[image]);
         }
@@ -3729,8 +4006,8 @@ impl PackPost {
                 pass.sky_parts
                     .as_ref()
                     .and_then(|[plain, stars]| match part.stage {
-                        "SKY" | "VOID" => Some(plain),
-                        "STARS" => Some(stars),
+                        "SKY" | "VOID" => plain.get(),
+                        "STARS" => stars.get(),
                         _ => None,
                     });
             rp.set_pipeline(part_pipeline.unwrap_or(pass.render()));
@@ -4009,7 +4286,7 @@ impl PackPost {
         frame: &super::Frame,
         terrain: &mut TerrainDraw<'_>,
     ) {
-        if super::sky_visible(frame) {
+        if super::sky_visible(frame) || super::end_fog_sky(frame) {
             self.draw_sky(device, queue, encoder, size, frame);
         }
         self.draw_terrain(device, queue, encoder, size, TerrainList::Solid, terrain);
@@ -5415,6 +5692,57 @@ mod tests {
         assert_eq!(used, [1, 2, 3]);
     }
 
+    /// A pack's pipelines are made together on several threads: each lands in its pass's slot,
+    /// and one wgpu refuses comes back by name (the pack is then built a program at a time).
+    #[test]
+    fn pipelines_compile_together_and_a_refused_one_is_named() {
+        let instance = crate::gfx::test_gpu::instance();
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            return;
+        };
+        let Ok((device, _queue)) = pollster::block_on(adapter.request_device(&Default::default()))
+        else {
+            return;
+        };
+        let layout = device.create_pipeline_layout(&Default::default());
+        let module = |source: &str| {
+            device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(source.into()),
+            })
+        };
+        let job = |label: &str, module: wgpu::ShaderModule| {
+            let slot = Slot::default();
+            let job = ComputeJob {
+                label: label.into(),
+                layout: layout.clone(),
+                module,
+            };
+            (slot.clone(), Job::Compute(slot, job))
+        };
+        let plain = "@compute @workgroup_size(1) fn main() {}";
+        let go = std::sync::atomic::AtomicBool::new(false);
+        let (slots, jobs): (Vec<_>, Vec<_>) = (0..12)
+            .map(|i| job(&format!("composite{i}"), module(plain)))
+            .unzip();
+        // Cancelled before it starts: nothing is made (`new` then drops the pack).
+        assert_eq!(compile(&device, &jobs, &true.into()), None);
+        assert!(slots.iter().all(|s| s.get().is_none()));
+        assert_eq!(compile(&device, &jobs, &go), None);
+        assert!(slots.iter().all(|s| s.get().is_some()));
+        // A binding the layout doesn't have: wgpu refuses the pipeline.
+        let bound = "@group(0) @binding(0) var<storage, read_write> b: array<u32>;\n\
+                     @compute @workgroup_size(1) fn main() { b[0] = 1u; }";
+        let (_, bad) = job("deferred3", module(bound));
+        let (slots, mut jobs): (Vec<_>, Vec<_>) =
+            (0..4).map(|i| job(&format!("c{i}"), module(plain))).unzip();
+        jobs.insert(2, bad);
+        let (program, _why) = compile(&device, &jobs, &go).expect("the pipeline is refused");
+        assert_eq!(program, "deferred3");
+        // The refusal stops none of the others: they are all made.
+        assert!(slots.iter().all(|s| s.get().is_some()));
+    }
+
     /// #3525: naga's SPIR-V writer panicked on Photon's gbuffers programs as the pipeline was
     /// made. Such a panic skips the pass, as a validation error does, and the device goes on.
     #[test]
@@ -5504,6 +5832,7 @@ mod tests {
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
             shadow_linear: 0,
+            jobs: None,
         };
         let reads = |group: Group| {
             let (_, samplers, ..) = bindings(
@@ -5598,6 +5927,7 @@ mod tests {
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
             shadow_linear: 0,
+            jobs: None,
             packed: [None; BUFFERS],
         };
         let (_, samplers, ..) = bindings(
@@ -5681,6 +6011,7 @@ mod tests {
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
             shadow_linear: 0,
+            jobs: None,
         };
         let mut notes = Vec::new();
         let (.., images) = bindings(
@@ -5823,6 +6154,7 @@ mod tests {
             released: std::cell::Cell::new(("", 0)),
             stand_ins: &stand_ins,
             shadow_linear: 0,
+            jobs: None,
         };
         let draws = DrawUniforms::new(&device);
         let mut notes = Vec::new();
@@ -5966,6 +6298,34 @@ mod tests {
     }
 
     #[test]
+    fn an_image_is_made_in_its_layout_qualifiers_format() {
+        // `image.x = … RGB10_A2 …` read through `layout(rgb10_a2) image2D x`.
+        for q in [
+            "rgba32f",
+            "rgba16f",
+            "rg16f",
+            "r11f_g11f_b10f",
+            "r32f",
+            "rgba16",
+            "rgb10_a2",
+            "rgba8",
+            "rg8",
+            "r16",
+            "rgba16_snorm",
+            "rgba8_snorm",
+            "r8_snorm",
+            "rgba32i",
+            "r16i",
+            "rgb10_a2ui",
+            "rgba8ui",
+            "r32ui",
+        ] {
+            let def = Format::parse(q).unwrap();
+            assert_eq!(Some(pack_images::format(def, true)), image_format(q), "{q}");
+        }
+    }
+
+    #[test]
     fn samplers_read_custom_textures_of_their_type() {
         use wgpu::TextureSampleType as T;
         let float = T::Float { filterable: true };
@@ -6009,6 +6369,10 @@ mod destination_tests;
 #[cfg(test)]
 #[path = "pack_material_tests.rs"]
 mod material_tests;
+
+#[cfg(test)]
+#[path = "pack_paged_maps_tests.rs"]
+mod paged_maps_tests;
 
 #[cfg(test)]
 mod rgb_alpha_tests;

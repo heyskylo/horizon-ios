@@ -326,8 +326,8 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
 
     /// `ChargeCursor.update`.
     fn sculk_cursor_update(&mut self, cursor: &mut ChargeCursor, origin: BlockPos, veins: bool) {
-        // shouldUpdate: charge left and the origin's chunk is ticking.
-        if cursor.charge <= 0 || !self.level.is_ticking_chunk(origin.chunk()) {
+        // shouldUpdate: charge left and the origin is in block-ticking ticket range.
+        if cursor.charge <= 0 || !self.level.should_tick_blocks_at(origin.chunk()) {
             return;
         }
         if cursor.update_delay > 0 {
