@@ -1380,6 +1380,7 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
 /// fast, and a fully frozen mob takes one freeze damage every 40 ticks.
 fn freeze_tick(m: &mut Mob, w: &MobWorld) {
     let in_snow = in_powder_snow(m, w);
+    m.in_powder_snow = in_snow;
     if !in_snow && m.ticks_frozen == 0 {
         return;
     }
