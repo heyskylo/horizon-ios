@@ -6161,6 +6161,8 @@ ISOLATED_EFFECTIVE_PRESENCE = frozenset({'effective component presence'})
 ISOLATED_BOAT_TREE = frozenset({'boat passenger tree'})
 # Its sync turns on fixed seeds for the whole script: the groups after it would draw from them (tools/test_seed_sync_parity.py).
 ISOLATED_SEED_SYNC = frozenset({'seed sync proof'})
+ISOLATED_EFFECTIVE_PRESENCE = frozenset({'effective component presence'})
+ISOLATED_BOAT_TREE = frozenset({'boat passenger tree'})
 ISOLATED_GROUPS = ISOLATED_REINFORCEMENTS | ISOLATED_RECIPES | ISOLATED_WOLF_ANGER | ISOLATED_FRAME_MAPS | ISOLATED_SPECTRAL_DURATION | ISOLATED_PICKUP_SAVE | ISOLATED_ORB_UUID | ISOLATED_STAND_FALL | ISOLATED_MAP_CRAFTING | ISOLATED_MACRO_TYPE | ISOLATED_ITEM_HEALTH | ISOLATED_POTION_ICONS | ISOLATED_JUKEBOX_CLOCK | ISOLATED_FUNCTION_FEEDBACK | ISOLATED_SEED_SYNC | ISOLATED_EFFECTIVE_PRESENCE | ISOLATED_BOAT_TREE
 
 
