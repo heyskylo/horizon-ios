@@ -158,6 +158,23 @@ for floor_name in ('stone-edge', 'wool-edge'):
     CASES[f'cow-{floor_name}'] = entity_case(f'cow-{floor_name}', floor_name, COW)
 
 
+# Entity.kill emits ENTITY_DIE after removal; wool stacks dampen it at the
+# source (ItemEntity.dampensVibrations), regardless of the floor material.
+for name, kind, nbt in (
+        ('stone-item', 'item', '{Item:{id:"minecraft:stone",count:1},NoGravity:1b}'),
+        ('wool-item', 'item', '{Item:{id:"minecraft:white_wool",count:1},NoGravity:1b}'),
+        ('red-wool-item', 'item', '{Item:{id:"minecraft:red_wool",count:1},NoGravity:1b}'),
+        ('cushion', 'cushion', '{}'),
+        ('crystal', 'end_crystal', '{Invulnerable:1b}'),
+        ('marker', 'marker', '{}')):
+    case = f'kill-{name}'
+    CASES[case] = [*arena('stone'), f'cmd Alice tp @s {FAR} 0 0',
+                   f'cmd Alice summon minecraft:{kind} 0.5 -60 0.5 {nbt}', 'ticks 10',
+                   *sensor(), 'ticks 5', f'step {case}', FREQUENCY,
+                   f'cmd Alice kill @e[type=minecraft:{kind}]', 'ticks 12', FREQUENCY, PHASE,
+                   'step setup']
+
+
 def run_side(label, server_command, client_command, build, world):
     directory = build / label
     port = server_dir(directory, world)
