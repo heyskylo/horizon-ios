@@ -672,7 +672,15 @@ pub fn encode_block_entity(
     match e {
         // EnderChestBlockEntity saves nothing of its own: the items are the player's.
         BlockEntity::Chest(_) if block == "minecraft:ender_chest" => {}
-        BlockEntity::Chest(items) => entries.push(("Items", encode_items(items))),
+        BlockEntity::Chest(items) => {
+            let list = encode_items(items);
+            // ShulkerBoxBlockEntity.saveAdditional: `saveAllItems(.., false)`
+            // writes no list for an empty box; other containers always do.
+            let empty = matches!(&list, Tag::List(l) if l.is_empty());
+            if !(empty && block.ends_with("shulker_box")) {
+                entries.push(("Items", list));
+            }
+        }
         BlockEntity::Furnace(f) => {
             entries.push(("Items", encode_items(&f.items)));
             entries.push(("lit_time_remaining", Tag::Int(f.lit_remaining)));

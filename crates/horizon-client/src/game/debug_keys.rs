@@ -528,7 +528,7 @@ impl Game<'_> {
         }
         // Horizon's own: HDR's output while the setting is on, under the GPU (a group of its
         // own would move others to the other column).
-        if self.settings.horizon.hdr
+        if self.settings.horizon.hdr_wanted()
             && let Some(r) = self.renderer.as_ref()
         {
             d.group("system", [r.hdr_line()]);
