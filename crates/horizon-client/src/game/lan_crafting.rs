@@ -42,6 +42,9 @@ pub(super) struct GuestCrafting {
     pub(super) machine: Option<(i32, Box<Menu>)>,
 }
 
+/// The most containers `native_recipe_sources` adds to one placement.
+const MAX_RECIPE_SOURCES: usize = 64;
+
 /// ServerboundContainerClickPacket's input.
 pub(super) fn input(id: i32) -> Input {
     match id {
@@ -805,6 +808,8 @@ impl Game<'_> {
             .filter(|(window, m)| *window == container && m.kind() == kind)
             .map_or_else(|| Box::new(Menu::new(kind)), |(_, m)| m);
         let shown = Self::lan_mod_craft_shown(host, gi, &items);
+        let sources = self.lan_recipe_sources(host, gi, t, pos);
+        menu.sources = sources.iter().map(|(_, items)| items.clone()).collect();
         let out = self.guest_menu_op(host, gi, &mut menu, |menu, env| {
             menu.load_container(env, &items);
             if let Some((slot, result)) = shown {
@@ -812,6 +817,21 @@ impl Game<'_> {
             }
             apply(menu, env)
         });
+        for ((at, before), after) in sources.into_iter().zip(std::mem::take(&mut menu.sources)) {
+            if after == before {
+                continue;
+            }
+            match self.world.block_entities.get_mut(&at) {
+                Some(BlockEntity::Chest(items)) => *items = after,
+                Some(BlockEntity::Mod(m)) => {
+                    for (slot, stack) in m.items.iter_mut().zip(after) {
+                        *slot = stack;
+                    }
+                }
+                _ => {}
+            }
+            self.container_changed(at);
+        }
         let after = menu.container_items();
         if after != items {
             if let Some(BlockEntity::Mod(m)) = self.world.block_entities.get_mut(&pos) {
@@ -827,6 +847,43 @@ impl Game<'_> {
         self.lan_mod_craft_settle(host, gi, pos, &mut menu);
         host.play.entry(conn).or_default().crafting.machine = Some((container, menu));
         Some(out)
+    }
+
+    /// The containers recipe placement into guest `gi`'s mod crafting menu
+    /// `t` at `pos` may also take from (`native_recipe_sources`): each block
+    /// and its slots, chest-like or a mod's container, none twice, not `pos`.
+    fn lan_recipe_sources(
+        &mut self,
+        host: &LanHost,
+        gi: usize,
+        t: &ModMenuType,
+        pos: (i32, i32, i32),
+    ) -> Vec<((i32, i32, i32), Vec<Option<ItemStack>>)> {
+        let mut asked = Vec::new();
+        let uuid = host.hub.guests[gi].uuid;
+        self.native_recipe_sources(uuid, t.id, [pos.0, pos.1, pos.2], &mut asked);
+        let mut sources: Vec<((i32, i32, i32), Vec<Option<ItemStack>>)> = Vec::new();
+        for at in asked {
+            let at = (at[0], at[1], at[2]);
+            if at == pos || sources.len() >= MAX_RECIPE_SOURCES || sources.iter().any(|s| s.0 == at)
+            {
+                continue;
+            }
+            let state = self.world.block(at.0, at.1, at.2).0;
+            let items = match self.world.block_entities.get(&at) {
+                Some(BlockEntity::Chest(items)) => items.clone(),
+                // A mod's container, while it is in the world (not ticking).
+                Some(BlockEntity::Mod(m)) if !m.id.is_empty() => {
+                    match self.world.block_entities.mod_container(state) {
+                        Some(c) => m.items.iter().take(c.slots).cloned().collect(),
+                        None => continue,
+                    }
+                }
+                _ => continue,
+            };
+            sources.push((at, items));
+        }
+        sources
     }
 
     /// The result guest `gi`'s mod crafting menu shows, with its slot, while

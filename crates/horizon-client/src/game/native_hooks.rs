@@ -7849,6 +7849,27 @@ impl Game<'_> {
     ) {
         mod_api::dispatch_menu_input_closed(self, mod_api::mods(), uuid, window, slots);
     }
+    /// Recipe placement into the crafting grid of a mod menu type
+    /// (`crafting`, docs/mods.md) open at `pos`, the recipe book's or a
+    /// recipe viewer's (`native_place_recipe`, `native_transfer_recipe`), by
+    /// `player`: push the positions of block containers the placement may
+    /// also take ingredients from onto `sources`, as a crafting station takes
+    /// them from the chests beside it. `menu` is the menu type (`<id>:<name>`).
+    /// Chests, barrels, shulker boxes, hoppers, dispensers, droppers and mod
+    /// containers in the player's level count; others, the menu's own block
+    /// and repeats are passed by, and at most 64 are used. The placement takes
+    /// from the player's inventory first, then the sources in order; what the
+    /// grid held goes back to the player as vanilla's does. No answer keeps
+    /// vanilla's placement. Server-side. API @API:recipe_sources@.
+    pub(super) fn native_recipe_sources(
+        &mut self,
+        player: u128,
+        menu: &str,
+        pos: [i32; 3],
+        sources: &mut Vec<[i32; 3]>,
+    ) {
+        mod_api::dispatch_recipe_sources(self, mod_api::mods(), player, menu, pos, sources);
+    }
     /// Once a server tick, after `ServerTickEnd`, the play packets one
     /// player's connection sent (`outbound`) or received since the last tick
     /// while a mod counts them (`native_count_packets(true)`; off, nothing is
