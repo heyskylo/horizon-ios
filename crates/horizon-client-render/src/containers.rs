@@ -19,25 +19,45 @@ pub struct ModMenuType {
     pub slots: usize,
     pub data_slots: usize,
     pub results: Vec<usize>,
+    /// its crafting grid, if it has one (`crafting`).
+    pub crafting: Option<ModCrafting>,
+}
+
+/// a mod menu type's crafting grid: `size`x`size` container slots from
+/// `grid` on, row by row, and the slot showing what they craft. The block
+/// entity holds the grid; the result is the menu's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModCrafting {
+    pub grid: usize,
+    pub size: usize,
+    pub result: usize,
+}
+
+impl ModCrafting {
+    /// The grid's container slots.
+    pub fn grid_slots(&self) -> std::ops::Range<usize> {
+        self.grid..self.grid + self.size * self.size
+    }
 }
 
 static MOD_MENU_TYPES: std::sync::OnceLock<Vec<ModMenuType>> = std::sync::OnceLock::new();
 
 /// registers the content mods' menu types, `(id, slots, data slots,
-/// results)`, a list set once per process (false when it already was).
+/// results, crafting)`, a list set once per process (false when it already was).
 pub fn register_mod_menu_types(
-    menus: impl IntoIterator<Item = (String, usize, usize, Vec<usize>)>,
+    menus: impl IntoIterator<Item = (String, usize, usize, Vec<usize>, Option<ModCrafting>)>,
 ) -> bool {
     if MOD_MENU_TYPES.get().is_some() {
         return false;
     }
     let menus = menus
         .into_iter()
-        .map(|(id, slots, data_slots, results)| ModMenuType {
+        .map(|(id, slots, data_slots, results, crafting)| ModMenuType {
             id: Box::leak(id.into_boxed_str()),
             slots,
             data_slots,
             results,
+            crafting,
         });
     MOD_MENU_TYPES.set(menus.collect()).is_ok()
 }
