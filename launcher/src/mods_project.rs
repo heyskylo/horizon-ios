@@ -687,12 +687,16 @@ impl Launcher {
             Support::Partial(_) => t.warn,
             Support::No(_) => t.muted,
         };
-        let back = button("mods-back", "Back to results", Kind::Ghost, &t).on_click(cx.listener(
-            |this, _: &ClickEvent, _, cx| {
-                this.mods.browse.open = None;
-                cx.notify();
-            },
-        ));
+        let back = button(
+            "mods-back",
+            format!("← {}", tr("Back to results")),
+            Kind::Secondary,
+            &t,
+        )
+        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+            this.mods.browse.open = None;
+            cx.notify();
+        }));
         let details = o.details.clone();
         let versions = o.versions.clone();
         let version_list = o.version_list.clone();
