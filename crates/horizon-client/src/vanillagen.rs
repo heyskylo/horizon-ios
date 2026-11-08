@@ -1111,19 +1111,20 @@ mod default_block_entity_tests {
         kinds[7] = Some("minecraft:sculk_sensor");
         let mut raw = vec![];
         add_default_block_entities(&kinds, &mut out, &mut raw);
+        // Both are modelled now: an ender chest's `EnderChestBlock.newBlockEntity` is
+        // an entity, so a generated one reads back like a placed chest.
         assert!(matches!(
             out.block_entities[..],
-            [((-28, -40, 57), crate::containers::BlockEntity::Sculk(_))]
+            [
+                ((-28, -40, 57), crate::containers::BlockEntity::Sculk(_)),
+                ((-27, -40, 57), crate::containers::BlockEntity::Chest(_))
+            ]
         ));
-        assert_eq!(raw.len(), 1);
-        assert_eq!(
-            raw[0].get("id"),
-            Some(&Tag::String("minecraft:ender_chest".into()))
-        );
+        assert!(raw.is_empty());
         add_default_block_entities(&kinds, &mut out, &mut raw);
         assert_eq!(
             (out.block_entities.len(), raw.len()),
-            (1, 1),
+            (2, 0),
             "a placed block entity is kept, not doubled"
         );
     }
