@@ -4,7 +4,7 @@
 //! loop at user-controlled playback speeds (slow-motion, 1x, fast-forward, pause).
 
 use super::{
-    mcpr::{McprReader, McprWriter, Metadata, TimestampedPacket},
+    mcpr::{Marker, McprReader, McprWriter, Metadata, TimestampedPacket},
     spline::CameraTrack,
 };
 use std::{
@@ -69,6 +69,25 @@ impl ReplayDriver {
     /// Camera keyframes saved alongside the packet stream, if present.
     pub fn camera_track(&self) -> Option<&CameraTrack> {
         self.reader.camera_track.as_ref()
+    }
+
+    /// Markers saved alongside the packet stream, in timeline order.
+    pub fn markers(&self) -> &[Marker] {
+        &self.reader.markers
+    }
+
+    /// Add a bookmark at the current playhead and persist it in `markers.json`.
+    pub fn add_marker(&mut self, label: String) -> io::Result<Marker> {
+        let marker = Marker {
+            time_ms: self.position_ms(),
+            label,
+        };
+        let mut markers = self.reader.markers.clone();
+        markers.push(marker.clone());
+        markers.sort_by_key(|entry| entry.time_ms);
+        McprWriter::replace_markers(&self.path, &markers)?;
+        self.reader.markers = markers;
+        Ok(marker)
     }
 
     /// Save the edited camera path in the recording archive.
