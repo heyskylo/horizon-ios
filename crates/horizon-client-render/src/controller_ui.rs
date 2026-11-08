@@ -65,6 +65,51 @@ pub struct Setting {
     pub item: Item,
     pub text: &'static str,
 }
+/// What the chosen value does, for a setting whose values each do something different.
+fn choice_description(opt: Opt, pad: &PadSettings) -> Option<&'static str> {
+    Some(match opt {
+        Opt::PadGameplayGuide => match pad.guide_detail {
+            gamepad::GuideDetail::Full => {
+                "Shows what your buttons do right now, in play and in inventories."
+            }
+            gamepad::GuideDetail::Basic => {
+                "Shows only what you can do with what you're looking at, and the main inventory buttons."
+            }
+            gamepad::GuideDetail::Off => "Doesn't show what your buttons do.",
+        },
+        Opt::PadGlyphs => match pad.glyphs {
+            GlyphStyle::Auto => "Shows the buttons of the controller you're using.",
+            GlyphStyle::Xbox => "Always shows Xbox buttons.",
+            GlyphStyle::PlayStation => "Always shows PlayStation buttons.",
+            GlyphStyle::Nintendo => "Always shows Nintendo buttons.",
+        },
+        Opt::PadNintendoButtons => {
+            if pad.nintendo_letters {
+                "A, on the right, confirms and jumps and B goes back, as on a Switch."
+            } else {
+                "B, at the bottom, confirms and jumps and A goes back, as on other controllers."
+            }
+        }
+        Opt::PadKeyboard => match pad.keyboard {
+            gamepad::TextKeyboard::Auto => {
+                "Opens Steam's keyboard on a Steam Deck under Steam, and Horizon's otherwise."
+            }
+            gamepad::TextKeyboard::Horizon => "Always opens Horizon's keyboard.",
+            gamepad::TextKeyboard::Steam => "Always opens Steam's keyboard.",
+        },
+        Opt::PadLightbar => match pad.lightbar {
+            gamepad::Lightbar::Health => {
+                "A DualSense's light shows your health, from green through amber to red."
+            }
+            gamepad::Lightbar::Dimension => {
+                "A DualSense's light changes with the dimension you're in."
+            }
+            gamepad::Lightbar::Off => "A DualSense keeps its own light.",
+        },
+        _ => return None,
+    })
+}
+
 fn option(opt: Opt, text: &'static str) -> Setting {
     Setting {
         item: Item::Option(opt),
@@ -141,10 +186,20 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                 ),
                 (
                     "Play",
-                    vec![option(
-                        Opt::PadTriggerThreshold,
-                        "How far a trigger is pulled before it counts as pressed.",
-                    )],
+                    vec![
+                        option(
+                            Opt::PadGameplayGuide,
+                            "Show the buttons for what you can do, while you play with a controller.",
+                        ),
+                        option(
+                            Opt::PadCraftOnServers,
+                            "Lets LT + A craft on servers other than your own worlds. Some servers count it as a macro.",
+                        ),
+                        option(
+                            Opt::PadTriggerThreshold,
+                            "How far a trigger is pulled before it counts as pressed.",
+                        ),
+                    ],
                 ),
                 (
                     "Menus",
@@ -216,6 +271,10 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                         option(
                             Opt::PadGlyphs,
                             "Follow the controller, or always show one family's buttons.",
+                        ),
+                        option(
+                            Opt::PadNintendoButtons,
+                            "Whether a Nintendo controller's A and B work by where they sit or by their letters.",
                         ),
                         info(Info::Using, "The buttons menus show right now."),
                     ],
@@ -289,6 +348,7 @@ impl Item {
             Item::Option(Opt::PadAdaptiveTriggers) => Some(c.adaptive_triggers),
             Item::Option(Opt::PadInvertX) => Some(c.invert_x),
             Item::Option(Opt::PadInvertY) => Some(c.invert_y),
+            Item::Option(Opt::PadCraftOnServers) => Some(c.craft_on_servers),
             _ => None,
         }
     }
@@ -826,8 +886,12 @@ impl ControllerUi {
     /// What a row does. A binding names the controller's own buttons, and what else its button
     /// does when it shares it.
     fn description(&self, setting: Setting, s: &Settings) -> String {
-        let Item::Bind(action) = setting.item else {
-            return lang::get(setting.text);
+        let action = match setting.item {
+            Item::Bind(action) => action,
+            Item::Option(opt) => {
+                return lang::get(choice_description(opt, &s.controller).unwrap_or(setting.text));
+            }
+            _ => return lang::get(setting.text),
         };
         let pad = &s.controller;
         let style = self.context.style;
@@ -1284,6 +1348,7 @@ mod tests {
             Opt::PadLookDeadzone,
             Opt::PadTriggerThreshold,
             Opt::PadGlyphs,
+            Opt::PadNintendoButtons,
             Opt::PadKeyboard,
             Opt::PadPointerSpeed,
             Opt::PadScrollSpeed,
@@ -1381,6 +1446,78 @@ mod tests {
         assert!((s.controller.move_deadzone - before - 0.01).abs() < 0.001);
     }
 
+    /// The Device page's Nintendo Buttons row sits with the glyphs, steps between its two
+    /// values rather than ticking a box, and what it sets is what the controller file keeps.
+    #[test]
+    fn the_nintendo_buttons_row_flips_letters_and_the_file_keeps_it() {
+        let (page, group) = rows()
+            .into_iter()
+            .flat_map(|(page, groups)| groups.into_iter().map(move |g| (page, g)))
+            .find(|(_, (_, rows))| {
+                rows.iter()
+                    .any(|r| r.item == Item::Option(Opt::PadNintendoButtons))
+            })
+            .unwrap();
+        assert_eq!((page, group.0), (Page::Device, "Glyphs"));
+        let mut s = Settings::default();
+        let item = Item::Option(Opt::PadNintendoButtons);
+        assert!(item.steps(&s));
+        s.controller.nintendo_letters = false;
+        let mut ui = ControllerUi {
+            focus: Some(Target::Item(item)),
+            ..ControllerUi::default()
+        };
+        // Vanilla's caption and value template; Horizon's own words come bundled.
+        struct Vanilla;
+        impl lang::ResourceSource for Vanilla {
+            fn read(&self, path: &str) -> Option<Vec<u8>> {
+                (path == "assets/minecraft/lang/en_us.json")
+                    .then(|| br#"{"options.generic_value": "%s: %s"}"#.to_vec())
+            }
+        }
+        let value = |ui: &ControllerUi, s: &Settings| {
+            lang::scoped(lang::Language::load(&[&Vanilla], "en_us"), || {
+                ui.parts(item, s)
+            })
+            .0
+        };
+        assert_eq!(value(&ui, &s).0, "Nintendo Buttons");
+        assert_eq!(value(&ui, &s).1.as_deref(), Some("By Position"));
+        let actions = key(&mut ui, &mut s, K::Enter);
+        assert!(actions.contains(&Action::Changed), "{actions:?}");
+        assert!(s.controller.nintendo_letters);
+        assert_eq!(value(&ui, &s).1.as_deref(), Some("By Letter"));
+        assert!(PadSettings::parse(&s.controller.serialize()).nintendo_letters);
+        key(&mut ui, &mut s, K::Enter);
+        assert!(!s.controller.nintendo_letters);
+        assert!(!PadSettings::parse(&s.controller.serialize()).nintendo_letters);
+    }
+
+    /// What the screen draws at the bottom of the page changes with the choice, in every one of
+    /// these settings.
+    #[test]
+    fn each_choice_describes_itself() {
+        let ui = ControllerUi::default();
+        let mut s = Settings::default();
+        for (opt, choices) in [
+            (Opt::PadGameplayGuide, 3),
+            (Opt::PadGlyphs, 4),
+            (Opt::PadNintendoButtons, 2),
+            (Opt::PadKeyboard, 3),
+            (Opt::PadLightbar, 3),
+        ] {
+            let setting = option(opt, "the fixed sentence");
+            let mut seen = Vec::new();
+            for _ in 0..choices {
+                let text = ui.description(setting, &s);
+                assert_ne!(text, "the fixed sentence", "{opt:?}");
+                assert!(!seen.contains(&text), "{opt:?} repeats {text}");
+                seen.push(text);
+                opt.cycle(&mut s, false, FB);
+            }
+        }
+    }
+
     #[test]
     fn every_text_is_in_the_language_table() {
         let (_, missed) = lang::scoped(lang::Language::load(&[], "de_de"), || {
@@ -1392,6 +1529,19 @@ mod tests {
                     for row in rows {
                         lang::get(row.text);
                     }
+                }
+            }
+            let mut settings = Settings::default();
+            for opt in [
+                Opt::PadGameplayGuide,
+                Opt::PadGlyphs,
+                Opt::PadNintendoButtons,
+                Opt::PadKeyboard,
+                Opt::PadLightbar,
+            ] {
+                for _ in 0..4 {
+                    lang::get(choice_description(opt, &settings.controller).unwrap());
+                    opt.cycle(&mut settings, false, FB);
                 }
             }
             for text in [

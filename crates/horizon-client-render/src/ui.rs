@@ -134,6 +134,10 @@ fn scaling(sprite: &str, r: &Rect) -> NineSlice {
         width: r.w,
         height: r.h,
         border: match sprite {
+            "horizon/jei/button_enabled_v2"
+            | "horizon/jei/button_disabled_v2"
+            | "horizon/jei/button_highlight_v2" => [6; 4],
+            "horizon/jei/search_background_v2" => [6; 4],
             "gui/sprites/widget/button"
             | "gui/sprites/widget/button_highlighted"
             | "gui/sprites/widget/button_disabled" => [3; 4],
@@ -211,6 +215,25 @@ pub fn blit_sprite(
 ) {
     if let Some(r) = atlas.sprites.get(sprite) {
         draw_sprite(batch, *r, nine_slice_metadata(sprite), [x, y, w, h], color);
+    }
+}
+/// `GuiGraphicsExtractor.blit(location, x, y, u, v, width, height, textureWidth,
+/// textureHeight)`: a `src` region of a sprite — in its own texture's units, as the
+/// u/v/width/height arguments are — stretched over `w` × `h`.
+pub fn blit_sprite_region(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    sprite: &str,
+    src: [f32; 4],
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    color: u32,
+) {
+    if let Some(r) = atlas.sprites.get(sprite) {
+        let size = [r.w as f32, r.h as f32];
+        batch.rect_uv(x, y, w, h, sub(*r, size, src), color);
     }
 }
 fn draw_sprite(
@@ -1255,6 +1278,29 @@ impl Caret {
         focused: bool,
         focused_at: Instant,
     ) {
+        self.draw_color(
+            batch,
+            atlas,
+            (id, value, max),
+            rect,
+            focused,
+            focused_at,
+            rgba(224, 224, 224, 255),
+        );
+    }
+    /// [`Self::draw`] with the text in `color` (`EditBox.setTextColor`): the
+    /// settings tab turns an invalid Realm name red.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_color(
+        &mut self,
+        batch: &mut HudBatch,
+        atlas: &HudAtlas,
+        (id, value, max): (crate::clipboard::FieldId, &str, usize),
+        rect: [f32; 4],
+        focused: bool,
+        focused_at: Instant,
+        color: u32,
+    ) {
         let mut idle;
         let edit = if focused {
             self.sync(id, value, max)
@@ -1266,6 +1312,7 @@ impl Caret {
         };
         [edit.x, edit.y, edit.width, edit.height] = rect;
         edit.focused = focused;
+        edit.text_color = color;
         if edit.focused_at < focused_at {
             edit.focused_at = focused_at;
         }
@@ -1636,10 +1683,19 @@ impl EditBox {
     }
     /// Draw the field; `format` styles the visible text (command colouring).
     pub fn draw(&mut self, batch: &mut HudBatch, atlas: &HudAtlas, format: Option<&Text>) {
+        self.draw_with_skin(batch, atlas, format, None);
+    }
+
+    pub fn draw_with_skin(
+        &mut self,
+        batch: &mut HudBatch,
+        atlas: &HudAtlas,
+        format: Option<&Text>,
+        skin: Option<&str>,
+    ) {
         self.layout(atlas);
         crate::widgets::target_as(
-            self.frame
-                .unwrap_or([self.x, self.y, self.width, self.height]),
+            [self.x, self.y, self.width, self.height],
             crate::widgets::Kind::Field,
         );
         crate::widgets::narratable(|| {
@@ -1651,11 +1707,11 @@ impl EditBox {
             .focused(self.focused)
         });
         if self.bordered {
-            let sprite = if self.focused {
+            let sprite = skin.unwrap_or(if self.focused {
                 "gui/sprites/widget/text_field_highlighted"
             } else {
                 "gui/sprites/widget/text_field"
-            };
+            });
             nine_slice(
                 batch,
                 atlas,

@@ -655,6 +655,122 @@ impl SecretStore for MemoryStore {
     }
 }
 
+/// How long a call to the system keyring may take before the launcher gives up on it (#12179). An
+/// unlock prompt the player is typing a password into counts as an answer still coming, so this is
+/// longer than a working keyring ever takes, short enough that Play says what is wrong.
+pub const KEYCHAIN_WAIT: Duration = Duration::from_secs(20);
+
+/// What the launcher says when the system keyring didn't answer within `wait`.
+pub fn keyring_no_answer(wait: Duration) -> String {
+    crate::i18n::trf(
+        "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.",
+        &[("seconds", &wait.as_secs().max(1).to_string())],
+    )
+}
+
+/// One call to a [`Bounded`] keyring: its answer, or that the caller gave up on it.
+struct Call<T> {
+    answer: Option<T>,
+    gave_up: bool,
+}
+
+/// A keyring whose calls give up after `wait` (#12179): a Secret Service that never answers (a
+/// stuck KWallet or GNOME Keyring daemon) otherwise holds the account lock forever, and Play stays
+/// on "Starting…" with nothing said. Each call runs on a thread of its own; one given up on keeps
+/// running there, and while it does, later calls fail at once instead of piling up behind it.
+pub struct Bounded {
+    keyring: std::sync::Arc<dyn SecretStore>,
+    wait: Duration,
+    /// Calls given up on that haven't come back yet.
+    stuck: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Bounded {
+    pub fn new(keyring: impl SecretStore + 'static, wait: Duration) -> Self {
+        Self {
+            keyring: std::sync::Arc::new(keyring),
+            wait,
+            stuck: Default::default(),
+        }
+    }
+
+    fn call<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&dyn SecretStore) -> Result<T, String> + Send + 'static,
+    ) -> Result<T, String> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let no_answer = || {
+            let said = keyring_no_answer(self.wait);
+            eprintln!("Horizon: {said}");
+            Err(said)
+        };
+        if self.stuck.load(SeqCst) > 0 {
+            return no_answer();
+        }
+        let call = std::sync::Arc::new((
+            Mutex::new(Call::<Result<T, String>> {
+                answer: None,
+                gave_up: false,
+            }),
+            std::sync::Condvar::new(),
+        ));
+        let (keyring, stuck, theirs) = (self.keyring.clone(), self.stuck.clone(), call.clone());
+        let spawned = std::thread::Builder::new()
+            .name("keyring".into())
+            .spawn(move || {
+                let answer = f(keyring.as_ref());
+                let (slot, done) = &*theirs;
+                let mut slot = slot.lock().unwrap_or_else(|e| e.into_inner());
+                if slot.gave_up {
+                    stuck.fetch_sub(1, SeqCst);
+                } else {
+                    slot.answer = Some(answer);
+                    done.notify_one();
+                }
+            });
+        if let Err(e) = spawned {
+            return Err(e.to_string());
+        }
+        let (slot, done) = &*call;
+        let slot = slot.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut slot, _) = done
+            .wait_timeout_while(slot, self.wait, |call| call.answer.is_none())
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(answer) = slot.answer.take() {
+            return answer;
+        }
+        // Under the call's lock: the thread, when it ends, sees this and counts itself back.
+        slot.gave_up = true;
+        self.stuck.fetch_add(1, SeqCst);
+        drop(slot);
+        no_answer()
+    }
+}
+
+impl SecretStore for Bounded {
+    fn get(&self, key: &str) -> Result<Option<String>, String> {
+        let key = key.to_string();
+        self.call(move |keyring| keyring.get(&key))
+    }
+    fn set(&self, key: &str, secret: &str) -> Result<(), String> {
+        let (key, secret) = (key.to_string(), secret.to_string());
+        self.call(move |keyring| keyring.set(&key, &secret))
+    }
+    fn delete(&self, key: &str) -> Result<(), String> {
+        let key = key.to_string();
+        self.call(move |keyring| keyring.delete(&key))
+    }
+    fn persistent(&self) -> bool {
+        self.keyring.persistent()
+    }
+    fn lock_file(&self) -> Option<PathBuf> {
+        self.keyring.lock_file()
+    }
+    fn operations(&self) -> &Mutex<()> {
+        self.keyring.operations()
+    }
+}
+
 /// The secrets file in the launcher's data folder, when no keychain answers (#5095): many Linux
 /// systems run no Secret Service, and sign-ins would otherwise last one run. One JSON object, key
 /// to secret, encrypted with a key of this computer's ([`seal`]), readable and writable by the
@@ -1510,7 +1626,8 @@ fn keychain_or_why() -> Result<Box<dyn SecretStore>, String> {
         if std::env::var_os("HORIZON_NO_KEYCHAIN").is_some() {
             return Err("HORIZON_NO_KEYCHAIN is set.".into());
         }
-        SystemStore.get("probe").map(|_| Box::new(SystemStore) as _)
+        let keychain = Bounded::new(SystemStore, KEYCHAIN_WAIT);
+        keychain.get("probe").map(|_| Box::new(keychain) as _)
     }
     #[cfg(not(all(
         not(test),
@@ -1534,7 +1651,10 @@ pub fn store() -> &'static dyn SecretStore {
         .get_or_init(|| {
             #[cfg(all(not(test), any(target_os = "linux", target_os = "freebsd")))]
             if std::env::var_os("HORIZON_NO_KEYCHAIN").is_none() {
-                return Box::new(Layered::new(Box::new(SystemStore), FileStore::launcher()));
+                return Box::new(Layered::new(
+                    Box::new(Bounded::new(SystemStore, KEYCHAIN_WAIT)),
+                    FileStore::launcher(),
+                ));
             }
             keychain_or_why().unwrap_or_else(|why| {
                 let _ = NO_KEYCHAIN_WHY.set(why);
@@ -1816,18 +1936,28 @@ impl Accounts {
 }
 
 /// No account in the launcher owns Minecraft: Java Edition: the game must not start.
-#[derive(Debug, PartialEq)]
-pub struct NoOwner;
+#[derive(Debug, Default, PartialEq)]
+pub struct NoOwner {
+    /// Why a sign-in couldn't be read, when the keyring didn't give it (#12179): what is said
+    /// instead of the refusal, which would tell a signed-in player to sign in.
+    pub keyring: Option<String>,
+}
 impl std::fmt::Display for NoOwner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{NEEDS_OWNER}.")
+        match &self.keyring {
+            Some(why) => write!(f, "{why}"),
+            None => write!(f, "{NEEDS_OWNER}."),
+        }
     }
 }
 
 impl NoOwner {
     /// The same refusal for the window, which has Settings rather than a command to name.
-    pub fn in_window() -> String {
+    pub fn in_window(&self) -> String {
         use crate::i18n::tr;
+        if let Some(why) = &self.keyring {
+            return why.clone();
+        }
         format!(
             "{}. {}",
             tr(NEEDS_OWNER),
@@ -1876,13 +2006,31 @@ pub fn launch(
     order.sort_by_key(|a| Some(&a.uuid) != selected.as_ref());
     let mut pass = Launch::default();
     let mut owned = false;
+    let mut unreadable = None;
     for account in order {
         if owned {
             break;
         }
         let plays = Some(&account.uuid) == selected.as_ref();
         let operation = session::lock(store);
-        let Some(secrets) = secrets_in(store, &account.uuid) else {
+        let read = match store.get(&account.uuid) {
+            Ok(text) => text.and_then(|s| serde_json::from_str::<Secrets>(&s).ok()),
+            Err(why) => {
+                // Not "signed out": the keyring didn't say (#12179). With no owner, the refusal
+                // says this instead.
+                let said = crate::i18n::trf(
+                    "Can't read {name}'s sign-in: {why}",
+                    &[("name", &account.name), ("why", &why)],
+                );
+                eprintln!("Horizon: {said}");
+                if plays {
+                    pass.offline = Some(said.clone());
+                }
+                unreadable = Some(said);
+                continue;
+            }
+        };
+        let Some(secrets) = read else {
             if plays {
                 pass.offline = Some(format!(
                     "{} is no longer signed in on this computer. Sign in again.",
@@ -1933,7 +2081,9 @@ pub fn launch(
     if owned {
         Ok(pass)
     } else {
-        Err(NoOwner)
+        Err(NoOwner {
+            keyring: unreadable,
+        })
     }
 }
 
@@ -1949,7 +2099,7 @@ pub fn launch_for_game(
     offline_without_owner: bool,
 ) -> Result<Launch, NoOwner> {
     match launch(ep, client_id, store, accounts) {
-        Err(NoOwner) if offline_without_owner => Ok(Launch::default()),
+        Err(NoOwner { .. }) if offline_without_owner => Ok(Launch::default()),
         pass => pass,
     }
 }
@@ -2456,7 +2606,7 @@ fn java_player_with(
         .session
         .or(pass.owner)
         .or_else(kept)
-        .ok_or_else(|| NoOwner.to_string())?;
+        .ok_or_else(|| NoOwner::default().to_string())?;
     Ok(crate::java_launch::Player {
         name: account.name,
         uuid: account.uuid,

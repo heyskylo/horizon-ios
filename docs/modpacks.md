@@ -333,6 +333,26 @@ cargo run -p horizon-port-pack -- events ~/.horizon/ports/pack/jars   # NeoForge
 cargo run -p horizon-port-pack -- port ~/Downloads/pack.zip ~/.horizon/ports/pack [--from <folder>] [--resources <root>]
 ```
 
+### Data packs in mod jars
+
+Some mods are a data pack in a jar: no classes, a `pack.mcmeta` and a `data/` folder (the skyblock
+packs of Skyblock Plus are). A content mod may not hold `data/minecraft`, so the carry would drop
+what they are for, such as a void world's noise settings. For a 26.2 or 26.3 pack, `port` makes
+them data packs instead: upgraded to 26.3 (`docs/datapack-upgrade.md`; a 26.3 one is copied as
+it is) into `<work>/home/new-world-datapacks/<mod>/`, with what happened in `<work>/datapacks.json`.
+A content mod an earlier port carried from the same jar is removed, and so is a pack in that folder
+whose jar is no longer a data-only one of the pack: `port` owns the folder.
+
+`home/` is the profile's game folder. The game copies its `new-world-datapacks/` into each world it
+creates there: Create New World shows them selected in its Data Packs screen, and a world made
+without that screen (`--world`, the control socket) gets them all. Worlds made before keep what
+they have. Without the folder nothing changes.
+
+Before its jar is read, a mod whose Modrinth project also ships as a data pack (`datapack` among
+the project's loaders) counts as data tier, so `fetch` gets its jar; the jar then decides. The
+report lists these jars as partial: nothing compares them with the Java pack yet, and their
+`assets/` (an advancement font, say) are not loaded.
+
 ### Resource packs from an imported modpack
 
 Import stages embedded resource packs in `<work>/resourcepacks/`: `.mrpack` common overrides and client
@@ -912,9 +932,15 @@ templates miss; **not yet** with the API tier it waits for, or the dependency; *
 for libraries, performance mods, pack tooling and what Horizon has built in. Unclassified mods
 (the 20 CurseForge-only rows the reviewed table only guesses) count as not yet. A mod made for
 1.20 or older (its `recipes/` and `loot_tables/` folders named as before 1.21, which 26.3 does
-not read) is not carried, as `check` doesn't carry it either: not yet, and not one Port can
-carry over. Prominence II (Fabric 1.20.1, 445 jars) had 149 such mods counted as come over,
-with 28,948 recipes and 8,784 loot tables that would not load.
+not read) is carried with its data files moved to 1.21's folder names (`recipe/`, `loot_table/`,
+`tags/block/`..., counted as `folders_renamed`); a file the jar also holds under the new name
+keeps that copy. Their JSON stays 1.20's: a recipe result naming its item as `item` (before
+1.20.5), which 26.3 skips, is kept as it is and counted as `recipes_old_result`, and NBT in loot
+functions, ingredients and predicates is not upgraded yet (#10262). In the game each such file
+fails alone and the rest load: those recipes are skipped, `set_nbt` and `copy_nbt` drop their item
+without the NBT, an advancement's NBT predicate matches any item, a template's block renamed since
+1.20 is air, and a 1.20 command in a function fails. Such a mod is partial whatever its harness
+says, with that in its reason. `check` still says it doesn't run.
 
 Both files open with a plain headline for players, counted from the rows' own status, class and
 tier: how many of the mods that need porting came over (ported or partial, as content: blocks,
