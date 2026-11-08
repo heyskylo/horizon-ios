@@ -6373,6 +6373,25 @@ impl Game<'_> {
         if let Some(r) = self.remote.as_mut() {
             r.last_teleport_sequence = r.sequence;
         }
+        // handleMovePlayer: a passenger keeps its own position and look (its vehicle
+        // carries it), so a vehicle a datapack teleports every tick doesn't snap the
+        // rider's view; the teleport is still accepted, with where the player is.
+        if self.riding.is_some()
+            && let Some(player) = self.player.as_ref()
+        {
+            let at = player.position;
+            self.send(S::AcceptTeleportation(play::AcceptTeleportation {
+                id: p.teleport,
+                x: at.x,
+                y: at.y,
+                z: at.z,
+                yaw: self.yaw,
+                pitch: self.pitch,
+            }));
+            self.stop_remote_mining();
+            self.mining = None;
+            return Ok(());
+        }
         match self.player.as_mut() {
             Some(player) => {
                 player.position = position;
