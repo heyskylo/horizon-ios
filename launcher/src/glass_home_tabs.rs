@@ -376,6 +376,9 @@ impl Launcher {
             .rounded(px(radius::LARGE))
             .bg(white(0.04))
             .overflow_y_scroll()
+            // The list takes the wheel in both directions; at its ends it must not hand it on
+            // to the page behind it.
+            .on_scroll(|_, _, cx| cx.stop_propagation())
             .child(
                 div()
                     .flex()
