@@ -519,11 +519,7 @@ impl Game<'_> {
             }
             self.boats[i].tick_bubble_wobble();
             if !driven {
-                Self::tick_boat_paddles(
-                    &mut self.boats[i],
-                    &mut self.audio,
-                    &mut self.world.random,
-                );
+                Self::tick_boat_paddles(&mut self.boats[i], &mut self.audio);
             }
         }
     }

@@ -14,7 +14,7 @@ use crate::{
 use horizon_core::{
     geometry::{Aabb, Direction, Vec3, VoxelShape, border::BorderGeometry},
     position::BlockPos,
-    random::RandomSource,
+    random::{LegacyRandom, RandomSource},
 };
 use horizon_world::{
     block_collision::BlockCollisionRegistry,
@@ -1940,6 +1940,7 @@ pub struct ItemFrame {
     pub check_interval: u32,
     /// `Entity.getCustomName` (`CustomName`), copied onto the dropped frame.
     pub custom_name: Option<horizon_world::nbt::Tag>,
+    pub random: LegacyRandom,
 }
 impl ItemFrame {
     pub fn step(&self) -> [i32; 3] {
