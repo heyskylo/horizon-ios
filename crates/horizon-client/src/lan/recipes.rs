@@ -52,19 +52,31 @@ fn ingredient(v: &Value) -> Option<Ingredient> {
     }
 }
 
-/// Every recipe file, by recipe id (the registry's order).
-pub(super) fn recipes(dir: &Path, prefix: &str, out: &mut BTreeMap<String, Value>) {
-    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if path.is_dir() {
-            recipes(&path, &format!("{prefix}{name}/"), out);
-        } else if let Some(stem) = name.strip_suffix(".json")
-            && let Ok(v) = serde_json::from_slice(&std::fs::read(&path).unwrap_or_default())
-        {
-            out.insert(format!("minecraft:{prefix}{stem}"), v);
+/// Every recipe file, by recipe id (the registry's order): read through
+/// `json_folder`, so a load holding the folder shares one read of it. A file
+/// that can't be read or doesn't parse is left out.
+fn recipes(dir: &Path, namespace: &str, out: &mut BTreeMap<String, Value>) {
+    let Ok(folder) = horizon_world::json_folder::read(dir) else {
+        return;
+    };
+    for file in &folder.files {
+        if let Ok(v) = serde_json::from_slice(file.bytes().unwrap_or_default()) {
+            out.insert(format!("{namespace}:{}", file.name), v);
         }
     }
+}
+
+/// Horizon's optional recipe viewer transfer. An empty clientbound payload
+/// advertises support. Requests carry a menu id and resource location.
+pub const TRANSFER_CHANNEL: &str = "horizon:recipe_transfer";
+
+/// The recipes by id in vanilla's registration order (path, then namespace),
+/// the order `RecipeManager` numbers groups and lists the stonecutter's
+/// recipes in, and so the order the host's own tables keep.
+fn registration_order<V>(all: &BTreeMap<String, V>) -> Vec<&V> {
+    let mut ordered: Vec<_> = all.iter().collect();
+    ordered.sort_by_cached_key(|(id, _)| horizon_client::crafting::registration_key(id));
+    ordered.into_iter().map(|(_, v)| v).collect()
 }
 
 /// The packs' recipe files over the game's own: the top pack's file for
@@ -94,8 +106,27 @@ pub(super) fn network_recipes(
     overlay: &horizon_world::loot::PackOverlay,
 ) -> (BTreeMap<String, Box<str>>, HashMap<String, i32>) {
     let mut all = BTreeMap::new();
-    recipes(&resources.join("data/minecraft/recipe"), "", &mut all);
+    recipes(
+        &resources.join("data/minecraft/recipe"),
+        "minecraft",
+        &mut all,
+    );
+    for namespace in horizon_items::content_namespaces::namespaces(resources) {
+        if namespace != "minecraft" {
+            recipes(
+                &resources.join(format!("data/{namespace}/recipe")),
+                &namespace,
+                &mut all,
+            );
+        }
+    }
     overlay_recipes(overlay, &mut all);
+    // The data's recipe filters, as the server's own tables apply them
+    // (#5910), once, before the ingredient normalization, so a swapped
+    // name resolves and every copy — the book's displays, the property
+    // sets — agrees on the swapped recipe.
+    let filters = horizon_items::recipe_filters::RecipeFilters::load(resources, overlay);
+    all.retain(|id, r| filters.apply(id, r));
     match horizon_client::items::Items::catalog(resources, overlay) {
         Ok(items) => all.retain(|_, r| normalize_ingredients(r, &items)),
         Err(e) => log::warn!("recipes: NeoForge's ingredient shapes stay unresolved: {e}"),
@@ -103,7 +134,7 @@ pub(super) fn network_recipes(
     // RecipeManager.unpackRecipeInfo's group numbers, while the files are
     // still parsed.
     let mut groups = HashMap::new();
-    for r in all.values() {
+    for r in registration_order(&all) {
         if let Some(g) = r["group"].as_str().filter(|g| !g.is_empty()) {
             let next = groups.len() as i32;
             groups.entry(g.to_owned()).or_insert(next);
@@ -133,7 +164,11 @@ fn flat(ing: &Value, items: &horizon_client::items::Items) -> Option<Value> {
             .and_then(|v| horizon_client::crafting::Ingredient::parse(v, items))
     })?;
     Some(Value::Array(
-        parsed.1.iter().map(|i| Value::String(i.clone())).collect(),
+        parsed
+            .order
+            .iter()
+            .map(|i| Value::String(i.clone()))
+            .collect(),
     ))
 }
 
@@ -190,26 +225,14 @@ fn normalize_ingredients(r: &mut Value, items: &horizon_client::items::Items) ->
 }
 
 /// The packet's payload for the network copy's recipes (`network_recipes`).
-pub fn update_recipes(
-    all: &BTreeMap<String, Box<str>>,
-    resources: &Path,
-    sync: &SyncData,
-    overlay: &horizon_world::loot::PackOverlay,
-) -> Vec<u8> {
-    // The data's recipe filters, as the server's own tables apply them. A
-    // filter can also swap a recipe's inputs and outputs, so it runs on
-    // this packet's own parsed values, the book's copy keeping its files
-    // as loaded. Parsing every recipe takes about a millisecond.
-    let filters = horizon_items::recipe_filters::RecipeFilters::load(resources, overlay);
-    let mut chosen: Vec<Value> = Vec::new();
-    for (id, text) in all {
-        let Ok(mut own) = serde_json::from_str::<Value>(text) else {
-            continue;
-        };
-        if filters.apply(id, &mut own) {
-            chosen.push(own);
-        }
-    }
+pub fn update_recipes(all: &BTreeMap<String, Box<str>>, sync: &SyncData) -> Vec<u8> {
+    // The copy is already filtered and swapped (`network_recipes`); the
+    // filters never run twice, so one swap cannot feed a later one again.
+    // Parsing every recipe takes about a millisecond.
+    let chosen: Vec<Value> = registration_order(all)
+        .into_iter()
+        .filter_map(|text| serde_json::from_str::<Value>(text).ok())
+        .collect();
     let tags: BTreeMap<&str, &[i32]> = sync
         .tags
         .registries

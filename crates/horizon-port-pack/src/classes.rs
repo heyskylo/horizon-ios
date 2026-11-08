@@ -25,6 +25,72 @@ pub struct Class {
     pub refs: BTreeSet<String>,
     /// Annotation and descriptor strings (`Lorg/spongepowered/asm/mixin/Mixin;`).
     pub mixin: bool,
+    /// The NeoForge events it listens to: the parameter of an `@SubscribeEvent`
+    /// method, or of a method reference or lambda that takes one event
+    /// (`NeoForge.EVENT_BUS.addListener(this::onTick)`), as binary names
+    /// (`net/neoforged/neoforge/event/tick/ServerTickEvent$Post`).
+    pub listens: BTreeSet<String>,
+    /// The NeoForge capabilities whose fields it reads
+    /// (`Capabilities.ItemHandler.BLOCK`).
+    pub capabilities: BTreeSet<String>,
+}
+
+/// The annotation on a NeoForge event listener method.
+const SUBSCRIBE_EVENT: &str = "Lnet/neoforged/bus/api/SubscribeEvent;";
+
+/// The event a `(Lnet/neoforged/…Event;)V` descriptor takes as its only
+/// parameter: a class under `net/neoforged/` whose outermost name ends in
+/// `Event`.
+fn one_event(descriptor: &str) -> Option<&str> {
+    let class = descriptor.strip_prefix("(L")?.strip_suffix(";)V")?;
+    let outer = class.rsplit('/').next()?.split('$').next()?;
+    (class.starts_with("net/neoforged/") && !class.contains(';') && outer.ends_with("Event"))
+        .then_some(class)
+}
+
+/// Whether a `RuntimeVisibleAnnotations` attribute names `annotation`
+/// (JVMS 4.7.16).
+fn annotated(body: &[u8], utf8: &HashMap<usize, String>, annotation: &str) -> Option<bool> {
+    let mut r = Reader { bytes: body, at: 0 };
+    let mut found = false;
+    for _ in 0..r.u2()? {
+        found |= utf8
+            .get(&(r.u2()? as usize))
+            .is_some_and(|t| t == annotation);
+        skip_pairs(&mut r, 0)?;
+    }
+    Some(found)
+}
+
+/// Skips an annotation's element-value pairs.
+fn skip_pairs(r: &mut Reader<'_>, depth: u8) -> Option<()> {
+    for _ in 0..r.u2()? {
+        r.skip(2)?;
+        skip_value(r, depth)?;
+    }
+    Some(())
+}
+
+/// Skips one element value; nesting deeper than 32 is refused.
+fn skip_value(r: &mut Reader<'_>, depth: u8) -> Option<()> {
+    if depth > 32 {
+        return None;
+    }
+    match r.u1()? {
+        b'B' | b'C' | b'D' | b'F' | b'I' | b'J' | b'S' | b'Z' | b's' | b'c' => r.skip(2),
+        b'e' => r.skip(4),
+        b'@' => {
+            r.skip(2)?;
+            skip_pairs(r, depth + 1)
+        }
+        b'[' => {
+            for _ in 0..r.u2()? {
+                skip_value(r, depth + 1)?;
+            }
+            Some(())
+        }
+        _ => None,
+    }
 }
 
 /// Reads a class file's header, constant pool and declared methods.
@@ -37,6 +103,11 @@ pub fn parse(bytes: &[u8]) -> Option<Class> {
     let count = r.u2()? as usize;
     let mut utf8: HashMap<usize, String> = HashMap::new();
     let mut class_of: HashMap<usize, usize> = HashMap::new();
+    // Field references (class, name and type), the names of names and
+    // types, and method types' descriptors: for `listens` and `capabilities`.
+    let mut fields: Vec<(usize, usize)> = Vec::new();
+    let mut name_of: HashMap<usize, usize> = HashMap::new();
+    let mut method_types: Vec<usize> = Vec::new();
     let mut i = 1;
     while i < count {
         let tag = r.u1()?;
@@ -49,8 +120,14 @@ pub fn parse(bytes: &[u8]) -> Option<Class> {
             7 => {
                 class_of.insert(i, r.u2()? as usize);
             }
-            8 | 16 | 19 | 20 => r.skip(2)?,
-            3 | 4 | 9..=12 | 17 | 18 => r.skip(4)?,
+            9 => fields.push((r.u2()? as usize, r.u2()? as usize)),
+            12 => {
+                name_of.insert(i, r.u2()? as usize);
+                r.skip(2)?;
+            }
+            16 => method_types.push(r.u2()? as usize),
+            8 | 19 | 20 => r.skip(2)?,
+            3 | 4 | 10 | 11 | 17 | 18 => r.skip(4)?,
             15 => r.skip(3)?,
             5 | 6 => {
                 r.skip(8)?;
@@ -77,17 +154,29 @@ pub fn parse(bytes: &[u8]) -> Option<Class> {
     }
     // Fields, then methods: flags, name, descriptor, attributes.
     let mut methods = Vec::new();
+    let mut listens = BTreeSet::new();
     for member in 0..2 {
         let n = r.u2()?;
         for _ in 0..n {
             r.skip(2)?;
             let name = r.u2()? as usize;
-            r.skip(2)?;
+            let descriptor = r.u2()? as usize;
             let attributes = r.u2()?;
+            let mut subscribes = false;
             for _ in 0..attributes {
-                r.skip(2)?;
+                let attribute = r.u2()? as usize;
                 let len = r.u4()? as usize;
-                r.skip(len)?;
+                let body = r.take(len)?;
+                if member == 1
+                    && utf8
+                        .get(&attribute)
+                        .is_some_and(|a| a == "RuntimeVisibleAnnotations")
+                {
+                    subscribes |= annotated(body, &utf8, SUBSCRIBE_EVENT).unwrap_or(false);
+                }
+            }
+            if subscribes && let Some(event) = utf8.get(&descriptor).and_then(|d| one_event(d)) {
+                listens.insert(event.to_owned());
             }
             if member == 1
                 && let Some(m) = utf8.get(&name)
@@ -107,6 +196,21 @@ pub fn parse(bytes: &[u8]) -> Option<Class> {
     let mixin = utf8
         .values()
         .any(|s| s == "Lorg/spongepowered/asm/mixin/Mixin;");
+    listens.extend(
+        method_types
+            .iter()
+            .filter_map(|d| utf8.get(d).and_then(|d| one_event(d)))
+            .map(str::to_owned),
+    );
+    let capabilities = fields
+        .iter()
+        .filter_map(|&(class, name_and_type)| {
+            let owner = class_name(class);
+            let kind = owner.strip_prefix("net/neoforged/neoforge/capabilities/Capabilities$")?;
+            let field = utf8.get(name_of.get(&name_and_type)?)?;
+            Some(format!("Capabilities.{}.{field}", kind.replace('$', ".")))
+        })
+        .collect();
     Some(Class {
         name,
         superclass,
@@ -114,6 +218,8 @@ pub fn parse(bytes: &[u8]) -> Option<Class> {
         methods,
         refs,
         mixin,
+        listens,
+        capabilities,
     })
 }
 
@@ -638,5 +744,18 @@ mod tests {
         ];
         let code = census(files.iter().map(Vec::as_slice));
         assert!(!code.behaviour(), "{code:?}");
+    }
+
+    #[test]
+    fn a_listener_takes_one_neoforge_event() {
+        let event = "net/neoforged/neoforge/event/tick/ServerTickEvent$Pre";
+        assert_eq!(one_event(&format!("(L{event};)V")), Some(event));
+        assert_eq!(one_event(&format!("(L{event};I)V")), None);
+        assert_eq!(one_event(&format!("(L{event};)Z")), None);
+        assert_eq!(
+            one_event("(Lnet/neoforged/neoforge/common/NeoForge;)V"),
+            None
+        );
+        assert_eq!(one_event("(Lcom/example/MyEvent;)V"), None);
     }
 }

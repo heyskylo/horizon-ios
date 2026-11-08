@@ -10,8 +10,6 @@ use horizon_core::{
     position::BlockPos,
     random::RandomSource,
 };
-use std::sync::Arc;
-
 /// A baked frame model: (corners in block units, unit UVs, sprite) per quad.
 pub(super) type FrameModel = Vec<([[f32; 3]; 4], [[f32; 2]; 4], String)>;
 
@@ -118,12 +116,40 @@ impl Game<'_> {
         ));
         let supported = behind.legacy_solid || (s[1] == 0 && behind.has_class("DiodeBlock"));
         // canCoexist(true): only hanging entities facing the same way block it.
-        let overlaps = |o: ([f64; 3], [f64; 3])| (0..3).all(|i| o.0[i] < hi[i] && lo[i] < o.1[i]);
-        supported
-            && !self
-                .item_frames
-                .iter()
-                .any(|o| o.id != f.id && o.facing == f.facing && overlaps(o.bounds()))
+        supported && super::paintings::frame_coexists(f, &self.item_frames, &self.paintings)
+    }
+    /// Asks the mods whether the acting guest may place a hanging entity
+    /// of type `kind` at `pos` (`native_hanging_place`): true when one
+    /// cancelled it. A game's own player is not asked.
+    pub(super) fn hanging_place_cancelled(&mut self, kind: &str, pos: [i32; 3]) -> bool {
+        let (Some(uuid), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) else {
+            return false;
+        };
+        let mut cancel = false;
+        self.native_hanging_place(uuid, &name, kind, pos, &mut cancel);
+        cancel
+    }
+    /// Asks the mods whether a hanging entity of type `kind` at `pos` may
+    /// break (`native_hanging_break`): true when one cancelled it. A break by
+    /// a player is asked only for the acting guest, with them as the player;
+    /// a break by anything else is asked with none.
+    pub(super) fn hanging_break_cancelled(
+        &mut self,
+        kind: &str,
+        pos: [i32; 3],
+        by_player: bool,
+    ) -> bool {
+        let player = if by_player {
+            let Some(uuid) = self.lan_acting_uuid else {
+                return false;
+            };
+            Some(uuid)
+        } else {
+            None
+        };
+        let mut cancel = false;
+        self.native_hanging_break(player, kind, pos, &mut cancel);
+        cancel
     }
     /// `ItemFrameItem.useOn`.
     pub(super) fn place_item_frame(&mut self, hit: &Hit, stack: &ItemStack) -> bool {
@@ -132,12 +158,6 @@ impl Game<'_> {
             "minecraft:glow_item_frame" => true,
             _ => return false,
         };
-        let invisible = stack.extra.as_ref().is_some_and(|extra| {
-            extra.other.iter().any(|(k, v)| {
-                (k == "minecraft:entity_data" || k == "entity_data")
-                    && horizon_client::save::number(v.get("Invisible")).unwrap_or(0) != 0
-            })
-        });
         let pos: [i32; 3] = std::array::from_fn(|i| hit.pos[i] + hit.face[i]);
         // `ItemFrameItem.mayPlace`: `Level.isInsideBuildHeight(blockPos)`, so a frame is not
         // placed on the top face of the highest block or under the lowest one.
@@ -145,9 +165,11 @@ impl Game<'_> {
             ..horizon_client::chunk::MIN_Y + horizon_client::chunk::HEIGHT)
             .contains(&pos[1])
         {
-            return false;
+            // ItemFrameItem.mayPlace's FAIL.
+            self.use_failed = true;
+            return true;
         }
-        let frame = ItemFrame {
+        let mut frame = ItemFrame {
             id: self.next_entity + 1,
             pos,
             facing: facing_of(hit.face),
@@ -156,20 +178,52 @@ impl Game<'_> {
             rotation: 0,
             drop_chance: 1.0,
             fixed: false,
-            invisible,
+            invisible: false,
             check_interval: 0,
+            // `applyComponentsFromItemStack` sets `CUSTOM_NAME`.
+            custom_name: stack.data().and_then(|d| d.custom_name.clone()),
+            random: horizon_client::random_source::entity(),
         };
+        // `EntityType.createDefaultStackConfig`: the item's `custom_data`, then its
+        // `entity_data` merged over the frame (`TypedEntityData.loadInto`), before
+        // `survives` runs on the configured frame.
+        let kind = frame.kind();
+        let own = horizon_client::entity_nbt::item_frame_to_nbt(&frame, [0; 4], None);
+        let configured =
+            horizon_client::block_entity_item::stack_configured_entity(stack, kind, &own);
+        if let Some(mut loaded) =
+            horizon_client::entity_nbt::item_frame_from_nbt(&configured, frame.id)
+        {
+            loaded.glow = glow;
+            frame = loaded;
+        }
+        // HangingEntity.survives false: CONSUME, which ItemStack.useOn still counts as a use.
         if !self.frame_survives(&frame) {
-            return false;
+            self.award_stat("used", &stack.item, 1);
+            return true;
+        }
+        if self.hanging_place_cancelled(kind, pos) {
+            return true;
         }
         self.next_entity += 1;
         self.audio
             .play(&sound(&frame, "place"), Some(center(&frame)), 1.0, 1.0);
+        // HangingEntityItem.useOn: ENTITY_PLACE at the frame, by the player, before it is
+        // added; ItemStack.useOn then counts the use.
+        let ctx = self.player_context(None);
+        self.post_game_event("minecraft:entity_place", center(&frame), ctx);
         self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
+        // The unmodelled rest of the loaded data (`data`, `Tags`...) stays with the frame.
+        let mut raw = configured;
+        if let horizon_world::nbt::Tag::Compound(map) = &mut raw {
+            map.remove(&"UUID".into());
+        }
+        self.persist.raw.insert(frame.id, raw);
         self.item_frames.push(frame);
         if !self.creative {
             self.consume_held();
         }
+        self.award_stat("used", &stack.item, 1);
         true
     }
     /// The frame under the crosshair within reach and its distance.
@@ -224,11 +278,21 @@ impl Game<'_> {
             return false;
         }
         let at = center(&self.item_frames[i]);
+        let entity_id = self.item_frames[i].id;
+        let action;
         if self.item_frames[i].item.is_none() {
             let Some(held) = self.held().cloned() else {
                 return false;
             };
+            // A map tracking more than 256 counted markers stays in the hand
+            // (InteractionResult.FAIL): nothing else is tried, no swing (#11383).
+            if let Some(id) = super::maps::map_id(&held)
+                && self.map(id).is_some_and(|m| m.tracked_over_limit(256))
+            {
+                return true;
+            }
             self.item_frames[i].item = Some(ItemStack { count: 1, ..held });
+            action = "put";
             self.audio
                 .play(&sound(&self.item_frames[i], "add_item"), Some(at), 1.0, 1.0);
             if !self.creative {
@@ -237,12 +301,25 @@ impl Game<'_> {
         } else {
             let f = &mut self.item_frames[i];
             f.rotation = (f.rotation + 1) % 8;
+            action = "rotate";
             let s = sound(f, "rotate_item");
             self.audio.play(&s, Some(at), 1.0, 1.0);
         }
         let p = self.item_frames[i].pos;
         self.world.modified.insert((p[0] >> 4, p[2] >> 4));
         self.frame_output_changed(p);
+        // ItemFrame.interact: BLOCK_CHANGE by the player, after setItem or
+        // setRotation.
+        let ctx = self.who_context(Some(horizon_client::mobs::Who::Player), None);
+        self.post_game_event("minecraft:block_change", at, ctx);
+        if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
+            let frame = self.item_frames.iter().find(|f| f.id == entity_id);
+            let item = frame
+                .and_then(|f| f.item.as_ref())
+                .map_or_else(String::new, |s| s.item.to_string());
+            let rotation = frame.map_or(0, |f| f.rotation);
+            self.native_player_item_frame_change(player, &name, entity_id, action, &item, rotation);
+        }
         self.swing_arm();
         true
     }
@@ -264,8 +341,21 @@ impl Game<'_> {
             return true;
         }
         let with_frame = self.item_frames[i].item.is_none();
+        let entity_id = self.item_frames[i].id;
+        if with_frame {
+            let (kind, pos) = (self.item_frames[i].kind(), self.item_frames[i].pos);
+            if self.hanging_break_cancelled(kind, pos, true) {
+                return true;
+            }
+        }
+        let old_item = self.item_frames[i]
+            .item
+            .as_ref()
+            .map_or("", |s| &*s.item)
+            .to_owned();
+        let rotation = self.item_frames[i].rotation;
         let at = center(&self.item_frames[i]);
-        let f = if with_frame {
+        let mut f = if with_frame {
             self.item_frames.remove(i)
         } else {
             self.item_frames[i].clone()
@@ -278,13 +368,49 @@ impl Game<'_> {
         );
         if !with_frame {
             self.item_frames[i].item = None;
+        } else {
+            // BlockAttachedEntity.kill, before dropItem. A frame holding an
+            // item only gives the item up (ItemFrame.hurtServer).
+            self.entity_killed_event(at, true);
         }
-        self.drop_frame_items(&f, with_frame, true);
+        self.drop_frame_items(&mut f, with_frame, true);
+        if !with_frame {
+            self.item_frames[i].random = f.random.clone();
+        }
+        // BLOCK_CHANGE by the attacker after the drops: ItemFrame.hurtServer
+        // for the item, ItemFrame.dropItem(level, causedBy) for the frame.
+        let ctx = self.who_context(Some(horizon_client::mobs::Who::Player), None);
+        self.post_game_event("minecraft:block_change", at, ctx);
         self.world.modified.insert((f.pos[0] >> 4, f.pos[2] >> 4));
         if f.item.is_some() {
             self.frame_output_changed(f.pos);
         }
+        if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
+            self.native_player_item_frame_change(
+                player,
+                &name,
+                entity_id,
+                if with_frame { "break" } else { "remove_item" },
+                if with_frame { "" } else { &old_item },
+                rotation,
+            );
+        }
         true
+    }
+    /// `ItemFrame.setItem(stack, true)`: keeps one item, plays the add sound
+    /// for a non-empty stack and updates the comparators.
+    pub(super) fn set_frame_item(&mut self, i: usize, stack: Option<ItemStack>) {
+        let f = &mut self.item_frames[i];
+        f.item = stack.map(|s| ItemStack { count: 1, ..s });
+        let (pos, filled) = (f.pos, f.item.is_some());
+        if filled {
+            let (name, at) = (
+                sound(&self.item_frames[i], "add_item"),
+                center(&self.item_frames[i]),
+            );
+            self.audio.play(&name, Some(at), 1.0, 1.0);
+        }
+        self.frame_output_changed(pos);
     }
     /// `ItemFrame.setItem` / `setRotation`: `updateNeighbourForOutputSignal`, so
     /// the comparators reading the frame take its new signal.
@@ -293,7 +419,7 @@ impl Game<'_> {
         self.with_level(|b, level, ticks| b.update_neighbour_for_output_signal(level, ticks, at));
     }
     /// `ItemFrame.dropItem`: the frame (when breaking) and the held item.
-    fn drop_frame_items(&mut self, f: &ItemFrame, with_frame: bool, by_player: bool) {
+    fn drop_frame_items(&mut self, f: &mut ItemFrame, with_frame: bool, by_player: bool) {
         // The framed map forgets the frame, except when the drops are off and
         // something caused the break (`removeFramedMap` runs only for a null
         // `causedBy` then).
@@ -308,15 +434,11 @@ impl Game<'_> {
         let at = [c[0] + s[0] * 0.15, c[1], c[2] + s[2] * 0.15];
         let mut drops = Vec::new();
         if with_frame {
-            drops.push(ItemStack {
-                item: Arc::from(f.kind()),
-                count: 1,
-                damage: 0,
-                extra: None,
-            });
+            // `ItemFrame.getFrameItemStackWithData` (glow frames share it).
+            drops.push(f.item_stack_with_data());
         }
         if let Some(item) = f.item.clone()
-            && self.world.random.next_float() < f.drop_chance
+            && f.random.next_float() < f.drop_chance
         {
             drops.push(item);
         }
@@ -355,14 +477,22 @@ impl Game<'_> {
                 ((c[0] - blast[0]).powi(2) + (c[1] - blast[1]).powi(2) + (c[2] - blast[2]).powi(2))
                     .sqrt()
                     / diameter;
-            if dist > 1.0 || self.item_frames[i].fixed {
+            let (kind, pos) = (self.item_frames[i].kind(), self.item_frames[i].pos);
+            if dist > 1.0
+                || self.item_frames[i].fixed
+                || self.hanging_break_cancelled(kind, pos, false)
+            {
                 i += 1;
                 continue;
             }
-            let f = self.item_frames.remove(i);
+            let mut f = self.item_frames.remove(i);
+            self.entity_killed_event(center(&f), false);
             self.audio
                 .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
-            self.drop_frame_items(&f, true, false);
+            self.drop_frame_items(&mut f, true, false);
+            // ItemFrame.dropItem(level, causedBy): BLOCK_CHANGE after the drops.
+            let ctx = self.who_context(None, None);
+            self.post_game_event("minecraft:block_change", center(&f), ctx);
             self.world.modified.insert((f.pos[0] >> 4, f.pos[2] >> 4));
             if f.item.is_some() {
                 self.frame_output_changed(f.pos);
@@ -383,12 +513,17 @@ impl Game<'_> {
             self.item_frames[i].check_interval += 1;
             if self.item_frames[i].check_interval >= 100 {
                 self.item_frames[i].check_interval = 0;
-                let f = self.item_frames[i].clone();
-                if !self.frame_survives(&f) {
+                let mut f = self.item_frames[i].clone();
+                if !self.frame_survives(&f) && !self.hanging_break_cancelled(f.kind(), f.pos, false)
+                {
                     self.item_frames.remove(i);
+                    self.entity_killed_event(center(&f), false);
                     self.audio
                         .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
-                    self.drop_frame_items(&f, true, false);
+                    self.drop_frame_items(&mut f, true, false);
+                    // ItemFrame.dropItem(level, null): BLOCK_CHANGE after the drops.
+                    let ctx = self.who_context(None, None);
+                    self.post_game_event("minecraft:block_change", center(&f), ctx);
                     if f.item.is_some() {
                         self.frame_output_changed(f.pos);
                     }
@@ -401,13 +536,16 @@ impl Game<'_> {
     /// ItemFrameRenderer: the frame model, then the item half size on its face.
     pub(super) fn frame_geometry(&mut self, camera: glam::DVec3, out: &mut Vec<Vertex>) {
         let sprites = &self.gui.atlas.sprites;
-        let mut maps: Vec<(i32, glam::Mat4, u32)> = Vec::new();
-        let mut items: Vec<(ItemStack, u32, glam::Mat4, u8)> = Vec::new();
+        // Each with its frame's type: a pack tells a glow frame and what it holds apart by its
+        // `entityId` (`glow_item_frame` in entity.properties), the item drawn within its frame.
+        let mut maps: Vec<(i32, glam::Mat4, u32, bool, &'static str)> = Vec::new();
+        let mut items: Vec<(ItemStack, u32, glam::Mat4, u8, bool, &'static str)> = Vec::new();
         // ItemFrame.shouldRenderAtSqrDistance: 1024 blocks at a view scale
         // of 1.
         let range = 16.0 * 64.0 * self.view_scale();
         for f in &self.item_frames {
             let entity_start = out.len();
+            self.mark_entity(entity_start, f.kind());
             let map = f.item.as_ref().and_then(super::maps::map_id);
             // EntityRenderer.shouldRender: its box (a block wide with a map),
             // measured from the box's centre.
@@ -425,6 +563,12 @@ impl Game<'_> {
             if !self.entity_in_view(camera, (lo + hi) / 2.0, range, lo, hi) {
                 continue;
             }
+            let culling = self.entity_cull_decision(f, 1.0);
+            if culling.hides_entity() {
+                continue;
+            }
+            let entity_start = out.len();
+            self.mark_motion(entity_start, Self::MOTION_OBJECT | u64::from(f.id));
             let s = f.step();
             // Pose: to the block centre, then X/Y rotation by facing.
             let (x_rot, y_rot) = if s[1] == 0 {
@@ -511,7 +655,15 @@ impl Game<'_> {
                     v.layer |= u32::from(horizon_client::mesher::INCANDESCENT) << 16;
                 }
             }
-            self.cull_entity_vertices(out, entity_start);
+            self.finish_entity_occlusion(culling, f, out, entity_start);
+            let cull_contents = culling.checks_vertices();
+            if let Some(stack) = &f.item {
+                let mut canceled = false;
+                self.native_render_item_in_frame(f.id, f.pos, stack, &mut canceled);
+                if canceled {
+                    continue;
+                }
+            }
             if let Some(id) = map {
                 // ItemFrameRenderer: the map fills the face, in 90-degree steps.
                 let depth = if f.invisible { 0.5 } else { 0.4375 };
@@ -526,7 +678,7 @@ impl Game<'_> {
                     * glam::DMat4::from_rotation_z(std::f64::consts::PI)
                     * glam::DMat4::from_scale(glam::DVec3::splat(0.0078125))
                     * glam::DMat4::from_translation(glam::DVec3::new(-64.0, -64.0, -1.0));
-                maps.push((id, m.as_mat4(), item_light));
+                maps.push((id, m.as_mat4(), item_light, cull_contents, f.kind()));
                 continue;
             }
             let Some(stack) = f.item.clone() else {
@@ -539,11 +691,23 @@ impl Game<'_> {
                 * glam::DMat4::from_translation(glam::DVec3::new(0.0, 0.0, depth))
                 * glam::DMat4::from_rotation_z((f64::from(f.rotation) * 45.0).to_radians())
                 * glam::DMat4::from_scale(glam::DVec3::splat(0.5));
-            items.push((stack, f.id, m.as_mat4(), item_light));
+            items.push((
+                stack,
+                f.id,
+                m.as_mat4(),
+                item_light,
+                cull_contents,
+                f.kind(),
+            ));
         }
         // `extractRenderState`: FIXED, seeded by the frame entity.
-        for (stack, id, m, light) in items {
+        let skinning = self.skinning();
+        let lights =
+            horizon_client::block_entity_render::diffuse_lights(self.dim == super::Dim::Nether);
+        for (stack, id, m, light, cull, kind) in items {
             let entity_start = out.len();
+            self.mark_entity(entity_start, kind);
+            self.mark_motion(entity_start, Self::MOTION_FRAME_ITEM | u64::from(id));
             let owner = super::item_draw::owner_at([0.0; 3], 0.0, "minecraft:item_frame");
             let state = self.resolve_item(
                 &stack,
@@ -551,18 +715,126 @@ impl Game<'_> {
                 Some(&owner),
                 id as i32,
             );
-            self.submit_item_world(
-                &state,
-                m,
-                horizon_client::block_entity_render::vertex_light(light),
-                out,
-            );
-            self.cull_entity_vertices(out, entity_start);
+            let light = horizon_client::block_entity_render::vertex_light(light);
+            // Posed on the GPU when every layer can be.
+            let skinned = skinning
+                .then(|| self.submit_item_skinned(&state, &[m], light, lights))
+                .flatten();
+            if skinned.is_none() {
+                self.submit_item_world(&state, m, light, out);
+            }
+            if cull {
+                self.cull_skinned(out, entity_start, skinned);
+            }
         }
-        for (id, m, light) in maps {
+        // Maps: keyed by their map id, which several frames can show, so they stay unmarked.
+        self.mark_motion(out.len(), 0);
+        // Nearest first: past the atlas's map slots, the far ones go without.
+        maps.sort_by(|a, b| {
+            let d = |m: &glam::Mat4| {
+                m.transform_point3(glam::Vec3::new(64.0, 64.0, 0.0))
+                    .length_squared()
+            };
+            d(&a.1).total_cmp(&d(&b.1))
+        });
+        for (id, m, light, cull, kind) in maps {
             let entity_start = out.len();
+            self.mark_entity(entity_start, kind);
+            // Its outline first: a map out of sight takes no slot in the atlas, or with
+            // more maps around than slots, the ones in view lost theirs to it.
+            if cull {
+                for c in [[0.0, 0.0], [128.0, 0.0], [128.0, 128.0], [0.0, 128.0]] {
+                    out.push(Vertex {
+                        pos: m
+                            .transform_point3(glam::Vec3::new(c[0], c[1], 0.0))
+                            .to_array(),
+                        ..bytemuck::Zeroable::zeroed()
+                    });
+                }
+                self.cull_entity_vertices(out, entity_start);
+                if out.len() == entity_start {
+                    continue;
+                }
+                out.truncate(entity_start);
+            }
             self.map_vertices(id, true, m, light, out);
-            self.cull_entity_vertices(out, entity_start);
+            if cull {
+                self.cull_entity_vertices(out, entity_start);
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod map_limit_tests {
+    use super::super::maps::{Decoration, Key, MapData};
+    use super::super::native_machines::tests::server_game;
+    use super::*;
+
+    fn frame(id: u32) -> ItemFrame {
+        ItemFrame {
+            id,
+            pos: [0, 64, id as i32],
+            facing: 3,
+            glow: false,
+            item: None,
+            rotation: 0,
+            drop_chance: 1.0,
+            fixed: false,
+            invisible: false,
+            check_interval: 0,
+            custom_name: None,
+            random: horizon_core::random::LegacyRandom::new(0),
+        }
+    }
+    /// A map whose `count` frame markers all count toward the limit.
+    fn map_tracking(count: i32) -> MapData {
+        let mut map = MapData::fresh(0.0, 0.0, 0, "minecraft:overworld");
+        map.decorations = (0..count)
+            .map(|i| Decoration {
+                sprite: "map/decorations/frame",
+                x: 0,
+                y: 0,
+                rot: 0,
+                name: None,
+                key: Key::Frame(1000 + i),
+            })
+            .collect();
+        map
+    }
+    fn filled_map(id: i32) -> ItemStack {
+        let mut stack = ItemStack::new("minecraft:filled_map", 1);
+        stack.data_mut().map_id = Some(id);
+        stack
+    }
+    fn at(id: u32) -> Option<InteractTarget> {
+        Some(InteractTarget {
+            id: id as i32,
+            location: [0.0; 3],
+        })
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources (HORIZON_TEST_RESOURCES)"]
+    fn a_map_tracking_more_than_256_markers_stays_in_the_hand() {
+        let mut game = server_game();
+        game.item_frames = vec![frame(1), frame(2)];
+        game.maps.data.insert(7, map_tracking(257));
+        game.maps.data.insert(8, map_tracking(256));
+
+        // ItemFrame.interact: FAIL, the frame stays empty and the map is kept.
+        *game.held_mut() = Some(filled_map(7));
+        assert!(
+            game.interact_frame(at(1)),
+            "the refusal ends the interaction"
+        );
+        assert!(game.item_frames[0].item.is_none());
+        assert_eq!(game.held().and_then(|s| s.data()?.map_id), Some(7));
+
+        // At the limit (not over it) the map goes in.
+        *game.held_mut() = Some(filled_map(8));
+        assert!(game.interact_frame(at(2)));
+        let framed = game.item_frames[1].item.as_ref();
+        assert_eq!(framed.and_then(|s| s.data()?.map_id), Some(8));
     }
 }

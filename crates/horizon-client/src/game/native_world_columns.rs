@@ -7,14 +7,13 @@ use super::native_world_edit::NativeHeightmap;
 /// What `native_read_columns` read: the blocks round each column's height (`bases`, none where it isn't loaded),
 /// as indexes into `palette`, a column after another, and three biome tints a column (grass, foliage, water).
 #[derive(Clone, Debug, PartialEq, Default)]
-pub(crate) struct NativeColumnBlocks {
-    pub(crate) palette: Vec<String>,
-    pub(crate) bases: Vec<Option<i32>>,
-    pub(crate) blocks: Vec<u16>,
-    pub(crate) tints: Vec<u32>,
+pub struct NativeColumnBlocks {
+    pub palette: Vec<String>,
+    pub bases: Vec<Option<i32>>,
+    pub blocks: Vec<u16>,
+    pub tints: Vec<u32>,
 }
 
-#[allow(dead_code)]
 impl Game<'_> {
     /// For a server mod: each column's height by `heightmap` in the authoritative level `dimension` (the one being
     /// ticked), none for a column not loaded. `Err` says why nothing was read: another dimension or a client of a
@@ -51,8 +50,9 @@ impl Game<'_> {
         dimension: &str,
         columns: &[(i32, i32)],
         heightmap: NativeHeightmap,
-        (below, above): (u32, u32),
+        range: (u32, u32),
     ) -> Result<NativeColumnBlocks, String> {
+        let (below, above) = range;
         if !self.native_level_open(dimension) {
             return Err(format!("{dimension} is not the level being ticked"));
         }

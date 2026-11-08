@@ -7,6 +7,85 @@ fn full() -> ChatAbilities {
     ChatAbilities::new(ChatVisibility::Full)
 }
 
+#[test]
+fn accepted_suggestions_report_utf16_ranges_and_tab_cycles() {
+    use winit::keyboard::KeyCode as K;
+    let font = font();
+    let m = Measure(&font);
+    let registries = Registries {
+        players: vec!["Steve".into(), "Steven".into()],
+        ..Registries::default()
+    };
+    let c = Commands {
+        dispatcher: crate::command::vanilla::game_dispatcher(),
+        registries: &registries,
+    };
+    let mut screen = ChatScreen::new(&m, &c, "", false, 0, 640, 360, full());
+    screen.type_text(&m, &c, "😀 hi st");
+    assert!(screen.take_suggestion_completion().is_none());
+    screen.key(&m, &c, &[], K::Tab, false, false);
+    assert!(
+        screen.take_suggestion_completion().is_none(),
+        "opening is not accepting"
+    );
+    for (shift, text) in [(false, "Steve"), (false, "Steven"), (true, "Steve")] {
+        screen.key(&m, &c, &[], K::Tab, shift, false);
+        assert_eq!(screen.value(), format!("😀 hi {text}"));
+        assert_eq!(
+            screen.take_suggestion_completion(),
+            Some(SuggestionCompletion {
+                original: "😀 hi st".into(),
+                range: (6, 8),
+                text: text.into(),
+                input: format!("😀 hi {text}"),
+            })
+        );
+        assert!(
+            screen.take_suggestion_completion().is_none(),
+            "reported once"
+        );
+    }
+    screen.key(&m, &c, &[], K::ArrowDown, false, false);
+    assert!(
+        screen.take_suggestion_completion().is_none(),
+        "selection is not accepting"
+    );
+    screen.key(&m, &c, &[], K::Escape, false, false);
+    assert!(screen.take_suggestion_completion().is_none());
+}
+
+#[test]
+fn clicked_suggestion_reports_the_actual_length_limited_input() {
+    use winit::keyboard::KeyCode as K;
+    let font = font();
+    let m = Measure(&font);
+    let registries = Registries {
+        players: vec!["Steve".into()],
+        ..Registries::default()
+    };
+    let c = Commands {
+        dispatcher: crate::command::vanilla::game_dispatcher(),
+        registries: &registries,
+    };
+    let mut screen = ChatScreen::new(&m, &c, "", false, 0, 640, 360, full());
+    screen.input.max_length = 6;
+    screen.type_text(&m, &c, "hi st");
+    screen.key(&m, &c, &[], K::Tab, false, false);
+    let [x, y, _, _] = screen.suggestions.as_ref().unwrap().rect;
+    assert!(screen.click(&m, &c, f64::from(x + 1), f64::from(y + 1)));
+    assert_eq!(screen.value(), "hi Ste");
+    assert_eq!(
+        screen.take_suggestion_completion(),
+        Some(SuggestionCompletion {
+            original: "hi st".into(),
+            range: (3, 5),
+            text: "Steve".into(),
+            input: "hi Ste".into(),
+        })
+    );
+    assert!(screen.take_suggestion_completion().is_none());
+}
+
 fn font() -> Font {
     // The missing-glyph metrics let these tests run without game assets.
     Font::load(
@@ -34,6 +113,7 @@ fn add(chat: &mut Chat, font: &Font, content: Text) {
                 added: 0,
                 content,
                 tag: None,
+                message: "".into(),
             },
         );
     }
@@ -51,6 +131,7 @@ fn smooth_chat_slides_a_line_in_and_can_hide_the_indicator() {
         tag: Some(std::sync::Arc::new(Tag::system_single_player(
             SYSTEM_INDICATOR,
         ))),
+        message: "hi".into(),
     });
     let text_alpha = |draws: &[GuiDraw]| {
         draws.iter().find_map(|d| match d {
@@ -199,7 +280,7 @@ fn locate_coordinates_fill_chat_with_teleport_without_submitting() {
         assert_eq!(link.component()["click_event"]["command"], expected);
         let mut chat = Chat::default();
         add(&mut chat, &font, Text::literal("Found at ").append(link));
-        let mut screen = ChatScreen::new(&m, &commands, "draft", 0, 640, 360, full());
+        let mut screen = ChatScreen::new(&m, &commands, "draft", false, 0, 640, 360, full());
         let x = 4.0 + f64::from(font.width("Found at "));
         assert!(!screen.click(&m, &commands, x, 315.0));
         let Some(ClickEvent::SuggestCommand(command)) = chat.click_at(&font, 360, x, 315.0) else {
@@ -240,6 +321,7 @@ fn history_arrows_recall_messages_and_restore_the_draft() {
         &m,
         &commands,
         "unfinished draft",
+        false,
         history.len(),
         640,
         360,
@@ -259,6 +341,93 @@ fn history_arrows_recall_messages_and_restore_the_draft() {
         );
         assert_eq!(screen.value(), expected);
     }
+}
+
+/// `ChatScreen.isDraft`: the box opens on the draft kept from last time
+/// (`ChatComponent.createScreen` passes `true`, which `ChatScreen.init`
+/// stores), so the text draws grey italic through `ChatScreen.formatChat`
+/// and the first Backspace clears the whole draft instead of one character.
+/// Editing the draft (`onEdited`) ends both.
+#[test]
+fn a_restored_draft_is_grey_italic_and_one_backspace_clears_it() {
+    use winit::keyboard::KeyCode::Backspace;
+
+    let font = font();
+    let m = Measure(&font);
+    let registries = Registries::default();
+    let c = Commands {
+        dispatcher: crate::command::vanilla::game_dispatcher(),
+        registries: &registries,
+    };
+    // The input's own text as the game draws it: x 4, y height - 12.
+    let input_text = |screen: &mut ChatScreen| -> Text {
+        screen
+            .draw(&m, (0, 0), 0, i32::MIN)
+            .into_iter()
+            .find_map(|draw| match draw {
+                Draw::Text {
+                    text, x: 4, y: 348, ..
+                } => Some(text),
+                _ => None,
+            })
+            .expect("the input draws its text")
+    };
+    let draft_style = |t: &Text| {
+        t.spans
+            .iter()
+            .all(|s| s.style.color == Some(text::GRAY) && s.style.is_italic())
+    };
+    let mut screen = ChatScreen::new(&m, &c, "half-written", true, 0, 640, 360, full());
+    assert_eq!(screen.value(), "half-written");
+    assert!(
+        draft_style(&input_text(&mut screen)),
+        "the restored draft draws grey italic"
+    );
+    // Typing into the draft (`onEdited`) ends the draft style, and Backspace
+    // eats one character again.
+    screen.type_text(&m, &c, "!");
+    assert_eq!(screen.value(), "half-written!");
+    let typed = input_text(&mut screen);
+    assert!(
+        !typed.spans.iter().any(|s| s.style.is_italic()),
+        "an edited draft is not grey italic"
+    );
+    assert_eq!(
+        screen.key(&m, &c, &[], Backspace, false, false),
+        ChatAction::None
+    );
+    assert_eq!(screen.value(), "half-written");
+    // A draft left alone clears whole on its first Backspace.
+    let mut screen = ChatScreen::new(&m, &c, "half-written", true, 0, 640, 360, full());
+    assert_eq!(
+        screen.key(&m, &c, &[], Backspace, false, false),
+        ChatAction::None
+    );
+    assert_eq!(screen.value(), "", "the first Backspace clears the draft");
+    // The flag is gone with it: typing is ordinary text, and Backspace eats
+    // one character.
+    screen.type_text(&m, &c, "hi");
+    assert_eq!(screen.value(), "hi");
+    let typed = input_text(&mut screen);
+    assert!(!typed.spans.iter().any(|s| s.style.is_italic()));
+    assert_eq!(
+        screen.key(&m, &c, &[], Backspace, false, false),
+        ChatAction::None
+    );
+    assert_eq!(screen.value(), "h");
+    // A box opened on ordinary text deletes one character at a time.
+    let mut screen = ChatScreen::new(&m, &c, "half-written", false, 0, 640, 360, full());
+    assert!(!draft_style(&input_text(&mut screen)));
+    assert_eq!(
+        screen.key(&m, &c, &[], Backspace, false, false),
+        ChatAction::None
+    );
+    assert_eq!(screen.value(), "half-writte");
+    // A command draft is grey italic as a whole: `formatChat` is registered
+    // before `CommandSuggestions.formatText`, so it wins over the argument
+    // colours.
+    let mut screen = ChatScreen::new(&m, &c, "/give @s stone", true, 0, 640, 360, full());
+    assert!(draft_style(&input_text(&mut screen)));
 }
 
 #[test]
@@ -281,7 +450,7 @@ fn mod_commands_are_coloured_and_complete_like_vanilla_ones() {
             dispatcher,
             registries: &registries,
         };
-        let mut screen = ChatScreen::new(&m, &c, "", 0, 640, 360, full());
+        let mut screen = ChatScreen::new(&m, &c, "", false, 0, 640, 360, full());
         screen.type_text(&m, &c, line);
         screen
     };
@@ -331,7 +500,7 @@ fn chat_completes_the_servers_custom_completions_with_the_players() {
             dispatcher,
             registries,
         };
-        let mut screen = ChatScreen::new(&m, &c, "", 0, 640, 360, full());
+        let mut screen = ChatScreen::new(&m, &c, "", false, 0, 640, 360, full());
         screen.type_text(&m, &c, line);
         // Chat shows no list by itself: Tab shows it, Tab again uses it.
         for _ in 0..2 {
@@ -379,7 +548,7 @@ fn ask_server_nodes_wait_for_the_servers_completions() {
     let tab = |screen: &mut ChatScreen| {
         screen.key(&m, &c, &[], winit::keyboard::KeyCode::Tab, false, false);
     };
-    let mut screen = ChatScreen::new(&m, &c, "", 0, 640, 360, full());
+    let mut screen = ChatScreen::new(&m, &c, "", false, 0, 640, 360, full());
     screen.type_text(&m, &c, "/bossbar get pt");
     let (request, sent) = screen.take_request().expect("the server is asked");
     assert_eq!(sent, "/bossbar get pt");
@@ -393,15 +562,25 @@ fn ask_server_nodes_wait_for_the_servers_completions() {
     tab(&mut screen);
     assert_eq!(screen.value(), "/bossbar get pt");
     screen.server_suggestions(&m, &c, request, (13, 2), reply("pt6:check"));
+    assert!(screen.take_suggestion_completion().is_none());
     tab(&mut screen);
     assert_eq!(screen.value(), "/bossbar get pt6:check");
+    assert_eq!(
+        screen.take_suggestion_completion(),
+        Some(SuggestionCompletion {
+            original: "/bossbar get pt".into(),
+            range: (13, 15),
+            text: "pt6:check".into(),
+            input: "/bossbar get pt6:check".into(),
+        })
+    );
     // Without the server's provider the local list is done at once.
     let local = crate::command::vanilla::game_dispatcher();
     let c = Commands {
         dispatcher: local,
         registries: &registries,
     };
-    let mut screen = ChatScreen::new(&m, &c, "", 0, 640, 360, full());
+    let mut screen = ChatScreen::new(&m, &c, "", false, 0, 640, 360, full());
     screen.type_text(&m, &c, "/bossbar get pt");
     assert_eq!(screen.take_request(), None);
 }
@@ -471,7 +650,7 @@ fn the_chat_option_decides_what_may_be_sent() {
         assert_eq!(abilities.allows("hi"), chat, "{visibility:?}");
         assert_eq!(abilities.allows("/time set day"), command, "{visibility:?}");
         for (line, allowed) in [("hi", chat), ("/time set day", command)] {
-            let mut screen = ChatScreen::new(&m, &c, "", 0, 640, 360, abilities);
+            let mut screen = ChatScreen::new(&m, &c, "", false, 0, 640, 360, abilities);
             screen.type_text(&m, &c, line);
             match enter(&mut screen) {
                 ChatAction::Submit(sent) => {
@@ -497,7 +676,16 @@ fn restricted_input_says_why_it_will_not_send() {
         registries: &registries,
     };
     let usage = |visibility, line: &str| {
-        let mut screen = ChatScreen::new(&m, &c, "", 0, 640, 360, ChatAbilities::new(visibility));
+        let mut screen = ChatScreen::new(
+            &m,
+            &c,
+            "",
+            false,
+            0,
+            640,
+            360,
+            ChatAbilities::new(visibility),
+        );
         screen.type_text(&m, &c, line);
         screen.usage.iter().map(|t| t.plain()).collect::<Vec<_>>()
     };
@@ -544,7 +732,7 @@ fn the_chat_option_filters_the_lines_both_ways() {
     assert_eq!(shown(&chat), ["client", "server", "player"]);
 }
 
-/// The in-frame LAN host's chat: a guest's line is a player message, so the
+/// A server's own chat: a guest's line is a player message, so the
 /// Chat option's player-message permission hides it at Commands Only and
 /// Hidden; command feedback (`/list`, `/tp`) is a system message and stays
 /// at Commands Only.
@@ -700,4 +888,141 @@ fn a_chat_message_is_cut_to_the_256_utf16_units_the_packet_holds() {
     // A cut between the halves of a pair keeps the character below it.
     let mixed = format!("{}\u{1f600}", "b".repeat(255));
     assert_eq!(normalize_chat_message(&mixed), "b".repeat(255));
+}
+
+/// PvP & HUD's chat options: the time before each message, and a repeated message counted on
+/// its own lines instead of filling the chat.
+#[test]
+fn timestamps_and_compact_chat_change_the_lines_not_the_messages() {
+    let font = font();
+    let mut chat = Chat {
+        clock: Some((9, 5)),
+        ..Chat::default()
+    };
+    chat.qol.compact = true;
+    let says = |chat: &mut Chat, text: &str| {
+        chat.add_message(
+            &font,
+            Text::literal(text),
+            None,
+            ChatSource::Server,
+            0,
+            false,
+        );
+    };
+    let shown =
+        |chat: &Chat| -> Vec<String> { chat.lines.iter().map(|l| l.content.plain()).collect() };
+    says(&mut chat, "gg");
+    says(&mut chat, "gg");
+    says(&mut chat, "gg");
+    assert_eq!(shown(&chat), ["gg (x3)"]);
+    says(&mut chat, "wp");
+    says(&mut chat, "gg");
+    assert_eq!(shown(&chat), ["gg", "wp", "gg (x3)"]);
+    assert_eq!(chat.received, 5, "every message still counts as received");
+    chat.qol.timestamps = true;
+    chat.rewrap(&font);
+    assert_eq!(
+        shown(&chat),
+        ["[09:05] gg", "[09:05] wp", "[09:05] gg (x3)"]
+    );
+    // Copying takes the message as it came: no time, no count.
+    assert_eq!(&*chat.lines[2].message, "gg");
+    // Turned off, the history shows each repeat as it was counted.
+    chat.qol = ChatQol::default();
+    chat.rewrap(&font);
+    assert_eq!(shown(&chat), ["gg", "wp", "gg (x3)"]);
+}
+
+/// PvP & HUD's chat search: only the messages holding the query show, in any case; clearing
+/// it brings every line back.
+#[test]
+fn the_chat_search_keeps_the_matching_messages() {
+    let font = font();
+    let mut chat = Chat::default();
+    for text in ["Alpha one", "beta", "ALPHABET soup"] {
+        chat.add_message(
+            &font,
+            Text::literal(text),
+            None,
+            ChatSource::Server,
+            0,
+            false,
+        );
+    }
+    let shown =
+        |chat: &Chat| -> Vec<String> { chat.lines.iter().map(|l| l.content.plain()).collect() };
+    chat.set_search_with(&font, Some("alpha"));
+    assert!(chat.searching());
+    assert_eq!(shown(&chat), ["ALPHABET soup", "Alpha one"]);
+    // A new message that doesn't match stays out of sight until the search ends.
+    chat.add_message(
+        &font,
+        Text::literal("gamma"),
+        None,
+        ChatSource::Server,
+        0,
+        false,
+    );
+    assert_eq!(shown(&chat).len(), 2);
+    chat.set_search_with(&font, Some("  "));
+    assert!(!chat.searching());
+    assert_eq!(
+        shown(&chat),
+        ["gamma", "ALPHABET soup", "beta", "Alpha one"]
+    );
+}
+
+/// Search and copy read a message as the chat shows it: legacy `§` codes format it, they
+/// aren't text.
+#[test]
+fn the_chat_search_and_copy_skip_legacy_codes() {
+    let font = font();
+    let mut chat = Chat::default();
+    for text in ["He§cllo", "§aplain"] {
+        chat.add_message(
+            &font,
+            Text::literal(text),
+            None,
+            ChatSource::Server,
+            0,
+            false,
+        );
+    }
+    assert_eq!(&*chat.lines[1].message, "Hello");
+    chat.set_search_with(&font, Some("hello"));
+    assert_eq!(chat.lines.len(), 1);
+    // `c` and `a` are codes here, not letters of either message.
+    chat.set_search_with(&font, Some("c"));
+    assert_eq!(chat.lines.len(), 0);
+}
+
+/// A repeat merged by compact chat leaves a reader scrolled up where they were.
+#[test]
+fn a_compact_repeat_keeps_the_scrolled_view_still() {
+    let font = font();
+    let mut chat = Chat::default();
+    chat.qol.compact = true;
+    let says = |chat: &mut Chat, text: &str| {
+        chat.add_message(
+            &font,
+            Text::literal(text),
+            None,
+            ChatSource::Server,
+            0,
+            true,
+        );
+    };
+    for i in 0..60 {
+        says(&mut chat, &format!("line {i}"));
+    }
+    says(&mut chat, "gg");
+    chat.scroll_by(5, true);
+    assert_eq!(chat.scroll, 5);
+    says(&mut chat, "gg");
+    assert_eq!(chat.lines[0].content.plain(), "gg (x2)");
+    assert_eq!(chat.scroll, 5);
+    // A new message still pushes the view up by its line.
+    says(&mut chat, "new");
+    assert_eq!(chat.scroll, 6);
 }

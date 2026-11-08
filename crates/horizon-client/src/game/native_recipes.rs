@@ -28,6 +28,7 @@ const MAX_SYNCED_RECIPES: usize = 1_000_000;
 #[derive(Default)]
 pub(super) struct RecipeTables {
     tables: Option<Arc<Recipes>>,
+    pub(super) categories: Option<HashMap<String, horizon_client::recipe_book::RecipeBookCategory>>,
     known: (Option<u64>, Arc<[i32]>),
     /// The server's recipes of the types its native mods sent (`horizon:
     /// recipe_content`) over the window's own: what `Game::recipes` reads on
@@ -54,7 +55,8 @@ impl Index {
         self.stack(&s.item, s.count, components(s))
     }
     fn any(&self, i: &Ingredient) -> Vec<RecipeStack> {
-        i.1.iter()
+        i.order
+            .iter()
             .filter_map(|id| self.stack(id, 1, String::new()))
             .collect()
     }
@@ -97,6 +99,21 @@ fn recipe(id: String, kind: RecipeKind) -> Recipe {
 }
 
 impl Game<'_> {
+    pub(super) fn registered_recipe_book_category(
+        &mut self,
+        kind: &str,
+    ) -> Option<horizon_client::recipe_book::RecipeBookCategory> {
+        if self.recipe_tables.categories.is_none() {
+            let mut declarations = Vec::new();
+            self.native_recipe_book_categories(&mut declarations);
+            self.recipe_tables.categories = Some(horizon_client::recipe_book::mod_categories(
+                declarations,
+                self.recipes(),
+                self.items(),
+            ));
+        }
+        self.recipe_tables.categories.as_ref()?.get(kind).cloned()
+    }
     /// `native_give`: `count` of `item`, refused outside a world, unless
     /// creative and for an item the game doesn't have.
     pub(super) fn recipe_give(&mut self, item: &str, count: u32) -> Result<(), String> {
@@ -279,10 +296,15 @@ impl Game<'_> {
                     result,
                 } => (
                     id,
-                    template,
+                    template.as_ref(),
                     base,
-                    addition,
-                    index.stack(result, 1, String::new()).into_iter().collect(),
+                    addition.as_ref(),
+                    result
+                        .create()
+                        .as_ref()
+                        .and_then(|s| index.of(s))
+                        .into_iter()
+                        .collect(),
                 ),
                 Smithing::Trim {
                     id,
@@ -290,10 +312,14 @@ impl Game<'_> {
                     base,
                     addition,
                     ..
-                } => (id, template, base, addition, index.any(base)),
+                } => (id, Some(template), base, Some(addition), index.any(base)),
             };
             let mut r = recipe(id.clone(), RecipeKind::Smithing);
-            r.slots = vec![index.any(template), index.any(base), index.any(addition)];
+            r.slots = vec![
+                template.map(|i| index.any(i)).unwrap_or_default(),
+                index.any(base),
+                addition.map(|i| index.any(i)).unwrap_or_default(),
+            ];
             r.results = results;
             out.push(r);
         }
@@ -344,6 +370,7 @@ impl Game<'_> {
         self.recipe_tables.incoming.clear();
         self.recipe_tables.received = None;
         self.recipe_tables.tables = None;
+        self.recipe_ui_forget_server_entries();
         self.forget_book();
     }
     /// `native_recipes_received` for the types that came, once the window

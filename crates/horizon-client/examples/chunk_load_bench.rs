@@ -89,8 +89,9 @@ fn main() -> Result<(), Error> {
     });
     let terrain = VanillaTerrain::new(&root.join("worldgen"), assets.registry, &biomes, seed)?;
 
-    // Generation and light, on the game's worker pool. Meshing is left out
-    // here and measured on its own below.
+    // Generation and light, on the game's worker pool (`threads` workers).
+    // Meshing is left out here and measured on its own below.
+    horizon_threads::jobs::configure(threads);
     let mut streaming = Streaming::new(Arc::new(terrain), context.clone(), threads);
     streaming.mesh = false;
     streaming.center = center;
@@ -218,10 +219,13 @@ fn mesher<'a>(context: &'a WorkerContext, seed: i64) -> Mesher<'a> {
     Mesher {
         nether_shading: false,
         shader_pack_lighting: false,
+        separate_ao: false,
+        shader_pack: false,
         zoom: BiomeZoom::new(obfuscate_seed(seed)),
         blend_radius: 2,
         smooth_lighting: true,
         cutout_leaves: true,
+        opaque_ice: false,
         translucent_layers: &[],
         leaf_culling: LeafCullingMode::Off,
         assets: &context.assets,

@@ -585,6 +585,7 @@ public final class VanillaMobAiOracle {
                             new net.minecraft.world.item.ItemStack(BuiltInRegistries.ITEM.getValue(
                                 net.minecraft.resources.Identifier.parse("minecraft:red_harness"))));
                         case "noai" -> mob.setNoAi(true);
+                        case "agelocked" -> method(AgeableMob.class, "setAgeLocked", boolean.class).invoke(mob, true);
                         case "profession" -> {
                             Villager villager = (Villager) mob;
                             villager.setVillagerData(villager.getVillagerData().withProfession(level.registryAccess(),
@@ -639,6 +640,14 @@ public final class VanillaMobAiOracle {
                         case "strength" -> method(net.minecraft.world.entity.animal.equine.Llama.class, "setStrength", int.class)
                             .invoke(mob, Integer.parseInt(v));
                         case "dead" -> mob.setHealth(0.0F);
+                        // effect=<name>:<amplifier>, never running out.
+                        case "effect" -> {
+                            String[] ea = v.split(":");
+                            var effect = BuiltInRegistries.MOB_EFFECT.wrapAsHolder(BuiltInRegistries.MOB_EFFECT.getValue(
+                                net.minecraft.resources.Identifier.withDefaultNamespace(ea[0])));
+                            afterAdd.add(() -> mob.addEffect(new net.minecraft.world.effect.MobEffectInstance(
+                                effect, -1, Integer.parseInt(ea[1]))));
+                        }
                         case "leashed", "leashto" -> {
                             // Leashed once every mob exists (below).
                         }
@@ -1109,6 +1118,7 @@ public final class VanillaMobAiOracle {
                 mem.sort(null);
                 sb.append("\tmem ").append(String.join(" ", mem));
             }
+            if (m instanceof AgeableMob ageable) sb.append("\tage ").append(ageable.getAge());
             if (m instanceof Villager villager) sb.append("\tvx ").append(villager(villager));
             if (m instanceof net.minecraft.world.entity.animal.golem.CopperGolem golem) {
                 Object opened = get(golem, "openedChestPos");

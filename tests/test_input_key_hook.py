@@ -13,13 +13,18 @@ ROOT = Path(__file__).resolve().parents[1]
 class InputKeyHookTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
     def test_original_event_after_handling_and_source_gates(self):
-        source = (ROOT / "crates/horizon-client/src/game.rs").read_text(encoding="utf-8")
+        source = "".join((ROOT / "crates/horizon-client/src" / path).read_text(encoding="utf-8")
+                         for path in ("game/window_handler.rs", "game.rs"))
         actual = method(source, "window_event")
         fixture = r"""
 type WindowId = i32;
 struct ActiveEventLoop;
 struct Window;
 impl Window { fn id(&self) -> i32 { 7 } }
+mod input_trace {
+    #[derive(Clone, Copy)]
+    pub enum InputOrigin { User, Agent, Game }
+}
 #[derive(Clone, Debug, PartialEq)]
 struct KeyEvent { physical_key: i32, logical_key: &'static str, location: i32,
                   text: &'static str, pressed: bool, repeat: bool }
@@ -28,7 +33,8 @@ fn glfw_modifiers(bits: u32) -> u32 { bits }
 struct Game { window: Option<Window>, modifiers: u32, early: bool,
               calls: Vec<&'static str>, observed: Vec<(KeyEvent, u32)> }
 impl Game {
-    fn handle_window_event(&mut self, _: &ActiveEventLoop, _: WindowId, mut event: WindowEvent) {
+    fn handle_window_event(&mut self, _: &ActiveEventLoop, _: WindowId, mut event: WindowEvent,
+                           _: input_trace::InputOrigin) {
         self.calls.push("handle"); self.modifiers = 0;
         if let WindowEvent::KeyboardInput { event, .. } = &mut event { event.physical_key = 99; event.text = ""; }
         if self.early { return; }

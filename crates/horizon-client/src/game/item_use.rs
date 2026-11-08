@@ -12,6 +12,23 @@ use horizon_client::{
 };
 use horizon_world::consumable::UseAnimation;
 
+/// Resolve USE_EFFECTS through the stack's component patch.
+pub(super) fn interact_vibrations(stack: &ItemStack, default: Option<bool>) -> bool {
+    if stack.count == 0 {
+        return false;
+    }
+    let Some(data) = stack.data() else {
+        return default.unwrap_or(false);
+    };
+    if data.other("!minecraft:use_effects").is_some() {
+        return false;
+    }
+    data.other("minecraft:use_effects").map_or_else(
+        || default.unwrap_or(false),
+        |tag| horizon_client::save::number(tag.get("interact_vibrations")).unwrap_or(1) != 0,
+    )
+}
+
 impl Game<'_> {
     /// `LivingEntity.startUsingItem` for the acting player's hand: nothing
     /// when a use runs already or the hand is empty. The use lasts
@@ -32,6 +49,9 @@ impl Game<'_> {
         self.using = Some((self.held_slot(), 0));
         self.use_duration = duration;
         self.use_ticks_set = ticks_set;
+        // `LivingEntity.startUsingItem`: `causeUseVibration(ITEM_INTERACT_START)`
+        // when the use effects of the stack ask for interaction vibrations.
+        self.use_vibration(&stack, "minecraft:item_interact_start");
         // A new charge hears the crossbow's loading sounds again
         // (`game/crossbow.rs`).
         self.crossbow_sounds = [false; 2];
@@ -39,17 +59,22 @@ impl Game<'_> {
     }
     /// `ItemStack.getUseDuration`: a consumable's time, 72000 for what is
     /// held until let go, the fixed times of brushes, bundles, spyglasses and
-    /// goat horns, 0 for the rest, then a mod's answer.
+    /// goat horns, 0 for the rest, then a mod's answer. A `consumable` or
+    /// `blocks_attacks` the server's patch adds counts as the item's own
+    /// (`Item.getUseDuration` reads the stack's components).
     pub(super) fn use_duration(&self, stack: &ItemStack) -> i32 {
         let info = self.items().get(&stack.item);
+        let (patched_ticks, patched_blocks) = horizon_client::item_sync::patched_use(stack);
         let mut duration = match &*stack.item {
             "minecraft:bow" | "minecraft:crossbow" | "minecraft:trident" => 72_000,
             "minecraft:spyglass" => 1200,
             "minecraft:brush" => 200,
             _ if info.is_some_and(|i| i.bundle) => 200,
             _ if let Some(i) = self.res.items().instrument(stack) => i.use_ticks(),
+            _ if let Some(ticks) = patched_ticks => ticks,
             _ => match info {
                 Some(i) if let Some(c) = &i.consumable => c.ticks(),
+                _ if patched_blocks => 72_000,
                 Some(i) if i.blocks_attacks.is_some() => 72_000,
                 _ if Kinetic::of(&stack.item).is_some() => 72_000,
                 _ => 0,
@@ -100,6 +125,7 @@ impl Game<'_> {
         // a potion is drunk (no last tick of its own: a mod's tick ran it out).
         if self.finish_drinking(slot, stack) {
             self.use_item_finished(stack);
+            self.use_vibration(stack, "minecraft:item_interact_finish");
             return;
         }
         self.using = None;
@@ -111,6 +137,8 @@ impl Game<'_> {
             self.stop_spyglass();
         }
         self.use_item_finished(stack);
+        // `LivingEntity.completeUsingItem` ends with `stopUsingItem`.
+        self.use_vibration(stack, "minecraft:item_interact_finish");
     }
     /// `LivingEntityUseItemEvent.Finish` after `finishUsingItem` of `stack`
     /// (no ticks left): the hand holds what a mod made the result.
@@ -204,6 +232,15 @@ pub(super) fn release_parts(canceled: bool, hand_changed: bool) -> (bool, bool) 
     (!canceled && !hand_changed, !canceled)
 }
 
+pub(super) fn bow_release_power(has_ammo: bool, charge: i32, canceled: bool) -> Option<f32> {
+    if canceled || charge < 0 || !has_ammo {
+        return None;
+    }
+    let f = charge as f32 / 20.0;
+    let power = ((f * f + f * 2.0) / 3.0).min(1.0);
+    (power >= 0.1).then_some(power)
+}
+
 /// `useItemRemaining` of a use of `duration` ticks, `ticks` old.
 fn ticks_left(duration: i32, ticks: u32) -> i32 {
     duration.saturating_sub_unsigned(ticks)
@@ -272,8 +309,8 @@ pub(super) fn use_pose(
 #[cfg(test)]
 mod tests {
     use super::{
-        consumes_at_once, count_down, duration_leaving, held, release_parts, start_of, tick_left,
-        ticks_left, use_pose,
+        bow_release_power, consumes_at_once, count_down, duration_leaving, held, release_parts,
+        start_of, tick_left, ticks_left, use_pose,
     };
     use horizon_client::first_person::ItemPose;
     use horizon_world::consumable::UseAnimation;
@@ -368,6 +405,16 @@ mod tests {
     }
 
     #[test]
+    fn bow_release_respects_charge_cancel_and_ammo() {
+        assert_eq!(bow_release_power(true, 20, false), Some(1.0));
+        assert_eq!(bow_release_power(true, 10, false), Some(5.0 / 12.0));
+        assert_eq!(bow_release_power(true, 0, false), None);
+        assert_eq!(bow_release_power(true, -1, false), None);
+        assert_eq!(bow_release_power(true, 20, true), None);
+        assert_eq!(bow_release_power(false, 20, false), None);
+    }
+
+    #[test]
     fn a_moved_end_moves_the_charge() {
         // a bow held 10 ticks of 72000: 10, as vanilla's.
         assert_eq!(held(72_000, ticks_left(72_000, 10)), 10);
@@ -425,5 +472,219 @@ mod tests {
         ] {
             assert!(matches!(pose(animation), ItemPose::Using));
         }
+    }
+}
+
+#[cfg(test)]
+pub(super) mod interact_vibration_tests {
+    use super::*;
+
+    type RecordedEvent = (&'static str, [f64; 3], Option<horizon_client::mobs::Who>);
+    thread_local! {
+        static EVENTS: std::cell::RefCell<Vec<RecordedEvent>> = const { std::cell::RefCell::new(Vec::new()) };
+        static RECORDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    pub(in crate::game) fn record_event(
+        event: &'static str,
+        pos: [f64; 3],
+        source: Option<horizon_client::mobs::Who>,
+    ) {
+        if RECORDING.get() {
+            EVENTS.with(|events| events.borrow_mut().push((event, pos, source)));
+        }
+    }
+
+    /// Runs `f` on a windowless game built from the prepared resources with
+    /// `held` in the main hand and returns the game events it posted;
+    /// `None` without the resources.
+    fn with_game(held: &str, f: impl FnOnce(&mut Game<'_>)) -> Option<Vec<String>> {
+        use crate::game::{Audio, Options, Progress, Settings, load_resources};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES")?);
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .ok()?;
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.player = Some(
+            horizon_client::motion::PlayerMotion::new(
+                game.motion,
+                horizon_core::geometry::Vec3::new(10.5, 64.0, -3.25),
+            )
+            .unwrap(),
+        );
+        *game.held_mut() = Some(ItemStack::new(held, 1));
+        crate::game::dispense_fixture::start_recording();
+        RECORDING.set(true);
+        f(&mut game);
+        RECORDING.set(false);
+        Some(crate::game::dispense_fixture::stop_recording())
+    }
+
+    /// `LivingEntity.startUsingItem` ends with
+    /// `this.useItem.causeUseVibration(this, GameEvent.ITEM_INTERACT_START)`,
+    /// and `ItemStack.causeUseVibration` posts only when the stack's use effects
+    /// ask for interaction vibrations (the default). `stopUsingItem` posts the
+    /// finish the same way, which Horizon already did, so a use is a pair of
+    /// vibrations and an item that turns them off is neither.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_use_start_is_an_item_interact_start_vibration() {
+        let bow = || ItemStack::new("minecraft:bow", 1);
+        let Some(lines) = with_game("minecraft:bow", |game| {
+            assert!(game.start_using_item(), "the bow's use starts");
+            game.stop_using_item(&bow());
+        }) else {
+            return;
+        };
+        assert_eq!(
+            lines,
+            vec![
+                "G 10,64,-4 minecraft:item_interact_start".to_owned(),
+                "G 10,64,-4 minecraft:item_interact_finish".to_owned(),
+            ]
+        );
+        // A spear's use effects set `interact_vibrations` false: no vibration.
+        let spear = || ItemStack::new("minecraft:iron_spear", 1);
+        let Some(lines) = with_game("minecraft:iron_spear", |game| {
+            assert!(game.start_using_item(), "the spear's use starts");
+            game.stop_using_item(&spear());
+        }) else {
+            return;
+        };
+        assert!(lines.is_empty(), "{lines:?}");
+    }
+
+    #[test]
+    fn stack_use_effects_patch_controls_vibrations() {
+        let mut rod = ItemStack::new("minecraft:fishing_rod", 1);
+        assert!(interact_vibrations(&rod, Some(true)));
+        rod.data_mut().set_loot_component(
+            "minecraft:use_effects",
+            &serde_json::json!({"interact_vibrations": false}),
+        );
+        assert!(!interact_vibrations(&rod, Some(true)));
+        rod.data_mut()
+            .set_loot_component("minecraft:use_effects", &serde_json::json!({}));
+        assert!(interact_vibrations(&rod, Some(false)));
+        rod.data_mut().set_other("minecraft:use_effects", None);
+        rod.data_mut().set_other(
+            "!minecraft:use_effects",
+            Some(horizon_world::nbt::Tag::Compound(Default::default())),
+        );
+        assert!(!interact_vibrations(&rod, Some(true)));
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn fishing_cast_and_reel_post_player_vibrations() {
+        use horizon_client::mobs::Who;
+        let Some(_) = with_game("minecraft:fishing_rod", |game| {
+            let rod = ItemStack::new("minecraft:fishing_rod", 1);
+            EVENTS.with(|events| events.borrow_mut().clear());
+            assert!(game.use_fishing_rod(&rod));
+            assert!(game.use_fishing_rod(&rod));
+            EVENTS.with(|events| {
+                assert_eq!(
+                    *events.borrow(),
+                    vec![
+                        (
+                            "minecraft:item_interact_start",
+                            [10.5, 64.0, -3.25],
+                            Some(Who::Player)
+                        ),
+                        (
+                            "minecraft:item_interact_finish",
+                            [10.5, 64.0, -3.25],
+                            Some(Who::Player)
+                        ),
+                    ]
+                );
+            });
+            let mut silent = rod.clone();
+            silent.data_mut().set_loot_component(
+                "minecraft:use_effects",
+                &serde_json::json!({"interact_vibrations": false}),
+            );
+            *game.held_mut() = Some(silent.clone());
+            EVENTS.with(|events| events.borrow_mut().clear());
+            assert!(game.use_fishing_rod(&silent));
+            assert!(game.use_fishing_rod(&silent));
+            EVENTS.with(|events| assert!(events.borrow().is_empty()));
+            *game.held_mut() = Some(rod.clone());
+            assert!(game.use_fishing_rod(&rod));
+            game.hook
+                .as_mut()
+                .unwrap()
+                .move_to([10.5, 64.0, -3.25], true);
+            let max = game
+                .items()
+                .get("minecraft:fishing_rod")
+                .unwrap()
+                .max_damage;
+            game.held_mut().as_mut().unwrap().damage = max - 1;
+            EVENTS.with(|events| events.borrow_mut().clear());
+            assert!(game.use_fishing_rod(&rod));
+            EVENTS.with(|events| assert!(events.borrow().is_empty(), "{:?}", *events.borrow()));
+        }) else {
+            panic!("prepared resources failed to load")
+        };
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn thrown_eye_posts_projectile_shoot_at_eye_from_player() {
+        use horizon_client::mobs::Who;
+        let Some(_) = with_game("minecraft:ender_eye", |game| {
+            let root =
+                std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+            let terrain = horizon_client::vanillagen::VanillaTerrain::new(
+                &root.join("worldgen"),
+                game.pack.assets.registry,
+                &game.res.core.biomes,
+                1234,
+            )
+            .unwrap();
+            game.end.set_locator(Some(std::sync::Arc::new(terrain)));
+            EVENTS.with(|events| events.borrow_mut().clear());
+            assert!(
+                game.use_ender_eye(&ItemStack::new("minecraft:ender_eye", 1), false)
+                    .unwrap()
+            );
+            EVENTS.with(|events| {
+                let events = events.borrow();
+                assert!(
+                    events.contains(&(
+                        "minecraft:projectile_shoot",
+                        [10.5, 64.0 + f64::from(1.8_f32) * 0.5, -3.25],
+                        Some(Who::Player),
+                    )),
+                    "{events:?}"
+                );
+            });
+        }) else {
+            panic!("prepared resources failed to load")
+        };
     }
 }

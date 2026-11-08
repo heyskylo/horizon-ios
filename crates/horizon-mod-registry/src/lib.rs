@@ -5,7 +5,9 @@
 //! request with the entry. Reviewers decide; merging publishes. Signed-in
 //! players also rate published projects (`ratings`, its only data: sessions
 //! are signed cookies, and GitHub holds everything else).
+mod archive;
 pub mod github;
+pub mod page;
 pub mod ratings;
 
 use axum::{
@@ -44,8 +46,8 @@ const PER_ACCOUNT: usize = 6;
 const PER_HOUR: usize = 60;
 /// The page's JSON.
 const MAX_FORM: usize = 64 << 10;
-/// A submission's whole body: the file, the page and the form's framing.
-const MAX_BODY: usize = index::MAX_FILE as usize + MAX_FORM * 2;
+/// A submission's whole body: the file, the page, its images and the form's framing.
+const MAX_BODY: usize = index::MAX_FILE as usize + page::MAX_IMAGES + MAX_FORM * 2;
 /// Ratings set per account per hour, and by everyone.
 const RATINGS_PER_ACCOUNT: usize = 30;
 const RATINGS_PER_HOUR: usize = 600;
@@ -464,7 +466,7 @@ async fn rate(
             format!("{id} isn't published in the registry"),
         ));
     };
-    if entry.owners.iter().any(|o| o.eq_ignore_ascii_case(&login)) {
+    if ownership(&entry, &login, account) != Ownership::None {
         return Err(Refusal::new(
             StatusCode::FORBIDDEN,
             "you publish this project: its players rate it",
@@ -497,16 +499,31 @@ pub struct Form {
     #[serde(default)]
     pub authors: Vec<String>,
     pub license: String,
-    /// The code's address (a file upload's); a repository listing's is the repository.
+    /// The code's address.
     #[serde(default)]
     pub source: String,
-    /// `owner/name` on GitHub: lists the project by its repository, whose releases are its
-    /// versions. No file is sent.
+    /// Refused: the registry no longer follows repositories (every version is a submission).
+    /// Kept so an old form's listing gets a clear answer.
     #[serde(default)]
     pub repo: Option<String>,
-    /// `https://` only; an icon in the repository is a pull request by hand.
+    /// Refused: icons are uploaded (the `icon` part) and kept in the registry.
     #[serde(default)]
     pub icon: Option<String>,
+    /// 1 to 3 of the kind's categories.
+    #[serde(default)]
+    pub categories: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// The project's screenshots to keep, in order (`screenshots/<id>/<name>` of its entry);
+    /// uploaded ones come after them. Absent: all of them.
+    #[serde(default)]
+    pub screenshots: Option<Vec<String>>,
+    /// A `shaderpack`'s submitter says they made it and its licence lets the registry hand it out.
+    #[serde(default)]
+    pub own_work: bool,
+    /// Changes the page only, with no file ("Edit project").
+    #[serde(default)]
+    pub edit: bool,
     /// A new project's minisign public key.
     #[serde(default)]
     pub key: Option<String>,
@@ -664,11 +681,11 @@ async fn submit(
         drain_form(&mut multipart).await;
     }
     let result = match result {
-        Ok((form, file)) => {
+        Ok((form, file, images)) => {
             let inner = inner.clone();
             tokio::task::spawn_blocking(move || match &file {
-                Some(file) => publish(&inner.config, &login, user_id, &form, file),
-                None => list(&inner.config, &login, user_id, &form),
+                Some(file) => publish(&inner.config, &login, user_id, &form, file, &images),
+                None => page::edit(&inner.config, &login, user_id, &form, &images),
             })
             .await
             .unwrap_or_else(|_| {
@@ -684,15 +701,29 @@ async fn submit(
     result.map(|url| Json(json!({"pull_request": url})))
 }
 
-/// Reads the form's two parts: `entry` (JSON) and `file`, streamed to `dir`.
+/// Reads the form's parts: `entry` (JSON), `file`, streamed to `dir`, and the images, `icon`
+/// and up to 8 `screenshot`s.
 async fn receive(
     multipart: &mut Multipart,
     dir: &Path,
-) -> Result<(Form, Option<PathBuf>), Refusal> {
+) -> Result<(Form, Option<PathBuf>, page::Uploads), Refusal> {
     use tokio::io::AsyncWriteExt;
     let (mut form, mut file) = (None, None);
+    let mut images = page::Uploads::default();
     while let Some(mut field) = multipart.next_field().await.map_err(torn)? {
         match field.name() {
+            Some(part @ ("icon" | "screenshot")) => {
+                let part = part.to_owned();
+                let name = field.file_name().unwrap_or("").to_owned();
+                let mut bytes = Vec::new();
+                while let Some(chunk) = field.chunk().await.map_err(torn)? {
+                    bytes.extend_from_slice(&chunk);
+                    if bytes.len() > page::MAX_IMAGE {
+                        return Err(bad(format!("{part} {name:?} is too big")));
+                    }
+                }
+                images.add(&part, &name, bytes).map_err(bad)?;
+            }
             Some("entry") => {
                 let text = field.text().await.map_err(torn)?;
                 if text.len() > MAX_FORM {
@@ -722,11 +753,11 @@ async fn receive(
         }
     }
     match (form, file) {
-        (Some(form), None) if form.repo.is_some() => Ok((form, None)),
-        (Some(form), Some(_)) if form.repo.is_some() => Err(bad(
-            "a project listed by its repository sends no file: publish a GitHub release in it",
+        (Some(form), _) if form.repo.is_some() => Err(bad(
+            "the registry doesn't follow repositories: submit each version's file here, so it is checked and reviewed",
         )),
-        (Some(form), Some(file)) => Ok((form, Some(file))),
+        (Some(form), None) if form.edit => Ok((form, None, images)),
+        (Some(form), Some(file)) if !form.edit => Ok((form, Some(file), images)),
         _ => Err(bad("send the page and the file")),
     }
 }
@@ -773,10 +804,41 @@ fn submission_tag_valid(config: &Config, branch: &str, login: &str, tag: &str) -
     mac.verify_slice(&tag).is_ok()
 }
 
+/// How a signed-in account relates to a project's owners.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ownership {
+    /// Its numeric ID is one of `owner_ids`: the account that listed it (or was added), whatever
+    /// its login is now.
+    ById,
+    /// The entry records no IDs (from before they were recorded) and its login is listed: an owner
+    /// as far as anyone can tell, but its updates always wait for a reviewer.
+    ByLoginOnly,
+    None,
+}
+
+/// Who `login` (GitHub account `user_id`) is to `entry`. When the entry has IDs, only they count: a
+/// login listed in `owners` but held by another account is someone who claimed it after a rename.
+pub fn ownership(entry: &Entry, login: &str, user_id: u64) -> Ownership {
+    if !entry.owner_ids.is_empty() {
+        return if entry.owner_ids.contains(&user_id) {
+            Ownership::ById
+        } else {
+            Ownership::None
+        };
+    }
+    if entry.owners.iter().any(|o| o.eq_ignore_ascii_case(login)) {
+        Ownership::ByLoginOnly
+    } else {
+        Ownership::None
+    }
+}
+
 /// The trailer of an owner update's pull request: a comment holding what the
 /// update is and an HMAC-SHA256 (hex, with `key`) over it, which the registry
 /// repository's `owner-update` workflow verifies with the same secret
-/// (`scripts/owner_update.py` there builds the same message).
+/// (`scripts/owner_update.py` there builds the same message). v2 adds the
+/// submitter's numeric GitHub ID, which the workflow checks against the
+/// entry's `owner_ids` on main.
 pub fn update_trailer(
     key: &[u8],
     id: &str,
@@ -784,8 +846,10 @@ pub fn update_trailer(
     sha256: &str,
     file: &str,
     submitter: &str,
+    submitter_id: u64,
 ) -> String {
-    let message = format!("owner-update-v1\n{id}\n{version}\n{sha256}\n{file}\n{submitter}");
+    let message =
+        format!("owner-update-v2\n{id}\n{version}\n{sha256}\n{file}\n{submitter}\n{submitter_id}");
     let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC takes any key length");
     mac.update(message.as_bytes());
     let hmac: String = mac
@@ -795,7 +859,7 @@ pub fn update_trailer(
         .map(|b| format!("{b:02x}"))
         .collect();
     format!(
-        "<!-- owner-update\nid: {id}\nversion: {version}\nsha256: {sha256}\nfile: {file}\nsubmitter: {submitter}\nhmac: {hmac}\n-->"
+        "<!-- owner-update\nformat: v2\nid: {id}\nversion: {version}\nsha256: {sha256}\nfile: {file}\nsubmitter: {submitter}\nsubmitter_id: {submitter_id}\nhmac: {hmac}\n-->"
     )
 }
 
@@ -807,6 +871,7 @@ pub fn publish(
     user_id: u64,
     form: &Form,
     file: &Path,
+    images: &page::Uploads,
 ) -> Result<String, Refusal> {
     let gh = &config.github;
     let kind = Kind::from(form.kind.clone());
@@ -814,13 +879,7 @@ pub fn publish(
     if !index::valid_id(&form.id) {
         return Err(bad("an id is 1 to 64 of a-z, 0-9 and _"));
     }
-    if form
-        .icon
-        .as_ref()
-        .is_some_and(|i| !i.starts_with("https://"))
-    {
-        return Err(bad("the icon must be an https:// address"));
-    }
+    page::check_form(form, &kind).map_err(bad)?;
     if !form.source.trim().starts_with("https://") {
         return Err(bad("the source must be an https:// address of the code"));
     }
@@ -828,6 +887,7 @@ pub fn publish(
         return Err(bad("a project needs a name and a licence"));
     }
     // The file's own checks first: a wrong file never reaches GitHub.
+    archive::check(file).map_err(bad)?;
     let facts = index::inspect(&kind, file).map_err(bad)?;
     if let Some(id) = facts.id.as_ref().filter(|id| **id != form.id) {
         return Err(bad(format!("the file's id is {id:?}, not {:?}", form.id)));
@@ -855,11 +915,15 @@ pub fn publish(
     };
     let existing = gh.entry(&form.id).map_err(github_down)?;
     let is_new = existing.is_none();
+    if is_new {
+        page::check_new(form, images).map_err(bad)?;
+    }
     let turns_native =
         kind == Kind::NativeMod && existing.as_ref().is_some_and(|(e, _)| e.kind == Kind::Mod);
     // An owner update: an owner's new version and nothing else of the entry
     // changes (key and owners included).
     let mut owner_update = false;
+    let mut matched = Ownership::ById;
     let (entry, blob) = match existing {
         None => (
             Entry {
@@ -871,16 +935,21 @@ pub fn publish(
                 description: form.description.clone(),
                 authors: form.authors.clone(),
                 owners: vec![login.to_owned()],
+                owner_ids: vec![user_id],
                 license: form.license.trim().to_owned(),
                 source: form.source.trim().to_owned(),
-                icon: form.icon.clone(),
+                icon: None,
+                categories: form.categories.clone(),
+                tags: form.tags.clone(),
+                screenshots: Vec::new(),
                 key: form.key.clone().filter(|k| !k.trim().is_empty()),
                 versions: vec![version.clone()],
             },
             None,
         ),
         Some((mut entry, blob)) => {
-            if !entry.owners.iter().any(|o| o.eq_ignore_ascii_case(login)) {
+            matched = ownership(&entry, login, user_id);
+            if matched == Ownership::None {
                 return Err(Refusal::new(
                     StatusCode::FORBIDDEN,
                     format!(
@@ -934,15 +1003,18 @@ pub fn publish(
             entry.authors = form.authors.clone();
             entry.license = form.license.trim().to_owned();
             entry.source = form.source.trim().to_owned();
-            if form.icon.is_some() {
-                entry.icon = form.icon.clone();
-            }
+            entry.categories = form.categories.clone();
+            entry.tags = form.tags.clone();
             entry.versions.insert(0, version.clone());
             let (mut a, mut b) = (entry.clone(), before);
             a.versions.clear();
             b.versions.clear();
             // A mod turning native is reviewed by hand, never an owner update.
-            owner_update = a == b
+            // Only an owner known by ID publishes on their own: a login match alone
+            // could be someone who claimed the login after a rename.
+            owner_update = matched == Ownership::ById
+                && a == b
+                && images.is_empty()
                 && !turns_native
                 && (entry.key.is_none() || version.signature.is_some())
                 && version
@@ -952,19 +1024,17 @@ pub fn publish(
             (entry, Some(blob))
         }
     };
+    let mut entry = entry;
+    let writes = page::place(&mut entry, form, images).map_err(bad)?;
     // Every check CI runs but the trial run: the file as its kind, its id and
     // version, its signature, the entry's fields. CI runs it all again.
     let files = file.parent().unwrap_or(Path::new("."));
     std::fs::copy(file, files.join(&sha256)).map_err(|e| bad(e.to_string()))?;
     let mut checked = entry.clone();
     checked.versions.truncate(1);
-    if checked
-        .icon
-        .as_ref()
-        .is_some_and(|i| !i.starts_with("https://"))
-    {
-        checked.icon = None;
-    }
+    // The images were checked by `page`; the registry's own files aren't in this scratch folder.
+    checked.icon = None;
+    checked.screenshots.clear();
     let project = registry::project(
         &checked,
         &Sources {
@@ -987,7 +1057,7 @@ pub fn publish(
         // The branch is there: a pull request, someone else's submission, or
         // this submitter's own that GitHub broke off (a timeout past the
         // branch's creation). Only the last is taken up again, from main: the
-        // branch holds no commit yet, or the one this form wrote for them.
+        // branch holds no commit yet, or only those this form wrote for them.
         if let Some(url) = gh.open_pull(&branch).map_err(github_down)? {
             return Err(Refusal::new(
                 StatusCode::CONFLICT,
@@ -998,14 +1068,15 @@ pub fn publish(
             ));
         }
         let commits = gh.commits(&branch).map_err(github_down)?;
-        let theirs = commits.len() <= 1
-            && commits.iter().all(|m| {
-                m.lines().any(|line| {
-                    line.trim()
-                        .strip_prefix("Submission:")
-                        .is_some_and(|tag| submission_tag_valid(config, &branch, login, tag.trim()))
-                })
-            });
+        // Every commit the form wrote (the entry, then its images) carries the tag; one without
+        // it is someone else's.
+        let theirs = commits.iter().all(|m| {
+            m.lines().any(|line| {
+                line.trim()
+                    .strip_prefix("Submission:")
+                    .is_some_and(|tag| submission_tag_valid(config, &branch, login, tag.trim()))
+            })
+        });
         if !theirs {
             return Err(Refusal::new(
                 StatusCode::CONFLICT,
@@ -1030,6 +1101,7 @@ pub fn publish(
         &message,
     )
     .map_err(github_down)?;
+    page::write(gh, &writes, &branch, &message)?;
     let v = &project.versions[0];
     let capabilities: Vec<String> = v
         .capabilities
@@ -1073,6 +1145,15 @@ pub fn publish(
         source = entry.source,
         lists = [capabilities, requires].concat().join("\n"),
     );
+    let body = if matched == Ownership::ByLoginOnly {
+        format!(
+            "{body}\n\n⚠️ This entry records no owner IDs, so @{login} (GitHub ID {user_id}) was matched by login only. \
+             Check it is the same account that listed the project (a renamed owner's login can be claimed by anyone), \
+             then add `owner_ids = [{user_id}]` to the entry."
+        )
+    } else {
+        body
+    };
     let trailer = config
         .update_key
         .as_deref()
@@ -1085,6 +1166,7 @@ pub fn publish(
                 &sha256,
                 &v.file.name,
                 login,
+                user_id,
             )
         });
     let body = match &trailer {
@@ -1104,109 +1186,6 @@ pub fn publish(
             eprintln!("labelling {url}: {} {}", e.status, e.message);
         }
     }
-    Ok(url)
-}
-
-/// A new project listed by its repository: the entry (a link and a page) on a new branch and a
-/// pull request opened. Its versions are the repository's GitHub releases, read by the registry
-/// without a pull request (docs/api/mod-index.md); a reviewer reads the repository now, once.
-pub fn list(config: &Config, login: &str, user_id: u64, form: &Form) -> Result<String, Refusal> {
-    let gh = &config.github;
-    let kind = Kind::from(form.kind.clone());
-    let repo = form.repo.as_deref().unwrap_or("").trim().to_owned();
-    if form
-        .icon
-        .as_ref()
-        .is_some_and(|i| !i.starts_with("https://"))
-    {
-        return Err(bad("the icon must be an https:// address"));
-    }
-    let entry = Entry {
-        id: form.id.clone(),
-        kind: kind.clone(),
-        repo: Some(repo.clone()),
-        name: form.name.trim().to_owned(),
-        summary: form.summary.trim().to_owned(),
-        description: form.description.clone(),
-        authors: form.authors.clone(),
-        owners: vec![login.to_owned()],
-        license: form.license.trim().to_owned(),
-        source: String::new(),
-        icon: form.icon.clone(),
-        key: form.key.clone().filter(|k| !k.trim().is_empty()),
-        versions: Vec::new(),
-    };
-    // The form asks for the page; the repository's horizon-registry.toml may change it later.
-    let problems = entry.resolved(&registry::Page::default()).check_fields();
-    if !problems.is_empty() {
-        return Err(bad(problems.join("; ")));
-    }
-    let Some(info) = gh.repository(&repo).map_err(github_down)? else {
-        return Err(bad(format!(
-            "https://github.com/{repo} was not found, or is private"
-        )));
-    };
-    if gh.entry(&form.id).map_err(github_down)?.is_some() {
-        return Err(Refusal::new(
-            StatusCode::CONFLICT,
-            format!(
-                "{} is already listed: publish a GitHub release in its repository",
-                form.id
-            ),
-        ));
-    }
-    let text = entry.to_toml().map_err(bad)?;
-    let branch = format!("list/{}", form.id);
-    if !gh.branch(&branch).map_err(github_down)? {
-        return Err(Refusal::new(
-            StatusCode::CONFLICT,
-            format!(
-                "{} was already submitted: its pull request is open",
-                form.id
-            ),
-        ));
-    }
-    let message = format!(
-        "List {}\n\nSubmitted by @{login} through the form.\n\nCo-authored-by: {login} <{user_id}+{login}@users.noreply.github.com>",
-        form.id
-    );
-    gh.put(
-        &format!("mods/{}.toml", form.id),
-        &text,
-        &branch,
-        None,
-        &message,
-    )
-    .map_err(github_down)?;
-    let owner = info["owner"]["login"].as_str().unwrap_or("?");
-    let body = format!(
-        "<!-- submitted-by: {login} -->\n🤖 Submitted through [{site}]({public}/mods/submit) by @{login}. The form opens the pull request with \
-         the registry's token: neither Ludovic nor a reviewer wrote it.\n\n\
-         | | |\n|---|---|\n| Project | `{id}` ({kind}, new) |\n| Repository | https://github.com/{repo} (owned by `{owner}`: {same}) |\n| Signed | {signed} |\n\n\
-         **Reviewers: this is the only review.** Releases published in that repository later are listed after the registry's automatic checks, with no pull request. \
-         Read the repository and its source, check that the submitter is allowed to speak for it, and that the page is accurate. \
-         The checks below trial the repository's existing releases.",
-        public = config.public_url,
-        site = config
-            .public_url
-            .split_once("://")
-            .map_or(config.public_url.as_str(), |(_, host)| host),
-        id = form.id,
-        kind = kind.name(),
-        same = if owner.eq_ignore_ascii_case(login) {
-            "the submitter"
-        } else {
-            "NOT the submitter: check they act for it"
-        },
-        signed = if entry.key.is_some() {
-            "releases must be signed with the key"
-        } else {
-            "no key: releases are unsigned"
-        },
-    );
-    let (url, _) = gh
-        .pull(&format!("List {}", form.id), &branch, &body)
-        .map_err(github_down)?;
     Ok(url)
 }
 

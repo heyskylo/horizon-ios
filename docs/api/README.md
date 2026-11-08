@@ -1,6 +1,6 @@
 # Horizon APIs
 
-Horizon has seven surfaces that other programs and people build on. Each one has an **API** (the contract: what you
+Horizon has eight surfaces that other programs and people build on. Each one has an **API** (the contract: what you
 may call, read or write, and what Horizon promises about it) and an **SDK** (the tools that help you use it). This
 section has one page per surface, plus the rules every surface follows:
 [stability and versioning](stability.md).
@@ -8,11 +8,12 @@ section has one page per surface, plus the rules every surface follows:
 | Surface | For | API today | Stability | Reference |
 | --- | --- | --- | --- | --- |
 | [Mods](../mods.md) | mod authors | content mods: manifest `api` 0.2; native mods: a horizon-mixins bundle ([native-mods.md](../native-mods.md)) | preview (content), experimental (native) | [mods.md](../mods.md) |
-| [Shaders](shaders.md) | shader authors | none yet: packs were removed on 2026-10-24 | planned | none |
+| [Shaders](shaders.md) | shader authors | API 0.1 (sky, vertex, material, weather and post stages, coloured block light, options, hot reload) | experimental | [shaders-reference.md](shaders-reference.md) |
 | [Agent control](agent-control.md) | agents, scripts, tests | `horizon-ctl`, its MCP server, the game's control socket | preview | [horizon-ctl-commands.md](../horizon-ctl-commands.md) (generated) |
 | [Servers](server.md) | hosts, panels, bots | `horizon-server` commands, `server.toml`, control API `/api/v1` | stable | [server-reference.md](server-reference.md) (generated) |
 | [Launcher](launcher.md) | players' agents, pack makers | `horizon-launcher` commands and its MCP server | preview | [launcher-commands.md](../launcher-commands.md) (generated) |
 | [Launch](launch.md) | other launchers | `horizon-client`'s launch options, the session JSON, exit codes; `horizon-prepare`'s output, `--check` and `--progress json` | experimental | [launch-reference.md](launch-reference.md) (generated) |
+| [Content](content.md) | other launchers | where each kind of content goes, turning it on and off, the checks before installing; `content` in `horizon-client --launch-api` | experimental | [mod-index.md](mod-index.md) |
 | [Data formats](data-formats.md) | tools that read Horizon's files | benchmark reports, telemetry, settings files, signed checksums | stable or preview, per format | on that page |
 
 ## How these APIs are designed

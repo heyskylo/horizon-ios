@@ -116,6 +116,64 @@ fn a_shadow_map_stays_in_range_and_needs_a_stage_to_read_it() {
 }
 
 #[test]
+fn the_shadow_map_may_follow_options() {
+    let with = |keys: &str| {
+        let sizes = "[[options]]\nid = \"shadow_size\"\nname = \"Size\"\ntype = \"choice\"\n\
+                     values = [\"1024\", \"2048\", \"4096\"]\ndefault = \"2048\"\n\
+                     [[options]]\nid = \"shadow_reach\"\nname = \"Reach\"\ntype = \"int\"\n\
+                     default = 128\nmin = 64\nmax = 256\n";
+        let text = sample_text().replace("distance = 96.0", &format!("distance = 96.0\n{keys}"));
+        format!("{text}\n{sizes}")
+    };
+    let m = Manifest::parse(&with(
+        "option = \"reflections\"\nresolution_option = \"shadow_size\"\n\
+         distance_option = \"shadow_reach\"\n",
+    ))
+    .unwrap();
+    let s = m.shadow.unwrap();
+    assert_eq!(
+        (
+            s.option.as_deref(),
+            s.resolution_option.as_deref(),
+            s.distance_option.as_deref()
+        ),
+        (
+            Some("reflections"),
+            Some("shadow_size"),
+            Some("shadow_reach")
+        )
+    );
+    let cases = [
+        (
+            "option = \"shadows\"\n",
+            "shadow.option: `shadows` is no option",
+        ),
+        // An int below 256 texels, words, a float.
+        (
+            "resolution_option = \"samples\"\n",
+            "shadow.resolution_option: `samples`",
+        ),
+        (
+            "resolution_option = \"tonemap\"\n",
+            "shadow.resolution_option: `tonemap`",
+        ),
+        (
+            "resolution_option = \"saturation\"\n",
+            "shadow.resolution_option: `saturation`",
+        ),
+        // 1024 blocks and more.
+        (
+            "distance_option = \"shadow_size\"\n",
+            "shadow.distance_option: `shadow_size`",
+        ),
+    ];
+    for (keys, needle) in cases {
+        let e = refused(&with(keys));
+        assert!(e.contains(needle), "{needle:?} not in {e:?}");
+    }
+}
+
+#[test]
 fn material_ids_go_by_the_first_entry_and_may_cut_shadows_whole() {
     let manifest = |rest: &str| {
         Manifest::parse(&format!(
@@ -224,8 +282,8 @@ fn refuses_what_this_build_does_not_read() {
     let cases = [
         (text.replace("schema = 1", "schema = 2"), "schema 2"),
         (
-            text.replace("api = \"0.1\"", "api = \"0.2\""),
-            "shader API 0.2",
+            text.replace("api = \"0.1\"", "api = \"0.3\""),
+            "shader API 0.3",
         ),
         (
             text.replace("\"sample_pack\"", "\"Sample\""),
@@ -300,8 +358,8 @@ fn refuses_what_this_build_does_not_read() {
     assert!(refused(no_stage).contains("no stage"));
     let mirror = format!("{no_stage}[sky]\nfile = \"sky.wgsl\"\n[reflection]\n");
     assert!(refused(&mirror).contains("[reflection] needs [material]"));
-    let many = (0..9).map(|i| format!("[[post]]\nfile = \"p{i}.wgsl\"\n"));
-    assert!(refused(&format!("{no_stage}{}", many.collect::<String>())).contains("9 post passes"));
+    let many = (0..13).map(|i| format!("[[post]]\nfile = \"p{i}.wgsl\"\n"));
+    assert!(refused(&format!("{no_stage}{}", many.collect::<String>())).contains("13 post passes"));
 }
 
 #[test]
@@ -646,4 +704,188 @@ fn materials_name_blocks_and_move_sprites_to_the_translucent_pass() {
         [false, false, true, false]
     );
     assert!(m.translucent_layers(&[(0, 9)], 4).is_empty());
+}
+
+#[test]
+fn reads_particle_lights_and_refuses_bad_ones() {
+    let entry = |rest: &str| {
+        format!(
+            "{}[[particle_lights]]\nparticles = [\"firefly\"]\n{rest}\n",
+            sample_text()
+        )
+    };
+    let m = Manifest::parse(&entry("color = [0.3, 0.35, 0.2]\nreach = 4.0")).unwrap();
+    assert_eq!(m.particle_lights[0].particles, ["firefly"]);
+    assert_eq!(m.particle_lights[0].reach, 4.0);
+    assert!(refused(&entry("color = [2.0, 0.0, 0.0]\nreach = 4.0")).contains("0..=1"));
+    assert!(refused(&entry("color = [1.0, 1.0, 1.0]\nreach = 40.0")).contains("reach"));
+}
+
+#[test]
+fn displacement_needs_the_material_stage_and_stays_in_range() {
+    let with = |section: &str| format!("{}\n[displacement]\n{section}", sample_text());
+    let d = Manifest::parse(&with(
+        "option = \"reflections\"\ncells_option = \"tonemap\"\n",
+    ));
+    // The sample's `tonemap` choice names no cell counts.
+    assert!(
+        d.unwrap_err()
+            .contains("displacement.cells_option: `tonemap` is no choice of cell counts")
+    );
+    let m = Manifest::parse(&with("distance = 16.0\noption = \"reflections\"\n")).unwrap();
+    let d = m.displacement.unwrap();
+    assert_eq!(
+        (d.distance, d.cells, d.option.as_deref()),
+        (16.0, 16, Some("reflections"))
+    );
+    let cases = [
+        (
+            "distance = 40.0\n",
+            "displacement.distance 40 is not in 4.0..=32.0",
+        ),
+        ("cells = 2\n", "displacement.cells 2 is not in 4..=64"),
+        (
+            "option = \"saturation\"\n",
+            "displacement.option: `saturation` is no bool option",
+        ),
+        (
+            "steps_option = \"samples\"\n",
+            "displacement.steps_option: `samples` is no bool option",
+        ),
+    ];
+    for (section, needle) in cases {
+        let e = refused(&with(section));
+        assert!(e.contains(needle), "{needle:?} not in {e:?}");
+    }
+    let no_stage = "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.1\"\n";
+    let sky_only = format!("{no_stage}[sky]\nfile = \"sky.wgsl\"\n[displacement]\n");
+    assert!(refused(&sky_only).contains("[displacement] needs [material]"));
+}
+
+const SMALLEST_0_2: &str = "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.2\"\n[[post]]\nfile = \"a.wgsl\"\n";
+
+#[test]
+fn both_lines_are_read() {
+    use horizon_shader_api::{Api, Blend};
+    let m = Manifest::parse(SMALLEST_0_2).unwrap();
+    assert_eq!(
+        (m.api, m.blend, m.tonemap.is_none()),
+        (Api::V0_2, Blend::Gamma, true)
+    );
+    assert_eq!(Manifest::parse(&sample_text()).unwrap().api, Api::V0_1);
+    let tonemap = format!("{SMALLEST_0_2}[tonemap]\nfile = \"t.wgsl\"\nname = \"Curve\"\n");
+    let m = Manifest::parse(&tonemap).unwrap();
+    assert_eq!(m.tonemap.as_ref().unwrap().name.as_deref(), Some("Curve"));
+    assert!(m.files().contains(&"t.wgsl"));
+    let linear = Manifest::parse(&format!("{SMALLEST_0_2}[frame]\nblend = \"linear\"\n")).unwrap();
+    assert_eq!(linear.blend, Blend::Linear);
+    let only = SMALLEST_0_2.replace(
+        "[[post]]\nfile = \"a.wgsl\"\n",
+        "[tonemap]\nfile = \"t.wgsl\"\n",
+    );
+    assert!(Manifest::parse(&only).unwrap().post.is_empty());
+}
+
+#[test]
+fn the_0_2_keys_are_refused_under_0_1_and_checked_under_0_2() {
+    let smallest_0_1 = SMALLEST_0_2.replace("0.2", "0.1");
+    let cases = [
+        (
+            format!("{smallest_0_1}[tonemap]\nfile = \"t.wgsl\"\n"),
+            "[tonemap] is shader API 0.2",
+        ),
+        (
+            format!("{smallest_0_1}[frame]\nblend = \"gamma\"\n"),
+            "[frame] is shader API 0.2",
+        ),
+        (
+            format!("{SMALLEST_0_2}[frame]\nblend = \"srgb\"\n"),
+            "frame.blend \"srgb\": gamma or linear",
+        ),
+        (
+            format!("{SMALLEST_0_2}[frame]\nwhite = 1\n"),
+            "unknown field",
+        ),
+        (
+            format!("{SMALLEST_0_2}[tonemap]\nfile = \"t.wgsl\"\nscale = 0.5\n"),
+            "`scale` and `output` are keys of [[post]] only",
+        ),
+        (
+            format!("{SMALLEST_0_2}[tonemap]\nfile = \"t.wgsl\"\nfog = false\n"),
+            "`fog` is a key of [material] only",
+        ),
+        (
+            format!("{SMALLEST_0_2}[tonemap]\nfile = \"../t.wgsl\"\n"),
+            "is not a plain path",
+        ),
+        (
+            "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1\"\napi = \"0.2\"\n".into(),
+            "or a [tonemap]",
+        ),
+    ];
+    for (text, needle) in cases {
+        let e = refused(&text);
+        assert!(e.contains(needle), "{needle:?} not in {e:?}");
+    }
+}
+
+fn float_option_manifest(fields: &str) -> String {
+    format!(
+        "schema = 1\nid = \"finite_options\"\nname = \"Finite options\"\nversion = \"1.0\"\napi = \"0.1\"\n[sky]\nfile = \"sky.wgsl\"\n[[options]]\nid = \"gain\"\nname = \"Gain\"\ntype = \"float\"\n{fields}"
+    )
+}
+
+#[test]
+fn finite_toml_numbers_cannot_overflow_float_option_storage() {
+    for fields in [
+        "min = 0.0\nmax = 1e300\ndefault = 1e300\nstep = 1e300\n",
+        "min = -1e300\nmax = 1.0\ndefault = 0.0\nstep = 1.0\n",
+        "min = -3e38\nmax = 3e38\ndefault = 0.0\nstep = 1e300\n",
+    ] {
+        assert!(
+            Manifest::parse(&float_option_manifest(fields)).is_err(),
+            "{fields}"
+        );
+    }
+}
+
+#[test]
+fn wide_finite_float_option_ranges_keep_a_finite_default_step() {
+    for bound in ["3e38", "3.4028234663852886e38"] {
+        let text =
+            float_option_manifest(&format!("min = -{bound}\nmax = {bound}\ndefault = 0.0\n"));
+        let manifest = Manifest::parse(&text).unwrap();
+        let OptionKind::Float {
+            min,
+            max,
+            default,
+            step,
+        } = manifest.options[0].kind
+        else {
+            panic!("expected float option");
+        };
+        assert!(min.is_finite() && max.is_finite() && default.is_finite());
+        assert!(step.is_finite() && step > 0.0);
+        assert!(f64::from(step) <= f64::from(max) - f64::from(min));
+        assert!(manifest.options[0].kind.default_constant().is_finite());
+    }
+}
+
+#[test]
+fn ordinary_float_options_and_invalid_non_finite_values_keep_their_contract() {
+    let fields = "min = 0.0\nmax = 1.0\ndefault = 0.5\nstep = 0.01\n";
+    let manifest = Manifest::parse(&float_option_manifest(fields)).unwrap();
+    assert_eq!(manifest.options[0].kind.default_constant(), 0.5);
+    for (key, old) in [
+        ("min", "0.0"),
+        ("max", "1.0"),
+        ("default", "0.5"),
+        ("step", "0.01"),
+    ] {
+        for invalid in ["nan", "inf", "-inf"] {
+            let invalid_fields =
+                fields.replace(&format!("{key} = {old}"), &format!("{key} = {invalid}"));
+            assert!(Manifest::parse(&float_option_manifest(&invalid_fields)).is_err());
+        }
+    }
 }

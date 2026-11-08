@@ -208,7 +208,15 @@ pub fn move_entity<W: EntityMoveWorld>(
             world.apply_movement_emission(emission, resolved, p, state)?;
         }
     }
-    let factor = f64::from(world.block_speed_factor()?);
-    let velocity = world.velocity()?.multiply(Vec3::new(factor, 1.0, factor));
+    let factor = world.block_speed_factor()?;
+    let velocity = scale_by_block_speed(world.velocity()?, factor);
     world.set_velocity(velocity)
+}
+/// The last step of `Entity.move`: the horizontal velocity is multiplied by
+/// `getBlockSpeedFactor()` (soul sand, honey), the vertical one is untouched.
+/// Every kind of entity ends its move here, so the player and the mobs share
+/// this one definition.
+pub fn scale_by_block_speed(velocity: Vec3, factor: f32) -> Vec3 {
+    let factor = f64::from(factor);
+    velocity.multiply(Vec3::new(factor, 1.0, factor))
 }

@@ -1,0 +1,12 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "effects", "target": "horizon_client::game::native_player_state::Game<'_>::native_effects"},
+    {"name": "add_effect", "target": "horizon_client::game::native_player_state::Game<'_>::native_add_effect"},
+    {"name": "remove_effect", "target": "horizon_client::game::native_player_state::Game<'_>::native_remove_effect"},
+    {"name": "set_effects", "target": "horizon_client::game::native_player_state::Game<'_>::native_set_effects"}
+  ],
+  "rust_summary": "a player's effects read, one given or taken off, or all replaced (`native_effects`, `native_add_effect`, `native_remove_effect`, `native_set_effects`), as vanilla's `LivingEntity.addEffect` and Bukkit's `addPotionEffect`.",
+  "doc_summary": "`native_effects(uuid)` reads a player's effects as `NativeEffect { id, amplifier, duration, ambient, particles }`; `native_add_effect(uuid, effect)` gives one as `LivingEntity.addEffect` (Bukkit's `addPotionEffect`), `native_remove_effect(uuid, id)` takes one off as `/effect clear`, `native_set_effects(uuid, effects)` replaces them all. Bundles need \"hooks\": @API:player_effects@.",
+  "comments": ["crates/horizon-client/src/game/native_player_state.rs"]
+}

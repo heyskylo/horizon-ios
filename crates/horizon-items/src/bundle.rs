@@ -96,6 +96,24 @@ pub fn can_be_in_bundle(stack: &ItemStack) -> bool {
     stack.count > 0 && !stack.item.ends_with("shulker_box")
 }
 
+/// `BundleItem.onDestroyed` (`ItemStack.onDestroyed` for a bundle): the stack
+/// is emptied and every stack it held comes back as its own item copy, which
+/// `ItemUtils.onContainerDestroyed` drops where the entity lay.
+pub fn destroyed(stack: &mut ItemStack) -> Vec<ItemStack> {
+    let Some(data) = stack.extra.as_deref_mut() else {
+        return Vec::new();
+    };
+    if data.bundle_contents.is_empty() {
+        return Vec::new();
+    }
+    // `set(BUNDLE_CONTENTS, BundleContents.EMPTY)`: no contents and no
+    // selected index left.
+    let spilled = std::mem::take(&mut data.bundle_contents);
+    data.bundle_selected = BundleSelected(-1);
+    stack.tidy();
+    spilled
+}
+
 /// `BundleContents.Mutable`.
 pub struct Contents {
     items: Vec<ItemStack>,
@@ -105,6 +123,16 @@ pub struct Contents {
 }
 
 impl Contents {
+    /// A component collection may belong to any item, including an item with
+    /// no previous bundle_contents component. Reuse the same weight model.
+    pub fn from_items(items: &Items, inside: Vec<ItemStack>) -> Self {
+        let weight = contents_weight(items, &inside);
+        Self {
+            items: inside,
+            weight,
+            selected: -1,
+        }
+    }
     /// The bundle's contents; None when the stack is no bundle.
     pub fn of(items: &Items, stack: &ItemStack) -> Option<Self> {
         let inside = contents_of(items, stack)?.to_vec();

@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "set_entity_rotation", "target": "horizon_client::game::native_npcs::Game<'_>::native_set_entity_rotation"}
+  ],
+  "rust_summary": "an entity turned without moving it, as `/rotate` does, a mob's head apart (`native_set_entity_rotation`).",
+  "doc_summary": "`native_set_entity_rotation(dimension, id, yaw, pitch, head_yaw)`, an entity of any loaded level turned without moving it as `/rotate` does (`Entity.forceSetRotation`), with `head_yaw` turning a mob's head alone (`setYHeadRot`): mobs, mannequins, armor stands, boats, minecarts, fangs and displays. Bundles need \"hooks\": @API:npc_entity_rotation@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_npcs.rs"
+  ]
+}

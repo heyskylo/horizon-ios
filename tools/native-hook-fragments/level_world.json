@@ -1,0 +1,40 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "level_seed",
+      "target": "horizon_client::game::native_level_world::Game<'_>::native_level_seed",
+      "receiver": "level"
+    },
+    {
+      "name": "level_difficulty",
+      "target": "horizon_client::game::native_level_world::Game<'_>::native_level_difficulty",
+      "receiver": "level"
+    },
+    {
+      "name": "level_game_rule",
+      "target": "horizon_client::game::native_level_world::Game<'_>::native_level_game_rule",
+      "receiver": "level"
+    },
+    {
+      "name": "level_weather",
+      "target": "horizon_client::game::native_level_world::Game<'_>::native_level_weather",
+      "receiver": "level"
+    },
+    {
+      "name": "level_is_raining",
+      "target": "horizon_client::game::native_level_world::Game<'_>::native_level_is_raining",
+      "receiver": "level"
+    },
+    {
+      "name": "level_is_thundering",
+      "target": "horizon_client::game::native_level_world::Game<'_>::native_level_is_thundering",
+      "receiver": "level"
+    }
+  ],
+  "rust_summary": "a level's world settings through a `LevelRef`: the seed, the difficulty, game rules and weather.",
+  "doc_summary": "`level.seed(host)`, `difficulty`, `game_rule(host, name)` (`GameRuleValue`), `weather`, `is_raining` and `is_thundering`. Bundles need \"hooks\": @API:level_world@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_level_world.rs"
+  ]
+}

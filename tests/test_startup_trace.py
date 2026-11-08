@@ -13,6 +13,8 @@ class StartupTraceTests(unittest.TestCase):
             '{"pid":1,"tid":2,"ph":"X","name":"ui.load","ts":5000,"dur":400000}',
             '{"pid":1,"tid":1,"ph":"i","s":"g","name":"title.shown","ts":450000}',
             '{"pid":1,"tid":1,"ph":"i","s":"g","name":"title.shown","ts":900000}',
+            # A counter track (the world's fill) is Perfetto's, not a step.
+            '{"pid":1,"tid":1,"ph":"C","name":"world.fill","ts":950000,"args":{"resident":9}}',
             '{"pid":1,"tid":1,"ph":"X","name":"torn',
         ]
         with tempfile.TemporaryDirectory() as d:
@@ -26,6 +28,19 @@ class StartupTraceTests(unittest.TestCase):
 
     def test_a_missing_trace_has_no_events(self):
         self.assertEqual(startup_trace.read_trace("/nonexistent/trace.jsonl"), [])
+
+    def test_step_stats_aggregate_named_durations(self):
+        runs = [
+            [(0.0, 10.0, "core.assets", "main"), (0.0, 4.0, "rest.recipes", "rest")],
+            [(0.0, 14.0, "core.assets", "main"), (0.0, 6.0, "rest.recipes", "rest")],
+        ]
+        self.assertEqual(
+            startup_trace.step_stats(runs),
+            {
+                "core.assets": {"n": 2, "median_ms": 12.0, "p95_ms": 14.0, "total_ms": 24.0},
+                "rest.recipes": {"n": 2, "median_ms": 5.0, "p95_ms": 6.0, "total_ms": 10.0},
+            },
+        )
 
 
 if __name__ == "__main__":

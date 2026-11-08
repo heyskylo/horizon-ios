@@ -12,6 +12,7 @@
 //! it by the rope either. Here the pull lands on the server's copy and the
 //! rider's client overwrites it the same way (`tick_boats`).
 use super::{Game, boats::Boat};
+use horizon_client::actions::Action;
 use horizon_client::mobs::leash::{self, Holder, HolderState, Pending};
 use horizon_core::geometry::Vec3;
 use horizon_world::nbt::Tag;
@@ -418,7 +419,7 @@ impl Game<'_> {
         let id = self.boats[i].id;
         // The sneak branch: the player's mobs and boats on leads are re-tied
         // to this boat.
-        let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
+        let sneaking = self.keys.held(Action::Sneak);
         if sneaking
             && self.tie_player_leads(glam::DVec3::new(c.x, c.y, c.z), Holder::Boat(id), None)
         {
@@ -467,7 +468,9 @@ impl Game<'_> {
             if self.boat_can_attach(i, player) {
                 let mut b = self.boats[i].clone();
                 self.release_boat_leash(&mut b, true);
+                // LeashData.setLeashHolder forgets a holder still waiting in the save.
                 b.leash = Some(Holder::Player);
+                b.leash_pending = None;
                 b.leash_player = Some(self.acting_player_uuid());
                 self.boats[i] = b;
                 self.lead_sound("tied", at);
@@ -486,23 +489,14 @@ impl Game<'_> {
 
     /// The leads on boats that hang on a player or a mob, for the entity
     /// tracker: the holder's entity id (`ClientboundSetEntityLinkPacket`).
-    pub(super) fn boat_leash_link(
-        &self,
-        b: &Boat,
-        host_entity: Option<i32>,
-        guests: &[(u128, i32)],
-    ) -> Option<i32> {
+    pub(super) fn boat_leash_link(&self, b: &Boat, guests: &[(u128, i32)]) -> Option<i32> {
         match b.leash? {
             Holder::Player => {
                 let uuid = self.boat_leash_player(b);
-                match guests
+                guests
                     .iter()
                     .find(|(u, _)| Some(horizon_client::lan::playerdata::uuid_ints(*u)) == uuid)
-                {
-                    Some(&(_, id)) => Some(id),
-                    None if uuid == self.level.player_uuid => host_entity,
-                    None => None,
-                }
+                    .map(|&(_, id)| id)
             }
             Holder::Mob(id) | Holder::Boat(id) => Some(id as i32),
             Holder::Knot(p) => self.knot_ids.get(&p).map(|&id| id as i32),
@@ -513,6 +507,69 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn command_view_uses_live_and_pending_boat_leashes_not_raw_tags() {
+        use crate::game::{Audio, Options, Progress, Settings, commands::Target, load_resources};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        let (id, uuid, actual_holder, unknown) =
+            (1, [326, 1, 0, 1], [326, 2, 0, 1], [111, 222, 333, 444]);
+        game.boats
+            .push(Boat::new(id, "oak".into(), Vec3::new(6.5, 100.0, 4.5), 0.0));
+        game.persist.uuids.insert(id, uuid);
+        game.level.player_uuid = Some([326, 3, 0, 1]);
+        let read = |game: &mut Game<'_>| game.entity_nbt(Target::Boat(id)).unwrap();
+        assert!(!game.persist.raw.contains_key(&id));
+        assert_eq!(
+            read(&mut game).get("UUID"),
+            Some(&Tag::IntArray(uuid.to_vec()))
+        );
+        assert!(read(&mut game).get("leash").is_none());
+        game.boats[0].leash = Some(Holder::Player);
+        game.boats[0].leash_player = Some(actual_holder);
+        let expected = Tag::compound([("UUID", Tag::IntArray(actual_holder.to_vec()))]);
+        assert_eq!(read(&mut game).get("leash"), Some(&expected));
+        assert_eq!(read(&mut game).get("leash"), Some(&expected));
+        let delayed = Tag::compound([("UUID", Tag::IntArray(unknown.to_vec()))]);
+        game.persist
+            .raw
+            .insert(id, Tag::compound([("leash", delayed.clone())]));
+        assert_eq!(read(&mut game).get("leash"), Some(&expected));
+        game.boats[0].leash = None;
+        game.boats[0].leash_player = None;
+        game.boats[0].leash_pending = Some(Pending::Uuid(unknown));
+        assert_eq!(read(&mut game).get("leash"), Some(&delayed));
+        game.boats[0].leash_pending = None;
+        assert!(read(&mut game).get("leash").is_none());
+    }
 
     #[test]
     fn a_boat_is_centred_half_its_height_up() {

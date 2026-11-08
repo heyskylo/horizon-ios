@@ -12,7 +12,8 @@ use std::{collections::BTreeSet, fs, io, path::Path, path::PathBuf};
 // Version 3 could omit untouched vanilla directories on Windows (#1649, #1688).
 // Version 5 read every vanilla file to stamp it on Windows.
 // Version 6 stamps vanilla's files by their metadata on Windows too.
-const VERSION: u32 = 6;
+// Version 7 stacks blockstate files (every pack's definition, bottom first).
+const VERSION: u32 = 8;
 
 #[derive(Default, Serialize, Deserialize)]
 pub(super) struct Dependencies {
@@ -296,6 +297,107 @@ fn lock_path(out: &Path) -> PathBuf {
     marker_path(out).with_extension("lock")
 }
 
+/// The overlays [`prune`] keeps in a cache folder, newest use first. Each holds a whole unpacked
+/// copy of its zip packs, and every server pack, and every new version of one, makes another.
+pub(super) const KEEP: usize = 8;
+
+/// The file whose shared lock says a process uses `out`, and whose time is its last use.
+fn use_path(out: &Path) -> PathBuf {
+    marker_path(out).with_extension("use")
+}
+
+/// Marks `out` as used by this process until it exits ([`prune`] never deletes it), and as used
+/// now. The lock is taken before the overlay is built or read, so a prune in another process
+/// that took the folder first finishes deleting it before this one rebuilds it.
+pub(super) fn hold(out: &Path) -> io::Result<()> {
+    use std::sync::{Mutex, PoisonError};
+    static HELD: Mutex<Vec<(PathBuf, fs::File)>> = Mutex::new(Vec::new());
+    if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+    let mut held = HELD.lock().unwrap_or_else(PoisonError::into_inner);
+    let at = match held.iter().position(|(path, _)| path == out) {
+        Some(at) => at,
+        None => {
+            let file = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(use_path(out))?;
+            file.lock_shared()?;
+            held.push((out.into(), file));
+            held.len() - 1
+        }
+    };
+    // Only the order of the prune depends on it: a filesystem without the time loses nothing.
+    let _ = held[at].1.set_modified(std::time::SystemTime::now());
+    Ok(())
+}
+
+/// Deletes the overlays in `cache` past the [`KEEP`] most recently used, skipping any that a
+/// process holds ([`hold`]) or builds. Only `<16 hex digits>` folders are overlays.
+pub(super) fn prune(cache: &Path) {
+    let Ok(entries) = fs::read_dir(cache) else {
+        return;
+    };
+    let mut overlays: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.len() == 16 && n.bytes().all(|b| b.is_ascii_hexdigit()))
+                && p.is_dir()
+        })
+        .map(|p| {
+            // An overlay built before use files existed goes by its marker or its folder.
+            let used = [use_path(&p), marker_path(&p), p.clone()]
+                .iter()
+                .find_map(|f| fs::metadata(f).and_then(|m| m.modified()).ok())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            (used, p)
+        })
+        .collect();
+    overlays.sort_by_key(|(used, _)| std::cmp::Reverse(*used));
+    for (_, old) in overlays.into_iter().skip(KEEP) {
+        if let Err(e) = remove_unused(&old) {
+            log::warn!(
+                "Horizon: couldn't remove the old pack overlay {}: {e}",
+                old.display()
+            );
+        }
+    }
+}
+
+/// Deletes the overlay `out` unless a process builds or uses it. The lock files stay: deleting
+/// them would let two processes lock different files of the same name.
+fn remove_unused(out: &Path) -> io::Result<()> {
+    let open = |path: PathBuf| {
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+    };
+    let building = open(lock_path(out))?;
+    let using = open(use_path(out))?;
+    for lock in [&building, &using] {
+        match lock.try_lock() {
+            Ok(()) => {}
+            Err(fs::TryLockError::WouldBlock) => return Ok(()),
+            Err(fs::TryLockError::Error(e)) => return Err(e),
+        }
+    }
+    // The marker first: a folder half deleted is never taken for a built one.
+    match fs::remove_file(marker_path(out)) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    fs::remove_dir_all(out)
+}
+
 pub(super) fn build(vanilla: &Path, packs: &[Pack], out: &Path) -> io::Result<()> {
     if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
@@ -366,6 +468,77 @@ mod tests {
     use super::*;
     use crate::{packs, text::Text};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn prune_keeps_the_most_recently_used_overlays_and_those_in_use() {
+        let f = Fixture::new();
+        let cache = f.0.join("cache");
+        let now = std::time::SystemTime::now();
+        // KEEP + 4 overlays, overlay 0 used last; one more not an overlay.
+        let overlays: Vec<PathBuf> = (0..KEEP + 4)
+            .map(|i| {
+                let out = cache.join(format!("{i:016x}"));
+                f.write(&format!("cache/{i:016x}/assets/a.png"), b"x");
+                f.write(&format!("cache/{i:016x}.overlay-cache.json"), b"{}");
+                let used = fs::File::create(use_path(&out)).unwrap();
+                used.set_modified(now - std::time::Duration::from_secs(60 * i as u64))
+                    .unwrap();
+                out
+            })
+            .collect();
+        f.write("cache/notes/keep.txt", b"x");
+        // Another process uses the oldest, and builds the second oldest.
+        let using = fs::File::open(use_path(&overlays[KEEP + 3])).unwrap();
+        using.lock_shared().unwrap();
+        let building = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(lock_path(&overlays[KEEP + 2]))
+            .unwrap();
+        building.lock().unwrap();
+        prune(&cache);
+        let kept: Vec<bool> = overlays.iter().map(|o| o.is_dir()).collect();
+        let mut expected = vec![true; KEEP];
+        expected.extend([false, false, true, true]);
+        assert_eq!(kept, expected);
+        assert!(
+            !marker_path(&overlays[KEEP]).exists(),
+            "never reused half deleted"
+        );
+        assert!(cache.join("notes/keep.txt").exists());
+        // Released, they go at the next prune.
+        drop((using, building));
+        prune(&cache);
+        assert_eq!(
+            overlays.iter().filter(|o| o.is_dir()).count(),
+            KEEP,
+            "only the most recent stay"
+        );
+        assert!(overlays[..KEEP].iter().all(|o| o.is_dir()));
+    }
+
+    #[test]
+    fn an_overlay_held_by_this_process_is_never_pruned() {
+        let f = Fixture::new();
+        let cache = f.0.join("cache");
+        let held = cache.join("00000000000000ff");
+        f.write("cache/00000000000000ff/assets/a.png", b"x");
+        hold(&held).unwrap();
+        // Older than KEEP others, and still in use.
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        fs::File::options()
+            .write(true)
+            .open(use_path(&held))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        for i in 0..KEEP {
+            f.write(&format!("cache/{i:016x}/assets/a.png"), b"x");
+        }
+        prune(&cache);
+        assert!(held.is_dir());
+    }
 
     struct Fixture(PathBuf);
     impl Fixture {

@@ -30,6 +30,17 @@ impl Pose {
             _ => Self::Standing,
         }
     }
+    /// Network ID for this pose (`Pose.id`).
+    pub fn id(self) -> i32 {
+        match self {
+            Self::Standing => 0,
+            Self::FallFlying => 1,
+            Self::Sleeping => 2,
+            Self::Swimming => 3,
+            Self::SpinAttack => 4,
+            Self::Crouching => 5,
+        }
+    }
     pub fn name(self) -> &'static str {
         match self {
             Self::Standing => "STANDING",
@@ -94,7 +105,8 @@ impl PlayerMotion {
         Ok(pose.dimensions(self.attribute("minecraft:scale")? as f32))
     }
     pub fn refresh_dimensions(&mut self) -> Result<()> {
-        self.dimensions = self.dimensions_for_pose(self.pose)?;
+        self.scale = self.attribute("minecraft:scale")? as f32;
+        self.dimensions = self.pose.dimensions(self.scale);
         Ok(())
     }
     pub fn set_pose(&mut self, pose: Pose) -> Result<()> {
@@ -117,8 +129,15 @@ impl PlayerMotion {
         }
         Ok(())
     }
+    /// `LocalPlayer.isMovingSlowly`: crouching, or `Entity.isVisuallyCrawling`
+    /// (visually swimming out of water). `LivingEntity.isVisuallySwimming`
+    /// counts the swimming pose and the fall-flying pose a glide that just
+    /// ended still holds, so the tick after an elytra lands moves at sneaking
+    /// speed (#8295).
     pub fn moving_slowly(&self) -> bool {
-        self.local_crouching || (self.pose == Pose::Swimming && !self.fluids.was_touching_water)
+        let visually_swimming =
+            self.pose == Pose::Swimming || (!self.fall_flying && self.pose == Pose::FallFlying);
+        self.local_crouching || (visually_swimming && !self.fluids.was_touching_water)
     }
 }
 impl MotionWorld<'_, '_, '_> {

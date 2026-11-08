@@ -8,7 +8,7 @@
 //! would otherwise fail here while the launcher's own downloads worked.
 //!
 //! Which hosts those are is decided here and nowhere else. The launcher asks `direct`, `env_for`,
-//! `host_of`, `scheme_of`, `socks` and `parse` for its own traffic, and keeps its agents here too
+//! `host_of`, `scheme_of` and `parse` for its own traffic, and keeps its agents here too
 //! (`keep`), so the two agree whatever the player set — and there is one copy of the rules to
 //! change when they need it.
 use std::collections::HashMap;
@@ -89,15 +89,13 @@ pub fn keep(
 /// `spec` as a proxy, when it is one. An address that can't be used is said once: a download left
 /// to go direct would otherwise fail with nothing pointing at the proxy.
 pub fn parse(spec: &str) -> Option<ureq::Proxy> {
-    if socks(spec) {
-        say(&format!(
-            "{} is a SOCKS proxy; downloads go without one. Write the http:// address your \
-             proxy app listens on as well.",
-            redacted(spec)
-        ));
-        return None;
-    }
-    match ureq::Proxy::new(spec) {
+    // `socks5h` is curl's name for SOCKS5 with the proxy resolving host names. `ureq` has only the
+    // name `socks5`, which already sends it host names to resolve.
+    let address = match spec.strip_prefix("socks5h://") {
+        Some(rest) => format!("socks5://{rest}"),
+        None => spec.to_owned(),
+    };
+    match ureq::Proxy::new(&address) {
         Ok(proxy) => Some(proxy),
         Err(e) => {
             say(&format!(
@@ -122,17 +120,6 @@ pub fn redacted(spec: &str) -> String {
         Some(at) => format!("{scheme}***@{}", &rest[at + 1..]),
         None => spec.to_owned(),
     }
-}
-
-/// Whether `spec` names a SOCKS proxy, which these downloads don't go through: `ureq` reads a
-/// SOCKS address happily and only fails when it connects through it.
-pub fn socks(spec: &str) -> bool {
-    matches!(
-        spec.split_once("://")
-            .map(|(s, _)| s.to_ascii_lowercase())
-            .as_deref(),
-        Some("socks" | "socks4" | "socks4a" | "socks5" | "socks5h")
-    )
 }
 
 /// Whether `url` is reached without the proxy: a local address, or a host `NO_PROXY` names. The
@@ -189,7 +176,15 @@ fn local(host: &str) -> bool {
         || host.ends_with(".localhost")
         || host == "::1"
         || host == "0.0.0.0"
-        || host.starts_with("127.")
+        || is_loopback_v4(&host)
+}
+
+/// A dotted IPv4 address in `127.0.0.0/8`; a DNS name that merely starts with `127.` is not one.
+fn is_loopback_v4(host: &str) -> bool {
+    host.starts_with("127.")
+        && host
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Whether `host` is in `NO_PROXY`: `*`, `host`, `.domain`, `*.domain` and `host:port` entries.
@@ -204,8 +199,15 @@ fn excluded(host: &str, no_proxy: &str) -> bool {
                 return true;
             }
             let entry = entry.trim_start_matches('*').trim_start_matches('.');
+            // A port follows the last colon of a bracketed entry, or of a host with no colon
+            // before it; an unbracketed IPv6 literal keeps its colons.
             let entry = match entry.rfind(':') {
-                Some(at) if !entry[at..].contains(']') => &entry[..at],
+                Some(at)
+                    if !entry[at..].contains(']')
+                        && (entry[..at].ends_with(']') || !entry[..at].contains(':')) =>
+                {
+                    &entry[..at]
+                }
                 _ => entry,
             };
             let entry = bare(entry);
@@ -323,7 +325,13 @@ mod tests {
         ] {
             assert!(local(host), "{host}");
         }
-        for host in ["playhorizon.dev", "api.minecraftservices.com", "10.0.0.1"] {
+        for host in [
+            "playhorizon.dev",
+            "api.minecraftservices.com",
+            "10.0.0.1",
+            "127.example.com",
+            "127.0.0.1.example.com",
+        ] {
             assert!(!local(host), "{host}");
         }
     }
@@ -347,14 +355,70 @@ mod tests {
         assert!(!excluded("modrinth.com", ""));
     }
 
+    /// A bare IPv6 entry keeps its colons: cut at the last one it would never match the host in
+    /// its brackets, and the download would go through the proxy after all.
+    #[test]
+    fn no_proxy_keeps_a_bare_ipv6_entry_whole() {
+        assert!(excluded("[2001:db8::1]", "2001:db8::1"));
+        assert!(excluded("[2001:db8::1]", "[2001:db8::1]"));
+        assert!(excluded("[2001:db8::1]", "[2001:db8::1]:8080"));
+        assert!(!excluded("[2001:db8::1]", "2001:db8::2"));
+    }
+
     #[test]
     fn an_address_that_cant_be_used_becomes_no_proxy() {
         assert!(parse("http://127.0.0.1:7890").is_some());
         assert!(parse("127.0.0.1:7890").is_some());
-        // `ureq` reads a SOCKS address and only fails once it connects through it.
-        assert!(socks("socks5://127.0.0.1:7891"));
-        assert!(parse("socks5://127.0.0.1:7891").is_none());
-        assert!(!socks("http://127.0.0.1:7890"));
+        assert!(parse("socks5://127.0.0.1:7891").is_some());
+        assert!(parse("socks3://127.0.0.1:7890").is_none());
+    }
+
+    /// A stand-in SOCKS5 proxy: answers one request itself and returns the host it was asked for.
+    fn socks5_proxy() -> (u16, std::thread::JoinHandle<String>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut greeting = [0; 2];
+            stream.read_exact(&mut greeting).unwrap();
+            assert_eq!(greeting[0], 5);
+            let mut methods = vec![0; greeting[1].into()];
+            stream.read_exact(&mut methods).unwrap();
+            stream.write_all(&[5, 0]).unwrap();
+            let mut request = [0; 5];
+            stream.read_exact(&mut request).unwrap();
+            assert_eq!(request[..4], [5, 1, 0, 3], "a CONNECT to a host name");
+            let mut host = vec![0; request[4].into()];
+            stream.read_exact(&mut host).unwrap();
+            let mut target_port = [0; 2];
+            stream.read_exact(&mut target_port).unwrap();
+            stream.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).unwrap();
+            let mut http = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            while http.read_line(&mut line).unwrap() > 2 {
+                line.clear();
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .unwrap();
+            String::from_utf8(host).unwrap()
+        });
+        (port, server)
+    }
+
+    /// `.invalid` never resolves here (RFC 2606), so the answer can only have come through the
+    /// proxy, which is handed the name to resolve.
+    #[test]
+    fn a_request_goes_through_a_socks_proxy() {
+        for scheme in ["socks5", "socks5h"] {
+            let (port, server) = socks5_proxy();
+            let proxy = parse(&format!("{scheme}://127.0.0.1:{port}")).unwrap();
+            let agent = ureq::AgentBuilder::new().proxy(proxy).build();
+            let answer = agent.get("http://horizon.invalid/a.jar").call().unwrap();
+            assert_eq!(answer.into_string().unwrap(), "ok", "{scheme}");
+            assert_eq!(server.join().unwrap(), "horizon.invalid", "{scheme}");
+        }
     }
 
     /// The agent a second request gets is the one the first built: one connection pool, not one

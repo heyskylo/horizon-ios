@@ -77,6 +77,9 @@ pub struct BlockEntities {
     /// The fluid tanks of mod blocks' block entities, by block state id;
     /// built with `states`, like the containers.
     mod_fluids: FxHashMap<u32, Arc<ModFluidTanks>>,
+    /// State-aware native factory ownership. Shared across level snapshots;
+    /// an empty slice means the declarations have not yet been compiled.
+    stateful_entities: Arc<[bool]>,
     /// The energy buffers of mod blocks' block entities, by block state id;
     /// built with `states`, like the containers.
     mod_energy: FxHashMap<u32, Arc<ModEnergyBuffer>>,
@@ -89,6 +92,7 @@ pub struct BlockEntities {
     /// instance blocks, `shows_box`), so a frame looks at them without scanning the map.
     /// Like `mods`, one taken out stays listed until `put` or `remove`.
     boxes: FxHashSet<Pos>,
+    asleep: FxHashSet<Pos>,
 }
 
 /// A structure or test instance block: the block entities whose box the frame may draw.
@@ -208,6 +212,21 @@ impl BlockEntities {
     pub fn mod_fluids(&self, state: u32) -> Option<&Arc<ModFluidTanks>> {
         self.mod_fluids.get(&state)
     }
+    pub fn set_stateful_entities(&mut self, states: Vec<bool>) {
+        self.stateful_entities = states.into();
+    }
+    pub fn has_stateful_entity_table(&self) -> bool {
+        !self.stateful_entities.is_empty()
+    }
+    pub fn stateful_entities(&self) -> Arc<[bool]> {
+        self.stateful_entities.clone()
+    }
+    pub fn stateful_entity(&self, state: u32) -> bool {
+        self.stateful_entities
+            .get(state as usize)
+            .copied()
+            .unwrap_or(false)
+    }
     pub fn set_mod_energy(&mut self, energy: FxHashMap<u32, Arc<ModEnergyBuffer>>) {
         self.mod_energy = energy;
     }
@@ -229,6 +248,7 @@ impl BlockEntities {
     }
     /// `removeBlockEntityTicker`: no slot, made or pending.
     fn cancel(&mut self, pos: &Pos) {
+        self.asleep.remove(pos);
         self.freed |= self.live.remove(pos).is_some();
         self.pending.remove(pos);
     }
@@ -292,14 +312,29 @@ impl BlockEntities {
             .filter(move |((cx, cz), _)| !far(*cx, x) && !far(*cz, z))
             .flat_map(|(_, set)| set)
     }
+    /// `LevelChunk.getBlockEntity`: the block entity at `pos`, if any.
+    pub fn get(&self, pos: &Pos) -> Option<&BlockEntity> {
+        self.map.get(pos)
+    }
     pub fn get_mut(&mut self, pos: &Pos) -> Option<&mut BlockEntity> {
+        self.asleep.remove(pos);
         self.map.get_mut(pos)
     }
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (&Pos, &mut BlockEntity)> {
+        self.asleep.clear();
         self.map.iter_mut()
     }
     pub fn values_mut(&mut self) -> impl Iterator<Item = &mut BlockEntity> {
+        self.asleep.clear();
         self.map.values_mut()
+    }
+    pub fn sleep(&mut self, pos: Pos) {
+        if self.map.contains_key(&pos) {
+            self.asleep.insert(pos);
+        }
+    }
+    pub fn is_asleep(&self, pos: &Pos) -> bool {
+        self.asleep.contains(pos)
     }
     /// `LevelChunk.setBlockEntity` (+ `addAndRegisterBlockEntity`): a new
     /// block entity may get a slot; one replacing another keeps its slot.
@@ -316,6 +351,7 @@ impl BlockEntities {
             self.attachments.remove(&pos);
         }
         let new_box = shows_box(&entity);
+        self.asleep.remove(&pos);
         let old = self.map.insert(pos, entity);
         if old.is_none() {
             self.add(pos);
@@ -342,6 +378,7 @@ impl BlockEntities {
         if absent {
             self.add(pos);
         }
+        self.asleep.remove(&pos);
         let entity = self.map.entry(pos).or_insert_with(make);
         if absent && matches!(entity, BlockEntity::Mod(_)) {
             self.mods.entry(chunk_of(pos)).or_default().insert(pos);
@@ -354,6 +391,7 @@ impl BlockEntities {
     /// `LevelChunk.removeBlockEntity`: the block entity and its slot.
     pub fn remove(&mut self, pos: &Pos) -> Option<BlockEntity> {
         self.attachments.remove(pos);
+        self.asleep.remove(pos);
         self.cancel(pos);
         let removed = self.map.remove(pos);
         if matches!(removed, Some(BlockEntity::Mod(_))) {
@@ -365,6 +403,7 @@ impl BlockEntities {
     /// The block entity at `pos`, out of the map for a while: its slot stays
     /// for `put` to bring it back (a tick working on it).
     pub fn take(&mut self, pos: &Pos) -> Option<BlockEntity> {
+        self.asleep.remove(pos);
         let taken = self.map.remove(pos);
         if taken.is_some() {
             self.out.insert(*pos);
@@ -374,6 +413,7 @@ impl BlockEntities {
     /// Brings back what `take` took, in its slot.
     pub fn put(&mut self, pos: Pos, entity: BlockEntity) {
         self.out.remove(&pos);
+        self.asleep.remove(&pos);
         if matches!(entity, BlockEntity::Mod(_)) {
             self.mods.entry(chunk_of(pos)).or_default().insert(pos);
         }
@@ -385,6 +425,16 @@ impl BlockEntities {
             self.add(pos);
         }
     }
+    /// [`Self::retain`] for unloading chunks: removes the block entities at
+    /// the positions `gone` names and changes none it keeps, so those that
+    /// sleep stay asleep (a moving player unloads chunks most ticks).
+    pub fn unload(&mut self, mut gone: impl FnMut(&Pos) -> bool) {
+        let asleep = std::mem::take(&mut self.asleep);
+        self.retain(|p, _| !gone(p));
+        self.asleep = asleep;
+        let map = &self.map;
+        self.asleep.retain(|p| map.contains_key(p));
+    }
     /// Removes the block entities `keep` refuses, and their slots
     /// (`clearAllBlockEntities` of unloaded chunks).
     pub fn retain(&mut self, mut keep: impl FnMut(&Pos, &mut BlockEntity) -> bool) {
@@ -395,6 +445,7 @@ impl BlockEntities {
             &mut self.attachments,
         );
         let (mods, boxes) = (&mut self.mods, &mut self.boxes);
+        self.asleep.clear();
         self.map.retain(|p, e| {
             let kept = keep(p, e);
             if !kept {
@@ -412,6 +463,7 @@ impl BlockEntities {
         self.map.clear();
         self.mods.clear();
         self.boxes.clear();
+        self.asleep.clear();
         self.tickers = Arc::default();
         self.live.clear();
         self.added.clear();
@@ -429,6 +481,7 @@ impl BlockEntities {
         let order = chunk_map_order(entities.iter().map(|(p, _)| *p));
         for (p, e) in entities {
             self.attachments.remove(&p);
+            self.asleep.remove(&p);
             let new_is_mod = matches!(e, BlockEntity::Mod(_));
             self.note_box(p, Some(&e));
             let old = self.map.insert(p, e);
@@ -448,6 +501,7 @@ impl BlockEntities {
     /// `LevelChunk.setBlockState` on a block entity's position, from state
     /// `old` to `new`: a ticker made, kept or dropped.
     pub fn state_changed(&mut self, pos: Pos, old: u32, new: u32) {
+        self.asleep.remove(&pos);
         if self.states.is_empty() || !self.map.contains_key(&pos) {
             return;
         }
@@ -502,6 +556,11 @@ impl BlockEntities {
         });
         Arc::clone(&self.tickers)
     }
+    /// How many block entities tick (`Level.blockEntityTickers`, the slots still live), as of
+    /// the last [`Self::tickers`]: what a diagnostics mod counts.
+    pub fn ticking_len(&self) -> usize {
+        self.live.len()
+    }
     /// Whether a slot from `tickers` still ticks.
     pub fn is_live(&self, (pos, slot): (Pos, u32)) -> bool {
         self.live.get(&pos) == Some(&slot) && self.map.contains_key(&pos)
@@ -532,10 +591,73 @@ mod tests {
             .collect()
     }
 
+    /// Unloading a chunk removes its block entities and leaves the others'
+    /// sleep alone; `retain`, which may change what it keeps, wakes them all.
+    #[test]
+    fn unloading_a_chunk_keeps_the_others_asleep() {
+        let mut b = level();
+        let (kept, gone) = ((1, 64, 1), (17, 64, 1));
+        b.insert(kept, hopper());
+        b.insert(gone, hopper());
+        b.sleep(kept);
+        b.sleep(gone);
+        b.unload(|p| p.0 >> 4 == 1);
+        assert!(b.get(&gone).is_none());
+        assert!(!b.is_asleep(&gone));
+        assert!(b.is_asleep(&kept));
+        b.retain(|_, _| true);
+        assert!(!b.is_asleep(&kept));
+    }
+
     fn near(b: &BlockEntities, x: f64, z: f64, radius: f64) -> Vec<Pos> {
         let mut found: Vec<Pos> = b.mods_near(x, z, radius).copied().collect();
         found.sort();
         found
+    }
+    #[test]
+    fn a_sleeping_block_entity_wakes_on_any_change() {
+        let p = (1, 64, 1);
+        let mut b = level();
+        b.sleep(p);
+        assert!(!b.is_asleep(&p));
+        b.insert(p, hopper());
+        let asleep = |b: &mut BlockEntities, wake: &dyn Fn(&mut BlockEntities)| {
+            b.sleep(p);
+            assert!(b.is_asleep(&p));
+            wake(b);
+            b.is_asleep(&p)
+        };
+        assert!(asleep(&mut b, &|_| {}));
+        assert!(!asleep(&mut b, &|b| {
+            b.get_mut(&p);
+        }));
+        assert!(!asleep(&mut b, &|b| {
+            b.insert(p, hopper());
+        }));
+        assert!(!asleep(&mut b, &|b| {
+            b.get_or_insert_with(p, hopper);
+        }));
+        assert!(!asleep(&mut b, &|b| {
+            let held = b.take(&p).unwrap();
+            b.put(p, held);
+        }));
+        assert!(!asleep(&mut b, &|b| b.state_changed(p, 1, 1)));
+        assert!(!asleep(&mut b, &|b| b.forget(&p)));
+        assert!(!asleep(&mut b, &|b| {
+            b.iter_mut().count();
+        }));
+        assert!(!asleep(&mut b, &|b| {
+            b.values_mut().count();
+        }));
+        assert!(!asleep(&mut b, &|b| b.retain(|_, _| true)));
+        assert!(!asleep(&mut b, &|b| b.load_chunk(vec![(p, hopper())])));
+        assert!(!asleep(&mut b, &|b| {
+            b.remove(&p);
+            b.insert(p, hopper());
+        }));
+        b.sleep(p);
+        b.clear();
+        assert!(!b.is_asleep(&p));
     }
     #[test]
     fn mod_block_entities_are_listed_by_chunk_until_they_go() {
@@ -573,6 +695,7 @@ mod tests {
             default: || 0,
             codec: None,
             copy_on_death: false,
+            sync: false,
         };
         let p = (1, 64, 2);
         let mut entities = level();

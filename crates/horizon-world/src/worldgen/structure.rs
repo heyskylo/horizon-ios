@@ -15,6 +15,7 @@ pub mod ocean_ruin;
 pub mod piece_limited;
 pub mod processor;
 pub mod ruined_portal;
+pub(crate) mod saved_templates;
 pub mod simple;
 pub mod start;
 pub mod start_checks;
@@ -285,6 +286,8 @@ pub struct StructureResources {
     pub transforms: StateTransforms,
     dir: PathBuf,
     templates: RwLock<HashMap<String, Option<Arc<StructureTemplate>>>>,
+    /// Data packs' template files, which win over the prepared ones.
+    pack_templates: BTreeMap<String, Arc<[u8]>>,
     pub processor_lists: BTreeMap<String, String>,
     jigsaw_states: BTreeMap<BlockStateId, bool>,
     pub(crate) waterlogged: HashMap<BlockStateId, BlockStateId>,
@@ -346,6 +349,7 @@ impl StructureResources {
             transforms,
             dir: dir.to_owned(),
             templates: RwLock::new(HashMap::new()),
+            pack_templates: BTreeMap::new(),
             processor_lists,
             jigsaw_states,
             waterlogged,
@@ -355,6 +359,11 @@ impl StructureResources {
                 .map(|(k, v)| (k.clone(), v.iter().cloned().collect()))
                 .collect(),
         }
+    }
+    /// These resources with data packs' template files over the prepared ones.
+    pub fn with_pack_templates(mut self, templates: BTreeMap<String, Arc<[u8]>>) -> Self {
+        self.pack_templates = templates;
+        self
     }
     /// StructureTemplateManager.getOrCreate; missing templates are empty.
     pub fn template(&self, id: &str) -> Option<Arc<StructureTemplate>> {
@@ -368,7 +377,11 @@ impl StructureResources {
         }
         let (namespace, path) = id.split_once(':').unwrap();
         let file = self.dir.join(namespace).join(format!("{path}.nbt"));
-        let loaded = std::fs::read(&file).ok().and_then(|bytes| {
+        let bytes = match self.pack_templates.get(&id) {
+            Some(bytes) => Some(bytes.to_vec()),
+            None => horizon_core::prepared_files::read(&file).ok(),
+        };
+        let loaded = bytes.and_then(|bytes| {
             let mut raw = Vec::new();
             flate2::read::GzDecoder::new(bytes.as_slice())
                 .read_to_end(&mut raw)

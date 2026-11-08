@@ -140,9 +140,13 @@ impl Retry {
     }
 }
 impl Tracker {
-    /// The server connected to last.
+    /// The server connected to last (splitscreen players join the same one).
     pub fn address(&self) -> Option<&str> {
         self.address.as_deref()
+    }
+    /// That server was found on the local network.
+    pub fn lan(&self) -> bool {
+        self.lan
     }
     /// A connection to `address` as `name` starts: a new address starts
     /// counting anew.

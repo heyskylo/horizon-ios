@@ -159,4 +159,19 @@ mod tests {
             "Horizon server 0.1.0 · restarting"
         );
     }
+
+    #[test]
+    fn console_requires_a_running_server() {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-server-console-stopped-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(
+            run(&dir).unwrap_err(),
+            format!("no server is running in {}", dir.display())
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

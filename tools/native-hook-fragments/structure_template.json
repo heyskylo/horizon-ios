@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "structure_template", "target": "horizon_client::game::native_structures::Game<'_>::native_structure_template"}
+  ],
+  "rust_summary": "a structure template's blocks as `/place template` would place them, without placing them (`native_structure_template`), for builders.",
+  "doc_summary": "`native_structure_template(id, at, rotation, mirror)` reads structure template `id` (`StructureTemplateManager.get`: the world's saved structures, then the game's and the mods' own) and answers what `/place template` would place at `at`: its size and its blocks, each with its position, its turned state and its block entity data, in vanilla's placement order. Nothing is placed: a builder places the blocks a tick at a time with `native_set_block`. Bundles need \"hooks\": @API:structure_template@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_structures.rs"
+  ]
+}

@@ -146,6 +146,18 @@ pub trait DensitySampler: std::fmt::Debug + Send + Sync {
             Ok(())
         })
     }
+
+    /// [`Self::sample_volume`] for a caller that reads only the Ys set in `needed`: bit `y` of
+    /// `needed[column]`, X/Z columns in buffer order. The other values may differ.
+    fn sample_needed(
+        &self,
+        context: &mut SamplerContext,
+        buffer: &mut [f32],
+        volume: DensityVolume,
+        _needed: &[u64],
+    ) -> Result<(), SampleError> {
+        self.sample_volume(context, buffer, volume)
+    }
 }
 fn check_buffer(buffer: &[f32], volume: DensityVolume) -> Result<(), SampleError> {
     if buffer.len() < volume.size() {
@@ -275,6 +287,20 @@ impl DensitySampler for GradientSampler {
     ) -> Result<(), SampleError> {
         check_buffer(buffer, volume)?;
         let [sx, sy, sz] = volume.sizes();
+        if self.axis == Axis::Y {
+            // Columns are contiguous along y: compute the first, copy it.
+            let columns = sx * sz;
+            for y in 0..sy {
+                let value = self.compute(volume.block(Axis::Y, y).unwrap())?;
+                if columns != 0 {
+                    buffer[y] = value;
+                }
+            }
+            for column in 1..columns {
+                buffer.copy_within(0..sy, column * sy);
+            }
+            return Ok(());
+        }
         for coordinate in 0..volume.sizes()[self.axis as usize] {
             let value = self.compute(volume.block(self.axis, coordinate).unwrap())?;
             match self.axis {
@@ -284,13 +310,7 @@ impl DensitySampler for GradientSampler {
                         buffer[start..start + sy].fill(value);
                     }
                 }
-                Axis::Y => {
-                    for z in 0..sz {
-                        for x in 0..sx {
-                            buffer[(x + z * sx) * sy + coordinate] = value;
-                        }
-                    }
-                }
+                Axis::Y => unreachable!("filled above"),
                 Axis::Z => {
                     let start = coordinate * sx * sy;
                     buffer[start..start + sx * sy].fill(value);
@@ -330,6 +350,20 @@ impl DensitySampler for NoiseSampler {
         Ok(self
             .noise
             .add_to_volume(buffer, volume, self.xz_scale, self.y_scale, 1.0)?)
+    }
+    fn sample_needed(
+        &self,
+        _: &mut SamplerContext,
+        buffer: &mut [f32],
+        volume: DensityVolume,
+        needed: &[u64],
+    ) -> Result<(), SampleError> {
+        check_buffer(buffer, volume)?;
+        buffer.fill(0.0);
+        let (xz_scale, y_scale) = (self.xz_scale, self.y_scale);
+        Ok(self
+            .noise
+            .add_to_needed(buffer, volume, xz_scale, y_scale, 1.0, needed)?)
     }
 }
 

@@ -7,6 +7,7 @@ use horizon_client::{
     motion::{LAVA, MotionEvent, MotionResources, MotionWorld, PlayerMotion, WATER},
     world::World,
 };
+use horizon_core::geometry::Aabb;
 use horizon_core::geometry::Vec3;
 use horizon_core::{position::BlockPos, random::RandomSource};
 use horizon_world::attributes::{Modifier, Operation};
@@ -299,14 +300,31 @@ pub fn main() -> Result<()> {
         // portal_tick that went through.
         let mut portal = horizon_client::nether_portal::PortalState::default();
         let mut travel: Option<horizon_core::position::BlockPos> = None;
+        // The fixture's other entities, as the boxes `Level.getEntityCollisions`
+        // selects from: the resident scene holds only the player.
+        let entities: Vec<Aabb> = f["entities"]
+            .as_array()
+            .map(|boxes| {
+                boxes
+                    .iter()
+                    .map(|b| {
+                        Aabb::new(
+                            Vec3::new(number(&b[0]), number(&b[1]), number(&b[2])),
+                            Vec3::new(number(&b[3]), number(&b[4]), number(&b[5])),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         for op in f["ops"].as_array().unwrap() {
             let mut world = MotionWorld {
-                entities: &[],
+                entities: &entities,
                 player: &mut player,
                 scene: &mut scene,
                 assets: &assets,
                 collision_binding: &binding,
                 resources: &resources,
+                health: &resources.health,
             };
             match op["mode"].as_str().unwrap() {
                 "shift" => world.player.shift_key_down = op["value"].as_bool().unwrap(),
@@ -536,6 +554,9 @@ pub fn main() -> Result<()> {
                     let flying = op["value"].as_bool().unwrap();
                     world.player.may_fly = op["may_fly"].as_bool().unwrap_or(flying);
                     world.player.flying = flying;
+                    if let Some(speed) = op.get("speed") {
+                        world.player.flying_speed = single(speed);
+                    }
                 }
                 "trigger" => world.player.jump_trigger_time = op["value"].as_i64().unwrap() as i32,
                 "delay" => world.player.no_jump_delay = op["value"].as_i64().unwrap() as i32,

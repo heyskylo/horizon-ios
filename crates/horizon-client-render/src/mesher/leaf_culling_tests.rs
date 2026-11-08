@@ -72,6 +72,8 @@ fn mesh(
     let mut mesher = Mesher {
         nether_shading: false,
         shader_pack_lighting: false,
+        separate_ao: false,
+        shader_pack: false,
         assets: &f.assets,
         render: &f.render,
         tables: &f.tables,
@@ -81,6 +83,7 @@ fn mesh(
         blend_radius: 0,
         smooth_lighting: false,
         cutout_leaves: true,
+        opaque_ice: false,
         translucent_layers: &[],
         leaf_culling: mode,
     };

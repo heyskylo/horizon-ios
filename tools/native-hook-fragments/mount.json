@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "mount", "target": "horizon_client::game::native_travel::Game<'_>::native_mount"},
+    {"name": "dismount", "target": "horizon_client::game::native_travel::Game<'_>::native_dismount"},
+    {"name": "eject_passengers", "target": "horizon_client::game::native_travel::Game<'_>::native_eject_passengers"}
+  ],
+  "rust_summary": "a server player or mob seated on a vehicle or taken off it, and a vehicle emptied (`native_mount`, `native_dismount`, `native_eject_passengers`), as `/ride` and Bukkit's `addPassenger`/`leaveVehicle`/`eject`.",
+  "doc_summary": "`native_mount(entity, vehicle)`, `native_dismount(entity)` and `native_eject_passengers(vehicle)` seat a server player or mob on a boat, minecart or mob, take it off, or take every rider off, as `/ride` does, with its checks and `native_entity_mount`. Bundles need \"hooks\": @API:mount@.",
+  "comments": ["crates/horizon-client/src/game/native_travel.rs"]
+}

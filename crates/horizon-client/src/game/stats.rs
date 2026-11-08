@@ -80,6 +80,11 @@ impl Stats {
         self.events
             .push((format!("minecraft:{ty}"), key.to_owned(), None));
     }
+    /// `ServerPlayer.die`'s `resetStat` of `TIME_SINCE_DEATH` and `TIME_SINCE_REST`.
+    pub(super) fn reset_death_timers(&mut self) {
+        self.reset("custom", "minecraft:time_since_death");
+        self.reset("custom", "minecraft:time_since_rest");
+    }
     pub(super) fn custom(&mut self, key: &str, n: i32) {
         namespaced(key, |key| self.add("custom", key, n));
     }
@@ -105,15 +110,17 @@ impl Stats {
     }
     /// `ServerStatsCounter.parseLocal`: the counters of a stats file.
     pub(super) fn read(path: &Path) -> Self {
+        let json = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .unwrap_or_default();
+        Self::from_json(&json)
+    }
+    /// The counters of a stats file's JSON, or of a hand-over's record (`player-import`).
+    pub(super) fn from_json(json: &serde_json::Value) -> Self {
         let mut stats = Self {
             loaded: true,
             ..Self::default()
-        };
-        let Some(json) = std::fs::read_to_string(path)
-            .ok()
-            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-        else {
-            return stats;
         };
         if let Some(all) = json.get("stats").and_then(|s| s.as_object()) {
             for (ty, entries) in all {
@@ -130,8 +137,9 @@ impl Stats {
         }
         stats
     }
-    /// `ServerStatsCounter.save`.
-    pub(super) fn write(&self, path: &Path) {
+    /// `ServerStatsCounter.toJson`: what `write` puts in the file, and what a
+    /// hand-over's record carries (`player-export`).
+    pub(super) fn to_json(&self) -> serde_json::Value {
         let stats: serde_json::Map<String, serde_json::Value> = self
             .values
             .iter()
@@ -142,10 +150,14 @@ impl Stats {
                 (ty.clone(), serde_json::Value::Object(entries))
             })
             .collect();
-        let json = serde_json::json!({
+        serde_json::json!({
             "stats": stats,
             "DataVersion": horizon_world::DATA_VERSION,
-        });
+        })
+    }
+    /// `ServerStatsCounter.save`.
+    pub(super) fn write(&self, path: &Path) {
+        let json = self.to_json();
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
@@ -167,12 +179,54 @@ pub(super) fn player_json(world: &Path, dir: &str, uuid: [i32; 4]) -> PathBuf {
     );
     world.join("players").join(dir).join(format!("{text}.json"))
 }
+/// `FileUtil.isValidPathSegment`: not `.` or `..`, and only the characters
+/// `[-._a-z0-9]`. A player name with a capital letter in it is refused like any
+/// other segment vanilla would not write to disk.
+fn valid_path_segment(segment: &str) -> bool {
+    segment != "."
+        && segment != ".."
+        && segment.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'.' | b'_')
+        })
+}
+
+/// `PlayerList.locateStatsFile`: the player's stats file, with the one an older
+/// version named after the player (`stats/<name>.json`) moved to the uuid file the
+/// first time it is asked for. A uuid file that is already there wins, and a move
+/// that fails leaves the old one in place.
+pub(super) fn locate_player_json(world: &Path, dir: &str, uuid: [i32; 4], name: &str) -> PathBuf {
+    let uuid_file = player_json(world, dir, uuid);
+    if uuid_file.exists() {
+        return uuid_file;
+    }
+    let file = format!("{name}.json");
+    if !valid_path_segment(&file) {
+        return uuid_file;
+    }
+    let named = uuid_file.with_file_name(&file);
+    if !named.is_file() {
+        return uuid_file;
+    }
+    match std::fs::rename(&named, &uuid_file) {
+        Ok(()) => uuid_file,
+        Err(e) => {
+            log::warn!(
+                "Horizon: failed to move the {} file {} to {}: {e}",
+                dir,
+                named.display(),
+                uuid_file.display()
+            );
+            named
+        }
+    }
+}
 impl Game<'_> {
     fn stats_path(&self) -> Option<PathBuf> {
-        Some(player_json(
+        Some(locate_player_json(
             &self.world_root,
             "stats",
             self.level.player_uuid?,
+            &self.options.player_name(),
         ))
     }
     /// `ServerStatsCounter.parseLocal`.
@@ -194,6 +248,30 @@ impl Game<'_> {
             self.stats.write(&path);
         }
     }
+    /// `ServerPlayer.awardStat`: `n` more of the statistic `ty` (a bare type
+    /// such as `used`) and `key`, unless a native mod cancels the award.
+    pub(super) fn award_stat(&mut self, ty: &str, key: &str, n: i32) {
+        // No mod, no name copied: the per-tick counters come through here.
+        let acting = if horizon_client::mod_api::mods().is_empty() {
+            None
+        } else {
+            self.lan_acting_uuid.zip(self.lan_acting_name.clone())
+        };
+        if let Some((player, name)) = acting {
+            let mut cancel = false;
+            namespaced(ty, |stat_type| {
+                self.native_player_stat_award(player, &name, stat_type, key, n, &mut cancel)
+            });
+            if cancel {
+                return;
+            }
+        }
+        self.stats.add(ty, key, n);
+    }
+    /// `Player.awardStat(Identifier)`: `n` more of the custom statistic `key`.
+    pub(super) fn award_custom_stat(&mut self, key: &str, n: i32) {
+        namespaced(key, |key| self.award_stat("custom", key, n));
+    }
     /// The per-tick counters (`Player.tick`/`ServerPlayer.tick` awardStat).
     pub(super) fn tick_stats(&mut self) {
         self.load_stats();
@@ -207,17 +285,17 @@ impl Game<'_> {
         };
         let alive = !p.health.dead_or_dying();
         let crouching = p.pose == horizon_client::pose::Pose::Crouching;
-        let s = &mut self.stats;
-        s.custom("play_time", 1);
-        s.custom("total_world_time", 1);
+        self.award_custom_stat("play_time", 1);
+        self.award_custom_stat("total_world_time", 1);
         if alive {
-            s.custom("time_since_death", 1);
-            if !sleeping {
-                s.custom("time_since_rest", 1);
-            }
+            self.award_custom_stat("time_since_death", 1);
         }
         if crouching {
-            s.custom("sneak_time", 1);
+            self.award_custom_stat("sneak_time", 1);
+        }
+        // ServerPlayer.doTick: dead or alive, every tick out of bed.
+        if !sleeping {
+            self.award_custom_stat("time_since_rest", 1);
         }
     }
     fn tick_movement_stats(&mut self) {
@@ -269,51 +347,58 @@ impl Game<'_> {
                 .map(|m| m.species())
                 .ok_or(())
         });
-        let s = &mut self.stats;
         match riding {
             Some(Ok(sp)) => {
                 use horizon_client::mobs::Species;
                 // `checkRidingStatistics`: only these mounts count, the horse
                 // family by the full 3D distance; any other mount nothing.
                 match sp {
-                    Species::Pig => s.custom("pig_one_cm", total),
-                    Species::Strider => s.custom("strider_one_cm", total),
-                    Species::HappyGhast => s.custom("happy_ghast_one_cm", total),
+                    Species::Pig => self.award_custom_stat("pig_one_cm", total),
+                    Species::Strider => self.award_custom_stat("strider_one_cm", total),
+                    Species::HappyGhast => self.award_custom_stat("happy_ghast_one_cm", total),
                     Species::Nautilus | Species::ZombieNautilus => {
-                        s.custom("nautilus_one_cm", total)
+                        self.award_custom_stat("nautilus_one_cm", total)
                     }
                     sp if horizon_client::mobs::equine::is_equine(sp) => {
-                        s.custom("horse_one_cm", total)
+                        self.award_custom_stat("horse_one_cm", total)
                     }
                     _ => {}
                 }
             }
             Some(Err(())) => {
                 if self.boats.iter().any(|b| Some(b.id) == self.riding) {
-                    s.custom("boat_one_cm", total)
+                    self.award_custom_stat("boat_one_cm", total)
                 } else if self.carts.iter().any(|c| Some(c.id) == self.riding) {
-                    s.custom("minecart_one_cm", total)
+                    self.award_custom_stat("minecart_one_cm", total)
                 }
             }
-            None if swimming => s.custom("swim_one_cm", total),
+            None if swimming => self.award_custom_stat("swim_one_cm", total),
             None if eye_in_water.fluid == horizon_client::blocks::Fluid::Water => {
-                s.custom("walk_under_water_one_cm", total)
+                self.award_custom_stat("walk_under_water_one_cm", total)
             }
-            None if in_water => s.custom("walk_on_water_one_cm", horizontal),
-            None if climbing => s.custom("climb_one_cm", (d.y * 100.0).round() as i32),
-            None if on_ground => {
-                if sprinting {
-                    s.custom("sprint_one_cm", horizontal)
-                } else if crouching {
-                    s.custom("crouch_one_cm", horizontal)
-                } else {
-                    s.custom("walk_one_cm", horizontal)
+            None if in_water => {
+                if horizontal > 0 {
+                    self.award_custom_stat("walk_on_water_one_cm", horizontal)
                 }
             }
-            None if gliding => s.custom("aviate_one_cm", total),
+            None if climbing => {
+                self.award_custom_stat("climb_one_cm", (d.y * 100.0).round() as i32)
+            }
+            None if on_ground => {
+                if horizontal > 0 {
+                    if sprinting {
+                        self.award_custom_stat("sprint_one_cm", horizontal)
+                    } else if crouching {
+                        self.award_custom_stat("crouch_one_cm", horizontal)
+                    } else {
+                        self.award_custom_stat("walk_one_cm", horizontal)
+                    }
+                }
+            }
+            None if gliding => self.award_custom_stat("aviate_one_cm", total),
             // Airborne and not gliding: more than 25 cm sideways per move
             // (creative flight, or a long jump), not only flying.
-            None if horizontal > 25 => s.custom("fly_one_cm", horizontal),
+            None if horizontal > 25 => self.award_custom_stat("fly_one_cm", horizontal),
             None => {}
         }
     }
@@ -400,7 +485,8 @@ impl Game<'_> {
         {
             return;
         }
-        let group = 1 + self.world.random.next_int_bound(3).unwrap_or(0);
+        let difficulty_id = self.difficulty_id();
+        let group = phantom_group_size(&mut self.world.random, difficulty_id);
         for _ in 0..group {
             let _ = self.spawn_mob(
                 "minecraft:phantom",
@@ -421,9 +507,89 @@ impl Game<'_> {
     }
 }
 
+/// `1 + random.nextInt(difficulty.getId() + 1)` of `PhantomSpawner.tick`: Peaceful still draws.
+fn phantom_group_size(random: &mut impl RandomSource, difficulty_id: i32) -> i32 {
+    1 + random.next_int_bound(difficulty_id + 1).unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `PlayerList.locateStatsFile`: a stats file an older version named after the player is moved
+    /// to the uuid file the first time it is asked for; a uuid file that is already there wins, and
+    /// a name vanilla would not write as a path segment is not looked for at all.
+    #[test]
+    fn an_old_stats_file_named_after_the_player_moves_to_its_uuid() {
+        let world = std::env::temp_dir().join(format!(
+            "horizon-stats-file-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let stats = world.join("players").join("stats");
+        std::fs::create_dir_all(&stats).unwrap();
+        let uuid = [1, 2, 3, 4];
+        let located = player_json(&world, "stats", uuid);
+        // Nothing to move: the uuid name is the answer, and looking writes nothing.
+        assert_eq!(locate_player_json(&world, "stats", uuid, "notch"), located);
+        assert!(!located.exists(), "looking for the file writes none");
+        // The old name-based file is moved onto the uuid name, and not left behind.
+        let old = stats.join("notch.json");
+        std::fs::write(&old, "{}").unwrap();
+        assert_eq!(locate_player_json(&world, "stats", uuid, "notch"), located);
+        assert!(located.is_file(), "the old file landed on the uuid name");
+        assert!(!old.exists(), "and is not left behind");
+        // A uuid file that exists is the answer, whether or not an old one does.
+        std::fs::write(&old, "{}").unwrap();
+        assert_eq!(locate_player_json(&world, "stats", uuid, "notch"), located);
+        assert!(old.is_file(), "the old file is left alone");
+        // FileUtil.isValidPathSegment on the file name: capitals and separators are not a segment,
+        // while a lowercase name with dashes, dots or digits is.
+        for name in ["Notch", "no/tch", "no tch"] {
+            assert!(
+                !valid_path_segment(&format!("{name}.json")),
+                "{name:?} is not a path segment"
+            );
+        }
+        for name in ["notch", "a-b_c.1", "jeb_"] {
+            assert!(
+                valid_path_segment(&format!("{name}.json")),
+                "{name:?} is a path segment"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&world);
+    }
+
+    /// ServerPlayer.die zeroes the two timers (and only them) and sends the new zero.
+    #[test]
+    fn death_resets_the_timers_since_death_and_rest() {
+        let mut s = Stats::default();
+        s.custom("time_since_death", 700);
+        s.custom("time_since_rest", 900);
+        s.custom("deaths", 2);
+        s.events.clear();
+        s.reset_death_timers();
+        assert_eq!(s.get("custom", "minecraft:time_since_death"), 0);
+        assert_eq!(s.get("custom", "minecraft:time_since_rest"), 0);
+        assert_eq!(s.get("custom", "minecraft:deaths"), 2);
+        assert_eq!(s.events.len(), 2);
+    }
+
+    #[test]
+    fn phantom_group_size_follows_difficulty() {
+        // Expected from java.util.Random(12345): 1 + nextInt(id + 1), six draws each.
+        let expected: [(i32, [i32; 6]); 4] = [
+            (0, [1, 1, 1, 1, 1, 1]),
+            (1, [1, 2, 2, 2, 2, 1]),
+            (2, [2, 2, 1, 1, 2, 2]),
+            (3, [2, 3, 4, 4, 4, 1]),
+        ];
+        for (id, sizes) in expected {
+            let mut r = horizon_core::random::LegacyRandom::new(12345);
+            let got: Vec<i32> = (0..6).map(|_| phantom_group_size(&mut r, id)).collect();
+            assert_eq!(got, sizes, "difficulty {id}");
+        }
+    }
 
     #[test]
     fn counters_events_and_dirty_entries() {

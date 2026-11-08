@@ -210,8 +210,7 @@ impl Game<'_> {
         if !self.verify_test_structure(&def.structure) {
             return Ok(None);
         }
-        // `server.getLevel(dimension)`: the server's levels; a client-only
-        // game (deprecated in-frame mode) has the one it is in.
+        // `server.getLevel(dimension)`: the server's levels.
         let dim = match def.dimension.as_str() {
             "minecraft:overworld" | "minecraft:the_nether" | "minecraft:the_end" => {
                 Some(Dim::from_id(&def.dimension))
@@ -275,7 +274,7 @@ impl Game<'_> {
             &[Text::literal(infos.len().to_string())],
         ));
         let grid = Grid::new(self.test_around(), per_row);
-        self.track_and_start_runner(infos, false, Some(grid));
+        self.track_and_start_command_runner(infos, grid);
         Ok(1)
     }
 

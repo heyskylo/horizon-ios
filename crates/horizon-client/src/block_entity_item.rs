@@ -29,6 +29,17 @@ pub fn data(stack: &crate::items::ItemStack) -> Option<(String, &Tag)> {
     Some((block_entity_nbt::id(data)?, data))
 }
 
+/// `JukeboxBlock.setPlacedBy`: the item's `minecraft:block_entity_data`
+/// carries a `RecordItem`, so the placed jukebox holds a record and its
+/// `has_record` state has to say so. Vanilla reads the item's data, not the
+/// block entity the placement just filled.
+pub fn carries_record(stack: &crate::items::ItemStack) -> bool {
+    stack
+        .data()
+        .and_then(|d| d.other(BLOCK_ENTITY_DATA))
+        .is_some_and(|data| data.get("RecordItem").is_some())
+}
+
 /// `BlockItem.shouldPrintOpWarning` for a player with game master permission:
 /// the item carries data of an op-only type.
 pub fn op_warning(stack: &crate::items::ItemStack) -> bool {
@@ -97,6 +108,25 @@ pub fn spawn_egg_entity_data<'a>(
         return None;
     }
     Some(data)
+}
+
+/// `EntityType.appendDefaultStackConfig` for a hanging entity or armor stand an
+/// item places: `Entity.applyImplicitComponents` stores the item's
+/// `minecraft:custom_data` as the entity's `data`, then `updateCustomEntityTag`
+/// (`TypedEntityData.loadInto`) merges the item's `minecraft:entity_data` over
+/// the entity's saved tag `own` when its type is `kind`.
+pub fn stack_configured_entity(stack: &crate::items::ItemStack, kind: &str, own: &Tag) -> Tag {
+    let mut tag = own.clone();
+    if let (Tag::Compound(map), Some(custom)) = (
+        &mut tag,
+        stack.data().and_then(|d| d.other("minecraft:custom_data")),
+    ) {
+        map.insert("data".into(), custom.clone());
+    }
+    match spawn_egg_entity_data(stack, kind, false) {
+        Some(data) => crate::data_cmd::merged(&tag, data),
+        None => tag,
+    }
 }
 
 /// `Spawner.getSpawnEntityDisplayName` (`SpawnData.entity.id` of the item's
@@ -368,7 +398,13 @@ pub fn place(saved: &Tag, components: &Compound, game_master: bool) -> Tag {
                     merged.insert(key.into(), v.clone());
                 }
             }
-            if let Some(Tag::Compound(loaded)) = canonical(&Tag::Compound(merged)) {
+            let merged = Tag::Compound(merged);
+            // A native mod's live entity supplies its own canonical id and
+            // schema. Keep the merged opaque payload for that type, while
+            // retaining vanilla's load/save validation for minecraft types.
+            let loaded =
+                canonical(&merged).or_else(|| (!id.starts_with("minecraft:")).then_some(merged));
+            if let Some(Tag::Compound(loaded)) = loaded {
                 tag = loaded;
             }
         }
@@ -471,6 +507,35 @@ mod tests {
     }
 
     #[test]
+    fn a_native_entity_item_merges_opaque_data_without_replacing_its_identity() {
+        let fresh = snbt(
+            "{id:\"example:heater\",x:4,y:65,z:8,fuel:1,\
+             nested:{retained:17,changed:0},components:{}}",
+        );
+        let Tag::Compound(patch) = snbt(
+            "{\"minecraft:block_entity_data\":{id:\"example:heater\",\
+             x:99,y:99,z:99,fuel:923,nested:{changed:5},opaque:[B;1,-2,3]}}",
+        ) else {
+            unreachable!()
+        };
+        let placed = place(&fresh, &patch, false);
+        assert_eq!(
+            placed,
+            snbt(
+                "{id:\"example:heater\",x:4,y:65,z:8,fuel:923,\
+                 nested:{retained:17,changed:5},opaque:[B;1,-2,3],components:{}}"
+            )
+        );
+        let Tag::Compound(other_type) =
+            snbt("{\"minecraft:block_entity_data\":{id:\"example:other\",fuel:888}}")
+        else {
+            unreachable!()
+        };
+        assert_eq!(place(&fresh, &other_type, false), fresh);
+        assert_eq!(place(&fresh, &pick(&placed), false), placed);
+    }
+
+    #[test]
     fn a_filled_named_chest_gives_its_items_and_name_as_components() {
         let chest = saved(
             "{id:\"minecraft:chest\",x:1,y:2,z:3,CustomName:\"Loot\",\
@@ -548,6 +613,34 @@ mod tests {
     }
 
     #[test]
+    fn a_placed_entity_takes_the_items_custom_data_and_matching_entity_data() {
+        let item = |components: &str| {
+            let components = snbt(components);
+            let (damage, extra) = crate::item_data::decode_components(Some(&components));
+            crate::items::ItemStack {
+                damage,
+                extra,
+                ..crate::items::ItemStack::new("minecraft:armor_stand", 1)
+            }
+        };
+        let own = snbt("{CustomName:\"Named\",ShowArms:0b}");
+        let stack = item(
+            "{\"minecraft:custom_data\":{k:1b},\"minecraft:entity_data\":{id:\"minecraft:armor_stand\",ShowArms:1b}}",
+        );
+        let tag = stack_configured_entity(&stack, "minecraft:armor_stand", &own);
+        assert_eq!(tag.get("ShowArms"), Some(&Tag::Byte(1)));
+        assert_eq!(tag.get("CustomName"), Some(&Tag::String("Named".into())));
+        assert_eq!(
+            tag.get("data").and_then(|d| d.get("k")),
+            Some(&Tag::Byte(1))
+        );
+        // Data of another type is not loaded; the custom data still is.
+        let tag = stack_configured_entity(&stack, "minecraft:item_frame", &own);
+        assert_eq!(tag.get("ShowArms"), Some(&Tag::Byte(0)));
+        assert!(tag.get("data").is_some());
+    }
+
+    #[test]
     fn a_spawn_egg_data_needs_its_own_type_and_an_op_for_an_op_only_one() {
         let egg = |entity_data: &str| {
             let components = snbt(&format!("{{\"minecraft:entity_data\":{entity_data}}}"));
@@ -600,6 +693,40 @@ mod tests {
         let chest = item("{id:\"minecraft:chest\",LootTable:\"x\"}");
         assert_eq!(spawner_entity(&chest), None);
         assert!(!op_warning(&chest));
+    }
+
+    /// `JukeboxBlock.setPlacedBy` looks for a `RecordItem` in the placed
+    /// item's block entity data, whatever the type it names: only that key
+    /// turns the box's `has_record` on.
+    #[test]
+    fn a_jukebox_item_with_a_record_in_its_data_says_so() {
+        let jukebox = |text: &str| {
+            let components = snbt(&format!("{{\"minecraft:block_entity_data\":{text}}}"));
+            let (damage, extra) = crate::item_data::decode_components(Some(&components));
+            crate::items::ItemStack {
+                damage,
+                extra,
+                ..crate::items::ItemStack::new("minecraft:jukebox", 1)
+            }
+        };
+        // A plain jukebox, and one whose data is only the type id: no record.
+        assert!(!carries_record(&crate::items::ItemStack::new(
+            "minecraft:jukebox",
+            1
+        )));
+        assert!(!carries_record(&jukebox("{id:\"minecraft:jukebox\"}")));
+        assert!(!carries_record(&jukebox(
+            "{id:\"minecraft:jukebox\",Items:[{Slot:0b,id:\"minecraft:stone\",count:1}]}"
+        )));
+        // Creative's Ctrl + Pick Block on a jukebox holding a disc.
+        assert!(carries_record(&jukebox(
+            "{id:\"minecraft:jukebox\",RecordItem:{id:\"minecraft:music_disc_cat\",count:1}}"
+        )));
+        // The key alone counts: `TypedEntityData.contains` never checks the
+        // type, and the state it sets is the one the block is placed as.
+        assert!(carries_record(&jukebox(
+            "{id:\"minecraft:chest\",RecordItem:{id:\"minecraft:music_disc_cat\",count:1}}"
+        )));
     }
 
     #[test]

@@ -42,13 +42,42 @@ An agent adds one server, `horizon-launcher mcp`. It holds:
   - `account_sign_in`, `account_list`.
 - **The game's tools.** It runs the selected version's `horizon-ctl mcp` (shipped beside the
   game) as a child. It lists that server's tools as `game_<name>`, all but `launch`, and passes
-  calls and results through, images included. `play` starts the game with a control socket in
-  the launcher's data folder. While no game answers, `game_*` calls say to call `play`.
+  calls and results through, images included. `play` starts the game with a control endpoint in
+  the launcher's data folder. A game the player started and turned Agent Control on in answers on
+  the game's default endpoint ([Connecting](#connecting)). Each call goes to the first of the two
+  where a game answers, the launcher's first, so a game from `play` wins over one from the window.
+  While no game answers on either, `game_*` calls say to call `play` or to turn Agent Control on.
+
+The default endpoint is worked out in the launcher's own process, so `$HORIZON_CONTROL`, and on
+Linux `$XDG_RUNTIME_DIR`, must be the same for `horizon-launcher mcp` as for the game.
 
 Why one server rather than two: the game's tools stay defined once, in horizon-ctl's table. The
-agent's client needs one entry and one approval. The version that plays is always the one the
-launcher selected, so the game's tools always match the game. `horizon-ctl mcp` stays available
-on its own, for a game started by hand or by a script.
+agent's client needs one entry and one approval, whichever way the game was started. The tools
+are always those of the version the launcher selected, even for a game of another version: a
+command that game does not know answers with an error, and `game_hello` tells which game it is.
+`horizon-ctl mcp` stays available on its own, for a game started by hand or by a script.
+
+## Protocol revisions
+
+All three servers share one implementation, `crates/horizon-mcp`, so they advertise and answer
+the same revisions. There are two of them.
+
+- `2026-07-28` is stateless: there is no handshake, and every request carries its version and
+  its capabilities in `_meta` (`io.modelcontextprotocol/protocolVersion`,
+  `io.modelcontextprotocol/clientCapabilities`). Every result says `resultType: "complete"`,
+  `tools/list` carries `ttlMs` and `cacheScope`, and each result names the server in
+  `_meta["io.modelcontextprotocol/serverInfo"]`. `server/discover` reports the versions,
+  capabilities and identity. `ping` no longer exists in this revision.
+- `2025-06-18` is the handshake revision, kept because the launcher's `game_*` tools talk to
+  whichever `horizon-ctl` the player has installed: an older one does not know the stateless
+  revision. A request with no `_meta` is answered in that revision's shapes, and `initialize`
+  still negotiates it.
+
+A server that serves both eras decides from the request itself, not from what came before it.
+A version the server does not serve is refused with `UnsupportedProtocolVersionError` (`-32022`)
+listing the ones it does, and a modern request missing its capabilities is malformed (`-32602`).
+A client that speaks both probes with `server/discover` first on stdio, then falls back to
+`initialize` when the answer is not a modern one.
 
 ## Inventory, before and after
 
@@ -101,7 +130,7 @@ passes on without checking it).
 | Open to LAN | Pause > Open to LAN | part | no | yes | yes | `lan open\|close\|status` |
 | Play with Friends: host, stop, status | Pause | part | no | yes | yes | `friends host\|stop\|status` |
 | Vanilla options, every page | Options | yes | part | yes | yes | `options-get`, `options-set` (all of options.txt, typed); `options PAGE` was socket-only |
-| Horizon Settings: Graphics, Controller, Extras, Mods, AI Agent | Horizon Settings | part | part | yes | yes | `options horizon\|graphics\|extras\|agent...`, then `ui`/`click`/`set` |
+| Horizon Settings: Extras, PvP & HUD, AI Agent; the graphics screen (Video Settings); Controller (Controls) | Horizon Settings, Video Settings, Controls | part | part | yes | yes | `options horizon\|graphics\|extras\|agent...`, then `ui`/`click`/`set` |
 | Agent control on or off, status, connection details | Horizon Settings > AI Agent | no | no | yes | yes | new page (#1353) |
 | Key binds | Controls > Key Binds | yes | yes | yes | yes | `options-set key_key.jump key.keyboard.j` |
 | Resource packs | Options > Resource Packs | part | part | yes | yes | `options packs`, then `ui` rows and `click`; `options-set resourcePacks` |
@@ -163,12 +192,16 @@ turn the switch off.
   - `horizon-launcher agent-config [--client ID] [--json] [--test]` prints the same thing.
 - **Game, Horizon Settings > AI Agent:**
   - **Agent Control** (`agentControl` in horizon-extras.txt, off by default) opens the default
-    endpoint (`$HORIZON_CONTROL`, else `horizon-control.sock` in the runtime directory) in a game
-    the player started. Turning it off closes the endpoint and stops its listener.
+    endpoint (`$HORIZON_CONTROL`, else `horizon-control.sock` in the runtime directory, or
+    `horizon-control.json` in the temporary directory on Windows) in a game the player started.
+    `horizon-launcher mcp` reaches it as it is, with no second server. Turning it off closes the
+    endpoint and stops its listener.
   - The page shows whether a client is connected (`Server::clients`), when the last command came,
     and the socket's name.
   - **Copy Connection Details** copies the socket path, a `horizon-ctl --socket ... state` line
-    and an `mcpServers` config for this game's `horizon-ctl mcp`.
+    and an `mcpServers` config for this game's `horizon-ctl mcp`. That config points into the
+    version's folder, so it stops working once the launcher removes that version; an agent that
+    already has `horizon-launcher mcp` does not need it.
 - **The default:** a game an agent starts (`play` in MCP, `horizon-ctl launch`, `--control`) is
   under control. A game the player starts from the window is not, until they turn Agent Control
   on. An open socket lets any program of that user drive the game, so it opens only when an agent
@@ -202,7 +235,8 @@ turn the switch off.
   - `busy`: another action or a benchmark is running;
   - `timeout`;
   - `connection`: the game can't be reached;
-  - `denied`: No AI is on (exit status 4).
+  - `denied`: No AI is on (exit status 4);
+  - `api`: `--api LINE` named a protocol line the game's `hello` does not report (exit status 5).
 
   The message names what to do next ("no world open; use: open WORLD").
 - **Shapes are shared:**
@@ -272,6 +306,125 @@ turn the switch off.
   dimensions and worlds (the newest 256). Take `last` before an action, and wait with `--since`,
   so the action's event can't slip in before the wait.
 
+### Input provenance
+
+Every input event carries who caused it: `user` (this computer's keyboard, mouse or pad),
+`agent` (the control socket: `horizon-ctl`, an MCP client) or `game` (input the game made up
+itself, such as a pad menu's click). This is how an agent tells its own actions from a person
+who took over mid-test.
+
+- `state` and `status` have an `input` section: `last_origin`, per-origin `counts`,
+  `user_since_agent` and `last_user_age_s`.
+- `input-log [--since SEQ] [--limit N] [--origin ORIGIN]` lists the newest 512 input events:
+  `seq`, `tick`, `origin`, and the key/button/motion/pad event or control-socket line.
+- Polls (`state`, `events`, `wait-for`, `input-log`, `ui`...) and session commands
+  (`record-*`, `repro-export`, `quit`...) are not input: they do not fill the ring or count as an
+  agent's keystroke. They still count as an agent watching, so a person's next key is noticed.
+- When a person's input arrives while an agent was driving, the game logs one line and pushes a
+  `user-input` event: `wait-for event user-input --timeout 600` makes a script notice at once
+  instead of blaming the person's keystroke on itself. The agent counts as driving while a
+  client is connected, a deferred action runs, or a `wait-for` waits, not only for five seconds
+  after its last line.
+- Things that are not input (frames, resizes) are not events. Typed text is never kept: a
+  `chat`, `command`, `type`, `signedit`, `connect`, `book` or `publish` line is recorded as
+  `<name> <redacted>`. OS-level tools that inject keys (xdotool, computer-use) look like a
+  person (`user`); only the agent's own socket is `agent`.
+
+### Repro recordings
+
+A recording is one folder, a bundle is that folder plus the logs in one zip:
+
+- `record-start [NAME] [--no-world]` saves the world, freezes the server, copies the world into
+  `recordings/<stamp>-NAME/world/` and starts writing: `inputs.jsonl` (the provenance events
+  above, with ticks), `state.jsonl` (the full `state_value()` every second, entities every ten),
+  `events.jsonl` and `session.json`. A `--no-world` recording keeps only the input and state,
+  for a server session. The deprecated in-frame mode (`--no-server-thread`) is refused.
+- A recording cannot cross worlds: quit-to-title stops it. It also stops itself at 1,000,000
+  input events or two hours, and is finished and bundled when the game exits. The newest ten
+  recordings and ten bundles are kept; older ones are pruned.
+- `record-stop [--export]` closes it; `repro-export [NAME] [PATH]` writes
+  `repro/<stamp>-NAME.zip` with the recording, `logs/latest.log`, a crash report from this
+  recording's session, a reduced `status.json` and a README. The export scrubs the user folder,
+  IPs, UUIDs, the world and server names and the other players' names; `status.json` loses the
+  server, name tags, sidebar and clipboard (an invite code lives there). Nothing is uploaded
+  automatically: the player attaches the zip to the bug report.
+- A player without `horizon-ctl` uses the debug keys: **F3+R** starts a recording and F3+R again
+  stops it and writes the bundle (the chat shows the path); **F3+E** writes the bundle of the
+  newest recording. The keys are off until **Recording shortcuts** is turned on (AI Agent page);
+  the page also has the two buttons and a live recording/replay line.
+- `record-replay NAME [--stop] [--in-place] [--keep-world] [--timeout S]` is the best effort
+  replay: it copies the recording's world into `saves/`, opens it, restores the recorded player
+  position, rotation and velocity, and feeds the recorded keys, mouse, wheel, look, pad events
+  and input-socket lines back at their original ticks. **Only input and movement commands run**
+  (`key`, `mouse`, `click*`, `look`, `turn`, `goto`, `pad`, `wait`...), never world, network or
+  account ones (`world-delete`, `connect`, `chat`, `command`...). It ends at the recording's
+  `end_tick`, releases every key and button it held, and removes its `saves/` copy (keep it with
+  `--keep-world`). The timeout counts from the command, not from when the world finished
+  loading. It is not frame-perfect and only makes sense on the same build and machine;
+  `state.jsonl` is the oracle for where the re-run should have ended. A server recording replays
+  only `--in-place`, into the same world.
+
+### Repeatable screenshots
+
+`HORIZON_STILL=1` (a dev switch, off by default) makes a frozen scene draw the same frame in every
+run, pixel for pixel, on the same build, GPU and driver: a change's before and after are then
+compared by a pixel diff, not by eye, where two runs otherwise differ by a shade or two over much
+of the frame ([#8750](https://github.com/horizon-rust/horizon/issues/8750)).
+
+- The world starts frozen (`/tick freeze`) before its first tick, on the server and the client:
+  how many ticks run while the world loads differs between runs, and the torch flicker and the
+  particles move on each.
+- What the frame shows of time follows the world's ticks, not the client's or the wall clock's:
+  - animated textures, the enchantment glint, the world border's scroll, the darkness effect's
+    pulse, the dragon's healing beam and the player model's idle swing (third person, the
+    inventory);
+  - the HUD: the hearts' jiggle and blink, chat fading, titles, the action bar, the held item's
+    name, the locator bar and the tab list (a title shown while frozen fades in on the next
+    `/tick step`);
+  - a shader pack's clock (Iris's `frameTimeCounter`, `frameCounter` and `frameTime`, a Horizon
+    pack's `time`, `frame_index` and `delta_time`, with smoothed values at their targets) and the
+    randoms behind custom uniforms, cave mood (`playerMood`), obfuscated text and a clock or
+    compass that spins;
+  - the camera's partial tick, held at 1 like the level's while frozen.
+- While frozen, the client's own entity effects (endermen's and blazes' particles) and its
+  countdowns (effects, a totem's pop, the hotbar's, the border's size change) wait for the world.
+- `/tick step N` moves the scene on by N ticks (flames, water, particles). What the server changes
+  during a step reaches the client between its ticks whenever it arrives, so particles that
+  follow can differ from run to run. Wait a second or more after a step before a capture (`wait
+  40`): the server sends its time once a second, which can leave the client a tick ahead until the
+  next, and the last tick still eases for a client tick. `/tick unfreeze` plays on as without the
+  switch.
+- While frozen, rain and thunder sit at their levels (1 while it rains or thunders, else 0), and
+  the rain fog too, as a shader pack's smoothed values do: `/weather rain` shows full rain without
+  a step. A step or `/tick unfreeze` fades them as without the switch.
+- The server's own randoms and entity ids are its own: a summoned mob's facing and variant, and
+  mob AI during a step, can differ when other server work drew on them first, and ids follow the
+  order the server loads and creates entities in, which loading changes from run to run. What an
+  id seeds can then differ: a minecart's offset against z-fighting, a mob's client random. Give
+  facings and variants in the command (`{Rotation:[0f,0f]}`) for a repeatable scene. An end
+  crystal's spin and bob start from its position instead, so they are the same in every run.
+- A script should wait until the world has loaded before it changes it: a command that acts on
+  what is loaded (`kill @e`, `fill`) finds more or less of it otherwise.
+- The player still ticks while frozen, as in vanilla: stand the player on a block (it falls
+  otherwise), and after a turn or a move wait a few seconds (`wait 60`) before a capture, or the
+  hand, which eases toward the view each tick, is a hair off. What the player does goes on too:
+  using an item, riding, running out of air.
+- A shader pack's own buffers, kept from frame to frame, take `horizon-ctl screenshot-sequence
+  FRAMES STEP_MS PATH`: the pack starts over (its buffers, images, shadow maps, smoothed values and
+  custom uniforms, or a Horizon pack's `history` and eased values) and draws FRAMES frames on a set
+  clock, frame n at n frames and (n - 1) × STEP_MS milliseconds (0 since the frame before on frame
+  1, STEP_MS after; a decimal, `16.666667` for 60 fps). The last is written as `screenshot PATH`
+  writes it (with its `-hdr.png` under HDR output), and the reply, once it is, names the pack and
+  the last frame's clock. Without a pack it draws the frames all the same. It needs the world
+  frozen, far terrain (LOD Distance), TAA, frame generation and the shadow cache off and chunk fade
+  0, and says so otherwise. While it runs, commands that would change the scene are refused, a
+  change to the camera, the world, the settings, the pack or the window's size ends it with an
+  error, `screenshot-sequence cancel` stops it and `quit` quits.
+- Not covered: temporal AA and frame generation (they build on earlier frames: turn them off),
+  custom entity model animations, native mods, and what eases on the wall clock for a moment
+  (toasts, the boss bar's fill, chunks fading in, the spyglass): wait for them to settle. Frame
+  times are real ones: not for timing.
+
 ## Tests
 
 - **Unit tests:**
@@ -279,13 +432,17 @@ turn the switch off.
     network annotations;
   - the launcher: generated tools, `confirm`, the reference, the agent configs;
   - `horizon_core::no_ai`;
-  - `options_ui`: the AI Agent page, and that No AI hides it.
+  - `options_ui`: the AI Agent page, and that No AI hides it;
+  - `input_trace`: origins, the ring, the intrusion rule, `input-log` and the recording writer;
+  - `repro`: the format's round trip, the folder slug and the world copy.
 - **`tools/agent_control_e2e.py`** drives a real game, offscreen on macOS and on a virtual screen
   on Linux, through the CLI and MCP:
   - `survival`, `ui`, `options`, `events`, `consume`, `pick`, `suggestions`;
   - `manage`: worlds, servers, effects, books, LAN, the options pages and `confirm`;
   - `no-ai`: every surface refuses;
-  - `setting`: Agent Control on opens the endpoint, the AI Agent page, Copy, and off closes it.
+  - `setting`: Agent Control on opens the endpoint, the AI Agent page, Copy, and off closes it;
+  - `repro`: origins in `state`/`input-log`, record-start/stop, the bundle's entries, and a
+    replay ending near the recorded state.
 - **`tools/launcher_mcp_e2e.py`** drives `horizon-launcher mcp`: the generated tools, `play` and
   the `game_*` tools, `confirm`, `agent-config` and `--test`, and No AI.
 

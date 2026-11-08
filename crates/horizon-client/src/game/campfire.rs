@@ -48,9 +48,10 @@ impl Game<'_> {
             _ => false,
         };
         if placed {
+            self.native_campfire_start(pos, &held.item);
             // ItemStack.consumeAndReturn: creative keeps the item.
             self.consume_held();
-            self.stats.custom("interact_with_campfire", 1);
+            self.award_custom_stat("interact_with_campfire", 1);
             self.post_block_game_event(
                 "minecraft:block_change",
                 pos,
@@ -90,6 +91,7 @@ impl Game<'_> {
             self.world.modified.insert((pos.0 >> 4, pos.2 >> 4));
         }
         if !lit {
+            self.sleep_idle_campfire(pos, false);
             return Ok(());
         }
         let Some(BlockEntity::Campfire(c)) = self.world.block_entities.get_mut(&pos) else {
@@ -97,11 +99,11 @@ impl Game<'_> {
         };
         let done = c.cook_tick();
         for (_, item) in done {
-            let result = self
-                .res
-                .recipes()
+            // The world's table, as placing the item (`self.recipes()`) asked.
+            let result = world_recipes!(self)
                 .cook(KIND, &item)
                 .map_or_else(|| item.clone(), |r| r.result.clone());
+            self.native_block_cook([pos.0, pos.1, pos.2], &item.item, &result.item);
             self.campfire_drop(pos, result);
             self.mark_block_entity_updated(pos);
             self.post_block_game_event(
@@ -111,7 +113,15 @@ impl Game<'_> {
                 Some(state),
             );
         }
+        self.sleep_idle_campfire(pos, true);
         Ok(())
+    }
+
+    fn sleep_idle_campfire(&mut self, pos: Pos, lit: bool) {
+        if matches!(self.world.block_entities.get(&pos), Some(BlockEntity::Campfire(c)) if c.idle(lit))
+        {
+            self.world.block_entities.sleep(pos);
+        }
     }
 
     /// `CampfireRenderer`: each cooking item lies on the fire, slot `i`
@@ -171,7 +181,7 @@ impl Game<'_> {
 
     /// `Containers.dropItemStack(level, x, y, z, stack)` at the block's
     /// integer position.
-    fn campfire_drop(&mut self, pos: Pos, stack: ItemStack) {
+    pub(super) fn campfire_drop(&mut self, pos: Pos, stack: ItemStack) {
         let at = BlockPos::new(pos.0, pos.1, pos.2);
         for piece in
             horizon_world::level::removal::drop_item_stack(&mut self.world.random, at, stack.count)

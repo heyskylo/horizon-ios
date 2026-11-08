@@ -3,11 +3,13 @@
 //! `LeashFenceKnotEntity.interact`), loading and saving who holds what,
 //! breaking, and drawing the rope (`LeashFeatureRenderer`) and the knot.
 use super::Game;
+use horizon_client::actions::Action;
 use horizon_client::{
     items::ItemStack,
     mesher::Vertex,
     mobs::leash::{self, Holder, Pending},
     mod_api::NativeLootDrops,
+    pose::Pose,
 };
 use horizon_world::nbt::Tag;
 
@@ -49,7 +51,108 @@ struct Rope {
     /// `getQuadLeashOffsets`, when the entity supports a quad lead.
     quad: Option<[[f64; 3]; 4]>,
 }
+/// Whether a mob's lead is held by `acting` (`getLeashHolder() == player`).
+fn held_by_acting_player(
+    leash: Option<Holder>,
+    leash_player: Option<[i32; 4]>,
+    acting: [i32; 4],
+) -> bool {
+    leash == Some(Holder::Player) && leash_player.is_none_or(|p| p == acting)
+}
+
+/// Resolve a `Pending` leash holder loaded from NBT.
+fn resolve_pending_leash(
+    pending: Pending,
+    player_uuid: [i32; 4],
+    owner_uuid: Option<[i32; 4]>,
+    is_guest: impl FnOnce([i32; 4]) -> bool,
+    mob_by_uuid: impl FnOnce([i32; 4]) -> Option<u32>,
+    boat_by_uuid: impl FnOnce([i32; 4]) -> Option<u32>,
+) -> Option<(Holder, Option<[i32; 4]>)> {
+    match pending {
+        Pending::Knot(p) => Some((Holder::Knot(p), None)),
+        Pending::Uuid(u) if is_guest(u) || owner_uuid == Some(u) => Some((Holder::Player, Some(u))),
+        // Old integrated worlds wrote offline_uuid("Player") for every holder.
+        // Only that known sentinel can be mapped to the integrated owner; a
+        // different level player UUID may belong to somebody else. Old guest
+        // leashes lost their real UUID, so this owner recovery is best effort.
+        Pending::Uuid(u)
+            if u == player_uuid
+                && u == horizon_client::lan::playerdata::uuid_ints(
+                    horizon_protocol::crypto::offline_uuid("Player"),
+                )
+                && owner_uuid.is_some() =>
+        {
+            Some((Holder::Player, owner_uuid))
+        }
+        Pending::Uuid(u) => mob_by_uuid(u)
+            .map(|id| (Holder::Mob(id), None))
+            .or_else(|| boat_by_uuid(u).map(|id| (Holder::Boat(id), None))),
+    }
+}
+
+/// Write a mob's `leash` NBT entry into `tag`.
+fn write_mob_leash_tag(
+    tag: &mut Tag,
+    holder: Option<Holder>,
+    pending: Option<Pending>,
+    leash_player: Option<[i32; 4]>,
+    level_player_uuid: Option<[i32; 4]>,
+    mob_uuid: impl FnOnce(u32) -> [i32; 4],
+) {
+    let Tag::Compound(map) = tag else { return };
+    map.remove(&"leash".into());
+    let uuid = match (holder, pending) {
+        (Some(Holder::Player), _) => leash_player.or(level_player_uuid).or(Some([0, 0, 0, 1])),
+        (Some(Holder::Mob(id) | Holder::Boat(id)), _) => Some(mob_uuid(id)),
+        (_, Some(Pending::Uuid(u))) => Some(u),
+        _ => None,
+    };
+    let value = match (holder, pending) {
+        (Some(h), _) => leash::to_nbt(h, uuid),
+        (None, Some(Pending::Knot(p))) => leash::to_nbt(Holder::Knot(p), None),
+        (None, Some(Pending::Uuid(u))) => leash::to_nbt(Holder::Player, Some(u)),
+        _ => None,
+    };
+    if let Some(v) = value {
+        map.insert("leash".into(), v);
+    }
+}
+
 impl Game<'_> {
+    /// BlockAttachedEntity.tick / LeashFenceKnotEntity.survives for explicitly loaded knots.
+    pub(super) fn tick_explicit_knots(&mut self) {
+        let ticking = self.entity_ticking_area();
+        let world = &self.world;
+        let facts = self.res.facts();
+        let fences = self.res.items().block_tags.get("minecraft:fences");
+        let mut untied = Vec::new();
+        self.others.retain_mut(|knot| {
+            let Some(check) = knot.knot_check.as_mut() else {
+                return true;
+            };
+            let at = horizon_core::position::BlockPos::containing(knot.position);
+            if !ticking(at.x, at.z) || !world.chunks.contains_key(&(at.x >> 4, at.z >> 4)) {
+                return true;
+            }
+            // Vanilla compares the old postincrement value: first check is tick 101.
+            if *check >= 100 {
+                *check = 0;
+                let state = facts.get(world.block(at.x, at.y, at.z));
+                if !fences.is_some_and(|f| f.contains(&*state.name)) {
+                    untied.push(knot.position.components());
+                    return false;
+                }
+            } else {
+                *check += 1;
+            }
+            true
+        });
+        // LeashFenceKnotEntity.dropItem plays LEAD_UNTIED; it drops no lead item.
+        for at in untied {
+            self.lead_sound("untied", at);
+        }
+    }
     pub(super) fn lead_sound(&mut self, sound: &str, at: [f64; 3]) {
         self.audio
             .play(&format!("minecraft:item.lead.{sound}"), Some(at), 1.0, 1.0);
@@ -112,8 +215,7 @@ impl Game<'_> {
         (0..self.mobs.len())
             .filter(|&i| {
                 let m = &self.mobs[i];
-                m.extra.leash == Some(Holder::Player)
-                    && m.extra.leash_player.is_none_or(|p| p == acting)
+                held_by_acting_player(m.extra.leash, m.extra.leash_player, acting)
                     && (m.position.x - around.x).abs() <= 16.0
                     && (m.position.y - around.y).abs() <= 16.0
                     && (m.position.z - around.z).abs() <= 16.0
@@ -123,12 +225,43 @@ impl Game<'_> {
     /// `Entity.spawnAtLocation(level, Items.LEAD)`: the item entity draws its
     /// motion from its own random, not the level's.
     pub(super) fn drop_lead_item(&mut self, at: [f64; 3]) {
-        let v = super::dispenser::new_item_motion();
-        self.spawn_item(ItemStack::new("minecraft:lead", 1), at, v, 10);
+        self.spawn_item_own(ItemStack::new("minecraft:lead", 1), at, 10);
     }
     /// `Leashable.dropLeash` / `removeLeash`: the lead falls as an item.
     pub(super) fn break_leash(&mut self, id: u32, drop: bool, sound: bool) {
         self.drop_leash(id, drop, sound, false);
+    }
+    /// `Entity.dropAllLeashConnections`: every mob and boat leashed to the
+    /// acting player, inside the 32-block box around the player's centre,
+    /// drops its lead. Then `GameEvent.SHEAR`. Whether anything dropped.
+    /// The player is not `Leashable`, so there is no lead of their own.
+    pub(super) fn drop_all_leash_connections(&mut self) -> bool {
+        let center = self.player_center();
+        let mobs: Vec<u32> = self
+            .player_leashed(center)
+            .into_iter()
+            .map(|i| self.mobs[i].id)
+            .collect();
+        let boats = self.player_led_boats(center);
+        if mobs.is_empty() && boats.is_empty() {
+            return false;
+        }
+        for id in mobs {
+            // One snap is played by the caller (`SoundEvents.LEAD_BREAK`),
+            // not a break sound on each leashed entity.
+            self.break_leash(id, true, false);
+        }
+        self.drop_boat_leashes(&boats);
+        let at = self
+            .player
+            .as_ref()
+            .map_or([center.x, center.y, center.z], |p| {
+                [p.position.x, p.position.y, p.position.z]
+            });
+        // `gameEvent(GameEvent.SHEAR, null)`: the player is the position, not the source.
+        let ctx = self.who_context(None, None);
+        self.post_game_event("minecraft:shear", at, ctx);
+        true
     }
     /// `break_leash` by the acting player's use (untying it, shears).
     fn break_leash_used(&mut self, id: u32, drop: bool) {
@@ -136,16 +269,24 @@ impl Game<'_> {
     }
     fn drop_leash(&mut self, id: u32, drop: bool, sound: bool, used: bool) {
         let killer = self.lead_killers.remove(&id).map(|(killer, _)| killer);
-        let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
+        let Some((alive, at, kind)) = self.mobs.iter_mut().find(|m| m.id == id).and_then(|m| {
+            horizon_client::mobs::leash::remove(m)?;
+            Some((
+                m.alive(),
+                [m.position.x, m.position.y, m.position.z],
+                super::native_hooks::mob_kind(m),
+            ))
+        }) else {
             return;
         };
-        if horizon_client::mobs::leash::remove(m).is_none() {
-            return;
+        self.native_entity_unleash(id, &kind);
+        if used
+            && let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone())
+        {
+            self.native_player_unleash_entity(player, &name, id);
         }
         // Leashable.tickLeash gates a dying entity's lead drop on entity_drops.
-        let drop = drop && (m.alive() || self.ui.rules.bool("entity_drops"));
-        let at = [m.position.x, m.position.y, m.position.z];
-        let kind = super::native_hooks::mob_kind(m);
+        let drop = drop && (alive || self.ui.rules.bool("entity_drops"));
         if sound {
             self.lead_sound("break", at);
         }
@@ -178,8 +319,7 @@ impl Game<'_> {
         self.native_loot_drops(&context, &mut drops);
         for stack in drops {
             if stack.count > 0 && &*stack.item != "minecraft:air" {
-                let v = super::dispenser::new_item_motion();
-                self.spawn_item(stack, at, v, 10);
+                self.spawn_item_own(stack, at, 10);
             }
         }
     }
@@ -194,22 +334,35 @@ impl Game<'_> {
                 .retain(|id, (_, at)| *at != dim || mobs.iter().any(|m| m.id == *id && !m.removed));
         }
         let player_uuid = self.level.player_uuid.unwrap_or([0, 0, 0, 1]);
+        let owner_uuid = self
+            .serving
+            .as_ref()
+            .map(|s| s.owner)
+            .or_else(|| self.lan.as_ref().and_then(|h| h.hub.singleplayer_owner))
+            .map(horizon_client::lan::playerdata::uuid_ints);
         for i in 0..self.mobs.len() {
             let Some(pending) = self.mobs[i].extra.leash_pending else {
                 continue;
             };
-            let holder = match pending {
-                Pending::Knot(p) => Some(Holder::Knot(p)),
-                Pending::Uuid(u) if u == player_uuid => Some(Holder::Player),
-                Pending::Uuid(u) => self
-                    .mob_by_uuid(u)
-                    .map(Holder::Mob)
-                    .or_else(|| self.boat_by_uuid(u).map(Holder::Boat)),
-            };
+            let holder = resolve_pending_leash(
+                pending,
+                player_uuid,
+                owner_uuid,
+                |u| {
+                    self.lan.as_ref().is_some_and(|h| {
+                        h.hub
+                            .guests
+                            .iter()
+                            .any(|g| horizon_client::lan::playerdata::uuid_ints(g.uuid) == u)
+                    })
+                },
+                |u| self.mob_by_uuid(u),
+                |u| self.boat_by_uuid(u),
+            );
             let m = &mut self.mobs[i];
-            if let Some(h) = holder {
+            if let Some((h, player)) = holder {
                 if h == Holder::Player {
-                    m.extra.leash_player = Some(player_uuid);
+                    m.extra.leash_player = player;
                 }
                 m.extra.leash = Some(h);
                 m.extra.leash_pending = None;
@@ -222,30 +375,22 @@ impl Game<'_> {
     }
     /// The `leash` tag of a mob about to be saved.
     pub(super) fn write_leash(&mut self, tag: &mut Tag, index: usize) {
-        let Tag::Compound(map) = tag else { return };
-        map.remove(&"leash".into());
         let m = &self.mobs[index];
-        let holder = m.extra.leash;
-        let pending = m.extra.leash_pending;
-        let uuid = match (holder, pending) {
-            (Some(Holder::Player), _) => Some(self.level.player_uuid.unwrap_or([0, 0, 0, 1])),
-            (Some(Holder::Mob(id) | Holder::Boat(id)), _) => Some(self.mob_uuid(id)),
-            (_, Some(Pending::Uuid(u))) => Some(u),
-            _ => None,
-        };
-        let value = match (holder, pending) {
-            (Some(h), _) => leash::to_nbt(h, uuid),
-            (None, Some(Pending::Knot(p))) => leash::to_nbt(Holder::Knot(p), None),
-            (None, Some(Pending::Uuid(u))) => leash::to_nbt(Holder::Player, Some(u)),
-            _ => None,
-        };
-        if let Some(v) = value {
-            map.insert("leash".into(), v);
-        }
+        let (holder, pending, leash_player) =
+            (m.extra.leash, m.extra.leash_pending, m.extra.leash_player);
+        let level_player_uuid = self.level.player_uuid;
+        write_mob_leash_tag(
+            tag,
+            holder,
+            pending,
+            leash_player,
+            level_player_uuid,
+            |id| self.mob_uuid(id),
+        );
     }
     /// `Entity.interact`'s leash part for a mob. Returns whether it was used.
     pub(super) fn interact_leash(&mut self, index: usize, item: &str) -> bool {
-        let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
+        let sneaking = self.keys.held(Action::Sneak);
         let id = self.mobs[index].id;
         let at = self.mobs[index].center();
         if !self.mobs[index].alive() {
@@ -295,12 +440,12 @@ impl Game<'_> {
         }
         // Mob.checkAndHandleImportantInteractions: only the player the lead
         // is tied to unties it (`getLeashHolder() == player`).
-        if self.mobs[index].extra.leash == Some(Holder::Player)
-            && self.mobs[index]
-                .extra
-                .leash_player
-                .is_none_or(|p| p == self.acting_player_uuid())
-        {
+        let acting = self.acting_player_uuid();
+        if held_by_acting_player(
+            self.mobs[index].extra.leash,
+            self.mobs[index].extra.leash_player,
+            acting,
+        ) {
             let creative = self.creative;
             self.break_leash_used(id, !creative);
             self.lead_game_event("minecraft:entity_interact", at);
@@ -314,11 +459,18 @@ impl Game<'_> {
                     self.break_leash_used(id, true);
                 }
                 let holder = self.acting_player_uuid();
-                self.mobs[index].extra.leash = Some(Holder::Player);
-                self.mobs[index].extra.leash_player = Some(holder);
+                // LeashData.setLeashHolder: a holder still waiting in the save
+                // is forgotten, so it can neither take over nor drop a lead.
+                let extra = &mut self.mobs[index].extra;
+                extra.leash = Some(Holder::Player);
+                extra.leash_pending = None;
+                extra.leash_player = Some(holder);
                 self.lead_sound("tied", at);
-                // The lead is always used up.
-                if let Some(stack) = self.held_mut().as_mut() {
+                // `Player.interactOn` restores the count of a player with
+                // infinite materials (creative); others spend the lead.
+                if !self.creative
+                    && let Some(stack) = self.held_mut().as_mut()
+                {
                     stack.count -= 1;
                     if stack.count == 0 {
                         *self.held_mut() = None;
@@ -329,7 +481,7 @@ impl Game<'_> {
         }
         false
     }
-    /// `LeadItem.useOn` and `LeashFenceKnotEntity.interact` on a fence.
+    /// `LeadItem.useOn` on the fence the crosshair hits.
     pub(super) fn interact_knot(&mut self) -> bool {
         let Some(hit) = self.pick() else {
             return false;
@@ -347,7 +499,15 @@ impl Game<'_> {
         {
             return false;
         }
-        let knot_pos = hit.pos;
+        // `FenceBlock.useWithoutItem` / `LeadItem.useOn` only tie the player's own mobs
+        // (`LeadItem.bindPlayerMobs`). A client whose crosshair met the knot sends Interact with
+        // the knot's id instead. Taking a mob back here would undo a tie: the client sends the
+        // click once for each hand.
+        self.use_knot(hit.pos, false)
+    }
+    /// A click at the fence at `knot_pos`: `knot_hit` for `LeashFenceKnotEntity.interact`,
+    /// otherwise `LeadItem.useOn`. Returns whether it was used.
+    pub(super) fn use_knot(&mut self, knot_pos: [i32; 3], knot_hit: bool) -> bool {
         let knot = leash::knot_state(knot_pos).center;
         let center = glam::DVec3::new(knot.x, knot.y, knot.z);
         let at = [center.x, center.y, center.z];
@@ -355,29 +515,8 @@ impl Game<'_> {
             .filter(|&i| self.mobs[i].extra.leash == Some(Holder::Knot(knot_pos)))
             .collect();
         let existing_boats = self.boats_on(Holder::Knot(knot_pos));
-        // `LeashFenceKnotEntity.interact` runs only when the ray meets the knot
-        // before the post: the knot's box (`recalculateBoundingBox`, 0.375 wide,
-        // y + 0.375 to y + 0.875) is wider than the post, so a hit point on the
-        // post inside that box went through the knot first. Any other click on
-        // the fence is `FenceBlock.useWithoutItem` / `LeadItem.useOn`, which only
-        // ties the player's own mobs (`LeadItem.bindPlayerMobs`).
-        let knot_hit = !(existing.is_empty() && existing_boats.is_empty()) && {
-            let box_ = leash::knot_state(knot_pos);
-            let half = box_.width / 2.0 + 1.0e-6;
-            (hit.point[0] - box_.position.x).abs() <= half
-                && (hit.point[2] - box_.position.z).abs() <= half
-                && hit.point[1] >= box_.position.y - 1.0e-6
-                && hit.point[1] <= box_.position.y + box_.height + 1.0e-6
-                // The knot is an entity: a hit on it counts only within the
-                // entity interaction range (`filterHitResult`), shorter than
-                // the block range the fence was hit at.
-                && self.eye_position().is_some_and(|eye| {
-                    let d = [0, 1, 2].map(|i| hit.point[i] - eye[i]);
-                    d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= self.entity_reach * self.entity_reach
-                })
-        };
         let held_item = self.held().map(|s| s.item.to_string());
-        let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
+        let sneaking = self.keys.held(Action::Sneak);
         // Shears snip every lead on the knot.
         if knot_hit && held_item.as_deref() == Some("minecraft:shears") {
             for i in existing {
@@ -401,6 +540,14 @@ impl Game<'_> {
         {
             return false;
         }
+        // A knot is made when a lead is tied to a fence that has none.
+        if existing.is_empty()
+            && existing_boats.is_empty()
+            && (!in_hand.is_empty() || !boats_in_hand.is_empty())
+            && self.hanging_place_cancelled("minecraft:leash_knot", knot_pos)
+        {
+            return true;
+        }
         let mut attached = self.tie_player_boats(center, Holder::Knot(knot_pos));
         for j in in_hand {
             if self.can_attach_lead(j, center) {
@@ -421,6 +568,12 @@ impl Game<'_> {
             attached |= self.take_knot_boats(knot_pos);
         }
         if attached {
+            let event_at = if knot_hit {
+                [knot.x, knot.y - 0.25, knot.z]
+            } else {
+                knot_pos.map(|v| f64::from(v) + 0.5)
+            };
+            self.lead_game_event("minecraft:block_attach", event_at);
             self.lead_sound("tied", at);
             self.swing_arm();
         }
@@ -631,7 +784,6 @@ impl Game<'_> {
         p: &horizon_client::motion::PlayerMotion,
         alpha: f64,
     ) -> glam::DVec3 {
-        let pos = glam::DVec3::new(p.position.x, p.position.y, p.position.z);
         // Player.getRopeHoldPosition: `0.22 * (RIGHT ? -1 : 1)`.
         let hand_dir = if self.settings.main_hand_left {
             1.0
@@ -650,20 +802,81 @@ impl Game<'_> {
             let eye = glam::DVec3::new(feet.x, feet.y + f64::from(p.dimensions.eye_height), feet.z);
             return rot_y(v, -yaw) + eye;
         }
-        let yaw = f64::from(self.yaw.to_radians());
-        let crouching = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
+        // Player.getRopeHoldPosition: the view's pitch eased toward `xRotO`,
+        // the body's yaw between `yBodyRotO` and `yBodyRot`, from
+        // `getPosition(partialTick)`.
+        let (_, x_rot) = rope_hold_angles((self.yaw, self.pitch), self.rope_rot_old, alpha as f32);
+        let t = alpha as f32;
+        let y_rot = self.player_model.as_ref().map_or(
+            f64::from(self.yaw * (std::f32::consts::PI / 180.0)),
+            |m| {
+                f64::from(
+                    (m.previous_body_yaw + t * (m.body_yaw - m.previous_body_yaw))
+                        * (std::f32::consts::PI / 180.0),
+                )
+            },
+        );
+        let feet = self.previous_position.lerp(p.position, alpha);
+        let pos = glam::DVec3::new(feet.x, feet.y, feet.z);
+        let x_rotated = |v: glam::DVec3| {
+            // Vec3.xRot(-xRot).
+            let (s, c) = ((-x_rot).sin(), (-x_rot).cos());
+            glam::DVec3::new(v.x, v.y * c + v.z * s, v.z * c - v.y * s)
+        };
+        if p.fall_flying || p.auto_spin_attack_ticks > 0 {
+            // getViewVector(partialTick) against getDeltaMovement, flat.
+            let look = horizon_world::view_direction::view_vector(
+                self.rope_rot_old.1 + t * (self.pitch - self.rope_rot_old.1),
+                self.rope_rot_old.0 + t * (self.yaw - self.rope_rot_old.0),
+            );
+            let movement = p.velocity;
+            let speed_len = movement.x * movement.x + movement.z * movement.z;
+            let look_len = look.x * look.x + look.z * look.z;
+            let z_rot = if speed_len > 0.0 && look_len > 0.0 {
+                let dot =
+                    (movement.x * look.x + movement.z * look.z) / (speed_len * look_len).sqrt();
+                let sign = movement.x * look.z - movement.z * look.x;
+                // Math.signum: 0 for 0.
+                let signum = if sign > 0.0 {
+                    1.0
+                } else if sign < 0.0 {
+                    -1.0
+                } else {
+                    0.0
+                };
+                f64::from((signum * horizon_core::jmath::acos(dot)) as f32)
+            } else {
+                0.0
+            };
+            // Vec3(xOff, -0.11, 0.85).zRot(-zRot).xRot(-xRot).yRot(-yRot).
+            let v = glam::DVec3::new(0.22 * hand_dir, -0.11, 0.85);
+            let (s, c) = ((-z_rot).sin(), (-z_rot).cos());
+            let v = glam::DVec3::new(v.x * c + v.y * s, v.y * c - v.x * s, v.z);
+            return pos + rot_y(x_rotated(v), -y_rot);
+        }
+        // LivingEntity.isVisuallySwimming.
+        if p.pose == Pose::Swimming || (!p.fall_flying && p.pose == Pose::FallFlying) {
+            let v = glam::DVec3::new(0.22 * hand_dir, 0.2, -0.15);
+            return pos + rot_y(x_rotated(v), -y_rot);
+        }
+        let crouching = self.keys.held(Action::Sneak);
         let v = glam::DVec3::new(
             0.22 * hand_dir,
             f64::from(p.dimensions.height) - 1.0,
             if crouching { -0.2 } else { 0.07 },
         );
-        pos + rot_y(v, -yaw)
+        pos + rot_y(v, -y_rot)
     }
 }
 
 #[cfg(test)]
 mod rope_hold_tests {
-    use super::rope_hold_angles;
+    use super::{
+        Holder, Pending, Tag, held_by_acting_player, leash, resolve_pending_leash,
+        rope_hold_angles, write_mob_leash_tag,
+    };
+    use horizon_client::lan::playerdata::uuid_ints;
+    use horizon_protocol::crypto::offline_uuid;
 
     #[test]
     fn rope_hold_angles_lerp_by_half_the_partial_tick() {
@@ -673,5 +886,194 @@ mod rope_hold_tests {
         assert!((x - 10.0_f64.to_radians()).abs() < 1e-6);
         let (y, _) = rope_hold_angles((90.0, 20.0), (50.0, 0.0), 0.0);
         assert!((y - 90.0_f64.to_radians()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn player_leash_survives_save_and_reopen_for_owner_and_guest() {
+        // Integrated servers initialize `level.player_uuid` to `offline_uuid("Player")`,
+        // while the single-player owner joins `hub.guests` under their actual profile UUID.
+        let level_player_uuid = uuid_ints(offline_uuid("Player"));
+        let owner_uuid = uuid_ints(offline_uuid("Player46606"));
+        let guest_uuid = uuid_ints(offline_uuid("Alex"));
+
+        for acting in [owner_uuid, guest_uuid] {
+            let mut tag = Tag::Compound(Default::default());
+            write_mob_leash_tag(
+                &mut tag,
+                Some(Holder::Player),
+                None,
+                Some(acting),
+                Some(level_player_uuid),
+                |_| [0; 4],
+            );
+            let pending = leash::pending_from_nbt(tag.get("leash")).expect("saved leash tag");
+            assert_eq!(pending, Pending::Uuid(acting));
+
+            let (holder, restored_player) = resolve_pending_leash(
+                pending,
+                level_player_uuid,
+                Some(owner_uuid),
+                |u| u == owner_uuid || u == guest_uuid,
+                |_| None,
+                |_| None,
+            )
+            .expect("restored player leash");
+            assert_eq!(holder, Holder::Player);
+            assert_eq!(restored_player, Some(acting));
+            assert!(held_by_acting_player(Some(holder), restored_player, acting));
+            let other = if acting == owner_uuid {
+                guest_uuid
+            } else {
+                owner_uuid
+            };
+            assert!(!held_by_acting_player(Some(holder), restored_player, other));
+        }
+    }
+
+    #[test]
+    fn legacy_singleplayer_uuid_leash_restores_to_integrated_owner() {
+        let level_player_uuid = uuid_ints(offline_uuid("Player"));
+        let owner_uuid = uuid_ints(offline_uuid("Player46606"));
+
+        let (holder, restored_player) = resolve_pending_leash(
+            Pending::Uuid(level_player_uuid),
+            level_player_uuid,
+            Some(owner_uuid),
+            |_| false,
+            |_| None,
+            |_| None,
+        )
+        .expect("restored legacy singleplayer leash");
+        assert_eq!(holder, Holder::Player);
+        assert_eq!(restored_player, Some(owner_uuid));
+        assert!(held_by_acting_player(
+            Some(holder),
+            restored_player,
+            owner_uuid
+        ));
+    }
+
+    #[test]
+    fn an_absent_players_uuid_is_not_reassigned_to_the_owner() {
+        let owner = uuid_ints(offline_uuid("LeashOwner"));
+        let absent = uuid_ints(offline_uuid("Alex"));
+        // Even an imported world's player UUID is not evidence of ownership.
+        for level in [uuid_ints(offline_uuid("Player")), absent] {
+            assert!(
+                resolve_pending_leash(
+                    Pending::Uuid(absent),
+                    level,
+                    Some(owner),
+                    |_| false,
+                    |_| None,
+                    |_| None,
+                )
+                .is_none()
+            );
+        }
+        // An entity with that UUID still resolves as an entity, not the owner.
+        assert_eq!(
+            resolve_pending_leash(
+                Pending::Uuid(absent),
+                absent,
+                Some(owner),
+                |_| false,
+                |u| (u == absent).then_some(17),
+                |_| None,
+            ),
+            Some((Holder::Mob(17), None))
+        );
+    }
+
+    #[test]
+    fn legacy_player_uuid_without_an_integrated_owner_stays_pending() {
+        let legacy = uuid_ints(offline_uuid("Player"));
+        assert!(
+            resolve_pending_leash(
+                Pending::Uuid(legacy),
+                legacy,
+                None,
+                |_| false,
+                |_| None,
+                |_| None,
+            )
+            .is_none()
+        );
+    }
+}
+
+#[cfg(test)]
+mod attach_tests {
+    /// `Entity.interact` with a lead: `setLeashedTo` → `LeashData.setLeashHolder`
+    /// forgets the holder a save named. A mob whose saved holder never loaded
+    /// keeps the player's lead past the 100-tick deadline, and no second lead
+    /// falls from the forgotten one.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_player_lead_replaces_a_saved_holder_that_never_loaded() {
+        use crate::game::{Audio, Options, Progress, Settings, load_resources};
+        use horizon_client::mobs::{
+            Mob,
+            leash::{Holder, Pending},
+        };
+        use horizon_core::geometry::Vec3;
+
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let res: &'static _ = Box::leak(Box::new(loaded.resources));
+        let mut game = super::Game::new(
+            res,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.creative = false;
+        game.player = Some(
+            horizon_client::motion::PlayerMotion::new(game.motion, Vec3::new(0.5, 64.0, 0.5))
+                .unwrap(),
+        );
+        let kind = game
+            .res
+            .mob_types()
+            .get("minecraft:cow")
+            .expect("cow")
+            .clone();
+        let mut cow = Mob::new(1, kind, Vec3::new(1.5, 64.0, 0.5), 0.0);
+        cow.extra.leash_pending = Some(Pending::Uuid([9, 9, 9, 9]));
+        game.mobs.push(cow);
+        game.inventory[game.selected] = Some(super::ItemStack::new("minecraft:lead", 1));
+
+        assert!(game.interact_leash(0, "minecraft:lead"));
+        assert_eq!(game.mobs[0].extra.leash, Some(Holder::Player));
+        assert!(game.inventory[game.selected].is_none(), "the lead is spent");
+        game.mobs[0].age = 101;
+        game.tick_leads();
+        assert_eq!(game.mobs[0].extra.leash, Some(Holder::Player));
+        assert!(
+            !game
+                .dropped
+                .iter()
+                .any(|d| &*d.stack.item == "minecraft:lead"),
+            "the forgotten holder drops no second lead"
+        );
     }
 }

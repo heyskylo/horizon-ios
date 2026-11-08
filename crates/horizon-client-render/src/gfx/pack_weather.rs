@@ -44,6 +44,9 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
             op: ">",
             reference: 0.1,
         }),
+        item_id_declared: false,
+        far_depth: false,
+        paged_maps: false,
     }
 }
 
@@ -162,7 +165,7 @@ impl PackWeather {
 
 /// A texture holding the atlas's texels under `rect` (normalised x, y, width, height), as
 /// Horizon's weather shader reads them (`weather_texel`).
-fn copy_sprite(
+pub(super) fn copy_sprite(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
     atlas: &wgpu::Texture,

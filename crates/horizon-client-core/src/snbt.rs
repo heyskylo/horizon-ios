@@ -8,11 +8,20 @@ pub use horizon_world::snbt_text::{java_double, java_float, quote_and_escape, to
 
 // ---- the coloured form -----------------------------------------------------
 
+/// Writer provenance for a live moving-piston command read, or its selected subtree.
+#[derive(Clone, Copy)]
+pub enum PistonPart {
+    Entity,
+    State,
+    Properties,
+}
+
 struct Pretty {
     indentation: String,
     result: Text,
     indent_depth: usize,
     depth: usize,
+    piston: Option<PistonPart>,
 }
 fn is_numeric(t: &Tag) -> bool {
     matches!(
@@ -58,6 +67,10 @@ impl Pretty {
         self.lit("]", None);
     }
     fn sub(&mut self, tag: &Tag, indent: bool) {
+        self.sub_with(tag, indent, None);
+    }
+    fn sub_with(&mut self, tag: &Tag, indent: bool, piston: Option<PistonPart>) {
+        let previous = std::mem::replace(&mut self.piston, piston);
         if indent {
             self.indent_depth += 1;
         }
@@ -67,6 +80,7 @@ impl Pretty {
             self.indent_depth -= 1;
         }
         self.depth -= 1;
+        self.piston = previous;
     }
     fn visit(&mut self, tag: &Tag) {
         match tag {
@@ -157,7 +171,11 @@ impl Pretty {
                 "\n"
             };
             let n = c.len();
-            for (i, (k, v)) in java_hash_order(c).into_iter().enumerate() {
+            let entries = match self.piston {
+                Some(part) => piston_hash_order(c, part),
+                None => java_hash_order(c),
+            };
+            for (i, (k, v)) in entries.into_iter().enumerate() {
                 self.lit(&entry, None);
                 let key = string_of(k);
                 if !key.is_empty()
@@ -171,7 +189,12 @@ impl Pretty {
                 }
                 self.lit(":", None);
                 self.lit(" ", None);
-                self.sub(v, true);
+                let child = match (self.piston, key.as_str()) {
+                    (Some(PistonPart::Entity), "blockState") => Some(PistonPart::State),
+                    (Some(PistonPart::State), "properties") => Some(PistonPart::Properties),
+                    _ => None,
+                };
+                self.sub_with(v, true, child);
                 if i + 1 < n {
                     self.lit(",", None);
                     self.lit(spacing, None);
@@ -186,22 +209,61 @@ impl Pretty {
         }
     }
 }
+fn hash_bucket(len: usize, key: &horizon_world::nbt::JavaString) -> usize {
+    let mut capacity = 16usize;
+    while len > capacity * 3 / 4 {
+        capacity *= 2;
+    }
+    let h = string_of(key)
+        .encode_utf16()
+        .fold(0u32, |h, ch| h.wrapping_mul(31).wrapping_add(u32::from(ch)));
+    ((h ^ (h >> 16)) as usize) & (capacity - 1)
+}
+fn piston_hash_order(
+    c: &horizon_world::nbt::Compound,
+    part: PistonPart,
+) -> Vec<(&horizon_world::nbt::JavaString, &Tag)> {
+    let mut entries: Vec<_> = c.iter().collect();
+    match part {
+        PistonPart::Entity => {
+            // saveAdditional, then the base's components and saveMetadata.
+            let fields = [
+                "blockState",
+                "facing",
+                "progress",
+                "extending",
+                "source",
+                "components",
+                "id",
+                "x",
+                "y",
+                "z",
+            ];
+            entries.sort_by_key(|(k, _)| {
+                (
+                    hash_bucket(c.len(), k),
+                    fields
+                        .iter()
+                        .position(|s| *s == string_of(k))
+                        .unwrap_or(fields.len()),
+                )
+            });
+        }
+        PistonPart::Properties => {
+            // StateDefinition builds property codecs in sorted-name order.
+            // DFU's nested map-pair encoder writes the second codec first.
+            entries.sort_by_key(|(k, _)| (hash_bucket(c.len(), k), std::cmp::Reverse(*k)));
+        }
+        PistonPart::State => return java_hash_order(c),
+    }
+    entries
+}
 /// The iteration order of the `HashMap<String, Tag>` a `CompoundTag` holds,
 /// for a map that grew to its size by insertion: buckets by
 /// `HashMap.hash(String.hashCode())`, keys sharing a bucket in key order.
 pub fn java_hash_order(
     c: &horizon_world::nbt::Compound,
 ) -> Vec<(&horizon_world::nbt::JavaString, &Tag)> {
-    let mut capacity = 16usize;
-    while c.len() > capacity * 3 / 4 {
-        capacity *= 2;
-    }
-    let bucket = |k: &horizon_world::nbt::JavaString| {
-        let h = string_of(k)
-            .encode_utf16()
-            .fold(0u32, |h, ch| h.wrapping_mul(31).wrapping_add(u32::from(ch)));
-        ((h ^ (h >> 16)) as usize) & (capacity - 1)
-    };
     // Keys sharing a bucket iterate in insertion order: the order vanilla's
     // savers write them, as far as it is known here.
     const WRITE_ORDER: &[&str] = &[
@@ -268,7 +330,7 @@ pub fn java_hash_order(
             .unwrap_or(WRITE_ORDER.len())
     };
     let mut entries: Vec<_> = c.iter().collect();
-    entries.sort_by_key(|(k, _)| (bucket(k), rank(k)));
+    entries.sort_by_key(|(k, _)| (hash_bucket(c.len(), k), rank(k)));
     entries
 }
 /// `NbtUtils.toPrettyComponent`: the coloured, unindented form.
@@ -281,6 +343,19 @@ pub fn pretty_indented(tag: &Tag, indentation: &str) -> Text {
         result: Text::empty(),
         indent_depth: 0,
         depth: 0,
+        piston: None,
+    };
+    p.visit(tag);
+    p.result
+}
+/// Command-only writer order; ordinary pretty printing keeps its existing policy.
+pub fn pretty_piston(tag: &Tag, part: PistonPart) -> Text {
+    let mut p = Pretty {
+        indentation: String::new(),
+        result: Text::empty(),
+        indent_depth: 0,
+        depth: 0,
+        piston: Some(part),
     };
     p.visit(tag);
     p.result
@@ -293,6 +368,33 @@ mod tests {
 
     fn rt(s: &str) -> String {
         to_snbt(&parse_snbt(s).unwrap().0)
+    }
+    #[test]
+    fn live_piston_writer_order_does_not_change_default_pretty() {
+        let tag = parse_snbt(
+            r#"{id:"minecraft:piston",blockState:{id:"minecraft:piston_head",properties:{facing:"east",short:"false",type:"normal"}},components:{},x:1,y:100,z:0,facing:5b,progress:0.0f,source:1b,extending:1b}"#,
+        ).unwrap().0;
+        let ordinary = r#"{blockState: {id: "minecraft:piston_head", properties: {facing: "east", short: "false", type: "normal"}}, components: {}, x: 1, facing: 5b, progress: 0.0f, y: 100, z: 0, id: "minecraft:piston", source: 1b, extending: 1b}"#;
+        assert_eq!(pretty(&tag).plain(), ordinary);
+        assert_eq!(
+            pretty_piston(&tag, PistonPart::Entity).plain(),
+            r#"{blockState: {id: "minecraft:piston_head", properties: {short: "false", facing: "east", type: "normal"}}, components: {}, x: 1, facing: 5b, progress: 0.0f, y: 100, z: 0, source: 1b, id: "minecraft:piston", extending: 1b}"#,
+        );
+        let state = tag.get("blockState").unwrap();
+        assert_eq!(
+            pretty_piston(state, PistonPart::State).plain(),
+            r#"{id: "minecraft:piston_head", properties: {short: "false", facing: "east", type: "normal"}}"#,
+        );
+        let props = state.get("properties").unwrap();
+        assert_eq!(
+            pretty_piston(props, PistonPart::Properties).plain(),
+            r#"{short: "false", facing: "east", type: "normal"}"#,
+        );
+        assert_eq!(
+            pretty(props).plain(),
+            r#"{facing: "east", short: "false", type: "normal"}"#
+        );
+        assert_eq!(pretty(&tag).plain(), ordinary);
     }
     #[test]
     fn compact_form_matches_vanilla() {

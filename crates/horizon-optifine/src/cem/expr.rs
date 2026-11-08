@@ -620,7 +620,7 @@ impl Emit {
             }
             Node::If(args) => {
                 let mut ends = Vec::new();
-                for pair in args.chunks_exact(2) {
+                for pair in args.as_chunks::<2>().0 {
                     self.node(&pair[0]);
                     let next = self.here();
                     self.push(Op::JumpIfZero(0), -1);

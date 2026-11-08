@@ -3,22 +3,13 @@
 //! snowballs, eggs, ender pearls, gravity 0.03) and fireballs
 //! (`AbstractHurtingProjectile`: no gravity, 0.1 acceleration, 0.95 inertia).
 //! The game applies the effects of a hit.
+use crate::entity_rules::EntityRules;
 use crate::mobs::Who;
 use horizon_core::{
-    geometry::{Aabb, Vec3},
+    geometry::{Aabb, Direction, Vec3},
+    position::BlockPos,
     random::RandomSource,
 };
-
-/// A new projectile entity's own random: vanilla seeds every entity's random
-/// unpredictably, and a projectile's spread (and an arrow's base damage) come
-/// from it, never from the shooter's random.
-pub fn own_random(shooter: &crate::mobs::Mob) -> horizon_core::random::LegacyRandom {
-    horizon_core::random::LegacyRandom::new(
-        i64::from(shooter.id).wrapping_mul(0x9E37_79B9)
-            ^ i64::from(shooter.age)
-            ^ shooter.position.x.to_bits() as i64,
-    )
-}
 
 /// a content mod's thrown item projectile, a copy of `Snowball` that deals
 /// `damage` and flies as its `item`.
@@ -92,9 +83,10 @@ pub enum ProjectileKind {
     /// flight that bursts on whatever it meets.
     WindCharge,
     BreezeWindCharge,
-    /// `ShulkerBullet`: homing on `target` in axis-aligned steps.
+    /// `ShulkerBullet`: homing on `target` in axis-aligned steps; one with
+    /// no target (a summoned one) falls like any projectile.
     ShulkerBullet {
-        target: Who,
+        target: Option<Who>,
         /// The current step direction (3D data value), if any.
         dir: Option<u8>,
         steps: i32,
@@ -105,20 +97,37 @@ pub enum ProjectileKind {
     WitherSkull {
         dangerous: bool,
     },
-    /// Splash potion thrown by witches: effect id, duration.
-    Potion {
-        effect: &'static str,
-        ticks: i32,
-        amplifier: i32,
-        color: u32,
-    },
+    /// `ThrownSplashPotion` or `ThrownLingeringPotion`: the potion item it
+    /// flies as (`ThrowableItemProjectile.getItem`). What it splashes is that
+    /// stack's `potion_contents`, so a witch's potion and a summoned one are
+    /// the same thing; its entity type is the stack's item.
+    ///
+    /// The `bool` is whether its entity type is `ThrownLingeringPotion`: the
+    /// type is the entity's own and `/summon` can pair either with any `Item`,
+    /// so it is kept next to the stack (a thrown potion's follows its item).
+    Potion(Box<crate::items::ItemStack>, bool),
+    /// `ThrownExperienceBottle`: its own entity type, gravity 0.07.
+    ExperienceBottle,
     /// a content mod's type.
     Thrown(&'static ThrownType),
 }
 impl ProjectileKind {
+    /// A thrown potion flying as `stack`: a lingering item makes the lingering
+    /// entity type, any other the splash one.
+    pub fn potion(stack: crate::items::ItemStack) -> Self {
+        let lingering = &*stack.item == "minecraft:lingering_potion";
+        Self::Potion(Box::new(stack), lingering)
+    }
     /// Wind charges take no push from an explosion (vanilla leaves their motion at 0).
     pub fn ignores_blast(&self) -> bool {
         matches!(self, Self::WindCharge | Self::BreezeWindCharge)
+    }
+    /// Whether the kind is a `Fireball` proper (`LargeFireball`,
+    /// `SmallFireball`): the projectiles that carry an `Item`
+    /// (`Fireball.DATA_ITEM_STACK`) and are drawn as it. A `DragonFireball`
+    /// and a `WitherSkull` extend the hurting projectile only.
+    pub fn is_item_fireball(&self) -> bool {
+        matches!(self, Self::SmallFireball | Self::LargeFireball { .. })
     }
     /// `EntityType.Builder.eyeHeight`: 0.13 for arrows and tridents, 0 for
     /// wind charges, else the default 0.85 of the box height.
@@ -137,7 +146,8 @@ impl ProjectileKind {
             | Self::Egg
             | Self::EnderPearl
             | Self::LlamaSpit
-            | Self::Potion { .. }
+            | Self::Potion(..)
+            | Self::ExperienceBottle
             | Self::Thrown(_) => 0.25,
             Self::SmallFireball
             | Self::WindCharge
@@ -162,13 +172,26 @@ impl ProjectileKind {
             Self::BreezeWindCharge => "minecraft:breeze_wind_charge",
             Self::ShulkerBullet { .. } => "minecraft:shulker_bullet",
             Self::WitherSkull { .. } => "minecraft:wither_skull",
-            Self::Potion { .. } => "minecraft:splash_potion",
+            // `ThrownSplashPotion`/`ThrownLingeringPotion`: the item names it.
+            Self::Potion(_, true) => "minecraft:lingering_potion",
+            Self::Potion(_, false) => "minecraft:splash_potion",
+            Self::ExperienceBottle => "minecraft:experience_bottle",
             Self::Thrown(t) => t.id,
         }
     }
 }
+/// `ThrownItemRenderer`'s sprite for a thrown potion.
+fn potion_sprite(item: &str) -> &'static str {
+    if item == "minecraft:lingering_potion" {
+        "item/lingering_potion"
+    } else {
+        "item/splash_potion"
+    }
+}
 #[derive(Clone, Debug, PartialEq)]
 pub struct Projectile {
+    /// When it joined its list ([`crate::join_seq`]); set by the list, not by the spawn site.
+    pub join: crate::join_seq::JoinSeq,
     /// The entity id a server tracks it by (0 until it is tracked).
     pub id: u32,
     pub kind: ProjectileKind,
@@ -192,6 +215,9 @@ pub struct Projectile {
     pub stuck: bool,
     /// Whether the projectile has left its owner's box (Projectile.leftOwner).
     pub left_owner: bool,
+    /// Non-arrow Projectile.hasBeenShot, independent of entity age.
+    pub has_been_shot: bool,
+    shoot_event: Option<Vec3>,
     /// The shooter's bow enchantments (Power, Punch, Flame, Piercing).
     pub bonus: crate::mobs::gear::ArrowBonus,
     /// Arrows' `AbstractArrow` state (ticked by `arrows::tick`).
@@ -207,6 +233,21 @@ pub struct Projectile {
     pub touching_water: bool,
     /// `Entity.noGravity` (`NoGravity` in its save): `getGravity` is 0.
     pub no_gravity: bool,
+    /// `Entity.remainingFireTicks`: a thrown projectile that flew through a
+    /// fire block burns for 160 ticks, with the flame drawn over it.
+    pub fire_ticks: i32,
+    /// `Fireball.DATA_ITEM_STACK`: the item a fireball is drawn as, a fire
+    /// charge until [`Projectile::set_item`] gives it another. None for the
+    /// kinds that are no `Fireball` (a wither skull, a wind charge).
+    pub item: Option<crate::items::ItemStack>,
+}
+/// `ThrownEnderpearl.isAllowedToTeleportOwner(owner, level)` for an owner in
+/// the pearl's own dimension: vanilla reaches
+/// `LivingEntity.isAlive() && !LivingEntity.isSleeping()` (bytecode 26-45) and
+/// returns false otherwise, so a pearl whose owner died or went to bed is
+/// discarded where it lands: no teleport, no 5 damage, no endermite roll.
+pub fn owner_can_take_pearl(alive: bool, sleeping: bool) -> bool {
+    alive && !sleeping
 }
 /// What a projectile struck this tick.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -236,10 +277,55 @@ pub trait ProjectileWorld {
     fn empty(&self, _p: [i32; 3]) -> bool {
         true
     }
-    /// `loadedAndEntityCanStandOn`: a sturdy top face.
-    fn solid(&self, _p: [i32; 3]) -> bool {
+    /// `Level.loadedAndEntityCanStandOn(p, projectile)` with the projectile's
+    /// feet at `entity_y`: the top face of the block's collision shape is
+    /// full (`Block.isFaceFull`), as on a top slab, not only a full cube.
+    fn can_stand_on(&self, _p: [i32; 3], _entity_y: f64) -> bool {
         false
     }
+    /// The block at `p` is a `BaseFireBlock` (fire, soul fire) whose
+    /// `entityInside` ignites an entity in it for 160 ticks
+    /// (`BaseFireBlock.fireIgnite`).
+    fn ignites(&self, _p: [i32; 3]) -> bool {
+        false
+    }
+    /// `BubbleColumnBlock.entityInside`'s view of the block at `p`: a bubble
+    /// column's `drag`, and whether nothing is above it (its surface, where
+    /// it throws harder); None for any other block.
+    fn bubble_column(&self, _p: [i32; 3]) -> Option<(bool, bool)> {
+        None
+    }
+}
+/// `CollisionGetter.clipIncludingBorder` over a block clip's result: a ray
+/// from inside the world border whose hit (or end, on a miss) lies outside it
+/// stops on the border instead, at `WorldBorder.clampVec3ToBound` of that
+/// point, facing `Direction.getApproximateNearest` of the travel. `bounds` is
+/// the border's [minX, minZ, maxX, maxZ].
+pub fn clip_including_border(
+    hit: Option<(Vec3, [i32; 3], [i32; 3])>,
+    from: Vec3,
+    to: Vec3,
+    bounds: [f64; 4],
+) -> Option<(Vec3, [i32; 3], [i32; 3])> {
+    let [min_x, min_z, max_x, max_z] = bounds;
+    // WorldBorder.isWithinBounds(x, z): the far edges are outside.
+    let within = |p: Vec3| p.x >= min_x && p.x < max_x && p.z >= min_z && p.z < max_z;
+    let end = hit.map_or(to, |h| h.0);
+    if !within(from) || within(end) {
+        return hit;
+    }
+    // Mth.clamp, up to 1.0E-5F inside the far edges.
+    let clamp = |v: f64, low: f64, high: f64| if v < low { low } else { v.min(high) };
+    let inset = f64::from(1.0e-5_f32);
+    let at = Vec3::new(
+        clamp(end.x, min_x, max_x - inset),
+        end.y,
+        clamp(end.z, min_z, max_z - inset),
+    );
+    let face =
+        Direction::approximate_nearest(Vec3::new(end.x - from.x, end.y - from.y, end.z - from.z));
+    let pos = BlockPos::containing(at);
+    Some((at, [pos.x, pos.y, pos.z], face.normal()))
 }
 /// Direction steps by 3D data value: down, up, north, south, west, east.
 pub const STEPS: [[i32; 3]; 6] = [
@@ -257,6 +343,38 @@ fn axis_of(d: u8) -> u8 {
         _ => 0,
     }
 }
+impl crate::entity_rules::EntityRules for Projectile {
+    fn is_no_gravity(&self) -> bool {
+        self.no_gravity
+    }
+    /// Each projectile class's `getDefaultGravity`.
+    fn get_default_gravity(&self) -> f64 {
+        match &self.kind {
+            ProjectileKind::Arrow { .. } | ProjectileKind::Trident => 0.05,
+            ProjectileKind::SmallFireball
+            | ProjectileKind::LargeFireball { .. }
+            | ProjectileKind::WitherSkull { .. } => 0.0,
+            ProjectileKind::LlamaSpit => 0.06,
+            // `ThrownExperienceBottle.getDefaultGravity` is 0.07.
+            ProjectileKind::ExperienceBottle => 0.07,
+            ProjectileKind::Potion { .. } => 0.05,
+            ProjectileKind::ShulkerBullet { .. } => 0.04,
+            _ => 0.03,
+        }
+    }
+}
+/// `AbstractHurtingProjectile.applyInertia` / `ThrowableProjectile.applyInertia`:
+/// four bubble particles at `position - movement * 0.25`, moving with `movement`.
+pub fn water_bubble_at(position: [f64; 3], movement: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+    (
+        [
+            position[0] - movement[0] * 0.25,
+            position[1] - movement[1] * 0.25,
+            position[2] - movement[2] * 0.25,
+        ],
+        movement,
+    )
+}
 impl Projectile {
     /// `Entity.getBoundingBox`: its type's square box standing on its position.
     pub fn bounds(&self) -> Aabb {
@@ -269,6 +387,10 @@ impl Projectile {
     }
     pub fn new(kind: ProjectileKind, position: Vec3, owner: Option<Who>) -> Self {
         let kind_is_arrow = matches!(kind, ProjectileKind::Arrow { .. } | ProjectileKind::Trident);
+        // `Fireball.defineSynchedData`: DATA_ITEM_STACK starts as a fire charge.
+        let item = kind
+            .is_item_fireball()
+            .then(|| crate::items::ItemStack::new("minecraft:fire_charge", 1));
         // `AbstractWindCharge`'s constructors set it to 0.
         let acceleration = if matches!(
             kind,
@@ -279,6 +401,7 @@ impl Projectile {
             0.1
         };
         Self {
+            join: Default::default(),
             id: 0,
             kind,
             owner,
@@ -294,17 +417,19 @@ impl Projectile {
             age: 0,
             stuck: false,
             left_owner: false,
+            has_been_shot: false,
+            shoot_event: None,
             bonus: Default::default(),
             acceleration,
             needs_sync: false,
             touching_water: false,
             no_gravity: false,
+            fire_ticks: 0,
+            item,
             arrow: kind_is_arrow.then(|| {
-                // Entity.random: seeded unpredictably, the position stands in.
+                // The arrow's own random (`Entity.random`).
                 Box::new(crate::arrows::ArrowState::new(
-                    horizon_core::random::LegacyRandom::new(
-                        position.x.to_bits() as i64 ^ position.z.to_bits().rotate_left(17) as i64,
-                    ),
+                    crate::random_source::entity(),
                 ))
             }),
         }
@@ -387,6 +512,70 @@ impl Projectile {
     pub fn is_arrow(&self) -> bool {
         matches!(self.kind, ProjectileKind::Arrow { .. })
     }
+    /// A `ThrowableProjectile`: snowballs, eggs, ender pearls, potions, a
+    /// content mod's thrown item and a llama's spit. They are the projectiles
+    /// that apply the effects of the blocks they fly through
+    /// (`ThrowableProjectile.tick` calls `applyEffectsFromBlocks`), which an
+    /// `AbstractHurtingProjectile` — a fireball, a wind charge, a skull — does
+    /// not.
+    pub fn is_thrown(&self) -> bool {
+        matches!(
+            self.kind,
+            ProjectileKind::Snowball
+                | ProjectileKind::Egg
+                | ProjectileKind::EnderPearl
+                | ProjectileKind::LlamaSpit
+                | ProjectileKind::Potion(..)
+                | ProjectileKind::Thrown(_)
+        )
+    }
+    /// `Entity.isOnFire`.
+    pub fn on_fire(&self) -> bool {
+        self.fire_ticks > 0
+    }
+    /// `Entity.igniteForTicks`: the longer fire wins.
+    pub fn ignite_for_ticks(&mut self, ticks: i32) {
+        if self.fire_ticks < ticks {
+            self.fire_ticks = ticks;
+        }
+    }
+    /// `Entity.clearFire`: it counts from below zero, which `on_fire` reads as out.
+    pub fn clear_fire(&mut self) {
+        self.fire_ticks = self.fire_ticks.min(0);
+    }
+    /// `ThrowableProjectile.tick`'s `applyEffectsFromBlocks` and the fire phase
+    /// of `Entity.baseTick`: a fire block the box is in ignites the projectile
+    /// for 160 ticks (`BaseFireBlock.fireIgnite`), water puts it out, and one
+    /// tick is counted down every tick.
+    fn fire_tick(&mut self, w: &impl ProjectileWorld) {
+        if !self.is_thrown() {
+            return;
+        }
+        if self.in_fire(w) {
+            self.ignite_for_ticks(160);
+        }
+        if w.in_water(self.bounds()) {
+            self.clear_fire();
+        } else if self.fire_ticks > 0 {
+            self.fire_ticks -= 1;
+        }
+    }
+    /// `Entity.checkInsideBlocks`: the blocks under the box, deflated by 1e-7
+    /// so a box sitting exactly on a block boundary is not inside it.
+    fn in_fire(&self, w: &impl ProjectileWorld) -> bool {
+        let b = self.bounds().deflate(Vec3::new(1.0e-7, 1.0e-7, 1.0e-7));
+        let (lo, hi) = (b.min_position(), b.max_position());
+        for x in (lo.x).floor() as i32..=(hi.x).floor() as i32 {
+            for y in (lo.y).floor() as i32..=(hi.y).floor() as i32 {
+                for z in (lo.z).floor() as i32..=(hi.z).floor() as i32 {
+                    if w.ignites([x, y, z]) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
     /// Whether it is a `SpectralArrow` (its own entity type): a spectral
     /// arrow's pickup item, or the glowing effect a dispenser shoots with.
     pub fn is_spectral_arrow(&self) -> bool {
@@ -397,7 +586,7 @@ impl Projectile {
             || self
                 .arrow
                 .as_ref()
-                .is_some_and(|a| &*a.pickup_item.item == "minecraft:spectral_arrow")
+                .is_some_and(|a| a.spectral || &*a.pickup_item.item == "minecraft:spectral_arrow")
     }
     /// `Arrow.ID_EFFECT_COLOR` (`updateColor`): the opaque colour of the
     /// potion the arrow carries, from its tipped pickup item or the effect a
@@ -427,20 +616,62 @@ impl Projectile {
                 | ProjectileKind::WitherSkull { .. }
         )
     }
-    /// `Entity.getGravity`: none with `NoGravity`, else the kind's default.
-    fn gravity(&self) -> f64 {
-        if self.no_gravity {
-            return 0.0;
+    /// `EntityRenderer.getBlockLightLevel` for a projectile: the renderer's
+    /// own override wins (`ShulkerBulletRenderer` returns 15, as the fireball
+    /// renderers do), and the base class draws anything `isOnFire` at 15
+    /// whatever the level says. `None` keeps the level's block light; the sky
+    /// light is never overridden.
+    pub fn block_light_override(&self) -> Option<u8> {
+        (self.is_fireball()
+            || self.on_fire()
+            || matches!(self.kind, ProjectileKind::ShulkerBullet { .. }))
+        .then_some(15)
+    }
+    /// `EntityRenderer.getPackedLightCoords` lights an entity from the block
+    /// its `getLightProbePosition` is in, which is `getEyePosition`: the eye
+    /// height of its box over `getPosition(partialTick)`, so the frame's
+    /// position rather than this tick's, and not the cell its feet rest in.
+    pub fn light_probe_y(&self, partial: f64) -> f64 {
+        self.previous.y + (self.position.y - self.previous.y) * partial + self.kind.eye_height()
+    }
+    pub fn water_bubbles(&self) -> Option<([f64; 3], [f64; 3])> {
+        if !self.touching_water {
+            return None;
         }
-        match self.kind {
-            ProjectileKind::Arrow { .. } | ProjectileKind::Trident => 0.05,
+        // ThrowableProjectile.tick applies gravity, then applyInertia reads
+        // that movement. AbstractHurtingProjectile.applyInertia reads the
+        // movement it already has: fireballs, wither skulls and wind charges
+        // have no gravity step before the bubbles.
+        let hurting = matches!(
+            self.kind,
             ProjectileKind::SmallFireball
-            | ProjectileKind::LargeFireball { .. }
-            | ProjectileKind::WitherSkull { .. } => 0.0,
-            ProjectileKind::LlamaSpit => 0.06,
-            ProjectileKind::Potion { .. } => 0.05,
-            _ => 0.03,
-        }
+                | ProjectileKind::LargeFireball { .. }
+                | ProjectileKind::WitherSkull { .. }
+                | ProjectileKind::WindCharge
+                | ProjectileKind::BreezeWindCharge
+        );
+        let throwable = matches!(
+            self.kind,
+            ProjectileKind::Snowball
+                | ProjectileKind::Egg
+                | ProjectileKind::EnderPearl
+                | ProjectileKind::Potion(..)
+                | ProjectileKind::ExperienceBottle
+                | ProjectileKind::Thrown(_)
+        );
+        let movement = if hurting {
+            [self.velocity.x, self.velocity.y, self.velocity.z]
+        } else if throwable {
+            [
+                self.velocity.x,
+                self.velocity.y - self.get_gravity(),
+                self.velocity.z,
+            ]
+        } else {
+            return None;
+        };
+        let at = [self.position.x, self.position.y, self.position.z];
+        Some(water_bubble_at(at, movement))
     }
     /// Projectile.shoot: normalized direction plus triangular noise, times speed.
     pub fn shoot(
@@ -511,6 +742,21 @@ impl Projectile {
         p.update_rotation();
         p
     }
+    /// `Fireball.setItem`: the item a fireball is drawn as. An empty stack
+    /// puts the default fire charge back, anything else is kept as a single
+    /// one (`copyWithCount(1)`); a kind that is no `Fireball` has no item.
+    pub fn set_item(&mut self, stack: crate::items::ItemStack) {
+        if !self.kind.is_item_fireball() {
+            return;
+        }
+        let mut stack = if stack.count == 0 || &*stack.item == "minecraft:air" {
+            crate::items::ItemStack::new("minecraft:fire_charge", 1)
+        } else {
+            stack
+        };
+        stack.count = 1;
+        self.item = Some(stack);
+    }
     fn update_rotation(&mut self) {
         let v = self.velocity;
         let sd = (v.x * v.x + v.z * v.z).sqrt();
@@ -528,24 +774,21 @@ impl Projectile {
         self.previous_yaw = self.yaw;
         self.previous_pitch = self.pitch;
     }
-    /// A shulker's bullet from its block toward `target`, first leaving
+    /// `ShulkerBullet.<init>(level, owner, target, invalidStartAxis)`: a
+    /// shulker's bullet at `at`, the centre of its owner's box
+    /// (`owner.getBoundingBox().getCenter()`), toward `target`, first leaving
     /// along an axis other than the one it is attached on.
     pub fn shulker_bullet(
         w: &impl ProjectileWorld,
-        owner_block: [i32; 3],
+        at: Vec3,
         owner: Who,
         target: Who,
         attach_axis: u8,
         seed: u64,
     ) -> Self {
-        let at = Vec3::new(
-            f64::from(owner_block[0]) + 0.5,
-            f64::from(owner_block[1]) + 0.5,
-            f64::from(owner_block[2]) + 0.5,
-        );
         let mut p = Self::new(
             ProjectileKind::ShulkerBullet {
-                target,
+                target: Some(target),
                 dir: Some(1),
                 steps: 0,
                 delta: [0.0; 3],
@@ -576,7 +819,11 @@ impl Projectile {
         ]
     }
     fn target_box(&self, w: &impl ProjectileWorld) -> Option<Aabb> {
-        let ProjectileKind::ShulkerBullet { target, .. } = self.kind else {
+        let ProjectileKind::ShulkerBullet {
+            target: Some(target),
+            ..
+        } = self.kind
+        else {
             return None;
         };
         w.targets()
@@ -690,7 +937,8 @@ impl Projectile {
                 v.z + (dl[2] - v.z) * 0.2,
             );
         } else {
-            self.velocity.y -= 0.04;
+            // `Entity.applyGravity`: `getGravity` is 0 under NoGravity.
+            self.velocity.y -= crate::entity_rules::EntityRules::get_gravity(self);
         }
         let from = self.position;
         let to = from.add_vector(self.velocity);
@@ -755,7 +1003,7 @@ impl Projectile {
                     lo.y.floor() as i32,
                     ((lo.z + hi.z) / 2.0).floor() as i32,
                 ];
-                if w.solid([p[0] + s[0], p[1] + s[1], p[2] + s[2]])
+                if w.can_stand_on([p[0] + s[0], p[1] + s[1], p[2] + s[2]], self.position.y)
                     || p[axis as usize] == t[axis as usize]
                 {
                     self.select_next_move(w, Some(axis));
@@ -767,13 +1015,14 @@ impl Projectile {
     /// AbstractHurtingProjectile.applyInertia, on both server and client.
     pub fn apply_hurting_inertia(&mut self, water: bool) {
         // WitherSkull.getInertia: 0.73 for dangerous skulls.
-        let inertia = match self.kind {
-            ProjectileKind::WitherSkull { dangerous: true } => 0.73,
+        // Vanilla returns float inertia and widens it before scaling double motion.
+        let inertia = f64::from(match self.kind {
+            ProjectileKind::WitherSkull { dangerous: true } => 0.73_f32,
             // AbstractWindCharge.getInertia and getLiquidInertia.
-            ProjectileKind::WindCharge | ProjectileKind::BreezeWindCharge => 1.0,
-            _ if water => 0.8,
-            _ => 0.95,
-        };
+            ProjectileKind::WindCharge | ProjectileKind::BreezeWindCharge => 1.0_f32,
+            _ if water => 0.8_f32,
+            _ => 0.95_f32,
+        });
         let v = self.velocity;
         let len = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt().max(1.0e-9);
         self.velocity = Vec3::new(
@@ -787,6 +1036,107 @@ impl Projectile {
     pub fn tick(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
         self.tick_with(w, true)
     }
+    /// One tick of a server's projectile on its client: [`tick`](Self::tick)
+    /// with `ThrowableProjectile.tick`'s bubble columns, which push it on the
+    /// client too, so a pearl held in a stasis chamber hovers between the
+    /// server's updates instead of sinking and snapping back. The integrated
+    /// and dedicated servers push their pearls in the creature tick instead.
+    pub fn tick_remote(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
+        if !self.is_throwable_projectile() {
+            return self.tick(w);
+        }
+        // handleFirstTickBubbleColumn: before gravity, every column block in
+        // the box (`findBlocksIn`, BlockPos.containing of both corners),
+        // entered precisely.
+        if self.age == 0 {
+            let b = self.bounds();
+            let (lo, hi) = (b.min_position(), b.max_position());
+            for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
+                for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
+                    for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
+                        if let Some((drag, surface)) = w.bubble_column([x, y, z]) {
+                            self.bubble_column_push(drag, surface);
+                        }
+                    }
+                }
+            }
+        }
+        let from = self.position;
+        let result = self.tick(w);
+        self.bubble_columns_along(w, from);
+        result
+    }
+    /// A `ThrowableProjectile`: the thrown kinds but llama spit, a plain
+    /// `Projectile` with its own tick.
+    fn is_throwable_projectile(&self) -> bool {
+        self.is_thrown() && self.kind != ProjectileKind::LlamaSpit
+    }
+    /// `Projectile.onAboveBubbleColumn` / `onInsideBubbleColumn`: unlike
+    /// `Entity`'s, a projectile's pushes are not clamped.
+    fn bubble_column_push(&mut self, drag: bool, surface: bool) {
+        self.velocity.y += match (drag, surface) {
+            (true, _) => -0.03,
+            (false, true) => 0.1,
+            (false, false) => 0.06,
+        };
+    }
+    /// `applyEffectsFromBlocks`' bubble columns (`Entity.checkInsideBlocks`):
+    /// the blocks the box swept through from `from`, each once, pushing when
+    /// the move was long or the final box (deflated by 1e-5F) is inside it.
+    fn bubble_columns_along(&mut self, w: &impl ProjectileWorld, from: Vec3) {
+        let to = self.position;
+        let eps = f64::from(1.0e-5_f32);
+        let deflated = self.bounds().deflate(Vec3::new(eps, eps, eps));
+        let far = from.distance_squared(to) > 0.999_990_000_000_252_6f64 * 0.999_990_000_000_252_6;
+        let mut cells = Vec::new();
+        let mut used = 0;
+        let _ = horizon_core::geometry::sweep_intersected_blocks(
+            from,
+            to,
+            deflated,
+            1_000_000,
+            |p, step| {
+                if step >= 16 {
+                    return false;
+                }
+                used = step;
+                cells.push(p);
+                true
+            },
+        );
+        // A sweep that used all 16 steps checks the end position once more.
+        if used + 1 >= 16 {
+            let _ = horizon_core::geometry::sweep_intersected_blocks(
+                to,
+                to,
+                deflated,
+                1_000_000,
+                |p, step| {
+                    if step >= 1 {
+                        return false;
+                    }
+                    cells.push(p);
+                    true
+                },
+            );
+        }
+        // Each block once, in the sweep's order: a handful of cells, no set.
+        for (i, &p) in cells.iter().enumerate() {
+            if cells[..i].contains(&p) {
+                continue;
+            }
+            let Some((drag, surface)) = w.bubble_column([p.x, p.y, p.z]) else {
+                continue;
+            };
+            let cell = Aabb::new(
+                Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z)),
+                Vec3::new(f64::from(p.x + 1), f64::from(p.y + 1), f64::from(p.z + 1)),
+            );
+            if far || deflated.intersects(cell) {
+                self.bubble_column_push(drag, surface);
+            }
+        }
+    }
     /// One tick that meets nothing: what `tick` would have done had its hit been
     /// canceled (`ProjectileImpactEvent`). The projectile goes the whole way of its
     /// motion and flies on, with no hit to act on.
@@ -794,6 +1144,15 @@ impl Projectile {
         self.tick_with(w, false)
     }
     fn tick_with(&mut self, w: &impl ProjectileWorld, impact: bool) -> (bool, Hit) {
+        // LlamaSpit and ShulkerBullet call Projectile.tick before moving;
+        // ThrowableProjectile and AbstractHurtingProjectile call it afterwards.
+        let base_first = matches!(
+            self.kind,
+            ProjectileKind::LlamaSpit | ProjectileKind::ShulkerBullet { .. }
+        );
+        if base_first {
+            self.tick_shoot_event();
+        }
         let from = self.position;
         let result = self.tick_inner(w, impact);
         w.block_contacts(
@@ -803,7 +1162,23 @@ impl Projectile {
             self.position,
             self.bounds(),
         );
+        self.fire_tick(w);
+        if !base_first {
+            self.tick_shoot_event();
+        }
         result
+    }
+    /// The first-tick notification branch of vanilla's base projectile tick.
+    /// Arrows own this state in ArrowState and follow their separate tick path.
+    fn tick_shoot_event(&mut self) {
+        if self.arrow.is_none() && !self.has_been_shot {
+            self.has_been_shot = true;
+            self.shoot_event = Some(self.position);
+        }
+    }
+    /// Drain the first-tick event for dispatch in the owner's game context.
+    pub fn take_shoot_event(&mut self) -> Option<Vec3> {
+        self.shoot_event.take()
     }
     fn tick_inner(&mut self, w: &impl ProjectileWorld, impact: bool) -> (bool, Hit) {
         // `Entity.setOldPosAndRot` (the previous position and rotation the
@@ -839,9 +1214,11 @@ impl Projectile {
                 }
             }
             _ => {
-                // ThrowableProjectile: gravity, then inertia.
-                self.velocity.y -= self.gravity();
-                let inertia = if water { 0.8 } else { 0.99 };
+                // ThrowableProjectile: gravity, then inertia. Its drag is a
+                // float in vanilla (0.8F in water, `getAirDrag` 0.99F), so
+                // widens to the double that scales the motion.
+                self.velocity.y -= self.get_gravity();
+                let inertia = f64::from(if water { 0.8_f32 } else { 0.99_f32 });
                 self.velocity = Vec3::new(
                     self.velocity.x * inertia,
                     self.velocity.y * inertia,
@@ -881,11 +1258,23 @@ impl Projectile {
             self.left_owner = owner_box
                 .is_none_or(|b| !b.inflate(Vec3::new(1.0, 1.0, 1.0)).contains(self.position));
         }
-        if impact && let Some((who, at, _)) = best {
+        // LlamaSpit never discards on an entity: `onHitEntity` only hurts, so
+        // the spit flies on through what it hit (its block hit discards).
+        let spit = self.kind == ProjectileKind::LlamaSpit;
+        let spit_hit = best
+            .filter(|_| impact && spit)
+            .map_or(Hit::None, |(who, at, _)| Hit::Entity { who, at });
+        if impact
+            && !spit
+            && let Some((who, at, _)) = best
+        {
             self.position = at;
             return (false, Hit::Entity { who, at });
         }
-        if impact && let Some((at, pos, face)) = block {
+        if impact
+            && !(spit && best.is_some())
+            && let Some((at, pos, face)) = block
+        {
             self.position = at;
             return (false, Hit::Block { pos, at, face });
         }
@@ -907,13 +1296,15 @@ impl Projectile {
                 return (false, Hit::None);
             }
             self.position = to;
+            // LlamaSpit.getAirDrag is 0.99F, widened before it scales motion.
+            let drag = f64::from(0.99_f32);
             self.velocity = Vec3::new(
-                self.velocity.x * 0.99,
-                self.velocity.y * 0.99 - self.gravity(),
-                self.velocity.z * 0.99,
+                self.velocity.x * drag,
+                self.velocity.y * drag - self.get_gravity(),
+                self.velocity.z * drag,
             );
             self.update_rotation();
-            return (self.position.y > -128.0 && self.age < 6000, Hit::None);
+            return (self.position.y > -128.0 && self.age < 6000, spit_hit);
         }
         self.position = to;
         if !self.is_fireball() {
@@ -945,31 +1336,29 @@ impl Projectile {
         damage as f32
     }
     /// the item a thrown potion or a mod's type is drawn as with its model
-    /// (`ThrownItemRenderer`): the splash potion `Witch.performRangedAttack`
-    /// makes for the effect, or the type's item.
+    /// (`ThrownItemRenderer`): the potion stack itself, or the type's item.
     pub fn drawn_item(&self) -> Option<crate::items::ItemStack> {
-        let effect = match self.kind {
-            ProjectileKind::Potion { effect, .. } => effect,
-            ProjectileKind::Thrown(t) => return Some(crate::items::ItemStack::new(t.item, 1)),
-            _ => return None,
-        };
-        let potion = match effect {
-            "minecraft:instant_health" => "minecraft:healing",
-            "minecraft:instant_damage" => "minecraft:harming",
-            other => other,
-        };
-        Some(crate::items::ItemStack::new("minecraft:splash_potion", 1).with_potion(potion))
+        match &self.kind {
+            ProjectileKind::Potion(stack, _) => Some((**stack).clone()),
+            ProjectileKind::ExperienceBottle => Some(crate::items::ItemStack::new(
+                "minecraft:experience_bottle",
+                1,
+            )),
+            ProjectileKind::Thrown(t) => Some(crate::items::ItemStack::new(t.item, 1)),
+            _ => None,
+        }
     }
     /// The item sprite drawn for thrown projectiles (ThrownItemRenderer).
     pub fn item_sprite(&self) -> Option<&'static str> {
-        Some(match self.kind {
+        Some(match &self.kind {
             ProjectileKind::Snowball => "item/snowball",
             ProjectileKind::Egg => "item/egg",
             ProjectileKind::EnderPearl => "item/ender_pearl",
             ProjectileKind::SmallFireball | ProjectileKind::LargeFireball { .. } => {
                 "item/fire_charge"
             }
-            ProjectileKind::Potion { .. } => "item/splash_potion",
+            ProjectileKind::Potion(stack, _) => potion_sprite(&stack.item),
+            ProjectileKind::ExperienceBottle => "item/experience_bottle",
             ProjectileKind::LlamaSpit => "entity/llama/llama_spit",
             // Drawn as `WindChargeModel` and `ShulkerBulletModel` by the game.
             ProjectileKind::WindCharge
@@ -983,7 +1372,8 @@ impl Projectile {
             }
         })
     }
-    /// Render scale of the item billboard (fireball renderers).
+    /// `ThrownItemRenderer`'s scale for the kind: 3 for a large fireball,
+    /// 0.75 for a small one, 1 for the rest.
     pub fn sprite_scale(&self) -> f32 {
         match self.kind {
             ProjectileKind::LargeFireball { .. } => 3.0,
@@ -1009,6 +1399,125 @@ mod tests {
             &self.0
         }
     }
+    /// Water filled with one kind of bubble column, as in a stasis chamber.
+    struct Column {
+        drag: bool,
+        surface: bool,
+    }
+    impl ProjectileWorld for Column {
+        fn clip(&self, _: Vec3, _: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
+            None
+        }
+        fn in_water(&self, _: Aabb) -> bool {
+            true
+        }
+        fn targets(&self) -> &[(Who, Aabb)] {
+            &[]
+        }
+        fn bubble_column(&self, _: [i32; 3]) -> Option<(bool, bool)> {
+            Some((self.drag, self.surface))
+        }
+    }
+    /// A pearl resting in the water of a column, past its first tick.
+    fn resting_pearl() -> Projectile {
+        let mut p = Projectile::new(ProjectileKind::EnderPearl, Vec3::new(0.5, 100.2, 0.5), None);
+        p.age = 5;
+        p.touching_water = true;
+        p
+    }
+    #[test]
+    fn a_pearl_in_a_bubble_column_is_pushed_after_it_moves() {
+        // ThrowableProjectile.tick: gravity 0.03, the water drag 0.8F, the
+        // move, then applyEffectsFromBlocks' BubbleColumnBlock.entityInside:
+        // Projectile.onInsideBubbleColumn adds 0.06 (-0.03 dragging down) and
+        // onAboveBubbleColumn 0.1 at the surface, with no clamp.
+        let drag = f64::from(0.8_f32);
+        for (column, push) in [
+            (
+                Column {
+                    drag: false,
+                    surface: false,
+                },
+                0.06,
+            ),
+            (
+                Column {
+                    drag: false,
+                    surface: true,
+                },
+                0.1,
+            ),
+            (
+                Column {
+                    drag: true,
+                    surface: false,
+                },
+                -0.03,
+            ),
+            (
+                Column {
+                    drag: true,
+                    surface: true,
+                },
+                -0.03,
+            ),
+        ] {
+            let mut p = resting_pearl();
+            p.tick_remote(&column);
+            assert_eq!(p.position.y, 100.2 + -0.03 * drag, "the move comes first");
+            assert_eq!(
+                p.velocity.y,
+                -0.03 * drag + push,
+                "drag {} surface {}",
+                column.drag,
+                column.surface
+            );
+        }
+    }
+    #[test]
+    fn a_new_pearl_takes_its_first_bubble_column_push_before_gravity() {
+        // ThrowableProjectile.handleFirstTickBubbleColumn on the first tick,
+        // before gravity, then the air drag 0.99F (not yet touching water),
+        // then the push after the move.
+        let mut p = Projectile::new(ProjectileKind::EnderPearl, Vec3::new(0.5, 100.2, 0.5), None);
+        p.tick_remote(&Column {
+            drag: false,
+            surface: false,
+        });
+        let air = f64::from(0.99_f32);
+        assert_eq!(p.velocity.y, (0.06 - 0.03) * air + 0.06);
+    }
+    #[test]
+    fn a_pearl_outside_any_bubble_column_only_falls() {
+        let mut p = resting_pearl();
+        p.tick_remote(&Empty(vec![]));
+        assert_eq!(p.velocity.y, -0.03 * f64::from(0.8_f32));
+    }
+    #[test]
+    fn first_tick_shoot_event_uses_base_tick_position_and_saved_flag() {
+        let w = Empty(vec![]);
+        for kind in [ProjectileKind::Snowball, ProjectileKind::LlamaSpit] {
+            let start = Vec3::new(0.0, 100.0, 0.0);
+            let mut p = Projectile::new(kind.clone(), start, None);
+            p.velocity = Vec3::new(1.0, 0.0, 0.0);
+            p.tick(&w);
+            let expected = if kind == ProjectileKind::LlamaSpit {
+                start
+            } else {
+                p.position
+            };
+            assert!(p.has_been_shot);
+            assert_eq!(p.take_shoot_event(), Some(expected));
+            assert_eq!(p.take_shoot_event(), None);
+            p.tick(&w);
+            assert_eq!(p.take_shoot_event(), None);
+            let mut saved = Projectile::new(kind, start, None);
+            saved.has_been_shot = true;
+            saved.tick(&w);
+            assert_eq!(saved.take_shoot_event(), None);
+        }
+    }
+
     #[test]
     fn snowball_falls_with_throwable_gravity_and_drag() {
         let mut p = Projectile::new(ProjectileKind::Snowball, Vec3::new(0.0, 100.0, 0.0), None);
@@ -1016,8 +1525,147 @@ mod tests {
         let w = Empty(vec![]);
         p.tick(&w);
         // ThrowableProjectile: gravity before inertia, then move.
-        assert!((p.velocity.y - (-0.03 * 0.99)).abs() < 1e-9);
-        assert!((p.position.x - 0.99).abs() < 1e-9);
+        // `getAirDrag` is 0.99F, widened to double: 0.9900000095367432.
+        assert_eq!(p.velocity.y.to_bits(), 0xbf9e_69ad_47ae_147b);
+        assert_eq!(p.position.x.to_bits(), 0x3fef_ae14_8000_0000);
+    }
+    /// One fire block in the cell (0, 99, 0), open air around it: a throwable
+    /// inside that cell is set alight, and one that has left it burns down.
+    struct Fire {
+        targets: Vec<(Who, Aabb)>,
+        water: bool,
+    }
+    impl ProjectileWorld for Fire {
+        fn clip(&self, _: Vec3, _: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
+            None
+        }
+        fn in_water(&self, _: Aabb) -> bool {
+            self.water
+        }
+        fn targets(&self) -> &[(Who, Aabb)] {
+            &self.targets
+        }
+        fn ignites(&self, p: [i32; 3]) -> bool {
+            p == [0, 99, 0]
+        }
+    }
+    /// `ThrowableProjectile.tick` calls `applyEffectsFromBlocks`, so a snowball
+    /// thrown through a fire block burns for `BaseFireBlock.fireIgnite`'s 160
+    /// ticks and is drawn with the flame (`Entity.displayFireAnimation`). The
+    /// port had no fire at all on a thrown projectile: `fire_ticks` stayed 0
+    /// however long it sat in the flames (#7456).
+    #[test]
+    fn a_snowball_in_a_fire_block_burns_and_the_fire_counts_down() {
+        let mut p = Projectile::new(ProjectileKind::Snowball, Vec3::new(0.5, 99.5, 0.5), None);
+        // Falling slowly: it stays inside (0, 99, 0) for this tick.
+        p.velocity = Vec3::ZERO;
+        let w = Fire {
+            targets: vec![],
+            water: false,
+        };
+        assert!(!p.on_fire());
+        p.tick(&w);
+        // Ignited for 160, then `Entity.baseTick`'s countdown for this tick.
+        assert_eq!(p.fire_ticks, 159);
+        assert!(p.on_fire());
+        // Out of the flames, the rest of the 160 ticks burn down.
+        let air = Empty(vec![]);
+        p.position = Vec3::new(0.5, 120.0, 0.5);
+        p.tick(&air);
+        assert_eq!(p.fire_ticks, 158);
+        for _ in 0..158 {
+            p.tick(&air);
+        }
+        assert_eq!(p.fire_ticks, 0, "the fire runs out");
+        assert!(!p.on_fire());
+        // Water puts it out at once: `Entity.baseTick`'s `isInWaterRainOrBubble`.
+        let mut wet = Projectile::new(ProjectileKind::Snowball, Vec3::new(0.5, 99.5, 0.5), None);
+        wet.velocity = Vec3::ZERO;
+        wet.tick(&w);
+        assert_eq!(wet.fire_ticks, 159);
+        wet.tick(&Fire {
+            targets: vec![],
+            water: true,
+        });
+        assert_eq!(wet.fire_ticks, 0, "water puts the snowball out");
+    }
+    /// A fireball is an `AbstractHurtingProjectile`: it does not apply the
+    /// effects of the blocks it flies through, so the fire block leaves it cold.
+    #[test]
+    fn a_fireball_is_not_ignited_by_a_fire_block() {
+        let mut p = Projectile::new(
+            ProjectileKind::SmallFireball,
+            Vec3::new(0.5, 99.5, 0.5),
+            None,
+        );
+        p.velocity = Vec3::ZERO;
+        p.tick(&Fire {
+            targets: vec![],
+            water: false,
+        });
+        assert_eq!(p.fire_ticks, 0);
+    }
+    #[test]
+    fn throwables_in_water_leave_bubbles_behind_them() {
+        let mut p = Projectile::new(ProjectileKind::Snowball, Vec3::new(0.5, 60.0, 0.5), None);
+        p.velocity = Vec3::new(1.0, 0.5, -2.0);
+        assert_eq!(p.water_bubbles(), None);
+        p.touching_water = true;
+        let (at, speed) = p.water_bubbles().expect("a snowball in water");
+        let expected_at = [0.25, 60.0 - 0.47 * 0.25, 1.0];
+        let expected_speed = [1.0, 0.47, -2.0];
+        for i in 0..3 {
+            assert!((at[i] - expected_at[i]).abs() < 1e-12, "{at:?}");
+            assert!((speed[i] - expected_speed[i]).abs() < 1e-12, "{speed:?}");
+        }
+        let mut bottle = Projectile::new(
+            ProjectileKind::ExperienceBottle,
+            Vec3::new(0.5, 60.0, 0.5),
+            None,
+        );
+        bottle.touching_water = true;
+        let (_, speed) = bottle.water_bubbles().expect("a bottle in water");
+        assert!((speed[1] + 0.07).abs() < 1e-12, "{speed:?}");
+        for kind in [
+            ProjectileKind::Arrow {
+                base_damage: 2.0,
+                critical: false,
+                effect: None,
+            },
+            ProjectileKind::LlamaSpit,
+        ] {
+            let mut other = Projectile::new(kind, Vec3::new(0.5, 60.0, 0.5), None);
+            other.touching_water = true;
+            assert_eq!(other.water_bubbles(), None);
+        }
+    }
+    /// `AbstractHurtingProjectile.applyInertia`: four bubbles on the motion
+    /// the projectile already has, with no gravity taken off first.
+    #[test]
+    fn hurting_projectiles_in_water_bubble_along_their_motion() {
+        let expected_at = [0.25, 59.875, 1.0];
+        let expected_speed = [1.0, 0.5, -2.0];
+        for kind in [
+            ProjectileKind::SmallFireball,
+            ProjectileKind::LargeFireball { power: 1 },
+            ProjectileKind::WitherSkull { dangerous: true },
+            ProjectileKind::WindCharge,
+            ProjectileKind::BreezeWindCharge,
+        ] {
+            let label = format!("{kind:?}");
+            let mut p = Projectile::new(kind, Vec3::new(0.5, 60.0, 0.5), None);
+            p.velocity = Vec3::new(1.0, 0.5, -2.0);
+            assert_eq!(p.water_bubbles(), None, "{label} in air leaves no trail");
+            p.touching_water = true;
+            let (at, speed) = p.water_bubbles().expect("bubbles in water");
+            for i in 0..3 {
+                assert!((at[i] - expected_at[i]).abs() < 1e-12, "{label} {at:?}");
+                assert!(
+                    (speed[i] - expected_speed[i]).abs() < 1e-12,
+                    "{label} {speed:?}"
+                );
+            }
+        }
     }
     /// A wall of blocks across x = 1.
     struct Wall(Vec<(Who, Aabb)>);
@@ -1032,6 +1680,91 @@ mod tests {
         fn targets(&self) -> &[(Who, Aabb)] {
             &self.0
         }
+    }
+    /// Open air inside a border from x, z = -4.5 to 5.5 (`/worldborder set
+    /// 10` centred on 0.5, 0.5).
+    const BORDER: [f64; 4] = [-4.5, -4.5, 5.5, 5.5];
+    /// `WorldBorder.clampVec3ToBound`'s far-edge inset, the float 1.0E-5F as
+    /// the class file holds it.
+    const INSET: f64 = 9.999999747378752E-6;
+    struct Bordered(Vec<(Who, Aabb)>);
+    impl ProjectileWorld for Bordered {
+        fn clip(&self, from: Vec3, to: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
+            clip_including_border(None, from, to, BORDER)
+        }
+        fn in_water(&self, _: Aabb) -> bool {
+            false
+        }
+        fn targets(&self) -> &[(Who, Aabb)] {
+            &self.0
+        }
+    }
+    #[test]
+    fn a_pearl_thrown_at_the_world_border_stops_on_it() {
+        let mut p = Projectile::new(
+            ProjectileKind::EnderPearl,
+            Vec3::new(3.5, 100.0, 0.5),
+            Some(Who::Player),
+        );
+        (p.left_owner, p.velocity) = (true, Vec3::new(3.0, 0.0, 0.0));
+        let (keep, hit) = p.tick(&Bordered(vec![]));
+        // It would end at x = 3.5 + 3 * 0.99F = 6.47, past maxX 5.5: the hit
+        // is on the border, 1.0E-5F inside it, facing east (+x), at the
+        // height it reached (100 - 0.03 * 0.99F).
+        let at = Vec3::new(5.5 - INSET, 100.0 - 0.03 * f64::from(0.99_f32), 0.5);
+        assert!(!keep, "ThrownEnderpearl.onHit discards the pearl");
+        let Hit::Block {
+            pos,
+            at: hit_at,
+            face,
+        } = hit
+        else {
+            panic!("no border hit: {hit:?}");
+        };
+        assert!((hit_at.x - at.x).abs() < 1e-12, "{hit_at:?}");
+        assert!((hit_at.y - at.y).abs() < 1e-9, "{hit_at:?}");
+        assert_eq!(hit_at.z, 0.5);
+        assert_eq!((pos, face), ([5, 99, 0], [1, 0, 0]));
+        assert_eq!(p.position, hit_at, "the pearl stays where it hit");
+        // It teleports its owner to where it started that tick (oldPosition),
+        // inside the border.
+        assert_eq!(p.previous, Vec3::new(3.5, 100.0, 0.5));
+    }
+    #[test]
+    fn the_border_clamps_each_axis_and_faces_the_travel() {
+        // Out across the near edge of z: minZ is kept as is, facing north.
+        let from = Vec3::new(0.5, 70.0, -4.0);
+        let hit = clip_including_border(None, from, Vec3::new(0.7, 70.0, -6.0), BORDER);
+        assert_eq!(
+            hit,
+            Some((Vec3::new(0.7, 70.0, -4.5), [0, 70, -5], [0, 0, -1]))
+        );
+        // Ending on maxX itself is outside (isWithinBounds: x < maxX).
+        let hit = clip_including_border(None, from, Vec3::new(5.5, 70.0, -4.0), BORDER)
+            .expect("a border hit");
+        assert_eq!(hit.0.x, 5.5 - INSET);
+        assert_eq!(hit.2, [1, 0, 0]);
+    }
+    #[test]
+    fn the_border_leaves_inner_hits_and_rays_from_outside_alone() {
+        let inside = Vec3::new(0.5, 70.0, 0.5);
+        // A miss that stays inside.
+        assert_eq!(
+            clip_including_border(None, inside, Vec3::new(5.0, 70.0, 5.0), BORDER),
+            None
+        );
+        // A block struck before the border.
+        let block = Some((Vec3::new(2.0, 70.0, 0.5), [2, 70, 0], [-1, 0, 0]));
+        assert_eq!(
+            clip_including_border(block, inside, Vec3::new(9.0, 70.0, 0.5), BORDER),
+            block
+        );
+        // A ray that starts outside the border is not stopped by it.
+        let outside = Vec3::new(7.0, 70.0, 0.5);
+        assert_eq!(
+            clip_including_border(None, outside, Vec3::new(9.0, 70.0, 0.5), BORDER),
+            None
+        );
     }
     fn thrown(kind: ProjectileKind) -> Projectile {
         let mut p = Projectile::new(kind, Vec3::new(0.0, 100.0, 0.0), Some(Who::Player));
@@ -1091,7 +1824,7 @@ mod tests {
         let (keep, none) = through.tick_through(&world);
         assert!(keep && none == Hit::None);
         // Gravity and drag of the tick, then the whole of its motion.
-        assert!((through.position.x - 1.5 * 0.99).abs() < 1e-9);
+        assert!((through.position.x - 1.5 * f64::from(0.99_f32)).abs() < 1e-9);
     }
     #[test]
     fn a_snowball_with_no_gravity_stays_where_it_was_summoned() {
@@ -1164,6 +1897,79 @@ mod tests {
         assert_eq!(settings("ruby:late"), (5, 3, true));
     }
 
+    /// `ShulkerBullet.tick` with no target: `applyGravity` (0.04, none under
+    /// NoGravity), then the move, no drag. 20 ticks from y 110 fall 8.4.
+    #[test]
+    fn a_shulker_bullet_without_a_target_falls_unless_no_gravity() {
+        let bullet = || {
+            Projectile::new(
+                ProjectileKind::ShulkerBullet {
+                    target: None,
+                    dir: None,
+                    steps: 0,
+                    delta: [0.0; 3],
+                    seed: 0,
+                },
+                Vec3::new(0.5, 110.0, 0.5),
+                None,
+            )
+        };
+        let w = Empty(vec![]);
+        let mut falling = bullet();
+        let mut held = bullet();
+        held.no_gravity = true;
+        for _ in 0..20 {
+            falling.tick(&w);
+            held.tick(&w);
+        }
+        assert!(
+            (falling.position.y - 101.6).abs() < 1e-6,
+            "{}",
+            falling.position.y
+        );
+        assert_eq!(held.position, Vec3::new(0.5, 110.0, 0.5));
+    }
+    /// `ShulkerBullet.tick`: a bullet turns off its axis before the block
+    /// ahead when it could stand on it (`loadedAndEntityCanStandOn`, asked
+    /// at the bullet's own height), and flies on toward one it could not.
+    #[test]
+    fn a_shulker_bullet_turns_before_a_block_it_could_stand_on() {
+        struct Ahead(Vec<(Who, Aabb)>, bool);
+        impl ProjectileWorld for Ahead {
+            fn clip(&self, _: Vec3, _: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
+                None
+            }
+            fn in_water(&self, _: Aabb) -> bool {
+                false
+            }
+            fn targets(&self) -> &[(Who, Aabb)] {
+                &self.0
+            }
+            fn can_stand_on(&self, p: [i32; 3], entity_y: f64) -> bool {
+                self.1 && p == [1, 64, 0] && (64.0..65.0).contains(&entity_y)
+            }
+        }
+        // East and above: with the X axis ruled out, up is the only way on.
+        let target = Aabb::new(Vec3::new(20.0, 70.0, 0.0), Vec3::new(21.0, 71.0, 1.0));
+        for standable in [false, true] {
+            let mut p = Projectile::new(
+                ProjectileKind::ShulkerBullet {
+                    target: Some(Who::Mob(2)),
+                    dir: Some(5),
+                    steps: 30,
+                    delta: [0.15, 0.0, 0.0],
+                    seed: 1,
+                },
+                Vec3::new(0.5, 64.5, 0.5),
+                None,
+            );
+            p.tick(&Ahead(vec![(Who::Mob(2), target)], standable));
+            let ProjectileKind::ShulkerBullet { dir, .. } = p.kind else {
+                unreachable!()
+            };
+            assert_eq!(dir, Some(if standable { 1 } else { 5 }), "{standable}");
+        }
+    }
     #[test]
     fn llama_spit_moves_first_then_drags_and_falls() {
         let mut p = Projectile::new(ProjectileKind::LlamaSpit, Vec3::new(0.0, 100.0, 0.0), None);
@@ -1172,7 +1978,7 @@ mod tests {
         let (keep, _) = p.tick(&w);
         assert!(keep);
         assert!((p.position.x - 1.0).abs() < 1e-9);
-        assert!((p.velocity.x - 0.99).abs() < 1e-9);
+        assert_eq!(p.velocity.x.to_bits(), 0x3fef_ae14_8000_0000);
         assert!((p.velocity.y + 0.06).abs() < 1e-9);
     }
     #[test]
@@ -1201,10 +2007,70 @@ mod tests {
         );
         let w = Empty(vec![]);
         p.tick(&w);
-        // (0.1 + 0.1) * 0.95
-        assert!((p.velocity.x - 0.19).abs() < 1e-9);
+        // Fresh Java 26.3: (0.1 + 0.1) * (double) 0.95f.
+        assert_eq!(p.velocity.x, 0.189_999_997_615_814_2);
     }
 
+    /// `Fireball.setItem` with `Fireball.defineSynchedData`'s default and
+    /// `getItem`: a fireball is drawn as a fire charge until it is given
+    /// another item, and it keeps a single one of it. A kind that is no
+    /// `Fireball` (a wither skull, a snowball) has no item to set.
+    #[test]
+    fn a_fireball_holds_one_of_the_item_it_is_given() {
+        let held = |p: &Projectile| {
+            p.item
+                .as_ref()
+                .map(|i| (&*i.item, i.count))
+                .map(|(i, n)| (i.to_string(), n))
+        };
+        for kind in [
+            ProjectileKind::LargeFireball { power: 1 },
+            ProjectileKind::SmallFireball,
+        ] {
+            let mut p = Projectile::new(kind, Vec3::new(0.0, 100.0, 0.0), None);
+            assert_eq!(
+                held(&p),
+                Some(("minecraft:fire_charge".to_owned(), 1)),
+                "the default"
+            );
+            p.set_item(crate::items::ItemStack::new("minecraft:diamond", 5));
+            assert_eq!(
+                held(&p),
+                Some(("minecraft:diamond".to_owned(), 1)),
+                "copyWithCount(1)"
+            );
+            // `setItem` refuses an empty stack, either way of being empty, and
+            // puts the default fire charge back.
+            for empty in [
+                crate::items::ItemStack::new("minecraft:air", 1),
+                crate::items::ItemStack::new("minecraft:diamond", 0),
+            ] {
+                p.set_item(empty);
+                assert_eq!(held(&p), Some(("minecraft:fire_charge".to_owned(), 1)));
+            }
+        }
+        for kind in [
+            ProjectileKind::WitherSkull { dangerous: false },
+            ProjectileKind::Snowball,
+        ] {
+            let mut p = Projectile::new(kind, Vec3::new(0.0, 100.0, 0.0), None);
+            assert_eq!(p.item, None);
+            p.set_item(crate::items::ItemStack::new("minecraft:diamond", 1));
+            assert_eq!(p.item, None, "no Fireball, no item");
+        }
+    }
+    /// `ThrownItemRenderer`'s scale per entity type, which the item model a
+    /// fireball is drawn as is scaled by: 3 for a fireball, 0.75 for a small
+    /// one, 1 for the other kinds and their own renderers.
+    #[test]
+    fn a_fireball_draws_at_thrice_or_three_quarters() {
+        let scale = |kind: ProjectileKind| {
+            Projectile::new(kind, Vec3::new(0.0, 100.0, 0.0), None).sprite_scale()
+        };
+        assert_eq!(scale(ProjectileKind::LargeFireball { power: 1 }), 3.0);
+        assert_eq!(scale(ProjectileKind::SmallFireball), 0.75);
+        assert_eq!(scale(ProjectileKind::Snowball), 1.0);
+    }
     #[test]
     fn fireball_inertia_preserves_custom_acceleration() {
         let mut p = Projectile::fireball(
@@ -1216,8 +2082,26 @@ mod tests {
         // A redirected projectile can carry a different acceleration power.
         p.acceleration = 0.2;
         p.tick(&Empty(vec![]));
-        assert!((p.velocity.x - 0.285).abs() < 1e-9);
-        assert!((p.position.x - 0.285).abs() < 1e-9);
+        assert_eq!(p.velocity.x, 0.284_999_996_423_721_37);
+        assert_eq!(p.position.x, 0.284_999_996_423_721_37);
+    }
+
+    #[test]
+    fn hurting_inertia_widens_water_and_dangerous_skull_floats() {
+        for (kind, water, expected) in [
+            (ProjectileKind::SmallFireball, true, 0.160_000_002_384_185_8),
+            (
+                ProjectileKind::WitherSkull { dangerous: true },
+                false,
+                0.146_000_003_814_697_27,
+            ),
+        ] {
+            let mut p = Projectile::new(kind, Vec3::ZERO, None);
+            p.velocity = Vec3::new(0.1, 0.0, 0.0);
+            p.acceleration = 0.1;
+            p.apply_hurting_inertia(water);
+            assert_eq!(p.velocity, Vec3::new(expected, 0.0, 0.0));
+        }
     }
 
     #[test]
@@ -1311,3 +2195,107 @@ mod trail_tests {
         assert!(p.arrow_trail(true).is_empty());
     }
 }
+#[cfg(test)]
+mod pearl_owner_tests {
+    use super::*;
+
+    /// `ThrownEnderpearl.isAllowedToTeleportOwner` in the pearl's own
+    /// dimension: only a living, awake owner takes the pearl. Vanilla's
+    /// `onHit` discards the pearl (and skips the 5 damage) otherwise.
+    #[test]
+    fn a_dead_or_sleeping_owner_cannot_take_its_pearl() {
+        assert!(owner_can_take_pearl(true, false), "alive and awake");
+        assert!(!owner_can_take_pearl(false, false), "a dead owner");
+        assert!(!owner_can_take_pearl(true, true), "a sleeping owner");
+        assert!(!owner_can_take_pearl(false, true), "dead in bed");
+    }
+}
+#[cfg(test)]
+mod render_light_tests {
+    use super::*;
+
+    fn shot(kind: ProjectileKind) -> Projectile {
+        Projectile::new(kind, Vec3::new(0.5, 64.0, 0.5), None)
+    }
+
+    /// `EntityRenderer.getBlockLightLevel` and the two overrides: a shulker
+    /// bullet and a fireball are 15 wherever they fly, anything on fire is 15
+    /// by the base class, and an ordinary arrow keeps the level's light.
+    #[test]
+    fn only_the_full_bright_projectiles_override_the_block_light() {
+        let bullet = shot(ProjectileKind::ShulkerBullet {
+            target: None,
+            dir: None,
+            steps: 0,
+            delta: [0.0; 3],
+            seed: 0,
+        });
+        assert_eq!(bullet.block_light_override(), Some(15));
+        assert_eq!(
+            shot(ProjectileKind::SmallFireball).block_light_override(),
+            Some(15)
+        );
+        assert_eq!(
+            shot(ProjectileKind::WitherSkull { dangerous: false }).block_light_override(),
+            Some(15)
+        );
+        let mut arrow = shot(ProjectileKind::Arrow {
+            base_damage: 2.0,
+            critical: false,
+            effect: None,
+        });
+        assert_eq!(arrow.block_light_override(), None);
+        // `Entity.isOnFire` on any projectile is 15, whatever its kind.
+        arrow.ignite_for_ticks(100);
+        assert_eq!(arrow.block_light_override(), Some(15));
+        let mut snowball = shot(ProjectileKind::Snowball);
+        assert_eq!(snowball.block_light_override(), None);
+        snowball.ignite_for_ticks(1);
+        assert_eq!(snowball.block_light_override(), Some(15));
+    }
+
+    /// `Entity.getLightProbePosition` is the eye position, so an arrow lying
+    /// in the top eighth of a block is lit by the block above it.
+    #[test]
+    fn a_projectile_is_lit_from_the_block_its_eye_is_in() {
+        let mut arrow = shot(ProjectileKind::Arrow {
+            base_damage: 2.0,
+            critical: false,
+            effect: None,
+        });
+        arrow.position = Vec3::new(0.5, 64.9, 0.5);
+        assert_eq!(arrow.light_probe_y(1.0).floor(), 65.0);
+        assert_eq!(arrow.position.y.floor(), 64.0);
+        // A wind charge's entity type declares no eye height, so it keeps its feet.
+        let mut wind = shot(ProjectileKind::WindCharge);
+        wind.position = Vec3::new(0.5, 64.9, 0.5);
+        assert_eq!(wind.light_probe_y(1.0), 64.9);
+        // A snowball's box is a quarter block: the eye is 0.2125 up.
+        let mut ball = shot(ProjectileKind::Snowball);
+        ball.position = Vec3::new(0.5, 64.8, 0.5);
+        assert!((ball.light_probe_y(1.0) - 64.8 - 0.85 * 0.25).abs() < 1e-6);
+    }
+
+    /// `getEyePosition(partialTick)` reads `getPosition(partialTick)`: an arrow
+    /// falling from 64 to 65 is probed at 64.63 for the first half of the frame
+    /// (the cell at 64) and only reaches the cell at 65 when the frame ends.
+    /// Horizon read the tick's own position, so the light popped a frame early.
+    #[test]
+    fn a_projectile_probe_follows_the_frame() {
+        let mut arrow = shot(ProjectileKind::Arrow {
+            base_damage: 2.0,
+            critical: false,
+            effect: None,
+        });
+        arrow.previous = Vec3::new(0.5, 64.0, 0.5);
+        arrow.position = Vec3::new(0.5, 65.0, 0.5);
+        assert!((arrow.light_probe_y(0.0) - 64.13).abs() < 1e-6);
+        assert_eq!(arrow.light_probe_y(0.0).floor(), 64.0);
+        assert_eq!(arrow.light_probe_y(0.5).floor(), 64.0);
+        assert!((arrow.light_probe_y(0.5) - 64.63).abs() < 1e-6);
+        assert_eq!(arrow.light_probe_y(1.0).floor(), 65.0);
+        // The old probe, this tick's position, was 65.0 for every frame.
+        assert_eq!((arrow.position.y + arrow.kind.eye_height()).floor(), 65.0);
+    }
+}
+crate::impl_joined!(Projectile);

@@ -50,10 +50,11 @@ impl Game<'_> {
         format!("{}[{}]", s.name, props.join(","))
     }
     fn put_block(&mut self, pos: [i32; 3], state: BlockStateId) -> Result<()> {
-        let name = self.res.facts().get(state).name.clone();
         self.world.block_entities.remove(&(pos[0], pos[1], pos[2]));
         self.level_set(pos, state)?;
-        if let Some(entity) = self.new_block_entity(&name) {
+        if !self.world.block_entities.stateful_entity(state.0)
+            && let Some(entity) = self.new_block_entity_for_state(state)
+        {
             self.world
                 .block_entities
                 .insert((pos[0], pos[1], pos[2]), entity);
@@ -76,7 +77,7 @@ impl Game<'_> {
                     let words: Vec<&str> = owned.iter().map(String::as_str).collect();
                     g.in_owner_level(|g| g.block_command(&words).map_err(|e| e.to_string()))
                 })
-                .ok_or("the integrated server stopped")?
+                .ok_or(super::integrated::NO_ANSWER)?
                 .map_err(Into::into);
         }
         // Another server's world changes only through its own commands, which

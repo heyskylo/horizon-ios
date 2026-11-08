@@ -146,10 +146,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     .link
                     .is_some_and(|fruit| b.is_block(nstate, fruit))
                     && dir == b.facing(state)
+                    && let Some(stem) = b.data(state).link2
                 {
-                    if let Some(stem) = b.data(state).link2 {
-                        return Some(table.set_int(b.default_of(stem), p.age, 7));
-                    }
+                    return Some(table.set_int(b.default_of(stem), p.age, 7));
                 }
                 sup!()
             }
@@ -358,7 +357,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             ),
             Class::Cocoa => survive_or_air!(dir == b.facing(state)),
             Class::Comparator => {
-                if dir == Direction::Down && !b.is_face_sturdy_rigid(nstate, Direction::Up) {
+                if dir == Direction::Down && !self.can_support_rigid_block_on(npos, nstate) {
                     air
                 } else {
                     sup!()
@@ -698,7 +697,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             }
             Class::RedstoneWire => self.redstone_wire_update_shape(state, pos, dir, npos, nstate),
             Class::Repeater => {
-                if dir == Direction::Down && !b.is_face_sturdy_rigid(nstate, Direction::Up) {
+                if dir == Direction::Down && !self.can_support_rigid_block_on(npos, nstate) {
                     air
                 } else if axis_of(dir) != axis_of(b.facing(state)) {
                     let locked = self.diode_is_locked(pos, state);

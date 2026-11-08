@@ -114,11 +114,8 @@ mod tests {
             ambient_occlusion: true,
             particle: None,
             cube: None,
-            faces: vec![BakedFace {
-                layer: 0,
-                opaque: true,
-                translucent: false,
-                quad: ModelQuad {
+            faces: vec![BakedFace::new(
+                ModelQuad {
                     positions: [
                         [0.0, 0.5, 0.0],
                         [0.0, 0.5, 1.0],
@@ -135,8 +132,17 @@ mod tests {
                     tint_index: -1,
                     shade_direction_override: None,
                     light_emission: 0,
+                    light: [0; 2],
+                    color: None,
+                    ambient_occlusion: None,
+                    render_type: None,
+                    shade: true,
                 },
-            }],
+                0,
+                true,
+                false,
+                None,
+            )],
         }
     }
     #[test]

@@ -136,7 +136,11 @@ impl Scanner {
     pub fn start() -> Self {
         let games: Games = Arc::default();
         let stop = Arc::new(AtomicBool::new(false));
-        if let Ok(socket) = bind_listener() {
+        // Constructing multiplayer screens in unit tests must not open the LAN.
+        if !cfg!(test)
+            && !super::test_loopback()
+            && let Ok(socket) = bind_listener()
+        {
             let (games, stop) = (games.clone(), stop.clone());
             let _ = std::thread::Builder::new()
                 .name("horizon-lan-scan".into())

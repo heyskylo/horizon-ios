@@ -80,7 +80,7 @@ pub fn register(m: &mut Mob) {
                 2,
                 NearestTarget::player(true)
                     .interval(10)
-                    .when(|m, _| m.extra.anger > 0),
+                    .when(super::tame::angry_at_player),
             );
         }
         S::Drowned => {
@@ -295,7 +295,7 @@ fn drowned_throw(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
         a.set_item(&trident);
     }
     p.shoot(
-        &mut crate::projectiles::own_random(m),
+        &mut crate::random_source::entity(),
         [xd, yd + dist * f64::from(0.2_f32), zd],
         1.6,
         ranged_attack_uncertainty(cx.w.difficulty.id),
@@ -324,7 +324,11 @@ impl Goal for DrownedTridentAttack {
         self.0.can_use(m, cx) && m.extra.main_hand.as_deref() == Some("minecraft:trident")
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        self.0.can_continue(m, cx)
+        // `RangedAttackGoal.canContinueToUse` asks `canUse()` again: the
+        // trident test is re-checked, and the goal only falls back to a target
+        // it is still walking towards once the trident is gone.
+        self.0.can_use(m, cx)
+            && (m.extra.main_hand.as_deref() == Some("minecraft:trident") || !m.ai.nav.is_done())
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx);
@@ -479,6 +483,12 @@ fn zombified_piglin_step(m: &mut Mob, cx: &mut Cx) {
     } else if m.ai.target.is_none() {
         m.extra.flag2 = false;
     }
+    // The anger's target is whoever the piglin holds as its target, so a
+    // piglin hit by another mob is angry at that mob and not at the player
+    // (`NearestAttackableTargetGoal` tests `isAngryAt`).
+    if m.ai.target.is_some() {
+        m.extra.angry_at = m.ai.target;
+    }
     if m.extra.anger > 0 {
         m.extra.anger -= 1;
         if !m.is_baby() {
@@ -500,6 +510,7 @@ fn zombified_piglin_step(m: &mut Mob, cx: &mut Cx) {
         }
         if m.extra.anger == 0 {
             m.ai.target = None;
+            m.extra.angry_at = None;
             m.extra.flag2 = false;
         }
     } else {
@@ -881,7 +892,7 @@ pub fn perform_ranged_attack(m: &mut Mob, who: Who, cx: &mut Cx, power: f32) {
     let dist = (xd * xd + zd * zd).sqrt();
     // AbstractArrow.setBaseDamageFromMob: power * 2 + triangle(difficulty * 0.11, 0.57425).
     let id = i32::from(cx.w.difficulty.id);
-    let mut arrow_random = crate::projectiles::own_random(m);
+    let mut arrow_random = crate::random_source::entity();
     let base = f64::from(power) * 2.0 + arrow_random.triangle(f64::from(id) * 0.11, 0.574_25);
     let effect = match m.species() {
         Species::Stray => Some(("minecraft:slowness", 600)),
@@ -899,13 +910,27 @@ pub fn perform_ranged_attack(m: &mut Mob, who: Who, cx: &mut Cx, power: f32) {
         Some(Who::Mob(m.id)),
     );
     p.set_bonus(super::gear::arrow_bonus(m));
+    ignite_for_wither_skeleton(m, &mut p);
     p.shoot(
         &mut arrow_random,
         [xd, yd + dist * 0.2, zd],
         1.6,
         (14 - id * 4) as f32,
     );
-    cx.events.push(MobEvent::Projectile(p));
+    cx.events.push(MobEvent::BowShot {
+        mob: m.id,
+        // ProjectileUtil.getWeaponHoldingHand(this, Items.BOW).
+        weapon: if m.extra.using_off_hand {
+            m.extra
+                .off_hand
+                .as_ref()
+                .map(|item| crate::items::ItemStack::new(item, 1))
+        } else {
+            m.extra.main_hand_stack().cloned()
+        }
+        .unwrap_or_else(|| crate::items::ItemStack::new("minecraft:bow", 1)),
+        arrow: p,
+    });
     let pitch = 1.0 / (m.random.next_float() * 0.4 + 0.8);
     cx.events.push(MobEvent::Sound(
         "entity.skeleton.shoot",
@@ -914,7 +939,17 @@ pub fn perform_ranged_attack(m: &mut Mob, who: Who, cx: &mut Cx, power: f32) {
         pitch,
     ));
 }
-/// Drowned.DrownedGoToWaterGoal (simplified to "head for water by day").
+/// `WitherSkeleton.getArrow`: the arrow the parent made is then
+/// `igniteForSeconds(100)` — 2000 fire ticks — so it burns on its way and sets
+/// alight what it hits. The species' own tipped effect rides on the same arrow.
+pub fn ignite_for_wither_skeleton(m: &Mob, p: &mut Projectile) {
+    if m.species() == Species::WitherSkeleton
+        && let Some(a) = p.arrow.as_mut()
+    {
+        a.ignite_for_seconds(100.0);
+    }
+}
+/// Drowned.DrownedGoToWaterGoal.
 #[derive(Clone, Debug, Default)]
 pub struct DrownedGoToWater {
     wanted: [f64; 3],
@@ -924,6 +959,7 @@ impl Goal for DrownedGoToWater {
     fn flags(&self) -> u8 {
         MOVE
     }
+    /// `Drowned.DrownedGoToWaterGoal.canUse`.
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         if !cx.w.daylight || m.fluids.in_water {
             return false;
@@ -939,7 +975,9 @@ impl Goal for DrownedGoToWater {
                 by + 2 - m.random.next_int_bound(8).unwrap_or(0),
                 bz + m.random.next_int_bound(20).unwrap_or(0) - 10,
             ];
-            if cx.w.fluid(p[0], p[1], p[2]) == crate::blocks::Fluid::Water {
+            // getBlockState(pos).is(Blocks.WATER): kelp, seagrass and
+            // waterlogged blocks hold water but are not the water block.
+            if cx.w.block_name(p[0], p[1], p[2]) == "minecraft:water" {
                 self.wanted = [
                     f64::from(p[0]) + 0.5,
                     f64::from(p[1]),
@@ -1135,7 +1173,10 @@ impl Goal for AttackTurtleEgg {
             self.base.next_start -= 1;
             return false;
         }
-        if self.base.find_nearest(m, cx.w, turtle_egg_target) {
+        // Most of the level holds no turtle egg: its sections' palettes say
+        // so without the walk of every cell in reach.
+        let egg = |s| &*cx.w.facts.get(s).name == "minecraft:turtle_egg";
+        if self.base.may_find(m, cx.w, egg) && self.base.find_nearest(m, cx.w, turtle_egg_target) {
             self.base.next_start = super::goals::reduced(20);
             return true;
         }
@@ -1232,7 +1273,7 @@ impl Goal for AttackTurtleEgg {
             }
             // The break sound's pitch draws from the level random.
             cx.events.push(MobEvent::Sound(
-                "block.turtle_egg.break",
+                "entity.turtle.egg_break",
                 [
                     f64::from(eat[0]) + 0.5,
                     f64::from(eat[1]) + 0.5,
@@ -1374,5 +1415,263 @@ mod trident_tests {
         assert_eq!(ranged_attack_uncertainty(1), 10.0, "easy");
         assert_eq!(ranged_attack_uncertainty(2), 6.0, "normal");
         assert_eq!(ranged_attack_uncertainty(3), 2.0, "hard");
+    }
+}
+
+#[cfg(test)]
+mod creative_target_tests {
+    use super::*;
+    use crate::mobs::world::{test_player, with_test_world};
+    use std::sync::Arc;
+
+    /// #6790: an angry zombified piglin lets go of a player in creative mode
+    /// (`TargetGoal.canContinueToUse` / `TargetingConditions` skip invulnerable
+    /// players).
+    #[test]
+    fn an_angry_zombified_piglin_drops_a_creative_player() {
+        with_test_world(&[], |w, types| {
+            let mut w = w.clone();
+            let mut player = test_player(Vec3::new(3.5, 64.0, 0.5));
+            player.creative = true;
+            w.player = Some(player);
+            let kind = Arc::new(types.types["minecraft:zombified_piglin"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            m.ai.target = Some(Who::Player);
+            m.extra.anger = 300;
+            let mut lr = horizon_core::random::LegacyRandom::new(0);
+            for _ in 0..40 {
+                let mut events = Vec::new();
+                m.tick(&w, &mut lr, &mut events);
+            }
+            assert_eq!(m.ai.target, None, "anger {}", m.extra.anger);
+        });
+    }
+}
+
+#[cfg(test)]
+mod go_to_water_tests {
+    use super::*;
+    use crate::mobs::world::with_built_test_world;
+    use std::sync::Arc;
+
+    /// `DrownedGoToWaterGoal.getWaterPos` takes only `Blocks.WATER` blocks:
+    /// an area of kelp (which holds water too) gives it nowhere to go.
+    #[test]
+    fn a_drowned_goes_to_water_blocks_not_kelp() {
+        for (block, expect) in [("minecraft:kelp", false), ("minecraft:water", true)] {
+            let build =
+                |world: &mut crate::world::World,
+                 registry: &horizon_world::registry::BlockRegistry| {
+                    for cx in -2..2 {
+                        for cz in -2..2 {
+                            world
+                                .chunks
+                                .insert((cx, cz), Arc::new(crate::chunk::Chunk::empty(cx, cz)));
+                        }
+                    }
+                    let state = registry.default_state(block).unwrap();
+                    for x in -12..12 {
+                        for z in -12..12 {
+                            for y in 58..=66 {
+                                world.set(x, y, z, state).unwrap();
+                            }
+                        }
+                    }
+                    let stone = registry.default_state("minecraft:stone").unwrap();
+                    world.set(0, 63, 0, stone).unwrap();
+                };
+            let ran = with_built_test_world(&[], build, |w, types| {
+                let mut kind = types.types["minecraft:drowned"].clone();
+                kind.species = Species::Drowned;
+                let mut m = Mob::new(1, Arc::new(kind), Vec3::new(0.5, 64.0, 0.5), 0.0);
+                assert!(w.fluid(3, 64, 3) == crate::blocks::Fluid::Water, "{block}");
+                let mut goal = DrownedGoToWater::default();
+                let mut events = Vec::new();
+                let mut lr = horizon_core::random::LegacyRandom::new(0);
+                let mut cx = Cx {
+                    w,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                assert_eq!(goal.can_use(&mut m, &mut cx), expect, "{block}");
+            });
+            let _ = ran;
+        }
+    }
+}
+
+#[cfg(test)]
+mod wither_arrow_tests {
+    use super::*;
+    use crate::mobs::world::{test_player, with_test_world};
+    use std::sync::Arc;
+
+    fn mob(species: Species) -> Mob {
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.species = species;
+        Mob::new(1, Arc::new(kind), Vec3::ZERO, 0.0)
+    }
+    fn arrow() -> Projectile {
+        Projectile::new(
+            ProjectileKind::Arrow {
+                base_damage: 2.0,
+                critical: false,
+                effect: None,
+            },
+            Vec3::ZERO,
+            None,
+        )
+    }
+
+    /// `WitherSkeleton.getArrow`: `super.getArrow(...)` then
+    /// `igniteForSeconds(100)` on the arrow it returns — 2000 fire ticks —
+    /// where a plain skeleton's arrow is not burning at all.
+    #[test]
+    fn only_a_wither_skeletons_arrow_comes_out_burning() {
+        for (species, fire_ticks) in [(Species::WitherSkeleton, 2000), (Species::Skeleton, 0)] {
+            let m = mob(species);
+            let mut p = arrow();
+            ignite_for_wither_skeleton(&m, &mut p);
+            let a = p.arrow.as_ref().expect("an arrow");
+            assert_eq!(a.fire_ticks, fire_ticks, "{species:?}");
+            assert_eq!(a.on_fire(), fire_ticks > 0, "{species:?}");
+        }
+        // `igniteForTicks` keeps the longer burn: a Flame arrow already alight
+        // for 4000 ticks is not shortened to the wither skeleton's 2000.
+        let m = mob(Species::WitherSkeleton);
+        let mut p = arrow();
+        if let Some(a) = p.arrow.as_mut() {
+            a.ignite_for_seconds(200.0);
+        }
+        ignite_for_wither_skeleton(&m, &mut p);
+        assert_eq!(p.arrow.as_ref().unwrap().fire_ticks, 4000);
+    }
+
+    /// The same rule through the shooting path: `perform_ranged_attack` hands
+    /// the arrow to `ignite_for_wither_skeleton` before it flies.
+    #[test]
+    fn a_wither_skeletons_shot_leaves_with_the_ignite() {
+        let ran = with_test_world(&[], |w, types| {
+            let mut w = w.clone();
+            // A player four blocks away: the aim needs a visible target.
+            w.player = Some(test_player(Vec3::new(0.5, 64.0, 4.5)));
+            for (name, fire_ticks) in [
+                ("minecraft:wither_skeleton", 2000),
+                ("minecraft:skeleton", 0),
+            ] {
+                let kind = Arc::new(types.types[name].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+                let mut events = Vec::new();
+                let mut lr = horizon_core::random::LegacyRandom::new(0);
+                let mut cx = Cx {
+                    w: &w,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                perform_ranged_attack(&mut m, Who::Player, &mut cx, 1.0);
+                let arrow = events
+                    .iter()
+                    .find_map(|e| match e {
+                        MobEvent::Projectile(p) | MobEvent::BowShot { arrow: p, .. } => {
+                            p.arrow.as_ref()
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("{name} shot nothing"));
+                assert_eq!(arrow.fire_ticks, fire_ticks, "{name}");
+            }
+        });
+        let _ = ran;
+    }
+
+    /// #9808: a zombified piglin angry at another mob (a skeleton's arrow
+    /// hit it) is not angry at the player (`NeutralMob.isAngryAt`).
+    #[test]
+    fn a_piglin_angry_at_a_mob_does_not_target_the_player() {
+        with_test_world(&[], |w, types| {
+            let mut w = w.clone();
+            w.player = Some(test_player(Vec3::new(3.5, 64.0, 0.5)));
+            let kind = Arc::new(types.types["minecraft:zombified_piglin"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            m.extra.anger = 300;
+            m.extra.angry_at = Some(Who::Mob(99));
+            let mut lr = horizon_core::random::LegacyRandom::new(0);
+            for _ in 0..40 {
+                let mut events = Vec::new();
+                m.tick(&w, &mut lr, &mut events);
+                assert_ne!(m.ai.target, Some(Who::Player));
+            }
+            // Fresh piglin, angry at the player: it does take the player.
+            let kind = Arc::new(types.types["minecraft:zombified_piglin"].clone());
+            let mut m = Mob::new(2, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            m.extra.anger = 300;
+            m.extra.angry_at = Some(Who::Player);
+            let mut hit = false;
+            for _ in 0..60 {
+                let mut events = Vec::new();
+                m.tick(&w, &mut lr, &mut events);
+                hit |= m.ai.target == Some(Who::Player);
+            }
+            assert!(hit, "angry at the player targets the player");
+        });
+    }
+}
+
+#[cfg(test)]
+mod trident_continue_tests {
+    use super::*;
+    use crate::mobs::world::{test_player, with_test_world};
+    use horizon_core::random::LegacyRandom;
+    use std::sync::Arc;
+
+    /// `DrownedTridentAttackGoal` overrides `canUse` with the trident test and
+    /// inherits `RangedAttackGoal.canContinueToUse`, which calls `canUse()`
+    /// again. Losing the trident mid-attack must therefore stop the goal;
+    /// Horizon's continue asked only the base ranged goal.
+    #[test]
+    fn a_drowned_that_loses_its_trident_stops_the_trident_attack() {
+        let mut outcomes = None;
+        let ran = with_test_world(&[], |w, types| {
+            let kind = Arc::new(types.types["minecraft:drowned"].clone());
+            let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+            m.extra.set_main_hand(Some("minecraft:trident".into()));
+            m.ai.target = Some(Who::Player);
+            let mut world = w.clone();
+            world.player = Some(test_player(Vec3::new(3.5, 64.0, 0.5)));
+            m.ai.goals.add(
+                2,
+                DrownedTridentAttack(crate::mobs::witch::RangedAttack::new(
+                    1.0,
+                    40,
+                    40,
+                    10.0,
+                    drowned_throw,
+                )),
+            );
+            let mut lr = LegacyRandom::new(0);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w: &world,
+                lr: &mut lr,
+                events: &mut events,
+            };
+            let mut goals = std::mem::take(&mut m.ai.goals);
+            goals.tick(&mut m, &mut cx);
+            let started = goals.is_running("DrownedTridentAttackGoal");
+            // No path left to follow: only the trident used to keep it going.
+            m.nav_stop();
+            m.extra.set_main_hand(None);
+            goals.tick(&mut m, &mut cx);
+            outcomes = Some((started, goals.is_running("DrownedTridentAttackGoal")));
+            m.ai.goals = goals;
+        });
+        if !ran {
+            return;
+        }
+        assert_eq!(
+            outcomes,
+            Some((true, false)),
+            "a trident attack starts for a drowned holding one and stops when it is gone"
+        );
     }
 }

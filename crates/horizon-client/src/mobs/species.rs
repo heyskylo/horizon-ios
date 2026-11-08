@@ -1324,6 +1324,75 @@ pub const ALL: &[Def] = &[
 pub fn def(s: Species) -> &'static Def {
     ALL.iter().find(|d| d.species == s).unwrap_or(&ALL[0])
 }
+/// `AgeableMob.canBeABaby`: the species `Mob::is_baby` can ever answer `true`
+/// for, which is what lets `getAge() < 0` mean "a baby" rather than "an age".
+///
+/// `canBeABaby` is `true` across the ageable tree but for the six classes
+/// that override it to `false` — `Frog`, `Parrot`, `ZombieNautilus`,
+/// `CamelHusk`, `Slime` and `MagmaCube`, the last two being `AbstractCubeMob`s
+/// and so `AgeableMob`s themselves — and the zombies, the piglins and the
+/// zoglin answer a synced `DATA_BABY_ID` rather than an age. Everything else
+/// inherits `LivingEntity.isBaby`, which is `false`: a `Giant`, a `Creeper`,
+/// a `PiglinBrute` or a `Tadpole` stays an adult however negative its `Age`.
+pub fn can_be_a_baby(s: Species) -> bool {
+    use Species as S;
+    matches!(
+        s,
+        S::Armadillo
+            | S::Axolotl
+            | S::Bee
+            | S::Camel
+            | S::Cat
+            | S::Chicken
+            | S::Cow
+            | S::Dolphin
+            | S::Donkey
+            | S::Drowned
+            | S::Fox
+            | S::GlowSquid
+            | S::Goat
+            | S::HappyGhast
+            | S::Hoglin
+            | S::Horse
+            | S::Husk
+            | S::Llama
+            | S::Mooshroom
+            | S::Mule
+            | S::Nautilus
+            | S::Ocelot
+            | S::Panda
+            | S::Pig
+            | S::Piglin
+            | S::PolarBear
+            | S::Rabbit
+            | S::Sheep
+            | S::SkeletonHorse
+            | S::Sniffer
+            | S::Squid
+            | S::Strider
+            | S::SulfurCube
+            | S::TraderLlama
+            | S::Turtle
+            | S::Villager
+            | S::WanderingTrader
+            | S::Wolf
+            | S::Zoglin
+            | S::Zombie
+            | S::ZombieHorse
+            | S::ZombieVillager
+            | S::ZombifiedPiglin
+    )
+}
+/// The vanilla entity type of a species, `minecraft:` and its [`Def::name`].
+pub fn vanilla_id(s: Species) -> &'static str {
+    static IDS: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
+        ALL.iter()
+            .map(|d| format!("minecraft:{}", d.name))
+            .collect()
+    });
+    let index = ALL.iter().position(|d| d.species == s).unwrap_or(0);
+    &IDS[index]
+}
 impl Def {
     /// Model layer families to load for this entity (adult, baby, variants).
     pub fn layer_prefixes(&self) -> Vec<&'static str> {
@@ -1485,7 +1554,10 @@ impl Def {
                     | S::ZombieNautilus
             ),
             undead,
-            breathes_water: aquatic
+            // `#can_breathe_under_water`, and the iron golem, whose
+            // `decreaseAirSupply` keeps its air. Not the dolphin: it holds its
+            // breath (4800 ticks) and surfaces for air.
+            breathes_water: (aquatic && s != S::Dolphin)
                 || undead
                 || matches!(
                     s,
@@ -1495,13 +1567,13 @@ impl Def {
                         | S::Guardian
                         | S::ElderGuardian
                         | S::IronGolem
-                        | S::SnowGolem
-                        | S::Ghast
-                        | S::Blaze
+                        | S::CopperGolem
                         | S::Nautilus
                 ),
-            // Nautilus.handleAirSupply: it dries out on land.
-            needs_water: aquatic || s == S::Nautilus,
+            // WaterAnimal.handleAirSupply: it dries out on land; Nautilus's
+            // does the same. Dolphin.handleAirSupply is empty, so a dolphin
+            // takes LivingEntity.baseTick's air like a land mob.
+            needs_water: (aquatic && s != S::Dolphin) || s == S::Nautilus,
             water_sensitive: matches!(s, S::Enderman | S::Blaze | S::SnowGolem | S::Strider),
             animal: !matches!(s, S::Bat | S::SulfurCube | S::Mannequin)
                 && !self.hostile_class()

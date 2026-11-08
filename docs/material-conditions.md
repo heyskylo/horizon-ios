@@ -74,8 +74,12 @@ column minimum caching, Y-only updates, ignored original volume strides, partial
 failed fills, retries, floor conversions, infinities/NaN and integer wrapping.
 The preliminary plane is bounded to 1,048,576 samples.
 
-Ore-vein rules accept three compiled density roots. Density and richness fill
-the expected chunk volume at compilation; gap sampling stays lazy. Cached
+Ore-vein rules accept three compiled density roots. A vein's density is never
+positive outside the y bounds that `DensityGraph::positive_y_bounds` reads from its shape: a
+range choice on a clamped y gradient whose out-of-range branch is a constant
+<= 0, as vanilla's vein densities are. The surface bands drop the vein rule outside those
+bounds. Density and richness fill the expected chunk volume at compilation, cut
+at the highest y any vein reaches. Gap sampling stays lazy. Cached
 lookups require an exact lattice position. Density queries use the block context;
 random choices use application coordinates and the seeded `minecraft:ore` stream.
 Tests cover both random algorithms, draw order, repeated calls, independent

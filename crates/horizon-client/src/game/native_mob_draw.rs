@@ -13,14 +13,13 @@ use glam::{DVec3, Mat4};
 use horizon_client::{
     block_entity_render::diffuse_lights,
     mesher::Vertex,
-    mobs::{Mob, anim, living::wrap},
+    mobs::{Mob, anim},
 };
 
 /// One mob's frame, as `EntityRenderer.extractRenderState` fills a
 /// `LivingEntityRenderState`: what a model reads to pose and animate itself.
 /// Angles are in degrees, interpolated to the frame's partial tick.
 // Native mods read it; nothing in Horizon does.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct NativeMobRender<'a> {
     /// The mob's network id, as the mob helpers and mod messages name it.
@@ -56,7 +55,7 @@ pub struct NativeMobRender<'a> {
 impl<'a> NativeMobRender<'a> {
     /// The render state of `m` at `partial` (`LivingEntityRenderer.extractRenderState`).
     pub(super) fn of(m: &'a Mob, partial: f32) -> Self {
-        let body = m.previous_body_yaw + wrap(m.body_yaw - m.previous_body_yaw) * partial;
+        let body = anim::body_rot(m, partial);
         // The walk cycle, head turn and age as the vanilla models read them:
         // no walking while riding or dead, a baby's legs three times as far
         // (`WalkAnimationState.position(partial)`, `positionScale`).
@@ -83,7 +82,6 @@ impl<'a> NativeMobRender<'a> {
 /// Which player a [`NativeMobRender`] is, for `native_player_submit` and
 /// `native_mob_layer`.
 // Native mods read it; nothing in Horizon does.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub struct NativePlayerRender<'a> {
     /// The player's profile name.

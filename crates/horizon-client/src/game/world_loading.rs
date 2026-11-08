@@ -8,6 +8,9 @@ pub(super) struct WorldRequest {
     pub seed: Option<i64>,
     pub creative: bool,
     pub create: Option<horizon_client::title::WorldOptions>,
+    /// The account the world opens under, for an integrated server
+    /// (`IntegratedServer.getSingleplayerProfile`): its name and UUID.
+    owner: Option<(String, u128)>,
 }
 
 pub(super) struct PreparedWorld {
@@ -21,6 +24,9 @@ pub(super) struct PreparedWorld {
     pub session_lock: horizon_client::save::SessionLock,
     pub rand_sequences: horizon_client::random_sequences::RandomSequences,
     pub locator: Option<Arc<VanillaTerrain>>,
+    /// The owner's offline UUID and the account's, when an older world moved its
+    /// owner at open (`playerdata::migrate_owner`): entities migrate as they load.
+    pub owner_migration: Option<(u128, u128)>,
 }
 
 impl WorldRequest {
@@ -38,7 +44,16 @@ impl WorldRequest {
             seed,
             creative,
             create: create.cloned(),
+            owner: None,
         })
+    }
+
+    /// The account this world opens under (`IntegratedServer.getSingleplayerProfile`):
+    /// a world older builds made under the offline profile moves its owner to it at
+    /// open. A dedicated server has no single-player owner and leaves it unset.
+    pub fn owned_by(mut self, player: &str, owner: u128) -> Self {
+        self.owner = Some((player.to_owned(), owner));
+        self
     }
 
     pub fn prepare(
@@ -49,9 +64,10 @@ impl WorldRequest {
         settings: &Settings,
         upgrade: &horizon_world::datafix::progress::UpgradeProgress,
     ) -> Result<PreparedWorld> {
+        let _prepare_step = startup::step("world.prepare");
         // Before any chunk is read: a loaded container with a loot table is rolled as its chunk
         // is decoded (`save::roll_loaded_loot`), and the spawn chunks are read while the world
-        // opens. Every world opens here: in-frame, on the server thread, on a dedicated server.
+        // opens. Every world opens here: on the server thread, on a dedicated server.
         let loot = || {
             horizon_client::structure_blocks::loot_data(
                 &options.resources,
@@ -96,6 +112,7 @@ impl WorldRequest {
             seed,
             creative,
             create,
+            owner,
         } = self;
         let name = name.as_deref();
         let create = create.as_ref();
@@ -164,6 +181,28 @@ impl WorldRequest {
             ..Level::default()
         });
         let mut level = level;
+        // `IntegratedServer.setSingleplayerProfile`: a world older Horizon builds made
+        // under the offline profile moves its owner to the account at open — the player
+        // file, its `UUID` and level.dat's `singleplayer_uuid`. Its entities follow as
+        // their chunks load (`owner_migration`, `entity_nbt::migrate_player_uuid`).
+        let owner_migration = owner.and_then(|(player, account)| {
+            let old = horizon_protocol::crypto::offline_uuid(&player);
+            (old != account).then(|| {
+                if created {
+                    // `IntegratedServer.initServer` saves with the profile before the first
+                    // tick: a world made under the account names it from its first level.dat.
+                    level.player_uuid = Some(horizon_client::lan::playerdata::uuid_ints(account));
+                } else if horizon_client::lan::playerdata::migrate_owner(
+                    &save_root, &mut level, old, account,
+                ) {
+                    log::info!(
+                        "Horizon: \"{folder}\" was made under the offline profile; \
+                         its owner moved to the account's UUID"
+                    );
+                }
+                (old, account)
+            })
+        });
         // CreateWorldScreen's choices, before streaming reads the generator.
         if created && let Some(o) = create {
             level.hardcore = o.hardcore;
@@ -176,8 +215,6 @@ impl WorldRequest {
                 o.flat_settings(),
                 o.single_biome(),
             )?;
-            // WorldCreationUiState.getGameRules, written with the level.
-            level.game_rules = o.rules.by_name();
             // The DataPackConfig the screen chose: the picked packs on,
             // everything else disabled — the feature packs left out, and the
             // world packs the Data Packs screen held back (`install` copies
@@ -206,16 +243,13 @@ impl WorldRequest {
             // picked feature packs over vanilla's (`FeatureFlags.REGISTRY`'s
             // codec writes the whole set, `minecraft:vanilla` included, and
             // omits the tag when it is the default).
-            let mut flags = vec!["minecraft:vanilla".to_owned()];
-            flags.extend(
-                packs
-                    .iter()
-                    .filter(|p| o.data_packs.contains(&p.id))
-                    .flat_map(|p| p.features()),
-            );
-            flags.sort();
-            flags.dedup();
-            level.enabled_features = flags;
+            level.enabled_features = o.enabled_features(&options.resources);
+            // CreateWorldScreen copies the edited rules with the final flags,
+            // even when the player never opened the rules screen.
+            level.game_rules = o
+                .rules
+                .copy_with_features(&level.enabled_features)
+                .by_name();
         }
         // Worlds made without the Create New World screen (--world, the
         // control socket) take its default: commands on for Creative only.
@@ -226,9 +260,19 @@ impl WorldRequest {
             level.dimension = d.clone();
             level.position = None;
         }
+        // The bounded registry-loader leaf slice: fail world preparation before streaming,
+        // rather than letting the flat-generator fallback swallow a selected pack's codec error.
+        let (overrides, _) = worldgen_overrides_of(
+            &save_root,
+            &options.resources,
+            res.biomes(),
+            &level.enabled_features,
+        );
+        overrides.validate_fill_layers(pack.assets.registry)?;
         let dim = Dim::from_id(&level.dimension);
         let shapes = level_shapes(&save_root, res.biomes());
         let shape = shapes.get(dim.id());
+        let streaming_step = startup::step("world.make_streaming");
         let (mut streaming, save, locator) = make_streaming(
             res,
             pack,
@@ -240,11 +284,15 @@ impl WorldRequest {
             level.seed,
             &level.enabled_features,
         )?;
+        drop(streaming_step);
         streaming.radius = settings.render_distance;
         let mut world = World::new(res.facts().air, level.seed);
         world.attachments = save.load_attachments();
         world.shape = shape;
-        world.fast_lava = dim == Dim::Nether;
+        world.fast_lava = horizon_world::dimension_type::DimensionFacts::of_builtin_level(
+            horizon_core::LevelKey::builtin_or_overworld(dim.id()),
+        )
+        .fast_lava;
         world.game_time = level.time;
         world.day_time = options.time.unwrap_or(level.day_time);
         world.weather = level.weather;
@@ -276,57 +324,35 @@ impl WorldRequest {
             session_lock,
             rand_sequences,
             locator,
+            owner_migration,
         })
     }
 }
 
 pub(super) struct WorldLoader {
-    pub cancelled: bool,
-    /// What the world's upgrade has done (`UpgradeProgress`), which
-    /// `FileFixerProgressScreen` shows while the file fixers run.
-    pub upgrade: Arc<horizon_world::datafix::progress::UpgradeProgress>,
     handle: JoinHandle<std::result::Result<PreparedWorld, String>>,
 }
 
 impl WorldLoader {
+    /// Prepare the world on its own thread. `upgrade` is what its upgrade has done
+    /// (`UpgradeProgress`), which the window's `FileFixerProgressScreen` shows while the
+    /// file fixers run, and where its Cancel stops them.
     pub fn start(
         request: WorldRequest,
         res: Arc<Resources>,
         pack: PackResources,
         options: Options,
         settings: Settings,
+        upgrade: Arc<horizon_world::datafix::progress::UpgradeProgress>,
     ) -> Result<Self> {
-        let upgrade = Arc::new(horizon_world::datafix::progress::UpgradeProgress::new());
-        let worker_upgrade = upgrade.clone();
         let handle = std::thread::Builder::new()
             .name("World initialization".into())
             .spawn(move || {
                 request
-                    .prepare(&res, &pack, &options, &settings, &worker_upgrade)
+                    .prepare(&res, &pack, &options, &settings, &upgrade)
                     .map_err(|e| e.to_string())
             })?;
-        Ok(Self {
-            cancelled: false,
-            upgrade,
-            handle,
-        })
-    }
-
-    // Wait for construction and disposal off the window thread. Keeping this
-    // handle prevents a queued reopen racing the old session lock.
-    pub fn cancel(self) -> Self {
-        Self {
-            cancelled: true,
-            upgrade: self.upgrade.clone(),
-            handle: std::thread::spawn(move || {
-                drop(self.finish());
-                Err("world initialization cancelled".into())
-            }),
-        }
-    }
-
-    pub fn ready(&self) -> bool {
-        self.handle.is_finished()
+        Ok(Self { handle })
     }
 
     pub fn finish(self) -> Result<PreparedWorld> {
@@ -379,6 +405,7 @@ pub(super) fn preload_world_data(
                 .name("World data preload".into())
                 .spawn(move || {
                     horizon_threads::behind_server();
+                    let sync = spawn_sync_preload(&resources, true);
                     // Errors are left for the world opening to report.
                     if let Ok(data) = horizon_client::vanillagen::shared_data(
                         &resources.join("worldgen"),
@@ -388,14 +415,17 @@ pub(super) fn preload_world_data(
                         // seed shares: about 140 ms off opening the world.
                         let _ = data.prepare_decoration("minecraft:normal", "minecraft:overworld");
                     }
+                    // The loot data's item tables and the server's data both
+                    // read the recipe folder: held here, it is read once.
+                    let _recipe_files =
+                        horizon_client::json_folder::read(&resources.join("data/minecraft/recipe"));
                     // The preload is the game's own data; the world's packs'
                     // tables are built when it opens (finish_open_world).
                     let _ = horizon_client::structure_blocks::loot_data(
                         &resources,
                         &horizon_world::loot::PackOverlay::NONE,
                     );
-                    let _ =
-                        super::lan::sync_data(&resources, &horizon_world::loot::PackOverlay::NONE);
+                    join_sync_preload(sync, &resources);
                 });
             match spawned {
                 Ok(thread) => *preload = Preload::Started { thread, left: None },
@@ -444,6 +474,7 @@ pub(super) fn preload_launch_world(
         .spawn(move || {
             // Not behind the server: the world's opening waits for it.
             let started = std::time::Instant::now();
+            let sync = spawn_sync_preload(&resources, false);
             // Errors are left for the world opening to report. The world's
             // flags from its level.dat: the feature packs a flag forces on.
             let enabled_features = horizon_client::save::Level::read(&world_root)
@@ -459,11 +490,15 @@ pub(super) fn preload_launch_world(
                 let preset = horizon_client::save::WorldGen::preset(&world_root);
                 let _ = data.prepare_decoration(preset, "minecraft:overworld");
             }
+            // As in `preload_world_data`: the loot data and the server's
+            // data share one read of the recipe folder.
+            let _recipe_files =
+                horizon_client::json_folder::read(&resources.join("data/minecraft/recipe"));
             let _ = horizon_client::structure_blocks::loot_data(
                 &resources,
                 &horizon_world::loot::PackOverlay::NONE,
             );
-            let _ = super::lan::sync_data(&resources, &horizon_world::loot::PackOverlay::NONE);
+            join_sync_preload(sync, &resources);
             log::info!(
                 "Horizon: world data preloaded for the launch's world in {} ms",
                 started.elapsed().as_millis()
@@ -472,6 +507,39 @@ pub(super) fn preload_launch_world(
     match spawned {
         Ok(thread) => *preload = Preload::Started { thread, left: None },
         Err(e) => log::warn!("Horizon: world data preload: {e}"),
+    }
+}
+
+/// The registries, tags, recipes and advancements the server sends
+/// (`lan::sync_data`), read on a thread of their own beside the worldgen and
+/// loot reads: they share nothing, and read after them they came too late
+/// for the server thread, which then read them a second time.
+fn spawn_sync_preload(
+    resources: &std::path::Path,
+    behind_server: bool,
+) -> Option<std::thread::JoinHandle<()>> {
+    let resources = resources.to_owned();
+    std::thread::Builder::new()
+        .name("Sync data preload".into())
+        .spawn(move || {
+            if behind_server {
+                horizon_threads::behind_server();
+            }
+            let _ = super::lan::sync_data(&resources, &horizon_world::loot::PackOverlay::NONE);
+        })
+        .ok()
+}
+
+/// Waits for [`spawn_sync_preload`]'s thread, so the preload is over when
+/// its own thread is; reads the data here if that thread did not start.
+fn join_sync_preload(sync: Option<std::thread::JoinHandle<()>>, resources: &std::path::Path) {
+    match sync {
+        Some(thread) => {
+            let _ = thread.join();
+        }
+        None => {
+            let _ = super::lan::sync_data(resources, &horizon_world::loot::PackOverlay::NONE);
+        }
     }
 }
 
@@ -616,7 +684,14 @@ pub(super) fn level_shapes(
         "minecraft:the_end",
     ] {
         let shape = overrides.level_height(level).and_then(|h| {
-            LevelShape::new(h.min_y, h.height, h.logical_height, h.has_skylight).ok()
+            LevelShape::new(
+                h.min_y,
+                h.height,
+                h.logical_height,
+                h.has_skylight,
+                h.has_ceiling,
+            )
+            .ok()
         });
         match shape {
             Some(shape) => *shapes.get_mut(level) = shape,
@@ -683,16 +758,23 @@ pub(super) fn make_streaming(
                 shape,
             )
         });
-    // `FlatLevelSource.createState`: a superflat world whose settings let structure sets
-    // generate runs them on its flat ground.
-    let flat_structures = (dim == Dim::Overworld)
+    // PlaceCommand.placeJigsaw/placeStructure generate directly, independently
+    // of WorldOptions.generateStructures. Keep their flat locator available
+    // even when automatic structure starts are disabled.
+    let automatic_structures =
+        horizon_client::save::WorldGen::read(world_root).is_none_or(|w| w.structures);
+    let flat_settings = (dim == Dim::Overworld)
         .then(|| horizon_client::save::world_gen_settings(world_root))
         .flatten()
-        .and_then(|s| horizon_client::flatgen::FlatTerrain::structure_settings(&s))
-        .filter(|_| horizon_client::save::WorldGen::read(world_root).is_none_or(|w| w.structures));
+        .and_then(|s| horizon_client::flatgen::FlatTerrain::pipeline_settings(&s));
+    // `adjustGenerationSettings`: a superflat world with features or lakes is decorated
+    // whether or not its structures generate.
+    let flat_decorates = flat_settings
+        .as_ref()
+        .is_some_and(|s| s.features || s.lakes);
     // A generator that cannot be built (a layer block the registry lacks, a level shorter
     // than the noise) leaves the world on its flat ground, as it was before.
-    let flat_vanilla = flat_structures.and_then(|settings| {
+    let flat_vanilla = flat_settings.and_then(|settings| {
         let overrides =
             world_worldgen_overrides(world_root, &options.resources, &biomes, enabled_features);
         match VanillaTerrain::for_flat(
@@ -702,11 +784,14 @@ pub(super) fn make_streaming(
             &biomes,
             seed,
             &settings,
-            true,
+            automatic_structures,
         ) {
-            Ok(terrain) => Some(Arc::new(terrain)),
+            Ok(mut terrain) => {
+                terrain.add_mod_signs(res.facts());
+                Some(Arc::new(terrain))
+            }
             Err(e) => {
-                log::warn!("Horizon: the superflat structures are unavailable: {e}");
+                log::warn!("Horizon: the superflat structures and features are unavailable: {e}");
                 None
             }
         }
@@ -719,11 +804,17 @@ pub(super) fn make_streaming(
                 registry: pack.assets.clone(),
                 biomes: biomes.clone(),
             }),
-            pack.context.clone(),
+            pack.context_with(biomes.clone()),
             res.threads(),
         )
-    } else if let Some(inner) = flat_vanilla {
-        inner.search_rings_behind();
+    } else if let Some(inner) = flat_vanilla
+        .as_ref()
+        .filter(|_| automatic_structures || flat_decorates)
+        .cloned()
+    {
+        if automatic_structures {
+            inner.search_rings_behind();
+        }
         inner.set_reference_file(world_root.join("data").join(format!(
             "horizon_structure_references_{}.json",
             dim.id().replace(':', "_")
@@ -742,10 +833,13 @@ pub(super) fn make_streaming(
                 registry: pack.assets.clone(),
                 biomes: biomes.clone(),
             }),
-            pack.context.clone(),
+            pack.context_with(biomes.clone()),
             res.threads(),
         )
     } else if let Some(inner) = flat {
+        // A superflat world that neither decorates nor generates structures: its
+        // layers alone. Only manual commands use the locator.
+        locator = flat_vanilla;
         Streaming::new(
             Arc::new(Persistent {
                 inner: Arc::new(inner),
@@ -753,7 +847,7 @@ pub(super) fn make_streaming(
                 registry: pack.assets.clone(),
                 biomes: biomes.clone(),
             }),
-            pack.context.clone(),
+            pack.context_with(biomes.clone()),
             res.threads(),
         )
     } else if options.test_terrain && dim == Dim::Overworld {
@@ -765,7 +859,7 @@ pub(super) fn make_streaming(
                 registry: pack.assets.clone(),
                 biomes: biomes.clone(),
             }),
-            pack.context.clone(),
+            pack.context_with(biomes.clone()),
             res.threads(),
         )
     } else {
@@ -775,13 +869,18 @@ pub(super) fn make_streaming(
         let preset = horizon_client::save::WorldGen::preset(world_root);
         let overrides =
             world_worldgen_overrides(world_root, &options.resources, &biomes, enabled_features);
-        let inner = Arc::new(VanillaTerrain::for_world_with(&options.resources.join("worldgen"), &overrides, pack.assets.registry, &biomes, seed, preset, dim.id(), structures).map_err(|e| {
+        let saved_stem = horizon_client::save::world_gen_settings(world_root)
+            .and_then(|s| s.get("dimensions")?.get(dim.id()).cloned())
+            .map(|stem| horizon_client::scoreboard::tag_to_json(&stem));
+        let mut inner = VanillaTerrain::for_world_with_settings(&options.resources.join("worldgen"), &overrides, pack.assets.registry, &biomes, seed, preset, dim.id(), structures, saved_stem.as_ref()).map_err(|e| {
                 if overrides.is_empty() {
                     format!("{e}\nPrepare the worldgen bundle with the launcher, or: horizon-prepare --prepare")
                 } else {
                     format!("{e}\nThe world's data packs change its world generation: one of them may not be made for this version")
                 }
-            })?);
+            })?;
+        inner.add_mod_signs(res.facts());
+        let inner = Arc::new(inner);
         if dim == Dim::Overworld && structures {
             inner.search_rings_behind();
         }
@@ -812,7 +911,7 @@ pub(super) fn make_streaming(
                 registry: pack.assets.clone(),
                 biomes: biomes.clone(),
             }),
-            pack.context.clone(),
+            pack.context_with(biomes.clone()),
             res.threads(),
         )
     };
@@ -821,6 +920,7 @@ pub(super) fn make_streaming(
     streaming.biome_blend = settings.biome_blend;
     streaming.smooth_lighting = settings.smooth_lighting;
     streaming.cutout_leaves = settings.cutout_leaves;
+    streaming.opaque_ice = settings.horizon.opaque_ice;
     streaming.leaf_culling = settings
         .horizon
         .leaf_culling_effective(&settings.resource_packs);
@@ -838,50 +938,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn polling_does_not_wait_for_world_initialization() {
-        let (release, wait) = std::sync::mpsc::channel();
-        let loader = WorldLoader {
-            cancelled: false,
-            upgrade: Default::default(),
-            handle: std::thread::spawn(move || {
-                wait.recv().unwrap();
-                Err("test world failure".into())
-            }),
-        };
-        assert!(!loader.ready());
-        release.send(()).unwrap();
-        assert_eq!(
-            loader.finish().err().unwrap().to_string(),
-            "test world failure"
-        );
-    }
-
-    #[test]
-    fn cancellation_keeps_initialization_tracked_until_it_has_stopped() {
-        let (release, wait) = std::sync::mpsc::channel();
-        let loader = WorldLoader {
-            cancelled: false,
-            upgrade: Default::default(),
-            handle: std::thread::spawn(move || {
-                wait.recv().unwrap();
-                Err("cancelled test world".into())
-            }),
-        }
-        .cancel();
-        assert!(loader.cancelled);
-        assert!(!loader.ready());
-        release.send(()).unwrap();
-        assert_eq!(
-            loader.finish().err().unwrap().to_string(),
-            "world initialization cancelled"
-        );
-    }
-
-    #[test]
     fn worker_panics_reach_the_client() {
         let loader = WorldLoader {
-            cancelled: false,
-            upgrade: Default::default(),
             handle: std::thread::spawn(|| panic!("broken world initialization")),
         };
         assert_eq!(
@@ -894,5 +952,213 @@ mod tests {
     fn prepared_world_can_cross_threads() {
         fn send<T: Send>() {}
         send::<PreparedWorld>();
+    }
+}
+
+#[cfg(test)]
+mod unused_feature_startup_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires prepared resources and scratch homes/cwd"]
+    fn actual_world_prepare_rejects_unused_invalid_feature() {
+        let resources = PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            resources.clone(),
+            None,
+            &resources,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = resources;
+        options.execution_role = execution_role::ExecutionRole::IntegratedServer;
+        for (case, height) in [("valid", 0), ("invalid", -1)] {
+            let root = std::env::current_dir().unwrap().join(case);
+            let pack = root.join("datapacks/h259");
+            std::fs::create_dir_all(pack.join("data/h259/worldgen/feature")).unwrap();
+            std::fs::write(pack.join("pack.mcmeta"), r#"{"pack":{"description":"H259 unused feature","min_format":[121,0],"max_format":[121,0]}}"#).unwrap();
+            let json = format!(
+                r#"{{"type":"minecraft:fill_layer","height":{height},"state":"minecraft:stone"}}"#
+            );
+            std::fs::write(
+                pack.join("data/h259/worldgen/feature/unused_probe.json"),
+                &json,
+            )
+            .unwrap();
+            let mut level = Level {
+                seed: 259,
+                data_packs: Some((vec!["vanilla".into(), "file/h259".into()], vec![])),
+                ..Level::default()
+            };
+            level.write(&root).unwrap();
+            horizon_client::save::write_world_gen_settings(
+                &root,
+                259,
+                horizon_client::save::WorldGen {
+                    preset: horizon_client::save::WorldPreset::Flat,
+                    structures: false,
+                    bonus_chest: false,
+                },
+            )
+            .unwrap();
+            let (overrides, _) = worldgen_overrides_of(
+                &root,
+                &options.resources,
+                loaded.resources.biomes(),
+                &level.enabled_features,
+            );
+            assert_eq!(
+                overrides
+                    .entries("features")
+                    .find(|(id, _)| *id == "h259:unused_probe")
+                    .unwrap()
+                    .1,
+                json
+            );
+            assert!(overrides.entries("placed_features").next().is_none());
+            assert_eq!(
+                horizon_client::save::WorldGen::read(&root).unwrap().preset,
+                horizon_client::save::WorldPreset::Flat
+            );
+            let request = WorldRequest {
+                save_root: root,
+                folder: case.into(),
+                name: None,
+                seed: Some(259),
+                creative: false,
+                create: None,
+                owner: None,
+            };
+            let result = request.prepare(
+                &loaded.resources,
+                &loaded.pack,
+                &options,
+                &settings,
+                &horizon_world::datafix::progress::UpgradeProgress::new(),
+            );
+            if height == 0 {
+                assert!(result.is_ok(), "valid unused registry entry must prepare");
+                drop(result);
+            } else {
+                let error = match result {
+                    Ok(_) => panic!(
+                        "unused invalid h259:unused_probe was accepted by actual world preparation"
+                    ),
+                    Err(error) => error.to_string(),
+                };
+                assert!(error.contains("h259:unused_probe"), "{error}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod unused_feature_preservation_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires prepared resources and scratch homes/cwd"]
+    fn startup_leaf_preservation_other_id_and_unrelated_feature() {
+        let resources = PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            resources.clone(),
+            None,
+            &resources,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = resources;
+        options.execution_role = execution_role::ExecutionRole::IntegratedServer;
+        let root = std::env::current_dir().unwrap().join("preservation");
+        let pack = root.join("datapacks/h259");
+        let entries = pack.join("data/controls/worldgen/feature");
+        std::fs::create_dir_all(&entries).unwrap();
+        std::fs::write(pack.join("pack.mcmeta"), r#"{"pack":{"description":"H259 preservation controls","min_format":[121,0],"max_format":[121,0]}}"#).unwrap();
+        let leaf = r#"{"type":"minecraft:fill_layer","height":1,"state":"minecraft:stone"}"#;
+        let unrelated = r#"{"type":"minecraft:no_op"}"#;
+        std::fs::write(entries.join("another_id.json"), leaf).unwrap();
+        std::fs::write(entries.join("unrelated.json"), unrelated).unwrap();
+        let mut level = Level {
+            seed: 259,
+            data_packs: Some((vec!["vanilla".into(), "file/h259".into()], vec![])),
+            ..Level::default()
+        };
+        level.write(&root).unwrap();
+        horizon_client::save::write_world_gen_settings(
+            &root,
+            259,
+            horizon_client::save::WorldGen {
+                preset: horizon_client::save::WorldPreset::Flat,
+                structures: false,
+                bonus_chest: false,
+            },
+        )
+        .unwrap();
+        let (mut overrides, _) = worldgen_overrides_of(
+            &root,
+            &options.resources,
+            loaded.resources.biomes(),
+            &level.enabled_features,
+        );
+        assert_eq!(
+            overrides.entries("features").collect::<Vec<_>>(),
+            vec![
+                ("controls:another_id", leaf),
+                ("controls:unrelated", unrelated),
+            ]
+        );
+        // Labeled native preservation controls, not additional Java runtime coverage.
+        overrides
+            .validate_fill_layers(loaded.pack.assets.registry)
+            .unwrap();
+        // The existing winning-entry map still owns precedence, not the validation phase.
+        overrides.set(
+            "features",
+            "controls:another_id",
+            r#"{"type":"minecraft:fill_layer","height":-1,"state":"minecraft:stone"}"#.into(),
+        );
+        let error = overrides
+            .validate_fill_layers(loaded.pack.assets.registry)
+            .unwrap_err();
+        assert!(error.to_string().contains("controls:another_id"));
+        overrides.set("features", "controls:another_id", leaf.into());
+        overrides
+            .validate_fill_layers(loaded.pack.assets.registry)
+            .unwrap();
+        let request = WorldRequest {
+            save_root: root,
+            folder: "preservation".into(),
+            name: None,
+            seed: Some(259),
+            creative: false,
+            create: None,
+            owner: None,
+        };
+        assert!(
+            request
+                .prepare(
+                    &loaded.resources,
+                    &loaded.pack,
+                    &options,
+                    &settings,
+                    &horizon_world::datafix::progress::UpgradeProgress::new(),
+                )
+                .is_ok(),
+            "preservation: other-id leaf and unrelated no_op must still prepare"
+        );
     }
 }

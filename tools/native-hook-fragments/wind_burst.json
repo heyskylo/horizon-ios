@@ -1,0 +1,16 @@
+{
+  "hooks": [
+    {
+      "name": "wind_burst",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_wind_burst",
+      "side": "server",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "collect",
+        "out": "blocks"
+      }
+    }
+  ],
+  "rust_summary": "Wind burst block filtering (`native_wind_burst`).",
+  "doc_summary": "Before a wind burst interacts with blocks, `native_wind_burst(dimension, center, blocks)` receives the shuffled candidate positions. Remove positions to spare those blocks; entity knockback and the shuffle's random draws are unchanged. Not called when mob_griefing prevents a breeze from interacting with blocks. Bundles need \"hooks\": @API:wind_burst@."
+}

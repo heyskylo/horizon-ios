@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "fluid_flow", "target": "horizon_client::game::native_world_read::Game<'_>::native_fluid_flow"}
+  ],
+  "rust_summary": "the current of a fluid at a position (`native_fluid_flow`, `FluidState.getFlow`).",
+  "doc_summary": "`native_fluid_flow(dimension, pos)` is `FluidState.getFlow(level, pos)`: the normalised current an item in the fluid is pushed by, zero for still or no fluid, none where the chunk isn't loaded or the dimension isn't available. Bundles need \"hooks\": @API:fluid_flow@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_world_read.rs"
+  ]
+}

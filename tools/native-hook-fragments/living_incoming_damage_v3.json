@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "living_incoming_damage_v3",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_living_incoming_damage_v3",
+      "neoforge": "LivingIncomingDamageEvent",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "damage everywhere v1 fires with the victim's and a player attacker's UUID and the causing and direct entity (`native_living_incoming_damage_v3`).",
+  "doc_summary": "`native_living_incoming_damage_v3(victim, victim_uuid, kind, attacker, attacker_uuid, direct, damage_type, amount, cancel)`: `native_living_incoming_damage` everywhere v1 fires, right after it, with a player victim's UUID, the causing entity where v1 has 0 (a mob's or a player's melee, the synchronous attack in progress), a player attacker's UUID and the direct entity; change the amount or cancel as in v1. Bundles need \"hooks\": @API:living_incoming_damage_v3@."
+}

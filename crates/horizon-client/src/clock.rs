@@ -2,6 +2,18 @@
 //! milliseconds turn into game ticks, partial ticks and real-time deltas, and
 //! the `/tick` freeze, step and sprint state.
 
+/// `HORIZON_STILL=1`, read once (`FixedStep::still`).
+fn still_requested() -> bool {
+    static STILL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *STILL.get_or_init(|| {
+        let on = std::env::var("HORIZON_STILL").is_ok_and(|v| v == "1");
+        if on {
+            log::warn!("HORIZON_STILL=1: worlds start frozen (/tick unfreeze), frames follow the world's ticks");
+        }
+        on
+    })
+}
+
 /// `DeltaTracker.Timer`: float arithmetic on integer milliseconds, exactly as
 /// the client does it.
 #[derive(Clone, Debug)]
@@ -277,6 +289,8 @@ impl ServerTickRateManager {
 /// Ticks one sprint frame may run (rendering carries on between frames).
 const SPRINT_PER_FRAME: i64 = 40;
 const SAMPLES: usize = 100;
+/// The windows of [`FixedStep::tps`], in seconds: one, five and fifteen minutes.
+const TPS_WINDOWS: [f64; 3] = [60.0, 300.0, 900.0];
 
 /// A step command's broadcast value and the ticks still owed to a new client.
 /// `ServerTickRateManager.updateStepTicks` sends the former immediately;
@@ -304,6 +318,10 @@ pub struct FixedStep {
     tick_times: [i64; SAMPLES],
     aggregated: i64,
     tick_count: i64,
+    /// The ticks a second over the last [`TPS_WINDOWS`], decayed once a second ([`Self::tps`]).
+    tps: [f64; 3],
+    /// When the second being counted started (at a recorded tick's end) and the ticks since.
+    tps_second: Option<(std::time::Instant, u32)>,
     /// A server's client: its level's tick rate only slows the timer down
     /// (`Minecraft.getTickTargetMillis`), since the server runs the ticks.
     client: bool,
@@ -311,15 +329,23 @@ pub struct FixedStep {
     /// (`ServerTickRateManager.updateStepTicks` broadcasts each one).
     step_changes: u32,
     step_requested: i32,
-    /// In-frame ticks dropped since the last overload warning (`drop_ticks`).
-    dropped: u32,
-    /// When the last overload warning was due, on the frame clock.
-    last_overload_warning: std::time::Duration,
+    /// `HORIZON_STILL=1`, a dev switch for screenshots that come out the same every run: the
+    /// world starts frozen, and while it is, the camera's partial tick is held at 1 as the
+    /// level's is. With the frame's other time (`Game::visual_ticks`) following the world's
+    /// ticks, a frozen scene draws the same frame every time, and `/tick step` moves it on by
+    /// whole ticks.
+    still: bool,
 }
 
 impl Default for FixedStep {
     fn default() -> Self {
-        Self {
+        Self::new(still_requested())
+    }
+}
+
+impl FixedStep {
+    fn new(still: bool) -> Self {
+        let mut clock = Self {
             timer: Timer::new(20.0, 0),
             manager: ServerTickRateManager::default(),
             now: std::time::Duration::ZERO,
@@ -329,16 +355,21 @@ impl Default for FixedStep {
             tick_times: [0; SAMPLES],
             aggregated: 0,
             tick_count: 0,
+            tps: [20.0; 3],
+            tps_second: None,
             client: false,
             step_changes: 0,
             step_requested: 0,
-            dropped: 0,
-            last_overload_warning: std::time::Duration::ZERO,
-        }
+            still,
+        };
+        // Frozen before any tick: how many run while the world loads differs between runs.
+        clock.manager.base.set_frozen(still);
+        clock
     }
-}
-
-impl FixedStep {
+    /// `HORIZON_STILL` (`still`).
+    pub fn still(&self) -> bool {
+        self.still
+    }
     /// The clock of a client connected to a server: the `ClientLevel`'s
     /// `TickRateManager`, set by the server's ticking packets.
     pub fn client() -> Self {
@@ -392,8 +423,12 @@ impl FixedStep {
     }
     /// The camera entity's partial tick (`Camera.getCameraEntityPartialTicks`
     /// for a player, who is never frozen): `getGameTimeDeltaPartialTick(true)`,
-    /// so the view and the hand stay smooth in a frozen level.
+    /// so the view and the hand stay smooth in a frozen level. Under `still`, held at 1 there
+    /// like the level's, so a frame doesn't depend on when it's drawn.
     pub fn camera_fraction(&self) -> f64 {
+        if self.still && !self.runs_normally() {
+            return 1.0;
+        }
         f64::from(self.timer.game_time_delta_partial_tick(true))
     }
     /// After a frame: whether the game is paused by a screen (the residual
@@ -410,14 +445,15 @@ impl FixedStep {
     /// `TickRateManager.tick` for one tick, then whether the world runs
     /// (`runsNormally`). Also the sprint check that opens a sprint tick.
     pub fn world_runs(&mut self) -> bool {
+        // MinecraftServer checks for a finished sprint before tickServer
+        // asks the tick-rate manager whether the levels should run.
+        if self.manager.is_sprinting() && self.manager.remaining_sprint_ticks() == 0 {
+            self.sprint_report = Some(self.manager.finish_tick_sprint());
+        }
         self.manager.base.tick();
         self.sprint_checked = false;
         if self.manager.is_sprinting() {
-            let (_, report) = self.manager.check_should_sprint_this_tick(self.now_ns());
-            self.sprint_checked = report.is_none();
-            if report.is_some() {
-                self.sprint_report = report;
-            }
+            self.sprint_checked = self.manager.check_should_sprint_this_tick(self.now_ns()).0;
         }
         self.manager.base.runs_normally()
     }
@@ -447,41 +483,6 @@ impl FixedStep {
     }
     pub fn sprinting(&self) -> bool {
         self.manager.is_sprinting()
-    }
-    /// Whether a frame that ran its world in the frame, and whose ticks so
-    /// far took `spent`, may run another one. Vanilla's world ticks on the
-    /// integrated server's thread, so a slow tick costs its frames nothing:
-    /// the server falls behind and says so (`MinecraftServer.runServer`'s
-    /// "Can't keep up!"). In the frame, a world whose ticks take longer than
-    /// their length falls behind every frame, so every frame ran the client
-    /// timer's ten: at 57 ms a tick, 1.7 FPS. So a frame stops once its
-    /// ticks have taken a tick's length: ticks of a few milliseconds keep the
-    /// full ten, and a world that cannot keep up runs one tick a frame,
-    /// slower but drawn. A sprint (`/tick sprint`) runs its own frame's worth.
-    pub fn tick_fits(&self, spent: std::time::Duration) -> bool {
-        self.sprinting() || spent < self.tick_duration()
-    }
-    /// The frame skips its remaining `ticks` (`tick_fits`): the world runs
-    /// slower than its tick rate. Returns vanilla's overload warning when one
-    /// is due: a second's worth of ticks behind, at most every ten seconds
-    /// (`OVERLOADED_THRESHOLD_NANOS`, `OVERLOADED_WARNING_INTERVAL_NANOS`).
-    pub fn drop_ticks(&mut self, ticks: u32) -> Option<String> {
-        self.dropped = self.dropped.saturating_add(ticks);
-        let tick = self.tick_duration();
-        let behind = tick * self.dropped;
-        let threshold = std::time::Duration::from_secs(1) + tick * 20;
-        let interval = std::time::Duration::from_secs(10) + tick * 100;
-        if behind <= threshold || self.now < self.last_overload_warning + interval {
-            return None;
-        }
-        let warning = format!(
-            "Can't keep up! Is the server overloaded? Running {}ms or {} ticks behind",
-            behind.as_millis(),
-            self.dropped
-        );
-        self.dropped = 0;
-        self.last_overload_warning = self.now;
-        Some(warning)
     }
     /// `requestGameToSprint`: true when a sprint was already running.
     pub fn start_sprint(&mut self, ticks: u32) -> bool {
@@ -537,6 +538,41 @@ impl FixedStep {
             let end = self.now_ns() + took;
             self.manager.end_tick_work(end);
         }
+        self.count_tick(std::time::Instant::now());
+    }
+    /// A recorded tick ended at `now`: once a second has passed since the second being
+    /// counted started, its ticks a second join each average of [`Self::tps`], weighted as a
+    /// load average is (`exp(-elapsed / window)` kept of the old value).
+    fn count_tick(&mut self, now: std::time::Instant) {
+        let Some((start, ticks)) = &mut self.tps_second else {
+            self.tps_second = Some((now, 0));
+            return;
+        };
+        *ticks += 1;
+        let elapsed = now.saturating_duration_since(*start).as_secs_f64();
+        if elapsed < 1.0 {
+            return;
+        }
+        let rate = f64::from(*ticks) / elapsed;
+        for (average, window) in self.tps.iter_mut().zip(TPS_WINDOWS) {
+            let kept = (-elapsed / window).exp();
+            *average = *average * kept + rate * (1.0 - kept);
+        }
+        self.tps_second = Some((now, 0));
+    }
+    /// The ticks a second the server kept over the last one, five and fifteen minutes (what
+    /// Bukkit's `Server.getTPS` reports; vanilla keeps no such average): measured between
+    /// recorded tick ends, so paused passes count where they are recorded. Starts at 20.
+    pub fn tps(&self) -> [f64; 3] {
+        self.tps
+    }
+    /// `getTickTimesNanos` as vanilla lays it out: the tick numbered `n` (from 1, as
+    /// `MinecraftServer.tickCount` after its increment) at index `n % 100`, so the
+    /// newest is at the recorded ticks' count `% 100`; 0 where no tick was recorded yet.
+    pub fn tick_times_nanos(&self) -> Vec<u64> {
+        (0..SAMPLES)
+            .map(|i| self.tick_times[(i + SAMPLES - 1) % SAMPLES].max(0) as u64)
+            .collect()
     }
     /// `getAverageTickTimeNanos`.
     pub fn average_nanos(&self) -> u64 {
@@ -554,35 +590,49 @@ impl FixedStep {
 mod tests {
     use super::*;
 
+    /// Twenty ticks a second keep 20; ten a second pull the one-minute average down
+    /// fastest; a second not yet over changes nothing.
     #[test]
-    fn a_frame_stops_ticking_after_a_ticks_length() {
-        let clock = FixedStep::default();
+    fn tps_averages_follow_the_ticks_a_second() {
+        let mut clock = FixedStep::new(false);
+        let t0 = std::time::Instant::now();
         let ms = std::time::Duration::from_millis;
-        // Ticks of 4 ms: the ten the timer allows fit in 50 ms.
-        assert!(clock.tick_fits(ms(4 * 9)));
-        // Ticks of 40 ms: the second one runs, not a third.
-        assert!(clock.tick_fits(ms(40)));
-        assert!(!clock.tick_fits(ms(80)));
-        // One tick longer than its length still runs, once a frame.
-        assert!(clock.tick_fits(ms(0)));
-        assert!(!clock.tick_fits(ms(120)));
-    }
-    #[test]
-    fn dropped_ticks_warn_once_a_second_behind_and_not_again_for_ten() {
-        let mut clock = FixedStep::default();
-        let s = std::time::Duration::from_secs;
-        clock.now = s(20);
+        for i in 0..=40 {
+            clock.count_tick(t0 + ms(50 * i));
+        }
         assert_eq!(
-            clock.drop_ticks(40),
-            None,
-            "two seconds: not past 1 s + 20 ticks"
+            clock.tps().map(|v| (v * 1000.0).round() / 1000.0),
+            [20.0; 3]
         );
-        let warning = clock.drop_ticks(1).expect("past the threshold");
-        assert!(warning.contains("2050ms or 41 ticks behind"), "{warning}");
-        clock.now = s(25);
-        assert_eq!(clock.drop_ticks(100), None, "within ten seconds");
-        clock.now = s(36);
-        assert!(clock.drop_ticks(0).unwrap().contains("100 ticks behind"));
+        let slow = t0 + ms(2000);
+        for i in 1..=10 {
+            clock.count_tick(slow + ms(100 * i));
+        }
+        let [one, five, fifteen] = clock.tps();
+        assert!(
+            one < five && five < fifteen && fifteen < 20.0,
+            "{:?}",
+            clock.tps()
+        );
+        assert!((one - (20.0 - 10.0 * (1.0 - (-1.0f64 / 60.0).exp()))).abs() < 1e-9);
+        clock.count_tick(slow + ms(1050));
+        assert_eq!(clock.tps(), [one, five, fifteen]);
+    }
+
+    /// The tick times sit where vanilla's array has them: tick n at n % 100.
+    #[test]
+    fn tick_times_are_laid_out_as_vanillas() {
+        let mut clock = FixedStep::new(false);
+        assert_eq!(clock.tick_times_nanos(), vec![0; SAMPLES]);
+        for n in 1..=150u64 {
+            clock.record(std::time::Duration::from_nanos(n));
+        }
+        let times = clock.tick_times_nanos();
+        assert_eq!(times.len(), SAMPLES);
+        assert_eq!(times[50], 150, "the newest, tick 150");
+        assert_eq!(times[51], 51, "tick 51, overwritten by none yet");
+        assert_eq!(times[0], 100);
+        assert_eq!(times[1], 101);
     }
 
     #[test]
@@ -617,6 +667,25 @@ mod tests {
         assert!(!m.base.runs_normally());
     }
     #[test]
+    fn a_finished_sprint_restores_freeze_before_the_next_world_tick() {
+        for was_frozen in [false, true] {
+            let mut clock = FixedStep::default();
+            clock.set_frozen(was_frozen);
+            assert_eq!(clock.world_runs(), !was_frozen);
+
+            assert!(!clock.start_sprint(1));
+            assert!(clock.world_runs());
+            assert!(!clock.frozen());
+            assert!(clock.take_sprint_report().is_none());
+
+            assert_eq!(clock.world_runs(), !was_frozen);
+            assert_eq!(clock.frozen(), was_frozen);
+            assert!(clock.take_sprint_report().is_some());
+            assert_eq!(clock.world_runs(), !was_frozen);
+            assert!(clock.take_sprint_report().is_none());
+        }
+    }
+    #[test]
     fn the_camera_keeps_interpolating_in_a_frozen_level() {
         let mut clock = FixedStep::default();
         clock.set_frozen(true);
@@ -625,6 +694,23 @@ mod tests {
         clock.end_frame(false);
         assert_eq!(clock.fraction(), 1.0, "frozen entities stay put");
         assert_eq!(clock.camera_fraction(), 0.5, "the player does not");
+    }
+    #[test]
+    fn a_still_clock_starts_frozen_and_holds_the_camera_too() {
+        let mut clock = FixedStep::new(true);
+        clock.world_runs();
+        assert!(!clock.runs_normally(), "frozen before the first tick");
+        clock.advance(std::time::Duration::from_millis(25));
+        clock.end_frame(false);
+        assert_eq!(clock.fraction(), 1.0);
+        assert_eq!(clock.camera_fraction(), 1.0);
+        // `/tick unfreeze`: the world runs as without the switch.
+        clock.set_frozen(false);
+        assert!(clock.world_runs());
+        assert!(
+            FixedStep::new(false).world_runs(),
+            "without the switch, unfrozen"
+        );
     }
     #[test]
     fn only_a_started_or_stopped_step_is_broadcast() {

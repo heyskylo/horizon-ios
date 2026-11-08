@@ -3,6 +3,7 @@
 //! and `ModelBlockRenderer`'s integer colour arithmetic (`ARGB.gray`,
 //! `scaleRGB`, `multiply`).
 use super::{Info, Padded, pi};
+use crate::models::catalog::QuadShape;
 use horizon_assets::model::Direction as D;
 
 /// `LightCoordsUtil.FULL_BRIGHT`.
@@ -19,27 +20,42 @@ pub(super) fn cardinal(nether: bool, face: D) -> f32 {
         D::West | D::East => 0.6,
     }
 }
+/// A face's brightness when a shader pack lights the faces (`Mesher::shader_pack_lighting`): no
+/// directional shading, every face at the dimension's up-face value (1.0, the Nether's 0.9).
+/// Our probe pack's Iris 1.11.7 values fit this: 0.9 on every Nether face, 1.0 in the overworld.
+pub(super) fn pack_flat(nether: bool) -> f32 {
+    cardinal(nether, D::Up)
+}
+/// The normals of `D`'s variants, in the order [`ADJACENCY`] is indexed by.
+const NORMALS: [[i32; 3]; 6] = [
+    [0, -1, 0],
+    [0, 1, 0],
+    [0, 0, -1],
+    [0, 0, 1],
+    [-1, 0, 0],
+    [1, 0, 0],
+];
 fn normal(face: D) -> [i32; 3] {
-    match face {
-        D::Down => [0, -1, 0],
-        D::Up => [0, 1, 0],
-        D::North => [0, 0, -1],
-        D::South => [0, 0, 1],
-        D::West => [-1, 0, 0],
-        D::East => [1, 0, 0],
-    }
+    NORMALS[face as usize]
 }
 pub(super) fn step(p: [i32; 3], face: D) -> [i32; 3] {
     let n = normal(face);
     [p[0] + n[0], p[1] + n[1], p[2] + n[2]]
 }
-fn state<'a>(pad: &Padded, info: &'a [Info], p: [i32; 3]) -> &'a Info {
-    &info[pad.blocks[pi(p[0], p[1], p[2])] as usize]
+/// The block state of the padded cell at index `i` (see `pi`, `step_index`).
+#[inline]
+pub(super) fn state_at<'a>(pad: &Padded, info: &'a [Info], i: usize) -> &'a Info {
+    &info[pad.blocks[i] as usize]
 }
 /// `LightCoordsUtil.getLightCoords`: light at `p` as seen through `state`
 /// (block level << 4 | sky level << 20).
 pub(super) fn coords(pad: &Padded, state: &Info, p: [i32; 3]) -> u32 {
     packed_coords(state, pad.light[pi(p[0], p[1], p[2])])
+}
+/// `coords` of the cell at index `i`, as seen through `state`.
+#[inline]
+pub(super) fn coords_at(pad: &Padded, state: &Info, i: usize) -> u32 {
+    packed_coords(state, pad.light[i])
 }
 /// `coords` of a stored light byte (sky level << 4 | block level).
 pub(super) fn packed_coords(state: &Info, packed: u8) -> u32 {
@@ -53,13 +69,13 @@ pub(super) fn packed_coords(state: &Info, packed: u8) -> u32 {
 pub(super) fn max_coords(a: u32, b: u32) -> u32 {
     (a >> 4 & 15).max(b >> 4 & 15) << 4 | (a >> 20 & 15).max(b >> 20 & 15) << 20
 }
-/// `LightCoordsUtil.lightCoordsWithEmission` (a quad's element light emission).
-pub(super) fn with_emission(coords: u32, emission: u8) -> u32 {
-    if emission == 0 {
+/// `LightCoordsUtil.lightCoordsWithEmission` (a quad's element light emission), with
+/// NeoForge's separate block and sky minimums: `[emission; 2]` is vanilla's.
+pub(super) fn with_min(coords: u32, [block, sky]: [u8; 2]) -> u32 {
+    if block == 0 && sky == 0 {
         return coords;
     }
-    let e = u32::from(emission);
-    (coords >> 4 & 15).max(e) << 4 | (coords >> 20 & 15).max(e) << 20
+    (coords >> 4 & 15).max(u32::from(block)) << 4 | (coords >> 20 & 15).max(u32::from(sky)) << 20
 }
 /// `LightCoordsUtil.smoothBlend`: zero samples take the centre; samples without
 /// sky light borrow the centre's sky.
@@ -83,9 +99,17 @@ fn weighted_blend(c: [u32; 4], w: [f32; 4]) -> u32 {
     };
     channel(0) | channel(16) << 16
 }
-/// `ARGB.gray` channel: `Mth.floor(brightness * 255)`.
+/// `ARGB.gray` channel: `Mth.floor(brightness * 255)`. Without the `floorf`
+/// call x86-64's baseline instruction set makes of `f32::floor`: truncation,
+/// one lower where that rounded a negative value up (saturating as `as` does).
 pub(super) fn gray(brightness: f32) -> i32 {
-    (brightness * 255.0).floor() as i32
+    let v = brightness * 255.0;
+    let whole = v as i32;
+    if whole as f32 > v {
+        whole.saturating_sub(1)
+    } else {
+        whole
+    }
 }
 /// One channel of `ARGB.scaleRGB(color, float)`.
 pub(super) fn scale(channel: i32, by: f32) -> i32 {
@@ -224,64 +248,21 @@ const ADJACENCY: [Adjacency; 6] = [
     adjacency(D::West),
     adjacency(D::East),
 ];
-/// `prepareQuadShape`: the quad's bounds, whether it is partial (smaller than
-/// the block face) and whether it is cubic (flush with the block boundary, or
-/// flat on a full collision shape).
-struct Shape {
-    bounds: [f32; 12],
-    partial: bool,
-    cubic: bool,
-}
-fn shape(positions: &[[f32; 3]; 4], face: D, full: bool) -> Shape {
-    let (mut min, mut max) = ([32f32; 3], [-32f32; 3]);
-    for p in positions {
-        for i in 0..3 {
-            min[i] = min[i].min(p[i]);
-            max[i] = max[i].max(p[i]);
-        }
-    }
-    let mut bounds = [0f32; 12];
-    for (index, value) in [
-        (WEST, min[0]),
-        (EAST, max[0]),
-        (DOWN, min[1]),
-        (UP, max[1]),
-        (NORTH, min[2]),
-        (SOUTH, max[2]),
-    ] {
-        bounds[index as usize] = value;
-        bounds[index as usize + 6] = 1.0 - value;
-    }
-    let (lo, hi) = (1.0e-4f32, 0.9999f32);
-    let partial = |a: usize, b: usize| min[a] >= lo || min[b] >= lo || max[a] <= hi || max[b] <= hi;
-    let (partial, cubic) = match face {
-        D::Down => (partial(0, 2), min[1] == max[1] && (min[1] < lo || full)),
-        D::Up => (partial(0, 2), min[1] == max[1] && (max[1] > hi || full)),
-        D::North => (partial(0, 1), min[2] == max[2] && (min[2] < lo || full)),
-        D::South => (partial(0, 1), min[2] == max[2] && (max[2] > hi || full)),
-        D::West => (partial(1, 2), min[0] == max[0] && (min[0] < lo || full)),
-        D::East => (partial(1, 2), min[0] == max[0] && (max[0] > hi || full)),
-    };
-    Shape {
-        bounds,
-        partial,
-        cubic,
-    }
+fn shape(positions: &[[f32; 3]; 4], face: D, full: bool) -> QuadShape {
+    QuadShape::new(positions, face, full)
 }
 /// `prepareQuadFlat` for a quad without a cull face: light from the
-/// neighbour when the quad is flush with the face, else from the block itself.
-pub(super) fn flat(
+/// neighbour when the quad is flush with the face (cubic), else from the block
+/// itself. `shape` is the quad's baked [`QuadShape`].
+pub(super) fn flat_shaped(
     pad: &Padded,
     own: &Info,
     pos: [i32; 3],
-    positions: &[[f32; 3]; 4],
     face: D,
+    shape: &QuadShape,
 ) -> u32 {
-    coords(
-        pad,
-        own,
-        flat_position(pos, positions, face, None, own.full),
-    )
+    let at = if shape.cubic { step(pos, face) } else { pos };
+    coords(pad, own, at)
 }
 /// Where `tesselateFlat` reads the light of a quad of a block at `pos`: the
 /// neighbour on its cull face, else `prepareQuadFlat`'s choice (the neighbour
@@ -300,6 +281,51 @@ pub(super) fn flat_position(
         None => pos,
     }
 }
+/// A face's AO sample offsets from the sample base, in `pi` index space, so a
+/// sample is `base + offset` rather than a `pi` per coordinate triple.
+struct Samples {
+    /// The four corners (`adjacency`'s).
+    corners: [isize; 4],
+    /// Each corner stepped out of the face (the permeability sample).
+    out: [isize; 4],
+    /// Corner `a` stepped toward corner `b`.
+    diagonal: [[isize; 4]; 4],
+    /// `step(pos, face)` from the block's own cell.
+    step: isize,
+}
+const fn samples(face: D) -> Samples {
+    let mut corners = [0isize; 4];
+    let mut out = [0isize; 4];
+    let mut diagonal = [[0isize; 4]; 4];
+    let step = super::step_index(NORMALS[face as usize]);
+    let mut i = 0;
+    while i < 4 {
+        let c = super::step_index(NORMALS[ADJACENCY[face as usize].corners[i] as usize]);
+        corners[i] = c;
+        out[i] = c + step;
+        let mut j = 0;
+        while j < 4 {
+            diagonal[i][j] =
+                c + super::step_index(NORMALS[ADJACENCY[face as usize].corners[j] as usize]);
+            j += 1;
+        }
+        i += 1;
+    }
+    Samples {
+        corners,
+        out,
+        diagonal,
+        step,
+    }
+}
+const SAMPLES: [Samples; 6] = [
+    samples(D::Down),
+    samples(D::Up),
+    samples(D::North),
+    samples(D::South),
+    samples(D::West),
+    samples(D::East),
+];
 /// `prepareQuadAmbientOcclusion`: per-vertex AO brightness (before `ARGB.gray`)
 /// and smooth light coords, by vertex index.
 pub(super) fn ambient_occlusion(
@@ -307,26 +333,34 @@ pub(super) fn ambient_occlusion(
     info: &[Info],
     own: &Info,
     pos: [i32; 3],
-    positions: &[[f32; 3]; 4],
+    shape: &QuadShape,
     face: D,
 ) -> ([f32; 4], [u32; 4]) {
-    let shape = shape(positions, face, own.full);
-    let base = if shape.cubic { step(pos, face) } else { pos };
+    let samples = &SAMPLES[face as usize];
+    // The block's own cell and the sample base (the neighbour when the quad is
+    // cubic): every corner and diagonal is a constant step from it.
+    let cell = pi(pos[0], pos[1], pos[2]) as isize;
+    let base = if shape.cubic {
+        cell + samples.step
+    } else {
+        cell
+    };
     let adjacency = &ADJACENCY[face as usize];
-    let corner = |i: usize| step(base, adjacency.corners[i]);
-    let sample = |p: [i32; 3]| {
-        let s = state(pad, info, p);
-        (coords(pad, s, p), s.shade)
+    let corner = |i: usize| base + samples.corners[i];
+    let sample = |i: isize| {
+        let i = i as usize;
+        let s = state_at(pad, info, i);
+        (coords_at(pad, s, i), s.shade)
     };
     let (light0, shade0) = sample(corner(0));
     let (light1, shade1) = sample(corner(1));
     let (light2, shade2) = sample(corner(2));
     let (light3, shade3) = sample(corner(3));
-    let permeable = |i: usize| state(pad, info, step(corner(i), face)).permeable;
+    let permeable = |i: usize| state_at(pad, info, (base + samples.out[i]) as usize).permeable;
     let (p0, p1, p2, p3) = (permeable(0), permeable(1), permeable(2), permeable(3));
     let diagonal = |a: usize, b: usize, open: bool| {
         if open {
-            sample(step(corner(a), adjacency.corners[b]))
+            sample(base + samples.diagonal[a][b])
         } else {
             (light0, shade0)
         }
@@ -335,15 +369,15 @@ pub(super) fn ambient_occlusion(
     let (light03, shade03) = diagonal(0, 3, p3 || p0);
     let (light12, shade12) = diagonal(1, 2, p2 || p1);
     let (light13, shade13) = diagonal(1, 3, p3 || p1);
-    let next = step(pos, face);
-    let next_state = state(pad, info, next);
+    let next = (cell + samples.step) as usize;
+    let next_state = state_at(pad, info, next);
     let light_center = if shape.cubic || !next_state.solid {
-        coords(pad, next_state, next)
+        coords_at(pad, next_state, next)
     } else {
-        coords(pad, own, pos)
+        coords_at(pad, own, cell as usize)
     };
     let shade_center = if shape.cubic {
-        state(pad, info, base).shade
+        state_at(pad, info, base as usize).shade
     } else {
         own.shade
     };
@@ -379,6 +413,57 @@ pub(super) fn ambient_occlusion(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ao_offsets_match_coordinate_samples_at_section_edges() {
+        // Explicit coordinate directions, without NORMALS, ADJACENCY or step_index.
+        let (down, up, north, south, west, east) = (
+            [0, -1, 0],
+            [0, 1, 0],
+            [0, 0, -1],
+            [0, 0, 1],
+            [-1, 0, 0],
+            [1, 0, 0],
+        );
+        let faces = [
+            (D::Down, down, [west, east, north, south]),
+            (D::Up, up, [east, west, north, south]),
+            (D::North, north, [up, down, east, west]),
+            (D::South, south, [west, east, down, up]),
+            (D::West, west, [up, down, north, south]),
+            (D::East, east, [down, up, north, south]),
+        ];
+        let add = |a: [i32; 3], b: [i32; 3]| std::array::from_fn(|i| a[i] + b[i]);
+        let index = |p: [i32; 3]| pi(p[0], p[1], p[2]);
+        for x in [0, 1, 14, 15] {
+            for y in [0, 1, 14, 15] {
+                for z in [0, 1, 14, 15] {
+                    let pos = [x, y, z];
+                    for (face, normal, corners) in faces {
+                        let samples = &SAMPLES[face as usize];
+                        let cell = index(pos) as isize;
+                        assert_eq!((cell + samples.step) as usize, index(add(pos, normal)));
+                        for cubic in [false, true] {
+                            let base_pos = if cubic { add(pos, normal) } else { pos };
+                            let base = if cubic { cell + samples.step } else { cell };
+                            for (i, corner) in corners.into_iter().enumerate() {
+                                let p = add(base_pos, corner);
+                                assert_eq!((base + samples.corners[i]) as usize, index(p));
+                                assert_eq!((base + samples.out[i]) as usize, index(add(p, normal)));
+                            }
+                            for (a, b) in [(0, 2), (0, 3), (1, 2), (1, 3)] {
+                                assert_eq!(
+                                    (base + samples.diagonal[a][b]) as usize,
+                                    index(add(add(base_pos, corners[a]), corners[b]))
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     const fn packed(block: u32, sky: u32) -> u32 {
         block << 4 | sky << 20
     }
@@ -406,6 +491,28 @@ mod tests {
         );
     }
     #[test]
+    fn gray_floors_like_f32_floor() {
+        let mut values = vec![
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            -0.0,
+            1.0,
+            -1.0,
+            1e10,
+            -1e10,
+        ];
+        for bits in (0..u32::MAX).step_by(7919) {
+            values.push(f32::from_bits(bits));
+        }
+        for i in -3000..3000 {
+            values.push(i as f32 / 1024.0);
+        }
+        for v in values {
+            assert_eq!(gray(v), (v * 255.0).floor() as i32, "{v:e}");
+        }
+    }
+    #[test]
     fn colour_arithmetic_matches_argb_helpers() {
         assert_eq!(gray(1.0), 255);
         assert_eq!(gray(0.8), 204);
@@ -416,9 +523,15 @@ mod tests {
     }
     #[test]
     fn emission_raises_both_channels_and_drops_fractions() {
-        assert_eq!(with_emission(0x0087_0013, 0), 0x0087_0013);
-        assert_eq!(with_emission(0x0087_0013, 3), packed(3, 8));
+        assert_eq!(with_min(0x0087_0013, [0; 2]), 0x0087_0013);
+        assert_eq!(with_min(0x0087_0013, [3; 2]), packed(3, 8));
         assert_eq!(max_coords(packed(3, 9), packed(7, 2)), packed(7, 9));
+    }
+    #[test]
+    fn block_and_sky_minimums_raise_their_own_channel() {
+        assert_eq!(with_min(0x0087_0013, [15, 0]), packed(15, 8));
+        assert_eq!(with_min(0x0087_0013, [0, 15]), packed(1, 15));
+        assert_eq!(with_min(0x0087_0013, [15, 15]), packed(15, 15));
     }
     #[test]
     fn flat_light_reads_the_neighbour_a_face_looks_at() {

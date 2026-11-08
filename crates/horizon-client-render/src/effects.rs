@@ -14,6 +14,8 @@ pub struct EffectInstance {
     pub amplifier: i32,
     pub ambient: bool,
     pub visible: bool,
+    /// `MobEffectInstance.showIcon`: whether the HUD and inventory list it.
+    pub show_icon: bool,
     pub hidden: Option<Box<EffectInstance>>,
 }
 impl EffectInstance {
@@ -24,8 +26,17 @@ impl EffectInstance {
             amplifier: amplifier.clamp(0, 255),
             ambient: false,
             visible: true,
+            show_icon: true,
             hidden: None,
         }
+    }
+    /// `new MobEffectInstance(effect, duration, amplifier, ambient, visible)`:
+    /// the icon shows exactly when the particles do.
+    pub fn with_flags(mut self, ambient: bool, visible: bool) -> Self {
+        self.ambient = ambient;
+        self.visible = visible;
+        self.show_icon = visible;
+        self
     }
     fn infinite(&self) -> bool {
         self.duration == -1
@@ -71,6 +82,10 @@ impl EffectInstance {
             self.visible = take.visible;
             changed = true;
         }
+        if take.show_icon != self.show_icon {
+            self.show_icon = take.show_icon;
+            changed = true;
+        }
         changed
     }
     /// `MobEffectInstance.tickClient`: a client counts its effects down
@@ -98,6 +113,7 @@ impl EffectInstance {
             self.amplifier = h.amplifier;
             self.ambient = h.ambient;
             self.visible = h.visible;
+            self.show_icon = h.show_icon;
             self.hidden = h.hidden;
         }
     }
@@ -116,8 +132,9 @@ pub enum EffectAction {
 }
 /// `shouldApplyEffectTickThisTick` + `applyEffectTick` for the periodic effects.
 fn periodic(id: &str, tick: i32, amp: i32) -> Option<EffectAction> {
+    // Java's `>>` and `<<` take the shift distance modulo 32 (`wrapping_*`).
     let every = |base: i32| {
-        let interval = base >> amp;
+        let interval = base.wrapping_shr(amp as u32);
         interval <= 0 || tick % interval == 0
     };
     match id {
@@ -126,10 +143,12 @@ fn periodic(id: &str, tick: i32, amp: i32) -> Option<EffectAction> {
         "wither" if every(40) => Some(EffectAction::Hurt("minecraft:wither", 1.0)),
         "hunger" => Some(EffectAction::Exhaust(0.005 * (amp + 1) as f32)),
         "saturation" if tick >= 1 => Some(EffectAction::Eat(amp + 1, 1.0)),
-        "instant_health" if tick >= 1 => Some(EffectAction::Heal((4 << amp.min(30)) as f32)),
+        "instant_health" if tick >= 1 => Some(EffectAction::Heal(
+            4i32.wrapping_shl(amp as u32).max(0) as f32,
+        )),
         "instant_damage" if tick >= 1 => Some(EffectAction::Hurt(
             "minecraft:magic",
-            (6 << amp.min(30)) as f32,
+            6i32.wrapping_shl(amp as u32) as f32,
         )),
         _ => None,
     }
@@ -139,11 +158,11 @@ fn periodic(id: &str, tick: i32, amp: i32) -> Option<EffectAction> {
 pub fn instant(id: &str, amp: i32, scale: f64) -> Option<EffectAction> {
     match id {
         "instant_health" => Some(EffectAction::Heal(
-            (scale * f64::from(4 << amp.min(30)) + 0.5) as i32 as f32,
+            (scale * f64::from(4i32.wrapping_shl(amp as u32)) + 0.5) as i32 as f32,
         )),
         "instant_damage" => Some(EffectAction::Hurt(
             "minecraft:magic",
-            (scale * f64::from(6 << amp.min(30)) + 0.5) as i32 as f32,
+            (scale * f64::from(6i32.wrapping_shl(amp as u32)) + 0.5) as i32 as f32,
         )),
         "saturation" => Some(EffectAction::Eat(amp + 1, 1.0)),
         _ => None,
@@ -167,6 +186,57 @@ pub enum OmenTick {
     Remove,
     /// It added this effect, then returned false.
     Add(EffectInstance),
+}
+/// A saved player's effect: `MobEffectInstance.Details` under its `id`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SavedEffect {
+    pub id: String,
+    pub duration: i32,
+    pub amplifier: i32,
+    pub ambient: bool,
+    /// `show_particles`.
+    pub particles: bool,
+    /// `show_icon`.
+    pub icon: bool,
+    /// `hidden_effect`: the weaker, longer instance of the same effect that
+    /// comes back when this one ends.
+    pub hidden: Option<Box<SavedEffect>>,
+}
+impl SavedEffect {
+    /// Ambient off, particles and icon shown, nothing hidden: the codec's
+    /// defaults.
+    pub fn new(id: impl Into<String>, duration: i32, amplifier: i32) -> Self {
+        Self {
+            id: id.into(),
+            duration,
+            amplifier,
+            ambient: false,
+            particles: true,
+            icon: true,
+            hidden: None,
+        }
+    }
+    fn of(e: &EffectInstance) -> Self {
+        Self {
+            id: potions::namespaced(e.id).to_owned(),
+            duration: e.duration,
+            amplifier: e.amplifier,
+            ambient: e.ambient,
+            particles: e.visible,
+            icon: e.show_icon,
+            hidden: e.hidden.as_deref().map(|h| Box::new(Self::of(h))),
+        }
+    }
+    /// `new MobEffectInstance(effect, details)`: the hidden chain comes back
+    /// with it.
+    fn instance(&self, id: &'static str) -> EffectInstance {
+        let mut e = EffectInstance::new(id, self.duration, self.amplifier);
+        e.ambient = self.ambient;
+        e.visible = self.particles;
+        e.show_icon = self.icon;
+        e.hidden = self.hidden.as_deref().map(|h| Box::new(h.instance(id)));
+        e
+    }
 }
 #[derive(Clone, Debug, Default)]
 pub struct PlayerEffects {
@@ -200,39 +270,25 @@ impl PlayerEffects {
     pub fn clear(&mut self) {
         self.list.clear();
     }
-    /// The effects of a saved player (`Player.active_effects`: id,
-    /// duration, amplifier, ambient, particles visible).
-    pub fn from_saved(saved: &[(String, i32, i32, bool, bool)]) -> Self {
+    /// The effects of a saved player (`Player.active_effects`), each with
+    /// the instances it hides.
+    pub fn from_saved(saved: &[SavedEffect]) -> Self {
         let mut effects = Self::default();
-        for (id, duration, amplifier, ambient, particles) in saved {
-            if let Some(def) = potions::effect(id) {
-                let mut e = EffectInstance::new(def.id, *duration, *amplifier);
-                e.ambient = *ambient;
-                e.visible = *particles;
-                effects.add(e);
+        for s in saved {
+            if let Some(def) = potions::effect(&s.id) {
+                effects.add(s.instance(def.id));
             }
         }
         effects
     }
     /// `Player.active_effects` for the save.
-    pub fn saved(&self) -> Vec<(String, i32, i32, bool, bool)> {
-        self.list
-            .iter()
-            .map(|e| {
-                (
-                    potions::namespaced(e.id).to_owned(),
-                    e.duration,
-                    e.amplifier,
-                    e.ambient,
-                    e.visible,
-                )
-            })
-            .collect()
+    pub fn saved(&self) -> Vec<SavedEffect> {
+        self.list.iter().map(SavedEffect::of).collect()
     }
     /// ClientboundUpdateMobEffectPacket's flags without blending: ambient,
-    /// particles visible and the icon shown (always, for these effects).
+    /// particles visible and the icon shown.
     pub fn flags(e: &EffectInstance) -> i8 {
-        i8::from(e.ambient) | i8::from(e.visible) << 1 | 4
+        i8::from(e.ambient) | i8::from(e.visible) << 1 | i8::from(e.show_icon) << 2
     }
     /// `LivingEntity.tickEffects` (server part) with the omens' effect ticks:
     /// `omen` answers `BadOmenMobEffect` (every tick), `RaidOmenMobEffect`
@@ -421,31 +477,33 @@ impl StatusFlags {
 
 /// The attribute modifier an effect adds at amplifier 0
 /// (`MobEffect.addAttributeModifier`): (attribute, id, amount, operation).
-/// Each level multiplies the amount (`amplifier + 1`).
+/// Each level multiplies the amount (`amplifier + 1`). Vanilla's amounts are
+/// `float` literals widened to the modifier's `double`, so `f64::from` the
+/// `f32` to keep the low digits.
 pub fn effect_modifier(effect: &str) -> Option<(&'static str, &'static str, f64, &'static str)> {
     match effect {
         "speed" => Some((
             "minecraft:movement_speed",
             "minecraft:effect.speed",
-            0.2,
+            f64::from(0.2f32),
             "add_multiplied_total",
         )),
         "slowness" => Some((
             "minecraft:movement_speed",
             "minecraft:effect.slowness",
-            -0.15,
+            f64::from(-0.15f32),
             "add_multiplied_total",
         )),
         "haste" => Some((
             "minecraft:attack_speed",
             "minecraft:effect.haste",
-            0.1,
+            f64::from(0.1f32),
             "add_multiplied_total",
         )),
         "mining_fatigue" => Some((
             "minecraft:attack_speed",
             "minecraft:effect.mining_fatigue",
-            -0.1,
+            f64::from(-0.1f32),
             "add_multiplied_total",
         )),
         "strength" => Some((
@@ -492,7 +550,75 @@ pub fn effect_modifier(effect: &str) -> Option<(&'static str, &'static str, f64,
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `HealOrHarmMobEffect`: Java's `<<` shifts by the amplifier modulo
+    /// 32 and wraps, so amplifier 32 is amplifier 0 again; a ticked heal is
+    /// at least 0 (#11386).
+    #[test]
+    fn heal_and_harm_shift_like_java() {
+        let magic = "minecraft:magic";
+        assert_eq!(
+            instant("instant_health", 32, 1.0),
+            Some(EffectAction::Heal(4.0))
+        );
+        assert_eq!(
+            instant("instant_damage", 33, 1.0),
+            Some(EffectAction::Hurt(magic, 12.0))
+        );
+        assert_eq!(
+            instant("instant_health", 1, 0.5),
+            Some(EffectAction::Heal(4.0))
+        );
+        assert_eq!(
+            periodic("instant_health", 1, 32),
+            Some(EffectAction::Heal(4.0))
+        );
+        // 4 << 29 is i32::MIN: the heal stops at 0. 6 << 30 wraps to i32::MIN.
+        assert_eq!(
+            periodic("instant_health", 1, 29),
+            Some(EffectAction::Heal(0.0))
+        );
+        assert_eq!(
+            periodic("instant_damage", 1, 30),
+            Some(EffectAction::Hurt(magic, i32::MIN as f32))
+        );
+        // Regeneration: 50 >> 32 is 50 again, not 0 (which would heal each tick).
+        assert_eq!(periodic("regeneration", 49, 32), None);
+        assert_eq!(
+            periodic("regeneration", 50, 32),
+            Some(EffectAction::Heal(1.0))
+        );
+    }
 
+    /// Warden darkness (`new MobEffectInstance(DARKNESS, 260, 0, false,
+    /// false)`) shows neither particles nor its icon; a renewal that shows the
+    /// icon turns it back on (`MobEffectInstance.update`).
+    #[test]
+    fn an_effect_without_particles_hides_its_icon() {
+        let mut fx = PlayerEffects::default();
+        fx.add(EffectInstance::new("darkness", 260, 0).with_flags(false, false));
+        let darkness = fx.get("darkness").unwrap();
+        // ClientboundUpdateMobEffectPacket: no ambient, particles or icon bit.
+        assert_eq!(PlayerEffects::flags(darkness), 0);
+        assert!(!crate::hud_overlays::EffectIcon::from(darkness).show_icon);
+        assert!(fx.add(EffectInstance::new("darkness", 100, 0)));
+        assert_eq!(PlayerEffects::flags(fx.get("darkness").unwrap()), 2 | 4);
+
+        // Details keeps show_icon apart from show_particles.
+        let mut speed = EffectInstance::new("speed", 100, 0);
+        speed.show_icon = false;
+        let mut fx = PlayerEffects::default();
+        fx.add(speed);
+        let saved = fx.saved();
+        assert_eq!(
+            saved,
+            [SavedEffect {
+                icon: false,
+                ..SavedEffect::new("minecraft:speed", 100, 0)
+            }]
+        );
+        let loaded = PlayerEffects::from_saved(&saved);
+        assert_eq!(PlayerEffects::flags(loaded.get("speed").unwrap()), 2);
+    }
     #[test]
     fn adding_counts_a_change_only_when_the_effect_changed() {
         let mut fx = PlayerEffects::default();
@@ -529,6 +655,21 @@ mod tests {
         assert_eq!(fx.get("speed").unwrap().duration, 49);
         assert_eq!(fx.get("raid_omen").unwrap().amplifier, 1);
     }
+    #[test]
+    fn a_reloaded_effect_falls_back_to_the_one_it_hid() {
+        // /effect give poison 6 s level II over poison 30 s level I, saved
+        // and loaded: when level II runs out, level I resumes with what is
+        // left of its 30 s.
+        let mut fx = PlayerEffects::default();
+        fx.add(EffectInstance::new("poison", 600, 0));
+        fx.add(EffectInstance::new("poison", 120, 1));
+        let mut loaded = PlayerEffects::from_saved(&fx.saved());
+        for _ in 0..120 {
+            loaded.tick();
+        }
+        let poison = loaded.get("poison").expect("level I resumed");
+        assert_eq!((poison.amplifier, poison.duration), (0, 480));
+    }
     /// The only test here that registers mod effects (once per process).
     #[test]
     fn a_mod_effect_saves_under_its_namespace() {
@@ -544,11 +685,11 @@ mod tests {
             1,
         ));
         let saved = fx.saved();
-        assert_eq!(saved, [("ruby:glow".to_owned(), 600, 1, false, true)]);
+        assert_eq!(saved, [SavedEffect::new("ruby:glow", 600, 1)]);
         assert_eq!(PlayerEffects::from_saved(&saved).list, fx.list);
         // Without its mod the saved effect is dropped, as an unknown id is.
         assert!(
-            PlayerEffects::from_saved(&[("gone:glow".into(), 600, 1, false, true)])
+            PlayerEffects::from_saved(&[SavedEffect::new("gone:glow", 600, 1)])
                 .list
                 .is_empty()
         );

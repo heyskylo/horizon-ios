@@ -3,7 +3,7 @@
 //! faceplanted), stalking and pouncing, napping in the shade by day, seeking
 //! shelter, perching, eating berries and the food held in the mouth (with the
 //! item's on-consumed effects: a chorus fruit teleports it).
-//! Strolling through villages and defending trusted players are not ported yet.
+//! Defending trusted players is not ported yet.
 //! The goal that walks to a dropped item is here; the game side takes the
 //! items (`Fox.pickUpItem`, `game/foxes.rs`). A totem in the mouth is a
 //! `death_protection` item like any other held one (`Mob::damage`).
@@ -15,7 +15,9 @@ use super::{
         Prey, Stroll, goal_clone, hide_pos, reduced,
     },
     living::wrap,
+    raider::heightmap_pos,
     riders,
+    villager_brain::{closer_to_center, sections_to_village, village_sections},
 };
 use horizon_core::{
     geometry::{Axis, Vec3},
@@ -51,7 +53,7 @@ pub fn flag(m: &Mob, f: i32) -> bool {
 /// blocks of the fox's; otherwise the ambient sound.
 pub fn awake_ambient(m: &mut Mob, w: &MobWorld) -> &'static str {
     // Level.isBrightOutside: the End has a fixed time, so never there.
-    let bright = w.daylight && !w.end;
+    let bright = w.daylight && !w.dimension_type.has_fixed_time;
     if !bright && m.random.next_float() < 0.1 {
         let around = m.bounds().inflate(Vec3::new(16.0, 16.0, 16.0));
         let player_near = w
@@ -185,6 +187,7 @@ pub fn register(m: &mut Mob) {
     );
     g.add(7, Sleep { countdown });
     g.add(8, Wrap::new(FollowParent::new(1.25)).on_start(clear_states));
+    g.add(9, StrollThroughVillage::default());
     g.add(10, EatBerries::new());
     g.add(10, LeapAtTarget::new(0.4));
     g.add(11, Stroll::avoiding_water(1.0));
@@ -241,7 +244,9 @@ fn fully_crouched(m: &Mob) -> bool {
     m.anim.v[CROUCH_AMOUNT] == MAX_CROUCH_AMOUNT
 }
 
-/// `Fox.tick` and the eating part of `Fox.aiStep`.
+/// `Fox.tick` and `Fox.aiStep`: eating, and `SoundEvents.FOX_AGGRO`
+/// (`Entity.playSound` at its feet) while the fox is defending. Only the
+/// server broadcasts that sound.
 pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     client_tick(m);
     if !m.alive() {
@@ -286,6 +291,12 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     }
     if in_water || flag(m, SLEEPING) {
         set_flag(m, SITTING, false);
+    }
+    // `Fox.aiStep`, after the living step: one tick in twenty a defending fox
+    // growls. `Entity.playSound` is positional and a silent fox stays quiet.
+    if flag(m, DEFENDING) && m.random.next_float() < 0.05 && !m.silent {
+        let at = [m.position.x, m.position.y, m.position.z];
+        events.push(MobEvent::Sound("entity.fox.aggro", at, 1.0, 1.0));
     }
     // Faceplanted: crumbs of the snow now and then (level event 2001).
     if flag(m, FACEPLANTED) && m.random.next_float() < 0.2 {
@@ -358,6 +369,13 @@ fn teleport_randomly(
         if !random_teleport(w, m, Vec3::new(x, y, z)) {
             continue;
         }
+        // `LivingEntity.checkPositionAndTeleport` broadcasts entity event 46
+        // before the teleport sound and the directional trail.
+        events.push(MobEvent::EntityEvent {
+            mob: m.id,
+            event: 46,
+            at: [m.position.x, m.position.y, m.position.z],
+        });
         // `SoundEvents.FOX_TELEPORT`, else the chorus fruit's own; the sound
         // plays at the point reached.
         events.push(MobEvent::Sound(
@@ -509,6 +527,107 @@ impl Goal for Sleep {
     fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
         self.countdown = m.random.next_int_bound(reduced(140)).unwrap_or(0);
         clear_states(m);
+    }
+}
+
+/// `Fox.FoxStrollThroughVillageGoal` (`StrollThroughVillageGoal(fox, 200)`):
+/// at night near a village, pick a spot toward its heart and walk 10 blocks
+/// that way. The fox's `canFoxMove` comes after the base checks (and their
+/// draws), and `start` clears its states.
+#[derive(Clone, Debug, Default)]
+struct StrollThroughVillage {
+    /// `StrollThroughVillageGoal.wantedPos`.
+    wanted: Option<[i32; 3]>,
+}
+/// `Fox.FoxStrollThroughVillageGoal.canFoxMove`.
+fn can_fox_move(m: &Mob) -> bool {
+    !flag(m, SLEEPING | SITTING | DEFENDING) && m.ai.target.is_none()
+}
+fn block_pos(p: Vec3) -> [i32; 3] {
+    [p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32]
+}
+fn section_of(p: [i32; 3]) -> [i32; 3] {
+    [p[0] >> 4, p[1] >> 4, p[2] >> 4]
+}
+impl Goal for StrollThroughVillage {
+    goal_clone!();
+    fn name(&self) -> &'static str {
+        "FoxStrollThroughVillage"
+    }
+    fn flags(&self) -> u8 {
+        MOVE
+    }
+    /// `StrollThroughVillageGoal.canUse`, then `canFoxMove`.
+    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        let w = cx.w;
+        if riders::mob_controlled(m, w) {
+            return false;
+        }
+        // Level.isBrightOutside: never in a dimension with a fixed time
+        // (the Nether, the End).
+        if w.daylight && !w.dimension_type.has_fixed_time {
+            return false;
+        }
+        if m.random.next_int_bound(reduced(200)).unwrap_or(1) != 0 {
+            return false;
+        }
+        let villages = village_sections(m, w);
+        // ServerLevel.isCloseToVillage(pos, 6).
+        if sections_to_village(&villages, section_of(block_pos(m.position))) > 6 {
+            return false;
+        }
+        let land = m.land_random_pos_scored(w, 15, 7, |p| {
+            -f64::from(sections_to_village(&villages, section_of(p)))
+        });
+        self.wanted = land.map(|p| block_pos(Vec3::new(p[0], p[1], p[2])));
+        self.wanted.is_some() && can_fox_move(m)
+    }
+    /// `StrollThroughVillageGoal.canContinueToUse`, then `canFoxMove`.
+    fn can_continue(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
+        self.wanted.is_some()
+            && !m.ai.nav.is_done()
+            && m.ai.nav.target_pos == self.wanted
+            && can_fox_move(m)
+    }
+    fn start(&mut self, m: &mut Mob, _cx: &mut Cx) {
+        clear_states(m);
+    }
+    /// `StrollThroughVillageGoal.tick`: with the path done and the wanted
+    /// spot past 10 blocks, a step of 10 toward a point 0.4 of the way back
+    /// from it, on the `MOTION_BLOCKING_NO_LEAVES` surface; `moveRandomly`
+    /// when there is no path there.
+    fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
+        let Some(wanted) = self.wanted else {
+            return;
+        };
+        let w = cx.w;
+        if !m.ai.nav.is_done() || closer_to_center(wanted, m.position, 10.0) {
+            return;
+        }
+        // Vec3.atBottomCenterOf.
+        let target = Vec3::new(
+            f64::from(wanted[0]) + 0.5,
+            f64::from(wanted[1]),
+            f64::from(wanted[2]) + 0.5,
+        );
+        let at = m.position;
+        let long_distance = at.subtract(target).scale(0.4).add_vector(target);
+        let step = block_pos(
+            long_distance
+                .subtract(at)
+                .normalize()
+                .scale(10.0)
+                .add_vector(at),
+        );
+        let to = heightmap_pos(w, step[0], step[2]);
+        if !m.nav_move_to(w, to.map(f64::from), 1.0) {
+            // moveRandomly.
+            let x = -8 + m.random.next_int_bound(16).unwrap_or(0);
+            let z = -8 + m.random.next_int_bound(16).unwrap_or(0);
+            let p = block_pos(m.position);
+            let to = heightmap_pos(w, p[0] + x, p[2] + z);
+            m.nav_move_to(w, to.map(f64::from), 1.0);
+        }
     }
 }
 
@@ -958,6 +1077,7 @@ impl EatBerries {
             }
             if count > 0 {
                 cx.events.push(MobEvent::DropItem {
+                    mob: m.id,
                     item: "minecraft:sweet_berries".into(),
                     count: count as u32,
                     at,
@@ -975,6 +1095,7 @@ impl EatBerries {
         } else {
             // CaveVines.use: one glow berry, the vine goes back to bare.
             cx.events.push(MobEvent::DropItem {
+                mob: m.id,
                 item: "minecraft:glow_berries".into(),
                 count: 1,
                 at,
@@ -1285,6 +1406,12 @@ mod consume_tests {
                         .iter()
                         .any(|e| matches!(e, MobEvent::LevelEvent { id: 2017, .. })),
                     "the portal trail: {events:?}"
+                );
+                assert!(
+                    events
+                        .iter()
+                        .any(|e| matches!(e, MobEvent::EntityEvent { event: 46, .. })),
+                    "entity event 46: {events:?}"
                 );
             },
         );

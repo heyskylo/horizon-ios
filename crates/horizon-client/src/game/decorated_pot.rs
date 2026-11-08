@@ -59,6 +59,46 @@ pub(super) fn unpack_loot(
 }
 
 impl Game<'_> {
+    /// `DecoratedPotBlockEntity.saveAdditional` for commands: a pure view of
+    /// the existing saved state. Unlike pot_tag, this never unpacks loot.
+    pub(super) fn pot_data(&self, pos: [i32; 3]) -> Option<Tag> {
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        if &*self.res.facts().get(state).name != "minecraft:decorated_pot" {
+            return None;
+        }
+        let mut tag = spill::saved_entity(&self.world, pos).unwrap_or_else(|| {
+            Tag::compound([
+                ("id", Tag::String("minecraft:decorated_pot".into())),
+                ("x", Tag::Int(pos[0])),
+                ("y", Tag::Int(pos[1])),
+                ("z", Tag::Int(pos[2])),
+            ])
+        });
+        tag = horizon_client::block_entity_nbt::canonical(&tag)?;
+        if let Tag::Compound(map) = &mut tag {
+            map.remove(&"keepPacked".into());
+        }
+        Some(tag)
+    }
+    /// `DecoratedPotBlockEntity.loadAdditional`: command edits and BlockInput
+    /// loading write back to the same saved tag that live pot interactions use.
+    pub(super) fn set_pot_data(&mut self, pos: [i32; 3], input: &Tag) -> Option<bool> {
+        let before = self.pot_data(pos)?;
+        let mut input = input.clone();
+        if let Tag::Compound(map) = &mut input {
+            for key in ["id", "x", "y", "z"] {
+                map.insert(key.into(), before.get(key)?.clone());
+            }
+        }
+        let mut tag = horizon_client::block_entity_nbt::canonical(&input)?;
+        if let Tag::Compound(map) = &mut tag {
+            map.remove(&"keepPacked".into());
+        }
+        let changed = tag != before;
+        spill::put_saved_entity(&mut self.world, pos, tag);
+        self.mark_block_entity_updated((pos[0], pos[1], pos[2]));
+        Some(changed)
+    }
     /// The pot's saved tag at `pos` with its loot unpacked (a new one for a
     /// pot without), or None when no pot is there.
     fn pot_tag(&mut self, pos: [i32; 3]) -> Option<Tag> {
@@ -111,7 +151,10 @@ impl Game<'_> {
                 1.0,
                 1.0,
             );
+            // DecoratedPotBlockEntity.wobble: Level.blockEvent, which the
+            // clients answer with triggerEvent (the window's pot wobbles).
             self.block_entity_event(pos, 1, WOBBLE_NEGATIVE);
+            self.lan_block_event(pos, 1, WOBBLE_NEGATIVE);
             self.post_block_game_event("minecraft:block_change", pos, Some(Who::Player), None);
             // ServerPlayerGameMode.useItemOn: useWithoutItem consumed the click.
             self.trigger_default_block_use(pos);
@@ -119,7 +162,8 @@ impl Game<'_> {
         };
         let stack = stack.clone();
         self.block_entity_event(pos, 1, WOBBLE_POSITIVE);
-        self.stats.add("used", &stack.item, 1);
+        self.lan_block_event(pos, 1, WOBBLE_POSITIVE);
+        self.award_stat("used", &stack.item, 1);
         // consumeAndReturn(1): one item goes in (a creative player keeps theirs).
         let inserted = match &mut pot_item {
             Some(p) => {
@@ -145,13 +189,22 @@ impl Game<'_> {
             1.0,
             0.7 + 0.5 * pitch_bend,
         );
-        self.particles.send_particles(
-            &ParticleOptions::simple(ParticleType::DustPlume),
-            [center[0], f64::from(pos[1]) + 1.2, center[2]],
-            [0.0; 3],
-            0.0,
-            7,
-        );
+        // ServerLevel.sendParticles(DUST_PLUME, x + 0.5, y + 1.2, z + 0.5, 7, 0, 0, 0, 0):
+        // the server draws none of it; the players within 32 blocks do, the window included.
+        let plume = ParticleOptions::simple(ParticleType::DustPlume);
+        let plume_at = [center[0], f64::from(pos[1]) + 1.2, center[2]];
+        self.particles
+            .send_particles(&plume, plume_at, [0.0; 3], 0.0, 7);
+        self.lan_send_particles(super::lan_particles::QueuedParticle {
+            dimension: self.dim.id(),
+            options: plume,
+            state: None,
+            at: plume_at,
+            spread: [0.0; 3],
+            speed: [0.0; 3],
+            count: 7,
+            randomization: 0,
+        });
         self.post_block_game_event("minecraft:block_change", pos, Some(Who::Player), None);
         self.trigger_block("minecraft:item_used_on_block", pos, &stack);
         true

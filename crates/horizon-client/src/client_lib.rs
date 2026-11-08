@@ -6,21 +6,26 @@ pub mod advancements;
 pub mod ambience;
 pub mod animate_tick;
 pub mod arrows;
+pub mod bed_geometry;
 pub mod block_contact;
+pub mod powder_snow;
 pub use horizon_client_render::{
-    assets, atlas_sources, audio, auth, ban_notice, bidi, biome, block_edit, block_entities,
-    block_entity_anim, block_entity_render, border_render, breaking, brewing, camera, chat, chunk,
-    chunk_map, cit, cit_assets, clouds, collisions, command_block, containers, crash, datapack,
-    dynamic_light, effects, environment, extras, fast_hash, fog, font, gfx, graphics,
-    graphics_style, graphics_ui, hdr_calibration, hud, hud_layout, hud_overlays, inventory_effects,
-    java_text, jigsaw_block, level_loading, light, lod, logging, menu_blur, mesher, minimap,
-    mipmap, mod_list, model_library, models, multiline_edit, native_emissive, options_file,
-    options_fixes, options_ui, overlay, pack_screen, packs, par, particles, poi_sections,
-    post_chain, potent_sulfur, preedit, providers, screen_draw, screen_effects, sculk,
-    section_mask, settings, shader_options, shader_pack_list, signs, skins, sound_engine,
-    sound_events, sound_preview, spans, split_layout, split_profiles, sprites, streaming,
-    structure_block, tab_list, telemetry, test_block, test_instance_block, testgen, title_edition,
-    trims, ui, vault, weather, widgets, world, worldborder, zip,
+    assets, atlas_sources, audio, auth, autotune, ban_notice, bidi, biome, block_edit,
+    block_entities, block_entity_anim, block_entity_render, block_sprites, block_states, bluemap,
+    bluemap_detect, border_render, breaking, brewing, camera, chat, chunk, chunk_map, cit,
+    cit_armor, cit_assets, cit_glint, client_resources, clouds, collisions, command_block,
+    containers, controller_ui, crash, custom_sky, datapack, dynamic_light, effects, environment,
+    extras, fast_hash, fluid_render, fog, font, gfx, graphics, graphics_style, graphics_ui,
+    hdr_calibration, hud, hud_kit, hud_layout, hud_overlays, inventory_effects, java_text,
+    jigsaw_block, json_folder, level_loading, light, lod, logging, menu_blur, mesher, minimap,
+    mipmap, mod_browser, mod_list, model_library, models, multiline_edit, native_emissive,
+    options_file, options_fixes, options_ui, overlay, pack_browser, pack_screen, packs, pad_cursor,
+    pad_glyph, par, particles, poi_sections, post_chain, potent_sulfur, preedit, providers, pvp,
+    pvp_hud, random_source, screen_draw, screen_effects, sculk, section_mask, server_terrain,
+    settings, shader_options, shader_pack_list, signs, skins, social, sound_engine, sound_events,
+    sound_preview, spans, split_layout, split_map, split_profiles, sprites, streaming,
+    structure_block, tab_list, telemetry, terrain_model, test_block, test_instance_block, testgen,
+    title_edition, trims, ui, vault, weather, widgets, world, worldborder, zip,
 };
 pub mod attack_strength;
 pub mod attribute_updates;
@@ -52,12 +57,13 @@ pub mod debug_overlay;
 pub mod debugworld;
 pub mod dialog;
 pub mod dialog_screen;
+#[cfg(feature = "discord")]
 pub mod discord_presence;
 pub mod end_crystal;
 pub mod end_gateway;
 pub mod entities;
-pub mod entity_culling;
 pub mod entity_nbt;
+pub mod entity_rules;
 pub mod extras_hud;
 pub mod falling_block;
 pub mod fire_render;
@@ -70,6 +76,7 @@ pub mod game_rules_screen;
 pub mod gizmos;
 pub mod gossip;
 pub mod health;
+#[cfg(feature = "heartbeat")]
 pub mod heartbeat;
 pub mod hotbar;
 pub mod hunger;
@@ -78,17 +85,21 @@ pub mod item_activation;
 pub mod item_render;
 pub mod item_sync;
 pub mod item_tooltip;
+pub mod join_seq;
 pub mod lan;
 pub mod landing;
+pub mod legacy_combat;
 pub mod locator_bar;
 pub mod lod_net;
 pub mod menu;
 pub mod merchant;
 pub mod mobs;
 pub mod mod_content;
+pub mod mod_registry;
 pub mod motion;
 pub mod multiplayer;
 pub mod music;
+pub mod native_client_hooks;
 pub mod native_data;
 pub mod net;
 pub mod nether_portal;
@@ -105,8 +116,8 @@ pub mod pose;
 pub mod pregen;
 pub mod projectiles;
 pub mod raid;
-pub mod ram_limit;
 pub mod random_tick_sections;
+pub mod realms;
 pub mod recipe_book;
 pub mod recipe_book_screen;
 pub mod reconnect;
@@ -115,15 +126,19 @@ pub mod scoreboard_cmd;
 pub mod screen_layout;
 pub mod screen_narrator;
 pub mod social_screen;
+pub mod sound_playback;
 pub use horizon_server_files as server;
+pub mod controller_notice;
 pub mod server_packs;
 pub mod shadows;
 pub mod spear;
 pub mod spectator_menu;
 pub mod sprint;
+pub mod stand_up;
 pub mod stations;
 pub mod stopwatches;
 pub mod structure_blocks;
+pub mod studio;
 pub mod text_display;
 pub mod tick_chunk_membership;
 pub mod ticket_levels;
@@ -131,7 +146,12 @@ pub mod title;
 pub mod toasts;
 pub mod ui_theme;
 pub mod vanillagen;
+pub mod voxel_occlusion;
+// Keep the old path for native callers while giving the implementation a name
+// that does not collide with the gameplay adapter in `game/entity_culling.rs`.
+pub use voxel_occlusion as entity_culling;
 pub mod win_screen;
+pub mod world_primitives;
 pub mod world_spawn;
 pub use horizon_client_core::Result;
 pub use horizon_client_core::block_entity_nbt;
@@ -144,8 +164,11 @@ pub use horizon_client_core::nbt_path;
 pub use horizon_client_core::scoreboard;
 pub use horizon_client_core::snbt;
 pub use horizon_client_core::text;
+pub use horizon_client_input::actions;
 pub use horizon_client_input::clipboard;
 pub use horizon_client_input::gamepad;
+pub use horizon_client_input::gameplay_guide;
+pub use horizon_client_input::held;
 pub use horizon_client_input::input;
 pub use horizon_client_input::interaction_input;
 pub use horizon_client_input::key_names;

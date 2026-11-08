@@ -5,7 +5,6 @@ use super::Game;
 use horizon_client::{
     items::ItemStack,
     mobs::{Mob, Species, sniffer},
-    sound_engine::{SoundEngine, SoundInstance, Sounds},
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
 
@@ -31,7 +30,7 @@ impl Game<'_> {
             f64::from(pos[1]) + 0.5,
             f64::from(pos[2]) + 0.5,
         ];
-        if let Some(id) = self.spawn_mob("minecraft:sniffer", at, true)
+        if let Some(id) = self.spawn_mob_raw("minecraft:sniffer", at, true)
             && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
         {
             m.extra.age = sniffer::BABY_START_AGE;
@@ -56,15 +55,15 @@ impl Game<'_> {
             let m = &self.mobs[i];
             if m.species() != Species::Sniffer
                 || !m.alive()
-                || m.silent
                 || !players
                     .iter()
                     .any(|p| m.position.distance_squared(p.position) <= 32.0 * 32.0)
             {
                 continue;
             }
+            let id = m.id;
             let at = [m.position.x, m.position.y, m.position.z];
-            if sniffer::state(m) == sniffer::SEARCHING && m.age.is_multiple_of(20) {
+            if !m.silent && sniffer::state(m) == sniffer::SEARCHING && m.age.is_multiple_of(20) {
                 self.audio
                     .play("minecraft:entity.sniffer.searching", Some(at), 1.0, 1.0);
                 continue;
@@ -76,16 +75,13 @@ impl Game<'_> {
                 continue;
             };
             if ms == 0 {
-                // ClientPacketListener.handleEntityEvent 63: a
-                // SnifferSoundInstance that follows the sniffer.
-                let id = self.mobs[i].id;
-                let instance = SoundInstance::sniffer(id, SoundEngine::unseeded());
-                self.audio.play_instance(instance, false);
+                // Sniffer.onDiggingStart: broadcast entity event 63.
+                self.lan_entity_event(id as i32, 63, at);
             }
             if ms <= 1700 || ms >= 6000 {
                 continue;
             }
-            let head = sniffer::head_block(m);
+            let head = sniffer::head_block(&self.mobs[i]);
             let below = self.world.block(head[0], head[1] - 1, head[2]);
             if self
                 .particle_sprite(below, [head[0], head[1] - 1, head[2]])
@@ -101,7 +97,7 @@ impl Game<'_> {
             // Drawn in this window when it has one, and sent to the players
             // within 32 blocks (the server thread's window is one of them).
             self.landing_dust(None, below, Vec3::new(dust[0], dust[1], dust[2]), 30, 0.0);
-            if self.mobs[i].age.is_multiple_of(10) {
+            if !self.mobs[i].silent && self.mobs[i].age.is_multiple_of(10) {
                 let hit = self.res.facts().get(below).sounds.hit.clone();
                 self.audio.play(&hit, Some(at), 0.5, 0.5);
             }

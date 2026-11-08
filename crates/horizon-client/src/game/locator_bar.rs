@@ -36,7 +36,7 @@ impl Game<'_> {
         if progress != *last {
             *last = progress;
             if *seen {
-                self.experience_display.2 = self.ticks;
+                self.experience_display.2 = self.visual_ticks().max(1);
             } else {
                 *seen = true;
             }
@@ -48,16 +48,17 @@ impl Game<'_> {
                 super::stations::Kind::Enchanting | super::stations::Kind::Anvil
             )
         }) {
-            self.experience_display.2 = self.ticks;
+            self.experience_display.2 = self.visual_ticks().max(1);
         }
     }
-    /// `Hud.willPrioritizeExperienceInfo`.
+    /// `Hud.willPrioritizeExperienceInfo`. A start of 0 is none: the stamps above are at least 1
+    /// (a new world under `HORIZON_STILL` is still at tick 0).
     pub(super) fn experience_recent(&self) -> bool {
         let (_, _, start) = self.experience_display;
-        start != 0 && start + 100 > self.ticks
+        start != 0 && start + 100 > self.visual_ticks()
     }
     /// The local player's UUID, as servers know it.
-    fn own_uuid(&self) -> u128 {
+    pub(super) fn own_uuid(&self) -> u128 {
         match &self.remote {
             Some(r) => r.profile(),
             None => self.level.player_uuid.map_or(0, uuid),
@@ -119,7 +120,7 @@ impl Game<'_> {
             project: &project,
             entity: &entity,
             styles: &self.waypoint_styles,
-            tick: self.ticks,
+            tick: self.visual_ticks(),
         };
         self.waypoints.draw(&view)
     }

@@ -22,6 +22,20 @@ pub(super) type Pos = (i32, i32, i32);
 /// `Screen.extractRenderState`'s grey for the labels: `-6250336`.
 pub(super) const LABEL: u32 = 0xFFA0_A0A0;
 
+/// The job of an edit screen's footer button `id`, given the ids of its Done and Cancel.
+pub(super) fn footer_action(
+    id: u8,
+    done: u8,
+    cancel: u8,
+) -> Option<horizon_client::widgets::Action> {
+    use horizon_client::widgets::Action;
+    match id {
+        _ if id == done => Some(Action::Done),
+        _ if id == cancel => Some(Action::Cancel),
+        _ => None,
+    }
+}
+
 /// A widget of an edit screen at GUI pixels.
 pub(super) enum Item {
     Label {
@@ -48,6 +62,8 @@ pub(super) enum Item {
         w: f32,
         label: Text,
         active: bool,
+        /// Its job on the screen, for the controller.
+        action: Option<horizon_client::widgets::Action>,
     },
     /// A multi-line message (`FittingMultiLineTextWidget`), wrapped to `w`
     /// and cut to what fits `h`.
@@ -271,10 +287,14 @@ impl Game<'_> {
                 w: bw,
                 label,
                 active,
+                action,
                 ..
             } = item
             {
                 let hover = ui::hovered(cursor, *x, *y, *bw, 20.0);
+                if let Some(action) = *action {
+                    horizon_client::widgets::declare_action(action, [*x, *y, *bw, 20.0], *active);
+                }
                 ui::button(batch, atlas, *x, *y, *bw, 20.0, label, *active, hover);
             }
         }
@@ -345,7 +365,7 @@ impl Game<'_> {
         let b = HudBatch::new(size);
         let cursor = self.cursor;
         let shift = self.has_shift_down();
-        let alt = self.keys.contains(&KeyCode::AltLeft);
+        let alt = self.keys.raw(&KeyCode::AltLeft);
         let atlas_click = |game: &Game<'_>, edit: &mut EditBox| {
             edit.click(&game.gui.atlas, cursor.0, false, false);
         };

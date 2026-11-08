@@ -31,6 +31,10 @@ pub fn cube_styles(faces: &[BakedFace]) -> Option<[CubeStyle; 6]> {
             || face.translucent
             || face.quad.tint_index != -1
             || face.quad.light_emission != 0
+            || face.quad.light != [0; 2]
+            || face.quad.color.is_some()
+            || face.quad.ambient_occlusion.is_some()
+            || face.quad.render_type.is_some()
         {
             return None;
         }
@@ -114,12 +118,7 @@ mod tests {
                         )
                         .unwrap()
                         .into_iter()
-                        .map(|quad| BakedFace {
-                            quad,
-                            layer: 7,
-                            opaque: true,
-                            translucent: false,
-                        })
+                        .map(|quad| BakedFace::new(quad, 7, true, false, None))
                         .collect();
                         let Some(styles) = cube_styles(&faces) else {
                             assert!(lock);
@@ -148,12 +147,7 @@ mod tests {
             bake_model_transformed(&model, BlockModelTransform::new([0; 3], false))
                 .unwrap()
                 .into_iter()
-                .map(|quad| BakedFace {
-                    quad,
-                    layer: 0,
-                    opaque: true,
-                    translucent: false,
-                })
+                .map(|quad| BakedFace::new(quad, 0, true, false, None))
                 .collect();
         faces[0].opaque = false;
         assert!(cube_styles(&faces).is_none());

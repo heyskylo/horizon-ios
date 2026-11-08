@@ -5,7 +5,9 @@
 //! lines (`ServerDebug`); on another server they show what vanilla shows
 //! there, nothing or `??`.
 use super::Game;
-use horizon_client::{debug_entries::ENTRIES, debug_overlay as overlay, debug_overlay::Displayer};
+use horizon_client::{
+    debug_entries::ENTRIES, debug_overlay as overlay, debug_overlay::Displayer, java_text,
+};
 use horizon_world::{
     heightmap::{HeightmapState, HeightmapType},
     worldgen::terrain::TerrainBlockStates,
@@ -125,7 +127,10 @@ impl Game<'_> {
                         let speed = self.known_player_movement();
                         d.group(
                             "position",
-                            [format!("Speed: {:.3} blocks/tick", speed.length())],
+                            [format!(
+                                "Speed: {} blocks/tick",
+                                java_text::format_fixed(speed.length(), 3)
+                            )],
                         );
                     }
                 }
@@ -172,8 +177,7 @@ impl Game<'_> {
                 }
                 "tps" => self.debug_tps_line(d),
                 // DebugEntryChunkGeneration, where the world is generated
-                // here: the window's server thread publishes its generators;
-                // the deprecated in-frame path is not extended.
+                // here: the window's server thread publishes its generators.
                 "chunk_generation_stats" => {
                     if let Some(p) = self.player.as_ref() {
                         let terrain = self
@@ -495,7 +499,7 @@ impl Game<'_> {
         };
         offer(
             self.mob_hit()
-                .map(|(i, d)| (d, self.mobs[i].kind.id.to_string())),
+                .map(|(i, d, _)| (d, self.mobs[i].kind.id.to_string())),
         );
         offer(
             self.boat_hit()
@@ -520,10 +524,6 @@ impl Game<'_> {
         offer(
             self.dragon_hit()
                 .map(|(_, d)| (d, "minecraft:ender_dragon".to_owned())),
-        );
-        offer(
-            self.guest_hit()
-                .map(|(_, d)| (d, "minecraft:player".to_owned())),
         );
         best.map(|b| b.1)
     }

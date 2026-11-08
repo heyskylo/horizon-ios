@@ -7,6 +7,7 @@ use super::dynamic::{as_bool, as_int, as_str, int_list, remove, set, string};
 use super::json::{self, Json};
 use super::progress::{UpgradeProgress, UpgradeType};
 use super::schema::Ty;
+use super::world_upgrader::worker_threads;
 use super::{CURRENT, update};
 use crate::compression::Compression;
 use crate::nbt::{self, Compound, JavaString, Limits, NamedTag, Tag};
@@ -14,6 +15,8 @@ use crate::region::{ChunkRecord, RegionFile, RegionWriter};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// The name `SharedConstants.getCurrentVersion().name()` writes in level.dat.
 pub const VERSION_NAME: &str = horizon_core::version::VANILLA_VERSION;
@@ -730,44 +733,104 @@ fn files_with_suffix(folder: &Path, suffix: &str) -> Vec<PathBuf> {
     out
 }
 
-/// Rewrite every chunk of the region files of a folder with `fix`.
+/// Rewrite every chunk of the region files of a folder with `fix`, the files
+/// spread over [`worker_threads`] workers. Each file is read, fixed and
+/// written whole by one worker, so its bytes do not depend on the thread count.
 fn upgrade_regions(
     folder: &Path,
     progress: &Progress,
-    mut fix: impl FnMut(&mut Tag),
+    fix: impl Fn(&mut Tag) + Sync,
 ) -> io::Result<()> {
-    let limits = Limits::default();
-    for path in files_with_suffix(folder, ".mca") {
-        progress.check()?;
-        let mut region = RegionFile::open(&path)?;
-        let positions: Vec<_> = region.chunks().map(|(p, _)| p).collect();
-        let mut records = Vec::new();
-        for pos in positions {
-            let Some(record) = region.read(pos)? else {
-                continue;
-            };
-            let mut root = record.nbt(limits)?;
-            fix(&mut root.tag);
-            records.push((
-                pos,
-                ChunkRecord::from_nbt(&root, record.compression, record.timestamp, limits)?,
-            ));
-        }
-        drop(region);
-        let staging = folder.join(".datafix");
-        fs::create_dir_all(&staging)?;
-        let temporary = staging.join(path.file_name().unwrap_or_default());
-        let _ = fs::remove_file(&temporary);
-        let mut writer = RegionWriter::create(&temporary)?;
-        for (pos, record) in &records {
-            writer.write(*pos, record)?;
-        }
-        writer.finish()?;
-        fs::rename(&temporary, &path)?;
-        fs::remove_dir(&staging)?;
-        progress.progress.increment_finished_operations();
+    upgrade_regions_with_threads(folder, progress, fix, worker_threads())
+}
+
+/// [`upgrade_regions`] on `threads` workers. A cancel or an error stops every
+/// worker before its next file; the error returned is the first file's in
+/// the folder's order.
+fn upgrade_regions_with_threads(
+    folder: &Path,
+    progress: &Progress,
+    fix: impl Fn(&mut Tag) + Sync,
+    threads: usize,
+) -> io::Result<()> {
+    let files = files_with_suffix(folder, ".mca");
+    if files.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    let staging = folder.join(".datafix");
+    fs::create_dir_all(&staging)?;
+    let next = AtomicUsize::new(0);
+    let stop = AtomicBool::new(false);
+    let failed: Mutex<Option<(usize, io::Error)>> = Mutex::new(None);
+    let work = || {
+        while !stop.load(Ordering::Relaxed) {
+            let index = next.fetch_add(1, Ordering::Relaxed);
+            let Some(path) = files.get(index) else {
+                break;
+            };
+            match progress
+                .check()
+                .and_then(|()| upgrade_region_file(path, &staging, &fix))
+            {
+                Ok(()) => progress.progress.increment_finished_operations(),
+                Err(e) => {
+                    stop.store(true, Ordering::Relaxed);
+                    let mut failed = failed.lock().unwrap_or_else(|e| e.into_inner());
+                    if failed.as_ref().is_none_or(|(first, _)| index < *first) {
+                        *failed = Some((index, e));
+                    }
+                }
+            }
+        }
+    };
+    std::thread::scope(|scope| {
+        // This thread is worker 0; a helper that fails to start leaves its
+        // share to the others.
+        for i in 1..threads.clamp(1, files.len()) {
+            let _ = std::thread::Builder::new()
+                .name(format!("World Upgrader #{i}"))
+                .spawn_scoped(scope, work);
+        }
+        work();
+    });
+    if let Some((_, e)) = failed.into_inner().unwrap_or_else(|e| e.into_inner()) {
+        let _ = fs::remove_dir(&staging);
+        return Err(e);
+    }
+    fs::remove_dir(&staging)
+}
+
+/// One file of [`upgrade_regions`]: every chunk fixed, then the file written
+/// anew in `staging` and moved over the old one. A file without chunks (most
+/// of a large world's are empty) has nothing to fix and is left as it is.
+fn upgrade_region_file(path: &Path, staging: &Path, fix: &impl Fn(&mut Tag)) -> io::Result<()> {
+    let limits = Limits::default();
+    let mut region = RegionFile::open(path)?;
+    let positions: Vec<_> = region.chunks().map(|(p, _)| p).collect();
+    if positions.is_empty() {
+        return Ok(());
+    }
+    let mut records = Vec::with_capacity(positions.len());
+    for pos in positions {
+        let Some(record) = region.read(pos)? else {
+            continue;
+        };
+        let mut root = record.nbt(limits)?;
+        fix(&mut root.tag);
+        records.push((
+            pos,
+            ChunkRecord::from_nbt(&root, record.compression, record.timestamp, limits)?,
+        ));
+    }
+    drop(region);
+    let temporary = staging.join(path.file_name().unwrap_or_default());
+    let _ = fs::remove_file(&temporary);
+    let mut writer = RegionWriter::create(&temporary)?;
+    for (pos, record) in &records {
+        writer.write(*pos, record)?;
+    }
+    writer.finish()?;
+    fs::rename(&temporary, path)
 }
 
 /// The progress a data upgrade reports to and whether it may stop early: a
@@ -1143,5 +1206,128 @@ mod upgrade_tests {
         assert_eq!(upgrade_world(&base).unwrap(), old);
         assert_eq!(level_version(&base), CURRENT);
         let _ = fs::remove_dir_all(&base);
+    }
+
+    fn old_chunk(x: i32, z: i32) -> Tag {
+        Tag::compound([
+            ("DataVersion", Tag::Int(4000)),
+            ("xPos", Tag::Int(x)),
+            ("zPos", Tag::Int(z)),
+            ("Status", Tag::String("minecraft:full".into())),
+        ])
+    }
+
+    /// `files` region files of `chunks` old chunks each.
+    fn old_region_folder(dir: &Path, files: i32, chunks: i32) {
+        fs::create_dir_all(dir).unwrap();
+        for rx in 0..files {
+            let mut region =
+                RegionFile::open_writable(dir.join(format!("r.{rx}.0.mca")), true).unwrap();
+            for i in 0..chunks {
+                let pos = horizon_core::position::ChunkPos::new(rx * 32 + i, i % 3);
+                let root = NamedTag {
+                    name: "".into(),
+                    tag: old_chunk(pos.x, pos.z),
+                };
+                let record =
+                    ChunkRecord::from_nbt(&root, Compression::Zlib, 7, Limits::default()).unwrap();
+                region.write(pos, &record).unwrap();
+            }
+        }
+    }
+
+    /// Every region file's chunk versions, in file then chunk order.
+    fn chunk_versions(dir: &Path) -> Vec<Vec<i32>> {
+        files_with_suffix(dir, ".mca")
+            .iter()
+            .map(|file| {
+                let mut region = RegionFile::open(file).unwrap();
+                let positions: Vec<_> = region.chunks().map(|(p, _)| p).collect();
+                positions
+                    .into_iter()
+                    .map(|pos| {
+                        let record = region.read(pos).unwrap().unwrap();
+                        data_version(&record.nbt(Limits::default()).unwrap().tag, -1)
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn fix_overworld_chunk(tag: &mut Tag) {
+        crate::datafix::update_chunk(tag, "minecraft:overworld", Some("minecraft:noise"));
+    }
+
+    /// Region files upgraded on 4 workers come out byte for byte as on one,
+    /// every chunk at the current version.
+    #[test]
+    fn parallel_region_upgrade_matches_one_thread() {
+        let base = std::env::temp_dir().join(format!("horizon-par-regions-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let mut outputs = Vec::new();
+        for threads in [1, 4] {
+            let dir = base.join(format!("threads-{threads}"));
+            old_region_folder(&dir, 9, 20);
+            // An empty file, as the game leaves for regions it never saved into.
+            fs::write(dir.join("r.-1.5.mca"), []).unwrap();
+            let progress = UpgradeProgress::new();
+            let run = Progress {
+                progress: &progress,
+                cancelable: true,
+            };
+            upgrade_regions_with_threads(&dir, &run, fix_overworld_chunk, threads).unwrap();
+            assert_eq!(progress.total_file_fix_stats().finished_operations(), 10);
+            assert_eq!(
+                fs::read(dir.join("r.-1.5.mca")).unwrap(),
+                b"",
+                "the empty file is left alone"
+            );
+            fs::remove_file(dir.join("r.-1.5.mca")).unwrap();
+            assert_eq!(chunk_versions(&dir), vec![vec![CURRENT; 20]; 9]);
+            assert!(!dir.join(".datafix").exists());
+            let bytes: Vec<Vec<u8>> = files_with_suffix(&dir, ".mca")
+                .iter()
+                .map(|f| fs::read(f).unwrap())
+                .collect();
+            outputs.push(bytes);
+        }
+        assert!(outputs[0] == outputs[1], "the files differ");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// A cancel during the region stage stops every worker after the file in
+    /// hand: at most one file each is converted, the rest stay old.
+    #[test]
+    fn cancel_stops_every_region_worker_after_its_file() {
+        let dir = std::env::temp_dir().join(format!("horizon-par-cancel-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        old_region_folder(&dir, 9, 20);
+        let progress = UpgradeProgress::new();
+        let run = Progress {
+            progress: &progress,
+            cancelable: true,
+        };
+        let error = upgrade_regions_with_threads(
+            &dir,
+            &run,
+            |tag: &mut Tag| {
+                progress.set_canceled();
+                fix_overworld_chunk(tag);
+            },
+            4,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        let versions = chunk_versions(&dir);
+        let converted = versions.iter().filter(|f| **f == [CURRENT; 20]).count();
+        let untouched = versions.iter().filter(|f| **f == [4000; 20]).count();
+        assert!((1..=4).contains(&converted), "{converted} files converted");
+        assert_eq!(converted + untouched, 9);
+        assert_eq!(
+            progress.total_file_fix_stats().finished_operations() as usize,
+            converted
+        );
+        assert!(!dir.join(".datafix").exists());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

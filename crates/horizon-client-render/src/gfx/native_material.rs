@@ -39,17 +39,44 @@ struct HorizonMaterialOut {
     @location(8) @interpolate(flat) face: u32,
     @location(9) @interpolate(flat) fluid_quad: u32,
     @location(10) @interpolate(flat) emission: f32,
+    // terrain.wgsl's `emission`, for HDR output's mark.
+    @location(11) @interpolate(flat) hdr_code: u32,
+    // The point on the flat face (`position` without `[displacement]`'s relief), how much of
+    // that relief it has (`MaterialInput.displaced`) and the face's normal (0 when the
+    // fragment finds it).
+    @location(12) base: vec3<f32>,
+    @location(13) displaced: f32,
+    @location(14) @interpolate(flat) normal: vec3<f32>,
 }
 fn horizon_material_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>,
-    light: vec2<u32>, origin: vec3<f32>) -> HorizonMaterialOut {
-    let pos = horizon_material_displace(position + origin, uv, layer, color, light);
+    light: vec2<u32>, origin: vec4<f32>) -> HorizonMaterialOut {
+    let pos = horizon_material_displace(position + origin.xyz, uv, layer, color, light);
+    var out = horizon_material_out(pos, uv, layer, color, vec2<f32>(light));
+    // The section's fade-in (`RenderSection.getVisibility`), as how far it is from whole, in the
+    // high 16 bits of `hdr_code`: no varying of its own, and 0 (whole) where nothing fades. It is
+    // the same for the whole section, so the flat varying loses nothing.
+    let instance = horizon_terrain_instance_visibility(origin.w);
+    out.hdr_code |= u32(round((1.0 - instance) * 65535.0)) << 16u;
+    return out;
+}
+// terrain.wgsl's fade-in (terrain.vsh's chunkVisibility): whole within 16 blocks, the section's
+// own visibility from 32 out, toward the fog colour, alpha kept. The distance blend runs here on
+// the interpolated distance, as vanilla's interpolated `visibility`, not once per triangle.
+fn horizon_material_faded(in: HorizonMaterialOut, color: vec4<f32>) -> vec4<f32> {
+    let instance = 1.0 - f32(in.hdr_code >> 16u) / 65535.0;
+    let visibility = mix(1.0, instance, clamp((in.spherical - 16.0) / 16.0, 0.0, 1.0));
+    return vec4(mix(horizon_terrain_globals.fog_color.rgb, color.rgb, visibility), color.a);
+}
+// `light`: sky, block, 16 per level.
+fn horizon_material_out(pos: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>,
+    light: vec2<f32>) -> HorizonMaterialOut {
     var out: HorizonMaterialOut;
     out.clip = horizon_terrain_globals.view_proj * vec4(pos, 1.0);
     out.uv = uv;
     out.layer = layer;
     out.tint = vec4(color.rgb, 1.0);
-    let block = max(f32(light.y), horizon_terrain_dynamic_block_light(pos));
-    let sky = f32(light.x);
+    let block = max(light.y, horizon_terrain_dynamic_block_light(pos));
+    let sky = light.x;
     // 16 per level, 15 levels.
     out.light = min(vec2(block, sky) / 240.0, vec2(1.0));
     out.lightmap = horizon_terrain_sample_lightmap(sky / 16.0, block / 16.0).rgb;
@@ -67,8 +94,13 @@ fn horizon_material_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color
     out.fluid_quad = u32(fluid);
     // The tier (0 none, 1 low, 2 incandescent, 3 bright, 4 very bright) as how strongly the
     // face shines: a redstone torch 7/15, a torch 14/15, glowstone 1.
-    let tier = 15u - (flags & 15u);
+    out.hdr_code = 15u - (flags & 15u);
+    // Codes above 4 are the same tiers, shining all over rather than in their bright parts.
+    let tier = select(out.hdr_code, out.hdr_code - 4u, out.hdr_code > 4u);
     out.emission = select(min(f32(tier) * 7.0 / 15.0, 1.0), 0.0, tier == 0u);
+    out.base = pos;
+    out.displaced = 0.0;
+    out.normal = vec3(0.0);
     return out;
 }
 @vertex fn horizon_material_vs(
@@ -76,7 +108,7 @@ fn horizon_material_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>,
     @location(5) origin: vec4<f32>) -> HorizonMaterialOut {
     return horizon_material_vertex(position, horizon_terrain_terrain_uv(uv, origin.w), layer,
-        color, light, origin.xyz);
+        color, light, origin);
 }
 @vertex fn horizon_material_vs_flat(
     @builtin(vertex_index) vertex: u32,
@@ -85,7 +117,7 @@ fn horizon_material_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color
 ) -> HorizonMaterialOut {
     let origin = horizon_terrain_slot_origins[horizon_terrain_block_slots[vertex >> 8u]];
     return horizon_material_vertex(position, horizon_terrain_terrain_uv(uv, origin.w), layer,
-        color, light, origin.xyz);
+        color, light, origin);
 }
 // The prelude's `block_normal_map` and `block_specular_map`: the resource packs' LabPBR maps
 // in the pack's frame group (3), one array each, a blank 1x1 without them.
@@ -138,40 +170,104 @@ fn horizon_material_color(in: HorizonMaterialOut, translucent: bool) -> vec4<f32
     horizon_block_lod = max(0.5 * log2(max(footprint, 1e-8)), 0.0);
     // Water draws translucent and lava solid, so the pass resolves the fluid kind.
     let fluid = select(0u, select(2u, 1u, translucent), in.fluid_quad != 0u);
-    let normal = horizon_material_normal(in.position);
+    // `[displacement]`'s grid hands down its face's normal: its relief is the pack's to shade.
+    let normal = select(horizon_material_normal(in.position), in.normal,
+        dot(in.normal, in.normal) > 0.5);
     horizon_material_face_normal = normal;
     horizon_surface = vec4<f32>(0.0);
-    let tangent = horizon_material_tangent(in.position, in.uv, normal);
-    return material(MaterialInput(albedo, in.tint, in.light, in.lightmap, in.position, in.uv,
-        translucent, horizon_sprite_tags(in.layer & 0x7fffu),
+    let tangent = horizon_material_tangent(in.base, in.uv, normal);
+    let out = material(MaterialInput(vec4(horizon_line_in(albedo.rgb), albedo.a),
+        vec4(horizon_line_in(in.tint.rgb), in.tint.a), in.light, horizon_line_in(in.lightmap),
+        in.position, in.uv, translucent, horizon_sprite_tags(in.layer & 0x7fffu),
         horizon_sprite_material(in.layer & 0x7fffu), in.clip.xy / frame.resolution,
-        in.face, fluid, in.emission, normal, tangent)).color;
+        in.face, fluid, in.emission, normal, tangent,
+        horizon_line_in(horizon_terrain_native_colored_light(in.position)), in.displaced)).color;
+    return vec4(horizon_line_out(out.rgb), out.a);
 }
 var<private> horizon_material_face_normal: vec3<f32>;
 struct HorizonMaterialSolid {
     @location(0) color: vec4<f32>,
     // The surface target's data: `set_surface`'s, then the fragment's depth, which the post
     // stage's `surface_at` compares with the final depth.
-    @location(1) surface: vec4<f32>,
+    // Its four floats' bits (`SURFACE_FORMAT` is an integer format).
+    @location(1) surface: vec4<u32>,
+}
+// What `fs_solid` leaves in the frame's alpha for HDR output, from the sprite before the pack's
+// material: the pack decides the colour, Horizon still knows which pixels are light sources.
+fn horizon_material_mark(in: HorizonMaterialOut, texel: vec4<f32>) -> f32 {
+    if horizon_terrain_HDR_WRITE_LIGHT { return 1.0; }
+    let code = in.hdr_code & 15u;
+    if code > 0u {
+        let whole = code > 4u;
+        let tier = select(code, code - 4u, whole);
+        let l = in.layer & 0x7fffu;
+        let t = textureLoad(horizon_terrain_emission_thresholds,
+            vec2(i32(l % horizon_terrain_SPRITE_SPLIT), i32(l / horizon_terrain_SPRITE_SPLIT)), 0);
+        let y = horizon_terrain_brightness(texel.rgb);
+        if whole || y >= t.r {
+            return horizon_terrain_hdr_mark(tier, y);
+        }
+    }
+    return 1.0;
 }
 @fragment fn horizon_material_fs_solid(in: HorizonMaterialOut) -> HorizonMaterialSolid {
-    let color = horizon_material_color(in, false);
+    // `[displacement]`'s grid draws these pixels.
+    if length(in.base) < horizon_displace_distance - 0.05 && horizon_displaced_layer(in.layer) {
+        discard;
+    }
+    return horizon_material_solid(in);
+}
+fn horizon_material_solid(in: HorizonMaterialOut) -> HorizonMaterialSolid {
+    let color = horizon_material_faded(in, horizon_material_color(in, false));
+    let texel = horizon_terrain_sprite(in.uv, in.layer & 0x7fffu);
     // Bit 15 of the layer marks opaque leaves (forceOpaque): no alpha cutout.
     if color.a < 0.5 && (in.layer & 0x8000u) == 0u { discard; }
     if horizon_surface.w == 0.0 {
         set_surface(horizon_material_face_normal, 0.0, 0.0);
     }
     var out: HorizonMaterialSolid;
-    out.color = horizon_material_fogged(vec4(color.rgb, 1.0), in.spherical, in.cylindrical);
-    out.surface = vec4(horizon_surface.xyz, in.clip.z);
+    let mark = horizon_material_mark(in, texel);
+    out.color = horizon_material_fogged(vec4(color.rgb, mark), in.spherical, in.cylindrical);
+    out.surface = bitcast<vec4<u32>>(vec4(horizon_surface.xyz, in.clip.z));
     return out;
 }
 @fragment fn horizon_material_fs_translucent(in: HorizonMaterialOut) -> @location(0) vec4<f32> {
-    let color = horizon_material_color(in, true);
+    let color = horizon_material_faded(in, horizon_material_color(in, true));
     if color.a < 0.01 { discard; }
     return horizon_material_fogged(color, in.spherical, in.cylindrical);
 }
 ";
+
+/// `[displacement]`'s grid (gfx/displace.rs): one instance a quad the pick chose, its corners
+/// read from the copy of the arena, each of its cells two triangles moved along the face's
+/// normal by the pack's `displacement`, measured from the texture's mean height so that the
+/// face's edges, pinned there, meet their neighbours whatever their relief.
+const DISPLACED_ENTRIES: &str = "
+@vertex fn horizon_material_vs_displaced(@builtin(vertex_index) v: u32,
+    @builtin(instance_index) instance: u32) -> HorizonMaterialOut {
+    let p = horizon_displace_point(v, instance);
+    var out = horizon_material_out(p.position, p.uv, p.layer, p.color, p.light);
+    out.base = p.base;
+    out.displaced = p.near;
+    out.normal = p.normal;
+    return out;
+}
+@fragment fn horizon_material_fs_displaced(in: HorizonMaterialOut) -> HorizonMaterialSolid {
+    if length(in.base) >= horizon_displace_distance + 0.05 {
+        discard;
+    }
+    return horizon_material_solid(in);
+}
+";
+
+/// What the material's displaced pipeline is built against: `[displacement]`'s values and
+/// its group 1.
+pub struct DisplacedShape<'a> {
+    pub distance: f32,
+    pub cells: u32,
+    pub steps: bool,
+    pub layout: &'a wgpu::BindGroupLayout,
+}
 
 /// What terrain pipelines are built against: the renderer's layouts and constants.
 pub struct TerrainShape<'a> {
@@ -204,6 +300,8 @@ pub struct NativeMaterial {
     pub solid: wgpu::RenderPipeline,
     pub translucent: wgpu::RenderPipeline,
     pub flat: Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>,
+    /// `[displacement]`'s grid of the solid terrain near the camera (gfx/displace.rs).
+    pub displaced: Option<wgpu::RenderPipeline>,
     /// The stage calls `set_surface`: its solid pipelines also write the surface target.
     pub writes_surface: bool,
 }
@@ -212,7 +310,8 @@ pub struct NativeMaterial {
 /// every name it declares prefixed.
 fn vanilla_terrain() -> String {
     prefixed(
-        section(TERRAIN, "struct Globals {", "// Sky (SkyRenderer)"),
+        &(include_str!("../hdr_light.wgsl").to_owned()
+            + section(TERRAIN, "struct Globals {", "// Sky (SkyRenderer)")),
         PREFIX,
     )
 }
@@ -252,13 +351,16 @@ fn horizon_material_displace(pos: vec3<f32>, uv: vec2<f32>, layer: u32, color: v
     let fluid = high >= 8u && (high & 7u) < 6u;
     let lit = min(vec2(f32(light.y), f32(light.x)) / 240.0, vec2(1.0));
     return vertex(VertexInput(pos, uv, horizon_sprite_material(layer & 0x7fffu), lit,
-        vec4(color.rgb, 1.0), select(0u, high & 7u, fluid), u32(fluid)));
+        vec4(horizon_line_in(color.rgb), 1.0), select(0u, high & 7u, fluid), u32(fluid)));
 }
 ";
 
-/// The surface target (the post stage's `scene_surface`): x the normal (two snorm16 in its
-/// bits), y smoothness, z the pack's data, w the fragment's depth.
-pub const SURFACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
+/// The surface target (the post stage's `scene_surface`): the bits of four floats, x the normal
+/// (two snorm16 in its bits), y smoothness, z the pack's data, w the fragment's depth. Stored
+/// as unsigned integers, not `Rgba32Float`: RGBA32UI is colour-renderable on every backend,
+/// where OpenGL (GLES 3 semantics) refuses RGBA32F as a render attachment, and integers keep
+/// the packed normal's bits exact.
+pub const SURFACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Uint;
 
 /// The terrain shader for the pack's material stage `source`, with its sprite `tags` and
 /// `materials`, and the vertex stage in its module when `vertex`.
@@ -266,18 +368,26 @@ fn shader_source(
     source: &str,
     tags: &[(u32, u32)],
     materials: &[(u32, u32)],
-    vertex: bool,
+    (vertex, displaced): (bool, bool),
+    api: horizon_shader_api::Api,
 ) -> String {
     format!(
-        "{source}\n// Horizon's terrain (terrain.wgsl)\n{}{}{}{}{ENTRIES}",
+        "{source}\n// Horizon's terrain (terrain.wgsl)\n{}{}{}{}{}{ENTRIES}{}{}",
         vanilla_terrain(),
+        super::native_post::line_helpers(api),
         if vertex {
             DISPLACE_PACK
         } else {
             DISPLACE_VANILLA
         },
         layer_table("horizon_sprite_tags", tags),
-        layer_table("horizon_sprite_material", materials)
+        layer_table("horizon_sprite_material", materials),
+        super::displace::RELIEF,
+        if displaced {
+            super::displace::GRID.to_owned() + DISPLACED_ENTRIES
+        } else {
+            String::new()
+        }
     )
 }
 
@@ -287,8 +397,10 @@ fn module(
     tags: &[(u32, u32)],
     materials: &[(u32, u32)],
     vertex: bool,
+    displaced: bool,
+    api: horizon_shader_api::Api,
 ) -> Result<naga::Module, String> {
-    let text = shader_source(&stage.source, tags, materials, vertex);
+    let text = shader_source(&stage.source, tags, materials, (vertex, displaced), api);
     naga::front::wgsl::parse_str(&text)
         .map_err(|e| format!("{}: {}", stage.file, e.emit_to_string(&text)))
 }
@@ -303,9 +415,17 @@ impl NativeMaterial {
         constants: &[(String, f64)],
         fog: bool,
         vertex: bool,
+        displaced: Option<&DisplacedShape<'_>>,
     ) -> Result<Self, String> {
         let writes_surface = horizon_shader_api::stages::calls_set_surface(&stage.source);
-        let module = module(stage, shape.sprite_tags, shape.sprite_materials, vertex)?;
+        let module = module(
+            stage,
+            shape.sprite_tags,
+            shape.sprite_materials,
+            vertex,
+            displaced.is_some(),
+            frame.api,
+        )?;
         let mut constants = present_constants(&module, constants);
         let sprite_names = [
             "horizon_terrain_SPRITE_ARRAYS",
@@ -313,6 +433,18 @@ impl NativeMaterial {
         ];
         constants.extend(sprite_names.into_iter().zip(shape.sprites));
         constants.push(("horizon_material_fog", f64::from(u8::from(fog))));
+        constants.push((
+            "horizon_terrain_HDR_WRITE_LIGHT",
+            f64::from(u8::from(shape.format == super::LINEAR_FRAME)),
+        ));
+        constants.push((
+            "horizon_displace_distance",
+            displaced.map_or(0.0, |d| f64::from(d.distance)),
+        ));
+        if let Some(d) = displaced {
+            constants.push(("horizon_displace_cells", f64::from(d.cells)));
+            constants.push(("horizon_displace_steps", f64::from(u8::from(d.steps))));
+        }
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some(&stage.label),
@@ -388,7 +520,7 @@ impl NativeMaterial {
                     module: &module,
                     entry_point: Some(fragment),
                     compilation_options: options,
-                    targets: if fragment == "horizon_material_fs_solid" && writes_surface {
+                    targets: if fragment != "horizon_material_fs_translucent" && writes_surface {
                         &solid_targets
                     } else {
                         &solid_targets[..1]
@@ -430,6 +562,16 @@ impl NativeMaterial {
                 ),
             )
         });
+        // The grid's corners come from its group 1, not from vertex buffers.
+        let displaced = displaced.map(|d| {
+            pipeline(
+                &layout(Some(d.layout)),
+                "horizon_material_vs_displaced",
+                &[],
+                "horizon_material_fs_displaced",
+                None,
+            )
+        });
         if let Some(e) = pollster::block_on(scope.pop()) {
             return Err(format!("{}: {e}", stage.file));
         }
@@ -437,15 +579,49 @@ impl NativeMaterial {
             solid,
             translucent,
             flat,
+            displaced,
             writes_surface,
         })
     }
 }
 
 #[cfg(test)]
+pub(super) fn coverage_test_shader(api: horizon_shader_api::Api) -> String {
+    use horizon_shader_api::{MANIFEST, Pack, StageKind, check};
+    let manifest = format!(
+        "schema = 1\nid = \"coverage\"\nname = \"Coverage\"\nversion = \"1\"\napi = \"{api}\"\n[material]\nfile = \"material.wgsl\"\n[displacement]\n"
+    );
+    let material = "fn material(input: MaterialInput) -> Surface { return Surface(vec4<f32>(1.4, 0.3, 0.1, 0.7)); }\nfn displacement(input: DisplacementInput) -> f32 { return 0.0; }\n";
+    let files = [(MANIFEST, manifest.as_str()), ("material.wgsl", material)]
+        .map(|(n, text)| (n.to_owned(), text.as_bytes().to_vec()))
+        .into();
+    let report = check(&Pack::from_files(files).unwrap()).unwrap();
+    let stage = report
+        .stages
+        .iter()
+        .find(|s| s.kind == StageKind::Material)
+        .unwrap();
+    shader_source(&stage.source, &[], &[], (false, true), api)
+        + r#"
+override TEST_TIER: u32 = 0u;
+override TEST_OVERLAY: u32 = 0u;
+@vertex fn test_vertex(@builtin(vertex_index) i: u32) -> HorizonMaterialOut {
+    var o: HorizonMaterialOut;
+    o.clip = vec4(vec2(f32((i << 1u) & 2u), f32(i & 2u)) * 2.0 - 1.0, 0.0, 1.0);
+    o.uv = vec2(0.5);
+    o.tint = vec4(1.0);
+    o.lightmap = vec3(1.0);
+    o.hdr_code = TEST_TIER;
+    o.base = vec3(1.0);
+    return o;
+}
+"#
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use horizon_shader_api::{MANIFEST, Pack, StageKind, check};
+    use horizon_shader_api::{Api, MANIFEST, Pack, StageKind, check};
 
     fn stage(material: &str) -> CheckedStage {
         let manifest = "schema = 1\nid = \"t\"\nname = \"T\"\nversion = \"1\"\napi = \"0.1\"\n\
@@ -458,6 +634,25 @@ mod tests {
         let mut report = check(&Pack::from_files(files).unwrap()).unwrap();
         assert_eq!(report.stages[0].kind, StageKind::Material);
         report.stages.remove(0)
+    }
+
+    /// The fade-in packed above the HDR code: a section a quarter visible (`section_instance`
+    /// with step 1: mantissa `1 - visibility` = 0.75) keeps its visibility through the code, and
+    /// a fragment 24 blocks away, half-way into the 16-block blend, is 1 - (1 - 0.25) / 2 = 0.625
+    /// visible; the code's low nibble survives.
+    #[test]
+    fn the_fade_in_rides_the_hdr_code() {
+        let w = f32::from_bits(1.0f32.to_bits() | (0.75 * 8_388_608.0) as u32);
+        // `horizon_material_vertex`.
+        let instance = 1.0 - (w.to_bits() & 0x7fffff) as f32 / 8_388_608.0;
+        let code = 7u32 | (((1.0 - instance) * 65535.0).round() as u32) << 16;
+        // `horizon_material_faded` and `horizon_material_mark`.
+        let unpacked = 1.0 - (code >> 16) as f32 / 65535.0;
+        assert!((unpacked - 0.25).abs() < 1.0 / 65535.0);
+        let blend = ((24.0f32 - 16.0) / 16.0).clamp(0.0, 1.0);
+        let visibility = 1.0 + (unpacked - 1.0) * blend;
+        assert!((visibility - 0.625).abs() < 1.0 / 65535.0);
+        assert_eq!(code & 15, 7);
     }
 
     #[test]
@@ -492,7 +687,7 @@ mod tests {
         let tags = [(7, 1), (3, 1), (9, 2)];
         let materials = [(5, 1000)];
         assert!(layer_table("t", &tags).contains("case 3u, 7u: { return 1u; }"));
-        let module = module(&stage, &tags, &materials, false).unwrap();
+        let module = module(&stage, &tags, &materials, false, false, Api::V0_1).unwrap();
         let info = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),
@@ -501,7 +696,13 @@ mod tests {
         .unwrap_or_else(|e| {
             panic!(
                 "{}",
-                e.emit_to_string(&shader_source(&stage.source, &tags, &materials, false))
+                e.emit_to_string(&shader_source(
+                    &stage.source,
+                    &tags,
+                    &materials,
+                    (false, false),
+                    Api::V0_1
+                ))
             )
         });
         let entries: Vec<&str> = module
@@ -522,5 +723,179 @@ mod tests {
             present_constants(&module, &[("gain".into(), 1.5), ("other".into(), 1.0)]),
             [("gain", 1.5)]
         );
+    }
+
+    /// The terrain shader of a 0.2 pack with a vertex stage, whose tint the renderer decodes.
+    #[test]
+    fn the_terrain_validates_with_a_0_2_pack() {
+        let manifest = "schema = 1\nid = \"t\"\nname = \"T\"\nversion = \"1\"\napi = \"0.2\"\n\
+            [material]\nfile = \"material.wgsl\"\n[vertex]\nfile = \"vertex.wgsl\"\n";
+        let material = "fn material(input: MaterialInput) -> Surface {\n    \
+                return Surface(input.albedo * input.tint * vec4(input.colored_light, 1.0));\n}\n";
+        let vertex = "fn vertex(input: VertexInput) -> vec3<f32> {\n    \
+                return input.position + input.tint.rgb;\n}\n";
+        let files = [
+            (MANIFEST, manifest),
+            ("material.wgsl", material),
+            ("vertex.wgsl", vertex),
+        ]
+        .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
+        .into();
+        let report = check(&Pack::from_files(files).unwrap()).unwrap();
+        let stage = report.stages.iter().find(|s| s.kind == StageKind::Material);
+        let module = module(stage.unwrap(), &[], &[], true, false, Api::V0_2).unwrap();
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap();
+    }
+
+    #[test]
+    fn the_displaced_grid_validates_with_a_pack() {
+        let manifest = "schema = 1\nid = \"t\"\nname = \"T\"\nversion = \"1\"\napi = \"0.1\"\n\
+            [material]\nfile = \"material.wgsl\"\n[displacement]\n";
+        let material = "fn material(input: MaterialInput) -> Surface {\n    \
+                return Surface(input.albedo * (1.0 - 0.5 * input.displaced));\n}\n\
+            fn displacement(input: DisplacementInput) -> f32 {\n    \
+                return (1.0 - input.height) * 0.125 * f32(input.material + 1u);\n}\n";
+        let files = [(MANIFEST, manifest), ("material.wgsl", material)]
+            .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
+            .into();
+        let mut report = check(&Pack::from_files(files).unwrap()).unwrap();
+        let stage = report.stages.remove(0);
+        let materials = [(5, 1000)];
+        let module = module(&stage, &[], &materials, false, true, Api::V0_1).unwrap();
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap_or_else(|e| {
+            let text = shader_source(&stage.source, &[], &materials, (false, true), Api::V0_1);
+            panic!("{}", e.emit_to_string(&text))
+        });
+        for entry in [
+            "horizon_material_vs_displaced",
+            "horizon_material_fs_displaced",
+        ] {
+            assert!(
+                module.entry_points.iter().any(|e| e.name == entry),
+                "{entry}"
+            );
+        }
+    }
+
+    /// An identity material (vanilla's own lighting, `albedo * tint * lightmap`) under 0.2,
+    /// its colours decoded on the way in and encoded on the way out as the entries do, draws
+    /// what 0.1's does (vanilla's) within an 8-bit step.
+    #[test]
+    fn an_identity_0_2_material_is_vanilla_s_within_an_8_bit_step() {
+        let instance = crate::gfx::test_gpu::instance();
+        let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
+            return;
+        };
+        let Ok((device, queue)) = pollster::block_on(adapter.request_device(&Default::default()))
+        else {
+            return;
+        };
+        // The entries' call of `material`, with a 16×16 grid of colours.
+        let entry = "@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u)) * 2.0 - 1.0, 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    let c = floor(p.xy) / 15.0;
+    let albedo = vec4(c.x, c.y, 1.0 - c.x, 1.0);
+    let tint = vec4(0.9, 1.0 - 0.5 * c.y, 0.7, 1.0);
+    let lightmap = vec3(c.y, 0.8, 1.0 - c.y);
+    let out = material(MaterialInput(vec4(horizon_line_in(albedo.rgb), albedo.a),
+        vec4(horizon_line_in(tint.rgb), tint.a), vec2(1.0), horizon_line_in(lightmap),
+        vec3(0.0), vec2(0.0), false, 0u, 0u, vec2(0.0), 0u, 0u, 0.0, vec3(0.0, 1.0, 0.0),
+        vec4(1.0, 0.0, 0.0, 1.0), horizon_line_in(vec3(0.0)), 0.0)).color;
+    return vec4(horizon_line_out(out.rgb), out.a);
+}
+";
+        let vanilla = "fn material(input: MaterialInput) -> Surface {\n    \
+            return Surface(input.albedo * input.tint * vec4(input.lightmap, 1.0));\n}\n";
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let draw = |api: Api| {
+            let manifest = format!(
+                "schema = 1\nid = \"t\"\nname = \"T\"\nversion = \"1\"\napi = \"{api}\"\n\
+                 [material]\nfile = \"material.wgsl\"\n"
+            );
+            let files = [(MANIFEST, manifest.as_str()), ("material.wgsl", vanilla)]
+                .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
+                .into();
+            let report = check(&Pack::from_files(files).unwrap()).unwrap();
+            let source = report.stages[0].source.clone()
+                + horizon_shader_api::stages::PBR_STUB
+                + super::super::native_post::line_helpers(api)
+                + entry;
+            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(source.into()),
+            });
+            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: None,
+                layout: None,
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(format.into())],
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
+            let size = wgpu::Extent3d {
+                width: 16,
+                height: 16,
+                depth_or_array_layers: 1,
+            };
+            let target = device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = target.create_view(&Default::default());
+            let mut encoder = device.create_command_encoder(&Default::default());
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: Default::default(),
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&pipeline);
+            pass.draw(0..3, 0..1);
+            drop(pass);
+            let screenshot = crate::gfx::copy_frame(&device, &mut encoder, &target, [16, 16]);
+            queue.submit([encoder.finish()]);
+            screenshot
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, |r| r.unwrap());
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            screenshot.slice(..).get_mapped_range().unwrap().to_vec()
+        };
+        let (old, new) = (draw(Api::V0_1), draw(Api::V0_2));
+        let worst = old.iter().zip(&new).map(|(a, b)| a.abs_diff(*b)).max();
+        assert!(worst.is_some_and(|w| w <= 1), "{worst:?}");
     }
 }

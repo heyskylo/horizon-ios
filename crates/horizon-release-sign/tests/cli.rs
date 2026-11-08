@@ -1,5 +1,5 @@
 //! The release steps as release.yml runs them: `sums`, tools/ci/sign_release.sh (OpenSSL), `verify`.
-use horizon_release_sign::{SIGNATURE, SUMS, SigningKey, trusted_keys};
+use horizon_release_sign::{SIGNATURE, SIGNATURE_V2, SUMS, SigningKey, trusted_keys};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -60,10 +60,14 @@ fn openssl() -> Option<String> {
 }
 
 fn sign_script(dir: &Path, env: &[(&str, &str)]) -> Output {
+    sign_script_for(TAG, dir, env)
+}
+
+fn sign_script_for(tag: &str, dir: &Path, env: &[(&str, &str)]) -> Output {
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/ci/sign_release.sh");
     let mut cmd = Command::new("bash");
     cmd.arg(script)
-        .arg(TAG)
+        .arg(tag)
         .arg(dir.join("horizon-linux-x86_64.tar.gz"))
         .arg(dir.join("horizon-windows-x64.zip"))
         .env_remove("RELEASE_SIGNING_KEY")
@@ -180,5 +184,72 @@ fn keygen_writes_the_secret_to_a_pipe_and_the_public_key_to_a_file() {
         std::fs::read_to_string(&public).unwrap().trim(),
         key.public_base64()
     );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_nightly_is_signed_for_its_channel_and_for_its_version() {
+    if cfg!(windows) || openssl().is_none() {
+        eprintln!("skipped: tools/ci/sign_release.sh is tested on Linux (bash, OpenSSL 3)");
+        return;
+    }
+    const VERSION: &str = "nightly-2026-10-28-0c02067";
+    let dir = folder("nightly");
+    std::fs::remove_file(dir.join(SUMS)).unwrap();
+    let (key, secret) = SigningKey::generate().unwrap();
+    let out = sign_script_for(
+        "nightly",
+        &dir,
+        &[("RELEASE_SIGNING_KEY", &secret), ("ALSO_FOR", VERSION)],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let public = key.public_base64();
+    let check = |tag: &str, signature: &str| {
+        tool(
+            &[
+                "verify",
+                "--tag",
+                tag,
+                "--key",
+                &public,
+                "--signature",
+                signature,
+            ],
+            &[&dir],
+        )
+        .status
+        .success()
+    };
+    // Launchers from before v2 check the channel's; current ones, the version's.
+    assert!(check("nightly", SIGNATURE));
+    assert!(check(VERSION, SIGNATURE_V2));
+    assert!(!check(VERSION, SIGNATURE));
+    assert!(!check("nightly", SIGNATURE_V2));
+    assert!(!check("nightly-2026-10-27-0c02067", SIGNATURE_V2));
+    // What a current launcher does with it.
+    let sums = std::fs::read(dir.join(SUMS)).unwrap();
+    let v2 = std::fs::read_to_string(dir.join(SIGNATURE_V2)).unwrap();
+    let digest = horizon_release_sign::nightly_digest(
+        VERSION,
+        "horizon-windows-x64.zip",
+        Some(&sums),
+        Some(&v2),
+        &[key.public()],
+    );
+    assert_eq!(
+        digest,
+        Ok(horizon_release_sign::sha256_hex(b"windows build"))
+    );
+    // A bad ALSO_FOR is refused before anything is signed.
+    let out = sign_script_for(
+        "nightly",
+        &dir,
+        &[("RELEASE_SIGNING_KEY", &secret), ("ALSO_FOR", "v0.2.81")],
+    );
+    assert!(!out.status.success());
     std::fs::remove_dir_all(dir).unwrap();
 }

@@ -10,7 +10,7 @@ use crate::{
 use horizon_core::random::{RandomSource, XoroshiroRandom, mix_stafford13, seed_from_hash};
 use horizon_world::loot::PackOverlay;
 use serde_json::Value;
-use std::{collections::HashMap, fs, path::Path, sync::Arc};
+use std::{collections::HashMap, path::Path, sync::Arc};
 
 /// `VillagerData.NEXT_LEVEL_XP_THRESHOLDS`.
 pub const LEVEL_XP: [i32; 5] = [0, 10, 70, 150, 250];
@@ -119,15 +119,28 @@ pub fn update_special_prices(offers: &mut [MerchantOffer], reputation: i32, hero
         }
     }
 }
-/// An `ItemCost`: item and count (component predicates are not used by the
-/// 26.3 trade data except for one exact match, kept as the stack's data).
+/// An `ItemCost`: item, count and the required exact component subset,
+/// kept as the stack's component patch.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ItemCost {
     pub stack: ItemStack,
 }
 impl ItemCost {
     pub fn test(&self, s: &ItemStack) -> bool {
-        s.item == self.stack.item && (self.stack.extra.is_none() || s.data() == self.stack.data())
+        if s.item != self.stack.item {
+            return false;
+        }
+        // ItemCost.test / DataComponentExactPredicate.test: exact values for
+        // each required component, with unrelated components allowed.
+        let Some(horizon_world::nbt::Tag::Compound(required)) =
+            crate::item_data::components_tag(self.stack.damage, self.stack.data())
+        else {
+            return true;
+        };
+        let actual = crate::item_data::components_tag(s.damage, s.data());
+        required.iter().all(|(key, value)| {
+            matches!(&actual, Some(horizon_world::nbt::Tag::Compound(c)) if c.get(key) == Some(value))
+        })
     }
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -278,8 +291,9 @@ pub enum Event {
     TradeUpdated(bool, f32),
     /// `MerchantMenu.playTradeSound` (a shift-clicked trade).
     TradeSound,
-    /// A trade of this offer was made (`notifyTrade`).
-    Traded(usize),
+    /// A trade of this offer was made (`notifyTrade`), with the offer as
+    /// it was right after that trade's use (before a level-up's prices).
+    Traded(usize, Box<MerchantOffer>),
 }
 /// What the world lends a trading session for offers made while it is open.
 pub struct TradeEnv<'a> {
@@ -373,7 +387,8 @@ impl Session {
         offer.uses += 1;
         let offer = offer.clone();
         self.ambient_sound_time = -80;
-        self.events.push(Event::Traded(index));
+        self.events
+            .push(Event::Traded(index, Box::new(offer.clone())));
         let mut prices = false;
         if self.villager {
             let mut pop = 3 + self.random.next_int_bound(4).unwrap_or(0);
@@ -448,26 +463,15 @@ pub struct Trades {
     /// potion tags, ordered (`set_random_potion` options).
     pub potion_tags: HashMap<String, Vec<String>>,
 }
-fn walk(dir: &Path, base: &Path, out: &mut HashMap<String, Value>) {
-    let Ok(entries) = fs::read_dir(dir) else {
+/// The `.json` files under `dir` as `minecraft:<path>` ids, through `json_folder` (from the
+/// prepared data file when there is one); a file that doesn't parse is left out.
+fn walk(dir: &Path, out: &mut HashMap<String, Value>) {
+    let Ok(folder) = horizon_world::json_folder::read(dir) else {
         return;
     };
-    for e in entries.flatten() {
-        let p = e.path();
-        if p.is_dir() {
-            walk(&p, base, out);
-        } else if p.extension().is_some_and(|x| x == "json")
-            && let Ok(rel) = p.strip_prefix(base)
-            && let Ok(bytes) = fs::read(&p)
-            && let Ok(v) = serde_json::from_slice(&bytes)
-        {
-            out.insert(
-                format!(
-                    "minecraft:{}",
-                    rel.with_extension("").to_string_lossy().replace('\\', "/")
-                ),
-                v,
-            );
+    for file in &folder.files {
+        if let Ok(value) = serde_json::from_slice(file.bytes().unwrap_or_default()) {
+            out.insert(format!("minecraft:{}", file.name), value);
         }
     }
 }
@@ -478,23 +482,11 @@ impl Trades {
     pub fn load(root: &Path, overlay: &horizon_world::loot::PackOverlay) -> Self {
         let data = root.join("data/minecraft");
         let (mut trades, mut raw_tags, mut sets) = (HashMap::new(), HashMap::new(), HashMap::new());
-        walk(
-            &data.join("villager_trade"),
-            &data.join("villager_trade"),
-            &mut trades,
-        );
-        walk(
-            &data.join("tags/villager_trade"),
-            &data.join("tags/villager_trade"),
-            &mut raw_tags,
-        );
-        walk(&data.join("trade_set"), &data.join("trade_set"), &mut sets);
+        walk(&data.join("villager_trade"), &mut trades);
+        walk(&data.join("tags/villager_trade"), &mut raw_tags);
+        walk(&data.join("trade_set"), &mut sets);
         let mut raw_potions = HashMap::new();
-        walk(
-            &data.join("tags/potion"),
-            &data.join("tags/potion"),
-            &mut raw_potions,
-        );
+        walk(&data.join("tags/potion"), &mut raw_potions);
         // The packs' trade files: a trade or set's top pack file replaces
         // the game's own (`SimpleJsonResourceReloadListener` sees one
         // resource per id), a tag's entries join in pack order with a
@@ -734,10 +726,13 @@ fn instantaneous(effect: &str) -> bool {
         "minecraft:saturation" | "minecraft:instant_health" | "minecraft:instant_damage"
     )
 }
-fn cost(items: &Items, v: &Value, additional: i32) -> ItemCost {
+fn cost<R: RandomSource>(items: &Items, v: &Value, additional: i32, random: &mut R) -> ItemCost {
     let id = v["id"].as_str().unwrap_or("minecraft:air");
     let max = items.get(id).map_or(64, |i| i.max_stack) as i32;
-    let count = (v["count"].as_i64().unwrap_or(1) as i32 + additional).clamp(0, max);
+    // TradeCost.toItemCost evaluates the provider before adding the modifier's
+    // price, including its random draws, then clamps to the item's stack size.
+    let count = v.get("count").map_or(1, |v| int_provider(v, random));
+    let count = count.wrapping_add(additional).clamp(0, max);
     let mut stack = ItemStack::new(id, count as u32);
     if let Some(potion) = v["components"]["minecraft:potion_contents"]["potion"].as_str() {
         stack = stack.with_potion(potion);
@@ -788,11 +783,13 @@ impl Trades {
         {
             additional *= 2;
         }
-        let a = cost(ctx.items, &t["wants"], additional);
+        let a = cost(ctx.items, &t["wants"], additional, random);
         if a.stack.count < 1 {
             return None;
         }
-        let b = t.get("additional_wants").map(|w| cost(ctx.items, w, 0));
+        let b = t
+            .get("additional_wants")
+            .map(|w| cost(ctx.items, w, 0, random));
         if b.as_ref().is_some_and(|b| b.stack.count < 1) {
             return None;
         }
@@ -839,6 +836,35 @@ impl Trades {
             }
         };
         match m["type"].as_str().or(m["function"].as_str()).unwrap_or("") {
+            "minecraft:set_enchantments" => {
+                // SetEnchantmentsFunction.run: transmute books with their
+                // count/components intact, then set (rather than upgrade) levels.
+                let mut out = if &*stack.item == "minecraft:book" {
+                    stack.transmute("minecraft:enchanted_book", stack.count)
+                } else {
+                    stack
+                };
+                let mut levels = out.crafting_enchantments().to_vec();
+                let add = m["add"].as_bool().unwrap_or(false);
+                for (id, provider) in m["enchantments"].as_object().into_iter().flatten() {
+                    let level = int_provider(provider, random);
+                    let previous = if add {
+                        levels
+                            .iter()
+                            .find(|(e, _)| &**e == id)
+                            .map_or(0, |(_, l)| *l as i32)
+                    } else {
+                        0
+                    };
+                    crate::item_data::set_level(
+                        &mut levels,
+                        id,
+                        previous.wrapping_add(level).clamp(0, 255) as u32,
+                    );
+                }
+                out.set_crafting_enchantments(levels);
+                Some((out, 0))
+            }
             "minecraft:enchant_with_levels" => {
                 let levels = int_provider(&m["levels"], random);
                 // EnchantmentHelper.enchantItem on the loot context's random.
@@ -1016,6 +1042,28 @@ mod tests {
         }
     }
 
+    /// A shift-click trades several times in one session: each `Traded`
+    /// event keeps the offer as it was right after its own trade, which is
+    /// what the mods hear (`TradeWithVillagerEvent` per `onTake`).
+    #[test]
+    fn each_trade_event_keeps_its_own_offer() {
+        let items = items();
+        let mut s = Session::new(vec![offer(4, None), offer(2, None)], false);
+        s.notify_trade(1, None, &items);
+        s.notify_trade(1, None, &items);
+        s.notify_trade(0, None, &items);
+        let seen: Vec<_> = s
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Traded(i, o) => Some((*i, o.uses, o.base_cost_a.stack.count)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(seen, [(1, 1, 2), (1, 2, 2), (0, 1, 4)]);
+        assert_eq!((s.offers[0].uses, s.offers[1].uses), (1, 2));
+    }
+
     #[test]
     fn demand_raises_prices() {
         let items = items();
@@ -1183,5 +1231,61 @@ mod tests {
                 .iter()
                 .all(|o| o.max_uses == 12 && (o.price_multiplier - 0.2).abs() < 1e-6)
         );
+    }
+
+    #[test]
+    fn renamed_water_bottle_pays_but_changed_potion_contents_do_not() {
+        let items = items();
+        let mut o = offer(1, None);
+        o.base_cost_a.stack = ItemStack::new("minecraft:potion", 1).with_potion("minecraft:water");
+        let mut bottle = ItemStack::new("minecraft:potion", 2).with_potion("minecraft:water");
+        bottle
+            .data_mut()
+            .set_loot_name("minecraft:custom_name", &json!("Bottle"));
+        let mut payment = Some(bottle.clone());
+        assert!(o.take(&items, &mut payment, &mut None));
+        assert_eq!(payment.unwrap().count, 1);
+        assert!(
+            !o.base_cost_a
+                .test(&bottle.clone().with_potion("minecraft:awkward"))
+        );
+        bottle
+            .data_mut()
+            .potion_extra
+            .push(("custom_color".into(), horizon_world::nbt::Tag::Int(123)));
+        assert!(!o.base_cost_a.test(&bottle));
+    }
+
+    #[test]
+    fn generated_books_set_and_add_levels_and_evaluate_both_cost_providers() {
+        let items = items();
+        let e = crate::enchant::tests::sample();
+        let t = Trades {
+            trades: HashMap::new(),
+            tags: HashMap::new(),
+            sets: HashMap::new(),
+            potion_tags: HashMap::new(),
+        };
+        let ctx = TradeContext {
+            items: &items,
+            enchantments: &e,
+            variant: "minecraft:plains",
+            origin: [0.0; 3],
+            maps: None,
+        };
+        let trade = json!({"gives":{"id":"minecraft:book", "count":2}, "wants":{"id":"minecraft:emerald", "count":{"type":"minecraft:constant", "value":7}}, "additional_wants":{"id":"minecraft:book", "count":{"type":"minecraft:constant", "value":2}}, "given_item_modifier":[{"function":"minecraft:set_enchantments", "enchantments":{"minecraft:sharpness":3}}, {"function":"minecraft:set_enchantments", "enchantments":{"minecraft:sharpness":2}, "add":true}]});
+        let o = t
+            .offer_from(&ctx, &trade, &mut sequence_random(1, "x"))
+            .unwrap();
+        assert_eq!(
+            (&*o.result.item, o.result.count),
+            ("minecraft:enchanted_book", 2)
+        );
+        assert_eq!(
+            o.result.stored_enchantments(),
+            &[(Arc::from("minecraft:sharpness"), 5)]
+        );
+        assert_eq!(o.base_cost_a.stack.count, 7);
+        assert_eq!(o.cost_b.unwrap().stack.count, 2);
     }
 }

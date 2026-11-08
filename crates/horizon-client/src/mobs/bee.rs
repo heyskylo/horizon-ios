@@ -220,10 +220,13 @@ fn start_anger_timer(m: &mut Mob, w: &MobWorld) {
     let ticks = next_int(m, 400, 780);
     st(m).anger_end = w.game_time + i64::from(ticks);
 }
+/// `NeutralMob.isValidPlayerTarget`: not creative or spectator, and not on
+/// Peaceful.
 fn valid_player_target(w: &MobWorld) -> bool {
-    w.player
-        .as_ref()
-        .is_some_and(|p| !p.creative && !p.spectator)
+    w.difficulty.id != 0
+        && w.player
+            .as_ref()
+            .is_some_and(|p| !p.creative && !p.spectator)
 }
 /// `NeutralMob.updatePersistentAnger(level, false)`.
 fn update_persistent_anger(m: &mut Mob, w: &MobWorld) {
@@ -338,29 +341,39 @@ pub fn hurt(m: &mut Mob) {
 pub fn sting(m: &mut Mob, who: Who, cx: &mut Cx) {
     let from = [m.position.x, m.position.y, m.position.z];
     let amount = (m.attrs.attack_damage as i32) as f32;
+    // `Bee.doHurtTarget`: any living target is poisoned when the hit lands,
+    // 10 s on normal and 18 s on hard. Easy adds none.
+    let seconds = match cx.w.difficulty.id {
+        2 => 10,
+        3 => 18,
+        _ => 0,
+    };
+    let source = Damage {
+        kind: DamageKind::Sting,
+        attacker: Some(Who::Mob(m.id)),
+        from: Some(from),
+        attacker_species: Some(Species::Bee),
+    };
     match who {
         Who::Player => {
-            // Bee.doHurtTarget: the poison only when the sting hurt, and
-            // only on normal (10 s) and hard (18 s).
-            let seconds = match cx.w.difficulty.id {
-                2 => 10,
-                3 => 18,
-                _ => 0,
-            };
             cx.events.push(MobEvent::StingPlayer {
                 amount,
                 from,
                 poison_ticks: seconds * 20,
             });
         }
+        Who::Mob(id) if seconds > 0 => cx.events.push(MobEvent::AttackMobWithEffect {
+            target: id,
+            amount,
+            source,
+            effect: "minecraft:poison",
+            ticks: seconds * 20,
+            amplifier: 0,
+        }),
         Who::Mob(id) => cx.events.push(MobEvent::AttackMob {
             target: id,
             amount,
-            source: Damage {
-                kind: DamageKind::Sting,
-                attacker: Some(Who::Mob(m.id)),
-                from: Some(from),
-            },
+            source,
         }),
     }
     set_has_stung(m, true);
@@ -416,7 +429,8 @@ fn hive_near_fire(m: &Mob, w: &MobWorld) -> bool {
 }
 /// `EnvironmentAttributes.BEES_STAY_IN_HIVE`: the overworld's night, or rain.
 pub fn bees_stay_in_hive(w: &MobWorld) -> bool {
-    let night = !w.nether && !w.end && (12542..23460).contains(&w.day_time.rem_euclid(24000));
+    let night = w.dimension_type.has_timeline("minecraft:day")
+        && (12542..23460).contains(&w.day_time.rem_euclid(24000));
     night || w.raining
 }
 fn tired_of_looking_for_nectar(m: &Mob) -> bool {
@@ -1083,6 +1097,12 @@ impl Goal for GrowCrop {
         for i in 1..=2 {
             let p = [here[0], here[1] - i, here[2]];
             if let Some(state) = grown(cx.w, p) {
+                // The growth sparks (level event 2011), then the crop.
+                cx.events.push(MobEvent::LevelEvent {
+                    id: 2011,
+                    pos: p,
+                    data: 15,
+                });
                 cx.events.push(MobEvent::SetBlock { pos: p, state });
                 st(m).crops_grown += 1;
             }
@@ -1241,4 +1261,123 @@ pub fn from_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
     b.hive = pos("hive_pos");
     b.flower = pos("flower_pos");
     b.anger_end = anger_end;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sting;
+    use crate::mobs::goals::Cx;
+    use crate::mobs::world::with_test_world;
+    use crate::mobs::{Mob, MobEvent, Species, Who, sensor_scan_tests::kind};
+    use horizon_core::geometry::Vec3;
+    use horizon_core::random::LegacyRandom;
+
+    fn bee() -> Mob {
+        let mut kind = kind();
+        let k = std::sync::Arc::make_mut(&mut kind);
+        k.id = "minecraft:bee".into();
+        k.species = Species::Bee;
+        k.attack_damage = 2.0;
+        Mob::new(3, kind, Vec3::ZERO, 0.0)
+    }
+
+    /// `NeutralMob.updatePersistentAnger`: anger at the player ends on
+    /// Peaceful, as for a creative or spectator player (#11377).
+    #[test]
+    fn peaceful_ends_a_bees_anger_at_the_player() {
+        with_test_world(&[], |w, _| {
+            for (difficulty, still_angry) in [(2, true), (0, false)] {
+                let mut w = w.clone();
+                w.player = Some(crate::mobs::world::test_player(Vec3::new(1.0, 0.0, 0.0)));
+                w.difficulty =
+                    crate::mobs::spawning::LocalDifficulty::new(difficulty, 18000, 0, 0.0);
+                let mut m = bee();
+                let b = super::st(&mut m);
+                b.angry_at = Some(Who::Player);
+                b.anger_end = w.game_time + 400;
+                super::update_persistent_anger(&mut m, &w);
+                let angry = super::get(&m).is_some_and(|b| b.angry_at.is_some());
+                assert_eq!(angry, still_angry, "difficulty {difficulty}");
+            }
+        });
+    }
+
+    /// `BeeGrowCropGoal.tick`: level event 2011 (data 15) comes before the
+    /// crop's new state (#11377).
+    #[test]
+    fn a_bee_sparks_a_crop_before_growing_it() {
+        use crate::mobs::goals::Goal;
+        crate::mobs::world::with_built_test_world(
+            &[],
+            |world, registry| {
+                let wheat = registry.default_state("minecraft:wheat").unwrap();
+                world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                );
+                world.set(0, 63, 0, wheat).unwrap();
+            },
+            |w, _| {
+                let mut m = bee();
+                m.position = Vec3::new(0.5, 64.0, 0.5);
+                let mut random = LegacyRandom::new(1);
+                let mut events = Vec::new();
+                // The goal grows on a 1-in-reduced(30) roll.
+                for _ in 0..1000 {
+                    if !events.is_empty() {
+                        break;
+                    }
+                    let mut cx = Cx {
+                        w,
+                        lr: &mut random,
+                        events: &mut events,
+                    };
+                    super::GrowCrop.tick(&mut m, &mut cx);
+                }
+                assert!(
+                    matches!(
+                        events[..],
+                        [
+                            MobEvent::LevelEvent {
+                                id: 2011,
+                                pos: [0, 63, 0],
+                                data: 15
+                            },
+                            MobEvent::SetBlock {
+                                pos: [0, 63, 0],
+                                ..
+                            }
+                        ]
+                    ),
+                    "{events:?}"
+                );
+            },
+        );
+    }
+
+    /// `Bee.doHurtTarget` on Normal: a mob is poisoned for 10 seconds (200 ticks).
+    #[test]
+    fn a_bee_sting_poisons_a_mob_for_ten_seconds_on_normal() {
+        with_test_world(&[], |w, _| {
+            let mut m = bee();
+            let mut events = Vec::new();
+            let mut random = LegacyRandom::new(1);
+            let mut cx = Cx {
+                w,
+                lr: &mut random,
+                events: &mut events,
+            };
+            sting(&mut m, Who::Mob(9), &mut cx);
+            assert!(events.iter().any(|e| matches!(
+                e,
+                MobEvent::AttackMobWithEffect {
+                    target: 9,
+                    effect: "minecraft:poison",
+                    ticks: 200,
+                    amplifier: 0,
+                    ..
+                }
+            )));
+        });
+    }
 }

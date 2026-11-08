@@ -3,12 +3,13 @@
 //! resource-pack reloads remain separate work.
 use crate::{Result, sprites::Sprites};
 use horizon_assets::{
-    bake::{BlockModelTransform, ModelQuad, bake_block_model},
+    bake::{BlockModelTransform, ModelQuad, RenderType, bake_block_model},
     blockstate::{
         BlockStateDefinition, Variant, VariantSet,
         bind::{Properties, PropertySchema, PropertyValues, SelectedModels},
         choice::CompiledChoices,
     },
+    model::Direction,
 };
 use horizon_core::{
     position::BlockPos,
@@ -23,8 +24,68 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::Path,
+    sync::OnceLock,
 };
 
+/// `prepareQuadShape`: the quad's bounds, whether it is partial (smaller than
+/// the block face) and whether it is cubic (flush with the block boundary, or
+/// flat on a full collision shape). A function of the quad's positions and the
+/// block's `isCollisionShapeFullBlock` only, so it is baked per face, once for
+/// each.
+#[derive(Clone, Copy)]
+pub struct QuadShape {
+    /// The quad's bounds by face index (`mesher::lighting`'s `SizeInfo`
+    /// order: down, up, north, south, west, east), and `1.0 - the bound`.
+    pub bounds: [f32; 12],
+    pub partial: bool,
+    pub cubic: bool,
+}
+impl QuadShape {
+    pub fn new(positions: &[[f32; 3]; 4], face: Direction, full: bool) -> Self {
+        // `SizeInfo` indices into the face shape.
+        const DOWN: usize = 0;
+        const UP: usize = 1;
+        const NORTH: usize = 2;
+        const SOUTH: usize = 3;
+        const WEST: usize = 4;
+        const EAST: usize = 5;
+        let (mut min, mut max) = ([32f32; 3], [-32f32; 3]);
+        for p in positions {
+            for i in 0..3 {
+                min[i] = min[i].min(p[i]);
+                max[i] = max[i].max(p[i]);
+            }
+        }
+        let mut bounds = [0f32; 12];
+        for (index, value) in [
+            (WEST, min[0]),
+            (EAST, max[0]),
+            (DOWN, min[1]),
+            (UP, max[1]),
+            (NORTH, min[2]),
+            (SOUTH, max[2]),
+        ] {
+            bounds[index] = value;
+            bounds[index + 6] = 1.0 - value;
+        }
+        let (lo, hi) = (1.0e-4f32, 0.9999f32);
+        let partial =
+            |a: usize, b: usize| min[a] >= lo || min[b] >= lo || max[a] <= hi || max[b] <= hi;
+        let (partial, cubic) = match face {
+            Direction::Down => (partial(0, 2), min[1] == max[1] && (min[1] < lo || full)),
+            Direction::Up => (partial(0, 2), min[1] == max[1] && (max[1] > hi || full)),
+            Direction::North => (partial(0, 1), min[2] == max[2] && (min[2] < lo || full)),
+            Direction::South => (partial(0, 1), min[2] == max[2] && (max[2] > hi || full)),
+            Direction::West => (partial(1, 2), min[0] == max[0] && (min[0] < lo || full)),
+            Direction::East => (partial(1, 2), min[0] == max[0] && (max[0] > hi || full)),
+        };
+        QuadShape {
+            bounds,
+            partial,
+            cubic,
+        }
+    }
+}
 pub struct BakedFace {
     pub quad: ModelQuad,
     pub layer: u32,
@@ -33,6 +94,36 @@ pub struct BakedFace {
     pub opaque: bool,
     /// Fractional alpha: drawn in the sorted translucent pass.
     pub translucent: bool,
+    /// The Fusion connecting texture rule its sprite joins by ([`crate::fusion`]), plus one:
+    /// two bytes, within the padding every face already has.
+    pub fusion: Option<std::num::NonZeroU16>,
+    /// `prepareQuadShape` of the quad, indexed by the block's `full` flag: the
+    /// mesher would otherwise recompute it for every face of every block.
+    pub shapes: [QuadShape; 2],
+    /// The quad's own UVs in `TerrainVertex` fixed point, which the mesh
+    /// otherwise recomputes for every face of every block.
+    pub uv_fixed: [[u16; 2]; 4],
+}
+impl BakedFace {
+    pub fn new(
+        quad: ModelQuad,
+        layer: u32,
+        opaque: bool,
+        translucent: bool,
+        fusion: Option<std::num::NonZeroU16>,
+    ) -> Self {
+        let shapes = [false, true].map(|full| QuadShape::new(&quad.positions, quad.facing, full));
+        let uv_fixed = crate::mesher::baked_uv(quad.uv);
+        Self {
+            quad,
+            layer,
+            opaque,
+            translucent,
+            fusion,
+            shapes,
+            uv_fixed,
+        }
+    }
 }
 pub struct BakedModel {
     pub ambient_occlusion: bool,
@@ -48,8 +139,11 @@ type VariantKey = (String, [u8; 3], bool);
 pub struct StateModels {
     /// Each definition's choices, a variant standing as its index in `baked`.
     choices: Vec<CompiledChoices<u32>>,
+    /// All baked alternatives per definition, invalidated before mutable model access.
+    bounds: OnceLock<Vec<Option<[[f32; 3]; 2]>>>,
     /// By state id: its definition in `choices` and the models it selects.
     states: Vec<Option<(usize, SelectedModels)>>,
+    single_models: Vec<Option<u32>>,
     /// Every transformed model once, with the variant it was baked from.
     baked: Vec<(Variant, BakedModel)>,
     /// Standalone models by id: their index in `baked`.
@@ -85,12 +179,17 @@ fn bake_resolved(
         .into_iter()
         .map(|quad| {
             let layer = sprites.insert(root, &quad.material.sprite)?;
-            Ok(BakedFace {
-                translucent: quad.material.force_translucent || sprites.translucent[layer as usize],
-                opaque: sprites.region_opaque(layer, &quad.uv),
-                quad,
-                layer,
-            })
+            // A model's `render_type` replaces the pass its sprite would pick.
+            let (translucent, opaque) = match quad.render_type {
+                Some(RenderType::Translucent | RenderType::Tripwire) => (true, false),
+                Some(RenderType::Solid) => (false, true),
+                Some(RenderType::Cutout | RenderType::CutoutMipped) => (false, false),
+                None | Some(RenderType::Unsupported) => (
+                    quad.material.force_translucent || sprites.translucent[layer as usize],
+                    sprites.region_opaque(layer, &quad.uv),
+                ),
+            };
+            Ok(BakedFace::new(quad, layer, opaque, translucent, None))
         })
         .collect::<Result<_>>()?;
     let cube = super::cube::cube_styles(&faces);
@@ -100,6 +199,35 @@ fn bake_resolved(
         faces,
         cube,
     })
+}
+/// The definitions a blockstate file holds, bottom first: the layers of a
+/// file the pack overlay stacked (`packs::BLOCKSTATE_LAYERS`), else the
+/// file itself.
+fn definition_layers(text: &str) -> std::result::Result<Vec<String>, String> {
+    if !text.contains(crate::packs::BLOCKSTATE_LAYERS) {
+        return Ok(vec![text.to_owned()]);
+    }
+    let value: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    match value.get(crate::packs::BLOCKSTATE_LAYERS) {
+        Some(Value::Array(layers)) => Ok(layers.iter().map(Value::to_string).collect()),
+        _ => Ok(vec![text.to_owned()]),
+    }
+}
+/// Each state's model from definitions bound bottom first: the topmost one
+/// that binds the state, as (its layer, its selection). A higher pack's
+/// definition replaces only the states it binds (`putAll` in
+/// `loadBlockStateDefinitionStack`).
+fn topmost(layers: Vec<Vec<Option<SelectedModels>>>) -> Vec<Option<(usize, SelectedModels)>> {
+    let mut picked: Vec<Option<(usize, SelectedModels)>> = Vec::new();
+    for (layer, bound) in layers.into_iter().enumerate() {
+        picked.resize(picked.len().max(bound.len()), None);
+        for (slot, selected) in picked.iter_mut().zip(bound) {
+            if let Some(selected) = selected {
+                *slot = Some((layer, selected));
+            }
+        }
+    }
+    picked
 }
 impl StateModels {
     pub fn load(
@@ -190,21 +318,17 @@ impl StateModels {
                 .collect::<Result<_>>()?;
             let possible: Vec<Properties> = serde_json::from_value(facts["states"].clone())?;
             // Vanilla's BlockStateModelLoader: a definition that does not
-            // read or bind is logged and its block gets no model; the other
-            // blocks still load.
-            let loaded = fs::read_to_string(
-                root.join(format!("assets/{namespace}/blockstates/{path}.json")),
+            // read or bind is logged and left out; with none left the block
+            // gets no model, and the other blocks still load. A file several
+            // packs provide binds each pack's definition on its own, bottom
+            // first (`loadBlockStateDefinitionStack`).
+            let layers = match horizon_core::prepared_files::read_to_string(
+                &root.join(format!("assets/{namespace}/blockstates/{path}.json")),
             )
             .map_err(|e| e.to_string())
-            .and_then(|text| BlockStateDefinition::from_json(&text).map_err(|e| e.to_string()))
-            .and_then(|definition| {
-                let bound = definition
-                    .bind(&schema, &possible)
-                    .map_err(|e| e.to_string())?;
-                Ok((definition, bound))
-            });
-            let (definition, bound) = match loaded {
-                Ok(loaded) => loaded,
+            .and_then(|text| definition_layers(&text))
+            {
+                Ok(layers) => layers,
                 Err(e) => {
                     log::warn!(
                         "Horizon: blockstate definition of {namespace}:{path} not loaded: {e}"
@@ -212,6 +336,26 @@ impl StateModels {
                     continue;
                 }
             };
+            let mut loaded = Vec::with_capacity(layers.len());
+            for text in &layers {
+                let layer = BlockStateDefinition::from_json(text)
+                    .map_err(|e| e.to_string())
+                    .and_then(|definition| {
+                        let bound = definition
+                            .bind(&schema, &possible)
+                            .map_err(|e| e.to_string())?;
+                        Ok((definition, bound))
+                    });
+                match layer {
+                    Ok(layer) => loaded.push(layer),
+                    Err(e) => log::warn!(
+                        "Horizon: blockstate definition of {namespace}:{path} not loaded: {e}"
+                    ),
+                }
+            }
+            if loaded.is_empty() {
+                continue;
+            }
             let native_order: Vec<_> = by_name
                 .get(name.as_str())
                 .map(Vec::as_slice)
@@ -229,32 +373,36 @@ impl StateModels {
                     "model state definitions disagree with the imported block registry".into(),
                 );
             }
-            for ((id, _), selected) in native_order.into_iter().zip(bound) {
-                if let Some(selected) = selected {
-                    states[id.0 as usize] = Some((choices.len(), selected));
+            let (definitions, bound): (Vec<_>, Vec<_>) = loaded.into_iter().unzip();
+            let first = choices.len();
+            for ((id, _), picked) in native_order.into_iter().zip(topmost(bound)) {
+                if let Some((layer, selected)) = picked {
+                    states[id.0 as usize] = Some((first + layer, selected));
                 }
             }
-            for choice in definition
-                .variants
-                .iter()
-                .flatten()
-                .map(|(_, choice)| choice)
-                .chain(
-                    definition
-                        .multipart
-                        .iter()
-                        .flatten()
-                        .map(|selector| &selector.variant),
-                )
-            {
-                match choice {
-                    VariantSet::Single(v) => {
-                        variants.insert(key(v));
+            for definition in definitions {
+                for choice in definition
+                    .variants
+                    .iter()
+                    .flatten()
+                    .map(|(_, choice)| choice)
+                    .chain(
+                        definition
+                            .multipart
+                            .iter()
+                            .flatten()
+                            .map(|selector| &selector.variant),
+                    )
+                {
+                    match choice {
+                        VariantSet::Single(v) => {
+                            variants.insert(key(v));
+                        }
+                        VariantSet::Weighted(v) => variants.extend(v.iter().map(|(v, _)| key(v))),
                     }
-                    VariantSet::Weighted(v) => variants.extend(v.iter().map(|(v, _)| key(v))),
                 }
+                choices.push(CompiledChoices::new(&definition)?);
             }
-            choices.push(CompiledChoices::new(&definition)?);
         }
         let names: Vec<String> = variants.iter().map(|(name, _, _)| name.clone()).collect();
         let library = match models.block_library(root, names.clone()) {
@@ -291,10 +439,19 @@ impl StateModels {
             baked.push((variant, model));
         }
         // Every variant of every definition was baked above.
-        let choices = choices.iter().map(|c| c.map(|v| index[&key(v)])).collect();
+        let choices: Vec<_> = choices.iter().map(|c| c.map(|v| index[&key(v)])).collect();
+        let single_models = states
+            .iter()
+            .map(|state| {
+                let (choice, selected) = state.as_ref()?;
+                choices[*choice].single_variant(selected).copied()
+            })
+            .collect();
         Ok(Self {
             choices,
+            bounds: OnceLock::new(),
             states,
+            single_models,
             baked,
             standalone: BTreeMap::new(),
         })
@@ -343,6 +500,13 @@ impl StateModels {
         }
         Ok(())
     }
+    /// Every baked model with the variant it was baked from, to change its faces.
+    pub fn models_mut(&mut self) -> impl Iterator<Item = (&Variant, &mut BakedModel)> {
+        self.bounds.take();
+        self.baked
+            .iter_mut()
+            .map(|(variant, model)| (&*variant, model))
+    }
     /// A model baked by [`Self::bake_standalone`], by id (`mymod:block/shaft_half`).
     pub fn standalone(&self, name: &str) -> Option<&BakedModel> {
         let &i = self.standalone.get(name)?;
@@ -363,6 +527,37 @@ impl StateModels {
         let model = self.choices[*choice].particle_variant(selected)?;
         self.baked[*model as usize].1.particle
     }
+    /// Envelope of every weighted/multipart alternative in the state's definition.
+    /// Includes transformed resource-pack faces outside the unit cube. Empty or
+    /// non-finite geometry has no usable envelope and keeps the original draw path.
+    pub fn render_bounds(&self, state: BlockStateId) -> Option<[[f32; 3]; 2]> {
+        let (definition, _) = self.state(state)?;
+        let bounds = self.bounds.get_or_init(|| {
+            self.choices
+                .iter()
+                .map(|choices| {
+                    let mut lo = glam::Vec3::splat(f32::INFINITY);
+                    let mut hi = glam::Vec3::splat(f32::NEG_INFINITY);
+                    let mut valid = true;
+                    // `map` visits every choice, without consuming the render RNG.
+                    choices.map(|&index| {
+                        for face in &self.baked[index as usize].1.faces {
+                            for p in face.quad.positions {
+                                let p = glam::Vec3::from_array(p);
+                                valid &= p.is_finite();
+                                lo = lo.min(p);
+                                hi = hi.max(p);
+                            }
+                        }
+                    });
+                    (valid && lo.is_finite() && hi.is_finite())
+                        .then_some([lo.to_array(), hi.to_array()])
+                })
+                .collect()
+        });
+        bounds.get(*definition).copied().flatten()
+    }
+
     pub fn collect_seeded(
         &self,
         state: BlockStateId,
@@ -383,6 +578,10 @@ impl StateModels {
         out: &mut Vec<&'a BakedModel>,
     ) -> Result<()> {
         out.clear();
+        if let Some(Some(model)) = self.single_models.get(state.0 as usize) {
+            out.push(&self.baked[*model as usize].1);
+            return Ok(());
+        }
         self.each_seeded(state, position_seed(position), |(_, model)| out.push(model))
     }
     fn each_seeded<'a>(
@@ -417,6 +616,44 @@ pub fn descriptor(name: &str, overrides: &[(&str, &str)]) -> BlockState {
 mod tests {
     use super::*;
     use crate::model_library::ParsedModels;
+
+    /// #7013: a pack's blockstate file that defines only some states (here
+    /// a fence gate's `powered=true` ones) keeps vanilla's model for the
+    /// rest, as vanilla binds each pack's definition and lets a higher one
+    /// replace only what it binds.
+    #[test]
+    fn a_partial_pack_blockstate_keeps_vanilla_for_the_other_states() {
+        let schema: PropertySchema = BTreeMap::from([(
+            "powered".to_owned(),
+            PropertyValues::Named(BTreeSet::from(["false".to_owned(), "true".to_owned()])),
+        )]);
+        let states: Vec<Properties> = ["false", "true"]
+            .iter()
+            .map(|p| BTreeMap::from([("powered".to_owned(), (*p).to_owned())]))
+            .collect();
+        let stacked = serde_json::json!({ crate::packs::BLOCKSTATE_LAYERS: [
+            {"variants":{"":{"model":"minecraft:block/oak_fence_gate"}}},
+            {"variants":{"powered=true":{"model":"minecraft:block/stone"}}}
+        ]})
+        .to_string();
+        let layers = definition_layers(&stacked).unwrap();
+        assert_eq!(layers.len(), 2);
+        let bound = layers
+            .iter()
+            .map(|text| {
+                BlockStateDefinition::from_json(text)
+                    .unwrap()
+                    .bind(&schema, &states)
+                    .unwrap()
+            })
+            .collect();
+        let picked = topmost(bound);
+        assert_eq!(picked[0], Some((0, SelectedModels::Variant(0))));
+        assert_eq!(picked[1], Some((1, SelectedModels::Variant(0))));
+        // A file that isn't stacked is one definition.
+        let plain = r#"{"variants":{"":{"model":"minecraft:block/stone"}}}"#;
+        assert_eq!(definition_layers(plain).unwrap(), vec![plain.to_owned()]);
+    }
 
     struct Fixture(std::path::PathBuf);
     impl Fixture {
@@ -512,3 +749,7 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "catalog/bounds_tests.rs"]
+mod bounds_tests;

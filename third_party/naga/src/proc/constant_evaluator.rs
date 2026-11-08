@@ -1154,12 +1154,17 @@ impl<'a> ConstantEvaluator<'a> {
                 // point. If we failed to, then that probably means we just
                 // haven't implemented that part of constant evaluation. Work
                 // around this by simply emitting it as a run-time expression.
+                // In a GLSL function, a value no literal can hold (an infinity) is GLSL's
+                // arithmetic at run time, as GL drivers compute it; WGSL forbids it.
+                let glsl_overflow = matches!(self.behavior, Behavior::Glsl(_))
+                    && matches!(eval_result, Err(ConstantEvaluatorError::Overflow(_)));
                 if self.behavior.has_runtime_restrictions()
-                    && matches!(
-                        eval_result,
-                        Err(ConstantEvaluatorError::NotImplemented(_)
-                            | ConstantEvaluatorError::InvalidBinaryOpArgs,)
-                    )
+                    && (glsl_overflow
+                        || matches!(
+                            eval_result,
+                            Err(ConstantEvaluatorError::NotImplemented(_)
+                                | ConstantEvaluatorError::InvalidBinaryOpArgs,)
+                        ))
                 {
                     Ok(self.append_expr(expr, span, ExpressionKind::Runtime))
                 } else {
@@ -2922,14 +2927,22 @@ impl<'a> ConstantEvaluator<'a> {
                                 .ok_or(ConstantEvaluatorError::ShiftedMoreThan32Bits)?,
                             _ => return Err(ConstantEvaluatorError::InvalidBinaryOpArgs),
                         }),
-                        (Literal::F32(a), Literal::F32(b)) => Literal::F32(match op {
-                            BinaryOperator::Add => a + b,
-                            BinaryOperator::Subtract => a - b,
-                            BinaryOperator::Multiply => a * b,
-                            BinaryOperator::Divide => a / b,
-                            BinaryOperator::Modulo => a % b,
-                            _ => return Err(ConstantEvaluatorError::InvalidBinaryOpArgs),
-                        }),
+                        (Literal::F32(a), Literal::F32(b)) => {
+                            let result = match op {
+                                BinaryOperator::Add => a + b,
+                                BinaryOperator::Subtract => a - b,
+                                BinaryOperator::Multiply => a * b,
+                                BinaryOperator::Divide => a / b,
+                                BinaryOperator::Modulo => a % b,
+                                _ => return Err(ConstantEvaluatorError::InvalidBinaryOpArgs),
+                            };
+                            // An infinity or NaN can't be a literal; in a function, GLSL's
+                            // arithmetic gives it at run time (`try_eval_and_append`).
+                            if !result.is_finite() {
+                                return Err(ConstantEvaluatorError::Overflow(format!("{op:?}")));
+                            }
+                            Literal::F32(result)
+                        }
                         (Literal::AbstractInt(a), Literal::U32(b)) => {
                             Literal::AbstractInt(match op {
                                 BinaryOperator::ShiftLeft => {

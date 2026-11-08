@@ -3,10 +3,9 @@ use super::Game;
 use horizon_assets::item_model::DisplayContext;
 use horizon_client::{
     gfx::TEXT_POLYGON_OFFSET_OVERLAY,
-    hud::HudBatch,
     items::ItemStack,
     mesher::Vertex,
-    text_display::{self, Lines, TextDisplayData},
+    text_display::{self, CachedQuads, TextDisplayData},
 };
 use horizon_protocol::entity_data::Value;
 use horizon_world::registry::BlockStateId;
@@ -48,9 +47,9 @@ pub(super) struct RemoteTextDisplay {
     /// `Display.lastProgress`: the progress the last frame drew, where a new
     /// interpolation starts from.
     last_progress: f32,
-    /// `TextDisplay.clientDisplayCache`: the split lines, until the render
-    /// state changes.
-    lines: Option<Lines>,
+    /// Local text geometry from the last visited frame; world poses do not
+    /// invalidate `TextDisplay.clientDisplayCache` or the glyph vertices.
+    lines: Option<CachedQuads>,
     /// `Entity.vehicle`: the mob it rides (`SetPassengers`), which places it
     /// every tick (`positionRider`), as NPC plugins hang a name over a head.
     pub(super) vehicle: Option<u32>,
@@ -175,7 +174,6 @@ impl RemoteTextDisplay {
             };
             self.shown = self.data.clone();
             self.initialized = true;
-            self.lines = None;
         }
         self.dirty = false;
         self.start_dirty = false;
@@ -354,23 +352,46 @@ impl Game<'_> {
             let d = display.shown.blend(&display.from, display.last_progress);
             let position = display.previous.lerp(display.position, partial);
             if d.text.is_empty() || !self.display_in_view(camera, position, &d, scale) {
+                // Out of view: its glyphs stay cached for when it comes back.
                 continue;
             }
+            let cached = display.lines.take();
             let rotation = std::array::from_fn(|i| {
                 display.old_rotation[i]
                     + angle(display.rotation[i] - display.old_rotation[i]) * partial as f32
             });
-            let lines = display
-                .lines
-                .get_or_insert_with(|| Lines::split(&self.gui.atlas.font, &d.text, d.line_width));
+            let mut cached = cached
+                .filter(|c| {
+                    c.matches(
+                        &d,
+                        background,
+                        self.gui.atlas.font.epoch(),
+                        self.gui.atlas.revision,
+                    )
+                })
+                .unwrap_or_else(|| CachedQuads::new(&self.gui.atlas, &d, background));
+            // A visited display keeps its geometry even when its transformed
+            // bounds miss the frustum; rebuilding just to reject it costs more.
+            self.map_patches.append(&mut cached.batch.patches);
+            let cached = display.lines.insert(cached);
             let matrix = glam::Mat4::from_translation((position - camera).as_vec3())
                 * d.matrix(rotation, angles)
-                * lines.pose();
+                * cached.lines.pose();
             if !matrix.is_finite() {
                 continue;
             }
-            let mut batch = HudBatch::new([1, 1]);
-            text_display::draw(&mut batch, &self.gui.atlas, &d, lines, background);
+            if text_display::no_culling(d.width, d.height) {
+                let (lo, hi) = cached.transformed_bounds(matrix);
+                if cached.batch.vertices.is_empty()
+                    || self
+                        .view_frustum
+                        .as_ref()
+                        .is_some_and(|v| !v.intersects(lo, hi))
+                {
+                    continue;
+                }
+            }
+            let batch = &cached.batch;
             let light = Self::display_light(&self.world, &d, position);
             // Font.DisplayMode: SEE_THROUGH over everything, else POLYGON_OFFSET.
             let through = d.flags & 2 != 0;
@@ -397,7 +418,6 @@ impl Game<'_> {
                 }
             }
             self.text_display_vertices += batch.vertices.len() / 6 * 4;
-            self.map_patches.extend(batch.patches);
         }
         self.text_displays = displays;
     }
@@ -429,6 +449,103 @@ fn has_special_model(block: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn culled_display_keeps_quads_across_frame_rollover() {
+        let atlas = horizon_client::hud::HudAtlas::boot();
+        let mut display = RemoteTextDisplay::new(Shows::Text, [0.0, 0.0, 5.0], 0.0);
+        let d = TextDisplayData {
+            text: std::sync::Arc::new(horizon_client::text::Text::literal("Culled")),
+            ..Default::default()
+        };
+        let cache = CachedQuads::new(&atlas, &d, 0);
+        let allocation = cache.batch.vertices.as_ptr();
+        display.lines = Some(cache);
+        for _ in 0..2 {
+            let cached = display
+                .lines
+                .take()
+                .filter(|c| c.matches(&d, 0, atlas.font.epoch(), atlas.revision))
+                .unwrap_or_else(|| panic!("culled display rebuilt its glyphs"));
+            let cached = display.lines.insert(cached);
+            let matrix = glam::Mat4::from_translation(glam::Vec3::Z * 5.0) * cached.lines.pose();
+            let (lo, _) = cached.transformed_bounds(matrix);
+            assert!(lo.z > 0.0, "the display is behind the camera");
+            assert_eq!(cached.batch.vertices.as_ptr(), allocation);
+        }
+    }
+
+    #[test]
+    fn cached_text_quads_match_fresh_and_invalidate() {
+        let atlas = horizon_client::hud::HudAtlas::boot();
+        let mut d = TextDisplayData {
+            text: std::sync::Arc::new(horizon_client::text::Text::literal("Hologram")),
+            ..Default::default()
+        };
+        let cache = CachedQuads::new(&atlas, &d, 0);
+        let mut fresh = horizon_client::hud::HudBatch::new([1, 1]);
+        text_display::draw(&mut fresh, &atlas, &d, &cache.lines, 0);
+        let vertices = |b: &horizon_client::hud::HudBatch| {
+            b.vertices
+                .iter()
+                .map(|v| (v.pos, v.uv, v.color, v.depth))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(vertices(&cache.batch), vertices(&fresh));
+        let matches = |d: &TextDisplayData| cache.matches(d, 0, atlas.font.epoch(), atlas.revision);
+        assert!(matches(&d));
+        for change in 0..7 {
+            let mut changed = d.clone();
+            match change {
+                0 => {
+                    changed.text =
+                        std::sync::Arc::new(horizon_client::text::Text::literal("Changed"))
+                }
+                1 => changed.text = std::sync::Arc::new((*d.text).clone().bold()),
+                2 => changed.opacity = 40,
+                3 => changed.background = 0,
+                4 => changed.flags = 1,
+                5 => changed.flags = 2,
+                _ => changed.line_width = 10,
+            }
+            assert!(!matches(&changed));
+        }
+        assert!(!cache.matches(&d, 1, atlas.font.epoch(), atlas.revision));
+        assert!(!cache.matches(&d, 0, atlas.font.epoch() + 1, atlas.revision));
+        assert!(!cache.matches(&d, 0, atlas.font.epoch(), atlas.revision + 1));
+        d.text = std::sync::Arc::new(horizon_client::text::Text::legacy("§kSecret"));
+        let cache = CachedQuads::new(&atlas, &d, 0);
+        assert!(!cache.matches(&d, 0, atlas.font.epoch(), atlas.revision));
+        // A plugin hologram sends `§k` inside a literal JSON string: the font
+        // resolves it, so its glyphs still change every frame.
+        d.text = std::sync::Arc::new(horizon_client::text::Text::literal("§kSecret"));
+        let cache = CachedQuads::new(&atlas, &d, 0);
+        assert!(!cache.matches(&d, 0, atlas.font.epoch(), atlas.revision));
+    }
+
+    #[test]
+    fn transformed_text_bounds_reach_into_view_but_not_from_behind() {
+        let atlas = horizon_client::hud::HudAtlas::boot();
+        let d = TextDisplayData {
+            text: std::sync::Arc::new(horizon_client::text::Text::literal("Wide hologram")),
+            ..Default::default()
+        };
+        let cache = CachedQuads::new(&atlas, &d, 0);
+        // A 90-degree camera looking down -Z has side planes x +/- z,
+        // y +/- z, and the near plane z = -0.05.
+        let visible = |matrix| {
+            let (lo, hi) = cache.transformed_bounds(matrix);
+            hi.x >= lo.z && lo.x <= -lo.z && hi.y >= lo.z && lo.y <= -lo.z && lo.z <= -0.05
+        };
+        let pose = |x, z, scale| {
+            glam::Mat4::from_translation(glam::Vec3::new(x, 0.0, z))
+                * glam::Mat4::from_scale(glam::Vec3::splat(scale))
+                * cache.lines.pose()
+        };
+        assert!(visible(pose(6.0, -5.0, 20.0)));
+        assert!(!visible(pose(100.0, -5.0, 1.0)));
+        assert!(!visible(pose(0.0, 5.0, 1.0)));
+    }
+
     #[test]
     fn metadata_and_position_interpolation_keep_their_separate_clocks() {
         let mut d = RemoteTextDisplay::new(Shows::Text, [0.0; 3], 0.0);

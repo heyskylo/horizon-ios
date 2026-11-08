@@ -252,7 +252,7 @@ impl Game<'_> {
         let m = &self.mobs[index];
         let species = m.species();
         let body =
-            shows_body(species).then(|| m.extra.head.as_deref().map(|i| ItemStack::new(i, 1)));
+            shows_body(species).then(|| m.extra.body.as_deref().map(|i| ItemStack::new(i, 1)));
         let mut items = m.extra.items.clone();
         items.resize(mount_columns(m) * 3, None);
         (m.saddle_item(), body, items)
@@ -274,7 +274,7 @@ impl Game<'_> {
         } else {
             body.as_ref()
                 .and_then(Option::as_ref)
-                .filter(|_| m.extra.head.is_none())
+                .filter(|_| m.extra.body.is_none())
         };
         let sound = if saddle_put_on && nautilus::is_nautilus(m.species()) {
             // AbstractNautilus.getEquipSound: its own saddle sounds.
@@ -289,9 +289,18 @@ impl Game<'_> {
             })
         };
         let m = &mut self.mobs[index];
+        let id = m.id;
+        let pos = m.position;
+        let saddle_off = m.extra.saddled && saddle.is_none();
+        let body_off = body
+            .as_ref()
+            .is_some_and(|b| b.is_none() && m.extra.body.is_some());
+        let body_on = body
+            .as_ref()
+            .is_some_and(|b| b.is_some() && m.extra.body.is_none());
         m.set_saddle(saddle);
         if let Some(body) = body {
-            m.extra.head = body.map(|a| a.item);
+            m.extra.body = body.map(|a| a.item);
         }
         let mut items = items;
         let keep = m.extra.items.len().max(CHEST_SIZE);
@@ -300,7 +309,12 @@ impl Game<'_> {
         let (x, z) = (at[0].floor() as i32 >> 4, at[2].floor() as i32 >> 4);
         self.world.modified.insert((x, z));
         if let Some(sound) = sound {
-            self.audio.play(&sound, Some(at), 0.5, 1.0);
+            self.audio.play(&sound, Some(at), 1.0, 1.0);
+        }
+        if saddle_put_on || body_on {
+            self.mob_equip_event(id, [pos.x, pos.y, pos.z], true);
+        } else if saddle_off || body_off {
+            self.mob_equip_event(id, [pos.x, pos.y, pos.z], false);
         }
     }
     pub(super) fn mount_slots(&self) -> Option<Vec<usize>> {

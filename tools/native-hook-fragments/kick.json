@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "kick", "target": "horizon_client::game::native_packets::Game<'_>::native_kick"}
+  ],
+  "rust_summary": "a player disconnected with a whole text as the reason, as `/kick` does (`native_kick`).",
+  "doc_summary": "`native_kick(player, reason)` disconnects a player with `reason` shown whole, in its colours and translations (Adventure's `Player.kick(Component)`), at the tick's end from any server hook, as `/kick` does: the log names it and `native_player_kicked` hears it. Bundles need \"hooks\": @API:kick@.",
+  "comments": ["crates/horizon-client/src/game/native_packets.rs"]
+}

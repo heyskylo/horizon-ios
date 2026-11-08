@@ -27,11 +27,11 @@ getrandom = "0.3"
 rusqlite = { version = "0.37", features = ["bundled"] }
 # Draining a refused upload (already one of axum's).
 http-body-util = "0.1"
+# The upload's zip checked before any reader opens it (src/archive.rs): horizon-mods' own.
+zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
-# A native mod's `.hnmod` for the tests (already one of horizon-mods').
-zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [profile.release]
 strip = true

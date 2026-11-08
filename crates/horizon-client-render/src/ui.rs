@@ -5,7 +5,12 @@ use crate::{
     hud::{HudAtlas, HudBatch, Rect, rgba},
     text::Text,
 };
-use std::{collections::HashMap, path::Path, sync::RwLock, time::Instant};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::RwLock,
+    time::Instant,
+};
 
 /// `GuiSpriteScaling.NineSlice`: the sprite's size in GUI pixels, whatever
 /// its texture's resolution, its borders (left, top, right, bottom) in the
@@ -50,41 +55,69 @@ fn parse_nine_slice(v: &serde_json::Value) -> Option<NineSlice> {
 }
 /// Read `gui.scaling` metadata for every GUI sprite under `root`.
 pub fn load_metadata(root: &Path) {
+    set_metadata(read_metadata(root));
+}
+/// The GUI sprites' nine-slice metadata of a resource root, read off the
+/// render thread by a pack reload ([`read_metadata`]) and put in use with
+/// [`set_metadata`].
+pub struct UiMetadata(HashMap<String, NineSlice>);
+/// Puts read metadata in use ([`load_metadata`] in two halves).
+pub fn set_metadata(metadata: UiMetadata) {
+    *NINE_SLICE.write().unwrap_or_else(|e| e.into_inner()) = Some(metadata.0);
+}
+/// Reads the metadata [`load_metadata`] puts in use, without putting it in use.
+pub fn read_metadata(root: &Path) -> UiMetadata {
     let mut map = HashMap::new();
     let base = root.join("assets/minecraft/textures");
-    let mut stack = vec![base.join("gui/sprites")];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+    let sprites = base.join("gui/sprites");
+    // A prepared root's: from its data file, without listing the disk.
+    let files: Vec<PathBuf> = match horizon_core::prepared_files::files_under(&sprites) {
+        Some(files) => files
+            .iter()
+            .filter(|file| file.ends_with(".png.mcmeta"))
+            .map(|file| sprites.join(file))
+            .collect(),
+        None => {
+            let mut files = Vec::new();
+            let mut stack = vec![sprites];
+            while let Some(dir) = stack.pop() {
+                let Ok(entries) = std::fs::read_dir(&dir) else {
+                    continue;
+                };
+                for e in entries.flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        stack.push(p);
+                    } else if p.to_string_lossy().ends_with(".png.mcmeta") {
+                        files.push(p);
+                    }
+                }
+            }
+            files
+        }
+    };
+    for p in files {
+        let name = p.to_string_lossy().into_owned();
+        let Some(stripped) = name.strip_suffix(".png.mcmeta") else {
             continue;
         };
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                stack.push(p);
-                continue;
-            }
-            let name = p.to_string_lossy().into_owned();
-            let Some(stripped) = name.strip_suffix(".png.mcmeta") else {
-                continue;
-            };
-            let Ok(text) = std::fs::read_to_string(&p) else {
-                continue;
-            };
-            let Some(nine_slice) = serde_json::from_str(&text)
-                .ok()
-                .as_ref()
-                .and_then(parse_nine_slice)
-            else {
-                continue;
-            };
-            let key = Path::new(stripped)
-                .strip_prefix(&base)
-                .map(|r| r.to_string_lossy().replace('\\', "/"))
-                .unwrap_or_default();
-            map.insert(key, nine_slice);
-        }
+        let Ok(text) = horizon_core::prepared_files::read_to_string(&p) else {
+            continue;
+        };
+        let Some(nine_slice) = serde_json::from_str(&text)
+            .ok()
+            .as_ref()
+            .and_then(parse_nine_slice)
+        else {
+            continue;
+        };
+        let key = Path::new(stripped)
+            .strip_prefix(&base)
+            .map(|r| r.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        map.insert(key, nine_slice);
     }
-    *NINE_SLICE.write().unwrap_or_else(|e| e.into_inner()) = Some(map);
+    UiMetadata(map)
 }
 /// The sprite's nine-slice metadata, when its `.png.mcmeta` has any.
 fn nine_slice_metadata(sprite: &str) -> Option<NineSlice> {
@@ -101,6 +134,10 @@ fn scaling(sprite: &str, r: &Rect) -> NineSlice {
         width: r.w,
         height: r.h,
         border: match sprite {
+            "horizon/jei/button_enabled_v2"
+            | "horizon/jei/button_disabled_v2"
+            | "horizon/jei/button_highlight_v2" => [6; 4],
+            "horizon/jei/search_background_v2" => [6; 4],
             "gui/sprites/widget/button"
             | "gui/sprites/widget/button_highlighted"
             | "gui/sprites/widget/button_disabled" => [3; 4],
@@ -178,6 +215,25 @@ pub fn blit_sprite(
 ) {
     if let Some(r) = atlas.sprites.get(sprite) {
         draw_sprite(batch, *r, nine_slice_metadata(sprite), [x, y, w, h], color);
+    }
+}
+/// `GuiGraphicsExtractor.blit(location, x, y, u, v, width, height, textureWidth,
+/// textureHeight)`: a `src` region of a sprite — in its own texture's units, as the
+/// u/v/width/height arguments are — stretched over `w` × `h`.
+pub fn blit_sprite_region(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    sprite: &str,
+    src: [f32; 4],
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    color: u32,
+) {
+    if let Some(r) = atlas.sprites.get(sprite) {
+        let size = [r.w as f32, r.h as f32];
+        batch.rect_uv(x, y, w, h, sub(*r, size, src), color);
     }
 }
 fn draw_sprite(
@@ -385,18 +441,41 @@ pub fn scrolling_text_at(
     now_ms: i64,
     color: u32,
 ) {
+    // `acceptScrollingWithDefaultCenter`: `centerX = (left + right) / 2`.
+    let center_x = left + ((right - left) / 2.0).floor();
+    scrolling_text_around_at(
+        batch, atlas, text, center_x, left, right, top, bottom, y, now_ms, color,
+    );
+}
+
+/// [`scrolling_text_at`] around an explicit `center_x`
+/// (`ActiveTextCollector.acceptScrolling`, which `SpriteIconButton.TextAndIcon`
+/// calls with the button's middle): a label that fits is centred on `center_x`
+/// moved as far as it must to stay between `left` and `right`
+/// (`Mth.clamp(centerX, left + lineWidth / 2, right - lineWidth / 2)`), so
+/// beside an icon it ends where the icon's room begins. A wider one is drawn
+/// from the left and slid inside the box.
+#[allow(clippy::too_many_arguments)]
+pub fn scrolling_text_around_at(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    text: &Text,
+    center_x: f32,
+    left: f32,
+    right: f32,
+    top: f32,
+    bottom: f32,
+    y: f32,
+    now_ms: i64,
+    color: u32,
+) {
     let text = text.resolved();
     let width = atlas.font.width_text(&text);
     let room = right - left;
     if width <= room {
-        batch.text_styled(
-            atlas,
-            &text,
-            centered_left(left, room, width),
-            y,
-            color,
-            true,
-        );
+        let half = (width / 2.0).floor();
+        let text_x = center_x.max(left + half).min(right - half);
+        batch.text_styled(atlas, &text, text_x - half, y, color, true);
         return;
     }
     // Scissored to the widget: what does not fit is read as the label
@@ -440,6 +519,37 @@ pub fn scrolling_text(
     );
 }
 
+/// `MenuTabBar.MenuTabButton.renderLabel` for the tab at `x, y`: its label
+/// inside the tab less 1 px on each side, from the tab's top when selected
+/// and 3 px lower when not (`acceptScrollingWithDefaultCenter`, so one wider
+/// than the tab slides instead of running into the next tab). White, gray
+/// for an inactive tab (`WithInactiveMessage`).
+pub fn menu_tab_label(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    label: &Text,
+    (x, y, width, height): (f32, f32, f32, f32),
+    selected: bool,
+    active: bool,
+    now_ms: i64,
+) {
+    let top = y + if selected { 0.0 } else { 3.0 };
+    let bottom = y + height;
+    scrolling_text_at(
+        batch,
+        atlas,
+        label,
+        x + 1.0,
+        x + width - 1.0,
+        top,
+        bottom,
+        // defaultScrollingHelper: `(top + bottom - lineHeight) / 2 + 1`.
+        ((top + bottom - 9.0) / 2.0).floor() + 1.0,
+        now_ms,
+        if active { u32::MAX } else { 0xFFA0_A0A0 },
+    );
+}
+
 /// Button (AbstractButton): nine-slice sprite plus the centred label.
 pub fn button(
     batch: &mut HudBatch,
@@ -455,6 +565,39 @@ pub fn button(
     button_as(batch, atlas, x, y, w, h, label, active, hover, |rect| {
         crate::widgets::Narratable::button(label.plain(), rect, active)
     });
+}
+/// A [`button`] with a job on its screen: its controller button and glyph come from `action`, so
+/// a new screen gets them by drawing this for its Done, Back, Cancel or Apply.
+#[allow(clippy::too_many_arguments)]
+pub fn action_button(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    action: crate::widgets::Action,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    label: &Text,
+    active: bool,
+    hover: bool,
+) {
+    crate::widgets::declare_action(action, [x, y, w, h], active);
+    let room = if active {
+        crate::widgets::action_glyph_room()
+    } else {
+        0.0
+    };
+    button_with_room(
+        batch,
+        atlas,
+        [x, y, w, h],
+        label,
+        active,
+        hover,
+        false,
+        room,
+        |rect| crate::widgets::Narratable::button(label.plain(), rect, active),
+    );
 }
 /// A [`button`] that vanilla narrates as another widget (a `CycleButton`, a
 /// `LockIconButton`): `narration` builds what it records from its rectangle,
@@ -472,12 +615,77 @@ pub fn button_as(
     hover: bool,
     narration: impl FnOnce([f32; 4]) -> crate::widgets::Narratable,
 ) {
-    crate::widgets::record(&label.plain(), [x, y, w, h], active);
-    crate::widgets::narratable(|| narration([x, y, w, h]).hovered(hover));
+    button_with_room(
+        batch,
+        atlas,
+        [x, y, w, h],
+        label,
+        active,
+        hover,
+        false,
+        0.0,
+        narration,
+    );
+}
+/// An options button whose focus highlights it without changing the mouse cursor.
+/// `AbstractWidget.handleCursor` tests hover, not `isHoveredOrFocused`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn focused_button(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    rect: [f32; 4],
+    label: &Text,
+    active: bool,
+    hover: bool,
+    focused: bool,
+    action: Option<crate::widgets::Action>,
+) {
+    let room = if let Some(action) = action {
+        crate::widgets::declare_action(action, rect, active);
+        if active {
+            crate::widgets::action_glyph_room()
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+    button_with_room(
+        batch,
+        atlas,
+        rect,
+        label,
+        active,
+        hover,
+        focused,
+        room,
+        |rect| crate::widgets::Narratable::button(label.plain(), rect, active),
+    );
+}
+/// A button whose label keeps `room` free at its left.
+#[allow(clippy::too_many_arguments)]
+fn button_with_room(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    [x, y, w, h]: [f32; 4],
+    label: &Text,
+    active: bool,
+    hover: bool,
+    focused: bool,
+    room: f32,
+    narration: impl FnOnce([f32; 4]) -> crate::widgets::Narratable,
+) {
+    let plain = label.plain();
+    crate::widgets::record(&plain, [x, y, w, h], active);
+    // An icon button has no label to record, and A presses it all the same.
+    if active && plain.trim().is_empty() {
+        crate::widgets::target([x, y, w, h]);
+    }
+    crate::widgets::narratable(|| narration([x, y, w, h]).hovered(hover || focused));
     crate::widgets::widget_cursor(hover, active);
     let sprite = if !active {
         "gui/sprites/widget/button_disabled"
-    } else if hover {
+    } else if hover || focused {
         "gui/sprites/widget/button_highlighted"
     } else {
         "gui/sprites/widget/button"
@@ -488,15 +696,18 @@ pub fn button_as(
     } else {
         rgba(160, 160, 160, 255)
     };
-    scrolling_text(
+    // Centred on the button, as the title's are, and only moved out from under a glyph.
+    scrolling_text_around_at(
         batch,
         atlas,
         label,
-        x + 2.0,
+        x + (w / 2.0).floor(),
+        x + 2.0 + room,
         x + w - 2.0,
         y,
         y + h,
         y + ((h - 8.0) / 2.0).floor(),
+        crate::hud_overlays::now_ms(),
         color,
     );
 }
@@ -772,8 +983,29 @@ impl Scroll {
     }
 }
 
-/// Vertical scroll bar (AbstractScrollArea): background and scroller sprites.
+/// Vertical scroll bar of a list (AbstractScrollArea): the sprites, and the
+/// list is registered for the controller's focus (`widgets::scroll_area`).
 pub fn scrollbar(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    x: f32,
+    top: f32,
+    bottom: f32,
+    content: f32,
+    scroll: f32,
+) {
+    if content > bottom - top {
+        crate::widgets::scroll_area(
+            [0.0, top, x + 6.0, bottom - top],
+            scroll,
+            content - (bottom - top),
+        );
+    }
+    scrollbar_sprites(batch, atlas, x, top, bottom, content, scroll);
+}
+
+/// The scroll bar's background and scroller sprites.
+pub fn scrollbar_sprites(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
     x: f32,
@@ -814,7 +1046,104 @@ pub fn tooltip(batch: &mut HudBatch, atlas: &HudAtlas, lines: &[Text], cursor: (
     if lines.is_empty() {
         return;
     }
-    crate::widgets::frame_tooltip(lines);
+    let (w, h) = tooltip_size(atlas, lines);
+    let mut x = cursor.0 + 12.0;
+    let mut y = cursor.1 - 12.0;
+    if x + w > batch.width {
+        x = (cursor.0 - 24.0 - w).max(4.0);
+    }
+    if y + h + 3.0 > batch.height {
+        y = batch.height - h - 3.0;
+    }
+    tooltip_box(batch, atlas, lines, x, y, w, h);
+}
+/// `WidgetTooltipHolder.createTooltipPositioner` for a hovered widget
+/// (`MenuTooltipPositioner`): the tooltip follows the pointer's x and keeps
+/// 3 to 5 px from the widget at `rect`.
+pub fn tooltip_menu(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    lines: &[Text],
+    cursor: (f32, f32),
+    rect: [f32; 4],
+) {
+    if lines.is_empty() {
+        return;
+    }
+    let (w, h) = tooltip_size(atlas, lines);
+    let (x, y) = menu_tooltip_position(
+        (batch.width as i32, batch.height as i32),
+        (cursor.0 as i32, cursor.1 as i32),
+        rect.map(|v| v as i32),
+        (w.ceil() as i32, h.ceil() as i32),
+    );
+    tooltip_box(batch, atlas, lines, x as f32, y as f32, w, h);
+}
+/// A widget's tooltip while the controller's focus is on it (Horizon's: vanilla has no gamepad
+/// input, and the hidden pointer mid-widget would put it over the widget).
+pub fn tooltip_under(batch: &mut HudBatch, atlas: &HudAtlas, lines: &[Text], rect: [f32; 4]) {
+    if lines.is_empty() {
+        return;
+    }
+    let (w, h) = tooltip_size(atlas, lines);
+    let (x, y) = tooltip_under_position((batch.width, batch.height), rect, (w, h));
+    tooltip_box(batch, atlas, lines, x, y, w, h);
+}
+/// Where `tooltip_under` puts lines of `size`: the frame's top left a pixel under the widget's
+/// bottom left, over the widget when the screen ends first, and always on the screen.
+fn tooltip_under_position(screen: (f32, f32), rect: [f32; 4], size: (f32, f32)) -> (f32, f32) {
+    // The frame reaches this far past the lines on every side.
+    const FRAME: f32 = 4.0;
+    let [x, y, _, height] = rect;
+    let right = screen.0 - size.0 - FRAME;
+    let below = y + height + 1.0 + FRAME;
+    let top = if below + size.1 + FRAME <= screen.1 {
+        below
+    } else {
+        y - 1.0 - FRAME - size.1
+    };
+    ((x + FRAME).min(right).max(FRAME), top.max(FRAME))
+}
+/// `MenuTooltipPositioner.positionTooltip`: the tooltip's top left with the
+/// pointer at `cursor`, the widget it belongs to at `rect`, and the screen.
+/// `MARGIN` 5 and `MOUSE_OFFSET_X` 12 on the horizontal, and the
+/// `MAX_OVERLAP_WITH_WIDGET` 3 and `MAX_DISTANCE_TO_WIDGET` 5 of the vertical
+/// offset from the widget's top or bottom edge.
+pub fn menu_tooltip_position(
+    screen: (i32, i32),
+    cursor: (i32, i32),
+    rect: [i32; 4],
+    size: (i32, i32),
+) -> (i32, i32) {
+    let [_, y, _, height] = rect;
+    let height = height.max(1);
+    let mut pos = (cursor.0 + 12, cursor.1);
+    if pos.0 + size.0 > screen.0 - 5 {
+        pos.0 = (cursor.0 - 12 - size.0).max(9);
+    }
+    pos.1 += 3;
+    // `bottom() + 3 + getOffset(0, 0, height)` is the widget's edge, `height`
+    // further down; below that the tooltip goes under it, else over it.
+    let below = size.1 + 6;
+    if y + 2 * height + below <= screen.1 - 5 {
+        pos.1 += widget_offset(pos.1, y, height);
+    } else {
+        pos.1 -= below + widget_offset(pos.1, y + height, height);
+    }
+    pos
+}
+/// `MenuTooltipPositioner.getOffset`: how far the tooltip goes past the
+/// widget's top (or bottom) edge, `height - 3` (`MAX_OVERLAP_WITH_WIDGET`)
+/// with the pointer on the edge, down to `MAX_DISTANCE_TO_WIDGET` 5 a whole
+/// height away. The distance over the height is a float division (`i2f`,
+/// `fdiv` in 26.3's bytecode), so the offset moves smoothly with the pointer;
+/// then `Mth.lerp` and Java's float rounding.
+fn widget_offset(at: i32, edge: i32, height: i32) -> i32 {
+    let distance = (at - edge).unsigned_abs().min(height as u32) as f32;
+    let start = (height - 3) as f32;
+    horizon_core::jmath::round_f32(start + distance / height as f32 * (5.0 - start))
+}
+fn tooltip_size(atlas: &HudAtlas, lines: &[Text]) -> (f32, f32) {
     let w = lines
         .iter()
         .map(|l| atlas.font.width_text(l))
@@ -824,14 +1153,18 @@ pub fn tooltip(batch: &mut HudBatch, atlas: &HudAtlas, lines: &[Text], cursor: (
     } else {
         10.0 * lines.len() as f32
     };
-    let mut x = cursor.0 + 12.0;
-    let mut y = cursor.1 - 12.0;
-    if x + w > batch.width {
-        x = (cursor.0 - 24.0 - w).max(4.0);
-    }
-    if y + h + 3.0 > batch.height {
-        y = batch.height - h - 3.0;
-    }
+    (w, h)
+}
+fn tooltip_box(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    lines: &[Text],
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+) {
+    crate::widgets::frame_tooltip(lines);
     nine_slice(
         batch,
         atlas,
@@ -883,6 +1216,9 @@ pub struct EditBox {
     /// `getMessage`: what the narrator calls the box ("<message> edit box:
     /// <value>").
     pub message: String,
+    /// Where a borderless box drawn in a frame of its own focuses: a controller's outline goes
+    /// round the frame, not over the text.
+    pub frame: Option<[f32; 4]>,
 }
 /// The focused text field of a screen that keeps its values as `String`s
 /// (the world list's search, world names, seeds, and the server screens): the `EditBox` state that
@@ -982,6 +1318,29 @@ impl Caret {
         focused: bool,
         focused_at: Instant,
     ) {
+        self.draw_color(
+            batch,
+            atlas,
+            (id, value, max),
+            rect,
+            focused,
+            focused_at,
+            rgba(224, 224, 224, 255),
+        );
+    }
+    /// [`Self::draw`] with the text in `color` (`EditBox.setTextColor`): the
+    /// settings tab turns an invalid Realm name red.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_color(
+        &mut self,
+        batch: &mut HudBatch,
+        atlas: &HudAtlas,
+        (id, value, max): (crate::clipboard::FieldId, &str, usize),
+        rect: [f32; 4],
+        focused: bool,
+        focused_at: Instant,
+        color: u32,
+    ) {
         let mut idle;
         let edit = if focused {
             self.sync(id, value, max)
@@ -993,6 +1352,7 @@ impl Caret {
         };
         [edit.x, edit.y, edit.width, edit.height] = rect;
         edit.focused = focused;
+        edit.text_color = color;
         if edit.focused_at < focused_at {
             edit.focused_at = focused_at;
         }
@@ -1145,6 +1505,7 @@ impl EditBox {
             suggestion: None,
             text_color: rgba(224, 224, 224, 255),
             message: String::new(),
+            frame: None,
         }
     }
     pub fn inner_width(&self) -> f32 {
@@ -1362,6 +1723,16 @@ impl EditBox {
     }
     /// Draw the field; `format` styles the visible text (command colouring).
     pub fn draw(&mut self, batch: &mut HudBatch, atlas: &HudAtlas, format: Option<&Text>) {
+        self.draw_with_skin(batch, atlas, format, None);
+    }
+
+    pub fn draw_with_skin(
+        &mut self,
+        batch: &mut HudBatch,
+        atlas: &HudAtlas,
+        format: Option<&Text>,
+        skin: Option<&str>,
+    ) {
         self.layout(atlas);
         crate::widgets::target_as(
             [self.x, self.y, self.width, self.height],
@@ -1376,11 +1747,11 @@ impl EditBox {
             .focused(self.focused)
         });
         if self.bordered {
-            let sprite = if self.focused {
+            let sprite = skin.unwrap_or(if self.focused {
                 "gui/sprites/widget/text_field_highlighted"
             } else {
                 "gui/sprites/widget/text_field"
-            };
+            });
             nine_slice(
                 batch,
                 atlas,
@@ -1576,9 +1947,68 @@ mod tests {
         assert_eq!(scrolled_left(10.0, 40.0, 1_000), 10.0 - offset);
     }
 
-    /// The label of a widget it does not fit is clipped to the widget's box
-    /// instead of being drawn past it (the bug: `so_so`'s 590 px Create World
-    /// label ran over the button beside it).
+    /// A controller reaches an icon button only through its target, and can't press a disabled one.
+    #[test]
+    fn an_active_icon_button_is_a_focus_target_and_a_disabled_one_is_not() {
+        let atlas = atlas();
+        let mut batch = HudBatch::new([640, 480]);
+        // Whatever this thread drew before is the last frame's, then gone.
+        crate::widgets::end_frame(u64::MAX - 1);
+        button(
+            &mut batch,
+            &atlas,
+            10.0,
+            20.0,
+            20.0,
+            20.0,
+            &Text::empty(),
+            true,
+            false,
+        );
+        button(
+            &mut batch,
+            &atlas,
+            40.0,
+            20.0,
+            20.0,
+            20.0,
+            &Text::empty(),
+            false,
+            false,
+        );
+        crate::widgets::end_frame(u64::MAX);
+        let targets: Vec<[f32; 4]> = crate::widgets::last_targets()
+            .iter()
+            .map(|t| t.rect)
+            .collect();
+        assert_eq!(targets, [[10.0, 20.0, 20.0, 20.0]]);
+    }
+
+    #[test]
+    fn a_glyph_leaves_a_label_that_fits_centred() {
+        let atlas = atlas();
+        crate::widgets::set_action_glyphs(true);
+        let label = Text::literal("Done");
+        let mut plain = HudBatch::new([640, 480]);
+        button(
+            &mut plain, &atlas, 10.0, 20.0, 150.0, 20.0, &label, true, false,
+        );
+        let mut declared = HudBatch::new([640, 480]);
+        action_button(
+            &mut declared,
+            &atlas,
+            crate::widgets::Action::Done,
+            10.0,
+            20.0,
+            150.0,
+            20.0,
+            &label,
+            true,
+            false,
+        );
+        assert_eq!(quads(&plain), quads(&declared));
+    }
+
     #[test]
     fn a_label_wider_than_its_widget_stays_inside_it() {
         let atlas = atlas();
@@ -1640,6 +2070,51 @@ mod tests {
             hi - lo >= width - 0.001,
             "the whole label is drawn: {lo}..{hi}, {width} wide"
         );
+    }
+
+    /// `MenuTabButton.renderLabel` on a 24 px tab: centred on the tab, its
+    /// text top at `(0 + 24 - 9) / 2 + 1 = 8` when selected and at
+    /// `(3 + 24 - 9) / 2 + 1 = 10` when not; white on an active tab, selected
+    /// or not, `0xA0A0A0` on an inactive one (`WithInactiveMessage`). The
+    /// Statistics tabs drew every label at 8 and an active unselected one gray.
+    #[test]
+    fn a_tab_label_sits_lower_on_an_unselected_tab_and_is_gray_only_when_inactive() {
+        let atlas = atlas();
+        let label = Text::literal("Items");
+        let half = (atlas.font.width_text(&label.resolved()) / 2.0).floor();
+        // A 124 px tab at x = 100: `(left + right) / 2 = (101 + 223) / 2 = 162`.
+        let left = 162.0 - half;
+        for (selected, active, y, color) in [
+            (true, true, 8.0, u32::MAX),
+            (false, true, 10.0, u32::MAX),
+            (false, false, 10.0, 0xFFA0_A0A0),
+        ] {
+            let mut tab = HudBatch::new([640, 480]);
+            menu_tab_label(
+                &mut tab,
+                &atlas,
+                &label,
+                (100.0, 0.0, 124.0, 24.0),
+                selected,
+                active,
+                0,
+            );
+            let mut want = HudBatch::new([640, 480]);
+            want.text_styled(&atlas, &label.resolved(), left, y, color, true);
+            let glyphs = |b: &HudBatch| -> Vec<([u32; 2], u32)> {
+                b.vertices
+                    .iter()
+                    .filter(|v| v.text == 1)
+                    .map(|v| ([v.pos[0].to_bits(), v.pos[1].to_bits()], v.color))
+                    .collect()
+            };
+            assert!(!glyphs(&want).is_empty());
+            assert_eq!(
+                glyphs(&tab),
+                glyphs(&want),
+                "selected {selected}, active {active}"
+            );
+        }
     }
 
     #[test]
@@ -1986,5 +2461,60 @@ mod tests {
         let mut v = "stone".to_string();
         assert!(!delete_words(&mut v, 1));
         assert_eq!(v, "stone");
+    }
+    #[test]
+    fn a_pad_focused_tooltip_hangs_from_its_widgets_bottom_left() {
+        let screen = (427.0, 240.0);
+        let widget = [100.0, 100.0, 150.0, 20.0];
+        // Frame at 100, 121: lines 4 further in.
+        assert_eq!(
+            tooltip_under_position(screen, widget, (80.0, 10.0)),
+            (104.0, 125.0)
+        );
+        // The screen's right edge moves it left, its bottom puts it over the widget.
+        assert_eq!(
+            tooltip_under_position(screen, [400.0, 100.0, 20.0, 20.0], (80.0, 10.0)),
+            (343.0, 125.0)
+        );
+        assert_eq!(
+            tooltip_under_position(screen, [100.0, 215.0, 150.0, 20.0], (80.0, 10.0)),
+            (104.0, 200.0)
+        );
+    }
+    /// `MenuTooltipPositioner.positionTooltip`: the pointer's 12 px offset,
+    /// the 5 px screen margin, and the 3 to 5 px the tooltip keeps from the
+    /// widget's top or bottom edge.
+    #[test]
+    fn a_menu_tooltip_stays_by_its_widget() {
+        let screen = (427, 240);
+        let widget = [100, 100, 150, 20];
+        let size = (80, 10);
+        // Pointer at the widget's top edge: the tooltip drops 3 px to 103,
+        // then `getOffset` adds round(lerp(3 / 20, 17, 5)) = round(15.2) = 15.
+        assert_eq!(
+            menu_tooltip_position(screen, (100, 100), widget, size),
+            (112, 118)
+        );
+        // Near the right edge its left side mirrors to the pointer's left.
+        assert_eq!(
+            menu_tooltip_position(screen, (400, 100), widget, size),
+            (308, 118)
+        );
+        // Halfway down the offset follows the pointer: 113 + round(9.2).
+        assert_eq!(
+            menu_tooltip_position(screen, (100, 110), widget, size),
+            (112, 122)
+        );
+        // A whole widget height from the edge, the offset is 5.
+        assert_eq!(
+            menu_tooltip_position(screen, (100, 117), widget, size),
+            (112, 125)
+        );
+        // A widget too close to the bottom: the tooltip goes above it,
+        // 203 - (10 + 6) - round(lerp(17 / 20, 17, 5)) = 203 - 16 - 7.
+        assert_eq!(
+            menu_tooltip_position(screen, (100, 200), [100, 200, 150, 20], size),
+            (112, 180)
+        );
     }
 }

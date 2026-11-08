@@ -4,9 +4,78 @@
 /// The game window's boot screen, before wgpu's first frame paints over it.
 #[cfg(target_os = "windows")]
 pub mod boot_paint;
-pub mod memory_limit;
+pub mod heap_census;
+pub mod jobs;
+pub mod process_memory;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
+
+/// The worker threads the machine offers this process: `available_parallelism`'s
+/// answer (its share of the cores — CPU affinity, a container's quota), resolved
+/// once, since it doesn't change under a run and asking again on a later path
+/// can only disagree with the pools already started. `HORIZON_WORKER_THREADS`
+/// sets it instead, to cap every pool on a machine whose OS reports more cores
+/// than a run should take; a value that isn't a positive number is ignored.
+/// Each pool keeps its own share of the count (the streaming pool all but one,
+/// far decoration a third of it).
+pub fn worker_count() -> usize {
+    static COUNT: OnceLock<usize> = OnceLock::new();
+    *COUNT.get_or_init(|| {
+        parse_worker_count(std::env::var("HORIZON_WORKER_THREADS").ok())
+            .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
+    })
+}
+
+/// The chunk worker pool's automatic size (`jobs::default_threads`, Graphics > Worker
+/// threads on Auto): every core but one, as vanilla's `Util.maxAllowedExecutorThreads`,
+/// counting on Apple silicon only its performance cores. Its efficiency cores are slower,
+/// and workers there kept the render and server threads waiting for a performance core: on
+/// a base M4 (4 performance and 6 efficiency cores) a fast flight's p99 frame went from
+/// 20 ms with 9 workers to 7 ms with 3 (#11294).
+pub fn default_workers() -> usize {
+    workers_for(worker_count(), performance_cores)
+}
+
+/// [`default_workers`] for `cores` cores, of which `performance` (asked only here, the
+/// sysctl) are performance cores where the machine tells them apart (`None` elsewhere):
+/// one less than the smaller count, at least 1.
+fn workers_for(cores: usize, performance: impl FnOnce() -> Option<usize>) -> usize {
+    let fast = performance().filter(|&n| n > 0).unwrap_or(cores);
+    cores.min(fast).saturating_sub(1).max(1)
+}
+
+/// The machine's performance cores (`hw.perflevel0.physicalcpu`), where it has more than one
+/// kind of core: Apple silicon. `None` where the OS doesn't say (an Intel Mac).
+#[cfg(target_vendor = "apple")]
+fn performance_cores() -> Option<usize> {
+    let mut count: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>();
+    // SAFETY: a NUL-terminated name; `count` and `size` are live locals of the size passed.
+    let read = unsafe {
+        libc::sysctlbyname(
+            c"hw.perflevel0.physicalcpu".as_ptr(),
+            (&raw mut count).cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (read == 0 && count > 0).then_some(count as usize)
+}
+
+#[cfg(not(target_vendor = "apple"))]
+fn performance_cores() -> Option<usize> {
+    None
+}
+
+/// `Some(n)` when `value` names a positive count (`" 4 "` counts; `"0"`,
+/// `"lots"`, a missing variable don't).
+fn parse_worker_count(value: Option<String>) -> Option<usize> {
+    value?.trim().parse().ok().filter(|&n| n > 0)
+}
 
 /// Ask the OS to run the calling thread ahead of the process's other
 /// threads, as vanilla's `MinecraftServer.spin` does for its server thread
@@ -132,6 +201,70 @@ fn behind() -> bool {
     false
 }
 
+/// Called by a far terrain thread as it starts (sampling, meshing and decorating
+/// distant tiles): work the near chunks, the ticks and the frames must never
+/// wait behind. On Linux and Android that is `behind_server`. On macOS and
+/// Windows, where `behind_server` changes nothing, the thread lowers itself one
+/// step: utility quality of service on macOS (background would throttle it to a
+/// crawl on battery) and below-normal priority on Windows, so the helpers that
+/// mesh and light the chunks around the player go first. Whether the OS took it.
+pub fn far_terrain_current() -> bool {
+    far()
+}
+
+#[cfg(not(any(target_vendor = "apple", windows)))]
+fn far() -> bool {
+    behind_server()
+}
+
+#[cfg(target_vendor = "apple")]
+fn far() -> bool {
+    // SAFETY: sets the calling thread's own QoS class; no pointers.
+    unsafe { libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_UTILITY, 0) == 0 }
+}
+
+#[cfg(windows)]
+fn far() -> bool {
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+    };
+    // SAFETY: GetCurrentThread's pseudo handle needs no closing.
+    unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL) != 0 }
+}
+
+/// For a far terrain thread that `far_terrain_current` lowered: behind the
+/// near terrain while it loads (`behind`), and back to the default once it
+/// is in. Kept at utility quality of service for good, macOS ran the far
+/// terrain on the efficiency cores long after the near chunks were in, and
+/// it took minutes to settle. On Linux and Android an unprivileged thread
+/// can't raise its priority again: it stays behind (`behind_server`), as it
+/// always has there, and this changes nothing. Whether the OS took it.
+#[cfg(any(target_vendor = "apple", windows))]
+pub fn far_terrain_behind(behind: bool) -> bool {
+    // Both set the class or priority outright: calling again is harmless.
+    if behind { far() } else { far_back() }
+}
+
+#[cfg(not(any(target_vendor = "apple", windows)))]
+pub fn far_terrain_behind(_behind: bool) -> bool {
+    false
+}
+
+#[cfg(target_vendor = "apple")]
+fn far_back() -> bool {
+    // SAFETY: sets the calling thread's own QoS class; no pointers.
+    unsafe { libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_DEFAULT, 0) == 0 }
+}
+
+#[cfg(windows)]
+fn far_back() -> bool {
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_NORMAL,
+    };
+    // SAFETY: GetCurrentThread's pseudo handle needs no closing.
+    unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL) != 0 }
+}
+
 /// Run the calling thread only on a core nothing else wants: work that may
 /// take seconds and that nothing waits for yet (the stronghold rings while a
 /// world opens). The idle class on Linux, background quality of service on
@@ -191,7 +324,11 @@ pub fn catch_stop_signals() {
     for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
         // SAFETY: the handler only touches an atomic and calls _exit, both async-signal-safe.
         unsafe {
-            libc::signal(signal, handler as libc::sighandler_t);
+            // A signal ignored from the start stays ignored, as the JVM leaves it (`nohup`'s SIGHUP:
+            // a server started that way outlives its terminal).
+            if libc::signal(signal, handler as libc::sighandler_t) == libc::SIG_IGN {
+                libc::signal(signal, libc::SIG_IGN);
+            }
         }
     }
 }
@@ -204,7 +341,21 @@ pub fn catch_stop_signals() {}
 /// World generation, meshing and the tick allocate and free small blocks on
 /// every worker at once; the system heaps serialise them (Windows' heap was
 /// 16% of a chunk's generation time), mimalloc keeps a heap per thread.
-pub use mimalloc::MiMalloc as Allocator;
+pub type Allocator = mimalloc::MiMalloc;
+/// The game's mimalloc allocator.
+pub const ALLOCATOR: Allocator = mimalloc::MiMalloc;
+
+/// The global allocator of a build with the `alloc-census` feature: live
+/// heap bytes by startup step and thread, for `horizon-ctl memory`.
+pub use heap_census::CensusAllocator;
+/// Whether this build counts the heap by tag (feature `alloc-census`).
+pub const HEAP_CENSUS: bool = cfg!(feature = "alloc-census");
+/// Tag the calling thread's allocations `name` while the guard lives, in a
+/// build that counts the heap ([`HEAP_CENSUS`]); nothing otherwise.
+#[inline]
+pub fn heap_tag(name: &'static str) -> Option<heap_census::Tag> {
+    HEAP_CENSUS.then(|| heap_census::tag(name))
+}
 
 /// `mi_option_purge_delay` in mimalloc.h (index 15 in v2 and v3); the bindings
 /// don't name it.
@@ -219,6 +370,36 @@ pub fn configure_allocator() {
     unsafe {
         libmimalloc_sys::mi_option_set(PURGE_DELAY, 0);
     }
+}
+
+/// The bytes the allocator has committed now and at its peak (mimalloc's
+/// process info), for `horizon-ctl memory`.
+pub fn allocator_commit() -> (usize, usize) {
+    let mut info = [0usize; 8];
+    let [
+        elapsed,
+        user,
+        system,
+        rss,
+        peak_rss,
+        commit,
+        peak_commit,
+        faults,
+    ] = &mut info;
+    // SAFETY: writes eight integers through pointers to them.
+    unsafe {
+        libmimalloc_sys::mi_process_info(
+            elapsed,
+            user,
+            system,
+            rss,
+            peak_rss,
+            commit,
+            peak_commit,
+            faults,
+        );
+    }
+    (info[5], info[6])
 }
 
 /// Give back to the OS the memory the allocator holds free, after something
@@ -359,6 +540,62 @@ pub fn keep_stdio_from_children() {
 
 #[cfg(test)]
 mod tests {
+    /// Without `HORIZON_WORKER_THREADS`, the count is the machine's.
+    #[test]
+    fn worker_count_defaults_to_the_machine() {
+        if std::env::var_os("HORIZON_WORKER_THREADS").is_some() {
+            return;
+        }
+        let machine = std::thread::available_parallelism().map_or(1, |n| n.get());
+        assert_eq!(super::worker_count(), machine);
+    }
+
+    /// The pool leaves a core, counting only the performance cores where the machine has them.
+    #[test]
+    fn default_workers_count_performance_cores() {
+        use super::workers_for;
+        // Apple silicon: base M4 (4 + 6), M1 (4 + 4), M4 Pro (10 + 4).
+        assert_eq!(workers_for(10, || Some(4)), 3);
+        assert_eq!(workers_for(8, || Some(4)), 3);
+        assert_eq!(workers_for(14, || Some(10)), 9);
+        // HORIZON_WORKER_THREADS below the performance cores still caps the pool.
+        assert_eq!(workers_for(4, || Some(10)), 3);
+        // Everywhere else (and a sysctl that answers nothing): every core but one, as before.
+        assert_eq!(workers_for(12, || None), 11);
+        assert_eq!(workers_for(14, || Some(0)), 13);
+        // Never fewer than one worker.
+        assert_eq!(workers_for(1, || None), 1);
+        assert_eq!(workers_for(2, || Some(1)), 1);
+    }
+
+    /// Off Apple the machine is never asked: the count is the one the pool always had.
+    #[test]
+    fn default_workers_are_unchanged_off_apple() {
+        let before = super::worker_count().saturating_sub(1).max(1);
+        if cfg!(target_vendor = "apple") {
+            assert!((1..=before).contains(&super::default_workers()));
+        } else {
+            assert_eq!(super::performance_cores(), None);
+            assert_eq!(super::default_workers(), before);
+        }
+    }
+
+    /// Only a positive number overrides the machine's count.
+    #[test]
+    fn worker_count_override_parses() {
+        for (value, parsed) in [
+            (None, None),
+            (Some("4"), Some(4)),
+            (Some(" 4 "), Some(4)),
+            (Some("0"), None),
+            (Some("-2"), None),
+            (Some("lots"), None),
+            (Some(""), None),
+        ] {
+            assert_eq!(super::parse_worker_count(value.map(String::from)), parsed);
+        }
+    }
+
     /// After it, this process's standard output is no longer handed to the processes it starts.
     #[cfg(windows)]
     #[test]

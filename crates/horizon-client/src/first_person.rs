@@ -168,6 +168,128 @@ pub fn item_pose(left: bool, inverse_height: f32, attack: f32, pose: ItemPose) -
     m
 }
 
+/// Combat feel Legacy's first-person item (`docs/pvp.md`): Minecraft 1.8.9's
+/// `ItemRenderer.renderItemInFirstPerson` for a flat item, drawn through 26.3's
+/// model. 1.8.9 posed the item (`transformFirstPersonItem`: the arm's place,
+/// 45° about Y, the swing's turns, a 0.4 scale), then applied its own
+/// `firstperson` display (`[0, -135, 25]`, `[0, 4, 2]`, `1.7`, rotated Y, X,
+/// Z) and `RenderItem`'s 0.5 scale. 26.3 applies `firstperson_righthand`
+/// (`[0, -90, 25]`, `[1.13, 3.2, 1.13]`, `0.68`) itself after this pose, so
+/// the pose ends with its inverse ([`MODERN_FLAT_DISPLAY`]). `block` is a
+/// sword held up while use is held: 1.8.9's `doBlockTransformations`, with
+/// the swing's turns kept as 1.7.10 kept them (hitting while blocking swings
+/// the sword). None for the poses 1.8.9 had no form of (crossbow, trident,
+/// spear, brush), which stay modern.
+pub fn legacy_item_pose(
+    left: bool,
+    inverse_height: f32,
+    attack: f32,
+    pose: ItemPose,
+    block: bool,
+) -> Option<glam::Mat4> {
+    use glam::{Mat4, Vec3};
+    let deg = |d: f32| d.to_radians();
+    let pi = std::f32::consts::PI;
+    let sin = |v: f32| v.sin();
+    // transformFirstPersonItem(equipProgress, swingProgress).
+    let first_person = |swing: f32| {
+        let f = sin(swing * swing * pi);
+        let f1 = sin(swing.sqrt() * pi);
+        Mat4::from_translation(Vec3::new(0.56, -0.52 - inverse_height * 0.6, -0.72))
+            * Mat4::from_rotation_y(deg(45.0))
+            * Mat4::from_rotation_y(deg(f * -20.0))
+            * Mat4::from_rotation_z(deg(f1 * -20.0))
+            * Mat4::from_rotation_x(deg(f1 * -80.0))
+            * Mat4::from_scale(Vec3::splat(0.4))
+    };
+    let m = match pose {
+        _ if block => {
+            // doBlockTransformations.
+            first_person(attack)
+                * Mat4::from_translation(Vec3::new(-0.5, 0.2, 0.0))
+                * Mat4::from_rotation_y(deg(30.0))
+                * Mat4::from_rotation_x(deg(-80.0))
+                * Mat4::from_rotation_y(deg(60.0))
+        }
+        ItemPose::Swing => {
+            // doItemUsedTransformations, then transformFirstPersonItem.
+            let root = attack.sqrt();
+            Mat4::from_translation(Vec3::new(
+                -0.4 * sin(root * pi),
+                0.2 * sin(root * pi * 2.0),
+                -0.2 * sin(attack * pi),
+            )) * first_person(attack)
+        }
+        ItemPose::Using => first_person(0.0),
+        ItemPose::Eat {
+            remaining,
+            duration,
+            partial,
+        } => {
+            // performDrinking.
+            let time = remaining - partial + 1.0;
+            let fraction = time / duration;
+            let bob = if fraction >= 0.8 {
+                0.0
+            } else {
+                ((time / 4.0 * pi).cos() * 0.1).abs()
+            };
+            let j = 1.0 - horizon_core::jmath::pow(f64::from(fraction), 27.0) as f32;
+            Mat4::from_translation(Vec3::new(0.0, bob, 0.0))
+                * Mat4::from_translation(Vec3::new(j * 0.6, j * -0.5, 0.0))
+                * Mat4::from_rotation_y(deg(j * 90.0))
+                * Mat4::from_rotation_x(deg(j * 10.0))
+                * Mat4::from_rotation_z(deg(j * 30.0))
+                * first_person(0.0)
+        }
+        ItemPose::Bow { ticks_used } => {
+            // doBowTransformations.
+            let power = (ticks_used / 20.0 * (ticks_used / 20.0) + ticks_used / 20.0 * 2.0) / 3.0;
+            let power = power.min(1.0);
+            let mut m = first_person(0.0)
+                * Mat4::from_rotation_z(deg(-18.0))
+                * Mat4::from_rotation_y(deg(-12.0))
+                * Mat4::from_rotation_x(deg(-8.0))
+                * Mat4::from_translation(Vec3::new(-0.9, 0.2, 0.0));
+            if power > 0.1 {
+                let shake = sin((ticks_used - 0.1) * 1.3) * (power - 0.1);
+                m *= Mat4::from_translation(Vec3::new(0.0, shake * 0.01, 0.0));
+            }
+            m * Mat4::from_translation(Vec3::new(0.0, 0.0, power * 0.1))
+                * Mat4::from_scale(Vec3::new(1.0, 1.0, 1.0 + power * 0.2))
+        }
+        _ => return None,
+    };
+    // 1.8.9's `firstperson` display and RenderItem's 0.5, then 26.3's display undone.
+    let legacy_display = Mat4::from_translation(Vec3::new(0.0, 4.0, 2.0) / 16.0)
+        * Mat4::from_rotation_y(deg(-135.0))
+        * Mat4::from_rotation_z(deg(25.0))
+        * Mat4::from_scale(Vec3::splat(1.7))
+        * Mat4::from_scale(Vec3::splat(0.5));
+    let right = m * legacy_display * modern_flat_display(false).inverse();
+    // 1.8.9 had only a right main arm: the left arm mirrors it.
+    let mirror = Mat4::from_scale(Vec3::new(-1.0, 1.0, 1.0));
+    Some(if left { mirror * right * mirror } else { right })
+}
+/// 26.3's `firstperson_righthand` display of a flat item (`item/generated` and
+/// `item/handheld`), on the `left` hand mirrored as `ItemTransform.apply` does,
+/// without the model's centring translation.
+pub fn modern_flat_display(left: bool) -> glam::Mat4 {
+    use glam::{Mat4, Vec3};
+    let s = if left { -1.0 } else { 1.0 };
+    Mat4::from_translation(Vec3::new(s * 1.13, 3.2, 1.13) / 16.0)
+        * Mat4::from_rotation_y((s * -90.0f32).to_radians())
+        * Mat4::from_rotation_z((s * 25.0f32).to_radians())
+        * Mat4::from_scale(Vec3::splat(0.68))
+}
+/// Whether a model layer's matrix is 26.3's flat-item first-person display (a resource
+/// pack's own display keeps the modern pose).
+pub fn is_modern_flat_display(matrix: &glam::Mat4, left: bool) -> bool {
+    let expected =
+        modern_flat_display(left) * glam::Mat4::from_translation(glam::Vec3::splat(-0.5));
+    matrix.abs_diff_eq(expected, 1e-4)
+}
+
 /// How `submitArmWithItem` holds a stack with a `minecraft:map_id`: in both
 /// hands when it is the main hand's and the off hand is empty
 /// (`renderTwoHandedMap`), else in its own hand (`renderOneHandedMap`).
@@ -479,13 +601,24 @@ impl HandHeights {
     /// `getItemSwapScale(1.0F)`. Returns whether each hand's visible item
     /// is replaced at the end.
     pub fn tick(&mut self, hands_busy: bool, swap_scale: f32, changed: [bool; 2]) -> [bool; 2] {
+        self.tick_with(hands_busy, swap_scale, changed, false)
+    }
+    /// [`Self::tick`]; `legacy` (Combat feel Legacy) raises the main hand fully whatever the
+    /// attack strength, as 1.8.9's `ItemRenderer.updateEquippedItem` did (no dip after a hit).
+    pub fn tick_with(
+        &mut self,
+        hands_busy: bool,
+        swap_scale: f32,
+        changed: [bool; 2],
+        legacy: bool,
+    ) -> [bool; 2] {
         self.old_main = self.main;
         self.old_off = self.off;
         if hands_busy {
             self.main = (self.main - 0.4).clamp(0.0, 1.0);
             self.off = (self.off - 0.4).clamp(0.0, 1.0);
         } else {
-            let attack = swap_scale;
+            let attack = if legacy { 1.0 } else { swap_scale };
             let main_target = if changed[0] {
                 0.0
             } else {
@@ -541,6 +674,8 @@ pub struct HandSway {
     pub y_bob: f32,
     pub x_bob_o: f32,
     pub y_bob_o: f32,
+    /// The yaw `tick_wrapped` has followed so far, unwrapped like vanilla's.
+    y_rot: f32,
 }
 impl HandSway {
     /// `LocalPlayer.applyInput` with the player's `getXRot` and `getYRot`.
@@ -548,9 +683,14 @@ impl HandSway {
         self.y_bob_o = self.y_bob;
         self.x_bob_o = self.x_bob;
         self.x_bob += (x_rot - self.x_bob) * 0.5;
-        // Vanilla's yaw runs on without wrapping, so `yRot - yBob` is the short way round. Ours
-        // is kept in -180..180 (a boat turns its rider through it), so take the short way here.
-        self.y_bob += wrap_degrees(y_rot - self.y_bob) * 0.5;
+        self.y_bob += (y_rot - self.y_bob) * 0.5;
+    }
+    /// `tick` for a yaw kept in -180..180 (a boat turns its rider through the wrap). Vanilla's
+    /// yaw runs on without wrapping, so `yRot - yBob` is always the short way round; this
+    /// follows the wrapped yaw by its short steps to give `tick` the same unwrapped yaw.
+    pub fn tick_wrapped(&mut self, x_rot: f32, y_rot: f32) {
+        self.y_rot += wrap_degrees(y_rot - self.y_rot);
+        self.tick(x_rot, self.y_rot);
     }
     /// The degrees the hands turn about X, then Y, before either is drawn:
     /// `(viewXRot - xBob) * 0.1` and `(viewYRot - yBob) * 0.1`, the bobs
@@ -1092,6 +1232,67 @@ mod tests {
         assert_eq!(swing_duration(d, Some(1), Some(0)), 4);
         assert_eq!(swing_duration(d, None, Some(2)), 12);
     }
+
+    #[test]
+    fn legacy_hand_puts_a_flat_item_where_1_8_9_drew_it() {
+        use glam::{Mat4, Vec3};
+        // At rest, the item's centre (model (0.5, 0.5, 0.5)) ends where 1.8.9's chain puts it:
+        // translate(0.56, -0.52, -0.72) . rotY(45) . scale(0.4) . translate((0, 4, 2) / 16)
+        // . ... . scale(0.5) . translate(-0.5): the centre is (0, 0.25, 0.125) scaled by 0.4,
+        // turned 45 degrees about Y.
+        let pose = legacy_item_pose(false, 0.0, 0.0, ItemPose::Swing, false).unwrap();
+        let layer = modern_flat_display(false) * Mat4::from_translation(Vec3::splat(-0.5));
+        let centre = (pose * layer).transform_point3(Vec3::splat(0.5));
+        let c45 = std::f32::consts::FRAC_1_SQRT_2;
+        let expected = Vec3::new(0.56 + 0.05 * c45, -0.52 + 0.1, -0.72 + 0.05 * c45);
+        assert!(centre.abs_diff_eq(expected, 1e-4), "{centre} vs {expected}");
+        // The left arm mirrors it.
+        let left = legacy_item_pose(true, 0.0, 0.0, ItemPose::Swing, false).unwrap();
+        let left_layer = modern_flat_display(true) * Mat4::from_translation(Vec3::splat(-0.5));
+        let l = (left * left_layer).transform_point3(Vec3::splat(0.5));
+        assert!(l.abs_diff_eq(Vec3::new(-expected.x, expected.y, expected.z), 1e-4));
+        // Lowered by the equip height: 0.6 of it, straight down.
+        let low = legacy_item_pose(false, 0.5, 0.0, ItemPose::Swing, false).unwrap();
+        let c = (low * layer).transform_point3(Vec3::splat(0.5));
+        assert!(c.abs_diff_eq(expected - Vec3::new(0.0, 0.3, 0.0), 1e-4));
+        // A blocking sword sits elsewhere, and poses 1.8.9 lacked stay modern.
+        let block = legacy_item_pose(false, 0.0, 0.0, ItemPose::Using, true).unwrap();
+        assert!(
+            !(block * layer)
+                .transform_point3(Vec3::splat(0.5))
+                .abs_diff_eq(expected, 0.01)
+        );
+        let trident = ItemPose::Trident { ticks_used: 3.0 };
+        assert!(legacy_item_pose(false, 0.0, 0.0, trident, false).is_none());
+    }
+
+    #[test]
+    fn legacy_hand_does_not_dip_after_a_hit() {
+        // Just after a hit the attack strength is 0: 26.3 lowers the main hand to 0,
+        // 1.8.9 keeps it up (it only lowers on an item change).
+        let mut modern = HandHeights {
+            main: 1.0,
+            old_main: 1.0,
+            off: 1.0,
+            old_off: 1.0,
+        };
+        let mut legacy = modern;
+        modern.tick_with(false, 0.0, [false; 2], false);
+        legacy.tick_with(false, 0.0, [false; 2], true);
+        assert!((modern.main - 0.6).abs() < 1e-6, "falls 0.4 a tick");
+        assert_eq!(legacy.main, 1.0);
+        // An item change still lowers it.
+        legacy.tick_with(false, 1.0, [true, false], true);
+        assert!((legacy.main - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_flat_display_check_knows_vanillas_matrix() {
+        let m = modern_flat_display(false) * glam::Mat4::from_translation(glam::Vec3::splat(-0.5));
+        assert!(is_modern_flat_display(&m, false));
+        assert!(!is_modern_flat_display(&m, true));
+        assert!(!is_modern_flat_display(&glam::Mat4::IDENTITY, false));
+    }
 }
 
 #[cfg(test)]
@@ -1406,12 +1607,12 @@ mod action_result_tests {
     #[test]
     fn hand_sway_takes_the_short_way_over_the_yaw_wrap() {
         let mut sway = HandSway::default();
-        sway.tick(0.0, 179.0);
+        sway.tick_wrapped(0.0, 179.0);
         for _ in 0..20 {
-            sway.tick(0.0, 179.0);
+            sway.tick_wrapped(0.0, 179.0);
         }
         // The view is still at 179; one tick later it reads -179 (2 degrees on).
-        sway.tick(0.0, -179.0);
+        sway.tick_wrapped(0.0, -179.0);
         let [_, y] = sway.rotation(1.0, 0.0, -179.0);
         assert!(
             y.abs() < 0.5,

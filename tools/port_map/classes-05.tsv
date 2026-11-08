@@ -1,4 +1,4 @@
-RegionFileVersion.configure	missing		minor: region-file-compression is read from server.properties (horizon-server-files properties.rs) but nothing applies it; chunk saves always write zlib (save.rs compress_records)
+RegionFileVersion.configure	port	crates/horizon-world/src/compression.rs::Compression::configure	read from server.properties by the dedicated server (game/dedicated.rs), every chunk region written with it (save.rs compress_records); an unknown name is logged and the default kept
 RegionFileVersion.register	skip:data		static version table; Horizon's codecs are the Compression enum (compression.rs)
 RegionFileVersion.wrap	port	crates/horizon-world/src/compression.rs::Compression::encode	whole-buffer codec; output side (input side is Compression::decode)
 RegionStorageInfo.withTypeSuffix	port	crates/horizon-client/src/save.rs::Folder::name	folder name per region kind; only the fixed region, entities and poi folders exist, none is suffixed
@@ -52,7 +52,7 @@ GameRuleMap.equals	skip:java		value equality of the map
 GameRuleMap.of	port	crates/horizon-client-core/src/gamerules.rs::GameRules::get	no stored map: a rule that was never set reads its table default
 GameRuleMap.setFromIf	skip:other		no caller in the pinned sources (only withOther uses it)
 GameRuleMap.withOther	skip:other		no caller in the pinned sources
-BlendingData	port	crates/horizon-world/src/worldgen/blending.rs::BlendingData	unpack/pack, calculateData for the border columns, heights, densities and biomes; the client reads the saved chunks (old_world.rs)
+BlendingData	home	crates/horizon-world/src/worldgen/blending.rs	BlendingData and Blender are in that file: unpack/pack and calculated (getOrUpdateBlendingData + calculateData) for the border columns, heights, densities and biomes; the client reads the saved chunks (old_world.rs)
 BlendingData.Packed.validateArraySize	skip:java		codec size check
 AllOfPredicate.test	port	crates/horizon-world/src/worldgen/block_predicate.rs::BlockPredicate::test_inner	the All arm
 AnyOfPredicate.test	port	crates/horizon-world/src/worldgen/block_predicate.rs::BlockPredicate::test_inner	the Any arm

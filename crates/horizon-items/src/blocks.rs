@@ -7,13 +7,7 @@ use horizon_world::{
     registry::{BlockRegistry, BlockStateId},
 };
 use serde_json::Value;
-use std::{
-    collections::HashMap,
-    fs::{self, File},
-    io::BufReader,
-    path::Path,
-    sync::Arc,
-};
+use std::{collections::HashMap, path::Path, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RenderShape {
@@ -105,9 +99,36 @@ pub fn cube_edges() -> Vec<[f64; 6]> {
     }
     edges
 }
+/// Which of the four `SignBlock` subclasses a block is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SignForm {
+    /// `CeilingHangingSignBlock` or `WallHangingSignBlock`.
+    pub hanging: bool,
+    /// `WallSignBlock` or `WallHangingSignBlock`.
+    pub wall: bool,
+}
+impl SignForm {
+    /// The block entity type its `newBlockEntity` makes.
+    pub fn block_entity_type(self) -> &'static str {
+        if self.hanging {
+            "minecraft:hanging_sign"
+        } else {
+            "minecraft:sign"
+        }
+    }
+}
 impl StateFacts {
     pub fn has_class(&self, name: &str) -> bool {
         self.classes.iter().any(|c| &**c == name)
+    }
+    /// A `SignBlock`'s form, by class: a mod's sign has its template's,
+    /// whatever its name.
+    pub fn sign_form(&self) -> Option<SignForm> {
+        self.has_class("SignBlock").then(|| SignForm {
+            hanging: self.has_class("CeilingHangingSignBlock")
+                || self.has_class("WallHangingSignBlock"),
+            wall: self.has_class("WallSignBlock") || self.has_class("WallHangingSignBlock"),
+        })
     }
 }
 /// Compact, owned behaviour inputs retained until the normal behaviour startup stage.
@@ -222,21 +243,21 @@ impl GameplayStateSource for GameplayProjection {
 pub struct BlockFacts {
     pub states: Vec<StateFacts>,
     pub air: BlockStateId,
+    /// Each sign block's `SignBlock.getWoodType` name.
+    pub woods: HashMap<Arc<str>, Arc<str>>,
 }
 impl BlockFacts {
     pub fn load(root: &Path, registry: &BlockRegistry) -> Result<Self> {
-        let behaviours: Value = serde_json::from_reader(BufReader::new(File::open(
-            root.join("block-behaviours.json"),
-        )?))?;
+        let behaviours: Value =
+            horizon_world::json_file::read(&root.join("block-behaviours.json"))?;
         Self::load_with_behaviour_json(root, registry, &behaviours)
     }
 
     /// Load both tables from one resource root, sharing each JSON decode.
     /// No data is cached across calls: changes to prepared packs or mods are read again.
     pub fn load_pair(root: &Path, registry: &BlockRegistry) -> Result<(Self, Behaviours)> {
-        let behaviours: Value = serde_json::from_reader(BufReader::new(File::open(
-            root.join("block-behaviours.json"),
-        )?))?;
+        let behaviours: Value =
+            horizon_world::json_file::read(&root.join("block-behaviours.json"))?;
         Self::load_with_behaviours(root, registry, &behaviours)
     }
 
@@ -285,17 +306,19 @@ impl BlockFacts {
         parallel: bool,
         callback: impl FnOnce(&[decode::Entry<'_>]) -> Result<T>,
     ) -> Result<(Self, T)> {
-        let bytes = fs::read(root.join("gameplay-facts.json"))?;
-        let validate = || serde_json::from_slice::<decode::Validate>(&bytes).map(drop);
+        let path = root.join("gameplay-facts.json");
+        let bytes = horizon_world::json_file::read_bytes(&path)?;
+        let validate =
+            || horizon_world::json_file::parse::<decode::Validate>(&path, &bytes).map(drop);
         if !parallel {
             validate()?;
-            return Self::decode_with_callback(&bytes, registry, behaviours, callback);
+            return Self::decode_with_callback(&path, &bytes, registry, behaviours, callback);
         }
         // The validation pass (a third of the load) only reports errors: it
         // reads the file beside the decode, and its error still wins.
         std::thread::scope(|scope| {
             let validated = scope.spawn(validate);
-            let decoded = Self::decode_with_callback(&bytes, registry, behaviours, callback);
+            let decoded = Self::decode_with_callback(&path, &bytes, registry, behaviours, callback);
             validated
                 .join()
                 .unwrap_or_else(|panic| std::panic::resume_unwind(panic))?;
@@ -304,12 +327,13 @@ impl BlockFacts {
     }
 
     fn decode_with_callback<T>(
+        path: &Path,
         bytes: &[u8],
         registry: &BlockRegistry,
         behaviours: &Value,
         callback: impl FnOnce(&[decode::Entry<'_>]) -> Result<T>,
     ) -> Result<(Self, T)> {
-        let raw: decode::Gameplay<'_> = serde_json::from_slice(bytes)?;
+        let raw: decode::Gameplay<'_> = horizon_world::json_file::parse(path, bytes)?;
         let entries = raw
             .states
             .0
@@ -340,6 +364,22 @@ impl BlockFacts {
                             .clone()
                     });
                 Some((b["name"].as_str()?, chain.collect()))
+            })
+            .collect();
+        let woods = behaviours["blocks"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|b| {
+                b["class"]
+                    .as_array()
+                    .is_some_and(|chain| chain.iter().any(|c| c == "SignBlock"))
+            })
+            .filter_map(|b| {
+                Some((
+                    Arc::from(b["name"].as_str()?),
+                    Arc::from(b["fields"]["type"]["name"].as_str()?),
+                ))
             })
             .collect();
         let mut names: HashMap<String, Arc<str>> = HashMap::new();
@@ -462,16 +502,26 @@ impl BlockFacts {
                 air: registry
                     .default_state("minecraft:air")
                     .ok_or("missing air")?,
+                woods,
             },
             extra,
         ))
     }
+    /// A state the registry doesn't have (a server with mods we lack sent it)
+    /// has air's facts.
+    #[inline]
     pub fn get(&self, id: BlockStateId) -> &StateFacts {
-        &self.states[id.0 as usize]
+        self.states
+            .get(id.0 as usize)
+            .unwrap_or_else(|| &self.states[self.air.0 as usize])
+    }
+    /// `SignBlock.getWoodType`'s name for a sign block.
+    pub fn wood_type(&self, block: &str) -> Option<&str> {
+        self.woods.get(block).map(|wood| &**wood)
     }
     pub fn is_air(&self, id: BlockStateId) -> bool {
         matches!(
-            &*self.states[id.0 as usize].name,
+            &*self.get(id).name,
             "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air"
         )
     }

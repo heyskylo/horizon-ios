@@ -49,6 +49,22 @@ impl Game<'_> {
         if !container || self.chest_menu_blocked(key, &name) {
             return;
         }
+        // BaseContainerBlockEntity.canOpen: a spectator opens no container that still
+        // has a loot table to unpack (it clears while it rolls, on first open).
+        // ServerPlayer.openMenu sends the refused spectator a red action bar.
+        if self
+            .world
+            .chunks
+            .get(&(key.0 >> 4, key.2 >> 4))
+            .and_then(|c| c.saved.as_ref())
+            .is_some_and(|s| s.rolled_loot.iter().any(|r| r.pos == key))
+        {
+            self.send_overlay_message(
+                Text::translate("container.spectatorCantOpen", &[])
+                    .with_color(horizon_client::text::RED),
+            );
+            return;
+        }
         let Some(entity) = BlockEntity::for_block(&name) else {
             return;
         };
@@ -63,8 +79,7 @@ impl Game<'_> {
     pub(super) fn container_title(&self, default: String) -> String {
         self.container_parts()
             .iter()
-            .find_map(|(key, _)| self.world.block_names.get(key))
-            .cloned()
+            .find_map(|(key, _)| self.block_name_plain(*key))
             .unwrap_or(default)
     }
     /// ShulkerBoxSlot.mayPlace: no shulker box inside a shulker box.
@@ -162,6 +177,19 @@ fn facing_step(facing: &str) -> (i32, i32) {
     }
 }
 
+/// `ChestBlock.getConnectedBlockPos` for a chest whose `type` is not single:
+/// where its other half belongs, whatever stands there now.
+pub(super) fn chest_connected_pos(
+    state: &horizon_world::chunk::BlockState,
+    pos: [i32; 3],
+) -> Option<[i32; 3]> {
+    if !is_chest_block(&state.name) {
+        return None;
+    }
+    let (dx, dz) = chest_half(state)?.connected_step()?;
+    Some([pos[0] + dx, pos[1], pos[2] + dz])
+}
+
 impl Game<'_> {
     /// The other half of the open double chest and whether the open one is
     /// the right half (`ChestBlock.getConnectedDirection`).
@@ -214,6 +242,10 @@ impl Game<'_> {
             at = [at[0] + dx, at[1] + dy, at[2] + dz];
         }
         let pitch = self.world.random.next_float() * 0.1 + 0.9;
+        // A server's `playSound(null, …)`: every player around, the opener too.
+        // `Audio::play` captures the sound while the world is open to the
+        // network and `lan_broadcast_effects` sends that tick to every guest,
+        // so nothing is queued separately (a second queue played it twice).
         self.audio.play(sound, Some(at), 0.5, pitch);
     }
     /// The open or close sound of the container block at `key`, if it has one.

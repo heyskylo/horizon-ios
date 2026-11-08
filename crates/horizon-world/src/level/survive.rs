@@ -140,7 +140,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             Class::Crop => {
                 self.raw_brightness(pos, 0) >= 8 && self.can_survive_at(depth + 1, state, pos)
             }
-            Class::Diode => b.is_face_sturdy_rigid(self.below_state(pos), Direction::Up),
+            Class::Diode => self.can_support_rigid_block(below(pos)),
             Class::Door => {
                 let below_state = self.below_state(pos);
                 if b.table.text(state, p.half) == "lower" {
@@ -323,9 +323,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     let below = below(pos);
                     for direction in HORIZONTAL {
                         let at = rel(below, direction);
+                        // Read block state before fluid state, matching vanilla's call order.
+                        let adjacent = self.state(at);
                         let fluid = self.fluid_at(at);
                         if b.fluid_in(fluid.kind(), b.fluid_tags.supports_sugar_cane_adjacently)
-                            || b.in_set(self.state(at), &t.supports_sugar_cane_adjacently)
+                            || b.in_set(adjacent, &t.supports_sugar_cane_adjacently)
                         {
                             return Some(true);
                         }

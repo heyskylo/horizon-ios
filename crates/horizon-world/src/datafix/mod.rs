@@ -8,7 +8,8 @@
 //! in order, and writes it with the current schema. Each fix finds its values
 //! with the schema just below its own key ([`schema`]). Every
 //! fix of the server data is ported ([`OLDEST_SUPPORTED`]). The fixes of client
-//! files (options, hotbars, debug profiles) are not ported either.
+//! files (options, debug profiles) are not ported either (creative toolbars in
+//! `hotbar.nbt` are ported via [`update_hotbar`]).
 mod block_state_data;
 mod chunk_flatten;
 mod chunk_leaves;

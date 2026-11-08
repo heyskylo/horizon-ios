@@ -7,9 +7,17 @@
 use super::{pick, safe_name, Kind, Project, Source, SourceId, Support, Version};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
-const MANIFEST: &str = "mod-browser.json";
+pub(crate) const MANIFEST: &str = "mod-browser.json";
+/// The folders the browser installs into: an entry's `file` is always inside one of them.
+const FOLDERS: [&str; 5] = [
+    "mods",
+    "resourcepacks",
+    "shaderpacks",
+    super::java::MODS_DIR,
+    crate::native_mods::INSTALLED,
+];
 /// How deep required dependencies are followed.
 const MAX_DEPTH: usize = 4;
 
@@ -41,10 +49,31 @@ pub struct Entry {
     pub namespaces: Vec<String>,
 }
 
+/// Whether `file` names something inside one of the folders the browser installs into, made of
+/// plain names only (no root, drive or `..`), so `home.join(file)` stays in the game folder. The
+/// list is a file in that folder, which a modpack could have put there: an entry naming any other
+/// place must never make the browser remove or rename it.
+pub fn in_folders(file: &str) -> bool {
+    let mut parts = Path::new(file).components();
+    let top = parts.next();
+    matches!(top, Some(Component::Normal(t)) if FOLDERS.iter().any(|f| t == *f))
+        && parts.clone().next().is_some()
+        && parts.all(|c| matches!(c, Component::Normal(_)))
+}
+
+impl Entry {
+    /// Where the entry's file is in the game folder `home`, when it is inside one the browser
+    /// installs into ([`in_folders`]).
+    pub fn path(&self, home: &Path) -> Option<PathBuf> {
+        in_folders(&self.file).then(|| home.join(&self.file))
+    }
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Installed {
     /// An entry this launcher can't read (a shader pack, which older launchers installed) is
-    /// left out, and its file left where it is.
+    /// left out, and its file left where it is; so is one whose file is outside the folders the
+    /// browser installs into ([`in_folders`]).
     #[serde(deserialize_with = "readable_entries")]
     pub entries: Vec<Entry>,
 }
@@ -53,7 +82,17 @@ fn readable_entries<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Entry>
     let entries = Vec::<serde_json::Value>::deserialize(d)?;
     Ok(entries
         .into_iter()
-        .filter_map(|e| serde_json::from_value(e).ok())
+        .filter_map(|e| serde_json::from_value::<Entry>(e).ok())
+        .filter(|e| {
+            let kept = in_folders(&e.file);
+            if !kept {
+                eprintln!(
+                    "{MANIFEST}: left out {:?}, whose file {:?} isn't in a pack or mod folder",
+                    e.title, e.file
+                );
+            }
+            kept
+        })
         .collect())
 }
 
@@ -66,12 +105,19 @@ impl Installed {
     }
 
     pub fn save(&self, home: &Path) -> Result<(), String> {
+        let _lock = super::lock_home(home);
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = home.join(MANIFEST);
-        let part = home.join(format!(".{MANIFEST}.part"));
+        let part = home.join(format!(".{MANIFEST}.{}-{id}.part", std::process::id()));
         let text = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
         fs::create_dir_all(home).map_err(|e| format!("{}: {e}", home.display()))?;
-        fs::write(&part, text).map_err(|e| format!("{}: {e}", part.display()))?;
-        fs::rename(&part, &path).map_err(|e| format!("{}: {e}", path.display()))
+        let res = fs::write(&part, text).and_then(|()| fs::rename(&part, &path));
+        if let Err(e) = res {
+            let _ = fs::remove_file(&part);
+            return Err(format!("{}: {e}", path.display()));
+        }
+        Ok(())
     }
 
     pub fn find(&self, source: SourceId, project: &str) -> Option<&Entry> {
@@ -170,6 +216,7 @@ pub fn install(
     home: &Path,
     progress: &dyn Fn(&str, f32),
 ) -> Result<Vec<Entry>, String> {
+    let _lock = super::lock_home(home);
     if project.source == SourceId::Horizon {
         return super::horizon::install(project, home, progress);
     }
@@ -195,6 +242,7 @@ pub(super) fn put(
     folder: &dyn Fn(Kind) -> &'static str,
     progress: &dyn Fn(&str, f32),
 ) -> Result<Vec<Entry>, String> {
+    let _lock = super::lock_home(home);
     let mut installed = Installed::load(home);
     let mut done = Vec::new();
     for step in steps {
@@ -230,8 +278,8 @@ pub(super) fn put(
         let path = source.fetch(file, &home.join(folder_name), &|f| progress(&line, f))?;
         let (algo, hash) = file.checksum().expect("fetch checks for one");
         if let Some(old) = &old {
-            if old.file != relative {
-                let _ = fs::remove_file(home.join(&old.file));
+            if let Some(file) = old.path(home).filter(|_| old.file != relative) {
+                let _ = fs::remove_file(file);
             }
         }
         let entry = Entry {
@@ -264,6 +312,7 @@ pub(super) fn put(
 
 /// Removes what the browser installed for `name` (a project id or slug): its file and its entry.
 pub fn remove(home: &Path, name: &str) -> Result<Entry, String> {
+    let _lock = super::lock_home(home);
     let mut installed = Installed::load(home);
     let entry = installed
         .lookup(name)
@@ -272,7 +321,7 @@ pub fn remove(home: &Path, name: &str) -> Result<Entry, String> {
     if entry.kind == Kind::Mod && entry.source != SourceId::Horizon {
         super::java::remove(home, &entry)?;
     } else {
-        match fs::remove_file(home.join(&entry.file)) {
+        match entry.path(home).map_or(Ok(()), fs::remove_file) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(format!("{}: {e}", entry.file)),
@@ -292,8 +341,18 @@ pub fn remove(home: &Path, name: &str) -> Result<Entry, String> {
     Ok(entry)
 }
 
-/// The newer version `entry` can be updated to, if any.
-pub fn update_for(source: &dyn Source, entry: &Entry) -> Result<Option<Version>, String> {
+/// The newer version `entry`, installed in game folder `home`, can be updated to, if any. A
+/// registry native mod's is the newest that builds on the Horizon `home` plays.
+pub fn update_for(
+    source: &dyn Source,
+    entry: &Entry,
+    home: &Path,
+) -> Result<Option<Version>, String> {
+    if entry.source == SourceId::Horizon {
+        if let Some(update) = super::horizon::fitting_update(&entry.project, &entry.version, home) {
+            return Ok(update);
+        }
+    }
     let project = source.project(&entry.project)?;
     let versions = source.versions(&project)?;
     Ok(pick(project.kind, &versions, true)
@@ -340,39 +399,46 @@ pub fn install_datapack(
     if project.kind != Kind::DataPack && !project.loaders.iter().any(|l| l == "datapack") {
         return Err(format!("{} isn't a data pack.", project.title));
     }
-    let versions = source.versions(project)?;
-    let version = pick(Kind::DataPack, &versions, everything).ok_or_else(|| {
-        format!(
-            "{} has no data pack for {}{}.",
-            project.title,
-            super::GAME,
-            if everything {
-                " or any other version"
-            } else {
-                ""
-            }
-        )
-    })?;
-    let file = version.file().expect("pick keeps versions with a file");
     let folder = std::env::temp_dir().join(format!(
         "horizon-launcher-datapack-{}-{}",
         std::process::id(),
-        version.id
+        project.id
     ));
-    let result = source.fetch(file, &folder, progress).and_then(|zip| {
+    // The registry's are checked against its index (signature, `pack.mcmeta` and `data/`).
+    let fetched = match project.source {
+        SourceId::Horizon => super::horizon::fetch_datapack(project, &folder, progress),
+        _ => {
+            let versions = source.versions(project)?;
+            let version = pick(Kind::DataPack, &versions, everything).ok_or_else(|| {
+                format!(
+                    "{} has no data pack for {}{}.",
+                    project.title,
+                    super::GAME,
+                    if everything {
+                        " or any other version"
+                    } else {
+                        ""
+                    }
+                )
+            })?;
+            let file = version.file().expect("pick keeps versions with a file");
+            source
+                .fetch(file, &folder, progress)
+                .map(|zip| (zip, version.number.clone()))
+        }
+    };
+    let result = fetched.and_then(|(zip, number)| {
         let coverage = crate::datapacks::coverage(&zip)?;
         if coverage.read.is_empty() {
-            return Err(format!(
-                "{} would change nothing in Horizon yet: it has no functions, predicates or item \
-                 modifiers, and Horizon doesn't read its {} yet.",
-                project.title,
-                coverage.not_read()
+            return Err(crate::i18n::trf(
+                "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
+                &[("title", &project.title), ("files", &coverage.not_read())],
             ));
         }
         let pack = crate::datapacks::add(world, &zip)?;
         Ok(DataPackInstall {
             pack,
-            number: version.number.clone(),
+            number,
             coverage,
         })
     });

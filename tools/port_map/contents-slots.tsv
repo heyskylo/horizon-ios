@@ -1,0 +1,6 @@
+ContentsSlotSource.transform	port	crates/horizon-client/src/game/commands/items.rs::Game::inline_slots	component reads; slot_candidates carries the same transform into live writes
+ContainerComponentManipulator.getSlots	port	crates/horizon-client/src/game/commands/items/contents.rs::Game::contents_slots	live parent slot and one of the three component collections
+ContainerComponentManipulator.ComponentSlotCollection.itemCopies	port	crates/horizon-client/src/game/commands/items/contents.rs::Component::items	copies with sparse container holes retained
+ContainerComponentManipulator.ComponentSlotCollection.size	port	crates/horizon-client/src/game/commands/items/contents.rs::Game::contents_slots	physical component slot count, including container holes
+ContainerComponentManipulator.ComponentSlotCollection.modifySlots	port	crates/horizon-client/src/game/commands/items/contents.rs::Game::modify_contents	mutable collection commits through its live parent; command path only
+ContainerComponentManipulator.ComponentSlotCollection.replaceSlotItems	port	crates/horizon-client/src/game/commands/items/contents.rs::Game::replace_contents	growable replacement and normalized parent write-through; command path only

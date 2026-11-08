@@ -4,6 +4,7 @@
     python3 tools/splitscreen_e2e.py                 # every scenario
     python3 tools/splitscreen_e2e.py --only join     # some scenarios by name
     python3 tools/splitscreen_e2e.py -v --only join  # -v: every command and its reply
+    python3 tools/splitscreen_e2e.py --only native_pointer  # macOS, real OS input; desktop must be idle
 
 How it works
 - `Game(players)` launches P1's game through horizon-ctl (`target/fast/horizon-ctl`, built with
@@ -21,7 +22,9 @@ Adding a scenario: write `scenario_<name>()` that prints `"<name>: what it check
 `Game` in a try/finally with `g.quit()`, checks with `check`, and add it to `SCENARIOS`.
 
 Don't rebuild the game while it runs: the next launch takes the new binary or times out. The
-windows are real and can take keyboard focus.
+windows are real and can take keyboard focus. The opt-in native_pointer scenario also moves
+the real pointer and sends OS keys; it requires macOS Accessibility permission and is excluded
+from the default sweep.
 
 Exit status 0 when every check passed.
 """
@@ -35,6 +38,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 from pathlib import Path
 
 try:
@@ -47,6 +51,9 @@ CTL = lab.cargo_target() / ('fast/horizon-ctl' + ('.exe' if os.name == 'nt' else
 RESOURCES = ROOT / '.local/horizon-client/26.3'
 # Logical; the views are checked as fractions of what P1 gets alone, so any scale works.
 WIDTH, HEIGHT = 1000, 600
+# Where `scenario_keyboard_after_leave` looks for the keyboard's letters, from the top middle.
+KEYBOARD_ROWS, KEYBOARD_REACH = 280, 290
+KEYBOARD_LETTER_LEVEL, KEYBOARD_MIN_LETTERS = 200, 200
 VERBOSE = False
 
 failures = []
@@ -62,18 +69,30 @@ def check(name, got, want):
 class Game:
     """One splitscreen session: P1 launched with `players` (HORIZON_SPLIT), each on its socket."""
 
-    def __init__(self, players, split=True, saved_split=False, **env):
-        self.home = Path(tempfile.mkdtemp(prefix='horizon-split-e2e-'))
+    def __init__(self, players, split=True, pick=False, seed=None, args=(), ready=True, home=None, saved_split=False, **env):
+        """`pick`: the others stop at the profile picker (`HORIZON_SPLIT_PICK`) instead of
+        joining as P2, P3...; `seed(home)` fills the game folder first; `args` go to the game;
+        `ready=False`: return once P1's game answers, before it is in a world."""
+        self.home = Path(home) if home is not None else Path(tempfile.mkdtemp(prefix='horizon-split-e2e-'))
+        self.home.mkdir(parents=True, exist_ok=True)
+        if seed:
+            seed(self.home)
         if saved_split:
             (self.home / 'horizon-extras.txt').write_text('splitscreen:true\n')
         self.sockets = Path(tempfile.mkdtemp(prefix='hzse-'))  # short: Unix socket paths
+        if pick:
+            env['HORIZON_SPLIT_PICK'] = '1'
         self.env = lab.game_env(HORIZON_HOME=self.home, HORIZON_SPLIT=str(players), **env)
         if not split:
             self.env.pop("HORIZON_SPLIT", None)
         try:
-            self.ctl(1, 'launch', '--wait', '--world', 'Split', '--creative',
+            launched = self.ctl(1, 'launch', *(['--wait'] if ready else []), '--world', 'Split', '--creative',
                      '--resources', str(RESOURCES), '--width', str(WIDTH), '--height', str(HEIGHT),
-                     '--render-distance', '4', '--name', 'P1', '--no-pause')
+                     '--render-distance', '4', '--name', 'P1', '--no-pause', *args)
+            self.pid = launched.get('launch', launched)['pid']
+            if not ready:
+                self.wait(lambda: self.alive(1), "P1's game")
+                return
             self.wait(lambda: all(self.alive(n) for n in range(1, players + 1)), 'every player in')
         except BaseException:
             # A launch that never got ready leaves no game behind.
@@ -94,6 +113,65 @@ class Game:
         if 'error' in reply:
             raise RuntimeError(f'P{n} {" ".join(words)}: {reply["error"]}')
         return reply
+
+    def press(self, n, label):
+        """Click player n's button `label` (exactly, else the first whose label starts with it)
+        once it's drawn and enabled: `ui` lists the last drawn frame's widgets, which lag a page
+        change (by most of a second on GNOME Wayland)."""
+        found = []
+        def ready():
+            widgets = [w for w in self.ctl(n, 'ui')['widgets'] if w.get('enabled')]
+            exact = [w['label'] for w in widgets if w.get('label') == label]
+            prefix = [w['label'] for w in widgets if w.get('label', '').startswith(label)]
+            found[:] = (exact or prefix)[:1]
+            return bool(found)
+        self.wait(ready, f'P{n} button {label!r}')
+        self.ctl(n, 'click-button', found[0])
+
+    def labels(self, n=1):
+        return [w.get('label', '') for w in self.ctl(n, 'ui')['widgets']]
+
+    def page(self, n=1):
+        """Open player n's Splitscreen Setup screen (Horizon Settings > Splitscreen...), on or
+        off; its widgets."""
+        def shown():
+            labels = self.labels(n)
+            return 'Done' in labels and any(l in labels for l in ['Identify', 'Splitscreen: Off', 'Splitscreen: On'])
+        if shown():
+            return self.ctl(n, 'ui')['widgets']
+        self.ctl(n, 'options', 'horizon')
+        self.press(n, 'Splitscreen...')
+        self.wait(shown, 'the Setup screen', seconds=5)
+        return self.ctl(n, 'ui')['widgets']
+
+    def setup(self, n=1):
+        """Open player n's Splitscreen Setup screen, splitscreen on and another player in."""
+        self.page(n)
+        self.wait(lambda: 'Apply' in self.labels(n), 'the Setup screen', seconds=5)
+
+    def play_on(self, player, where, by=1):
+        """Move player `player` to `where` ('Window 2', 'New window', 'Fill Monitor 2') on player
+        `by`'s Setup screen and Apply; a window not open yet is a new one."""
+        self.setup(by)
+        self.press(by, f'P{player}')
+        if where.startswith('Window '):
+            # One window button cycles through the windows: on until it names this one.
+            for _ in range(16):
+                windows = [l for l in self.labels(by) if l.startswith('Window ')]
+                if not windows or where in windows:
+                    break
+                self.press(by, windows[0])
+        self.press(by, where if where in self.labels(by) else 'New window')
+        self.press(by, 'Apply')
+        self.close_page(by)
+
+    def close_page(self, n=1):
+        """Back to playing: Esc through the options and the pause menu."""
+        for _ in range(6):
+            if self.ctl(n, 'ui').get('screen') not in ('options', 'paused'):
+                return
+            self.ctl(n, 'key', 'esc', 'tap')
+            time.sleep(0.5)
 
     def alive(self, n):
         try:
@@ -167,6 +245,31 @@ def scenario_four():
         check('three: one wide on top, two below', three, [(2 * w, h), (w, h), (w, h)])
     finally:
         g.quit()
+
+
+def scenario_guide():
+    print('guide: the gameplay guide fits every split view, overlapping nothing of its own')
+    for players in (2, 3, 4):
+        g = Game(players, args=('--offscreen',))
+        try:
+            for n in range(1, players + 1):
+                g.ctl(n, 'pad', 'rb', 'tap')
+                g.ctl(n, 'turn', '0', '30', '--over', '0.2')
+            time.sleep(1.5)
+            for n in range(1, players + 1):
+                shown = g.ctl(n, 'pad', 'status')['guide']
+                w, h = shown['view']
+                rects = [r['rect'] for side in ('left', 'right') for r in shown[side]]
+                check(f'{players} players: P{n} has rows', bool(rects), True)
+                inside = all(x >= 0 and y >= 0 and x + rw <= w and y + rh <= h for x, y, rw, rh in rects)
+                check(f'{players} players: P{n} inside its view', inside, True)
+                apart = all(a[0] + a[2] <= b[0] or b[0] + b[2] <= a[0] or a[1] + a[3] <= b[1] or b[1] + b[3] <= a[1]
+                            for i, a in enumerate(rects) for b in rects[i + 1:])
+                check(f'{players} players: P{n} rows apart', apart, True)
+                if os.environ.get('GUIDE_SHOTS'):
+                    g.ctl(n, 'screenshot', str(Path(os.environ['GUIDE_SHOTS']) / f'guide-{players}-P{n}.png'))
+        finally:
+            g.quit()
 
 
 def scenario_alone():
@@ -279,6 +382,32 @@ def scenario_switch():
         g.quit()
 
 
+def scenario_controller_profiles():
+    print('controller_profiles: P2 sees and changes its own controller settings, not P1\'s')
+    g = Game(2)
+    try:
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'P2 playing')
+
+        def labels(n):
+            return [w.get('label') or '' for w in g.ctl(n, 'ui')['widgets']]
+
+        g.ctl(2, 'options', 'controller')
+        g.wait(lambda: any('Editing:' in l and 'P2' in l for l in labels(2)), 'P2 named on its screen')
+        g.ctl(2, 'click-button', 'Device')
+        g.wait(lambda: any(l.startswith('Vibration') for l in labels(2)), 'the Device page')
+        g.ctl(2, 'click-button', next(l for l in labels(2) if l.startswith('Vibration')))
+        saved = lambda: [p for p in g.home.rglob('horizon-controller.txt') if 'vibration:false' in p.read_text()]
+        g.wait(saved, 'P2 saved its vibration')
+        check('only P2 has it', [p.parent.name for p in saved()], ['P2'])
+        g.ctl(1, 'options', 'controller')
+        g.wait(lambda: any('Editing:' in l and 'P1' in l for l in labels(1)), 'P1 named on its screen')
+        g.ctl(1, 'click-button', 'Device')
+        g.wait(lambda: any(l.startswith('Vibration') for l in labels(1)), 'P1\'s Device page')
+        check('P1 keeps its own', next(l for l in labels(1) if l.startswith('Vibration')).endswith('ON'), True)
+    finally:
+        g.quit()
+
+
 def scenario_bumpers():
     print('bumpers: reorder views, move into a new window, return and join there')
     g = Game(2, HORIZON_SPLIT_PICK='1')
@@ -357,9 +486,968 @@ def scenario_toggle():
         g.quit()
 
 
+def scenario_setup():
+    print('setup: preview, Revert, Apply, Done, and solo return while the page stays open')
+    g = Game(2, saved_split=True)
+    def labels():
+        return [w.get('label', '') for w in g.ctl(1, 'ui')['widgets']]
+    def enabled(label):
+        return next(w['enabled'] for w in g.ctl(1, 'ui')['widgets'] if w['label'] == label)
+    def page():
+        g.ctl(1, 'options', 'horizon')
+        g.press(1, 'Splitscreen...')
+        g.wait(lambda: (g.ctl(1, 'state').get('menu') or {}).get('status') == 'active', 'Setup active')
+    try:
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'P2 playing')
+        half = g.size(1)
+        whole = (2 * half[0], half[1])
+        g.ctl(1, 'key', 'esc', 'tap')
+        g.wait(lambda: 'Splitscreen Settings' in labels(), 'P1 pause shortcut')
+        g.press(1, 'Splitscreen Settings')
+        g.wait(lambda: (g.ctl(1, 'state').get('menu') or {}).get('status') == 'active', 'Setup active')
+        g.press(1, 'P2')
+        g.press(1, 'New window')
+        check('preview leaves the real views alone', g.sizes([1, 2]), [half, half])
+        check('draft enables Apply', enabled('Apply'), True)
+        g.press(1, 'Revert')
+        check('Revert clears the draft', enabled('Apply'), False)
+        g.press(1, 'P2')
+        g.press(1, 'New window')
+        g.press(1, 'Apply')
+        check('Apply gives P1 its whole window', g.settle([1], [whole]), [whole])
+        own = g.size(2)
+        check('P2 gets a separate window', own != half, True)
+        g.wait(lambda: not enabled('Apply'), 'the applied draft is current')
+        g.press(1, 'P2')
+        g.press(1, 'Window 1')
+        g.press(1, 'Done')
+        check('Done discards unapplied placement', g.sizes([1, 2]), [whole, own])
+        page()
+        g.press(1, 'P2')
+        g.press(1, 'Window 1')
+        g.press(1, 'Apply')
+        check('Apply reunites both views', g.settle([1, 2], [half, half]), [half, half])
+        g.ctl(2, 'disconnect')
+        g.wait(lambda: not g.alive(2), 'P2 gone')
+        g.wait(lambda: (g.ctl(1, 'state').get('menu') or {}).get('status') == 'idle', 'Setup idle')
+        check('idle map has no stale player tiles', 'P2' in labels(), False)
+        check('idle P1 has the full window', g.settle([1], [whole]), [whole])
+        for _ in range(3):
+            g.press(1, 'Done')
+            g.ctl(1, 'options', 'horizon')
+            g.press(1, 'Splitscreen...')
+            g.wait(lambda: (g.ctl(1, 'state').get('menu') or {}).get('status') == 'idle', 'reopened idle')
+        g.press(1, 'Splitscreen: On')
+        g.wait(lambda: (g.ctl(1, 'state').get('menu') or {}).get('status') == 'off', 'Setup off')
+        g.press(1, 'Splitscreen: Off')
+        g.wait(lambda: (g.ctl(1, 'state').get('menu') or {}).get('status') == 'idle', 'Setup idle again')
+    finally:
+        g.quit()
+
+
+def scenario_setup_leave():
+    print('setup_leave: a middle player leaving invalidates the draft instead of moving the wrong seat')
+    g = Game(3, saved_split=True)
+    try:
+        g.wait(lambda: g.ctl(3, 'state').get('player') is not None, 'P3 playing')
+        g.ctl(1, 'options', 'horizon')
+        g.press(1, 'Splitscreen...')
+        g.wait(lambda: (g.ctl(1, 'state').get('menu') or {}).get('status') == 'active', 'Setup active')
+        g.press(1, 'P3')
+        g.press(1, 'New window')
+        g.ctl(2, 'disconnect')
+        g.wait(lambda: not g.alive(2), 'P2 gone')
+        def reset():
+            widgets = g.ctl(1, 'ui')['widgets']
+            return any(w['label'] == 'Apply' and not w['enabled'] for w in widgets)
+        g.wait(reset, 'stale draft discarded')
+        labels = [w['label'] for w in g.ctl(1, 'ui')['widgets']]
+        check('remaining seat stays on the map', 'P3' in labels and 'P2' not in labels, True)
+        check('P3 shares the original window', g.size(3), g.size(1))
+    finally:
+        g.quit()
+
+
+def scenario_controls():
+    print('controls: the 2-sharing layout square, dragging a player between windows, Names, Identify')
+    g = Game(2, saved_split=True)
+    def widgets():
+        return g.ctl(1, 'ui')['widgets']
+    def labels():
+        return [w['label'] for w in widgets()]
+    def enabled(label):
+        return next(w['enabled'] for w in widgets() if w['label'] == label)
+    def centre(label):
+        x, y, w, h = next(w['bounds'] for w in widgets() if w['label'] == label)
+        return x + w / 2, y + h / 2
+    try:
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'P2 playing')
+        half = g.size(1)
+        whole = (2 * half[0], half[1])
+        g.ctl(1, 'options', 'horizon')
+        g.press(1, 'Splitscreen...')
+        g.wait(lambda: (g.ctl(1, 'state').get('menu') or {}).get('status') == 'active', 'Setup active')
+        # Two sharing a window: Auto (side by side here), Side by side, Top and bottom.
+        g.press(1, '2 sharing: Auto')
+        g.press(1, '2 sharing: Side by side')
+        g.press(1, 'Apply')
+        stacked = (whole[0], half[1] // 2)
+        check('top and bottom', g.settle([1, 2], [stacked, stacked]), [stacked, stacked])
+        g.press(1, '2 sharing: Top and bottom')
+        g.press(1, 'Apply')
+        check('auto: side by side again', g.settle([1, 2], [half, half]), [half, half])
+        # Drag P2 into a window of its own, then onto P1's tile: back in Window 1.
+        g.press(1, 'P2')
+        g.press(1, 'New window')
+        g.press(1, 'Apply')
+        check('P2 in its own window', g.settle([1], [whole]), [whole])
+        g.wait(lambda: 'P2' in labels() and not enabled('Apply'), 'the applied map')
+        (x2, y2), (x1, y1) = centre('P2'), centre('P1')
+        g.ctl(1, 'drag-at', str(x2), str(y2), str((x1 + x2) / 2), str((y1 + y2) / 2), str(x1), str(y1))
+        g.wait(lambda: enabled('Apply'), 'the drop makes a draft')
+        g.press(1, 'Apply')
+        check('dragged onto P1: both in Window 1', g.settle([1, 2], [half, half]), [half, half])
+        # Names on and off (saved), Identify.
+        g.press(1, 'Names: On')
+        g.wait(lambda: 'Names: Off' in labels(), 'Names: Off')
+        check('Names turns off', 'Names: Off' in labels(), True)
+        g.press(1, 'Names: Off')
+        g.wait(lambda: 'Names: On' in labels(), 'Names: On')
+        g.press(1, 'Identify')
+        g.press(1, 'Done')
+    finally:
+        g.quit()
+
+
+def scenario_three():
+    print('three: the three layouts')
+    g = Game(3, saved_split=True)
+    try:
+        w2, h = g.size(2)  # one wide on top by default: P2 has a quarter
+        layouts = [
+            ('one tall on the left', [(w2, 2 * h), (w2, h), (w2, h)]),
+            ('side by side', None),
+            ('one wide on top', [(2 * w2, h), (w2, h), (w2, h)]),
+        ]
+        for name, want in layouts:
+            g.setup()
+            g.press(1, '3 sharing:')
+            g.press(1, 'Apply')
+            g.close_page()
+            got = g.settle([1, 2, 3], want) if want else g.settle([1, 2, 3], [g.size(1)] * 3)
+            if want:
+                check(name, got, want)
+            else:
+                widths = [x for x, _ in got]
+                check(f'{name}: three columns, full height',
+                      max(widths) - min(widths) <= 1 and all(y == 2 * h for _, y in got), True)
+    finally:
+        g.quit()
+
+
+def scenario_live():
+    print('live: splitscreen off and on in a world')
+    g = Game(2, saved_split=True)
+    try:
+        half = g.size(1)
+        # With another player in, the switch is greyed: it turns off once P1 plays alone.
+        enabled = [w.get('enabled') for w in g.page() if w.get('label') == 'Splitscreen: On']
+        check('others in: the switch is greyed', enabled, [False])
+        g.close_page()
+        g.ctl(2, 'key', 'esc', 'tap')
+        g.wait(lambda: 'Leave' in g.labels(2), "P2's pause menu", seconds=5)
+        g.press(2, 'Leave')
+        g.wait(lambda: not g.alive(2), 'P2 gone', seconds=10)
+        # Reopen repeatedly after the compositor was removed: Windows must refresh monitor
+        # handles from P1's window even with no compositor surface left.
+        for _ in range(3):
+            g.page()
+            check('alone: Setup shows idle instead of window previews',
+                  (g.ctl(1, 'state').get('menu') or {}).get('status'), 'idle')
+            check('idle: no player tile to drag', 'P1' in g.labels(), False)
+            g.close_page()
+        g.page()
+        g.ctl(1, 'click-button', 'Splitscreen: On')
+        g.wait(lambda: (g.ctl(1, 'state').get('menu') or {}).get('status') == 'off', 'off indicator')
+        g.close_page()
+        full = g.settle([1], [(2 * half[0], half[1])])
+        check('off: P1 has the whole window', full, [(2 * half[0], half[1])])
+        g.page()
+        g.ctl(1, 'click-button', 'Splitscreen: Off')
+        g.wait(lambda: (g.ctl(1, 'state').get('menu') or {}).get('status') == 'idle', 'idle again without a compositor')
+        g.close_page()
+        time.sleep(1)
+        status = g.ctl(1, 'status')
+        check('on again: P1 still renders the whole window', tuple(status['renderer']['size']),
+              (2 * half[0], half[1]))
+        check('on again: frames keep coming', status['fps'] > 10, True)
+    finally:
+        g.quit()
+
+
+def scenario_keyboard_after_leave():
+    print('keyboard: the on-screen keyboard keeps its letters when the renderer changes')
+    from pad_menu_e2e import png_rows
+
+    def letters(g, tag):
+        """Near-white pixels in the keyboard, at the top of P1's view over chat: its letters."""
+        path = g.home / f'keyboard-{tag}.png'
+        g.ctl(1, 'screenshot', str(path))
+        rows, width, channels = png_rows(path)
+        middle = width // 2
+        return sum(all(v > KEYBOARD_LETTER_LEVEL for v in row[x * channels:x * channels + 3])
+                   for row in rows[:KEYBOARD_ROWS] for x in range(middle - KEYBOARD_REACH, middle + KEYBOARD_REACH))
+
+    g = Game(2, saved_split=True)
+    try:
+        g.ctl(1, 'pad', 'south', 'tap')
+        g.ctl(1, 'key', 't', 'tap')
+        g.wait(lambda: g.ctl(1, 'pad', 'status')['menu']['keyboard'], "P1's keyboard", seconds=10)
+        time.sleep(1)
+        before = letters(g, 'before')
+        check('the keyboard has letters', before > KEYBOARD_MIN_LETTERS, True)
+        g.ctl(2, 'quit')
+        g.wait(lambda: not g.alive(2), 'P2 gone', seconds=15)
+        g.wait(lambda: g.ctl(1, 'pad', 'status')['menu']['keyboard'], "P1's keyboard still up", seconds=10)
+        time.sleep(1)
+        check('alone on a new renderer, it still has them', letters(g, 'after') > KEYBOARD_MIN_LETTERS, True)
+    finally:
+        g.quit()
+
+
+def scenario_pause():
+    print('pause: the game runs on while one player sits behind a pause menu')
+    g = Game(2)
+    try:
+        g.ctl(1, 'key', 'esc', 'tap')
+        g.wait(lambda: g.ctl(1, 'ui').get('screen') == 'paused', "P1's pause menu", seconds=5)
+        time.sleep(0.5)  # let the frames settle on the new pause state before measuring
+        before = [g.ctl(n, 'status')['ticks'] for n in (1, 2)]
+        time.sleep(1.0)
+        after = [g.ctl(n, 'status')['ticks'] for n in (1, 2)]
+        # The world runs for the other player, so P1's own client must tick too: its
+        # ticks counter keeps advancing behind the menu (issue #9718 stopped it).
+        check('P1 behind its menu: its client keeps ticking', after[0] - before[0] > 10, True)
+        check('P2: ticks on as ever', after[1] - before[1] > 10, True)
+        g.close_page(1)
+    finally:
+        g.quit()
+    # Alone the same menu does stop the game: the splitscreen exemption must not leak.
+    g = Game(1)
+    try:
+        g.ctl(1, 'key', 'esc', 'tap')
+        g.wait(lambda: g.ctl(1, 'ui').get('screen') == 'paused', "P1's pause menu", seconds=5)
+        time.sleep(0.5)
+        before = g.ctl(1, 'status')['ticks']
+        time.sleep(1.0)
+        check('alone: the pause menu still stops the ticks',
+              g.ctl(1, 'status')['ticks'] - before < 5, True)
+    finally:
+        g.quit()
+
+
+def scenario_profile_availability():
+    print('profile_availability: long profile lists and a profile freed while another picker stays open')
+    def seed(home):
+        for name in ['Ada', 'Bea', 'Cal', 'Dee', 'Eve', 'Fay', 'Gia', 'Hal', 'Ivy']:
+            (home / 'splitscreen' / 'profiles' / name).mkdir(parents=True)
+    g = Game(3, pick=True, seed=seed)
+    try:
+        menu = lambda n: (g.ctl(n, 'state').get('menu') or {})
+        g.wait(lambda: all(menu(n).get('mode') == 'splitscreen-profiles' for n in [2, 3]),
+               'both pickers')
+        g.press(2, 'Next')
+        g.press(2, 'Next')
+        g.press(2, 'Ivy')
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'Ivy playing')
+        g.wait(lambda: 'Ivy' in menu(3).get('taken', []), 'Ivy disabled in the open picker')
+        check('the ninth profile joins', True, True)
+        g.ctl(2, 'disconnect')
+        g.wait(lambda: not g.alive(2), 'Ivy leaving')
+        g.wait(lambda: 'Ivy' not in menu(3).get('taken', []), 'Ivy available without reopening')
+        g.press(3, 'Next')
+        g.press(3, 'Next')
+        g.press(3, 'Ivy')
+        g.wait(lambda: g.ctl(3, 'state').get('player') is not None, 'Ivy joining again')
+        check('the open picker can select the freed profile', True, True)
+    finally:
+        g.quit()
+
+
+def scenario_gui_scales():
+    print('gui_scales: each player keeps its own GUI scale across turns and settings changes')
+    # Room for scale 2 in a half (vanilla's 320 x 240 minimum) on a 100% display too.
+    g = Game(2, args=('--width', '2000', '--height', '1200'))
+    try:
+        g.ctl(1, 'options-set', 'guiScale', '1')
+        g.ctl(2, 'options-set', 'guiScale', '2')
+        for n in [1, 2]:
+            g.ctl(n, 'key', 'esc', 'tap')
+        def sizes():
+            return [g.ctl(n, 'ui')['gui_size'] for n in [1, 2]]
+        g.wait(lambda: sizes()[0][0] == 2 * sizes()[1][0], 'independent GUI scales')
+        check('P1 GUI twice as wide at scale 1', sizes()[0][0], 2 * sizes()[1][0])
+        g.ctl(2, 'options-set', 'guiScale', '1')
+        g.wait(lambda: sizes()[0] == sizes()[1], 'P2 scale changed independently')
+        check('equal scales give equal GUI sizes', sizes()[0], sizes()[1])
+    finally:
+        g.quit()
+
+
+def scenario_fullscreen():
+    print('fullscreen: a profile that was fullscreen joins')
+
+    def seed(home):
+        profile = home / 'splitscreen/profiles/P2'
+        profile.mkdir(parents=True)
+        (profile / 'options.txt').write_text('fullscreen:true\n')
+
+    g = Game(2, saved_split=True, seed=seed)
+    try:
+        time.sleep(3)
+        value = g.ctl(1, 'options-get', 'fullscreen')['options']['fullscreen']['value']
+        check("P1's window stays windowed (P1's fullscreen option)", value, False)
+        # P2's F11 in a window of its own: that window, and only it, goes fullscreen and back.
+        g.play_on(2, 'Window 2')
+        windowed = g.size(2)
+        g.ctl(2, 'key', 'f11', 'tap')
+        try:
+            g.wait(lambda: g.size(2)[0] > windowed[0], "P2's window fullscreen", seconds=10)
+        except RuntimeError:
+            # macOS ignores a fullscreen request while another window's transition runs: again.
+            g.ctl(2, 'key', 'f11', 'tap')
+            g.wait(lambda: g.size(2)[0] > windowed[0], "P2's window fullscreen", seconds=20)
+        check("P2's F11: its window fills the screen", g.size(2)[0] > windowed[0], True)
+        value = g.ctl(1, 'options-get', 'fullscreen')['options']['fullscreen']['value']
+        check("P1's window stays windowed", value, False)
+        full = g.size(2)
+        time.sleep(2)  # macOS ignores a change while its fullscreen animation runs
+        g.ctl(2, 'key', 'f11', 'tap')
+        try:
+            g.wait(lambda: g.size(2) == windowed, "P2's window back", seconds=10)
+        except RuntimeError:
+            print(f'    (windowed {windowed}, fullscreen {full}, now {g.size(2)})')
+        check("P2's F11 again: back to its window", g.size(2), windowed)
+    finally:
+        g.quit()
+
+
+def scenario_leave():
+    print("leave: from the pause menu, or switch profile from Splitscreen Settings")
+    g = Game(3, saved_split=True)
+    try:
+        def settings(n):
+            """Player n's pause menu, then its Splitscreen Settings."""
+            g.ctl(n, 'key', 'esc', 'tap')
+            g.wait(lambda: 'Splitscreen Settings' in g.labels(n), f"P{n}'s pause menu", seconds=5)
+            g.press(n, 'Splitscreen Settings')
+
+        def menu(n):
+            return (g.ctl(n, 'state').get('menu') or {}).get('mode')
+        g.ctl(3, 'key', 'esc', 'tap')
+        g.wait(lambda: 'Leave' in g.labels(3), "P3's pause menu", seconds=5)
+        g.press(3, 'Leave')
+        g.wait(lambda: not g.alive(3), 'P3 gone', seconds=10)
+        w, h = g.size(1)
+        check('Leave: P3 left, P1 and P2 share the window', g.settle([1, 2], [(w, h), (w, h)]), [(w, h), (w, h)])
+        # P2's Splitscreen Settings: its profiles, still playing beneath.
+        settings(2)
+        g.wait(lambda: menu(2) == 'splitscreen-profiles', "P2's profiles", seconds=10)
+        check('P2 still plays while it picks', g.ctl(2, 'state').get('player') is not None, True)
+        check('its own profile marked, not pickable',
+              [x.get('enabled') for x in g.ctl(2, 'ui')['widgets'] if x.get('label') == 'P2 - you'], [False])
+        # Cancel: nothing changed.
+        g.press(2, 'Cancel')
+        time.sleep(1)
+        check('Cancel: P2 plays on as P2', (g.alive(2), menu(2), g.size(2)), (True, None, (w, h)))
+        g.close_page(2)
+        # Again, RB to a new window, then a new profile: P2 comes back as Cam, there.
+        settings(2)
+        g.wait(lambda: menu(2) == 'splitscreen-profiles', "P2's profiles", seconds=10)
+        g.ctl(2, 'pad', 'rb', 'tap')
+        whole = (2 * w, h)
+        check('RB on the page: P2 to a new window, P1 alone', g.settle([1], [whole]), [whole])
+        g.press(2, 'New Profile...')
+        g.ctl(2, 'type', 'Cam')
+        g.press(2, 'Create')
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None and menu(2) is None, 'Cam in the world',
+               seconds=20)
+        check('Cam plays in the new window', (g.size(1), g.size(2) != (w, h)), (whole, True))
+        # P1's Splitscreen Settings is the Setup screen.
+        settings(1)
+        g.wait(lambda: 'Apply' in g.labels(1), "P1's Setup screen", seconds=5)
+        g.press(1, 'Done')
+        g.close_page(1)
+    finally:
+        g.quit()
+
+
+def scenario_signedin():
+    print('signedin: P1 signed into an account, another player joins under its own profile')
+    session = Path(tempfile.mkdtemp(prefix='horizon-session-')) / 'session.json'
+    session.write_text(json.dumps({'name': 'Signed', 'uuid': '069a79f444e94726a5befca90e38aaf5',
+                                   'access_token': 'not-a-real-token', 'user_type': 'msa'}))
+    session.chmod(0o600)
+    g = Game(2, args=('--session-file', str(session)))
+    try:
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'P2 in the world', seconds=20)
+        time.sleep(2)
+        check('P2 plays', g.ctl(2, 'state').get('player') is not None, True)
+        check('P1 still plays (not replaced by its own name joining)',
+              g.ctl(1, 'state').get('player') is not None and g.size(1) == g.size(2), True)
+    finally:
+        g.quit()
+
+
+def scenario_monitor():
+    print('monitor: a player fills another monitor, another joins it (skipped with one monitor)')
+    g = Game(2, saved_split=True)
+    try:
+        half = g.size(1)
+        g.setup(1)
+        g.press(1, 'P2')
+        fill = [l for l in g.labels(1) if l.startswith('Fill Monitor')]
+        if not fill:
+            print('  skip one monitor only')
+            return
+        g.press(1, fill[0])
+        g.press(1, 'Apply')
+        g.close_page(1)
+        g.wait(lambda: g.size(2) != half, "P2's window to fill the monitor", seconds=15)
+        time.sleep(1)
+        size = g.size(2)
+        check('P2 fills the monitor: a window of its own', size != g.size(1), True)
+        g.play_on(1, 'Window 2')
+        # Halves side by side, or top and bottom on a portrait monitor.
+        halves = [(size[0] // 2, size[1]), (size[0], size[1] // 2)]
+        g.wait(lambda: g.size(1) in halves and g.size(2) == g.size(1), 'P1 beside P2 on the monitor', seconds=15)
+        check('P1 joins it: halves of the monitor', g.size(1) in halves and g.size(2) == g.size(1), True)
+    finally:
+        g.quit()
+
+
+def scenario_eight():
+    print('eight: eight players in one window')
+    g = Game(8, saved_split=True)
+    try:
+        sizes = g.sizes(range(1, 9))
+        near = lambda a, b: abs(a - b) <= 1  # thirds of an odd width differ by a pixel
+        # Rows of three, three and two: six equal views, then two wider ones; all the same height.
+        check(f'rows of 3, 3 and 2: {sizes}',
+              all(near(x[0], sizes[0][0]) and near(x[1], sizes[0][1]) for x in sizes[:6])
+              and near(sizes[6][0], sizes[7][0]) and sizes[6][0] > sizes[0][0] + 100
+              and all(near(x[1], sizes[0][1]) for x in sizes), True)
+        drawing = lambda: all(g.ctl(n, 'status')['fps'] > 10 for n in range(1, 9))
+        try:
+            g.wait(drawing, 'every view drawing', seconds=20)
+        except RuntimeError:
+            pass
+        check('every view draws', drawing(), True)
+    finally:
+        g.quit()
+
+
+def scenario_sixteen():
+    print('sixteen: sixteen players in a 4x4 grid, P16 moves to its own window and leaves')
+    # Room for P1's menus in a sixteenth of the window on a 100% display too.
+    g = Game(16, saved_split=True, args=('--width', '2000', '--height', '1200'))
+    try:
+        players = range(1, 17)
+        g.wait(lambda: all(g.ctl(n, 'state').get('player') is not None for n in players),
+               'all sixteen players admitted to the world', seconds=60)
+        check('all sixteen players enter the world', True, True)
+        sizes = g.sizes(players)
+        near = lambda a, b: abs(a - b) <= 1
+        check('all sixteen views have equal dimensions',
+              all(near(w, sizes[0][0]) and near(h, sizes[0][1]) for w, h in sizes), True)
+        drawing = lambda: all(g.ctl(n, 'status')['fps'] > 0 for n in players)
+        g.wait(drawing, 'all sixteen views drawing', seconds=30)
+        check('every player renders', drawing(), True)
+        print('  FPS per player:', [round(g.ctl(n, 'status')['fps'], 1) for n in players])
+        g.play_on(16, 'New window')
+        check('P16 gets its own larger view', g.size(16)[0] > sizes[15][0], True)
+        g.ctl(16, 'disconnect')
+        g.wait(lambda: not g.alive(16), 'P16 leaving')
+        check('P15 still plays after P16 leaves', g.ctl(15, 'state').get('player') is not None, True)
+    finally:
+        g.quit()
+
+
+def scenario_pointer():
+    print('pointer: only the player with the keyboard and mouse grabs the pointer')
+    g = Game(2)
+    try:
+        time.sleep(3)
+        grabbed = lambda n: g.ctl(n, 'state').get('pointer_grabbed')  # noqa: E731
+        g.ctl(1, 'mouse', 'left', 'click')
+        time.sleep(0.5)
+        check('P1 plays with the mouse, P2 never grabs it', (grabbed(1), grabbed(2)), (True, False))
+        # P2's menus (its controller) leave P1's pointer alone.
+        g.ctl(2, 'key', 'e', 'tap')
+        time.sleep(0.6)
+        g.ctl(2, 'key', 'esc', 'tap')
+        time.sleep(0.6)
+        check("after P2's inventory: still P1's", (grabbed(1), grabbed(2)), (True, False))
+    finally:
+        g.quit()
+
+
+def scenario_pausemenu():
+    print("pausemenu: Splitscreen Settings in the pause menu only while another player plays")
+    g = Game(2, saved_split=True, pick=True)
+    try:
+        def paused(n):
+            """Player n's pause menu: its buttons, then closed again."""
+            g.ctl(n, 'key', 'esc', 'tap')
+            g.wait(lambda: 'Options...' in g.labels(n), f"P{n}'s pause menu", seconds=5)
+            labels = g.labels(n)
+            g.close_page(n)
+            return labels
+        menu = lambda: (g.ctl(2, 'state').get('menu') or {}).get('mode')  # noqa: E731
+        g.wait(lambda: menu() == 'splitscreen-profiles', "P2's picker")
+        # P2 still choosing: nobody else plays yet, so the pause menu has no Splitscreen Settings;
+        # Setup stays reachable from Horizon Settings.
+        check('alone: no Splitscreen Settings in the pause menu', 'Splitscreen Settings' in paused(1), False)
+        g.page(1)
+        check('alone: Horizon Settings > Splitscreen... still there', 'Done' in g.labels(1), True)
+        g.close_page(1)
+        g.ctl(2, 'click-button', 'New Profile...')
+        g.ctl(2, 'type', 'Dee')
+        g.ctl(2, 'click-button', 'Create')
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'Dee in the world')
+        time.sleep(1)
+        check('joined: in P1\'s pause menu', 'Splitscreen Settings' in paused(1), True)
+        check("joined: in Dee's", 'Splitscreen Settings' in paused(2), True)
+        # Dee leaves: P1 alone again, the pause menu drops it.
+        g.ctl(2, 'key', 'esc', 'tap')
+        g.wait(lambda: 'Leave' in g.labels(2), "Dee's pause menu", seconds=5)
+        g.press(2, 'Leave')
+        g.wait(lambda: not g.alive(2), 'Dee gone', seconds=10)
+        time.sleep(1)
+        check('alone again: no Splitscreen Settings in the pause menu', 'Splitscreen Settings' in paused(1), False)
+    finally:
+        g.quit()
+
+
+@contextlib.contextmanager
+def dedicated(directory=None, **extra):
+    """A Horizon dedicated server, offline mode, started and ready: (server, port)."""
+    from test_dedicated_server_parity import Server
+    port = lab.free_port()
+    folder = Path(tempfile.mkdtemp(prefix='hz-split-server-'))
+    directory = Path(directory) if directory is not None else folder / 'server'
+    directory.mkdir(parents=True, exist_ok=True)
+    properties = {'online-mode': 'false', 'white-list': 'false', 'server-port': str(port), 'level-type': 'minecraft\\:flat',
+                  'generate-structures': 'false', 'view-distance': '3', 'simulation-distance': '3',
+                  'pause-when-empty-seconds': '-1', 'spawn-protection': '0', **extra}
+    (directory / 'server.properties').write_text(''.join(f'{k}={v}\n' for k, v in properties.items()),
+                                                 encoding='iso-8859-1')
+    (directory / 'eula.txt').write_text('eula=true\n')
+    server = Server([lab.cargo_target() / ('fast/horizon-client' + ('.exe' if os.name == 'nt' else '')), '--resources', RESOURCES, '--dedicated',
+                     '--nogui'], directory, 'server')
+    try:
+        server.wait_for(r'Done \(')
+        yield server, port
+    finally:
+        server.stop()
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def scenario_packs():
+    print("packs: the server's resource pack: P1 says Yes, the others follow without being asked")
+    from server_pack_e2e import Files, build_pack
+    folder = Path(tempfile.mkdtemp(prefix='hz-split-pack-'))
+    sha1 = build_pack(folder / 'pack.zip')
+    files = Files({'/pack.zip': (folder / 'pack.zip').read_bytes()})
+    try:
+        with dedicated(**{'resource-pack': files.url('/pack.zip'), 'resource-pack-sha1': sha1,
+                          'require-resource-pack': 'false'}) as (server, port):
+            g = Game(2, args=('--server', f'127.0.0.1:{port}'), ready=False)
+            try:
+                g.wait(lambda: 'Yes' in g.labels(1), "P1 asked about the server's pack", seconds=60)
+                g.ctl(1, 'click-button', 'Yes')
+                server.wait_for(r'P2 joined the game', timeout=90)
+                check("P2 joins on P1's Yes, never asked itself", True, True)
+                # P2 finds P1's copy in their shared downloads folder (same SHA-1).
+                downloads = [p for p, _ in files.requests if p == '/pack.zip']
+                check('the pack downloaded once, for both', len(downloads), 1)
+            finally:
+                g.quit()
+    finally:
+        files.shutdown()
+        shutil.rmtree(folder, ignore_errors=True)
+
+def scenario_pack_overlay():
+    print("pack_overlay: a player's pack reload leaves P1's selected pack and vanilla's files in place")
+
+    def seed(home):
+        (home / 'resourcepacks').mkdir()
+        meta = {'pack': {'pack_format': 9999, 'supported_formats': {'min_inclusive': 6, 'max_inclusive': 9999},
+                         'description': 'pack_overlay'}}
+        with zipfile.ZipFile(home / 'resourcepacks/overlay.zip', 'w') as z:
+            z.writestr('pack.mcmeta', json.dumps(meta))
+        (home / 'options.txt').write_text('resourcePacks:["vanilla","file/overlay.zip"]\n')
+        (home / 'shaderpacks').mkdir()
+        with zipfile.ZipFile(home / 'shaderpacks/shader.zip', 'w') as z:
+            z.writestr('shaders/final.fsh', 'void main() {}\n')
+
+    g = Game(2, seed=seed, args=('--offscreen',))
+    try:
+        log = g.home / 'logs/latest.log'
+        stone = 'assets/minecraft/textures/block/stone.png'
+        overlays = [d for d in (g.home / '.horizon-cache/resourcepacks').iterdir() if d.is_dir()]
+        check('one overlay for the selection', len(overlays), 1)
+        check("vanilla's stone in it before", (overlays[0] / stone).exists(), True)
+        # The first shader pack of a session turns material maps on, which reloads the packs.
+        g.ctl(2, 'options', 'shader-packs')
+        g.press(2, 'shader.zip')
+        g.wait(lambda: 'shader pack shader.zip' in log.read_text(errors='replace'), "P2's shader pack", seconds=60)
+        check("vanilla's stone in it after", (overlays[0] / stone).exists(), True)
+        check('the reload succeeded', 'resource reload failed' in log.read_text(errors='replace'), False)
+    finally:
+        g.quit()
+
+
+def scenario_server():
+    print('server: P1 on a dedicated server; the others join it, a kicked one drops out, all leave with P1')
+    with dedicated() as (server, port):
+        g = Game(3, args=('--server', f'127.0.0.1:{port}'))
+        try:
+            server.wait_for(r'P2 joined the game', timeout=60)
+            server.wait_for(r'P3 joined the game', timeout=60)
+            check('P2 and P3 join the server P1 is on', True, True)
+            server.console('kick P3 Testing')
+            g.wait(lambda: not g.alive(3), 'P3 gone after its kick', seconds=20)
+            check('kicked: P3 drops out, P1 plays on', g.ctl(1, 'state').get('player') is not None, True)
+            g.ctl(1, 'disconnect')
+            server.wait_for(r'P2 left the game', timeout=30)
+            check('P1 leaves: P2 leaves with it', True, True)
+        finally:
+            g.quit()
+
+
+
+def pick_profile(g, n, name):
+    """Choose or create an instance-local offline profile, through the actual picker."""
+    g.wait(lambda: (g.ctl(n, 'state').get('menu') or {}).get('mode') == 'splitscreen-profiles',
+           f"P{n}'s picker")
+    if name in (g.ctl(n, 'state').get('menu') or {}).get('profiles', []):
+        for _ in range(8):
+            if name in g.labels(n):
+                g.press(n, name)
+                break
+            g.press(n, 'Next')
+        else:
+            raise RuntimeError(f'profile {name} never appeared')
+    else:
+        g.press(n, 'New Profile...')
+        g.ctl(n, 'type', name)
+        g.press(n, 'Create')
+    g.wait(lambda: g.ctl(n, 'state').get('player') is not None, f'{name} playing')
+
+
+def progress(g, n):
+    p = g.ctl(n, 'state').get('player') or {}
+    return {'diamonds': g.ctl(n, 'inventory')['counts'].get('minecraft:diamond', 0),
+            'position': [round(v, 2) for v in p.get('position', [])],
+            'health': p.get('health'), 'xp': p.get('xp')}
+
+
+def prepare_progress(run, name, count, levels, x):
+    for command in ['gamerule natural_health_regeneration false',
+                    'fill 0 99 0 31 99 31 minecraft:stone',
+                    'fill 0 100 0 31 105 31 minecraft:air',
+                    f'gamemode survival {name}', f'clear {name}',
+                    f'give {name} minecraft:diamond {count}',
+                    f'xp set {name} {levels} levels', f'xp set {name} 0 points',
+                    f'tp {name} {x} 100 8.5', f'damage {name} 4 minecraft:generic']:
+        run(command)
+
+
+def await_progress(g, n, count, levels, x):
+    def ready():
+        p = progress(g, n)
+        return (p['diamonds'] == count and p['health'] == 16
+                and p['position'] == [x, 100.0, 8.5] and (p['xp'] or {}).get('level') == levels)
+    try:
+        g.wait(ready, f'P{n} inventory, position, health and XP', seconds=20)
+    except RuntimeError as error:
+        raise RuntimeError(f'{error}; actual: {progress(g, n)}') from error
+    return progress(g, n)
+
+
+def scenario_dedicated_profiles():
+    print('dedicated_profiles: guest becomes independent P1; identities survive server restart')
+    with tempfile.TemporaryDirectory(prefix='hz-profile-server-') as folder:
+        directory = Path(folder) / 'server'
+        with dedicated(directory=directory) as (server, port):
+            g = Game(2, pick=True, args=('--server', f'127.0.0.1:{port}'))
+            try:
+                pick_profile(g, 2, 'jordank')
+                prepare_progress(server.console, 'jordank', 7, 12, 8.5)
+                expected = await_progress(g, 2, 7, 12, 8.5)
+                g.ctl(2, 'disconnect')
+                g.wait(lambda: not g.alive(2), 'Jordan leaving splitscreen')
+                remote = Game(1, args=('--server', f'127.0.0.1:{port}', '--name', 'jordank'))
+                try:
+                    check('independent P1 uses the guest save', await_progress(remote, 1, 7, 12, 8.5), expected)
+                finally:
+                    remote.quit()
+            finally:
+                g.quit()
+        with dedicated(directory=directory) as (server, port):
+            for name in ['someone_else', 'jordank']:
+                g = Game(1, args=('--server', f'127.0.0.1:{port}', '--name', name))
+                try:
+                    if name == 'jordank':
+                        check('server restart keeps Jordan progress', await_progress(g, 1, 7, 12, 8.5), expected)
+                    else:
+                        check('a different offline name has separate inventory',
+                              progress(g, 1)['diamonds'], 0)
+                finally:
+                    g.quit()
+
+
+def scenario_integrated_profiles():
+    print('integrated_profiles: P1 rename keeps solo save; Jordan moves from splitscreen to LAN')
+    g = Game(2, pick=True)
+    home = g.home
+    try:
+        pick_profile(g, 2, 'jordank')
+        run = lambda command: g.ctl(1, 'command', command)
+        prepare_progress(run, 'P1', 3, 5, 20.5)
+        owner = await_progress(g, 1, 3, 5, 20.5)
+        prepare_progress(run, 'jordank', 7, 12, 8.5)
+        jordan = await_progress(g, 2, 7, 12, 8.5)
+        g.ctl(2, 'disconnect')
+        g.wait(lambda: not g.alive(2), 'Jordan leaving')
+        port = g.ctl(1, 'lan', 'open', '0', 'commands')['port']
+        remote = Game(1, args=('--server', f'127.0.0.1:{port}', '--name', 'jordank'))
+        try:
+            check('LAN Jordan uses splitscreen progress', await_progress(remote, 1, 7, 12, 8.5), jordan)
+        finally:
+            remote.quit()
+    finally:
+        g.quit()
+    g = Game(1, home=home, args=('--name', 'AnotherName'))
+    try:
+        check('changing P1 launcher name keeps solo progress', await_progress(g, 1, 3, 5, 20.5), owner)
+    finally:
+        g.quit()
+
+
+def scenario_native_pointer():
+    print('native_pointer: OS keys and mouse drive the owning view across joins, menus and handoffs')
+    if sys.platform != 'darwin':
+        raise RuntimeError('native_pointer requires macOS; portable capture tests run separately')
+    from native_input import MacInput
+    g = Game(2, saved_split=True)
+    native = None
+    try:
+        native = MacInput(g.pid)
+        g.wait(lambda: all(g.ctl(n, 'state').get('player') for n in [1, 2]), 'both players loaded')
+        native.activate()
+        size = (g.size(1)[0] + g.size(2)[0], g.size(1)[1])
+        point = lambda x, y: native.point(size, x, y)
+        state = lambda n: g.ctl(n, 'state')
+        grabbed = lambda: [state(n)['pointer_grabbed'] for n in [1, 2]]
+        check('P1 keeps capture after P2 joins without another click', grabbed(), [True, False])
+        # OS mouse motion, unlike horizon-ctl mouse-move, passes through Split.device_event.
+        def look(owner):
+            other = 3 - owner
+            before = [state(n)['player']['yaw'] for n in [1, 2]]
+            for _ in range(3):
+                native.relative(20, 0)
+            time.sleep(0.3)
+            after = [state(n)['player']['yaw'] for n in [1, 2]]
+            check(f'native mouse turns P{owner}', abs(after[owner-1] - before[owner-1]) > 0.1, True)
+            check(f'P{other} does not turn with P{owner} mouse', after[other-1], before[other-1])
+        look(1)
+        g.ctl(1, 'command', 'gamemode spectator @a')
+        g.ctl(1, 'command', 'tp P1 0 150 0 0 0')
+        g.ctl(1, 'command', 'tp P2 20 150 0 0 0')
+        time.sleep(0.5)
+
+        def walk(owner):
+            other = 3 - owner
+            # Spectator movement decelerates after a release; measure fresh movement
+            # after that inertia settles, while checking held keys independently.
+            def settled():
+                before = state(other)['player']['position']
+                time.sleep(0.15)
+                after = state(other)['player']['position']
+                return all(abs(after[i] - before[i]) < 0.001 for i in [0, 2])
+            g.wait(settled, f"P{other}'s previous movement settles", seconds=5)
+            before = [state(n)['player']['position'] for n in [1, 2]]
+            native.key('w', True)
+            try:
+                g.wait(lambda: 'KeyW' in g.ctl(owner, 'status')['keys'], f'OS W reaches P{owner}')
+                check(f'OS W reaches only P{owner}', 'KeyW' in g.ctl(other, 'status')['keys'], False)
+                time.sleep(0.4)
+            finally:
+                native.key('w', False)
+            time.sleep(0.3)
+            after = [state(n)['player']['position'] for n in [1, 2]]
+            moved = lambda n: sum((after[n-1][i] - before[n-1][i]) ** 2 for i in [0, 2]) > 0.01
+            check(f'P{owner} actually moves with OS W', moved(owner), True)
+            check(f'P{other} stays put', moved(other), False)
+
+        walk(1)
+        g.ctl(2, 'pad', 'start', 'tap')  # A controller player's pause menu.
+        walk(1)
+        check("P2's menu leaves native capture with P1", grabbed(), [True, False])
+        look(1)
+        g.ctl(2, 'pad', 'start', 'tap')
+        # A click on P2 cannot steal a locked P1 pointer.
+        native.click(point(0.75, 0.4))
+        check('clicking another view while captured keeps P1 ownership', grabbed(), [True, False])
+        native.tap('escape')
+        native.click(point(0.75, 0.4))
+        check('Esc then click hands native capture to P2', grabbed(), [False, True])
+        walk(2)
+        look(2)
+        # Transfer while W is still physically held: the old player must not keep walking.
+        native.key('w', True)
+        g.wait(lambda: 'KeyW' in g.ctl(2, 'status')['keys'], 'P2 holds W')
+        native.tap('escape')
+        native.click(point(0.25, 0.1))
+        native.tap('escape')  # Close P1's own pause menu.
+        check('handoff releases the previous owners held W', 'KeyW' in g.ctl(2, 'status')['keys'], False)
+        native.key('w', False)
+        walk(1)
+        check('P1 recaptures after the round trip', grabbed(), [True, False])
+        # Separate native windows keep the same ownership rules and deliver
+        # key releases to the old player when its window loses the keyboard.
+        g.play_on(2, 'New window')
+        native.activate()
+        for _ in range(3):
+            native.relative(15, 0)
+        check('moving P2 to another window keeps P1 capture', grabbed(), [True, False])
+        walk(1)
+        native.tap('escape')
+        native.click(native.point(g.size(2), 0.5, 0.2, title='Window 2'), title='Window 2')
+        native.tap('escape')  # P2 kept its own pause menu from the previous handoff.
+        check('clicking Window 2 gives P2 native capture', grabbed(), [False, True])
+        walk(2)
+        look(2)
+        native.tap('escape')
+        native.click(native.point(g.size(1), 0.5, 0.1, title='Window 1'), title='Window 1')
+        native.tap('escape')
+        check('clicking Window 1 restores P1 capture', grabbed(), [True, False])
+        walk(1)
+        g.ctl(2, 'disconnect')
+        g.wait(lambda: not g.alive(2), 'P2 left')
+        time.sleep(0.3)
+        before = state(1)['player']['yaw']
+        for _ in range(3):
+            native.relative(15, 0)
+        time.sleep(0.3)
+        check('native mouse still turns P1 after the compositor is removed',
+              abs(state(1)['player']['yaw'] - before) > 0.1, True)
+    finally:
+        if native is not None:
+            native.release()
+        g.quit()
+
+
+def scenario_launcher():
+    print("launcher: its other accounts are profiles; offline ones stay in this instance")
+    folder = Path(tempfile.mkdtemp(prefix='hz-launcher-'))
+    # Another signed-in account's session, as the launcher writes it (a token nobody checks:
+    # P1's own world is offline-mode).
+    session = folder / 'session-ann.json'
+    session.write_text(json.dumps({'name': 'Ann', 'uuid': '069a79f444e94726a5befca90e38aaf5',
+                                   'access_token': 'not-a-real-token', 'user_type': 'msa'}))
+    session.chmod(0o600)
+    os.environ['HORIZON_ACCOUNT_SESSIONS'] = json.dumps(
+        [{'name': 'Ann', 'uuid': '069a79f444e94726a5befca90e38aaf5', 'file': str(session)}, {'name': 'Cal', 'uuid': '00000000000000000000000000000001', 'skipped': 'Sign in again'}])
+    g = Game(3, pick=True, seed=lambda home: (home / 'splitscreen/profiles/Bea').mkdir(parents=True))
+    try:
+        menu = lambda n: g.ctl(n, 'state').get('menu') or {}  # noqa: E731
+        g.wait(lambda: menu(2).get('mode') == 'splitscreen-profiles', 'the picker')
+        check('the accounts, then the offline profiles', menu(2).get('profiles'), ['Ann', 'Cal', 'Bea'])
+        check('the account marked', 'Ann (Microsoft)' in g.labels(2), True)
+        check('unavailable account marked offline', 'Cal (Offline)' in g.labels(2), True)
+        check('unavailable account cannot be forgotten', 'Forget Cal' in g.labels(2), False)
+        g.ctl(2, 'click-button', 'Ann (Microsoft)')
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'Ann in the world')
+        g.wait(lambda: menu(3).get('mode') == 'splitscreen-profiles', "P3's picker")
+        g.ctl(3, 'click-button', 'New Profile...')
+        g.ctl(3, 'type', 'Dan')
+        g.ctl(3, 'click-button', 'Create')
+        g.wait(lambda: g.ctl(3, 'state').get('player') is not None, 'Dan in the world')
+        check('a new offline profile is kept in the instance',
+              (g.home / 'splitscreen/profiles/Dan').is_dir(), True)
+    finally:
+        g.quit()
+        os.environ.pop('HORIZON_ACCOUNT_SESSIONS', None)
+
+
+def scenario_custom_skin():
+    print("custom_skin: P1's uploaded skin survives P2 joining")
+    from server_pack_e2e import decode_png, png
+
+    output = Path(tempfile.mkdtemp(prefix='split-skin-'))
+    skin = output / 'synthetic-skin.png'
+    skin.write_bytes(png(64, 64, lambda x, y: (255, 0, 0, 255)))
+
+    def red_pixels(path, gui_size=None):
+        width, height, rows = decode_png(path.read_bytes())
+        if gui_size is None:
+            box = (width * .25, height * .2, width * .75, height * .75)
+        else:
+            # InventoryScreen's player preview, within the 176 x 166 inventory.
+            gui_width, gui_height = gui_size
+            scale = width / gui_width
+            left, top = (gui_width - 176) / 2, (gui_height - 166) / 2
+            box = tuple(v * scale for v in (left + 26, top + 8, left + 75, top + 78))
+        left, top, right, bottom = map(round, box)
+        return sum(r > 80 and r > 3 * g and r > 3 * b
+                   for y in range(top, bottom) for r, g, b in rows[y][left:right])
+
+    def seed(home):
+        (home / 'splitscreen/profiles/Ada').mkdir(parents=True)
+        (home / 'options.txt').write_text('tutorialStep:none\n')
+
+    # A synthetic texture exercises the same dynamic atlas slots as a downloaded
+    # Microsoft skin, without using an account or a player's skin. No native input.
+    game = Game(2, pick=True, seed=seed, args=('--offscreen',), HORIZON_OFFLINE_SKIN=str(skin))
+    results = []
+    try:
+        game.wait(lambda: (game.ctl(2, 'state').get('menu') or {}).get('mode')
+                  == 'splitscreen-profiles', 'P2 profile picker')
+        game.press(2, 'Ada')
+        game.wait(lambda: game.ctl(2, 'state').get('player') is not None, 'P2 in the world')
+        for player in (1, 2):
+            game.ctl(player, 'key', 'f5', 'tap')
+            game.ctl(player, 'wait', '20')
+            world = output / f'p{player}-world.png'
+            game.ctl(player, 'screenshot', str(world))
+            game.ctl(player, 'command', 'gamemode survival')
+            game.ctl(player, 'key', 'e', 'tap')
+            game.ctl(player, 'wait', '10')
+            inventory = output / f'p{player}-inventory.png'
+            game.ctl(player, 'screenshot', str(inventory))
+            size = game.ctl(player, 'ui')['gui_size']
+            result = dict(player=player, world_red=red_pixels(world),
+                          inventory_red=red_pixels(inventory, size))
+            results.append(result)
+            print(json.dumps(result), flush=True)
+            check(f'P{player} custom skin in third person', result['world_red'] > 1000, True)
+            check(f'P{player} custom skin in inventory', result['inventory_red'] > 100, True)
+            game.ctl(player, 'key', 'esc', 'tap')
+    finally:
+        game.quit()
+        (output / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
+        print(f'  screenshots and results: {output}')
+
+
 SCENARIOS = {
     'alone': scenario_alone,
+    'guide': scenario_guide,
     'join': scenario_join,
+    'controller_profiles': scenario_controller_profiles,
+    'custom_skin': scenario_custom_skin,
     'four': scenario_four,
     'windows': scenario_windows,
     'picker': scenario_picker,
@@ -367,6 +1455,30 @@ SCENARIOS = {
     'switch': scenario_switch,
     'bumpers': scenario_bumpers,
     'toggle': scenario_toggle,
+    'setup': scenario_setup,
+    'setup_leave': scenario_setup_leave,
+    'controls': scenario_controls,
+    'three': scenario_three,
+    'live': scenario_live,
+    'keyboard_after_leave': scenario_keyboard_after_leave,
+    'pause': scenario_pause,
+    'profile_availability': scenario_profile_availability,
+    'gui_scales': scenario_gui_scales,
+    'fullscreen': scenario_fullscreen,
+    'leave': scenario_leave,
+    'signedin': scenario_signedin,
+    'monitor': scenario_monitor,
+    'eight': scenario_eight,
+    'sixteen': scenario_sixteen,
+    'pointer': scenario_pointer,
+    'native_pointer': scenario_native_pointer,
+    'pausemenu': scenario_pausemenu,
+    'server': scenario_server,
+    'packs': scenario_packs,
+    'pack_overlay': scenario_pack_overlay,
+    'dedicated_profiles': scenario_dedicated_profiles,
+    'integrated_profiles': scenario_integrated_profiles,
+    'launcher': scenario_launcher,
 }
 
 
@@ -382,7 +1494,7 @@ def main():
         sys.exit(f'{CTL} is missing: cargo build --profile fast -p horizon-client')
     if not (RESOURCES / 'assets').exists():
         sys.exit(f'no prepared resources in {RESOURCES}')
-    for name in args.only or list(SCENARIOS):
+    for name in args.only or [n for n in SCENARIOS if n != 'native_pointer']:
         print(f'[{name}]')
         try:
             SCENARIOS[name]()

@@ -37,6 +37,7 @@ struct Pad { menu: Menu }
 struct Game { pad: Pad, cursor: (f32, f32), in_menu: bool }
 impl Game {
     fn pad_in_menu(&self) -> bool { self.in_menu }
+    fn key_focus_screen(&self) -> bool { self.in_menu }
     fn key_targets(&self) -> Vec<Target> { vec![Target { rect: [0., 0., 10., 10.] }] }
     METHOD
 }

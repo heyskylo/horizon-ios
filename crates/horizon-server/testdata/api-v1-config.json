@@ -1,0 +1,109 @@
+{
+  "get": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {
+      "config": {
+        "api": {"allow_public": false, "bind": "", "token": "(set)"},
+        "backups": {"every": "6h", "keep": 12},
+        "discord": {
+          "enabled": true,
+          "events": ["chat", "join", "leave", "death"],
+          "webhook": "(set)"
+        },
+        "engine": {
+          "low_memory": false,
+          "path": "",
+          "resources": "",
+          "restart_on_crash": true
+        },
+        "panel": {"allow_public": false, "bind": "127.0.0.1:8130"},
+        "properties": {},
+        "server": {
+          "accept_older_clients": false,
+          "admin_feedback_to_ops": true,
+          "bind": "",
+          "enforce_whitelist": false,
+          "max_players": 20,
+          "max_view_distance": 0,
+          "motd": "A Minecraft Server",
+          "online_mode": true,
+          "port": 25565,
+          "simulation_distance": 10,
+          "view_distance": 10,
+          "whitelist": true
+        },
+        "transfer": {
+          "enabled": false,
+          "expect_seconds": 10,
+          "max_expect_seconds": 60,
+          "max_expected": 64,
+          "max_freeze_seconds": 30,
+          "max_hold_seconds": 60,
+          "stop_wait_seconds": 10
+        },
+        "updates": {"keep": 1},
+        "world": {
+          "difficulty": "easy",
+          "game_mode": "survival",
+          "hardcore": false,
+          "name": "world",
+          "seed": ""
+        }
+      }
+    }
+  },
+  "malformed": {
+    "status": 400,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"error": "the body must be {\"changes\": {\"section.name\": value, ...}}"}
+  },
+  "protected": {
+    "status": 403,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"error": "api.token can only be changed in server.toml"}
+  },
+  "invalid_range": {
+    "status": 400,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"error": "server.max_players is 0: use 1 to 1000"}
+  },
+  "invalid_shape": {
+    "status": 400,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"error": "world.seed: a value is one line of text, a number or true/false"}
+  },
+  "unknown": {
+    "status": 400,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"error": "server.unknown is not a setting (`horizon-server config` lists them)"}
+  },
+  "patch_stopped": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {
+      "saved": ["server.max_players", "world.difficulty"],
+      "applied": [],
+      "restart": [],
+      "running": false
+    }
+  },
+  "patch_running": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {
+      "saved": ["backups.keep", "server.port"],
+      "applied": ["backups.keep"],
+      "restart": ["server.port"],
+      "running": true
+    }
+  }
+}

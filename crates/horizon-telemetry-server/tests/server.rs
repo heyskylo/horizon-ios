@@ -5,7 +5,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use horizon_telemetry::batch::{self, Batch};
-use horizon_telemetry::payload::{Crash, Payload, Perf, Settings, Source, System, Timings};
+use horizon_telemetry::payload::{
+    Crash, Payload, Perf, Settings, SlowFrames, Source, System, Timings,
+};
 use horizon_telemetry::{Item, outbox};
 use horizon_telemetry_server::store::{self, Store};
 use horizon_telemetry_server::{App, Config, router};
@@ -196,6 +198,55 @@ async fn totals_break_down_by_hardware_class() {
     }
 }
 
+/// What froze: slow frames by release and step, summed over sessions; a step shows only once
+/// enough installs had it, and never with an install or a machine.
+#[tokio::test]
+async fn slow_frames_show_what_froze_with_enough_installs() {
+    let s = server(Config {
+        min_install_days: 2,
+        ..generous()
+    });
+    let slow = |span: &str, frames, frame_max_ms, span_max_ms| {
+        let mut item = perf("NVIDIA GeForce RTX 4070", 12);
+        if let Payload::Perf(p) = &mut item.payload {
+            p.slow_frames = vec![SlowFrames {
+                span: span.into(),
+                frames,
+                frame_max_ms,
+                span_max_ms,
+            }];
+        }
+        item
+    };
+    for (n, frame_max_ms) in [(0, 900.0), (1, 400.0)] {
+        let item = slow("renderer/r_uploads", 3, frame_max_ms, 300.0);
+        assert_eq!(
+            s.post(&install(n), vec![item]).await,
+            StatusCode::NO_CONTENT
+        );
+    }
+    let lone = slow("tick/tick_mobs", 1, 260.0, 200.0);
+    assert_eq!(
+        s.post(&install(2), vec![lone]).await,
+        StatusCode::NO_CONTENT
+    );
+    let quiet = perf("NVIDIA GeForce RTX 4070", 12);
+    assert_eq!(
+        s.post(&install(3), vec![quiet]).await,
+        StatusCode::NO_CONTENT
+    );
+    let totals = s.aggregate().await;
+    assert_eq!(
+        totals["slow_frames"],
+        serde_json::json!([{
+            "version": "v2026.10.15", "span": "renderer/r_uploads", "frames": 6, "sessions": 2,
+            "installs": 2, "frame_max_ms": 900.0, "span_max_ms": 300.0,
+        }]),
+        "one install is too few for tick_mobs: {totals}"
+    );
+    assert!(!totals.to_string().contains(&install(0)));
+}
+
 #[tokio::test]
 async fn bad_batches_are_refused() {
     let s = server(generous());
@@ -225,6 +276,7 @@ async fn an_address_is_rate_limited() {
     let s = server(Config {
         requests_per_hour: 30.0,
         trust_proxy: true,
+        client_ip_header: Some("x-forwarded-for".into()),
         ..Config::default()
     });
     for n in 0..3 {
@@ -247,13 +299,14 @@ async fn an_address_is_rate_limited() {
         }
         req.body(Body::from(body)).unwrap()
     };
-    // A client can't pick its address: the proxy adds the real one last, or sets X-Real-IP.
+    // A client can't pick its address: the proxy adds the real one last. Only the configured header
+    // is read: an X-Real-IP the client made up changes nothing.
     assert_eq!(
         s.send(from("198.51.100.7, 203.0.113.9", None)).await.0,
         StatusCode::TOO_MANY_REQUESTS
     );
     assert_eq!(
-        s.send(from("198.51.100.7", Some("203.0.113.9"))).await.0,
+        s.send(from("203.0.113.9", Some("198.51.100.42"))).await.0,
         StatusCode::TOO_MANY_REQUESTS
     );
     // Another address has its own allowance.
@@ -460,4 +513,205 @@ async fn the_launchers_uploader_reaches_it_end_to_end() {
             .newest_day(&store::install_key(&consent.install_id).unwrap()),
         None
     );
+}
+
+async fn aggregate_for(s: &Server, days: u32, from: &str) -> (StatusCode, String) {
+    s.send(
+        Request::get(format!("/v1/aggregate?days={days}"))
+            .header("x-forwarded-for", from)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn deleting_an_unknown_install_keeps_the_cached_totals() {
+    let s = server(Config {
+        min_install_days: 1,
+        ..generous()
+    });
+    assert_eq!(
+        s.post(&install(1), vec![perf("Apple M4 Pro", 12)]).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(s.aggregate().await["groups"][0]["sessions"], 1);
+    assert_eq!(
+        s.post(&install(2), vec![perf("Apple M4 Pro", 12)]).await,
+        StatusCode::NO_CONTENT
+    );
+    // An install that sent nothing: nothing deleted, the cached answer stays (no rebuild).
+    let (code, _) = s
+        .send(
+            Request::delete(format!("/v1/installs/{}", install(77)))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(code, StatusCode::NO_CONTENT);
+    assert_eq!(
+        s.aggregate().await["groups"][0]["sessions"],
+        1,
+        "still cached"
+    );
+    // A real deletion drops it.
+    s.send(
+        Request::delete(format!("/v1/installs/{}", install(1)))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        s.aggregate().await["groups"][0]["sessions"],
+        1,
+        "rebuilt: install 2 only"
+    );
+}
+
+#[tokio::test]
+async fn the_totals_are_rate_limited_per_address() {
+    let s = server(Config {
+        reads_per_hour: 30.0,
+        trust_proxy: true,
+        client_ip_header: Some("x-forwarded-for".into()),
+        ..generous()
+    });
+    for _ in 0..3 {
+        assert_eq!(aggregate_for(&s, 30, "203.0.113.5").await.0, StatusCode::OK);
+    }
+    assert_eq!(
+        aggregate_for(&s, 30, "203.0.113.5").await.0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(aggregate_for(&s, 30, "203.0.113.6").await.0, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn uncached_totals_have_a_budget_cached_ones_dont() {
+    // A burst of one build (a tenth of 10 an hour, at least one).
+    let s = server(Config {
+        aggregate_builds_per_hour: 10.0,
+        ..generous()
+    });
+    assert_eq!(aggregate_for(&s, 30, "203.0.113.5").await.0, StatusCode::OK);
+    // Another window would be another build: past the budget, 503.
+    assert_eq!(
+        aggregate_for(&s, 31, "203.0.113.5").await.0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    // The cached one is still served.
+    assert_eq!(aggregate_for(&s, 30, "203.0.113.5").await.0, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn the_windows_answered_can_be_listed() {
+    let s = server(Config {
+        aggregate_days: Some(vec![7, 30]),
+        ..generous()
+    });
+    assert_eq!(aggregate_for(&s, 30, "203.0.113.5").await.0, StatusCode::OK);
+    let (code, body) = aggregate_for(&s, 31, "203.0.113.5").await;
+    assert_eq!(code, StatusCode::BAD_REQUEST);
+    assert!(body.contains("7, 30"), "{body}");
+    // Unset: any value from 1 to 366, as before.
+    let s = server(generous());
+    assert_eq!(aggregate_for(&s, 31, "203.0.113.5").await.0, StatusCode::OK);
+    assert_eq!(
+        horizon_telemetry_server::parse_days(" 7, 30,90 ,366"),
+        Some(vec![7, 30, 90, 366])
+    );
+    for bad in ["", ",", "0", "367", "30,x"] {
+        assert_eq!(horizon_telemetry_server::parse_days(bad), None, "{bad:?}");
+    }
+}
+
+async fn ask(s: &Server, headers: &[(&str, &str)]) -> StatusCode {
+    let mut req = Request::get("/v1/aggregate?days=30");
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    s.send(req.body(Body::empty()).unwrap()).await.0
+}
+
+#[tokio::test]
+async fn the_client_address_comes_from_the_configured_header_only() {
+    // Railway: X-Real-IP, which its edge overwrites. Three reads each (a burst of 3 at 30 an hour).
+    let s = server(Config {
+        reads_per_hour: 30.0,
+        trust_proxy: true,
+        client_ip_header: Some("x-real-ip".into()),
+        ..generous()
+    });
+    for _ in 0..3 {
+        assert_eq!(
+            ask(&s, &[("x-real-ip", "203.0.113.1")]).await,
+            StatusCode::OK
+        );
+    }
+    assert_eq!(
+        ask(&s, &[("x-real-ip", "203.0.113.1")]).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // A different X-Forwarded-For doesn't make it someone else.
+    assert_eq!(
+        ask(
+            &s,
+            &[
+                ("x-real-ip", "203.0.113.1"),
+                ("x-forwarded-for", "198.51.100.1")
+            ]
+        )
+        .await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        ask(&s, &[("x-real-ip", "203.0.113.2")]).await,
+        StatusCode::OK
+    );
+    // Trusting a proxy with no header named: the TCP peer (here none, so one shared bucket), as
+    // the start-up warning says.
+    let s = server(Config {
+        reads_per_hour: 30.0,
+        trust_proxy: true,
+        ..generous()
+    });
+    for ip in ["203.0.113.1", "203.0.113.2", "203.0.113.3"] {
+        assert_eq!(ask(&s, &[("x-real-ip", ip)]).await, StatusCode::OK);
+    }
+    assert_eq!(
+        ask(&s, &[("x-real-ip", "203.0.113.4")]).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
+
+#[test]
+fn client_address_settings_refuse_or_warn_when_they_cannot_work() {
+    let config = |trust_proxy, header: Option<&str>| Config {
+        trust_proxy,
+        client_ip_header: header.map(str::to_owned),
+        ..Config::default()
+    };
+    // TRUST_PROXY=1 without the header: refused, never started with one shared bucket.
+    let refusal = config(true, None).client_ip_refusal().unwrap();
+    assert!(
+        refusal.contains("HORIZON_TELEMETRY_CLIENT_IP_HEADER") && refusal.contains("Not starting")
+    );
+    assert_eq!(config(true, Some("x-real-ip")).client_ip_refusal(), None);
+    assert_eq!(config(false, None).client_ip_refusal(), None);
+    assert_eq!(config(false, Some("x-real-ip")).client_ip_refusal(), None);
+    assert_eq!(config(true, None).client_ip_warning(), None);
+    assert!(
+        config(false, Some("x-real-ip"))
+            .client_ip_warning()
+            .unwrap()
+            .contains("ignored")
+    );
+    assert_eq!(config(true, Some("x-real-ip")).client_ip_warning(), None);
+    assert_eq!(config(false, None).client_ip_warning(), None);
+    assert_eq!(
+        horizon_telemetry_server::header_name(" X-Real-IP "),
+        Some("x-real-ip".into())
+    );
+    assert_eq!(horizon_telemetry_server::header_name(""), None);
+    assert_eq!(horizon_telemetry_server::header_name("bad header"), None);
 }

@@ -1,0 +1,16 @@
+{
+  "hooks": [
+    {
+      "name": "tab_complete_v2",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_tab_complete_v2",
+      "neoforge": "none (Bukkit's TabCompleter.onTabComplete; Brigadier's SuggestionProvider for ask_server nodes)",
+      "side": "server",
+      "mod_api": {
+        "contract": "collect",
+        "out": "suggestions"
+      }
+    }
+  ],
+  "rust_summary": "`NativeCommand` argument kinds whose completions the client asks the server for (`word?`, `text?`, `player_name`), and a guest's completion request with the command split into label and arguments (`native_tab_complete_v2`).",
+  "doc_summary": "`NativeCommand` argument kinds `word?`, `text?` and `player_name` make the player's client ask the server for completions; `native_tab_complete_v2(player, name, label, arguments, range, suggestions)` hears the request with the command split into its label and arguments, `range` being the word typed in a mod's command. Bundles need \"hooks\": @API:tab_complete_v2@."
+}

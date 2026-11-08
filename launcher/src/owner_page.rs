@@ -35,7 +35,7 @@ impl Launcher {
         self.owner_screen_open = false;
         if !self.settings.owner_notice_seen {
             self.settings.owner_notice_seen = true;
-            self.settings.save();
+            self.save_settings();
         }
     }
 
@@ -53,6 +53,9 @@ impl Launcher {
             Some(SignInState::Done(Err(e))) => Shown::Error(e),
             Some(SignInState::Done(Ok(_))) | None => Shown::Idle,
         };
+        if crate::glass_ui::on() {
+            return self.glass_owner_screen(state, configured, cx);
+        }
         let line = |s: &str, color: u32| {
             shell::text(theme::night::UI, shell::c(color))
                 .relative()
@@ -98,6 +101,8 @@ impl Launcher {
         body = match state {
             Shown::Code(uri, user_code) => {
                 let copy = user_code.to_string();
+                let (private_uri, link_uri, other_uri) =
+                    (uri.to_string(), uri.to_string(), uri.to_string());
                 body.child(
                     raised()
                         .flex()
@@ -139,6 +144,49 @@ impl Launcher {
                                         gpui::ClipboardItem::new_string(copy.clone()),
                                     )
                                 }),
+                        ),
+                )
+                .child(
+                    div()
+                        .mt(px(8.))
+                        .flex()
+                        .flex_col()
+                        .items_start()
+                        .gap(px(4.))
+                        .when(!microsoft::has_private_window(), |col| {
+                            col.child(shell::text(theme::night::CAPTION, shell::c(n.muted)).child(
+                                tr("Open this link in a private window to pick another account."),
+                            ))
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .gap(px(8.))
+                                .child(if microsoft::has_private_window() {
+                                    shell::action("owner-private", shell::Action::Quiet, &t)
+                                        .child(shell::label(tr("Open in private window")))
+                                        .on_click(move |_, _, cx| {
+                                            microsoft::open_private(&private_uri, cx)
+                                        })
+                                } else {
+                                    shell::action("owner-copy-link", shell::Action::Quiet, &t)
+                                        .child(shell::label(tr("Copy link")))
+                                        .on_click(move |_, _, cx| {
+                                            copy_to_clipboard(
+                                                cx,
+                                                gpui::ClipboardItem::new_string(link_uri.clone()),
+                                            )
+                                        })
+                                })
+                                .child(
+                                    shell::action("owner-other", shell::Action::Quiet, &t)
+                                        .child(shell::label(tr(
+                                            "Use a different Microsoft account",
+                                        )))
+                                        .on_click(move |_, _, cx| {
+                                            microsoft::use_different_account(&other_uri, cx)
+                                        }),
+                                ),
                         ),
                 )
             }
@@ -224,6 +272,256 @@ impl Launcher {
             .bg(plate::alpha(n.page, 0.8))
             .on_scroll(|_, _, cx| cx.stop_propagation())
             .occlude()
+            .child(card)
+    }
+
+    /// The screen in the glass look: a dialog plate over the dimmed, blurred launcher (the
+    /// mockup's modals), its Sign in the Account card's white Microsoft button, its code in the
+    /// card's inner panel.
+    fn glass_owner_screen(
+        &self,
+        state: Shown,
+        configured: bool,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        use crate::glass_ui::{self as ui, white};
+        use horizon_theme::glass::{ink, radius};
+        let t = self.theme;
+        let panel = || {
+            div()
+                .mt(px(20.))
+                .p(px(20.))
+                .rounded(px(radius::POPOVER))
+                .bg(white(0.045))
+        };
+        let mut card = ui::dialog_plate(radius::MODAL)
+            .id("owner-card")
+            .occlude()
+            .flex()
+            .flex_col()
+            // A set width: text measured at it wraps where it is drawn.
+            .w(px(520.))
+            .max_w_full()
+            .p(px(32.))
+            .child(ui::text(13., FontWeight::MEDIUM, ink::QUIET).child(tr("Microsoft account")))
+            .child(
+                div()
+                    .mt(px(8.))
+                    .font_family(horizon_theme::glass::DISPLAY_FONT)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_size(px(28.))
+                    .line_height(px(35.))
+                    .text_color(white(ink::FULL))
+                    .child(tr("Sign in to play")),
+            )
+            .child(
+                div()
+                    .mt(px(12.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(ui::text(14., FontWeight::NORMAL, ink::BODY).child(tr(
+                        "Horizon needs a Microsoft account that owns Minecraft: Java Edition, like other launchers.",
+                    )))
+                    .child(ui::text(14., FontWeight::NORMAL, ink::BODY).child(tr(
+                        "No Minecraft install needed: Horizon downloads it from Mojang for your account.",
+                    )))
+                    .child(ui::text(14., FontWeight::NORMAL, ink::QUIET).child(tr(
+                        "Your worlds, offline names and settings stay where they are.",
+                    ))),
+            );
+        card = match state {
+            Shown::Code(uri, user_code) => {
+                let copy = user_code.to_string();
+                let (private_uri, link_uri, other_uri) =
+                    (uri.to_string(), uri.to_string(), uri.to_string());
+                card.child(
+                    panel()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(16.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.))
+                                .child(ui::text(13., FontWeight::NORMAL, ink::NOTE).child(trf(
+                                    "Open {link} in your browser and enter this code:",
+                                    &[("link", short_link(uri))],
+                                )))
+                                .child(
+                                    div()
+                                        .font_family(theme::MONO)
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_size(px(30.))
+                                        .line_height(px(38.))
+                                        .text_color(white(ink::FULL))
+                                        .child(user_code.to_string()),
+                                ),
+                        )
+                        .child(ui::quiet("owner-copy", tr("Copy code"), 36., &t).on_click(
+                            move |_, _, cx| {
+                                copy_to_clipboard(cx, gpui::ClipboardItem::new_string(copy.clone()))
+                            },
+                        )),
+                )
+                .child(
+                    div()
+                        .mt(px(8.))
+                        .flex()
+                        .flex_col()
+                        .items_start()
+                        .gap(px(4.))
+                        .when(!microsoft::has_private_window(), |col| {
+                            col.child(ui::text(13., FontWeight::NORMAL, ink::QUIET).child(tr(
+                                "Open this link in a private window to pick another account.",
+                            )))
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .gap(px(8.))
+                                .child(if microsoft::has_private_window() {
+                                    ui::quiet(
+                                        "owner-private",
+                                        tr("Open in private window"),
+                                        32.,
+                                        &t,
+                                    )
+                                    .on_click(
+                                        move |_, _, cx| microsoft::open_private(&private_uri, cx),
+                                    )
+                                } else {
+                                    ui::quiet("owner-copy-link", tr("Copy link"), 32., &t).on_click(
+                                        move |_, _, cx| {
+                                            copy_to_clipboard(
+                                                cx,
+                                                gpui::ClipboardItem::new_string(link_uri.clone()),
+                                            )
+                                        },
+                                    )
+                                })
+                                .child(
+                                    ui::quiet(
+                                        "owner-other",
+                                        tr("Use a different Microsoft account"),
+                                        32.,
+                                        &t,
+                                    )
+                                    .on_click(
+                                        move |_, _, cx| {
+                                            microsoft::use_different_account(&other_uri, cx)
+                                        },
+                                    ),
+                                ),
+                        ),
+                )
+            }
+            Shown::Starting(what) => card
+                .child(panel().child(ui::text(14., FontWeight::NORMAL, ink::BODY).child(tr(what)))),
+            Shown::Error(e) => card.child(
+                panel().child(
+                    ui::text(14., FontWeight::NORMAL, ink::FULL)
+                        .text_color(ui::color(horizon_theme::glass::DANGER))
+                        .child(e.to_string()),
+                ),
+            ),
+            Shown::Idle => card,
+        };
+        let main: Option<AnyElement> = match state {
+            Shown::Code(uri, _) => {
+                let uri = uri.to_string();
+                Some(
+                    ui::button(
+                        "owner-open".into(),
+                        tr("Open link").into(),
+                        Kind::Primary,
+                        &t,
+                    )
+                    .h(px(44.))
+                    .px(px(24.))
+                    .on_click(move |_, _, cx| cx.open_url(&uri))
+                    .into_any_element(),
+                )
+            }
+            Shown::Starting(_) => None,
+            Shown::Error(_) if !configured => None,
+            _ => Some(
+                keyboard(
+                    div()
+                        .id("owner-sign-in")
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(10.))
+                        .h(px(44.))
+                        .px(px(20.))
+                        .rounded(px(radius::ROW))
+                        .bg(gpui::white())
+                        .cursor_pointer()
+                        .hover(|s| s.opacity(0.9))
+                        .font_family(horizon_theme::glass::FONT)
+                        .text_size(px(15.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(gpui::rgb(horizon_theme::glass::ON_LIGHT))
+                        .child(microsoft::logo(18.))
+                        .child(tr("Sign in with Microsoft")),
+                    &t,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.sign_in_to_play();
+                    cx.notify();
+                }))
+                .into_any_element(),
+            ),
+        };
+        let later = ui::button("owner-later".into(), tr("Not now").into(), Kind::Ghost, &t)
+            .h(px(44.))
+            .px(px(20.))
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.close_owner_screen();
+                cx.notify();
+            }));
+        card = card.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .mt(px(24.))
+                .children(main)
+                .child(later),
+        );
+        if matches!(state, Shown::Code(..)) {
+            card = card.child(
+                ui::text(13., FontWeight::NORMAL, ink::QUIET)
+                    .mt(px(12.))
+                    .child(tr("Waiting for Microsoft… the window goes on by itself.")),
+            );
+        }
+        div()
+            .id("owner-gate")
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .p(px(24.))
+            .on_scroll(|_, _, cx| cx.stop_propagation())
+            .occlude()
+            .child(ui::scrim_backdrop())
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .bg(ui::scrim()),
+            )
             .child(card)
     }
 }

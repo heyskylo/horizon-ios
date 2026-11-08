@@ -15,10 +15,11 @@ const VERSION: &str = match option_env!("HORIZON_VERSION") {
 const HELP: &str = "\
 horizon-prepare: prepare Horizon's resources from your own Minecraft Java Edition
 
-Usage: horizon-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [--root PATH] [--output PATH]
+Usage: horizon-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [--prism-dir PATH] [--root PATH] [--output PATH]
                        [--version-json PATH] [--client-jar PATH] [--libraries-dir PATH] [--assets-dir PATH]
                        [--java-home PATH] [--complete] [--progress json]
        horizon-prepare --check [--root PATH] [--output PATH]
+       horizon-prepare --launch-api [--root PATH]
        horizon-prepare compile-exporters [--root PATH]
        horizon-prepare sounds [--minecraft-dir PATH] [--version-json PATH] [--assets-dir PATH] [--root PATH] [--output PATH]
        horizon-prepare panorama [--minecraft-dir PATH] [--version-json PATH] [--assets-dir PATH] [--root PATH] [--output PATH]
@@ -31,6 +32,9 @@ Usage: horizon-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [-
                         (default: HORIZON_SERVER_JAR, or the copy imported before)
   --minecraft-dir PATH  The official launcher's game directory with your installed copy
                         (default: HORIZON_MINECRAFT_DIR, or the launcher's own)
+  --prism-dir PATH      A Prism Launcher or MultiMC root, or one of its instances, to read as is:
+                        its rewritten version JSON, Maven libraries, assets and components. No
+                        server jar is downloaded: its client jar stands in for the server side
   --version-json PATH   The pinned version's JSON, where --minecraft-dir has none
   --client-jar PATH     The pinned client jar, where --minecraft-dir has none
   --libraries-dir PATH  The folder of the client's libraries (Maven layout)
@@ -52,6 +56,8 @@ Usage: horizon-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [-
                         for resources the game plays with nothing missing
   --progress json       One JSON object a line on stdout: {\"message\": ...} for each log line,
                         {\"fraction\": F} as the work advances (0 to 1), {\"error\": ...} on failure
+  --launch-api          Print what this preparer supports as JSON (the Launch API's version, the
+                        pinned Minecraft and Java, the resources' layout, the options) and exit 0
 
 Needs Minecraft played once from the official launcher, and Java of the version
 research-lock.json pins. Releases use a runtime; development or changed exporters need a JDK.
@@ -100,6 +106,7 @@ fn main() -> ExitCode {
     let mut check = false;
     let mut complete = false;
     let mut json = false;
+    let mut launch_api = false;
     let mut args = std::env::args_os().skip(1).peekable();
     let assets = args.next_if(|a| {
         matches!(
@@ -134,6 +141,7 @@ fn main() -> ExitCode {
             }
             "--server-jar" => value("--server-jar").map(|v| options.server_jar = Some(v)),
             "--minecraft-dir" => value("--minecraft-dir").map(|v| options.minecraft_dir = Some(v)),
+            "--prism-dir" => value("--prism-dir").map(|v| options.inputs.prism_dir = Some(v)),
             "--version-json" => {
                 value("--version-json").map(|v| options.inputs.version_json = Some(v))
             }
@@ -161,6 +169,10 @@ fn main() -> ExitCode {
                 Ok(v) => Err(format!("--progress takes json, not {}", v.display())),
                 Err(e) => Err(e),
             },
+            "--launch-api" if inline.is_none() => {
+                launch_api = true;
+                Ok(())
+            }
             "-h" | "--help" => {
                 print!("{HELP}");
                 return ExitCode::SUCCESS;
@@ -183,6 +195,18 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     };
     options.root = root;
+    if launch_api {
+        return match horizon_prepare::artifacts::Lock::read(&options.root) {
+            Ok(lock) => {
+                println!("{}", horizon_prepare::launch_api::reply(VERSION, &lock));
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if check {
         if options.import || options.server_jar.is_some() {
             eprintln!("horizon-prepare: error: --check prepares nothing; leave out --prepare and --server-jar");
@@ -328,6 +352,17 @@ mod tests {
         assert_eq!(fraction_line(1.0), r#"{"fraction": 1.000}"#);
         for line in [json_line("message", "tab\there, é"), fraction_line(0.9)] {
             assert!(horizon_prepare::pyjson::loads(&line).is_ok(), "{line}");
+        }
+    }
+
+    /// Every option `--launch-api` promises is one `--help` documents.
+    #[test]
+    fn launch_api_options_are_in_the_help() {
+        for (name, _) in horizon_prepare::launch_api::OPTIONS {
+            assert!(
+                HELP.contains(&format!("  {name} ")),
+                "{name} is not in --help"
+            );
         }
     }
 }

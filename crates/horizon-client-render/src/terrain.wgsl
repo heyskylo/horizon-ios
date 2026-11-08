@@ -32,11 +32,18 @@ struct Globals {
     // triangle's volume with the camera; then each rim vertex's normal against the apex.
     sunrise_fan: array<vec4<f32>, 32>,
     // x: Options.textureFiltering (0 none, 1 RGSS, 2 anisotropic), y: the sprite arrays' width
-    // in texels (vanilla's TextureSize).
+    // in texels (vanilla's TextureSize), z: the mip level at which a sprite is one texel when
+    // the views reach it, else 0 (`rotated_grid`).
     filtering: vec4<f32>,
     // HDR output's tier windows (hdr.rs `Hdr::windows`): x..w low to very bright,
     // [0] where the lift starts, [1] where it is full.
     hdr_windows: array<vec4<f32>, 2>,
+    // HDR lighting: x how strongly the sky lights the world now (`Sky::sky_light_factor`),
+    // y what the sky and fog get: the same, but none under water; z 1 with HDR output on.
+    // w: apply the no-pack HDR gain; HDR_WRITE_LIGHT independently keeps float alpha as coverage.
+    hdr_light: vec4<f32>,
+    hdr_settings: vec4<f32>,
+    hdr_shares: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var sprites: texture_2d_array<f32>;
@@ -59,6 +66,11 @@ struct Globals {
 // which then samples exactly as before.
 override SPRITE_ARRAYS: u32 = 1u;
 override SPRITE_SPLIT: u32 = 2048u;
+// Whether the solid shaders carry HDR output's lighting (a pipeline constant): the
+// renderer builds its solid terrain without it for the frames HDR is off, where
+// `hdr_light.z` is 0, since even a branch never taken costs Apple GPUs ~15% of a
+// solid pixel's time (gfx.rs's `SolidPipeline`).
+override HDR_LIGHTING: bool = true;
 // A sprite sampled with the given gradients, from whichever array holds its layer.
 fn sprite_grad(uv: vec2<f32>, layer: u32, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> {
     let l = i32(layer % SPRITE_SPLIT);
@@ -121,12 +133,34 @@ fn sample_rgss(uv: vec2<f32>, layer: u32, pixel: vec2<f32>, du: vec2<f32>, dv: v
     let max_texel = max(texel_screen.x, texel_screen.y);
     let min_pixel = min(pixel.x, pixel.y);
     let blend = smoothstep(min_pixel, min_pixel * 2.0, max_texel);
+    // Only the side of the mix that has weight is sampled: near texels (blend 0) take
+    // sample_nearest's one tap alone, far ones (blend 1) the rotated grid alone.
+    if blend <= 0.0 {
+        return sample_nearest(uv, layer, pixel, du, dv, texel_screen, tiled);
+    }
+    let rgss = rotated_grid(uv, layer, pixel, du, dv);
+    if blend >= 1.0 {
+        return rgss;
+    }
+    return mix(sample_nearest(uv, layer, pixel, du, dv, texel_screen, tiled), rgss, blend);
+}
+fn rotated_grid(uv: vec2<f32>, layer: u32, pixel: vec2<f32>, du: vec2<f32>,
+                dv: vec2<f32>) -> vec4<f32> {
+    let min_pixel = min(pixel.x, pixel.y);
     let du_len = length(du);
     let dv_len = length(dv);
     let effective = sqrt(min(du_len, dv_len) * max(du_len, dv_len));
     let exact = max(0.0, log2(effective / min_pixel));
     let low = floor(exact);
     let mip_blend = fract(exact);
+    // From this level on the sprite is a single texel (0: the views stop before one is), and
+    // the sampler clamps any level past it to it: there every tap reads the same value, so
+    // one tap gives the four's mean. Distant tiles sit there.
+    let single = globals.filtering.z;
+    if single > 0.0 && low >= single {
+        return sprite_level(uv, layer, low);
+    }
+    let high_single = single > 0.0 && low + 1.0 >= single;
     var offsets = array<vec2<f32>, 4>(
         vec2(0.125, 0.375), vec2(-0.125, -0.375), vec2(0.375, -0.125), vec2(-0.375, 0.125));
     var sum_low = vec4(0.0);
@@ -134,10 +168,14 @@ fn sample_rgss(uv: vec2<f32>, layer: u32, pixel: vec2<f32>, du: vec2<f32>, dv: v
     for (var i = 0; i < 4; i++) {
         let p = uv + offsets[i] * pixel;
         sum_low += sprite_level(p, layer, low);
-        sum_high += sprite_level(p, layer, low + 1.0);
+        if !high_single {
+            sum_high += sprite_level(p, layer, low + 1.0);
+        }
     }
-    let rgss = mix(sum_low * 0.25, sum_high * 0.25, mip_blend);
-    return mix(sample_nearest(uv, layer, pixel, du, dv, texel_screen, tiled), rgss, blend);
+    if high_single {
+        sum_high = 4.0 * sprite_level(uv, layer, low + 1.0);
+    }
+    return mix(sum_low * 0.25, sum_high * 0.25, mip_blend);
 }
 // Distant terrain tiles (lod/mesh.rs) count their UVs in blocks past 1: each block takes the
 // sprite again, as separate faces would under the clamped sampler. Sprite UVs in [0, 1] stay.
@@ -145,10 +183,13 @@ fn tile_uv(uv: vec2<f32>) -> vec2<f32> {
     return uv - max(ceil(uv) - 1.0, vec2(0.0));
 }
 fn sprite(tiled: vec2<f32>, layer: u32) -> vec4<f32> {
-    // terrain.fsh's two sampling paths: sampleRGSS for RGSS, sampleNearest otherwise.
     // The gradients come from the unwrapped UV, so the mip level holds across block seams.
-    let du = dpdx(tiled);
-    let dv = dpdy(tiled);
+    return sprite_at(tiled, layer, dpdx(tiled), dpdy(tiled));
+}
+// `sprite` with the unwrapped UV's screen gradients given: the visibility buffer's resolve
+// (visbuffer.wgsl) works them out from the quad, as its neighbours may be other quads.
+fn sprite_at(tiled: vec2<f32>, layer: u32, du: vec2<f32>, dv: vec2<f32>) -> vec4<f32> {
+    // terrain.fsh's two sampling paths: sampleRGSS for RGSS, sampleNearest otherwise.
     let uv = tile_uv(tiled);
     // The wrap shifts a face's UVs by whole blocks, so half of one tells a tile's face from a
     // block's (whose UVs stay inside its sprite).
@@ -161,24 +202,83 @@ fn sprite(tiled: vec2<f32>, layer: u32) -> vec4<f32> {
     return sample_nearest(uv, layer, pixel, du, dv, texel_screen, tiled_face);
 }
 
+// The terrain stages' values, as the code reads them. What crosses from the vertex stage to the
+// fragment stage is `TerrainWire`: the same values in fewer interpolant locations.
 struct TerrainOut {
-    @builtin(position) clip: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-    @location(1) @interpolate(flat) layer: u32,
-    @location(2) color: vec4<f32>,
-    @location(3) spherical: f32,
-    @location(4) cylindrical: f32,
+    clip: vec4<f32>,
+    uv: vec2<f32>,
+    layer: u32,
+    color: vec4<f32>,
+    spherical: f32,
+    cylindrical: f32,
     // How the face shines in HDR output (mesher.rs's `EMISSION_BITS`): 0 not
     // at all, 1 to 4 the tier with its bright parts, 5 to 8 the tier all over.
-    @location(5) @interpolate(flat) emission: u32,
-    @location(6) @interpolate(flat) fade: u32,
+    emission: u32,
+    // HDR lighting: block and sky light, as levels 0 to 15.
+    scene: vec2<f32>,
+    fade: u32,
     // A distant tile's tile-relative position, for its fade (`faded`).
-    @location(7) local: vec3<f32>,
+    local: vec3<f32>,
     // terrain.vsh's chunkVisibility: the section's fade-in, from 16 blocks out.
-    @location(8) visibility: f32,
+    visibility: f32,
     // The camera-relative height, for the water mirror's cut at the plane.
-    @location(9) height: f32,
-    @location(10) @interpolate(flat) emissive_layer: u32,
+    height: f32,
+    emissive_layer: u32,
+    // [world warp varyings]
+    // (a native mod's world warp adds its own here, and in `TerrainWire`, `to_wire` and
+    // `from_wire`: gfx/world_warp.rs)
+    // [end world warp varyings]
+}
+// `TerrainOut` in 5 interpolant locations instead of 12. A GPU's vertex stage pays for each
+// location it exports (AMD's parameter cache gives one a whole slot, however few of its four
+// components are used): on an RX 580 the 12 cost 3.2 ns per quad and these 5 cost 1.6. Every
+// component is still interpolated on its own (and the integers stay flat), so each pixel gets
+// the very values the separate locations gave it.
+struct TerrainWire {
+    @builtin(position) clip: vec4<f32>,
+    // The colour.
+    @location(0) a: vec4<f32>,
+    // `local` and `visibility`.
+    @location(1) b: vec4<f32>,
+    // `uv` and `scene`.
+    @location(2) c: vec4<f32>,
+    // `spherical`, `cylindrical` and `height`.
+    @location(3) d: vec4<f32>,
+    // `layer`, `emission`, `fade` and `emissive_layer`.
+    @location(4) @interpolate(flat) e: vec4<u32>,
+    // [world warp wire]
+    // [end world warp wire]
+}
+fn to_wire(o: TerrainOut) -> TerrainWire {
+    var w: TerrainWire;
+    w.clip = o.clip;
+    w.a = o.color;
+    w.b = vec4(o.local, o.visibility);
+    w.c = vec4(o.uv, o.scene);
+    w.d = vec4(o.spherical, o.cylindrical, o.height, 0.0);
+    w.e = vec4(o.layer, o.emission, o.fade, o.emissive_layer);
+    // [world warp to wire]
+    // [end world warp to wire]
+    return w;
+}
+fn from_wire(w: TerrainWire) -> TerrainOut {
+    var o: TerrainOut;
+    o.clip = w.clip;
+    o.color = w.a;
+    o.local = w.b.xyz;
+    o.visibility = w.b.w;
+    o.uv = w.c.xy;
+    o.scene = w.c.zw;
+    o.spherical = w.d.x;
+    o.cylindrical = w.d.y;
+    o.height = w.d.z;
+    o.layer = w.e.x;
+    o.emission = w.e.y;
+    o.fade = w.e.z;
+    o.emissive_layer = w.e.w;
+    // [world warp from wire]
+    // [end world warp from wire]
+    return o;
 }
 // Whether a fading tile or section leaves this pixel out (gfx/lod.rs's
 // `fade_code`, `fade_out_code`). It fades in, or out, chunk by chunk: each
@@ -293,9 +393,9 @@ fn fade_code(w: f32) -> u32 {
 @vertex fn vs_terrain(
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>,
-    @location(5) origin: vec4<f32>) -> TerrainOut {
-    return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
-        origin.w);
+    @location(5) origin: vec4<f32>) -> TerrainWire {
+    return to_wire(terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
+        origin.w));
 }
 // Flat section draws (gfx/flat.rs): one draw per arena page over the frame's
 // index list. A section's vertices fill whole 256-vertex blocks of its page:
@@ -306,17 +406,19 @@ fn fade_code(w: f32) -> u32 {
     @builtin(vertex_index) vertex: u32,
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
-) -> TerrainOut {
+) -> TerrainWire {
     let origin = slot_origins[block_slots[vertex >> 8u]];
-    return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
-        origin.w);
+    return to_wire(terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
+        origin.w));
 }
 // Solid terrain draws in two passes, each over its own part of every mesh's quads
 // (`mesher::Part`): first the quads with no cutout that are not fading, through
 // `fs_opaque`, which never discards, so a tiled GPU (Apple's) keeps hiding the pixels
 // behind them; then the rest through `fs_solid`. One discard anywhere in a pipeline's shader turned that hiding off for
-// all the terrain it drew. A quad the pass leaves out is decided before any of the
-// vertex's work and lies outside the clip volume: it makes no pixel.
+// all the terrain it drew. The draw lists give each pass only its own part; a mesh that
+// was not sorted (`Sides::unsorted`) gives both passes all of its quads, so each pass
+// still leaves out the other's: decided before any of the vertex's work, outside the
+// clip volume, it makes no pixel.
 fn opaque_quad(layer: u32, w: f32) -> bool {
     return (layer & 0x8000u) != 0u && fade_code(w) == 0u;
 }
@@ -328,42 +430,252 @@ fn left_out() -> TerrainOut {
 @vertex fn vs_terrain_opaque(
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>,
-    @location(5) origin: vec4<f32>) -> TerrainOut {
-    if !opaque_quad(layer, origin.w) { return left_out(); }
-    return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
-        origin.w);
+    @location(5) origin: vec4<f32>) -> TerrainWire {
+    if !opaque_quad(layer, origin.w) { return to_wire(left_out()); }
+    return to_wire(terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
+        origin.w));
 }
 @vertex fn vs_terrain_cutout(
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>,
-    @location(5) origin: vec4<f32>) -> TerrainOut {
-    if opaque_quad(layer, origin.w) { return left_out(); }
-    return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
-        origin.w);
+    @location(5) origin: vec4<f32>) -> TerrainWire {
+    if opaque_quad(layer, origin.w) { return to_wire(left_out()); }
+    return to_wire(terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
+        origin.w));
 }
 @vertex fn vs_terrain_flat_opaque(
     @builtin(vertex_index) vertex: u32,
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
-) -> TerrainOut {
+) -> TerrainWire {
     let origin = slot_origins[block_slots[vertex >> 8u]];
-    if !opaque_quad(layer, origin.w) { return left_out(); }
-    return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
-        origin.w);
+    if !opaque_quad(layer, origin.w) { return to_wire(left_out()); }
+    return to_wire(terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
+        origin.w));
 }
 @vertex fn vs_terrain_flat_cutout(
     @builtin(vertex_index) vertex: u32,
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
-) -> TerrainOut {
+) -> TerrainWire {
     let origin = slot_origins[block_slots[vertex >> 8u]];
-    if opaque_quad(layer, origin.w) { return left_out(); }
-    return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
-        origin.w);
+    if opaque_quad(layer, origin.w) { return to_wire(left_out()); }
+    return to_wire(terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz,
+        origin.w));
+}
+// Solid section draws that read their vertices from the arena page (gfx.rs's `pulled`
+// pipelines; `mesher/packed.rs`): a draw's vertex indices below PACKED_BASE name vertices
+// (`TerrainVertex`, six words, as `TERRAIN_ATTRIBUTES` reads them), from PACKED_BASE on a
+// corner of the quad whose record is at that slot (`PACKED_BASE + 4 * slot + corner`).
+// Either way they come out as the six words of the vertex, so the work after is the same.
+// Binding 19: visbuffer.wgsl, in the same module, takes 2 to 18 of its own group 1.
+@group(1) @binding(19) var<storage, read> arena_page: array<vec2<u32>>;
+const PACKED_BASE: u32 = 0x10000000u;
+// Far tiles' own compact layout (`lod/packed.rs`), read apart from a section's by the base
+// its draws use: from FAR_BASE on, a corner of the quad whose far record is at that slot.
+const FAR_BASE: u32 = 0x20000000u;
+// `TerrainVertex::tiled`: a far tile's UVs are in blocks from the face's corner, this many
+// fixed-point steps each (`mesher::TILED_UV_STEPS`).
+const TILED_UV_STEPS: f32 = 32.0;
+// A vertex's words: position bits, then UV, layer with light, colour.
+struct ArenaCorner {
+    p: vec3<u32>,
+    r: vec3<u32>,
+}
+fn arena_vertex(v: u32) -> ArenaCorner {
+    let a = arena_page[v * 3u];
+    let b = arena_page[v * 3u + 1u];
+    let c = arena_page[v * 3u + 2u];
+    return ArenaCorner(vec3(a.x, a.y, b.x), vec3(b.y, c.x, c.y));
+}
+// The offset a block corner adds on one component: `side` on the face's axis (rel 0), `du`
+// on the next axis (rel 1), `dw` on the one after (rel 2).
+fn corner_offset(rel: u32, side: u32, du: u32, dw: u32) -> u32 {
+    return select(select(dw, du, rel == 1u), side, rel == 0u);
+}
+// `packed::packed_vertex`: corner `corner` of the record whose words are lo (0 to 2) and
+// hi (3 to 5).
+fn packed_corner(lo: vec3<u32>, hi: vec3<u32>, corner: u32) -> ArenaCorner {
+    let orient = (hi.z >> 12u) & 0x3ffffu;
+    let block = vec3(orient & 15u, (orient >> 4u) & 15u, (orient >> 8u) & 15u);
+    let axis = (orient >> 12u) & 3u;
+    let side = (orient >> 14u) & 1u;
+    let start = (orient >> 15u) & 3u;
+    let dir = (orient >> 17u) & 1u;
+    let step = (start + select(corner, 4u - corner, dir == 1u)) & 3u;
+    let du = select(0u, 1u, step == 1u || step == 2u);
+    let dw = select(0u, 1u, step >= 2u);
+    // No dynamic component stores: FXC (DirectX 12) rejects them (X3500). A component's offset
+    // from the axis (0: the axis, 1: the next, 2: the one after) picks what it gets. Scalar
+    // selects only: a vector select becomes GLSL's mix(uvec3, uvec3, bvec3), which old AMD
+    // OpenGL drivers (Radeon HD 7400M, driver 15.301) resolve to the float overload and reject.
+    let offset = vec3(
+        corner_offset((3u - axis) % 3u, side, du, dw),
+        corner_offset((4u - axis) % 3u, side, du, dw),
+        corner_offset((5u - axis) % 3u, side, du, dw),
+    );
+    let pos = block + offset;
+    let sel = lo.z >> 24u;
+    let us = (sel >> (2u * corner)) & 1u;
+    let vs = (sel >> (2u * corner + 1u)) & 1u;
+    let u = (lo.z >> (6u * us)) & 63u;
+    let v = (lo.z >> (12u + 6u * vs)) & 63u;
+    var light = hi.z;
+    if corner == 0u {
+        light = hi.x >> 16u;
+    } else if corner == 1u {
+        light = hi.y;
+    } else if corner == 2u {
+        light = hi.y >> 12u;
+    }
+    light &= 0xfffu;
+    let packed_light = ((light & 63u) << 2u) | (((light >> 6u) & 63u) << 10u);
+    let g = (lo.y >> (8u * corner)) & 255u;
+    let t = lo.x;
+    let color = (g * ((t >> 16u) & 255u) / 255u) | ((g * ((t >> 8u) & 255u) / 255u) << 8u)
+        | ((g * (t & 255u) / 255u) << 16u) | (t & 0xff000000u);
+    return ArenaCorner(bitcast<vec3<u32>>(vec3<f32>(pos)),
+        vec3((u << 10u) | (v << 26u), (hi.x & 0xffffu) | (packed_light << 16u), color));
+}
+// `lod::packed::Face::vertices`: corner `corner` of the far record whose words are lo (0 to
+// 2) and hi (3 to 5). A far quad is a rectangle in an axis-aligned plane with one colour,
+// one light and one layer, so the record holds the rectangle and this rebuilds the four
+// corners and the UVs `lod::mesh::emit_quad` derived from them. The two have to agree, and
+// `lod::mesh`'s `every_quad_the_mesher_emits_packs_and_comes_back` is what holds them to it.
+fn far_corner(lo: vec3<u32>, hi: vec3<u32>, corner: u32) -> ArenaCorner {
+    let axis = hi.z & 3u;
+    let reversed = (hi.z >> 2u) & 1u;
+    let plane = f32(bitcast<i32>(lo.z));
+    let u0 = f32(bitcast<i32>(hi.x));
+    let v0 = f32(bitcast<i32>(hi.y));
+    let u1 = u0 + f32((hi.z >> 3u) & 0x7ffu);
+    let v1 = v0 + f32((hi.z >> 14u) & 0x7ffu);
+    // `points.reverse()`, which is what the mesher does for Down, South and East.
+    let c = select(corner, 3u - corner, reversed == 1u);
+    let far_v = select(v0, v1, c <= 1u);
+    // Axis X runs its u the other way round, as that function's `points` do.
+    let first = c == 0u || c == 3u;
+    let far_u = select(select(u1, u0, first), select(u0, u1, first), axis == 2u);
+    // 0: the plane is y, u is x and v is z. 1: the plane is z, u is x, v is y.
+    // 2: the plane is x, u is z and v is y.
+    var pos = vec3(far_u, plane, far_v);
+    if axis == 1u {
+        pos = vec3(far_u, far_v, plane);
+    } else if axis == 2u {
+        pos = vec3(plane, far_v, far_u);
+    }
+    // The UV is `[u, -v]` of the face counted from its corner, which is `[u0, -v1]`: every
+    // coordinate is whole, so the mesher's `floor` of the least corner is the corner itself.
+    let uv = vec2<u32>(vec2(far_u - u0, v1 - far_v) * TILED_UV_STEPS);
+    // Word 1 is the layer with the light, word 0 the colour, as a vertex holds them.
+    return ArenaCorner(bitcast<vec3<u32>>(pos), vec3(uv.x | (uv.y << 16u), lo.y, lo.x));
+}
+// A solid draw's vertex `vertex`, and the slot its block is found by (`block_slots`, 256
+// slots a block): the vertex's own, or its quad's record's. `packed`: it has a record.
+struct SectionCorner {
+    c: ArenaCorner,
+    slot: u32,
+    packed: bool,
+}
+fn section_corner(vertex: u32) -> SectionCorner {
+    if vertex < PACKED_BASE {
+        return SectionCorner(arena_vertex(vertex), vertex, false);
+    }
+    if vertex >= FAR_BASE {
+        let far_slot = (vertex - FAR_BASE) >> 2u;
+        let a = arena_page[far_slot * 3u];
+        let b = arena_page[far_slot * 3u + 1u];
+        let c = arena_page[far_slot * 3u + 2u];
+        // `FULL`: the quad's four vertices, word 0 slots on, as a section's spill.
+        if (c.y & 0x80000000u) != 0u {
+            return SectionCorner(arena_vertex(far_slot + a.x + (vertex & 3u)), far_slot, true);
+        }
+        return SectionCorner(far_corner(vec3(a.x, a.y, b.x), vec3(b.y, c.x, c.y), vertex & 3u),
+            far_slot, true);
+    }
+    let slot = (vertex - PACKED_BASE) >> 2u;
+    let corner = vertex & 3u;
+    let a = arena_page[slot * 3u];
+    let b = arena_page[slot * 3u + 1u];
+    let c = arena_page[slot * 3u + 2u];
+    // `packed::FULL`: the quad's four vertices, word 0 slots on.
+    if (c.y & 0x80000000u) != 0u {
+        return SectionCorner(arena_vertex(slot + a.x + corner), slot, true);
+    }
+    return SectionCorner(packed_corner(vec3(a.x, a.y, b.x), vec3(b.y, c.x, c.y), corner), slot,
+        true);
+}
+// The colour as the vertex fetch converts a Unorm8x4 attribute, bit for bit (Apple's M1:
+// times 1/255; `unpack4x8unorm` and the correctly rounded c / 255 each differ from it for
+// some bytes, and moved a few pixels' colour or alpha cutout).
+fn unorm8x4(c: u32) -> vec4<f32> {
+    return vec4<f32>(vec4(c & 255u, (c >> 8u) & 255u, (c >> 16u) & 255u, c >> 24u))
+        * (1.0 / 255.0);
+}
+fn corner_layer(c: ArenaCorner) -> u32 {
+    return c.r.y & 0xffffu;
+}
+fn corner_vertex(c: ArenaCorner, origin: vec4<f32>) -> TerrainOut {
+    let uv = vec2(c.r.x & 0xffffu, c.r.x >> 16u);
+    let light = vec2((c.r.y >> 16u) & 0xffu, c.r.y >> 24u);
+    return terrain_vertex(bitcast<vec3<f32>>(c.p), terrain_uv(uv, origin.w), corner_layer(c),
+        unorm8x4(c.r.z), light, origin.xyz, origin.w);
+}
+@vertex fn vs_section(@builtin(vertex_index) vertex: u32,
+    @location(5) origin: vec4<f32>) -> TerrainWire {
+    return to_wire(corner_vertex(section_corner(vertex).c, origin));
+}
+@vertex fn vs_section_opaque(@builtin(vertex_index) vertex: u32,
+    @location(5) origin: vec4<f32>) -> TerrainWire {
+    let s = section_corner(vertex);
+    if !opaque_quad(corner_layer(s.c), origin.w) { return to_wire(left_out()); }
+    return to_wire(corner_vertex(s.c, origin));
+}
+@vertex fn vs_section_cutout(@builtin(vertex_index) vertex: u32,
+    @location(5) origin: vec4<f32>) -> TerrainWire {
+    let s = section_corner(vertex);
+    if opaque_quad(corner_layer(s.c), origin.w) { return to_wire(left_out()); }
+    return to_wire(corner_vertex(s.c, origin));
+}
+@vertex fn vs_section_flat(@builtin(vertex_index) vertex: u32) -> TerrainWire {
+    let s = section_corner(vertex);
+    let origin = slot_origins[block_slots[s.slot >> 8u]];
+    return to_wire(corner_vertex(s.c, origin));
+}
+@vertex fn vs_section_flat_opaque(@builtin(vertex_index) vertex: u32) -> TerrainWire {
+    let s = section_corner(vertex);
+    let origin = slot_origins[block_slots[s.slot >> 8u]];
+    if !opaque_quad(corner_layer(s.c), origin.w) { return to_wire(left_out()); }
+    return to_wire(corner_vertex(s.c, origin));
+}
+@vertex fn vs_section_flat_cutout(@builtin(vertex_index) vertex: u32) -> TerrainWire {
+    let s = section_corner(vertex);
+    let origin = slot_origins[block_slots[s.slot >> 8u]];
+    if opaque_quad(corner_layer(s.c), origin.w) { return to_wire(left_out()); }
+    return to_wire(corner_vertex(s.c, origin));
+}
+// HDR lighting: how far a surface's light carries it above paper white, 0 to 1. Only the
+// strongest light does, so dark stays as dark as in SDR; sky light by how the face meets the sun.
+fn hdr_scene(block: f32, sky: f32, facing: f32) -> f32 {
+    let b = smoothstep(11.0, 15.0, block);
+    let s = smoothstep(11.0, 15.0, sky) * globals.hdr_light.x * facing;
+    return max(b, s);
+}
+// The frame's alpha for it, between 1 (none) and the light sources' marks below 0.75.
+fn hdr_scene_alpha(scene: f32) -> f32 {
+    return 1.0 - 0.24 * scene;
+}
+// The face's normal, from the fragment's derivatives, for how it faces the sun.
+var<private> hdr_normal: vec3<f32>;
+fn hdr_facing() -> f32 {
+    return mix(0.45, 1.0, max(dot(hdr_normal, globals.sun.xyz), 0.0));
 }
 fn terrain_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>,
     light: vec2<u32>, origin: vec3<f32>, w: f32) -> TerrainOut {
+    // [world warp vertex]
+    // (a world warp's pipelines put the point through the mod's `world_warp`: gfx/world_warp.rs)
     let pos = position + origin;
+    // [end world warp vertex]
     var out: TerrainOut;
     out.clip = fade_depth(globals.view_proj * vec4(pos, 1.0), w);
     out.local = position;
@@ -384,6 +696,7 @@ fn terrain_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f3
     }
     let block = max(f32(light.y), dynamic_block_light(pos));
     out.color = vec4(color.rgb, 1.0) * sample_lightmap(f32(light.x) / 16.0, block / 16.0);
+    out.scene = vec2(block / 16.0, f32(light.x) / 16.0);
     if globals.colored_count.x > 0u {
         out.color = vec4(min(out.color.rgb + color.rgb * native_colored_light(pos), vec3(1.0)), out.color.a);
     }
@@ -395,6 +708,8 @@ fn terrain_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f3
     const CHUNK_FULLY_VISIBLE_RANGE: f32 = 16.0;
     out.visibility = mix(1.0, instance_visibility(w),
         clamp((length(pos) - CHUNK_FULLY_VISIBLE_RANGE) / CHUNK_FULLY_VISIBLE_RANGE, 0.0, 1.0));
+    // [world warp out]
+    // [end world warp out]
     return out;
 }
 fn linear_fog(d: f32, start: f32, end: f32) -> f32 {
@@ -421,11 +736,16 @@ fn hdr_mark(tier: u32, y: f32) -> f32 {
     let lift = smoothstep(globals.hdr_windows[0][t], globals.hdr_windows[1][t], y);
     return 0.175 * f32(3u - t) + 0.165 * (1.0 - lift);
 }
-@fragment fn fs_solid(in: TerrainOut) -> @location(0) vec4<f32> {
+@fragment fn fs_solid(wire: TerrainWire) -> @location(0) vec4<f32> {
+    let in = from_wire(wire);
     return solid_color(in);
 }
 // `fs_solid` for the opaque pass (`opaque_quad`): no fade, no cutout, no discard.
-@fragment fn fs_opaque(in: TerrainOut) -> @location(0) vec4<f32> {
+@fragment fn fs_opaque(wire: TerrainWire) -> @location(0) vec4<f32> {
+    let in = from_wire(wire);
+    if HDR_LIGHTING && globals.hdr_light.z != 0.0 {
+        hdr_normal = normalize(cross(dpdy(in.local), dpdx(in.local)));
+    }
     let texel = sprite(in.uv, in.layer & 0x7fffu);
     var color = texel * in.color;
     color = mix(globals.fog_color * vec4(1.0, 1.0, 1.0, color.a), color, in.visibility);
@@ -433,13 +753,17 @@ fn hdr_mark(tier: u32, y: f32) -> f32 {
 }
 // The water mirror (gfx.rs's reflection pass): what lies below the water plane
 // (`fog_ends.w`, camera-relative) would show above it in the mirror, so it is cut away.
-@fragment fn fs_solid_mirror(in: TerrainOut) -> @location(0) vec4<f32> {
+@fragment fn fs_solid_mirror(wire: TerrainWire) -> @location(0) vec4<f32> {
+    let in = from_wire(wire);
     if in.height < globals.fog_ends.w { discard; }
     return solid_color(in);
 }
 fn solid_color(in: TerrainOut) -> vec4<f32> {
     let dx = dpdx(in.local);
     let dy = dpdy(in.local);
+    if HDR_LIGHTING && globals.hdr_light.z != 0.0 {
+        hdr_normal = normalize(cross(dy, dx));
+    }
     if faded(in.fade, in.local, dx, dy) { discard; }
     // Bit 15 of the layer marks opaque leaves (forceOpaque): no alpha cutout.
     let texel = sprite(in.uv, in.layer & 0x7fffu);
@@ -451,25 +775,54 @@ fn solid_color(in: TerrainOut) -> vec4<f32> {
 }
 // The rest of a solid pixel's colour once it is kept: emission and fog.
 fn solid_finish(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>) -> vec4<f32> {
+    return solid_light(solid_finish_at(in, texel, color, dpdx(in.uv), dpdy(in.uv)));
+}
+// A finished solid pixel as the frame keeps it: on the float frame its colour, alpha 1, lit by
+// HDR's gain where it applies (`hdr_light.w`); else its mark in alpha.
+fn solid_light(finished: vec4<f32>) -> vec4<f32> {
+    if HDR_WRITE_LIGHT {
+        if globals.hdr_light.w != 0.0 {
+            return vec4(hdr_written(finished.rgb, finished.a, globals.hdr_settings, globals.hdr_shares), 1.0);
+        }
+        return vec4(finished.rgb, 1.0);
+    }
+    return finished;
+}
+// `solid_finish` with the UV's screen gradients given (`sprite_at`).
+fn solid_finish_at(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>, du: vec2<f32>,
+                   dv: vec2<f32>) -> vec4<f32> {
     // Below 0.75, alpha tells HDR output (hdr.wgsl) a light source's pixel
     // shines, at which tier (mesher::hdr_tier) and how much (hdr_mark), by the
     // texel's own brightness, so its light level and face shading don't change
     // it. Only pixels as bright as their sprite's threshold may: its bright
     // parts, or all of it. Nothing else reads the frame's alpha.
+    // Fog turns a far surface into the fog's colour: it takes the fog's light with it, or a
+    // fully fogged mountain would stand out from the fog behind it.
+    // Without HDR output nothing reads the alpha, so its lighting is not worked out.
     var emissive = 1.0;
-    if in.emission > 0u {
-        let whole = in.emission > 4u;
-        let tier = select(in.emission, in.emission - 4u, whole);
-        let l = in.layer & 0x7fffu;
-        let t = textureLoad(emission_thresholds, vec2(i32(l % SPRITE_SPLIT), i32(l / SPRITE_SPLIT)), 0);
-        let y = brightness(texel.rgb);
-        if y >= select(t.r, t.g, whole) {
-            emissive = hdr_mark(tier, y);
+    if HDR_LIGHTING && globals.hdr_light.z != 0.0 {
+        let fogged = max(linear_fog(in.spherical, globals.fog.x, globals.fog.y),
+            linear_fog(in.cylindrical, globals.fog.z, globals.fog.w)) * globals.fog_color.a;
+        emissive = hdr_scene_alpha(mix(hdr_scene(in.scene.x, in.scene.y, hdr_facing()),
+            globals.hdr_light.y, fogged));
+        if in.emission > 0u {
+            // A light source's own face shines as one or stays as drawn, without the lighting.
+            emissive = 1.0;
+            let whole = in.emission > 4u;
+            let tier = select(in.emission, in.emission - 4u, whole);
+            let l = in.layer & 0x7fffu;
+            let t = textureLoad(emission_thresholds, vec2(i32(l % SPRITE_SPLIT), i32(l / SPRITE_SPLIT)), 0);
+            let y = brightness(texel.rgb);
+            // All over means all over: the sprite's range is one frame's, and an animated sprite's
+            // other frames dip below it. Fog hides a light source as it hides everything else.
+            if whole || y >= t.r {
+                emissive = hdr_mark(tier, y * (1.0 - fogged));
+            }
         }
     }
     if in.emissive_layer != 0xffffffffu {
         // The high bit: an OptiFine overlay, drawn cutout (opaque where alpha >= 0.1).
-        var mask = sprite(in.uv, in.emissive_layer & 0x7fffffffu);
+        var mask = sprite_at(in.uv, in.emissive_layer & 0x7fffffffu, du, dv);
         if (in.emissive_layer & 0x80000000u) != 0u {
             mask.a = select(0.0, 1.0, mask.a >= 0.1);
         }
@@ -477,14 +830,110 @@ fn solid_finish(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>) -> vec4<f32>
     }
     return apply_fog(vec4(color.rgb, emissive), in.spherical, in.cylindrical);
 }
+// HDR lighting on what's mostly opaque among translucent faces (water), drawn again after
+// them with only alpha written: `fs_translucent` blends its alpha as coverage, so a lake's
+// value would be diluted. Clear glass leaves what's behind it, light sources included, alone.
+@fragment fn fs_translucent_mark(wire: TerrainWire) -> @location(0) vec4<f32> {
+    let in = from_wire(wire);
+    let dx = dpdx(in.local);
+    let dy = dpdy(in.local);
+    hdr_normal = normalize(cross(dy, dx));
+    if sprite(in.uv, in.layer & 0x7fffu).a < 0.6 { discard; }
+    let fogged = max(linear_fog(in.spherical, globals.fog.x, globals.fog.y),
+        linear_fog(in.cylindrical, globals.fog.z, globals.fog.w)) * globals.fog_color.a;
+    let scene = mix(hdr_scene(in.scene.x, in.scene.y, hdr_facing()), globals.hdr_light.y, fogged);
+    return vec4(0.0, 0.0, 0.0, hdr_scene_alpha(scene));
+}
 // Water, glass and other see-through faces draw whole as they fade in, the
 // layer drawn first in front (gfx.rs's water tiers): dithered, the faded-out
 // pixels showed the layer behind through the one in front, twice the water.
-@fragment fn fs_translucent(in: TerrainOut) -> @location(0) vec4<f32> {
-    var color = sprite(in.uv, in.layer & 0x7fffu) * in.color;
+@fragment fn fs_translucent(wire: TerrainWire) -> @location(0) vec4<f32> {
+    let in = from_wire(wire);
+    if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 {
+        hdr_normal = normalize(cross(dpdy(in.local), dpdx(in.local)));
+    }
+    let texel = sprite(in.uv, in.layer & 0x7fffu);
+    var color = texel * in.color;
     color = mix(globals.fog_color * vec4(1.0, 1.0, 1.0, color.a), color, in.visibility);
     if color.a < 0.01 { discard; }
+    let finished = apply_fog(color, in.spherical, in.cylindrical);
+    if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 {
+        // The surface's own light, whatever its texel's alpha: what is behind it is light already.
+        // (The marked frame keeps one mark a pixel, so there `fs_translucent_mark` skips clear
+        // texels to leave what is behind them its own.)
+        let fogged = max(linear_fog(in.spherical, globals.fog.x, globals.fog.y),
+            linear_fog(in.cylindrical, globals.fog.z, globals.fog.w)) * globals.fog_color.a;
+        let mark = hdr_scene_alpha(mix(hdr_scene(in.scene.x, in.scene.y, hdr_facing()), globals.hdr_light.y, fogged));
+        return vec4(hdr_written(finished.rgb, mark, globals.hdr_settings, globals.hdr_shares), finished.a);
+    }
+    return finished;
+}
+
+// Native still-fluid boxes use block sprites and lightmap without terrain AO/emission
+// packing or entity-model diffuse shading. The absolute sprite layer occupies glint UV x.
+struct NativeFluidOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) color: vec4<f32>,
+    @location(2) @interpolate(flat) sprite: u32,
+    @location(3) spherical: f32,
+    @location(4) cylindrical: f32,
+}
+@vertex fn vs_native_fluid(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>,
+    @location(3) color: vec4<f32>, @location(4) light: vec4<u32>,
+    @location(6) sprite: vec2<f32>) -> NativeFluidOut {
+    let block = max(f32(light.y), dynamic_block_light(position));
+    var lit = color * sample_lightmap(f32(light.x) / 16.0, block / 16.0);
+    if globals.colored_count.x > 0u {
+        lit = vec4(min(lit.rgb + color.rgb * native_colored_light(position), vec3(1.0)), lit.a);
+    }
+    return NativeFluidOut(globals.view_proj * vec4(position, 1.0), uv, lit, u32(sprite.x),
+        length(position), max(length(position.xz), abs(position.y)));
+}
+@fragment fn fs_native_fluid(in: NativeFluidOut) -> @location(0) vec4<f32> {
+    // The source translucent shader has no alpha discard; transparent texels write depth too.
+    let color = sprite_grad(in.uv, in.sprite, dpdx(in.uv), dpdy(in.uv)) * in.color;
     return apply_fog(color, in.spherical, in.cylindrical);
+}
+
+// Native terrain models retain floating-point transformed normals. Fullbright still receives
+// entity directional shading; the material's alpha test and mip policy are independent.
+// Diffuse/normal policy: Flywheel 1.0.6, copyright2021-2024 Jozufozu (MIT);
+// full permission/warranty notice in THIRD_PARTY_NOTICES.md.
+override NATIVE_MODEL_ALPHA_CUTOFF: f32 = 0.0;
+struct NativeModelOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) color: vec4<f32>,
+    @location(2) @interpolate(flat) sprite: u32,
+    @location(3) spherical: f32,
+    @location(4) cylindrical: f32,
+    @location(5) normal: vec3<f32>,
+}
+@vertex fn vs_native_model(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>,
+    @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec4<u32>,
+    @location(5) normal_z: u32, @location(6) normal_xy: vec2<f32>) -> NativeModelOut {
+    let block = max(f32(light.y), dynamic_block_light(position));
+    var lit = color * sample_lightmap(f32(light.x) / 16.0, block / 16.0);
+    if globals.colored_count.x > 0u {
+        lit = vec4(min(lit.rgb + color.rgb * native_colored_light(position), vec3(1.0)), lit.a);
+    }
+    return NativeModelOut(globals.view_proj * vec4(position, 1.0), uv, lit, layer >> 16u,
+        length(position), max(length(position.xz), abs(position.y)),
+        vec3(normal_xy, bitcast<f32>(normal_z)));
+}
+@fragment fn fs_native_model(in: NativeModelOut) -> @location(0) vec4<f32> {
+    var color = sprite_grad(in.uv, in.sprite, dpdx(in.uv), dpdy(in.uv)) * in.color;
+    if NATIVE_MODEL_ALPHA_CUTOFF > 0.0 && color.a < NATIVE_MODEL_ALPHA_CUTOFF { discard; }
+    if any(in.normal != vec3(0.0)) {
+        let light0 = normalize(vec3(0.2, 1.0, -0.7));
+        let light1 = normalize(vec3(-0.2, select(1.0, -1.0, globals.time.y > 0.5), 0.7));
+        let shade = min(1.0, (max(0.0, dot(light0, in.normal))
+            + max(0.0, dot(light1, in.normal))) * 0.6 + 0.4);
+        color = vec4(color.rgb * shade, color.a);
+    }
+    let finished = apply_fog(color, in.spherical, in.cylindrical);
+    return vec4(finished.rgb, select(finished.a, 1.0, HDR_WRITE_LIGHT));
 }
 
 // Sky (SkyRenderer): the 10-vertex sky disc fan at y = 16 (radius 512) in
@@ -600,19 +1049,52 @@ fn sunrise_weight(d: vec3<f32>) -> f32 {
 // The sky's colour along the view ray `d` (a shader pack's sky stage gets it as its input:
 // gfx/native_sky.rs builds that stage from this section).
 fn sky_along_ray(d: vec3<f32>) -> vec3<f32> {
-    var color = globals.fog_color.rgb;
-    let dist = disc_distance(d, 16.0);
-    if dist.x >= 0.0 {
-        color = sky_fog(globals.sky_color.rgb, dist);
-    }
+    var color = sky_along_ray_base(d);
     let w = sunrise_weight(d);
     if w > 0.0 {
         color = mix(color, globals.sunrise.rgb, w * globals.sunrise.a);
     }
     return color;
 }
+// The sky without the sunrise fan: the renderer rasterizes the fan's sixteen
+// triangles over this colour instead of testing them in every sky pixel.
+fn sky_along_ray_base(d: vec3<f32>) -> vec3<f32> {
+    var color = globals.fog_color.rgb;
+    let dist = disc_distance(d, 16.0);
+    if dist.x >= 0.0 {
+        color = sky_fog(globals.sky_color.rgb, dist);
+    }
+    return color;
+}
+fn sky_finished(color: vec3<f32>) -> vec4<f32> {
+    let mark = 1.0 - 0.24 * globals.hdr_light.y;
+    if HDR_WRITE_LIGHT {
+        if globals.hdr_light.w != 0.0 {
+            return vec4(hdr_written(color, mark, globals.hdr_settings, globals.hdr_shares), 1.0);
+        }
+        return vec4(color, 1.0);
+    }
+    return vec4(color, mark);
+}
 @fragment fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
-    return vec4(sky_along_ray(view_ray(in.ndc)), 1.0);
+    // `hdr_scene_alpha`, spelled out: this part of the file also goes into shader packs' skies.
+    return sky_finished(sky_along_ray(view_ray(in.ndc)));
+}
+@fragment fn fs_sky_base(in: SkyOut) -> @location(0) vec4<f32> {
+    return sky_finished(sky_along_ray_base(view_ray(in.ndc)));
+}
+// The sunrise/sunset fan as geometry: the clip position is projected by the
+// CPU with the sky's unjittered view, and the apex weight (1 at the apex, 0 at
+// the rim) interpolates exactly the barycentric the per-pixel test computed.
+struct SunriseOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) weight: f32,
+}
+@vertex fn vs_sunrise(@location(0) clip: vec4<f32>, @location(1) weight: f32) -> SunriseOut {
+    return SunriseOut(clip, weight);
+}
+@fragment fn fs_sunrise(in: SunriseOut) -> @location(0) vec4<f32> {
+    return vec4(sky_finished(globals.sunrise.rgb).rgb, in.weight * globals.sunrise.a);
 }
 // The first-person hand's depth clear inside the world pass: `vs_sky`'s triangle lies at the
 // far plane, written over the whole depth target with no colour.

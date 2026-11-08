@@ -8,7 +8,8 @@ use horizon_client::{
     blocks::BlockFacts,
     items::Items,
     mobs::{
-        Mob, MobTypes, Species, cube, drops, enderman, gear, raider, render::DYE_NAMES, sulfur_cube,
+        Mob, MobTypes, Species, cube, drops, enderman, gear, raider, render::DYE_NAMES,
+        species::can_be_a_baby, sulfur_cube,
     },
     random_sequences::RandomSequences,
 };
@@ -111,7 +112,7 @@ pub fn main() -> horizon_client::Result<()> {
             for slot in drops::SLOTS {
                 drops::clear_slot(&mut m, slot);
             }
-            if get("baby", "0") == "1" && drops::can_be_baby(m.species()) {
+            if get("baby", "0") == "1" && can_be_a_baby(m.species()) {
                 m.extra.age = -24000;
             }
             if get("fire", "0") == "1" {
@@ -164,8 +165,8 @@ pub fn main() -> horizon_client::Result<()> {
                             m.extra.head = item;
                             Some(gear::HEAD)
                         }
-                        "body" if drops::head_is_body(m.species()) => {
-                            m.extra.head = item;
+                        "body" => {
+                            m.extra.body = item;
                             None
                         }
                         "saddle" => {
@@ -282,12 +283,15 @@ pub fn main() -> horizon_client::Result<()> {
                 loot: &loot,
                 damage: Some(source),
                 player: player.filter(|_| pkill),
+                player_killed: pkill,
                 luck: get("luck", "0").parse()?,
                 vehicle: c.get("vehicle").map(|v| LootEntity::new(v)),
                 mob_drops: true,
                 world_seed,
             };
-            let (items, _) = drops::die(&mut m, &death, &mut sequences);
+            // Vanilla's entity tables all name a random sequence: no level random.
+            let mut level = horizon_core::random::LegacyRandom::new(0);
+            let (items, _) = drops::die(&mut m, &death, &mut sequences, &mut level);
             for d in items {
                 let _ = match d {
                     drops::Drop::Item(s) => writeln!(out, "{}", line(&s)),

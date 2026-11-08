@@ -46,6 +46,9 @@ fn book_page_box() -> ui::EditBox {
     edit
 }
 
+/// Where a book's text is, from its top left corner, above its page buttons.
+const BOOK_TEXT: [f32; 4] = [36.0, 16.0, 120.0, 136.0];
+
 pub(super) enum BookScreen {
     Edit {
         /// Inventory slot of the book (the selected hotbar slot).
@@ -146,10 +149,22 @@ impl Game<'_> {
             }
             ClickEvent::OpenUrl(url) => self.click_url(url),
             // closeContainerOnServer, then clickCommandAction with no screen
-            // after the command: the book closes and the command runs.
+            // after the command: the book closes and the command runs. A
+            // lectern's screen goes with its menu; a book is still the screen
+            // a confirmation returns to.
             ClickEvent::RunCommand(command) => {
+                let book = if lectern.is_none() {
+                    self.book.take()
+                } else {
+                    None
+                };
                 self.close_book();
                 self.click_command(&command);
+                if let Some(book) = book {
+                    self.command_prompt_returns_to(super::remote_chat::Behind::Book(Box::new(
+                        book,
+                    )));
+                }
             }
             // Screen.defaultHandleClickEvent: copied, the book stays open.
             ClickEvent::CopyToClipboard(value) => {
@@ -158,6 +173,12 @@ impl Game<'_> {
             }
             // defaultHandleGameClickEvent: the dialog opens over the book.
             ClickEvent::ShowDialog(dialog) => self.show_dialog_ref(&dialog),
+            // Screen.defaultHandleGameClickEvent: custom actions retain the book.
+            ClickEvent::Custom { id, payload } => {
+                if let Some(remote) = &self.remote {
+                    remote.session.send_custom_click(&id, payload);
+                }
+            }
             // SuggestCommand's insertText does nothing on a book; a server's
             // text never opens a file.
             ClickEvent::SuggestCommand(_) | ClickEvent::OpenFile(_) => {}
@@ -182,6 +203,8 @@ impl Game<'_> {
         } else if let Some(screen) = self.book_screen(stack) {
             self.open_book(screen);
         }
+        // WritableBookItem.use / WrittenBookItem.use count every open.
+        self.award_stat("used", &stack.item, 1);
         self.swing_arm();
         true
     }
@@ -258,7 +281,7 @@ impl Game<'_> {
             self.remote_close_container();
         }
         self.book = None;
-        self.capture(true);
+        self.capture(self.screen == super::Screen::Playing && !self.screen_over_playing());
     }
     /// `BookEditScreen.saveChanges` and `BookSignScreen`'s Sign and Close:
     /// trailing empty pages dropped, the book in hand updated here and, on a
@@ -334,9 +357,40 @@ impl Game<'_> {
         {
             return;
         }
-        self.as_guest(host, conn, |g| {
-            g.write_book(p.slot as usize, p.pages, p.title)
+        let menu_slot = if p.slot == super::shield::OFFHAND_SLOT as i32 {
+            45
+        } else {
+            36 + p.slot as usize
+        };
+        let cancelled = self.as_guest(host, conn, |g| {
+            let mut cancel = false;
+            let writable = g
+                .stack_in(p.slot as usize)
+                .is_some_and(|stack| &*stack.item == "minecraft:writable_book");
+            if writable
+                && let (Some(player), Some(name)) = (g.lan_acting_uuid, g.lan_acting_name.clone())
+            {
+                g.native_player_edit_book(
+                    player,
+                    &name,
+                    p.pages.len() as i32,
+                    p.title.is_some(),
+                    &mut cancel,
+                );
+            }
+            if cancel {
+                return true;
+            }
+            g.write_book(p.slot as usize, p.pages, p.title);
+            false
         });
+        // A cancelled edit leaves the client's own copy of the book: forget
+        // what was sent so the next broadcast resends the server's stack.
+        if cancelled == Some(true)
+            && let Some(g) = host.hub.guests.iter_mut().find(|g| g.conn == conn)
+        {
+            g.menu_sent[menu_slot] = None;
+        }
     }
     pub(super) fn book_key(&mut self, event: &KeyEvent) {
         if event.state != ElementState::Pressed {
@@ -730,8 +784,7 @@ impl Game<'_> {
         let p = BlockPos::new(key.0, key.1, key.2);
         let state = self.world.block(key.0, key.1, key.2);
         self.with_level(|b, level, ticks| {
-            let block = b.block(state);
-            b.update_neighbors_at(level, ticks, BlockPos::new(p.x, p.y - 1, p.z), block);
+            b.lectern_update_below(level, ticks, p, state);
         });
     }
     fn set_lectern_property(&mut self, key: (i32, i32, i32), name: &str, value: bool) {
@@ -811,6 +864,9 @@ impl Game<'_> {
         self.audio
             .play("minecraft:item.book.put", Some(at), 1.0, 1.0);
         self.container_changed(key);
+        if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
+            self.native_player_insert_lectern_book(player, &name, pos, &book.item);
+        }
         true
     }
     /// `LecternBlock.openScreen`: reading the lectern's book.
@@ -822,7 +878,7 @@ impl Game<'_> {
         let Some(book) = &l.book else { return false };
         let pages = view_pages(book.data());
         let page = (l.page.max(0) as usize).min(pages.len().saturating_sub(1));
-        self.stats.custom("interact_with_lectern", 1);
+        self.award_custom_stat("interact_with_lectern", 1);
         self.open_book(BookScreen::View {
             pages,
             page,
@@ -874,7 +930,21 @@ impl Game<'_> {
     /// lectern, so the screen closes (the server closes the menu once the
     /// book is gone; a server's client closes at once rather than wait).
     fn take_lectern_book(&mut self, key: (i32, i32, i32)) {
+        let before = match self.world.block_entities.get(&key) {
+            Some(BlockEntity::Lectern(l)) => l.book.clone(),
+            _ => None,
+        };
         self.lectern_button(key, 3);
+        if let (Some(book), Some(player), Some(name)) = (
+            before.filter(|_| {
+                matches!(self.world.block_entities.get(&key),
+                Some(BlockEntity::Lectern(l)) if l.book.is_none())
+            }),
+            self.lan_acting_uuid,
+            self.lan_acting_name.clone(),
+        ) {
+            self.native_player_take_lectern_book(player, &name, [key.0, key.1, key.2], &book.item);
+        }
         if self.may_build()
             && matches!(
                 self.book,
@@ -1023,6 +1093,15 @@ impl Game<'_> {
             self.lectern_pulses.push((key, 2));
             self.level_event_at(1043, [key.0, key.1, key.2], 0);
             self.container_changed(key);
+            if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone())
+            {
+                self.native_player_lectern_page_change(
+                    player,
+                    &name,
+                    [key.0, key.1, key.2],
+                    menu.data[0],
+                );
+            }
         }
     }
     /// The open lectern screen follows its block entity (`LecternScreen`'s
@@ -1131,11 +1210,11 @@ impl Game<'_> {
     pub(super) fn draw_book(&self, batch: &mut HudBatch) {
         let Some(book) = &self.book else { return };
         let atlas = &self.gui.atlas;
-        let (w, h) = (batch.width, batch.height);
+        let w = batch.width;
         let (mx, my) = self.cursor;
         let hover =
             |x: f32, y: f32, bw: f32, bh: f32| mx >= x && my >= y && mx < x + bw && my < y + bh;
-        batch.fill(atlas, 0.0, 0.0, w, h, rgba(16, 16, 16, 160));
+        self.render_transparent_background("book", batch);
         let left = ((w - 192.0) / 2.0).floor();
         let top = 2.0;
         if let Some(mut r) = atlas.sprites.get("gui/book").copied() {
@@ -1143,6 +1222,18 @@ impl Game<'_> {
             r.u1 = r.u0 + 192.0 * du;
             r.v1 = r.v0 + 192.0 * dv;
             batch.rect_uv(left, top, 192.0, 192.0, r, u32::MAX);
+        }
+        // The page, or the signing title on it: a field to a controller, which opens its keyboard.
+        if matches!(book, BookScreen::Edit { .. }) {
+            widgets::target_as(
+                [
+                    left + BOOK_TEXT[0],
+                    top + BOOK_TEXT[1],
+                    BOOK_TEXT[2],
+                    BOOK_TEXT[3],
+                ],
+                widgets::Kind::Field,
+            );
         }
         let tr = |key: &str, fallback: &str| self.translate(key, fallback);
         let page_buttons = |batch: &mut HudBatch, back: bool, forward: bool| {
@@ -1201,6 +1292,20 @@ impl Game<'_> {
                 20.0,
                 &Text::literal(label),
                 active,
+                hover(x, 196.0, bw, 20.0),
+            );
+        };
+        let action_button = |batch: &mut HudBatch, action, x: f32, bw: f32, label: &str| {
+            ui::action_button(
+                batch,
+                atlas,
+                action,
+                x,
+                196.0,
+                bw,
+                20.0,
+                &Text::literal(label),
+                true,
                 hover(x, 196.0, bw, 20.0),
             );
         };
@@ -1307,12 +1412,12 @@ impl Game<'_> {
                     &tr("book.finalizeButton", "Sign and Close"),
                     !title.trim().is_empty(),
                 );
-                button(
+                action_button(
                     batch,
+                    widgets::Action::Cancel,
                     w / 2.0 + 2.0,
                     98.0,
                     &tr("gui.cancel", "Cancel"),
-                    true,
                 );
             }
             BookScreen::Edit {
@@ -1390,7 +1495,13 @@ impl Game<'_> {
                     &tr("book.signButton", "Sign"),
                     true,
                 );
-                button(batch, w / 2.0 + 2.0, 98.0, &tr("gui.done", "Done"), true);
+                action_button(
+                    batch,
+                    widgets::Action::Done,
+                    w / 2.0 + 2.0,
+                    98.0,
+                    &tr("gui.done", "Done"),
+                );
             }
             BookScreen::View {
                 pages,
@@ -1421,7 +1532,13 @@ impl Game<'_> {
                 // LecternScreen.createMenuControls: Done and Take Book only with
                 // build permission, else BookViewScreen's wide Done.
                 if lectern.is_some() && self.may_build() {
-                    button(batch, w / 2.0 - 100.0, 98.0, &tr("gui.done", "Done"), true);
+                    action_button(
+                        batch,
+                        widgets::Action::Done,
+                        w / 2.0 - 100.0,
+                        98.0,
+                        &tr("gui.done", "Done"),
+                    );
                     button(
                         batch,
                         w / 2.0 + 2.0,
@@ -1430,12 +1547,12 @@ impl Game<'_> {
                         true,
                     );
                 } else {
-                    button(
+                    action_button(
                         batch,
+                        widgets::Action::Done,
                         (w - 200.0) / 2.0,
                         200.0,
                         &tr("gui.done", "Done"),
-                        true,
                     );
                 }
                 // HoveredTextEffects.TOOLTIP_AND_CURSOR: the hovered words'

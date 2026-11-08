@@ -11,7 +11,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicU32, Ordering},
 };
 
 const SECTOR: usize = 4096;
@@ -234,7 +234,11 @@ impl RegionFile {
         if external {
             let temporary = directory.join(format!(".c.{}.{}.mcc.tmp", chunk.x, chunk.z));
             let written = File::create(&temporary)
-                .and_then(|mut f| f.write_all(&record.compressed))
+                .and_then(|mut f| {
+                    f.write_all(&record.compressed)?;
+                    // The region's sync only covers the stub, not this external payload.
+                    f.sync_all()
+                })
                 .and_then(|_| fs::rename(&temporary, &external_file));
             if let Err(e) = written {
                 let _ = fs::remove_file(&temporary);
@@ -329,10 +333,14 @@ impl RegionFile {
         }
         let compression = Compression::try_from(header[4] & 127)?;
         let compressed = if header[4] & 128 != 0 {
-            if len != 1 {
-                return Err(invalid("external chunk stub has inline data"));
-            }
+            // `createExternalChunkInputStream`: the stub's length says nothing
+            // about the stream in the `.mcc`, so a stub that also claims inline
+            // data only warns; and a stub whose file is gone is a chunk that is
+            // not there (`null`), not a damaged one.
             let path = external_path(self.path.parent().unwrap_or(Path::new(".")), chunk);
+            if !path.is_file() {
+                return Ok(None);
+            }
             let file = File::open(path)?;
             let mut data = Vec::new();
             file.take((MAX_COMPRESSED + 1) as u64)
@@ -387,7 +395,7 @@ impl RegionFile {
 }
 type BTreeChanges<'a> = std::collections::BTreeMap<usize, Option<&'a ChunkRecord>>;
 
-static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+static NEXT_TEMP: AtomicU32 = AtomicU32::new(0);
 
 /// Writes a complete new region to a temporary sibling, then publishes it with
 /// an atomic, non-overwriting hard link. Drop rolls back unpublished files.

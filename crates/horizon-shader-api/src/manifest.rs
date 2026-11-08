@@ -5,11 +5,54 @@ use serde::Deserialize;
 pub const MANIFEST: &str = "horizon-shaders.toml";
 /// The manifest schema this build reads.
 pub const SCHEMA: u32 = 1;
-/// The shader API line this build serves: the stages, their signatures and
-/// the inputs a pack's WGSL may read.
-pub const API: &str = "0.1";
+/// The shader API line packs are written for unless they opt into a newer one: what the
+/// templates write, and what the game and the registry take.
+pub const API: &str = Api::V0_1.as_str();
+
+/// A shader API line: the stages, their signatures and the inputs a pack's WGSL may read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Api {
+    /// Vanilla's gamma values.
+    V0_1,
+    /// Linear light (docs/design/hdr-linear-light.md). Experimental: checked, not yet drawn.
+    V0_2,
+}
+
+impl Api {
+    /// Every line this build reads and checks, oldest first.
+    pub const SERVED: [Api; 2] = [Api::V0_1, Api::V0_2];
+
+    /// The manifest's `api` value.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Api::V0_1 => "0.1",
+            Api::V0_2 => "0.2",
+        }
+    }
+
+    pub fn parse(line: &str) -> Option<Api> {
+        Self::SERVED.into_iter().find(|a| a.as_str() == line)
+    }
+}
+
+impl std::fmt::Display for Api {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// `[frame] blend` (0.2): what the frame stores, and so how see-through draws blend.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Blend {
+    /// Vanilla's gamma, values above 1 kept: Horizon encodes a stage's result before it is
+    /// stored and blended.
+    #[default]
+    Gamma,
+    /// Linear light: glass, water and smoke blend as light does.
+    Linear,
+}
 /// Full-screen passes a pack may chain.
-pub const MAX_POST_PASSES: usize = 8;
+pub const MAX_POST_PASSES: usize = 12;
 /// Options a pack may declare.
 pub const MAX_OPTIONS: usize = 64;
 /// Settings pages a pack may declare, and the items one page may hold.
@@ -24,6 +67,8 @@ pub const MAX_TEXTURES: usize = 8;
 pub const MAX_TEXTURE_SIZE: u32 = 2048;
 /// `[[lights]]` entries a manifest may declare.
 pub const MAX_LIGHTS: usize = 256;
+/// `[[particle_lights]]` entries a manifest may declare.
+pub const MAX_PARTICLE_LIGHTS: usize = 32;
 /// Sprite tags a pack may declare: the bits of `MaterialInput.tags`.
 pub const MAX_TAGS: usize = 32;
 
@@ -35,7 +80,7 @@ pub struct Manifest {
     pub name: String,
     pub version: String,
     /// The API line the pack is written for.
-    pub api: String,
+    pub api: Api,
     pub description: String,
     pub authors: Vec<String>,
     pub license: Option<String>,
@@ -49,6 +94,10 @@ pub struct Manifest {
     pub weather: Option<Stage>,
     /// Full-screen passes, in the order they run.
     pub post: Vec<Stage>,
+    /// 0.2: the picture for the display, after the post chain (Horizon's tone curve when absent).
+    pub tonemap: Option<Stage>,
+    /// 0.2: `[frame] blend`.
+    pub blend: Blend,
     pub options: Vec<PackOption>,
     /// How the settings page lays the options out; the first page is the one it opens on.
     /// Empty: one page with every option.
@@ -62,12 +111,43 @@ pub struct Manifest {
     /// The colour of block light by the block giving it off: the first entry with a matching
     /// pattern wins (`Manifest::light_of`).
     pub lights: Vec<LightColor>,
+    /// Particles that join the frame's coloured lights (`MaterialInput.colored_light`): the first
+    /// entry naming a particle wins.
+    pub particle_lights: Vec<ParticleLight>,
     pub budget: Budget,
     /// When the material stage's water mirror (`reflection`) is drawn.
     pub reflection: Option<Reflection>,
     /// The shadow map the material and post stages read, if the pack asks for one.
     pub shadow: Option<Shadow>,
+    /// Relief as geometry near the camera, if the pack asks for it; needs `[material]`.
+    pub displacement: Option<Displacement>,
 }
+
+/// `[displacement]`: within `distance` of the camera, the faces of solid terrain whose
+/// resource pack textures have LabPBR heights are drawn as a grid of `cells` by `cells`, each
+/// corner moved along the face's normal by the material stage's
+/// `fn displacement(input: DisplacementInput) -> f32`: relief that is geometry, which
+/// occludes itself, writes its depth and is lit at its true place.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Displacement {
+    /// How far from the camera faces are displaced, in blocks; the relief eases out over the
+    /// last quarter.
+    pub distance: f32,
+    /// The grid's cells along a face's side (fewer where the textures have fewer texels).
+    pub cells: u32,
+    /// The `bool` option that turns it on, if any (else it is always on).
+    pub option: Option<String>,
+    /// A `choice` option whose values are cell counts, if any: the player's value replaces
+    /// `cells`.
+    pub cells_option: Option<String>,
+    /// A `bool` option, if any: while it is on each cell is a flat step with walls, the
+    /// height map's texels standing out sharply, rather than a smooth surface through them.
+    pub steps_option: Option<String>,
+}
+
+/// How far from the camera `[displacement]` reaches, in blocks, and its grid's cells a side.
+pub const DISPLACEMENT_DISTANCES: std::ops::RangeInclusive<f32> = 4.0..=32.0;
+pub const DISPLACEMENT_CELLS: std::ops::RangeInclusive<u32> = 4..=64;
 
 /// `[shadow]`: the renderer draws the solid terrain and entities as the sun (the moon by night)
 /// sees them into a square depth map each frame, which the material and post stages read.
@@ -84,12 +164,58 @@ pub struct Shadow {
     /// a full shadow, say, whatever holes they show.
     #[serde(default)]
     pub solid_materials: Vec<u32>,
+    /// The option the map is drawn while it is not 0 (a bool on, a number other than 0), if
+    /// any: while it is 0 there is no map and no shadow pass, and `has_shadow` reads 0.
+    #[serde(default)]
+    pub option: Option<String>,
+    /// An `int` option, or a `choice` whose values are numbers, if any: the player's value
+    /// replaces `resolution`.
+    #[serde(default)]
+    pub resolution_option: Option<String>,
+    /// An `int` option, or a `choice` whose values are numbers, if any: the player's value
+    /// replaces `distance`.
+    #[serde(default)]
+    pub distance_option: Option<String>,
+}
+
+impl Default for Shadow {
+    /// `[shadow]` with no keys.
+    fn default() -> Self {
+        Shadow {
+            resolution: default_shadow_resolution(),
+            distance: default_shadow_distance(),
+            solid_materials: Vec::new(),
+            option: None,
+            resolution_option: None,
+            distance_option: None,
+        }
+    }
 }
 
 /// The shadow map's side, in texels.
 pub const SHADOW_RESOLUTIONS: std::ops::RangeInclusive<u32> = 256..=8192;
 /// Half the side of the square the shadow map covers, in blocks.
 pub const SHADOW_DISTANCES: std::ops::RangeInclusive<f32> = 32.0..=512.0;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDisplacement {
+    #[serde(default = "default_displacement_distance")]
+    distance: f32,
+    #[serde(default = "default_displacement_cells")]
+    cells: u32,
+    option: Option<String>,
+    cells_option: Option<String>,
+    steps_option: Option<String>,
+}
+
+fn default_displacement_distance() -> f32 {
+    12.0
+}
+
+fn default_displacement_cells() -> u32 {
+    16
+}
 
 fn default_shadow_resolution() -> u32 {
     2048
@@ -121,6 +247,16 @@ pub struct PackTexture {
     pub linear: bool,
     /// Coordinates outside 0..1 repeat the image (else they clamp to its edges).
     pub repeat: bool,
+}
+
+/// `[[particle_lights]]`: `particles` (names, as `firefly` or `minecraft:firefly`) light what's
+/// within `reach` blocks in `color`, as strongly as they are opaque.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParticleLight {
+    pub particles: Vec<String>,
+    pub color: [f32; 3],
+    pub reach: f32,
 }
 
 /// `[[lights]]`: the colour of the block light from some blocks, as the material stage reads
@@ -184,6 +320,15 @@ impl Material {
 
 /// Whether the sprite or block `name` (`namespace:path`) fits `pattern`: the namespace
 /// defaults to `minecraft`, and each `*` matches any run of characters.
+/// The colour of the first of `lights` whose patterns match the block `name`
+/// (`Manifest::light_of`, for a copy of the entries).
+pub fn light_color(lights: &[LightColor], name: &str) -> Option<[f32; 3]> {
+    lights
+        .iter()
+        .find(|l| l.blocks.iter().any(|pattern| sprite_matches(pattern, name)))
+        .map(|l| l.color)
+}
+
 fn sprite_matches(pattern: &str, name: &str) -> bool {
     let pattern = match pattern.contains(':') {
         true => std::borrow::Cow::Borrowed(pattern),
@@ -331,6 +476,8 @@ struct Raw {
     weather: Option<Stage>,
     #[serde(default)]
     post: Vec<Stage>,
+    tonemap: Option<Stage>,
+    frame: Option<RawFrame>,
     #[serde(default)]
     options: Vec<RawOption>,
     #[serde(default)]
@@ -344,9 +491,12 @@ struct Raw {
     #[serde(default)]
     lights: Vec<LightColor>,
     #[serde(default)]
+    particle_lights: Vec<ParticleLight>,
+    #[serde(default)]
     budget: RawBudget,
     reflection: Option<Reflection>,
     shadow: Option<Shadow>,
+    displacement: Option<RawDisplacement>,
 }
 
 #[derive(Deserialize)]
@@ -363,6 +513,12 @@ struct RawOption {
     max: Option<toml::Value>,
     step: Option<f64>,
     values: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawFrame {
+    blend: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -452,12 +608,29 @@ impl Manifest {
                 raw.schema
             )));
         }
-        if raw.api != API {
+        let Some(api) = Api::parse(&raw.api) else {
             return Err(err(format!(
-                "written for shader API {}; this Horizon serves {API}",
+                "written for shader API {}; this Horizon serves 0.1 and 0.2",
                 raw.api
             )));
+        };
+        if api == Api::V0_1 {
+            for (present, key) in [
+                (raw.tonemap.is_some(), "[tonemap]"),
+                (raw.frame.is_some(), "[frame]"),
+            ] {
+                if present {
+                    return Err(err(format!(
+                        "{key} is shader API 0.2: the pack says api = \"0.1\""
+                    )));
+                }
+            }
         }
+        let blend = match raw.frame.as_ref().and_then(|f| f.blend.as_deref()) {
+            None | Some("gamma") => Blend::Gamma,
+            Some("linear") => Blend::Linear,
+            Some(b) => return Err(err(format!("frame.blend {b:?}: gamma or linear"))),
+        };
         let id_ok = (1..=64).contains(&raw.id.len())
             && raw
                 .id
@@ -473,10 +646,15 @@ impl Manifest {
             && raw.material.is_none()
             && raw.weather.is_none()
             && raw.post.is_empty()
+            && raw.tonemap.is_none()
         {
-            return Err(err(
-                "no stage: give it a [sky], a [material], a [weather] or a [[post]]".into(),
-            ));
+            return Err(err(match api {
+                Api::V0_1 => "no stage: give it a [sky], a [material], a [weather] or a [[post]]",
+                Api::V0_2 => {
+                    "no stage: give it a [sky], a [material], a [weather], a [[post]] or a [tonemap]"
+                }
+            }
+            .into()));
         }
         if raw.vertex.is_some() && raw.material.is_none() {
             return Err(err(
@@ -488,6 +666,7 @@ impl Manifest {
             .iter()
             .chain(&raw.vertex)
             .chain(&raw.post)
+            .chain(&raw.tonemap)
             .any(|s| s.fog.is_some())
         {
             return Err(err("`fog` is a key of [material] only".into()));
@@ -497,6 +676,7 @@ impl Manifest {
             .iter()
             .chain(&raw.material)
             .chain(&raw.vertex)
+            .chain(&raw.tonemap)
             .any(|s| s.scale.is_some() || s.output.is_some())
         {
             return Err(err("`scale` and `output` are keys of [[post]] only".into()));
@@ -514,7 +694,8 @@ impl Manifest {
             .chain(&raw.material)
             .chain(&raw.vertex)
             .chain(&raw.weather)
-            .chain(&raw.post);
+            .chain(&raw.post)
+            .chain(&raw.tonemap);
         for file in raw
             .shared
             .iter()
@@ -525,7 +706,13 @@ impl Manifest {
             }
         }
         let sky_only = |s: &Stage| s.clouds.is_some() || s.sun.is_some() || s.stars.is_some();
-        if raw.material.iter().chain(&raw.post).any(sky_only) {
+        if raw
+            .material
+            .iter()
+            .chain(&raw.post)
+            .chain(&raw.tonemap)
+            .any(sky_only)
+        {
             return Err(err(
                 "`clouds`, `sun` and `stars` are keys of [sky] only".into()
             ));
@@ -650,6 +837,34 @@ impl Manifest {
                 "lights are read by the material stage: give it a [material]".into(),
             ));
         }
+        if !raw.particle_lights.is_empty() && raw.material.is_none() {
+            return Err(err(
+                "particle lights are read by the material stage: give it a [material]".into(),
+            ));
+        }
+        if raw.particle_lights.len() > MAX_PARTICLE_LIGHTS {
+            return Err(err(format!(
+                "{} [[particle_lights]]; a pack may declare {MAX_PARTICLE_LIGHTS}",
+                raw.particle_lights.len()
+            )));
+        }
+        for l in &raw.particle_lights {
+            if l.particles.is_empty() {
+                return Err(err("a [[particle_lights]] entry needs particles".into()));
+            }
+            if l.color.iter().any(|c| !(0.0..=1.0).contains(c)) {
+                return Err(err(format!(
+                    "particle light color {:?} is not in 0..=1 per channel",
+                    l.color
+                )));
+            }
+            if !(0.25..=16.0).contains(&l.reach) {
+                return Err(err(format!(
+                    "particle light reach {} is not in 0.25..=16",
+                    l.reach
+                )));
+            }
+        }
         if raw.lights.len() > MAX_LIGHTS {
             return Err(err(format!(
                 "{} [[lights]]; a pack may declare {MAX_LIGHTS}",
@@ -707,12 +922,93 @@ impl Manifest {
                     s.distance
                 )));
             }
+            if let Some(id) = &s.option
+                && !options.iter().any(|o| o.id == *id)
+            {
+                return Err(err(format!("shadow.option: `{id}` is no option")));
+            }
+            let resolution = |v: f64| v.fract() == 0.0 && SHADOW_RESOLUTIONS.contains(&(v as u32));
+            if let Some(id) = &s.resolution_option
+                && !numbers_in(&options, id, resolution)
+            {
+                return Err(err(format!(
+                    "shadow.resolution_option: `{id}` is no int or choice of resolutions in \
+                     {SHADOW_RESOLUTIONS:?}"
+                )));
+            }
+            let distance = |v: f64| SHADOW_DISTANCES.contains(&(v as f32));
+            if let Some(id) = &s.distance_option
+                && !numbers_in(&options, id, distance)
+            {
+                return Err(err(format!(
+                    "shadow.distance_option: `{id}` is no int or choice of distances in \
+                     {SHADOW_DISTANCES:?}"
+                )));
+            }
         }
+        let displacement = match raw.displacement {
+            Some(_) if raw.material.is_none() => {
+                return Err(err("[displacement] needs [material]".into()));
+            }
+            Some(d) if !DISPLACEMENT_DISTANCES.contains(&d.distance) => {
+                return Err(err(format!(
+                    "displacement.distance {} is not in {DISPLACEMENT_DISTANCES:?}",
+                    d.distance
+                )));
+            }
+            Some(d) if !DISPLACEMENT_CELLS.contains(&d.cells) => {
+                return Err(err(format!(
+                    "displacement.cells {} is not in {DISPLACEMENT_CELLS:?}",
+                    d.cells
+                )));
+            }
+            Some(d) => {
+                if let Some(id) = &d.option
+                    && !options
+                        .iter()
+                        .any(|o| o.id == *id && matches!(o.kind, OptionKind::Bool { .. }))
+                {
+                    return Err(err(format!(
+                        "displacement.option: `{id}` is no bool option"
+                    )));
+                }
+                if let Some(id) = &d.steps_option
+                    && !options
+                        .iter()
+                        .any(|o| o.id == *id && matches!(o.kind, OptionKind::Bool { .. }))
+                {
+                    return Err(err(format!(
+                        "displacement.steps_option: `{id}` is no bool option"
+                    )));
+                }
+                if let Some(id) = &d.cells_option
+                    && !options.iter().any(|o| {
+                        o.id == *id
+                            && matches!(&o.kind, OptionKind::Choice { values, .. } if values
+                                .iter()
+                                .all(|v| v.parse().is_ok_and(|c| DISPLACEMENT_CELLS.contains(&c))))
+                    })
+                {
+                    return Err(err(format!(
+                        "displacement.cells_option: `{id}` is no choice of cell counts in \
+                         {DISPLACEMENT_CELLS:?}"
+                    )));
+                }
+                Some(Displacement {
+                    distance: d.distance,
+                    cells: d.cells,
+                    option: d.option,
+                    cells_option: d.cells_option,
+                    steps_option: d.steps_option,
+                })
+            }
+            None => None,
+        };
         Ok(Manifest {
             id: raw.id,
             name: raw.name,
             version: raw.version,
-            api: raw.api,
+            api,
             description: raw.description,
             authors: raw.authors,
             license: raw.license,
@@ -722,15 +1018,19 @@ impl Manifest {
             vertex: raw.vertex,
             weather: raw.weather,
             post: raw.post,
+            tonemap: raw.tonemap,
+            blend,
             options,
             pages,
             tags: raw.tags,
             materials: raw.materials,
             textures,
             lights: raw.lights,
+            particle_lights: raw.particle_lights,
             budget: Budget { gpu_ms },
             reflection: raw.reflection,
             shadow: raw.shadow,
+            displacement,
         })
     }
 
@@ -805,10 +1105,7 @@ impl Manifest {
     /// The `[[lights]]` colour of the block `name` (`namespace:path`): the first entry with a
     /// matching pattern.
     pub fn light_of(&self, name: &str) -> Option<[f32; 3]> {
-        self.lights
-            .iter()
-            .find(|l| l.blocks.iter().any(|pattern| sprite_matches(pattern, name)))
-            .map(|l| l.color)
+        light_color(&self.lights, name)
     }
 
     /// The pack targets its post passes write (`[[post]] output`), in the order first
@@ -834,7 +1131,8 @@ impl Manifest {
             .chain(&self.material)
             .chain(&self.vertex)
             .chain(&self.weather)
-            .chain(&self.post);
+            .chain(&self.post)
+            .chain(&self.tonemap);
         for file in self
             .shared
             .iter()
@@ -846,6 +1144,23 @@ impl Manifest {
         }
         files
     }
+}
+
+/// Whether `id` is an `int` option or a `choice` whose every value stands for a number
+/// (`OptionKind::number`) that `valid` takes.
+fn numbers_in(options: &[PackOption], id: &str, valid: impl Fn(f64) -> bool) -> bool {
+    options.iter().any(|o| {
+        o.id == id
+            && match &o.kind {
+                OptionKind::Int { min, max, .. } => {
+                    valid(f64::from(*min)) && valid(f64::from(*max))
+                }
+                OptionKind::Choice { values, .. } => {
+                    (0..values.len()).all(|i| o.kind.number(i as f64).is_some_and(&valid))
+                }
+                _ => false,
+            }
+    })
 }
 
 /// A WGSL identifier the renderer leaves to packs: ASCII, not starting
@@ -1009,9 +1324,9 @@ impl RawOption {
         let float = |v: &toml::Value| {
             v.as_float()
                 .or_else(|| v.as_integer().map(|i| i as f64))
-                .filter(|f| f.is_finite())
                 .map(|f| f as f32)
-                .ok_or_else(|| format!("{v} is not a number"))
+                .filter(|f| f.is_finite())
+                .ok_or_else(|| format!("{v} is not a finite 32-bit number"))
         };
         let need = |v: Option<toml::Value>, key: &str| v.ok_or_else(|| format!("needs {key}"));
         let unused = |present: bool, key: &str| {
@@ -1039,11 +1354,13 @@ impl RawOption {
                     float(&need(self.max, "max")?)?,
                 );
                 let default = float(&self.default)?;
-                let step = self.step.map_or((max - min) / 100.0, |s| s as f32);
+                // The endpoints may both fit f32 even when their difference does not.
+                let range = f64::from(max) - f64::from(min);
+                let step = self.step.map_or((range / 100.0) as f32, |s| s as f32);
                 if !(min < max && (min..=max).contains(&default)) {
                     return Err(format!("needs min < max and default in [{min}, {max}]"));
                 }
-                if !(step > 0.0 && step <= max - min) {
+                if !(step.is_finite() && step > 0.0 && f64::from(step) <= range) {
                     return Err(format!("step {step} is not in (0, max - min]"));
                 }
                 OptionKind::Float {
@@ -1108,6 +1425,16 @@ impl OptionKind {
             OptionKind::Float { .. } => "f32",
             OptionKind::Int { .. } => "i32",
             OptionKind::Choice { .. } => "u32",
+        }
+    }
+
+    /// The number the pipeline constant `value` stands for: an `int`'s own, the value a
+    /// `choice` picks read as a number; none for other kinds, or a choice that is no number.
+    pub fn number(&self, value: f64) -> Option<f64> {
+        match self {
+            OptionKind::Int { .. } => Some(value),
+            OptionKind::Choice { values, .. } => values.get(value as usize)?.parse().ok(),
+            _ => None,
         }
     }
 

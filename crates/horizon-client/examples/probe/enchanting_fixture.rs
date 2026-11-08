@@ -9,7 +9,7 @@ use horizon_client::{
     stations,
 };
 use horizon_world::loot::PackOverlay;
-use std::{fmt::Write as _, fs, path::Path};
+use std::{fmt::Write as _, fs, path::Path, sync::Arc};
 
 pub fn main() -> horizon_client::Result<()> {
     let args: Vec<String> = crate::args().collect();
@@ -24,7 +24,20 @@ pub fn main() -> horizon_client::Result<()> {
     for line in input.lines() {
         let f: Vec<&str> = line.split(' ').collect();
         let (seed, bookcases, item): (i32, i32, &str) = (f[0].parse()?, f[1].parse()?, f[2]);
-        let stack = ItemStack::new(item, 1);
+        let mut stack = ItemStack::new(item, 1);
+        if let Some(damage) = f.get(3) {
+            stack.damage = damage.parse()?;
+        }
+        if let Some(levels) = f.get(4).filter(|levels| **levels != "-") {
+            stack.data_mut().enchantments = levels
+                .split(',')
+                .map(|entry| {
+                    let (id, level) = entry.split_once('=')?;
+                    Some((Arc::from(id), level.parse().ok()?))
+                })
+                .collect::<Option<Vec<_>>>()
+                .ok_or("bad enchantments")?;
+        }
         let offers = stations::enchant_offers(&e, &items, seed, bookcases, Some(&stack));
         for i in 0..3 {
             let cost = offers.costs[i];

@@ -17,7 +17,8 @@
 use crate::{Result, blocks::MAP_COLORS};
 use horizon_core::geometry::{Aabb, Axis, ShapeOp, Vec3, VoxelShape};
 use horizon_mods::content::{
-    Block, Content, CreativeTab, EntityType, MenuType, MobEffect, Rarity, StateProperty,
+    Block, BlockShapes, Content, CreativeTab, EntityType, MenuType, MobEffect, Rarity,
+    StateProperty, StateValues,
 };
 use horizon_world::nbt::{self, Compound, JavaString, Limits, Tag};
 use serde::{Deserialize, Serialize, de};
@@ -223,6 +224,12 @@ impl J {
     fn as_u32(&self) -> Option<u32> {
         match self {
             J::Num(n) => n.as_u64().and_then(|v| u32::try_from(v).ok()),
+            _ => None,
+        }
+    }
+    fn as_str(&self) -> Option<&str> {
+        match self {
+            J::Str(s) => Some(s),
             _ => None,
         }
     }
@@ -485,50 +492,11 @@ fn set_nbt_properties(state: &mut Tag, combo: &[(String, String)]) {
 
 // DiscreteVoxelShape.forAllEdges: merge consecutive boundary edges.
 fn shape_edges(shape: &VoxelShape) -> Vec<J> {
-    let sizes = shape.sizes();
-    let mut result = Vec::new();
-    for axis in [2, 0, 1] {
-        let a = (axis + 1) % 3;
-        let b = (axis + 2) % 3;
-        for u in 0..=sizes[a] {
-            for v in 0..=sizes[b] {
-                let mut start = None;
-                for t in 0..=sizes[axis] {
-                    let mut count = 0;
-                    let mut odd = 0;
-                    for du in 0..=1 {
-                        for dv in 0..=1 {
-                            let mut p = [0i32; 3];
-                            p[axis] = t as i32;
-                            p[a] = u as i32 + du - 1;
-                            p[b] = v as i32 + dv - 1;
-                            if shape.is_full(p[0], p[1], p[2]) {
-                                count += 1;
-                                odd ^= du ^ dv;
-                            }
-                        }
-                    }
-                    let edge = count == 1 || count == 3 || (count == 2 && odd == 0);
-                    if edge {
-                        if start.is_none() {
-                            start = Some(t);
-                        }
-                    } else if let Some(first) = start.take() {
-                        let mut from = [0.0; 3];
-                        let mut to = [0.0; 3];
-                        from[a] = shape.coordinates(Axis::ALL[a])[u];
-                        from[b] = shape.coordinates(Axis::ALL[b])[v];
-                        to[a] = from[a];
-                        to[b] = from[b];
-                        from[axis] = shape.coordinates(Axis::ALL[axis])[first];
-                        to[axis] = shape.coordinates(Axis::ALL[axis])[t];
-                        result.push(J::Arr(from.into_iter().chain(to).map(J::f64).collect()));
-                    }
-                }
-            }
-        }
-    }
-    result
+    shape
+        .edges()
+        .into_iter()
+        .map(|edge| J::Arr(edge.into_iter().map(J::f64).collect()))
+        .collect()
 }
 
 fn encode_shape(shape: &VoxelShape) -> Tag {
@@ -568,6 +536,77 @@ fn encode_shape(shape: &VoxelShape) -> Tag {
     Tag::Compound(c)
 }
 
+fn resolve_state_values<'a, 's, T>(
+    spec: &'s StateValues<T>,
+    block: &str,
+    states: &Range<u32>,
+    order: &[(u32, u32)],
+    combos: &[Vec<(String, String)>],
+    properties: impl Fn(u32) -> Option<&'a J>,
+) -> Result<Vec<&'s T>> {
+    let names = spec.property_names();
+    let mut used = BTreeSet::new();
+    let mut selected = Vec::with_capacity(order.len());
+    for &(state, combo) in order {
+        let values = names
+            .iter()
+            .map(|name| {
+                combos[combo as usize]
+                    .iter()
+                    .find(|(key, _)| key == name)
+                    .map(|(_, value)| value.as_str())
+                    .or_else(|| {
+                        match properties(states.start + state).and_then(|props| props.get(name)) {
+                            Some(J::Str(value)) => Some(value.as_str()),
+                            _ => None,
+                        }
+                    })
+                    .ok_or_else(|| format!("{block}: state lacks property {name}"))
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let key = values.join(",");
+        let value = if let Some(value) = spec.values.get(&key) {
+            used.insert(key);
+            value
+        } else {
+            spec.default
+                .as_ref()
+                .ok_or_else(|| format!("{block}: no state value for {key}"))?
+        };
+        selected.push(value);
+    }
+    if used.len() != spec.values.len() {
+        return Err(
+            format!("{block}: state values include an unknown property value tuple").into(),
+        );
+    }
+    Ok(selected)
+}
+
+fn resolve_shapes<'a>(
+    spec: &BlockShapes,
+    block: &str,
+    states: &Range<u32>,
+    order: &[(u32, u32)],
+    combos: &[Vec<(String, String)>],
+    properties: impl Fn(u32) -> Option<&'a J>,
+) -> Result<Vec<VoxelShape>> {
+    resolve_state_values(spec, block, states, order, combos, properties)?
+        .into_iter()
+        .map(|boxes| {
+            let mut shape = VoxelShape::empty();
+            for bounds in boxes {
+                let part = VoxelShape::from_box(Aabb::new(
+                    Vec3::new(bounds[0], bounds[1], bounds[2]),
+                    Vec3::new(bounds[3], bounds[4], bounds[5]),
+                ))?;
+                shape = shape.join_unoptimized(&part, ShapeOp::OR)?;
+            }
+            Ok(shape)
+        })
+        .collect()
+}
+
 /// A block being added: its declaration and where its states go.
 struct NewBlock<'a> {
     decl: &'a Block,
@@ -575,6 +614,9 @@ struct NewBlock<'a> {
     /// The template's item, if it has one.
     item: Option<String>,
     shapes: Option<Vec<VoxelShape>>,
+    collision_shapes: Option<Vec<VoxelShape>>,
+    context_shapes: BTreeMap<String, Vec<VoxelShape>>,
+    state_light: Option<Vec<u8>>,
     default: u32,
     /// The declared state properties' combinations, every property at its
     /// default first (one empty combination when the block declares none):
@@ -583,6 +625,9 @@ struct NewBlock<'a> {
     /// Each state's template state offset and combination index, in registry order
     /// (`state_order`).
     order: Vec<(u32, u32)>,
+    /// The sign whose item places this block on a wall, which makes that item
+    /// this block's too (`StandingAndWallBlockItem.registerBlocks`).
+    wall_of: Option<String>,
 }
 impl NewBlock<'_> {
     /// Template states and declared combinations in registry order.
@@ -600,6 +645,9 @@ struct NewItem {
     rarity: Option<Rarity>,
     components: Vec<(String, J)>,
     crafting_remainder: Option<String>,
+    /// `StandingAndWallBlockItem.wallBlock`, when its block declares it.
+    wall_block: Option<String>,
+    place_block: Option<String>,
 }
 
 struct Plan<'a> {
@@ -797,8 +845,10 @@ fn read_json(path: &Path) -> Result<J> {
 impl Plan<'_> {
     /// `entity-types.json` with a row for each mod type: its template's, so its
     /// size, eyes and category are the template's (`execute anchored eyes`,
-    /// spawner checks and the commands' entity type list, `reg.entity_types`).
-    /// The rows are appended as text: parsed and written back, a float such as
+    /// spawner checks and the commands' entity type list, `reg.entity_types`),
+    /// with `template` naming it and a living type's own attribute bases
+    /// (`MobTypes` makes the mob from it). The rows are appended as text, each
+    /// value as the template has it: parsed and written back, a float such as
     /// a zombie's `movement_speed` can come back one ulp off.
     fn entity_types_json(&self, bytes: &[u8]) -> std::result::Result<Vec<u8>, String> {
         use serde_json::value::RawValue;
@@ -821,11 +871,47 @@ impl Plan<'_> {
             }
             out.extend(serde_json::to_vec(&t.id).map_err(|e| e.to_string())?);
             out.push(b':');
-            out.extend(row.get().as_bytes());
+            out.extend(mod_entity_row(row, t)?);
         }
         out.push(b'}');
         Ok(out)
     }
+}
+
+/// A mod entity type's row in `entity-types.json`: its template's `row` with
+/// `template` added and the type's attribute bases in place of the
+/// template's. The other values keep the template's text.
+fn mod_entity_row(
+    row: &serde_json::value::RawValue,
+    t: &EntityType,
+) -> std::result::Result<Vec<u8>, String> {
+    use serde_json::value::{RawValue, to_raw_value};
+    type Raw = BTreeMap<String, Box<RawValue>>;
+    let fail = |e: serde_json::Error| format!("{}: {e}", t.template);
+    let mut fields: Raw = serde_json::from_str(row.get()).map_err(fail)?;
+    if !t.attributes.is_empty() {
+        let mut attributes: Raw = match fields.get("attributes") {
+            Some(a) => serde_json::from_str(a.get()).map_err(fail)?,
+            None => Raw::new(),
+        };
+        for (id, value) in &t.attributes {
+            // Refused rather than added: the mob reads the attributes its
+            // template's class has, so an extra one would do nothing.
+            let Some(base) = attributes.get_mut(id) else {
+                return Err(format!(
+                    "{}: attribute {id} is not one of {}'s",
+                    t.id, t.template
+                ));
+            };
+            *base = to_raw_value(value).map_err(fail)?;
+        }
+        fields.insert(
+            "attributes".into(),
+            to_raw_value(&attributes).map_err(fail)?,
+        );
+    }
+    fields.insert("template".into(), to_raw_value(&t.template).map_err(fail)?);
+    serde_json::to_vec(&fields).map_err(fail)
 }
 
 impl<'a> Plan<'a> {
@@ -880,50 +966,7 @@ impl<'a> Plan<'a> {
                 let states = range(&decl.template).ok_or_else(|| {
                     format!("{}: template {} is not a block", decl.id, decl.template)
                 })?;
-                let shapes = if let Some(spec) = &decl.shapes {
-                    let Some(J::Arr(rows)) = facts.get("states") else {
-                        unreachable!()
-                    };
-                    let mut used = BTreeSet::new();
-                    let mut out = Vec::new();
-                    for id in states.clone() {
-                        let J::Arr(row) = &rows[id as usize] else {
-                            unreachable!()
-                        };
-                        let Some(J::Str(value)) = row
-                            .get(4)
-                            .and_then(|x| x.get("properties"))
-                            .and_then(|x| x.get(&spec.property))
-                        else {
-                            return Err(format!(
-                                "{}: template state lacks property {}",
-                                decl.id, spec.property
-                            )
-                            .into());
-                        };
-                        let boxes = spec.values.get(value).ok_or_else(|| {
-                            format!("{}: no shape for {}={value}", decl.id, spec.property)
-                        })?;
-                        used.insert(value.as_str());
-                        let mut shape = VoxelShape::empty();
-                        for b in boxes {
-                            let part = VoxelShape::from_box(Aabb::new(
-                                Vec3::new(b[0], b[1], b[2]),
-                                Vec3::new(b[3], b[4], b[5]),
-                            ))?;
-                            shape = shape.join_unoptimized(&part, ShapeOp::OR)?;
-                        }
-                        out.push(shape);
-                    }
-                    if used.len() != spec.values.len() {
-                        return Err(format!(
-                            "{}: shape values include an unknown {} value",
-                            decl.id, spec.property
-                        )
-                        .into());
-                    }
-                    Some(out)
-                } else if let Some(size) = decl.thickness {
+                let pipe_shapes = if let Some(size) = decl.thickness {
                     let Some(J::Arr(rows)) = facts.get("states") else {
                         unreachable!()
                     };
@@ -1027,6 +1070,40 @@ impl<'a> Plan<'a> {
                     .map(|(name, property)| (name.clone(), property.values().len() as u32))
                     .collect();
                 let order = block_order(&states, properties, &declared, combos.len() as u32);
+                let resolve = |spec: &BlockShapes| {
+                    resolve_shapes(spec, &decl.id, &states, &order, &combos, properties)
+                };
+                let shapes = if let Some(spec) = &decl.shapes {
+                    Some(resolve(spec)?)
+                } else {
+                    pipe_shapes.map(|shapes: Vec<VoxelShape>| {
+                        order
+                            .iter()
+                            .map(|&(state, _)| shapes[state as usize].clone())
+                            .collect()
+                    })
+                };
+                let collision_shapes = decl.collision_shapes.as_ref().map(resolve).transpose()?;
+                let mut context_shapes = BTreeMap::new();
+                for (channel, specs) in [
+                    ("outline", &decl.outline_context_shapes),
+                    ("collision", &decl.collision_context_shapes),
+                ] {
+                    for (kind, spec) in specs {
+                        context_shapes.insert(format!("{channel}_{}", kind.name()), resolve(spec)?);
+                    }
+                }
+                if let Some(spec) = &decl.interaction_shapes {
+                    context_shapes.insert("interaction".into(), resolve(spec)?);
+                }
+                let state_light = decl
+                    .state_light
+                    .as_ref()
+                    .map(|spec| {
+                        resolve_state_values(spec, &decl.id, &states, &order, &combos, properties)
+                            .map(|values| values.into_iter().copied().collect())
+                    })
+                    .transpose()?;
                 // The lookup from (template state, combination) to the state's row.
                 let mut rows = vec![0; order.len()];
                 for (position, &(state, combo)) in order.iter().enumerate() {
@@ -1051,10 +1128,24 @@ impl<'a> Plan<'a> {
                     rename,
                     item: None,
                     shapes,
+                    collision_shapes,
+                    context_shapes,
+                    state_light,
                     default,
                     combos,
                     order,
+                    wall_of: None,
                 });
+            }
+        }
+        // A sign's wall form, which `Content` checked against its mod's blocks.
+        let pairs: Vec<_> = blocks
+            .iter()
+            .filter_map(|b| Some((b.decl.wall_block.clone()?, b.decl.id.clone())))
+            .collect();
+        for (wall, sign) in pairs {
+            if let Some(block) = blocks.iter_mut().find(|b| b.decl.id == wall) {
+                block.wall_of = Some(sign);
             }
         }
         if next > MAX_STATES {
@@ -1101,17 +1192,27 @@ impl<'a> Plan<'a> {
                     rarity: None,
                     components: component_patch(&b.decl.id, &b.decl.components)?,
                     crafting_remainder: None,
+                    wall_block: b.decl.wall_block.clone(),
+                    place_block: None,
                 });
             }
         }
         for m in &sorted {
             for i in &m.content.items {
+                if let Some(target) = &i.place_block
+                    && !defaults.contains_key(target)
+                    && !blocks.iter().any(|b| &b.decl.id == target)
+                {
+                    return Err(format!("{}: place_block {target:?} is not a block", i.id).into());
+                }
                 items.push(NewItem {
                     rename: Rename::new(&i.template, &i.id),
                     max_stack_size: i.max_stack_size,
                     rarity: i.rarity,
                     components: component_patch(&i.id, &i.components)?,
                     crafting_remainder: i.crafting_remainder.clone(),
+                    wall_block: None,
+                    place_block: i.place_block.clone(),
                 });
             }
         }
@@ -1148,13 +1249,15 @@ impl<'a> Plan<'a> {
 
     /// What moves in a new block's copies of its template's rows: the
     /// block, and the template's item when it has another name. A block
-    /// without an item gets `minecraft:air` where rows name one.
+    /// without an item gets `minecraft:air` where rows name one, except a
+    /// sign's wall form, whose item is the paired sign's.
     fn renames(&self, b: &NewBlock) -> Vec<Rename> {
         let mut out = vec![b.rename.clone()];
+        let own = b.decl.item.then_some(b.decl.id.as_str());
         if let Some(item) = b.item.as_deref().filter(|i| *i != b.decl.template)
-            && b.decl.item
+            && let Some(to) = own.or(b.wall_of.as_deref())
         {
-            out.push(Rename::new(item, &b.decl.id));
+            out.push(Rename::new(item, to));
         }
         out
     }
@@ -1170,7 +1273,7 @@ impl<'a> Plan<'a> {
             // One row per template state per combination the block declares,
             // so its states stay one run in registry order.
             for (next, (id, combo)) in (b.rename.first..).zip(b.state_combinations()) {
-                let t = (id - b.rename.states.start) as usize;
+                let state_index = (next - b.rename.first) as usize;
                 let mut row = list[id as usize].clone();
                 for r in &renames {
                     row.rename(r, ids);
@@ -1180,12 +1283,12 @@ impl<'a> Plan<'a> {
                 }
                 if gameplay {
                     row.set("id", J::Num(next.into()));
-                    if !b.decl.item {
+                    if !b.decl.item && b.wall_of.is_none() {
                         row.set("item", J::Str("minecraft:air".into()));
                     }
-                    self.override_gameplay(b, combo, &mut row);
+                    self.override_gameplay(b, state_index, combo, &mut row);
                     if let Some(shapes) = &b.shapes {
-                        let shape = &shapes[t];
+                        let shape = &shapes[state_index];
                         let boxes = shape
                             .boxes()
                             .iter()
@@ -1207,6 +1310,9 @@ impl<'a> Plan<'a> {
                             .collect();
                         row.set("outline", J::Arr(boxes));
                         row.set("outline_edges", J::Arr(shape_edges(shape)));
+                    }
+                    if let Some(shapes) = b.collision_shapes.as_ref().or(b.shapes.as_ref()) {
+                        let shape = &shapes[state_index];
                         row.set(
                             "full_collision",
                             J::Bool(!shape.join_is_not_empty(&VoxelShape::block(), ShapeOp::XOR)?),
@@ -1220,10 +1326,31 @@ impl<'a> Plan<'a> {
     }
 
     /// The declared properties, on a gameplay row.
-    fn override_gameplay(&self, b: &NewBlock, combo: &[(String, String)], row: &mut J) {
+    fn override_gameplay(
+        &self,
+        b: &NewBlock,
+        state_index: usize,
+        combo: &[(String, String)],
+        row: &mut J,
+    ) {
         let p = &b.decl.properties;
         if let Some(ticks) = &p.random_ticks {
             row.set("random_ticks", J::Bool(ticks.applies(combo)));
+        }
+        if let Some(shape) = p.render_shape {
+            row.set("render_shape", J::Str(shape.name().into()));
+        }
+        // `noOcclusion`: a block that can't occlude is never a solid render either, and a solid
+        // render's full light dampening becomes a non-solid block's (`getLightDampening`: 0 when
+        // skylight passes down, else 1, as for leaves and spawners).
+        if p.occludes == Some(false) {
+            let solid = matches!(row.get("solid_render"), Some(J::Bool(true)));
+            if solid {
+                let down = matches!(row.get("skylight_down"), Some(J::Bool(true)));
+                row.set("dampening", J::Num(i64::from(!down).into()));
+            }
+            row.set("can_occlude", J::Bool(false));
+            row.set("solid_render", J::Bool(false));
         }
         if let Some(v) = p.hardness {
             row.set("hardness", J::f64(v as f64));
@@ -1233,6 +1360,9 @@ impl<'a> Plan<'a> {
         }
         if let Some(v) = p.light {
             row.set("emission", J::Num(v.into()));
+        }
+        if let Some(values) = &b.state_light {
+            row.set("emission", J::Num(values[state_index].into()));
         }
         if let Some(v) = p.requires_tool {
             row.set("requires_tool", J::Bool(v));
@@ -1271,11 +1401,32 @@ impl<'a> Plan<'a> {
             BTreeSet::new()
         };
         for i in &self.items {
+            if !components && let Some(block) = &i.place_block {
+                map.set(
+                    &i.rename.to,
+                    J::Obj(vec![
+                        (
+                            "class".into(),
+                            J::Arr(vec![J::Str("BlockItem".into()), J::Str("Item".into())]),
+                        ),
+                        (
+                            "fields".into(),
+                            J::Obj(vec![("block".into(), J::Str(block.clone()))]),
+                        ),
+                    ]),
+                );
+                continue;
+            }
             let Some(v) = map.get(&i.rename.from) else {
                 continue;
             };
             let mut v = v.clone();
             v.rename(&i.rename, false);
+            if let Some(wall) = &i.wall_block
+                && let Some(fields) = v.get_mut("fields")
+            {
+                fields.set("wallBlock", J::Str(wall.clone()));
+            }
             if components {
                 if let Some(n) = i.max_stack_size {
                     v.set("minecraft:max_stack_size", J::Num(n.into()));
@@ -1343,8 +1494,15 @@ impl<'a> Plan<'a> {
                         for r in &self.renames(b) {
                             v.rename(r, false);
                         }
-                        if !b.decl.item {
+                        if !b.decl.item && b.wall_of.is_none() {
                             v.set("item", J::Str("minecraft:air".into()));
+                        }
+                        // `SignBlock.getWoodType`: the wood's name is what
+                        // the editor reads of it.
+                        if let Some(wood) = &b.decl.wood_type
+                            && let Some(name) = v.at("fields/type/name")
+                        {
+                            *name = J::Str(wood.clone());
                         }
                         // A connecting block: the chorus plant's PipeBlock
                         // without its rules, joining the declared tag.
@@ -1375,6 +1533,10 @@ impl<'a> Plan<'a> {
                     let Some(entry) = doc.get_mut(&b.decl.id) else {
                         continue;
                     };
+                    // Faces beside a block that occludes nothing are drawn (`Block.shouldRenderFace`).
+                    if !model && b.decl.properties.occludes == Some(false) {
+                        entry.set("can_occlude", J::Bool(false));
+                    }
                     if model && let Some(schema) = entry.get_mut("schema") {
                         for (property_name, property) in &b.decl.state_properties {
                             schema.set(
@@ -1535,24 +1697,74 @@ impl<'a> Plan<'a> {
             return Err("collision table has no shapes".into());
         };
         for block in &self.blocks {
-            if let Some(shapes) = &block.shapes {
-                // One shape per template state, shared by every combination
-                // of it: the geometry is the template's, the properties are
-                // the block's.
-                let ids: Vec<i32> = shapes
-                    .iter()
-                    .map(|shape| {
+            if let Some(shapes) = block.collision_shapes.as_ref().or(block.shapes.as_ref()) {
+                let mut encoded = BTreeMap::new();
+                for (offset, shape) in shapes.iter().enumerate() {
+                    let key: Vec<_> = shape
+                        .boxes()
+                        .iter()
+                        .map(|bounds| {
+                            [
+                                bounds.min(Axis::X),
+                                bounds.min(Axis::Y),
+                                bounds.min(Axis::Z),
+                                bounds.max(Axis::X),
+                                bounds.max(Axis::Y),
+                                bounds.max(Axis::Z),
+                            ]
+                            .map(f64::to_bits)
+                        })
+                        .collect();
+                    let id = *encoded.entry(key).or_insert_with(|| {
                         entries.push(encode_shape(shape));
                         entries.len() as i32 - 1
-                    })
-                    .collect();
-                for (at, &shape) in ids.iter().enumerate() {
-                    for combination in 0..block.rename.fanout {
-                        let row = block.rename.row(at as u32, combination);
-                        indices.push((block.rename.first as usize + row as usize, shape));
-                    }
+                    });
+                    indices.push((block.rename.first as usize + offset, id));
                 }
             }
+        }
+        // Variant references live in the same checked per-state table as the defaults.
+        // No runtime content scan, callback, or world-dependent registration is needed.
+        let mut contexts = Vec::new();
+        for block in &self.blocks {
+            if block.context_shapes.is_empty() {
+                continue;
+            }
+            let mut encoded = BTreeMap::new();
+            for offset in 0..block.order.len() {
+                let mut row = Compound::new();
+                row.insert(
+                    "state".into(),
+                    Tag::Int((block.rename.first as usize + offset) as i32),
+                );
+                for (channel, variants) in &block.context_shapes {
+                    let shape = &variants[offset];
+                    let key: Vec<_> = shape
+                        .boxes()
+                        .iter()
+                        .map(|bounds| {
+                            [
+                                bounds.min(Axis::X),
+                                bounds.min(Axis::Y),
+                                bounds.min(Axis::Z),
+                                bounds.max(Axis::X),
+                                bounds.max(Axis::Y),
+                                bounds.max(Axis::Z),
+                            ]
+                            .map(f64::to_bits)
+                        })
+                        .collect();
+                    let id = *encoded.entry(key).or_insert_with(|| {
+                        entries.push(encode_shape(shape));
+                        entries.len() as i32 - 1
+                    });
+                    row.insert(channel.as_str().into(), Tag::Int(id));
+                }
+                contexts.push(Tag::Compound(row));
+            }
+        }
+        if !contexts.is_empty() {
+            root.insert("context_shapes".into(), Tag::List(contexts));
         }
         let Some(Tag::IntArray(mapping)) = root.get_mut(&JavaString::from("cached_shapes")) else {
             return Err("collision table has no mapping".into());
@@ -1733,11 +1945,14 @@ const BIOME_TAGS: &str = "worldgen/biome_tags.json";
 /// worldgen loader reads each from (id → the file's text): what structure
 /// mods hold. Biomes, noise and density functions change the terrain and
 /// are not read from mods.
-const WORLDGEN_BUNDLES: [(&str, &str); 6] = [
+const WORLDGEN_BUNDLES: [(&str, &str); 7] = [
     ("structure", "worldgen/structures.json"),
     ("structure_set", "worldgen/structure_sets.json"),
     ("template_pool", "worldgen/template_pools.json"),
     ("processor_list", "worldgen/processor_lists.json"),
+    // 26.3 names the folder `feature`; `configured_feature` is the 26.2 name, kept
+    // so older mods still load.
+    ("feature", "worldgen/features.json"),
     ("configured_feature", "worldgen/features.json"),
     ("placed_feature", "worldgen/placed_features.json"),
 ];
@@ -1869,6 +2084,7 @@ fn place_in_biomes(
     modifiers: &[biomes::Modifier],
     biome_tags: Option<J>,
     placed: Option<J>,
+    tags: &BTreeMap<String, TagMerge>,
     warnings: &mut Vec<String>,
 ) -> Result<()> {
     let bundle = |doc: Option<J>, name: &str| -> Result<BTreeMap<String, String>> {
@@ -1899,7 +2115,47 @@ fn place_in_biomes(
     let biome_tags = bundle(biome_tags, BIOME_TAGS)?;
     let placed: BTreeSet<String> = bundle(placed, PLACED_FEATURES)?.into_keys().collect();
     let feature_tags = bundle(None, FEATURE_TAGS)?;
-    biomes::apply(
+    let entities_path = out_path(overlay, "entity-types.json");
+    let entity_categories: BTreeMap<String, String> = match entities_path.exists() {
+        true => match read_json(&entities_path)? {
+            J::Obj(entries) => entries
+                .into_iter()
+                .map(|(k, v)| {
+                    let cat = v
+                        .get("category")
+                        .and_then(J::as_str)
+                        .unwrap_or("misc")
+                        .to_owned();
+                    (k, cat)
+                })
+                .collect(),
+            _ => return Err("entity-types.json: not an object".into()),
+        },
+        false => BTreeMap::new(),
+    };
+    let entity_ids: BTreeSet<String> = entity_categories.keys().cloned().collect();
+    let mut entity_tags = BTreeMap::new();
+    let vanilla_entity_tags = base.join("data/minecraft/tags/entity_type");
+    if vanilla_entity_tags.is_dir() {
+        for file in &crate::json_folder::read(&vanilla_entity_tags)?.files {
+            let text = std::str::from_utf8(file.bytes()?)
+                .map_err(|e| format!("entity_type/{}: {e}", file.name))?;
+            entity_tags.insert(format!("minecraft:{}", file.name), text.to_owned());
+        }
+    }
+    for file in tags.keys() {
+        if let Some((ns, path)) = file
+            .strip_prefix("data/")
+            .and_then(|r| r.split_once("/tags/entity_type/"))
+            .and_then(|(ns, p)| Some((ns, p.strip_suffix(".json")?)))
+        {
+            entity_tags.insert(
+                format!("{ns}:{path}"),
+                fs::read_to_string(out_path(overlay, file))?,
+            );
+        }
+    }
+    let changed = biomes::apply(
         &mut doc,
         modifiers,
         &biomes::Registry {
@@ -1912,8 +2168,22 @@ fn place_in_biomes(
             ids: &placed,
             tags: &feature_tags,
         },
+        &biomes::Registry {
+            what: "entity type",
+            ids: &entity_ids,
+            tags: &entity_tags,
+        },
+        &entity_categories,
         warnings,
     )?;
+    for (id, text) in changed {
+        if let Some((ns, path)) = id.split_once(':') {
+            let file = format!("data/{ns}/worldgen/biome/{path}.json");
+            if out_path(overlay, &file).exists() {
+                overlay.write(&file, text.as_bytes())?;
+            }
+        }
+    }
     overlay.write(BIOMES, &serde_json::to_vec(&doc)?)
 }
 
@@ -1942,6 +2212,11 @@ impl Overlay<'_> {
         };
         for entry in read.flatten() {
             let rel = rel.join(entry.file_name());
+            // The base's files in one file: it describes the base, not this root (and
+            // would be copied where links are not made).
+            if rel == Path::new(horizon_core::prepared_files::FILE_NAME) {
+                continue;
+            }
             link(&self.base.join(&rel), &self.out.join(&rel))?;
         }
         Ok(())
@@ -1979,6 +2254,19 @@ impl Overlay<'_> {
         fs::write(path, bytes)?;
         Ok(())
     }
+    /// `write` with a file's own bytes, copied without reading them (a clone on APFS).
+    fn copy(&self, rel: &str, from: &Path) -> Result<()> {
+        let rel = Path::new(rel);
+        if let Some(parent) = rel.parent() {
+            self.dir(parent)?;
+        }
+        let path = self.out.join(rel);
+        if fs::symlink_metadata(&path).is_ok() {
+            fs::remove_file(&path)?;
+        }
+        fs::copy(from, path)?;
+        Ok(())
+    }
 }
 fn out_path(overlay: &Overlay<'_>, rel: &str) -> PathBuf {
     overlay.out.join(rel)
@@ -1996,8 +2284,25 @@ fn link(target: &Path, at: &Path) -> std::io::Result<()> {
         }
         Ok(())
     } else {
-        fs::copy(target, at).map(|_| ())
+        link_file(target, at, |target, at| fs::hard_link(target, at))
     }
+}
+/// A file of the overlay where symlinks need a privilege: a hard link to the base's file, which costs a name where
+/// a copy costs the file's bytes (the base is ~28,000 files, 0.6 GiB), or a copy when no link can be made (another
+/// volume, a filesystem without links, the NTFS limit on links to one file). A link shares the base file's data,
+/// which is safe because the overlay is only ever replaced name by name (`Overlay::write` removes the name before it
+/// writes), never written in place. A symlink is copied through, as before: linked, it would stay a symlink.
+#[cfg(any(not(unix), test))]
+fn link_file(
+    target: &Path,
+    at: &Path,
+    hard_link: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let symlink = fs::symlink_metadata(target).is_ok_and(|m| m.file_type().is_symlink());
+    if !symlink && hard_link(target, at).is_ok() {
+        return Ok(());
+    }
+    fs::copy(target, at).map(|_| ())
 }
 
 /// A tag file's JSON text with `more` appended to its values (no repeats).
@@ -2014,6 +2319,19 @@ fn merge_tag(text: Option<&str>, more: &[J], what: &str) -> Result<String> {
             values.push(v.clone());
         }
     }
+    Ok(serde_json::to_string_pretty(&doc)?)
+}
+
+/// An atlas definition's JSON text with `more` sources after its own.
+fn merge_atlas(text: Option<&str>, more: &[J], what: &str) -> Result<String> {
+    let mut doc = match text {
+        Some(t) => serde_json::from_str(t).map_err(|e| format!("{what}: {e}"))?,
+        None => J::Obj(vec![("sources".into(), J::Arr(Vec::new()))]),
+    };
+    let Some(J::Arr(sources)) = doc.get_mut("sources") else {
+        return Err(format!("{what}: no sources").into());
+    };
+    sources.extend(more.iter().cloned());
     Ok(serde_json::to_string_pretty(&doc)?)
 }
 
@@ -2193,7 +2511,7 @@ fn tables(base: &Path, plan: &Plan, overlay: &Overlay<'_>) -> Result<()> {
         overlay.write(name, &bytes)
     };
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let threads = horizon_threads::worker_count();
     std::thread::scope(|scope| {
         let workers: Vec<_> = (0..threads.min(TABLE_THREADS))
             .map(|_| {
@@ -2242,12 +2560,25 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
     let mut worldgen: BTreeMap<&str, Vec<(String, String)>> = BTreeMap::new();
     let mut additions: BTreeMap<&str, Vec<Addition>> = BTreeMap::new();
     let mut modifiers = Vec::new();
+    let mut atlases: BTreeMap<String, Vec<J>> = BTreeMap::new();
     for m in mods {
         let declarations = format!("data/{}/horizon/", m.id);
         let mut reader = m.content.reader()?;
         for file in &m.content.files {
-            let bytes = reader.read(file)?;
             let is_tag = file.starts_with("data/") && file.contains("/tags/");
+            // Most files (textures, models...) only go into the overlay: copied, not read and
+            // written again, they take a fraction of the time (Chipped alone has 10k textures).
+            let plain = !(is_tag && file.ends_with(".json"))
+                && !(file.starts_with("assets/minecraft/atlases/") && file.ends_with(".json"))
+                && !file.starts_with(&declarations)
+                && !biomes::is_modifier(file)
+                && worldgen_entry(file).is_none()
+                && !(file.starts_with("data/") && file.contains("/structure/"));
+            if plain && let Some(from) = reader.path(file)? {
+                overlay.copy(file, &from)?;
+                continue;
+            }
+            let bytes = reader.read(file)?;
             if is_tag && file.ends_with(".json") {
                 let doc: J = serde_json::from_slice(&bytes).map_err(|e| format!("{file}: {e}"))?;
                 let Some(J::Arr(values)) = doc.get("values") else {
@@ -2258,6 +2589,15 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
                 let shared = !m.content.namespaces.iter().any(|n| n == ns);
                 let merge = tags.entry(file.clone()).or_default();
                 warnings.extend(merge.add(&m.id, file, replace, shared, values));
+            } else if file.starts_with("assets/minecraft/atlases/") && file.ends_with(".json") {
+                let doc: J = serde_json::from_slice(&bytes).map_err(|e| format!("{file}: {e}"))?;
+                let Some(J::Arr(sources)) = doc.get("sources") else {
+                    return Err(format!("{}: {file}: no sources", m.id).into());
+                };
+                atlases
+                    .entry(file.clone())
+                    .or_default()
+                    .extend(sources.iter().cloned());
             } else if !file.starts_with(&declarations) {
                 overlay.write(file, &bytes)?;
                 if biomes::is_modifier(file) {
@@ -2281,6 +2621,14 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
                 }
             }
         }
+    }
+    // A reload appends every pack's sources for an atlas to the ones below it.
+    for (file, sources) in &atlases {
+        let vanilla = fs::read_to_string(base.join(file)).ok();
+        overlay.write(
+            file,
+            merge_atlas(vanilla.as_deref(), sources, file)?.as_bytes(),
+        )?;
     }
     // A tag naming an id nobody registers fails as a whole in vanilla, and
     // carried-over mods name blocks left out or other mods' ids: such
@@ -2380,6 +2728,7 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
             &modifiers,
             biome_tag_doc,
             placed_doc,
+            &tags,
             &mut warnings,
         )?;
     }
@@ -2460,7 +2809,10 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
 }
 
 /// The root to load: `base` itself with no content, else the mods' overlay
-/// over it, built in `cache/mod-content`.
+/// over it, built in `cache/mod-content/<stamp>`: one folder per mod set, so
+/// a running game keeps reading the root it was given while a switch builds
+/// another (docs/design/mod-hotload.md). Roots of other sets unused for a day
+/// are removed.
 ///
 /// The root is built once and kept: later starts with the same build, base
 /// and mod files reuse it. With ATM10's carried mods a build takes about
@@ -2472,19 +2824,118 @@ pub fn resource_root(base: &Path, mods: &[ContentMod], cache: &Path) -> Result<P
     {
         return Ok(base.to_owned());
     }
-    let out = cache.join("mod-content");
     let stamp = stamp(base, mods)?;
+    let roots = cache.join("mod-content");
+    let out = roots.join(&stamp[..ROOT_NAME]);
     if fs::read(out.join(STAMP)).is_ok_and(|s| s == stamp.as_bytes()) {
         // A reused root warns as the build did.
         let warnings = fs::read_to_string(out.join(WARNINGS)).unwrap_or_default();
         warnings.lines().for_each(|w| log::warn!("Horizon: {w}"));
+        // Used again: kept another day. Marked beside the root, not in it: the pack overlay
+        // laid over the root reads its files, and a rewritten one would rebuild it (#12403).
+        let _ = fs::write(used_path(&out), b"");
         return Ok(out);
     }
     for warning in build(base, mods, &out)? {
         log::warn!("Horizon: {warning}");
     }
     fs::write(out.join(STAMP), stamp)?;
+    prune_roots(&roots, &out, KEEP_ROOTS);
     Ok(out)
+}
+
+/// The length of a root's folder name: the start of its stamp.
+const ROOT_NAME: usize = 16;
+/// How long a root no start or switch used is kept.
+const KEEP_ROOTS: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+/// The file beside `root` whose time is its last reuse (`<root>.used`).
+fn used_path(root: &Path) -> PathBuf {
+    root.with_extension("used")
+}
+
+/// Removes from `roots` the roots other than `current` whose stamp is older
+/// than `keep`, and what an older game left there (one root built straight in
+/// the folder). A game still running on a removed root was started more than
+/// `keep` ago and reads its tables already; only the folders' own names are
+/// touched.
+fn prune_roots(roots: &Path, current: &Path, keep: std::time::Duration) {
+    let Ok(entries) = fs::read_dir(roots) else {
+        return;
+    };
+    let old_layout = roots.join(STAMP).exists();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == current {
+            continue;
+        }
+        let name = entry.file_name();
+        let is_root = name.len() == ROOT_NAME
+            && name
+                .to_string_lossy()
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit())
+            && path.is_dir();
+        let age = |file: PathBuf| {
+            fs::metadata(file)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+        };
+        let stale = match is_root {
+            // Its build (the stamp) or its last reuse, whichever is newer.
+            true => [age(path.join(STAMP)), age(used_path(&path))]
+                .into_iter()
+                .flatten()
+                .min()
+                .is_none_or(|age| age > keep),
+            // The old single root's files and folders.
+            false => old_layout,
+        };
+        if !stale {
+            continue;
+        }
+        let removed = match path.is_dir() {
+            true => fs::remove_dir_all(&path).inspect(|_| {
+                let _ = fs::remove_file(used_path(&path));
+            }),
+            false => fs::remove_file(&path),
+        };
+        if let Err(e) = removed {
+            log::warn!(
+                "Horizon: an old mod content root stays: {}: {e}",
+                path.display()
+            );
+        }
+    }
+}
+
+/// Whether turning a content mod on or off can apply in a running game
+/// (docs/design/mod-hotload.md): its assets and data can, through the
+/// resource reload and the server's data reload. What a world numbers or
+/// generates from cannot yet: then the translation key of why.
+pub fn live_switch(content: &Content) -> std::result::Result<(), &'static str> {
+    if !content.blocks.is_empty()
+        || !content.items.is_empty()
+        || !content.effects.is_empty()
+        || !content.entity_types.is_empty()
+        || !content.menu_types.is_empty()
+        || !content.creative_tabs.is_empty()
+    {
+        return Err("horizon.mods.switch.registries");
+    }
+    let worldgen = |file: &&String| {
+        let mut parts = file.split('/');
+        parts.next() == Some("data")
+            && parts.nth(1).is_some_and(|folder| {
+                matches!(folder, "worldgen" | "dimension" | "dimension_type")
+                    || folder == "tags" && file.contains("/tags/worldgen/")
+                    || matches!(folder, "neoforge" | "forge") && file.contains("/biome_modifier/")
+            })
+    };
+    if content.files.iter().any(|f| worldgen(&f)) {
+        return Err("horizon.mods.switch.worldgen");
+    }
+    Ok(())
 }
 
 /// In a root built by [`build`]: its warnings, one per line.

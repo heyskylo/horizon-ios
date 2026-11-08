@@ -1,0 +1,10 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "player_persistent_data", "target": "horizon_client::game::native_player_state::Game<'_>::native_player_persistent_data"},
+    {"name": "set_player_persistent_data", "target": "horizon_client::game::native_player_state::Game<'_>::native_set_player_persistent_data"}
+  ],
+  "rust_summary": "the compound mods keep on a player (`native_player_persistent_data`, `native_set_player_persistent_data`), saved as `NeoForgeData`, as NeoForge's `Entity.getPersistentData` and Bukkit's `PersistentDataContainer`.",
+  "doc_summary": "`native_player_persistent_data(uuid)` reads and `native_set_player_persistent_data(uuid, data)` replaces the compound mods keep on a player, saved in their file as `NeoForgeData` (NeoForge's `Entity.getPersistentData`, Bukkit's `PersistentDataContainer`). Bundles need \"hooks\": @API:player_persistent_data@.",
+  "comments": ["crates/horizon-client/src/game/native_player_state.rs"]
+}

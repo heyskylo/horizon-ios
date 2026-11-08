@@ -45,8 +45,14 @@ pub(super) struct StartupMenu {
     key_synthetic: bool,
     /// The screen the keyboard's focus is on (`key_screen`).
     key_screen: u64,
+    /// The screen (`Self::key_screen`) the title's click focus belongs to:
+    /// another one in front drops it, as `Gui.setScreen` drops the focus of
+    /// the screen it leaves (`Screen.clearFocus`).
+    focus_screen: u64,
     pub pending: Option<PendingWorldEntry>,
     pub reload_packs: bool,
+    /// Browse mods' worker (`mod_browser`).
+    mod_jobs: super::mod_browser::Jobs,
     pub perf: horizon_client::telemetry::Session,
 }
 
@@ -58,6 +64,7 @@ impl StartupMenu {
                 name: options.player_name(),
                 cookies: None,
                 lan: false,
+                realm: false,
             })
         } else {
             options
@@ -213,11 +220,16 @@ impl StartupMenu {
                 creative,
                 create: Some(Box::new(options)),
             },
-            Action::Connect { address, lan } => PendingWorldEntry::Server {
+            Action::Connect {
+                address,
+                lan,
+                realm,
+            } => PendingWorldEntry::Server {
                 address,
                 name: player_name,
                 cookies: None,
                 lan,
+                realm,
             },
             _ => return,
         };
@@ -259,6 +271,21 @@ impl StartupMenu {
             }
             return Action::None;
         }
+        // `TabNavigationBar.keyPressed` comes before the open tab's own
+        // widgets: Ctrl plus a digit or Tab picks a tab instead of reaching
+        // them.
+        let ctrl = if cfg!(target_os = "macos") {
+            self.modifiers.super_key()
+        } else {
+            self.modifiers.control_key()
+        };
+        if let PhysicalKey::Code(key) = event.physical_key
+            && title
+                .tab_bar_key(key, ctrl, self.modifiers.shift_key())
+                .is_some()
+        {
+            return Action::None;
+        }
         match event.physical_key {
             PhysicalKey::Code(KeyCode::Escape) => title.escape(),
             PhysicalKey::Code(KeyCode::F5) => title.refresh_servers(),
@@ -269,7 +296,8 @@ impl StartupMenu {
                 return title.confirm_key_size(viewport).0;
             }
             PhysicalKey::Code(KeyCode::Space)
-                if title.list_focused() || title.focused_button.is_some() =>
+                if !title.has_caret_field()
+                    && (title.list_focused() || title.focused_button.is_some()) =>
             {
                 return title.confirm_key_size(viewport).0;
             }
@@ -293,7 +321,7 @@ impl StartupMenu {
                 | KeyCode::ArrowUp
                 | KeyCode::ArrowDown),
             ) => {
-                title.arrow_key(key, viewport);
+                title.arrow_key(key, viewport, self.modifiers.shift_key());
             }
             _ => {
                 let cleared = !title.has_caret_field()
@@ -344,12 +372,12 @@ pub(super) fn spawn_loader(
         .name("resource-loader".into())
         .spawn(move || {
             let mut pack_error = None;
-            let root = packs::startup_root(&vanilla_root, &settings.resource_packs, &[])
+            let base = mods::content_root(&vanilla_root, &settings.mods.enabled, &dev_mods);
+            let root = packs::startup_root(&vanilla_root, &base, &settings.resource_packs, &[])
                 .unwrap_or_else(|error| {
                     pack_error = Some(error.to_string());
-                    vanilla_root.clone()
+                    base.clone()
                 });
-            let root = mods::content_root(&root, &settings.mods.enabled, &dev_mods);
             let result = load_resources(
                 root,
                 world.as_deref(),
@@ -401,7 +429,18 @@ impl Loading {
                 }
             }
         }
+        self.drive_menu_mod_browser();
         self.restart_menu_resources()
+    }
+    /// The startup menu's Browse mods, as `Game::drive_mod_browser`.
+    fn drive_menu_mod_browser(&mut self) {
+        let menu = &mut self.menu;
+        if menu
+            .mod_jobs
+            .poll(&mut menu.options.mod_browser, &mut self.settings.mods)
+        {
+            self.settings.save(&Game::options_path());
+        }
     }
     pub(super) fn apply_menu_settings(&mut self) {
         if let Some(renderer) = &mut self.renderer {
@@ -520,6 +559,14 @@ impl Loading {
                     let _ = std::fs::create_dir_all(&dir);
                     packs::open_folder(&dir);
                 }
+                Event::DownloadPack(i) => {
+                    let dir = packs::packs_dir();
+                    if let Some(screen) = &mut self.menu.options.pack_screen
+                        && let Some(browser) = &mut screen.browser
+                    {
+                        browser.download(i, &dir, horizon_core::VANILLA_VERSION);
+                    }
+                }
                 Event::DataPacks(ids) => {
                     let resources = self.vanilla_root.clone();
                     if let Some(title) = &mut self.menu.title {
@@ -535,7 +582,24 @@ impl Loading {
                     let _ = std::fs::create_dir_all(&dir);
                     packs::open_folder(&dir);
                 }
+                Event::BrowseMods => {
+                    let ui = &mut self.menu.options.mod_browser;
+                    self.menu.mod_jobs.browse(ui, Game::game_dir());
+                }
+                Event::InstallMod(id) => {
+                    let ui = &mut self.menu.options.mod_browser;
+                    self.menu.mod_jobs.install(ui, Game::game_dir(), id);
+                }
+                Event::OpenModPage(url) => packs::open_uri(&url),
                 Event::ListShaderPacks => {
+                    let (key, _) = horizon_client::shader_pack_list::resolve(
+                        &Game::shader_packs_dir(),
+                        &self.settings.horizon.shader_pack,
+                    );
+                    if key != self.settings.horizon.shader_pack {
+                        self.settings.horizon.shader_pack = key;
+                        self.save_menu_settings();
+                    }
                     self.settings.shader_packs =
                         horizon_client::shader_pack_list::scan(&Game::shader_packs_dir());
                 }
@@ -581,11 +645,34 @@ impl Loading {
                     self.settings.narrator(),
                     &mut self.menu.narrator_toast,
                 ),
+                // The startup menu has no screen stack for ConfirmLinkScreen;
+                // the link opens directly, as the menu's other links do.
+                Event::AccessibilityHelp => {
+                    super::packs::open_uri(super::options::ACCESSIBILITY_HELP_LINK)
+                }
                 // Mods' settings pages open only in a running game.
-                Event::NativeSettings(_) | Event::NativeButton(..) => {}
+                // The HUD editor needs a world: its button is inactive here.
+                Event::NativeSettings(_) | Event::NativeButton(..) | Event::HudEditor => {}
                 // The startup menu runs before the game opens a control socket,
-                // and before its sound engine (no clicks, no volume previews).
-                Event::ButtonClick | Event::CopyAgentDetails | Event::Volume(..) => {}
+                // and before its sound engine (no clicks, no volume previews,
+                // and no music tracks to list or play).
+                Event::ButtonClick
+                | Event::CopyAgentDetails
+                | Event::ToggleRecording
+                | Event::ExportRepro
+                | Event::ListMusicTracks
+                | Event::PlayMusicTrack(..)
+                | Event::Volume(..) => {}
+                Event::OpenStudioFolder => {
+                    let dir = std::path::PathBuf::from("recordings");
+                    let _ = std::fs::create_dir_all(&dir);
+                    packs::open_folder(&dir);
+                }
+                Event::OpenStudioReplay(path) => {
+                    self.menu.options_open = false;
+                    self.menu.dragging = false;
+                    self.menu.pending = Some(PendingWorldEntry::StudioReplay(path));
+                }
             }
         }
     }
@@ -646,6 +733,18 @@ impl Loading {
             right,
         );
         self.menu_option_events(events);
+    }
+
+    /// The Realms screen's join, once its address came back: queued like a click on a server.
+    pub(super) fn poll_menu_realms(&mut self, event_loop: &dyn EventLoopCtl) {
+        if let Some(action) = self
+            .menu
+            .title
+            .as_mut()
+            .and_then(Title::take_connect_request)
+        {
+            self.menu_action(event_loop, action);
+        }
     }
 
     fn menu_action(&mut self, event_loop: &dyn EventLoopCtl, action: Action) {
@@ -1037,6 +1136,22 @@ impl Loading {
                     }
                 }
             }
+            // AbstractSelectionList.mouseClicked: a world row takes a click
+            // of any button, so the middle one selects it without joining.
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Middle,
+                ..
+            } => {
+                let batch = HudBatch::new(self.menu_size());
+                if let Some(title) = &mut self.menu.title {
+                    title.select_world_at(
+                        self.menu.cursor.0,
+                        self.menu.cursor.1,
+                        (batch.width, batch.height),
+                    );
+                }
+            }
             WindowEvent::MouseWheel { delta, .. } => {
                 let raw = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
@@ -1103,6 +1218,16 @@ impl Loading {
             horizon_client::ui_theme::draw_boot(&self.boot, batch, &logs);
             return;
         };
+        // `Gui.setScreen` clears the focus of the screen it leaves
+        // (`Screen.clearFocus`): the title behind the options, and the one
+        // that comes back, start with no button highlighted.
+        let screen = self.menu.key_screen();
+        if super::pad_menu::another_screen_is_front(&mut self.menu.focus_screen, screen) {
+            self.menu.options.clear_click_focus();
+            if let Some(title) = self.menu.title.as_mut() {
+                title.focused_button = None;
+            }
+        }
         if self.menu.pending.is_some() {
             horizon_client::level_loading::draw_loading_overlay(
                 batch,
@@ -1149,6 +1274,7 @@ impl Loading {
                 batch,
                 self.menu.cursor,
                 self.settings.file.bool("hideSplashTexts"),
+                self.settings.file.bool("hideServerAddress"),
             );
         }
         if let Some(focus) = self.menu.key_focus
@@ -1326,6 +1452,7 @@ mod tests {
             Action::Connect {
                 address: "localhost:25565".into(),
                 lan: true,
+                realm: false,
             },
             "Guest".into(),
         );

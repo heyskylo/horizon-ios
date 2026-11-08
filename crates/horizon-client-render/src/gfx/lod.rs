@@ -7,13 +7,19 @@ use crate::{
     mesher::SectionMesh,
 };
 use glam::{DVec3, Vec3};
-use std::time::{Duration, Instant};
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
 /// Finished tile meshes not uploaded yet, the tiles they replace (removed
 /// once every mesh is in) and the columns they leave out.
 #[derive(Default)]
 pub(super) struct Pending {
     meshes: FxHashMap<TileKey, SectionMesh>,
+    /// The order they go up in: as handed over (`Lod::update`: finer tiles
+    /// first, so no tile clipped around a finer one is drawn before it).
+    order: VecDeque<TileKey>,
     removed: FxHashSet<TileKey>,
     cutout: Option<FxHashSet<(i32, i32)>>,
 }
@@ -30,7 +36,9 @@ impl Pending {
     ) {
         for (key, mesh) in meshes {
             self.removed.remove(&key);
-            self.meshes.insert(key, mesh);
+            if self.meshes.insert(key, mesh).is_none() {
+                self.order.push_back(key);
+            }
         }
         for key in removed {
             self.meshes.remove(&key);
@@ -42,8 +50,10 @@ impl Pending {
     }
 }
 
+/// Small, its meshes boxed: `draw_frame` walks every tile each frame (thousands at long far
+/// distances), and that walk is bound by the memory it reads.
 pub(super) struct Tile {
-    pub mesh: SectionGpu,
+    pub mesh: Box<SectionGpu>,
     bounds: Bounds,
     /// When it began to fade in; none while the rest of its job uploads.
     shown: Option<Instant>,
@@ -54,7 +64,10 @@ pub(super) struct Tile {
     /// Its mesh before near chunks took some of its columns, drawn in its
     /// place until they have faded in (from the job's end, the instant), so
     /// no hole shows through them.
-    previous: Option<(SectionGpu, Option<Instant>)>,
+    previous: Option<Box<(SectionGpu, Option<Instant>)>>,
+    /// Its slot in occlusion culling's results (`cull::TILE`), kept while
+    /// meshes of the same tile replace one another.
+    pub cull_slot: u32,
 }
 
 /// How long a tile takes to fade in over the ones it replaces.
@@ -144,17 +157,31 @@ pub(super) struct Visible {
 impl Tile {
     /// The mesh drawn this frame: the previous one while it stands in.
     pub fn drawn(&self) -> &SectionGpu {
-        self.previous.as_ref().map_or(&self.mesh, |(mesh, _)| mesh)
+        self.previous
+            .as_deref()
+            .map_or(&self.mesh, |(mesh, _)| mesh)
     }
     pub fn drawn_mut(&mut self) -> &mut SectionGpu {
-        match &mut self.previous {
+        match self.previous.as_deref_mut() {
             Some((mesh, _)) => mesh,
             None => &mut self.mesh,
         }
     }
+    /// The box occlusion culling tests (`cull::Cull`), around its origin: its
+    /// mesh's bounds grown by a block, while that mesh is the one drawn
+    /// whole (no stand-in, no fade). A fading tile's dither moves its depth
+    /// toward the camera (terrain.wgsl's `fade_depth`), out of the box.
+    pub fn cull_bounds(&self, fade: u32) -> Option<[[f32; 3]; 2]> {
+        (fade == 0 && self.previous.is_none()).then(|| {
+            [
+                (self.bounds.min - 1.0).to_array(),
+                (self.bounds.max + 1.0).to_array(),
+            ]
+        })
+    }
     /// Both meshes it holds in the arena: its own and the stand-in, if any.
     pub fn meshes_mut(&mut self) -> impl Iterator<Item = &mut SectionGpu> {
-        std::iter::once(&mut self.mesh).chain(self.previous.as_mut().map(|(mesh, _)| mesh))
+        std::iter::once(&mut *self.mesh).chain(self.previous.as_deref_mut().map(|(mesh, _)| mesh))
     }
     pub fn visible(
         &self,
@@ -184,15 +211,19 @@ impl Renderer {
     /// its old mesh stands in while they fade in. A new one waits for the rest of its job
     /// (`upload_lods`), then fades in.
     pub fn upload_lod(&mut self, key: TileKey, mesh: &SectionMesh, keep: bool) {
+        if let Some(copies) = &mut self.capture_copies {
+            copies.tile(key, mesh);
+        }
+        let old_slot = self.lods.get(&key).map(|tile| tile.cull_slot);
         let (shown, previous) = match self.lods.remove(&key) {
             Some(old) if old.dying.is_none() => match old.previous {
                 Some(previous) => {
-                    self.release_mesh(old.mesh);
+                    self.release_mesh(*old.mesh);
                     (old.shown, Some(previous))
                 }
-                None if keep => (old.shown, Some((old.mesh, None))),
+                None if keep => (old.shown, Some(Box::new((*old.mesh, None)))),
                 None => {
-                    self.release_mesh(old.mesh);
+                    self.release_mesh(*old.mesh);
                     (old.shown, None)
                 }
             },
@@ -204,40 +235,55 @@ impl Renderer {
         };
         match Bounds::mesh(mesh).zip(self.upload_mesh(mesh)) {
             Some((bounds, mesh)) => {
+                let cull_slot = old_slot.unwrap_or_else(|| {
+                    self.lod_cull_free.pop().unwrap_or_else(|| {
+                        self.lod_cull_next += 1;
+                        self.lod_cull_next - 1
+                    })
+                });
                 self.lods.insert(
                     key,
                     Tile {
-                        mesh,
+                        mesh: Box::new(mesh),
                         bounds,
                         shown,
                         dying: None,
                         alone: false,
                         previous,
+                        cull_slot,
                     },
                 );
             }
             None => {
-                if let Some((previous, _)) = previous {
+                if let Some((previous, _)) = previous.map(|p| *p) {
                     self.release_mesh(previous);
                 }
+                self.lod_cull_free.extend(old_slot);
             }
         }
     }
 
     fn release_tile(&mut self, tile: Tile) {
-        self.release_mesh(tile.mesh);
-        if let Some((previous, _)) = tile.previous {
+        self.release_mesh(*tile.mesh);
+        if let Some((previous, _)) = tile.previous.map(|p| *p) {
             self.release_mesh(previous);
         }
     }
 
     pub fn remove_lod(&mut self, key: TileKey) {
+        if let Some(copies) = &mut self.capture_copies {
+            copies.forget_tile(key);
+        }
         if let Some(tile) = self.lods.remove(&key) {
+            self.lod_cull_free.push(tile.cull_slot);
             self.release_tile(tile);
         }
     }
 
     pub fn clear_lods(&mut self) {
+        if let Some(copies) = &mut self.capture_copies {
+            copies.clear_tiles();
+        }
         self.lod_pending = None;
         // No far terrain left to fade out over.
         for (key, since) in std::mem::take(&mut self.lod_leaving) {
@@ -252,6 +298,8 @@ impl Renderer {
         for (_, tile) in std::mem::take(&mut self.lods) {
             self.release_tile(tile);
         }
+        self.lod_cull_free.clear();
+        self.lod_cull_next = 0;
         self.set_lod_cutout(Default::default());
     }
 
@@ -293,8 +341,10 @@ impl Renderer {
         let stood_in: Vec<_> = self
             .lods
             .values_mut()
-            .filter_map(|tile| match tile.previous {
-                Some((_, Some(since))) if start - since >= FADE => tile.previous.take(),
+            .filter_map(|tile| match tile.previous.as_deref() {
+                Some((_, Some(since))) if start - *since >= FADE => {
+                    tile.previous.take().map(|p| *p)
+                }
                 _ => None,
             })
             .collect();
@@ -330,7 +380,10 @@ impl Renderer {
             .copied()
             .collect();
         while let Some(pending) = &mut self.lod_pending {
-            let Some(&key) = pending.meshes.keys().next() else {
+            // Keys meshed again keep their place; removed ones are skipped.
+            let next = std::iter::from_fn(|| pending.order.pop_front())
+                .find(|key| pending.meshes.contains_key(key));
+            let Some(key) = next else {
                 let pending = self.lod_pending.take().expect("pending tiles");
                 // A tile fades in over the ones it replaces. One over nothing
                 // shows whole: its hidden chunks would open holes to the sky
@@ -393,7 +446,7 @@ impl Renderer {
                     if tile.shown.is_none() {
                         tile.shown = Some(if over_replaced(key) { start } else { whole });
                     }
-                    if let Some((_, since)) = &mut tile.previous {
+                    if let Some((_, since)) = tile.previous.as_deref_mut() {
                         since.get_or_insert(start);
                     }
                 }
@@ -424,6 +477,15 @@ impl Renderer {
                 return;
             }
         }
+    }
+
+    /// The tiles drawn for good, not fading out (`render-capture`).
+    pub(super) fn standing_lods(&self) -> FxHashSet<TileKey> {
+        self.lods
+            .iter()
+            .filter(|(_, tile)| tile.dying.is_none())
+            .map(|(&key, _)| key)
+            .collect()
     }
 
     /// The chunk columns the resident tiles now leave out (`Lod::take_cutout`).
@@ -498,7 +560,16 @@ mod tests {
         let mut removed: Vec<_> = pending.removed.iter().map(|k| k.x).collect();
         removed.sort_unstable();
         assert_eq!((meshes, removed), (vec![1, 3], vec![2, 4]));
-        assert!(pending.cutout.is_some_and(|c| c.contains(&(0, 0))));
+        assert!(pending.cutout.as_ref().is_some_and(|c| c.contains(&(0, 0))));
+        // They go up in the order handed over, each once.
+        pending.add(vec![(key(1), SectionMesh::default())], vec![], None);
+        let order: Vec<_> = pending
+            .order
+            .iter()
+            .filter(|k| pending.meshes.contains_key(k))
+            .map(|k| k.x)
+            .collect();
+        assert_eq!(order, [1, 3]);
     }
 
     #[test]

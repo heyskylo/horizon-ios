@@ -179,19 +179,19 @@ impl Condition {
         let fields = object(raw)?;
         if fields.len() == 1 {
             for name in ["OR", "AND"] {
-                if let Some(raw) = fields.get(name) {
-                    if let Ok(values) = array(raw).and_then(|values| {
+                if let Some(raw) = fields.get(name)
+                    && let Ok(values) = array(raw).and_then(|values| {
                         values
                             .into_iter()
                             .map(Self::decode)
                             .collect::<Result<Vec<_>>>()
-                    }) {
-                        return Ok(if name == "OR" {
-                            Self::Or(values)
-                        } else {
-                            Self::And(values)
-                        });
-                    }
+                    })
+                {
+                    return Ok(if name == "OR" {
+                        Self::Or(values)
+                    } else {
+                        Self::And(values)
+                    });
                 }
             }
         }

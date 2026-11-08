@@ -1,7 +1,12 @@
 package dev.horizonlab.parity;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonNull;
+import com.google.gson.JsonParser;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Optional;
 import net.minecraft.client.multiplayer.resolver.AddressCheck;
 import net.minecraft.client.multiplayer.resolver.ResolvedServerAddress;
@@ -13,6 +18,27 @@ import net.minecraft.client.multiplayer.resolver.ServerRedirectHandler;
 /** ConnectScreen.startConnecting uses the resolved socket's host and port for login. */
 public final class VanillaServerAddressOracle {
     public static void main(String[] args) throws Exception {
+        if (args.length == 2) {
+            JsonArray output = new JsonArray();
+            try (var reader = Files.newBufferedReader(Path.of(args[0]))) {
+                for (var input : JsonParser.parseReader(reader).getAsJsonArray()) {
+                    // Preserve Horizon's existing outer ASCII whitespace trim;
+                    // this corpus compares host/port syntax, not IDN mapping.
+                    String text = input.getAsString().trim();
+                    if (!ServerAddress.isValidAddress(text)) {
+                        output.add(JsonNull.INSTANCE);
+                    } else {
+                        var address = ServerAddress.parseString(text);
+                        JsonArray parsed = new JsonArray();
+                        parsed.add(address.getHost());
+                        parsed.add(address.getPort());
+                        output.add(parsed);
+                    }
+                }
+            }
+            Files.writeString(Path.of(args[1]), output.toString());
+            return;
+        }
         AddressCheck allow = new AddressCheck() {
             public boolean isAllowed(ResolvedServerAddress address) { return true; }
             public boolean isAllowed(ServerAddress address) { return true; }

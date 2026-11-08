@@ -1,27 +1,29 @@
 //! The selected instance's screenshots on Home (`horizon_launcher::screenshots`): the newest as
 //! thumbnails, all of them on request, and a viewer (← and → step through) with Copy, Open,
-//! Show in folder and Delete (to the trash, after a confirmation).
+//! Show in folder and Delete (to the trash, after a confirmation). Pictures are made at their
+//! shown size (`picture_cache`), never decoded whole.
 use super::*;
+use crate::picture_cache::Look;
 use gpui::{ClipboardItem, Image, ImageFormat};
 use horizon_launcher::screenshots::{self, Shot};
 use std::path::PathBuf;
 
 /// Thumbnails shown before "Show all".
-const FIRST: usize = 8;
+pub(super) const FIRST: usize = 8;
 const THUMB_W: f32 = 196.;
 const THUMB_H: f32 = THUMB_W * 9. / 16.;
 
 #[derive(Default)]
 pub(super) struct Screenshots {
     home: Option<PathBuf>,
-    list: Vec<Shot>,
+    pub(super) list: Vec<Shot>,
     fresh: bool,
-    all: bool,
+    pub(super) all: bool,
     /// The picture open in the viewer, by its place in `list`.
-    viewing: Option<usize>,
-    confirm_delete: bool,
+    pub(super) viewing: Option<usize>,
+    pub(super) confirm_delete: bool,
     /// What the last action did, or why it failed.
-    note: Option<Result<String, String>>,
+    pub(super) note: Option<Result<String, String>>,
 }
 
 impl Screenshots {
@@ -32,7 +34,7 @@ impl Screenshots {
 }
 
 impl Launcher {
-    fn load_screenshots(&mut self, home: PathBuf) {
+    pub(super) fn load_screenshots(&mut self, home: PathBuf) {
         if self.screenshots.home.as_ref() != Some(&home) {
             self.screenshots = Screenshots {
                 home: Some(home.clone()),
@@ -144,33 +146,42 @@ impl Launcher {
         }
         buttons = buttons.child(
             tab_action("screenshots-folder", "Open folder", &t)
-                .on_click(move |_, _, cx| cx.open_with_system(&folder)),
+                .on_click(move |_, _, cx| crate::glass_toast::open(cx, &folder)),
         );
-        let grid = div().flex().flex_wrap().gap(px(10.)).children(
-            list.into_iter().take(shown).enumerate().map(|(i, shot)| {
-                div()
-                    .id(SharedString::from(format!("screenshot-{i}")))
-                    .flex_none()
-                    .w(px(THUMB_W))
-                    .h(px(THUMB_H))
-                    .border_2()
-                    .border_color(t.outline)
-                    .bg(t.well)
-                    .cursor_pointer()
-                    .hover(|s| s.border_color(t.accent))
-                    .child(
-                        gpui::img(shot.path.clone())
-                            .size_full()
-                            .object_fit(gpui::ObjectFit::Cover),
-                    )
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.screenshots.viewing = Some(i);
-                        this.screenshots.confirm_delete = false;
-                        this.screenshots.note = None;
-                        cx.notify();
-                    }))
-            }),
-        );
+        let thumb = Look::Fit(self.thumb_side());
+        let pictures: Vec<_> = list
+            .iter()
+            .take(shown)
+            .map(|shot| self.picture(&shot.path, thumb, cx))
+            .collect();
+        let grid =
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(px(10.))
+                .children(pictures.into_iter().enumerate().map(|(i, picture)| {
+                    div()
+                        .id(SharedString::from(format!("screenshot-{i}")))
+                        .flex_none()
+                        .w(px(THUMB_W))
+                        .h(px(THUMB_H))
+                        .border_2()
+                        .border_color(t.outline)
+                        .bg(t.well)
+                        .cursor_pointer()
+                        .hover(|s| s.border_color(t.accent))
+                        .children(picture.map(|image| {
+                            gpui::img(image)
+                                .size_full()
+                                .object_fit(gpui::ObjectFit::Cover)
+                        }))
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.screenshots.viewing = Some(i);
+                            this.screenshots.confirm_delete = false;
+                            this.screenshots.note = None;
+                            cx.notify();
+                        }))
+                }));
         let mut section = div().flex().flex_col().gap(px(8.));
         if self.screenshots.viewing.is_none() {
             if let Some(Err(e)) = &self.screenshots.note {
@@ -186,6 +197,11 @@ impl Launcher {
         let i = self.screenshots.viewing?;
         let shot = self.screenshots.list.get(i)?.clone();
         let count = self.screenshots.list.len();
+        // Every pixel the window can show; its tile stands in while it is made.
+        let (full, thumb) = (Look::Fit(self.window_side()), Look::Fit(self.thumb_side()));
+        let picture = self
+            .picture(&shot.path, full, cx)
+            .or_else(|| self.pictures.made(&shot.path, thumb));
         let taken: chrono::DateTime<chrono::Local> = shot.taken.into();
         let step = |id: &'static str, label: &'static str, older: bool, can: bool| {
             let b = button(id, label, Kind::Ghost, &t);
@@ -234,7 +250,7 @@ impl Launcher {
                     ))
                     .child(
                         button("screenshot-open", "Open", Kind::Ghost, &t)
-                            .on_click(move |_, _, cx| cx.open_with_system(&open)),
+                            .on_click(move |_, _, cx| crate::glass_toast::open(cx, &open)),
                     )
                     .child(
                         button("screenshot-show", "Show in folder", Kind::Ghost, &t)
@@ -325,14 +341,14 @@ impl Launcher {
                         .border_2()
                         .border_color(t.outline)
                         .bg(t.well)
-                        .child(
-                            gpui::img(shot.path.clone())
+                        .children(picture.map(|image| {
+                            gpui::img(image)
                                 .absolute()
                                 .top_0()
                                 .left_0()
                                 .size_full()
-                                .object_fit(gpui::ObjectFit::Contain),
-                        ),
+                                .object_fit(gpui::ObjectFit::Contain)
+                        })),
                 )
                 .child(bottom),
         )

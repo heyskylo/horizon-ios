@@ -1,7 +1,8 @@
 struct Hud {
     size: vec4<f32>,
     // Blend::EndPortal: atlas rects (u0, v0, width, height) of end_sky.png and
-    // end_portal.png, then vanilla's GameTime in x.
+    // end_portal.png, then vanilla's GameTime in x and PvP & HUD's glint colour in yzw
+    // (y below 0: vanilla's).
     end_portal: array<vec4<f32>, 3>,
 }
 @group(0) @binding(0) var<uniform> hud: Hud;
@@ -10,6 +11,7 @@ struct Hud {
 // enchanted_glint_item on its own repeating texture (vanilla's GlintSampler).
 @group(0) @binding(3) var glint_tex: texture_2d<f32>;
 @group(0) @binding(4) var glint_sampler: sampler;
+@group(0) @binding(5) var linear_sampler: sampler;
 struct Out {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -34,17 +36,56 @@ struct Out {
     if in.uv.x >= 2.0 {
         let mask = textureSample(atlas, atlas_sampler, in.uv - vec2(2.0, 0.0)).a;
         if mask < 0.1 { discard; }
-        let glint = hud.size.w * textureSample(glint_tex, glint_sampler, in.glint_uv);
+        var glint = hud.size.w * textureSample(glint_tex, glint_sampler, in.glint_uv);
+        let tint = hud.end_portal[2].yzw;
+        if tint.x >= 0.0 {
+            glint = vec4(max(glint.r, max(glint.g, glint.b)) * tint, glint.a);
+        }
         return vec4(glint.rgb * glint.rgb, mask);
     }
     let c = textureSample(atlas, atlas_sampler, in.uv) * in.color;
     if c.a < 0.004 { discard; }
     return c;
 }
+// OptiFine CIT glint layers (hud/cit_glint.rs): every rule's texture in one array, the slot in
+// the vertex colour's red and the layer's intensity in its alpha. Masked by the item's texture
+// as the vanilla glint is, then blended by the pipeline the rule's `blend` asks for.
+struct CitSlot {
+    rgba: vec4<f32>,
+    // x: linear filtering (`blur`).
+    blur: vec4<f32>,
+}
+struct CitSlots {
+    slots: array<CitSlot, 256>,
+}
+@group(1) @binding(0) var cit_tex: texture_2d_array<f32>;
+@group(1) @binding(1) var cit_blur: sampler;
+@group(1) @binding(2) var cit_nearest: sampler;
+@group(1) @binding(3) var<uniform> cit: CitSlots;
+@fragment fn fs_cit_glint(in: Out) -> @location(0) vec4<f32> {
+    let mask = textureSample(atlas, atlas_sampler, in.uv).a;
+    let index = u32(round(in.color.r * 255.0));
+    let slot = cit.slots[index];
+    let blurred = textureSampleLevel(cit_tex, cit_blur, in.glint_uv, index, 0.0);
+    let sharp = textureSampleLevel(cit_tex, cit_nearest, in.glint_uv, index, 0.0);
+    if mask < 0.1 { discard; }
+    // The layer's colour times its intensity (the glint strength option included) in alpha,
+    // cut where vanilla's glint shader cuts, which CIT Resewn draws through.
+    var t = select(sharp, blurred, slot.blur.x > 0.5) * slot.rgba;
+    t.a *= in.color.a;
+    if t.a < 0.1 { discard; }
+    return t;
+}
 @fragment fn fs_crosshair(in: Out) -> @location(0) vec4<f32> {
     let c = textureSample(atlas, atlas_sampler, in.uv) * in.color;
     if c.a == 0.0 { discard; }
     return c;
+}
+// RenderPipelines.VIGNETTE (WinScreen's credits vignette): bilinear sample of
+// credits_vignette.png (which has blur: true in its .mcmeta and a wrapped border in the atlas).
+@fragment fn fs_vignette(in: Out) -> @location(0) vec4<f32> {
+    let c = textureSample(atlas, linear_sampler, in.uv) * in.color;
+    return vec4(c.rgb, 1.0);
 }
 // rendertype_end_portal.fsh (entity.wgsl has the same for portal blocks).
 const PORTAL_COLORS = array<vec3<f32>, 16>(

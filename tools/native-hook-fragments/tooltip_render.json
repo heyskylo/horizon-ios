@@ -1,0 +1,43 @@
+{
+  "hooks": [
+    {
+      "name": "tooltip_render_pre",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_tooltip_render_pre",
+      "neoforge": "RenderTooltipEvent.Pre",
+      "side": "client",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "helpers": [
+    {
+      "name": "gui_draw_item",
+      "target": "horizon_client::game::native_client_services::Game<'_>::native_gui_draw_item"
+    },
+    {
+      "name": "gui_draw_item_with",
+      "target": "horizon_client::game::native_client_services::Game<'_>::native_gui_draw_item_with"
+    },
+    {
+      "name": "has_shift_down",
+      "target": "horizon_client::game::native_client_services::Game<'_>::native_has_shift_down"
+    },
+    {
+      "name": "has_control_down",
+      "target": "horizon_client::game::native_client_services::Game<'_>::native_has_control_down"
+    },
+    {
+      "name": "has_alt_down",
+      "target": "horizon_client::game::native_client_services::Game<'_>::native_has_alt_down"
+    },
+    {
+      "name": "is_key_down",
+      "target": "horizon_client::game::native_client_services::Game<'_>::native_is_key_down"
+    }
+  ],
+  "rust_summary": "item tooltip rendering interception (`native_tooltip_render_pre`), GUI item drawing helpers (`gui_draw_item`, `gui_draw_item_with`), and live keyboard modifier/key state checks (`has_shift_down`, `has_control_down`, `has_alt_down`, `is_key_down`).",
+  "doc_summary": "`native_tooltip_render_pre(stack, batch, x, y, cancel)` allows cancelling vanilla item tooltip rendering or drawing custom surfaces, while `Host` gains `gui_draw_item(batch, stack, at)`, `gui_draw_item_with(batch, stack, at, text)`, `has_shift_down()`, `has_control_down()`, `has_alt_down()`, and `is_key_down(key)`. Bundles need \"hooks\": @API:tooltip_render@."
+}

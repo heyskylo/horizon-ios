@@ -184,13 +184,15 @@ pub fn find_patrol_target_from(m: &mut Mob, [x, y, z]: [i32; 3]) {
     s.patrol_target = Some([x + dx, y, z + dz]);
     s.patrolling = true;
 }
-/// The leader's ominous banner and its drop chance of 2.0 (always dropped).
+/// The leader's ominous banner and saved head drop chance of 2.0.
 ///
 /// Also keeps the full ominous stack in `armor[0]` so `SetEquipment` sends
 /// the patterned banner to clients (`Raid.getOminousBannerInstance`).
 pub fn wear_banner(m: &mut Mob) {
     m.extra.head = Some(BANNER.into());
     m.extra.armor[0] = Some(ominous_banner());
+    // Raid.setLeader and PatrollingMonster.finalizeSpawn: EquipmentSlot.HEAD.
+    super::finalize::set_drop_chance(m, 5, 2.0);
 }
 /// Why a mob was spawned (`EntitySpawnReason`), as far as raiders care.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -579,10 +581,13 @@ impl Goal for Celebration {
             };
             m.voice(sound, cx.events);
         }
-        if m.random
-            .next_int_bound(super::goals::reduced(50))
-            .unwrap_or(1)
-            == 0
+        // Raider.RaiderCelebration.tick: a raider riding a ravager (or any
+        // vehicle) does not jump. The roll is skipped too, as in vanilla.
+        if m.extra.mount.is_none()
+            && m.random
+                .next_int_bound(super::goals::reduced(50))
+                .unwrap_or(1)
+                == 0
         {
             m.ai.jumping = true;
         }
@@ -733,7 +738,7 @@ mod tests {
         assert!(!can_be_leader(Species::Witch) && !can_be_leader(Species::Ravager));
     }
     #[test]
-    fn wear_banner_keeps_the_ominous_stack_for_clients() {
+    fn wear_banner_keeps_the_stack_and_head_drop_chance() {
         use crate::mobs::sensor_scan_tests::kind;
         use std::sync::Arc;
         let mut k = (*kind()).clone();
@@ -742,6 +747,7 @@ mod tests {
         let mut m = Mob::new(1, Arc::new(k), Vec3::ZERO, 0.0);
         m.extra.raider = Some(Box::default());
         state_mut(&mut m).patrol_leader = true;
+        super::super::finalize::set_drop_chance(&mut m, 1, 0.65);
         wear_banner(&mut m);
         assert_eq!(m.extra.head.as_deref(), Some(BANNER));
         assert!(
@@ -751,6 +757,17 @@ mod tests {
                 .is_some_and(|d| d.ominous_banner)
         );
         assert!(is_captain(&m));
+        let saved = crate::entity_nbt::mob_to_nbt(&m, [0; 4], None, None, |_| None);
+        let chances = saved.get("drop_chances").unwrap();
+        assert_eq!(
+            chances.get("head"),
+            Some(&horizon_world::nbt::Tag::Float(2.0_f32.to_bits()))
+        );
+        assert_eq!(
+            chances.get("offhand"),
+            Some(&horizon_world::nbt::Tag::Float(0.65_f32.to_bits())),
+            "equipping the banner preserves other slots' explicit chances"
+        );
         // Client that only saw SetEquipment: no PatrolLeader, still a captain.
         state_mut(&mut m).patrol_leader = false;
         assert!(is_captain(&m));
@@ -770,5 +787,41 @@ mod tests {
         let at = Vec3::new(10.5, 64.5, 10.5);
         assert!(close_to_center([10, 64, 10], at, 1.0));
         assert!(!close_to_center([30, 64, 10], at, 10.0));
+    }
+
+    /// `RaiderCelebration.tick` jumps only when the raider is not a passenger.
+    #[test]
+    fn a_celebrating_raider_does_not_jump_while_riding() {
+        use crate::mobs::world::with_test_world;
+        use horizon_core::random::LegacyRandom;
+        use std::sync::Arc;
+        let _ = with_test_world(&[], |w, _| {
+            let jumped = |seed: i64, riding: bool| {
+                let mut k = (*crate::mobs::sensor_scan_tests::kind()).clone();
+                k.id = "minecraft:pillager".into();
+                k.species = Species::Pillager;
+                let mut m = Mob::new(1, Arc::new(k), Vec3::ZERO, 0.0);
+                m.random = LegacyRandom::new(seed);
+                m.extra.raider = Some(Box::default());
+                if riding {
+                    m.extra.mount = Some(9);
+                }
+                let mut goal = Celebration;
+                let mut lr = LegacyRandom::new(1);
+                let mut events = Vec::new();
+                let mut cx = Cx {
+                    w,
+                    lr: &mut lr,
+                    events: &mut events,
+                };
+                goal.tick(&mut m, &mut cx);
+                m.ai.jumping
+            };
+            let seed = (1..500)
+                .find(|seed| jumped(*seed, false))
+                .expect("some seed celebrates with a jump");
+            assert!(jumped(seed, false));
+            assert!(!jumped(seed, true));
+        });
     }
 }

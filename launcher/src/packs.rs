@@ -49,6 +49,66 @@ pub struct Pack {
     pub enabled: bool,
 }
 
+fn shader_key(path: &Path) -> Option<String> {
+    if !horizon_shader_api::package::is_pack(path) {
+        return None;
+    }
+    let manifest = horizon_shader_api::Pack::read_manifest(path).ok()?;
+    Some(format!("horizon:{}", manifest.id))
+}
+
+fn migrate_shader_values(home: &Path, pack: &Path, key: &str) -> std::io::Result<()> {
+    let Some(id) = key.strip_prefix("horizon:") else {
+        return Ok(());
+    };
+    let dir = home.join(Kind::Shader.folder());
+    let target = dir.join(".horizon-options").join(format!("{id}.txt"));
+    if target.exists() {
+        return Ok(());
+    }
+    let previous = line_value(
+        &fs::read_to_string(home.join(GRAPHICS)).unwrap_or_default(),
+        "pickedShaderPack",
+    )
+    .filter(|picked| {
+        !picked.starts_with("horizon:")
+            && (shader_key(&dir.join(picked)).as_deref() == Some(key)
+                || (!dir.join(picked).exists()
+                    && picked
+                        .strip_prefix(&format!("{id}-"))
+                        .is_some_and(|version| {
+                            version.len() > ".hshader".len() && version.ends_with(".hshader")
+                        })))
+    });
+    // Changing the selection would discard the old filename needed to import its sidecar.
+    for source in previous
+        .map(|name| dir.join(name))
+        .into_iter()
+        .chain(std::iter::once(pack.to_path_buf()))
+    {
+        let mut sidecar = source.into_os_string();
+        sidecar.push(".txt");
+        let mut source = match fs::File::open(sidecar) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+        fs::create_dir_all(target.parent().unwrap())?;
+        let mut file = match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+        {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        std::io::copy(&mut source, &mut file)?;
+        return Ok(());
+    }
+    Ok(())
+}
+
 /// The packs of `kind` in the game folder `home`, by name: turning one on or off leaves it where
 /// it is.
 pub fn list(home: &Path, kind: Kind) -> Vec<Pack> {
@@ -59,6 +119,11 @@ pub fn list(home: &Path, kind: Kind) -> Vec<Pack> {
         .flatten()
         .filter_map(|e| read(&e.path(), kind, &on))
         .collect();
+    packs.sort_by(|a, b| a.file.cmp(&b.file));
+    let mut keys = std::collections::HashSet::new();
+    packs.retain(|p| {
+        kind != Kind::Shader || keys.insert(shader_key(&p.path).unwrap_or_else(|| p.file.clone()))
+    });
     packs.sort_by_key(|p| p.title.to_lowercase());
     packs
 }
@@ -70,13 +135,40 @@ fn enabled(home: &Path, kind: Kind) -> Vec<String> {
             .into_iter()
             .filter_map(|id| id.strip_prefix("file/").map(str::to_string))
             .collect(),
-        Kind::Shader => line_value(
-            &fs::read_to_string(home.join(GRAPHICS)).unwrap_or_default(),
-            "pickedShaderPack",
-        )
-        .filter(|v| !v.is_empty())
-        .into_iter()
-        .collect(),
+        Kind::Shader => {
+            let picked = line_value(
+                &fs::read_to_string(home.join(GRAPHICS)).unwrap_or_default(),
+                "pickedShaderPack",
+            )
+            .filter(|v| !v.is_empty());
+            let dir = home.join(Kind::Shader.folder());
+            picked
+                .map(|p| {
+                    shader_key(&dir.join(&p))
+                        .or_else(|| {
+                            if dir.join(&p).exists() {
+                                return None;
+                            }
+                            let stem = p.strip_suffix(".hshader")?;
+                            let mut paths: Vec<_> = fs::read_dir(&dir)
+                                .ok()?
+                                .flatten()
+                                .map(|e| e.path())
+                                .collect();
+                            paths.sort();
+                            paths
+                                .iter()
+                                .filter_map(|path| shader_key(path))
+                                .find(|key| {
+                                    stem.strip_prefix(key.strip_prefix("horizon:").unwrap())
+                                        .is_some_and(|v| v.starts_with('-') && v.len() > 1)
+                                })
+                        })
+                        .unwrap_or(p)
+                })
+                .into_iter()
+                .collect()
+        }
     }
 }
 
@@ -114,7 +206,8 @@ fn read(path: &Path, kind: Kind, on: &[String]) -> Option<Pack> {
     };
     Some(Pack {
         kind,
-        enabled: on.contains(&file),
+        enabled: on.contains(&file)
+            || (kind == Kind::Shader && shader_key(path).is_some_and(|k| on.contains(&k))),
         path: path.to_path_buf(),
         file,
         title,
@@ -247,7 +340,20 @@ pub fn set_enabled(home: &Path, pack: &Pack, on: bool) -> Result<(), String> {
             )
         }
         Kind::Shader => {
-            let value = if on { pack.file.as_str() } else { "" };
+            if let Some(previous) = line_value(
+                &fs::read_to_string(home.join(GRAPHICS)).unwrap_or_default(),
+                "pickedShaderPack",
+            )
+            .filter(|p| !p.is_empty() && !p.starts_with("horizon:"))
+            {
+                if let Some(key) = enabled(home, Kind::Shader).first() {
+                    let path = home.join(Kind::Shader.folder()).join(previous);
+                    migrate_shader_values(home, &path, key).map_err(|e| e.to_string())?;
+                }
+            }
+            let key = shader_key(&pack.path).unwrap_or_else(|| pack.file.clone());
+            migrate_shader_values(home, &pack.path, &key).map_err(|e| e.to_string())?;
+            let value = if on { key.as_str() } else { "" };
             set_line(&home.join(GRAPHICS), "pickedShaderPack", value)
         }
     }

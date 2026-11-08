@@ -87,9 +87,13 @@ pub fn poll_game(shared: Arc<Shared>) {
                 continue;
             };
             // A new game numbers its events from 1 again.
+            let mut history = false;
             if control.as_ref().is_none_or(|(p, _)| *p != pid) {
                 control = engine::Control::connect(&shared.dir).ok().map(|c| (pid, c));
                 since = 0;
+                // What the game recorded before this first fetch (its saves while it started) happened before
+                // the management protocol's clients could hear of it.
+                history = true;
             }
             let Some((_, game)) = control.as_mut() else {
                 continue;
@@ -104,6 +108,9 @@ pub fn poll_game(shared: Arc<Shared>) {
                 let kind = event["type"].as_str().unwrap_or("game").to_owned();
                 if let Some(fields) = event.as_object_mut() {
                     fields.remove("seq");
+                }
+                if !(history && matches!(kind.as_str(), "saving" | "saved")) {
+                    crate::management::game_event(&shared, &kind, &event);
                 }
                 shared.emit(&kind, event);
             }
@@ -185,6 +192,16 @@ pub fn route(shared: &Arc<Shared>, request: &Request) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn event_reply(response: Response) -> Value {
+        assert!(response.stream.is_none());
+        json!({
+            "status": response.status,
+            "content_type": response.content_type,
+            "headers": response.headers,
+            "body": serde_json::from_str::<Value>(&response.body).unwrap(),
+        })
+    }
 
     #[test]
     fn events_after_a_number_by_type() {
@@ -275,5 +292,68 @@ mod tests {
         assert_eq!(polled["next"], 3);
         assert_eq!(polled["events"][0]["line"], "not a join");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn event_replies_match_api_v1_goldens() {
+        use std::io::Read;
+
+        let golden: Value =
+            serde_json::from_str(include_str!("../testdata/api-v1-events.json")).unwrap();
+        let shared = Shared::with_install(std::path::Path::new("unused"), None);
+        shared.log_line("ready".into());
+        shared.emit("join", json!({ "name": "Alex" }));
+        shared.emit("chat", json!({ "name": "Alex", "message": "hi" }));
+        let poll = |query: &str, headers: Vec<(String, String)>| {
+            event_reply(route(
+                &shared,
+                &Request {
+                    method: "GET".into(),
+                    path: "/api/v1/events".into(),
+                    query: query.into(),
+                    headers,
+                    body: Vec::new(),
+                },
+            ))
+        };
+        assert_eq!(poll("", Vec::new()), golden["all"]);
+        assert_eq!(poll("since=2", Vec::new()), golden["since"]);
+        assert_eq!(poll("types=join,leave", Vec::new()), golden["types"]);
+        assert_eq!(
+            poll("", vec![("Last-Event-ID".into(), "1".into())]),
+            golden["last_event_id"]
+        );
+        assert_eq!(poll("since=not-a-number", Vec::new()), golden["bad_since"]);
+        assert_eq!(poll("types=unknown", Vec::new()), golden["unknown_type"]);
+
+        let mut response = route(
+            &shared,
+            &Request {
+                method: "GET".into(),
+                path: "/api/v1/events".into(),
+                query: "types=join,chat".into(),
+                headers: vec![
+                    ("Accept".into(), "text/event-stream".into()),
+                    ("Last-Event-ID".into(), "1".into()),
+                ],
+                body: Vec::new(),
+            },
+        );
+        assert_eq!(response.status, golden["stream"]["status"]);
+        assert_eq!(response.content_type, golden["stream"]["content_type"]);
+        assert_eq!(response.headers, Vec::<(&str, String)>::new());
+        let expected = golden["stream"]["body"].as_str().unwrap().as_bytes();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let control = server.try_clone().unwrap();
+        let write = response.stream.take().unwrap();
+        let writer = std::thread::spawn(move || write(&server));
+        let mut body = vec![0; expected.len()];
+        client.read_exact(&mut body).unwrap();
+        assert_eq!(body, expected);
+        control.shutdown(std::net::Shutdown::Both).unwrap();
+        shared.emit("join", json!({ "name": "Wake" }));
+        writer.join().unwrap();
     }
 }

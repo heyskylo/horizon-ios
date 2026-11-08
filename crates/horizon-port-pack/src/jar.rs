@@ -3,7 +3,7 @@
 //! census of its data, assets and classes. Legacy metadata contributes identity
 //! only; license and dependency fields are not interpreted.
 use serde::{Deserialize, Serialize};
-use std::{fs, io::Read, path::Path};
+use std::{fs, path::Path};
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct JarInfo {
@@ -30,6 +30,12 @@ pub struct Census {
     pub sounds: usize,
     pub classes: usize,
     pub mixin_configs: usize,
+    /// Files under `data/<namespace>/`, of any kind.
+    #[serde(default)]
+    pub data_files: usize,
+    /// A `pack.mcmeta` at the top: the jar is also a data or resource pack.
+    #[serde(default)]
+    pub pack_mcmeta: bool,
 }
 
 const NOT_MODS: [&str; 5] = ["minecraft", "neoforge", "forge", "fabricloader", "java"];
@@ -37,25 +43,38 @@ const NOT_MODS: [&str; 5] = ["minecraft", "neoforge", "forge", "fabricloader", "
 pub fn read(path: &Path) -> Result<JarInfo, String> {
     let file = fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("{}: {e}", path.display()))?;
-    let text = |zip: &mut zip::ZipArchive<fs::File>, name: &str| -> Option<String> {
-        let mut s = String::new();
-        zip.by_name(name).ok()?.read_to_string(&mut s).ok()?;
-        Some(s)
-    };
-    let mut info = if let Some(t) = text(&mut zip, "META-INF/neoforge.mods.toml")
-        .or_else(|| text(&mut zip, "META-INF/mods.toml"))
-    {
-        mods_toml(&t)?
-    } else if let Some(t) = text(&mut zip, "fabric.mod.json") {
+    // A metadata file larger than any real one refuses the jar (crate::entry); a missing or
+    // non-UTF-8 one reads as absent.
+    let text =
+        |zip: &mut zip::ZipArchive<fs::File>, name: &str| -> Result<Option<String>, String> {
+            let Ok(file) = zip.by_name(name) else {
+                return Ok(None);
+            };
+            let declared = file.size();
+            match crate::entry::read_text(file, declared, crate::entry::MAX_TEXT) {
+                Ok(s) => Ok(Some(s)),
+                Err(e) if crate::entry::is_too_big(&e) => {
+                    Err(format!("{}: {name}: {e}", path.display()))
+                }
+                Err(_) => Ok(None),
+            }
+        };
+    let mut tomls = Vec::new();
+    for n in ["META-INF/neoforge.mods.toml", "META-INF/mods.toml"] {
+        tomls.extend(text(&mut zip, n)?);
+    }
+    let mut info = if !tomls.is_empty() {
+        metadata(&tomls)?
+    } else if let Some(t) = text(&mut zip, "fabric.mod.json")? {
         fabric(&t)?
-    } else if let Some(t) = text(&mut zip, "mcmod.info") {
+    } else if let Some(t) = text(&mut zip, "mcmod.info")? {
         mcmod_info(&t)?
     } else {
         JarInfo::default()
     };
     // `version = "${file.jarVersion}"` is filled in from the manifest at load.
     if info.version.starts_with("${") {
-        info.version = text(&mut zip, "META-INF/MANIFEST.MF")
+        info.version = text(&mut zip, "META-INF/MANIFEST.MF")?
             .and_then(|m| manifest_value(&m, "Implementation-Version"))
             .unwrap_or_default();
     }
@@ -82,6 +101,71 @@ fn manifest_value(manifest: &str, key: &str) -> Option<String> {
         .find_map(|l| l.strip_prefix(key)?.strip_prefix(':'))
         .map(|v| v.trim().to_owned())
         .filter(|v| !v.is_empty())
+}
+
+/// The jar's mod from its metadata files (`neoforge.mods.toml` first, then
+/// `mods.toml`). A jar built for one loader may carry the other loader's file
+/// as an unfilled template (`modId = "${id}"`, `[[dependencies.${id}]]`), which
+/// its own loader never reads: the first file that parses and names a real mod
+/// id is the one. When none parses, the first file is read line by line
+/// ([`mods_toml_lines`]), as a loader that reads past what it does not need.
+pub fn metadata(tomls: &[String]) -> Result<JarInfo, String> {
+    let real = |i: &JarInfo| !i.mod_id.is_empty() && !i.mod_id.contains("${");
+    let mut first_error = None;
+    for t in tomls {
+        match mods_toml(t) {
+            Ok(i) if real(&i) => return Ok(i),
+            Ok(_) => {}
+            Err(e) => {
+                first_error.get_or_insert(e);
+            }
+        }
+    }
+    tomls
+        .iter()
+        .map(|t| mods_toml_lines(t))
+        .find(real)
+        .ok_or_else(|| first_error.unwrap_or_else(|| "mods.toml: no [[mods]] modId".into()))
+}
+
+/// The first `[[mods]]` table's `modId`, `displayName` and `version` and the
+/// top-level `license`, read line by line (`key = "value"`, `#` comments), for
+/// a metadata file a TOML parser refuses. Dependencies are not read.
+pub fn mods_toml_lines(text: &str) -> JarInfo {
+    let mut info = JarInfo::default();
+    // 0: top level, 1: the first [[mods]], 2: past it.
+    let mut section = 0;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            let name = line.trim_matches(['[', ']']).trim();
+            section = match (section, name) {
+                (0, "mods") => 1,
+                _ => 2,
+            };
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let value = value.trim();
+        let Some(value) = value
+            .strip_prefix('"')
+            .and_then(|v| v.split_once('"'))
+            .or_else(|| value.strip_prefix('\'').and_then(|v| v.split_once('\'')))
+            .map(|(v, _)| v.to_owned())
+        else {
+            continue;
+        };
+        match (section, key.trim()) {
+            (0, "license") => info.license = value,
+            (1, "modId") if info.mod_id.is_empty() => info.mod_id = value,
+            (1, "displayName") => info.name = value,
+            (1, "version") => info.version = value,
+            _ => {}
+        }
+    }
+    info
 }
 
 /// `[[mods]]` (the first one is the jar's mod), the top-level `license`, and
@@ -195,6 +279,10 @@ pub fn census(names: &[String]) -> Census {
         } else if n.ends_with(".mixins.json") || (parts.len() == 1 && n.contains("mixins")) {
             c.mixin_configs += 1;
         }
+        c.pack_mcmeta |= n == "pack.mcmeta";
+        if parts.len() > 2 && parts[0] == "data" && !n.ends_with('/') {
+            c.data_files += 1;
+        }
         // assets/<ns>/<kind>/... and data/<ns>/<kind>/...
         let (Some(root), Some(kind)) = (parts.first(), parts.get(2)) else {
             continue;
@@ -293,6 +381,34 @@ mandatory = true
             ("ruby", "1.2.0", "MIT")
         );
         assert_eq!(info.depends, ["geckolib", "curios"]);
+    }
+
+    /// Drip Sounds' Forge jar carries an unfilled NeoForge template beside its
+    /// `mods.toml`; a file no parser reads still gives its id line by line.
+    #[test]
+    fn templates_and_broken_files_are_read_tolerantly() {
+        let template = "license = \"LGPL\"\n[[mods]]\nmodId = \"${id}\"\nversion = \"${version}\"\n\n[[dependencies.${id}]]\nmodId = \"minecraft\"\n";
+        let forge = "license = \"LGPL-3.0-only\"\n[[mods]]\nmodId = \"waterdripsound\"\ndisplayName = \"Drip Sounds\"\nversion = \"0.6.3\"\n[[dependencies.waterdripsound]]\nmodId = \"cloth_config\"\nmandatory = true\n";
+        assert!(mods_toml(template).is_err());
+        let info = metadata(&[template.to_owned(), forge.to_owned()]).unwrap();
+        assert_eq!(
+            (info.mod_id.as_str(), info.version.as_str()),
+            ("waterdripsound", "0.6.3")
+        );
+        assert_eq!(info.depends, ["cloth_config"]);
+        // Nothing parses: the lines still name the mod (a duplicate key is a TOML error).
+        let broken = "license = 'MIT' # x\n[[mods]]\nmodId = \"ruby\"\nmodId = \"ruby\"\nversion = \"2\"\ndisplayName = \"Ruby\"\n[[mods]]\nmodId = \"other\"\n";
+        assert!(mods_toml(broken).is_err());
+        let info = metadata(&[template.to_owned(), broken.to_owned()]).unwrap();
+        assert_eq!(
+            (
+                info.mod_id.as_str(),
+                info.name.as_str(),
+                info.license.as_str()
+            ),
+            ("ruby", "Ruby", "MIT")
+        );
+        assert!(metadata(&[template.to_owned()]).is_err());
     }
 
     #[test]

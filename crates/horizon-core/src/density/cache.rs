@@ -95,10 +95,10 @@ impl DensitySampler for CachingDensitySampler {
         if cell.value_key == key && !cell.value.is_nan() {
             return Ok(cell.value);
         }
-        if let Some(volume) = cell.volume {
-            if let Some(index) = volume.index_of_block(position) {
-                return Ok(cell.buffer[index]);
-            }
+        if let Some(volume) = cell.volume
+            && let Some(index) = volume.index_of_block(position)
+        {
+            return Ok(cell.buffer[index]);
         }
         cell.active = true;
         let result = self.input.sample_value(context, position);

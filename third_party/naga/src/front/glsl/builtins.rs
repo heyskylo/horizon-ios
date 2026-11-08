@@ -2582,12 +2582,60 @@ fn texture_call(
             ctx.conversion(array_index_expr, meta, Scalar::I32)?;
         }
 
+        // A texel offset must be a constant expression, but GL drivers also take one a
+        // function gets as a parameter (`const in ivec2 offset`, Arc's FXAA). Such an offset
+        // moves the coordinate by that many texels of the base level instead.
+        let mut coordinate = comps.coordinate;
+        let mut offset = offset;
+        if let Some(by) = offset.filter(|&o| !ctx.local_expression_kind_tracker.is_const(o)) {
+            let size = ctx.add_expression(
+                Expression::ImageQuery {
+                    image,
+                    query: ImageQuery::Size { level: None },
+                },
+                meta,
+            )?;
+            let size = ctx.add_expression(
+                Expression::As {
+                    expr: size,
+                    kind: Sk::Float,
+                    convert: Some(4),
+                },
+                meta,
+            )?;
+            let by = ctx.add_expression(
+                Expression::As {
+                    expr: by,
+                    kind: Sk::Float,
+                    convert: Some(4),
+                },
+                meta,
+            )?;
+            let shift = ctx.add_expression(
+                Expression::Binary {
+                    op: BinaryOperator::Divide,
+                    left: by,
+                    right: size,
+                },
+                meta,
+            )?;
+            coordinate = ctx.add_expression(
+                Expression::Binary {
+                    op: BinaryOperator::Add,
+                    left: coordinate,
+                    right: shift,
+                },
+                meta,
+            )?;
+            offset = None;
+        }
+
         Ok(ctx.add_expression(
             Expression::ImageSample {
                 image,
                 sampler,
                 gather: None, //TODO
-                coordinate: comps.coordinate,
+                coordinate,
                 array_index,
                 offset,
                 level,

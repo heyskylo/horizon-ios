@@ -9,6 +9,7 @@
 //! path ends in `.json`, the game listens on a random localhost TCP port and
 //! writes `{"transport":"tcp","port":N,"token":"..."}` to the path, readable
 //! only by its user; a client's first line must then be `auth TOKEN`.
+use crate::block_entity_render::StaticCacheFrameStats;
 use std::{
     io::{self, BufRead, BufReader, Read, Write},
     net::{Ipv4Addr, TcpListener, TcpStream},
@@ -94,6 +95,7 @@ fn read_endpoint(path: &Path) -> io::Result<(u16, String)> {
 
 /// Connect to a running game's control endpoint (and authenticate over TCP).
 pub fn connect(path: &Path) -> io::Result<Stream> {
+    private_dir(path, false)?;
     #[cfg(unix)]
     if !uses_tcp(path) {
         return UnixStream::connect(path).map(Stream::Unix);
@@ -113,32 +115,17 @@ pub fn connect(path: &Path) -> io::Result<Stream> {
     Ok(Stream::Tcp(stream))
 }
 
-/// 128 random bits as hex, from the standard library's OS-seeded hasher keys.
+/// 128 random bits from the OS's random generator, as 32 hex digits: the TCP endpoint's token, which
+/// gates full control of the running game.
 fn random_token() -> String {
-    use std::hash::{BuildHasher, Hasher};
-    (0..2)
-        .map(|i| {
-            let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-            h.write_u64(i);
-            h.write_u128(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_nanos()),
-            );
-            h.write_u32(std::process::id());
-            format!("{:016x}", h.finish())
-        })
-        .collect()
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).expect("OS random generator");
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Write the endpoint file so that only this user can read it.
-fn write_private(path: &Path, text: &str) -> io::Result<()> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    options.open(path)?.write_all(text.as_bytes())
-}
+/// Writes the endpoint file so that only this user can read it, even over an older file
+/// (`horizon_server_files::private_file`).
+use horizon_server_files::private_file::write_private;
 
 /// Constant-time comparison of the presented token.
 fn same_token(a: &str, b: &str) -> bool {
@@ -172,12 +159,105 @@ pub fn default_path() -> PathBuf {
     if !cfg!(unix) {
         return std::env::temp_dir().join("horizon-control.json");
     }
-    let dir = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .or_else(fallback_dir)
+        .unwrap_or_else(std::env::temp_dir);
     dir.join("horizon-control.sock")
+}
+
+/// Without `$XDG_RUNTIME_DIR` (containers, some WSL and minimal setups), when the temporary
+/// directory is shared by every user (`/tmp`), a folder of this user's own in it,
+/// `horizon-<uid>`: a fixed name there let another user bind the socket first, so that
+/// `--control` failed and `horizon-ctl` talked to theirs. [`private_dir`] checks it before the
+/// socket is made or reached. A temporary directory of the user's own (macOS's `$TMPDIR`) is
+/// used as it is. The launcher finds the endpoint the same way (`game_tools.rs`).
+fn fallback_dir() -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = std::env::temp_dir();
+        let shared = std::fs::metadata(&temp).is_ok_and(|m| m.permissions().mode() & 0o002 != 0);
+        let uid = own_uid().filter(|_| shared)?;
+        Some(temp.join(format!("horizon-{uid}")))
+    }
+    #[cfg(not(unix))]
+    None
+}
+
+/// This process's user: the owner of `/proc/self` where there is one, else of the home folder.
+#[cfg(unix)]
+fn own_uid() -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata("/proc/self")
+        .ok()
+        .or_else(|| std::fs::metadata(std::env::var_os("HOME")?).ok())
+        .map(|m| m.uid())
+}
+
+/// For an endpoint in [`fallback_dir`]: [`check_private`] on that folder. Elsewhere (the user's
+/// `$HORIZON_CONTROL`, the runtime directory) nothing to check.
+fn private_dir(path: &Path, make: bool) -> io::Result<()> {
+    match fallback_dir() {
+        Some(dir) if path.parent() == Some(dir.as_path()) => check_private(&dir, make),
+        _ => Ok(()),
+    }
+}
+
+/// `dir` made (mode 0700) when `make`, and refused unless it is a real folder, this user's, that
+/// no one else may enter.
+#[cfg(unix)]
+fn check_private(dir: &Path, make: bool) -> io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    if make {
+        match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+            Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(e),
+            _ => {}
+        }
+    }
+    let meta = std::fs::symlink_metadata(dir)?;
+    if !meta.is_dir()
+        || meta.permissions().mode() & 0o077 != 0
+        || own_uid().is_some_and(|uid| uid != meta.uid())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "{} isn't a folder only this user can open; set $HORIZON_CONTROL or $XDG_RUNTIME_DIR",
+                dir.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+#[cfg(not(unix))]
+fn check_private(_: &Path, _: bool) -> io::Result<()> {
+    Ok(())
+}
+
+/// Whether `path` can be an endpoint at all, without touching it: a Unix socket's path has a
+/// length limit (`sockaddr_un`); a TCP endpoint is an ordinary file and has none.
+pub fn check_path(path: &Path) -> io::Result<()> {
+    if uses_tcp(path) {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    std::os::unix::net::SocketAddr::from_pathname(path).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{} bytes is too long for a Unix socket path; use a shorter one",
+                path.as_os_str().len()
+            ),
+        )
+    })?;
+    Ok(())
 }
 
 impl Server {
     pub fn start(path: &Path) -> io::Result<Self> {
+        check_path(path)?;
+        private_dir(path, true)?;
         // An endpoint left by a crashed game refuses connections; replace it.
         if path.exists() && connect(path).is_err() {
             std::fs::remove_file(path)?;
@@ -195,8 +275,7 @@ impl Server {
             tcp_port = Some(port);
             write_private(
                 path,
-                &serde_json::json!({ "transport": "tcp", "port": port, "token": token })
-                    .to_string(),
+                serde_json::json!({ "transport": "tcp", "port": port, "token": token }).to_string(),
             )?;
             spawn_listener(
                 move || listener.accept().map(|(s, _)| s),
@@ -341,12 +420,33 @@ impl Drop for Server {
     }
 }
 
+/// The longest request line a connection may send. The game reads and parses a request on its
+/// own thread between two ticks, so one without bound could stall the server (a proxy's
+/// `player-import` carries a whole player, a few hundred kilobytes at most).
+const MAX_LINE: u64 = 16 << 20;
+
 fn serve(stream: Stream, sender: &mpsc::Sender<Request>) {
     let Ok(mut writer) = stream.try_clone() else {
         return;
     };
-    for line in BufReader::new(stream).lines() {
-        let Ok(line) = line else { return };
+    let mut reader = BufReader::new(stream);
+    loop {
+        let mut bytes = Vec::new();
+        match (&mut reader)
+            .take(MAX_LINE + 1)
+            .read_until(b'\n', &mut bytes)
+        {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+        if bytes.len() as u64 > MAX_LINE {
+            let _ = writeln!(writer, r#"{{"error":"the request is longer than 16 MiB"}}"#);
+            return;
+        }
+        let Ok(line) = String::from_utf8(bytes) else {
+            return;
+        };
+        let line = line.trim_end_matches(['\n', '\r']).to_owned();
         if line.trim().is_empty() {
             continue;
         }
@@ -366,7 +466,68 @@ fn serve(stream: Stream, sender: &mpsc::Sender<Request>) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn the_fallback_socket_folder_must_be_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!("horizon-control-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        // Made 0700 when missing, and then fine to reach.
+        let made = base.join("made");
+        super::check_private(&made, true).unwrap();
+        let mode = std::fs::metadata(&made).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        super::check_private(&made, false).unwrap();
+        // One another user could enter or write: refused, made or not.
+        let open = base.join("open");
+        std::fs::create_dir(&open).unwrap();
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(super::check_private(&open, true).is_err());
+        assert!(super::check_private(&open, false).is_err());
+        // A link to a private folder, or a file: refused.
+        std::os::unix::fs::symlink(&made, base.join("link")).unwrap();
+        assert!(super::check_private(&base.join("link"), false).is_err());
+        std::fs::write(base.join("file"), b"").unwrap();
+        assert!(super::check_private(&base.join("file"), true).is_err());
+        // Missing and not to be made: an error, not a folder made by whoever connects.
+        assert!(super::check_private(&base.join("missing"), false).is_err());
+        assert!(!base.join("missing").exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     use super::*;
+
+    /// The check agrees with the system at every length around its limit.
+    #[cfg(unix)]
+    #[test]
+    fn check_path_says_what_bind_does() {
+        let dir = std::env::temp_dir().join(format!("hz-sock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut fits, mut too_long) = (false, false);
+        for len in 1..=150 {
+            let path = dir.join("x".repeat(len));
+            let bound = UnixListener::bind(&path).is_ok();
+            assert_eq!(check_path(&path).is_ok(), bound, "{}", path.display());
+            let _ = std::fs::remove_file(&path);
+            fits |= bound;
+            too_long |= !bound;
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(fits && too_long, "the lengths tried must cross the limit");
+    }
+
+    /// A `.json` endpoint is a file and TCP: the socket limit is not its limit.
+    #[test]
+    fn long_tcp_endpoint_opens() {
+        let dir = std::env::temp_dir().join(format!("hz-long-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{}.json", "x".repeat(150)));
+        let server = Server::start(&path);
+        assert!(server.is_ok(), "{:?}", server.err());
+        drop(server);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn tcp_endpoint_round_trip() {
@@ -392,6 +553,35 @@ mod tests {
         assert!(!path.exists());
     }
 
+    /// A request past the limit is answered with an error and never reaches the game.
+    #[test]
+    fn a_request_longer_than_the_limit_is_refused() {
+        let path =
+            std::env::temp_dir().join(format!("horizon-ctl-long-{}.json", std::process::id()));
+        let server = Server::start(&path).unwrap();
+        let client = connect(&path).unwrap();
+        let mut writing = client.try_clone().unwrap();
+        // The server stops reading at the limit and closes: the rest may not be taken.
+        let writer = thread::spawn(move || {
+            let chunk = vec![b'x'; 1 << 20];
+            for _ in 0..=(MAX_LINE >> 20) {
+                if writing.write_all(&chunk).is_err() {
+                    return;
+                }
+            }
+            let _ = writing.write_all(b"\n");
+        });
+        let mut reply = String::new();
+        BufReader::new(client).read_line(&mut reply).unwrap();
+        assert!(reply.contains("longer than"), "{reply}");
+        let _ = writer.join();
+        assert!(
+            server.try_recv().is_none(),
+            "the game was handed the request"
+        );
+        drop(server);
+    }
+
     #[test]
     fn tcp_refuses_a_wrong_token() {
         let path =
@@ -411,6 +601,30 @@ mod tests {
         assert_eq!(random_token().len(), 32);
         assert!(same_token("abc", "abc") && !same_token("abc", "abd") && !same_token("a", "ab"));
     }
+
+    #[test]
+    fn frame_summary_reports_block_entity_cache_work() {
+        let mut stats = FrameStats::default();
+        stats.record(10.0);
+        stats.record_cpu(5.0);
+        stats.record_block_entities(StaticCacheFrameStats {
+            snapshot_rebuilds: 2,
+            snapshot_bytes_built: 128,
+            static_bytes_uploaded: 96,
+            static_entities_drawn: 4,
+            dynamic_entities_drawn: 3,
+            ..Default::default()
+        });
+
+        let summary = stats.summary();
+        assert_eq!(summary["static_snapshot_rebuilds"], 2);
+        assert_eq!(summary["static_snapshot_bytes_built"], 128);
+        assert_eq!(summary["static_bytes_uploaded"], 96);
+        assert_eq!(summary["static_entities_drawn"], 4);
+        assert_eq!(summary["dynamic_entities_drawn"], 3);
+        assert_eq!(summary["static_entities_drawn_avg_per_frame"], 4.0);
+        assert_eq!(summary["dynamic_entities_drawn_avg_per_frame"], 3.0);
+    }
 }
 
 /// Frame durations since the last reset, summarized like the Java recorder,
@@ -422,6 +636,11 @@ pub struct FrameStats {
     gpu: Vec<f32>,
     /// Milliseconds per frame phase (`PHASES`), one entry per rendered frame.
     phases: Vec<[f32; PHASES.len()]>,
+    static_snapshot_rebuilds: u64,
+    static_snapshot_bytes_built: u64,
+    static_bytes_uploaded: u64,
+    static_entities_drawn: u64,
+    dynamic_entities_drawn: u64,
 }
 
 /// The parts of a frame's CPU time: world streaming and uploads, game ticks,
@@ -490,6 +709,14 @@ impl FrameStats {
             self.gpu.extend_from_slice(millis);
         }
     }
+    /// Block-entity cache counters for the frame just rendered.
+    pub fn record_block_entities(&mut self, stats: StaticCacheFrameStats) {
+        self.static_snapshot_rebuilds += stats.snapshot_rebuilds;
+        self.static_snapshot_bytes_built += stats.snapshot_bytes_built;
+        self.static_bytes_uploaded += stats.static_bytes_uploaded;
+        self.static_entities_drawn += stats.static_entities_drawn;
+        self.dynamic_entities_drawn += stats.dynamic_entities_drawn;
+    }
     /// Every recorded frame time, in milliseconds, in order.
     pub fn frame_millis(&self) -> &[f32] {
         &self.millis
@@ -507,6 +734,11 @@ impl FrameStats {
         self.cpu.clear();
         self.gpu.clear();
         self.phases.clear();
+        self.static_snapshot_rebuilds = 0;
+        self.static_snapshot_bytes_built = 0;
+        self.static_bytes_uploaded = 0;
+        self.static_entities_drawn = 0;
+        self.dynamic_entities_drawn = 0;
     }
     pub fn summary(&self) -> serde_json::Value {
         let mut sorted = self.millis.clone();
@@ -550,6 +782,13 @@ impl FrameStats {
             "gpu": percentiles(&self.gpu),
             "phases_avg_ms": self.phase_average(0.0),
             "slow_phases_avg_ms": slow_phases,
+            "static_snapshot_rebuilds": self.static_snapshot_rebuilds,
+            "static_snapshot_bytes_built": self.static_snapshot_bytes_built,
+            "static_bytes_uploaded": self.static_bytes_uploaded,
+            "static_entities_drawn": self.static_entities_drawn,
+            "dynamic_entities_drawn": self.dynamic_entities_drawn,
+            "static_entities_drawn_avg_per_frame": self.static_entities_drawn as f64 / n as f64,
+            "dynamic_entities_drawn_avg_per_frame": self.dynamic_entities_drawn as f64 / n as f64,
         })
     }
 }

@@ -1,11 +1,11 @@
 //! Biome colours from the pinned biome definitions and colormaps
 //! (`Biome.getGrassColor`/`getFoliageColor`/..., `BlockTintSources`).
 use crate::Result;
+use horizon_client_core::particle_type::ParticleType;
 use horizon_core::{noise::SimplexNoise, position::BlockPos, random::LegacyRandom};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashMap},
-    fs,
     path::Path,
     sync::Arc,
 };
@@ -107,11 +107,31 @@ pub struct BiomeInfo {
     /// The biome's own fog colour attribute; otherwise the dimension's applies.
     pub fog: Option<u32>,
     pub water_fog: u32,
+    /// `minecraft:visual/ambient_particles` entries and their probabilities.
+    pub ambient_particles: Vec<(ParticleType, f32)>,
     /// `BiomeGenerationSettings.features`: the placed feature ids of each
     /// `GenerationStep.Decoration` step, in order.
     pub features: Vec<Vec<String>>,
+    /// The biome's environment attributes (`Biome.getAttributes`): its layer in the
+    /// environment attribute stack.
+    pub attributes: horizon_world::environment_attributes::AttributeMap,
 }
 impl BiomeInfo {
+    fn ambient_particles(v: &Value) -> Vec<(ParticleType, f32)> {
+        let list = &v["attributes"]["minecraft:visual/ambient_particles"];
+        let entries = list["argument"].as_array().or_else(|| list.as_array());
+        entries
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| {
+                Some((
+                    ParticleType::from_name(entry["particle"]["type"].as_str()?)?,
+                    entry["probability"].as_f64().unwrap_or(0.0) as f32,
+                ))
+            })
+            .collect()
+    }
+
     /// `Biome.getHeightAdjustedTemperature`: the frozen modifier, then cooler
     /// with height above `sea_level + 17`.
     pub fn temperature_at(&self, pos: BlockPos, sea_level: i32) -> f32 {
@@ -171,7 +191,9 @@ fn color(v: &Value) -> Option<u32> {
 }
 fn colormap(root: &Path, name: &str) -> Result<Vec<u32>> {
     let path = root.join(format!("assets/minecraft/textures/colormap/{name}.png"));
-    let mut decoder = png::Decoder::new(std::io::BufReader::new(fs::File::open(path)?));
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(horizon_core::prepared_files::read(
+        &path,
+    )?));
     decoder.ignore_checksums(true);
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info()?;
@@ -244,6 +266,7 @@ impl BiomeInfo {
             sky: color(&attributes["minecraft:visual/sky_color"]),
             fog: color(&attributes["minecraft:visual/fog_color"]),
             water_fog: color(&attributes["minecraft:visual/water_fog_color"]).unwrap_or(0x050533),
+            ambient_particles: Self::ambient_particles(v),
             features: v["features"]
                 .as_array()
                 .into_iter()
@@ -257,6 +280,11 @@ impl BiomeInfo {
                         .collect()
                 })
                 .collect(),
+            attributes: horizon_world::environment_attributes::AttributeMap::parse(attributes)
+                .unwrap_or_else(|e| {
+                    log::warn!("biome attributes: {e}");
+                    Default::default()
+                }),
             name,
         }
     }
@@ -277,21 +305,22 @@ impl Biomes {
             dry: colormap(root, "dry_foliage")?,
         };
         let mut list = Vec::new();
-        let mut names: Vec<_> = fs::read_dir(root.join("data/minecraft/worldgen/biome"))?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|e| e == "json"))
+        // The folder's own files (not its subfolders'), by file name: through `json_folder`,
+        // from the prepared data file when there is one.
+        let folder = horizon_world::json_folder::read(&root.join("data/minecraft/worldgen/biome"))?;
+        let mut files: Vec<_> = folder
+            .files
+            .iter()
+            .filter(|f| !f.name.contains('/'))
             .collect();
-        names.sort();
-        for path in names {
-            let name = format!(
-                "minecraft:{}",
-                path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .ok_or("bad biome")?
-            );
-            let v: Value = serde_json::from_slice(&fs::read(&path)?)?;
-            list.push(BiomeInfo::from_json(name, &v, &maps));
+        files.sort_by_cached_key(|f| format!("{}.json", f.name));
+        for file in files {
+            let v: Value = horizon_world::json_file::parse(&file.path, file.bytes()?)?;
+            list.push(BiomeInfo::from_json(
+                format!("minecraft:{}", file.name),
+                &v,
+                &maps,
+            ));
         }
         let index = list
             .iter()
@@ -372,6 +401,17 @@ impl Biomes {
     pub fn get(&self, id: u16) -> &BiomeInfo {
         &self.list[usize::from(id).min(self.list.len() - 1)]
     }
+    /// The name of biome `id`, plains (as for an unknown name) when the id is
+    /// past this table: a column a server sent under its earlier, longer
+    /// registry (a proxy's previous server) keeps its ids until the next
+    /// login replaces it. `get` clamps such an id to the last entry instead,
+    /// so for that stale column the colours and this name can come from
+    /// different biomes until the login.
+    pub fn name(&self, id: u16) -> &str {
+        self.list
+            .get(usize::from(id))
+            .map_or("minecraft:plains", |b| b.name.as_str())
+    }
     pub fn grass(&self, id: u16, x: f64, z: f64) -> u32 {
         let b = self.get(id);
         match b.modifier {
@@ -431,6 +471,25 @@ impl Biomes {
             }
         }
         changed.then_some(out)
+    }
+
+    /// This table (the biome files') with its colours passed through `f`, when
+    /// they differ from `current`'s: what a refresh of a table already
+    /// coloured by `f` once must not compound.
+    pub fn recolored_from(
+        &self,
+        current: &Self,
+        f: impl FnMut(&str, &mut BiomeColors),
+    ) -> Option<Self> {
+        let out = self.with_colors(f).unwrap_or_else(|| self.clone());
+        let tints = |b: &BiomeInfo| (b.grass, b.foliage, b.dry_foliage, b.water);
+        let same = out.list.len() == current.list.len()
+            && out
+                .list
+                .iter()
+                .zip(&current.list)
+                .all(|(a, b)| tints(a) == tints(b));
+        (!same).then_some(out)
     }
 }
 
@@ -542,7 +601,9 @@ mod pack_tests {
     #[test]
     fn packs_replace_in_place_and_add_after_the_builtin_biomes() {
         let base = builtin(&["minecraft:meadow", "minecraft:plains", "minecraft:river"]);
-        let red = json!({"temperature": 2.0, "effects": {"water_color": "#ff0000"}});
+        let red = json!({"temperature": 2.0, "effects": {"water_color": "#ff0000"},
+            "attributes": {"minecraft:visual/ambient_particles": {
+                "argument": [{"particle": {"type": "minecraft:ash"}, "probability": 0.25}]}}});
         let hot = json!({"effects": {"grass_color": 0x123456}});
         let files = [
             ("pack:zeta", &hot),
@@ -555,6 +616,9 @@ mod pack_tests {
         assert_eq!(world.id("minecraft:river"), 2);
         assert_eq!(world.get(2).water, 0xFF0000);
         assert_eq!(world.get(2).temperature, 2.0);
+        assert_eq!(world.get(2).ambient_particles.len(), 1);
+        assert_eq!(world.get(2).ambient_particles[0].0.name(), "ash");
+        assert_eq!(world.get(2).ambient_particles[0].1, 0.25);
         // New biomes follow, in registry order.
         assert_eq!(world.id("minecraft:molten_peaks"), 3);
         assert_eq!(world.id("pack:zeta"), 4);
@@ -578,6 +642,49 @@ mod pack_tests {
         assert!(!other.contains("minecraft:molten_peaks"));
         assert_eq!(other.get(2).water, 0x3F76E4);
         assert!(!other.has_packs());
+    }
+
+    /// A column keeps the ids of the table it was decoded with. When a
+    /// proxy's next server lacks a biome the last one added, that id is past
+    /// the next table, and it names plains instead of indexing past the end
+    /// (#12148: "the len is 67 but the index is 67").
+    #[test]
+    fn an_id_past_the_table_names_plains() {
+        let next = builtin(&["minecraft:meadow", "minecraft:plains", "minecraft:river"]);
+        let last = next.with_packs([("limbo:void", &json!({}))]);
+        let stale = last.id("limbo:void");
+        assert_eq!((stale, last.name(stale)), (3, "limbo:void"));
+        assert_eq!(next.name(stale), "minecraft:plains");
+        assert_eq!(next.name(u16::MAX), "minecraft:plains");
+        assert_eq!(next.name(2), "minecraft:river");
+    }
+}
+
+#[cfg(test)]
+impl Biomes {
+    /// Biomes from their files' JSON, by name, in id order: for tests elsewhere.
+    pub(crate) fn from_jsons(entries: &[(&str, Value)]) -> Self {
+        let maps = Colormaps {
+            grass: Vec::new(),
+            foliage: Vec::new(),
+            dry: Vec::new(),
+        };
+        let list: Vec<_> = entries
+            .iter()
+            .map(|(name, v)| BiomeInfo::from_json((*name).to_owned(), v, &maps))
+            .collect();
+        Self {
+            builtin: Arc::new(list.clone()),
+            index: list
+                .iter()
+                .enumerate()
+                .map(|(i, b)| (b.name.clone(), i as u16))
+                .collect(),
+            list,
+            info_noise: SimplexNoise::with_skipped_offsets(&mut LegacyRandom::new(2345), true),
+            colormaps: Arc::new(maps),
+            packs: BTreeMap::new(),
+        }
     }
 }
 

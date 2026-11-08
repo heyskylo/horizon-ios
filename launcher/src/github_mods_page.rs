@@ -59,7 +59,7 @@ impl Github {
         self.focused = self.focus.is_focused(window);
     }
 
-    fn busy(&self) -> bool {
+    pub(super) fn busy(&self) -> bool {
         matches!(self.stage, Stage::Working(_))
     }
 
@@ -125,7 +125,7 @@ impl Launcher {
                         self.github.newer.clear();
                         // The review above was the trust notice; the Mods page offers Build.
                         self.settings.native_mods_noticed = true;
-                        self.settings.save();
+                        self.save_settings();
                     }
                     self.instance_mods_changed();
                     self.github.message = Some(result);
@@ -472,8 +472,16 @@ impl Launcher {
         right = right.child(
             switch(format!("native-switch-{id}"), on, &t).on_click(cx.listener(
                 move |this, _: &ClickEvent, _, cx| {
+                    let home = this.mods.home();
+                    // An update holds the folder: the window doesn't wait for it.
+                    let Some(_lock) = horizon_launcher::browser::try_lock_home(&home) else {
+                        this.mods.message =
+                            Some(Err(tr("Wait for the current operation to finish.").into()));
+                        cx.notify();
+                        return;
+                    };
                     this.mods.message =
-                        horizon_launcher::browser::java::set_enabled(&this.mods.home(), &id, !on)
+                        horizon_launcher::browser::java::set_enabled(&home, &id, !on)
                             .err()
                             .map(Err);
                     this.instance_mods_changed();

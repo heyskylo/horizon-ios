@@ -124,6 +124,25 @@ fn write(words: &mut [u64], bits: u8, i: usize, value: u32) {
     let (word, shift) = locate(bits, i);
     words[word] = (words[word] & !(mask(bits) << shift)) | (u64::from(value) << shift);
 }
+/// `word + add`, bit by bit: which bits carried out of their position. The
+/// carry out of bit `i` is `a & b | (a | b) & !sum` for `sum = a + b`.
+#[inline]
+fn carry_out(word: u64, add: u64, sum: u64) -> u64 {
+    (word & add) | ((word | add) & !sum)
+}
+/// The first of `count` `bits`-wide fields of `word` that is `len` or more.
+fn first_bad(word: u64, count: usize, bits: usize, len: usize) -> PaletteError {
+    for slot in 0..count {
+        let index = ((word >> (slot * bits)) & ((1 << bits) - 1)) as u32;
+        if index as usize >= len {
+            return PaletteError::BadIndex {
+                index,
+                palette: len,
+            };
+        }
+    }
+    unreachable!("check_indices found no field past the palette")
+}
 /// Values below this are looked up in a table indexed by value once a
 /// palette outgrows the scan: every block state and biome id of 26.3.
 const DENSE_VALUES: u32 = 1 << 16;
@@ -248,7 +267,17 @@ impl PalettedContainer {
     pub fn bits(&self) -> u8 {
         self.bits
     }
+    /// What the stored ids stand for — the values of the list palette, `None`
+    /// for a single value (`uniform()`) and for the global palette, whose
+    /// stored ids are the values.
+    pub fn palette(&self) -> Option<&[u32]> {
+        match &self.palette {
+            Palette::List(list) => Some(list),
+            _ => None,
+        }
+    }
     /// Entries in the palette (the global palette reports its bit capacity).
+    #[inline]
     pub fn palette_len(&self) -> usize {
         match &self.palette {
             Palette::Single(_) => 1,
@@ -256,6 +285,7 @@ impl PalettedContainer {
             Palette::Global => 1 << self.bits.min(31),
         }
     }
+    #[inline]
     pub fn is_global(&self) -> bool {
         matches!(self.palette, Palette::Global)
     }
@@ -270,6 +300,46 @@ impl PalettedContainer {
             Palette::Single(value) => *value,
             Palette::List(list) => list[self.raw(i)],
             Palette::Global => self.raw(i) as u32,
+        }
+    }
+    /// `get` of the entries `start..start + out.len()`, the palette matched once.
+    #[inline]
+    pub fn get_run(&self, start: usize, out: &mut [u32]) {
+        if out.len() == 2 && !matches!(self.palette, Palette::Single(_)) {
+            let bits = usize::from(self.bits);
+            let per = 64 / bits;
+            let slot = start % per;
+            if slot + 1 < per {
+                let word = self.words[start / per] >> (slot * bits);
+                let mask = mask(self.bits);
+                let a = (word & mask) as usize;
+                let b = ((word >> bits) & mask) as usize;
+                match &self.palette {
+                    Palette::List(list) => {
+                        out[0] = list[a];
+                        out[1] = list[b];
+                    }
+                    Palette::Global => {
+                        out[0] = a as u32;
+                        out[1] = b as u32;
+                    }
+                    Palette::Single(_) => unreachable!(),
+                }
+                return;
+            }
+        }
+        match &self.palette {
+            Palette::Single(value) => out.fill(*value),
+            Palette::List(list) => {
+                for (k, cell) in out.iter_mut().enumerate() {
+                    *cell = list[self.raw(start + k)];
+                }
+            }
+            Palette::Global => {
+                for (k, cell) in out.iter_mut().enumerate() {
+                    *cell = self.raw(start + k) as u32;
+                }
+            }
         }
     }
     /// The value when every entry is equal, without the palette having to be
@@ -445,6 +515,36 @@ impl PalettedContainer {
             }
         }
     }
+    /// The stored ids through `map`: `out[i] = map[id of entry i]`, in index
+    /// order, the id being a palette id for a list palette and the value
+    /// itself for the global one (see `palette`). A single-value palette
+    /// stores no ids: `out` is left as it is.
+    pub fn unpack_ids_mapped<T: Copy>(&self, out: &mut [T], map: &[T]) {
+        assert_eq!(out.len(), self.strategy.entries());
+        // Four bits a linear palette's usual width: a whole word of them is a
+        // row of 16, and immediate shifts for the compiler to unroll.
+        if self.bits == 4 {
+            for (row, &word) in out.as_chunks_mut::<16>().0.iter_mut().zip(&self.words) {
+                for (x, cell) in row.iter_mut().enumerate() {
+                    *cell = map[((word >> (x * 4)) & 0xF) as usize];
+                }
+            }
+            return;
+        }
+        if self.bits == 0 {
+            return;
+        }
+        let bits = usize::from(self.bits);
+        let per = 64 / bits;
+        let m = mask(self.bits);
+        for (chunk, &word) in out.chunks_mut(per).zip(&self.words) {
+            let mut shift = 0;
+            for cell in chunk {
+                *cell = map[((word >> shift) & m) as usize];
+                shift += bits;
+            }
+        }
+    }
     /// The palette id of every entry in index order, and the list palette
     /// they index (`get(i)` is `list[ids[i]]`), without looking the values
     /// up; `None` (and `ids` untouched) for a single-value or global palette.
@@ -540,28 +640,55 @@ impl PalettedContainer {
             }),
         }
     }
+    /// Rejects a stored index at or past the palette: the same inputs are
+    /// accepted as an entry-by-entry scan accepts, and the same first offending
+    /// entry is named. One whole word is checked at once: adding `2^bits - len`
+    /// to a word lifts every field by that much, so a field carries out of its
+    /// own bits exactly when its index is past the palette. A carry out of a
+    /// field that a previous field's carry reached adds one more, so such a
+    /// field can only look bad where a genuinely bad field precedes it in the
+    /// same word; the word is then rescanned entry by entry for the error.
     fn check_indices(&self) -> Result<(), PaletteError> {
         let Palette::List(list) = &self.palette else {
             return Ok(());
         };
-        if list.len() == 1 << self.bits {
+        let len = list.len();
+        debug_assert!(len >= 1);
+        debug_assert_eq!(
+            self.words.len(),
+            storage_len(self.bits, self.strategy.entries())
+        );
+        let bits = usize::from(self.bits);
+        if len == 1 << bits {
+            // Every field is a palette entry.
             return Ok(());
         }
-        let per = 64 / usize::from(self.bits);
-        let mut remaining = self.strategy.entries();
-        let mask = mask(self.bits);
-        for &word in &self.words {
-            let count = remaining.min(per);
-            for slot in 0..count {
-                let index = ((word >> (slot * usize::from(self.bits))) & mask) as u32;
-                if index as usize >= list.len() {
-                    return Err(PaletteError::BadIndex {
-                        index,
-                        palette: list.len(),
-                    });
-                }
+        let per = 64 / bits;
+        let entries = self.strategy.entries();
+        // One in the low bit of each field of a word, the field's top bit, and
+        // the bias that overflows a field whose index is `len` or more.
+        let ones = (0..per).fold(0u64, |a, field| a | 1 << (field * bits));
+        let bias = ones * ((1u64 << bits) - len as u64);
+        let top = ones << (bits - 1);
+        let full = entries / per;
+        let (whole, tail) = self.words.split_at(full);
+        for &word in whole {
+            let sum = word.wrapping_add(bias);
+            if carry_out(word, bias, sum) & top != 0 {
+                return Err(first_bad(word, per, bits, len));
             }
-            remaining -= count;
+        }
+        // The last word's fields past `entries` are padding: whatever they
+        // hold, the scan never reads them.
+        let rest = entries - full * per;
+        if rest > 0
+            && let Some(&word) = tail.first()
+        {
+            let used = (1u64 << (rest * bits)) - 1;
+            let sum = word.wrapping_add(bias & used);
+            if carry_out(word, bias & used, sum) & top & used != 0 {
+                return Err(first_bad(word, rest, bits, len));
+            }
         }
         Ok(())
     }
@@ -706,10 +833,23 @@ impl PalettedContainer {
     }
 }
 impl PartialEq for PalettedContainer {
-    /// Equal when every entry is.
+    /// Equal when every entry is. The same width, palette and words are the
+    /// same entries, whatever they are: compared without reading each.
     fn eq(&self, other: &Self) -> bool {
         let entries = self.strategy.entries();
-        entries == other.strategy.entries() && (0..entries).all(|i| self.get(i) == other.get(i))
+        if entries != other.strategy.entries() {
+            return false;
+        }
+        let same_palette = match (&self.palette, &other.palette) {
+            (Palette::Single(a), Palette::Single(b)) => a == b,
+            (Palette::List(a), Palette::List(b)) => a == b,
+            (Palette::Global, Palette::Global) => true,
+            _ => false,
+        };
+        if same_palette && self.bits == other.bits && self.words == other.words {
+            return true;
+        }
+        (0..entries).all(|i| self.get(i) == other.get(i))
     }
 }
 
@@ -734,6 +874,34 @@ mod tests {
         *state ^= *state >> 7;
         *state ^= *state << 17;
         *state
+    }
+    #[test]
+    fn runs_read_the_stored_values() {
+        let mut state = 0x9E37_79B9_7F4A_7C15;
+        // One value, a list palette, and the global palette.
+        for distinct in [1u64, 5, 3000] {
+            let values: Vec<u32> = (0..4096)
+                .map(|_| (rng(&mut state) % distinct) as u32)
+                .collect();
+            let container = PalettedContainer::from_values(BLOCKS, &values);
+            for start in 0..4095 {
+                let mut pair = [u32::MAX; 2];
+                container.get_run(start, &mut pair);
+                assert_eq!(pair, values[start..start + 2]);
+            }
+            for _ in 0..200 {
+                let start = (rng(&mut state) % 4096) as usize;
+                let len = (rng(&mut state) % 20) as usize;
+                let len = len.min(4096 - start);
+                let mut run = vec![u32::MAX; len];
+                container.get_run(start, &mut run);
+                assert_eq!(
+                    run,
+                    values[start..start + len],
+                    "{distinct} values, {start}+{len}"
+                );
+            }
+        }
     }
     #[test]
     fn containers_stored_alike_are_the_same() {
@@ -917,6 +1085,97 @@ mod tests {
         assert!(PalettedContainer::from_wire(BLOCKS, 0, vec![1, 2], vec![]).is_err());
         assert!(PalettedContainer::from_wire(BIOMES, 2, vec![1, 2, 3, 4, 5], vec![0; 4]).is_err());
         assert!(PalettedContainer::from_wire(BLOCKS, 0, vec![9], vec![]).is_ok());
+    }
+    /// Every word of every width against the entry-at-a-time scan, over
+    /// valid data, a bad entry anywhere in a word, garbage only in a word's
+    /// padding fields, and the last word's padding set to all ones: the same
+    /// verdict, and the first offending entry named as before.
+    #[test]
+    fn index_check_matches_an_entry_by_entry_scan() {
+        fn scan(strategy: Strategy, bits: u8, len: usize, words: &[u64]) -> Result<(), u32> {
+            let per = 64 / usize::from(bits);
+            for i in 0..strategy.entries() {
+                if i / per >= words.len() {
+                    break;
+                }
+                let index = read(words, bits, i);
+                if index as usize >= len {
+                    return Err(index);
+                }
+            }
+            Ok(())
+        }
+        fn compare(strategy: Strategy, bits: u8, len: usize, words: &[u64], what: &str) {
+            let container = PalettedContainer {
+                strategy,
+                bits,
+                palette: Palette::List((0..len as u32).collect()),
+                words: words.to_vec(),
+            };
+            match (container.check_indices(), scan(strategy, bits, len, words)) {
+                (Ok(()), Ok(())) => {}
+                (Err(PaletteError::BadIndex { index, palette }), Err(first)) => {
+                    assert_eq!((index, palette), (first, len), "{what}");
+                }
+                (a, b) => panic!("{what}: {a:?} vs {b:?}"),
+            }
+        }
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        for strategy in [BLOCKS, BIOMES] {
+            let entries = strategy.entries();
+            let max_len = match strategy.kind {
+                Kind::Blocks => 256,
+                Kind::Biomes => 8,
+            };
+            for len in 2..=max_len {
+                let bits = match strategy.config(ceil_log2(len)) {
+                    Config::List(bits) => bits,
+                    _ => unreachable!("{len} entries in a single-value palette"),
+                };
+                let per = 64 / usize::from(bits);
+                let words_len = storage_len(bits, entries);
+                let valid = pack_words(bits, entries, (0..entries).map(|i| (i % len) as u32));
+                let name = format!("{len} entries, {bits} bits");
+                compare(strategy, bits, len, &valid, &name);
+                if len == 1 << bits {
+                    // No field can hold an index past the palette.
+                    continue;
+                }
+                let top = mask(bits) as usize;
+                // A bad entry in the first, a middle and the last field of a
+                // word, and in the container's last entry.
+                for at in [0, per / 2, per - 1, entries / 2, entries - 1] {
+                    let mut bad = valid.clone();
+                    let index = (len + (rng(&mut state) % 7) as usize).min(top);
+                    write(&mut bad, bits, at, index as u32);
+                    compare(strategy, bits, len, &bad, &format!("{name}, bad at {at}"));
+                }
+                // Garbage in the last word's padding fields only.
+                let rest = entries - (words_len - 1) * per;
+                if rest < per {
+                    let mut padded = valid.clone();
+                    padded[words_len - 1] |= u64::MAX << (rest * usize::from(bits));
+                    compare(strategy, bits, len, &padded, &format!("{name}, padding"));
+                }
+                // A whole random word, every field drawn from `0..=len`.
+                for _ in 0..64 {
+                    let mut words = valid.clone();
+                    let word = (rng(&mut state) % words_len as u64) as usize;
+                    words[word] = 0;
+                    for field in 0..per {
+                        let index = (rng(&mut state) % (len as u64 + 1)).min(top as u64);
+                        words[word] |= index << (field * usize::from(bits));
+                    }
+                    compare(
+                        strategy,
+                        bits,
+                        len,
+                        &words,
+                        &format!("{name}, random word {word}"),
+                    );
+                }
+            }
+        }
     }
     #[test]
     fn saved_validation_matches_entrywise_reference() {
@@ -1151,8 +1410,8 @@ mod tests {
             let y = i >> 8;
             let r = rng(&mut state);
             terrain.push(match y {
-                0..=8 if r % 40 == 0 => 2000 + (r >> 8) as u32 % 6,
-                0..=8 if r % 13 == 0 => 0,
+                0..=8 if r.is_multiple_of(40) => 2000 + (r >> 8) as u32 % 6,
+                0..=8 if r.is_multiple_of(13) => 0,
                 0..=8 => 1,
                 9..=10 => 10,
                 11 => 9,

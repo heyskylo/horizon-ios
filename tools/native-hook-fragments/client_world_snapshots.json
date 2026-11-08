@@ -1,0 +1,14 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "client_chunks", "target": "horizon_client::game::native_client_world::Game<'_>::native_client_chunks"},
+    {"name": "client_chunks_changed", "target": "horizon_client::game::native_client_world::Game<'_>::native_client_chunks_changed"},
+    {"name": "client_biomes", "target": "horizon_client::game::native_client_world::Game<'_>::native_client_biomes"},
+    {"name": "client_biomes_changed", "target": "horizon_client::game::native_client_world::Game<'_>::native_client_biomes_changed"}
+  ],
+  "rust_summary": "client world snapshots (`native_client_chunks`, `native_client_chunks_changed`, `native_client_biomes`, `native_client_biomes_changed`): the client's loaded chunks of an area and its biome table, shared with the world and read on a mod's own threads.",
+  "doc_summary": "client world snapshots: `native_client_chunks(from, to)` shares the client world's loaded chunks of an area with a mod's worker threads (`NativeClientChunks`: block states, biome ids, which columns are loaded, each column's top non-empty section, the world's height), `native_client_chunks_changed(&snapshot)` names the chunks that differ from the snapshot now, `native_client_biomes()` gives the biome table that names and tints the ids (`NativeClientBiomes`) and `native_client_biomes_changed(&biomes)` says when the terrain is drawn with another ([Client world snapshots](#client-world-snapshots)). Bundles need `\"hooks\": @API:client_world_snapshots@`.",
+  "comments": [
+    "crates/horizon-client/src/game/native_client_world.rs"
+  ]
+}

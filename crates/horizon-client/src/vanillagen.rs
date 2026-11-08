@@ -117,6 +117,16 @@ fn add_default_block_entities(kinds: &[Option<&str>], out: &mut Chunk, raw: &mut
 }
 
 impl VanillaTerrain {
+    /// A mod's sign takes its template's block entity, whatever its name: a
+    /// feature that places one leaves it with text to edit.
+    pub fn add_mod_signs(&mut self, facts: &crate::blocks::BlockFacts) {
+        for (state, kind) in self.block_entity_types.iter_mut().enumerate() {
+            let state = horizon_world::registry::BlockStateId(state as u32);
+            if let Some(form) = facts.get(state).sign_form() {
+                *kind = Some(form.block_entity_type());
+            }
+        }
+    }
     fn client_surface(&self, surface: SurfaceSample) -> crate::lod::Surface {
         crate::lod::Surface {
             height: surface.height,
@@ -183,8 +193,27 @@ impl VanillaTerrain {
         dimension: &str,
         structures: bool,
     ) -> crate::Result<Self> {
+        Self::for_world_with_settings(
+            dir, overrides, registry, biomes, seed, preset, dimension, structures, None,
+        )
+    }
+    /// `for_world_with` with the saved dimension's generator and type, below
+    /// any dimension supplied by the world's data packs.
+    pub fn for_world_with_settings(
+        dir: &Path,
+        overrides: &WorldgenOverrides,
+        registry: &'static BlockRegistry,
+        biomes: &Biomes,
+        seed: i64,
+        preset: &str,
+        dimension: &str,
+        structures: bool,
+        saved_stem: Option<&serde_json::Value>,
+    ) -> crate::Result<Self> {
         let data: Arc<GeneratorData> = shared_data_with(dir, overrides, registry)?;
-        let generator = OverworldGenerator::for_world(data, seed, preset, dimension, structures)?;
+        let generator = OverworldGenerator::for_world_with_settings(
+            data, seed, preset, dimension, structures, saved_stem,
+        )?;
         Self::assemble(dir, registry, biomes, generator, seed, preset, dimension)
     }
     /// A superflat overworld with the structures its settings allow
@@ -216,6 +245,12 @@ impl VanillaTerrain {
     /// Whether this is a superflat generator, whose `spawnOriginalMobs` places nothing.
     pub fn is_flat(&self) -> bool {
         self.flat
+    }
+    /// `NoiseGeneratorSettings.disableMobGeneration`: whether the generator
+    /// adds the creature packs of a freshly generated chunk. The End's preset
+    /// is the one shipped setting that turns it on.
+    pub fn disable_mob_generation(&self) -> bool {
+        self.generator.disable_mob_generation()
     }
     /// The terrain around a generator, with the tables the client's chunks need.
     fn assemble(
@@ -249,6 +284,14 @@ impl VanillaTerrain {
                 "Horizon: {} placed features cannot run and will be skipped",
                 unsupported.len()
             );
+            // Name them, so a pack's author can find what to fix; capped, so a broken pack can't flood the log.
+            const NAMED: usize = 20;
+            for (name, reason) in unsupported.iter().take(NAMED) {
+                log::warn!("Horizon:   {name}: {reason}");
+            }
+            if unsupported.len() > NAMED {
+                log::warn!("Horizon:   and {} more", unsupported.len() - NAMED);
+            }
             if !dir.join("blocks/block-properties.nbt").exists() {
                 log::warn!(
                     "Horizon: the worldgen bundle lacks the block behavior exports (worldgen/blocks/*.nbt); \
@@ -698,6 +741,12 @@ pub fn shared_data_with(
 }
 impl ChunkGenerator for VanillaTerrain {
     type Worker = GeneratorWorker;
+    fn set_saved_starts(
+        &self,
+        source: Arc<horizon_world::worldgen::generator::SavedStructureStarts>,
+    ) {
+        self.generator.set_saved_starts(source);
+    }
     fn worker(&self) -> GeneratorWorker {
         let mut worker = self.generator.worker();
         worker.set_structure_mobs(self.structure_mobs.clone());
@@ -709,6 +758,9 @@ impl ChunkGenerator for VanillaTerrain {
     fn idle(&self, worker: &mut GeneratorWorker) {
         worker.release();
     }
+    fn all_idle(&self) {
+        self.generator.release_caches();
+    }
     fn lod_surface(
         &self,
         worker: &mut GeneratorWorker,
@@ -718,7 +770,8 @@ impl ChunkGenerator for VanillaTerrain {
         Some(self.client_surface(worker.surface_sample(x, z)?))
     }
     /// The structure starts a saved chunk references, as vanilla reads them
-    /// with the chunk: built here, on the loading worker, into the
+    /// with the chunk: read from the owning chunk's save (or regenerated for
+    /// unsupported pieces) here, on the loading worker, into the
     /// generator's cache, rather than on the game thread the first time
     /// spawning or a mob asks which structures hold a position (a village
     /// start took 70 to 110 ms there, one tick each, after a world loaded).
@@ -844,6 +897,21 @@ impl ChunkGenerator for VanillaTerrain {
         match proto.downcast_ref::<VanillaProto>() {
             Some(VanillaProto::Ready(chunk)) => Some(self.block_column(chunk)),
             _ => None,
+        }
+    }
+    fn cache_census(&self) -> Vec<(&'static str, usize, Option<usize>)> {
+        let c = self.generator.cache_census();
+        vec![
+            ("biome_chunks", c.biome_chunks, Some(c.biome_bytes)),
+            ("carver_biomes", c.carver_entries, None),
+            ("start_chunks", c.start_chunks, None),
+            ("start_lists", c.start_lists, None),
+        ]
+    }
+    fn proto_heap_bytes(&self, proto: &Proto) -> ([usize; 6], [usize; 16]) {
+        match proto.downcast_ref::<VanillaProto>() {
+            Some(VanillaProto::Ready(chunk)) => (chunk.heap_bytes(), chunk.terrain.storage_bits()),
+            _ => ([0; 6], [0; 16]),
         }
     }
     fn non_air_sections(&self, proto: &Proto) -> Option<crate::section_mask::SectionMask> {

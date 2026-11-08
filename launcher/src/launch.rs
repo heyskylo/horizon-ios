@@ -34,11 +34,6 @@ pub struct Launch {
     /// Environment variables for the game (and the two commands above).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
-    /// The most RAM Horizon may hold that the player chose, in MiB; none (the default): no
-    /// limit, so big worlds and modpacks keep their render distance. Read it with
-    /// [`Launch::memory_limit`]. A Java instance has `-Xmx` instead (`instances::Java::memory_mb`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub memory_limit_mb: Option<u32>,
     /// Linux: run the game through Feral's GameMode (`gamemoderun`), when it is installed.
     #[serde(default, skip_serializing_if = "is_false")]
     pub gamemode: bool,
@@ -54,35 +49,26 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-/// Tells the game its limit (`HORIZON_MEMORY_LIMIT_MB`). Horizon's only: a Java instance has `-Xmx`.
-/// Before [`wrap`], so the player's own variable wins.
-pub fn limit_memory(cmd: &mut Command, launch: &Launch) {
-    if let Some(mb) = launch.memory_limit() {
-        cmd.env("HORIZON_MEMORY_LIMIT_MB", mb.to_string());
-    }
-}
-
 /// The memory slider's stops, in MiB.
 const SLIDER_STEP: u32 = 64;
 /// The slider's top when the computer's memory is not known.
 const UNKNOWN_TOTAL_MB: u32 = 64 * 1024;
 
-/// The value at `fraction` of a slider over `total_mb`: none at its very end (no limit), and at
-/// the start the smallest value there is, as nothing keeps a player from going that low.
-pub fn memory_at(fraction: f32, total_mb: u32) -> Option<u32> {
+/// Java heap size at `fraction` of a slider over `total_mb`, in MiB.
+pub fn memory_at(fraction: f32, total_mb: u32) -> u32 {
     if fraction >= 1. {
-        return None;
+        return total_mb.max(1);
     }
     let mb = fraction.max(0.) * total_mb as f32;
-    Some(((mb / SLIDER_STEP as f32).round() as u32 * SLIDER_STEP).max(1))
+    ((mb / SLIDER_STEP as f32).round() as u32 * SLIDER_STEP).max(1)
 }
 
 /// What [`parse_memory`] says of text that isn't a memory limit.
 #[derive(Debug, PartialEq, Eq)]
 pub struct NotMemory;
 
-/// A memory limit as a player types it: a number of MB, or of GB with `gb`, and nothing or `off`
-/// for no limit. Nothing keeps a player from going low. Err when it is none of those.
+/// A Java heap size as a player types it: MB, or GB with `gb`, and nothing or `off`
+/// to restore the default. Nothing keeps a player from going low. Err when it is none of those.
 pub fn parse_memory(typed: &str) -> Result<Option<u32>, NotMemory> {
     let typed = typed.trim().to_ascii_lowercase();
     if typed.is_empty() || typed == "off" {
@@ -99,8 +85,8 @@ pub fn parse_memory(typed: &str) -> Result<Option<u32>, NotMemory> {
 }
 
 /// Where `mb` sits on a slider over `total_mb`; [`memory_at`]'s inverse.
-pub fn memory_fraction(mb: Option<u32>, total_mb: u32) -> f32 {
-    mb.map_or(1., |mb| (mb as f32 / total_mb.max(1) as f32).min(1.))
+pub fn memory_fraction(mb: u32, total_mb: u32) -> f32 {
+    (mb as f32 / total_mb.max(1) as f32).min(1.)
 }
 
 /// This computer's memory in MiB, the top of the slider.
@@ -155,7 +141,7 @@ pub struct Found {
 /// installed, on any system (for tests and screenshots).
 pub const TOOLS_ENV: &str = "HORIZON_LAUNCHER_LINUX_TOOLS";
 
-fn on_path(program: &str) -> bool {
+pub(crate) fn on_path(program: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|path| {
         std::env::split_paths(&path).any(|dir| {
             let file = dir.join(program);
@@ -240,16 +226,6 @@ pub fn switch_env(launch: &Launch, found: &Found) -> Vec<(&'static str, &'static
 }
 
 impl Launch {
-    /// The most RAM Horizon may hold, in MiB; none: no limit.
-    pub fn memory_limit(&self) -> Option<u32> {
-        self.memory_limit_mb
-    }
-
-    /// Keeps the player's choice; none: no limit.
-    pub fn set_memory_limit(&mut self, limit: Option<u32>) {
-        self.memory_limit_mb = limit;
-    }
-
     pub fn is_empty(&self) -> bool {
         self == &Launch::default()
     }
@@ -273,12 +249,6 @@ impl Launch {
             parts.push(crate::i18n::trf(
                 "runs {command} after",
                 &[("command", self.post_exit.trim())],
-            ));
-        }
-        if let Some(mb) = self.memory_limit_mb {
-            parts.push(crate::i18n::trf(
-                "limited to {mb} MB",
-                &[("mb", &mb.to_string())],
             ));
         }
         if self.gamemode {
@@ -489,6 +459,8 @@ pub fn plan(launch: &Launch, words: Vec<OsString>, windows: bool, found: &Found)
 /// The game's command run with `launch`: a new command with the same folder and variables,
 /// plus the instance's variables. Call it last, after every argument is added.
 pub fn wrap(cmd: Command, launch: &Launch) -> Command {
+    #[cfg(windows)]
+    let cmd = crate::windows_runtime::redirect(cmd);
     if launch.is_empty() {
         return cmd;
     }

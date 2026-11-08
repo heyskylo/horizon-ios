@@ -81,6 +81,22 @@ pub struct Paletted {
 }
 impl Paletted {
     pub fn read(r: &mut Reader, strategy: Strategy, global_bits: u8) -> Result<Self> {
+        Self::read_layout(r, strategy, global_bits, false)
+    }
+    /// PalettedContainer.Data.write before 1.21.5 wrote a VarInt long count before the storage.
+    pub(crate) fn read_prefixed(
+        r: &mut Reader,
+        strategy: Strategy,
+        global_bits: u8,
+    ) -> Result<Self> {
+        Self::read_layout(r, strategy, global_bits, true)
+    }
+    fn read_layout(
+        r: &mut Reader,
+        strategy: Strategy,
+        global_bits: u8,
+        prefixed: bool,
+    ) -> Result<Self> {
         let wire = r.u8()?;
         let (has_palette, bits) = strategy.configuration(wire, global_bits);
         // SimpleBitStorage holds 1 to 32 bits; wider wire values would
@@ -96,7 +112,13 @@ impl Paletted {
             let n = r.count(1 << bits)?;
             (0..n).map(|_| r.varint()).collect::<Result<_>>()?
         };
-        let data = r.fixed_longs(storage_len(bits, strategy.entries()))?;
+        let n = storage_len(bits, strategy.entries());
+        if prefixed && r.count(r.remaining() / 8)? != n {
+            return Err(Error::new(
+                "palette long count disagrees with its bits per entry",
+            ));
+        }
+        let data = r.fixed_longs(n)?;
         Ok(Self {
             bits,
             palette,
@@ -313,12 +335,25 @@ impl ChunkData {
         w.data
     }
 }
-/// ByteBufCodecs.byteArray(2048) per DataLayer.
+/// ByteBufCodecs.byteArray(2048) per DataLayer, whose constructor refuses
+/// any other length: the client indexes a layer's 2048 bytes directly.
 pub struct Layers;
 impl Codec<Vec<Vec<u8>>> for Layers {
     fn read(r: &mut Reader) -> Result<Vec<Vec<u8>>> {
         let n = r.count(r.remaining())?;
-        (0..n).map(|_| r.byte_array(2048)).collect()
+        (0..n)
+            .map(|_| {
+                let layer = r.byte_array(2048)?;
+                if layer.len() == 2048 {
+                    Ok(layer)
+                } else {
+                    Err(crate::Error::new(format!(
+                        "DataLayer should be 2048 bytes not: {}",
+                        layer.len()
+                    )))
+                }
+            })
+            .collect()
     }
     fn write(v: &Vec<Vec<u8>>, w: &mut Writer) {
         w.varint(v.len() as i32);
@@ -378,6 +413,19 @@ pub fn nibble(layer: &[u8], i: usize) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_light_layer_is_2048_bytes_or_refused() {
+        let layers = |len: usize| {
+            let mut w = Writer::new();
+            w.varint(1);
+            w.byte_array(&vec![0x11; len]);
+            Layers::read(&mut Reader::new(&w.data))
+        };
+        assert_eq!(layers(2048).unwrap(), [vec![0x11; 2048]]);
+        assert!(layers(0).is_err());
+        assert!(layers(2047).is_err());
+    }
 
     #[test]
     fn from_values_matches_the_linear_search() {

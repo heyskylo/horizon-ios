@@ -8,15 +8,19 @@ description = "Downloads, prepares and starts Horizon builds"
 [workspace]
 
 [dependencies]
+# The catalog and mod-owned trait injections share their generation rules.
+horizon-mod-api-gen = { path = "../crates/horizon-mod-api-gen" }
 # GPUI Fast (longbridge/gpui-fast): Zed's GPUI with retained views and cached scroll layers, under
 # its own name. wgpu renders on Linux, not blade (#3812).
-gpui = { package = "gpui-fast", version = "0.1.12" }
-gpui_platform = { package = "gpui-fast-platform", version = "0.1.12", features = ["wayland", "x11", "font-kit"] }
+gpui = { package = "gpui-fast", version = "0.1.13" }
+gpui_platform = { package = "gpui-fast-platform", version = "0.1.13", features = ["wayland", "x11", "font-kit"] }
 ureq = { version = "2", features = ["json", "tls"], default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Validate and render injected trait signatures before they reach rustc.
-syn = { version = "2", features = ["full", "visit-mut"] }
+# Validate trait injection bindings before passing them to the shared generator.
+syn = { version = "2", features = ["full", "visit"] }
+# Match generated helpers to the compiler's byte spans, without depending on formatting.
+proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"
 # Checks the client jar and the version file found in other launchers' folders (sources.rs).
 sha1 = "0.10"
@@ -37,6 +41,10 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 horizon-theme = { path = "../crates/horizon-theme" }
 horizon-core = { path = "../crates/horizon-core" }
+horizon-cosmetics = { path = "../crates/horizon-cosmetics" }
+glam = "0.30"
+# `horizon-launcher mcp`: the Model Context Protocol, shared with horizon-ctl and horizon-server.
+horizon-mcp = { path = "../crates/horizon-mcp" }
 horizon-prepare = { path = "../crates/horizon-prepare" }
 # Join a friend: invite codes (the game does the joining).
 horizon-friends = { path = "../crates/horizon-friends" }
@@ -45,6 +53,8 @@ horizon-bench = { path = "../crates/horizon-bench" }
 horizon-port-pack = { path = "../crates/horizon-port-pack" }
 # Horizon's mod registry: its index and the checks a download passes before install.
 horizon-mods = { path = "../crates/horizon-mods", features = ["index"] }
+# Use the game's manifest validation for native shader identities.
+horizon-shader-api = { path = "../crates/horizon-shader-api" }
 # Signed updates: archives are checked against the release's signed checksums (docs/security.md).
 horizon-release-sign = { path = "../crates/horizon-release-sign" }
 # Opt-in data collection: the consent, the outbox and its upload (docs/telemetry.md).
@@ -63,6 +73,8 @@ getrandom = "0.3"
 # Players' heads on the Servers page, from the default skins in the player's own game files (already
 # in the lockfile through gpui).
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+# Screenshots read a row at a time and shrunk as they come (`pictures`): the version `image` uses.
+png = "0.18"
 
 # Native builds at low priority (rust_toolchain::low_priority); already in the lockfile.
 [target.'cfg(unix)'.dependencies]
@@ -70,6 +82,9 @@ libc = "0.2"
 # Microsoft account secrets in the OS keychain: the Secret Service on Linux through oo7 (the same
 # build gpui uses), Keychain and Credential Manager through keyring.
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+# The GPU's texture limit, which caps the pictures made for GPUI's atlas (`pictures::gpu_limit`): the
+# wgpu GPUI itself uses on Linux.
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "vulkan", "gles"] }
 oo7 = { version = "0.6", default-features = false, features = ["async-std", "native_crypto"] }
 futures-lite = "2"
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -82,8 +97,14 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAcce
 raw-window-handle = "0.6"
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
-# The computer's memory, the end of the Launch panel's memory slider; already in the lockfile.
-windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation"] }
+# Java's heap slider reads the computer's memory; the uninstaller hides its running copy; an
+# abandoned launcher update is one whose process has gone. Already in the lockfile.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_SystemInformation", "Win32_System_Threading"] }
+# Shortcuts written by the shell itself (shortcut::write_windows_link): the hand-laid Shell Link has
+# no target ID list, so Explorer shows an empty target and starts nothing.
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_UI_Shell"] }
+# Per-user setup: the Uninstall entry and the launcher's own key under HKCU (installer.rs).
+winreg = "0.56"
 
 [target.'cfg(windows)'.build-dependencies]
 # The icon resource in the .exe (build.rs).
@@ -91,7 +112,6 @@ winresource = "0.1"
 
 [dev-dependencies]
 # Tokenize source strings for the translation completeness test, including multiline calls.
-proc-macro2 = "1"
 syn = "2"
 
 [profile.release]
