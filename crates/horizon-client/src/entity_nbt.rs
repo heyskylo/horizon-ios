@@ -223,6 +223,33 @@ pub fn who_uuid(who: Who, uuid_of: &mut impl FnMut(u32) -> Option<[i32; 4]>) -> 
         Who::Mob(id) => uuid_of(id),
     }
 }
+/// Replace every reference to the player `old` in a saved entity with `new`. Older
+/// Horizon worlds named their single player by the offline UUID (`Owner` on tamed
+/// animals and horses, a projectile's `Owner` and an item's `Thrower`, a fox's
+/// `Trusted`, `angry_at`, a leash's `UUID`); when such a world opens under the
+/// account (`lan::playerdata::migrate_owner`), a chunk's entities are rewritten as
+/// they load, and their next save keeps the account's UUID. A reference is the
+/// player's four ints, wherever the entity keeps it; an entity's own `UUID` never
+/// names the player.
+pub fn migrate_player_uuid(tag: &mut Tag, old: [i32; 4], new: [i32; 4]) {
+    if old == new {
+        return;
+    }
+    match tag {
+        Tag::IntArray(uuid) if uuid.as_slice() == old.as_slice() => uuid.copy_from_slice(&new),
+        Tag::List(list) => {
+            for tag in list {
+                migrate_player_uuid(tag, old, new);
+            }
+        }
+        Tag::Compound(map) => {
+            for tag in map.values_mut() {
+                migrate_player_uuid(tag, old, new);
+            }
+        }
+        _ => {}
+    }
+}
 /// The entity a stored UUID names, while it is in the level: `player` (the
 /// player's own UUID, when one is in the level), or the mob `uuids` gives that
 /// UUID to. `uuids` is the game layer's id -> UUID map, so this is the read half
@@ -4463,6 +4490,50 @@ mod spell_ticks_nbt_tests {
 mod tests {
     use super::*;
     use crate::items::ItemStack;
+
+    /// Older worlds name their single player by the offline UUID; the migration rewrites
+    /// every reference to it (owner, thrower, trusted list, anger, leash) and nothing else.
+    #[test]
+    fn a_players_offline_uuid_becomes_the_accounts_everywhere_in_an_entity() {
+        let old = [1, 2, 3, 4];
+        let new = [5, 6, 7, 8];
+        let mut tag = Tag::compound([
+            ("id", string("minecraft:wolf")),
+            ("UUID", Tag::IntArray(vec![9, 9, 9, 9])),
+            ("Owner", Tag::IntArray(old.to_vec())),
+            ("Thrower", Tag::IntArray(old.to_vec())),
+            ("angry_at", Tag::IntArray(old.to_vec())),
+            (
+                "Trusted",
+                Tag::List(vec![
+                    Tag::IntArray(old.to_vec()),
+                    Tag::IntArray(vec![3, 3, 3, 3]),
+                ]),
+            ),
+            (
+                "leash",
+                Tag::compound([("UUID", Tag::IntArray(old.to_vec()))]),
+            ),
+            ("Health", Tag::Float(20.0f32.to_bits())),
+        ]);
+        migrate_player_uuid(&mut tag, old, new);
+        assert_eq!(tag.get("Owner"), Some(&Tag::IntArray(new.to_vec())));
+        assert_eq!(tag.get("Thrower"), Some(&Tag::IntArray(new.to_vec())));
+        assert_eq!(tag.get("angry_at"), Some(&Tag::IntArray(new.to_vec())));
+        assert_eq!(
+            tag.get("Trusted"),
+            Some(&Tag::List(vec![
+                Tag::IntArray(new.to_vec()),
+                Tag::IntArray(vec![3, 3, 3, 3]),
+            ]))
+        );
+        assert_eq!(
+            tag.get("leash").and_then(|leash| leash.get("UUID")),
+            Some(&Tag::IntArray(new.to_vec()))
+        );
+        // The entity's own UUID is not the player's.
+        assert_eq!(tag.get("UUID"), Some(&Tag::IntArray(vec![9, 9, 9, 9])));
+    }
 
     #[test]
     fn empty_saved_tags_are_omitted_without_changing_raw_or_nonempty_tags() {

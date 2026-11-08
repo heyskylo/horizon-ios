@@ -460,6 +460,16 @@ impl Game<'_> {
         for (key, tags) in loaded {
             let count = tags.len();
             for mut tag in tags {
+                // A world older builds named by the offline profile names the player that
+                // way in its entities too: migrate them as they load, so the next save of
+                // the chunk keeps the account's UUID (`playerdata::migrate_owner`).
+                if let Some((old, new)) = self.owner_migration {
+                    entity_nbt::migrate_player_uuid(
+                        &mut tag,
+                        horizon_client::lan::playerdata::uuid_ints(old),
+                        horizon_client::lan::playerdata::uuid_ints(new),
+                    );
+                }
                 // PersistentEntitySectionManager.addEntity's `loaded`.
                 let from_disk = !take_fresh(&mut tag);
                 // An End gateway's traveller never left the level: nothing joins.

@@ -405,14 +405,21 @@ impl Game<'_> {
             .as_ref()
             .map_or_else(|| self.options.player_name(), |a| a.name.clone());
         let new_world = create.is_some();
+        // `IntegratedServer`'s constructor: `setSingleplayerProfile(minecraft.getGameProfile())`
+        // — the signed-in account's own UUID. Only an offline start names its player by the
+        // offline profile. The owner is the world's player, so a world without
+        // `singleplayer_uuid` (a Realms download, `renameAndDropPlayer`) finds the owner's
+        // `players/data/<uuid>.dat` instead of starting a new player.
+        let owner = auth
+            .as_ref()
+            .map_or_else(|| offline_uuid(&player), |a| a.uuid);
         let launch = Launch {
             folder: folder.to_owned(),
             name: name.map(str::to_owned),
             seed,
             creative,
             create: create.cloned(),
-            // An offline-mode server names its players by their offline profile.
-            owner: offline_uuid(&player),
+            owner,
             player: player.clone(),
             owner_profile: auth.as_ref().map(|a| {
                 let id = a.uuid;
@@ -834,6 +841,9 @@ impl Game<'_> {
             })),
             levels: self.level_shapes,
             owner_profile: launch.owner_profile.clone(),
+            // `IntegratedServer.getSingleplayerProfile`: the window's own player logs in
+            // through memory as the account's profile, whatever the hello says.
+            singleplayer_profile: Some((launch.player.clone(), owner)),
             // IntegratedServer.initServer: the MOTD names the owner and the world.
             ..NetConfig::lan(
                 0,
@@ -1232,6 +1242,9 @@ fn serve(
         launch.creative,
         launch.create.as_ref(),
     )
+    // `IntegratedServer.setSingleplayerProfile`: the account this world belongs to
+    // (an older world's offline owner moves to it at open).
+    .map(|request| request.owned_by(&launch.player, launch.owner))
     .and_then(|request| {
         WorldLoader::start(
             request,
