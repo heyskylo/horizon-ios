@@ -11637,8 +11637,8 @@ impl Renderer {
             );
         }
         laps.lap("r_passes");
-        // What an SDR picture of the frame shows: on HDR output's layered frame its HUD target,
-        // the HUD over the world clipped to white.
+        // The clipped picture for offscreen SDR presentation. Layered screenshots reconstruct
+        // their SDR picture in take_readback without changing this or the HDR display targets.
         let sdr_texture = self
             .hdr
             .as_ref()
@@ -12389,13 +12389,22 @@ impl Renderer {
         // the row stride too small for the copy and abort in validation.
         if self.config.format.block_copy_size(None) == Some(4) {
             let size = [self.config.width, self.config.height];
-            // The 16-bit frame is read through an 8-bit copy in the swapchain's format.
-            let copy = (texture.format() != self.config.format.remove_srgb_suffix()
-                && texture.format() == self.frame_format)
-                .then(|| {
-                    let format = self.config.format.remove_srgb_suffix();
-                    self.readback
-                        .unorm_copy(&self.device, encoder, texture, format)
+            let format = self.config.format.remove_srgb_suffix();
+            // The layered float frame maps the world to SDR, then adds the HUD as drawn.
+            // Other 16-bit frames keep their clipped 8-bit copy.
+            let copy = self
+                .hdr
+                .as_mut()
+                .and_then(|hdr| {
+                    hdr.sdr_screenshot(&self.device, encoder, format, request.size.is_some())
+                })
+                .or_else(|| {
+                    (texture.format() != format && texture.format() == self.frame_format).then(
+                        || {
+                            self.readback
+                                .unorm_copy(&self.device, encoder, texture, format)
+                        },
+                    )
                 });
             let texture = copy.as_ref().unwrap_or(texture);
             Some((request, copy_frame(&self.device, encoder, texture, size)))

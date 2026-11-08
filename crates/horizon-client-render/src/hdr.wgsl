@@ -284,6 +284,36 @@ fn layered(at: vec2<i32>) -> vec3<f32> {
     return vec4(layered(vec2<i32>(pos.xy)), 1.0);
 }
 
+// Screenshots keep midtones at their drawn brightness, with a shoulder starting at 0.6
+// paper white in linear light. Unlike the display curve (whose knee is at least white),
+// this has an unbounded source range: k + (1-k)*(top-k)/(top+1-2*k) approaches SDR
+// white smoothly, with slope 1 at k. One scale keeps the world's linear RGB ratios.
+fn screenshot_world(w: vec3<f32>) -> vec3<f32> {
+    let top = pow(max(w.r, max(w.g, w.b)), 2.2);
+    if top <= 0.6 {
+        return w;
+    }
+    let mapped = 0.6 + 0.4 * (top - 0.6) / (top - 0.2);
+    return w * pow(mapped / top, 1.0 / 2.2);
+}
+
+override screenshot_world_only: bool = false;
+
+// The ordinary PNG, or the world's icon before the HUD: H as drawn, at 100%, over
+// the SDR world's light. This never changes the targets used by HDR output or its copy.
+@fragment fn fs_sdr_screenshot(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let at = vec2<i32>(pos.xy);
+    let w = max(textureLoad(frame, at, 0).rgb, vec3(0.0));
+    let mapped = screenshot_world(w);
+    if screenshot_world_only {
+        return vec4(mapped, 1.0);
+    }
+    let p = clamp(textureLoad(hud, at, 0).rgb, vec3(0.0), vec3(1.0));
+    let c = textureLoad(coverage, at, 0).r;
+    let h = max(p - (1.0 - c) * min(w, vec3(1.0)), vec3(0.0));
+    return vec4(h + (1.0 - c) * mapped, 1.0);
+}
+
 @fragment fn fs_hdr_layered(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     if calibrating(pos) {
         return calibration_picture(pos);
