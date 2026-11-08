@@ -116,6 +116,10 @@ pub(super) struct Profile {
     pub(super) server_reply: Option<Sender<String>>,
     /// Whether the server's capture belongs to a window capture, whose stop ends it.
     pub(super) server_joined: bool,
+    /// The window capture's file, held open for the server's part until it has all arrived.
+    pub(super) server_sink: Option<super::perf_link::Sink>,
+    /// The server's file while it arrives.
+    pub(super) incoming: Option<super::perf_link::Incoming>,
 }
 
 impl Profile {
@@ -138,6 +142,8 @@ impl Profile {
             server_link: Link::default(),
             server_reply: None,
             server_joined: false,
+            server_sink: None,
+            incoming: None,
         }
     }
 
@@ -615,6 +621,7 @@ impl Game<'_> {
         if self.profile.perf.capturing() {
             let _ = self.stop_profile(StopReason::Shutdown);
         }
+        self.abandon_part();
         // The file is whole only once the server thread's side is, which a closing game's server has no more ticks for.
         if let Some(integrated) = &self.integrated {
             integrated.request_stop();

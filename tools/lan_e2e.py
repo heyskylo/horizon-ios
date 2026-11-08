@@ -7093,11 +7093,14 @@ def check_server_profile(host, guest, out):
     assert 'already' in refused('profile', 'server', 'start'), 'a second request while one runs is accepted'
     assert 'already' in refused_host_start(host), "the host started a capture over the guest's"
     stopped = guest.raw('profile', 'server', 'stop')
-    assert stopped['path'] == started['path'] and stopped['sides'] == ['server'], (started, stopped)
+    assert stopped['sides'] == ['server'] and stopped['path'].startswith('reports/profile-'), (started, stopped)
     made = sorted(set(files()) - set(before))
     assert made == [Path(started['path']).name], (made, started)
     data = gzip.decompress((reports / made[0]).read_bytes())
     assert data, "the host's copy is empty"
+    received = guest.work / 'home' / stopped['path']
+    assert received.is_file(), f"the guest has no copy at {received}"
+    assert (reports / made[0]).read_bytes() == received.read_bytes(), "the guest's copy is not the host's file as it is"
     assert idle()['sides'] == []
     text = log_text()
     assert f'{GUEST_NAME} started a server profile (30 s, samples off)' in text, 'the host log does not name the guest at the start'

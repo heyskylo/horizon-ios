@@ -404,6 +404,7 @@ fn server_saved(side: &mut ServerSide, saved: io::Result<server_perf::Saved>) ->
             }
             Some(Done::Saved {
                 path: shown(&saved.path),
+                file: saved.path.clone(),
                 removed,
             })
         }

@@ -997,5 +997,6 @@
   "horizon.perf.denied": "a server profile needs operator level 4",
   "horizon.perf.already_running": "the server is already running a profile",
   "horizon.perf.not_running": "no server profile of yours is running",
-  "horizon.perf.failed": "the server could not write the profile; see its log"
+  "horizon.perf.failed": "the server could not write the profile; see its log",
+  "horizon.perf.part_incomplete": "the server's part of the profile did not arrive whole"
 }

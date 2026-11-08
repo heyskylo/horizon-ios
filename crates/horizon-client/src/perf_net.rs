@@ -17,6 +17,14 @@ pub const ANSWER_TIMEOUT: Duration = Duration::from_secs(10);
 /// Bytes of a serverbound payload at most (ServerboundCustomPayloadPacket.MAX_PAYLOAD_SIZE).
 const MAX_PAYLOAD: usize = 32767;
 const MAX_PATH: usize = 256;
+/// Bytes of the server's file in one chunk.
+pub const CHUNK: usize = 32 * 1024;
+/// The most bytes per second the server sends of its file.
+pub const RATE: usize = 256 * 1024;
+/// Bytes already queued for the guest above which the server holds its next chunk back, so gameplay packets go first.
+pub const BUSY_QUEUE: usize = 64 * 1024;
+/// How long a client waits for the file to be finished, or for the next chunk, before it gives up on the server's part.
+pub const STALL_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_REMOVED: usize = 64;
 
 /// What a capture on the server is asked to record; the switches a server has (no GPU, no file).
@@ -86,12 +94,15 @@ pub enum Reply {
         seconds: Option<u32>,
         samples: bool,
     },
-    /// The capture ended and its file is whole on the server.
+    /// The capture ended and its file is whole on the server; `bytes` of it follow as [`Reply::Chunk`]s, none if 0.
     Finished {
         path: String,
         removed: Vec<String>,
+        bytes: u64,
     },
     Refused(Refusal),
+    /// The next bytes of the file, at most [`CHUNK`].
+    Chunk(Vec<u8>),
 }
 
 const START: u8 = 0;
@@ -185,6 +196,7 @@ impl Request {
 const STARTED: u8 = 0;
 const FINISHED: u8 = 1;
 const REFUSED: u8 = 2;
+const CHUNK_TAG: u8 = 3;
 
 impl Reply {
     pub fn encode(&self) -> Vec<u8> {
@@ -200,13 +212,22 @@ impl Reply {
                 w.varint(seconds.unwrap_or(0) as i32);
                 w.bool(*samples);
             }
-            Self::Finished { path, removed } => {
+            Self::Finished {
+                path,
+                removed,
+                bytes,
+            } => {
                 w.u8(FINISHED);
                 w.string(path);
+                w.varlong(*bytes as i64);
                 w.varint(removed.len().min(MAX_REMOVED) as i32);
                 for name in removed.iter().take(MAX_REMOVED) {
                     w.string(name);
                 }
+            }
+            Self::Chunk(data) => {
+                w.u8(CHUNK_TAG);
+                w.byte_array(data);
             }
             Self::Refused(why) => {
                 w.u8(REFUSED);
@@ -235,11 +256,18 @@ impl Reply {
             }
             FINISHED => {
                 let path = r.string(MAX_PATH)?;
+                let bytes = u64::try_from(r.varlong()?)
+                    .map_err(|_| Error::new("perf: negative file size"))?;
                 let removed = (0..r.count(MAX_REMOVED)?)
                     .map(|_| r.string(MAX_PATH))
                     .collect::<Result<_>>()?;
-                Self::Finished { path, removed }
+                Self::Finished {
+                    path,
+                    removed,
+                    bytes,
+                }
             }
+            CHUNK_TAG => Self::Chunk(r.byte_array(CHUNK)?),
             REFUSED => Self::Refused(match r.u8()? {
                 0 => Refusal::Denied,
                 1 => Refusal::AlreadyRunning,
@@ -319,6 +347,56 @@ pub enum Link {
     },
     /// The stop request waits for the file to be whole.
     Stopping { path: String, since: Instant },
+    /// The server's file arrives: `got` of `total` bytes, the last at `since`.
+    Receiving {
+        path: String,
+        since: Instant,
+        got: u64,
+        total: u64,
+    },
+}
+
+/// What a chunk of the server's file means for the client.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Received {
+    /// No file was expected.
+    Stray,
+    More,
+    /// The file is whole.
+    Last,
+    /// More bytes arrived than the server announced.
+    TooMuch,
+}
+
+/// The server's pacing of the file it sends: chunks of at most [`CHUNK`], never faster than [`RATE`], and none while the guest's connection has a backlog.
+#[derive(Clone, Debug)]
+pub struct Outgoing {
+    remaining: u64,
+    next_at: Instant,
+}
+
+impl Outgoing {
+    pub fn new(total: u64, now: Instant) -> Self {
+        Self {
+            remaining: total,
+            next_at: now,
+        }
+    }
+
+    pub fn done(&self) -> bool {
+        self.remaining == 0
+    }
+
+    /// The size of the chunk to send at `now`, if one is due; `queued` is the bytes already waiting to be sent to the guest.
+    pub fn next(&mut self, now: Instant, queued: usize) -> Option<usize> {
+        if self.remaining == 0 || now < self.next_at || queued > BUSY_QUEUE {
+            return None;
+        }
+        let n = self.remaining.min(CHUNK as u64) as usize;
+        self.remaining -= n as u64;
+        self.next_at = now + Duration::from_secs_f64(n as f64 / RATE as f64);
+        Some(n)
+    }
 }
 
 /// What an answer from the server means for the client.
@@ -332,6 +410,8 @@ pub enum Outcome {
     Finished {
         path: String,
         removed: Vec<String>,
+        /// Bytes of the server's file to come; 0 when the server sends none.
+        bytes: u64,
     },
     Refused(Refusal),
     /// The reply fits no request of ours, for example a duplicate.
@@ -405,9 +485,29 @@ impl Link {
                     samples,
                 }
             }
-            (Self::Running { .. } | Self::Stopping { .. }, Reply::Finished { path, removed }) => {
-                Outcome::Finished { path, removed }
+            (
+                Self::Running { .. } | Self::Stopping { .. },
+                Reply::Finished {
+                    path,
+                    removed,
+                    bytes,
+                },
+            ) => {
+                if bytes > 0 {
+                    *self = Self::Receiving {
+                        path: path.clone(),
+                        since: now,
+                        got: 0,
+                        total: bytes,
+                    };
+                }
+                Outcome::Finished {
+                    path,
+                    removed,
+                    bytes,
+                }
             }
+            (Self::Receiving { .. }, Reply::Refused(why)) => Outcome::Refused(why),
             (Self::Asking { .. }, Reply::Refused(why)) => Outcome::Refused(why),
             (Self::Running { .. } | Self::Stopping { .. }, Reply::Refused(why)) => {
                 Outcome::Refused(why)
@@ -416,6 +516,47 @@ impl Link {
                 *self = before;
                 Outcome::Stray
             }
+        }
+    }
+
+    /// Counts `len` bytes of the server's file that arrived.
+    pub fn chunk(&mut self, len: usize, now: Instant) -> Received {
+        match std::mem::take(self) {
+            Self::Receiving {
+                path, got, total, ..
+            } => {
+                let got = got + len as u64;
+                if got < total {
+                    *self = Self::Receiving {
+                        path,
+                        since: now,
+                        got,
+                        total,
+                    };
+                    Received::More
+                } else if got == total {
+                    Received::Last
+                } else {
+                    Received::TooMuch
+                }
+            }
+            other => {
+                *self = other;
+                Received::Stray
+            }
+        }
+    }
+
+    /// Whether the server's file has been awaited or received too slowly for longer than [`STALL_TIMEOUT`]; the link goes idle.
+    pub fn stalled(&mut self, now: Instant) -> bool {
+        match self {
+            Self::Stopping { since, .. } | Self::Receiving { since, .. }
+                if now.duration_since(*since) > STALL_TIMEOUT =>
+            {
+                *self = Self::Idle;
+                true
+            }
+            _ => false,
         }
     }
 

@@ -552,8 +552,18 @@ horizon-ctl profile mark NAME
   is `horizon`: `horizon:block_registry` is only sent when content mods are loaded, so it would miss ordinary Horizon
   servers. `profile server start|stop` on such a server waits for those answers (10 s for the first); a bare `profile start`
   also sends `Start` and a refusal becomes the warning `SERVER_NOT_HORIZON`, `SERVER_DENIED` or `SERVER_ALREADY_RUNNING` in
-  the client's file, and `Started` leaves the mark `server_started`. The server's bytes do not reach the client yet (R1b).
+  the client's file, and `Started` leaves the mark `server_started`. The server's file follows (R1b).
   For tests only, `horizon-ctl lan op NAME LEVEL` sets a connected guest's operator level on a LAN host.
+- **As built (R1b):** `Finished` carries the size of the server's file, and that many bytes follow as `Chunk` replies of at most
+  32 KiB. The server sends a chunk only when one is due, at least 125 ms after the last (never above 256 KiB in any second), and
+  only while the guest has at most 64 KiB queued, so gameplay packets go first. The client feeds the chunks to
+  `horizon_perf_format::PartMerger`, which inflates the stream and yields whole top-level fields without `format`, unknown fields
+  included. A window capture that asked for the server (a bare `profile start`) keeps its writer open from `Started` on and appends
+  those fields to its own stream, so its file finishes once the part has arrived. `profile server stop` alone saves the server's gzip
+  bytes unchanged as a file of its own in the client's `reports/` (with retention) and replies with that path. A lost connection, a
+  bad stream, an error from the server or 30 s without progress ends the transfer: the window's file keeps the whole fields received
+  and gets `SERVER_PART_INCOMPLETE` after the client's `Stop` (the cut is only known then), plus a server `Stop` with reason
+  `DISCONNECTED` when the part had begun without one, so the whole-file reader still opens it; a file of its own is removed.
 - **As built (C1):** `profile client` captures the window only. A client capture without `--seconds` stops at the 600 s window cap with
   `STOP_REASON_WINDOW_CAP`, so `HORIZON_PROFILE` records the first 10 minutes of a run. The client's slow ring takes
   frames over `HORIZON_SPIKES`, else 50 ms. The health gauges (process and machine probes) are read on a thread of their
