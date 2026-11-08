@@ -1327,15 +1327,26 @@ where
     }
     /// `Blender.of(region)` for the chunk at `pos`.
     fn blender_at(&self, pos: ChunkPos) -> Arc<super::blending::Blender> {
+        fn empty_blender() -> Arc<super::blending::Blender> {
+            static EMPTY: OnceLock<Arc<super::blending::Blender>> = OnceLock::new();
+            EMPTY
+                .get_or_init(|| Arc::new(super::blending::Blender::empty()))
+                .clone()
+        }
         // `SharedConstants.DEBUG_DISABLE_BLENDING`.
         static DISABLED: OnceLock<bool> = OnceLock::new();
         if *DISABLED.get_or_init(|| std::env::var_os("HORIZON_DISABLE_BLENDING").is_some()) {
-            return Arc::new(super::blending::Blender::empty());
+            return empty_blender();
         }
-        Arc::new(match self.old_world.get() {
-            Some(world) => super::blending::Blender::of(world.as_ref(), pos),
-            None => super::blending::Blender::empty(),
-        })
+        let Some(world) = self.old_world.get() else {
+            return empty_blender();
+        };
+        let blender = super::blending::Blender::of(world.as_ref(), pos);
+        if blender.is_empty() {
+            empty_blender()
+        } else {
+            Arc::new(blender)
+        }
     }
     fn biome_chunk(
         &self,
