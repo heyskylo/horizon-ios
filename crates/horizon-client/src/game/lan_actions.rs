@@ -4446,15 +4446,17 @@ impl Game<'_> {
             // ServerPlayer.die: with showDeathMessages, the message goes to
             // the dying player's death screen and to everyone the team lets
             // see it; without it, the death screen gets an empty one.
+            let me = self.player_text(&name, uuid);
+            let text = match cause {
+                Some(key) => horizon_client::text::Text::translate(&key, &[me]),
+                None if at[1] < f64::from(self.world.bottom_y() - 64) => {
+                    horizon_client::text::Text::translate("death.attack.outOfWorld", &[me])
+                }
+                None => self.guest_death_message(conn, me),
+            };
+            // The rendered message, whether or not death messages are shown.
+            self.native_player_died_v2(uuid, &name, &text);
             let message = if self.ui.rules.bool("show_death_messages") {
-                let me = self.player_text(&name, uuid);
-                let text = match cause {
-                    Some(key) => horizon_client::text::Text::translate(&key, &[me]),
-                    None if at[1] < f64::from(self.world.bottom_y() - 64) => {
-                        horizon_client::text::Text::translate("death.attack.outOfWorld", &[me])
-                    }
-                    None => self.guest_death_message(conn, me),
-                };
                 let message = horizon_client::lan::data::component_nbt(&text.component());
                 let board = &self.score.board;
                 host.hub.system_message_to(message.clone(), |other| {

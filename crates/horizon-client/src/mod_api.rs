@@ -32,13 +32,13 @@ pub use crate::game::native_client_services::{
 };
 pub use crate::game::native_text_field::NativeTextField;
 pub use crate::game::{
-    ItemEnergyBuffer, NativeBiomeId, NativeBlockEdit, NativeBlockReadError, NativeBlockRun,
-    NativeClientBiomes, NativeClientChunks, NativeClock, NativeColumnBlocks, NativeComponentError,
-    NativeConfig, NativeConfigFile, NativeConfigKind, NativeCriterion, NativeDataMapType,
-    NativeExperienceOrb, NativeFalling, NativeHeightmap, NativeHeldItem, NativeHit,
-    NativeItemEntity, NativeMapDecoration, NativeMapInfo, NativeMobRender, NativeModEvent,
-    NativePlayer, NativePlayerRender, NativeReloadListener, NativeShake, NativeStructureBlock,
-    NativeStructureTemplate, NativeWorldDraw,
+    AdvancementDisplay, ItemEnergyBuffer, NativeBiomeId, NativeBlockEdit, NativeBlockReadError,
+    NativeBlockRun, NativeClientBiomes, NativeClientChunks, NativeClock, NativeColumnBlocks,
+    NativeComponentError, NativeConfig, NativeConfigFile, NativeConfigKind, NativeCriterion,
+    NativeDataMapType, NativeExperienceOrb, NativeFalling, NativeHeightmap, NativeHeldItem,
+    NativeHit, NativeItemEntity, NativeMapDecoration, NativeMapInfo, NativeMobRender,
+    NativeModEvent, NativePlayer, NativePlayerRender, NativeReloadListener, NativeShake,
+    NativeStructureBlock, NativeStructureTemplate, NativeWorldDraw,
 };
 pub use crate::gamerules::Value as GameRuleValue;
 /// What a mod asks of the terrain's picture each frame (`native_world_hold`). API 414.

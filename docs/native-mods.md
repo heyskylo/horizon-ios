@@ -5308,3 +5308,7 @@ unchanged. The list has already been shuffled; entity knockback and the shuffle'
 random draws are unaffected. A breeze blocked by `mob_griefing` does not call the hook.
 This is separate from `explosion_detonate`, and does not cancel the burst's sound,
 particles or entity effects. The pending fragment assigns its API number at merge.
+
+### Advancement displays
+
+The pending `advancement_display` helper (`host.advancement_display`) returns an `AdvancementDisplay` for an advancement id in the loaded tree: `title` and `description` as `Text` (the components as the datapack wrote them), `frame` as `task`, `goal` or `challenge`, `announce_to_chat` and `hidden`. It is None for an unknown id or one without a display. The helper loads the tree on first use, so it is for server-side reads, not hot paths. The pending fragment assigns its API number at merge (`@API:advancement_display@`).

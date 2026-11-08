@@ -2085,6 +2085,27 @@ impl Game<'_> {
             // next).
             self.spawn_item_own(item, pos, 10);
         }
+        // LivingEntity.dropExperience: a mod may change the mob's experience
+        // before the orbs are split and spawned (the orbs stay last).
+        if rest.iter().any(|d| matches!(d, drops::Drop::Orb(_))) {
+            let mut xp: i32 = rest
+                .iter()
+                .filter_map(|d| match d {
+                    drops::Drop::Orb(value) => Some(*value),
+                    _ => None,
+                })
+                .sum();
+            let before = xp;
+            self.native_living_experience_drop(m.id, &kind, &mut xp);
+            if xp != before {
+                rest.retain(|d| !matches!(d, drops::Drop::Orb(_)));
+                while xp > 0 {
+                    let value = drops::orb_value(xp);
+                    xp -= value;
+                    rest.push(drops::Drop::Orb(value));
+                }
+            }
+        }
         for d in rest {
             match d {
                 drops::Drop::CarriedBlock(state) => {
@@ -6038,19 +6059,25 @@ impl Game<'_> {
                     _ => None,
                 };
                 let owner = self.potion_owner(p.owner);
-                self.splash(
-                    stack,
-                    at,
-                    mob,
-                    block,
-                    p.age,
-                    &owner,
-                    self.entity_silent(p.id),
-                    p.velocity,
-                );
+                let item = stack.item.to_string();
+                let mut cancel = false;
                 if stack.item.as_ref() != "minecraft:experience_bottle" {
-                    let item = stack.item.to_string();
-                    self.native_potion_splash(&item, [at.x, at.y, at.z]);
+                    self.native_potion_splash_v2(&item, [at.x, at.y, at.z], &mut cancel);
+                }
+                if !cancel {
+                    self.splash(
+                        stack,
+                        at,
+                        mob,
+                        block,
+                        p.age,
+                        &owner,
+                        self.entity_silent(p.id),
+                        p.velocity,
+                    );
+                    if stack.item.as_ref() != "minecraft:experience_bottle" {
+                        self.native_potion_splash(&item, [at.x, at.y, at.z]);
+                    }
                 }
             }
             // LlamaSpit.onHitEntity hurts only when the owner is a LivingEntity.
