@@ -5,6 +5,7 @@ import java.io.PrintWriter;
 import java.nio.file.*;
 import java.util.*;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.SectionPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
@@ -18,6 +19,7 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.NetherPortalBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.dimension.BuiltinDimensionTypes;
+import net.minecraft.world.level.portal.PortalShape;
 
 /**
  * Nether portal travel, one entity per case: `NetherPortalBlock.getPortalDestination`
@@ -28,7 +30,10 @@ import net.minecraft.world.level.dimension.BuiltinDimensionTypes;
  * `createPortal`, `BlockUtil.getLargestRectangleAround`,
  * `PortalShape.getRelativePosition` and `findCollisionFreePosition`. Printed:
  * the entity's size, the exit portal found (or "created"), the blocks the
- * destination changed and the arrival position (bits) and yaw.
+ * destination changed and the arrival position (bits) and yaw. Cases with
+ * kind "shape" instead print `PortalShape.findAnyShape` and
+ * `findEmptyPortalShape` for a frame world, and the blocks `createPortalBlocks`
+ * changes.
  */
 public final class VanillaPortalOracle {
     /** The points of interest of the destination: the case's portal blocks. */
@@ -42,6 +47,54 @@ public final class VanillaPortalOracle {
     }
 
     static net.minecraft.world.level.dimension.DimensionType OVERWORLD, NETHER;
+
+    static String shapeLine(PortalShape shape) {
+        try {
+            var axisField = PortalShape.class.getDeclaredField("axis");
+            var rightField = PortalShape.class.getDeclaredField("rightDir");
+            var bottomField = PortalShape.class.getDeclaredField("bottomLeft");
+            var widthField = PortalShape.class.getDeclaredField("width");
+            var heightField = PortalShape.class.getDeclaredField("height");
+            var blocksField = PortalShape.class.getDeclaredField("numPortalBlocks");
+            for (var field : List.of(axisField, rightField, bottomField, widthField, heightField, blocksField)) {
+                field.setAccessible(true);
+            }
+            var axis = (Direction.Axis) axisField.get(shape);
+            var right = (Direction) rightField.get(shape);
+            var bottom = (BlockPos) bottomField.get(shape);
+            int width = widthField.getInt(shape);
+            int height = heightField.getInt(shape);
+            int blocks = blocksField.getInt(shape);
+            return "axis=" + (axis == Direction.Axis.X ? "x" : "z") + " right=" + right.getName()
+                + " bottom=" + bottom.getX() + "," + bottom.getY() + "," + bottom.getZ()
+                + " size=" + width + "x" + height + " blocks=" + blocks
+                + " valid=" + shape.isValid() + " complete=" + shape.isComplete();
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    static List<String> runShape(JsonObject f) throws Exception {
+        var copy = new JsonObject();
+        copy.add("cells", f.get("source"));
+        copy.add("seed", f.get("seed"));
+        var w = VanillaBlockUpdateOracle.build(copy);
+        var probe = f.getAsJsonObject("probe");
+        BlockPos at = VanillaBlockUpdateOracle.readPos(probe.getAsJsonArray("pos"));
+        Direction.Axis axis = probe.get("axis").getAsString().equals("x") ? Direction.Axis.X : Direction.Axis.Z;
+        List<String> out = new ArrayList<>();
+        out.add("shape " + shapeLine(PortalShape.findAnyShape(w, at, axis)));
+        Map<BlockPos, BlockState> before = new HashMap<>(w.cells);
+        var empty = PortalShape.findEmptyPortalShape(w, at, axis);
+        if (empty.isEmpty()) {
+            out.add("empty none");
+        } else {
+            out.add("empty " + shapeLine(empty.get()));
+            empty.get().createPortalBlocks(w);
+            out.addAll(VanillaBlockUpdateOracle.summary(w, before));
+        }
+        return out;
+    }
 
     public static void main(String[] args) throws Exception {
         ParityData.init();
@@ -83,6 +136,7 @@ public final class VanillaPortalOracle {
     }
 
     static List<String> run(JsonObject f) throws Exception {
+        if (f.has("kind") && f.get("kind").getAsString().equals("shape")) return runShape(f);
         boolean fromNether = f.get("from").getAsString().equals("nether");
         var source = level(f, "source", fromNether);
         var target = level(f, "target", !fromNether);

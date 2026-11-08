@@ -120,6 +120,23 @@ pub struct Session {
     pub recorder: Arc<Mutex<Option<StudioRecorder>>>,
 }
 impl Session {
+    /// The negotiated wire release, once the connection has been established.
+    pub fn server_version(&self) -> horizon_protocol::adapter::ServerVersion {
+        self.writer.lock().unwrap().as_ref().map_or(
+            horizon_protocol::adapter::ServerVersion::Current,
+            ConnWriter::server_version,
+        )
+    }
+
+    /// Secure-chat enforcement synchronized later than login on older servers.
+    pub fn legacy_secure_chat_enforcement(&self) -> Option<bool> {
+        self.writer
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(ConnWriter::legacy_secure_chat_enforcement)
+    }
+
     /// Start connecting in the background, as `auth`'s account when there is one.
     pub fn connect(
         address: &str,
@@ -535,9 +552,13 @@ pub fn save_friends_relay(relay: &str) {
 }
 
 /// Reach the friend's world from the code (directly, or through a relay)
-/// and open the tunnel: the loopback address to connect to.
+/// and open the tunnel: the loopback address to connect to, and the token to send on it first.
 #[cfg(feature = "friends")]
-fn join_friend(code: &str, lang: &Language, send: &Sender<Event>) -> Result<(String, u16), Reason> {
+fn join_friend(
+    code: &str,
+    lang: &Language,
+    send: &Sender<Event>,
+) -> Result<(String, u16, Vec<u8>), Reason> {
     use horizon_friends::{
         PathMode,
         guest::{self, GuestConfig},
@@ -559,15 +580,23 @@ fn join_friend(code: &str, lang: &Language, send: &Sender<Event>) -> Result<(Str
             tr(lang, "horizon.multiplayer.connected_friend_relay")
         },
     );
-    let (port, _) = tunnel
+    let loopback = tunnel
         .serve_loopback()
         .map_err(|e| Reason::plain(e.to_string()))?;
-    Ok(("127.0.0.1".to_owned(), port))
+    Ok((
+        "127.0.0.1".to_owned(),
+        loopback.port,
+        loopback.token.to_vec(),
+    ))
 }
 
 /// A build without Play with Friends: the address is refused, never retried.
 #[cfg(not(feature = "friends"))]
-fn join_friend(code: &str, lang: &Language, _: &Sender<Event>) -> Result<(String, u16), Reason> {
+fn join_friend(
+    code: &str,
+    lang: &Language,
+    _: &Sender<Event>,
+) -> Result<(String, u16, Vec<u8>), Reason> {
     Err(Reason::keyed_arg(
         "horizon.multiplayer.invalid_address",
         lang,
@@ -753,7 +782,7 @@ fn run(
     let (host, port, mut c) = if let Some(pipe) = local {
         (address.to_owned(), 0, Connection::local(pipe))
     } else {
-        let (host, port) = match address.strip_prefix(FRIEND) {
+        let (host, port, token) = match address.strip_prefix(FRIEND) {
             Some(code) => join_friend(code, lang, send)?,
             None => {
                 let Some(target) = parse_address(address) else {
@@ -767,12 +796,18 @@ fn run(
                 };
                 status(send, &tr(lang, "connect.connecting"));
                 log_connecting(&target.0, target.1);
-                target
+                (target.0, target.1, Vec::new())
             }
         };
         let (mut c, host, port) =
             connect_tcp(&host, port, address.starts_with(FRIEND), READ_TIMEOUT)
                 .map_err(Reason::plain)?;
+        // The tunnel's port takes only the client that sends its token first.
+        if !token.is_empty() {
+            c.writer
+                .write_raw(&token)
+                .map_err(|e| Reason::plain(e.to_string()))?;
+        }
         if !address.starts_with(FRIEND)
             && let Some(version) = older_server(address)
         {

@@ -1,7 +1,7 @@
 //! Headless transport for the block-entity render parity gate: replays each
 //! case (block state, light, partial tick and ticked block-entity fields)
 //! through `BlockEntityRenderer` at the block origin and writes the quads
-//! (texture, sprite-local UVs, baked colour, light) and sign text calls.
+//! (texture, sprite-local UVs, tint, normal, light) and sign text calls.
 #![forbid(unsafe_code)]
 use glam::{DVec3, Mat4, Quat, Vec3};
 use horizon_client::{
@@ -417,7 +417,8 @@ pub fn main() -> Result<()> {
                         ])
                     })
                     .collect();
-                json!({"texture": texture, "v": v, "color": q[0].color, "light": q[0].light})
+                json!({"texture": texture, "v": v, "color": q[0].color, "light": q[0].light,
+                       "normal": q[0].normal})
             })
             .collect();
         let texts: Vec<Value> = texts
