@@ -588,6 +588,12 @@ pub(super) fn packed_biomes(
         .filter_map(|id| packs.iter().find(|p| &p.id == id))
         .collect();
     let (overrides, _) = horizon_client::datapack::worldgen_overrides(&enabled, |_| true);
+    // The mods' spawns too: their biome modifiers go over the packs' biomes.
+    let overrides = horizon_client::vanillagen::biome_modifiers_over_packs(
+        &resources.join("worldgen"),
+        &overrides,
+    )
+    .unwrap_or(overrides);
     let packed: Vec<(String, serde_json::Value)> = overrides
         .entries("biomes")
         .filter_map(|(id, json)| Some((id.to_owned(), serde_json::from_str(json).ok()?)))

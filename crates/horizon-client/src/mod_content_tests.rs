@@ -3994,6 +3994,72 @@ fn biome_modifiers_place_mod_features_in_vanilla_biomes() {
     let _ = fs::remove_dir_all(&scratch);
 }
 
+/// A world's data pack that replaces a vanilla biome (Terralith's plains)
+/// keeps the mods' modifier features, and a pack's own biome its tag puts
+/// under the modifier's selector gets them: NeoForge applies modifiers after
+/// every pack. A biome no pack touches stays as the content root has it.
+#[test]
+fn biome_modifiers_apply_over_world_packs() {
+    let base = biome_base("biome-modifiers-packs");
+    let scratch = base.parent().unwrap().to_owned();
+    let m = zinc_mod(
+        &scratch.join("zinc"),
+        &[(
+            "add_zinc",
+            r##"{"type":"neoforge:add_features","biomes":"#minecraft:is_overworld",
+                "features":"zinc:ore_zinc","step":"underground_ores"}"##,
+        )],
+    );
+    let out = scratch.join("out");
+    build(&base, &[m], &out).unwrap();
+    let mut packs = horizon_world::worldgen::overrides::WorldgenOverrides::default();
+    let pack_plains =
+        r#"{"temperature":0.5,"features":[[],[],[],[],[],[],["minecraft:ore_coal"]]}"#;
+    packs.set("biomes", "minecraft:plains", pack_plains.to_owned());
+    packs.set("biomes", "terra:alpine", r#"{"features":[]}"#.to_owned());
+    packs.add_tag(
+        "biome_tags",
+        "minecraft:is_overworld",
+        "file/terra",
+        r#"{"values":["terra:alpine"]}"#.to_owned(),
+    );
+    let after = biome_modifiers_over_packs(&out, &packs)
+        .unwrap()
+        .unwrap_or(packs);
+    let features = |id: &str| -> serde_json::Value {
+        let text = after.entries("biomes").find(|(i, _)| *i == id).unwrap().1;
+        serde_json::from_str::<serde_json::Value>(text).unwrap()["features"].clone()
+    };
+    assert_eq!(
+        features("minecraft:plains"),
+        serde_json::json!([
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            ["minecraft:ore_coal", "zinc:ore_zinc"]
+        ])
+    );
+    assert_eq!(
+        features("terra:alpine"),
+        serde_json::json!([[], [], [], [], [], [], ["zinc:ore_zinc"]])
+    );
+    // The pack's own values stay.
+    let plains = after
+        .entries("biomes")
+        .find(|(i, _)| *i == "minecraft:plains");
+    let plains: serde_json::Value = serde_json::from_str(plains.unwrap().1).unwrap();
+    assert_eq!(plains["temperature"], serde_json::json!(0.5));
+    assert!(
+        after
+            .entries("biomes")
+            .all(|(id, _)| id != "minecraft:desert")
+    );
+    let _ = fs::remove_dir_all(&scratch);
+}
+
 /// A mod with features but no modifier leaves vanilla's biome bundle alone.
 #[test]
 fn biome_modifiers_none_keep_the_vanilla_biomes() {
