@@ -161,8 +161,16 @@ impl Goal for DrinkItem {
                     1.0,
                 ));
             } else {
+                let had_boost = m
+                    .extra
+                    .effects
+                    .iter()
+                    .any(|e| e.0 == "minecraft:health_boost");
                 m.extra.effects.clear();
                 m.extra.effect_fallbacks.clear();
+                if had_boost {
+                    super::finalize::health_boost_changed(m);
+                }
                 cx.events.push(MobEvent::Sound(
                     "entity.wandering_trader.drink_milk",
                     m.center(),

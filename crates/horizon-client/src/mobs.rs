@@ -4257,14 +4257,27 @@ impl Mob {
         match effect {
             // `LivingEntity.removeAllEffects`: the absorption hearts go with it.
             ConsumeEffect::ClearAllEffects => {
+                let had_boost = self
+                    .extra
+                    .effects
+                    .iter()
+                    .any(|e| e.0 == "minecraft:health_boost");
                 self.extra.effect_fallbacks.clear();
                 for e in std::mem::take(&mut self.extra.effects) {
                     if e.0 == "minecraft:absorption" {
                         self.absorption = (self.absorption - 4.0 * (e.2 + 1) as f32).max(0.0);
                     }
                 }
+                if had_boost {
+                    finalize::health_boost_changed(self);
+                }
             }
             ConsumeEffect::RemoveEffects(ids) => {
+                let had_boost = self
+                    .extra
+                    .effects
+                    .iter()
+                    .any(|e| e.0 == "minecraft:health_boost");
                 self.extra.effects.retain(|e| {
                     let held = e.0.trim_start_matches("minecraft:");
                     !ids.iter()
@@ -4273,6 +4286,14 @@ impl Mob {
                 self.extra
                     .effect_fallbacks
                     .retain(|h| self.extra.effects.iter().any(|e| e.0 == h.id));
+                let has_boost = self
+                    .extra
+                    .effects
+                    .iter()
+                    .any(|e| e.0 == "minecraft:health_boost");
+                if had_boost && !has_boost {
+                    finalize::health_boost_changed(self);
+                }
             }
             // `ApplyStatusEffectsConsumeEffect.apply`: one random draw, even at
             // probability 1.
@@ -6582,5 +6603,19 @@ mod hidden_speed_mob_tick_tests {
         assert!(m.extra.hidden_effects.contains(&"minecraft:speed"));
         assert!(!m.extra.effect_fallbacks[0].ambient);
         assert!(m.extra.effect_fallbacks[0].visible);
+    }
+    #[test]
+    fn health_boost_death_effect_clear_clamps_health() {
+        let mut kind = (*sensor_scan_tests::kind()).clone();
+        kind.id = "minecraft:pig".into();
+        kind.species = Species::Pig;
+        let mut m = Mob::new(202, Arc::new(kind), Vec3::ZERO, 0.0);
+        finalize::set_base(&mut m, finalize::Attr::MaxHealth, 10.0);
+        m.add_effect("health_boost", 200, 1);
+        assert_eq!(m.attrs.max_health, 18.0);
+        m.health = 18.0;
+        m.apply_death_effect(&crate::items::ConsumeEffect::ClearAllEffects);
+        assert_eq!(m.attrs.max_health, 10.0);
+        assert_eq!(m.health, 10.0);
     }
 }

@@ -2135,6 +2135,13 @@ pub fn mob_from_nbt(
                     .map(Box::new),
             );
         }
+        if m.extra
+            .effects
+            .iter()
+            .any(|e| e.0 == "minecraft:health_boost")
+        {
+            crate::mobs::finalize::health_boost_changed(&mut m);
+        }
     }
     m.silent = flag(tag, "Silent");
     m.invulnerable_flag = flag(tag, "Invulnerable");
