@@ -125,6 +125,9 @@ pub(super) struct Minecart {
     /// a landing of three blocks or more and taken by the cart's next tick
     /// step (vanilla explodes inside the move itself).
     fall_blast: Option<f64>,
+    /// `Entity.stuckSpeedMultiplier`: set by a cobweb the cart's box is in,
+    /// scaled into its next move.
+    stuck: Vec3,
     pub hurt_time: i32,
     pub hurt_dir: i32,
     pub damage: f32,
@@ -489,6 +492,7 @@ impl Minecart {
             horizontal_collision: false,
             fall_distance: 0.0,
             fall_blast: None,
+            stuck: Vec3::ZERO,
             hurt_time: 0,
             hurt_dir: 1,
             damage: 0.0,
@@ -727,7 +731,13 @@ impl Game<'_> {
     }
     /// Entity.move for a cart: collisions zero the blocked components, the world border's walls
     /// among them (`CollisionGetter.borderCollision`, asked for every entity).
-    fn move_cart(&self, c: &mut Minecart, delta: Vec3) {
+    fn move_cart(&self, c: &mut Minecart, mut delta: Vec3) {
+        // Entity.move: a stuck multiplier scales this move and zeroes the velocity.
+        if c.stuck.length_squared() > 1.0e-7 {
+            delta = delta.multiply(c.stuck);
+            c.stuck = Vec3::ZERO;
+            c.velocity = Vec3::ZERO;
+        }
         let scene = SceneCollisions {
             world: &self.world,
             binding: self.collision,
@@ -1366,6 +1376,21 @@ impl Game<'_> {
             self.collision,
         ) {
             c.fall_distance = 0.0;
+        }
+        // WebBlock.entityInside: makeStuckInBlock(0.25, 0.05, 0.25) for every
+        // cobweb the box (deflated by 1.0E-5) is in; it resets the fall distance.
+        let b = c.bounds().deflate(Vec3::new(1e-5, 1e-5, 1e-5));
+        let (lo, hi) = (b.min_position(), b.max_position());
+        let facts = self.res.facts();
+        for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
+            for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
+                for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
+                    if &*facts.get(self.world.block(x, y, z)).name == "minecraft:cobweb" {
+                        c.fall_distance = 0.0;
+                        c.stuck = Vec3::new(0.25, f64::from(0.05_f32), 0.25);
+                    }
+                }
+            }
         }
     }
     /// Runs `push_from_cart` for the cart being ticked (`c` is a copy of the
