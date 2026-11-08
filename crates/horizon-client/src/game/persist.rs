@@ -817,7 +817,7 @@ impl Game<'_> {
                 previous: position,
                 velocity: entity_nbt::motion(&tag),
                 fuse,
-                on_ground: matches!(tag.get("OnGround"), Some(Tag::Byte(1))),
+                on_ground: entity_nbt::flag(&tag, "OnGround"),
                 fall_distance: horizon_client::save::float(tag.get("fall_distance")).unwrap_or(0.0),
                 stuck: Vec3::ZERO,
                 in_water: false,

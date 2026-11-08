@@ -190,7 +190,7 @@ impl InteractionState {
         Self {
             width: float("width"),
             height: float("height"),
-            response: matches!(tag.get("response"), Some(Tag::Byte(b)) if *b != 0),
+            response: horizon_client::entity_nbt::flag(tag, "response"),
             attack: PlayerAction::from_tag(tag.get("attack")),
             interaction: PlayerAction::from_tag(tag.get("interaction")),
         }

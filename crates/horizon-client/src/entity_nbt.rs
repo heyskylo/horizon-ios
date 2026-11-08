@@ -61,10 +61,14 @@ pub fn rotation(tag: &Tag) -> [f32; 2] {
 }
 /// `NumericTag.byteValue`'s nonzero test for entity NBT, defaulting to false.
 pub fn flag(tag: &Tag, key: &str) -> bool {
+    flag_or(tag, key, false)
+}
+/// `getBooleanOr(key, default)`: any numeric tag's nonzero test, else `default`.
+pub fn flag_or(tag: &Tag, key: &str, default: bool) -> bool {
     // NBT floats floor before int narrowing; the final byte keeps the low bits.
     tag.get(key)
         .and_then(int_value)
-        .is_some_and(|value| value as i8 != 0)
+        .map_or(default, |value| value as i8 != 0)
 }
 /// `Entity.saveWithoutId` fields every entity has, over the loaded compound.
 struct Base<'a> {
@@ -3869,6 +3873,24 @@ pub fn cushion_from_nbt(tag: &Tag, id: u32) -> Option<Cushion> {
 #[cfg(test)]
 mod cushion_tests {
     use super::*;
+
+    #[test]
+    fn flags_take_any_number_and_fall_back_when_absent() {
+        let tag = Tag::compound([
+            ("byte", Tag::Byte(2)),
+            ("int", Tag::Int(1)),
+            ("wrapped", Tag::Int(256)),
+            ("short", Tag::Short(0)),
+            ("text", string("1")),
+        ]);
+        assert!(flag(&tag, "byte"));
+        assert!(flag(&tag, "int"));
+        assert!(!flag(&tag, "wrapped"));
+        assert!(!flag_or(&tag, "short", true));
+        assert!(flag_or(&tag, "text", true));
+        assert!(flag_or(&tag, "absent", true));
+        assert!(!flag(&tag, "absent"));
+    }
 
     #[test]
     fn cushion_save_preserves_color_anchor_rotation_and_unknown_data() {
