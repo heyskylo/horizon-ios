@@ -1313,6 +1313,7 @@ impl Game<'_> {
                     timeline: true,
                     file: Some(file.into()),
                     trigger: Trigger::Env,
+                    sampler: Default::default(),
                 },
             );
         }
@@ -1414,7 +1415,9 @@ impl Game<'_> {
             if state.report.as_ref().is_some_and(report::Recording::done) {
                 self.finish_perf_capture(&mut state, StopReason::Normal);
             }
-            report::log_saved(&mut state.perf, false);
+            self.serve_perf_requests(&mut state);
+            let done = report::log_saved(&mut state.perf, false);
+            self.perf_captures_done(done);
             // DedicatedServer.sendLowDiskSpaceWarning: the operators hear of it
             // (no window drains the toasts here).
             if horizon_client::chunk_io::take().low_disk_space
@@ -1463,7 +1466,8 @@ impl Game<'_> {
             watchdog.running.store(false, Ordering::Relaxed);
         }
         self.finish_perf_capture(&mut state, StopReason::Shutdown);
-        report::log_saved(&mut state.perf, true);
+        let done = report::log_saved(&mut state.perf, true);
+        self.perf_captures_done(done);
         match crashed {
             Some(message) => self.stop_after_crash(&message),
             None => self.stop_dedicated(),
@@ -1744,6 +1748,7 @@ impl Game<'_> {
                                 timeline,
                                 file: None,
                                 trigger: Trigger::Console,
+                                sampler: Default::default(),
                             },
                         );
                         log(

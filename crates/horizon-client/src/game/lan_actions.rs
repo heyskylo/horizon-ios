@@ -2065,7 +2065,8 @@ impl Game<'_> {
             S::CustomPayload(p)
                 if p.channel != horizon_protocol::quiet::CHANNEL
                     && p.channel != horizon_protocol::mod_net::CHANNEL
-                    && p.channel != horizon_client::lod_net::CHANNEL =>
+                    && p.channel != horizon_client::lod_net::CHANNEL
+                    && p.channel != horizon_client::perf_net::CHANNEL =>
             {
                 self.guest_custom_payload(host, conn, p.channel, p.data);
                 return;
@@ -2801,6 +2802,9 @@ impl Game<'_> {
             }
             S::CustomPayload(p) if p.channel == horizon_client::lod_net::CHANNEL => {
                 self.guest_far_terrain(host, conn, &p.data)
+            }
+            S::CustomPayload(p) if p.channel == horizon_client::perf_net::CHANNEL => {
+                self.guest_perf(host, conn, &p.data)
             }
             S::CustomPayload(p) if p.channel == horizon_client::lan::recipes::TRANSFER_CHANNEL => {
                 self.guest_recipe_transfer(host, conn, &p.data);

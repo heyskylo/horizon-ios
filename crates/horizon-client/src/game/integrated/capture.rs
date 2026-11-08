@@ -1,5 +1,6 @@
 //! The server thread's side of a capture (docs/perf-platform.md §4.1): it writes into the window's file, or into one of its own.
 use super::super::dedicated::{SLOW_TICK_MS, report::Recording};
+use super::super::perf_remote::Done;
 use super::super::profile_capture::{reply_text, shown};
 use super::super::{Game, tick_profile};
 use horizon_client::client_perf::{
@@ -300,8 +301,17 @@ impl Game<'_> {
         }
     }
 
+    /// Whether a server capture runs or is being saved on this thread.
+    pub(in crate::game) fn server_capture_busy(&self) -> bool {
+        self.profile
+            .server
+            .as_ref()
+            .is_some_and(|s| s.perf.capturing() || s.perf.finishing())
+    }
+
     /// One tick of the server thread, timed for the health history and the capture.
     pub(super) fn tick_server_measured(&mut self, paused: bool) -> crate::Result<()> {
+        self.serve_perf_asked();
         let Some(mut side) = self.profile.server.take() else {
             return self.tick_server_timed(paused);
         };
@@ -337,10 +347,14 @@ impl Game<'_> {
         {
             self.end_server_capture(&mut side, reason);
         }
-        for saved in side.perf.take_saved(false) {
-            server_saved(&mut side, saved);
-        }
+        let done: Vec<Done> = side
+            .perf
+            .take_saved(false)
+            .into_iter()
+            .filter_map(|saved| server_saved(&mut side, saved))
+            .collect();
         self.profile.server = Some(side);
+        self.perf_captures_done(done);
         result
     }
 
@@ -350,22 +364,25 @@ impl Game<'_> {
             return;
         };
         self.end_server_capture(&mut side, StopReason::Shutdown);
+        let mut done = Vec::new();
         if side.owner {
             for saved in side.perf.take_saved(true) {
-                server_saved(&mut side, saved);
+                done.extend(server_saved(&mut side, saved));
             }
         }
         side.ended();
+        drop(side);
+        self.perf_captures_done(done);
     }
 }
 
 /// A capture of this side finished: an owner logs the file and tells the window that waits for it.
-fn server_saved(side: &mut ServerSide, saved: io::Result<server_perf::Saved>) {
+fn server_saved(side: &mut ServerSide, saved: io::Result<server_perf::Saved>) -> Option<Done> {
     if !side.owner {
         if let Err(e) = saved {
             log::error!("Horizon: could not write the server side of the capture: {e}");
         }
-        return;
+        return None;
     }
     side.ended();
     let reply = side.reply.take();
@@ -375,15 +392,20 @@ fn server_saved(side: &mut ServerSide, saved: io::Result<server_perf::Saved>) {
                 log::info!("Horizon: removed the oldest capture {}", path.display());
             }
             log::info!("Horizon: {}", files::saved_line(&saved.path));
+            let removed: Vec<String> = saved.deleted.iter().map(|p| shown(p)).collect();
             if let Some(reply) = reply {
                 let _ = reply.send(reply_text(&Stopped {
                     ok: true,
                     sides: vec![ProfileSide::Server],
                     path: shown(&saved.path),
                     open_at: files::PERF_UI_URL.to_owned(),
-                    removed: saved.deleted.iter().map(|p| shown(p)).collect(),
+                    removed: removed.clone(),
                 }));
             }
+            Some(Done::Saved {
+                path: shown(&saved.path),
+                removed,
+            })
         }
         Err(e) => {
             log::error!("Horizon: could not write the performance capture: {e}");
@@ -392,6 +414,7 @@ fn server_saved(side: &mut ServerSide, saved: io::Result<server_perf::Saved>) {
                     error: e.to_string(),
                 }));
             }
+            Some(Done::Failed)
         }
     }
 }

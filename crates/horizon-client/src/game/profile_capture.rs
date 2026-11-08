@@ -4,6 +4,7 @@ use super::integrated::{
     NO_ANSWER,
     capture::{Live, ServerSide, Target},
 };
+use super::perf_remote::Served;
 use crate::Result;
 use horizon_client::client_perf::{
     self, ClientPerf,
@@ -12,6 +13,7 @@ use horizon_client::client_perf::{
         Stopped, Traced,
     },
 };
+use horizon_client::perf_net::Link;
 use horizon_client::server_perf::{self, TickDetail, WorldCounts};
 use horizon_client::spans::{self, Span};
 use horizon_client::text::{ClickEvent, Style, Text};
@@ -73,6 +75,8 @@ enum ServerLink {
 enum StopRoute {
     Window,
     ServerOnly,
+    /// A capture of the connected server alone.
+    Remote,
 }
 
 /// A capture of the server thread alone, which writes its own file.
@@ -92,7 +96,7 @@ pub(super) struct Profile {
     /// The server thread's side of the running or last window capture, once it was asked.
     joined: Option<Arc<Live>>,
     server_only: Option<ServerOnly>,
-    perf: ClientPerf,
+    pub(super) perf: ClientPerf,
     started_by: Trigger,
     stopped_by_key: bool,
     /// `profile stop` waits for the file to be whole.
@@ -104,6 +108,14 @@ pub(super) struct Profile {
     env_tried: bool,
     /// What the running capture asks the renderer to time.
     gpu: GpuSwitch,
+    /// The guests' requests to this server and the capture they ask of it (perf_remote.rs).
+    pub(super) served: Served,
+    /// This client's capture on the server it is connected to.
+    pub(super) server_link: Link,
+    /// `profile` waits for the server's answer to its start, or for its file after a stop.
+    pub(super) server_reply: Option<Sender<String>>,
+    /// Whether the server's capture belongs to a window capture, whose stop ends it.
+    pub(super) server_joined: bool,
 }
 
 impl Profile {
@@ -122,6 +134,10 @@ impl Profile {
             hardware_warmed: false,
             env_tried: false,
             gpu: GpuSwitch::Off,
+            served: Served::default(),
+            server_link: Link::default(),
+            server_reply: None,
+            server_joined: false,
         }
     }
 
@@ -157,6 +173,7 @@ impl Profile {
             }
             _ if self.perf.capturing() => Ok(StopRoute::Window),
             _ if self.server_only_live() => Ok(StopRoute::ServerOnly),
+            _ if self.server_link.running() => Ok(StopRoute::Remote),
             _ => Err(NO_CAPTURE),
         }
     }
@@ -168,18 +185,24 @@ impl Profile {
             .server_only
             .as_ref()
             .filter(|s| client.is_none() && s.live.active());
+        let remote = self
+            .server_link
+            .status(Instant::now())
+            .filter(|_| client.is_none() && alone.is_none());
         Status {
             ok: true,
-            capturing: client.is_some() || alone.is_some(),
+            capturing: client.is_some() || alone.is_some() || remote.is_some(),
             sides: self.sides(),
             path: client
                 .as_ref()
                 .map(|s| shown(&s.path))
-                .or_else(|| alone.map(|s| shown(&s.path))),
+                .or_else(|| alone.map(|s| shown(&s.path)))
+                .or_else(|| remote.map(|(path, _)| path.to_owned())),
             elapsed_s: client
                 .as_ref()
                 .map(|s| s.elapsed_s)
-                .or_else(|| alone.map(|s| s.since.elapsed().as_secs_f64())),
+                .or_else(|| alone.map(|s| s.since.elapsed().as_secs_f64()))
+                .or_else(|| remote.map(|(_, elapsed)| elapsed)),
             bytes: client
                 .as_ref()
                 .map(|s| s.bytes)
@@ -207,7 +230,7 @@ impl Profile {
 
     /// The sides a capture is writing, server first.
     fn sides(&self) -> Vec<ProfileSide> {
-        let server = self.server_live() || self.server_only_live();
+        let server = self.server_live() || self.server_only_live() || self.server_link.running();
         [
             server.then_some(ProfileSide::Server),
             self.perf.capturing().then_some(ProfileSide::Client),
@@ -218,7 +241,7 @@ impl Profile {
     }
 }
 
-fn reports_dir() -> PathBuf {
+pub(super) fn reports_dir() -> PathBuf {
     client_perf::reports_dir(
         std::env::var_os(ENV_DIR).as_deref(),
         &horizon_client::logging::game_home(),
@@ -263,6 +286,9 @@ impl Game<'_> {
         let parsed = request::parse(words)?;
         match parsed.request {
             Request::Start(options) => {
+                if parsed.side == Some(ProfileSide::Server) && self.integrated.is_none() {
+                    return self.start_remote_only(&options, reply);
+                }
                 let started = self.start_profile(parsed.side, &options, Trigger::Ctl)?;
                 json_of(&started)
             }
@@ -273,6 +299,7 @@ impl Game<'_> {
                         self.stop_profile_with(StopReason::Normal, bench.into_iter().collect())?;
                         self.profile.reply = Some(reply.clone());
                     }
+                    StopRoute::Remote => self.stop_remote_only(reply)?,
                     StopRoute::ServerOnly => {
                         let integrated = self.integrated.as_ref().ok_or(NO_CAPTURE)?;
                         let reply = reply.clone();
@@ -343,6 +370,7 @@ impl Game<'_> {
         self.profile.perf.capturing()
             || self.profile.perf.saving()
             || self.profile.server_only_live()
+            || !self.profile.server_link.is_idle()
     }
 
     fn start_profile(
@@ -384,6 +412,9 @@ impl Game<'_> {
             ServerLink::Off
         };
         self.join_server_capture();
+        if side.is_none() {
+            self.join_remote_server(options);
+        }
         log::info!("Horizon: profiling the client to {}", path.display());
         Ok(Started {
             ok: true,
@@ -471,6 +502,7 @@ impl Game<'_> {
         if server && let Some(integrated) = &self.integrated {
             integrated.post(move |g| g.stop_server_capture(reason, None));
         }
+        self.stop_joined_server();
         self.profile.link = ServerLink::Off;
         self.profile.gpu = GpuSwitch::Off;
         Ok(())
@@ -572,6 +604,7 @@ impl Game<'_> {
 
     /// Once per loop turn: the captures whose files are whole, told to whoever waits for them.
     pub(super) fn poll_profile(&mut self) {
+        self.poll_server_link();
         for saved in self.profile.perf.take_saved(false) {
             self.profile_saved(saved);
         }
@@ -592,6 +625,7 @@ impl Game<'_> {
     }
 
     fn profile_saved(&mut self, saved: std::io::Result<horizon_client::server_perf::Saved>) {
+        self.stop_joined_server();
         spans::record_here(self.profile.spans_were_on);
         self.profile.trace_file = None;
         let reply = self.profile.reply.take();

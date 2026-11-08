@@ -535,10 +535,25 @@ horizon-ctl profile mark NAME
   instant, so both sides' `t` count from the same zero; it writes `Start` (kind `INTEGRATED`), its ticks, spans,
   mob costs and `tick` thread samples, and its own `Stop`, and the window finishes the file once both are in. A bare
   `profile start` before a world opens, `HORIZON_PROFILE` and F3+O are joined by the server when it comes up (once per
-  capture). `profile server start` makes a file of the server thread alone; with no single-player world it is refused
-  until R1a gives it a remote server to reach. `stop` ends the capture with every side it holds (a `--side` it does not hold is an error), `status` lists
+  capture). `profile server start` makes a file of the server thread alone (on a server joined over the network, see R1a).
+  `stop` ends the capture with every side it holds (a `--side` it does not hold is an error), `status` lists
   the sides that run, and `mark` goes to every running side or the one `--side` names. Replies list `sides`, server first; on `start` they are the sides asked for, and `status` and `stop` confirm which wrote. A `mark` reply's `t` is the window's game clock for every side, while the file stores it from the capture's start. With `--threads all`
   the window's sampler claims every opted-in thread, the server thread included, so the server side has no samples of its own.
+- **As built (R1a):** `crates/horizon-client/src/perf_net.rs` is the wire (a `Request` of `Start` or `Stop`, a `Reply` of
+  `Started`, `Finished` or `Refused`, and the client's `Link` state) and `game/perf_remote.rs` the server's half. A request
+  is checked where it arrives: the guest must be a Horizon client (brand `horizon`) and at operator level 4, else
+  `Denied`; the guest's switches are held to `profile start`'s limits on decode and never carry a file or a GPU switch. A
+  `Start` is carried out between two ticks by the server thread (`Target::Own`, trigger `REMOTE`) or by a dedicated
+  server's tick loop (`serve_perf_requests`, which maps it to the `horizon-report` capture); a second one while any
+  capture runs, the console's or `profile server` included, gets `AlreadyRunning`. Only the guest that started a
+  capture may stop it (`NotRunning` otherwise). The server answers `Started` with its `reports/` file and `Finished` once
+  the file is whole, whichever way the capture ended (stop, window or shutdown), and logs `Horizon: NAME started a server
+  profile (...)` and `Horizon: NAME's server profile saved to PATH`. The client treats a server as Horizon when its brand
+  is `horizon`: `horizon:block_registry` is only sent when content mods are loaded, so it would miss ordinary Horizon
+  servers. `profile server start|stop` on such a server waits for those answers (10 s for the first); a bare `profile start`
+  also sends `Start` and a refusal becomes the warning `SERVER_NOT_HORIZON`, `SERVER_DENIED` or `SERVER_ALREADY_RUNNING` in
+  the client's file, and `Started` leaves the mark `server_started`. The server's bytes do not reach the client yet (R1b).
+  For tests only, `horizon-ctl lan op NAME LEVEL` sets a connected guest's operator level on a LAN host.
 - **As built (C1):** `profile client` captures the window only. A client capture without `--seconds` stops at the 600 s window cap with
   `STOP_REASON_WINDOW_CAP`, so `HORIZON_PROFILE` records the first 10 minutes of a run. The client's slow ring takes
   frames over `HORIZON_SPIKES`, else 50 ms. The health gauges (process and machine probes) are read on a thread of their

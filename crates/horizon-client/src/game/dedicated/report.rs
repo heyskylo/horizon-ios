@@ -1,7 +1,14 @@
 //! `horizon-report [SECONDS]` and `horizon-trace [SECONDS]` on the dedicated server's console, and `HORIZON_TRACE`: record a window of ticks into `reports/profile-<time>Z.hzperf`.
-use super::super::{Dim, Game, tick_profile};
+use super::super::{
+    Dim, Game,
+    perf_remote::{Asked, Done},
+    profile_capture::shown,
+    tick_profile,
+};
+use horizon_client::client_perf::request::Threads;
+use horizon_client::perf_net::Refusal;
 use horizon_client::server_perf::{
-    self, CaptureEnd, CaptureOptions, ServerPerf, WorldCounts,
+    self, CaptureEnd, CaptureOptions, SamplerOptions, ServerPerf, WorldCounts,
     traffic::Wire,
     world::{LevelCounts, MobCost, MobCosts, WorkerJobs},
 };
@@ -40,6 +47,7 @@ pub(super) struct Plan {
     /// Where the capture is written when it is not `reports/`.
     pub file: Option<PathBuf>,
     pub trigger: Trigger,
+    pub sampler: SamplerOptions,
 }
 
 /// The longest `horizon-trace` records when no seconds are given.
@@ -102,18 +110,26 @@ pub(super) fn parse(words: &[&str]) -> Result<Command, ()> {
 }
 
 /// Logs the captures whose files are done; with `wait`, every one still being finished.
-pub(in crate::game) fn log_saved(perf: &mut ServerPerf, wait: bool) {
-    for saved in perf.take_saved(wait) {
-        match saved {
+pub(in crate::game) fn log_saved(perf: &mut ServerPerf, wait: bool) -> Vec<Done> {
+    perf.take_saved(wait)
+        .into_iter()
+        .map(|saved| match saved {
             Ok(saved) => {
                 for path in &saved.deleted {
                     log::info!("Horizon: removed the oldest capture {}", path.display());
                 }
                 log::info!("Horizon: {}", files::saved_line(&saved.path));
+                Done::Saved {
+                    path: shown(&saved.path),
+                    removed: saved.deleted.iter().map(|p| shown(p)).collect(),
+                }
             }
-            Err(e) => log::error!("Horizon: could not write the performance capture: {e}"),
-        }
-    }
+            Err(e) => {
+                log::error!("Horizon: could not write the performance capture: {e}");
+                Done::Failed
+            }
+        })
+        .collect()
 }
 
 /// Registry ids for the loose entities a level counts apart from its mobs: items, orbs, projectiles, minecarts, boats.
@@ -205,13 +221,58 @@ fn span_cost_nanos() -> f64 {
 
 impl Game<'_> {
     /// Starts a report: the recording the game side needs and the capture beside it.
-    pub(super) fn record_report(&self, state: &mut super::ServerState, plan: &Plan) {
+    pub(super) fn record_report(
+        &self,
+        state: &mut super::ServerState,
+        plan: &Plan,
+    ) -> Option<PathBuf> {
         state.report = Some(Recording::start(plan.seconds));
-        self.start_perf_capture(state, plan);
+        self.start_perf_capture(state, plan)
+    }
+
+    /// Begins and ends the captures guests asked for, between two ticks.
+    pub(super) fn serve_perf_requests(&mut self, state: &mut super::ServerState) {
+        for asked in self.take_perf_asked() {
+            match asked {
+                Asked::Start { conn, name, wanted } => {
+                    if state.report.is_some() || state.perf.capturing() || state.perf.finishing() {
+                        self.perf_refused(conn, Refusal::AlreadyRunning);
+                        continue;
+                    }
+                    let options = wanted.options();
+                    let plan = Plan {
+                        seconds: options.seconds.unwrap_or(MAX_SECONDS),
+                        samples: options.samples,
+                        timeline: options.timeline,
+                        file: None,
+                        trigger: Trigger::Remote,
+                        sampler: SamplerOptions {
+                            hz: options.hz,
+                            over_ms: options.over_ms,
+                            wall: options.wall,
+                            all_threads: options.threads == Threads::All,
+                        },
+                    };
+                    match self.record_report(state, &plan) {
+                        Some(path) => self.perf_started(conn, name, &wanted, &shown(&path)),
+                        None => {
+                            state.report = None;
+                            log::error!("Horizon: {name}'s server profile did not start");
+                            self.perf_refused(conn, Refusal::Failed);
+                        }
+                    }
+                }
+                Asked::Stop => self.finish_perf_capture(state, StopReason::Normal),
+            }
+        }
     }
 
     /// Opens the `.hzperf` that records beside a report, and logs where it goes.
-    pub(super) fn start_perf_capture(&self, state: &mut super::ServerState, plan: &Plan) {
+    pub(super) fn start_perf_capture(
+        &self,
+        state: &mut super::ServerState,
+        plan: &Plan,
+    ) -> Option<PathBuf> {
         let options = self.capture_options(
             plan,
             (state.view, state.max_players, state.compression),
@@ -219,8 +280,14 @@ impl Game<'_> {
         );
         let t = state.perf_epoch.elapsed().as_secs_f64();
         match state.perf.start_capture(t, Path::new("reports"), options) {
-            Ok(path) => log::info!("Horizon: capturing to {}", path.display()),
-            Err(e) => log::error!("Horizon: could not start the performance capture: {e}"),
+            Ok(path) => {
+                log::info!("Horizon: capturing to {}", path.display());
+                Some(path)
+            }
+            Err(e) => {
+                log::error!("Horizon: could not start the performance capture: {e}");
+                None
+            }
         }
     }
 
@@ -258,7 +325,7 @@ impl Game<'_> {
             trigger: plan.trigger,
             start,
             samples: plan.samples,
-            sampler: Default::default(),
+            sampler: plan.sampler,
             block_names: self.block_names(),
             levels: self.level_counts(),
             wire: self.wire_bytes(),
@@ -558,6 +625,7 @@ mod tests {
             timeline: false,
             file: None,
             trigger: Trigger::Console,
+            sampler: SamplerOptions::default(),
         };
         let options = game.capture_options(&plan, ((10, 8), 20, 256), horizon);
         perf.start_capture(0.0, &dir, options).unwrap();

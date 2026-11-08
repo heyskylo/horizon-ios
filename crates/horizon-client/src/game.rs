@@ -320,6 +320,8 @@ mod paintings;
 mod pandas;
 mod particle_culling;
 mod passengers;
+mod perf_link;
+mod perf_remote;
 mod persist;
 mod perspective;
 mod pick_entity;
