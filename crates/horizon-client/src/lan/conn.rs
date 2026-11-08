@@ -670,15 +670,18 @@ fn serve_connection(
 }
 
 /// The older release a client's handshake states, when this server lets it join
-/// (`horizon-accept-older-clients`): 26.2 down to 1.20.5, the releases the adapter
-/// has tables for (`ServerVersion::from_protocol`).
+/// (`horizon-accept-older-clients`): 26.2 down to 1.20.5. The client-direction adapter
+/// also knows older releases whose server-direction layouts are not implemented.
 fn older_client(
     shared: &Shared,
     protocol: i32,
 ) -> Option<horizon_protocol::adapter::ServerVersion> {
     use horizon_protocol::adapter::ServerVersion;
     let version = ServerVersion::from_protocol(protocol)?;
-    (shared.config.accept_older_clients && version.at_most(ServerVersion::V26_2)).then_some(version)
+    (shared.config.accept_older_clients
+        && version.at_most(ServerVersion::V26_2)
+        && !version.at_most(ServerVersion::V1_20_3))
+    .then_some(version)
 }
 
 fn serve_status(c: &mut Connection, shared: &Shared, protocol: i32) -> Result<(), String> {
@@ -1924,6 +1927,55 @@ impl KeepAliveWatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Having tables for Horizon to join an old server does not make the reverse direction supported.
+    #[test]
+    fn nbt_item_clients_are_refused_even_when_older_clients_are_enabled() {
+        let config = crate::lan::NetConfig {
+            announce: false,
+            listen: false,
+            accept_older_clients: true,
+            ..crate::lan::NetConfig::loopback(0, "Older clients".into(), 8)
+        };
+        let lan =
+            crate::lan::Lan::start_with(Arc::new(crate::lan::data::SyncData::empty()), config)
+                .unwrap();
+        for protocol in [764, 765] {
+            let mut c = Connection::local(lan.connect_local().unwrap());
+            c.send(
+                &handshake::Serverbound::Intention(handshake::Intention {
+                    protocol,
+                    host: "127.0.0.1".into(),
+                    port: 0,
+                    intent: handshake::LOGIN,
+                })
+                .encode(),
+            )
+            .unwrap();
+            // If this regresses to accepting an unsupported version, its hello produces a login
+            // response instead of leaving the test waiting for one the server has not sent yet.
+            let _ = c.send(
+                &login::Serverbound::Hello(login::ServerHello {
+                    name: "Old".into(),
+                    uuid: offline_uuid("Old"),
+                })
+                .encode(),
+            );
+            let (id, payload) = c.recv().unwrap();
+            let login::Clientbound::Disconnect(reason) =
+                login::Clientbound::decode(id, &payload).unwrap()
+            else {
+                panic!("protocol {protocol} was allowed into the reverse adapter")
+            };
+            assert!(
+                reason
+                    .reason_json
+                    .contains("multiplayer.disconnect.incompatible"),
+                "protocol {protocol}: {}",
+                reason.reason_json
+            );
+        }
+    }
 
     /// Logs in through `c` and answers the `LoginFinished` profile.
     fn login_profile(mut c: Connection, name: &str) -> login::GameProfile {
