@@ -252,6 +252,34 @@ Use `--server-protocol 764` for 1.20.2, `765` for 1.20.3/1.20.4, `766` for 1.20.
 `767` for 1.21/1.21.1, `768` for 1.21.2/1.21.3, `769` for 1.21.4, `770` for 1.21.5, or `771` for 1.21.6;
 1.21.7 and 1.21.8 both use `772`.
 
+The registry mappings and named pinned IDs are generated from official vanilla
+reports. `tools/regenerate_registry_id_adapters.py` records each release's exact
+rename, reassignment, state-alias, inheritance and static-name options. Each
+release listed in `RELEASES` needs `VERSION/jars/client.jar` and its matching
+official `VERSION/datagen/reports/{registries,blocks}.json`. For unobfuscated
+26.1+ releases, `tools/version_port.py prepare VERSION --download` supplies these.
+For older releases, use owned official client jars and reports exported by the
+matching vanilla server's data generator:
+
+```sh
+java -DbundlerMainClass=net.minecraft.data.Main -jar VERSION/jars/server.jar --reports --output VERSION/datagen
+```
+
+With those inputs prepared, run:
+
+```sh
+python3 tools/regenerate_registry_id_adapters.py --versions /path/to/prepared/versions
+python3 tools/regenerate_registry_id_adapters.py --versions /path/to/prepared/versions --check
+```
+
+The version store defaults to `HORIZON_VERSIONS` (or `~/code/horizon-parity/versions`).
+The pin uses the repository's imported `.local/` jar and reports; `--new DIR`
+selects a separately prepared pin. `--only VERSION...` selects releases while
+still checking pinned constants. `--check` writes no tracked files and fails if
+any output differs; regeneration itself downloads nothing. This checks
+report-derived IDs; gameplay still needs its parity harnesses. When bumping the
+pin, regenerate these files and review the mappings with its reports.
+
 ### Agent control (`horizon-ctl` and MCP)
 
 AI agents and scripts play Horizon through `horizon-ctl`, a command line that
