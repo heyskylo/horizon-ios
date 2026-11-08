@@ -2861,6 +2861,14 @@ impl Lod {
         if self.outstanding_meshes >= self.mesh_workers * 4 {
             return;
         }
+        // As in `request_samples`: the far meshing threads run behind the render thread, so it
+        // never waits for this lock. Busy now, the dirty tiles stay dirty for the next frame.
+        let shared = self.shared.clone();
+        let mut queued = match shared.mesh_jobs.try_lock() {
+            Ok(queued) => queued,
+            Err(std::sync::TryLockError::WouldBlock) => return,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        };
         let keys: Vec<(TileKey, u64)> = self
             .dirty
             .drain()
@@ -2879,7 +2887,6 @@ impl Lod {
             split: self.plan.split.clone(),
         });
         let covered = Arc::new(self.covered.clone());
-        let mut queued = self.shared.mesh_jobs.lock().unwrap();
         let count = keys.len();
         for (key, version) in keys {
             let finer = self.finer_of(key);
@@ -2990,7 +2997,14 @@ impl Lod {
             self.wanted_stale = false;
         }
         let mut issued = 0;
-        let mut jobs = self.shared.jobs.lock().unwrap();
+        // The far sampling threads take this lock too, and they run behind the render thread
+        // (`far_terrain_current`): one preempted while holding it kept a frame waiting for over
+        // 100 ms on a busy machine. Busy now, the requests go out next frame.
+        let mut jobs = match self.shared.jobs.try_lock() {
+            Ok(jobs) => jobs,
+            Err(std::sync::TryLockError::WouldBlock) => return,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        };
         while issued < free {
             let Some(std::cmp::Reverse(wanted)) = self.wanted.pop() else {
                 break;
