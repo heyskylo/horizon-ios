@@ -385,7 +385,8 @@ impl Goal for RunAroundLikeCrazy {
         m.nav_move_to(cx.w, t, 1.2)
     }
     fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
-        !m.extra.tame && !mob_controlled_rider(m) && !m.ai.nav.is_done() && is_vehicle(m)
+        // `canContinueToUse` has no `isMobControlled` check (RunAroundLikeCrazyGoal:47).
+        !m.extra.tame && !m.ai.nav.is_done() && is_vehicle(m)
     }
     fn every_tick(&self) -> bool {
         true
