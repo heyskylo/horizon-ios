@@ -57,6 +57,9 @@ const MAX_SET_MODS: usize = 64;
 /// Native build requests per address per hour, and from everyone.
 const BUILDS_PER_ADDRESS: usize = 12;
 const BUILDS_PER_HOUR: usize = 120;
+/// Status polls per address per hour, and from everyone: each one costs a GitHub API call.
+const POLLS_PER_ADDRESS: usize = 120;
+const POLLS_PER_HOUR: usize = 1200;
 /// How long a dispatched native build is deduplicated.
 const DISPATCH_DEDUP_WINDOW: Duration = Duration::from_secs(15 * 60);
 /// How long the ratings' totals are served from memory (and cached by
@@ -134,6 +137,8 @@ struct Inner {
     build_windows: Windows,
     /// Deduplication window for recently dispatched native builds (key -> dispatched instant).
     dispatched: Mutex<HashMap<String, Instant>>,
+    /// Status polls in the last hour, by client address ("" for everyone's).
+    poll_windows: Windows,
     ratings: Mutex<Ratings>,
     /// `GET /api/mods/ratings`' body, and when it was made.
     totals: Mutex<Option<(Instant, String)>>,
@@ -150,6 +155,7 @@ impl App {
             rated: Mutex::default(),
             build_windows: Mutex::default(),
             dispatched: Mutex::default(),
+            poll_windows: Mutex::default(),
             ratings: Mutex::new(ratings),
             totals: Mutex::default(),
         })))
@@ -1211,12 +1217,20 @@ pub fn publish(
     Ok(url)
 }
 
+/// The client's address as the proxy in front of the service saw it: `X-Real-IP`, else the
+/// last `X-Forwarded-For` hop (the one the proxy appended). The first hop is whatever the
+/// client sent, so a limit keyed on it could be dodged by changing the header.
 fn client_ip(headers: &HeaderMap) -> String {
-    headers
-        .get("x-forwarded-for")
-        .or_else(|| headers.get("x-real-ip"))
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
+    let real = headers.get("x-real-ip").and_then(|v| v.to_str().ok());
+    let forwarded = || {
+        headers
+            .get_all("x-forwarded-for")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .flat_map(|v| v.split(','))
+            .last()
+    };
+    real.or_else(forwarded)
         .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "anonymous".to_string())
@@ -1359,6 +1373,17 @@ async fn request_native_build(
                 )));
             }
         }
+        let revoked = gh.revoked().map_err(github_down)?;
+        if let Some(m) = mods_to_check.iter().find(|m| {
+            revoked.iter().any(|r| {
+                r.id == m.id
+                    && r.sha256
+                        .as_ref()
+                        .is_none_or(|h| h.eq_ignore_ascii_case(&m.sha256))
+            })
+        }) {
+            return Err(bad(format!("{}@{} was taken down", m.id, m.version)));
+        }
         Ok(())
     })
     .await
@@ -1410,8 +1435,20 @@ async fn request_native_build(
 
 async fn get_native_build(
     State(app): State<App>,
+    headers: HeaderMap,
     Query(query): Query<NativeBuildQuery>,
 ) -> Result<Json<serde_json::Value>, Refusal> {
+    if !allow(
+        &app.0.poll_windows,
+        &client_ip(&headers),
+        POLLS_PER_ADDRESS,
+        POLLS_PER_HOUR,
+    ) {
+        return Err(Refusal::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many native build polls this hour: try again later",
+        ));
+    }
     if !is_hex_str(&query.base, 40) {
         return Err(bad(format!(
             "{:?} is not a commit (40 hex digits)",
@@ -1608,6 +1645,16 @@ mod tests {
         let sig = native_build::signature(&key, &req.target);
         assert!(sig.starts_with(&key[..16]));
         assert!(sig.ends_with("-x86_64-unknown-linux-gnu.sig"));
+    }
+
+    #[test]
+    fn a_client_cannot_pick_its_own_rate_limit_address() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "1.2.3.4, 203.0.113.9".parse().unwrap());
+        assert_eq!(client_ip(&headers), "203.0.113.9");
+        headers.insert("x-real-ip", "198.51.100.7".parse().unwrap());
+        assert_eq!(client_ip(&headers), "198.51.100.7");
+        assert_eq!(client_ip(&HeaderMap::new()), "anonymous");
     }
 
     #[test]
