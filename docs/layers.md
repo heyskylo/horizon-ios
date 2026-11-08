@@ -196,7 +196,7 @@ an unrelated edit. Generated files and `third_party/` are not checked.
   Each failure names the section of this page that applies. An `allowed` entry with no dependency left is only a
   note.
 - `python3 tools/check_addresses.py` (#12990) checks the built-in addresses ([below](#built-in-addresses)).
-- The file-size check (next) checks the rule above.
+- `python3 tools/check_file_size.py` (#13015) checks the file-size rule above.
 
 All three run in CI's verify job and in `tools/pr_ready.py`.
 
@@ -290,7 +290,7 @@ mechanical steps (checks, M1–M4) continue meanwhile. M5 and M6 wait for that r
 | 1 | This page, first version | | #12979, merged |
 | 2 | Layer check in CI and pr_ready, with the PR template's checklist | | #12983 |
 | 3 | Address check in CI and pr_ready | | #12990 |
-| 4 | File-size check in CI and pr_ready | | next |
+| 4 | File-size check in CI and pr_ready | | #13015 |
 | M1 | `horizon-addresses`, the address list file; the Horizon crates read it | 7 address entries | #12993 |
 | M2 | `horizon-system` (engine): the hardware probes leave `horizon-telemetry`, and the crash report and GPU info read them there | prepares M3 | |
 | M3 | The renderer's telemetry and benchmark modules leave `horizon-client-render` for a Horizon crate, through a stats and crash-report extension point | render → telemetry, bench | |
