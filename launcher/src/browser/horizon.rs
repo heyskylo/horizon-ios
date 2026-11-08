@@ -841,6 +841,64 @@ pub fn works_on<'a>(
     }
 }
 
+/// Where a native mod turned on in an instance stands, for its row on the instance's Mods tab.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Standing {
+    /// In the instance's native build, on the Horizon the instance plays.
+    Built(String),
+    /// In the build, which moved to the commit mods made for another one needed.
+    Moved(String),
+    /// Left out of the build, and why.
+    LeftOut(String),
+    /// No build yet: whether it should build there, and how ([`works_on`]).
+    Expected(bool, String),
+}
+
+/// [`Standing`] of the native mods `ids` (manifest ids) in `instance`, by id: from its native
+/// build's record when it plays one, else from the registry's versions.
+pub fn standings(
+    instance: &crate::instances::Instance,
+    ids: &[String],
+) -> HashMap<String, Standing> {
+    let plays = instance.resolve_version(None).ok();
+    if let Some(about) = plays.as_deref().and_then(crate::native_mods::about) {
+        let on = crate::native_status::horizon_label(&about.base);
+        let moved =
+            !about.pinned_by.is_empty() && about.base_horizon.as_ref() != Some(&about.horizon);
+        return ids
+            .iter()
+            .map(|id| {
+                let standing = match about.left_out.iter().find(|l| &l.id == id) {
+                    Some(left) => Standing::LeftOut(left.label()),
+                    None if moved => Standing::Moved(crate::i18n::trf(
+                        "In the last build, on Horizon {commit} for {mods}, not on {horizon}",
+                        &[
+                            ("commit", &about.horizon[..about.horizon.len().min(7)]),
+                            ("mods", &about.pinned_by.join(", ")),
+                            ("horizon", &on),
+                        ],
+                    )),
+                    None => Standing::Built(crate::i18n::trf(
+                        "In the last build, on {horizon}",
+                        &[("horizon", &on)],
+                    )),
+                };
+                (id.clone(), standing)
+            })
+            .collect();
+    }
+    let Ok(index) = index() else {
+        return HashMap::new();
+    };
+    let works = works_on(&index, instance);
+    ids.iter()
+        .filter_map(|id| {
+            let (fits, line) = works(index.project(id)?)?;
+            Some((id.clone(), Standing::Expected(fits, line)))
+        })
+        .collect()
+}
+
 /// [`works_on`] for the projects `ids` in `instance`, by id.
 pub fn works_lines(
     ids: &[String],

@@ -1181,7 +1181,6 @@
   "Builds on the Horizon you play": "Builds on the Horizon you play",
   "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first",
   "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile",
-  "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}",
   "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.",
   "Tags": "Тегтар",
   "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on.": "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on.",
@@ -1262,5 +1261,9 @@
   "{mod}: version {version} didn't build, trying {older}": "{mod}: {version} версияһы йыйылманы, {older} һынала",
   "Use recommended (kept at {version})": "Тәҡдим ителгәнде ҡулланырға ({version} ҡалдырылған)",
   "Only what works on {instance}": "{instance} өсөн эшләгәндәр генә",
-  "{count} versions that don't work on {instance} are hidden": "{instance} өсөн эшләмәгән {count} версия йәшерелгән"
+  "{count} versions that don't work on {instance} are hidden": "{instance} өсөн эшләмәгән {count} версия йәшерелгән",
+  "Made for Horizon {pin}: the launcher builds it on {yours}, the one you play, and on {pin} only if it doesn't compile there": "Horizon {pin} өсөн эшләнгән: лаунчер уны һин уйнаған {yours} өҫтөндә йыя, ә {pin} өҫтөндә унда компиляцияланмаһа ғына",
+  "{mods} didn't build on the Horizon you play: building on the one they were made for": "{mods} һин уйнаған Horizon-да йыйылманы: улар эшләнгән версияла йыйыла",
+  "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Һуңғы йыйылышта, {mods} өсөн Horizon {commit}, {horizon} түгел",
+  "In the last build, on {horizon}": "Һуңғы йыйылышта, {horizon}"
 }
