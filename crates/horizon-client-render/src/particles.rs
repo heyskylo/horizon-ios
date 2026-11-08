@@ -5154,6 +5154,8 @@ const CREEPER: [[f64; 2]; 12] = [
 ];
 
 #[cfg(test)]
+mod tick_bench;
+#[cfg(test)]
 mod tests {
     use super::*;
 
