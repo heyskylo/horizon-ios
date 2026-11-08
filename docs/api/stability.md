@@ -18,7 +18,7 @@ promise, how something is deprecated and removed, and the tests that keep old mo
 | --- | --- | --- |
 | Content mods | the manifest's `api` line | `api = "0.2"` in `horizon-mod.toml` |
 | Native mods | the Horizon and horizon-mixins revisions the bundle pins | `horizon_revision` in `horizon-mixin.toml` |
-| Agent control | the control protocol's version (`hello` replies it; MCP `serverInfo` carries the release) | `horizon-ctl --api 0.1` (planned) |
+| Agent control | the control protocol's version (`hello` replies it; MCP `serverInfo` carries the release) | `horizon-ctl --api 0.1` |
 | Server control API | the path (`/api/v1/`) | the path |
 | `server.toml` | the file's keys; a key is never renamed in place | nothing: old files keep loading |
 | Launcher commands | the command names and their `--json` output | nothing |
@@ -90,7 +90,8 @@ Deprecations and breaking changes are in bold. The release notes of the game rel
 | Content mods (`registries`: data-driven blocks, items, mob effects, thrown entity types and menu types) | preview | manifest `api = "0.2"` |
 | Native mods (horizon-mixins bundles, [native-mods.md](../native-mods.md)) | experimental | the pinned revisions |
 | `cargo horizon-mod` (`new`, `build`, `run`, `check`) | preview | none yet (unversioned) |
-| Shader API | not started | |
+| Shader API | experimental | 0.1 |
+| Shader API 0.2 (linear light, [hdr-linear-light.md](../design/hdr-linear-light.md)) | experimental, behind a switch: `horizon-shader` checks it, the game draws it only with `HORIZON_HDR_FRAME=float` set, and the registry doesn't list it | 0.2 |
 | `horizon-ctl` commands and MCP tools | preview | none yet (unversioned) |
 | The game's own control-socket commands outside `horizon-ctl`'s table (test hooks) | experimental | |
 | `horizon-server` commands, `server.toml` | stable | `horizon-server --version` |

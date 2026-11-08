@@ -66,6 +66,19 @@ impl Default for WorldOptions {
     }
 }
 impl WorldOptions {
+    /// A fresh Create New World in the game folder (the working directory): the defaults, with
+    /// the packs this game folder gives every new world.
+    pub(super) fn for_new_world() -> Self {
+        let seeded = std::env::current_dir()
+            .ok()
+            .and_then(|dir| crate::datapack::seed_create_world(&dir));
+        let mut options = Self::default();
+        if let Some((dir, ids)) = seeded {
+            options.pack_dir = Some(dir);
+            options.data_packs.extend(ids);
+        }
+        options
+    }
     /// Re-Create: the saved world's choices.
     pub(super) fn of_world(
         level: &crate::save::Level,
@@ -367,6 +380,7 @@ pub(super) fn buttons(w: f32, h: f32, creative: bool, o: &WorldOptions) -> Vec<B
         id,
         icon: None,
         trailing: None,
+        action: None,
     };
     let (gx, gy) = grid(w, h, o.tab);
     let mut buttons = match o.tab {
@@ -458,14 +472,17 @@ pub(super) fn buttons(w: f32, h: f32, creative: bool, o: &WorldOptions) -> Vec<B
         true,
         21,
     ));
-    buttons.push(b(
-        x + 158.0,
-        h - 27.0,
-        150.0,
-        crate::lang::get_or("gui.cancel", "Cancel"),
-        true,
-        22,
-    ));
+    buttons.push(
+        b(
+            x + 158.0,
+            h - 27.0,
+            150.0,
+            crate::lang::get_or("gui.cancel", "Cancel"),
+            true,
+            22,
+        )
+        .does(crate::widgets::Action::Cancel),
+    );
     buttons
 }
 
@@ -618,6 +635,7 @@ impl Title {
             let selected = o.tab == i;
             let label = Text::translate(key, &[]);
             crate::widgets::record(&label.plain(), [x, 0.0, tw, TAB_BAR], true);
+            crate::widgets::target_as([x, 0.0, tw, TAB_BAR], crate::widgets::Kind::Tab(selected));
             let sprite = match (selected, ui::hovered(cursor, x, 0.0, tw, TAB_BAR)) {
                 (true, true) => "gui/sprites/widget/tab_selected_highlighted",
                 (true, false) => "gui/sprites/widget/tab_selected",

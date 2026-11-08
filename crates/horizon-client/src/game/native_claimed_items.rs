@@ -115,7 +115,6 @@ impl ModInput {
     }
 }
 
-#[allow(dead_code)]
 impl Game<'_> {
     /// The stack in inventory slot `slot` as a mod's events carry it.
     fn mod_held(&self, slot: usize) -> Option<NativeHeldItem> {

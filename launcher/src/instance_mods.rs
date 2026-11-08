@@ -26,15 +26,17 @@ const OFF: &str = ".disabled";
 #[derive(Clone)]
 pub(super) struct ModRow {
     /// Its file in the instance, as it is when on (`mods/lumen-0.6.2.jar`).
-    file: String,
-    name: String,
-    version: String,
-    on: bool,
+    pub(super) file: String,
+    pub(super) name: String,
+    pub(super) version: String,
+    pub(super) on: bool,
     /// What the browser knows of it; None: a file put in by hand.
-    entry: Option<installed::Entry>,
+    pub(super) entry: Option<installed::Entry>,
     /// The icon its jar names, scaled to the row (`images::ROW`) and decoded once by the UI.
-    icon: Option<Arc<gpui::Image>>,
-    native: Option<native_status::Installed>,
+    pub(super) icon: Option<Arc<gpui::Image>>,
+    pub(super) native: Option<native_status::Installed>,
+    /// A native mod turned on: where it stands in the instance's build ([`horizon::standings`]).
+    pub(super) standing: Option<horizon::Standing>,
 }
 
 /// Modrinth projects' icon URLs by project id, kept on disk beside the image cache so the icons
@@ -53,15 +55,15 @@ fn project_icons_file() -> PathBuf {
 #[derive(Default)]
 pub(super) struct InstanceMods {
     home: Option<PathBuf>,
-    fresh: bool,
+    pub(super) fresh: bool,
     reading: bool,
-    list: Vec<ModRow>,
+    pub(super) list: Vec<ModRow>,
     /// The browser was installing at the last draw: its end changes the list.
     was_busy: bool,
     /// Only the rows near the view are built (a modpack has hundreds), measured again when the
     /// shown list changes (its length and the filter).
-    cull: cull::Cull,
-    shown: (usize, String),
+    pub(super) cull: cull::Cull,
+    pub(super) shown: (usize, String),
     fingerprint: String,
 }
 
@@ -132,6 +134,7 @@ fn read(home: &Path, java_instance: bool) -> Vec<ModRow> {
                         entry,
                         icon,
                         native: None,
+                        standing: None,
                     }
                 })
             })
@@ -147,6 +150,7 @@ fn read(home: &Path, java_instance: bool) -> Vec<ModRow> {
                 entry: Some(e),
                 icon: None,
                 native: None,
+                standing: None,
             })
             .collect()
     };
@@ -162,8 +166,26 @@ fn read(home: &Path, java_instance: bool) -> Vec<ModRow> {
                     entry: None,
                     icon: None,
                     native: Some(native),
+                    standing: None,
                 }),
         );
+        let native_id = |r: &ModRow| match (&r.native, &r.entry) {
+            (Some(native), _) => Some(native.id.clone()),
+            (None, Some(e)) if native_status::is_native_file(&e.file) => {
+                horizon::mod_id(e).map(str::to_owned)
+            }
+            _ => None,
+        };
+        let ids: Vec<String> = rows.iter().filter(|r| r.on).filter_map(native_id).collect();
+        let instance = horizon_launcher::instances::list()
+            .into_iter()
+            .find(|i| i.home == home);
+        if let (false, Some(instance)) = (ids.is_empty(), instance) {
+            let mut standings = horizon::standings(&instance, &ids);
+            for row in rows.iter_mut().filter(|r| r.on) {
+                row.standing = native_id(row).and_then(|id| standings.remove(&id));
+            }
+        }
     }
     rows.sort_by_key(|r| r.name.to_lowercase());
     rows
@@ -319,7 +341,7 @@ impl Launcher {
         m.fresh.then_some(m.list.len())
     }
 
-    fn switch_mod(&mut self, row: &ModRow) {
+    pub(super) fn switch_mod(&mut self, row: &ModRow) {
         let home = self.instance_mods.home.clone().unwrap_or_default();
         let java_instance = self.selected_instance().is_some_and(|i| i.java.is_some());
         match &row.entry {

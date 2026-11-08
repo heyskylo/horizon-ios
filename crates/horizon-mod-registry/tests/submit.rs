@@ -69,33 +69,26 @@ async fn mock_github() -> (String, Shared) {
             }),
         )
         .route(
-            "/repos/o/r/contents/mods/{file}",
+            "/repos/o/r/contents/{*path}",
             get(
-                |State(s): State<Shared>, UrlPath(file): UrlPath<String>| async move {
+                |State(s): State<Shared>, UrlPath(path): UrlPath<String>| async move {
                     let s = s.lock().unwrap();
-                    match s.main.get(&format!("mods/{file}")) {
+                    match s.main.get(&path) {
                         Some(text) => Ok(Json(json!({"content": STANDARD.encode(text), "sha": "blob1"}))),
                         None => Err(StatusCode::NOT_FOUND),
                     }
                 },
             )
             .put(
-                |State(s): State<Shared>, UrlPath(file): UrlPath<String>, Json(b): Json<Value>| async move {
-                    let text = String::from_utf8(STANDARD.decode(b["content"].as_str().unwrap()).unwrap()).unwrap();
-                    let key = (b["branch"].as_str().unwrap().to_owned(), format!("mods/{file}"));
+                |State(s): State<Shared>, UrlPath(path): UrlPath<String>, Json(b): Json<Value>| async move {
+                    let bytes = STANDARD.decode(b["content"].as_str().unwrap()).unwrap();
+                    let text = String::from_utf8_lossy(&bytes).into_owned();
+                    let key = (b["branch"].as_str().unwrap().to_owned(), path);
                     let value = (text, b["message"].as_str().unwrap().to_owned(), b["sha"].as_str().map(str::to_owned));
                     s.lock().unwrap().commits.insert(key, value);
                     Json(json!({}))
                 },
             ),
-        )
-        .route(
-            "/repos/alice/coords",
-            get(|| async { Json(json!({"private": false, "owner": {"login": "alice"}})) }),
-        )
-        .route(
-            "/repos/alice/secret",
-            get(|| async { Json(json!({"private": true, "owner": {"login": "alice"}})) }),
         )
         .route(
             "/repos/o/r/releases/tags/staging",
@@ -205,7 +198,22 @@ fn fixtures() -> PathBuf {
 struct Client {
     app: Router,
     cookies: HashMap<String, String>,
+    /// Image parts sent with every submission: (part, file name, bytes). A new project's icon
+    /// by default.
+    images: Vec<(&'static str, String, Vec<u8>)>,
 }
+
+/// The header of a PNG of `w`×`h` pixels: what the service reads of an image.
+fn png(w: u32, h: u32) -> Vec<u8> {
+    let mut b = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+    b.extend(w.to_be_bytes());
+    b.extend(h.to_be_bytes());
+    b.extend([8, 6, 0, 0, 0]);
+    b
+}
+
+const DESCRIPTION: &str =
+    "Shows your coordinates, facing and the time of day in a corner of the screen.";
 
 impl Client {
     async fn send(&mut self, request: Request<Body>) -> (StatusCode, Value, Option<String>) {
@@ -307,6 +315,11 @@ impl Client {
             body.extend_from_slice(file);
             body.extend_from_slice(b"\r\n");
         }
+        for (part, name, bytes) in &self.images {
+            body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{part}\"; filename=\"{name}\"\r\nContent-Type: application/octet-stream\r\n\r\n").as_bytes());
+            body.extend_from_slice(bytes);
+            body.extend_from_slice(b"\r\n");
+        }
         body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
         let request = Request::post("/api/mods/submit")
             .header(header::COOKIE, self.cookie_header())
@@ -330,6 +343,8 @@ fn form() -> Value {
         "kind": "mod",
         "name": "Coordinates HUD",
         "summary": "Your coordinates in a corner.",
+        "description": DESCRIPTION,
+        "categories": ["utility"],
         "authors": ["Alice"],
         "license": "MIT",
         "source": "https://github.com/alice/coords",
@@ -380,6 +395,7 @@ async fn setup_keyed(
     let client = Client {
         app: router(App::new(config).unwrap()),
         cookies: HashMap::new(),
+        images: vec![("icon", "icon.png".into(), png(128, 128))],
     };
     (client, mock)
 }
@@ -434,12 +450,31 @@ async fn a_submission_becomes_a_pull_request() {
     assert_eq!(mock.lock().unwrap().assets.len(), 1, "uploaded once");
 }
 
+/// The mock GitHub's account IDs: `alice` is 7, anyone else 8.
+const ALICE_ID: u64 = 7;
+
 /// `mods/coords_hud.toml` on main as `alice` owns it: what the form's page
-/// says, a dummy first version.
+/// says, a dummy first version. Its `owner_ids` is the account the mock
+/// signs in as `alice`.
 fn published(owner: &str, key: bool) -> String {
+    published_with_ids(owner, key, &[ALICE_ID])
+}
+
+/// [`published`] with the owner IDs given (none: an entry from before they were recorded).
+fn published_with_ids(owner: &str, key: bool, ids: &[u64]) -> String {
     let f = form();
+    let ids = match ids {
+        [] => String::new(),
+        ids => format!(
+            "owner_ids = [{}]\n",
+            ids.iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
     let text = format!(
-        "id = \"coords_hud\"\nkind = \"mod\"\nname = \"Coordinates HUD\"\nsummary = \"Your coordinates in a corner.\"\nauthors = [\"Alice\"]\nowners = [\"{owner}\"]\nlicense = \"MIT\"\nsource = \"https://github.com/alice/coords\"\n{}\n[[versions]]\nversion = \"0.0.1\"\npublished = \"2026-01-01\"\ngame = \"26.3\"\nfile = \"coords_hud-0.0.1.hmod\"\nsha256 = \"{}\"\n",
+        "id = \"coords_hud\"\nkind = \"mod\"\nname = \"Coordinates HUD\"\nsummary = \"Your coordinates in a corner.\"\ndescription = \"{DESCRIPTION}\"\ncategories = [\"utility\"]\nauthors = [\"Alice\"]\nowners = [\"{owner}\"]\n{ids}license = \"MIT\"\nsource = \"https://github.com/alice/coords\"\n{}\n[[versions]]\nversion = \"0.0.1\"\npublished = \"2026-01-01\"\ngame = \"26.3\"\nfile = \"coords_hud-0.0.1.hmod\"\nsha256 = \"{}\"\n",
         if key {
             format!("key = {}\n", f["key"])
         } else {
@@ -464,6 +499,8 @@ async fn update(
         .insert("mods/coords_hud.toml".into(), main);
     let file = std::fs::read(fixtures().join("coords_hud-0.1.0.hmod")).unwrap();
     let csrf = client.sign_in().await;
+    // An update uploads no image: an owner's version alone.
+    client.images.clear();
     let mut f = form();
     change(&mut f);
     let (status, json) = client.submit(&csrf, &f, &file).await;
@@ -482,7 +519,7 @@ async fn an_owners_update_is_signed_for_the_repository() {
     let trailer = body.split("<!-- owner-update\n").nth(1).expect(&body);
     let mut mac = Hmac::<sha2::Sha256>::new_from_slice(UPDATE_KEY).unwrap();
     mac.update(
-        format!("owner-update-v1\ncoords_hud\n0.1.0\n{HMOD_SHA}\ncoords_hud-0.1.0.hmod\nalice")
+        format!("owner-update-v2\ncoords_hud\n0.1.0\n{HMOD_SHA}\ncoords_hud-0.1.0.hmod\nalice\n{ALICE_ID}")
             .as_bytes(),
     );
     let hmac: String = mac
@@ -494,7 +531,7 @@ async fn an_owners_update_is_signed_for_the_repository() {
     assert_eq!(
         trailer,
         format!(
-            "id: coords_hud\nversion: 0.1.0\nsha256: {HMOD_SHA}\nfile: coords_hud-0.1.0.hmod\nsubmitter: alice\nhmac: {hmac}\n-->"
+            "format: v2\nid: coords_hud\nversion: 0.1.0\nsha256: {HMOD_SHA}\nfile: coords_hud-0.1.0.hmod\nsubmitter: alice\nsubmitter_id: {ALICE_ID}\nhmac: {hmac}\n-->"
         ),
     );
     assert_eq!(labels, [(1, json!(["owner-update"]))]);
@@ -526,10 +563,10 @@ async fn everything_else_waits_for_a_reviewer() {
     )
     .await;
     unsigned(&body, &labels);
-    // A new icon.
+    // Another category.
     let (body, labels) = update(
         published("alice", true),
-        |f| f["icon"] = json!("https://x.test/i.png"),
+        |f| f["categories"] = json!(["utility", "mobs"]),
         Some(UPDATE_KEY),
     )
     .await;
@@ -541,6 +578,59 @@ async fn everything_else_waits_for_a_reviewer() {
     };
     let (body, _) = update(published("alice", false), unkeyed, Some(UPDATE_KEY)).await;
     assert!(body.contains("<!-- owner-update"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_login_match_alone_waits_for_a_reviewer() {
+    // An entry from before owner IDs were recorded: alice is matched by login, so the
+    // pull request opens, but without the owner-update trailer, and says why.
+    let (body, labels) = update(
+        published_with_ids("alice", true, &[]),
+        |_| {},
+        Some(UPDATE_KEY),
+    )
+    .await;
+    assert!(!body.contains("<!-- owner-update"), "{body}");
+    assert!(labels.is_empty());
+    assert!(body.contains("matched by login only"), "{body}");
+    assert!(
+        body.contains(&format!("owner_ids = [{ALICE_ID}]")),
+        "{body}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reclaimed_login_is_not_the_owner() {
+    // The entry's alice was account 99; the account signing in as alice now is 7: someone who
+    // claimed the login after a rename. Refused, and nothing reaches GitHub.
+    let (mut client, mock) = setup_keyed(|_| {}, Some(UPDATE_KEY)).await;
+    mock.lock().unwrap().main.insert(
+        "mods/coords_hud.toml".into(),
+        published_with_ids("alice", true, &[99]),
+    );
+    let file = std::fs::read(fixtures().join("coords_hud-0.1.0.hmod")).unwrap();
+    let csrf = client.sign_in().await;
+    let (status, json) = client.submit(&csrf, &form(), &file).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{json}");
+    assert!(
+        json["error"].as_str().unwrap().contains("only its owners"),
+        "{json}"
+    );
+    let m = mock.lock().unwrap();
+    assert!(m.pulls.is_empty() && m.assets.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_renamed_owner_keeps_publishing_by_id() {
+    // The entry still lists the old login; the account (ID 7) signs in under its new one.
+    let (body, labels) = update(
+        published_with_ids("alice-old-name", true, &[ALICE_ID]),
+        |_| {},
+        Some(UPDATE_KEY),
+    )
+    .await;
+    assert!(body.contains("<!-- owner-update"), "{body}");
+    assert_eq!(labels, [(1, json!(["owner-update"]))]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -572,6 +662,7 @@ async fn what_the_form_refuses() {
     // A shader pack runs the game's own check: a mod's file isn't one.
     let mut f = form();
     f["kind"] = json!("shader");
+    f["categories"] = json!(["bloom"]);
     let (status, json) = client.submit(&csrf, &f, &file).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
     refused(status, &json, "horizon-shaders.toml: missing");
@@ -613,6 +704,29 @@ async fn what_the_form_refuses() {
 
 /// The origin gate in front of a submission, before the sign-in and the
 /// form: how the answer to a request from `origin`.
+/// The mod's file with a symlink beside its files: refused before any kind's
+/// reader opens it (src/archive.rs).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_zip_with_a_symlink_is_refused() {
+    let (mut client, _mock) = setup().await;
+    let file = std::fs::read(fixtures().join("coords_hud-0.1.0.hmod")).unwrap();
+    let mut zip = zip::ZipWriter::new_append(std::io::Cursor::new(file)).unwrap();
+    zip.add_symlink(
+        "assets/link",
+        "/etc/passwd",
+        zip::write::SimpleFileOptions::default(),
+    )
+    .unwrap();
+    let linked = zip.finish().unwrap().into_inner();
+    let csrf = client.sign_in().await;
+    let (status, json) = client.submit(&csrf, &form(), &linked).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+    assert_eq!(
+        json["error"],
+        "\"assets/link\" is a symlink or special file"
+    );
+}
+
 async fn origin_gate(app: &Router, origin: Option<&str>) -> StatusCode {
     let mut request = Request::post("/api/mods/submit");
     if let Some(origin) = origin {
@@ -743,6 +857,7 @@ async fn ratings() {
     let mut other = Client {
         app: client.app.clone(),
         cookies: HashMap::new(),
+        images: Vec::new(),
     };
     mock.lock().unwrap().login = "carol".into();
     let carol = other.sign_in().await;
@@ -993,50 +1108,25 @@ async fn a_mod_turns_native_once() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_project_is_listed_by_its_repository_and_never_updated_by_the_form() {
+async fn the_registry_follows_no_repository() {
     let (mut client, mock) = setup().await;
     let csrf = client.sign_in().await;
     let listing = json!({
-        "id": "coords_hud", "kind": "native-mod", "repo": "alice/coords", "name": "Coordinates HUD",
+        "id": "other", "kind": "native-mod", "repo": "alice/coords", "name": "Coordinates HUD",
         "summary": "Your coordinates in a corner.", "license": "MIT",
     });
-    let (status, json) = client.submit_with(&csrf, &listing, None).await;
-    assert_eq!(status, StatusCode::OK, "{json}");
-    {
-        let m = mock.lock().unwrap();
-        assert!(m.assets.is_empty(), "no file is uploaded");
-        let (text, _, blob) = &m.commits[&(
-            "list/coords_hud".to_owned(),
-            "mods/coords_hud.toml".to_owned(),
-        )];
-        assert!(blob.is_none());
-        let entry: Entry = toml::from_str(text).unwrap();
-        assert_eq!(entry.repo.as_deref(), Some("alice/coords"));
-        assert_eq!(entry.owners, ["alice"]);
-        assert!(entry.versions.is_empty());
-        let body = m.pulls[0]["body"].as_str().unwrap();
-        assert!(
-            body.contains("the submitter") && !body.contains("owner-update"),
-            "{body}"
-        );
-        assert!(m.labels.is_empty());
-    }
-    // A repository that is not found or private, a missing licence, a file beside a repository.
-    let mut other = listing.clone();
-    other["id"] = json!("other");
-    for (field, value) in [
-        ("repo", json!("alice/secret")),
-        ("repo", json!("alice/nothing")),
-        ("license", json!("")),
-    ] {
-        let mut bad = other.clone();
-        bad[field] = value;
-        let (status, json) = client.submit_with(&csrf, &bad, None).await;
+    for file in [None, Some(&b"x"[..])] {
+        let (status, json) = client.submit_with(&csrf, &listing, file).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert!(
+            json["error"]
+                .as_str()
+                .unwrap()
+                .contains("doesn't follow repositories"),
+            "{json}"
+        );
     }
-    let (status, _) = client.submit_with(&csrf, &other, Some(b"x")).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    // An update of a project listed by its repository: publish a release instead.
+    // An entry from when it did: an update through the form is still refused.
     let main = published("alice", false).replacen(
         "kind = \"mod\"\n",
         "kind = \"mod\"\nrepo = \"alice/coords\"\n",
@@ -1049,8 +1139,189 @@ async fn a_project_is_listed_by_its_repository_and_never_updated_by_the_form() {
     let file = std::fs::read(fixtures().join("coords_hud-0.1.0.hmod")).unwrap();
     let (status, json) = client.submit(&csrf, &form(), &file).await;
     assert_eq!(status, StatusCode::CONFLICT, "{json}");
+    assert!(mock.lock().unwrap().pulls.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_project_has_a_page_and_its_images_go_in_the_registry() {
+    let (mut client, mock) = setup().await;
+    let file = std::fs::read(fixtures().join("coords_hud-0.1.0.hmod")).unwrap();
+    let csrf = client.sign_in().await;
+    // What a new project lacks, each refused before anything reaches GitHub.
+    let refusals = [
+        ("description", json!("Too short.")),
+        ("categories", json!([])),
+        ("categories", json!(["bloom"])),
+        ("tags", json!(["Casino"])),
+        ("icon", json!("https://x.test/i.png")),
+    ];
+    for (field, value) in refusals {
+        let mut f = form();
+        f[field] = value.clone();
+        let (status, json) = client.submit(&csrf, &f, &file).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{field} {value}: {json}");
+    }
     assert!(
-        json["error"].as_str().unwrap().contains("GitHub release"),
+        mock.lock().unwrap().pulls.is_empty(),
+        "nothing reached GitHub"
+    );
+    // Submissions per account per hour are limited: the rest on a fresh service.
+    let (mut client, mock) = setup().await;
+    let csrf = client.sign_in().await;
+    client.images.clear();
+    let (status, json) = client.submit(&csrf, &form(), &file).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        json["error"].as_str().unwrap().contains("upload an icon"),
         "{json}"
     );
+    // A JPEG icon, a screenshot too small.
+    for (part, name, bytes) in [
+        ("icon", "i.png", vec![0xff, 0xd8, 0xff]),
+        ("screenshot", "s.png", png(100, 100)),
+    ] {
+        client.images = vec![
+            ("icon", "icon.png".into(), png(128, 128)),
+            (part, name.into(), bytes),
+        ];
+        let (status, json) = client.submit(&csrf, &form(), &file).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{part}: {json}");
+    }
+    assert!(
+        mock.lock().unwrap().pulls.is_empty(),
+        "nothing reached GitHub"
+    );
+
+    client.images = vec![
+        ("icon", "icon.png".into(), png(128, 128)),
+        ("screenshot", "a.png".into(), png(1280, 720)),
+        ("screenshot", "b.png".into(), png(1920, 1080)),
+    ];
+    let mut f = form();
+    f["tags"] = json!(["hud"]);
+    let (status, json) = client.submit(&csrf, &f, &file).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    let m = mock.lock().unwrap();
+    let branch = "submit/coords_hud-0.1.0".to_owned();
+    let entry: Entry =
+        toml::from_str(&m.commits[&(branch.clone(), "mods/coords_hud.toml".into())].0).unwrap();
+    assert_eq!(entry.icon.as_deref(), Some("icons/coords_hud.png"));
+    assert_eq!(
+        entry.screenshots,
+        [
+            "screenshots/coords_hud/1.png",
+            "screenshots/coords_hud/2.png"
+        ]
+    );
+    assert_eq!(
+        (entry.categories.as_slice(), entry.tags.as_slice()),
+        (&["utility".to_owned()][..], &["hud".to_owned()][..])
+    );
+    for path in [
+        "icons/coords_hud.png",
+        "screenshots/coords_hud/1.png",
+        "screenshots/coords_hud/2.png",
+    ] {
+        assert!(
+            m.commits.contains_key(&(branch.clone(), path.to_owned())),
+            "{path}"
+        );
+    }
+}
+
+/// `alice`'s project on main with two screenshots.
+fn with_screenshots() -> String {
+    published("alice", false).replacen(
+        "license = ",
+        "icon = \"icons/coords_hud.png\"\nscreenshots = [\"screenshots/coords_hud/1.png\", \"screenshots/coords_hud/2.png\"]\nlicense = ",
+        1,
+    )
+}
+
+async fn edit(
+    client: &mut Client,
+    csrf: &str,
+    change: impl FnOnce(&mut Value),
+) -> (StatusCode, Value) {
+    let mut f = form();
+    for field in ["key", "signature", "version", "game"] {
+        f.as_object_mut().unwrap().remove(field);
+    }
+    f["edit"] = json!(true);
+    change(&mut f);
+    client.submit_with(csrf, &f, None).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_owner_edits_the_page_without_a_version() {
+    let (mut client, mock) = setup().await;
+    mock.lock()
+        .unwrap()
+        .main
+        .insert("mods/coords_hud.toml".into(), with_screenshots());
+    let csrf = client.sign_in().await;
+    client.images.clear();
+    // Nothing changed; a screenshot that isn't the project's; a file sent with an edit.
+    let (status, json) = edit(&mut client, &csrf, |_| {}).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        json["error"].as_str().unwrap().contains("nothing changed"),
+        "{json}"
+    );
+    let (status, _) = edit(&mut client, &csrf, |f| {
+        f["screenshots"] = json!(["screenshots/other/1.png"])
+    })
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let mut f = form();
+    f["edit"] = json!(true);
+    let (status, _) = client.submit(&csrf, &f, b"x").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // Drops the first screenshot, adds one, changes the categories and tags.
+    client.images = vec![("screenshot", "new.jpg".into(), png(1280, 720))];
+    let (status, _) = edit(&mut client, &csrf, |f| {
+        f["screenshots"] = json!(["screenshots/coords_hud/2.png"])
+    })
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "a PNG named .jpg");
+    client.images = vec![("screenshot", "new.png".into(), png(1280, 720))];
+    let (status, json) = edit(&mut client, &csrf, |f| {
+        f["screenshots"] = json!(["screenshots/coords_hud/2.png"]);
+        f["categories"] = json!(["utility", "management"]);
+        f["tags"] = json!(["hud"]);
+    })
+    .await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    {
+        let m = mock.lock().unwrap();
+        let branch = m.branches.last().unwrap().clone();
+        assert!(branch.starts_with("edit/coords_hud-"), "{branch}");
+        let (text, _, blob) = &m.commits[&(branch.clone(), "mods/coords_hud.toml".into())];
+        assert_eq!(blob.as_deref(), Some("blob1"));
+        let entry: Entry = toml::from_str(text).unwrap();
+        // A new name never reuses one the entry had.
+        assert_eq!(
+            entry.screenshots,
+            [
+                "screenshots/coords_hud/2.png",
+                "screenshots/coords_hud/3.png"
+            ]
+        );
+        assert_eq!(entry.categories, ["utility", "management"]);
+        assert_eq!(entry.versions.len(), 1, "no version added");
+        assert!(
+            m.commits
+                .contains_key(&(branch, "screenshots/coords_hud/3.png".into()))
+        );
+        assert!(m.assets.is_empty());
+        let body = m.pulls[0]["body"].as_str().unwrap();
+        assert!(body.contains("categories, tags, screenshots"), "{body}");
+        assert_eq!(m.labels, [(1, json!(["owner-edit"]))]);
+    }
+    // Someone else: not an owner by ID.
+    mock.lock().unwrap().login = "bob".into();
+    let csrf = client.sign_in().await;
+    let (status, json) = edit(&mut client, &csrf, |f| f["tags"] = json!(["x"])).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{json}");
 }

@@ -1,5 +1,8 @@
 // Reuse the concrete attribute fixture's arena, supplier and observer binding.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "this fixture shares another one's source and uses part of it"
+)]
 mod integration {
     include!("stored_effect_attributes_fixture.rs");
 

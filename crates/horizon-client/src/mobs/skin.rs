@@ -22,7 +22,7 @@ struct Stored {
     /// The model's bounds in its parts' own space, per part: min and max of
     /// its own vertices (none: no polygons).
     bounds: Vec<Option<([f32; 3], [f32; 3])>>,
-    /// The model's render type culls back faces (the bat).
+    /// The model's render type culls back faces (the bat, the baby turtle).
     cull: bool,
 }
 
@@ -41,13 +41,16 @@ struct StoredPart {
 #[derive(Default)]
 pub struct SkinModels {
     stored: FxHashMap<usize, (Arc<Part>, Option<Stored>)>,
+    rotations: Rotations,
+    rotation_cache_disabled: bool,
     /// Item models, the same way (`item_render::ItemRenderState::submit_skinned`).
     items: FxHashMap<usize, (Arc<BakedItemModel>, Option<StoredItem>)>,
     vertices: u32,
-    /// Whether the eyes render type's layers (spiders', endermen's...) are posed
-    /// here too, as [`SkinJob::FLAT`] draws (`gfx::Renderer::skins_eyes`); set
-    /// each frame.
-    pub eyes: bool,
+    /// Whether the layers improved transparency would draw in its stages are
+    /// posed here too (`gfx::Renderer::skins_tagged`; set each frame): the eyes
+    /// render type's (spiders', endermen's...) as [`SkinJob::FLAT`] draws, and
+    /// `entityTranslucent` layers (a horse's markings, a slime's outer cube).
+    pub tagged: bool,
 }
 
 /// A stored item model: its quads' vertices in order, by runs of quads that
@@ -71,7 +74,68 @@ pub struct ItemRun {
 /// models pile up otherwise).
 const STORE_LIMIT: u32 = 4 << 20;
 
+/// Local rotations repeat across bones, entities and frames. Exact input bits
+/// keep signed zero and animation precision; collisions only replace an entry.
+struct Rotations([Option<Rotation>; 64]);
+
+#[derive(Clone, Copy)]
+struct Rotation {
+    key: [u32; 3],
+    matrix: glam::Mat4,
+    normal: glam::Mat3,
+}
+
+impl Default for Rotations {
+    fn default() -> Self {
+        Self([None; 64])
+    }
+}
+
+impl Rotations {
+    #[inline]
+    fn get(&mut self, p: [f32; 9]) -> &Rotation {
+        use std::hash::Hasher;
+        let key = [p[3].to_bits(), p[4].to_bits(), p[5].to_bits()];
+        // Positive zero produces these exact matrices on both original paths.
+        // Keep it outside the table so a stream of animated misses cannot evict it.
+        if key == [0; 3] {
+            return &Rotation {
+                key: [0; 3],
+                matrix: glam::Mat4::IDENTITY,
+                normal: glam::Mat3::IDENTITY,
+            };
+        }
+        let mut hash = crate::fast_hash::FxHasher::default();
+        // Hash each angle separately: packing two into a u64 makes opposite
+        // signs collide in common mirrored limb poses.
+        for angle in key {
+            hash.write_u32(angle);
+        }
+        let index = hash.finish() as usize & (self.0.len() - 1);
+        let slot = &mut self.0[index];
+        if slot.as_ref().is_none_or(|rotation| rotation.key != key) {
+            *slot = Some(Rotation {
+                key,
+                matrix: glam::Mat4::from_quat(glam::Quat::from_euler(
+                    glam::EulerRot::ZYX,
+                    p[5],
+                    p[4],
+                    p[3],
+                )),
+                normal: ModelNormals::rotation(p[3], p[4], p[5]),
+            });
+        }
+        slot.as_ref().unwrap()
+    }
+}
+
 impl SkinModels {
+    /// Select the original per-part rotation arithmetic when reuse is disabled.
+    /// The caller can change this between frames without rebuilding the model store.
+    pub fn set_rotation_cache_enabled(&mut self, enabled: bool) {
+        self.rotation_cache_disabled = !enabled;
+    }
+
     /// Starts a frame: drops the models nothing else holds (their vertices
     /// stay in the store until it restarts), restarts the store when it grew
     /// too large or the renderer's (`stored`, its size) is out of step.
@@ -86,7 +150,7 @@ impl SkinModels {
         frame.clear_draws();
     }
 
-    fn restart(&mut self, frame: &mut SkinFrame) {
+    pub fn restart(&mut self, frame: &mut SkinFrame) {
         self.stored.clear();
         self.items.clear();
         self.vertices = 0;
@@ -95,7 +159,11 @@ impl SkinModels {
         frame.reset = true;
     }
 
-    fn entry(&mut self, model: &Arc<Part>, frame: &mut SkinFrame) -> Option<&Stored> {
+    fn entry(
+        &mut self,
+        model: &Arc<Part>,
+        frame: &mut SkinFrame,
+    ) -> Option<(&Stored, &mut Rotations)> {
         let key = Arc::as_ptr(model) as usize;
         let vertices = &mut self.vertices;
         let (_, stored) = self.stored.entry(key).or_insert_with(|| {
@@ -106,7 +174,7 @@ impl SkinModels {
             *vertices += (frame.new_model.len() - before) as u32;
             (model.clone(), stored)
         });
-        stored.as_ref()
+        Some((stored.as_ref()?, &mut self.rotations))
     }
 
     /// An item model's runs, stored on first sight; `None` when it has no
@@ -288,9 +356,29 @@ pub struct Skin<'a> {
     pub frame: &'a mut SkinFrame,
     /// Camera-relative bounds of what this mob drew here (for culling).
     pub bounds: Option<(glam::Vec3, glam::Vec3)>,
+    /// The last walk, for a draw that repeats it.
+    last: Option<Walked>,
 }
 
-impl Skin<'_> {
+/// One walk of [`Skin::draw`]: what it drew, and the jobs it pushed.
+struct Walked {
+    model: usize,
+    base: glam::Mat4,
+    poses: u64,
+    jobs: std::ops::Range<usize>,
+}
+
+impl<'a> Skin<'a> {
+    /// One entity's draws into `frame`.
+    pub fn new(models: &'a mut SkinModels, frame: &'a mut SkinFrame) -> Self {
+        Self {
+            models,
+            frame,
+            bounds: None,
+            last: None,
+        }
+    }
+
     /// Grows the bounds of what this entity drew here by `lo..hi` posed by `m`.
     pub fn grow_bounds(&mut self, m: glam::Mat4, (lo, hi): (glam::Vec3, glam::Vec3)) {
         let center = m.transform_point3((lo + hi) * 0.5);
@@ -318,27 +406,95 @@ impl Skin<'_> {
         poses: &Poses,
         paint: Paint,
     ) -> bool {
-        let Some(stored) = self.models.entry(model, self.frame) else {
+        let key = Arc::as_ptr(model) as usize;
+        // A draw that repeats the last walk (a villager's type, profession and
+        // level over its body, a spider's eyes): the same model, matrix and
+        // poses give the same part matrices and parts left out, so its jobs
+        // are the last ones' over the same parts, with this paint.
+        if let Some(last) = &self.last
+            && last.model == key
+            && last.base == base
+            && last.poses == poses.version()
+        {
+            for i in last.jobs.clone() {
+                let job = self.frame.jobs[i];
+                self.frame.jobs.push(SkinJob {
+                    dst: self.frame.vertices,
+                    ..paint.job(job.first, job.count, job.part, job.cull)
+                });
+                self.frame.vertices += job.count;
+            }
+            return true;
+        }
+        let cache_enabled = !self.models.rotation_cache_disabled;
+        let Some((stored, rotations)) = self.models.entry(model, self.frame) else {
             return false;
         };
+        let jobs = self.frame.jobs.len();
         let first_part = self.frame.parts.len() as u32;
         self.frame.parts.resize(
             self.frame.parts.len() + stored.parts.len(),
             bytemuck::Zeroable::zeroed(),
         );
-        let mut walk = Walk {
-            stored,
-            poses,
-            parts: &mut self.frame.parts[first_part as usize..],
-            jobs: &mut self.frame.jobs,
-            vertices: &mut self.frame.vertices,
-            bounds: &mut self.bounds,
-            first_part,
-            paint,
-            index: 0,
-        };
-        walk.part(model, base, ModelNormals::new(base));
+        if cache_enabled {
+            let mut walk = CachedWalk {
+                rotations,
+                stored,
+                poses,
+                parts: &mut self.frame.parts[first_part as usize..],
+                jobs: &mut self.frame.jobs,
+                vertices: &mut self.frame.vertices,
+                bounds: &mut self.bounds,
+                first_part,
+                paint,
+                index: 0,
+            };
+            walk.part(model, base, ModelNormals::new(base));
+        } else {
+            let mut walk = Walk {
+                stored,
+                poses,
+                parts: &mut self.frame.parts[first_part as usize..],
+                jobs: &mut self.frame.jobs,
+                vertices: &mut self.frame.vertices,
+                bounds: &mut self.bounds,
+                first_part,
+                paint,
+                index: 0,
+            };
+            walk.part(model, base, ModelNormals::new(base));
+        }
+        // The walk's first job never extends an earlier draw's: those have
+        // other parts.
+        self.last = Some(Walked {
+            model: key,
+            base,
+            poses: poses.version(),
+            jobs: jobs..self.frame.jobs.len(),
+        });
         true
+    }
+}
+
+impl Paint {
+    /// A job drawing `count` stored vertices from `first`, posed by the parts
+    /// from `part`, in this paint (`dst` left 0).
+    fn job(self, first: u32, count: u32, part: u32, cull: u32) -> SkinJob {
+        SkinJob {
+            first,
+            count,
+            part,
+            dst: 0,
+            rect: self.uv,
+            scroll: self.scroll,
+            color: self.color,
+            light: self.light,
+            overlay: self.overlay,
+            glint: u32::from(self.overlay == super::render::ARMOR_GLINT),
+            mode: SkinJob::MODEL,
+            cull,
+            spare: 0,
+        }
     }
 }
 
@@ -416,19 +572,102 @@ impl Walk<'_> {
             job.count += stored.count;
         } else {
             self.jobs.push(SkinJob {
-                first,
-                count: stored.count,
-                part: self.first_part,
                 dst: *self.vertices,
-                rect: paint.uv,
-                scroll: paint.scroll,
-                color: paint.color,
-                light: paint.light,
-                overlay: paint.overlay,
-                glint: u32::from(paint.overlay == super::render::ARMOR_GLINT),
-                mode: SkinJob::MODEL,
-                cull: u32::from(self.stored.cull),
-                spare: 0,
+                ..paint.job(
+                    first,
+                    stored.count,
+                    self.first_part,
+                    u32::from(self.stored.cull),
+                )
+            });
+        }
+        *self.vertices += stored.count;
+    }
+}
+
+struct CachedWalk<'a> {
+    stored: &'a Stored,
+    rotations: &'a mut Rotations,
+    poses: &'a Poses,
+    parts: &'a mut [SkinPart],
+    jobs: &'a mut Vec<SkinJob>,
+    vertices: &'a mut u32,
+    bounds: &'a mut Option<(glam::Vec3, glam::Vec3)>,
+    first_part: u32,
+    paint: Paint,
+    /// The pre-order index of the part being walked.
+    index: u32,
+}
+
+impl CachedWalk<'_> {
+    /// `render::draw_normals` without the vertices: the part's matrices, and
+    /// its polygons as (part of) a job.
+    fn part(&mut self, part: &Part, base: glam::Mat4, normals: ModelNormals) {
+        let index = self.index;
+        let stored = self.stored.parts[index as usize];
+        let p = self.poses.pose(part);
+        if self.poses.is_hidden(part) || p[6] == 0.0 && p[7] == 0.0 && p[8] == 0.0 {
+            // The whole subtree is left out.
+            self.index = stored.end;
+            return;
+        }
+        let rotation = self.rotations.get(p);
+        let m = super::render::posed_rotated(base, p, rotation.matrix);
+        let normals = normals.part_rotated(p, rotation.normal);
+        let n = if normals.trusted {
+            normals.matrix
+        } else {
+            glam::Mat3::from_cols(
+                normals.matrix.x_axis.normalize_or_zero(),
+                normals.matrix.y_axis.normalize_or_zero(),
+                normals.matrix.z_axis.normalize_or_zero(),
+            )
+        };
+        self.parts[index as usize] = SkinPart {
+            matrix: m.to_cols_array(),
+            normal: n.to_cols_array(),
+        };
+        if !self.poses.skips(part) && stored.count > 0 {
+            self.emit(stored);
+            if let Some((lo, hi)) = self.stored.bounds[index as usize] {
+                let (lo, hi) = (glam::Vec3::from_array(lo), glam::Vec3::from_array(hi));
+                let center = m.transform_point3((lo + hi) * 0.5);
+                let half = (hi - lo) * 0.5;
+                let r = glam::Mat3::from_mat4(m);
+                let extent =
+                    r.x_axis.abs() * half.x + r.y_axis.abs() * half.y + r.z_axis.abs() * half.z;
+                let (a, b) = (center - extent, center + extent);
+                *self.bounds = Some(match *self.bounds {
+                    Some((l, h)) => (l.min(a), h.max(b)),
+                    None => (a, b),
+                });
+            }
+        }
+        self.index += 1;
+        for child in &part.children {
+            self.part(child, m, normals);
+        }
+    }
+
+    /// The part's vertices: extends the last job when they follow its own.
+    fn emit(&mut self, stored: StoredPart) {
+        let first = self.stored.first + stored.first;
+        let paint = self.paint;
+        if let Some(job) = self.jobs.last_mut()
+            && job.first + job.count == first
+            && job.part == self.first_part
+            && job.dst + job.count == *self.vertices
+        {
+            job.count += stored.count;
+        } else {
+            self.jobs.push(SkinJob {
+                dst: *self.vertices,
+                ..paint.job(
+                    first,
+                    stored.count,
+                    self.first_part,
+                    u32::from(self.stored.cull),
+                )
             });
         }
         *self.vertices += stored.count;
@@ -441,12 +680,184 @@ mod tests {
     use crate::gfx::entity_skin::expand;
     use crate::mobs::{Mob, MobData, MobTypes, render};
 
+    #[test]
+    fn rotation_cache_can_be_bypassed_between_frames() {
+        let model = Arc::new(Part::parse(
+            "root",
+            &serde_json::json!({
+                "pose": [0, 0, 0, 0, 0, 0, 1, 1, 1],
+                "polygons": [[[0, 0, 0, 0, 0], [0, 16, 0, 0, 1],
+                              [0, 16, 16, 1, 1], [0, 0, 16, 1, 0]]],
+                "normals": [[1, 0, 0]]
+            }),
+        ));
+        let mut models = SkinModels::default();
+        let mut frame = SkinFrame::default();
+        let mut store = Vec::new();
+        let paint = Paint {
+            uv: [0.125, 0.25, 0.75, 0.875],
+            scroll: 0.0,
+            color: 0xff80_c0ff,
+            light: 0x70a0,
+            overlay: 0,
+        };
+        for (i, enabled) in [false, true, false, true].into_iter().enumerate() {
+            let mut poses = Poses::new(&model);
+            poses.get("root")[3..6].copy_from_slice(&[0.3 + i as f32 * 0.1, -0.7, 1.2]);
+            let base = glam::Mat4::from_scale(glam::Vec3::new(-0.75, 1.25, 0.5));
+            let mut expected = Vec::new();
+            render::draw(
+                &model,
+                base,
+                &poses,
+                paint.uv,
+                paint.color,
+                paint.light,
+                paint.overlay,
+                &mut expected,
+            );
+            let before = models
+                .rotations
+                .0
+                .map(|entry| entry.map(|rotation| rotation.key));
+            models.set_rotation_cache_enabled(enabled);
+            models.begin(&mut frame, store.len() as u32);
+            assert!(Skin::new(&mut models, &mut frame).draw(&model, base, &poses, paint));
+            let after = models
+                .rotations
+                .0
+                .map(|entry| entry.map(|rotation| rotation.key));
+            if enabled {
+                assert_ne!(before, after, "enabled cache must record the new rotation");
+            } else {
+                assert_eq!(
+                    before, after,
+                    "bypass must not access or populate the cache"
+                );
+            }
+            store.extend_from_slice(&frame.new_model);
+            frame.handed();
+            assert_eq!(
+                bytemuck::cast_slice::<_, u8>(&expand(&store, &frame)),
+                bytemuck::cast_slice::<_, u8>(&expected),
+            );
+        }
+    }
+
+    #[test]
+    fn reused_rotations_keep_scaled_and_animated_vertices_bit_exact() {
+        let leaf = |name: &str| {
+            Part::parse(
+                name,
+                &serde_json::json!({
+                    "pose": [0, 0, 0, 0, 0, 0, 1, 1, 1],
+                    "polygons": [[[0, 0, 0, 0, 0], [0, 16, 0, 0, 1],
+                                  [0, 16, 16, 1, 1], [0, 0, 16, 1, 0]]],
+                    "normals": [[1, 0, 0]]
+                }),
+            )
+        };
+        let mut root = leaf("root");
+        let mut child = leaf("child");
+        child.children.push(leaf("tip"));
+        root.children.push(child);
+        let model = Arc::new(root);
+        let mut models = SkinModels::default();
+        let mut frame = SkinFrame::default();
+        let mut store = Vec::new();
+        let angles = [0.0, -0.0, 0.7, f32::from_bits(0.7f32.to_bits() + 1), -1.2];
+        // More distinct rotations than the cache holds, interspersed with hits.
+        // Translation, parent transforms and scale keep changing under a reused
+        // rotation, including mirrored and nonuniform normal stacks.
+        for i in 0..512 {
+            let mut poses = Poses::new(&model);
+            for (j, name) in ["root", "child", "tip"].into_iter().enumerate() {
+                let pose = poses.get(name);
+                pose[0] = i as f32 * 0.03125;
+                pose[1] = j as f32 * -2.25;
+                pose[3] = angles[(i + j) % angles.len()];
+                pose[4] = if i % 3 == 0 { i as f32 * 0.013 } else { 0.0 };
+                pose[5] = angles[(i / 2 + j) % angles.len()];
+                pose[6..9].copy_from_slice(match (i + j) % 4 {
+                    0 => &[1.0, 1.0, 1.0],
+                    1 => &[-1.0, 1.0, -1.0],
+                    2 => &[0.75, 1.25, 0.5],
+                    _ => &[0.0, 0.0, 0.0],
+                });
+            }
+            if i % 17 == 0 {
+                poses.visible("child", false);
+            }
+            if i % 19 == 0 {
+                poses.skip_draw("root");
+            }
+            let base = glam::Mat4::from_translation(glam::Vec3::new(i as f32 * 0.1, -3.25, 7.0))
+                * glam::Mat4::from_rotation_y(i as f32 * 0.017);
+            let paint = Paint {
+                uv: [0.125, 0.25, 0.75, 0.875],
+                scroll: 0.0,
+                color: 0xff80_c0ff,
+                light: 0x70a0,
+                overlay: 0,
+            };
+            let mut expected = Vec::new();
+            render::draw(
+                &model,
+                base,
+                &poses,
+                paint.uv,
+                paint.color,
+                paint.light,
+                paint.overlay,
+                &mut expected,
+            );
+            models.begin(&mut frame, store.len() as u32);
+            assert!(Skin::new(&mut models, &mut frame).draw(&model, base, &poses, paint));
+            store.extend_from_slice(&frame.new_model);
+            frame.handed();
+            let actual = expand(&store, &frame);
+            assert_eq!(
+                bytemuck::cast_slice::<_, u8>(&actual),
+                bytemuck::cast_slice::<_, u8>(&expected),
+                "draw {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn restart_clears_models_and_marks_frame_reset() {
+        let mut models = SkinModels::default();
+        let mut frame = SkinFrame::default();
+        frame.jobs.push(Default::default());
+        frame.parts.push(SkinPart {
+            matrix: [0.0; 16],
+            normal: [0.0; 9],
+        });
+        frame.vertices = 4;
+        frame.outline_jobs.push(Default::default());
+        frame.outline_vertices = 4;
+        assert!(frame.pending());
+
+        models.restart(&mut frame);
+        frame.clear_draws();
+
+        assert_eq!(models.vertices, 0);
+        assert_eq!(frame.base, 0);
+        assert_eq!(frame.vertices, 0);
+        assert_eq!(frame.outline_vertices, 0);
+        assert!(frame.jobs.is_empty());
+        assert!(frame.parts.is_empty());
+        assert!(frame.outline_jobs.is_empty());
+        assert!(frame.reset);
+    }
+
     /// Every vanilla mob, at a few ages and turns: the GPU path's vertices
     /// (its jobs expanded as `entity_skin.wgsl` does) are the CPU path's, to
     /// the bit and in the same order, for each mob it takes; the mobs it
     /// leaves to the CPU draw exactly as before. Twice: with the eyes render
     /// type's layers left to the CPU (improved transparency on), then posed
-    /// too (`SkinModels::eyes`). Needs the prepared resources.
+    /// too with a horse's markings and a slime's outer cube (`SkinModels::tagged`).
+    /// Needs the prepared resources.
     #[test]
     fn posed_on_the_gpu_every_mob_draws_what_the_cpu_draws() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -487,7 +898,7 @@ mod tests {
         let (mut posed, mut kept) = (0, 0);
         let mut ids: Vec<_> = types.types.keys().cloned().collect();
         ids.sort();
-        // The mobs posed at least once, without and with the eyes layers.
+        // The mobs posed at least once, without and with the tagged layers.
         let mut taken = [std::collections::BTreeSet::new(), Default::default()];
         for eyes in [false, true] {
             for (n, id) in ids.iter().enumerate() {
@@ -499,16 +910,25 @@ mod tests {
                     m.age = age;
                     m.limb_speed = 0.6;
                     m.limb_position = age as f32 * 0.37;
+                    // A farmer: its type, profession and level layers repeat
+                    // the body's draw (`Skin::draw` reuses its walk).
+                    if matches!(
+                        id.as_str(),
+                        "minecraft:villager" | "minecraft:zombie_villager"
+                    ) {
+                        m.extra.variant2 = 5;
+                        m.extra.variant3 = 3;
+                    }
+                    // White field markings (`entityTranslucent`).
+                    if id == "minecraft:horse" {
+                        m.extra.variant2 = 2;
+                    }
                     let mut cpu = Vec::new();
                     render::render_with(&m, 0.4, camera, &atlas, 0x50a0, &data, &[], &mut cpu);
                     models.begin(&mut frame, store.len() as u32);
-                    models.eyes = eyes;
+                    models.tagged = eyes;
                     let mut gpu = Vec::new();
-                    let mut skin = Skin {
-                        models: &mut models,
-                        frame: &mut frame,
-                        bounds: None,
-                    };
+                    let mut skin = Skin::new(&mut models, &mut frame);
                     render::render_skinned(
                         &m, 0.4, camera, &atlas, 0x50a0, &data, &mut gpu, &mut skin,
                     );
@@ -555,25 +975,28 @@ mod tests {
         eprintln!("posed on the GPU: {posed} mob draws; kept on the CPU: {kept}");
         assert!(posed > 2 * 3 * 40, "only {posed} draws took the GPU path");
         let added: Vec<_> = taken[1].difference(&taken[0]).copied().collect();
-        eprintln!("posed only with the eyes layers: {added:?}");
+        eprintln!("posed only with the tagged layers: {added:?}");
         for id in [
             "minecraft:spider",
             "minecraft:cave_spider",
             "minecraft:enderman",
             "minecraft:phantom",
             "minecraft:copper_golem",
+            "minecraft:horse",
+            "minecraft:slime",
         ] {
-            assert!(added.contains(&id), "{id} not posed with its eyes");
+            assert!(added.contains(&id), "{id} not posed with its tagged layers");
         }
         assert!(taken[0].is_subset(&taken[1]));
     }
 
-    /// `BatModel` draws with `entityCutoutCull`: its zero-depth ears, wings and
-    /// feet put two quads in one place, and only culling tells them apart. The
-    /// bat's vertices ask for the shaded cull encoding, other mobs keep -127,
-    /// on both paths (the whole-mob test above holds them bit-equal).
+    /// `BatModel` and `BabyTurtleModel` draw with `entityCutoutCull`: their
+    /// zero-depth ears, wings, feet and legs put two quads in one place, and
+    /// only culling tells them apart. Their vertices ask for the shaded cull
+    /// encoding, other mobs keep -127, on both paths (the whole-mob test above
+    /// holds them bit-equal).
     #[test]
-    fn only_the_bat_asks_for_culled_back_faces() {
+    fn only_culled_render_types_ask_for_culled_back_faces() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.local/horizon-client/26.3");
         if !root.join("entity-models.json").exists() {
@@ -581,12 +1004,37 @@ mod tests {
             return;
         }
         let types = MobTypes::load(&root).unwrap();
-        for (id, w) in [
-            ("minecraft:bat", crate::mesher::SHADED_CULL_W),
-            ("minecraft:cow", -127),
-            ("minecraft:cat", -127),
-        ] {
-            let mut part = vec![&*types.types[id].model];
+        let turtle = &types.types["minecraft:turtle"];
+        let baby_turtle = turtle.layer("turtle_baby#main").expect("baby turtle model");
+        let cases: [(&str, &std::sync::Arc<crate::mobs::Part>, i8, u32); 5] = [
+            (
+                "minecraft:bat",
+                &types.types["minecraft:bat"].model,
+                crate::mesher::SHADED_CULL_W,
+                1,
+            ),
+            (
+                "minecraft:turtle_baby",
+                baby_turtle,
+                crate::mesher::SHADED_CULL_W,
+                1,
+            ),
+            ("minecraft:turtle", &turtle.model, -127, 0),
+            (
+                "minecraft:cow",
+                &types.types["minecraft:cow"].model,
+                -127,
+                0,
+            ),
+            (
+                "minecraft:cat",
+                &types.types["minecraft:cat"].model,
+                -127,
+                0,
+            ),
+        ];
+        for (id, model, w, _) in cases {
+            let mut part = vec![&**model];
             let mut seen = 0;
             while let Some(p) = part.pop() {
                 for poly in &p.polygons {
@@ -601,15 +1049,11 @@ mod tests {
         // The GPU path flags the job, the CPU path the polygons.
         let mut models = SkinModels::default();
         let mut frame = SkinFrame::default();
-        for (id, cull) in [("minecraft:bat", 1), ("minecraft:cow", 0)] {
+        for (id, model, _, cull) in cases {
             models.begin(&mut frame, 0);
-            let mut skin = Skin {
-                models: &mut models,
-                frame: &mut frame,
-                bounds: None,
-            };
+            let mut skin = Skin::new(&mut models, &mut frame);
             assert!(skin.draw(
-                &types.types[id].model,
+                model,
                 glam::Mat4::IDENTITY,
                 &Poses::default(),
                 Paint {
@@ -680,11 +1124,7 @@ mod tests {
                 );
                 models.begin(&mut frame, store.len() as u32);
                 let mut gpu = Vec::new();
-                let mut skin = Skin {
-                    models: &mut models,
-                    frame: &mut frame,
-                    bounds: None,
-                };
+                let mut skin = Skin::new(&mut models, &mut frame);
                 let paint = (uv, 0.0, 0xff80_c0ff, 0x70a0, overlay);
                 render::put(
                     &mut Some(&mut skin),

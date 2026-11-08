@@ -352,6 +352,40 @@ impl Frontend {
                     }
                 }
             }
+            // A vector with a component for each of the matrix's (`mat2(vec4)`) fills it column
+            // by column, as several arguments do (GLSL 4.60, 5.4.2).
+            TypeInner::Vector { size, .. } if size as u32 >= columns as u32 * rows as u32 => {
+                let vector_ty = ctx.module.types.insert(
+                    Type {
+                        name: None,
+                        inner: TypeInner::Vector {
+                            size: rows,
+                            scalar: element_scalar,
+                        },
+                    },
+                    meta,
+                );
+                for c in 0..columns as u32 {
+                    let column = (0..rows as u32)
+                        .map(|r| {
+                            ctx.add_expression(
+                                Expression::AccessIndex {
+                                    base: value,
+                                    index: c * rows as u32 + r,
+                                },
+                                meta,
+                            )
+                        })
+                        .collect::<Result<_>>()?;
+                    components.push(ctx.add_expression(
+                        Expression::Compose {
+                            ty: vector_ty,
+                            components: column,
+                        },
+                        meta,
+                    )?);
+                }
+            }
             _ => {
                 components = iter::repeat_n(value, columns as usize).collect();
             }
@@ -601,7 +635,7 @@ impl Frontend {
                 // Storage images cannot be directly compared since while the access is part of the
                 // type in naga's IR, in glsl they are a qualifier and don't enter in the match as
                 // long as the access needed is satisfied.
-                if let (
+                let conversion = if let (
                     &TypeInner::Image {
                         class:
                             crate::ImageClass::Storage {
@@ -656,55 +690,61 @@ impl Frontend {
                     }
 
                     // The images satisfy the conditions to be considered as an exact match
-                    new_conversions[i] = Conversion::Exact;
-                    continue;
+                    Conversion::Exact
                 } else if overload_param_ty == call_arg_ty {
-                    // If the types match there's no need to check for conversions so continue
-                    new_conversions[i] = Conversion::Exact;
-                    continue;
-                }
-
-                // Glsl defines that inout follows both the conversions for input parameters and
-                // output parameters, this means that the type must have a conversion from both the
-                // call argument to the function parameter and the function parameter to the call
-                // argument, the only way this is possible is for the conversion to be an identity
-                // (i.e. call argument = function parameter)
-                if let ParameterQualifier::InOut = parameter_info.qualifier {
-                    continue 'outer;
-                }
-
-                // The function call argument and the function definition
-                // parameter are not equal at this point, so we need to try
-                // implicit conversions.
-                //
-                // Now there are two cases, the argument is defined as a normal
-                // parameter (`in` or `const`), in this case an implicit
-                // conversion is made from the calling argument to the
-                // definition argument. If the parameter is `out` the
-                // opposite needs to be done, so the implicit conversion is made
-                // from the definition argument to the calling argument.
-                let maybe_conversion = if parameter_info.qualifier.is_lhs() {
-                    conversion(call_arg_ty, overload_param_ty)
+                    // If the types match there's no need to check for conversions
+                    Conversion::Exact
                 } else {
-                    conversion(overload_param_ty, call_arg_ty)
-                };
+                    // Glsl defines that inout follows both the conversions for input parameters and
+                    // output parameters, this means that the type must have a conversion from both the
+                    // call argument to the function parameter and the function parameter to the call
+                    // argument, the only way this is possible is for the conversion to be an identity
+                    // (i.e. call argument = function parameter)
+                    if let ParameterQualifier::InOut = parameter_info.qualifier {
+                        continue 'outer;
+                    }
 
-                let conversion = match maybe_conversion {
-                    Some(info) => info,
-                    None => continue 'outer,
-                };
+                    // The function call argument and the function definition
+                    // parameter are not equal at this point, so we need to try
+                    // implicit conversions.
+                    //
+                    // Now there are two cases, the argument is defined as a normal
+                    // parameter (`in` or `const`), in this case an implicit
+                    // conversion is made from the calling argument to the
+                    // definition argument. If the parameter is `out` the
+                    // opposite needs to be done, so the implicit conversion is made
+                    // from the definition argument to the calling argument.
+                    let maybe_conversion = if parameter_info.qualifier.is_lhs() {
+                        conversion(call_arg_ty, overload_param_ty)
+                    } else {
+                        conversion(overload_param_ty, call_arg_ty)
+                    };
 
-                // At this point a conversion will be needed so the overload no longer
-                // exactly matches the call arguments
-                exact = false;
+                    let conversion = match maybe_conversion {
+                        Some(info) => info,
+                        None => continue 'outer,
+                    };
+
+                    // At this point a conversion will be needed so the overload no longer
+                    // exactly matches the call arguments
+                    exact = false;
+                    conversion
+                };
 
                 // Compare the conversions needed for this overload parameter to that of the
                 // last overload analyzed respective parameter, the value is:
                 // - `true` when the new overload argument has a better conversion
                 // - `false` when the old overload argument has a better conversion
                 let best_arg = match (conversion, old_conversions[i]) {
-                    // An exact match is always better, we don't need to check this for the
-                    // current overload since it was checked earlier
+                    // Equally good: this argument decides nothing.
+                    (Conversion::Exact, Conversion::Exact) => {
+                        new_conversions[i] = Conversion::Exact;
+                        continue;
+                    }
+                    // An exact match is better than any conversion (GLSL 4.60 §6.1), so
+                    // `greaterThanEqual(ivec3, uvec3)` takes the uvec3 overload: exact on its
+                    // second argument where the vec3 one converts both.
+                    (Conversion::Exact, _) => true,
                     (_, Conversion::Exact) => false,
                     // No overload was yet analyzed so this one is the best yet
                     (_, Conversion::None) => true,

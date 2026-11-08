@@ -13,10 +13,11 @@ use super::{
 };
 use horizon_client::advancements::EntityView;
 use horizon_client::mobs::{Damage, DamageKind, MobEvent, SpawnSetup, Species};
+use horizon_client::random_source;
 use horizon_core::{
     geometry::{Aabb, Vec3},
     position::BlockPos,
-    random::RandomSource,
+    random::{LegacyRandom, RandomSource},
 };
 
 pub(super) struct Bolt {
@@ -26,6 +27,9 @@ pub(super) struct Bolt {
     life: i32,
     flashes: i32,
     seed: i64,
+    /// The bolt's own random (`Entity.random`): its seed, flashes, flash
+    /// timing, fire spots and thunder pitch draw from it, never the level's.
+    random: LegacyRandom,
     visual_only: bool,
     /// Mooshrooms and copper golems change once per bolt.
     converted: Vec<u32>,
@@ -42,6 +46,17 @@ pub(super) struct Bolt {
     /// the host, `Some(Some(conn))` for a guest.
     pub cause: Option<Option<u32>>,
 }
+/// `Pig.thunderHit`: `SpawnSetup` for mobs converted by lightning, preserving baby state.
+fn thunder_mob_spawn_setup(m: &horizon_client::mobs::Mob) -> SpawnSetup {
+    SpawnSetup {
+        baby: m.is_baby(),
+        yaw: m.yaw,
+        persistent: true,
+        skip_finalize: true,
+        ..Default::default()
+    }
+}
+
 /// The box `LightningBolt.tick` collects the `LightningStrikeTrigger` bystanders from: 15 blocks
 /// around the bolt, 15 down and `6 + 15` up.
 fn in_viewer_box(bolt: [f64; 3], p: [f64; 3]) -> bool {
@@ -55,9 +70,13 @@ impl Game<'_> {
     /// spawning chunk (within 128 blocks of a player) that is in entity
     /// ticking range.
     pub(super) fn tick_thunder(&mut self) {
-        // isRaining (rain level > 0.2) and isThundering (> 0.9, sky light, no ceiling).
+        // isRaining (rain level > 0.2) and isThundering (> 0.9) both need
+        // Level.canHaveWeather: sky light, no ceiling and not the End.
         let (rain, thunder) = self.world.weather.levels(1.0);
-        if rain <= 0.2 || thunder <= 0.9 || self.dim != super::Dim::Overworld || self.world_debug {
+        let weather = self.world.shape.sky_light
+            && !self.world.shape.has_ceiling
+            && self.dim != super::Dim::End;
+        if rain <= 0.2 || thunder <= 0.9 || !weather || self.world_debug {
             return;
         }
         let mut scratch = std::mem::take(&mut self.spawn_scratch);
@@ -100,7 +119,7 @@ impl Game<'_> {
             if trap {
                 let at = [f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2])];
                 // ServerLevel.tickChunk: a trap horse waits for a player.
-                if let Some(id) = self.spawn_mob("minecraft:skeleton_horse", at, false)
+                if let Some(id) = self.spawn_mob_raw("minecraft:skeleton_horse", at, false)
                     && let Some(h) = self.mobs.iter_mut().find(|m| m.id == id)
                 {
                     h.extra.trap = true;
@@ -232,9 +251,10 @@ impl Game<'_> {
             let ctx = horizon_client::sculk::Context::default();
             self.post_game_event("minecraft:lightning_strike", at, ctx);
         }
-        let r = &mut self.world.random;
-        let seed = r.next_long();
-        let flashes = r.next_int_bound(3).unwrap_or(0) + 1;
+        // The LightningBolt constructor: `seed`, then `flashes`.
+        let mut random = random_source::entity();
+        let seed = random.next_long();
+        let flashes = random.next_int_bound(3).unwrap_or(0) + 1;
         self.lightning_seen[0] += 1;
         let id = self.take_entity_id();
         self.bolts.push(Bolt {
@@ -243,6 +263,7 @@ impl Game<'_> {
             life: 2,
             flashes,
             seed,
+            random,
             visual_only,
             converted: Vec::new(),
             hit: Vec::new(),
@@ -266,9 +287,10 @@ impl Game<'_> {
     /// only flashes, sounds and draws (`LightningBolt.tick` off the server).
     pub(super) fn spawn_remote_bolt(&mut self, id: u32, at: [f64; 3]) {
         self.bolts.retain(|b| b.id != id);
-        let r = &mut self.world.random;
-        let seed = r.next_long();
-        let flashes = r.next_int_bound(3).unwrap_or(0) + 1;
+        // The client's own copy, constructed as on the server.
+        let mut random = random_source::entity();
+        let seed = random.next_long();
+        let flashes = random.next_int_bound(3).unwrap_or(0) + 1;
         self.lightning_seen[0] += 1;
         self.bolts.push(Bolt {
             id,
@@ -276,6 +298,7 @@ impl Game<'_> {
             life: 2,
             flashes,
             seed,
+            random,
             visual_only: true,
             converted: Vec::new(),
             hit: Vec::new(),
@@ -285,20 +308,28 @@ impl Game<'_> {
             cause: None,
         });
     }
-    /// `spawnFire`: fire at the strike point and `extra` random neighbours,
-    /// wherever `BaseFireBlock.getState` fire can survive. Returns how many
-    /// blocks it set on fire.
-    fn bolt_fire(&mut self, at: [f64; 3], extra: i32) -> i32 {
+    /// `spawnFire`: fire at the strike point and `extra` random neighbours
+    /// (from the bolt's own `random`), wherever `BaseFireBlock.getState` fire
+    /// can survive, when a player is within the fire-spread radius. Returns how
+    /// many blocks it set on fire.
+    fn bolt_fire(&mut self, at: [f64; 3], extra: i32, random: &mut LegacyRandom) -> i32 {
         let mut set = 0;
         let base = [
             at[0].floor() as i32,
             at[1].floor() as i32,
             at[2].floor() as i32,
         ];
+        // ServerLevel.canSpreadFireAround at the bolt: no fire at all, and no
+        // draws for the extra sources, away from every player (#11376).
+        let origin = BlockPos::new(base[0], base[1], base[2]);
+        if !self.with_level(|_, level, _| {
+            horizon_world::level::LevelAccess::can_spread_fire_around(level, origin)
+        }) {
+            return 0;
+        }
         let mut spots = vec![base];
         for _ in 0..extra {
-            let r = &mut self.world.random;
-            let mut d = || r.next_int_bound(3).unwrap_or(1) - 1;
+            let mut d = || random.next_int_bound(3).unwrap_or(1) - 1;
             spots.push([base[0] + d(), base[1] + d(), base[2] + d()]);
         }
         for p in spots {
@@ -327,14 +358,16 @@ impl Game<'_> {
         let mut bolts = std::mem::take(&mut self.bolts);
         bolts.retain_mut(|b| {
             if b.life == 2 {
-                let pitch = 0.8 + self.world.random.next_float() * 0.2;
+                // A client's bolt draws the pitches from its own random. Here one
+                // bolt stands for both copies, and both randoms are unseeded.
+                let pitch = 0.8 + b.random.next_float() * 0.2;
                 self.audio.play(
                     "minecraft:entity.lightning_bolt.thunder",
                     Some(b.at),
                     10000.0,
                     pitch,
                 );
-                let pitch = 0.5 + self.world.random.next_float() * 0.2;
+                let pitch = 0.5 + b.random.next_float() * 0.2;
                 self.audio.play(
                     "minecraft:entity.lightning_bolt.impact",
                     Some(b.at),
@@ -344,7 +377,8 @@ impl Game<'_> {
                 if !b.visual_only {
                     // Only Normal and Hard start fires with the strike itself.
                     if self.ui.difficulty >= 2 {
-                        b.fires += self.bolt_fire(b.at, 4);
+                        let set = self.bolt_fire(b.at, 4, &mut b.random);
+                        b.fires += set;
                     }
                     self.strike_rod(b.at);
                 }
@@ -362,12 +396,13 @@ impl Game<'_> {
                     self.lightning_strike_triggers(b);
                     return false;
                 }
-                if b.life < -self.world.random.next_int_bound(10).unwrap_or(0) {
+                if b.life < -b.random.next_int_bound(10).unwrap_or(0) {
                     b.flashes -= 1;
                     b.life = 1;
-                    b.seed = self.world.random.next_long();
+                    b.seed = b.random.next_long();
                     if !b.visual_only {
-                        b.fires += self.bolt_fire(b.at, 0);
+                        let set = self.bolt_fire(b.at, 0, &mut b.random);
+                        b.fires += set;
                     }
                 }
             }
@@ -404,9 +439,12 @@ impl Game<'_> {
         if let Some(mut s) = registry.state(state).cloned() {
             s.properties.insert("powered".into(), "true".into());
             if let Some(powered) = registry.id(&s) {
-                // The rod's onPlace schedules the 8-tick unpowering.
                 let _ = self.level_set(p, powered);
                 self.with_level(|b, level, ticks| {
+                    // `level.scheduleTick(pos, this, 8)`: the unpowering. A rod struck
+                    // is the same block as before, so its placement does not schedule
+                    // it, and without this it stayed powered for good.
+                    b.schedule_tick(level, ticks, BlockPos::new(p[0], p[1], p[2]), 8);
                     if level.redstone_experiments {
                         b.lightning_rod_update_neighbors(
                             level,
@@ -476,7 +514,7 @@ impl Game<'_> {
             };
             let pos = [p.position.x, p.position.y, p.position.z];
             if in_viewer_box(at, pos) && !struck(pos) {
-                viewers.push(g.player_entity());
+                viewers.push(g.player_entity_for("minecraft:lightning_strike"));
             }
         });
         self.for_each_player(|g| {
@@ -530,6 +568,7 @@ impl Game<'_> {
             kind: DamageKind::Generic,
             attacker: None,
             from: Some(b.at),
+            attacker_species: None,
         };
         let mut struck = Vec::new();
         let mut events = Vec::new();
@@ -546,16 +585,27 @@ impl Game<'_> {
             }
             left -= 1;
             struck.push(self.mob_entity(&self.mobs[i]));
+            // LivingConversionEvent.Pre: a canceled conversion leaves the
+            // mob to the lightning's fire and damage, as `super.thunderHit`.
+            let outcome = match self.mobs[i].species() {
+                Species::Pig if !peaceful => Some("minecraft:zombified_piglin"),
+                Species::Villager if !peaceful => Some("minecraft:witch"),
+                _ => None,
+            };
+            let mut keep = false;
+            if let Some(outcome) = outcome {
+                let (id, kind) = (
+                    self.mobs[i].id,
+                    super::native_hooks::mob_kind(&self.mobs[i]),
+                );
+                self.native_living_conversion_pre(id, &kind, outcome, &mut keep);
+            }
             let m = &mut self.mobs[i];
             b.hit.push(m.id);
-            let setup = |m: &horizon_client::mobs::Mob| SpawnSetup {
-                yaw: m.yaw,
-                persistent: true,
-                ..Default::default()
-            };
+            let setup = thunder_mob_spawn_setup;
             let at = [m.position.x, m.position.y, m.position.z];
             match m.species() {
-                Species::Pig if !peaceful => {
+                Species::Pig if !peaceful && !keep => {
                     m.removed = true;
                     events.push(MobEvent::SpawnKind {
                         kind: "minecraft:zombified_piglin".into(),
@@ -564,12 +614,17 @@ impl Game<'_> {
                     });
                     continue;
                 }
-                Species::Villager if !peaceful => {
+                Species::Villager if !peaceful && !keep => {
                     m.removed = true;
                     events.push(MobEvent::SpawnKind {
                         kind: "minecraft:witch".into(),
                         at,
-                        setup: setup(m),
+                        // Villager.thunderHit: the witch's convertTo runs
+                        // finalizeSpawn(CONVERSION); the zombified piglin's does not.
+                        setup: SpawnSetup {
+                            skip_finalize: false,
+                            ..setup(m)
+                        },
                     });
                     continue;
                 }
@@ -721,8 +776,60 @@ impl Game<'_> {
 }
 
 #[cfg(test)]
-mod viewer_tests {
-    use super::in_viewer_box;
+mod tests {
+    use super::*;
+    use horizon_client::mobs::{Anim, Brain, Mob, MobType, Part, Species};
+    use horizon_core::geometry::Vec3;
+    use std::sync::Arc;
+
+    /// `LightningBolt.spawnFire` places nothing, and draws no extra sources,
+    /// unless `canSpreadFireAround` passes at the bolt (#11376).
+    #[test]
+    #[ignore = "needs prepared resources (HORIZON_TEST_RESOURCES)"]
+    fn a_bolt_away_from_players_starts_no_fire() {
+        use horizon_client::gamerules::Value;
+        let mut game = super::super::native_machines::tests::server_game();
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap();
+        let air = game.res.facts().air;
+        game.world.set(8, 64, 8, stone).unwrap();
+        let bolt = [8.5, 65.0, 8.5];
+        // (radius, player's x): fires expected at the strike.
+        for (radius, player_x, fires) in [
+            (128, 12.5, true),
+            (1, 12.5, false),
+            (0, 8.5, false),
+            (-1, 1000.0, true),
+        ] {
+            game.world.set(8, 65, 8, air).unwrap();
+            game.ui
+                .rules
+                .set("fire_spread_radius_around_player", Value::Int(radius));
+            game.player = Some(
+                horizon_client::motion::PlayerMotion::new(
+                    game.motion,
+                    Vec3::new(player_x, 65.0, 8.5),
+                )
+                .unwrap(),
+            );
+            let random = game.world.random.clone();
+            let mut bolt_random = LegacyRandom::new(0);
+            let set = game.bolt_fire(bolt, 4, &mut bolt_random);
+            let burning = game.world.block(8, 65, 8) != air;
+            assert_eq!((set > 0, burning), (fires, fires), "radius {radius}");
+            if !fires {
+                // No offset draws either: the bolt's own random is untouched,
+                // and a bolt never draws from the level's.
+                assert_eq!(bolt_random.next_long(), LegacyRandom::new(0).next_long());
+                let mut before = random;
+                assert_eq!(game.world.random.next_long(), before.next_long());
+            }
+        }
+    }
 
     #[test]
     fn viewer_box_reaches_15_around_and_down_and_21_up() {
@@ -732,5 +839,87 @@ mod viewer_tests {
         assert!(!in_viewer_box(bolt, [0.0, 85.5, 0.0]));
         assert!(!in_viewer_box(bolt, [0.0, 48.5, 0.0]));
         assert!(!in_viewer_box(bolt, [15.5, 64.0, 0.0]));
+    }
+
+    /// `Pig.thunderHit`: striking a pig with lightning converts it to a zombified
+    /// piglin while preserving age (#7510).
+    #[test]
+    fn a_baby_pig_hit_by_lightning_becomes_a_baby_zombified_piglin() {
+        let make_pig = |baby: bool| {
+            let kind = Arc::new(MobType {
+                id: "minecraft:pig".into(),
+                species: Species::Pig,
+                width: 0.9,
+                height: 0.9,
+                eye_height: 0.85,
+                category: "creature".into(),
+                max_health: 10.0,
+                speed: 0.25,
+                flying_speed: 0.02,
+                attack_damage: 0.0,
+                attack_knockback: 0.0,
+                follow_range: 16.0,
+                step_height: 0.6,
+                armor: 0.0,
+                armor_toughness: 0.0,
+                knockback_resistance: 0.0,
+                jump_strength: 0.42,
+                attributes: Default::default(),
+                item_stack_limits: Default::default(),
+                gravity: 0.08,
+                safe_fall_distance: 3.0,
+                fall_damage_multiplier: 1.0,
+                water_efficiency: 0.0,
+                water_slowdown: 0.8,
+                air_speed: 0.02,
+                baby_scale: 0.5,
+                head_rot_speed: 10.0,
+                max_head_x_rot: 40.0,
+                max_head_y_rot: 75.0,
+                ambient_interval: 80,
+                flags: Default::default(),
+                model: Arc::new(Part {
+                    name: "root".into(),
+                    pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                    polygons: Vec::new(),
+                    children: Vec::new(),
+                }),
+                layers: Default::default(),
+                texture: String::new(),
+                brain: Brain::Passive,
+                anim: Anim::Quadruped,
+                sounds: ["", "", ""],
+                step_sound: None,
+                food: Default::default(),
+                tempt: Default::default(),
+            });
+            let mut pig = Mob::new(1, kind, Vec3::ZERO, 45.0);
+            if baby {
+                pig.extra.age = -24000;
+            }
+            pig
+        };
+
+        let adult_pig = make_pig(false);
+        assert!(!adult_pig.is_baby());
+        let adult_setup = thunder_mob_spawn_setup(&adult_pig);
+        assert!(!adult_setup.baby);
+        assert_eq!(adult_setup.yaw, 45.0);
+        assert!(adult_setup.persistent);
+
+        let baby_pig = make_pig(true);
+        assert!(baby_pig.is_baby());
+        let baby_setup = thunder_mob_spawn_setup(&baby_pig);
+        assert!(baby_setup.baby);
+        assert_eq!(baby_setup.yaw, 45.0);
+        assert!(baby_setup.persistent);
+
+        // When setup.baby is true, apply_setup sets m.extra.age = -24000,
+        // resulting in a baby mob (is_baby() == true).
+        let mut zombified = Mob::new(2, adult_pig.kind.clone(), Vec3::ZERO, 0.0);
+        if baby_setup.baby {
+            zombified.extra.age = -24000;
+        }
+        assert!(zombified.is_baby());
     }
 }

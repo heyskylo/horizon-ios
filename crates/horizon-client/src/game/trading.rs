@@ -12,7 +12,7 @@ use horizon_client::mobs::{
     villager,
 };
 use horizon_client::{
-    hud::{HudBatch, rgba},
+    hud::HudBatch,
     items::ItemStack,
     merchant::{self, MerchantOffer, TradeContext},
 };
@@ -321,7 +321,6 @@ impl Game<'_> {
         for (id, r) in std::mem::take(&mut session.sequences) {
             self.rand_sequences.give_back(id, r);
         }
-        let traded = std::mem::take(&mut session.last_traded);
         let Some(id) = state.mob else { return };
         let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
             return;
@@ -335,9 +334,6 @@ impl Game<'_> {
         let trade = m.extra.trade.get_or_insert_default();
         trade.xp = session.xp;
         trade.offers = session.offers.clone();
-        if traded && session.villager {
-            self.villager_traded(id);
-        }
     }
     /// Opens a merchant menu without a mob (horizon-ctl `trade`).
     pub(super) fn open_merchant(&mut self, profession: &str, variant: &str, level: i32) {
@@ -451,7 +447,18 @@ impl Game<'_> {
                     };
                     self.audio.play(sound, Some(origin), 1.0, pitch);
                 }
-                merchant::Event::Traded(_, offer) => traded.push(*offer),
+                merchant::Event::Traded(index, offer) => {
+                    // The mods may change the live offer (Bukkit's PlayerTradeEvent#getTrade).
+                    let trader = mob.and_then(|id| {
+                        let m = self.mobs.iter().find(|m| m.id == id)?;
+                        Some((id, super::native_hooks::mob_kind(m)))
+                    });
+                    if let (Some((id, kind)), Some(live)) = (trader, session.offers.get_mut(index))
+                    {
+                        self.native_merchant_offer_traded(id, &kind, live);
+                    }
+                    traded.push(*offer);
+                }
                 merchant::Event::TradeSound => {
                     let sound = if villager {
                         "minecraft:entity.villager.yes"
@@ -469,6 +476,13 @@ impl Game<'_> {
     /// `villager_trade` trigger, then the mods' `native_trade_with_villager`
     /// for a server's player (when the trader is still in the level).
     pub(super) fn merchant_traded(&mut self, mob: Option<u32>, offers: &[MerchantOffer]) {
+        if !offers.is_empty()
+            && let Some(id) = mob
+        {
+            // Record while the accepted trade is still in its real player's
+            // turn. The villager, not the menu's lifetime, owns the pending event.
+            self.villager_trade_pending(id);
+        }
         for offer in offers {
             self.award_custom_stat("traded_with_villager", 1);
             let merchant = mob.and_then(|id| self.mobs.iter().find(|m| m.id == id));
@@ -613,15 +627,8 @@ impl Game<'_> {
         );
         let offers = m.session.offers.clone();
         let costs: Vec<ItemStack> = offers.iter().map(|o| o.cost_a(self.items())).collect();
+        self.render_transparent_background("merchant", batch);
         let atlas = &self.gui.atlas;
-        batch.fill(
-            atlas,
-            0.0,
-            0.0,
-            batch.width,
-            batch.height,
-            rgba(16, 16, 16, 160),
-        );
         if let Some(mut r) = atlas.sprites.get("gui/container/villager").copied() {
             let (du, dv) = ((r.u1 - r.u0) / r.w as f32, (r.v1 - r.v0) / r.h as f32);
             r.u1 = r.u0 + 276.0 * du;

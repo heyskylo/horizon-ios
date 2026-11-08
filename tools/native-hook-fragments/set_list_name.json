@@ -1,0 +1,9 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "set_list_name", "target": "horizon_client::game::native_server::Game<'_>::native_set_list_name"}
+  ],
+  "rust_summary": "a player's styled Tab list name (`native_set_list_name`), as Bukkit's `Player.setPlayerListName`.",
+  "doc_summary": "`native_set_list_name(uuid, name)` shows styled text for a player in everyone's Tab list in place of their nickname or name (None: back), kept by UUID and sent with every later entry (a join, a vanish ending). Bundles need \"hooks\": @API:set_list_name@.",
+  "comments": ["crates/horizon-client/src/game/native_server.rs"]
+}

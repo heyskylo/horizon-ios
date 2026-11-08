@@ -1,14 +1,15 @@
 //! Splitscreen's profile page (Horizon's Splitscreen setting): a joining player picks a profile,
 //! or makes one, before entering P1's world, and a player in it switches to another from its
 //! pause menu (Splitscreen Settings), playing on until the new one can join. A profile is a name
-//! (kept in the game folder), with its own options. The
+//! (instance-local offline names and the launcher's Microsoft accounts), with its own options. The
 //! game fills the list when the page opens (`filled`), takes the choice, and says why a pick
-//! can't play (`refused`). Built from vanilla's widgets, as Horizon's own pages are.
+//! can't play (`refused`). Built from vanilla's widgets.
 use crate::{
-    gamepad::{Button as PadButton, GlyphStyle},
-    graphics_style::STYLE,
+    gamepad::MenuJob,
+    graphics_style,
     hud::{HudAtlas, HudBatch, rgba},
     lang,
+    pad_glyph::{self, Glyph, Glyphs},
     text::Text,
     ui,
 };
@@ -56,10 +57,12 @@ pub fn wrap(text: &str, max: f32, width: impl Fn(&str) -> f32) -> Vec<String> {
 pub struct SplitProfiles {
     /// The game filled the page since it opened.
     pub filled: bool,
-    /// The profiles; those playing now (none can be picked twice); and the one this player plays
-    /// as (switching; none while joining).
+    /// The profiles; those playing now (none can be picked twice); the signed-in Microsoft
+    /// accounts among them; and the one this player plays as (switching; none while joining).
     pub names: Vec<String>,
     pub taken: Vec<String>,
+    pub accounts: Vec<String>,
+    pub offline_accounts: Vec<String>,
     pub current: Option<String>,
     /// Why the last pick can't play (an online server, an expired sign-in), until the next.
     pub refused: Option<String>,
@@ -127,7 +130,7 @@ impl SplitProfiles {
     }
 
     fn editable(&self, name: &str) -> bool {
-        !self.taken.contains(&name.to_owned())
+        !self.accounts.contains(&name.to_owned()) && !self.taken.contains(&name.to_owned())
     }
 
     fn buttons(&self, w: f32, h: f32) -> Vec<Button> {
@@ -179,24 +182,34 @@ impl SplitProfiles {
             .skip(self.page() * SHOWN)
             .take(SHOWN)
         {
+            let microsoft = self.accounts.contains(name);
             let mut label = name.clone();
+            if microsoft {
+                label.push_str(&if self.offline_accounts.contains(name) {
+                    tr("horizon.splitscreen.profiles.offline", " (Offline)")
+                } else {
+                    tr("horizon.splitscreen.profiles.microsoft", " (Microsoft)")
+                });
+            }
             if self.current.as_ref() == Some(name) {
                 label.push_str(&tr("horizon.splitscreen.profiles.you", " - you"));
             }
             let y = 44.0 + (i % SHOWN) as f32 * 24.0;
             buttons.push((
-                [x, y, 176.0, 20.0],
+                [x, y, if microsoft { 200.0 } else { 176.0 }, 20.0],
                 label,
                 !self.taken.contains(name),
                 Target::Profile(i),
             ));
-            buttons.push((
-                [x + 180.0, y, 20.0, 20.0],
-                tr("horizon.splitscreen.profiles.forget_named", "Forget %s")
-                    .replacen("%s", name, 1),
-                self.editable(name),
-                Target::Remove(i),
-            ));
+            if !microsoft {
+                buttons.push((
+                    [x + 180.0, y, 20.0, 20.0],
+                    tr("horizon.splitscreen.profiles.forget_named", "Forget %s")
+                        .replacen("%s", name, 1),
+                    self.editable(name),
+                    Target::Remove(i),
+                ));
+            }
         }
         let mut y = 52.0 + self.names.len().min(SHOWN) as f32 * 24.0;
         if self.names.len() > SHOWN {
@@ -231,7 +244,7 @@ impl SplitProfiles {
         atlas: &HudAtlas,
         cursor: (f32, f32),
         in_world: bool,
-        style: GlyphStyle,
+        glyphs: Glyphs,
     ) {
         let (w, h) = (batch.width.ceil(), batch.height.ceil());
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, in_world);
@@ -241,7 +254,7 @@ impl SplitProfiles {
         };
         let buttons = self.buttons(w, h);
         if let Some(name) = &self.forgetting {
-            STYLE.title(
+            graphics_style::title(
                 batch,
                 atlas,
                 &Text::literal(tr(
@@ -272,7 +285,7 @@ impl SplitProfiles {
                 line(batch, why, 176.0, rgba(255, 85, 85, 255));
             }
         } else if let Some(field) = &mut self.new {
-            STYLE.title(
+            graphics_style::title(
                 batch,
                 atlas,
                 &Text::literal(tr("horizon.splitscreen.profiles.new_title", "New Profile")),
@@ -293,8 +306,8 @@ impl SplitProfiles {
                 ),
                 None => tr("horizon.pages.split_profiles", "Who's playing?"),
             };
-            STYLE.title(batch, atlas, &Text::literal(title));
-            self.draw_bumpers(batch, atlas, style);
+            graphics_style::title(batch, atlas, &Text::literal(title));
+            self.draw_bumpers(batch, atlas, glyphs);
             // Under Cancel: where offline profiles live.
             let y = buttons.last().map_or(0.0, |b| b.0[1] + 30.0);
             line(
@@ -322,9 +335,30 @@ impl SplitProfiles {
         for ([x, y, bw, bh], label, enabled, target) in &buttons {
             let hover = ui::hovered(cursor, *x, *y, *bw, *bh);
             let remove = matches!(target, Target::Remove(_));
+            if hover && let Target::Profile(i) = target {
+                let name = &self.names[*i];
+                if self.accounts.contains(name) {
+                    tip = Some(if self.offline_accounts.contains(name) {
+                        tr(
+                            "horizon.splitscreen.profiles.sign_in",
+                            "Sign in again in the launcher",
+                        )
+                    } else {
+                        tr("horizon.splitscreen.profiles.online", "Microsoft online")
+                    });
+                }
+            }
             let mut text = Text::literal(if remove { "" } else { label });
             if matches!(target, Target::Forget) {
                 text = text.with_color(0xFF5555);
+            }
+            let action = match target {
+                Target::Keep | Target::Cancel => Some(crate::widgets::Action::Cancel),
+                Target::Back => Some(crate::widgets::Action::Back),
+                _ => None,
+            };
+            if let Some(action) = action {
+                crate::widgets::declare_action(action, [*x, *y, *bw, *bh], *enabled);
             }
             ui::button(batch, atlas, *x, *y, *bw, *bh, &text, *enabled, hover);
             if remove {
@@ -367,7 +401,7 @@ impl SplitProfiles {
 
     /// Under the title: the bumpers as keys, as the prompts over a player's view draw them (the
     /// controller's own symbols, in its colours), then where they put the view.
-    fn draw_bumpers(&self, batch: &mut HudBatch, atlas: &HudAtlas, style: GlyphStyle) {
+    fn draw_bumpers(&self, batch: &mut HudBatch, atlas: &HudAtlas, glyphs: Glyphs) {
         let width = |text: &str| HudBatch::text_width(atlas, text).ceil();
         let words = match &self.place {
             Some(place) => tr(
@@ -377,31 +411,24 @@ impl SplitProfiles {
             .replacen("%s", place, 1),
             None => tr("horizon.splitscreen.profiles.move", "Move where you play"),
         };
-        let keys = [PadButton::LeftBumper, PadButton::RightBumper];
-        let key_width = |b: PadButton| width(b.label(style)) + 4.0;
+        let keys = [MenuJob::PagePrev, MenuJob::PageNext].map(|job| Glyph::menu(job, glyphs));
+        let key_width = |b: Glyph| pad_glyph::width(atlas, b);
         let total = keys.iter().map(|&b| key_width(b) + 4.0).sum::<f32>() + 2.0 + width(&words);
         let (mut x, y) = (((batch.width - total) / 2.0).floor(), 30.0);
         for b in keys {
-            let [r, g, bl] = b.color(style);
             let kw = key_width(b);
-            // A light edge around the dark key: it stands out on the menu's dark background.
-            batch.fill(
-                atlas,
-                x - 2.0,
-                y - 3.0,
-                kw + 2.0,
-                13.0,
-                rgba(170, 170, 170, 255),
-            );
-            batch.fill(atlas, x - 1.0, y - 2.0, kw, 11.0, rgba(40, 40, 40, 255));
-            batch.text(
-                atlas,
-                b.label(style),
-                x + 1.0,
-                y,
-                rgba(r, g, bl, 255),
-                false,
-            );
+            // A light edge around a dark key: it stands out on the menu's dark background.
+            if pad_glyph::art(atlas, b).is_none() {
+                batch.fill(
+                    atlas,
+                    x - 2.0,
+                    y - 3.0,
+                    kw + 2.0,
+                    pad_glyph::HEIGHT + 2.0,
+                    rgba(170, 170, 170, 255),
+                );
+            }
+            pad_glyph::draw(batch, atlas, b, x, y);
             x += kw + 4.0;
         }
         batch.text(atlas, &words, x + 2.0, y, rgba(240, 240, 240, 255), true);
@@ -584,12 +611,29 @@ mod tests {
             names: (0..11).map(|i| format!("Player{i}")).collect(),
             ..Default::default()
         };
+        p.accounts = vec!["Player10".into()];
         press(&mut p, &atlas, "Next");
         press(&mut p, &atlas, "Next");
-        press(&mut p, &atlas, "Player10");
+        press(&mut p, &atlas, "Player10 (Microsoft)");
         assert_eq!(p.take_choice(), Some(Some("Player10".into())));
         press(&mut p, &atlas, "Previous");
         assert!(p.buttons(427.0, 240.0).iter().any(|b| b.1 == "Player4"));
+    }
+
+    #[test]
+    fn unavailable_accounts_are_marked_and_cannot_be_forgotten() {
+        let mut p = SplitProfiles {
+            names: vec!["Cal".into()],
+            accounts: vec!["Cal".into()],
+            offline_accounts: vec!["Cal".into()],
+            ..Default::default()
+        };
+        assert!(!p.editable("Cal"));
+        let buttons = p.buttons(427.0, 240.0);
+        assert!(buttons.iter().any(|b| b.1 == "Cal (Offline)" && b.2));
+        assert!(!buttons.iter().any(|b| b.1 == "Forget Cal"));
+        press(&mut p, &atlas(), "Cal (Offline)");
+        assert_eq!(p.take_choice(), Some(Some("Cal".into())));
     }
 
     #[test]

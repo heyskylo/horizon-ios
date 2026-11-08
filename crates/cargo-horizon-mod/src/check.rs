@@ -93,7 +93,7 @@ pub fn kind_of(path: &Path) -> Option<Kind> {
         "hmod" => Some(Kind::Mod),
         "hnmod" => Some(Kind::NativeMod),
         "hpack" => Some(Kind::Modpack),
-        "zip" => Some(Kind::ResourcePack),
+        "zip" => Some(horizon_mods::index::zip_kind(path)),
         "hshader" => Some(Kind::Shader),
         _ => None,
     }

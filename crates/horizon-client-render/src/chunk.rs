@@ -14,12 +14,14 @@ pub const MIN_Y: i32 = -64;
 pub const HEIGHT: i32 = 384;
 pub const SECTIONS: usize = (HEIGHT / 16) as usize;
 
-/// A level's build range and skylight, from its dimension type (`min_y`,
-/// `height`, `logical_height`, `has_skylight`), as `LevelHeightAccessor` and
-/// `SerializableChunkData.write` read them.
+/// A level's build range, skylight and ceiling, from its dimension type
+/// (`min_y`, `height`, `logical_height`, `has_skylight`, `has_ceiling`), as
+/// `LevelHeightAccessor` and `SerializableChunkData.write` read them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LevelShape {
     pub sky_light: bool,
+    /// `DimensionType.hasCeiling`: weather, spawning and maps read it.
+    pub has_ceiling: bool,
     pub min_y: i32,
     pub height: i32,
     /// `DimensionType.logicalHeight`: how high portals and chorus fruit reach.
@@ -28,18 +30,21 @@ pub struct LevelShape {
 impl LevelShape {
     pub const OVERWORLD: Self = Self {
         sky_light: true,
+        has_ceiling: false,
         min_y: MIN_Y,
         height: HEIGHT,
         logical_height: HEIGHT,
     };
     pub const NETHER: Self = Self {
         sky_light: false,
+        has_ceiling: true,
         min_y: 0,
         height: 256,
         logical_height: 128,
     };
     pub const END: Self = Self {
         sky_light: true,
+        has_ceiling: false,
         min_y: 0,
         height: 256,
         logical_height: 256,
@@ -50,6 +55,7 @@ impl LevelShape {
         height: i32,
         logical_height: i32,
         sky_light: bool,
+        has_ceiling: bool,
     ) -> Result<Self, String> {
         ColumnLayout::new(min_y, height)?;
         if !(0..=height).contains(&logical_height) {
@@ -59,6 +65,7 @@ impl LevelShape {
         }
         Ok(Self {
             sky_light,
+            has_ceiling,
             min_y,
             height,
             logical_height,
@@ -218,11 +225,42 @@ pub const BIOME_STRATEGY: Strategy = Strategy::biomes(8);
 /// (what vanilla servers and clients send), more when content mods add states
 /// past 65,536 (docs/modpacks.md). Set once, before the first chunk.
 static BLOCK_BITS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(16);
+/// States in the registry, set with [`BLOCK_BITS`].
+static BLOCK_STATES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
 
 /// Block states are `PalettedContainer`s over the registry: vanilla's 16-bit
 /// global palette, wider with enough content mods.
 pub fn block_strategy() -> Strategy {
     Strategy::blocks(BLOCK_BITS.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Whether the registry has this state. Every id is known until the registry is loaded.
+pub fn known_block_state(id: u32) -> bool {
+    id < BLOCK_STATES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A server's block container in our palette width. Ids past our registry (a
+/// server or host with mods we lack) read as air: every per-state table is
+/// indexed by them, and a palette's unused entries are scanned too.
+pub fn known_blocks_only(blocks: PalettedContainer) -> PalettedContainer {
+    let ours = block_strategy();
+    let unknown = |id: u32| !known_block_state(id) || u64::from(id) >> ours.global_bits != 0;
+    let any_unknown = if blocks.is_global() {
+        blocks.has(unknown)
+    } else {
+        blocks.maybe_has(unknown)
+    };
+    if !any_unknown && blocks.strategy().global_bits == ours.global_bits {
+        return blocks;
+    }
+    let mut values = [0u32; 4096];
+    blocks.unpack(&mut values);
+    for value in &mut values {
+        if unknown(*value) {
+            *value = 0;
+        }
+    }
+    PalettedContainer::from_values(ours, &values)
 }
 
 /// Frees `columns` (`count` of them) on a short-lived thread of its own
@@ -243,6 +281,10 @@ pub fn free_columns<T: Send + 'static>(columns: T, count: usize) {
 pub fn set_block_states(states: usize) {
     let bits = horizon_core::paletted::ceil_log2(states).max(16);
     BLOCK_BITS.store(bits, std::sync::atomic::Ordering::Relaxed);
+    BLOCK_STATES.store(
+        u32::try_from(states).unwrap_or(u32::MAX),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     forget_shared();
 }
 
@@ -315,6 +357,24 @@ impl Light {
     }
     /// The smallest form of packed light per block.
     pub fn packed(light: Box<[u8; 4096]>) -> Self {
+        match Self::classify(&light) {
+            (false, false, first) => Self::Uniform(first),
+            (true, false, first) => Self::Sky(Self::pack_layer(&light, 4), first & 15),
+            (false, true, first) => Self::Block(Self::pack_layer(&light, 0), first >> 4),
+            (true, true, _) => Self::Full(light),
+        }
+    }
+    /// The smallest form of packed light per block, allocating a 4 KiB box only
+    /// when both sky and block light vary within the section.
+    pub fn from_slice(light: &[u8; 4096]) -> Self {
+        match Self::classify(light) {
+            (false, false, first) => Self::Uniform(first),
+            (true, false, first) => Self::Sky(Self::pack_layer(light, 4), first & 15),
+            (false, true, first) => Self::Block(Self::pack_layer(light, 0), first >> 4),
+            (true, true, _) => Self::Full(Box::new(*light)),
+        }
+    }
+    fn classify(light: &[u8; 4096]) -> (bool, bool, u8) {
         let first = light[0];
         let (mut sky_varies, mut block_varies) = (false, false);
         for &v in light.iter() {
@@ -322,19 +382,14 @@ impl Light {
             sky_varies |= d & 0xF0 != 0;
             block_varies |= d & 15 != 0;
         }
-        let layer = |shift: u32| {
-            let mut layer = Box::new([0u8; 2048]);
-            for (out, pair) in layer.iter_mut().zip(light.as_chunks::<2>().0) {
-                *out = (pair[0] >> shift & 15) | (pair[1] >> shift & 15) << 4;
-            }
-            layer
-        };
-        match (sky_varies, block_varies) {
-            (false, false) => Self::Uniform(first),
-            (true, false) => Self::Sky(layer(4), first & 15),
-            (false, true) => Self::Block(layer(0), first >> 4),
-            (true, true) => Self::Full(light),
+        (sky_varies, block_varies, first)
+    }
+    fn pack_layer(light: &[u8; 4096], shift: u32) -> Box<[u8; 2048]> {
+        let mut layer = Box::new([0u8; 2048]);
+        for (out, pair) in layer.iter_mut().zip(light.as_chunks::<2>().0) {
+            *out = (pair[0] >> shift & 15) | (pair[1] >> shift & 15) << 4;
         }
+        layer
     }
     /// The packed light of blocks `at..at + out.len()`, into `out`.
     #[inline]
@@ -534,7 +589,7 @@ pub struct Chunk {
     /// Block entities read from a save, moved into the world on arrival.
     pub block_entities: Vec<((i32, i32, i32), block_entity::BlockEntity)>,
     /// `CustomName` of the container block entities (shown as the screen title).
-    pub block_names: Vec<((i32, i32, i32), String)>,
+    pub block_names: Vec<((i32, i32, i32), Tag)>,
     /// Generation postprocessing marks (ProtoChunk.postProcessing) as world
     /// positions, applied once by LevelChunk.postProcessGeneration.
     pub postprocess: Vec<[i32; 3]>,
@@ -576,6 +631,14 @@ impl Chunk {
             postprocess: Vec::new(),
             saved: None,
             entities: Vec::new(),
+        }
+    }
+    /// The original `structures.starts`, including starts with unknown pieces.
+    pub fn saved_structure_starts(&self) -> Option<&horizon_world::nbt::Compound> {
+        let structures = self.saved.as_ref()?.root.get(&"structures".into())?;
+        match structures.get("starts")? {
+            horizon_world::nbt::Tag::Compound(starts) => Some(starts),
+            _ => None,
         }
     }
     /// The minimum block Y of the column.
@@ -808,7 +871,10 @@ impl RolledLoot {
     /// Puts the loot table back in place of `Items` while they are still the
     /// roll; false once the container holds anything else.
     pub fn restore(&self, map: &mut Compound) -> bool {
-        if map.get(&"Items".into()) != Some(&self.items) {
+        // An empty shulker box saves no `Items`, which matches an empty roll.
+        let saved = map.get(&"Items".into());
+        let empty = matches!(&self.items, Tag::List(l) if l.is_empty());
+        if saved != Some(&self.items) && !(saved.is_none() && empty) {
             return false;
         }
         map.remove(&"Items".into());
@@ -1019,12 +1085,15 @@ mod tests {
         assert_eq!(tall.section_index(2032), None);
         assert_eq!(tall.section_y(130), 2016);
         assert_eq!(
-            LevelShape::new(-64, 384, 384, true),
+            LevelShape::new(-64, 384, 384, true, false),
             Ok(LevelShape::OVERWORLD)
         );
-        assert_eq!(LevelShape::new(0, 256, 128, false), Ok(LevelShape::NETHER));
-        assert!(LevelShape::new(0, 256, 257, true).is_err());
-        assert!(LevelShape::new(-60, 384, 384, true).is_err());
+        assert_eq!(
+            LevelShape::new(0, 256, 128, false, true),
+            Ok(LevelShape::NETHER)
+        );
+        assert!(LevelShape::new(0, 256, 257, true, false).is_err());
+        assert!(LevelShape::new(-60, 384, 384, true, false).is_err());
     }
 
     #[test]
@@ -1032,9 +1101,9 @@ mod tests {
         for shape in [LevelShape::OVERWORLD, LevelShape::NETHER, LevelShape::END] {
             assert_eq!(shape.column(), ColumnLayout::VANILLA, "{shape:?}");
         }
-        let tall = LevelShape::new(-64, 2096, 2096, true).unwrap();
+        let tall = LevelShape::new(-64, 2096, 2096, true, false).unwrap();
         assert_eq!(tall.column(), ColumnLayout::new(-64, 2096).unwrap());
-        let deep = LevelShape::new(-512, 256, 256, false).unwrap();
+        let deep = LevelShape::new(-512, 256, 256, false, true).unwrap();
         assert_eq!(deep.column(), ColumnLayout::new(-512, 832).unwrap());
         assert!(LevelShape::NETHER.has_section(15) && !LevelShape::NETHER.has_section(16));
         assert!(!LevelShape::NETHER.has_section(-1));

@@ -41,13 +41,14 @@ public final class VanillaSoundEngineOracle {
 
     /** A minecart the minecart sound instances follow. */
     public static final class Cart extends Minecart {
+        boolean silent;
         Cart() {
             super(null, null);
         }
 
         @Override
         public boolean isSilent() {
-            return false;
+            return silent;
         }
     }
 
@@ -94,6 +95,7 @@ public final class VanillaSoundEngineOracle {
                             case "loop" -> new BiomeAmbientSoundsHandler.LoopSoundInstance(event);
                             case "uloop" -> new UnderLiquidAmbientSoundInstance(event, actor, LocalPlayer::isUnderWater);
                             case "usub" -> sub.newInstance(actor, event);
+                            case "bound" -> new EntityBoundSoundInstance(event,SoundSource.values()[Integer.parseInt(a[4])],f(a[5]),f(a[6]),carts.get(a[15]),seed);
                             case "cart" -> new MinecartSoundInstance(carts.get(a[3]));
                             case "rcart", "rcartu" -> new RidingMinecartSoundInstance(actor, carts.get(a[3]), a[2].equals("rcartu"),
                                 a[2].equals("rcartu") ? SoundEvents.MINECART_INSIDE_UNDERWATER : SoundEvents.MINECART_INSIDE, 0.0F, 0.75F, 1.0F);
@@ -124,14 +126,16 @@ public final class VanillaSoundEngineOracle {
                         actor.underwater = a[1].equals("1");
                         VanillaSoundRig.set(actor, Entity.class, "removalReason", a[2].equals("1") ? Entity.RemovalReason.DISCARDED : null);
                     }
-                    case "cart" -> {
+                    case "cart", "cartnew" -> {
                         // cart name x y z dx dy dz removed
                         Cart cart = carts.get(a[1]);
-                        if (cart == null) {
+                        if (cart == null || a[0].equals("cartnew")) {
+                            if(cart != null)VanillaSoundRig.set(cart,Entity.class,"removalReason",Entity.RemovalReason.DISCARDED);
                             cart = VanillaSoundRig.make(Cart.class);
                             VanillaSoundRig.set(cart, Entity.class, "level", level);
                             carts.put(a[1], cart);
                         }
+                        cart.silent=a.length>9 && a[9].equals("1");
                         VanillaSoundRig.set(cart, Entity.class, "position", new Vec3(d(a[2]), d(a[3]), d(a[4])));
                         VanillaSoundRig.set(cart, Entity.class, "deltaMovement", new Vec3(d(a[5]), d(a[6]), d(a[7])));
                         VanillaSoundRig.set(cart, Entity.class, "removalReason", a[8].equals("1") ? Entity.RemovalReason.DISCARDED : null);

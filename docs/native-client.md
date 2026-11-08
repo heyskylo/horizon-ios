@@ -12,6 +12,53 @@ in vanilla's Anvil format.
 in the README scores each subsystem against vanilla and lists what is still
 missing; [Rust rewrite status](rust-parity.md) has the details.
 
+On Windows, the launcher uses a stable executable path for each game home across
+release and native-mod updates. Its private runtime copy lives under the launcher's
+data folder in `run/<home key>/game/`; installed versions remain intact. Opening a
+world to other machines can still require an initial Windows Firewall permission.
+The launcher does not create firewall rules or change network-profile settings.
+
+## musl Linux: manual installation
+
+On x86-64 musl distributions, download `horizon-linux-musl-x86_64.tar.gz` from the
+[Nightly release](https://github.com/horizon-rust/horizon/releases/tag/nightly), when available. This optional
+build is omitted if its build fails. The launcher does not install or update it. Its desktop gameplay and
+vanilla parity are still unverified; see the [musl build limitations](release-flow.md#builds).
+
+You need a working X11 or Wayland desktop, musl, libgcc, ALSA and libudev. For Vulkan, install both the loader
+(`libvulkan.so.1`) and your GPU's driver. On Alpine, the common runtime packages are:
+
+```sh
+sudo apk add musl libgcc alsa-lib eudev-libs vulkan-loader
+```
+
+Install the appropriate Mesa/Vulkan driver and window-system libraries for your desktop separately; OpenGL
+also needs a working musl-compatible OpenGL/EGL stack. NVIDIA's proprietary userspace drivers require glibc
+and cannot be loaded by this build; see [Alpine's GPU requirements](https://wiki.alpinelinux.org/wiki/Requirements).
+
+Resource preparation needs a **musl-compatible system JDK 25** (including `java` and `javac`). Mojang's bundled
+Linux Java runtime needs glibc. Install JDK 25 from your distribution or another musl-compatible provider,
+set `JAVA_HOME` to that JDK, and check `"$JAVA_HOME/bin/java" -version`. You also need your own Minecraft Java
+Edition 26.3 installation and its server jar. Download the server jar yourself from the `downloads.server.url`
+in that version's launcher JSON. Horizon's preparer does not download it.
+
+Extract the archive and, inside its folder, run the following with your actual paths:
+
+```sh
+./horizon-prepare --prepare --minecraft-dir /path/to/minecraft --server-jar /path/to/server.jar
+./horizon-prepare sounds --minecraft-dir /path/to/minecraft
+./horizon-client --resources "$PWD/.local/horizon-client/26.3"
+```
+
+The sounds command copies the sounds from your Minecraft installation's asset store. If that store is
+incomplete, obtain the missing assets through your Minecraft launcher first. Preparation details and alternative
+layouts are described below.
+
+Updates are manual: download and extract the next musl archive, prepare its resources, and use that version's
+programs. Keep your saves in a separate `HORIZON_HOME` and point each version at it. Back up saves before
+updating. The bundled `horizon-server` also refuses automatic updates because the server update archives use
+glibc. An absent musl archive is not a reason to install the glibc archive on a musl system.
+
 ## Run from a checkout
 
 Use current stable Rust (1.90+) and JDK 25 (Python 3.10+ only for the development
@@ -74,6 +121,10 @@ cargo run --release -p horizon-client -- --render-distance 12
 
 Development builds that link quickly: `cargo build --profile fast -p horizon-client`.
 
+`HORIZON_OCCLUSION_PROFILE=1` enables detailed entity-occlusion phase and bounds-scan timings
+in `horizon-ctl stats` and `bench`. The normal benchmark keeps these CPU-clock reads disabled;
+query, cache-hit and cull counters remain available without profiling.
+
 Optional Windows allocator build features are documented in
 [Windows allocator experiments](windows-allocators.md).
 
@@ -109,7 +160,125 @@ listening; `HORIZON_AUDIO=1` opens it there anyway, so send it to a null sink
 (`PIPEWIRE_PROPS='{ target.object=<sink> node.dont-fallback=true }'`). Don't
 mute a test run's stream in the mixer: PipeWire remembers the mute for every
 later `horizon-client`. The launcher starts the game as "Horizon" for that
-reason.
+reason. On Linux, Horizon requests a 1024-frame fixed buffer for lower latency;
+if your audio server underruns (e.g. PipeWire with `min-quantum` ≥ 1024), set
+`HORIZON_AUDIO_BUFFER=2048` or `HORIZON_AUDIO_BUFFER=default` to use the backend's
+default buffer size.
+
+### Experimental older servers
+
+The native Rust adapter recognizes 26.2, 26.1.x, 1.21.11, 1.21.9/1.21.10,
+1.21.7/1.21.8, 1.21.6, 1.21.5, 1.21.4, 1.21.2/1.21.3, 1.21/1.21.1,
+1.20.5/1.20.6, 1.20.3/1.20.4 and 1.20.2. It is off by default while compatibility is incomplete. Set
+`HORIZON_OLDER_SERVERS=1` before starting the game; the server's status ping selects
+the adapter. The client still needs its prepared **26.3** resources.
+
+```sh
+HORIZON_OLDER_SERVERS=1 cargo run --profile fast -p horizon-client -- --server 127.0.0.1:25565
+```
+
+In PowerShell, set `$env:HORIZON_OLDER_SERVERS = '1'`, then run the same Cargo
+command without the environment assignment at its start.
+
+This does not load Fabric JARs or emulate every older version's movement and
+combat. Older item components still have gaps; a recognized protocol is not a
+promise of complete compatibility. The 1.21.6 and 1.21.7/1.21.8 adapters use vanilla
+packet layouts shared by these releases, with separate item/sound mappings for
+1.21.6. The 1.21.5 adapter also removes vanilla's chunk-buffer padding and converts crouch/action commands,
+hanging-entity metadata and the pre-1.21.6 attribute-modifier/equippable layouts.
+The 1.21.4 bridge converts its older chunks, tooltip flags, nested stacks, chat,
+team rules and entity metadata. Old inventory clicks use the server's authoritative
+slot/cursor resynchronization. Smithing previews follow the server's synced trim
+registry; inline 1.21.4 trim holders and templates outside the known vanilla item
+set remain unsupported.
+The 1.21.2/1.21.3 bridge also handles particle flags and client-chosen trail lifetimes,
+vehicle movement, tab-list hats, integer custom-model data, old creaking-heart states
+and the transient creaking type. Custom-model data uses the first float when sent
+back; integers beyond exact float precision can lose precision. Server-delegated
+block/entity picking is not supported on 1.20.2 through 1.21.3, whose old pick packet
+requires a client inventory index instead of a world target.
+The 1.21/1.21.1 bridge converts older recipe declarations and book updates, food
+consumption data, potions, instruments, teleports, inventory windows and settings.
+Boat wood variants become their corresponding modern entity types, retaining
+movement, metadata and passengers when recreated. Old explosions preserve their
+radius, destroyed-block updates and knockback. Custom recipe serializers and
+consumable effects without an old representation remain unsupported.
+The 1.20.5/1.20.6 bridge also converts UUID-based attribute modifiers, food without
+a remainder field, horse inventory sizes, projectile acceleration and item-use
+packets without rotation. Static enchantment and painting names are supplied in
+their original wire-id order; their definitions use the client's prepared resources.
+Old modifier names become vanilla's canonical identifiers and cannot retain arbitrary
+original display names on write-back. New identifiers without a known old UUID
+receive a stable generated UUID, so their original identifier is lost on a round trip.
+The old three-component projectile acceleration is represented by its
+magnitude; a custom direction independent of velocity has no scalar representation.
+Wolf registry references on 1.21 through 1.21.4 are normalized past their older
+holder encoding; inline wolf definitions on those versions remain unsupported.
+The 1.20.3/1.20.4 bridge splits the whole-NBT registry sync and upgrades legacy
+NBT item stacks through Horizon's datafixes. A connection-local cache retains original
+tags for unchanged stacks, bounded to 1,024 entries and 8 MiB of serialized values;
+ambiguous normalized keys, evicted entries and entries over 256 KiB use semantic
+reconstruction. Modified entity/block-entity data has no general reverse datafix,
+and newer components without an old field cannot be represented. Incoming block-entity
+updates and chunk entries use forward datafixes for banner patterns, skull profiles,
+text and nested inventory stacks, retaining opaque fields and the original tag identity.
+Independent vanilla fixtures cover these conversions; they do not establish full rendered parity. Static banners,
+enchantments, paintings, instruments and the original wolf coat use vanilla names.
+Old recipes, trades, horse equipment, attribute/effect metadata and particles are
+translated; legacy commands retain the chat tracker's acknowledgement even without
+signable arguments. Full older movement, combat and particle behavior parity remains
+unfinished. Authentication follows the login encryption request, and old secure-chat
+enforcement is applied when server data arrives; online-mode chat remains unvalidated.
+The 1.20.2 bridge converts JSON component fields to NBT while retaining real NBT
+and the login-disconnect JSON exception. It selects saved-item data version 3578,
+handles width-first shaped recipes and grass/short_grass names, splits old score
+removals, supplies absent objective/explosion fields from vanilla defaults and
+reads vibration source identifiers. Its single server resource-pack slot uses
+connection state across configuration and play; newer intermediate statuses have
+no old response. Pack replacement and asynchronous results retain native pack
+generation identity. Vanilla's global inactive-pack failure policy still applies,
+including a late failed download affecting newly pending packs. Advanced mutated
+entity NBT has no general reverse schema, including old projectile potion data.
+Structured hover-item and hover-entity rendering still has native gaps; verified
+wire-text conversion does not establish complete interactive hover behavior.
+Online-mode login and complete interactive playthroughs on these versions
+have not been validated. Earlier Java releases, Classic/Alpha/Beta,
+April Fools and Bedrock are outside the implemented adapter set.
+
+For a protocol-only development check, append `--server-protocol 772` to
+`cargo run -p horizon-protocol --example protocol_probe -- 127.0.0.1:25565 20`.
+The probe fails if it encounters packet or chunk decode errors.
+Use `--server-protocol 764` for 1.20.2, `765` for 1.20.3/1.20.4, `766` for 1.20.5/1.20.6,
+`767` for 1.21/1.21.1, `768` for 1.21.2/1.21.3, `769` for 1.21.4, `770` for 1.21.5, or `771` for 1.21.6;
+1.21.7 and 1.21.8 both use `772`.
+
+The registry mappings and named pinned IDs are generated from official vanilla
+reports. `tools/regenerate_registry_id_adapters.py` records each release's exact
+rename, reassignment, state-alias, inheritance and static-name options. Each
+release listed in `RELEASES` needs `VERSION/jars/client.jar` and its matching
+official `VERSION/datagen/reports/{registries,blocks}.json`. For unobfuscated
+26.1+ releases, `tools/version_port.py prepare VERSION --download` supplies these.
+For older releases, use owned official client jars and reports exported by the
+matching vanilla server's data generator:
+
+```sh
+java -DbundlerMainClass=net.minecraft.data.Main -jar VERSION/jars/server.jar --reports --output VERSION/datagen
+```
+
+With those inputs prepared, run:
+
+```sh
+python3 tools/regenerate_registry_id_adapters.py --versions /path/to/prepared/versions
+python3 tools/regenerate_registry_id_adapters.py --versions /path/to/prepared/versions --check
+```
+
+The version store defaults to `HORIZON_VERSIONS` (or `~/code/horizon-parity/versions`).
+The pin uses the repository's imported `.local/` jar and reports; `--new DIR`
+selects a separately prepared pin. `--only VERSION...` selects releases while
+still checking pinned constants. `--check` writes no tracked files and fails if
+any output differs; regeneration itself downloads nothing. This checks
+report-derived IDs; gameplay still needs its parity harnesses. When bumping the
+pin, regenerate these files and review the mappings with its reports.
 
 ### Agent control (`horizon-ctl` and MCP)
 
@@ -225,7 +394,9 @@ in an MCP client as a stdio server with the command `horizon-ctl` and the
 argument `mcp` (`--socket PATH` before `mcp` to pick a socket).
 
 **Transport.** On Linux and macOS the endpoint is a Unix socket:
-`$HORIZON_CONTROL`, else `$XDG_RUNTIME_DIR/horizon-control.sock`, or
+`$HORIZON_CONTROL`, else `$XDG_RUNTIME_DIR/horizon-control.sock` (without a runtime
+directory and with a temporary directory every user shares, as `/tmp`,
+`horizon-<uid>/horizon-control.sock` in it, a folder only that user may open), or
 `--control-socket PATH` (`horizon-ctl --socket PATH`). Windows has no Unix
 sockets: there the game listens on a random `127.0.0.1` port and writes
 `{"transport":"tcp","port":N,"token":"..."}` to the endpoint path
@@ -241,18 +412,10 @@ the inventory screen and places one, through the CLI and through MCP.
 constant speed and replies with the same summary as `bench` (avg/1%-low FPS and
 p50/p95/p99/max frame times), plus CPU and GPU time per frame; [the graphics
 benchmark](graphics.md#benchmark) is built on it. Frame times include waits for
-presentation, so `bench` reports what is on screen.
-
-### RAM limit
-
-`HORIZON_MEMORY_LIMIT_MB` (the launcher sets it) and `/ramlimit`, `/ramlimit <MB>`, `/ramlimit off` limit
-the RAM the game holds; the command lasts until the game closes and works on any server, as the window
-answers it. On Windows the system enforces the limit with a hard working set limit, so memory the game
-uses least moves out of RAM and a low limit costs speed. If the game is also slow and faulting hard, far
-terrain goes off and the render distance in use drops, never the saved option, and both come back when
-there is room. Linux and macOS have no such limit: there the game steps down before it reaches the limit.
-The game ends with a crash report only when it can't run under the limit: on Windows no frame for a minute
-while faulting hard, elsewhere 20 seconds over the limit with nothing left to give up.
+presentation, so `bench` reports what is on screen. With asynchronous entity
+culling active, the summary also includes `async_occlusion_culling`: cache hits
+and misses, worker time, queued and skipped queries, budget limits, and entity
+vertices culled.
 
 ### Discord Rich Presence
 
@@ -278,9 +441,9 @@ the large one; there are no game-mode images yet.
 
 ### Play on another of your machines
 
-Horizon targets Linux on x86-64 with an NVIDIA GPU (Vulkan); macOS and Windows
-are out of scope. To play on another Linux machine
-without Rust, JDK or prepared resources, package a release build where they exist:
+Horizon targets desktop Linux, macOS and Windows (see [Windows ARM64](windows-arm64.md)).
+To play on another machine without Rust, JDK or prepared resources,
+package a release build where they exist:
 
 ```sh
 cargo build --release -p horizon-client
@@ -815,7 +978,6 @@ without an error. Both views were inspected. The
 [renderer startup check](../benchmarks/rust-native-crouch-2026-10-07/startup-smoke.json),
 seven client tests and all-target client Clippy also passed. These checks do not
 establish full vanilla gameplay or final Linux release acceptance on the target machine.
-
 
 ## Pending attribute updates
 

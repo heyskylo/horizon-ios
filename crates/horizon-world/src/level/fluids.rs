@@ -1,7 +1,7 @@
 //! `FlowingFluid` (water and lava) ticking and spreading, `LiquidBlock`
 //! interactions, liquid containers (waterlogging) and bucket pickup.
 use super::{
-    Behaviours, Dimension, LevelAccess, Sim, Spread,
+    Behaviours, LevelAccess, Sim, Spread,
     classes::{Class, Interface},
     update::{HORIZONTAL, above, below, rel},
 };
@@ -105,7 +105,7 @@ impl Behaviours {
 
 impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     fn fast_lava(&self) -> bool {
-        self.level.dimension() == Dimension::Nether
+        self.level.dimension_type().fast_lava
     }
     /// `Fluid.getTickDelay`.
     pub(crate) fn fluid_tick_delay(&self, kind: FluidKind) -> i32 {
@@ -176,6 +176,12 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let index = self.b.facts(state).shape;
         match self.b.collision_shape(state) {
             Some(shape) => (index, shape),
+            // `getCollisionShape(level, pos)` runs with `CollisionContext.empty()`,
+            // under which scaffolding is above the block and not descending: it
+            // reads as the stable shape. The other dynamic shapes stay empty.
+            None if self.b.data(state).is(Class::Scaffolding) => {
+                (-1, crate::dynamic_support::scaffolding_stable_shape_ref())
+            }
             None => (-1, VoxelShape::empty_ref()),
         }
     }
@@ -260,7 +266,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             if data.is(Class::Campfire) {
                 self.emit(super::LevelEvent::Sound {
                     pos,
-                    sound: "minecraft:block.generic.extinguish_fire".into(),
+                    sound: "minecraft:entity.generic.extinguish_fire".into(),
                     volume: 1.0,
                     pitch: 1.0,
                 });

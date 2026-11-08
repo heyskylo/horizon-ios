@@ -7,7 +7,7 @@ use horizon_client::{
     assets::Assets,
     gfx::PreparedTextures,
     hud::HudAtlas,
-    lang,
+    lang, pack_browser,
     pack_screen::{self, Compat, PackInfo, Source as PackSource},
     packs::{self, Pack, Position},
     streaming::WorkerContext,
@@ -30,16 +30,11 @@ pub fn packs_dir() -> PathBuf {
         .unwrap_or_default()
         .join("resourcepacks")
 }
+mod folder;
+
 /// `Util.getPlatform().openPath`: the system file manager on the folder.
 pub fn open_folder(dir: &Path) {
-    let program = if cfg!(target_os = "windows") {
-        "explorer"
-    } else if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
-    };
-    if let Err(e) = std::process::Command::new(program).arg(dir).spawn() {
+    if let Err(e) = folder::command(dir).and_then(|mut command| command.spawn()) {
         log::warn!("Horizon: could not open {}: {e}", dir.display());
     }
 }
@@ -55,17 +50,21 @@ pub fn open_uri(uri: &str) {
     #[cfg(not(windows))]
     open_folder(Path::new(uri));
 }
-/// The resource root to load from, given the vanilla root, the selection and
-/// a server's packs, which go on top (`Pack.Position.TOP`, fixed).
+/// The resource root to load from: the selection and a server's packs, which go on top
+/// (`Pack.Position.TOP`, fixed), laid over `base`. `base` is the mods' content root
+/// ([`super::mods::content_root`] of `vanilla`), so mod resources sit below the player's packs
+/// as in vanilla, and a pack change leaves the content root's cache alone (#12403). Built-in
+/// packs are found in `vanilla`.
 pub fn startup_root(
     vanilla: &Path,
+    base: &Path,
     selected: &[String],
     server: &[Pack],
 ) -> std::io::Result<PathBuf> {
     let all = packs::discover(vanilla, &packs_dir());
     let mut enabled = packs::enabled(&all, selected);
     enabled.extend_from_slice(server);
-    packs::resource_root(vanilla, &enabled, &cache_dir())
+    packs::resource_root(base, &enabled, &cache_dir())
 }
 fn info(p: &Pack) -> PackInfo {
     let built_in = !p.id.starts_with("file/");
@@ -140,6 +139,29 @@ pub(super) fn pack_infos(vanilla: &Path, server: &[Pack]) -> Vec<PackInfo> {
     infos.push(vanilla_info(vanilla));
     infos
 }
+/// The folder packs' Polytone config entries (#11486), by pack id, for those that have some:
+/// what the Pack Options page edits.
+pub(super) fn pack_configs(vanilla: &Path) -> std::collections::BTreeMap<String, packs::Configs> {
+    packs::discover(vanilla, &packs_dir())
+        .into_iter()
+        .filter(|p| !p.polytone_configs.entries().is_empty())
+        .map(|p| (p.id, p.polytone_configs))
+        .collect()
+}
+/// The player changed Pack Options: `chosen` replaces their choices for `entries`, kept in
+/// `polytone-configs.json`.
+pub(super) fn save_pack_options(
+    entries: &[String],
+    chosen: std::collections::BTreeMap<String, packs::ConfigValue>,
+) {
+    let mut all = packs::polytone_choices();
+    all.retain(|id, _| !entries.contains(id));
+    all.extend(chosen);
+    if let Err(e) = packs::save_polytone_choices(&packs::polytone_choices_file(), &all) {
+        log::warn!("could not save the pack options: {e}");
+    }
+    packs::set_polytone_choices(all);
+}
 impl Game<'_> {
     pub(super) fn vanilla_root(&self) -> PathBuf {
         if self.ui.vanilla_root.as_os_str().is_empty() {
@@ -169,8 +191,12 @@ impl Game<'_> {
     /// (`PackSelectionScreen` makes its `PackSelectionModel` from them).
     pub(super) fn refresh_pack_lists(&mut self) {
         let infos = pack_infos(&self.vanilla_root(), &self.server_packs.active);
+        let configs = pack_configs(&self.vanilla_root());
+        let browsing = self.settings.extras.pack_browser;
         let o = &mut self.ui.options;
+        o.pack_browser = browsing;
         o.pack_infos = infos;
+        o.pack_configs = configs;
         o.pack_selection = self.settings.resource_packs.clone();
         o.pack_screen = None;
     }
@@ -183,6 +209,42 @@ impl Game<'_> {
     /// a worker under the progress overlay (`LoadingOverlay` over
     /// `ReloadableResourceManager.createReload`'s background executor), so
     /// the window keeps drawing; `drive_pack_reload` applies it.
+    /// Horizon's pack browser: what its worker finished since the last
+    /// frame. A pack that landed becomes an entry in the available list.
+    pub(super) fn drive_pack_browser(&mut self) {
+        let Some(screen) = &mut self.ui.options.pack_screen else {
+            return;
+        };
+        let Some(browser) = &mut screen.browser else {
+            return;
+        };
+        let Some(message) = browser.poll() else {
+            return;
+        };
+        if let pack_browser::Message::Results(_) = &message {
+            // The rows draw their icons as they land.
+            browser.fetch_icons();
+        }
+        if let pack_browser::Message::Icon(id, png) = &message {
+            let key = pack_screen::icon_texture(id);
+            if let Some(icon) = pack_screen::load_fetched_icon(png) {
+                // Tracked, so closing the browser frees it again.
+                screen.keep_browser_icon(key, icon);
+            }
+            return;
+        }
+        if let pack_browser::Message::Downloaded(name) = message {
+            log::info!("Horizon: added the resource pack {name}");
+            // Rebuilding the screen would shut the list; keep it and only
+            // refresh what the lists read.
+            let selection = self.settings.resource_packs.clone();
+            let infos = pack_infos(&self.vanilla_root(), &self.server_packs.active);
+            self.ui.options.pack_infos = infos;
+            self.ui.options.pack_configs = pack_configs(&self.vanilla_root());
+            self.ui.options.pack_selection = selection;
+            self.ui.options.pack_screen = None;
+        }
+    }
     pub(super) fn reload_packs(&mut self) {
         // Pack reload updates tail-owned mob metadata. Keep menus responsive
         // until those resources exist, then apply the latest selection once.
@@ -214,8 +276,10 @@ impl Game<'_> {
                 match &mut self.server_packs.load_fail {
                     Some(toast) => toast.reset(title, None),
                     None => {
-                        self.server_packs.load_fail =
-                            Some(horizon_client::toasts::SystemToast::new(title, None));
+                        if self.toast_allowed("system", "pack_load_failure") {
+                            self.server_packs.load_fail =
+                                Some(horizon_client::toasts::SystemToast::new(title, None));
+                        }
                     }
                 }
                 return;
@@ -245,7 +309,7 @@ impl Game<'_> {
         let (selected, server, mods, dev_mods) = (
             self.settings.resource_packs.clone(),
             self.server_packs.active.clone(),
-            self.settings.mods.enabled.clone(),
+            self.applied_mods(),
             self.options.dev_mods.clone(),
         );
         let (assets, res, context) = (
@@ -275,6 +339,7 @@ impl Game<'_> {
             staged.and_then(|staged| self.apply_staged_pack(staged).map_err(|e| e.to_string()));
         match kind {
             ReloadKind::Selection => {
+                self.mods_reloaded(result.is_ok());
                 if let Err(e) = result {
                     self.selection_reload_failed(&e);
                 }
@@ -318,7 +383,12 @@ impl Game<'_> {
                     Some(textures),
                     self.settings.horizon.api,
                     self.settings.horizon.translucent_batching,
-                    super::shader_packs::picked_pack_draws_flat(&self.settings),
+                    self.settings.horizon.wide_frame(),
+                    super::shader_packs::picked_pack_shape(&self.settings),
+                    (
+                        self.settings.file.int("textureFiltering"),
+                        self.settings.file.int("maxAnisotropyBit"),
+                    ),
                 )
             })
             .transpose()
@@ -341,7 +411,6 @@ impl Game<'_> {
         self.random_tick_sections.clear();
         self.portals.sections.clear();
         self.options.resources = root.clone();
-        let context = pack.context.clone();
         self.pack = pack;
         self.gui = gui;
         // The new atlas's skin and map slots are blank: players and maps
@@ -413,6 +482,7 @@ impl Game<'_> {
         // A pack that may replace leaf models falls back to `Off` before the
         // reload marks every section dirty.
         self.streaming.leaf_culling = self.effective_leaf_culling();
+        let context = self.worker_context();
         self.streaming.reload_resources(&mut self.world, context);
         self.pending_uploads.clear();
         // New GPU textures: a renderer built from the reloaded resources; the
@@ -456,12 +526,12 @@ pub(super) fn stage_pack(
     japanese: bool,
     progress: &super::Progress,
 ) -> horizon_client::Result<StagedPack> {
-    let root = startup_root(vanilla_root, selected, server)?;
-    let root = super::mods::content_root(&root, mods_enabled, dev_mods);
+    let base = super::mods::content_root(vanilla_root, mods_enabled, dev_mods);
+    let root = startup_root(vanilla_root, &base, selected, server)?;
     progress.set(1);
     // The world's models and sprites and the GUI atlas read the same root and nothing of
     // each other: about a second each, side by side.
-    let mod_image = !horizon_client::mod_api::mods().is_empty();
+    let mod_image = crate::game::mods::built_with_native_mods();
     // The sound events, the GUI sprites' metadata and the language are read here too, not in
     // the frame that applies the reload (about 20 ms of it).
     let (render, atlas, panorama, (sounds, ui_metadata, language)) = std::thread::scope(|s| {

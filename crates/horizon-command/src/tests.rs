@@ -109,6 +109,60 @@ fn reader_matches_brigadier() {
     assert_eq!(e.message.plain(), "parsing.int.invalid");
     assert_eq!(e.context().unwrap(), "<--[HERE]");
 }
+
+#[test]
+fn resource_selector_wildcards_preserve_unicode_and_backtracking() {
+    let cases = [
+        ("minecraft:stone", "minecraft:*", true),
+        ("minecraft:stone", "minecraft:s?one", true),
+        ("minecraft:stone", "minecraft:s?on", false),
+        ("éclair", "?clair", true),
+        ("éclair", "??clair", false),
+        ("abc", "a**c", true),
+        ("abc", "*b*", true),
+        ("", "*", true),
+        ("", "?", false),
+    ];
+    for (text, pattern, expected) in cases {
+        assert_eq!(
+            wildcard_match(text, pattern),
+            expected,
+            "{text:?} vs {pattern:?}"
+        );
+    }
+}
+
+#[test]
+fn resource_selector_scans_normalized_ids() {
+    let ids = [
+        "minecraft:stone".to_owned(),
+        "minecraft:oak_stairs".to_owned(),
+        "example:stone".to_owned(),
+        "minecraft:éclair".to_owned(),
+    ];
+    assert_eq!(
+        select_resources(&ids, "stone")
+            .into_iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["minecraft:stone"]
+    );
+    assert_eq!(
+        select_resources(&ids, "minecraft:*stairs")
+            .into_iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["minecraft:oak_stairs"]
+    );
+    assert_eq!(
+        select_resources(&ids, "minecraft:?clair")
+            .into_iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["minecraft:éclair"]
+    );
+}
+
 #[test]
 fn parses_vanilla_commands() {
     assert_eq!(run("gamemode creative").unwrap().0, "gamemode");
@@ -337,6 +391,44 @@ fn entity_arguments_suggest_the_selected_entity() {
             "{players_only}"
         );
     }
+}
+#[test]
+fn whitespace_is_what_java_character_is_whitespace_says() {
+    let java: Vec<u32> = [
+        0x09..=0x0D,
+        0x1C..=0x20,
+        0x1680..=0x1680,
+        0x2000..=0x2006,
+        0x2008..=0x200A,
+        0x2028..=0x2029,
+        0x205F..=0x205F,
+        0x3000..=0x3000,
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let ours: Vec<u32> = (0..=0x10FFFF)
+        .filter_map(char::from_u32)
+        .filter(|c| Reader::is_java_whitespace(*c))
+        .map(u32::from)
+        .collect();
+    assert_eq!(ours, java);
+
+    let mut r = Reader::new("\u{1F}\u{3000} x");
+    r.skip_whitespace();
+    assert_eq!(r.peek(), 'x');
+    for nbsp in ["\u{A0}", "\u{2007}", "\u{202F}", "\u{85}"] {
+        let text = format!("{nbsp}x");
+        let mut r = Reader::new(&text);
+        r.skip_whitespace();
+        assert_eq!(r.remaining(), text, "{:?} is not whitespace", nbsp);
+    }
+
+    let reg = reg();
+    let parse = |text: &str| selector::parse(&mut Reader::new(text), &reg, true).is_ok();
+    assert!(parse("@e[ type=minecraft:pig]"));
+    assert!(parse("@e[\u{1F}type=minecraft:pig]"));
+    assert!(!parse("@e[\u{A0}type=minecraft:pig]"));
 }
 #[test]
 fn a_uuid_selects_by_entity_uuid() {
@@ -791,7 +883,8 @@ fn the_dedicated_commands_complete_from_the_servers_lists() {
 fn only_a_dedicated_server_has_the_dedicated_commands() {
     // Commands.CommandSelection: an integrated server (single player, a LAN
     // world) registers no /op, /ban, /ban-ip, /banlist, /pardon, /pardon-ip,
-    // /deop or /whitelist, so /help and Tab don't offer them.
+    // /deop, /setidletimeout, /transfer, /whitelist, /save-all, /save-off, /save-on or /stop,
+    // so /help and Tab don't offer them.
     let dedicated = [
         "ban",
         "ban-ip",
@@ -800,6 +893,12 @@ fn only_a_dedicated_server_has_the_dedicated_commands() {
         "op",
         "pardon",
         "pardon-ip",
+        "save-all",
+        "save-off",
+        "save-on",
+        "setidletimeout",
+        "stop",
+        "transfer",
         "whitelist",
     ];
     for dev in [false, true] {
@@ -824,6 +923,58 @@ fn only_a_dedicated_server_has_the_dedicated_commands() {
     }
     assert!(vanilla::game_dispatcher().find("ban").is_none());
     assert!(vanilla::release_dispatcher().find("ban").is_none());
+}
+#[test]
+fn a_dedicated_servers_admins_send_players_to_another_server() {
+    // TransferCommand.register: LEVEL_ADMINS, `<hostname> [<port> [<players>]]`
+    // with IntegerArgumentType.integer(1, 65535) for the port.
+    let server = vanilla::game_tree(false, false, true);
+    assert!(
+        vanilla::game_tree(false, false, false)
+            .find("transfer")
+            .is_none()
+    );
+    let at = |level: u8| Registries {
+        permission: level,
+        ..reg()
+    };
+    for line in [
+        "transfer example.net",
+        "transfer example.net 25566",
+        "transfer example.net 25566 Alex",
+    ] {
+        assert_eq!(
+            server.parse(line, &at(3)).executable().unwrap().1,
+            "transfer",
+            "{line}"
+        );
+    }
+    // The hostname is required.
+    let e = server.parse("transfer", &at(3)).executable().unwrap_err();
+    assert_eq!(e.message.plain(), "command.unknown.command");
+    // Below LEVEL_ADMINS the node is not there at all.
+    for level in [0, 1, 2] {
+        let e = server
+            .parse("transfer example.net", &at(level))
+            .executable()
+            .unwrap_err();
+        assert_eq!(
+            e.message.plain(),
+            "command.unknown.command",
+            "level {level}"
+        );
+    }
+    // IntegerArgumentType.integer(1, 65535): port 0 is low, 65536 big.
+    let e = server
+        .parse("transfer example.net 0", &at(3))
+        .executable()
+        .unwrap_err();
+    assert_eq!(e.message.plain(), "argument.integer.low");
+    let e = server
+        .parse("transfer example.net 65536", &at(3))
+        .executable()
+        .unwrap_err();
+    assert_eq!(e.message.plain(), "argument.integer.big");
 }
 /// The root literals a player at `level` is offered (the chat's, client tree).
 fn root_commands(d: &Dispatcher, level: u8) -> Vec<String> {
@@ -878,4 +1029,238 @@ fn a_dedicated_server_keeps_seed_and_version_for_game_masters() {
             }
         }
     }
+}
+#[test]
+fn a_dedicated_servers_admins_set_the_idle_timeout() {
+    // SetPlayerIdleTimeoutCommand.register: LEVEL_ADMINS, and
+    // IntegerArgumentType.integer(0) — zero turns the timeout off, and a
+    // negative count of minutes is out of range.
+    let server = vanilla::game_tree(false, false, true);
+    let integrated = vanilla::game_tree(false, false, false);
+    assert!(integrated.find("setidletimeout").is_none());
+    let at = |level: u8| Registries {
+        permission: level,
+        ..reg()
+    };
+    // Below LEVEL_ADMINS the node is not there at all.
+    for level in [0, 1, 2] {
+        let e = server
+            .parse("setidletimeout 5", &at(level))
+            .executable()
+            .unwrap_err();
+        assert_eq!(
+            e.message.plain(),
+            "command.unknown.command",
+            "level {level}"
+        );
+    }
+    // The minutes are required: an incomplete command.
+    let e = server
+        .parse("setidletimeout", &at(3))
+        .executable()
+        .unwrap_err();
+    assert_eq!(e.message.plain(), "command.unknown.command");
+    for line in ["setidletimeout 0", "setidletimeout 5"] {
+        assert_eq!(
+            server.parse(line, &at(3)).executable().unwrap().1,
+            "setidletimeout"
+        );
+    }
+    // IntegerArgumentType.integer(0): argument.integer.low for -1 below 0.
+    let e = server
+        .parse("setidletimeout -1", &at(3))
+        .executable()
+        .unwrap_err();
+    assert_eq!(e.message.plain(), "argument.integer.low");
+    // Past i32 the number itself is unreadable.
+    let e = server
+        .parse("setidletimeout 2147483648", &at(3))
+        .executable()
+        .unwrap_err();
+    assert_eq!(e.message.plain(), "parsing.int.invalid");
+}
+
+#[test]
+fn time_argument_rounds_like_math_round_float() {
+    let ticks = |input: &str| {
+        let reg = reg();
+        let parse = vanilla::dispatcher().parse(input, &reg);
+        let (ctx, _) = parse.executable().unwrap();
+        match ctx.args.iter().find(|a| a.name == "time").unwrap().value {
+            Arg::Int(t) => t,
+            ref other => panic!("{other:?}"),
+        }
+    };
+    // 0.49999997 + 0.5 rounds up to 1.0 in f32, but Math.round is exact.
+    assert_eq!(ticks("time set 0.49999997t"), 0);
+    assert_eq!(ticks("time set 0.5t"), 1);
+    assert_eq!(ticks("time add -2.5t"), -2);
+}
+
+#[test]
+fn a_dedicated_servers_owners_can_stop_and_save_it() {
+    // StopCommand, SaveAllCommand, SaveOffCommand and SaveOnCommand:
+    // Commands.hasPermission(LEVEL_OWNERS), an admin (3) gets none of them.
+    let server = vanilla::game_tree(false, false, true);
+    let at = |permission| Registries {
+        permission,
+        ..reg()
+    };
+    for (line, id) in [
+        ("stop", "stop"),
+        ("save-all", "save-all"),
+        ("save-all flush", "save-all"),
+        ("save-off", "save-off"),
+        ("save-on", "save-on"),
+    ] {
+        assert_eq!(
+            server.parse(line, &at(4)).executable().unwrap().1,
+            id,
+            "{line}"
+        );
+        assert!(server.parse(line, &at(3)).executable().is_err(), "{line}");
+    }
+}
+
+#[test]
+fn local_coordinate_missing_after_space_expects_a_coordinate() {
+    // LocalCoordinates.readDouble: nothing left to read is ERROR_EXPECTED_DOUBLE,
+    // with the cursor where it stopped; only a non-'^' character is "mixed".
+    let reg = reg();
+    let parse = |text: &str| {
+        let mut r = Reader::new(text);
+        let e = ArgType::Vec3 { center: true }
+            .parse(&mut r, &reg)
+            .map(|_| ())
+            .unwrap_err();
+        (e.key, e.cursor)
+    };
+    assert_eq!(parse("^1 "), ("argument.pos.missing.double".into(), 3));
+    assert_eq!(parse("^1 ^2 "), ("argument.pos.missing.double".into(), 6));
+    assert_eq!(parse("^1 ~"), ("argument.pos.mixed".into(), 0));
+}
+
+/// `execute … run` redirects back to the root, so a crafted deeply nested chain
+/// recurses `parse_nodes` once per level. It must be rejected by the depth guard,
+/// never overflow the parsing thread's stack (a stack overflow would abort this
+/// test binary rather than let it pass).
+#[test]
+fn deeply_nested_execute_run_is_rejected_not_overflowed() {
+    let mut deep = String::from("say hi");
+    for _ in 0..400 {
+        deep = format!("execute if entity @s run {deep}");
+    }
+    assert!(run(&deep).is_err());
+}
+
+/// The guard is high enough that real command chains still parse.
+#[test]
+fn shallow_execute_run_still_parses() {
+    assert!(run("execute if entity @s run say hi").is_ok());
+    assert!(run("execute as @a at @s run tp @s 0 0 0").is_ok());
+}
+
+#[test]
+fn h149_cardinal_local_positions_use_exact_table_values() {
+    let mut failures = Vec::new();
+    let got = Coordinates::Local([0.75, 0.5, 1.25])
+        .position([8.5, 202.25, 8.5], [0.0f32, 0.0f32])
+        .map(f64::to_bits);
+    let want = [
+        0x4022800000000000u64,
+        0x4069580000000000u64,
+        0x4023800000000000u64,
+    ];
+    if got != want {
+        failures.push(("south", got, want));
+    }
+    let got = Coordinates::Local([0.75, 0.5, 1.25])
+        .position([8.5, 202.25, 8.5], [90.0f32, 0.0f32])
+        .map(f64::to_bits);
+    let want = [
+        0x401d000000000000u64,
+        0x4069580000000000u64,
+        0x4022800000000000u64,
+    ];
+    if got != want {
+        failures.push(("west", got, want));
+    }
+    let got = Coordinates::Local([0.75, 0.5, 1.25])
+        .position([8.5, 202.25, 8.5], [180.0f32, 0.0f32])
+        .map(f64::to_bits);
+    let want = [
+        0x401f000000000000u64,
+        0x4069580000000000u64,
+        0x401d000000000000u64,
+    ];
+    if got != want {
+        failures.push(("north", got, want));
+    }
+    let got = Coordinates::Local([0.75, 0.5, 1.25])
+        .position([8.5, 202.25, 8.5], [270.0f32, 0.0f32])
+        .map(f64::to_bits);
+    let want = [
+        0x4023800000000000u64,
+        0x4069580000000000u64,
+        0x401f000000000000u64,
+    ];
+    if got != want {
+        failures.push(("east", got, want));
+    }
+    assert!(
+        failures.is_empty(),
+        "exact cardinal local-coordinate bit mismatches: {failures:#?}"
+    );
+}
+
+#[test]
+fn h149_oblique_local_offsets_are_grouped_before_the_origin() {
+    let world = Coordinates::World([
+        Coord {
+            relative: true,
+            value: 0.75,
+        },
+        Coord {
+            relative: true,
+            value: 0.5,
+        },
+        Coord {
+            relative: true,
+            value: 1.25,
+        },
+    ]);
+    assert_eq!(
+        world
+            .position([8.5, 202.25, 8.5], [37.5, -22.25])
+            .map(f64::to_bits),
+        [9.25f64, 202.75, 9.75].map(f64::to_bits),
+        "unchanged world/relative control before local failures"
+    );
+    let mut failures = Vec::new();
+    let got = Coordinates::Local([0.1, 0.1, 0.1])
+        .position([8.5, 202.25, 8.5], [37.5f32, -22.25f32])
+        .map(f64::to_bits);
+    let want = [
+        0x402117934a6314b9u64,
+        0x40694c2c5ee98f58u64,
+        0x40213562572e889au64,
+    ];
+    if got != want {
+        failures.push(("oblique", got, want));
+    }
+    let got = Coordinates::Local([0.1, 0.1, 0.1])
+        .position([8.5, 202.25, 8.5], [123.75f32, 47.125f32])
+        .map(f64::to_bits);
+    let want = [
+        0x4020a7648c7aa86bu64,
+        0x406947d514129374u64,
+        0x4021025e8b180036u64,
+    ];
+    if got != want {
+        failures.push(("positioned_oblique", got, want));
+    }
+    assert!(
+        failures.is_empty(),
+        "exact oblique local-coordinate bit mismatches: {failures:#?}"
+    );
 }

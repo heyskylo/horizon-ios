@@ -60,7 +60,8 @@ ITEMS = {
                 plain('armor_stand', 2), 'BOAT', 'CHEST_BOAT'],
     'spawn': [plain('pig_spawn_egg'), plain('sheep_spawn_egg', 2), plain('zombie_spawn_egg'), plain('cow_spawn_egg'),
               plain('chicken_spawn_egg'), plain('skeleton_spawn_egg'), plain('creeper_spawn_egg'), plain('villager_spawn_egg'),
-              plain('wolf_spawn_egg'), plain('horse_spawn_egg'), plain('squid_spawn_egg'), plain('slime_spawn_egg')],
+              plain('wolf_spawn_egg'), plain('horse_spawn_egg'), plain('squid_spawn_egg'), plain('slime_spawn_egg'),
+              plain('ender_dragon_spawn_egg')],
     'equipment': [plain('iron_helmet'), plain('diamond_chestplate'), plain('leather_leggings'), plain('golden_boots'),
                   plain('chainmail_helmet'), plain('netherite_boots'), plain('turtle_helmet'), plain('saddle'),
                   plain('iron_horse_armor'), plain('diamond_horse_armor'), plain('leather_horse_armor'), plain('white_carpet'),
@@ -240,9 +241,57 @@ def front_state(states, rng, name):
     return states.get(name)
 
 
+VEHICLES = ['oak_chest_boat', 'cherry_chest_boat', 'bamboo_chest_raft', 'chest_minecart', 'hopper_minecart']
+
+
+def vehicle_cases(states, seed, only):
+    """A dropper in front of container entities (`HopperBlockEntity.getContainerAt`'s entity half): centred in the
+    space in front, reaching into it from beyond, just past it, two at once (the random pick), behind a chest
+    block that wins, or not a container at all. A random stream of their own keeps the other cases as they are."""
+    rng = random.Random(seed ^ 0x5EED_B0A7)
+    for n in range(48):
+        item = rng.choice([plain('stone', 5), plain('diamond'), plain('stick', 64), plain('oak_sapling', 3)])
+        if only and only not in item:
+            continue
+        facing = DIRECTIONS[n % len(DIRECTIONS)]
+        dx, dy, dz = STEP[facing]
+        cells = [[0, 0, 0, states.get('dropper', facing=facing, triggered='false')]]
+        scene = rng.choice(['centre', 'centre', 'reach', 'past', 'two', 'chest', 'plain'])
+        shift = {'reach': 0.7, 'past': 1.5}.get(scene, 0.0)
+        at = [dx + 0.5 + dx * shift, dy + dy * shift, dz + 0.5 + dz * shift]
+        kind = rng.choice(VEHICLES)
+        entities = [{'type': 'minecraft:' + kind, 'pos': at, 'yaw': rng.choice([0.0, 90.0, 180.0])}]
+        if scene == 'two':
+            entities.append({'type': 'minecraft:' + kind, 'pos': [at[0] + 0.25, at[1], at[2] - 0.25], 'yaw': 0.0})
+        elif scene == 'chest':
+            h.put(cells, (dx, dy, dz), states.get('chest'))
+        elif scene == 'plain':
+            entities[0]['type'] = 'minecraft:' + rng.choice(['oak_boat', 'minecart'])
+        items = [[0, 0, 0, slot, item] for slot in rng.sample(range(9), rng.choice([1, 1, 2]))]
+        case = {**h.environment(rng), 'mode': 'dispense', 'pos': [0, 0, 0], 'cells': cells, 'items': items,
+                'entities': entities}
+        case.pop('raining', None)
+        case.pop('thundering', None)
+        yield case
+
+
 def cases(facts, count, seed, only):
     rng = random.Random(seed)
     states = States(facts)
+    dragon_egg = plain('ender_dragon_spawn_egg')
+    if not only or only in dragon_egg:
+        # Both the unobstructed position and a fractional collision height must
+        # use the dragon's own 16 by 8 bounding box in EntityType.getYOffset.
+        for front in ('air', 'oak_slab'):
+            cells = [[0, 0, 0, states.get('dispenser', facing='north', triggered='false')]]
+            if front != 'air':
+                cells.append([0, 0, -1, states.get(front, type='bottom', waterlogged='false')])
+            case = {**h.environment(rng), 'mode': 'dispense', 'pos': [0, 0, 0], 'cells': cells,
+                    'items': [[0, 0, 0, 0, dragon_egg]]}
+            case.pop('raining', None)
+            case.pop('thundering', None)
+            yield case
+    yield from vehicle_cases(states, seed, only)
     kinds = list(ITEMS)
     for n in range(count):
         kind = kinds[n % len(kinds)]
@@ -462,7 +511,7 @@ def main():
     print(f'{len(all_cases) - total - skipped}/{len(all_cases) - skipped} cases match ({skipped} oracle errors; '
           f'{unseeded} spawning cases compared without the final level random)')
     (work / 'differences.json').write_text(json.dumps({k: [[c, a, b] for c, a, b in v[:5]] for k, v in groups.items()}))
-    h.finish(total)
+    h.finish(total + skipped)
 
 
 def describe(case, facts):

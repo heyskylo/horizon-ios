@@ -1,0 +1,16 @@
+{
+  "hooks": [
+    {
+      "name": "client_player_network_logging_in",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_client_player_network_logging_in",
+      "neoforge": "ClientPlayerNetworkEvent.LoggingIn",
+      "side": "client",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "the window's player logging in to a server (`native_client_player_network_logging_in`).",
+  "doc_summary": "the window's player logging in to a server, single player's own included: `native_client_player_network_logging_in()`, NeoForge's `ClientPlayerNetworkEvent.LoggingIn`, once per login packet after the new client level, not on respawns or dimension changes. Its counterpart for logging out is `native_client_disconnecting` ([Logging in and out](#logging-in-and-out)). Bundles need \"hooks\": @API:client_player_network_logging_in@."
+}

@@ -161,6 +161,7 @@ impl Game<'_> {
             assets: &self.pack.assets,
             collision_binding: self.collision,
             resources: self.motion,
+            health: &self.health_resources,
         }
         .no_player_collision(bounds)
         .unwrap_or(false);
@@ -184,7 +185,13 @@ impl Game<'_> {
         }
         // The position packet moves the old position along (absolute xyz).
         self.previous_position = at;
-        self.portal_particles();
+        // `broadcastEntityEvent(46)` after the teleport. A server-thread window
+        // is a remote client, so the packet is what draws the particles there.
+        if let Some(id) = self.lan_acting_entity {
+            self.lan_entity_event(id as i32, 46, [at.x, at.y, at.z]);
+        } else {
+            self.portal_particles();
+        }
         true
     }
     fn state_in_tag(&self, tag: &str, state: horizon_world::registry::BlockStateId) -> bool {
@@ -195,27 +202,70 @@ impl Game<'_> {
             .get(tag)
             .is_some_and(|s| s.contains(&**name))
     }
-    /// `LivingEntity.handleEntityEvent(46)`: 128 portal particles from the old
-    /// to the new position, from the client player's random (the particle
-    /// engine's here).
+    /// `LivingEntity.handleEntityEvent(46)` for this client: 128 portal
+    /// particles from the old position to the new one. The local player's
+    /// random is the particle engine's.
     fn portal_particles(&mut self) {
-        let Some(p) = self.player.as_ref() else {
-            return;
+        let (from, to, width, height) = {
+            let Some(p) = self.player.as_ref() else {
+                return;
+            };
+            (
+                [
+                    self.previous_position.x,
+                    self.previous_position.y,
+                    self.previous_position.z,
+                ],
+                [p.position.x, p.position.y, p.position.z],
+                f64::from(p.dimensions.width),
+                f64::from(p.dimensions.height),
+            )
         };
-        let (from, to) = (self.previous_position, p.position);
-        let (width, height) = (
-            f64::from(p.dimensions.width),
-            f64::from(p.dimensions.height),
+        self.emit_living_teleport(from, to, width, height);
+    }
+    /// `LivingEntity.handleEntityEvent(46)` for the entity the packet names:
+    /// this player, or a mob the client is drawing.
+    pub(super) fn entity_teleport_particles(&mut self, id: i32) {
+        if self.remote.as_ref().is_some_and(|r| r.entity_id == id) {
+            self.portal_particles();
+            return;
+        }
+        let spawned = {
+            let Some(m) = self.mobs.iter_mut().find(|m| m.id == id as u32) else {
+                return;
+            };
+            let from = [m.previous.x, m.previous.y, m.previous.z];
+            let to = [m.position.x, m.position.y, m.position.z];
+            let (width, height) = (f64::from(m.width()), f64::from(m.height()));
+            let mut spawned = Vec::with_capacity(128);
+            horizon_client::particles::living_teleport_particles(
+                &mut m.random,
+                from,
+                to,
+                width,
+                height,
+                |p, v| spawned.push((p, v)),
+            );
+            spawned
+        };
+        let options = ParticleOptions::simple(ParticleType::Portal);
+        for (p, v) in spawned {
+            self.particles.add(&options, p, v);
+        }
+    }
+    fn emit_living_teleport(&mut self, from: [f64; 3], to: [f64; 3], width: f64, height: f64) {
+        let mut spawned = Vec::with_capacity(128);
+        horizon_client::particles::living_teleport_particles(
+            self.particles.random(),
+            from,
+            to,
+            width,
+            height,
+            |p, v| spawned.push((p, v)),
         );
         let options = ParticleOptions::simple(ParticleType::Portal);
-        for i in 0..128 {
-            let d = f64::from(i) / 127.0;
-            let r = self.particles.random();
-            let v = [0; 3].map(|_| f64::from((r.next_float() - 0.5) * 0.2));
-            let x = from.x + d * (to.x - from.x) + (r.next_double() - 0.5) * width * 2.0;
-            let y = from.y + d * (to.y - from.y) + r.next_double() * height;
-            let z = from.z + d * (to.z - from.z) + (r.next_double() - 0.5) * width * 2.0;
-            self.particles.add(&options, [x, y, z], v);
+        for (p, v) in spawned {
+            self.particles.add(&options, p, v);
         }
     }
     /// `LivingEntity.stopRiding`.
@@ -229,6 +279,8 @@ impl Game<'_> {
             self.dismount_cart(i);
         } else if let Some(c) = self.cushions.iter().find(|c| c.id == id).cloned() {
             self.get_up_from_cushion(&c);
+        } else if self.seat(id).is_some() {
+            self.get_off_seat();
         } else {
             self.dismount_mount();
         }
@@ -335,6 +387,9 @@ impl TeleportConsumeWorld for Teleporter<'_, '_> {
             let high = shape.min_y + shape.logical_height - 1;
             let y = to[1].clamp(f64::from(shape.min_y), f64::from(high));
             *target = Vec3::new(to[0], y, to[2]);
+        }
+        if !cancel {
+            horizon_client::lan::hub::teleport_cause(Some("chorus_fruit"));
         }
         Ok(!cancel)
     }

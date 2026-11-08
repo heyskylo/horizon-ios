@@ -74,22 +74,34 @@ pub fn after_update(version: &str) {
         .into_iter()
         .filter_map(|i| i.version)
         .collect();
-    for old in stale(&backend::installed(), version, selected.as_deref(), &pinned) {
-        let _ = backend::remove(&old);
+    for old in stale(
+        &backend::installed(),
+        version,
+        selected.as_deref(),
+        &pinned,
+        backend::auto_installed,
+    ) {
+        // A removal stops at the first running program, with half the version already gone.
+        if !backend::in_use(&old) {
+            let _ = backend::remove(&old);
+        }
     }
 }
 
-/// The installed Nightlies to remove once `current` is installed: every other one that is neither
-/// selected nor pinned by an instance.
+/// The automatically installed Nightlies to remove once `current` is installed: every other one
+/// that is neither selected nor pinned by an instance. Manual and legacy installs stay.
 fn stale(
     installed: &[String],
     current: &str,
     selected: Option<&str>,
     pinned: &[String],
+    auto: impl Fn(&str) -> bool,
 ) -> Vec<String> {
     installed
         .iter()
-        .filter(|v| date_of(v).is_some() && *v != current && Some(v.as_str()) != selected)
+        .filter(|v| {
+            date_of(v).is_some() && auto(v) && *v != current && Some(v.as_str()) != selected
+        })
         .filter(|v| !pinned.contains(v))
         .cloned()
         .collect()
@@ -105,6 +117,7 @@ mod tests {
             name: name.into(),
             body: String::new(),
             date: date.into(),
+            time: String::new(),
             asset: Some(("https://example/horizon.zip".into(), 1)),
             prerelease: true,
             nightly: None,
@@ -149,9 +162,22 @@ mod tests {
                 &installed,
                 "nightly-2026-10-29-aaaaaaa",
                 Some("nightly-2026-10-28-ccccccc"),
-                &pinned
+                &pinned,
+                |tag| tag != "nightly-2026-10-28-ccccccc"
             ),
             ["nightly-2026-10-28-bbbbbbb"]
+        );
+    }
+
+    #[test]
+    fn cli_update_keeps_unselected_manual_nightly() {
+        let current = "nightly-2026-11-05-aaaaaaa";
+        let manual = "nightly-2026-11-03-bbbbbbb";
+        let previous_auto = "nightly-2026-11-02-ccccccc";
+        let installed = [current, manual, previous_auto].map(String::from);
+        assert_eq!(
+            stale(&installed, current, None, &[], |tag| tag != manual),
+            [previous_auto]
         );
     }
 }

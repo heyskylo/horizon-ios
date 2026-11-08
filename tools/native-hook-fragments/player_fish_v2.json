@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "player_fish_v2",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_player_fish_v2",
+      "neoforge": "none (NeoForge's ItemFishedEvent fires after the loot roll, in FishingHook.retrieve; Bukkit's PlayerFishEvent with getHand)",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "a player's fishing rod with the hand that holds it, cancellable (`native_player_fish_v2`).",
+  "doc_summary": "`native_player_fish_v2(player, name, state, hand, cancel)`: `native_player_fish` with the rod's hand (the hand used for a cast or reel-in, Bukkit's `PlayerFishEvent.getHand`; for a bite the hand holding the rod, main hand first), asked right after v1 with the same `cancel`. Bundles need \"hooks\": @API:player_fish_v2@."
+}

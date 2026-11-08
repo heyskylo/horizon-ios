@@ -54,7 +54,7 @@ ScreenRectangle.getBorder	port	crates/horizon-client/src/game/key_focus.rs::edge
 ScreenRectangle.overlaps	inline	crates/horizon-client-input/src/gamepad.rs::focus_step_strict	a target overlapping the strip on the other axis is the next one
 ScreenRectangle.overlapsInAxis	inline	crates/horizon-client-input/src/gamepad.rs::focus_step_strict	the per-axis half of the overlap test
 ScreenRectangle.getCenterInAxis	inline	crates/horizon-client-input/src/gamepad.rs::focus_step_vague	the second pass picks the nearest facing edge's centre when nothing overlaps
-ScreenRectangle.intersection	missing		minor: a nested GUI clip is not intersected with the outer one; paint (screen_draw.rs) replaces the clip on each Scissor draw
+ScreenRectangle.intersection	port	crates/horizon-client-render/src/screen_draw.rs::intersect	paint's scissor stack cuts each clip to the screen, or to the clip around it, and to ScreenRectangle.empty() when they miss; closing a clip puts the enclosing one back
 ScreenRectangle.intersects	skip:other		no caller in the 26.3 client GUI code; pure geometry predicate
 ScreenRectangle.encompasses	skip:other		used by GuiRenderState for element batching bounds; Horizon appends quads to the HUD batch without it
 ScreenRectangle.containsPoint	port	crates/horizon-client-render/src/screen_draw.rs::inside	the same half-open point-in-rectangle test
@@ -105,7 +105,7 @@ BanNoticeScreens	home	crates/horizon-client-render/src/ban_notice.rs,crates/hori
 ChatScreen.removed	port	crates/horizon-client/src/game/chat.rs::Game::keep_chat_draft	the text left in the box becomes the draft unless shouldDiscardDraft; blank text discards it, and a draft still shown unchanged stays as it is
 ChatScreen.shouldDiscardDraft	port	crates/horizon-client/src/game/chat.rs::should_discard_draft	kept on interruption, and on Escape only with Save Chat Drafts; sent text discards it
 ChatScreen.insertText	port	crates/horizon-client-render/src/chat.rs::ChatScreen::type_text	insert at the cursor; replace=true (setValue) is ChatScreen::suggest_command in Horizon
-ChatScreen.formatChat	missing		minor: the restored draft is typed into the box as plain text; chat_draft_shown is tracked but never colours the input grey italic
+ChatScreen.formatChat	port	crates/horizon-client-render/src/chat.rs::ChatScreen::format	the draft formatter is tried before CommandSuggestions.formatText (ChatScreen.init registers it first), so an unedited draft draws grey italic whole; its first Backspace clears the box (ChatScreen::key)
 ChatScreen.updateNarrationState	skip:other		screen-reader narration; Horizon has no narration output
 ChatScreen.handleChatInput	port	crates/horizon-client/src/game/chat.rs::Game::handle_chat_input	the message is normalized first (ChatScreen.normalizeChatMessage), then into history, then a command or a chat line
 ChatScreen.normalizeChatMessage	port	crates/horizon-client-render/src/chat.rs::normalize_chat_message	String.trim, then normalizeSpace (one space per whitespace run), then the first 256 UTF-16 units (StringUtil.trimChatMessage)

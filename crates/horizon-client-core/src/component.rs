@@ -111,7 +111,15 @@ impl Parser<'_> {
             map.insert(key, self.value()?);
             self.ws();
             match self.peek() {
-                Some(b',') => self.i += 1,
+                // SnbtGrammar: an entry may be followed by a comma before the brace.
+                Some(b',') => {
+                    self.i += 1;
+                    self.ws();
+                    if self.peek() == Some(b'}') {
+                        self.i += 1;
+                        return Ok(Value::Object(map));
+                    }
+                }
                 Some(b'}') => {
                     self.i += 1;
                     return Ok(Value::Object(map));
@@ -140,7 +148,15 @@ impl Parser<'_> {
             list.push(self.value()?);
             self.ws();
             match self.peek() {
-                Some(b',') => self.i += 1,
+                // SnbtGrammar: a list or array may end with a comma.
+                Some(b',') => {
+                    self.i += 1;
+                    self.ws();
+                    if self.peek() == Some(b']') {
+                        self.i += 1;
+                        return Ok(Value::Array(list));
+                    }
+                }
                 Some(b']') => {
                     self.i += 1;
                     return Ok(Value::Array(list));
@@ -207,9 +223,11 @@ fn style_flag(v: Option<&Value>) -> Option<bool> {
     }
 }
 
-fn untrusted_http_url(url: &str) -> bool {
-    // ExtraCodecs.UNTRUSTED_URI / Util.parseAndValidateUntrustedUri: http and
-    // https only, scheme case-insensitive.
+/// ExtraCodecs.UNTRUSTED_URI / Util.parseAndValidateUntrustedUri: http and
+/// https only, scheme case-insensitive. Every `open_url` a server sends must
+/// pass it: anything else (`file:`, a UNC path, a custom protocol handler)
+/// could start a program through the system's URL handler.
+pub fn untrusted_http_url(url: &str) -> bool {
     url.split_once(':').is_some_and(|(scheme, _)| {
         scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
     })
@@ -264,10 +282,7 @@ fn parse_click_event(e: &serde_json::Map<String, Value>) -> Option<crate::text::
 fn object_style(o: &serde_json::Map<String, Value>) -> Style {
     let mut style = Style::default();
     if let Some(c) = o.get("color").and_then(Value::as_str) {
-        style.color = named_color(c).or_else(|| {
-            c.strip_prefix('#')
-                .and_then(|h| u32::from_str_radix(h, 16).ok())
-        });
+        style.color = named_color(c).or_else(|| hex_color(c));
     }
     style.shadow_color = o.get("shadow_color").and_then(shadow_color);
     style.bold = style_flag(o.get("bold"));
@@ -308,6 +323,13 @@ fn object_style(o: &serde_json::Map<String, Value>) -> Style {
         .and_then(Value::as_str)
         .map(str::to_owned);
     style
+}
+
+/// `TextColor.parseColor` for `#...`: `Integer.parseInt(rest, 16)` (so a sign
+/// and any digit count are accepted), kept only within `0..=0xFFFFFF`.
+pub(crate) fn hex_color(c: &str) -> Option<u32> {
+    let value = i64::from_str_radix(c.strip_prefix('#')?, 16).ok()?;
+    (0..=0xFF_FFFF).contains(&value).then_some(value as u32)
 }
 
 /// `Style.shadow_color`: a packed ARGB int or normalized RGBA array.
@@ -390,10 +412,11 @@ pub fn to_text_with(
                             .collect()
                     })
                     .unwrap_or_default();
-                let translated = Text::translate(key, &args);
+                // TranslatableContents.decompose: Language.getOrDefault(key, fallback), so the
+                // fallback is the template itself, never looked up as another key.
                 match o.get("fallback").and_then(Value::as_str) {
-                    Some(fallback) if translated.plain() == key => Text::translate(fallback, &args),
-                    _ => translated,
+                    Some(fallback) => Text::translate_with_fallback(key, fallback, &args),
+                    None => Text::translate(key, &args),
                 }
             } else if let Some(sel) = o.get("selector").and_then(Value::as_str) {
                 resolve(sel)
@@ -491,6 +514,86 @@ pub fn name_text(tag: &Tag) -> Text {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lang::{self, Language, ResourceSource};
+
+    struct Mem(std::collections::HashMap<String, Vec<u8>>);
+    impl ResourceSource for Mem {
+        fn read(&self, path: &str) -> Option<Vec<u8>> {
+            self.0.get(path).cloned()
+        }
+    }
+
+    /// TranslatableContents.decompose: Language.getOrDefault(key, fallback). A missing key
+    /// shows the fallback as written, even when the fallback is another key the language has.
+    #[test]
+    fn a_translatable_fallback_stays_literal() {
+        let pack = Mem([(
+            "assets/minecraft/lang/en_us.json".to_owned(),
+            br#"{"real.key": "Translated", "greet": "Hello %s"}"#.to_vec(),
+        )]
+        .into());
+        let ((), _) = lang::scoped(Language::load(&[&pack], "en_us"), || {
+            let parse = |v: Value| to_text(&v, &mut |_| Text::empty()).plain();
+            let missing = serde_json::json!({"translate": "missing.key", "fallback": "real.key"});
+            assert_eq!(parse(missing), "real.key");
+            // The fallback is a template: its arguments are filled in.
+            let args = serde_json::json!({"translate": "missing.key", "fallback": "Hi %s", "with": ["Steve"]});
+            assert_eq!(parse(args), "Hi Steve");
+            // A key the language has wins over its fallback.
+            let found =
+                serde_json::json!({"translate": "greet", "fallback": "real.key", "with": ["Alex"]});
+            assert_eq!(parse(found), "Hello Alex");
+            // A component built with the constructor keeps its meaning through its JSON.
+            let built = Text::translate_with_fallback("missing.key", "real.key", &[]);
+            let again = to_text(&built.component(), &mut |_| Text::empty());
+            assert_eq!(again.plain(), built.plain());
+            assert_eq!(again.component(), built.component());
+        });
+    }
+
+    /// SnbtGrammar: a compound or list may end with one comma; two in a row
+    /// stay an error.
+    #[test]
+    fn a_component_takes_one_trailing_comma() {
+        let parse = |s: &str| parse_snbt(s).map(|(v, _)| v);
+        assert_eq!(
+            parse("{text:\"a\",color:\"red\",}"),
+            parse("{text:\"a\",color:\"red\"}")
+        );
+        assert_eq!(
+            parse("[\"a\", {text:\"b\",} ,]"),
+            parse("[\"a\",{text:\"b\"}]")
+        );
+        assert!(parse("{text:\"a\",,}").is_err());
+        assert!(parse("[\"a\",,]").is_err());
+    }
+
+    #[test]
+    fn hex_color_follows_text_color_parse_color() {
+        for bad in [
+            "#1000000",
+            "#FFFFFFFF",
+            "#-FF",
+            "#",
+            "#zz",
+            "FFFFFF",
+            "#99999999999",
+        ] {
+            assert_eq!(hex_color(bad), None, "{bad}");
+        }
+        for (good, want) in [
+            ("#FFFFFF", 0xFFFFFF),
+            ("#000000", 0),
+            ("#F", 15),
+            ("#+FF", 255),
+            ("#-0", 0),
+        ] {
+            assert_eq!(hex_color(good), Some(want), "{good}");
+        }
+        let out = serde_json::json!({"text": "A", "color": "#1000000"});
+        let text = to_text(&out, &mut |_| Text::empty());
+        assert_eq!(text.spans[0].style.color, None);
+    }
 
     #[test]
     fn shadow_color_accepts_packed_and_rgba_styles() {

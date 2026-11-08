@@ -161,8 +161,8 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         }
         // isPortal
         if !matches!(
-            self.level.dimension(),
-            super::Dimension::Overworld | super::Dimension::Nether
+            self.level.level_key(),
+            super::LevelKey::OVERWORLD | super::LevelKey::NETHER
         ) {
             return false;
         }

@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "send_particles_to",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_send_particles_to"
+    }
+  ],
+  "rust_summary": "particles for one player alone (`native_send_particles_to`), as vanilla's `ServerLevel.sendParticles(player, ...)`.",
+  "doc_summary": "`native_send_particles_to(uuid, options, state, at, spread, speed, count, force)` (`host.send_particles_to`) shows particles to one player alone, within 32 blocks or 512 with `force`, as vanilla's `ServerLevel.sendParticles(player, ...)` and Bukkit's `Player.spawnParticle`; it leaves at the tick's end, so it works from any server hook. Bundles need \"hooks\": @API:send_particles_to@."
+}

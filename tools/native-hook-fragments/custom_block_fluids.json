@@ -1,0 +1,37 @@
+{
+  "hooks": [
+    {
+      "name": "custom_block_fluids",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_custom_block_fluids",
+      "mod_api": {
+        "contract": "listen"
+      }
+    },
+    {
+      "name": "custom_fluid_tanks",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_custom_fluid_tanks",
+      "mod_api": {
+        "contract": "replace",
+        "out": "out"
+      }
+    },
+    {
+      "name": "custom_fluid_fill",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_custom_fluid_fill",
+      "mod_api": {
+        "contract": "replace",
+        "out": "out"
+      }
+    },
+    {
+      "name": "custom_fluid_drain",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_custom_fluid_drain",
+      "mod_api": {
+        "contract": "replace",
+        "out": "out"
+      }
+    }
+  ],
+  "rust_summary": "an opt-in provider behind the ordinary block-fluid helpers.",
+  "doc_summary": "`native_custom_block_fluids` opts into native-owned tank storage used by the existing sided block-fluid queries, insert and extract helpers. Providers retain their own data and tank rules. Ordinary transfers skip these endpoints until a rollback contract exists. Bundles need \"hooks\": @API:custom_block_fluids@."
+}

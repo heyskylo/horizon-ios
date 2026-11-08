@@ -43,6 +43,7 @@ pub mod generator;
 mod generator_blocks;
 mod generator_decoration;
 mod generator_structures;
+pub(crate) use generator_structures::tag_json;
 pub mod height_provider;
 pub mod iceberg;
 pub mod live;
@@ -51,6 +52,7 @@ pub mod material_condition;
 pub mod material_extensions;
 pub mod material_stage;
 pub mod material_surface;
+pub mod native_generate;
 pub mod ore_feature;
 pub mod overrides;
 pub mod placement;
@@ -281,6 +283,13 @@ mod tests {
             let raw: Box<RawValue> = serde_json::from_str(text).unwrap();
             assert_eq!(integer(&raw).unwrap(), expected, "{text}");
         }
+    }
+    #[test]
+    fn a_muted_octave_decodes_to_a_silent_noise() {
+        let noise = decode_noise(r#"{"base_octave":0,"amplitude_modifiers":[0.0]}"#).unwrap();
+        assert!(noise.octaves().is_empty());
+        assert_eq!(noise.normalization_factor(), 0.0);
+        assert_eq!(noise.range(), [0.0, 0.0]);
     }
     #[test]
     fn codec_defaults_and_empty_modifiers_match_explicit_parameters() {

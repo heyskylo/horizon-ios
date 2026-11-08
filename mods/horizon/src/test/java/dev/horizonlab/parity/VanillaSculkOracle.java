@@ -671,7 +671,8 @@ public final class VanillaSculkOracle {
             out.flush();
         }
 
-        /** A scripted action: `event NAME x y z SOURCE [STATE]` or `set x y z STATE` (setBlock with update flags 3). */
+        /** A scripted action: `event NAME x y z SOURCE [STATE]`, `set x y z STATE` (setBlock with update flags 3),
+         *  `ignite mN` or `ate mN`. */
         void act(ServerLevel level, String[] w, List<Mob> mobs) throws Exception {
             switch (w[0]) {
                 case "event" -> {
@@ -686,6 +687,9 @@ public final class VanillaSculkOracle {
                     mob.hurtServer(level, level.damageSources().playerAttack(player), Float.parseFloat(w.length > 2 ? w[2] : "1000"));
                 }
                 case "set" -> level.setBlock(new BlockPos(Integer.parseInt(w[1]), Integer.parseInt(w[2]), Integer.parseInt(w[3])), parseState(level, w[4]), 3);
+                // A mob's own game events: Creeper.ignite (its next tick primes the fuse), Mob.ate.
+                case "ignite" -> ((net.minecraft.world.entity.monster.Creeper) mobs.get(Integer.parseInt(w[1].substring(1)))).ignite();
+                case "ate" -> mobs.get(Integer.parseInt(w[1].substring(1))).ate();
                 default -> throw new IllegalArgumentException(String.join(" ", w));
             }
         }

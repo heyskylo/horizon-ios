@@ -340,15 +340,19 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         self.level.observe_block_changed(pos, old, state);
         let new_block = self.block_of(state);
         let block_changed = self.block_of(old) != new_block;
+        if block_changed && self.b.instance_of(old, super::classes::Class::Comparator) {
+            // LevelChunk removes the old ComparatorBlockEntity with its output.
+            self.ticks.comparator_outputs.remove(&pos);
+        }
         if block_changed && self.block_of(old) == self.b.named.moving_piston {
             // PistonMovingBlockEntity.preRemoveSideEffects -> finalTick; the
-            // block is already replaced, so only the entity goes away.
+            // block is already replaced, so only the entity goes away. The
+            // extended base is MovingPistonBlock.destroy's, which only the
+            // player-break path calls (player_destroy).
             self.remove_moving_piston(pos);
-            // MovingPistonBlock.destroy: the extended base the head belonged to
-            // goes with it, so a broken moving piston leaves no extended piston.
-            self.destroy_moving_piston_base(pos, old);
         } else if block_changed
             && (self.b.has_flag(old, super::data::state_flags::BLOCK_ENTITY)
+                || self.level.has_native_block_entity(old)
                 || self.level.has_mod_block_entity(pos))
             && !self.keeps_block_entity(state, old)
         {
@@ -378,6 +382,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         if update_flags & flags::UPDATE_SKIP_ON_PLACE == 0 {
             self.on_place(state, pos, old, moved);
         }
+        let landed = self.state(pos);
+        if self.block_of(landed) == new_block {
+            self.level.ensure_block_entity(pos, landed);
+        }
         Some(old)
     }
     /// `BlockState.shouldChangedStateKeepBlockEntity(oldState)`: copper chests
@@ -392,7 +400,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     /// piston base behind it with it when that base is extended (a head that was
     /// still moving over a base that finished extending). An unextended base, or
     /// no piston base at all, stays.
-    fn destroy_moving_piston_base(&mut self, pos: BlockPos, state: BlockStateId) {
+    pub(crate) fn destroy_moving_piston_base(&mut self, pos: BlockPos, state: BlockStateId) {
         let b = self.b;
         let Some(facing) = b.table.dir(state, b.props.facing) else {
             return;

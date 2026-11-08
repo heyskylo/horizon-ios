@@ -1,4 +1,5 @@
 AbstractNautilus.createAttributes	skip:data		attributes come from the entity type table (MobType in mobs.rs)
+AbstractNautilus.canBeAffected	port	crates/horizon-client/src/mobs.rs::Mob::can_be_affected	poison, for the nautilus and its zombie
 AbstractNautilus.checkNautilusSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	S::Nautilus arm: sea level minus 25 to minus 5, water below and above; only the nautilus has a placement (the zombie nautilus has none of its own)
 AbstractNautilus.canUseSlot	port	crates/horizon-client/src/game/dispenser.rs::mob_can_use_slot	saddle and body slots need an alive, grown, tame nautilus
 AbstractNautilus.canDispenserEquipIntoSlot	port	crates/horizon-client/src/game/dispenser.rs::mob_can_dispenser_equip	body and saddle always, other slots only with pick_up_loot
@@ -8,9 +9,9 @@ AbstractNautilus.doPlayerRide	inline	crates/horizon-client/src/game/nautili.rs::
 AbstractNautilus.getNautilusRestrictionRadius	port	crates/horizon-client/src/mobs/nautilus.rs::restriction_radius	ticked in #3512; `AbstractNautilus.getNautilusRestrictionRadius` is cited at crates/horizon-client/src/mobs/nautilus.rs:231
 AbstractNautilus.checkRestriction	port	crates/horizon-client/src/mobs/nautilus.rs::check_restriction	ticked in #3512; `AbstractNautilus.checkRestriction` is cited at crates/horizon-client/src/mobs/nautilus.rs:240
 AbstractNautilus.applyEffects	inline	crates/horizon-client/src/mobs/nautilus.rs::ai_step	the rider gets breath of the nautilus for 60 ticks, refreshed every 40 ticks
-AbstractNautilus.onPlayerJump	inline	crates/horizon-client/src/game/mounts.rs::Game::charge_mount_jump	the charged jump scale (0.4 to 1.0) goes to the rider input; the dash itself waits for its cooldown in nautilus::ridden
+AbstractNautilus.onPlayerJump	port	crates/horizon-client/src/mobs/nautilus.rs::on_player_jump	a saddled nautilus out of its dash cooldown keeps the bar's scale on the rider (`PlayerRideableJumping.getPlayerJumpPendingScale`, 0.4 to 1.0), and the host's own ride charges the same scale through `game/mounts.rs::Game::charge_mount_jump`
 AbstractNautilus.executeRidersJump	port	crates/horizon-client/src/mobs/nautilus.rs::dash	gap: minor: the push leaves out getBlockSpeedFactor (soul sand, honey); 1.2 in water, 0.5 on land, 40 tick cooldown, dashing flag
-AbstractNautilus.handleStartJump	inline	crates/horizon-client/src/mobs/nautilus.rs::ai_step	the dash sound plays on the tick after the dash (scratch[1]); no game event
+AbstractNautilus.handleStartJump	inline	crates/horizon-client/src/mobs/nautilus.rs::on_player_jump	START_RIDING_JUMP's scale goes to the pending jump there, and the dash it starts is `executeRidersJump` in the same file, which raises DASH (`flag2`) and queues the dash sound for the next tick (scratch[1]); no game event
 AbstractNautilus.onSyncedDataUpdated	skip:other		client mirror of the dash flag; the nautilus keeps its own dash clock (anim_ticks) and the jump bar uses mount.jump_ticks
 AbstractNautilus.tryToTame	inline	crates/horizon-client/src/game/nautili.rs::Game::interact_nautilus	one chance in three, taming particles (event 7 or 6), eating sound, tame_animal trigger
 AbstractNautilus.hurtServer	port	crates/horizon-client/src/mobs/nautilus.rs::after_hurt	angry at the attacker for 400 ticks
@@ -25,7 +26,7 @@ Nautilus.getAmbientSound	port	crates/horizon-client/src/mobs/nautilus.rs::sounds
 Nautilus.getHurtSound	port	crates/horizon-client/src/mobs/nautilus.rs::sounds	by age and by under water or on land
 Nautilus.getDeathSound	port	crates/horizon-client/src/mobs/nautilus.rs::sounds	by age and by under water or on land
 Nautilus.playEatingSound	port	crates/horizon-client/src/mobs/nautilus.rs::eat_sound	baby and adult eat sounds
-Nautilus.baseTick	inline	crates/horizon-client/src/mobs/ai.rs::base_tick	gap: minor: dries out on land through the generic needs_water air supply, so the damage is the drown kind instead of dry_out and a no-AI nautilus dries out too
+Nautilus.baseTick	inline	crates/horizon-client/src/mobs/ai.rs::base_tick	NoAI skips custom supply and uses superclass Breath/drown; gap: minor: the normal handler still uses generic needs_water air so damage is drown instead of dry_out
 NautilusAi.initCoreActivity	inline	crates/horizon-client/src/mobs/nautilus.rs::register	panic 1.6 is a goal; the look and move sinks are the generic controls and the cooldown counters tick in ai_step
 NautilusAi.initIdleActivity	inline	crates/horizon-client/src/mobs/nautilus.rs::register	gap: minor: breed 0.4, tempt 1.3, swim stroll 1.0 and the target pick (find_target), but SetWalkTargetFromLookTarget is not ported so it does not swim toward what it looks at
 NautilusAi.initFightActivity	inline	crates/horizon-client/src/mobs/nautilus.rs::register	the Charge goal: speed 0.6, 12 block range, 80 tick cooldown, only without love or temptation
@@ -58,8 +59,10 @@ Parrot.createAttributes	skip:data		attributes (health 6, flying speed 0.4) come 
 Parrot.createNavigation	port	crates/horizon-client/src/mobs/parrot.rs::register	flying navigation and a flying move control, no doors, floats
 Parrot.calculateFlapping	port	crates/horizon-client/src/mobs/parrot.rs::calculate_flapping	
 Parrot.checkParrotSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	S::Parrot arm: parrots_spawnable_on below and bright enough
+Parrot.isFlapping	port	crates/horizon-client/src/mobs/parrot.rs::process_flapping	strict flyDist > nextFlap, used by air movement and live Game flap dispatch
 Parrot.onFlap	port	crates/horizon-client/src/mobs/parrot.rs::process_flapping	the wing-beat sound at 0.15 and nextFlap
 Parrot.hurtServer	port	crates/horizon-client/src/mobs/tame.rs::stand_when_hurt	
+Parrot.getVoicePitch	port	crates/horizon-client/src/mobs.rs::voice_pitch	getPitch(random): 1.0 +- 0.2 with no baby bump, where LivingEntity raises a baby to 1.5
 Parrot.get	skip:other		reads the variant as a data component for predicates; Horizon has no entity component view
 Parrot.applyImplicitComponent	missing		minor: a spawn egg's parrot_variant component is not applied (only bucketed mobs read item components)
 Parrot.defineSynchedData	skip:other		synched variant id; Horizon keeps it in extra.variant (remote_mob_data.rs reads index 20)
@@ -90,7 +93,7 @@ PigVariants.bootstrap	skip:data		variant registry; the variants and their biome 
 PigVariants.register	skip:data		registry helper
 PolarBear.createAttributes	skip:data		attributes come from the entity type table
 PolarBear.checkPolarBearSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	S::PolarBear arm: ice-block rule in the alternate biomes, animal rule elsewhere
-PolarBear.getDefaultDimensions	missing		minor: the box of a rearing bear stays its normal height (vanilla grows it up to twice with the stand animation); Mob::dims has no polar bear arm
+PolarBear.getDefaultDimensions	port	crates/horizon-client/src/mobs/living.rs::Mob::awake_dims_in	the rear-up animation scales the box by (1, 1 + animation / 6), widening nothing, through polar_bear::stand_box_scale
 PolarBear.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	ageable group with chance 1.0 (the PolarBear and Ocelot arm)
 Rabbit.getJumpPower	port	crates/horizon-client/src/mobs/rabbit.rs::jump_scale	0.5 toward higher ground or a wall, 0.2 when slow, else 0.3, divided by 0.42 (jump_power adds the block factor and boost)
 Rabbit.getJumpCompletion	skip:other		only copied into the render state; the rabbit model plays the hop and idle keyframe animations instead
@@ -102,7 +105,7 @@ Rabbit.setLandingDelay	inline	crates/horizon-client/src/mobs/rabbit.rs::server_a
 Rabbit.createAttributes	skip:data		attributes come from the entity type table
 Rabbit.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	RabbitType; MoreCarrotTicks is kept at 0
 Rabbit.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	gap: minor: RabbitType (0 to 5 and 99) is read but MoreCarrotTicks is ignored
-Rabbit.playAttackSound	missing		minor: only the killer bunny plays it and Horizon has no killer bunny behaviour
+Rabbit.playAttackSound	port	crates/horizon-client/src/mobs/rabbit.rs::attack_sound	only the killer bunny: `entity.rabbit.attack` at volume 1 and a pitch drawn from its own random (not the baby voice pitch)
 Rabbit.getBreedOffspring	port	crates/horizon-client/src/game/creatures.rs::Game::breed	gap: minor: the baby always takes the first parent's coat; vanilla takes either parent's and one time in 20 rolls a biome coat
 Rabbit.setVariant	inline	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	gap: player: variant 99 (killer bunny, from /summon or a save) only changes the texture: no armour 8, no plus 5 attack, no melee or target goals, no Killer Bunny name
 Rabbit.get	skip:other		reads the variant as a data component for predicates; Horizon has no entity component view
@@ -141,7 +144,9 @@ Sniffer.onScentingStart	inline	crates/horizon-client/src/mobs/animal_brain.rs::t
 Sniffer.onDiggingStart	inline	crates/horizon-client/src/mobs/animal_brain.rs::transition	the seed drop is set 120 ticks ahead (ints[3]); the client sound starts from the animation in tick_sniffer_effects
 Sniffer.dropSeed	inline	crates/horizon-client/src/mobs/sniffer.rs::ai_step	gift loot sniffer_digging at the head block and the drop seed sound when the tick comes
 Sniffer.storeExploredPosition	inline	crates/horizon-client/src/mobs/animal_brain.rs::B::do_stop	the on-pos is put in front of the explored list, kept to 20
-Sniffer.jumpFromGround	missing		minor: no sniffer arm in Mob::jump_from_ground, so its hop gets no extra forward nudge (moveRelative 0.1 forward) when it moves slowly
+Sniffer.jumpFromGround	port	crates/horizon-client/src/mobs/living.rs::jump_from_ground	the sniffer arm: a hop the move control asked for, from under 0.1 a tick of ground speed, adds moveRelative(0.1, forward)
 Sniffer.mobInteract	inline	crates/horizon-client/src/mobs/ai.rs::eating_sound	the eating sound plays when the food was taken (feed_animal)
 Sniffer.playEatingSound	port	crates/horizon-client/src/mobs/ai.rs::eating_sound	Species::Sniffer arm: entity.sniffer.eat with pitch 0.8 to 1.2
 Sniffer.playSearchingSound	port	crates/horizon-client/src/game/sniffers.rs::Game::tick_sniffer_effects	searching sound every 20 ticks while searching, near any player
+Parrot.canBeABaby	port	crates/horizon-client/src/mobs/species.rs::can_be_a_baby	the false arm: a parrot with a negative Age is an adult, and its getVoicePitch is the plain range
+ZombieNautilus.canBeABaby	port	crates/horizon-client/src/mobs/species.rs::can_be_a_baby	the false arm: a zombie nautilus with a negative Age is an adult

@@ -449,7 +449,7 @@ impl Game<'_> {
     pub(super) fn sort_mouse_press(&mut self, button: MouseButton) -> bool {
         self.sort_input(&keybinds::mouse_name(button))
     }
-    /// The HDR settings key (`Graphics::hdr_key`): opens Graphics: HDR from the game, where
+    /// The HDR settings key (`Graphics::hdr_key`): opens the graphics screen's HDR page from the game, where
     /// the display offers HDR; Done goes back to the game.
     pub(super) fn hdr_key_press(&mut self, key: KeyCode) -> bool {
         keybinds::key_name(key).is_some_and(|name| self.hdr_input(name))
@@ -495,10 +495,9 @@ impl Game<'_> {
         }
         let views: Vec<Option<ItemStack>> = slots.iter().map(|&s| self.slot_view(s)).collect();
         let clicks = {
-            let names = |id: &str| self.pack.names.display_item(id);
             let rank = |s: &ItemStack| {
                 let order = self.creative_screen.order_of(s).unwrap_or(usize::MAX);
-                (order, hover_name(&names, s))
+                (order, hover_name(&self.pack.names, s))
             };
             let max = |s: &ItemStack| self.max_stack(s);
             inv_sort::plan(&views, &rank, &max)

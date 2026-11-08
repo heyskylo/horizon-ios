@@ -50,16 +50,16 @@ Vec3i.differsHorizontally	inline	crates/horizon-client/src/mobs/frog.rs::LaySpaw
 Vec3i.toString	skip:debug		debug string
 CauldronInteraction.Dispatcher.put	skip:java		item-to-interaction table; Horizon matches items in cauldron.rs::interact
 CauldronInteractions.newDispatcher	skip:java		table constructor
-CauldronInteractions.bootStrap	inline	crates/horizon-client/src/cauldron.rs::interact	gap: minor: posts no FLUID_PICKUP/FLUID_PLACE game event (Game::use_on_cauldron)
+CauldronInteractions.bootStrap	inline	crates/horizon-client/src/cauldron.rs::interact	fluid events after the sound via Interaction.fluid_event and Game::use_on_cauldron
 CauldronInteractions.addDefaultInteractions	inline	crates/horizon-client/src/cauldron.rs::interact	the lava, water and powder snow bucket arms for every cauldron kind
-CauldronInteractions.fillBucket	inline	crates/horizon-client/src/cauldron.rs::interact	gap: minor: posts no FLUID_PICKUP/FLUID_PLACE game event (Game::use_on_cauldron)
-CauldronInteractions.emptyBucket	inline	crates/horizon-client/src/cauldron.rs::interact	gap: minor: posts no FLUID_PICKUP/FLUID_PLACE game event (Game::use_on_cauldron)
-CauldronInteractions.fillWaterInteraction	inline	crates/horizon-client/src/cauldron.rs::interact	gap: minor: posts no FLUID_PICKUP/FLUID_PLACE game event (Game::use_on_cauldron)
-CauldronInteractions.fillLavaInteraction	inline	crates/horizon-client/src/cauldron.rs::interact	gap: minor: posts no FLUID_PICKUP/FLUID_PLACE game event (Game::use_on_cauldron)
-CauldronInteractions.fillPowderSnowInteraction	inline	crates/horizon-client/src/cauldron.rs::interact	gap: minor: posts no FLUID_PICKUP/FLUID_PLACE game event (Game::use_on_cauldron)
-CauldronInteractions.shulkerBoxInteraction	inline	crates/horizon-client/src/cauldron.rs::interact	gap: minor: posts no FLUID_PICKUP/FLUID_PLACE game event (Game::use_on_cauldron)
-CauldronInteractions.bannerInteraction	inline	crates/horizon-client/src/cauldron.rs::interact	gap: minor: posts no FLUID_PICKUP/FLUID_PLACE game event (Game::use_on_cauldron)
-CauldronInteractions.dyedItemIteration	inline	crates/horizon-client/src/cauldron.rs::interact	gap: minor: posts no FLUID_PICKUP/FLUID_PLACE game event (Game::use_on_cauldron)
+CauldronInteractions.fillBucket	inline	crates/horizon-client/src/cauldron.rs::interact	fluid events after the sound via Interaction.fluid_event and Game::use_on_cauldron
+CauldronInteractions.emptyBucket	inline	crates/horizon-client/src/cauldron.rs::interact	fluid events after the sound via Interaction.fluid_event and Game::use_on_cauldron
+CauldronInteractions.fillWaterInteraction	inline	crates/horizon-client/src/cauldron.rs::interact	fluid events after the sound via Interaction.fluid_event and Game::use_on_cauldron
+CauldronInteractions.fillLavaInteraction	inline	crates/horizon-client/src/cauldron.rs::interact	fluid events after the sound via Interaction.fluid_event and Game::use_on_cauldron
+CauldronInteractions.fillPowderSnowInteraction	inline	crates/horizon-client/src/cauldron.rs::interact	fluid events after the sound via Interaction.fluid_event and Game::use_on_cauldron
+CauldronInteractions.shulkerBoxInteraction	inline	crates/horizon-client/src/cauldron.rs::interact	lowerFillLevel posts BLOCK_CHANGE only, no fluid event in vanilla
+CauldronInteractions.bannerInteraction	inline	crates/horizon-client/src/cauldron.rs::interact	lowerFillLevel posts BLOCK_CHANGE only, no fluid event in vanilla
+CauldronInteractions.dyedItemIteration	inline	crates/horizon-client/src/cauldron.rs::interact	lowerFillLevel posts BLOCK_CHANGE only, no fluid event in vanilla
 BlockTransformer.playerHasBlockingItemUseIntent	port	crates/horizon-client/src/game.rs::Game::block_transform	gap: minor: checks the off-hand shield for any hand; vanilla checks the main hand only
 BlockTransformer.BlockTransformData.builder	skip:java		builder
 BlockTransformer.BlockTransformData.Builder.build	skip:java		builder
@@ -78,7 +78,7 @@ DataComponentInitializers.Initializer.add	skip:data		item default component init
 DataComponentInitializers.SingleComponentInitializer.asInitializer	skip:data		item default component initializers; Horizon reads item defaults from its tables
 DataComponentLookup.getOrCreateStorage	skip:java		cache
 DataComponentLookup.scanForComponents	skip:java		index build behind the lookup
-DataComponentLookup.findAll	inline	crates/horizon-client/src/game/creatures.rs::Game::dye_color_mix_in_recipes	DyeColor.findColorMixInRecipes looks the two dyes up through the recipe components; this builds the two-dye grid and asks the recipe manager for it
+DataComponentLookup.findAll	inline	crates/horizon-client/src/game/creatures.rs::dye_color_mix_in_recipes	DyeColor.findColorMixInRecipes looks the two dyes up through the recipe components; this builds the two-dye grid and asks the recipe manager for it
 DataComponentLookup.ComponentStorage.findMatching	skip:other		how a spawn egg finds its entity type: the egg's id is the type's with _spawn_egg on the end (creatures.rs::Game::spawn_egg_allowed trims it), so no component is looked up
 DataComponentMap.makeCodecFromMap	skip:java		codec
 DataComponentMap.iterator	skip:java		iterator

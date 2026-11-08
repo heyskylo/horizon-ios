@@ -6,7 +6,7 @@
 use super::{Species, data};
 use crate::blocks::{BlockFacts, Fluid};
 use horizon_core::random::{RandomSource, slime_chunk_random};
-use horizon_world::registry::BlockStateId;
+use horizon_world::{dimension_type::DimensionFacts, registry::BlockStateId};
 
 /// `EntitySpawnReason`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,33 +39,13 @@ impl Reason {
         self == Self::TrialSpawner
     }
 }
-/// The dimension type's monster spawn light rules.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Dimension {
-    Overworld,
-    Nether,
-    End,
-}
-impl Dimension {
-    /// `monster_spawn_block_light_limit`.
-    fn block_light_limit(self) -> i32 {
-        match self {
-            Self::Nether => 15,
-            _ => 0,
-        }
-    }
-    /// `monster_spawn_light_level.sample`: uniform 0..=7 in the overworld.
-    fn light_test(self, random: &mut impl RandomSource) -> i32 {
-        match self {
-            Self::Overworld => random.next_int_bound(8).unwrap_or(0),
-            Self::Nether => 7,
-            Self::End => 15,
-        }
-    }
-}
-
 /// What spawn checks read from a level.
 pub trait SpawnLevel {
+    /// `WorldBorder.isWithinBounds(BlockPos)`. Unbounded test levels allow all positions.
+    fn within_world_border(&self, _x: i32, _z: i32) -> bool {
+        true
+    }
+
     fn state(&self, x: i32, y: i32, z: i32) -> BlockStateId;
     fn facts(&self) -> &BlockFacts;
     fn mob_data(&self) -> &data::MobData;
@@ -80,7 +60,7 @@ pub trait SpawnLevel {
     /// `getHeight(WORLD_SURFACE, x, z)`: above the highest non-air block.
     fn world_surface(&self, x: i32, z: i32) -> i32;
     fn peaceful(&self) -> bool;
-    fn dimension(&self) -> Dimension;
+    fn dimension_type(&self) -> &DimensionFacts;
     /// The `gameplay/surface_slime_spawn_chance` environment attribute.
     fn surface_slime_chance(&self, x: i32, y: i32, z: i32) -> f32;
     fn world_seed(&self) -> i64;
@@ -119,8 +99,17 @@ fn can_see_sky_from_below_water<L: SpawnLevel>(l: &L, x: i32, y: i32, z: i32) ->
     }
     ((y + 1)..sea).all(|yy| {
         let f = l.facts().get(l.state(x, yy, z));
-        f.dampening == 0 || f.fluid != Fluid::None
+        // `BlockState.liquid()` is water, lava and the bubble column. Kelp,
+        // seagrass and waterlogged blocks hold water and still stop the scan.
+        f.dampening == 0 || liquid_block(&f.name)
     })
+}
+/// `BlockState.liquid()`: the three blocks whose property is set.
+fn liquid_block(name: &str) -> bool {
+    matches!(
+        name,
+        "minecraft:water" | "minecraft:lava" | "minecraft:bubble_column"
+    )
 }
 
 /// `EntityType.fireImmune`.
@@ -244,7 +233,11 @@ pub fn is_valid_empty_spawn<L: SpawnLevel>(s: Species, l: &L, x: i32, y: i32, z:
 }
 /// `SpawnPlacements.isSpawnPositionOk`.
 pub fn is_spawn_position_ok<L: SpawnLevel>(s: Species, l: &L, x: i32, y: i32, z: i32) -> bool {
-    match l.mob_data().species_placement(s) {
+    let placement = l.mob_data().species_placement(s);
+    if placement != data::Placement::NoRestrictions && !l.within_world_border(x, z) {
+        return false;
+    }
+    match placement {
         data::Placement::OnGround => {
             is_valid_spawn(s, l, x, y - 1, z)
                 && is_valid_empty_spawn(s, l, x, y, z)
@@ -269,14 +262,14 @@ pub fn is_dark_enough<L: SpawnLevel>(
     if l.sky_light(x, y, z) > random.next_int_bound(32).unwrap_or(0) {
         return false;
     }
-    let dim = l.dimension();
-    let limit = dim.block_light_limit();
+    let dim = l.dimension_type();
+    let limit = dim.monster_spawn_block_light_limit;
     if limit < 15 && l.block_light(x, y, z) > limit {
         return false;
     }
     let darken = if l.thundering() { 10 } else { l.sky_darken() };
     let brightness = raw_brightness(l, x, y, z, darken);
-    brightness <= dim.light_test(random)
+    brightness <= dim.monster_spawn_light_level.sample(random).unwrap_or(0)
 }
 /// `Animal.isBrightEnoughToSpawn`.
 fn bright<L: SpawnLevel>(l: &L, x: i32, y: i32, z: i32) -> bool {
@@ -547,6 +540,10 @@ fn slime_rules<L: SpawnLevel>(
 }
 
 impl SpawnLevel for super::MobWorld<'_> {
+    fn within_world_border(&self, x: i32, z: i32) -> bool {
+        self.border
+            .is_none_or(|border| border.is_within_bounds(f64::from(x), f64::from(z), 0.0))
+    }
     fn state(&self, x: i32, y: i32, z: i32) -> BlockStateId {
         self.world.block(x, y, z)
     }
@@ -570,7 +567,11 @@ impl SpawnLevel for super::MobWorld<'_> {
             .is_some_and(|members| members.contains(biome))
     }
     fn sky_light(&self, x: i32, y: i32, z: i32) -> i32 {
-        if self.nether || self.end {
+        // Kept as before: vanilla's End has sky light, but Horizon reads 0 there.
+        if matches!(
+            self.dimension_type.id.as_str(),
+            "minecraft:the_nether" | "minecraft:the_end"
+        ) {
             return 0;
         }
         i32::from(self.world.light(x, y, z) >> 4)
@@ -593,14 +594,8 @@ impl SpawnLevel for super::MobWorld<'_> {
     fn peaceful(&self) -> bool {
         self.difficulty.effective == 0.0
     }
-    fn dimension(&self) -> Dimension {
-        if self.nether {
-            Dimension::Nether
-        } else if self.end {
-            Dimension::End
-        } else {
-            Dimension::Overworld
-        }
+    fn dimension_type(&self) -> &DimensionFacts {
+        self.dimension_type
     }
     fn surface_slime_chance(&self, _: i32, _: i32, _: i32) -> f32 {
         let phase = self.day_time.div_euclid(24000).rem_euclid(8) as usize;
@@ -616,5 +611,142 @@ impl SpawnLevel for super::MobWorld<'_> {
                 + (p.position.z - z).powi(2);
             p.alive && !p.creative && !p.spectator && d < distance * distance
         })
+    }
+}
+
+#[cfg(test)]
+mod underwater_sky_tests {
+    use super::*;
+    use crate::mobs::world::with_built_test_world;
+    use horizon_core::random::LegacyRandom;
+    use horizon_world::{block_state_properties::BlockProperties, chunk::BlockState};
+
+    fn with_props(
+        registry: &horizon_world::registry::BlockRegistry,
+        name: &str,
+        props: &[(&str, &str)],
+    ) -> horizon_world::registry::BlockStateId {
+        let mut properties = BlockProperties::new();
+        for (key, value) in props {
+            properties.insert((*key).to_owned(), (*value).to_owned());
+        }
+        registry
+            .resolve(&BlockState {
+                name: format!("minecraft:{name}"),
+                properties,
+            })
+            .unwrap()
+    }
+
+    /// `Guardian.checkGuardianSpawnRules`: below sea level the 1-in-20 roll is
+    /// skipped when `canSeeSkyFromBelowWater` is false. Kelp (dampening 1, not
+    /// `liquid()`) makes it false. A bubble column is `liquid()`, so the scan
+    /// continues and the roll is still required.
+    #[test]
+    fn kelp_hides_the_sky_from_a_guardian_and_a_bubble_column_does_not() {
+        let ran = with_built_test_world(
+            &[],
+            |world, registry| {
+                world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                );
+                let water = registry.default_state("minecraft:water").unwrap();
+                let kelp = with_props(registry, "kelp", &[("age", "0")]);
+                let column = with_props(registry, "bubble_column", &[("drag", "true")]);
+                for x in [0, 1] {
+                    world.set(x, 49, 0, water).unwrap();
+                    world.set(x, 50, 0, water).unwrap();
+                }
+                world.set(0, 55, 0, kelp).unwrap();
+                world.set(1, 55, 0, column).unwrap();
+            },
+            |w, _| {
+                // Sea level in this world is 63, so y=55 sits in the scan.
+                assert_eq!(w.sea_level(), 63);
+                let mut probe = LegacyRandom::new(1);
+                assert_ne!(
+                    probe.next_int_bound(20).unwrap(),
+                    0,
+                    "seed 1 must miss the 1-in-20"
+                );
+                let mut random = LegacyRandom::new(1);
+                assert!(
+                    check_spawn_rules(Species::Guardian, w, Reason::Natural, &mut random, 0, 50, 0),
+                    "kelp between the guardian and the sea hides the sky"
+                );
+                let mut random = LegacyRandom::new(1);
+                assert!(
+                    !check_spawn_rules(
+                        Species::Guardian,
+                        w,
+                        Reason::Natural,
+                        &mut random,
+                        1,
+                        50,
+                        0
+                    ),
+                    "a bubble column is liquid(), so the sky still shows"
+                );
+            },
+        );
+        // Without the vanilla data under .local/horizon-client the world
+        // cannot be built: the test has nothing to check.
+        let _ = ran;
+    }
+}
+
+#[cfg(test)]
+mod light_draw_tests {
+    use super::*;
+    use crate::mobs::{MobWorld, world::with_built_test_world};
+    use horizon_core::random::LegacyRandom;
+
+    /// `Monster.isDarkEnoughToSpawn`: the sky roll draws one bound-32 int, then the
+    /// dimension type's light level draws as its provider does (uniform 0..=7 one
+    /// bound-8 int, a constant none).
+    #[test]
+    fn dark_enough_draws_follow_the_dimension_type_provider() {
+        with_built_test_world(
+            &[],
+            |world, _| {
+                world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                );
+            },
+            |w, _| {
+                for (type_id, draws) in [
+                    ("minecraft:overworld", &[32, 8][..]),
+                    ("minecraft:the_nether", &[32][..]),
+                    ("minecraft:the_end", &[32][..]),
+                ] {
+                    let level = MobWorld {
+                        dimension_type: DimensionFacts::vanilla(type_id).unwrap(),
+                        ..w.clone()
+                    };
+                    let mut random = LegacyRandom::new(42);
+                    let dark = is_dark_enough(&level, &mut random, 0, 70, 0);
+                    let mut expected = LegacyRandom::new(42);
+                    let rolls: Vec<i32> = draws
+                        .iter()
+                        .map(|bound| expected.next_int_bound(*bound).unwrap())
+                        .collect();
+                    assert_eq!(random.next_int(), expected.next_int(), "{type_id}");
+                    let light = level
+                        .block_light(0, 70, 0)
+                        .max(level.sky_light(0, 70, 0) - level.sky_darken());
+                    let test = rolls.get(1).copied().unwrap_or(match type_id {
+                        "minecraft:the_nether" => 7,
+                        _ => 15,
+                    });
+                    assert_eq!(
+                        dark,
+                        rolls[0] >= level.sky_light(0, 70, 0) && light <= test,
+                        "{type_id}"
+                    );
+                }
+            },
+        );
     }
 }

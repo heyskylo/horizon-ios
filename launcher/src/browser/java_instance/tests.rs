@@ -300,10 +300,12 @@ fn the_page_search_keeps_the_players_filters_but_not_their_version() {
     let t = target("1.21.1", Some("fabric"));
     let picked = details::Filters {
         categories: vec!["optimization".into()],
+        tags: Vec::new(),
         loader: Some("neoforge".into()),
         game_version: Some("26.3".into()),
         environment: Some(details::Environment::Client),
         sort: Some(details::Sort::Downloads),
+        works_on: false,
     };
     let q = t.search("fps", Kind::Mod, &picked);
     assert_eq!(q.text, "fps");
@@ -319,4 +321,51 @@ fn the_page_search_keeps_the_players_filters_but_not_their_version() {
     assert!(!t.takes(Kind::Modpack) && !t.takes(Kind::Shader) && !t.takes(Kind::DataPack));
     assert_eq!(t.describe(Kind::Mod), "Minecraft 1.21.1 with fabric");
     assert_eq!(t.describe(Kind::ResourcePack), "Minecraft 1.21.1");
+}
+
+#[test]
+fn a_planted_list_never_reaches_outside_the_instance() {
+    let root = home("planted");
+    let home = root.join("instance");
+    let secret = root.join("outside/id_ed25519");
+    fs::create_dir_all(secret.parent().unwrap()).unwrap();
+    fs::write(&secret, b"key").unwrap();
+    fs::create_dir_all(home.join("mods")).unwrap();
+    fs::write(home.join("mods/x.jar"), b"jar").unwrap();
+    let entry = |project: &str, file: &str| {
+        serde_json::json!({
+            "source": "modrinth", "project": project, "slug": project, "title": project,
+            "kind": "mod", "version": "1", "number": "1", "file": file,
+            "checksum": "SHA-512:00", "page": ""
+        })
+    };
+    let absolute = secret.to_string_lossy().into_owned();
+    let manifest = serde_json::json!({ "entries": [
+        entry("absolute", &absolute),
+        entry("up", "../outside/id_ed25519"),
+        entry("through-mods", "mods/../../outside/id_ed25519"),
+        entry("whole-folder", "horizon-mods"),
+        entry("x", "mods/x.jar"),
+    ]});
+    fs::write(home.join("mod-browser.json"), manifest.to_string()).unwrap();
+
+    let kept: Vec<_> = Installed::load(&home)
+        .entries
+        .into_iter()
+        .map(|e| e.file)
+        .collect();
+    assert_eq!(kept, ["mods/x.jar"]);
+    for name in ["absolute", "up", "through-mods"] {
+        assert!(remove(&home, name).is_err(), "{name}");
+    }
+    // An entry handed in directly (not loaded) is refused where its file is touched, too.
+    let mut planted = Installed::load(&home).entries[0].clone();
+    planted.file = absolute;
+    assert!(set_on(&home, &planted, false).is_err());
+    assert!(secret.is_file() && !root.join("outside/id_ed25519.disabled").exists());
+
+    remove(&home, "x").unwrap();
+    assert!(!home.join("mods/x.jar").exists());
+    assert_eq!(fs::read(&secret).unwrap(), b"key");
+    fs::remove_dir_all(&root).unwrap();
 }

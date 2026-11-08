@@ -25,7 +25,9 @@ impl HolderSet {
             return Err(crate::Error::new("holder set larger than the packet"));
         }
         Ok(Self::Items(
-            (0..n).map(|_| r.varint()).collect::<Result<_>>()?,
+            (0..n)
+                .map(|_| r.varint().map(crate::adapter::ids::item))
+                .collect::<Result<_>>()?,
         ))
     }
     pub fn write(&self, w: &mut Writer) {
@@ -93,16 +95,19 @@ impl SlotDisplay {
             return Err(crate::Error::new("slot displays nest too deep"));
         }
         let inner = |r: &mut Reader| Self::read_at(r, depth + 1).map(Box::new);
-        Ok(match r.varint()? {
+        Ok(match crate::adapter::ids::slot_display(r.varint()?) {
             0 => Self::Empty,
             1 => Self::AnyFuel,
             2 => Self::WithAnyPotion(inner(r)?),
             3 => {
                 let source = inner(r)?;
-                Self::OnlyWithComponent(source, r.varint()?)
+                Self::OnlyWithComponent(source, crate::adapter::ids::component(r.varint()?))
             }
-            4 => Self::Item(r.varint()?),
+            4 => Self::Item(crate::adapter::ids::item(r.varint()?)),
             5 => Self::ItemStack(Template::read(r)?),
+            6 if crate::adapter::ids::quirks().tag_slot_display_is_id => {
+                Self::Tag(HolderSet::Tag(r.string(32767)?))
+            }
             6 => Self::Tag(HolderSet::read(r)?),
             7 => Self::Dyed {
                 dye: inner(r)?,
@@ -111,18 +116,37 @@ impl SlotDisplay {
             8 => {
                 let base = inner(r)?;
                 let material = inner(r)?;
-                let pattern = match r.varint()? {
-                    0 => TrimPattern::Direct {
-                        asset: r.string(32767)?,
-                        description: r.nbt()?,
-                        decal: r.bool()?,
-                    },
-                    id => TrimPattern::Id(id - 1),
-                };
-                Self::SmithingTrim {
-                    base,
-                    material,
-                    pattern,
+                if crate::adapter::ids::quirks().components_before_1_21_5 {
+                    let old_pattern = inner(r)?;
+                    let mut patterns = Vec::new();
+                    old_pattern.legacy_trim_patterns(&mut patterns)?;
+                    let mut displays: Vec<_> = patterns
+                        .into_iter()
+                        .map(|id| Self::SmithingTrim {
+                            base: base.clone(),
+                            material: material.clone(),
+                            pattern: TrimPattern::Id(id),
+                        })
+                        .collect();
+                    if displays.len() == 1 {
+                        displays.remove(0)
+                    } else {
+                        Self::Composite(displays)
+                    }
+                } else {
+                    let pattern = match r.varint()? {
+                        0 => TrimPattern::Direct {
+                            asset: r.string(32767)?,
+                            description: r.nbt()?,
+                            decal: r.bool()?,
+                        },
+                        id => TrimPattern::Id(id - 1),
+                    };
+                    Self::SmithingTrim {
+                        base,
+                        material,
+                        pattern,
+                    }
                 }
             }
             9 => Self::WithRemainder {
@@ -140,6 +164,30 @@ impl SlotDisplay {
             id => return Err(crate::Error::new(format!("unknown slot display {id}"))),
         })
     }
+    fn legacy_trim_patterns(&self, out: &mut Vec<i32>) -> Result<()> {
+        let item = match self {
+            Self::Item(item) => *item,
+            Self::ItemStack(stack) => stack.item,
+            Self::Composite(list) => {
+                for display in list {
+                    display.legacy_trim_patterns(out)?;
+                }
+                return Ok(());
+            }
+            Self::WithRemainder { input, .. } => return input.legacy_trim_patterns(out),
+            _ => {
+                return Err(crate::Error::new(
+                    "unsupported legacy trim template display",
+                ));
+            }
+        };
+        let pattern = crate::adapter::ids::trim_pattern(item)
+            .ok_or_else(|| crate::Error::new("legacy template has no synced trim pattern"))?;
+        if !out.contains(&pattern) {
+            out.push(pattern);
+        }
+        Ok(())
+    }
     pub fn write(&self, w: &mut Writer) {
         match self {
             Self::Empty => w.varint(0),
@@ -155,11 +203,25 @@ impl SlotDisplay {
             }
             Self::Item(id) => {
                 w.varint(4);
-                w.varint(*id);
+                w.varint(crate::adapter::ids::item(*id));
             }
             Self::ItemStack(stack) => {
                 w.varint(5);
                 Template::write(stack, w);
+            }
+            Self::Tag(set) if crate::adapter::ids::quirks_written().tag_slot_display_is_id => {
+                match set {
+                    // TagSlotDisplay of 26.2: the tag's bare id.
+                    HolderSet::Tag(name) => {
+                        w.varint(6);
+                        w.string(name);
+                    }
+                    // A list of items has no such form: a composite of item displays shows the same.
+                    HolderSet::Items(items) => {
+                        Self::Composite(items.iter().map(|&item| Self::Item(item)).collect())
+                            .write(w)
+                    }
+                }
             }
             Self::Tag(set) => {
                 w.varint(6);
@@ -497,6 +559,23 @@ impl Codec<RecipeBookSettings> for RecipeBookSettings {
             w.bool(open);
             w.bool(filtering);
         }
+    }
+}
+
+/// ServerboundRecipeBookSeenRecipePacket: the `RecipeDisplayId` the player
+/// has looked at, so the server stops treating it as a new one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecipeBookSeenRecipe {
+    pub recipe: i32,
+}
+impl Codec<RecipeBookSeenRecipe> for RecipeBookSeenRecipe {
+    fn read(r: &mut Reader) -> Result<Self> {
+        Ok(Self {
+            recipe: r.varint()?,
+        })
+    }
+    fn write(v: &Self, w: &mut Writer) {
+        w.varint(v.recipe);
     }
 }
 

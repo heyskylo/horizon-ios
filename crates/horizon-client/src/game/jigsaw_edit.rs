@@ -2,7 +2,7 @@
 //! state, priorities and joint, with the Generate button and its levels.
 use super::{
     Game,
-    block_editor::{Editor, Item, Outcome, Pos, cycle, on_off},
+    block_editor::{Editor, Item, Outcome, Pos, cycle, footer_action, on_off},
 };
 use horizon_client::{
     containers::BlockEntity,
@@ -123,6 +123,7 @@ impl Editor for JigsawEditor {
             w: bw,
             label: text,
             active,
+            action: footer_action(id, DONE, CANCEL),
         };
         let label = |key: &str, x: f32, y: f32| Item::Label {
             text: tr(key),

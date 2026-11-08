@@ -17,17 +17,25 @@ pub struct Frame {
 /// Wings push even while perched and even when teams forbid damage.
 /// The normal mob damage handler owns armor, invulnerability frames and last-attacker bookkeeping.
 pub fn contact(m: &mut Mob, f: &Frame, teams_allow: bool) {
+    for part in 0..4 {
+        contact_part(m, f, teams_allow, part);
+    }
+}
+/// `EnderDragon.knockBack` / `hurt`: one wing or head contact; true when it runs post-attack effects,
+/// even if the hurt cooldown refused the damage.
+pub fn contact_part(m: &mut Mob, f: &Frame, teams_allow: bool, part: usize) -> bool {
     if f.recently_hurt || m.removed || m.id == f.dragon_id {
-        return;
+        return false;
     }
     let bounds = m.bounds();
     let source = Damage {
         kind: DamageKind::MobAttack,
         attacker: Some(Who::Mob(f.dragon_id)),
         from: Some([f.origin.x, f.origin.y, f.origin.z]),
+        attacker_species: None,
     };
-    for wing in &f.wings {
-        if wing.intersects(bounds) {
+    if part < 2 {
+        if f.wings[part].intersects(bounds) {
             let dx = m.position.x - f.center.0;
             let dz = m.position.z - f.center.1;
             let dd = (dx * dx + dz * dz).max(0.1);
@@ -39,16 +47,14 @@ pub fn contact(m: &mut Mob, f: &Frame, teams_allow: bool) {
                 && m.ai.last_hurt_by_time < (m.age as i32).saturating_sub(2)
             {
                 m.damage(5.0, source);
+                return true;
             }
         }
+    } else if teams_allow && f.heads[part - 2].intersects(bounds) {
+        m.damage(10.0, source);
+        return true;
     }
-    if teams_allow {
-        for head in &f.heads {
-            if head.intersects(bounds) {
-                m.damage(10.0, source);
-            }
-        }
-    }
+    false
 }
 
 #[cfg(test)]

@@ -2,8 +2,13 @@
 //! variant choice (or the stack's `painting/variant`), `HangingEntity.survives`
 //! checks every 100 ticks, breaking by attack (`dropItem`), saving, and
 //! `PaintingRenderer` quads.
-use super::{Game, Hit};
-use horizon_client::{entities::Painting, items::ItemStack, mesher::Vertex};
+use super::{Game, Hit, entity_culling::default_range};
+use horizon_client::{
+    entities::{ItemFrame, Painting},
+    items::ItemStack,
+    mesher::Vertex,
+    random_source,
+};
 use horizon_core::{
     geometry::{Aabb, Vec3},
     random::RandomSource,
@@ -76,6 +81,24 @@ impl PaintingVariants {
 fn overlaps(a: ([f64; 3], [f64; 3]), b: ([f64; 3], [f64; 3])) -> bool {
     (0..3).all(|i| a.0[i] < b.1[i] && b.0[i] < a.1[i])
 }
+/// `HangingEntity.canCoexist(true)` for an item frame.
+pub(super) fn frame_coexists(f: &ItemFrame, frames: &[ItemFrame], paintings: &[Painting]) -> bool {
+    !frames
+        .iter()
+        .any(|o| o.id != f.id && o.facing == f.facing && overlaps(o.bounds(), f.bounds()))
+        && !paintings
+            .iter()
+            .any(|o| o.step() == f.step() && overlaps(o.bounds(), f.bounds()))
+}
+/// `HangingEntity.canCoexist(false)` for a painting.
+fn painting_coexists(p: &Painting, paintings: &[Painting], frames: &[ItemFrame]) -> bool {
+    !paintings
+        .iter()
+        .any(|o| o.id != p.id && overlaps(o.bounds(), p.bounds()))
+        && !frames
+            .iter()
+            .any(|o| o.step() == p.step() && overlaps(o.bounds(), p.bounds()))
+}
 
 /// `HangingEntityItem.mayPlace` for a painting: not a floor or ceiling.
 /// Direction.get2DDataValue: south 0, west 1, north 2, east 3.
@@ -90,9 +113,16 @@ fn painting_facing(face: [i32; 3]) -> Option<u8> {
         _ => 3,
     })
 }
+/// Whether the camera, at the origin of `corners`' space, is on the side of the quad
+/// that `normal` points to.
+fn faces_camera(corners: &[glam::DVec3; 4], normal: glam::DVec3) -> bool {
+    let centre = (corners[0] + corners[1] + corners[2] + corners[3]) / 4.0;
+    normal.dot(-centre) > 0.0
+}
+
 impl Game<'_> {
     /// `HangingEntity.survives`: no block collision in the box, solid blocks
-    /// (or diodes) behind it and no other painting overlapping it.
+    /// (or diodes) behind it and no conflicting hanging entity overlapping it.
     pub(super) fn painting_survives(&self, p: &Painting) -> bool {
         let (lo, hi) = p.bounds();
         let bounds = Aabb::new(
@@ -123,10 +153,7 @@ impl Game<'_> {
                 }
             }
         }
-        !self
-            .paintings
-            .iter()
-            .any(|o| o.id != p.id && overlaps(o.bounds(), (lo, hi)))
+        painting_coexists(p, &self.paintings, &self.item_frames)
     }
     /// `HangingEntityItem.useOn` on a client level: SUCCESS once
     /// `Painting.create` finds a surviving variant (and the stack's
@@ -178,8 +205,10 @@ impl Game<'_> {
         if &*stack.item != "minecraft:painting" {
             return false;
         }
+        // HangingEntityItem.mayPlace: never on a top or bottom face (FAIL).
         let Some(facing) = painting_facing(hit.face) else {
-            return false;
+            self.use_failed = true;
+            return true;
         };
         let pos = [
             hit.pos[0] + hit.face[0],
@@ -207,13 +236,14 @@ impl Game<'_> {
                 fitting.push(v);
             }
         }
+        // Nothing fits: CONSUME, which ItemStack.useOn still counts as a use.
         let Some(largest) = fitting.iter().map(|v| v.width * v.height).max() else {
-            return false;
+            self.award_stat("used", &stack.item, 1);
+            return true;
         };
         fitting.retain(|v| v.width * v.height >= largest);
-        let pick = self
-            .world
-            .random
+        // Util.getRandomSafe(variants, candidate.random): the painting's own random.
+        let pick = random_source::entity()
             .next_int_bound(fitting.len() as i32)
             .unwrap_or(0) as usize;
         let v = &fitting[pick];
@@ -224,12 +254,39 @@ impl Game<'_> {
         if let Some(v) = self.painting_variants.of_stack(stack).cloned() {
             (candidate.variant, candidate.width, candidate.height) = (v.id, v.width, v.height);
             if !self.painting_survives(&candidate) {
-                return false;
+                self.award_stat("used", &stack.item, 1);
+                return true;
             }
+        }
+        // `updateCustomEntityTag`: the item's `custom_data` and its `entity_data`
+        // merged over the painting, so a `variant` there replaces the pick (and
+        // has to survive, else the use is CONSUME).
+        let own = horizon_client::entity_nbt::painting_to_nbt(&candidate, [0; 4], None);
+        let mut raw = horizon_client::block_entity_item::stack_configured_entity(
+            stack,
+            "minecraft:painting",
+            &own,
+        );
+        if let Some((_, _, variant)) = horizon_client::entity_nbt::painting_from_nbt(&raw)
+            && *candidate.variant != *variant
+            && let Some(v) = self
+                .painting_variants
+                .get(&horizon_world::datafix::dynamic::namespaced(&variant))
+                .cloned()
+        {
+            (candidate.variant, candidate.width, candidate.height) = (v.id, v.width, v.height);
+            if !self.painting_survives(&candidate) {
+                self.award_stat("used", &stack.item, 1);
+                return true;
+            }
+        }
+        if let horizon_world::nbt::Tag::Compound(map) = &mut raw {
+            map.remove(&"UUID".into());
         }
         if self.hanging_place_cancelled("minecraft:painting", pos) {
             return true;
         }
+        self.persist.raw.insert(candidate.id, raw);
         let (lo, hi) = candidate.bounds();
         let at = [
             (lo[0] + hi[0]) / 2.0,
@@ -238,11 +295,16 @@ impl Game<'_> {
         ];
         self.audio
             .play("minecraft:entity.painting.place", Some(at), 1.0, 1.0);
+        // HangingEntityItem.useOn: ENTITY_PLACE at the painting, by the player, before it is
+        // added; ItemStack.useOn then counts the use.
+        let ctx = self.player_context(None);
+        self.post_game_event("minecraft:entity_place", at, ctx);
         self.paintings.push(candidate);
         self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
         if !self.creative {
             self.consume_held();
         }
+        self.award_stat("used", &stack.item, 1);
         // HangingEntityItem.useOn returns SUCCESS: the hand swings.
         self.swing_arm();
         true
@@ -277,6 +339,18 @@ impl Game<'_> {
     /// `Painting.hurtServer` -> kill and `dropItem`. False when a mod kept it
     /// (`native_hanging_break`): it stays at `index`.
     pub(super) fn break_painting(&mut self, index: usize, by_player: bool) -> bool {
+        self.break_painting_by(
+            index,
+            by_player,
+            by_player.then_some(super::commands::Target::Player),
+        )
+    }
+    pub(super) fn break_painting_by(
+        &mut self,
+        index: usize,
+        by_player: bool,
+        source: Option<super::commands::Target>,
+    ) -> bool {
         let pos = self.paintings[index].pos;
         if self.hanging_break_cancelled("minecraft:painting", pos, by_player) {
             return false;
@@ -289,6 +363,8 @@ impl Game<'_> {
             (lo[2] + hi[2]) / 2.0,
         ];
         self.world.modified.insert((p.pos[0] >> 4, p.pos[2] >> 4));
+        // BlockAttachedEntity.kill, before dropItem.
+        self.entity_killed_event_by(at, source);
         if !self.ui.rules.bool("entity_drops") {
             return true;
         }
@@ -344,13 +420,16 @@ impl Game<'_> {
             return;
         };
         for p in &self.paintings {
-            let entity_start = out.len();
             // EntityRenderer.shouldRender: the default range and its box,
             // measured from the box's centre (HangingEntity's position).
             let (lo, hi) = p.bounds();
             let (lo, hi) = (glam::DVec3::from(lo), glam::DVec3::from(hi));
-            let range = super::entity_culling::default_range(hi - lo, self.view_scale());
+            let range = default_range(hi - lo, self.view_scale());
             if !self.entity_in_view(camera, (lo + hi) / 2.0, range, lo, hi) {
+                continue;
+            }
+            let culling = self.entity_cull_decision(p, 1.0);
+            if culling.hides_entity() {
                 continue;
             }
             let Some(v) = self.painting_variants.get(&p.variant) else {
@@ -376,24 +455,32 @@ impl Game<'_> {
                 f64::from(p.height) / 2.0,
                 1.0 / 32.0,
             );
+            let entity_start = out.len();
+            self.mark_motion(entity_start, Self::MOTION_OBJECT | u64::from(p.id));
             let light = self.world.light(p.pos[0], p.pos[1], p.pos[2]);
             let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
-            let mut quad = |corners: [glam::DVec3; 4], uv: [[f32; 2]; 4], shade: f32| {
-                let k = (255.0 * shade) as u32;
-                let color = 0xFF00_0000 | k << 16 | k << 8 | k;
-                for (p, uv) in corners.iter().zip(uv) {
-                    out.push(Vertex {
-                        normal: [0; 4],
-                        pos: p.as_vec3().to_array(),
-                        uv,
-                        layer: 0,
-                        color,
-                        light: packed,
+            let mut quad =
+                |corners: [glam::DVec3; 4], normal: glam::DVec3, uv: [[f32; 2]; 4], shade: f32| {
+                    // Back faces are culled, as the entity pipeline culls them: inside the
+                    // painting's box nothing of it shows. `corners` are relative to the camera.
+                    if !faces_camera(&corners, normal) {
+                        return;
+                    }
+                    let k = (255.0 * shade) as u32;
+                    let color = 0xFF00_0000 | k << 16 | k << 8 | k;
+                    for (p, uv) in corners.iter().zip(uv) {
+                        out.push(Vertex {
+                            normal: [0; 4],
+                            pos: p.as_vec3().to_array(),
+                            uv,
+                            layer: 0,
+                            color,
+                            light: packed,
 
-                        glint_uv: [0.0, 0.0],
-                    });
-                }
-            };
+                            glint_uv: [0.0, 0.0],
+                        });
+                    }
+                };
             let full = |r: horizon_client::hud::Rect| {
                 [[r.u0, r.v1], [r.u1, r.v1], [r.u1, r.v0], [r.u0, r.v0]]
             };
@@ -405,6 +492,7 @@ impl Game<'_> {
                     f + right * hw + up * hh,
                     f - right * hw + up * hh,
                 ],
+                out_dir,
                 full(front),
                 1.0,
             );
@@ -416,6 +504,7 @@ impl Game<'_> {
                     b - right * hw + up * hh,
                     b + right * hw + up * hh,
                 ],
+                -out_dir,
                 full(back),
                 0.8,
             );
@@ -434,6 +523,7 @@ impl Game<'_> {
                     f + t - right * hw,
                     f + t + right * hw,
                 ],
+                up,
                 strip,
                 1.0,
             );
@@ -444,6 +534,7 @@ impl Game<'_> {
                     b + bt - right * hw,
                     b + bt + right * hw,
                 ],
+                -up,
                 strip,
                 0.5,
             );
@@ -454,6 +545,7 @@ impl Game<'_> {
                     f - right * hw + up * hh,
                     b - right * hw + up * hh,
                 ],
+                -right,
                 strip,
                 0.6,
             );
@@ -464,10 +556,11 @@ impl Game<'_> {
                     b + right * hw + up * hh,
                     f + right * hw + up * hh,
                 ],
+                right,
                 strip,
                 0.6,
             );
-            self.cull_entity_vertices(out, entity_start);
+            self.finish_entity_occlusion(culling, p, out, entity_start);
         }
     }
 }
@@ -475,6 +568,42 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hanging_entities_block_overlapping_other_types() {
+        let p = Painting {
+            id: 1,
+            pos: [0, 0, 0],
+            facing: 0,
+            variant: Arc::from("minecraft:kebab"),
+            width: 1,
+            height: 1,
+            check_interval: 0,
+        };
+        let mut f = ItemFrame {
+            id: 2,
+            pos: [0, 0, 0],
+            facing: 3,
+            glow: false,
+            item: None,
+            rotation: 0,
+            drop_chance: 1.0,
+            fixed: false,
+            invisible: false,
+            check_interval: 0,
+            custom_name: None,
+            random: horizon_client::random_source::entity(),
+        };
+        for glow in [false, true] {
+            f.glow = glow;
+            assert!(!frame_coexists(&f, &[], std::slice::from_ref(&p)));
+            assert!(!painting_coexists(&p, &[], std::slice::from_ref(&f)));
+            f.pos = [2, 0, 0];
+            assert!(frame_coexists(&f, &[], std::slice::from_ref(&p)));
+            assert!(painting_coexists(&p, &[], std::slice::from_ref(&f)));
+            f.pos = [0, 0, 0];
+        }
+    }
 
     /// `HangingEntityItem.useOn` returns SUCCESS (the hand swings) when a
     /// painting is created on a wall. Floor, ceiling, or a failed create is
@@ -492,5 +621,30 @@ mod tests {
         assert!(!painting_use_on_swings([0, 1, 0], true));
         assert!(!painting_use_on_swings([0, -1, 0], true));
         assert!(!painting_use_on_swings([0, 0, 1], false));
+    }
+}
+
+#[cfg(test)]
+mod face_tests {
+    use super::faces_camera;
+    use glam::DVec3;
+
+    /// A quad at z = 2 facing -z (towards a camera at the origin) shows; seen from behind
+    /// (the camera on the other side, the quad now at z = -2) it does not.
+    #[test]
+    fn a_quad_shows_only_to_the_side_it_faces() {
+        let at = |z: f64| {
+            [
+                DVec3::new(-1.0, -1.0, z),
+                DVec3::new(1.0, -1.0, z),
+                DVec3::new(1.0, 1.0, z),
+                DVec3::new(-1.0, 1.0, z),
+            ]
+        };
+        let normal = DVec3::new(0.0, 0.0, -1.0);
+        assert!(faces_camera(&at(2.0), normal));
+        assert!(!faces_camera(&at(-2.0), normal));
+        // Edge on: nothing to draw.
+        assert!(!faces_camera(&at(0.0), normal));
     }
 }

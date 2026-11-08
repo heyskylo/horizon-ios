@@ -12,19 +12,18 @@ FRAGMENTS = Path("tools/native-hook-fragments")
 SOURCE = Path("crates/horizon-client/src/game/native_hooks.rs")
 DOCS = Path("docs/native-mods.md")
 CATALOG = Path("native-hooks.json")
-# The mod API's types and the files `cargo run -p xtask -- mod-api` generates: they copy hook and
-# helper comments, markers included, so every marker is stamped in them too and `--check` holds.
-MOD_API = (
-    Path("crates/horizon-client/src/mod_api.rs"),
-    Path("crates/horizon-client/src/mod_api/generated.rs"),
-    Path("crates/horizon-client/src/mod_api/generated_host.rs"),
-    Path("crates/horizon-client/src/game/mod_api_host_generated.rs"),
-    Path("crates/horizon-client-render/src/gfx/native_render/generated.rs"),
-)
+# Hand-written API types can carry markers too; generated copies are built from stamped sources.
+MOD_API = Path("crates/horizon-client/src/mod_api.rs")
 
 
-def stamp(check):
+def stamp(check, only=None):
     paths = sorted((ROOT / FRAGMENTS).glob("*.json"))
+    if only is not None:
+        selected = set(only)
+        missing = selected - {path.stem for path in paths}
+        if missing:
+            raise ValueError(f"unknown pending fragment(s): {', '.join(sorted(missing))}")
+        paths = [path for path in paths if path.stem in selected]
     if not paths:
         return False
     if check:
@@ -52,8 +51,7 @@ def stamp(check):
     names = {hook["name"] for hook in catalog["hooks"]}
     helper_names = {helper["name"] for helper in catalog.get("helpers", [])}
     extra = {}
-    # The catalog takes new entries in file name order, the order `cargo run -p xtask -- mod-api`
-    # reads pending fragments in, so stamping leaves the generated mod API as it was.
+    # Append the selected entries in filename order, as the build-time generator reads fragments.
     for path in sorted(ordered):
         fragment = json.loads(path.read_text())
         for hook in fragment["hooks"]:
@@ -87,7 +85,7 @@ def stamp(check):
         docs = docs.replace(docs_marker, f"\nAPI {version} adds {doc_summary}\n" + docs_marker, 1)
         for filename in fragment.get("comments", []):
             file = Path(filename)
-            if file.is_absolute() or ".." in file.parts or file in (SOURCE, DOCS, CATALOG, *MOD_API):
+            if file.is_absolute() or ".." in file.parts or file in (SOURCE, DOCS, CATALOG, MOD_API):
                 raise ValueError(f"invalid comment path: {filename}")
             text = extra.get(file, (ROOT / file).read_text())
             if marker not in text:
@@ -96,10 +94,9 @@ def stamp(check):
         # Most hook comments live in the source itself, and some hook lists in the docs.
         source = source.replace(marker, str(version))
         docs = docs.replace(marker, str(version))
-        for file in MOD_API:
-            if (ROOT / file).exists():
-                text = extra.get(file, (ROOT / file).read_text())
-                extra[file] = text.replace(marker, str(version))
+        if (ROOT / MOD_API).exists():
+            text = extra.get(MOD_API, (ROOT / MOD_API).read_text())
+            extra[MOD_API] = text.replace(marker, str(version))
 
     source = re.sub(
         r"^(pub\(crate\) const NATIVE_HOOKS_API: u32 = )\d+;$",
@@ -118,9 +115,11 @@ def stamp(check):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="fail if fragments are pending")
+    parser.add_argument("--only", nargs="+", metavar="FRAGMENT",
+                        help="stamp only these pending fragment names (without .json), in merge order")
     args = parser.parse_args()
     try:
-        return int(stamp(args.check))
+        return int(stamp(args.check, args.only))
     except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:
         print(f"stamp_native_hooks: {error}", file=sys.stderr)
         return 1

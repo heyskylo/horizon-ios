@@ -24,6 +24,20 @@ pub struct Cure {
 pub fn cure(m: &Mob) -> Option<&Cure> {
     villager::ext(m).and_then(|e| e.cure.as_ref())
 }
+/// `ZombieVillager.handleEntityEvent(16)`: the client's cure sound.
+pub fn cure_sound(m: &mut Mob) -> Option<MobEvent> {
+    if m.species() != Species::ZombieVillager || m.silent {
+        return None;
+    }
+    let volume = 1.0 + m.random.next_float();
+    let pitch = m.random.next_float() * 0.7 + 0.3;
+    Some(MobEvent::Sound(
+        "entity.zombie_villager.cure",
+        [m.position.x, m.eye_y(), m.position.z],
+        volume,
+        pitch,
+    ))
+}
 /// `ZombieVillager.DATA_CONVERTING_ID` on a client: only `is_converting`
 /// (the cure's shaking) reads the cure, so its time does not matter.
 pub fn set_converting(m: &mut Mob, on: bool) {
@@ -51,16 +65,16 @@ pub fn start_converting(
 ) {
     villager::ext_mut(m).cure = Some(Cure { time, starter });
     m.extra.effects.retain(|e| e.0 != "minecraft:weakness");
+    m.extra
+        .effect_fallbacks
+        .retain(|h| h.id != "minecraft:weakness");
     // Strength amplifier: min(difficulty id - 1, 0), always 0 with monsters.
     m.add_effect("minecraft:strength", time, 0);
-    let pitch = m.random.next_float() * 0.7 + 0.3;
-    let volume = 1.0 + m.random.next_float();
-    events.push(MobEvent::Sound(
-        "entity.zombie_villager.cure",
-        [m.position.x, m.eye_y(), m.position.z],
-        volume,
-        pitch,
-    ));
+    events.push(MobEvent::EntityEvent {
+        mob: m.id,
+        event: 16,
+        at: [m.position.x, m.position.y, m.position.z],
+    });
 }
 
 /// `getConversionProgress`: 1 per tick, plus a chance per nearby iron bars or
@@ -151,6 +165,18 @@ pub fn read_nbt(m: &mut Mob, tag: &Tag) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horizon_core::{geometry::Vec3, random::LegacyRandom};
+
+    fn zombie_villager() -> Mob {
+        let mut kind = super::super::sensor_scan_tests::kind();
+        let data = std::sync::Arc::make_mut(&mut kind);
+        data.id = "minecraft:zombie_villager".into();
+        data.species = Species::ZombieVillager;
+        data.eye_height = 1.5;
+        let mut m = Mob::new(42, kind, Vec3::new(1.25, 2.0, 3.75), 0.0);
+        m.random = LegacyRandom::new(0);
+        m
+    }
 
     #[test]
     fn a_cure_round_trips_through_nbt() {
@@ -188,7 +214,9 @@ mod tests {
             &horizon_world::loot::PackOverlay::NONE,
         )
         .unwrap();
-        let collision = crate::collisions::load(&root, registry).unwrap();
+        let collision = std::sync::Arc::new(crate::collisions::load(&root, registry).unwrap());
+        let suffocation =
+            crate::mobs::suffocation::bind(collision.clone(), &motion.causes_suffocation).unwrap();
         let air = registry.default_state("minecraft:air").unwrap();
         let world = crate::world::World::new(air, 0);
         let lid_openers = std::collections::HashMap::new();
@@ -200,21 +228,26 @@ mod tests {
             fluid_tables: &motion.fluids,
             movement: &motion.blocks,
             collision: &collision,
+            suffocation: &suffocation,
             data: &data,
             player: None,
+            controlling_player_movement: None,
             nearest_player: None,
             others: &[],
             dragon: None,
             leash_boats: &[],
+            who_lookup: None,
             others_grid: None,
             others_index: None,
+            others_villagers: None,
+            others_solid: None,
             daylight: true,
             monsters_burn: false,
             game_time: 1000,
             day_time: 18000,
             raining: false,
             thundering: false,
-            nether: false,
+            level: horizon_core::LevelKey::OVERWORLD,
             block_tags: &items.block_tags,
             landing: &motion.landing,
             biomes: &biomes,
@@ -223,7 +256,7 @@ mod tests {
             mob_drops: true,
             max_entity_cramming: 24,
             difficulty: super::super::spawning::LocalDifficulty::new(2, 18000, 0, 0.0),
-            end: false,
+            dimension_type: horizon_world::dimension_type::DimensionFacts::overworld(),
             world_seed: 0,
             sea_level: 63,
             items: Some(&items),
@@ -267,5 +300,61 @@ mod tests {
         put_cure(&mut map, None);
         assert_eq!(map.get(&"ConversionTime".into()), Some(&Tag::Int(-1)));
         assert_eq!(parse_cure(&Tag::Compound(map)), None);
+    }
+
+    #[test]
+    fn starting_a_cure_broadcasts_even_when_silent_without_drawing_sound_randomness() {
+        for silent in [false, true] {
+            let mut m = zombie_villager();
+            m.silent = silent;
+            m.add_effect("minecraft:weakness", 100, 0);
+            let mut random = m.random.clone();
+            let starter = Some([1, 2, 3, 4]);
+            let mut events = Vec::new();
+
+            start_converting(&mut m, starter, 4000, &mut events);
+
+            assert_eq!(
+                cure(&m),
+                Some(&Cure {
+                    time: 4000,
+                    starter
+                })
+            );
+            assert!(!m.has_effect("minecraft:weakness"));
+            assert!(m.extra.effects.contains(&("minecraft:strength", 4000, 0)));
+            assert_eq!(events.len(), 1);
+            let MobEvent::EntityEvent { mob, event, at } = events[0] else {
+                panic!("Starting a cure must broadcast an entity event");
+            };
+            assert_eq!((mob, event, at), (42, 16, [1.25, 2.0, 3.75]));
+            assert_eq!(m.random.next_long(), random.next_long());
+        }
+    }
+
+    #[test]
+    fn cure_sound_draws_volume_before_pitch_at_eye_height() {
+        let mut m = zombie_villager();
+        let Some(MobEvent::Sound(name, at, volume, pitch)) = cure_sound(&mut m) else {
+            panic!("A non-silent zombie villager must play the cure sound");
+        };
+        assert_eq!(name, "entity.zombie_villager.cure");
+        assert_eq!(at, [1.25, 3.5, 3.75]);
+        // The first two java.util.Random(0) floats, volume before pitch.
+        assert_eq!(volume.to_bits(), 0x3fdd_905a);
+        assert_eq!(pitch.to_bits(), 0x3f61_cb52);
+        assert_eq!(m.random.next_float().to_bits(), 0x3e76_4f2c);
+    }
+
+    #[test]
+    fn silent_or_other_mobs_do_not_play_the_cure_sound_or_draw_randomness() {
+        let mut silent = zombie_villager();
+        silent.silent = true;
+        let other = Mob::new(43, super::super::sensor_scan_tests::kind(), Vec3::ZERO, 0.0);
+        for mut m in [silent, other] {
+            let mut random = m.random.clone();
+            assert!(cure_sound(&mut m).is_none());
+            assert_eq!(m.random.next_long(), random.next_long());
+        }
     }
 }

@@ -62,7 +62,7 @@ fn a_tall_column_streams_lights_and_meshes_to_its_top() {
     let Some(root) = resources() else {
         return;
     };
-    let shape = LevelShape::new(-64, 2096, 2096, true).unwrap();
+    let shape = LevelShape::new(-64, 2096, 2096, true, false).unwrap();
     let layout = shape.column();
     let assets = Arc::new(Assets::load(&root).unwrap());
     let render = Arc::new(assets.reload(&root).unwrap());
@@ -130,10 +130,12 @@ fn a_tall_column_streams_lights_and_meshes_to_its_top() {
             nether_shading: false,
             shader_pack_lighting: false,
             separate_ao: false,
+            shader_pack: false,
             zoom: BiomeZoom::new(0),
             blend_radius: 2,
             smooth_lighting: true,
             cutout_leaves: true,
+            opaque_ice: false,
             translucent_layers: &[],
             leaf_culling: LeafCullingMode::Off,
             assets: &context.assets,

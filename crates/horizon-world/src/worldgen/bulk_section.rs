@@ -41,10 +41,10 @@ impl<'a, 'r, B: TerrainBlockStates> TerrainBulkAccess<'a, 'r, B> {
             return Ok(None);
         }
         let key = section.pack();
-        if let Some((last, section)) = self.last {
-            if last == key {
-                return Ok(Some(section));
-            }
+        if let Some((last, section)) = self.last
+            && last == key
+        {
+            return Ok(Some(section));
         }
         let cached = if let Some(cached) = self.acquired.get(&key) {
             *cached

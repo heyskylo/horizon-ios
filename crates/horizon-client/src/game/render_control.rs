@@ -14,6 +14,8 @@ pub const HELP: &[&str] = &[
     "section-draws [flat|indirect]  how terrain sections are drawn (A/B checks); replies the mode",
     "section-cull [on|off]          occlusion culling of solid sections (A/B checks); replies the mode",
     "section-sides [on|off]         leave out solid quads facing away from the eye (A/B checks); replies the mode",
+    "gpu-culling [on|off|auto]     GPU Culling as its setting sets it, not saved (A/B checks); replies the mode",
+    "render-capture on|off|DIR      keep copies of the meshes drawn (on), or write the next frame's scene to DIR for scene_replay",
 ];
 
 impl Game<'_> {
@@ -94,14 +96,9 @@ impl Game<'_> {
             }
             "signedit" => {
                 let key = (int(1)?, int(2)?, int(3)?);
-                let name = self
-                    .res
-                    .facts()
-                    .get(self.world.block(key.0, key.1, key.2))
-                    .name
-                    .clone();
+                let state = self.world.block(key.0, key.1, key.2);
                 let entity = self
-                    .new_block_entity(&name)
+                    .new_block_entity_for_state(state)
                     .filter(|e| matches!(e, horizon_client::containers::BlockEntity::Sign(_)))
                     .ok_or("no sign there")?;
                 self.world.block_entities.get_or_insert_with(key, || entity);

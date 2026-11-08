@@ -902,7 +902,7 @@ impl B {
                 let in_reach = mem(m).visible_mobs.present()
                     && visible_contains(m, w, target)
                     && w.target_info(target)
-                        .is_some_and(|t| m.within_melee_range(&t));
+                        .is_some_and(|t| m.within_melee_range(w, &t));
                 let mm = mem(m);
                 if in_reach {
                     mm.walk_target.clear();
@@ -957,7 +957,7 @@ impl B {
                 let Some(info) = w.target_info(target) else {
                     return false;
                 };
-                if !(m.within_melee_range(&info) && visible_contains(m, w, target)) {
+                if !(m.within_melee_range(w, &info) && visible_contains(m, w, target)) {
                     return false;
                 }
                 mem(m).look_target.set(Tracker::Entity(target, true));
@@ -1305,4 +1305,239 @@ pub fn describe(m: &Mob) -> Option<(String, String)> {
     slot!("sonic_boom_sound_delay", mm.sonic_boom_sound_delay, unit);
     out.sort();
     Some((acts.join("|"), out.join(" ")))
+}
+
+#[cfg(test)]
+mod warden_owned_memory_tests {
+    use super::*;
+    use crate::entity_nbt::{mob_from_nbt, mob_to_nbt};
+    use crate::mobs::MobType;
+    use crate::save::{doubles, put};
+    use horizon_world::{
+        nbt::{Compound, Tag},
+        registry::BlockRegistry,
+    };
+    use std::{collections::HashMap, sync::Arc};
+    fn string(s: &str) -> Tag {
+        Tag::String(s.into())
+    }
+    use crate::mobs::{Species, world::with_built_test_world};
+    use horizon_core::random::LegacyRandom;
+
+    fn types() -> HashMap<String, Arc<MobType>> {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let ty = Arc::make_mut(&mut kind);
+        ty.id = "minecraft:warden".into();
+        ty.species = Species::Warden;
+        HashMap::from([("minecraft:warden".into(), kind)])
+    }
+    fn entry(ttl: Option<i64>) -> Tag {
+        let mut entry = Tag::compound([("value", Tag::Compound(Compound::new()))]);
+        if let Some(ttl) = ttl {
+            put(&mut entry, "ttl", Tag::Long(ttl));
+        }
+        entry
+    }
+    fn input(no_ai: bool, form: u8) -> Tag {
+        let mut raw = Tag::compound([
+            ("id", string("minecraft:warden")),
+            ("UUID", Tag::IntArray(vec![29, 0, 0, 1])),
+            ("Pos", doubles(&[2.5, 3.0, 2.5])),
+            ("Motion", doubles(&[0.0; 3])),
+            ("Health", Tag::Float(10f32.to_bits())),
+            ("NoAI", Tag::Byte(i8::from(no_ai))),
+            ("NoGravity", Tag::Byte(1)),
+            ("Tags", Tag::List(vec![string("keep")])),
+            ("audit:keep", Tag::Int(42)),
+        ]);
+        if form != 0 {
+            let memories = if form == 1 {
+                Tag::Compound(Compound::new())
+            } else {
+                Tag::compound([
+                    (
+                        "minecraft:is_emerging",
+                        entry(matches!(form, 2 | 4).then_some(2)),
+                    ),
+                    (
+                        "minecraft:dig_cooldown",
+                        entry(matches!(form, 2 | 4).then_some(if form == 4 { 17 } else { 1200 })),
+                    ),
+                    ("audit:unrelated", Tag::Int(7)),
+                ])
+            };
+            put(
+                &mut raw,
+                "Brain",
+                Tag::compound([("memories", memories), ("audit:brain", Tag::Int(19))]),
+            );
+        }
+        raw
+    }
+    fn slot_state(m: &Mob) -> [Option<i64>; 2] {
+        let mem = &m
+            .extra
+            .warden
+            .as_ref()
+            .expect("actual Warden state")
+            .brain
+            .mem;
+        [
+            mem.is_emerging.present().then_some(mem.is_emerging.ttl()),
+            mem.dig_cooldown.present().then_some(mem.dig_cooldown.ttl()),
+        ]
+    }
+    fn assert_saved(tag: &Tag, expected: [Option<i64>; 2]) {
+        for (key, ttl) in ["minecraft:is_emerging", "minecraft:dig_cooldown"]
+            .into_iter()
+            .zip(expected)
+        {
+            let actual = tag
+                .get("Brain")
+                .and_then(|b| b.get("memories"))
+                .and_then(|b| b.get(key));
+            match ttl {
+                None => assert!(actual.is_none(), "stale {key}: {actual:?}"),
+                Some(ttl) => assert_eq!(actual, Some(&entry((ttl != i64::MAX).then_some(ttl)))),
+            }
+        }
+    }
+    #[test]
+    fn decoded_owned_slots_and_no_raw_saves_are_actual_not_input_echoes() {
+        let kinds = types();
+        for no_ai in [false, true] {
+            for (form, expected) in [
+                (2, [Some(2), Some(1200)]),
+                (4, [Some(2), Some(17)]),
+                (0, [None, None]),
+                (1, [None, None]),
+                (3, [Some(i64::MAX), Some(i64::MAX)]),
+            ] {
+                let raw = input(no_ai, form);
+                let m = mob_from_nbt(&raw, &kinds, 91, None).unwrap();
+                assert_eq!(m.no_ai, no_ai);
+                assert_eq!(slot_state(&m), expected, "form={form}");
+                let mut stale = raw.clone();
+                put(
+                    &mut stale,
+                    "Brain",
+                    Tag::compound([
+                        (
+                            "memories",
+                            Tag::compound([
+                                ("minecraft:is_emerging", entry(Some(999))),
+                                ("minecraft:dig_cooldown", entry(Some(999))),
+                                ("audit:unrelated", Tag::Int(7)),
+                            ]),
+                        ),
+                        ("audit:brain", Tag::Int(19)),
+                    ]),
+                );
+                for source in [None, Some(&raw), Some(&stale)] {
+                    let saved = mob_to_nbt(&m, [29, 0, 0, 1], source, None, |_| None);
+                    assert_saved(&saved, expected);
+                    if source.is_some() {
+                        assert_eq!(saved.get("audit:keep"), Some(&Tag::Int(42)));
+                        if form != 0 || source == Some(&stale) {
+                            assert_eq!(
+                                saved.get("Brain").and_then(|b| b.get("audit:brain")),
+                                Some(&Tag::Int(19))
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn owned_memory_mutations_remove_stale_raw_without_replacing_the_brain() {
+        let raw = input(true, 2);
+        let mut m = mob_from_nbt(&raw, &types(), 92, None).unwrap();
+        let listener = m.extra.warden.as_ref().unwrap().vibration.to_nbt();
+        let mem = &mut m.extra.warden.as_mut().unwrap().brain.mem;
+        mem.is_emerging.clear();
+        mem.dig_cooldown.set_ttl((), 7);
+        mem.sniff_cooldown.set_ttl((), 17);
+        let saved = mob_to_nbt(&m, [29, 0, 0, 1], Some(&raw), None, |_| None);
+        assert_saved(&saved, [None, Some(7)]);
+        assert_eq!(
+            saved.get("Brain").and_then(|b| b.get("audit:brain")),
+            Some(&Tag::Int(19))
+        );
+        assert_eq!(
+            saved
+                .get("Brain")
+                .and_then(|b| b.get("memories"))
+                .and_then(|b| b.get("audit:unrelated")),
+            Some(&Tag::Int(7))
+        );
+        assert_eq!(
+            m.extra
+                .warden
+                .as_ref()
+                .unwrap()
+                .brain
+                .mem
+                .sniff_cooldown
+                .ttl(),
+            17
+        );
+        assert_eq!(
+            m.extra.warden.as_ref().unwrap().vibration.to_nbt(),
+            listener
+        );
+        let mem = &mut m.extra.warden.as_mut().unwrap().brain.mem;
+        mem.is_emerging.set(());
+        mem.dig_cooldown.clear();
+        assert_saved(
+            &mob_to_nbt(&m, [29, 0, 0, 1], Some(&raw), None, |_| None),
+            [Some(i64::MAX), None],
+        );
+    }
+    #[test]
+    #[ignore = "needs prepared resources; actual full Mob ticks, no skipped coverage"]
+    fn actual_mob_ticks_expire_owned_memories_and_noai_retains_them() {
+        let build = |world: &mut crate::world::World, registry: &BlockRegistry| {
+            world
+                .chunks
+                .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+            let stone = registry.default_state("minecraft:stone").unwrap();
+            for x in 0..=4 {
+                for z in 0..=4 {
+                    world.set(x, 0, z, stone).unwrap();
+                }
+            }
+        };
+        let ran = with_built_test_world(&[], build, |w, kinds| {
+            let types = HashMap::from([(
+                "minecraft:warden".into(),
+                Arc::new(kinds.types["minecraft:warden"].clone()),
+            )]);
+            for no_ai in [false, true] {
+                let mut raw = input(no_ai, 4);
+                put(&mut raw, "Health", Tag::Float(500f32.to_bits()));
+                let mut m = mob_from_nbt(&raw, &types, 93, None).unwrap();
+                let loaded = slot_state(&m);
+                let mut random = LegacyRandom::new(0);
+                let mut events = Vec::new();
+                for tick in 1..=5 {
+                    assert!(m.tick(w, &mut random, &mut events));
+                    assert_eq!(m.age, tick as u32);
+                    let expected = if no_ai {
+                        [Some(2), Some(17)]
+                    } else {
+                        [(tick <= 2).then_some(2 - tick), Some(17 - tick)]
+                    };
+                    assert_eq!(slot_state(&m), expected, "actual tick={tick},NoAI={no_ai}");
+                    assert_saved(
+                        &mob_to_nbt(&m, [29, 0, 0, 1], None, None, |_| None),
+                        expected,
+                    );
+                    assert_eq!(m.health, 500.0);
+                }
+                assert_eq!(loaded, [Some(2), Some(17)]);
+            }
+        });
+        assert!(ran, "prepared actual MobWorld prerequisite must run");
+    }
 }

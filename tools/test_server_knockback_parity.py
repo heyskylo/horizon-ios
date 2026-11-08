@@ -16,7 +16,9 @@ players made of vanilla's protocol code, joins them both and runs one script on 
   Alice's motion packets and her sprint flag as the server sets it are compared exactly;
 - a zombie hits Bob, twice: the knockback reaches Bob's client once his server-side copy has
   travelled a tick (the mob's hit, then ServerPlayer's travel, then ServerEntity.sendChanges). It is night, so
-  that no zombie burns (a burning mob is in its hurt cooldown).
+  that no zombie burns (a burning mob is in its hurt cooldown);
+- Bob hits Alice just after her first airborne position. The motion packet must carry the jump's upward
+  velocity, before the server's next travel tick reduces it.
 
 The script waits on the server, not on the wall: `ticks N` is N ticks of its game clock (with a `sync` round trip
 before and after, so each client holds what the server sent), `tickstep` is one `/tick step` that has run, `frozen`
@@ -150,6 +152,16 @@ def pvp_case(weapon=SWORD, sprint=False, crit=False, shield=False, armour=False,
     return lines
 
 
+def pvp_takeoff_case():
+    """Use the first joined guest as the victim so her move is handled before Bob's attack."""
+    return ['cmd Alice difficulty peaceful', 'cmd Alice clear @s',
+            'cmd Alice effect give @s minecraft:resistance 1000 4 true',
+            f'cmd Bob item replace entity @s weapon.mainhand with {SWORD}',
+            f'cmd Alice tp Alice {V[0]} {V[1]} {V[2]} 90 0',
+            f'cmd Alice tp Bob {A[0]} {A[1]} {A[2]} -90 0',
+            *stand('Alice', V, 90), *stand('Bob', A, -90), 'ticks 30', 'takeoff-hit']
+
+
 def mob_hits_case(kind):
     """A mob's own attack on Bob, twice: his motion packet. Alice is in creative, so the mob goes for Bob; each mob
     is killed once its hit has come (`await`), and Bob stands back where he was before the next. (A mob with no
@@ -163,12 +175,17 @@ def mob_hits_case(kind):
 
 
 def zombie_half_shield_case():
-    """A zombie one block in front of Bob, who holds a raised half-blocking shield, hits him once."""
+    """A zombie in front of Bob, who holds a raised half-blocking shield, hits him once.
+
+    The zombie stands south-west of Bob, 45 degrees from his view whether it is the west of his position packets
+    (yaw 90) or the south the `use` packet turns him to (`handleUseItem`'s absSnapRotationTo(0, 0)): which of the two
+    counts at the tick of the hit is down to timing, and one block east (behind him, or at exactly 90 degrees) made the
+    shield block in some runs of vanilla and not in others (#8164)."""
     mob = '@e[type=minecraft:zombie,limit=1]'
     return ['cmd Bob clear @s', 'cmd Alice gamemode creative', *stand('Bob', V, 90),
             f'cmd Bob item replace entity @s weapon.mainhand with {HALF_SHIELD}', 'ticks 2', 'use Bob', 'ticks 30',
             *stand('Bob', V, 90, ticks=1), 'mark Bob',
-            f'cmd Alice summon minecraft:zombie {V[0] + 1} {V[1]} {V[2]} {{Rotation:[90f,0f]}}',
+            f'cmd Alice summon minecraft:zombie {V[0] - 1} {V[1]} {V[2] + 1} {{Rotation:[-135f,0f]}}',
             f'cmd Alice effect give {mob} minecraft:slowness 100000 127 true', 'await Bob', f'cmd Alice kill {mob}',
             'ticks 20', *stand('Bob', V, 90), 'cmd Bob clear @s', 'cmd Alice kill @e[type=!player]',
             'cmd Alice gamemode survival']
@@ -214,10 +231,17 @@ CASES = {
     'zombie-hits-bob': mob_hits_case('zombie'),
     'crystal-creative': blast_case('crystal', 16),
     'tnt-creative': blast_case('tnt', 32),
+    'pvp-takeoff': pvp_takeoff_case(),
 }
 SETUP = ['cmd Alice gamerule spawn_mobs false', 'cmd Alice gamerule spawn_monsters false',
          'cmd Alice kill @e[type=!player]', 'cmd Alice gamerule advance_time false', 'cmd Alice time set midnight',
          f'cmd Alice tp Alice {A[0]} {A[1]} {A[2]} -90 0', f'cmd Alice tp Bob {V[0]} {V[1]} {V[2]} 90 0', 'ticks 40']
+
+
+def age_of(text):
+    """The number in a `/data get ... Age` reply (`60`, `4500s`)."""
+    digits = ''.join(c for c in text.split(':')[-1] if c.isdigit())
+    return int(digits) if digits else 0
 
 
 def server_data(server, selector, path, timeout=120):
@@ -298,6 +322,21 @@ def run_side(label, server_command, client_command, build, world):
                     while server_data(server, mob, 'Motion') == before:
                         time.sleep(0.05)
                     sync()
+                elif word == 'waitage':
+                    # Hold until an entity's `Age` has reached N. A value that
+                    # decays with the entity's own ticks (a blast's push on an
+                    # item) then belongs to a known age on both servers, whose
+                    # game clocks need not advance together between commands.
+                    # The console's own round trip can be two ticks, so the wait
+                    # is `>=` and the age is carried beside the value it pins.
+                    sync()
+                    selector, age = line.split()[1], int(line.split()[2])
+                    deadline = time.time() + 120
+                    while age_of(server_data(server, selector, 'Age')) < age:
+                        if time.time() > deadline:
+                            raise AssertionError(f'{server.log_path.name}: {selector} never reached Age {age}')
+                        time.sleep(0.05)
+                    sync()
                 elif word == 'tickstep':
                     # `/tick step 1` answers at once and the tick runs after: the clock says when it has.
                     sync()
@@ -306,6 +345,21 @@ def run_side(label, server_command, client_command, build, world):
                     client.stdin.flush()
                     while game_time(server) == before:
                         time.sleep(0.05)
+                    sync()
+                elif word == 'takeoff-hit':
+                    sync()
+                    server.console('tick rate 2')
+                    sync()
+                    wait_ticks(server, 1)
+                    game_time(server)
+                    client.stdin.write(f'mark Alice\npos Alice {V[0]} {V[1] + 0.42} {V[2]} 90 0 0\n')
+                    client.stdin.flush()
+                    # Leave the position packet a head start on its own connection, inside the longer tick.
+                    time.sleep(0.035)
+                    client.stdin.write('attack Bob Alice\nawait Alice\n')
+                    client.stdin.flush()
+                    sync()
+                    server.console('tick rate 20')
                     sync()
                 else:
                     client.stdin.write(line + '\n')
@@ -383,6 +437,9 @@ def main():
 
     world = generate_world(vanilla_server, build)
     vanilla = compared(run_side('vanilla', vanilla_server, client, build, world))
+    takeoff = [line for line in vanilla.get('pvp-takeoff', []) if line.startswith('Alice motion self ')]
+    if len(takeoff) != 1 or not 0.4 < float(takeoff[0].split()[4]) < 0.43:
+        raise AssertionError(f'pvp-takeoff: vanilla did not hit after the jump and before travel: {takeoff}')
     horizon = compared(run_side('horizon', horizon_server, client, build, world))
     differ, fixed = [], []
     for case in CASES:

@@ -2,11 +2,12 @@
 //! setInitialSpawn walks a chunk spiral around NoiseBasedChunkGenerator.
 //! getOrigin, then PlayerSpawnFinder.findSpawn picks a free column around
 //! the world spawn within the respawn radius.
-use super::{Game, dispenser::entity_random};
+use super::Game;
 use horizon_client::{
     Result,
     assets::Properties,
     collisions::{SceneCollisions, no_collision_or_liquid},
+    random_source,
     world::World,
     world_spawn::{
         PlayerSpawnFinder, SpawnCandidate, SpawnLevel, level_respawn_pos, spawn_pos_in_chunk,
@@ -28,6 +29,9 @@ struct Columns<'a, 'r> {
     world: &'a World,
     properties: &'a Properties,
     binding: &'a BlockCollisionRegistry<'r>,
+    has_ceiling: bool,
+    /// `ChunkGenerator.getSpawnHeight` (64 for the vanilla generators).
+    spawn_height: i32,
 }
 impl SpawnLevel for Columns<'_, '_> {
     fn min_y(&self) -> i32 {
@@ -66,6 +70,12 @@ impl SpawnLevel for Columns<'_, '_> {
                 .is_ok_and(|differs| !differs)
         })
     }
+    fn has_ceiling(&self) -> bool {
+        self.has_ceiling
+    }
+    fn spawn_height(&self) -> i32 {
+        self.spawn_height
+    }
 }
 
 impl Game<'_> {
@@ -74,6 +84,10 @@ impl Game<'_> {
             world: &self.world,
             properties: &self.pack.assets.properties,
             binding: self.collision,
+            // The spawn searches are the overworld's (PlayerSpawnFinder); a
+            // ceiling starts them at the generator's spawn height.
+            has_ceiling: self.level_shapes.overworld.has_ceiling,
+            spawn_height: self.spawn_origin.map_or(64, |(_, height)| height),
         }
     }
     /// ChunkGenerator.getOrigin and getSpawnHeight of the overworld.
@@ -295,7 +309,7 @@ impl Game<'_> {
             radius = 1;
         }
         PlayerSpawnFinder::new(suggestion, radius, |n| {
-            entity_random().next_int_bound(n).unwrap_or(0)
+            random_source::entity().next_int_bound(n).unwrap_or(0)
         })
     }
     /// ServerPlayer.adjustSpawnLocation for a server's new player: where

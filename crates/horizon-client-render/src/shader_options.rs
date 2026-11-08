@@ -178,7 +178,10 @@ impl ShaderOptions {
             Some(name) => self.named(&format!("profile.{name}"), name),
             None => Text::literal(lang::get("generator.custom")),
         };
-        Text::literal(format!("{}: ", lang::get("horizon.shader_options.profile"))).append(value)
+        Text::option_name_value(
+            Text::literal(lang::get("horizon.shader_options.profile")),
+            value,
+        )
     }
 
     /// What the pack says of an option, a screen or the profiles (`option.NAME.comment`...).
@@ -188,60 +191,21 @@ impl ShaderOptions {
             .map(|c| Text::legacy(&c.replace("\\n", "\n")))
     }
 
-    /// `option_label` within `width` as `measure` sizes it: the name shortened (`Bloom Up...: 2`)
-    /// when the whole doesn't fit, and whether it was.
-    pub fn option_label_within(
-        &self,
-        name: &str,
-        width: f32,
-        measure: impl Fn(&Text) -> f32,
-    ) -> (Text, bool) {
-        let full = self.option_label(name);
-        if measure(&full) <= width {
-            return (full, false);
-        }
-        // The pack's text, cut a character at a time with the `§` codes it holds kept.
-        let key = format!("option.{name}");
-        let caption = self.lang.get(&key).unwrap_or(name);
-        let value = self.value_text(name);
-        let mut chars: Vec<char> = caption.chars().collect();
-        loop {
-            while chars.len() >= 2 && chars[chars.len() - 2] == '§' {
-                chars.truncate(chars.len() - 2);
-            }
-            if chars.pop().is_none() {
-                return (full, true);
-            }
-            // Without the spaces and codes it ends with.
-            let mut end = chars.len();
-            loop {
-                if end >= 2 && chars[end - 2] == '§' {
-                    end -= 2;
-                } else if end > 0 && chars[end - 1].is_whitespace() {
-                    end -= 1;
-                } else {
-                    break;
-                }
-            }
-            let cut: String = chars[..end].iter().collect();
-            let label = Text::legacy(&format!("{cut}..."))
-                .append(": ")
-                .append(value.clone());
-            if measure(&label) <= width {
-                return (label, true);
-            }
-        }
-    }
-
     /// `Name: value`, in the pack's words, the value yellow when it is not the default.
     pub fn option_label(&self, name: &str) -> Text {
+        Text::option_name_value(
+            self.named(&format!("option.{name}"), name),
+            self.value_text(name),
+        )
+    }
+
+    /// Option `name`'s caption in the pack's words.
+    pub fn option_name(&self, name: &str) -> Text {
         self.named(&format!("option.{name}"), name)
-            .append(": ")
-            .append(self.value_text(name))
     }
 
     /// The value of option `name` as the pack names it, yellow when it is not the default.
-    fn value_text(&self, name: &str) -> Text {
+    pub fn value_text(&self, name: &str) -> Text {
         let Some(option) = self.options.get(name) else {
             return Text::literal(String::new());
         };
@@ -348,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn single_resets_comments_and_fitted_labels() {
+    fn single_resets_and_comments() {
         let mut o = options();
         o.lang = Lang::parse(
             "option.LEVEL=Level of detail\noption.LEVEL.comment=How much detail.\\nMore costs more.\n",
@@ -362,18 +326,6 @@ mod tests {
             Some("How much detail.\nMore costs more.")
         );
         assert!(o.comment("option.AO").is_none());
-        // One unit a character.
-        let measure = |t: &Text| t.plain().chars().count() as f32;
-        assert!(!o.option_label_within("LEVEL", 40.0, measure).1);
-        let (fitted, cut) = o.option_label_within("LEVEL", 12.0, measure);
-        assert!(cut);
-        assert_eq!(fitted.plain(), "Level...: 2");
-        o.lang = Lang::parse("option.LEVEL=§aLevel §lof detail§r\n");
-        let (fitted, _) = o.option_label_within("LEVEL", 12.0, measure);
-        assert_eq!(fitted.plain(), "Level...: 2");
-        assert_eq!(fitted.spans[0].style, Text::legacy("§aL").spans[0].style);
-        let (fitted, _) = o.option_label_within("LEVEL", 14.0, measure);
-        assert_eq!(fitted.plain(), "Level of...: 2");
     }
 
     #[test]

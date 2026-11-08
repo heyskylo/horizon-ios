@@ -1,0 +1,122 @@
+{
+  "op": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"changed": true, "output": ["Made Alex a server operator"]}
+  },
+  "op_again": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"changed": false, "output": ["Nothing changed. The player already is an operator"]}
+  },
+  "deop": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"changed": true, "output": ["Made Alex no longer a server operator"]}
+  },
+  "deop_again": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"changed": false, "output": ["Nothing changed. The player is not an operator"]}
+  },
+  "whitelist_add": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"changed": true, "output": ["Added Alex to the whitelist"]}
+  },
+  "whitelist_add_again": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"changed": false, "output": ["Player is already whitelisted"]}
+  },
+  "whitelist_on": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"changed": true, "output": ["Whitelist is now turned on"]}
+  },
+  "whitelist_on_again": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"changed": false, "output": ["Whitelist is already turned on"]}
+  },
+  "whitelist_remove": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"changed": true, "output": ["Removed Alex from the whitelist"]}
+  },
+  "whitelist_remove_again": {
+    "status": 200,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"changed": false, "output": ["Player is not whitelisted"]}
+  },
+  "kick_stopped": {
+    "status": 409,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"error": "the game isn't running right now"}
+  },
+  "ban_stopped": {
+    "status": 409,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"error": "the game isn't running right now"}
+  },
+  "pardon_stopped": {
+    "status": 409,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"error": "the game isn't running right now"}
+  },
+  "ban_ip_stopped": {
+    "status": 409,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"error": "the game isn't running right now"}
+  },
+  "pardon_ip_stopped": {
+    "status": 409,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"error": "the game isn't running right now"}
+  },
+  "malformed": {
+    "status": 400,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"error": "the body needs \"name\": a player's name (1 to 16 characters, no spaces)"}
+  },
+  "bad_name": {
+    "status": 400,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"error": "the body needs \"name\": a player's name (1 to 16 characters, no spaces)"}
+  },
+  "bad_reason": {
+    "status": 400,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"error": "\"reason\" is one line of at most 256 characters"}
+  },
+  "bad_ip": {
+    "status": 400,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"error": "the body needs \"ip\": an IPv4 or IPv6 address"}
+  },
+  "bad_whitelist": {
+    "status": 400,
+    "content_type": "application/json",
+    "headers": [],
+    "body": {"error": "the body needs \"enabled\": true or false"}
+  }
+}

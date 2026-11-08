@@ -1,10 +1,10 @@
 //! `CampfireBlock.useItemOn`: an item in `#minecraft:douses_campfires` (the
 //! shovels) put on a lit campfire puts it out.
 use super::Game;
+use horizon_client::actions::Action;
 use horizon_client::{Result, animate_tick::make_campfire_smoke, items::ItemStack};
 use horizon_core::position::BlockPos;
 use horizon_world::chunk::BlockState;
-use winit::keyboard::KeyCode;
 
 impl Game<'_> {
     /// The lit campfire at `pos` that `held` puts out, when the item is in
@@ -38,7 +38,7 @@ impl Game<'_> {
         seq: i32,
     ) -> bool {
         // Player.isSecondaryUseActive: a held item means both hands count.
-        if self.keys.contains(&KeyCode::ShiftLeft) {
+        if self.keys.held(Action::Sneak) {
             return false;
         }
         let Some(mut state) = self.campfire_to_douse(pos, held) else {

@@ -132,10 +132,10 @@ impl<S: MaterialSurfaceQueries> MaterialSurfaceQueries for MaterialDensitySource
             .get(index)
             .ok_or(MaterialRuleError::MissingDensityProvider)?;
         let position = [position.x, position.y, position.z];
-        if let Some(buffer) = source.buffer {
-            if let Some(index) = block_index(self.expected, position) {
-                return Ok(self.buffers[buffer][index]);
-            }
+        if let Some(buffer) = source.buffer
+            && let Some(index) = block_index(self.expected, position)
+        {
+            return Ok(self.buffers[buffer][index]);
         }
         Ok(source.sampler.sample_value(&mut self.context, position)?)
     }

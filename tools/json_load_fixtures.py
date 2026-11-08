@@ -67,6 +67,10 @@ def write(path, target, entry, defaults=False):
     print(f"{path.name}: {path.stat().st_size} bytes, {count} states")
 
 
+# A flag is not a directory: `--help` must print this usage instead of writing 66 MB into `./--help`.
+if len(sys.argv) != 2 or sys.argv[1].startswith("-"):
+    sys.exit(__doc__)
+
 root = Path(sys.argv[1])
 root.mkdir(parents=True, exist_ok=True)
 write(root / "gameplay-facts.json", 55_700_000, gameplay)

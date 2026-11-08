@@ -64,7 +64,7 @@ ContainerObjectSelectionList.Entry.updateNarration	port	crates/horizon-client/sr
 CycleButton.extractContents	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::draw	option button sprite and its label
 CycleButton.onPress	port	crates/horizon-client-render/src/options_ui.rs::Opt::cycle	click cycles forward; the back flag comes from the caller
 CycleButton.getCycledValue	skip:other		only feeds the narration of the next value
-CycleButton.mouseScrolled	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::wheel	the wheel over a cycle button takes its step (up goes back) and the list stays put; a blocked row falls through to the page
+CycleButton.mouseScrolled	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::wheel	the wheel over a cycle button outside a list takes its step (up goes back); a list keeps the wheel (AbstractScrollArea.mouseScrolled) unless the Horizon extra is on
 CycleButton.updateValue	inline	crates/horizon-client-render/src/options_ui.rs::Opt::cycle	labels are read live from Settings (Opt::label), so no cached message needs updating
 CycleButton.createLabelForValue	port	crates/horizon-client-render/src/options_ui.rs::Opt::label	value label or full name, from the setting
 CycleButton.updateWidgetNarration	inline	crates/horizon-client/src/screen_narrator.rs::narrate	narrate's cycle arm: gui.narrate.button(name: value), then narration.cycle_button.usage.{focused,hovered} with the value a click moves to
@@ -78,19 +78,19 @@ CycleButton.ValueListSupplier.create	skip:java		value list copy
 DebugScreenOverlay.<init>	skip:java		constructs the chart objects; Horizon's DebugCharts is plain state
 DebugScreenOverlay.formatChart	port	crates/horizon-client/src/game/debug_keys.rs::Game::debug_chart_lines	the [key] name visible or hidden line
 DebugScreenOverlay.formatKeybind	inline	crates/horizon-client/src/game/debug_keys.rs::Game::debug_chart_lines	the key closure inside debug_chart_lines
-DebugScreenOverlay.getServerLevel	missing		minor: F3 draws no chunk or level lines; draw_debug_overlay has no chunk data
-DebugScreenOverlay.getLevel	missing		minor: F3 draws no chunk or level lines; draw_debug_overlay has no chunk data
+DebugScreenOverlay.getServerLevel	inline	crates/horizon-client/src/game/debug_lines.rs::Game::debug_chunk_source_lines	the server chunk's and its ServerLevel's counts: the Chunks[S] line over the server's chunk map; the module comment names DebugScreenOverlay.getServerChunk and its ServerLevel
+DebugScreenOverlay.getLevel	inline	crates/horizon-client/src/game/debug_lines.rs::Game::debug_entry_lines	the overlay's own lines read the client level there: day count, biome, local difficulty and the chunk render stats
 DebugScreenOverlay.getServerChunk	port	crates/horizon-client/src/game/debug_lines.rs::Game::server_debug_lines	the integrated server's half of the F3 lines for the dimension at the feet: heightmaps, local difficulty, spawn counts and the chunk source's counts
-DebugScreenOverlay.getClientChunk	missing		minor: F3 draws no client chunk line
+DebugScreenOverlay.getClientChunk	inline	crates/horizon-client/src/game/debug_lines.rs::Game::debug_heightmap_lines	the client chunk's heightmaps, the CH line, then the server chunk's SH line
 DebugScreenOverlay.showDebugScreen	port	crates/horizon-client/src/game/debug_keys.rs::Game::draw_debug_overlay	debug on and (HUD shown or a screen open)
-DebugScreenOverlay.showProfilerChart	missing		minor: no profiler chart; the profiling chart key is used up and draws nothing (debug_keys.rs:662)
+DebugScreenOverlay.showProfilerChart	inline	crates/horizon-client/src/debug_chart.rs::DebugCharts::draw	the charts the corners hold are drawn from the toggles: frame and tick times, bandwidth and ping, the lightmap; the predicate is folded into the draw
 DebugScreenOverlay.showNetworkCharts	port	crates/horizon-client/src/debug_chart.rs::DebugCharts::draw	network chart drawn when its flag is set
 DebugScreenOverlay.showFpsCharts	port	crates/horizon-client/src/debug_chart.rs::DebugCharts::draw	fps chart drawn when its flag is set
 DebugScreenOverlay.showLightmapTexture	port	crates/horizon-client/src/game/debug_keys.rs::Game::draw_debug_overlay	lightmap drawn when its flag is set (debug_keys.rs:473)
 DebugScreenOverlay.toggleNetworkCharts	port	crates/horizon-client/src/debug_chart.rs::DebugCharts::toggle_network	toggles the network chart and clears the others
 DebugScreenOverlay.toggleFpsCharts	port	crates/horizon-client/src/debug_chart.rs::DebugCharts::toggle_fps	toggles the fps chart and clears the others
 DebugScreenOverlay.toggleLightmapTexture	port	crates/horizon-client/src/debug_chart.rs::DebugCharts::toggle_lightmap	toggles the lightmap and clears the others
-DebugScreenOverlay.toggleProfilerChart	missing		minor: no profiler chart (see showProfilerChart)
+DebugScreenOverlay.toggleProfilerChart	port	crates/horizon-client/src/debug_chart.rs::DebugCharts::toggle_fps	the chart key turns the FPS chart on (and the F3 overlay with it), turning the network and lightmap charts off
 DebugScreenOverlay.logRemoteSample	missing		minor: unsure: the debug_sample packet is only named in horizon-protocol/src/ids.rs, so a server's samples are not logged
 EditBox.createNarrationMessage	inline	crates/horizon-client/src/screen_narrator.rs::narrate	narrate's edit-box arm: gui.narrate.editBox(message, value); Narratable::edit_box is recorded by ui::EditBox::draw and screen_draw's field
 EditBox.getHighlighted	port	crates/horizon-client-render/src/ui.rs::EditBox::selected_text	the text between cursor and highlight

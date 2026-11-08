@@ -30,13 +30,17 @@ impl Screen {
             | Self::DebugOptions => true,
             Self::Playing
             | Self::GameModeSwitcher
+            | Self::EmoteWheel
             | Self::Chat
             | Self::Creative
             | Self::Inventory
             | Self::Dead
             | Self::CommandBlock
             | Self::BlockEditor
-            | Self::Mod => false,
+            | Self::Mod
+            // The HUD editor shows the HUD it moves.
+            | Self::HudEditor
+            | Self::Studio => false,
             // WinScreen.extractBackground: the poem fills the screen with the End portal, the
             // credits alone blur. Game::menu_blur knows which one rolls.
             Self::Win => false,
@@ -268,7 +272,17 @@ impl Game<'_> {
                 }
                 _ => Text::translate(key, &[]),
             };
-            ui::button(batch, atlas, x, y, bw, 20.0, &label, active, hover);
+            let action = match id {
+                0 => Some(horizon_client::widgets::Action::Back),
+                1 => Some(horizon_client::widgets::Action::Options),
+                2 => Some(horizon_client::widgets::Action::Exit),
+                _ => None,
+            };
+            if let Some(action) = action {
+                ui::action_button(batch, atlas, action, x, y, bw, 20.0, &label, active, hover);
+            } else {
+                ui::button(batch, atlas, x, y, bw, 20.0, &label, active, hover);
+            }
             // PauseScreen's customAdditions button: CUSTOM_OPTIONS_TOOLTIP.
             if (id == 11 || id == 14) && hover {
                 tooltip = Some(Text::translate("menu.custom_options.tooltip", &[]));

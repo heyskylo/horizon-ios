@@ -23,8 +23,8 @@ pub(super) struct Social {
     /// who left is still listed by name.
     names: HashMap<u128, String>,
     page: Page,
-    search: EditBox,
-    scroll: f32,
+    pub(super) search: EditBox,
+    pub(super) scroll: f32,
     /// Opened from the pause menu: Done goes back there.
     from_pause: bool,
 }
@@ -74,6 +74,7 @@ impl Game<'_> {
     }
     /// `new SocialInteractionsScreen(lastScreen)`: it opens on All, with an empty search.
     pub(super) fn open_social(&mut self, from_pause: bool) {
+        self.hide_social_tutorial();
         self.social.page = Page::All;
         self.social.search.set_value("");
         self.social.scroll = 0.0;

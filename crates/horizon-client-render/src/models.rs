@@ -93,15 +93,20 @@ pub(crate) fn prepare_with_models(
     models: &crate::model_library::ParsedModels,
 ) -> Result<PreparedModels> {
     let facts: std::collections::BTreeMap<String, Value> =
-        serde_json::from_slice(&std::fs::read(root.join("model-states.json"))?)?;
+        horizon_world::json_file::read(&root.join("model-states.json"))?;
     let blocks: Vec<&str> = facts
         .keys()
         .filter(|name| registry.default_state(name).is_some())
         .map(|name| name.strip_prefix("minecraft:").unwrap_or(name))
         .collect();
-    let mut catalog =
-        StateModels::from_facts_with_models(root, registry, &blocks, sprites, &facts, models)?;
-    catalog.bake_standalone(root, sprites, models, standalone())?;
+    let mut catalog = {
+        let _step = crate::spans::startup::step("core.bake_states");
+        StateModels::from_facts_with_models(root, registry, &blocks, sprites, &facts, models)?
+    };
+    {
+        let _step = crate::spans::startup::step("core.bake_standalone");
+        catalog.bake_standalone(root, sprites, models, standalone())?;
+    }
     let mut placements = Vec::new();
     let mut states = Vec::new();
     for (index, (name, properties)) in GALLERY.iter().enumerate() {
@@ -153,11 +158,11 @@ pub fn load_visibility(
         collision::CachedCollisionRegistry,
         registry::BlockTableFile,
     };
-    use std::{collections::BTreeMap, fs};
+    use std::collections::BTreeMap;
     let file = BlockTableFile::open(&root.join("occlusion.nbt"), registry)?;
     let occlusion = CachedCollisionRegistry::from_table(file.table("occlusion")?)?;
     let raw: BTreeMap<String, Value> =
-        serde_json::from_slice(&fs::read(root.join("render-definitions.json"))?)?;
+        horizon_world::json_file::read(&root.join("render-definitions.json"))?;
     let definitions = raw
         .into_iter()
         .map(|(name, v)| {

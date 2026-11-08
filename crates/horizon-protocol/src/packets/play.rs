@@ -72,6 +72,12 @@ packet!(AddEntity {
 });
 packet!(Animate { id: i32 => VarInt, action: u8 => UByte });
 packet!(BlockChangedAck { sequence: i32 => VarInt });
+packet!(
+    /// ClientboundSelectAdvancementsTabPacket: the advancement tab the server keeps for the
+    /// player, or none. `ClientPacketListener.handleSelectAdvancementsTab` opens the screen on
+    /// that tab, and closes it for none.
+    SelectAdvancementsTab { tab: Option<String> => Opt<Ident> }
+);
 packet!(BlockDestruction { id: i32 => VarInt, pos: [i32; 3] => Pos, progress: u8 => UByte });
 packet!(BlockEntityData { pos: [i32; 3] => Pos, kind: i32 => VarInt, tag: Tag => Nbt });
 packet!(BlockUpdate { pos: [i32; 3] => Pos, state: i32 => VarInt });
@@ -461,7 +467,9 @@ impl VecDelta {
         let mut out = base;
         for i in 0..3 {
             if delta[i] != 0 {
-                out[i] = ((base[i] * 4096.0).round() as i64 + i64::from(delta[i])) as f64 / 4096.0;
+                out[i] = (horizon_core::jmath::round(base[i] * 4096.0) + i64::from(delta[i]))
+                    as f64
+                    / 4096.0;
             }
         }
         out
@@ -881,6 +889,12 @@ packet!(
 packet!(SetPlayerInventory { slot: i32 => VarInt, item: Option<Stack> => Slot });
 packet!(
     /// ClockNetworkState for one world clock (registry id).
+    ///
+    /// `ClientboundSetTimePacket` keys its map by `Holder<WorldClock>`, but
+    /// `WorldClock.STREAM_CODEC` is `ByteBufCodecs.holderRegistry`, not
+    /// `holder`: the key is the plain registry id, with no inline form and no
+    /// off-by-one. The test below is a join packet captured from a vanilla
+    /// 26.3 server.
     ClockState { clock: i32 => VarInt, total_ticks: i64 => VarLong, partial_tick: f32 => Float, rate: f32 => Float }
 );
 packet!(SetTime { game_time: i64 => Long, clocks: Vec<ClockState> => List<ClockState> });
@@ -891,7 +905,7 @@ impl Codec<(i32, Option<(String, Option<f32>)>)> for SoundHolder {
     fn read(r: &mut Reader) -> Result<(i32, Option<(String, Option<f32>)>)> {
         let id = r.varint()?;
         if id != 0 {
-            return Ok((id - 1, None));
+            return Ok((crate::adapter::ids::sound_event(id - 1), None));
         }
         let location = r.string(32767)?;
         let range = if r.bool()? { Some(r.f32()?) } else { None };
@@ -1506,6 +1520,46 @@ fn read_argument_properties(r: &mut Reader, id: i32) -> Result<()> {
     ArgumentProperties::read(r, id).map(|_| ())
 }
 
+/// Whether following `edges` from any node never comes back to it. An index
+/// outside the nodes leads nowhere (the dispatcher drops it).
+fn acyclic(nodes: &[CommandNode], edges: impl Fn(&CommandNode) -> &[i32]) -> bool {
+    const NEW: u8 = 0;
+    const ON_PATH: u8 = 1;
+    const DONE: u8 = 2;
+    let mut state = vec![NEW; nodes.len()];
+    // Depth first without recursion: a node and how many of its edges are followed.
+    let mut path: Vec<(usize, usize)> = Vec::new();
+    for start in 0..nodes.len() {
+        if state[start] != NEW {
+            continue;
+        }
+        state[start] = ON_PATH;
+        path.push((start, 0));
+        while let Some(&(node, followed)) = path.last() {
+            let Some(&edge) = edges(&nodes[node]).get(followed) else {
+                state[node] = DONE;
+                path.pop();
+                continue;
+            };
+            if let Some(top) = path.last_mut() {
+                top.1 += 1;
+            }
+            let Some(next) = usize::try_from(edge).ok().filter(|&e| e < nodes.len()) else {
+                continue;
+            };
+            match state[next] {
+                ON_PATH => return false,
+                NEW => {
+                    state[next] = ON_PATH;
+                    path.push((next, 0));
+                }
+                _ => {}
+            }
+        }
+    }
+    true
+}
+
 /// The command tree: nodes and the index of the root.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Commands {
@@ -1531,7 +1585,7 @@ impl Codec<Commands> for Commands {
                 name = r.string(32767)?;
             }
             if kind == 2 {
-                let id = r.varint()?;
+                let id = crate::adapter::ids::command_argument_type(r.varint()?);
                 let start = r.position();
                 read_argument_properties(r, id)?;
                 parser = Some((id, r.since(start).to_vec()));
@@ -1549,6 +1603,12 @@ impl Codec<Commands> for Commands {
                 parser,
                 suggestions,
             });
+        }
+        // ClientboundCommandsPacket.validateEntries: every node's redirect builds
+        // first (canBuild), then its children (canResolve). A cycle in either never
+        // does, and walking it would recurse without end.
+        if !acyclic(&nodes, |n| n.redirect.as_slice()) || !acyclic(&nodes, |n| &n.children) {
+            return Err(crate::Error::new("Server sent an impossible command tree"));
         }
         Ok(Self {
             nodes,
@@ -2017,6 +2077,7 @@ packet_enum!(Clientbound, crate::ids::play::clientbound {
     // A common packet: the same `configuration::ServerLinks` the
     // configuration phase sends.
     ServerLinks(ServerLinks) = SERVER_LINKS,
+    SelectAdvancementsTab(SelectAdvancementsTab) = SELECT_ADVANCEMENTS_TAB,
     SwingAnimation(SwingAnimation) = SWING_ANIMATION,
     SystemChat(SystemChat) = SYSTEM_CHAT,
     TabList(TabList) = TAB_LIST,
@@ -2264,6 +2325,30 @@ packet!(
         carried: Option<Hashed> => HashedSlot,
     }
 );
+/// ServerboundSeenAdvancementsPacket: the tab the player opened (action 0, `OPENED_TAB`), or
+/// that its screen closed (1, `CLOSED_SCREEN`, which carries no tab).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SeenAdvancements {
+    pub action: i32,
+    pub tab: Option<String>,
+}
+impl Codec<SeenAdvancements> for SeenAdvancements {
+    fn read(r: &mut Reader) -> Result<SeenAdvancements> {
+        let action = r.varint()?;
+        // The identifier is there for OPENED_TAB only (`readIdentifier` in the other branch).
+        let tab = match action {
+            0 => Some(r.string(32767)?),
+            _ => None,
+        };
+        Ok(SeenAdvancements { action, tab })
+    }
+    fn write(v: &SeenAdvancements, w: &mut Writer) {
+        w.varint(v.action);
+        if v.action == 0 {
+            w.string(v.tab.as_deref().unwrap_or_default());
+        }
+    }
+}
 packet!(SelectTrade { item: i32 => VarInt });
 packet!(
     /// ServerboundBlockEntityTagQueryPacket: an operator's F3+I asks for the
@@ -2589,6 +2674,7 @@ packet_enum!(Serverbound, crate::ids::play::serverbound {
     ChatSessionUpdate(ChatSessionUpdate) = CHAT_SESSION_UPDATE,
     PlaceRecipe(super::recipes::PlaceRecipe) = PLACE_RECIPE,
     RecipeBookChangeSettings(super::recipes::RecipeBookChangeSettings) = RECIPE_BOOK_CHANGE_SETTINGS,
+    RecipeBookSeenRecipe(super::recipes::RecipeBookSeenRecipe) = RECIPE_BOOK_SEEN_RECIPE,
     ChunkBatchReceived(ChunkBatchReceived) = CHUNK_BATCH_RECEIVED,
     ClientCommand(ClientCommand) = CLIENT_COMMAND,
     ClientInformation(ClientInformation) = CLIENT_INFORMATION,
@@ -2619,6 +2705,7 @@ packet_enum!(Serverbound, crate::ids::play::serverbound {
     PlayerLoaded(Empty) = PLAYER_LOADED,
     Pong(Ping) = PONG,
     RenameItem(RenameItem) = RENAME_ITEM,
+    SeenAdvancements(SeenAdvancements) = SEEN_ADVANCEMENTS,
     ContainerSlotStateChanged(ContainerSlotStateChanged) = CONTAINER_SLOT_STATE_CHANGED,
     Punch(Empty) = PUNCH,
     JigsawGenerate(JigsawGenerate) = JIGSAW_GENERATE,
@@ -2642,7 +2729,66 @@ packet_enum!(Serverbound, crate::ids::play::serverbound {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{chunk::BlockEntityInfo, packets::round_trip, text::literal};
+    use crate::{
+        chunk::BlockEntityInfo,
+        packets::{recipes::RecipeBookSeenRecipe, round_trip},
+        text::literal,
+    };
+
+    #[test]
+    fn a_command_tree_with_a_cycle_is_refused() {
+        let node = |kind: u8, name: &str, children: Vec<i32>, redirect: Option<i32>| CommandNode {
+            kind,
+            executable: false,
+            restricted: false,
+            children,
+            redirect,
+            name: name.into(),
+            parser: None,
+            suggestions: None,
+        };
+        let read = |nodes: Vec<CommandNode>| {
+            let mut w = Writer::new();
+            Commands::write(&Commands { nodes, root: 0 }, &mut w);
+            Commands::read(&mut Reader::new(&w.data))
+        };
+        // `execute` with `run` redirecting back to the root, as vanilla's tree has it.
+        let execute = vec![
+            node(0, "", vec![1], None),
+            node(1, "execute", vec![2], None),
+            node(1, "run", vec![], Some(0)),
+        ];
+        assert!(read(execute).is_ok());
+        // root -> a -> b -> a
+        let children = vec![
+            node(0, "", vec![1], None),
+            node(1, "a", vec![2], None),
+            node(1, "b", vec![1], None),
+        ];
+        assert!(read(children).is_err());
+        assert!(read(vec![node(0, "", vec![0], None)]).is_err());
+        // a redirects to b, b to a
+        let redirects = vec![
+            node(0, "", vec![1, 2], None),
+            node(1, "a", vec![], Some(2)),
+            node(1, "b", vec![], Some(1)),
+        ];
+        assert!(read(redirects).is_err());
+        // A long chain is fine and checked without recursing.
+        let mut chain: Vec<_> = (1..=100_000).map(|i| node(1, "x", vec![i], None)).collect();
+        chain[0].kind = 0;
+        chain.push(node(1, "x", vec![], None));
+        assert!(read(chain.clone()).is_ok());
+        chain.last_mut().unwrap().children.push(50_000);
+        assert!(read(chain).is_err());
+    }
+
+    #[test]
+    fn vec_delta_quantizes_the_base_like_math_round() {
+        // Math.round(-2.5) is -2, so a delta of 1 lands on -1/4096, not -2/4096.
+        let out = VecDelta::apply([-2.5 / 4096.0, 0.0, 0.0], [1, 0, 0]);
+        assert_eq!(out[0], -1.0 / 4096.0);
+    }
 
     #[test]
     fn merchant_cost_predicate_is_a_typed_list_without_patch_counts() {
@@ -2753,6 +2899,87 @@ mod tests {
                 &payload[..payload.len() - 1]
             )
             .is_err()
+        );
+    }
+
+    /// ServerboundRecipeBookSeenRecipePacket is one `RecipeDisplayId`, a
+    /// VarInt: display 300 is the two bytes `AC 02`, and a byte list that
+    /// stops early is not a display id.
+    #[test]
+    fn a_seen_recipe_is_one_varint_display_id() {
+        let payload = [0xAC, 0x02];
+        let seen = Serverbound::RecipeBookSeenRecipe(RecipeBookSeenRecipe { recipe: 300 });
+        assert_eq!(
+            Serverbound::decode(
+                crate::ids::play::serverbound::RECIPE_BOOK_SEEN_RECIPE,
+                &payload
+            )
+            .unwrap(),
+            seen
+        );
+        assert_eq!(&seen.encode()[1..], payload);
+        assert!(
+            Serverbound::decode(
+                crate::ids::play::serverbound::RECIPE_BOOK_SEEN_RECIPE,
+                &payload[..1]
+            )
+            .is_err()
+        );
+    }
+
+    /// ServerboundSeenAdvancementsPacket: the action, then the tab only when the player opened
+    /// one — a closed screen is the action on its own.
+    #[test]
+    fn a_seen_advancements_packet_carries_its_tab_only_when_one_was_opened() {
+        let opened = SeenAdvancements {
+            action: 0,
+            tab: Some("minecraft:story/root".into()),
+        };
+        let mut w = crate::buf::Writer::new();
+        w.varint(0);
+        w.string("minecraft:story/root");
+        assert_eq!(
+            Serverbound::decode(crate::ids::play::serverbound::SEEN_ADVANCEMENTS, &w.data).unwrap(),
+            Serverbound::SeenAdvancements(opened.clone())
+        );
+        assert_eq!(
+            &Serverbound::SeenAdvancements(opened).encode()[1..],
+            &w.data[..]
+        );
+        // CLOSED_SCREEN: the action alone, with nothing after it.
+        let closed = [0x01];
+        assert_eq!(
+            Serverbound::decode(crate::ids::play::serverbound::SEEN_ADVANCEMENTS, &closed).unwrap(),
+            Serverbound::SeenAdvancements(SeenAdvancements {
+                action: 1,
+                tab: None,
+            })
+        );
+        // Both packets are typed now, so neither reads as an unknown opcode, and a packet too
+        // short for its tab is malformed rather than a tab-less open.
+        assert!(!matches!(
+            Serverbound::decode(crate::ids::play::serverbound::SEEN_ADVANCEMENTS, &closed).unwrap(),
+            Serverbound::Unknown(..)
+        ));
+        assert!(
+            Serverbound::decode(crate::ids::play::serverbound::SEEN_ADVANCEMENTS, &[0x00]).is_err()
+        );
+        let tab = Clientbound::SelectAdvancementsTab(SelectAdvancementsTab {
+            tab: Some("minecraft:story/root".into()),
+        });
+        assert_eq!(
+            Clientbound::decode(
+                crate::ids::play::clientbound::SELECT_ADVANCEMENTS_TAB,
+                &tab.encode()[1..]
+            )
+            .unwrap(),
+            tab
+        );
+        let none = Clientbound::SelectAdvancementsTab(SelectAdvancementsTab { tab: None });
+        assert_eq!(
+            &none.encode()[1..],
+            &[0x00],
+            "no tab is the absence flag alone"
         );
     }
 
@@ -3891,6 +4118,30 @@ mod tests {
             Serverbound::encode,
             Serverbound::decode,
         );
+    }
+
+    /// A `SetTime` packet captured from a vanilla 26.3 server at join, two
+    /// clocks: `Long 13071`, then `VarInt 2`, `(0, 66678, 0.0, 1.0)` and
+    /// `(1, 13071, 0.0, 1.0)`. Reading the clock as a holder id + 1 turns the
+    /// first key into an inline definition and the packet stops decoding.
+    #[test]
+    fn a_time_clock_is_a_plain_registry_id() {
+        let payload = [
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x33, 0x0f, // game_time 13071
+            0x02, // two clocks
+            0x00, 0xf6, 0x88, 0x04, 0x00, 0x00, 0x00, 0x00, 0x3f, 0x80, 0x00, 0x00, // clock 0
+            0x01, 0x8f, 0x66, 0x00, 0x00, 0x00, 0x00, 0x3f, 0x80, 0x00, 0x00, // clock 1
+        ];
+        let decoded =
+            Clientbound::decode(crate::ids::play::clientbound::SET_TIME, &payload).unwrap();
+        let Clientbound::SetTime(t) = decoded else {
+            panic!("expected SetTime")
+        };
+        assert_eq!(t.game_time, 13071);
+        assert_eq!(t.clocks.len(), 2);
+        assert_eq!((t.clocks[0].clock, t.clocks[0].total_ticks), (0, 66678));
+        assert_eq!((t.clocks[1].clock, t.clocks[1].total_ticks), (1, 13071));
+        assert_eq!(t.clocks[0].rate, 1.0);
     }
 
     #[test]

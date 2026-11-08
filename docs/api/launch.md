@@ -21,8 +21,9 @@ The whole way, from picking a build to playing: [launch-guide.md](launch-guide.m
    hand over that account's session (`--session-stdin`, or `--session-file`), never on the command line. This
    is the same owner gate `horizon-launcher` applies before every start. Horizon never downloads Mojang's
    files; a launcher that does downloads them only for that owner.
-2. Ask the build what it takes: `horizon-client --launch-api` prints JSON with `launch_api` (the version) and
-   `options`. Pass only options it lists: any other is refused with exit code 2.
+2. Ask the build what it takes: `horizon-client --launch-api` prints JSON with `launch_api` (the version),
+   `options` and `content` (which mods, shader packs and packs it loads). Pass only options it lists: any other is
+   refused with exit code 2.
 3. Start it with a folder per instance:
 
    ```sh
@@ -120,6 +121,6 @@ test keeps the contract and the code together.
 ## Changelog
 
 - 0.1.0 (not released yet, so still one version): `horizon-client`'s `--game-dir`, `--home`, `--player-dir`, `--fullscreen`,
-  `--session-stdin`, `--launch-api`, exit code 2 for a refused command line; `horizon-prepare`'s `--launch-api`,
+  `--session-stdin`, `--launch-api` (with `content`), exit code 2 for a refused command line; `horizon-prepare`'s `--launch-api`,
   `--output`, `--check`, `--complete`, `--progress json`, `--version-json`, `--client-jar`, `--libraries-dir`,
   `--assets-dir` and `--java-home`.

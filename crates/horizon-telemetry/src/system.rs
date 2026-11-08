@@ -64,6 +64,79 @@ fn number(text: &str) -> Option<u32> {
     }
 }
 
+/// The processor's own architecture. It differs from the build's (`std::env::consts::ARCH`) when
+/// the system emulates this build: the x64 game on a Windows ARM64 PC (whose GPU is then an ARM
+/// PC's, an Adreno in #7513), or under Rosetta 2 on Apple Silicon.
+pub fn machine_arch() -> &'static str {
+    static ARCH: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    ARCH.get_or_init(|| emulating_on().unwrap_or(std::env::consts::ARCH))
+}
+
+/// The native architecture when this x86_64 build runs emulated, else None.
+#[cfg(windows)]
+fn emulating_on() -> Option<&'static str> {
+    use std::ffi::{c_char, c_void};
+    type IsWow64Process2 = unsafe extern "system" fn(*mut c_void, *mut u16, *mut u16) -> i32;
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> *mut c_void;
+        fn GetModuleHandleA(name: *const c_char) -> *mut c_void;
+        fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
+    }
+    // SAFETY: kernel32 is loaded in every process; IsWow64Process2 (Windows 10 1709 and later) is
+    // looked up rather than imported, so older systems still start.
+    let function = unsafe {
+        let kernel32 = GetModuleHandleA(c"kernel32.dll".as_ptr());
+        if kernel32.is_null() {
+            return None;
+        }
+        GetProcAddress(kernel32, c"IsWow64Process2".as_ptr())
+    };
+    if function.is_null() {
+        return None;
+    }
+    // SAFETY: the address is kernel32's IsWow64Process2, of the documented signature above.
+    let is_wow64_process2 =
+        unsafe { std::mem::transmute::<*mut c_void, IsWow64Process2>(function) };
+    let (mut process, mut native) = (0u16, 0u16);
+    // SAFETY: the pseudo-handle of this process, and two live u16 outputs.
+    if unsafe { is_wow64_process2(GetCurrentProcess(), &mut process, &mut native) } == 0 {
+        return None;
+    }
+    // IMAGE_FILE_MACHINE_ARM64 under an x64 build: emulated.
+    (cfg!(target_arch = "x86_64") && native == 0xaa64).then_some("aarch64")
+}
+
+#[cfg(target_os = "macos")]
+fn emulating_on() -> Option<&'static str> {
+    use std::ffi::{c_char, c_int, c_void};
+    unsafe extern "C" {
+        fn sysctlbyname(
+            name: *const c_char,
+            old: *mut c_void,
+            old_len: *mut usize,
+            new: *mut c_void,
+            new_len: usize,
+        ) -> c_int;
+    }
+    let (mut translated, mut len): (c_int, usize) = (0, std::mem::size_of::<c_int>());
+    // SAFETY: an int-sized output for sysctl.proc_translated, 1 in a process Rosetta translates.
+    let ok = unsafe {
+        sysctlbyname(
+            c"sysctl.proc_translated".as_ptr(),
+            (&raw mut translated).cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    } == 0;
+    (ok && translated == 1).then_some("aarch64")
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn emulating_on() -> Option<&'static str> {
+    None
+}
+
 /// The CPU's name from a Linux `/proc/cpuinfo`: x86's `model name`; else an ARM core named by
 /// its implementer and part (an arm64 kernel prints only `CPU implementer: 0x41` and `CPU part:
 /// 0xd0c`, as `lscpu` maps them: `ARM Neoverse-N1`); else the board's `Model` (a Raspberry Pi's

@@ -29,6 +29,22 @@ impl Taken {
         };
         [p.x, p.y, p.z]
     }
+    /// `ClientboundTakeItemEntityPacket`'s taken entity.
+    fn entity_id(&self) -> u32 {
+        match self {
+            Taken::Item(i) => i.id,
+            Taken::Orb(o) => o.id,
+            Taken::Arrow(a) => a.id,
+            Taken::Trident(t) => t.id,
+        }
+    }
+    /// The packet's amount: the stack's size, or one of the others.
+    fn amount(&self) -> i32 {
+        match self {
+            Taken::Item(i) => i.stack.count as i32,
+            Taken::Orb(_) | Taken::Arrow(_) | Taken::Trident(_) => 1,
+        }
+    }
 }
 
 /// Whoever took it: the particle's `target`.
@@ -96,6 +112,16 @@ impl Game<'_> {
     /// `handleTakeItemEntity`: `particleEngine.add(new ItemPickupParticle(...))` when the
     /// collector is known; it joins the group at the end of the next particle tick.
     pub(super) fn add_pickup(&mut self, taken: Taken, collector: Collector) {
+        // The clients add the particle from ClientboundTakeItemEntityPacket;
+        // the server's own is never drawn, so a mob's take has to be sent (#12493).
+        if let (Collector::Mob(id), Some(host), None) = (collector, &self.lan, &self.remote) {
+            host.hub.take_item(
+                taken.entity_id() as i32,
+                id as i32,
+                taken.amount(),
+                taken.position(),
+            );
+        }
         if let Some(target) = self.collector_target(collector) {
             self.add_pickup_toward(taken, collector, target);
         }
@@ -150,6 +176,8 @@ mod tests {
     fn orb_at(x: f64, y: f64, z: f64) -> Taken {
         let at = horizon_core::geometry::Vec3::new(x, y, z);
         Taken::Orb(Box::new(ExperienceOrb {
+            rotation: [0.0, 0.0],
+            join: Default::default(),
             no_gravity: false,
             id: 0,
             position: at,
@@ -161,6 +189,7 @@ mod tests {
             count: 1,
             ticks: 0,
             health: 5,
+            following: None,
         }))
     }
 

@@ -34,7 +34,10 @@ pub fn element(v: &Element) -> Value {
         .collect();
     json!({"from":bits(v.from),"to":bits(v.to),"faces":faces,"rotation":v.rotation.as_ref().map(rotation),"shade":v.shade_direction_override.map(Direction::name),"light":v.light_emission})
 }
-#[allow(dead_code)] // Shared by fixtures which normalize different model stages.
+#[allow(
+    dead_code,
+    reason = "shared by fixtures which normalize different model stages"
+)]
 pub fn model(v: &CuboidModel) -> Value {
     let textures: BTreeMap<_, _> = v
         .textures

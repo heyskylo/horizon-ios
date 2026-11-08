@@ -31,7 +31,7 @@ Fox.FoxLookAtPlayerGoal.canContinueToUse	inline	crates/horizon-client/src/mobs/f
 Fox.FoxMeleeAttackGoal.checkAndPerformAttack	inline	crates/horizon-client/src/mobs/goals.rs::MeleeAttack::tick	the generic melee strike, then the fox bite at entity.fox.bite 1.0/1.0 (MeleeAttack::bite, set in fox.rs::register)
 Fox.FoxPanicGoal.shouldPanic	inline	crates/horizon-client/src/mobs/fox.rs::register	Panic(2.2); the not-defending test is moot because defending is never set
 Fox.FoxPounceGoal.canContinueToUse	inline	crates/horizon-client/src/mobs/fox.rs::Pounce::can_continue	target alive, still in the air or tilted 15 degrees, not faceplanted
-Fox.FoxStrollThroughVillageGoal.canFoxMove	missing		minor: the stroll-through-village goal is not ported (foxes never follow village streets); fox.rs::can_move is Fox.canMove, a different test
+Fox.FoxStrollThroughVillageGoal.canFoxMove	port	crates/horizon-client/src/mobs/fox.rs::can_fox_move	not sleeping, sitting or defending, and no target; fox.rs::can_move is Fox.canMove, a different test
 Frog.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	variant holder and tongue target id
 Frog.getTongueTarget	inline	crates/horizon-client/src/mobs/frog.rs::ShootTongue::tick	gap: minor: the target lives in Frog.State; FrogLookControl.resetXRotOnTick has no frog case, so the head pitch is zeroed while the tongue is out
 Frog.get	port	crates/horizon-client/src/mobs/finalize.rs::species_variant_component	frog/variant component
@@ -46,7 +46,7 @@ Frog.FrogNodeEvaluator.getStart	missing		minor: frogs use the plain ground navig
 Frog.FrogNodeEvaluator.getPathType	missing		minor: blocks above #frog_prefer_jump_to (lily pad, dripleaf) are not treated as open path nodes
 Frog.FrogPathNavigation.canCutCorner	port	crates/horizon-client/src/mobs/nav.rs::Navigation::can_cut_corner	with the frog on the amphibious finder the corners it refuses are the generic set (fire, damage, walkable doors), which is the frog's own three
 Frog.FrogPathNavigation.createPathFinder	port	crates/horizon-client/src/mobs/frog.rs::register	amphibious navigation with the frog's prefersShallowSwimming (water below sea level - 10 costs more)
-FrogAi.initCoreActivity	inline	crates/horizon-client/src/mobs/frog.rs::register	gap: minor: Panic runs at 1.25 where AnimalPanic uses 2.0; look and move sinks are the controls
+FrogAi.initCoreActivity	inline	crates/horizon-client/src/mobs/frog.rs::register	AnimalPanic(2.0) is the Panic goal; look and move sinks are the controls
 FrogAi.initIdleActivity	inline	crates/horizon-client/src/mobs/frog.rs::register	gap: minor: Croak, stroll and look at player (6 blocks), the 1.25 food tempt (unless pregnant) and the mate search; no TryFindLand
 FrogAi.initSwimActivity	inline	crates/horizon-client/src/mobs/frog.rs::register	gap: minor: no separate swim activity: Float and the land stroll stand in, no random swim at 0.75 or find-land
 FrogAi.initLaySpawnActivity	port	crates/horizon-client/src/mobs/frog.rs::register	the LaySpawn goal, added in place of the activity
@@ -75,6 +75,9 @@ Goat.getBreedOffspring	port	crates/horizon-client/src/game/creatures.rs::breed	t
 Goat.customServerAiStep	inline	crates/horizon-client/src/mobs/ai.rs::generic	goals stand in for the brain: Float, Panic 2.0, Breed, Tempt, FollowParent, stroll and look (ai.rs generic) and the ram goal (goat.rs); the ram cooldown counts down in goat.rs::tick
 Goat.setYHeadRot	port	crates/horizon-client/src/mobs/control.rs::look_control_tick	the head is clamped to `getMaxHeadYRot` (15 degrees) from the body after every look update, walking or standing
 Goat.playEatingSound	port	crates/horizon-client/src/mobs/ai.rs::eating_sound	screaming or normal eat sound at 0.8 to 1.2 pitch
+Goat.getAmbientSound	port	crates/horizon-client/src/mobs/ai.rs::voice_sounds	screaming ambient event selected by IsScreamingGoat
+Goat.getHurtSound	port	crates/horizon-client/src/mobs/ai.rs::voice_sounds	screaming hurt event selected by IsScreamingGoat
+Goat.getDeathSound	port	crates/horizon-client/src/mobs/ai.rs::voice_sounds	screaming death event selected by IsScreamingGoat
 Goat.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	gap: player: live spawns use spawning.rs::finalize, which has no goat arm: no screaming goats (2 percent), no one-horned goats (10 percent), and no starting ram cooldown, so a fresh goat can ram at once; Ctx::finalize only runs for structure mobs and the probe
 Goat.getDefaultDimensions	port	crates/horizon-client/src/mobs/living.rs::Mob::dims	baby box (0.45 x 0.65, eye 0.59375) from the species table; no long jump pose scale since there is no long jump
 Goat.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	IsScreamingGoat, HasLeftHorn, HasRightHorn
@@ -112,10 +115,12 @@ SnowGolem.hasPumpkin	inline	crates/horizon-client/src/game/creatures.rs::Game::i
 SnowGolem.setPumpkin	inline	crates/horizon-client/src/game/creatures.rs::Game::interact_shear_mob	sets extra.sheared (shears, dispenser); nothing puts a pumpkin back, as in vanilla
 SnowGolem.getLeashOffset	port	crates/horizon-client/src/mobs/leash.rs::leash_offset	0.75 of the eye height
 HappyGhast.setServerStillTimeout	inline	crates/horizon-client/src/mobs/happy_ghast.rs::still_tick	gap: minor: the timeout is extra.counter (10 when a player stands on top, 10 on dismount, 0 on boarding); the one-off position sync to tracking players is not sent, lan.rs only marks the entity precise
+HappyGhast.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	still_timeout, the serverStillTimeout `still_tick` keeps in `counter`
+HappyGhast.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	still_timeout back into `counter`; absent is 0
 HappyGhast.registerGoals	port	crates/horizon-client/src/mobs/happy_ghast.rs::setup	adult goals: float, tempt (harness and food for a bare adult, food otherwise), float around within 16
 HappyGhast.adultGhastSetup	port	crates/horizon-client/src/mobs/happy_ghast.rs::setup	adult half: ghast move control, happy ghast look control, goals, brain stopped
 HappyGhast.babyGhastSetup	port	crates/horizon-client/src/mobs/happy_ghast.rs::setup	baby half: flying move control, baby flying navigation, no goals, timeout cleared
-HappyGhast.ageBoundaryReached	port	crates/horizon-client/src/mobs/happy_ghast.rs::ensure_setup	reruns setup when the age sign changes
+HappyGhast.ageBoundaryReached	port	crates/horizon-client/src/mobs/finalize.rs::age_boundary_reached	reruns the setup (happy_ghast::ensure_setup) when the age sign changes, so a hatched ghastling flies its own goals before its first tick
 HappyGhast.createAttributes	skip:data		attributes come from entity-types.json
 HappyGhast.getAmbientSoundInterval	port	crates/horizon-client/src/mobs.rs::Mob::ambient_interval	six times as long while it carries a rider
 HappyGhast.canUseSlot	inline	crates/horizon-client/src/game/ghasts.rs::Game::interact_happy_ghast	a harness goes only on a living adult without one; shears take it off
@@ -130,3 +135,4 @@ HappyGhast.syncStayStillFlag	port	crates/horizon-client/src/game/lan.rs::mob_met
 HappyGhast.getLeashOffset	port	crates/horizon-client/src/mobs/leash.rs::leash_offset	Vec3.ZERO, the rope at the ghast's feet rather than an eye height up
 HappyGhastAi.initCoreActivity	port	crates/horizon-client/src/mobs/animal_brain.rs::ghastling_package	swim, flying panic 2.0, look sink, move sink and the tempt cooldown countdown
 HappyGhastAi.initIdleActivity	port	crates/horizon-client/src/mobs/animal_brain.rs::ghastling_package	tempt with look in the eyes, follow a player, follow an adult, then fly stroll or walk to the look target
+Frog.canBeABaby	port	crates/horizon-client/src/mobs/species.rs::can_be_a_baby	the false arm: a frog with a negative Age is an adult

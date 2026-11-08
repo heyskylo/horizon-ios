@@ -19,8 +19,8 @@ CatSpawner.spawnInVillage	port	crates/horizon-client/src/game/cat_spawner.rs::Ga
 CatSpawner.spawnCat	port	crates/horizon-client/src/game/cat_spawner.rs::Game::spawn_cat	black variant inside cats_spawn_as_black structures; persistence flag from the caller
 InventoryCarrier.pickUpItem	port	crates/horizon-client/src/game/villagers.rs::Game::villager_pickups	gap: minor: villager arm only; piglins, sulfur cubes, pandas and others have their own pickup fns
 AbstractVillager.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	villager arm: type, then the baby group
-AbstractVillager.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	Offers in the villager arm; inventory via villager::write_nbt
-AbstractVillager.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::read_villager	Offers read here; inventory via villager::read_nbt
+AbstractVillager.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	Offers; Villager inventory via villager::write_nbt, WanderingTrader inventory via extra.inventory, including empty
+AbstractVillager.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	Offers via read_villager; Villager inventory via villager::read_nbt, WanderingTrader via eight-slot extra.inventory; aggregation gap retained
 AbstractVillager.getSlot	missing		minor: commands cannot address a villager inventory slot (container.N); mob slot names cover weapon, armour and saddle only
 AbstractVillager.addOffersFromItemListings	port	crates/horizon-client/src/merchant.rs::Trades::offers_from_set	the allow_duplicates path: a picked trade stays in the pool
 AbstractVillager.addOffersFromItemListingsWithoutDuplicates	port	crates/horizon-client/src/merchant.rs::Trades::offers_from_set	the no-duplicates path: a picked trade leaves the pool
@@ -37,7 +37,8 @@ Villager.createDefaultVillagerData	skip:data		default type, profession and level
 Villager.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	villager arm: data, xp, restocks, offers; food, gossip and decay via villager::write_nbt
 Villager.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::read_villager	data and offers here; food, gossip, decay and inventory via villager::read_nbt
 Villager.getAmbientSound	port	crates/horizon-client/src/mobs/ai.rs::play_ambient	gap: minor: the trade ambient sound is not played while trading
-Villager.rewardTradeXp	port	crates/horizon-client/src/merchant.rs::Session::notify_trade	gap: minor: no 10 second Regeneration on the villager at level-up
+Villager.rewardTradeXp	port	crates/horizon-client/src/merchant.rs::Session::notify_trade	gap: minor: no 10 second Regeneration on the villager at level-up; accepted Game::merchant_traded records the actual trader for the next eligible mob AI phase
+Villager.customServerAiStep	port	crates/horizon-client/src/mobs/ai.rs::server_ai_step	Villager branch: Brain tick, then the retained trader event; Game::villager_traded_by applies reputation and current prices; existing NoAI gate
 Villager.die	port	crates/horizon-client/src/game/villagers.rs::Game::villager_murdered	gap: minor: releaseAllPois is not done on death
 Villager.releaseAllPois	missing		claims are per-mob fields (`extra.bed`, `extra.home` for the job site, `extra.meeting`) with no world-side point-of-interest store to release from; freeing a claim for another villager while this one lives has no counterpart
 Villager.releasePoi	missing		same as `releaseAllPois`: a single claim is that mob's field, dropped with the mob
@@ -84,6 +85,7 @@ Inventory.isEmpty	port	crates/horizon-world/src/player_inventory.rs::PlayerInven
 Inventory.getItem	port	crates/horizon-world/src/player_inventory.rs::PlayerInventory::get	slots past the main inventory address equipment
 Inventory.replaceWith	port	crates/horizon-world/src/player_inventory.rs::PlayerInventory::replace_with	
 Inventory.removeFromSelected	port	crates/horizon-world/src/player_inventory.rs::PlayerInventory::remove_selected	
+Player.getVoicePitch	port	crates/horizon-client/src/game/remote.rs::player_voice_pitch	a constant 1.0 (fconst_1), so the hurt sound of handleDamageEvent and the death sound of handleEntityEvent 3 are played unpitched and draw nothing from the level random
 Player.defineSynchedData	skip:java		synched data definitions; Horizon keeps the fields in game and player state
 Player.turtleHelmetTick	port	crates/horizon-client/src/game/potions.rs::Game::turtle_helmet_tick	
 Player.isEquipped	inline	crates/horizon-client/src/game/potions.rs::Game::turtle_helmet_tick	the head-slot check for the turtle helmet
@@ -92,6 +94,7 @@ Player.increaseScore	skip:other		the score is experience.total in Horizon (death
 Player.getWeaponItem	missing		the riptide spin attack keeps only `auto_spin_attack_ticks` and `auto_spin_attack_dmg`, not the stack it started with (`autoSpinAttackItemStack`), so there is no item to answer with mid-spin
 Player.destroyVanishingCursedItems	port	crates/horizon-client/src/game.rs::Game::drop_inventory	vanishing-curse stacks are removed from the death drops
 Player.hasCorrectToolForDrops	port	crates/horizon-client/src/game.rs::Game::tick_mining	the correct-tool test for harvest drops
+Player.canDropItems	inline	crates/horizon-client/src/lan/menu.rs::click	THROW is not acted on while the client has dropped items too fast
 Player.readAdditionalSaveData	port	crates/horizon-client/src/save.rs::Level::read_player	
 Player.addAdditionalSaveData	port	crates/horizon-client/src/save.rs::Level::player_tag	
 Player.hurtHelmet	inline	crates/horizon-client/src/game.rs::Game::hurt_armor	gap: minor: hurt_armor hits all four armour slots; the head-only hit from LivingEntity.hurt is not separated
@@ -105,7 +108,7 @@ Player.startSleepInBed	port	crates/horizon-client/src/game.rs::Game::try_sleep
 Player.isSleepingLongEnough	port	crates/horizon-client/src/game/lan_actions.rs::sleep_counts	100 ticks in bed is what counts a sleeper as deep for SleepStatus.update
 Player.updateSwimming	port	crates/horizon-client/src/motion.rs::MotionWorld::swimming	
 Player.getXpNeededForNextLevel	port	crates/horizon-client/src/entities.rs::Experience::needed	
-Player.hasEnoughFoodToDoExhaustiveManoeuvres	missing		no food-or-flying gate anywhere in `motion.rs`: the exhaustion of a jump or a move is added without asking the food level
+Player.hasEnoughFoodToDoExhaustiveManoeuvres	inline	crates/horizon-client/src/sprint.rs::Conditions::possible	the food-or-mayfly test is the sprint gate's `enough_food || may_fly`: `enough_food` is `FoodData::has_enough_food` (food level above 6) filled in `motion.rs`, and `player_food::enough_food_for_manoeuvres` is the same test as a probed free function
 Player.mayUseItemAt	port	crates/horizon-client/src/game.rs::Game::use_hand	the may-build test before use-on in adventure mode
 Player.isSwimming	port	crates/horizon-client/src/motion.rs::MotionWorld::swimming	
 Player.decorateDisplayNameComponent	port	crates/horizon-client/src/game/commands.rs::player_display_name	click suggests /tell, hover shows the player entity, plus the insertion
@@ -133,8 +136,8 @@ StackedContents.RecipePicker.getVisitedIngredientIndex	skip:java		bitset index a
 StackedContents.RecipePicker.getVisitiedItemIndex	skip:java		bitset index arithmetic; plain bool vectors in Horizon
 StackedContents.RecipePicker.clearAllVisited	port	crates/horizon-client/src/menu/place.rs::Picker::clear_visited	
 StackedItemContents.getBiggestCraftableStack	port	crates/horizon-client/src/menu/place.rs::Stacked::try_pick_all	the largest craftable count, found by a bounded search
-EvokerFangs.readAdditionalSaveData	missing		fangs are not saved: `entity_nbt.rs` has no evoker fangs writer, so a save in mid-bite drops them
-EvokerFangs.addAdditionalSaveData	missing		no writer for the warmup delay or the owner either
+EvokerFangs.readAdditionalSaveData	port	crates/horizon-client/src/game/persist.rs::Game::spawn_loaded_entities	Warmup defaults to 0 and enters active fangs; gap: Owner resolution only finds already-loaded mobs
+EvokerFangs.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::evoker_fangs_to_nbt	live Warmup, known owner UUID, unresolved Owner retained from raw NBT
 EvokerFangs.getAnimationProgress	port	crates/horizon-client/src/game/fangs.rs::Game::fangs_geometry	the bite progress that positions the fang model
 EyeOfEnder.setItem	skip:ui		the item sprite a flying eye shows; Horizon draws the eye itself
 EyeOfEnder.shouldRenderAtSqrDistance	skip:ui		render distance culling only

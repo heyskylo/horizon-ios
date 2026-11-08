@@ -19,26 +19,75 @@ pub struct ModMenuType {
     pub slots: usize,
     pub data_slots: usize,
     pub results: Vec<usize>,
+    /// its crafting grid, if it has one (`crafting`).
+    pub crafting: Option<ModCrafting>,
+    /// its linked slots, if it has any (`links`).
+    pub links: Option<ModLinks>,
+}
+
+/// a mod menu type's linked slots: `count` container slots from `from` on,
+/// which show the slots of the containers a native mod links them to
+/// (`native_menu_links`) instead of the block entity's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModLinks {
+    pub from: usize,
+    pub count: usize,
+}
+
+impl ModLinks {
+    /// The linked container slots.
+    pub fn slots(&self) -> std::ops::Range<usize> {
+        self.from..self.from + self.count
+    }
+}
+
+/// a mod menu type's crafting grid: `size`x`size` container slots from
+/// `grid` on, row by row, and the slot showing what they craft. The block
+/// entity holds the grid; the result is the menu's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModCrafting {
+    pub grid: usize,
+    pub size: usize,
+    pub result: usize,
+}
+
+impl ModCrafting {
+    /// The grid's container slots.
+    pub fn grid_slots(&self) -> std::ops::Range<usize> {
+        self.grid..self.grid + self.size * self.size
+    }
 }
 
 static MOD_MENU_TYPES: std::sync::OnceLock<Vec<ModMenuType>> = std::sync::OnceLock::new();
 
-/// registers the content mods' menu types, `(id, slots, data slots,
-/// results)`, a list set once per process (false when it already was).
-pub fn register_mod_menu_types(
-    menus: impl IntoIterator<Item = (String, usize, usize, Vec<usize>)>,
-) -> bool {
+/// One menu type as [`register_mod_menu_types`] takes it: `(id, slots, data
+/// slots, results, crafting, links)`.
+pub type ModMenuTypeEntry = (
+    String,
+    usize,
+    usize,
+    Vec<usize>,
+    Option<ModCrafting>,
+    Option<ModLinks>,
+);
+
+/// registers the content mods' menu types, a list set once per process
+/// (false when it already was).
+pub fn register_mod_menu_types(menus: impl IntoIterator<Item = ModMenuTypeEntry>) -> bool {
     if MOD_MENU_TYPES.get().is_some() {
         return false;
     }
-    let menus = menus
-        .into_iter()
-        .map(|(id, slots, data_slots, results)| ModMenuType {
-            id: Box::leak(id.into_boxed_str()),
-            slots,
-            data_slots,
-            results,
-        });
+    let menus =
+        menus.into_iter().map(
+            |(id, slots, data_slots, results, crafting, links)| ModMenuType {
+                id: Box::leak(id.into_boxed_str()),
+                slots,
+                data_slots,
+                results,
+                crafting,
+                links,
+            },
+        );
     MOD_MENU_TYPES.set(menus.collect()).is_ok()
 }
 
@@ -215,6 +264,13 @@ impl Campfire {
         }
         changed
     }
+    pub fn idle(&self, lit: bool) -> bool {
+        if lit {
+            self.items.iter().all(Option::is_none)
+        } else {
+            self.progress.iter().all(|&p| p <= 0)
+        }
+    }
 }
 impl Skull {
     pub fn new(
@@ -257,6 +313,17 @@ impl SkullSkin {
 }
 /// The skull and head blocks (`SkullBlock`, `WallSkullBlock`): every
 /// `*_skull` and `*_head` but the piston's head.
+/// The item slots of the container `name`'s block carries, if any.
+fn container_size(name: &str) -> Option<usize> {
+    match name {
+        "minecraft:chest" | "minecraft:trapped_chest" | "minecraft:barrel" => Some(27),
+        n if n.ends_with("copper_chest") => Some(27),
+        "minecraft:hopper" => Some(HOPPER_SLOTS),
+        "minecraft:dispenser" | "minecraft:dropper" => Some(9),
+        n if n.ends_with("shulker_box") => Some(27),
+        _ => None,
+    }
+}
 fn is_skull(name: &str) -> bool {
     name.ends_with("_skull") || (name.ends_with("_head") && name != "minecraft:piston_head")
 }
@@ -374,8 +441,20 @@ impl BlockEntity {
         if name == "minecraft:end_gateway" {
             return Some(Self::EndGateway(EndGateway::default()));
         }
+        if name == "minecraft:bell" {
+            return Some(Self::Bell);
+        }
+        if name == "minecraft:conduit" {
+            return Some(Self::Conduit(None));
+        }
+        if name == "minecraft:enchanting_table" {
+            return Some(Self::EnchantingTable);
+        }
         if name == "minecraft:daylight_detector" {
             return Some(Self::DaylightDetector);
+        }
+        if name.ends_with("copper_golem_statue") {
+            return Some(Self::CopperGolemStatue(Default::default()));
         }
         if name == "minecraft:beacon" {
             return Some(Self::Beacon(Box::new(Beacon {
@@ -422,15 +501,60 @@ impl BlockEntity {
         if name == "minecraft:potent_sulfur" {
             return Some(Self::PotentSulfur(PotentSulfur::default()));
         }
-        let size = match name {
-            "minecraft:chest" | "minecraft:trapped_chest" | "minecraft:barrel" => 27,
-            n if n.ends_with("copper_chest") => 27,
-            "minecraft:hopper" => HOPPER_SLOTS,
-            "minecraft:dispenser" | "minecraft:dropper" => 9,
-            n if n.ends_with("shulker_box") => 27,
-            _ => return None,
-        };
-        Some(Self::Chest(vec![None; size]))
+        Some(Self::Chest(vec![None; container_size(name)?]))
+    }
+    /// `BlockEntity.isValidBlockState`: whether this kind of entity belongs
+    /// under `name`'s block — vanilla keeps a set block's existing entity
+    /// only when its type is in the block's set, and drops it for the
+    /// block's own otherwise. Each kind fits the blocks `for_block` maps to
+    /// it (a furnace is its kind's, a sign only its standing or hanging
+    /// kind); a mod block's own can't tell its block here, so a non-vanilla
+    /// name is trusted — a name change drops it either way.
+    pub fn fits(&self, name: &str) -> bool {
+        match self {
+            Self::Chest(items) => container_size(name) == Some(items.len()),
+            Self::Furnace(f) => FurnaceKind::from_block(name) == Some(f.kind),
+            Self::Sign(s) => crate::signs::sign_kind(name) == Some(s.hanging),
+            Self::Sculk(s) => {
+                crate::sculk::SculkEntity::for_block(name).is_some_and(|n| n.id() == s.id())
+            }
+            Self::CommandBlock(_) => crate::command_block::Mode::of_block(name).is_some(),
+            Self::Skull(_) => is_skull(name),
+            Self::Banner(_) => name.ends_with("_banner"),
+            Self::CopperGolemStatue(_) => name.ends_with("copper_golem_statue"),
+            Self::Shelf(_) => name == "minecraft:shelf" || name.ends_with("_shelf"),
+            Self::Mod(_) => !name.starts_with("minecraft:"),
+            Self::Beehive(_) => matches!(name, "minecraft:beehive" | "minecraft:bee_nest"),
+            Self::Campfire(_) => {
+                matches!(name, "minecraft:campfire" | "minecraft:soul_campfire")
+            }
+            Self::Brushable(_) => matches!(
+                name,
+                "minecraft:suspicious_sand"
+                    | "minecraft:suspicious_gravel"
+                    | "minecraft:brushable_block"
+            ),
+            Self::Brewing(_) => name == "minecraft:brewing_stand",
+            Self::Beacon(_) => name == "minecraft:beacon",
+            Self::Jukebox(_) => name == "minecraft:jukebox",
+            Self::Lectern(_) => name == "minecraft:lectern",
+            Self::CreakingHeart(_) => name == "minecraft:creaking_heart",
+            Self::Spawner(_) => name == "minecraft:spawner",
+            Self::TrialSpawner(_) => name == "minecraft:trial_spawner",
+            Self::Vault(_) => name == "minecraft:vault",
+            Self::Crafter(_) => name == "minecraft:crafter",
+            Self::EndGateway(_) => name == "minecraft:end_gateway",
+            Self::DaylightDetector => name == "minecraft:daylight_detector",
+            Self::Bell => name == "minecraft:bell",
+            Self::Conduit(_) => name == "minecraft:conduit",
+            Self::EnchantingTable => name == "minecraft:enchanting_table",
+            Self::StructureBlock(_) => name == "minecraft:structure_block",
+            Self::TestBlock(_) => name == "minecraft:test_block",
+            Self::TestInstanceBlock(_) => name == "minecraft:test_instance_block",
+            Self::JigsawBlock(_) => name == "minecraft:jigsaw",
+            Self::PotentSulfur(_) => name == "minecraft:potent_sulfur",
+            Self::ChiseledBookshelf(_) => name == "minecraft:chiseled_bookshelf",
+        }
     }
     pub fn id(&self) -> &str {
         match self {
@@ -451,6 +575,7 @@ impl BlockEntity {
             Self::Lectern(_) => "minecraft:lectern",
             Self::Sculk(s) => s.id(),
             Self::Banner(_) => "minecraft:banner",
+            Self::CopperGolemStatue(_) => "minecraft:copper_golem_statue",
             Self::Crafter(_) => "minecraft:crafter",
             Self::CreakingHeart(_) => "minecraft:creaking_heart",
             Self::Spawner(_) => "minecraft:mob_spawner",
@@ -461,6 +586,9 @@ impl BlockEntity {
             Self::Skull(_) => "minecraft:skull",
             Self::EndGateway(_) => "minecraft:end_gateway",
             Self::DaylightDetector => "minecraft:daylight_detector",
+            Self::Bell => "minecraft:bell",
+            Self::Conduit(_) => "minecraft:conduit",
+            Self::EnchantingTable => "minecraft:enchanting_table",
             Self::Brushable(_) => "minecraft:brushable_block",
             Self::Campfire(_) => "minecraft:campfire",
             Self::ChiseledBookshelf(_) => "minecraft:chiseled_bookshelf",
@@ -495,11 +623,14 @@ impl BlockEntity {
             | Self::TestBlock(_)
             | Self::TestInstanceBlock(_)
             | Self::DaylightDetector
+            | Self::Bell
+            | Self::Conduit(_)
+            | Self::EnchantingTable
             | Self::Brushable(_) => Vec::new(),
             Self::Mod(m) => m.items.iter().flatten().cloned().collect(),
             Self::Lectern(l) => l.book.iter().cloned().collect(),
             Self::Sculk(_) => Vec::new(),
-            Self::Banner(_) => Vec::new(),
+            Self::Banner(_) | Self::CopperGolemStatue(_) => Vec::new(),
             Self::Crafter(c) => c.items.iter().flatten().cloned().collect(),
             Self::Campfire(c) => c.items.iter().flatten().cloned().collect(),
             Self::ChiseledBookshelf(b) => b.items.iter().flatten().cloned().collect(),
@@ -516,6 +647,7 @@ impl BlockEntity {
             | Self::Lectern(_)
             | Self::Sculk(_)
             | Self::Banner(_)
+            | Self::CopperGolemStatue(_)
             | Self::EndGateway(_)
             | Self::Skull(_)
             | Self::PotentSulfur(_)
@@ -524,6 +656,9 @@ impl BlockEntity {
             | Self::TestBlock(_)
             | Self::TestInstanceBlock(_)
             | Self::DaylightDetector
+            | Self::Bell
+            | Self::Conduit(_)
+            | Self::EnchantingTable
             | Self::Brushable(_) => &[],
             Self::Jukebox(j) => &j.items,
             Self::Crafter(c) => &c.items,
@@ -550,6 +685,7 @@ impl BlockEntity {
             | Self::Lectern(_)
             | Self::Sculk(_)
             | Self::Banner(_)
+            | Self::CopperGolemStatue(_)
             | Self::EndGateway(_)
             | Self::Skull(_)
             | Self::PotentSulfur(_)
@@ -558,6 +694,9 @@ impl BlockEntity {
             | Self::TestBlock(_)
             | Self::TestInstanceBlock(_)
             | Self::DaylightDetector
+            | Self::Bell
+            | Self::Conduit(_)
+            | Self::EnchantingTable
             | Self::Brushable(_) => &mut [],
             Self::Jukebox(j) => &mut j.items,
             Self::Crafter(c) => &mut c.items,
@@ -675,6 +814,56 @@ mod tests {
         assert!(!menu_reaches("vanilla", "ruby:press"));
         assert!(!menu_reaches("fabric", "ruby:press"));
         assert!(menu_reaches("vanilla", "minecraft:generic_9x3"));
+    }
+
+    #[test]
+    fn a_campfire_is_idle_only_while_its_tick_changes_nothing() {
+        let mut c = Campfire::default();
+        assert!(c.idle(true) && c.idle(false));
+        assert!(c.place_food(&mut ItemStack::new("minecraft:beef", 1), 600));
+        assert!(!c.idle(true));
+        assert!(c.idle(false));
+        c.cook_tick();
+        assert!(!c.idle(false));
+        c.cooldown_tick();
+        assert!(c.idle(false));
+    }
+
+    /// The campfire sleeps while `idle`, so the tick its block runs (`cook_tick` lit,
+    /// `cooldown_tick` unlit) must change nothing then, and must change an awake one.
+    #[test]
+    fn an_idle_campfire_tick_changes_nothing() {
+        let tick = |c: &mut Campfire, lit: bool| {
+            if lit {
+                !c.cook_tick().is_empty()
+            } else {
+                c.cooldown_tick()
+            }
+        };
+        let empty = Campfire::default();
+        let mut food = Campfire::default();
+        assert!(food.place_food(&mut ItemStack::new("minecraft:beef", 1), 600));
+        let mut warm = food.clone();
+        warm.cook_tick();
+        let mut cooled = warm.clone();
+        while cooled.cooldown_tick() {}
+        for (before, lit) in [
+            (&empty, true),
+            (&empty, false),
+            (&food, false),
+            (&cooled, false),
+        ] {
+            assert!(before.idle(lit), "{before:?} lit {lit}");
+            let mut after = before.clone();
+            assert!(!tick(&mut after, lit));
+            assert_eq!(&after, before, "lit {lit}");
+        }
+        for (before, lit) in [(&food, true), (&warm, false)] {
+            assert!(!before.idle(lit), "{before:?} lit {lit}");
+            let mut after = before.clone();
+            tick(&mut after, lit);
+            assert_ne!(&after, before, "lit {lit}");
+        }
     }
 
     #[test]

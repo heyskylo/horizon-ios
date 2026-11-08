@@ -32,15 +32,75 @@ impl std::error::Error for ShapeError {}
 #[derive(Clone, Debug)]
 pub struct VoxelShape {
     identity: Arc<ShapeIdentity>,
-    coords: Arc<[Vec<f64>; 3]>,
+    coords: Coords,
     sizes: [usize; 3],
     occupancy: Arc<[u64]>,
     cube: bool,
     coordinate_cubes: [bool; 3],
-    boxes: Arc<Vec<Aabb>>,
+    boxes: Arc<[Aabb]>,
     bounds: Option<Aabb>,
     discrete_min: [i32; 3],
     discrete_max: [i32; 3],
+}
+
+/// The three axes' boundaries in one allocation: axis `i` is
+/// `values[starts[i]..starts[i + 1]]`. A moved shape (one per block an
+/// entity's movement meets) then allocates its coordinates once, not four
+/// times.
+#[derive(Clone, Debug)]
+struct Coords {
+    values: Arc<[f64]>,
+    starts: [usize; 4],
+}
+impl Coords {
+    fn new(axes: [Vec<f64>; 3]) -> Self {
+        let mut starts = [0; 4];
+        for i in 0..3 {
+            starts[i + 1] = starts[i] + axes[i].len();
+        }
+        let mut values = Vec::with_capacity(starts[3]);
+        for axis in axes {
+            values.extend(axis);
+        }
+        Self {
+            values: values.into(),
+            starts,
+        }
+    }
+    fn to_vecs(&self) -> [Vec<f64>; 3] {
+        std::array::from_fn(|i| self[i].to_vec())
+    }
+    /// Every boundary plus its axis's offset, the same addition as moving
+    /// each axis on its own.
+    fn moved(&self, offset: Vec3) -> Self {
+        let [_, y, z, _] = self.starts;
+        let [dx, dy, dz] = offset.components();
+        let values = self
+            .values
+            .iter()
+            .enumerate()
+            .map(|(i, value)| {
+                *value
+                    + if i < y {
+                        dx
+                    } else if i < z {
+                        dy
+                    } else {
+                        dz
+                    }
+            })
+            .collect();
+        Self {
+            values,
+            starts: self.starts,
+        }
+    }
+}
+impl std::ops::Index<usize> for Coords {
+    type Output = [f64];
+    fn index(&self, axis: usize) -> &[f64] {
+        &self.values[self.starts[axis]..self.starts[axis + 1]]
+    }
 }
 
 type FaceCache = [OnceLock<Result<VoxelShape, ShapeError>>; 6];
@@ -102,17 +162,17 @@ impl VoxelShape {
         }
         let mut shape = Self {
             identity: Arc::new(ShapeIdentity::default()),
-            coords: Arc::new(coords),
+            coords: Coords::new(coords),
             sizes,
             occupancy: occupancy.into(),
             cube,
             coordinate_cubes,
-            boxes: Arc::new(Vec::new()),
+            boxes: Vec::new().into(),
             bounds: None,
             discrete_min,
             discrete_max,
         };
-        shape.boxes = Arc::new(shape.decompose());
+        shape.boxes = shape.decompose().into();
         shape.bounds = shape.boxes.iter().copied().reduce(Aabb::union_bounds);
         Ok(shape)
     }
@@ -152,6 +212,54 @@ impl VoxelShape {
     pub fn boxes(&self) -> &[Aabb] {
         &self.boxes
     }
+    /// `DiscreteVoxelShape.forAllEdges`: merged boundary edges, in axis-cycle order.
+    pub fn edges(&self) -> Vec<[f64; 6]> {
+        let sizes = self.sizes();
+        let mut result = Vec::new();
+        for axis in [2, 1, 0] {
+            let a = (axis + 1) % 3;
+            let b = (axis + 2) % 3;
+            for u in 0..=sizes[a] {
+                for v in 0..=sizes[b] {
+                    let mut start = None;
+                    for t in 0..=sizes[axis] {
+                        let mut count = 0;
+                        let mut odd = 0;
+                        for du in 0..=1 {
+                            for dv in 0..=1 {
+                                let mut p = [0i32; 3];
+                                p[axis] = t as i32;
+                                p[a] = u as i32 + du - 1;
+                                p[b] = v as i32 + dv - 1;
+                                if self.is_full(p[0], p[1], p[2]) {
+                                    count += 1;
+                                    odd ^= du ^ dv;
+                                }
+                            }
+                        }
+                        let edge = count == 1 || count == 3 || (count == 2 && odd == 0);
+                        if edge {
+                            if start.is_none() {
+                                start = Some(t);
+                            }
+                        } else if let Some(first) = start.take() {
+                            let mut from = [0.0; 3];
+                            let mut to = [0.0; 3];
+                            from[a] = self.coordinates(Axis::ALL[a])[u];
+                            from[b] = self.coordinates(Axis::ALL[b])[v];
+                            to[a] = from[a];
+                            to[b] = from[b];
+                            from[axis] = self.coordinates(Axis::ALL[axis])[first];
+                            to[axis] = self.coordinates(Axis::ALL[axis])[t];
+                            result.push([from[0], from[1], from[2], to[0], to[1], to[2]]);
+                        }
+                    }
+                }
+            }
+        }
+        result
+    }
+
     pub fn coordinates(&self, axis: Axis) -> &[f64] {
         &self.coords[axis as usize]
     }
@@ -289,16 +397,10 @@ impl VoxelShape {
         result.identity = Arc::new(ShapeIdentity::default());
         result.cube = false;
         result.coordinate_cubes = [false; 3];
-        let mut coords = (*self.coords).clone();
-        for axis in Axis::ALL {
-            for value in &mut coords[axis as usize] {
-                *value += offset.component(axis);
-            }
-        }
-        result.coords = Arc::new(coords);
+        result.coords = self.coords.moved(offset);
         // The same occupancy decomposes into the same boxes, over coordinates
         // moved by the same additions.
-        result.boxes = Arc::new(self.boxes.iter().map(|b| b.move_by(offset)).collect());
+        result.boxes = self.boxes.iter().map(|b| b.move_by(offset)).collect();
         result.bounds = self.bounds.map(|bounds| bounds.move_by(offset));
         result
     }
@@ -429,6 +531,29 @@ impl VoxelShape {
             })
         } else {
             Aabb::clip_boxes(self.boxes.iter().copied(), start, end, block)
+        }
+    }
+    /// `VoxelShape.clip` over an already decomposed union, without rebuilding its grid.
+    /// Uses half-open box containment for the same nudged inside test as the grid query.
+    pub fn clip_boxes<I>(boxes: I, start: Vec3, end: Vec3, block: BlockPos) -> Option<BlockHit>
+    where
+        I: Iterator<Item = Aabb> + Clone,
+    {
+        let delta = end.subtract(start);
+        if delta.length_squared() < COLLISION_EPSILON {
+            return None;
+        }
+        let nudged = start.add_vector(delta.scale(0.001));
+        let local = nudged.subtract(Vec3::from_block(block));
+        if boxes.clone().any(|b| b.contains(local)) {
+            Some(BlockHit {
+                location: nudged,
+                direction: Direction::approximate_nearest(delta).opposite(),
+                block,
+                inside: true,
+            })
+        } else {
+            Aabb::clip_boxes(boxes, start, end, block)
         }
     }
     pub fn closest_point(&self, point: Vec3) -> Option<Vec3> {
@@ -603,5 +728,35 @@ mod tests {
         assert!(VoxelShape::block().is_block());
         assert!(!VoxelShape::block().moved(Vec3::ZERO).is_block());
         assert!(!VoxelShape::block().fresh_identity().is_block());
+    }
+    #[test]
+    fn each_moved_axis_takes_only_its_own_offset() {
+        // Three axes of different lengths, so a boundary given another
+        // axis's offset would show.
+        let coords = [
+            vec![0.0, 0.25, 1.0],
+            vec![0.0, 0.5],
+            vec![0.0, 0.125, 0.75, 1.0],
+        ];
+        let shape = VoxelShape::from_grid(coords.clone(), &[true; 6]).unwrap();
+        let offset = Vec3::new(3.0, -64.0, 0.1);
+        let moved = shape.moved(offset);
+        for (axis, (values, by)) in Axis::ALL
+            .into_iter()
+            .zip(coords.iter().zip([3.0, -64.0, 0.1]))
+        {
+            let expected: Vec<u64> = values.iter().map(|v| (v + by).to_bits()).collect();
+            let got: Vec<u64> = moved
+                .coordinates(axis)
+                .iter()
+                .map(|v| v.to_bits())
+                .collect();
+            assert_eq!(got, expected, "{axis:?}");
+            assert_eq!(
+                shape.coordinates(axis),
+                &values[..],
+                "{axis:?} of the original"
+            );
+        }
     }
 }

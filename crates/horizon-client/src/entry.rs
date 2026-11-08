@@ -1,5 +1,5 @@
 //! Startup shared by the gameplay library and its executable.
-use crate::{crash, game, logging, ram_limit};
+use crate::{crash, game, logging};
 
 /// Start the game. The executable supplies the allocator and retains the mod API marker.
 pub fn main() {
@@ -13,8 +13,14 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         log::warn!("Trait mods already installed; ignoring the second list");
     }
     horizon_threads::configure_allocator();
+    // horizon-extras (docs/forking.md): without the feature, no Horizon Settings or Mods page.
+    if !cfg!(feature = "horizon-extras") {
+        horizon_client::options_ui::HORIZON_EXTRAS
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
     horizon_client::telemetry::mark_start();
     horizon_client::spans::startup::init(std::time::Instant::now());
+    horizon_client::spans::trace::start_from_env();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let game_args = args.iter().take_while(|a| *a != "--dedicated");
     let help = game_args
@@ -45,6 +51,8 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         }
         (logging::game_home(), "client", "Render thread")
     };
+    // Before the log opens, so a mod's injection hears its first lines.
+    logging::set_line_hook(crate::native_client_hooks::native_log_line);
     if !help {
         logging::init(
             logging::player_dir_override().unwrap_or(home.as_path()),
@@ -53,7 +61,6 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         // The log's first line names the build, so a bug report that carries the log says which one it was.
         log::info!("Horizon {}", crash::version());
         crash::install(home.clone(), side);
-        ram_limit::start(&home, side);
     }
     let renderers = crate::mod_api::mods()
         .iter()
@@ -98,6 +105,35 @@ pub fn main_with(mods: crate::mod_api::Mods) {
     {
         log::warn!("Native data-load hooks already installed; keeping the first callbacks");
     }
+    if horizon_world::worldgen::native_generate::install(
+        horizon_world::worldgen::native_generate::NativeGenerateHooks {
+            chunk_generate: |dimension, chunk, seed, flat, chunk_out, generate| {
+                crate::mod_api::dispatch_chunk_generate(
+                    crate::mod_api::mods(),
+                    dimension,
+                    chunk,
+                    seed,
+                    flat,
+                    chunk_out,
+                    generate,
+                );
+            },
+            lod_column: |dimension, column, seed, flat, column_out| {
+                crate::mod_api::dispatch_lod_column(
+                    crate::mod_api::mods(),
+                    dimension,
+                    column,
+                    seed,
+                    flat,
+                    column_out,
+                );
+            },
+        },
+    )
+    .is_err()
+    {
+        log::warn!("Native generation hooks already installed; keeping the first callbacks");
+    }
     if crate::native_client_hooks::install(crate::native_client_hooks::NativeClientHooks {
         menu_slot_rules: |menu, slot, stack, may_place, max_stack| {
             crate::mod_api::dispatch_menu_slot_rules(
@@ -107,6 +143,25 @@ pub fn main_with(mods: crate::mod_api::Mods) {
                 stack,
                 may_place,
                 max_stack,
+            );
+        },
+        player_chat: |player, name, message, replies, cancel| {
+            crate::mod_api::dispatch_player_chat(
+                crate::mod_api::mods(),
+                player,
+                name,
+                message,
+                replies,
+                cancel,
+            );
+        },
+        sound_play: |sound, volume, pitch, cancel| {
+            crate::mod_api::dispatch_sound_play(
+                crate::mod_api::mods(),
+                sound,
+                volume,
+                pitch,
+                cancel,
             );
         },
         living_heal: |entity, amount, cancel| {
@@ -146,13 +201,62 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         living_jump: |entity, kind| {
             crate::mod_api::dispatch_living_jump(crate::mod_api::mods(), entity, kind);
         },
+        register_goals: |mob| {
+            crate::mod_api::dispatch_register_goals(crate::mod_api::mods(), mob);
+        },
+        player_pre_login: |player, name, address, defer| {
+            crate::mod_api::dispatch_player_pre_login(
+                crate::mod_api::mods(),
+                player,
+                name,
+                address,
+                defer,
+            );
+        },
+        player_profile: |player, name, properties| {
+            crate::mod_api::dispatch_player_profile(
+                crate::mod_api::mods(),
+                player,
+                name,
+                properties,
+            );
+        },
         ingredient: |kind, data, items| {
             crate::mod_api::dispatch_ingredient(crate::mod_api::mods(), kind, data, items);
+        },
+        ingredient_test: |kind, data, stack, accept| {
+            crate::mod_api::dispatch_ingredient_test(
+                crate::mod_api::mods(),
+                kind,
+                data,
+                stack,
+                accept,
+            );
+        },
+        log_line: |level, thread, message, line| {
+            crate::mod_api::dispatch_log_line(crate::mod_api::mods(), level, thread, message, line);
+        },
+        handshake: |address, host, intent, cancel, reason| {
+            crate::mod_api::dispatch_handshake(
+                crate::mod_api::mods(),
+                address,
+                host,
+                intent,
+                reason,
+                cancel,
+            );
         },
     })
     .is_err()
     {
         log::warn!("Native client hooks already installed; keeping the first callbacks");
+    }
+    if horizon_client::sound_engine::install_playback_hook(
+        horizon_client::sound_playback::native_sound_play,
+    )
+    .is_err()
+    {
+        log::warn!("Native sound hook already installed; keeping the first callback");
     }
     raise_open_file_limit();
     if let Err(error) = game::run_with() {

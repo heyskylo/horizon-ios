@@ -7,6 +7,9 @@
 //! a broken bed, or leaving the game.
 use super::{Dim, Game};
 use horizon_client::Result;
+use horizon_client::bed_geometry::{SleepOn, pos_to_bed, shape_top, slept_on};
+use horizon_core::geometry::Vec3;
+use horizon_world::registry::BlockStateId;
 
 impl Game<'_> {
     /// `setBlockAndUpdate(head, state.setValue(OCCUPIED, occupied))`, when
@@ -71,8 +74,8 @@ impl Game<'_> {
             // has destroy_on_leave, so a straw bed breaks when its sleeper gets up.
             let bed = self.world.block(head[0], head[1], head[2]);
             let straw = &*self.res.facts().get(bed).name == "minecraft:straw_bed";
-            if dim == Dim::Overworld
-                && straw
+            if straw
+                && self.dimension_type_of(dim).straw_bed_rule.destroy_on_leave
                 && let Err(e) = self.destroy_straw_bed(head)
             {
                 log::warn!("could not break the straw bed at {head:?}: {e}");
@@ -103,5 +106,45 @@ impl Game<'_> {
             }
         }
         self.enter_level(None, back)
+    }
+}
+
+impl Game<'_> {
+    /// The bed's `part`: head or foot.
+    fn bed_part(&self, state: BlockStateId) -> Option<String> {
+        self.pack
+            .assets
+            .registry
+            .state(state)
+            .and_then(|s| s.properties.get("part").cloned())
+    }
+    /// `LivingEntity.startSleeping`'s height: the top of the shape the player
+    /// lies on, measured from the head's own y - a straw bed's head from its
+    /// foot's - or `None` when there is no such shape, in which case the
+    /// player does not lie down at all.
+    pub(super) fn sleep_height(&self, head: [i32; 3]) -> Option<f64> {
+        let state = self.world.block(head[0], head[1], head[2]);
+        let name = self.res.facts().get(state).name.to_owned();
+        let part = self.bed_part(state);
+        let step = self.bed_forward(state);
+        let foot_at = [head[0] - step[0], head[1], head[2] - step[2]];
+        let foot_state = self.world.block(foot_at[0], foot_at[1], foot_at[2]);
+        let foot_name = self.res.facts().get(foot_state).name.to_owned();
+        let foot_part = self.bed_part(foot_state);
+        let on = slept_on(
+            &name,
+            part.as_deref(),
+            Some((&foot_name, foot_part.as_deref())),
+        )?;
+        let at = match on {
+            SleepOn::Head => head,
+            SleepOn::Foot => foot_at,
+        };
+        shape_top(&self.outline_boxes(at), f64::from(at[1]))
+    }
+    /// Where the sleeper lies (`setPosToBed`), when the bed gives it a shape.
+    pub(super) fn sleeping_position(&self, head: [i32; 3]) -> Option<Vec3> {
+        self.sleep_height(head)
+            .map(|height| pos_to_bed(head, height))
     }
 }

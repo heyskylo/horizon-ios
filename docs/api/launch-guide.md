@@ -19,6 +19,7 @@ Builds are GitHub releases of `horizon-rust/horizon`, one archive per platform:
 | Platform | Archive |
 | --- | --- |
 | Windows x64 | `horizon-windows-x64.zip` |
+| Windows ARM64 | `horizon-windows-arm64.zip` |
 | Linux x86_64 | `horizon-linux-x86_64.tar.gz` |
 | macOS Apple silicon | `horizon-macos-arm64.zip` |
 | macOS Intel | `horizon-macos-x64.zip` |

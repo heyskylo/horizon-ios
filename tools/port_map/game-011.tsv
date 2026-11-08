@@ -29,7 +29,7 @@ AbstractHorse.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.r
 AbstractHorse.setOffspringAttribute	port	crates/horizon-client/src/mobs/equine.rs::inherit	max health, jump strength and speed from both parents
 AbstractHorse.onPlayerJump	inline	crates/horizon-client/src/game/mounts.rs::Game::tick_mount_riding	gap: minor: the rear and the jump sound; donkeys and mules play the horse jump sound
 AbstractHorse.handleEntityEvent	port	crates/horizon-client-render/src/particles.rs::entity_event_burst	events 7 and 6: hearts and smoke around the mount
-AbstractHorse.positionRider	port	crates/horizon-client/src/game/mounts.rs::Game::position_rider	gap: minor: the rider's body yaw is not copied from the mount
+AbstractHorse.positionRider	port	crates/horizon-client/src/game/mounts.rs::Game::position_rider	gap: minor: the player's own body yaw is not copied (its model is drawn by solveBodyRot); mob riders take it in riders::takes_vehicle_body
 AbstractHorse.generateMaxHealth	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::horse_health	
 AbstractHorse.generateJumpStrength	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::horse_jump	
 AbstractHorse.generateSpeed	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::horse_speed	
@@ -94,7 +94,7 @@ Cat.createAttributes	skip:data		attributes come from entity-types.json
 Cat.handleLieDown	inline	crates/horizon-client/src/mobs/tame.rs::cat_ai_step	gap: minor: purring and the amounts are ported; lying on top of a sleeping player (a 0.15 shift of the pose) is not tracked
 Cat.updateLieDownAmount	port	crates/horizon-client/src/mobs/tame.rs::cat_amounts	
 Cat.updateRelaxStateOneAmount	port	crates/horizon-client/src/mobs/tame.rs::cat_amounts	
-Cat.canMate	inline	crates/horizon-client/src/mobs/goals.rs::Breed::can_use	gap: minor: a sitting cat is refused as a mate, vanilla only needs both tame and in love
+Cat.canMate	inline	crates/horizon-client/src/mobs/goals.rs::Breed::can_use	both tamed; the seeker's sitting pose does not matter, and only a wolf's partner is refused while it sits
 Cat.removeWhenFarAway	port	crates/horizon-client/src/mobs/ai.rs::feline_removed_when_far	`!isTame() && tickCount > 2400`, read by check_despawn's removable flag
 Cat.reassessTameGoals	inline	crates/horizon-client/src/mobs/tame.rs::register_cat	the player avoidance goal is conditioned on being untamed instead of added and removed
 Cat.tryToTame	inline	crates/horizon-client/src/game/creatures.rs::Game::interact_mob	one chance in three, then tame, sitting, event 7 or 6 and the advancement trigger
@@ -127,6 +127,7 @@ AbstractSchoolingFish.inRangeOfLeader	port	crates/horizon-client/src/mobs/aquati
 AbstractSchoolingFish.pathToLeader	port	crates/horizon-client/src/mobs/aquatic.rs::FollowFlockLeader::tick	nav_move_to_entity at the leader, every 10 reduced ticks
 AbstractSchoolingFish.addFollowers	inline	crates/horizon-client/src/mobs/aquatic.rs::FollowFlockLeader::can_use	the room limit and the recruits of the flock search; start_following applies each
 AbstractSchoolingFish.finalizeSpawn	inline	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	the group shares a leader id and variant, and FollowFlockLeader (crates/horizon-client/src/mobs/aquatic.rs) paths a follower to the leader every 10 ticks
+Pufferfish.playerTouch	port	crates/horizon-client/src/game/creatures/pufferfish_player.rs::Game::touch_pufferfish	player-tick contact, accepted damage and poison with the actual fish source; client game-event delivery remains separate
 Pufferfish.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	`getIntOr("PuffState", 0)` at most 2; mob_to_nbt writes it, and a reload test covers it
 Pufferfish.registerGoals	port	crates/horizon-client/src/mobs/aquatic.rs::register	the puff goal at priority 1
 Pufferfish.touch	inline	crates/horizon-client/src/mobs/aquatic.rs::ai_step	sting_touching_mobs: alive mobs outside #not_scary_for_pufferfish whose box meets the fish's inflated by 0.3, when teams allow damage, take a mobAttack hit for puff state + 1, then, once it lands, POISON for 60 * puff state and the sting sound (game/creatures.rs PufferfishSting)
@@ -135,9 +136,10 @@ Salmon.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::read
 Salmon.get	inline	crates/horizon-client/src/entity_nbt.rs::bucket_components	the size component goes onto the bucket
 Salmon.applyImplicitComponent	port	crates/horizon-client/src/entity_nbt.rs::apply_item_components	size from the bucket, the salmon/size component
 Salmon.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	weighted size: small 30, medium 50, large 15
+Salmon.getDefaultDimensions	port	crates/horizon-client/src/mobs/living.rs::Mob::awake_dims_in	the variant's bounding box scale (small 0.5, medium 1.0, large 1.5) over the whole box, through aquatic::salmon_scale
 TropicalFish.packVariant	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	packed pattern, base colour and pattern colour; lan.rs::mob_meta packs it for sync
 TropicalFish.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	packed variant entry
-TropicalFish.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::read_variant	an unknown pattern is a kob
+TropicalFish.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::read_variant	an unknown pattern is a kob; full color bytes use DyeColor.byId zero fallback
 TropicalFish.setPattern	inline	crates/horizon-client/src/entity_nbt.rs::apply_item_components	only reached from the bucket's pattern component
 TropicalFish.setBaseColor	inline	crates/horizon-client/src/entity_nbt.rs::apply_item_components	only reached from the bucket's base colour component
 TropicalFish.setPatternColor	inline	crates/horizon-client/src/entity_nbt.rs::apply_item_components	only reached from the bucket's pattern colour component

@@ -4,7 +4,7 @@ ServerPlayerGameMode.isInRangeOfGround	port	crates/horizon-world/src/world_movem
 ServerPlayerGameMode.incrementDestroyProgress	inline	crates/horizon-client/src/game/lan_actions.rs::Game::guest_dig_feedback	gap: minor: crack stage is the client formula (progress*10 - 1), so other players' cracks on a guest's block run one stage behind the server value
 ServerPlayerGameMode.debugLogging	skip:debug		DEBUG_BLOCK_BREAK logging
 ServerPlayerGameMode.abortDestroyBlock	inline	crates/horizon-client/src/game/lan_actions.rs::Game::lan_guest_packet	the abort action clears the guest's crack for everyone; no separate check of a mismatched destroy position
-ServerPlayerGameMode.destroyAndAck	missing		minor: guest_destroy ignores whether the break succeeded, so a refused break never sends the block back to the guest
+ServerPlayerGameMode.destroyAndAck	inline	crates/horizon-client/src/game/lan_actions.rs::Game::lan_guest_packet	the sequence ack every PlayerAction arm sends first (Hub::ack -> ClientboundBlockChangedAck in tick_level) takes a vanilla client's predicted block back, and the ABORT arm also sends the state
 SimulationChunkTracker.getLevel	port	crates/horizon-client/src/ticket_levels.rs::Map::get	simulation level per chunk, 33 where no ticket reaches
 SimulationChunkTracker.setLevel	inline	crates/horizon-client/src/ticket_levels.rs::compute	the whole level map is rebuilt from player and forced tickets instead of updated per node
 ThreadedLevelLightEngine.checkBlock	inline	crates/horizon-client-render/src/light.rs::relight	a block change relights resident chunks directly, no queued PRE_UPDATE task
@@ -119,8 +119,8 @@ EnvironmentAttributeSystem.ValueSampler.getValue	inline	crates/horizon-client-re
 EnvironmentAttributeSystem.ValueSampler.computeValuePositional	inline	crates/horizon-client/src/game.rs::Game::render	base, timeline track, then biome blend, then weather, in that order
 EnvironmentAttributeSystem.ValueSampler.computeValueNotPositional	inline	crates/horizon-client-render/src/environment.rs::Environment::sample	base then timeline track
 EnvironmentAttributes.register	skip:data		attribute registry
-WeatherAttributes.addBuiltinLayers	port	crates/horizon-client-render/src/environment.rs::apply_weather	rain and thunder layers over sky, fog, cloud, sky light, stars and sunrise; bees staying in the hive is bees_stay_in_hive in bee.rs
-WeatherAttributes.addLayer	port	crates/horizon-client-render/src/environment.rs::apply_weather	rain level minus thunder level, then thunder level, each lerped over the value
+WeatherAttributes.addBuiltinLayers	port	crates/horizon-world/src/environment_system.rs::Builder::weather_layers	rain and thunder layers over sky, fog, cloud, sky light, stars and sunrise; bees staying in the hive is bees_stay_in_hive in bee.rs
+WeatherAttributes.addLayer	port	crates/horizon-world/src/environment_system.rs::Builder::weather_layer	rain level minus thunder level, then thunder level, each lerped by the attribute's state-change function in `weather`
 BooleanModifier.apply	port	crates/horizon-client/src/patrol.rs::BoolTrack::apply	and, or, xor, nand, nor, xnor over the timeline track value
 ColorModifier.BlendToGray.lerp	skip:other		only lerps blend_to_gray arguments between keyframes; no timeline uses that modifier
 ListModifier.Append.apply	inline	crates/horizon-client/src/animate_tick.rs::AnimateTables::load	a biome's ambient_particles list is its argument over an empty dimension list
@@ -129,8 +129,8 @@ ClockTimeMarker.getRepetitionCount	skip:other		no vanilla caller
 ClockTimeMarker.resolveTimeToMoveTo	port	crates/horizon-client/src/game/chat.rs::TimeMarker::resolve	
 ClockTimeMarker.occursAt	port	crates/horizon-client/src/game/chat.rs::TimeMarker::occurs_at	
 ClockTimeMarker.durationToNext	inline	crates/horizon-client/src/game/chat.rs::TimeMarker::resolve	the d > 0 else period + d step
-ServerClockManager.init	inline	crates/horizon-client/src/game/chat.rs::Game::build_registries	overworld timelines and their time markers are loaded; the End clock runs with game time
-ServerClockManager.getInstance	skip:java		clock lookup; Horizon keeps one overworld clock in ui.clock
+ServerClockManager.init	inline	crates/horizon-client/src/game/chat.rs::Game::build_registries	overworld timelines and time markers are loaded; gap: minor: command-only End state is independent, while running/network/save clock initialization remains separate
+ServerClockManager.getInstance	port	crates/horizon-client/src/game/commands.rs::Game::command_clock_time	clock-keyed command values/state; Overworld stays tied to world.day_time; gap: minor: non-Overworld running clocks, network and save lifecycle remain separate
 ServerClockManager.setTotalTicks	inline	crates/horizon-client/src/game/commands.rs::Game::cmd_time	/time set <ticks>
 ServerClockManager.moveToTimeMarker	inline	crates/horizon-client/src/game/commands.rs::Game::cmd_time	/time set <marker>: not found, already there, or moved
 ServerClockManager.addTicks	inline	crates/horizon-client/src/game/commands.rs::Game::cmd_time	/time add, floored at 0

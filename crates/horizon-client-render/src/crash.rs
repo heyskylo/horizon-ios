@@ -10,6 +10,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::{DateTime, Local};
+use horizon_telemetry::system::machine_arch;
 
 /// What the game is doing, set as it goes: graphics adapter, settings, packs, world.
 static DETAILS: Mutex<Vec<(&'static str, String)>> = Mutex::new(Vec::new());
@@ -242,9 +243,18 @@ fn read(path: &str) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
+/// The build's architecture, and the machine's after "on" when it emulates the build.
+fn arch_label(build: &str, machine: &str) -> String {
+    if build == machine {
+        build.to_owned()
+    } else {
+        format!("{build} on {machine}")
+    }
+}
+
 /// `PRETTY_NAME` of /etc/os-release and the kernel, or the system's own version string.
 fn operating_system() -> String {
-    let arch = std::env::consts::ARCH;
+    let arch = arch_label(std::env::consts::ARCH, machine_arch());
     let version = if cfg!(target_os = "linux") {
         let name = read("/etc/os-release").and_then(|t| {
             t.lines()
@@ -429,30 +439,6 @@ pub fn report_watchdog(home: &Path, side: &'static str, message: String) -> Opti
             log: crate::logging::recent_lines(),
         },
     )
-}
-
-/// The report for a game that went over the player's RAM limit (`ram_limit`), written by the
-/// watcher thread: it says nothing about where the memory went, so it carries no stack. The player
-/// chose this limit, so it is no bug to send (`telemetry::keep_crash`), and leaving that out ends
-/// the game seconds sooner: it keeps running, over its limit, until the report is written.
-pub fn report_memory_limit(home: &Path, side: &'static str, message: String) {
-    if REPORTED.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    let report = Report {
-        time: Local::now(),
-        description: "RAM limit reached".into(),
-        error: message,
-        stack: String::new(),
-        thread: thread_name(side),
-        side,
-        details: system_details(side),
-        log: crate::logging::recent_lines(),
-    };
-    match report.save(home) {
-        Ok(path) => eprintln!("{SAVED_LINE}{}", path.display()),
-        Err(e) => eprintln!("Horizon: could not save a crash report: {e}"),
-    }
 }
 
 fn payload_text(payload: &(dyn std::any::Any + Send)) -> String {
@@ -706,6 +692,17 @@ pub fn debug_crash_after() -> Option<std::time::Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_emulated_build_names_both_architectures() {
+        // A Windows ARM64 PC playing the x64 build: its reports say so (#7513 read "x86_64").
+        assert_eq!(arch_label("x86_64", "aarch64"), "x86_64 on aarch64");
+        assert_eq!(arch_label("aarch64", "aarch64"), "aarch64");
+        assert_eq!(arch_label("x86_64", "x86_64"), "x86_64");
+        // On the machine running the tests: native builds name one architecture.
+        let label = arch_label(std::env::consts::ARCH, machine_arch());
+        assert!(label.starts_with(std::env::consts::ARCH));
+    }
 
     #[test]
     fn a_release_reports_its_built_in_version() {

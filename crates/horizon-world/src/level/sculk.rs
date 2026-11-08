@@ -326,8 +326,8 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
 
     /// `ChargeCursor.update`.
     fn sculk_cursor_update(&mut self, cursor: &mut ChargeCursor, origin: BlockPos, veins: bool) {
-        // shouldUpdate: charge left and the origin's chunk is ticking.
-        if cursor.charge <= 0 || !self.level.is_ticking_chunk(origin.chunk()) {
+        // shouldUpdate: charge left and the origin is in block-ticking ticket range.
+        if cursor.charge <= 0 || !self.level.should_tick_blocks_at(origin.chunk()) {
             return;
         }
         if cursor.update_delay > 0 {
@@ -646,6 +646,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 continue;
             }
             let default_sculk = self.b.default_of(self.b.named.sculk);
+            self.emit(LevelEvent::BlockEvent {
+                pos: support_pos,
+                state: support_state,
+                kind: "push_entities_up",
+            });
             self.set_block_and_update(support_pos, default_sculk);
             self.sculk_sound(support_pos, "minecraft:block.sculk.spread", 1.0, 1.0);
             self.sculk_spread_all(default_sculk, support_pos, &ALL_SPREADS);

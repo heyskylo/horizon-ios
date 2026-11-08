@@ -77,7 +77,7 @@ ClientPacketListener.applyPlayerInfoUpdate	inline	crates/horizon-client/src/game
 ClientPacketListener.initializeChatSession	port	crates/horizon-client/src/game/remote.rs::Remote::new_chat_validator	the session each INITIALIZE_CHAT entry carries is kept and checked against the services' profile-key keys when the player's chat is first read
 ClientPacketListener.enforcesSecureChat	inline	crates/horizon-client/src/game/remote.rs::Game::handle_packet	the Login flag is kept as serverEnforcesSecureChat and the fallback message validator enforces it
 ClientPacketListener.handleGameRuleValues	port	crates/horizon-client/src/game/lan_screen.rs::Game::remote_world_options_rules	
-ClientPacketListener.handleSoundEntityEvent	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	SoundEntity arm: the sound plays where the tracked entity is
+ClientPacketListener.handleSoundEntityEvent	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	SoundEntity arm binds the sound to the current entity object, preserving packet category and seed; unknown entities are ignored
 ClientPacketListener.handleAddObjective	port	crates/horizon-client/src/game/remote.rs::Game::remote_objective	add, remove and update of an objective
 ClientPacketListener.handleSetScore	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	SetScore arm
 ClientPacketListener.handleResetScore	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	ResetScore arm
@@ -104,7 +104,7 @@ ClientPacketListener.isAcceptingMessages	inline	crates/horizon-client/src/game/r
 ClientPacketListener.getPlayerInfo	skip:java		a map lookup by UUID; Horizon keeps the player list in remote.tab_players and remote.players
 ClientPacketListener.getPlayerInfoIgnoreCase	missing		unsure: a case-insensitive name lookup for profiles (LocalPlayerResolver); Horizon has none
 ClientPacketListener.markMessageAsProcessed	port	crates/horizon-client/src/game/remote_chat.rs::Game::mark_message_processed	when the chat takes the message, past any Chat Delay
-ClientPacketListener.sendChatAcknowledgement	port	crates/horizon-client/src/game/remote_chat.rs::Game::mark_message_processed	a ChatAck once more than 64 wait
+ClientPacketListener.sendChatAcknowledgement	port	crates/horizon-client/src/game/remote_chat.rs::Game::send_chat_acknowledgement	the tracker's offset, and a ServerboundChatAck when it is above zero; after a configuration transition too
 ClientPacketListener.sendCommand	port	crates/horizon-client/src/game/remote_chat.rs::Game::send_command	message arguments signed with a chat session; the unsigned packet otherwise
 ClientPacketListener.verifyCommand	port	crates/horizon-client/src/game/remote_chat.rs::verify_command	over the tree the server sent
 ClientPacketListener.isValidCommand	port	crates/horizon-command/src/lib.rs::ParseResults::is_valid	
@@ -125,8 +125,8 @@ ClientSuggestionProvider.modifyCustomCompletions	port	crates/horizon-client-core
 KnownPacksManager.trySelectingPacks	skip:data		Horizon answers SelectKnownPacks with no packs, so the server sends full registries (net.rs configure)
 LegacyServerPinger.channelActive	skip:other		legacy pre-1.7 server-list ping, not used by this client
 LegacyServerPinger.channelRead0	skip:other		legacy pre-1.7 server-list ping, not used by this client
-LevelLoadTracker.startClientLoad	inline	crates/horizon-client/src/game/remote.rs::Game::tick_remote_level	gap: player: no loading screen state; the wait is only for the player's column to be lit
-LevelLoadTracker.isLevelReady	inline	crates/horizon-client/src/game/remote.rs::Game::tick_remote_level	gap: minor: readiness is the player's column being lit; vanilla's close delay is not kept
+LevelLoadTracker.startClientLoad	port	crates/horizon-client-render/src/level_loading.rs::LevelLoadTracker::start_client_load	state WaitingForServer until the loading start game event, 30 000 ms out, with the screen's reason; the player and level vanilla keeps in that state are passed to tick_client_load instead
+LevelLoadTracker.isLevelReady	port	crates/horizon-client-render/src/level_loading.rs::LevelLoadTracker::is_level_ready	ready once the ready time plus the close delay (500 ms for a new world, 0 for a respawn) has passed
 LevelLoadTracker.getPlayerCompiledSectionCallback	inline	crates/horizon-client/src/game/remote.rs::Game::tick_remote_level	gap: minor: the gate is the column being lit, not the section being compiled
 LevelLoadTracker.WaitingForPlayerChunk.isReady	inline	crates/horizon-client/src/game/remote.rs::Game::tick_remote_level	gap: minor: no timeout and no spectator or dead exemption
 LevelLoadTracker.WaitingForServer.loadingPacketsReceived	port	crates/horizon-client-render/src/level_loading.rs::LevelLoadTracker::loading_packets_received	GameEvent 13 (LEVEL_CHUNKS_LOAD_START) moves the wait on to the player's chunk

@@ -5,7 +5,7 @@ use horizon_world::nbt::Tag;
 
 /// Failure to access a native item component.
 #[derive(Debug)]
-pub(crate) enum NativeComponentError {
+pub enum NativeComponentError {
     UnknownType,
     InvalidValue(horizon_protocol::Error),
 }
@@ -20,7 +20,6 @@ impl std::fmt::Display for NativeComponentError {
 impl std::error::Error for NativeComponentError {}
 
 // Native mods use these helpers.
-#[allow(dead_code)]
 impl Game<'_> {
     /// Read a native component, including the item's default when not patched.
     pub(super) fn native_component<'a>(

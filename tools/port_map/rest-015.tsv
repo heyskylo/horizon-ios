@@ -20,7 +20,7 @@ FunctionCommand.register	port	crates/horizon-command/src/tree_misc.rs::function	
 FunctionCommand.getArgumentTag	inline	crates/horizon-client/src/game/functions.rs::Game::cmd_function	with <path> branch reads the tag and rejects non-compound
 FunctionCommand.queueFunctions	inline	crates/horizon-client/src/game/functions.rs::Game::cmd_function	no-return path runs in cmd_function; return path goes through run_return_run
 FunctionCommand.instantiateAndQueueFunctions	port	crates/horizon-client/src/game/functions.rs::Game::run_function	instantiates with arguments and runs; instantiation failure reported
-FunctionCommand.decorateOutputIfNeeded	inline	crates/horizon-client/src/game/functions.rs::Game::cmd_function	per-function result message when a value comes back
+FunctionCommand.decorateOutputIfNeeded	inline	crates/horizon-client/src/game/functions.rs::Game::cmd_function	per-function result feedback for explicit values and return fail (zero); failure callback remains false/0 and no-return functions stay silent; command-exec function return feedback controls
 FunctionCommand.queueFunctionsAsReturn	port	crates/horizon-client/src/game/commands/execute.rs::Game::run_return_run	gap: minor: several functions under 'return run' return their sum; vanilla hands each result to the frame
 FunctionCommand.queueFunctionsNoReturn	inline	crates/horizon-client/src/game/functions.rs::Game::cmd_function	sums results into the caller's callback
 GameModeCommand.register	port	crates/horizon-command/src/vanilla.rs::registered	gamemode literal with gamemode and target arguments
@@ -112,7 +112,7 @@ ReturnCommand.ReturnValueCustomExecutor.run	port	crates/horizon-client/src/game/
 RideCommand.mount	port	crates/horizon-client/src/game/commands/world_cmds.rs::Game::cmd_ride	mount branch with already-riding, player and loop checks
 RideCommand.dismount	port	crates/horizon-client/src/game/commands/world_cmds.rs::Game::cmd_ride	dismount branch
 RotateCommand.register	port	crates/horizon-command/src/tree_world.rs::rotate_swing	rotate literal with entity, facing and rotation syntax
-SaveAllCommand.register	port	crates/horizon-client/src/game.rs::Game::save_game_metadata	gap: minor: the full save exists here (level, advancements, scoreboard, world state) but no /save-all literal reaches it
+SaveAllCommand.register	port	crates/horizon-client/src/game/autosave.rs::Game::save_game_metadata	gap: minor: the full save exists here (level, advancements, scoreboard, world state) but no /save-all literal reaches it
 SayCommand.register	port	crates/horizon-command/src/vanilla.rs::registered	say literal; message delivery is Game::cmd_say
 ScheduleCommand.remove	port	crates/horizon-client/src/game/functions.rs::Game::cmd_schedule	schedule.clear branch: removes by id, failure when none
 ScoreboardCommand.createRenderTypeModify	port	crates/horizon-command/src/tree_scoreboard.rs::scoreboard	rendertype literal per render type
@@ -142,8 +142,8 @@ ServerPackCommand.pushPack	missing		minor: no push; ResourcePackPush exists only
 ServerPackCommand.popPack	missing		minor: no pop; ResourcePackPop exists only in horizon-protocol
 SetBlockCommand.register	port	crates/horizon-command/src/vanilla.rs::registered	setblock literal with destroy, keep, replace and strict
 SetBlockCommand.setBlock	port	crates/horizon-client/src/game/commands.rs::Game::cmd_setblock	destroy, keep, replace, strict and block entity NBT
-SetPlayerIdleTimeoutCommand.register	missing		minor: no /setidletimeout literal; server.properties keeps player-idle-timeout only
-SetPlayerIdleTimeoutCommand.setIdleTimeout	missing		minor: no in-game idle timeout change
+SetPlayerIdleTimeoutCommand.register	port	crates/horizon-client/src/game/commands.rs::Game::execute_command	the node (the literal, its permission level and the `minutes` argument from 0) comes from the data generator's commands.json through lan/commands.rs, which lists `setidletimeout` as dedicated-only; this branch is its execute
+SetPlayerIdleTimeoutCommand.setIdleTimeout	port	crates/horizon-client/src/game/commands/profiles.rs::Game::cmd_setidle_timeout	the minutes go to the live sweep and to server.properties; the reply names them, or says the timeout is off, and the result is the minute count
 SetSpawnCommand.setSpawn	port	crates/horizon-client/src/game/commands.rs::Game::cmd_spawnpoint	forced spawn per target, overworld spawn or respawn anchor by dimension
 SetWorldSpawnCommand.setSpawn	port	crates/horizon-client/src/game/commands.rs::Game::cmd_setworldspawn	world spawn with angle and the fallback respawn update
 SpawnArmorTrimsCommand.register	missing		minor: no /spawn_armor_trims literal (test command for trim patterns)

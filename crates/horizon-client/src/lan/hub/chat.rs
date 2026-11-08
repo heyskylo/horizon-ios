@@ -3,12 +3,29 @@
 //! messages checked link by link, the acknowledged window, and messages
 //! relayed with each connection's numbering and signature cache.
 use super::{HostEvent, Hub};
+use horizon_client_core::text::Text;
 use horizon_protocol::{
     packets::play::{self, Clientbound as C},
     secure_chat::{self, Body, Chain, ChatSession, DecodeError, ProfileKey, Signature, Unpacked},
     text::{literal, translatable},
 };
 use horizon_world::nbt::{JavaString, Tag};
+
+/// A player's chat message is about to be sent to everyone (after the secure-chat chain and the chat
+/// filter took it). A mod may cancel it, which drops it for everybody (the sender is not told, so push
+/// a line to `replies` to answer them), or only answer. It cannot change the text: a signed message
+/// would no longer verify. Once for each message a player sends, on a server. Commands are
+/// `native_player_command`. API 399.
+#[inline(never)]
+pub fn native_player_chat(
+    player: u128,
+    name: &str,
+    message: &str,
+    replies: &mut Vec<Text>,
+    cancel: &mut bool,
+) {
+    crate::native_client_hooks::player_chat(player, name, message, replies, cancel);
+}
 
 /// Now, in epoch milliseconds (Instant.now()).
 pub fn now_millis() -> i64 {
@@ -221,6 +238,20 @@ impl Hub {
         ) {
             return;
         }
+        // The mods may refuse it (a muted player), before anyone sees it.
+        if self.mods_loaded {
+            let (mut cancel, mut replies) = (false, Vec::new());
+            native_player_chat(uuid, &name, &message.content, &mut replies, &mut cancel);
+            for line in replies {
+                self.guests[i].send(&C::SystemChat(play::SystemChat {
+                    content: crate::lan::data::component_nbt(&line.component()),
+                    overlay: false,
+                }));
+            }
+            if cancel {
+                return;
+            }
+        }
         let bound = play::ChatTypeBound {
             chat_type: self.chat_type,
             name: self.player_display_name(uuid, &name),
@@ -425,6 +456,29 @@ impl Hub {
             return Err(mismatch(events));
         }
         Ok(out)
+    }
+
+    /// `PlayerList.broadcastChatMessage` for a non-player command source:
+    /// an unsigned message with the source's display name, visible as player chat.
+    /// `except` is a connection that gets the line another way (with its
+    /// command's captured output).
+    pub fn broadcast_source_chat(
+        &self,
+        chat_type: &str,
+        name: Tag,
+        message: Tag,
+        except: Option<u32>,
+    ) {
+        let bound = play::ChatTypeBound {
+            chat_type: self.chat_type_id(chat_type),
+            name,
+            target: None,
+        };
+        for (k, guest) in self.guests.iter().enumerate() {
+            if guest.placed && Some(guest.conn) != except {
+                self.send_disguised(k, message.clone(), bound.clone());
+            }
+        }
     }
 
     /// A message command's chat (SayCommand, EmoteCommands): to everyone,

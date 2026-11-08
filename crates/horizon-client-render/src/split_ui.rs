@@ -1,7 +1,7 @@
 //! Setup's monitor map and draft window choices. Apply is consumed by the game adapter.
 use crate::{
     gamepad::Button as PadButton,
-    graphics_style::STYLE,
+    graphics_style,
     hud::{HudAtlas, HudBatch, rgba},
     lang,
     split_layout::{Draft, Monitor, Placement, Spot, Warning, ordered},
@@ -568,7 +568,7 @@ impl SplitUi {
     pub fn draw(&self, batch: &mut HudBatch, atlas: &HudAtlas, cursor: (f32, f32), in_world: bool) {
         let (w, h) = (batch.width, batch.height);
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, in_world);
-        STYLE.title(
+        graphics_style::title(
             batch,
             atlas,
             &Text::literal(tr("horizon.pages.split_setup", &[])),
@@ -691,6 +691,16 @@ impl SplitUi {
             Target::Three => Some(layout_glyph(true, d.three)),
             _ => None,
         });
+        let action = match target {
+            Target::Apply => Some(crate::widgets::Action::Apply),
+            Target::Done => Some(crate::widgets::Action::Done),
+            _ => None,
+        };
+        if let Some(action) = action {
+            // Off during a hold: every button goes to the held player.
+            let enabled = *active && self.held.is_none();
+            crate::widgets::declare_action(action, [x, y, bw, bh], enabled);
+        }
         // The selected player's name in yellow: picked, not just under the pointer.
         let text = if glyph.is_some() {
             Text::literal("")
@@ -1500,6 +1510,30 @@ mod tests {
     }
 
     #[test]
+    fn done_is_declared_off_while_a_player_is_held() {
+        use crate::widgets::{Action, end_frame, last_actions, set_action_screen};
+        let atlas =
+            HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets")).unwrap();
+        let mut ui = screen(2);
+        ui.size = SIZE;
+        let done = |ui: &SplitUi, frame: u64| {
+            let mut batch = HudBatch::new([427, 300]);
+            ui.draw(&mut batch, &atlas, (0.0, 0.0), false);
+            set_action_screen(9);
+            end_frame(frame);
+            last_actions(9)
+                .into_iter()
+                .find(|a| a.action == Action::Done)
+                .map(|a| a.enabled)
+        };
+        assert_eq!(done(&ui, 9001), Some(true));
+        assert!(ui.pad_pick_up(centre(&ui, "P2")));
+        assert_eq!(done(&ui, 9002), Some(false));
+        assert!(ui.pad_button(PadButton::East));
+        assert_eq!(done(&ui, 9003), Some(true));
+    }
+
+    #[test]
     fn b_puts_a_held_player_back() {
         let mut ui = screen(2);
         ui.size = SIZE;
@@ -1620,11 +1654,9 @@ mod tests {
             "L'écran partagé est désactivé."
         );
         assert!(labels(&ui).contains(&"Écran partagé : Désactivé".to_owned()));
+        // German translates it now; a key a language lacks still falls back to the bundled
+        // English (lang's `layers_selected_language_over_english`).
         lang::set(lang::Language::load(&[], "de_de"));
-        assert_eq!(
-            ui.status_lines().unwrap()[0],
-            "Splitscreen is off.",
-            "untranslated new keys use bundled English"
-        );
+        assert_eq!(ui.status_lines().unwrap()[0], "Splitscreen ist aus.");
     }
 }

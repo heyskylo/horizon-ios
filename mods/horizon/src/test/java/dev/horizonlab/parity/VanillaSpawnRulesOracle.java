@@ -14,6 +14,7 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.resources.RegistryDataLoader;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.Bootstrap;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.RegistryLayer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.packs.PackType;
@@ -21,6 +22,7 @@ import net.minecraft.server.packs.repository.ServerPacksSource;
 import net.minecraft.server.packs.resources.MultiPackResourceManager;
 import net.minecraft.tags.TagLoader;
 import net.minecraft.util.RandomSource;
+import net.minecraft.util.debug.ServerDebugSubscribers;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.entity.*;
 import net.minecraft.world.entity.player.Player;
@@ -61,6 +63,9 @@ public final class VanillaSpawnRulesOracle {
         Map<Integer, BlockState> column = new HashMap<>();
         int x0, z0, sky, block, darken, sea, surface;
         boolean thunder;
+        boolean unobstructed = true;
+        boolean liquid;
+        MinecraftServer server;
         long seed;
         Difficulty difficulty;
         DimensionType dimension;
@@ -70,6 +75,7 @@ public final class VanillaSpawnRulesOracle {
         WorldBorder border = new WorldBorder();
         int next = 1;
         @Override public RegistryAccess registryAccess() { return registries; }
+        @Override public MinecraftServer getServer() { return server; }
         @Override public Difficulty getDifficulty() { return difficulty; }
         @Override public long getGameTime() { return 0L; }
         @Override public int getNextEntityId() { return next++; }
@@ -79,6 +85,8 @@ public final class VanillaSpawnRulesOracle {
             return column.getOrDefault(pos.getY(), Blocks.AIR.defaultBlockState());
         }
         @Override public FluidState getFluidState(BlockPos pos) { return getBlockState(pos).getFluidState(); }
+        @Override public boolean isUnobstructed(net.minecraft.world.entity.Entity entity) { return unobstructed; }
+        @Override public boolean containsAnyLiquid(net.minecraft.world.phys.AABB box) { return liquid; }
         @Override public int getBrightness(LightLayer layer, BlockPos pos) { return layer == LightLayer.SKY ? sky : block; }
         @Override public int getRawBrightness(BlockPos pos, int darkening) { return Math.max(block, sky - darkening); }
         @Override public int getSkyDarken() { return darken; }
@@ -125,6 +133,8 @@ public final class VanillaSpawnRulesOracle {
 
         Lvl level = (Lvl) alloc(Lvl.class);
         level.registries = access;
+        level.server = (MinecraftServer) alloc(VanillaBlockUpdateOracle.Server.class);
+        put(level.server, MinecraftServer.class, "debugSubscribers", new ServerDebugSubscribers(level.server));
         level.column = new HashMap<>();
         level.playerList = new ArrayList<>();
         level.border = new WorldBorder();
@@ -155,6 +165,9 @@ public final class VanillaSpawnRulesOracle {
                     int y = Integer.parseInt(c.getOrDefault("y", "64"));
                     level.x0 = Integer.parseInt(c.getOrDefault("x", "8"));
                     level.z0 = Integer.parseInt(c.getOrDefault("z", "8"));
+                    level.border = new WorldBorder();
+                    level.border.setCenter(Double.parseDouble(c.getOrDefault("borderx", "0")), Double.parseDouble(c.getOrDefault("borderz", "0")));
+                    level.border.setSize(Double.parseDouble(c.getOrDefault("bordersize", "59999968")));
                     level.column.clear();
                     for (var e : c.entrySet()) {
                         if (e.getKey().startsWith("at")) {
@@ -162,6 +175,7 @@ public final class VanillaSpawnRulesOracle {
                             level.column.put(y + offset, net.minecraft.commands.arguments.blocks.BlockStateParser.parseForBlock(blocks, e.getValue(), false).blockState());
                         }
                     }
+                    level.liquid = level.column.values().stream().anyMatch(state -> !state.getFluidState().isEmpty());
                     level.sky = Integer.parseInt(c.getOrDefault("sky", "15"));
                     level.block = Integer.parseInt(c.getOrDefault("light", "0"));
                     level.darken = Integer.parseInt(c.getOrDefault("darken", "0"));
@@ -187,10 +201,18 @@ public final class VanillaSpawnRulesOracle {
                     EntityType<?> type = BuiltInRegistries.ENTITY_TYPE.getValue(Identifier.parse(c.get("type")));
                     EntitySpawnReason reason = EntitySpawnReason.valueOf(c.getOrDefault("reason", "natural").toUpperCase(Locale.ROOT));
                     BlockPos pos = new BlockPos(level.x0, y, level.z0);
-                    RandomSource random = RandomSource.create(Long.parseLong(c.getOrDefault("seed", "0")));
-                    boolean ok = SpawnPlacements.isSpawnPositionOk(type, level, pos);
-                    boolean rules = SpawnPlacements.checkSpawnRules(type, level, reason, pos, random);
-                    w.println(c.get("name") + " " + ok + " " + rules + " " + random.nextInt(1000));
+                    if (c.getOrDefault("mode", "").equals("obstruction")) {
+                        level.unobstructed = !c.getOrDefault("unobstructed", "1").equals("0");
+                        var entity = type.create(level, EntitySpawnReason.LOAD);
+                        if (entity != null) entity.setPosRaw(level.x0 + 0.5, y, level.z0 + 0.5);
+                        boolean obstruction = entity instanceof Mob mob && mob.checkSpawnObstruction(level);
+                        w.println(c.get("name") + " " + obstruction);
+                    } else {
+                        RandomSource random = RandomSource.create(Long.parseLong(c.getOrDefault("seed", "0")));
+                        boolean ok = SpawnPlacements.isSpawnPositionOk(type, level, pos);
+                        boolean rules = SpawnPlacements.checkSpawnRules(type, level, reason, pos, random);
+                        w.println(c.get("name") + " " + ok + " " + rules + " " + random.nextInt(1000));
+                    }
                 } catch (Throwable t) {
                     Throwable cause = t instanceof InvocationTargetException ite ? ite.getCause() : t;
                     StringBuilder line = new StringBuilder(c.get("name") + " error " + cause);

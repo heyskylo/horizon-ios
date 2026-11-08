@@ -1,0 +1,357 @@
+//! Poses as the game's model parts have them.
+
+/// x, y, z (pixels), x, y, z rotations (radians), x, y, z scales: the
+/// game's `Part::pose`.
+pub type Pose = [f32; 9];
+
+/// `ModelPart.translateAndRotate`: the matrix a part's pose applies under
+/// its parent's (the game's `mobs::render::posed`). An item's root pose is
+/// its attachment, so the item sits at `bone * pose_matrix(root.pose)`.
+pub fn pose_matrix(p: Pose) -> glam::Mat4 {
+    glam::Mat4::from_translation(glam::Vec3::new(p[0], p[1], p[2]) / 16.0)
+        * glam::Mat4::from_quat(glam::Quat::from_euler(
+            glam::EulerRot::ZYX,
+            p[5],
+            p[4],
+            p[3],
+        ))
+        * glam::Mat4::from_scale(glam::Vec3::new(p[6], p[7], p[8]))
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::{Bone, Error, Item, MAX_VERTICES, Motion, Slot, Tag};
+    use glam::{Mat4, Vec3};
+
+    /// A `width`×`height` PNG, base64.
+    pub(crate) fn png(width: u32, height: u32) -> String {
+        use base64::Engine;
+        let mut bytes = Vec::new();
+        let mut encoder = png::Encoder::new(&mut bytes, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        let mut writer = encoder.write_header().unwrap();
+        writer
+            .write_image_data(&vec![200; (width * height * 4) as usize])
+            .unwrap();
+        writer.finish().unwrap();
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    /// A hat: an 8×2×8 brim 8 pixels above the head's pivot, and a crown
+    /// on it that swings 10° about z over 40 ticks.
+    fn hat(extra: &str) -> String {
+        format!(
+            r#"{{"format": 1, "id": "hat", "slot": "head", "bone": "head",
+              "attach": {{"offset": [0, -8, 0]}},
+              "texture": {{"png": "{}"}},
+              "parts": [{{"name": "brim", "cubes": [{{"origin": [-4, -2, -4], "size": [8, 2, 8], "uv": [0, 0]}}],
+                "children": [{{"name": "crown", "pivot": [0, -2, 0],
+                  "cubes": [{{"origin": [-2, -4, -2], "size": [4, 4, 4], "uv": [0, 10]}}]}}]}}],
+              "animations": [{{"part": "crown", "motion": "swing", "axis": "z", "amplitude": 10, "period": 40}}]
+              {extra}}}"#,
+            png(32, 32)
+        )
+    }
+
+    /// The posed position of a part's first face's vertex `i`.
+    fn corner(item: &Item, bone: Mat4, path: &[&str], face: usize, i: usize, ticks: f32) -> Vec3 {
+        let mut poses = std::collections::HashMap::new();
+        item.animate(ticks, |n, p| {
+            poses.insert(n.to_owned(), p);
+        });
+        let mut m = bone * pose_matrix(item.root.pose);
+        let mut part = &item.root;
+        for name in path {
+            part = part.children.iter().find(|c| c.name == *name).unwrap();
+            m *= pose_matrix(*poses.get(*name).unwrap_or(&part.pose));
+        }
+        let v = part.faces[face].vertices[i];
+        m.transform_point3(Vec3::new(v[0], v[1], v[2]) / 16.0)
+    }
+
+    fn close(a: Vec3, b: Vec3) {
+        assert!((a - b).abs().max_element() < 1e-5, "{a} != {b}");
+    }
+
+    #[test]
+    fn reads_the_item_and_bakes_box_uv() {
+        let item = Item::parse(hat("").as_bytes()).unwrap();
+        assert_eq!((item.slot, item.bone), (Slot::Head, Bone::Head));
+        assert_eq!(item.vertices, 2 * 6 * 4);
+        assert_eq!(
+            (item.texture.width, item.texture.rgba.len()),
+            (32, 32 * 32 * 4)
+        );
+        // The brim's down face: corners l1, l0, t0, t1 with UV (u+d, v) to
+        // (u+d+w, v+d) remapped as (u1,v0) (u0,v0) (u0,v1) (u1,v1).
+        let down = &item.root.children[0].faces[0];
+        assert_eq!(down.normal, [0.0, -1.0, 0.0]);
+        assert_eq!(
+            down.vertices,
+            [
+                [4.0, -2.0, 4.0, 16.0 / 32.0, 0.0],
+                [-4.0, -2.0, 4.0, 8.0 / 32.0, 0.0],
+                [-4.0, -2.0, -4.0, 8.0 / 32.0, 8.0 / 32.0],
+                [4.0, -2.0, -4.0, 16.0 / 32.0, 8.0 / 32.0],
+            ]
+        );
+    }
+
+    #[test]
+    fn the_item_follows_its_bone() {
+        let item = Item::parse(hat("").as_bytes()).unwrap();
+        // Brim face 0, vertex 2 is (-4, -2, -4) px: 8 px up from the
+        // attachment, (-0.25, -0.625, -0.25) blocks from the bone's pivot.
+        close(
+            corner(&item, Mat4::IDENTITY, &["brim"], 0, 2, 0.0),
+            Vec3::new(-0.25, -0.625, -0.25),
+        );
+        // The head turned 90° about y: (x, y, z) -> (z, y, -x).
+        let turned = Mat4::from_rotation_y(90f32.to_radians());
+        close(
+            corner(&item, turned, &["brim"], 0, 2, 0.0),
+            Vec3::new(-0.25, -0.625, 0.25),
+        );
+        // The head 1.5 blocks up and nodding 90° about x: (x, y, z) -> (x, -z, y).
+        let nod = Mat4::from_translation(Vec3::new(0.0, 1.5, 0.0))
+            * Mat4::from_rotation_x(90f32.to_radians());
+        close(
+            corner(&item, nod, &["brim"], 0, 2, 0.0),
+            Vec3::new(-0.25, 1.5 + 0.25, -0.625),
+        );
+    }
+
+    #[test]
+    fn swings_on_its_period() {
+        let item = Item::parse(hat("").as_bytes()).unwrap();
+        // The crown's down face, vertex 2: (-2, -4, -2) px from its pivot,
+        // which is 10 px above the bone's.
+        let rest = Vec3::new(-2.0, -14.0, -2.0) / 16.0;
+        close(
+            corner(&item, Mat4::IDENTITY, &["brim", "crown"], 0, 2, 0.0),
+            rest,
+        );
+        close(
+            corner(&item, Mat4::IDENTITY, &["brim", "crown"], 0, 2, 20.0),
+            rest,
+        );
+        // A quarter period: 10° about z at the crown's pivot (0, -10, 0) px:
+        // (x, y) -> (x cos - y sin, x sin + y cos) about it.
+        let (s, c) = 10f32.to_radians().sin_cos();
+        let (x, y) = (-2.0, -4.0);
+        let swung = Vec3::new(x * c - y * s, -10.0 + x * s + y * c, -2.0) / 16.0;
+        close(
+            corner(&item, Mat4::IDENTITY, &["brim", "crown"], 0, 2, 10.0),
+            swung,
+        );
+        // The same pose a period later.
+        close(
+            corner(&item, Mat4::IDENTITY, &["brim", "crown"], 0, 2, 50.0),
+            swung,
+        );
+    }
+
+    #[test]
+    fn spins_once_per_period_and_bobs() {
+        let spin = hat("").replace(
+            r#""motion": "swing", "axis": "z", "amplitude": 10"#,
+            r#""motion": "spin", "axis": "y""#,
+        );
+        let item = Item::parse(spin.as_bytes()).unwrap();
+        assert_eq!(item.animations[0].motion, Motion::Spin);
+        let mut got = None;
+        item.animate(10.0, |_, p| got = Some(p));
+        assert!((got.unwrap()[4] - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        let bob = hat("").replace(
+            r#""motion": "swing", "axis": "z", "amplitude": 10"#,
+            r#""motion": "bob", "axis": "y", "amplitude": 1.5"#,
+        );
+        let item = Item::parse(bob.as_bytes()).unwrap();
+        item.animate(10.0, |_, p| got = Some(p));
+        // The crown's pivot y is -2; a quarter period adds the amplitude.
+        assert!((got.unwrap()[1] - (-2.0 + 1.5)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn each_animated_part_is_posed_once_with_all_its_animations() {
+        // The crown swings and spins, the brim bobs: one pose each, in the order of their first
+        // animation, the crown's adding both of its own.
+        let item = hat("").replace(
+            r#"{"part": "crown", "motion": "swing", "axis": "z", "amplitude": 10, "period": 40}"#,
+            r#"{"part": "crown", "motion": "swing", "axis": "z", "amplitude": 10, "period": 40},
+               {"part": "brim", "motion": "bob", "axis": "y", "amplitude": 1.5, "period": 40},
+               {"part": "crown", "motion": "spin", "axis": "y", "period": 40}"#,
+        );
+        let item = Item::parse(item.as_bytes()).unwrap();
+        let mut got = Vec::new();
+        item.animate(10.0, |n, p| got.push((n.to_owned(), p)));
+        let names: Vec<&str> = got.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["crown", "brim"]);
+        // A quarter period: the swing at its 10 degrees, a quarter turn, the bob at 1.5.
+        let crown = got[0].1;
+        assert_eq!(crown[..3], [0.0, -2.0, 0.0]);
+        assert!((crown[5] - 10f32.to_radians()).abs() < 1e-6, "{crown:?}");
+        assert!(
+            (crown[4] - std::f32::consts::FRAC_PI_2).abs() < 1e-6,
+            "{crown:?}"
+        );
+        let brim = got[1].1;
+        assert!(
+            (brim[1] - 1.5).abs() < 1e-6 && brim[3..6] == [0.0; 3],
+            "{brim:?}"
+        );
+    }
+
+    #[test]
+    fn refuses_items_past_the_limits() {
+        let big = hat("").replace(r#""size": [4, 4, 4]"#, r#""size": [4, 4, 4], "inflate": 0"#);
+        assert!(Item::parse(big.as_bytes()).is_ok());
+        // 22 boxes of 24 vertices are past the budget.
+        let cube = r#"{"origin": [0, 0, 0], "size": [1, 1, 1], "uv": [0, 0]}"#;
+        let many = vec![cube; MAX_VERTICES / 24 + 1].join(",");
+        let file = hat("").replace(
+            r#""cubes": [{"origin": [-4, -2, -4], "size": [8, 2, 8], "uv": [0, 0]}]"#,
+            &format!(r#""cubes": [{many}]"#),
+        );
+        assert_eq!(
+            Item::parse(file.as_bytes()),
+            Err(Error::TooManyVertices(23 * 24))
+        );
+        // Far from the head.
+        let far = hat("").replace(r#""offset": [0, -8, 0]"#, r#""offset": [0, -30, 0]"#);
+        assert!(matches!(Item::parse(far.as_bytes()), Err(Error::TooFar(_))));
+        // A texture past 64x64.
+        let wide = hat("").replace(&png(32, 32), &png(128, 32));
+        assert!(matches!(
+            Item::parse(wide.as_bytes()),
+            Err(Error::Texture(_))
+        ));
+        // UV off the texture, an animation of no part, a wild swing.
+        for (from, to) in [
+            (r#""uv": [0, 10]"#, r#""uv": [20, 10]"#),
+            (r#""part": "crown""#, r#""part": "tail""#),
+            (r#""amplitude": 10"#, r#""amplitude": 90"#),
+            (r#""id": "hat""#, r#""id": "Hat!""#),
+        ] {
+            assert!(
+                Item::parse(hat("").replace(from, to).as_bytes()).is_err(),
+                "{to}"
+            );
+        }
+        assert!(Item::parse(hat(r#", "glow": true"#).as_bytes()).is_err());
+    }
+
+    /// A name tag: an 8×8 mark and a violet line, no parts.
+    fn name_tag(extra: &str) -> String {
+        format!(
+            r##"{{"format": 1, "id": "tag", "slot": "name_tag", "texture": {{"png": "{}"}},
+              "parts": [], "tag": {{"line": "#a98fFF"}}{extra}}}"##,
+            png(8, 8)
+        )
+    }
+
+    #[test]
+    fn a_name_tag_is_a_mark_and_a_line_without_a_model() {
+        let item = Item::parse(name_tag("").as_bytes()).unwrap();
+        assert_eq!(item.slot, Slot::NameTag);
+        assert_eq!(
+            item.tag,
+            Some(Tag {
+                line: [0xa9, 0x8f, 0xff]
+            })
+        );
+        assert_eq!(item.vertices, 0);
+        assert_eq!((item.texture.width, item.texture.height), (8, 8));
+        // A model item never has a line.
+        assert_eq!(Item::parse(hat("").as_bytes()).unwrap().tag, None);
+    }
+
+    #[test]
+    fn refuses_name_tags_with_a_model_or_a_big_mark() {
+        let cube =
+            r#"{"name": "box", "cubes": [{"origin": [0, 0, 0], "size": [1, 1, 1], "uv": [0, 0]}]}"#;
+        let boxed = name_tag("").replace(r#""parts": []"#, &format!(r#""parts": [{cube}]"#));
+        let wide = name_tag("").replace(&png(8, 8), &png(32, 32));
+        let oblong = name_tag("").replace(&png(8, 8), &png(16, 8));
+        let no_line = name_tag("").replace(r##", "tag": {"line": "#a98fFF"}"##, "");
+        let bad_line = name_tag("").replace("#a98fFF", "violet");
+        for file in [boxed, wide, oblong, no_line, bad_line] {
+            assert!(Item::parse(file.as_bytes()).is_err(), "{file}");
+        }
+        let hat_with_tag = hat(r##", "tag": {"line": "#ffffff"}"##);
+        assert!(Item::parse(hat_with_tag.as_bytes()).is_err());
+    }
+
+    /// A shirt: the body's box, and a sleeve that rides the right arm.
+    fn shirt(sleeve: &str) -> String {
+        format!(
+            r#"{{"format": 1, "id": "shirt", "slot": "torso", "bone": "body",
+              "texture": {{"png": "{}"}},
+              "parts": [{{"name": "chest", "cubes": [{{"origin": [-4, 0, -2], "size": [8, 12, 4], "uv": [0, 0]}}]}},
+                {{"name": "sleeve", {sleeve}
+                  "cubes": [{{"origin": [-3, -2, -2], "size": [4, 4, 4], "uv": [0, 16]}}]}}]}}"#,
+            png(32, 32)
+        )
+    }
+
+    #[test]
+    fn a_sleeve_rides_its_own_bone() {
+        let item = Item::parse(shirt(r#""bone": "right_arm","#).as_bytes()).unwrap();
+        assert_eq!((item.slot, item.bone), (Slot::Torso, Bone::Body));
+        assert_eq!(item.vertices, 2 * 6 * 4);
+        let roots: Vec<_> = item.roots().map(|(b, r)| (b, r.children.len())).collect();
+        assert_eq!(roots, [(Bone::Body, 1), (Bone::RightArm, 1)]);
+        // The sleeve's root sits at the arm's pivot with the item's attachment (none here): its
+        // down face's vertex 2 is the cube's (-3, -2, -2) corner, under whatever matrix the arm
+        // has.
+        let (_, limb) = &item.limbs[0];
+        let arm = Mat4::from_translation(Vec3::new(-5.0, 2.0, 0.0) / 16.0)
+            * Mat4::from_rotation_x(40f32.to_radians());
+        let v = limb.children[0].faces[0].vertices[2];
+        let at = arm * pose_matrix(limb.pose) * pose_matrix(limb.children[0].pose);
+        close(
+            at.transform_point3(Vec3::new(v[0], v[1], v[2]) / 16.0),
+            arm.transform_point3(Vec3::new(-3.0, -2.0, -2.0) / 16.0),
+        );
+        // On the item's own bone it stays with the chest.
+        let same = Item::parse(shirt(r#""bone": "body","#).as_bytes()).unwrap();
+        assert!(same.limbs.is_empty());
+        assert_eq!(same.root.children.len(), 2);
+    }
+
+    #[test]
+    fn the_top_is_the_highest_point_above_the_neck_at_rest() {
+        // The hat's crown: a 4-pixel box on a pivot 10 pixels up, swinging 10° about z. Its top
+        // corners (±2, 4 up from the pivot) rise to 10 + 4 cos 10° + 2 sin 10° at the swing's end.
+        let (s, c) = 10f32.to_radians().sin_cos();
+        let item = Item::parse(hat("").as_bytes()).unwrap();
+        assert!(
+            (item.top - (10.0 + 4.0 * c + 2.0 * s)).abs() < 1e-4,
+            "{}",
+            item.top
+        );
+        // Each root counts from its own bone's rest pivot: a sleeve 2 pixels above the body's
+        // pivot (the neck) reaches 2 up; on the right arm, whose pivot is 2 below, the neck.
+        let on_body = Item::parse(shirt(r#""bone": "body","#).as_bytes()).unwrap();
+        assert!((on_body.top - 2.0).abs() < 1e-5, "{}", on_body.top);
+        let on_arm = Item::parse(shirt(r#""bone": "right_arm","#).as_bytes()).unwrap();
+        assert!(on_arm.top.abs() < 1e-5, "{}", on_arm.top);
+        // A name tag style has no model.
+        assert_eq!(Item::parse(name_tag("").as_bytes()).unwrap().top, 0.0);
+    }
+
+    #[test]
+    fn only_a_top_level_part_rides_another_bone() {
+        let nested = hat("").replace(
+            r#""name": "crown","#,
+            r#""name": "crown", "bone": "left_arm","#,
+        );
+        assert!(matches!(
+            Item::parse(nested.as_bytes()),
+            Err(Error::Invalid(_))
+        ));
+        let named = shirt("").replace(r#""name": "sleeve""#, r#""name": "cosmetic_right_arm""#);
+        assert!(Item::parse(named.as_bytes()).is_err());
+    }
+}

@@ -22,6 +22,7 @@
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 
 /// `PostChain.MAIN_TARGET_ID`.
 const MAIN: &str = "minecraft:main";
@@ -384,6 +385,8 @@ enum Block {
     Globals,
     /// One of the pass's `uniforms` groups.
     Custom(wgpu::Buffer),
+    /// A block the request sets every frame (`Extras::blocks`), by name.
+    Dynamic(String, wgpu::Buffer),
 }
 
 /// A pass running the resources' own GLSL, translated by `post_glsl`.
@@ -473,6 +476,17 @@ pub struct Request<'a> {
     pub menu_blur_radius: f32,
     /// What the `Globals` block holds besides the screen size and the blur radius.
     pub globals: Globals,
+    /// What resource packs' Polytone post chains add, when a pack has some.
+    pub extras: Option<&'a Extras>,
+}
+
+/// What resource packs' Polytone post chains add to every chain (#11486, wiki "Shaders"): their
+/// declared targets (`post_targets`), kept between frames, and uniform blocks set every frame.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Extras {
+    pub targets: BTreeMap<String, InternalTarget>,
+    /// Each block's std140 bytes, by its name (`PolyGlobals`, an expression uniform's).
+    pub blocks: BTreeMap<String, Vec<u8>>,
 }
 
 /// `GlobalSettingsUniform.update`'s other values.
@@ -489,7 +503,7 @@ pub struct Globals {
 
 impl Globals {
     /// The std140 block: `ivec3, float, vec3, float, vec2, int, int`.
-    fn bytes(&self, size: [u32; 2], menu_blur_radius: i32) -> [u8; 48] {
+    pub(crate) fn bytes(&self, size: [u32; 2], menu_blur_radius: i32) -> [u8; 48] {
         let mut out = Vec::with_capacity(48);
         for v in self.camera_block_pos {
             out.extend_from_slice(&v.to_le_bytes());
@@ -515,6 +529,7 @@ impl<'a> Request<'a> {
             root: Path::new(""),
             menu_blur_radius: 0.0,
             globals: Globals::default(),
+            extras: None,
         }
     }
 }
@@ -539,7 +554,43 @@ pub struct PostEffects {
     blit: Option<Pass>,
     /// The `Globals` block.
     globals: wgpu::Buffer,
+    /// Chains loading on a thread of their own ([`PostEffects::preload`]), for the
+    /// root they load from; `pending` until they arrive.
+    preloading: Option<(PathBuf, mpsc::Receiver<Preloaded>)>,
+    pending: HashSet<String>,
+    /// This frame's `Extras::blocks`.
+    extra_blocks: BTreeMap<String, Vec<u8>>,
+    /// The frame's depth with GL's rows, for the passes that read `minecraft:main`'s: the
+    /// pipeline, and the texture at the frame's size.
+    gl_depth: Option<(wgpu::BindGroupLayout, wgpu::RenderPipeline)>,
+    gl_depth_target: Option<(wgpu::Texture, wgpu::TextureView)>,
 }
+
+/// The frame's depth with its rows flipped as the chains' colour is (row 0 at the bottom). Its
+/// values stay: 26.3 keeps reverse-Z depth as Horizon does (the sky is 0), and packs' post
+/// shaders read it so.
+const GL_DEPTH_WGSL: &str = r#"
+@group(0) @binding(0) var depth: texture_depth_2d;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4<f32>(p * 2.0 - 1.0, 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
+    let size = textureDimensions(depth);
+    let x = min(u32(at.x), size.x - 1u);
+    let y = size.y - 1u - min(u32(at.y), size.y - 1u);
+    return vec4<f32>(textureLoad(depth, vec2<u32>(x, y), 0), 0.0, 0.0, 1.0);
+}
+"#;
+
+/// A chain [`PostEffects::preload`] loaded, by id.
+type Preloaded = (String, Result<Option<Chain>, String>);
+
+/// The chains a spectated entity applies (`GameRenderer.checkEntityPostEffect`): the
+/// first frame through a creeper's eyes compiled its pipelines, a 0.1-0.9 s freeze on
+/// the Mac mini.
+pub const SPECTATOR_CHAINS: [&str; 3] =
+    ["minecraft:creeper", "minecraft:spider", "minecraft:invert"];
 
 fn resource_path(root: &Path, id: &str) -> PathBuf {
     let (ns, path) = id.split_once(':').unwrap_or(("minecraft", id));
@@ -612,6 +663,11 @@ impl PostEffects {
             bilinear: make(wgpu::FilterMode::Linear),
             chains: HashMap::new(),
             failed: HashSet::new(),
+            preloading: None,
+            pending: HashSet::new(),
+            extra_blocks: BTreeMap::new(),
+            gl_depth: None,
+            gl_depth_target: None,
             root: PathBuf::new(),
             work: None,
             staging: None,
@@ -632,6 +688,91 @@ impl PostEffects {
             self.root = root.to_owned();
             self.chains.clear();
             self.failed.clear();
+            self.preloading = None;
+            self.pending.clear();
+        }
+    }
+
+    /// Loads the `ids` chains (namespaced) not loaded yet and compiles their pipelines for
+    /// `format`, on a thread of their own: `apply` leaves a chain out until it has
+    /// arrived instead of compiling it in the frame that first asks for it.
+    pub fn preload(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        root: &Path,
+        ids: &[&str],
+        format: wgpu::TextureFormat,
+    ) {
+        self.use_root(root);
+        if self.preloading.is_some() {
+            return;
+        }
+        let ids: Vec<String> = ids
+            .iter()
+            .filter(|id| !self.chains.contains_key(**id) && !self.failed.contains(**id))
+            .map(|id| normalise(id))
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let (device, queue, root) = (device.clone(), queue.clone(), root.to_owned());
+        let format = format.remove_srgb_suffix();
+        let spawned = std::thread::Builder::new()
+            .name("Post effects".into())
+            .spawn({
+                let ids = ids.clone();
+                move || {
+                    for id in ids {
+                        let mut chain = Self::load(&root, &device, &queue, &id, &Extras::default());
+                        if let Ok(Some(chain)) = &mut chain {
+                            for pass in &mut chain.passes {
+                                if let Some(translated) = &mut pass.translated {
+                                    translated.ensure_pipeline(&device, format);
+                                }
+                            }
+                        }
+                        if tx.send((id, chain)).is_err() {
+                            return;
+                        }
+                    }
+                }
+            });
+        if spawned.is_ok() {
+            self.pending.extend(ids);
+            self.preloading = Some((self.root.clone(), rx));
+        }
+    }
+
+    /// Takes the chains `preload` has finished.
+    fn collect_preloaded(&mut self) {
+        let Some((root, rx)) = &self.preloading else {
+            return;
+        };
+        if *root != self.root {
+            self.preloading = None;
+            self.pending.clear();
+            return;
+        }
+        loop {
+            match rx.try_recv() {
+                Ok((id, loaded)) => {
+                    self.pending.remove(&id);
+                    let loaded = loaded.unwrap_or_else(|e| {
+                        log::warn!("Failed to load post effect {id}: {e}");
+                        self.failed.insert(id.clone());
+                        None
+                    });
+                    self.chains.insert(id, loaded);
+                }
+                Err(mpsc::TryRecvError::Empty) => return,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.preloading = None;
+                    self.pending.clear();
+                    return;
+                }
+            }
         }
     }
 
@@ -679,15 +820,22 @@ impl PostEffects {
 
     /// `PostChain.load` for the file of `id`: `Ok(None)` when it does not exist.
     fn load(
-        &self,
+        root: &Path,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         id: &str,
+        extras: &Extras,
     ) -> Result<Option<Chain>, String> {
-        let Ok(text) = std::fs::read_to_string(resource_path(&self.root, id)) else {
+        let Ok(text) = std::fs::read_to_string(resource_path(root, id)) else {
             return Ok(None);
         };
-        let config = Config::parse(&text)?;
+        let mut config = Config::parse(&text)?;
+        for (target, t) in &extras.targets {
+            config
+                .targets
+                .entry(target.clone())
+                .or_insert_with(|| t.clone());
+        }
         // isPostEffectValid / LevelTargetBundle.MAIN_TARGETS: the frame is the one
         // external target Horizon has.
         if let Some(bad) = config.external_targets().into_iter().find(|t| *t != MAIN) {
@@ -711,10 +859,19 @@ impl PostEffects {
         let mut passes = Vec::new();
         for (n, p) in config.passes.iter().enumerate() {
             let output = index(&p.output).ok_or("a target is missing")?;
-            let pass = match self.translated_pass(device, queue, n, p, output, &index, &mut images)
-            {
+            let pass = match Self::translated_pass(
+                root,
+                device,
+                queue,
+                n,
+                p,
+                output,
+                &index,
+                &mut images,
+                extras,
+            ) {
                 Ok(pass) => pass,
-                Err(e) => match self.standin_pass(device, queue, n, p, output, &index) {
+                Err(e) => match Self::standin_pass(device, queue, n, p, output, &index) {
                     Ok(pass) => {
                         log::debug!("post effect {id} pass {n} uses the built-in shaders: {e}");
                         pass
@@ -737,7 +894,7 @@ impl PostEffects {
     /// A pass over the resources' own GLSL (`PostChain.createPass`).
     #[allow(clippy::too_many_arguments)]
     fn translated_pass(
-        &self,
+        root: &Path,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         n: usize,
@@ -745,8 +902,9 @@ impl PostEffects {
         output: usize,
         index: &dyn Fn(&str) -> Option<usize>,
         images: &mut Vec<(wgpu::Texture, wgpu::TextureView, [u32; 2])>,
+        extras: &Extras,
     ) -> Result<Pass, String> {
-        let program = crate::post_glsl::translate(&self.root, &p.vertex, &p.fragment)?;
+        let program = crate::post_glsl::translate(root, &p.vertex, &p.fragment)?;
         let mut refs = Vec::new();
         for input in &p.inputs {
             let src = match &input.source {
@@ -761,7 +919,7 @@ impl PostEffects {
                     }
                 }
                 Source::Texture { location } => {
-                    images.push(self.image(device, queue, location)?);
+                    images.push(Self::image(root, device, queue, location)?);
                     Src::Image(images.len() - 1)
                 }
             };
@@ -777,6 +935,15 @@ impl PostEffects {
             let block = match name.as_str() {
                 "SamplerInfo" => Block::Info,
                 "Globals" => Block::Globals,
+                other if !p.uniforms.contains_key(other) && extras.blocks.contains_key(other) => {
+                    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("Post effect pack uniforms"),
+                        size: UNIFORM_BYTES,
+                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    });
+                    Block::Dynamic(other.to_owned(), buffer)
+                }
                 other => {
                     let values = p
                         .uniforms
@@ -859,7 +1026,6 @@ impl PostEffects {
 
     /// A pass over Horizon's WGSL stand-ins for the vanilla post shaders.
     fn standin_pass(
-        &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         n: usize,
@@ -911,14 +1077,13 @@ impl PostEffects {
 
     /// `textures/effect/<location>.png` as a texture (`PostChain.createPass`'s `TextureInput`).
     fn image(
-        &self,
+        root: &Path,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         location: &str,
     ) -> Result<(wgpu::Texture, wgpu::TextureView, [u32; 2]), String> {
         let (ns, path) = location.split_once(':').unwrap_or(("minecraft", location));
-        let file = self
-            .root
+        let file = root
             .join("assets")
             .join(ns)
             .join("textures/effect")
@@ -1029,14 +1194,19 @@ impl PostEffects {
         mut timing: Option<&mut crate::gfx::pack_timing::PassTiming>,
     ) -> bool {
         self.use_root(req.root);
+        self.collect_preloaded();
+        self.extra_blocks = req.extras.map(|e| e.blocks.clone()).unwrap_or_default();
         let mut applied = Vec::new();
         for effect in req.effects {
             let id = normalise(effect);
-            if self.failed.contains(&id) || applied.contains(&id) {
+            // A chain still compiling on `preload`'s thread waits for it.
+            if self.failed.contains(&id) || applied.contains(&id) || self.pending.contains(&id) {
                 continue;
             }
             if !self.chains.contains_key(&id) {
-                let loaded = match self.load(device, queue, &id) {
+                let empty = Extras::default();
+                let extras = req.extras.unwrap_or(&empty);
+                let loaded = match Self::load(&self.root, device, queue, &id, extras) {
                     Ok(chain) => chain,
                     Err(e) => {
                         log::warn!("Failed to load post effect {id}: {e}");
@@ -1105,6 +1275,11 @@ impl PostEffects {
             timing.as_deref_mut(),
         );
         self.staging = Some(staging);
+        if let Some(view) = depth {
+            self.gl_depth(device, encoder, view, size);
+        }
+        let gl_depth = self.gl_depth_target.take();
+        let depth = depth.and(gl_depth.as_ref().map(|(_, v)| v));
         for id in &applied {
             let mut chain = self.chains.remove(id).flatten().expect("loaded above");
             self.run_chain(
@@ -1135,7 +1310,115 @@ impl PostEffects {
         );
         self.blit = Some(blit);
         self.work = Some(work);
+        self.gl_depth_target = gl_depth;
         true
+    }
+
+    /// Copies `depth` (the frame's) into `gl_depth_target` with GL's rows, at `size`.
+    fn gl_depth(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        depth: &wgpu::TextureView,
+        size: [u32; 2],
+    ) {
+        let (layout, pipeline) = self.gl_depth.get_or_insert_with(|| {
+            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Post effect GL depth"),
+                source: wgpu::ShaderSource::Wgsl(GL_DEPTH_WGSL.into()),
+            });
+            let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Post effect GL depth"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                }],
+            });
+            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Post effect GL depth"),
+                bind_group_layouts: &[Some(&layout)],
+                immediate_size: 0,
+            });
+            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Post effect GL depth"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::TextureFormat::R32Float.into())],
+                }),
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+            (layout, pipeline)
+        });
+        if self
+            .gl_depth_target
+            .as_ref()
+            .is_none_or(|(t, _)| t.size().width != size[0] || t.size().height != size[1])
+        {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Post effect GL depth"),
+                size: wgpu::Extent3d {
+                    width: size[0],
+                    height: size[1],
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R32Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&Default::default());
+            self.gl_depth_target = Some((texture, view));
+        }
+        let (_, target) = self.gl_depth_target.as_ref().expect("made above");
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Post effect GL depth"),
+            layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(depth),
+            }],
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Post effect GL depth"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &group, &[]);
+        pass.draw(0..3, 0..1);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1336,6 +1619,13 @@ impl PostEffects {
                 Block::Info => &pass.info,
                 Block::Globals => &self.globals,
                 Block::Custom(buffer) => buffer,
+                Block::Dynamic(name, buffer) => {
+                    if let Some(bytes) = self.extra_blocks.get(name) {
+                        let n = bytes.len().min(UNIFORM_BYTES as usize) & !3;
+                        queue.write_buffer(buffer, 0, &bytes[..n]);
+                    }
+                    buffer
+                }
             };
             entries.push(wgpu::BindGroupEntry {
                 binding: *binding,
@@ -1729,6 +2019,7 @@ mod tests {
                 root,
                 menu_blur_radius: 5.0,
                 globals: Globals::default(),
+                extras: None,
             },
             None,
         );
@@ -1860,6 +2151,7 @@ mod tests {
                 root,
                 menu_blur_radius: 0.0,
                 globals: Globals::default(),
+                extras: None,
             },
             None,
         ));
@@ -1930,6 +2222,119 @@ mod tests {
              "output":"minecraft:main",
              "uniforms":{"MineConfig":[{"name":"Scale","type":"float","value":1.0}]}}]}"#,
         );
+        own_glsl(&root);
+        let mut effects = PostEffects::new(&device);
+        let [top, bottom] = run_halves(
+            &device,
+            &queue,
+            &mut effects,
+            &root,
+            &["minecraft:custom".to_owned()],
+        );
+        // Red (1, 0, 0) * the image (0.5, 1, 1) * 0.5 * depth 1, then again * 1: 0.125.
+        let near = |a: u8, b: u8| a.abs_diff(b) <= 3;
+        assert!(near(top[0], 32) && top[1] == 0 && top[3] == 255, "{top:?}");
+        // Green stays below it: 0.5 * 1 * 1.
+        assert!(bottom[0] == 0 && near(bottom[1], 128), "{bottom:?}");
+        assert!(effects.failed.is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The frame's depth reaches a pass as 26.3 keeps it, reverse-Z (the sky 0, a near pixel
+    /// close to 1), not as GL's window depth.
+    #[test]
+    fn a_pass_reads_the_frame_depth_as_it_is() {
+        let Some((device, queue)) = device() else {
+            return;
+        };
+        let root = scratch(
+            "depth",
+            r#"{"passes":[{"vertex_shader":"minecraft:core/quad","fragment_shader":"minecraft:post/depth",
+             "inputs":[{"sampler_name":"Depth","target":"minecraft:main","use_depth_buffer":true}],
+             "output":"minecraft:main"}]}"#,
+        );
+        own_glsl(&root);
+        std::fs::write(
+            root.join("assets/minecraft/shaders/post/depth.fsh"),
+            "#version 330\nuniform sampler2D DepthSampler;\nlayout(location = 0) in vec2 texCoord;\n\
+             layout(location = 0) out vec4 fragColor;\n\
+             void main() { fragColor = vec4(texture(DepthSampler, texCoord).r, 0.0, 0.0, 1.0); }\n",
+        )
+        .unwrap();
+        let size = wgpu::Extent3d {
+            width: 8,
+            height: 4,
+            depth_or_array_layers: 1,
+        };
+        let texture = |format, usage| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
+        };
+        let frame = texture(
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        );
+        let depth = texture(
+            wgpu::TextureFormat::Depth32Float,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        );
+        let (view, depth_view) = (
+            frame.create_view(&Default::default()),
+            depth.create_view(&Default::default()),
+        );
+        let mut encoder = device.create_command_encoder(&Default::default());
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(0.25),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            ..Default::default()
+        });
+        let mut effects = PostEffects::new(&device);
+        let ran = effects.apply(
+            &device,
+            &queue,
+            &mut encoder,
+            &frame,
+            &view,
+            [8, 4],
+            Some(&depth_view),
+            &Request {
+                effects: &["minecraft:depth".to_owned()],
+                root: &root,
+                menu_blur_radius: 0.0,
+                globals: Globals::default(),
+                extras: None,
+            },
+            None,
+        );
+        let buffer = crate::gfx::copy_frame(&device, &mut encoder, &frame, [8, 4]);
+        queue.submit([encoder.finish()]);
+        buffer.map_async(wgpu::MapMode::Read, .., |r| r.unwrap());
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let red = buffer.get_mapped_range(..).unwrap()[0];
+        assert!(ran);
+        // 0.25 of 255, not 0.75.
+        assert!(red.abs_diff(64) <= 1, "{red}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// `core/quad.vsh`, `post/mine.fsh` and the `tint` image of `a_chain_runs_its_own_glsl`.
+    fn own_glsl(root: &Path) {
         let shaders = root.join("assets/minecraft/shaders");
         std::fs::create_dir_all(shaders.join("core")).unwrap();
         std::fs::create_dir_all(shaders.join("post")).unwrap();
@@ -1960,20 +2365,60 @@ mod tests {
             writer.write_image_data(&[128, 255, 255, 255]).unwrap();
         }
         std::fs::write(effect.join("tint.png"), png_bytes).unwrap();
+    }
+
+    /// A chain `preload` loaded arrives with its pipelines compiled on the loading
+    /// thread, and runs as one loaded in its frame does.
+    #[test]
+    fn a_preloaded_chain_arrives_compiled() {
+        let Some((device, queue)) = device() else {
+            return;
+        };
+        let root = scratch(
+            "preloaded",
+            r#"{"targets":{"half":{"width":4,"height":2}},"passes":[
+            {"vertex_shader":"minecraft:core/quad","fragment_shader":"minecraft:post/mine",
+             "inputs":[{"sampler_name":"In","target":"minecraft:main","bilinear":true},
+                       {"sampler_name":"Depth","target":"minecraft:main","use_depth_buffer":true},
+                       {"sampler_name":"Tint","location":"tint","width":1,"height":1}],
+             "output":"half",
+             "uniforms":{"MineConfig":[{"name":"Scale","type":"float","value":0.5}]}},
+            {"vertex_shader":"minecraft:core/quad","fragment_shader":"minecraft:post/mine",
+             "inputs":[{"sampler_name":"In","target":"half"},
+                       {"sampler_name":"Depth","target":"half","use_depth_buffer":true},
+                       {"sampler_name":"Tint","location":"tint","width":1,"height":1}],
+             "output":"minecraft:main",
+             "uniforms":{"MineConfig":[{"name":"Scale","type":"float","value":1.0}]}}]}"#,
+        );
+        own_glsl(&root);
         let mut effects = PostEffects::new(&device);
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        effects.preload(&device, &queue, &root, &["minecraft:preloaded"], format);
+        assert!(effects.pending.contains("minecraft:preloaded"));
+        let started = std::time::Instant::now();
+        while !effects.pending.is_empty() {
+            assert!(started.elapsed().as_secs() < 60, "the chain never arrived");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            effects.collect_preloaded();
+        }
+        let chain = effects.chains["minecraft:preloaded"]
+            .as_ref()
+            .expect("loaded");
+        assert!(chain.passes.iter().all(|pass| {
+            pass.translated
+                .as_ref()
+                .is_some_and(|t| t.pipelines.contains_key(&format))
+        }));
         let [top, bottom] = run_halves(
             &device,
             &queue,
             &mut effects,
             &root,
-            &["minecraft:custom".to_owned()],
+            &["minecraft:preloaded".to_owned()],
         );
-        // Red (1, 0, 0) * the image (0.5, 1, 1) * 0.5 * depth 1, then again * 1: 0.125.
         let near = |a: u8, b: u8| a.abs_diff(b) <= 3;
         assert!(near(top[0], 32) && top[1] == 0 && top[3] == 255, "{top:?}");
-        // Green stays below it: 0.5 * 1 * 1.
         assert!(bottom[0] == 0 && near(bottom[1], 128), "{bottom:?}");
-        assert!(effects.failed.is_empty());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -2024,20 +2469,25 @@ mod tests {
         {
             return;
         }
-        let mut effects = PostEffects::new(&device);
-        effects.use_root(&root);
         for name in ["blur", "creeper", "invert", "spider"] {
             let id = format!("minecraft:{name}");
             assert!(
-                effects.load(&device, &queue, &id).unwrap().is_some(),
+                PostEffects::load(&root, &device, &queue, &id, &Extras::default())
+                    .unwrap()
+                    .is_some(),
                 "{id}"
             );
         }
         // entity_outline needs targets and shaders the world pass has of its own.
         assert!(
-            effects
-                .load(&device, &queue, "minecraft:entity_outline")
-                .is_err()
+            PostEffects::load(
+                &root,
+                &device,
+                &queue,
+                "minecraft:entity_outline",
+                &Extras::default()
+            )
+            .is_err()
         );
     }
 }

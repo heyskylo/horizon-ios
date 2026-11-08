@@ -1,7 +1,8 @@
 //! Apply ordered carving-mask intervals to pre-lighting terrain.
 use super::{
     material_condition::{
-        MaterialConditions, MaterialDensitySources, MaterialRule, MaterialSurfaceQueries,
+        CompiledSurfaceRule, MaterialConditions, MaterialDensitySources, MaterialRule,
+        MaterialSurfaceQueries,
     },
     material_stage::{SurfaceError, TopMaterialInputs, top_material_cell},
     terrain::{TerrainAquifer, TerrainBlockStates, TerrainChunk, TerrainError},
@@ -68,6 +69,29 @@ pub fn apply_carving_mask<R: RandomSource, S: MaterialSurfaceQueries, B: Terrain
     inputs: TopMaterialInputs<'_, R, S>,
     aquifer: &mut (impl TerrainAquifer + ?Sized),
     blocks: &CarvingBlocks,
+    filter: impl FnMut([i32; 3]) -> bool,
+) -> Result<(), SurfaceError>
+where
+    R::Positional: Clone,
+{
+    apply_carving_mask_shared(
+        chunk, mask, &rule, &mut None, inputs, aquifer, blocks, filter,
+    )
+}
+/// `apply_carving_mask` with the rule compiled once for the chunks `shared`
+/// serves (`MaterialConditions::add_shared_rule`).
+pub fn apply_carving_mask_shared<
+    R: RandomSource,
+    S: MaterialSurfaceQueries,
+    B: TerrainBlockStates,
+>(
+    chunk: &mut TerrainChunk<'_, B>,
+    mask: &CarvingMask,
+    rule: &MaterialRule,
+    shared: &mut Option<CompiledSurfaceRule<R>>,
+    inputs: TopMaterialInputs<'_, R, S>,
+    aquifer: &mut (impl TerrainAquifer + ?Sized),
+    blocks: &CarvingBlocks,
     mut filter: impl FnMut([i32; 3]) -> bool,
 ) -> Result<(), SurfaceError>
 where
@@ -96,7 +120,7 @@ where
     )?;
     let mut worker =
         MaterialConditions::<R, _>::with_possible_biomes(generation, root, sources, None);
-    let rule = worker.add_rule(rule)?;
+    let rule = worker.add_shared_rule(rule, shared)?;
     let cx = chunk.position().x.wrapping_shl(4);
     let cz = chunk.position().z.wrapping_shl(4);
     for column in mask.columns() {

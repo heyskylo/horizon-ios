@@ -53,8 +53,8 @@ ScrollableLayout.setMaxHeight	skip:ui		sizing only; same screens
 ScrollableLayout.arrangeElements	skip:ui		scrollbar reserve and layout live in each screen's own code (10 px each side in dialog and LAN screens)
 ScrollableLayout.Container.refreshChildren	skip:ui		children are laid out each frame
 ScrollableLayout.Container.extractWidgetRenderState	skip:ui		each screen draws its own clipped list (server links, dialog, LAN)
-ScrollableLayout.Container.getBorderForArrowNavigation	missing		minor: arrow-key focus moves across the list are not ported; Horizon lists have no keyboard focus
-ScrollableLayout.Container.setFocused	missing		minor: focusing a row does not scroll it into view; Horizon lists have no keyboard focus
+ScrollableLayout.Container.getBorderForArrowNavigation	inline	crates/horizon-client-render/src/options_ui.rs::OptionsUi::key	the arrow keys step the focus to the neighbour in that direction, across the list's edge too (gamepad::focus_step_rect, or focus_step_strict/vague for up and down), which is the child the border lookup would return
+ScrollableLayout.Container.setFocused	inline	crates/horizon-client-render/src/options_ui.rs::OptionsUi::key	Tab and the arrows scroll a list row that took the focus into the visible area, 4 pixels past the edge it crossed, then clamp the list
 ScrollableLayout.Container.setX	skip:ui		positions set by each screen's layout
 ScrollableLayout.Container.setY	skip:ui		positions set by each screen's layout
 ScrollableLayout.Container.setScrollAmount	inline	crates/horizon-client/src/game/server_links.rs::Game::server_links_scroll	gap: minor: clamps the server links list only; other scroll areas clamp in their own code
@@ -119,11 +119,11 @@ DebugEntrySystemSpecs.display	port	crates/horizon-client/src/game/debug_keys.rs:
 DebugEntrySystemSpecs.typeName	port	crates/horizon-client/src/game/debug_keys.rs::Game::draw_debug_overlay	GPU type suffix (iGPU, dGPU, vGPU, software)
 DebugEntryTps.display	port	crates/horizon-client/src/game/debug_keys.rs::Game::draw_debug_overlay	integrated or remote server line: tick ms against target, sprinting or frozen, tx and rx
 DebugScreenEntries.register	skip:debug		registry of F3 entries; Horizon's overlay has a fixed profile
-DebugScreenEntryList.load	skip:debug		reads the F3 profile file; F3 profile editing is developer tooling (Horizon's F3 hint says To edit but has no editor)
-DebugScreenEntryList.setStatus	skip:debug		F3 profile editor (developer tooling)
-DebugScreenEntryList.toggleStatus	skip:debug		F3 profile editor (developer tooling)
-DebugScreenEntryList.rebuildCurrentList	skip:debug		F3 profile editor (developer tooling)
-DebugScreenEntryList.save	skip:debug		F3 profile editor (developer tooling)
+DebugScreenEntryList.load	port	crates/horizon-client/src/debug_entries.rs::DebugEntries::load	reads debug-profile.json from the game directory at startup; the default profile without a file, and a file that does not parse is reset to it and saved again
+DebugScreenEntryList.setStatus	port	crates/horizon-client/src/debug_entries.rs::DebugEntries::set_status	the status is custom from then on (profile cleared) and saved; the F3+F6 DebugOptionsScreen writes the Off / In Overlay / Always buttons through it
+DebugScreenEntryList.toggleStatus	port	crates/horizon-client/src/debug_entries.rs::DebugEntries::toggle_status	F3+B and F3+G flip an entry on or off with the overlay open or closed, returning whether it is on afterwards
+DebugScreenEntryList.rebuildCurrentList	inline	crates/horizon-client/src/debug_entries.rs::DebugEntries::enabled	no stored list: enabled and any_enabled answer the current list's membership on demand, every frame, whether the overlay is open or not
+DebugScreenEntryList.save	port	crates/horizon-client/src/debug_entries.rs::DebugEntries::save	the profile's name while it is unchanged, else every status, with the codec's DataVersion; the F3+F6 DebugOptionsScreen changes profiles and statuses
 AbstractDebugChart.extractSampleBars	port	crates/horizon-client/src/debug_chart.rs::Chart::bars	one bar per sample
 AbstractDebugChart.extractMainSampleBar	port	crates/horizon-client/src/debug_chart.rs::Chart::bars	the main value's bar (dimension 0)
 BandwidthDebugChart.extractLabeledLineAtValue	port	crates/horizon-client/src/debug_chart.rs::Chart::lines_and_labels	

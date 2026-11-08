@@ -8,6 +8,7 @@ use crate::{
 };
 use horizon_core::position::ChunkPos;
 use std::{
+    cell::RefCell,
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -17,6 +18,11 @@ use std::{
 const SECTOR: usize = 4096;
 const HEADER: usize = SECTOR * 2;
 const MAX_COMPRESSED: usize = 64 * 1024 * 1024;
+
+thread_local! {
+    /// Decompression storage retained by each region-reading worker.
+    static NBT_DECODE_BUFFER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
 
 #[derive(Clone, Debug)]
 pub struct ChunkRecord {
@@ -41,14 +47,16 @@ impl ChunkRecord {
     /// `RegionFileStorage.read`: the root read straight off the decompressing
     /// stream, so bytes after it, and a damaged stream past it, are never read.
     pub fn nbt(&self, limits: Limits) -> io::Result<NamedTag> {
-        let mut bytes = Vec::new();
-        let decoded = self
-            .compression
-            .decode_into(&self.compressed, limits.max_bytes, &mut bytes);
-        match nbt::read_named(&bytes, limits) {
-            Ok((root, _)) => Ok(root),
-            Err(e) => Err(decoded.err().unwrap_or_else(|| invalid(e.to_string()))),
-        }
+        NBT_DECODE_BUFFER.with_borrow_mut(|bytes| {
+            bytes.clear();
+            let decoded = self
+                .compression
+                .decode_into(&self.compressed, limits.max_bytes, bytes);
+            match nbt::read_named(bytes, limits) {
+                Ok((root, _)) => Ok(root),
+                Err(e) => Err(decoded.err().unwrap_or_else(|| invalid(e.to_string()))),
+            }
+        })
     }
 }
 
@@ -234,7 +242,11 @@ impl RegionFile {
         if external {
             let temporary = directory.join(format!(".c.{}.{}.mcc.tmp", chunk.x, chunk.z));
             let written = File::create(&temporary)
-                .and_then(|mut f| f.write_all(&record.compressed))
+                .and_then(|mut f| {
+                    f.write_all(&record.compressed)?;
+                    // The region's sync only covers the stub, not this external payload.
+                    f.sync_all()
+                })
                 .and_then(|_| fs::rename(&temporary, &external_file));
             if let Err(e) = written {
                 let _ = fs::remove_file(&temporary);
@@ -329,10 +341,14 @@ impl RegionFile {
         }
         let compression = Compression::try_from(header[4] & 127)?;
         let compressed = if header[4] & 128 != 0 {
-            if len != 1 {
-                return Err(invalid("external chunk stub has inline data"));
-            }
+            // `createExternalChunkInputStream`: the stub's length says nothing
+            // about the stream in the `.mcc`, so a stub that also claims inline
+            // data only warns; and a stub whose file is gone is a chunk that is
+            // not there (`null`), not a damaged one.
             let path = external_path(self.path.parent().unwrap_or(Path::new(".")), chunk);
+            if !path.is_file() {
+                return Ok(None);
+            }
             let file = File::open(path)?;
             let mut data = Vec::new();
             file.take((MAX_COMPRESSED + 1) as u64)

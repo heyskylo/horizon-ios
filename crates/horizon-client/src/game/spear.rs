@@ -25,6 +25,14 @@ use horizon_core::{
 /// The key of this window's own player in `Game::kinetic_feedback`.
 pub(super) const OWN: i32 = i32::MIN;
 
+/// What a stab reaches along the view: a mob (its index in `mobs`) or
+/// another player (its index in `stab_players`).
+#[derive(Clone, Copy)]
+enum Target {
+    Mob(usize),
+    Player(usize),
+}
+
 impl Game<'_> {
     /// `Item.use` of a kinetic weapon: `startUsingItem` with a new
     /// `recentKineticEnemies`, and `KineticWeapon.makeSound` at the user.
@@ -108,8 +116,9 @@ impl Game<'_> {
             .collect()
     }
 
-    /// `ProjectileUtil.getHitEntitiesAlong` with the spear's `AttackRange`.
-    fn stab_targets(&self, eye: Vec3, look: Vec3, movement: Vec3) -> Vec<usize> {
+    /// `ProjectileUtil.getHitEntitiesAlong` with the spear's `AttackRange`:
+    /// the mobs and the other players along the view, nearest first.
+    fn stab_targets(&self, eye: Vec3, look: Vec3, movement: Vec3) -> Vec<Target> {
         // AttackRange.effectiveMinRange and effectiveMaxRange for a player.
         let (min, max) = if self.creative {
             (REACH.min_creative, REACH.max_creative)
@@ -118,10 +127,18 @@ impl Game<'_> {
         };
         let reach = (min, max, REACH.hitbox_margin);
         let clip = |from, to| self.clip_collider(from, to);
-        let boxes = self.hittable_mob_boxes();
+        let mobs = self.mobs.len();
+        let mut boxes = self.hittable_mob_boxes();
+        boxes.extend((self.stab_players.iter().enumerate()).map(|(k, p)| (mobs + k, p.bounds)));
         hits_in_reach(&boxes, eye, look, movement, reach, clip)
             .into_iter()
-            .map(|(i, _)| i)
+            .map(|(i, _)| {
+                if i < mobs {
+                    Target::Mob(i)
+                } else {
+                    Target::Player(i - mobs)
+                }
+            })
             .collect()
     }
 
@@ -132,7 +149,7 @@ impl Game<'_> {
             return;
         };
         let used = ticks as i32 - kinetic.delay_ticks;
-        let (Some(eye), Some(feet)) = (
+        let (Some(eye), Some(_)) = (
             self.eye_position(),
             self.player.as_ref().map(|p| p.position),
         ) else {
@@ -149,8 +166,16 @@ impl Game<'_> {
         let now = self.world.game_time;
         let actor = self.lan_acting;
         let mut affected = false;
-        for i in self.stab_targets(eye, look, movement) {
-            let key = (actor, self.mobs[i].id);
+        let mut on_players = Vec::new();
+        for target in self.stab_targets(eye, look, movement) {
+            let (entity, target_motion) = match target {
+                Target::Mob(i) => (self.mobs[i].id, self.mob_speed(i)),
+                Target::Player(k) => {
+                    let p = &self.stab_players[k];
+                    (p.entity_id as u32, p.movement.scale(20.0))
+                }
+            };
+            let key = (actor, entity);
             let recent = self
                 .stabbed
                 .get(&key)
@@ -159,7 +184,7 @@ impl Game<'_> {
                 continue;
             }
             self.stabbed.insert(key, now);
-            let target_speed = look.dot(self.mob_speed(i));
+            let target_speed = look.dot(target_motion);
             let relative = (attacker_speed - target_speed).max(0.0);
             // An entity factor of 1 for a player.
             let dismounts = kinetic.dismount.test(used, attacker_speed, relative, 1.0);
@@ -168,20 +193,36 @@ impl Game<'_> {
             if dismounts || pushes || damages {
                 // The attack damage attribute's base value (1) and the speed.
                 let amount = 1.0 + (relative * f64::from(kinetic.damage_multiplier)).floor() as f32;
-                affected |= self.stab_mob(i, amount, damages, pushes, dismounts);
+                match target {
+                    Target::Mob(i) => {
+                        affected |= self.stab_mob(i, amount, damages, pushes, dismounts)
+                    }
+                    Target::Player(k) => on_players
+                        .extend(self.queue_player_stab(k, amount, damages, pushes, dismounts)),
+                }
             }
         }
         if affected {
-            // Level.broadcastEntityEvent(player, 2), felt by the player too.
-            if self.audio.capture.is_some() {
-                self.lan_kinetic_hits.push(actor);
-            }
-            let who = actor.map_or(OWN, |conn| conn as i32);
-            self.kinetic_hit_feedback(who, &kinetic, [feet.x, feet.y, feet.z]);
-            // SPEAR_MOBS_TRIGGER: the living entities stabbed in this use.
-            let stabbed = self.stabbed.keys().filter(|(who, _)| *who == actor).count();
-            self.trigger_spear_mobs(stabbed);
+            self.spear_hit_feedback(&kinetic);
         }
+        self.keep_player_stabs(kinetic, true, affected, on_players);
+    }
+
+    /// What follows a charge tick that affected an entity:
+    /// `Level.broadcastEntityEvent(player, 2)`, felt by the player too, and
+    /// SPEAR_MOBS_TRIGGER with the living entities stabbed in this use.
+    pub(super) fn spear_hit_feedback(&mut self, kinetic: &Kinetic) {
+        let Some(feet) = self.player.as_ref().map(|p| p.position) else {
+            return;
+        };
+        let actor = self.lan_acting;
+        if self.audio.capture.is_some() {
+            self.lan_kinetic_hits.push(actor);
+        }
+        let who = actor.map_or(OWN, |conn| conn as i32);
+        self.kinetic_hit_feedback(who, kinetic, [feet.x, feet.y, feet.z]);
+        let stabbed = self.stabbed.keys().filter(|(who, _)| *who == actor).count();
+        self.trigger_spear_mobs(stabbed);
     }
 
     /// `Player.stabAttack` on the mob at `index`: whether it was affected.
@@ -201,6 +242,7 @@ impl Game<'_> {
         let Some(p) = self.player.as_ref() else {
             return false;
         };
+        let _attacker = self.knockback_scope(p.entity_id);
         let from = [p.position.x, p.position.y, p.position.z];
         // The enchantments' share, scaled by the attack strength unless the
         // weapon is in use.
@@ -263,6 +305,22 @@ impl Game<'_> {
         }
         // damageStatsAndHearts.
         let actual = old_health - self.mobs[index].health;
+        self.damage_stats_and_hearts(actual, feet, height);
+        if hurt {
+            self.last_hurt_by_player.insert(id, self.lan_acting);
+        }
+        if let Some(p) = self.player.as_mut()
+            && !self.creative
+        {
+            p.cause_food_exhaustion(0.1);
+        }
+        true
+    }
+
+    /// `Player.damageStatsAndHearts`: the damage dealt statistic, and the
+    /// damage indicator particles over a target that lost more than 2 health
+    /// (`feet` and `height`: the target's).
+    pub(super) fn damage_stats_and_hearts(&mut self, actual: f32, feet: [f64; 3], height: f64) {
         self.award_custom_stat("damage_dealt", (actual * 10.0).round() as i32);
         if actual > 2.0 {
             let indicator = horizon_client::particles::ParticleOptions::simple(
@@ -282,20 +340,11 @@ impl Game<'_> {
                 state: None,
                 at: [feet[0], feet[1] + height * 0.5, feet[2]],
                 spread: [0.1, 0.0, 0.1],
-                speed: 0.2,
+                speed: [0.2; 3],
                 count: (actual * 0.5) as u32 as i32,
                 randomization: 0,
             });
         }
-        if hurt {
-            self.last_hurt_by_player.insert(id, self.lan_acting);
-        }
-        if let Some(p) = self.player.as_mut()
-            && !self.creative
-        {
-            p.cause_food_exhaustion(0.1);
-        }
-        true
     }
 
     /// `Player.cannotAttackWithItem` for the held item: a spear needs its
@@ -320,8 +369,14 @@ impl Game<'_> {
         let damage = self.attack_damage();
         let movement = self.known_player_movement();
         let mut hit = false;
-        for i in self.stab_targets(eye, look, movement) {
-            hit |= self.stab_mob(i, damage, true, true, false);
+        let mut on_players = Vec::new();
+        for target in self.stab_targets(eye, look, movement) {
+            match target {
+                Target::Mob(i) => hit |= self.stab_mob(i, damage, true, true, false),
+                Target::Player(k) => {
+                    on_players.extend(self.queue_player_stab(k, damage, true, true, false))
+                }
+            }
         }
         // Player.onAttack, then postPiercingAttack.
         self.attack_ticks = 0;
@@ -329,6 +384,7 @@ impl Game<'_> {
         if hit {
             self.play_at_feet(kinetic.hit_sound);
         }
+        self.keep_player_stabs(kinetic, false, hit, on_players);
         // swingAndResetAttackStrength (ServerPlayer): a swing that starts
         // resets the attack strength.
         let swings = self.swings_started;

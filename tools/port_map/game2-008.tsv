@@ -8,14 +8,19 @@ MerchantContainer.isEmpty	skip:java		container emptiness helper; Horizon checks 
 MerchantContainer.setItem	inline	crates/horizon-client/src/menu.rs::Menu::slot_changed	the store is the generic put; the payment update is merchant_update, run from slot_changed for every merchant slot
 MerchantMenu.quickMoveStack	inline	crates/horizon-client/src/menu.rs::Menu::quick_move	the Kind::Merchant arm; a result shift-click also queues the trade sound event
 MerchantMenu.playTradeSound	port	crates/horizon-client/src/game/trading.rs::Game::merchant_apply	the TradeSound event plays entity.villager.yes or the wandering trader yes
-MerchantResultSlot.remove	port	crates/horizon-client/src/menu.rs::Menu::remove	gap: minor: the removeCount tally that feeds the crafted statistic is not kept
+MerchantResultSlot.remove	port	crates/horizon-client/src/menu.rs::Menu::remove	tallies min(requested amount, result count) for checkTakeAchievements
 MerchantResultSlot.mayPickup	port	crates/horizon-client/src/menu.rs::Menu::may_pickup	the Role::MerchantResult arm
+MerchantResultSlot.onQuickCraft	inline	crates/horizon-client/src/menu.rs::Menu::quick_move	the Merchant result arm tallies the moved amount and checks achievements on the original copy
+MerchantResultSlot.checkTakeAchievements	port	crates/horizon-client/src/menu.rs::Menu::merchant_check_take_achievements	queues the real item/count without a recipe id, then resets removeCount; Game awards through the acting player before merchant notification
+MerchantResultSlot.onTake	inline	crates/horizon-client/src/menu.rs::Menu::on_take	the Merchant result arm checks achievements before merchant_take; quick move passes the actual remaining stack
 ResultSlot.remove	port	crates/horizon-client/src/menu.rs::Menu::remove	gap: minor: the removeCount tally for the crafted statistic is not kept
 ResultSlot.safeClone	skip:other		onCraftedBy only matters for MAP_POST_PROCESSING, which only cartography results carry; map_crafted covers that take
-ResultSlot.checkTakeAchievements	port	crates/horizon-client/src/game.rs::Game::award_crafted	gap: minor: the recipe is awarded; the crafted statistic count from onCraftedBy is not added on this take
+ResultSlot.checkTakeAchievements	port	crates/horizon-client/src/game/inventory_slots.rs::Game::award_crafted	gap: minor: the recipe is awarded; the crafted statistic count from onCraftedBy is not added on this take
 ResultSlot.copyAllInputItems	inline	crates/horizon-client/src/crafting.rs::Recipes::remainders	gap: minor: vanilla copies every input when no recipe matches on the server; remainders returns none for an unmatched recipe
 ResultSlot.getRemainingItems	port	crates/horizon-client/src/crafting.rs::Recipes::remainders	container remainders and the special banner and book copies
 Slot.safeTake	port	crates/horizon-client/src/menu.rs::Menu::safe_take	
+Slot.allowModification	port	crates/horizon-client/src/menu.rs::Menu::allow_modification	mayPickup and mayPlace of the stack the slot holds; `lan::menu`'s bundle click asks the same pair of `View::may_pickup` and `View::may_place`, so a guest cannot take a bundle's contents out of a slot that withholds it
+Slot.mayPickup	inline	crates/horizon-client/src/lan/menu.rs::View::may_pickup	a binding curse keeps a survival player's armour on (ArmorSlot.mayPickup); the menu's own rules answer for every other slot, and every click that takes a stack asks it: pickup, quick move, swap (a number key or the off hand's F) and throw
 SlotRanges.create	inline	crates/horizon-command/src/args.rs::slot_ranges	a range is a name and size pair built in slot_ranges
 SlotRanges.addSlotRange	inline	crates/horizon-command/src/args.rs::slot_ranges	the range closure adds the numbered names and the wildcard
 SlotRanges.tryRead	inline	crates/horizon-command/src/args.rs::ArgType::parse	the Slots and Slot arms read a name and check the range exists
@@ -34,15 +39,15 @@ StonecutterMenu.removed	port	crates/horizon-client/src/game/stations.rs::Game::c
 ArrowItem.asProjectile	port	crates/horizon-client/src/game/dispenser.rs::Game::shoot_projectile_item	dispensed arrows are built in the arrow arm of the item shot
 BlockItem.updateBlockEntityComponents	port	crates/horizon-client/src/block_entity_item.rs::place	the placed block entity takes the item's components
 BlockItem.canPlace	port	crates/horizon-world/src/level/place.rs::Sim::place	the placement checks, including the survive check, run in Sim::place
-BlockItem.onDestroyed	missing		no `onDestroyed` on any item: an item entity of a shulker box or a bundle destroyed by fire or lava spills nothing
+BlockItem.onDestroyed	port	crates/horizon-client/src/entities.rs::ItemEntity::hurt	the damage that empties an item's health makes the stack's `container` contents item entities where it lay (`item_data::destroyed_container`)
 BoatItem.getBoat	port	crates/horizon-client/src/game/boats.rs::Game::place_boat	boat placed at the hit point with the item's stack config
 BucketItem.playEmptySound	port	crates/horizon-world/src/level/buckets.rs::Sim::empty_sound	
 BundleItem.getWeightSafe	port	crates/horizon-items/src/bundle.rs::Contents::weight_fraction	float fraction; vanilla compares an exact Fraction
 BundleItem.getBarWidth	port	crates/horizon-items/src/bundle.rs::Contents::bar	
 BundleItem.getBarColor	port	crates/horizon-items/src/bundle.rs::Contents::bar	
 BundleItem.removeOneItemFromBundle	port	crates/horizon-items/src/bundle.rs::Contents::remove_one	
-BundleItem.getTooltipImage	port	crates/horizon-items/src/bundle.rs::tooltip_layout	gap: minor: the tooltip_display rule that hides the bundle contents is not checked here
-BundleItem.onDestroyed	missing		same as `BlockItem.onDestroyed`: nothing spills a destroyed item entity's contents
+BundleItem.getTooltipImage	port	crates/horizon-client/src/item_tooltip.rs::bundle_tooltip	the contents grid, hidden when `minecraft:tooltip_display` hides `minecraft:bundle_contents` (or the whole tooltip); the geometry is `bundle.rs::tooltip_layout`
+BundleItem.onDestroyed	port	crates/horizon-client/src/entities.rs::ItemEntity::hurt	the damage that empties an item's health makes the bundle's contents item entities where it lay (`bundle::destroyed`)
 BundleItem.playRemoveOneSound	port	crates/horizon-client/src/game.rs::Game::drop_bundle_content	the menu queues the same sound in menu/bundle.rs
 BundleItem.playInsertSound	port	crates/horizon-client/src/menu/bundle.rs::Menu::carried_bundle_click	queues the insert or insert-fail sound
 BundleItem.playDropContentsSound	port	crates/horizon-client/src/game.rs::Game::drop_bundle_content	
@@ -54,14 +59,14 @@ CrossbowItem.createProjectile	port	crates/horizon-client/src/arrows.rs::Ticker::
 CrossbowItem.getShotPitch	inline	crates/horizon-client/src/game/crossbow.rs::Game::shoot_crossbow	the shot pitch per index is inline
 CrossbowItem.getRandomShotPitch	inline	crates/horizon-client/src/game/crossbow.rs::Game::shoot_crossbow	the random pitch formula is inline
 CrossbowItem.getPowerForTime	inline	crates/horizon-client/src/game/crossbow.rs::Game::tick_crossbow	the charge fraction capped at one is the tick check against the charge time
-DyeColor.getMixedColor	port	crates/horizon-client/src/game/creatures.rs::Game::dye_mix	the colour of the crafting recipe that mixes the two dyes, else one of the two picked at random (`next_boolean`); `creatures.rs:3153`, `:3176` and `:3222` give the offspring of a sheep, wolf or cat its colour with it
-DyeColor.findColorMixInRecipes	port	crates/horizon-client/src/game/creatures.rs::Game::dye_color_mix_in_recipes	the two dyes laid out as a 2x2 crafting grid through `Recipes::find`, and the result read back as a dye colour by its `_dye` suffix
+DyeColor.getMixedColor	port	crates/horizon-client/src/game/creatures.rs::dye_mix	the colour of the crafting recipe that mixes the two dyes, else one of the two picked at random (`next_boolean`); the three breed call sites give a sheep's lamb, a wolf's puppy and a cat's kitten its colour with it
+DyeColor.findColorMixInRecipes	port	crates/horizon-client/src/game/creatures.rs::dye_color_mix_in_recipes	the two dyes laid out as a 2x2 crafting grid through `Recipes::find`, and the result read back as a dye colour by its `_dye` suffix
 FireworkRocketItem.createDispenseConfig	port	crates/horizon-client/src/game/dispenser.rs::Game::dispense_projectile	rocket config: offset 0.5000099, uncertainty 1, power 0.5, event 1004
 FireworkRocketItem.getEntityJustOutsideOfBlockPos	port	crates/horizon-client/src/game/dispenser.rs::Game::dispense_position	the position just outside the dispenser on the facing side
 HangingEntityItem.mayPlace	port	crates/horizon-client/src/game/paintings.rs::Game::place_painting	paintings take no vertical face; an item frame (ItemFrameItem.mayPlace) may go on one and only needs the build height, which place_item_frame checks
 HangingEntityItem.appendHoverText	port	crates/horizon-client/src/game/stations.rs::Game::stack_tooltip_lines	
 Item.getDestroySpeed	port	crates/horizon-items/src/items.rs::Items::mining_speed	
-Item.finishUsingItem	port	crates/horizon-client/src/game.rs::Game::consume_held	the consumable effects are applied by apply_consume_effect
+Item.finishUsingItem	port	crates/horizon-client/src/game/using_item.rs::Game::consume_held	the consumable effects are applied by apply_consume_effect
 Item.getBarColor	port	crates/horizon-client-render/src/hud_overlays.rs::damage_bar	width and hue from the damage fraction
 Item.mineBlock	port	crates/horizon-client/src/game.rs::Game::mine_block_with_held	
 Item.isCorrectToolForDrops	port	crates/horizon-items/src/items.rs::Items::correct_for_drops	
@@ -92,14 +97,14 @@ ItemStack.hasNonDefault	skip:other		component presence query; Horizon reads stac
 ItemStack.validateComponents	skip:java		codec-side validation
 ItemStack.validateContainedItemSizes	skip:java		codec-side validation
 ItemStack.getDamageValue	skip:other		field accessor; Horizon keeps damage on the stack
-ItemStack.setDamageValue	skip:other		field write
+ItemStack.setDamageValue	port	crates/horizon-client/src/stations.rs::set_damage_value	stored clamped to [0, max_damage]; the anvil repair paths and the grindstone result call it (a mob's slot damage goes through set_slot_damage in mobs/finalize.rs)
 ItemStack.isBroken	inline	crates/horizon-client/src/game.rs::Game::damage_held	the break test (damage at or over max) is in damage_held
 ItemStack.nextDamageWillBreak	inline	crates/horizon-client/src/game/trident.rs::Game::use_trident	gap: minor: only the trident's check is ported here
 ItemStack.processDurabilityChange	port	crates/horizon-client/src/game/enchant_effects.rs::Game::durability_loss	the Unbreaking-adjusted loss
 ItemStack.applyDamage	port	crates/horizon-client/src/game.rs::Game::damage_held	gap: minor: no item durability advancement trigger fires
-ItemStack.hurtAndConvertOnBreak	missing		nothing converts a broken carrot on a stick or fungus on a stick into a fishing rod
+ItemStack.hurtAndConvertOnBreak	port	crates/horizon-client/src/game/mounts.rs::stick_on_break	`FoodOnAStickItem.use` wears the steering stick through `hurtAndBreak` (so `processDurabilityChange` gets its say) and leaves a transmuted fishing rod - the components carry over and the rod starts whole - rather than a fresh plain one
 ItemStack.hurtEnemy	port	crates/horizon-client/src/game/mace.rs::Game::weapon_wear	the per-hit durability loss of a weapon
-ItemStack.interactLivingEntity	port	crates/horizon-client/src/game.rs::Game::interact_entity	equip-on-interact is in the mob paths (nautili.rs, ghasts.rs)
+ItemStack.interactLivingEntity	port	crates/horizon-client/src/game/item_actions.rs::Game::interact_entity	equip-on-interact is in the mob paths (nautili.rs, ghasts.rs)
 ItemStack.copy	skip:java		value copy
 ItemStack.copyWithCount	skip:java		value copy with a count
 ItemStack.transmuteCopyIgnoreEmpty	port	crates/horizon-items/src/item_data.rs::ItemStack::transmute	keeps the components, changes the item
@@ -108,7 +113,7 @@ ItemStack.matchesIgnoringComponents	port	crates/horizon-items/src/item_data.rs::
 ItemStack.lenientOptionalFieldOf	skip:java		codec helper
 ItemStack.hashItemAndComponents	skip:java		hash for collections
 ItemStack.hashStackList	skip:java		hash for collections
-ItemStack.onCraftedBy	inline	crates/horizon-client/src/game.rs::Game::click_inventory	gap: minor: the crafted statistic is added only on the inventory grid craft path here
+ItemStack.onCraftedBy	inline	crates/horizon-client/src/game.rs::Game::click_inventory	gap: minor: other station result takes still omit crafted counts; the inventory grid and merchant result callbacks award through Game::award_stat
 ItemStack.set	skip:other		component write; Horizon stores component data in typed fields
 ItemStack.update	skip:java		functional update helper
 ItemStack.applyComponentsAndValidate	missing		a validated component patch has no single counterpart: `/item modify` goes through its own path
@@ -121,7 +126,7 @@ ItemStack.getDamageSource	missing		a stack's `damage_type` component is not read
 ItemStackTemplate.fromNonEmptyStack	port	crates/horizon-items/src/item_data.rs::template_tag	stack to template tag
 ItemStackTemplate.withCount	skip:java		record copy with a new count
 ItemStackTemplate.apply	port	crates/horizon-assets/src/item_model.rs::stack_from_template	
-ItemUtils.onContainerDestroyed	missing		the shared spill of a destroyed container item has no counterpart; see `BlockItem.onDestroyed`
+ItemUtils.onContainerDestroyed	port	crates/horizon-client/src/game.rs::Game::spawn_destroyed_contents	each stack the destroyed item let go becomes a `new ItemEntity(level, x, y, z, stack)` where it lay: no pickup delay and the constructor's nudge
 Items.registerBlock	skip:data		item registry bootstrap
 Items.registerItem	skip:data		item registry bootstrap
 JukeboxSong.hasFinished	port	crates/horizon-items/src/items.rs::Song::finished	

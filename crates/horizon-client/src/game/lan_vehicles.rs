@@ -38,11 +38,13 @@ fn corners(b: Aabb) -> ([f64; 3], [f64; 3]) {
     ([lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z])
 }
 
-/// A boat or minecart a server player rode, followed for
-/// `native_vehicle_moved`.
+/// A boat, minecart or mount a server player rode, followed for
+/// `native_vehicle_moved` (a mount only for its v2).
 pub(super) struct WatchedVehicle {
     id: u32,
     dim: Dim,
+    /// A mob (a horse, a pig), which v1 does not hear.
+    mount: bool,
     /// The server player it carries now.
     rider: Option<u128>,
     /// Where the hook last heard of it.
@@ -52,18 +54,25 @@ pub(super) struct WatchedVehicle {
 }
 
 impl Game<'_> {
-    /// Where the boat or minecart `id` of this level is.
-    fn watched_vehicle_position(&self, id: u32) -> Option<[f64; 3]> {
+    /// Where the boat, minecart or mount `id` of this level is, and whether
+    /// it is a mount.
+    fn watched_vehicle_position(&self, id: u32) -> Option<([f64; 3], bool)> {
         let at = |v: Vec3| [v.x, v.y, v.z];
         self.boats
             .iter()
             .find(|b| b.id == id)
-            .map(|b| at(b.position))
+            .map(|b| (at(b.position), false))
             .or_else(|| {
                 self.carts
                     .iter()
                     .find(|c| c.id == id)
-                    .map(|c| at(c.position))
+                    .map(|c| (at(c.position), false))
+            })
+            .or_else(|| {
+                self.mobs
+                    .iter()
+                    .find(|m| m.id == id && !m.removed)
+                    .map(|m| (at(m.position), true))
             })
     }
 
@@ -82,7 +91,7 @@ impl Game<'_> {
         }
         let dim = self.dim;
         for &(id, _, uuid) in &riders {
-            let Some(at) = self.watched_vehicle_position(id) else {
+            let Some((at, mount)) = self.watched_vehicle_position(id) else {
                 continue;
             };
             match self.watched_vehicles.iter_mut().find(|w| w.id == id) {
@@ -90,6 +99,7 @@ impl Game<'_> {
                 None => self.watched_vehicles.push(WatchedVehicle {
                     id,
                     dim,
+                    mount,
                     rider: Some(uuid),
                     at,
                     still: 0,
@@ -97,7 +107,7 @@ impl Game<'_> {
             }
         }
         let mut kept = Vec::new();
-        // (rider's connection and UUID, vehicle type, from, to)
+        // (rider's connection and UUID, vehicle, type, mount, from, to)
         let mut moved = Vec::new();
         for mut w in std::mem::take(&mut self.watched_vehicles) {
             // Another level's vehicle is told of on that level's tick.
@@ -106,7 +116,7 @@ impl Game<'_> {
                 continue;
             }
             // Broken, or gone from this level.
-            let Some(now) = self.watched_vehicle_position(w.id) else {
+            let Some((now, _)) = self.watched_vehicle_position(w.id) else {
                 continue;
             };
             let rider = riders.iter().find(|r| r.0 == w.id);
@@ -118,7 +128,7 @@ impl Game<'_> {
                     self.level_entity(w.id as i32)
                         .unwrap_or(super::commands::Target::Boat(w.id)),
                 );
-                moved.push((rider.map(|r| (r.1, r.2)), kind, from, now));
+                moved.push((rider.map(|r| (r.1, r.2)), w.id, kind, w.mount, from, now));
             } else {
                 w.still += 1;
                 if w.rider.is_none() && w.still > 200 {
@@ -130,21 +140,66 @@ impl Game<'_> {
         self.watched_vehicles = kept;
         // The rider's state is swapped in for the call, so the helpers reach
         // them; a vehicle nobody rides is told of with nobody swapped in.
-        for (rider, kind, from, to) in moved {
-            let Some((conn, uuid)) = rider else {
-                self.native_vehicle_moved(None, &kind, from, to);
-                continue;
+        for (rider, id, kind, mount, from, to) in moved {
+            let (mut dest, mut cancel) = (to, false);
+            let mut hook = |game: &mut Self| {
+                if !mount {
+                    game.native_vehicle_moved(rider.map(|r| r.1), &kind, from, to);
+                }
+                let player = rider.map(|r| r.1);
+                game.native_vehicle_moved_v2(
+                    player,
+                    dim.id(),
+                    id,
+                    &kind,
+                    from,
+                    &mut dest,
+                    &mut cancel,
+                );
             };
-            let Some(mut host) = self.lan.take() else {
-                continue;
-            };
-            let hook = |game: &mut Self| game.native_vehicle_moved(Some(uuid), &kind, from, to);
-            if self.lan_acting == Some(conn) {
-                hook(self);
-            } else {
-                self.as_guest(&mut host, conn, hook);
+            match rider {
+                None => hook(self),
+                Some((conn, _)) => {
+                    let Some(mut host) = self.lan.take() else {
+                        continue;
+                    };
+                    if self.lan_acting == Some(conn) {
+                        hook(self);
+                    } else {
+                        self.as_guest(&mut host, conn, hook);
+                    }
+                    self.lan = Some(host);
+                }
             }
-            self.lan = Some(host);
+            self.native_vehicle_move_answer(id, from, to, dest, cancel);
+        }
+    }
+
+    /// `native_vehicle_moved_v2`'s answer: a canceled move puts the vehicle
+    /// back at `from`, a changed `to` puts it there, with its riders
+    /// (`native_teleport_vehicle`), and the watch hears it from there.
+    fn native_vehicle_move_answer(
+        &mut self,
+        id: u32,
+        from: [f64; 3],
+        to: [f64; 3],
+        dest: [f64; 3],
+        cancel: bool,
+    ) {
+        let at = if cancel {
+            from
+        } else if dest != to && dest.iter().all(|v| v.is_finite()) {
+            dest
+        } else {
+            return;
+        };
+        if !self.native_teleport_vehicle(self.dim.id(), id, at) {
+            return;
+        }
+        if let Some((now, _)) = self.watched_vehicle_position(id)
+            && let Some(w) = self.watched_vehicles.iter_mut().find(|w| w.id == id)
+        {
+            w.at = now;
         }
     }
 
@@ -229,23 +284,19 @@ impl Game<'_> {
         let cart = self.carts.iter().any(|c| c.id == vehicle);
         let mount = self.mobs.iter().any(|m| m.id == vehicle);
         let cushion = self.cushions.iter().any(|c| c.id == vehicle);
+        let seat = self.seat(vehicle).is_some();
         // The vehicle is gone (broken, in another level) or the rider died:
         // its client drops it with the entity or the death screen.
-        if dead || (boat.is_none() && !cart && !mount && !cushion) {
+        if dead || (boat.is_none() && !cart && !mount && !cushion && !seat) {
             let g = &mut host.hub.guests[gi];
             (g.vehicle, g.vehicle_good) = (None, None);
             return;
         }
         let mut ejected = false;
         if let Some(i) = boat {
-            // AbstractBoat.tick on the server for a boat its rider drives:
-            // only the hurt animation and the damage wear off here.
-            let b = &mut self.boats[i];
-            b.hurt_time = (b.hurt_time - 1).max(0);
-            b.damage = (b.damage - 1.0).max(0.0);
             // `Entity.ejectPassengers`: every player in the boat must see
             // the request; the common boat tick clears it once nobody rides.
-            ejected = b.eject_riders;
+            ejected = self.boats[i].eject_riders;
         }
         // ServerGamePacketListenerImpl.tick: the vehicle's last good position
         // is where it is now, so a move the server made (a piston, a push)
@@ -272,6 +323,12 @@ impl Game<'_> {
                 }
                 let c = game.cushions.iter().find(|c| Some(c.id) == game.riding)?;
                 let p = c.seat();
+                return Some([p.x, p.y, p.z]);
+            }
+            // An armor stand, a display, a marker...: the rider keeps its seat as the vehicle is
+            // moved (/tp, a mod) until it sneaks.
+            if game.riding.is_some_and(|id| game.seat(id).is_some()) {
+                let p = game.tick_seat_riding(keys)?;
                 return Some([p.x, p.y, p.z]);
             }
             if let Some(i) = game.boats.iter().position(|b| Some(b.id) == game.riding) {
@@ -333,7 +390,8 @@ impl Game<'_> {
                     .iter()
                     .find(|c| c.id == vehicle)
                     .map(|c| (c.position, c.seat()))
-            });
+            })
+            .or_else(|| self.seat(vehicle).map(|s| (s.position, s.player_seat())));
         if let Some((p, seat)) = at {
             let g = &mut host.hub.guests[gi];
             g.vehicle_good = Some([p.x, p.y, p.z]);
@@ -385,6 +443,13 @@ impl Game<'_> {
         }
         let g = &host.hub.guests[gi];
         if g.awaiting_teleport.is_some() || !g.client_loaded() {
+            return;
+        }
+        // Only the vehicle's controlling passenger moves it: the move of a
+        // player in a boat's second seat is ignored (#11541).
+        if g.vehicle
+            .is_some_and(|v| !self.guest_controls_vehicle(host, conn, v))
+        {
             return;
         }
         let owner = host.hub.singleplayer_owner == Some(g.uuid);
@@ -522,6 +587,22 @@ impl Game<'_> {
         b.previous_yaw = b.yaw;
         b.yaw = p.yaw;
         b.on_ground = p.on_ground;
+        // handleMoveVehicle's `vehicle.move` counts the fall
+        // (AbstractBoat.checkFallDamage); the server's baseTick resets it in
+        // water (updateFluidInteraction), which this boat's skipped tick
+        // doesn't run.
+        use super::entity::Entity as _;
+        let mut probe = self.boats[i].clone();
+        let in_water = probe
+            .push_by_fluid(&self.world, &self.res.motion().fluids)
+            .0
+            > 0.0;
+        let fall = if in_water {
+            0.0
+        } else {
+            self.boat_fall(&self.boats[i], resolved.y)
+        };
+        self.boats[i].fall_distance = fall;
         let seat = self.player_boat_seat(i);
         let g = &mut host.hub.guests[gi];
         g.previous_position = g.position;
@@ -559,6 +640,177 @@ impl Game<'_> {
         };
         if let Some(b) = self.boats.iter_mut().find(|b| b.id == vehicle) {
             b.paddling = paddles;
+            b.paddle_controller = true;
         }
+    }
+}
+
+#[cfg(test)]
+mod controller_tests {
+    use crate::game::{Audio, Game, Options, Progress, Settings, load_resources};
+    use horizon_client::chunk::Chunk;
+    use horizon_client::lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig};
+    use horizon_core::position::ChunkPos;
+    use horizon_protocol::packets::{configuration::ClientInformation, play};
+    use std::sync::{Arc, atomic::AtomicI32, mpsc};
+
+    fn guest(conn: u32, uuid: u128) -> Guest {
+        let (tx, _rx) = mpsc::channel();
+        let mut g = Guest::new(
+            Joined {
+                conn,
+                uuid,
+                name: format!("Rider{conn}"),
+                properties: Vec::new(),
+                info: ClientInformation::new(2),
+                brand: "test".into(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
+            },
+            1000 + conn as i32,
+            [4.5, 200.0, 4.5],
+            2,
+        );
+        g.dimension = "minecraft:overworld".into();
+        g.placed = true;
+        g.loaded = true;
+        // PlayerLoaded came in: its moves count.
+        g.load_timeout = 0;
+        g
+    }
+
+    /// Two players in one boat: the one that got in first drives it
+    /// (`getControllingPassenger`), whichever joined the server first. Its
+    /// client hears it sits first, and only its moves count; the second
+    /// seat's client, which still sends where it sees the boat, used to put
+    /// the boat back every tick (#11541).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn the_first_rider_in_drives_the_boat() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::env::temp_dir().join(format!("horizon-boat-driver-unit-{}", std::process::id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+        let stone = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:stone")
+            .unwrap()
+            .0;
+        let mut chunk = Chunk::empty(0, 0);
+        for x in 0..16 {
+            for z in 0..16 {
+                chunk.set(x, 199, z, stone);
+            }
+        }
+        game.world.chunks.insert((0, 0), Arc::new(chunk));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("summon minecraft:oak_boat 4.5 200 4.5"));
+        let boat = game.boats[0].id;
+        let start = game.boats[0].position;
+        game.lan_host(
+            super::super::lan::LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            NetConfig {
+                announce: false,
+                ..NetConfig::loopback(0, "boat-driver-test".into(), 3)
+            },
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: "minecraft:overworld".into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 3,
+                integrated: false,
+                levels: Default::default(),
+            },
+        )
+        .unwrap();
+        let mut host = game.lan.take().unwrap();
+        // The second seat's player joined the server first; the driver got
+        // into the boat first.
+        let (mut passenger, mut driver) = (guest(2, 21), guest(3, 22));
+        (driver.vehicle, driver.vehicle_order) = (Some(boat), 1);
+        (passenger.vehicle, passenger.vehicle_order) = (Some(boat), 2);
+        let (passenger_id, driver_id) = (passenger.entity_id, driver.entity_id);
+        host.hub.guests.push(passenger);
+        host.hub.guests.push(driver);
+
+        game.lan_riding(&host.hub.guests, &mut host.hub.riding);
+        assert_eq!(
+            host.hub.riding.passengers(boat as i32),
+            [driver_id, passenger_id],
+            "the driver sits first"
+        );
+
+        let move_to = |x: f64| play::MoveVehicleRequest {
+            position: [x, start.y, start.z],
+            yaw: 0.0,
+            pitch: 0.0,
+            on_ground: true,
+        };
+        game.guest_move_vehicle(&mut host, 2, &move_to(start.x + 0.3));
+        assert_eq!(
+            game.boats[0].position, start,
+            "the second seat moves nothing"
+        );
+        game.guest_move_vehicle(&mut host, 3, &move_to(start.x + 0.3));
+        assert!(
+            (game.boats[0].position.x - (start.x + 0.3)).abs() < 1.0e-9,
+            "the driver moves the boat: {:?}",
+            game.boats[0].position
+        );
+        // handleMoveVehicle's `vehicle.move` runs AbstractBoat.checkFallDamage:
+        // a boat that lands on the ground (a fall loaded from its save, here)
+        // has no fall left.
+        game.boats[0].fall_distance = 5.0;
+        game.guest_move_vehicle(&mut host, 3, &move_to(start.x + 0.6));
+        assert_eq!(
+            game.boats[0].fall_distance, 0.0,
+            "a guest's boat on the ground"
+        );
     }
 }

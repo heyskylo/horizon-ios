@@ -30,11 +30,12 @@ fn java_float_text(v: f64, plain: &str, sci: &str) -> String {
         }
     } else {
         let (mantissa, exponent) = sci.split_once('e').unwrap_or((sci, "0"));
-        let mantissa = if mantissa.contains('.') {
-            mantissa.to_owned()
-        } else {
-            format!("{mantissa}.0")
-        };
+        if !mantissa.contains('.') {
+            // Java also considers two-digit decimals when one digit round-trips,
+            // choosing the closest value. Padding Rust's choice loses that step
+            // for tiny subnormals (Float.MIN_VALUE is 1.4E-45, not 1.0E-45).
+            return format!("{v:.1e}").replace('e', "E");
+        }
         format!("{mantissa}E{exponent}")
     }
 }
@@ -156,22 +157,62 @@ fn visit(tag: &Tag, out: &mut String) {
         }
         Tag::Compound(c) => {
             out.push('{');
-            let mut entries: Vec<(String, &Tag)> =
-                c.iter().map(|(k, v)| (string_of(k), v)).collect();
-            entries.sort_by(|a, b| a.0.cmp(&b.0));
-            for (i, (k, v)) in entries.iter().enumerate() {
+            // JavaString keys already follow StringTagVisitor's UTF-16 order.
+            // Sorting converted Rust strings would put supplementary keys last.
+            for (i, (k, v)) in c.iter().enumerate() {
+                let k = string_of(k);
                 if i > 0 {
                     out.push(',');
                 }
-                if unquoted_key(k) {
-                    out.push_str(k);
+                if unquoted_key(&k) {
+                    out.push_str(&k);
                 } else {
-                    out.push_str(&quote_and_escape(k));
+                    out.push_str(&quote_and_escape(&k));
                 }
                 out.push(':');
                 visit(v, out);
             }
             out.push('}');
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scientific_text_selects_the_closest_two_digit_decimal() {
+        for (bits, expected) in [
+            (1, "1.4E-45"),
+            (2, "2.8E-45"),
+            (7, "9.8E-45"),
+            (71, "9.9E-44"),
+            (100, "1.4E-43"),
+        ] {
+            for (sign, prefix) in [(0, ""), (1 << 31, "-")] {
+                let bits = bits | sign;
+                assert_eq!(
+                    java_float(f32::from_bits(bits)),
+                    format!("{prefix}{expected}")
+                );
+                assert_eq!(to_snbt(&Tag::Float(bits)), format!("{prefix}{expected}f"));
+            }
+        }
+        for (bits, expected) in [
+            (1, "4.9E-324"),
+            (2, "9.9E-324"),
+            (12, "5.9E-323"),
+            (100, "4.94E-322"),
+        ] {
+            for (sign, prefix) in [(0, ""), (1 << 63, "-")] {
+                let bits = bits | sign;
+                assert_eq!(
+                    java_double(f64::from_bits(bits)),
+                    format!("{prefix}{expected}")
+                );
+                assert_eq!(to_snbt(&Tag::Double(bits)), format!("{prefix}{expected}d"));
+            }
         }
     }
 }

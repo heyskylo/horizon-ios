@@ -16,7 +16,7 @@ use std::{
     io::{self, Read, Write},
     net::{Shutdown, SocketAddr, TcpListener, TcpStream},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel, sync_channel},
     },
@@ -44,6 +44,10 @@ pub struct Config {
     pub global_unknown_burst: f64,
     /// Read a PROXY protocol v1 line before anything else.
     pub proxy_protocol: bool,
+    /// The load balancers allowed to send that line (`RELAY_PROXY_FROM`, addresses or CIDR ranges).
+    /// A connection from anywhere else is closed unanswered: its line would be a client choosing its
+    /// own address. The relay refuses to start with `proxy_protocol` and none listed ([`Config::check`]).
+    pub proxy_from: Vec<Net>,
     pub idle: Duration,
     pub ping_every: Duration,
     pub host_timeout: Duration,
@@ -65,6 +69,7 @@ impl Default for Config {
             global_unknown_per_min: 120.0,
             global_unknown_burst: 30.0,
             proxy_protocol: false,
+            proxy_from: Vec::new(),
             idle: Duration::from_secs(120),
             ping_every: Duration::from_secs(20),
             host_timeout: Duration::from_secs(60),
@@ -75,14 +80,21 @@ impl Default for Config {
     }
 }
 impl Config {
-    /// The defaults with the `RELAY_*` environment variables applied.
-    pub fn from_env() -> Self {
+    /// The defaults with the `RELAY_*` environment variables applied: an error for a setting the relay
+    /// can't run with as given ([`Config::check`]).
+    pub fn from_env() -> Result<Self, String> {
         fn var<T: std::str::FromStr>(name: &str) -> Option<T> {
             std::env::var(name).ok()?.trim().parse().ok()
         }
         let mut c = Self::default();
         if let Some(v) = var("RELAY_MAX_HOSTS") {
             c.max_hosts = v;
+        }
+        if let Some(v) = var("RELAY_MAX_HOSTS_PER_ADDRESS") {
+            c.rates.hosts_per_address = v;
+        }
+        if let Some(v) = var("RELAY_MAX_OPEN_PER_ADDRESS") {
+            c.rates.open_per_address = v;
         }
         if let Some(v) = var("RELAY_MAX_BRIDGES") {
             c.max_bridges = v;
@@ -108,7 +120,83 @@ impl Config {
         if let Some(v) = var::<u8>("RELAY_PROXY_PROTOCOL") {
             c.proxy_protocol = v != 0;
         }
-        c
+        if let Ok(list) = std::env::var("RELAY_PROXY_FROM") {
+            c.proxy_from = Net::parse_list(&list).map_err(|e| format!("RELAY_PROXY_FROM: {e}"))?;
+        }
+        c.check()?;
+        Ok(c)
+    }
+
+    /// Why the relay must not start with these settings, if it mustn't.
+    pub fn check(&self) -> Result<(), String> {
+        if self.proxy_protocol && self.proxy_from.is_empty() {
+            return Err("RELAY_PROXY_PROTOCOL=1 needs RELAY_PROXY_FROM: the load balancers' addresses or \
+                        ranges (e.g. 10.0.0.0/8). Without it any client could send a PROXY line and choose \
+                        the address its limits count."
+                .into());
+        }
+        Ok(())
+    }
+}
+
+/// An address or a CIDR range: `10.1.2.3`, `10.0.0.0/8`, `fd00::/8`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Net {
+    address: std::net::IpAddr,
+    prefix: u8,
+}
+impl Net {
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let text = text.trim();
+        let (address, prefix) = match text.split_once('/') {
+            Some((a, p)) => (a, Some(p)),
+            None => (text, None),
+        };
+        let address: std::net::IpAddr = address
+            .parse()
+            .map_err(|_| format!("{text:?} is not an address or a range"))?;
+        let bits = if address.is_ipv4() { 32 } else { 128 };
+        let prefix = match prefix {
+            None => bits,
+            Some(p) => p
+                .parse::<u8>()
+                .ok()
+                .filter(|p| *p <= bits)
+                .ok_or_else(|| format!("{text:?}: the prefix is 0 to {bits}"))?,
+        };
+        Ok(Self { address, prefix })
+    }
+
+    /// A comma-separated list; empty entries are skipped, a bad one is an error.
+    pub fn parse_list(text: &str) -> Result<Vec<Self>, String> {
+        text.split(',')
+            .filter(|t| !t.trim().is_empty())
+            .map(Self::parse)
+            .collect()
+    }
+
+    pub fn contains(&self, ip: std::net::IpAddr) -> bool {
+        use std::net::IpAddr;
+        // An IPv4 client of a dual-stack listener arrives as ::ffff:a.b.c.d.
+        let ip = match ip {
+            IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+            v4 => v4,
+        };
+        match (self.address, ip) {
+            (IpAddr::V4(net), IpAddr::V4(ip)) => {
+                let mask = u32::MAX
+                    .checked_shl(32 - u32::from(self.prefix))
+                    .unwrap_or(0);
+                u32::from(net) & mask == u32::from(ip) & mask
+            }
+            (IpAddr::V6(net), IpAddr::V6(ip)) => {
+                let mask = u128::MAX
+                    .checked_shl(128 - u32::from(self.prefix))
+                    .unwrap_or(0);
+                u128::from(net) & mask == u128::from(ip) & mask
+            }
+            _ => false,
+        }
     }
 }
 
@@ -116,6 +204,8 @@ impl Config {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     pub hosts: usize,
+    /// Bridges open, and joins matched with a host and waiting for its attach (each holds one of
+    /// `max_bridges` from the match on).
     pub bridges: usize,
     pub registrations: u64,
     pub joins: u64,
@@ -176,6 +266,14 @@ struct State {
     rate_limited: AtomicU64,
     relayed_bytes: AtomicU64,
     stop: AtomicBool,
+}
+
+/// The state behind `mutex`, even if a connection's thread panicked holding it: one bad connection
+/// must not make every later one panic too.
+fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[derive(Clone)]
@@ -271,7 +369,7 @@ impl Relay {
 
 fn counts(s: &State) -> Counts {
     Counts {
-        hosts: s.inner.lock().unwrap().hosts.len(),
+        hosts: locked(&s.inner).hosts.len(),
         bridges: s.bridges.load(Ordering::Relaxed),
         registrations: s.registrations.load(Ordering::Relaxed),
         joins: s.joins.load(Ordering::Relaxed),
@@ -309,20 +407,61 @@ fn unmap(peer: SocketAddr) -> SocketAddr {
     }
 }
 
+/// A connection counted against its address's cap ([`limits::Limiter::open_connection`]), given
+/// back however the connection ends.
+struct OpenSlot<'a>(&'a State, std::net::IpAddr);
+impl<'a> OpenSlot<'a> {
+    fn take(state: &'a State, ip: std::net::IpAddr) -> Option<Self> {
+        // Decided with the lock released before a slot exists: a refused one must never be built,
+        // its Drop would give back a place it never took (and lock the limiter again).
+        let open = locked(&state.limiter).open_connection(ip);
+        open.then(|| Self(state, ip))
+    }
+}
+impl Drop for OpenSlot<'_> {
+    fn drop(&mut self) {
+        locked(&self.0.limiter).close_connection(self.1);
+    }
+}
+
 fn handle(state: &Arc<State>, mut stream: TcpStream, peer: SocketAddr) -> io::Result<()> {
     if state.stop.load(Ordering::Relaxed) {
         return Ok(());
     }
     let mut peer = unmap(peer);
+    // Counted per address before anything is read: past its cap a connection is closed at once,
+    // not held for `first_line` with one of the relay's global slots. Behind the PROXY protocol the
+    // client's address is the line the load balancer sends on connect, so it's counted after it.
+    let mut _open = None;
+    if !state.config.proxy_protocol {
+        let Some(slot) = OpenSlot::take(state, peer.ip()) else {
+            return Ok(());
+        };
+        _open = Some(slot);
+    }
     // The first line (and an HTTP request) within `first_line` in all.
     let first_line = horizon_friends::deadline(&stream, state.config.first_line)?;
     stream.set_read_timeout(Some(state.config.first_line))?;
     let _ = stream.set_nodelay(true);
+    let _ = horizon_friends::set_tcp_keepalive(&stream);
     let mut line = wire::read_line(&mut stream)?.ok_or(io::ErrorKind::UnexpectedEof)?;
     if state.config.proxy_protocol {
+        if !state
+            .config
+            .proxy_from
+            .iter()
+            .any(|net| net.contains(peer.ip()))
+        {
+            // Not from our load balancer: its PROXY line would be the client's own say.
+            return Ok(());
+        }
         peer = proxy_line(&line)
             .map(unmap)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no PROXY line"))?;
+        let Some(slot) = OpenSlot::take(state, peer.ip()) else {
+            return Ok(());
+        };
+        _open = Some(slot);
         line = wire::read_line(&mut stream)?.ok_or(io::ErrorKind::UnexpectedEof)?;
     }
     if line.starts_with(b"GET ") {
@@ -376,6 +515,15 @@ fn http(state: &State, stream: &mut TcpStream, line: &[u8], peer: SocketAddr) ->
     stream.write_all(response.as_bytes())
 }
 
+/// One of an address's open hosts, given back when the host's connection
+/// ends, however it ends.
+struct HostSlot<'a>(&'a State, std::net::IpAddr);
+impl Drop for HostSlot<'_> {
+    fn drop(&mut self) {
+        locked(&self.0.limiter).close_host(self.1);
+    }
+}
+
 fn host(
     state: &Arc<State>,
     mut stream: TcpStream,
@@ -384,14 +532,19 @@ fn host(
     game: String,
 ) -> io::Result<()> {
     let now = Instant::now();
-    if !state.limiter.lock().unwrap().allow_register(peer.ip(), now) {
+    if !locked(&state.limiter).allow_register(peer.ip(), now) {
         state.rate_limited.fetch_add(1, Ordering::Relaxed);
         return refuse(&mut stream, ErrorCode::RateLimited);
     }
+    // One client holding its connections open must not take every host slot.
+    if !locked(&state.limiter).open_host(peer.ip()) {
+        return refuse(&mut stream, ErrorCode::Full);
+    }
+    let _slot = HostSlot(state, peer.ip());
     let (tx, rx) = channel();
     let token = random_token();
     let nameplate = {
-        let mut inner = state.inner.lock().unwrap();
+        let mut inner = locked(&state.inner);
         let kept = state.config.ended_kept;
         inner
             .ended
@@ -426,7 +579,7 @@ fn host(
     state.registrations.fetch_add(1, Ordering::Relaxed);
     let result = serve_host(state, &mut stream, peer, &nameplate, &token, tx, rx);
     {
-        let mut inner = state.inner.lock().unwrap();
+        let mut inner = locked(&state.inner);
         if inner
             .hosts
             .get(&nameplate)
@@ -477,8 +630,28 @@ fn serve_host(
     Ok(())
 }
 
-enum Lookup {
-    Found(Sender<Out>),
+/// One of `max_bridges`, reserved when a guest is matched with its host and given back when it drops:
+/// on every way out of the join (no attach, a refusal, an error, a panic) and at the bridge's end. A
+/// reservation counts from the match, not from the bridge, so joins waiting for their host's attach
+/// can't add up past the cap.
+struct BridgeSlot<'a>(&'a AtomicUsize);
+impl<'a> BridgeSlot<'a> {
+    fn take(count: &'a AtomicUsize, max: usize) -> Option<Self> {
+        if count.fetch_add(1, Ordering::AcqRel) >= max {
+            count.fetch_sub(1, Ordering::AcqRel);
+            return None;
+        }
+        Some(Self(count))
+    }
+}
+impl Drop for BridgeSlot<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+enum Lookup<'a> {
+    Found(Sender<Out>, BridgeSlot<'a>),
     Unknown,
     Ended,
     Version(String),
@@ -494,10 +667,13 @@ fn join(
 ) -> io::Result<()> {
     let now = Instant::now();
     state.joins.fetch_add(1, Ordering::Relaxed);
-    // The global budget for unknown codes is checked before the lookup, so a
-    // refusal says nothing about whether the nameplate exists.
-    let allowed = state.limiter.lock().unwrap().allow_join(peer.ip(), now)
-        && state.global_unknown.lock().unwrap().has(now);
+    // The budgets for unknown codes (the site's, then the global one) are checked before the
+    // lookup, so a refusal says nothing about whether the nameplate exists. The site's comes first:
+    // emptying the global budget takes many sites, not the /64s of one home's /56.
+    let allowed = {
+        let mut limiter = locked(&state.limiter);
+        limiter.allow_join(peer.ip(), now) && limiter.site_unknown_has(peer.ip(), now)
+    } && locked(&state.global_unknown).has(now);
     if !allowed {
         state.rate_limited.fetch_add(1, Ordering::Relaxed);
         return refuse(&mut stream, ErrorCode::RateLimited);
@@ -508,23 +684,25 @@ fn join(
     let session = random_u64();
     let (atx, arx) = sync_channel(1);
     let lookup = {
-        let mut inner = state.inner.lock().unwrap();
+        let mut inner = locked(&state.inner);
         let ended = inner
             .ended
             .get(&nameplate)
             .is_some_and(|t| now.saturating_duration_since(*t) < state.config.ended_kept);
-        let busy = state.bridges.load(Ordering::Relaxed) >= state.config.max_bridges;
         let lookup = match inner.hosts.get_mut(&nameplate) {
             None if ended => Lookup::Ended,
             None => Lookup::Unknown,
             Some(h) if h.protocol != protocol => Lookup::Version(h.game.clone()),
-            Some(h) if busy || h.pending >= state.config.max_pending_per_host => Lookup::Full,
-            Some(h) => {
-                h.pending += 1;
-                Lookup::Found(h.to_host.clone())
-            }
+            Some(h) if h.pending >= state.config.max_pending_per_host => Lookup::Full,
+            Some(h) => match BridgeSlot::take(&state.bridges, state.config.max_bridges) {
+                Some(slot) => {
+                    h.pending += 1;
+                    Lookup::Found(h.to_host.clone(), slot)
+                }
+                None => Lookup::Full,
+            },
         };
-        if matches!(lookup, Lookup::Found(_)) {
+        if matches!(lookup, Lookup::Found(..)) {
             inner.pending.insert(
                 session,
                 Pending {
@@ -535,12 +713,16 @@ fn join(
         }
         lookup
     };
-    let to_host = match lookup {
-        Lookup::Found(tx) => tx,
+    let (to_host, slot) = match lookup {
+        Lookup::Found(tx, slot) => (tx, slot),
         Lookup::Unknown => {
             state.unknown.fetch_add(1, Ordering::Relaxed);
-            state.limiter.lock().unwrap().unknown(peer.ip(), now);
-            state.global_unknown.lock().unwrap().try_take(now);
+            {
+                let mut limiter = locked(&state.limiter);
+                limiter.unknown(peer.ip(), now);
+                limiter.site_unknown_take(peer.ip(), now);
+            }
+            locked(&state.global_unknown).try_take(now);
             return refuse(&mut stream, ErrorCode::UnknownCode);
         }
         Lookup::Ended => return refuse(&mut stream, ErrorCode::Ended),
@@ -558,15 +740,18 @@ fn join(
     let _ = to_host.send(Out::Line(FromRelay::Join { session }));
     let attached = arx.recv_timeout(state.config.attach_wait);
     {
-        let mut inner = state.inner.lock().unwrap();
+        let mut inner = locked(&state.inner);
         inner.pending.remove(&session);
         if let Some(h) = inner.hosts.get_mut(&nameplate) {
             h.pending = h.pending.saturating_sub(1);
         }
     }
     match attached {
-        Ok((host, host_peer)) => bridge(state, stream, peer, host, host_peer, session),
-        Err(_) => refuse(&mut stream, ErrorCode::HostUnreachable),
+        Ok((host, host_peer)) => bridge(state, stream, peer, host, host_peer, session, slot),
+        Err(_) => {
+            drop(slot);
+            refuse(&mut stream, ErrorCode::HostUnreachable)
+        }
     }
 }
 
@@ -578,7 +763,7 @@ fn attach(
     token: &str,
 ) -> io::Result<()> {
     let target = {
-        let inner = state.inner.lock().unwrap();
+        let inner = locked(&state.inner);
         inner
             .pending
             .get(&session)
@@ -602,7 +787,8 @@ fn attach(
     }
 }
 
-/// Tell both ends they are bridged, then copy each way until either ends.
+/// Tell both ends they are bridged, then copy each way until either ends. `_slot` (the guest's
+/// reservation of one of `max_bridges`) is given back when this returns, however it returns.
 fn bridge(
     state: &Arc<State>,
     mut guest: TcpStream,
@@ -610,9 +796,9 @@ fn bridge(
     mut host: TcpStream,
     host_peer: SocketAddr,
     session: u64,
+    _slot: BridgeSlot<'_>,
 ) -> io::Result<()> {
-    state.bridges.fetch_add(1, Ordering::Relaxed);
-    let result = (|| -> io::Result<()> {
+    (|| -> io::Result<()> {
         wire::send(
             &mut guest,
             &FromRelay::Bridged {
@@ -630,6 +816,7 @@ fn bridge(
         for s in [&guest, &host] {
             s.set_read_timeout(Some(state.config.idle))?;
             let _ = s.set_nodelay(true);
+            let _ = horizon_friends::set_tcp_keepalive(s);
         }
         let (g, h, st) = (guest.try_clone()?, host.try_clone()?, state.clone());
         let up = std::thread::Builder::new()
@@ -638,15 +825,13 @@ fn bridge(
         copy(state, host, guest);
         let _ = up.join();
         Ok(())
-    })();
-    state.bridges.fetch_sub(1, Ordering::Relaxed);
-    result
+    })()
 }
 
 fn copy(state: &State, mut from: TcpStream, mut to: TcpStream) {
     let rate = state.config.session_rate;
     let mut bucket = Bucket::new(rate, (rate / 2.0).max(16384.0), Instant::now());
-    let mut buf = vec![0u8; 16 * 1024];
+    let mut buf = [0u8; 16 * 1024];
     loop {
         let n = match from.read(&mut buf) {
             Ok(0) | Err(_) => break,
@@ -655,7 +840,7 @@ fn copy(state: &State, mut from: TcpStream, mut to: TcpStream) {
         let now = Instant::now();
         let wait = bucket
             .take(n as f64, now)
-            .max(state.total.lock().unwrap().take(n as f64, now));
+            .max(locked(&state.total).take(n as f64, now));
         if !wait.is_zero() {
             std::thread::sleep(wait);
         }
@@ -673,6 +858,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_poisoned_lock_still_opens() {
+        let mutex = Arc::new(Mutex::new(7));
+        let held = mutex.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = held.lock().unwrap();
+            panic!("a connection's thread panics holding the lock");
+        })
+        .join();
+        assert!(mutex.is_poisoned());
+        assert_eq!(*locked(&mutex), 7);
+    }
+
+    #[test]
     fn mapped_addresses_become_ipv4() {
         assert_eq!(
             unmap("[::ffff:203.0.113.7]:5000".parse().unwrap()),
@@ -680,6 +878,41 @@ mod tests {
         );
         let v6: SocketAddr = "[2001:db8::1]:5000".parse().unwrap();
         assert_eq!(unmap(v6), v6);
+    }
+
+    #[test]
+    fn proxy_protocol_needs_its_load_balancers() {
+        let on = Config {
+            proxy_protocol: true,
+            ..Config::default()
+        };
+        assert!(on.check().unwrap_err().contains("RELAY_PROXY_FROM"));
+        let listed = Config {
+            proxy_from: Net::parse_list("10.0.0.0/8, 2001:db8::/32,192.0.2.7").unwrap(),
+            ..on
+        };
+        assert!(listed.check().is_ok());
+        assert!(Config::default().check().is_ok());
+        for bad in ["10.0.0.0/33", "nope", "10.0.0.1/x", "::/129"] {
+            assert!(Net::parse_list(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn ranges_hold_their_addresses() {
+        let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
+        let ten = Net::parse("10.0.0.0/8").unwrap();
+        assert!(ten.contains(ip("10.200.3.4")) && !ten.contains(ip("11.0.0.1")));
+        assert!(
+            ten.contains(ip("::ffff:10.1.1.1")),
+            "IPv4 on a dual-stack listener"
+        );
+        let one = Net::parse("192.0.2.7").unwrap();
+        assert!(one.contains(ip("192.0.2.7")) && !one.contains(ip("192.0.2.8")));
+        let v6 = Net::parse("2001:db8::/32").unwrap();
+        assert!(v6.contains(ip("2001:db8:1::5")) && !v6.contains(ip("2001:db9::1")));
+        assert!(!v6.contains(ip("10.0.0.1")));
+        assert!(Net::parse("0.0.0.0/0").unwrap().contains(ip("203.0.113.1")));
     }
 
     #[test]

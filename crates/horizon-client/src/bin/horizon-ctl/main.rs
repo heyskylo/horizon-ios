@@ -23,6 +23,8 @@ const USAGE: u8 = 2;
 const UNREACHABLE: u8 = 3;
 /// No AI is on (`horizon_core::no_ai`): agent control is off.
 const DENIED: u8 = 4;
+/// `--api LINE`: the game speaks another protocol line.
+const API_MISMATCH: u8 = 5;
 
 /// A failure, with the exit status it maps to.
 #[derive(Debug)]
@@ -104,13 +106,46 @@ impl Client {
     }
 }
 
+/// Whether a game's protocol (`MAJOR.MINOR.PATCH`) is on the requested line (`MAJOR.MINOR`, or a full version):
+/// every part the line names must match. Before 1.0 a patch only adds, so `0.1` takes `0.1.0` and `0.1.4`.
+fn on_line(protocol: &str, line: &str) -> bool {
+    let game: Vec<&str> = protocol.split('.').collect();
+    let want: Vec<&str> = line.split('.').collect();
+    want.len() <= game.len() && want.iter().zip(&game).all(|(w, g)| w == g)
+}
+
+/// Ask the game `hello` and refuse it unless it speaks `line`. A game without the command
+/// (older than protocol 0.1.0) has no protocol line and is refused too.
+fn check_api(client: &mut Client, line: &str) -> Result<(), Failure> {
+    let refuse = |why: String| Failure {
+        reply: json!({ "error": format!("horizon-ctl --api {line}: {why}"), "kind": "api", "wanted": line }),
+        status: API_MISMATCH,
+    };
+    let reply = client.send("hello")?;
+    match reply.get("protocol").and_then(Value::as_str) {
+        Some(p) if on_line(p, line) => Ok(()),
+        Some(p) => Err(refuse(format!(
+            "the game speaks control protocol {p}, not the {line} line; use a horizon-ctl built for it (docs/api/agent-control.md)"
+        ))),
+        None => Err(refuse(
+            "the game does not report a control protocol (it predates hello); update the game or drop --api".to_owned(),
+        )),
+    }
+}
+
 /// Global options and the connection, opened on first use.
 pub struct Session {
     pub socket: PathBuf,
     pub timeout: Option<Duration>,
     /// The game's home, where No AI is read (`horizon_core::no_ai`).
     pub home: PathBuf,
+    /// `--api LINE`: the protocol line this run speaks; a game on another line is refused.
+    pub api: Option<String>,
     client: Option<Client>,
+    /// `mcp --paced`: the world stands still between tool calls (`mcp::Session::call`).
+    pub paced: bool,
+    /// The pause menu `--paced` opened, which the next action closes.
+    pub(crate) held: bool,
 }
 
 impl Session {
@@ -119,7 +154,10 @@ impl Session {
             socket,
             timeout,
             home: horizon_client::logging::game_home(),
+            api: None,
             client: None,
+            paced: false,
+            held: false,
         }
     }
     /// A failure while No AI is on: every command refuses (help aside).
@@ -128,7 +166,11 @@ impl Session {
     }
     fn client(&mut self) -> Result<&mut Client, Failure> {
         if self.client.is_none() {
-            self.client = Some(Client::connect(&self.socket, self.timeout)?);
+            let mut client = Client::connect(&self.socket, self.timeout)?;
+            if let Some(line) = &self.api {
+                check_api(&mut client, line)?;
+            }
+            self.client = Some(client);
         }
         Ok(self.client.as_mut().unwrap())
     }
@@ -147,6 +189,124 @@ impl Session {
             });
         }
         Ok(reply)
+    }
+
+    /// `hunt ID`: walk up to a mob and hit it until it is gone, at most `timeout` seconds.
+    fn hunt(&mut self, id: i64, timeout: f64) -> Result<Value, Failure> {
+        let deadline = Instant::now() + Duration::from_secs_f64(timeout.max(0.0));
+        let before = self.game("inventory")?;
+        let (mut hits, mut seen) = (0, Value::Null);
+        loop {
+            let near = self.game("entities 48")?;
+            let Some(mob) = find_entity(&near, id) else {
+                break;
+            };
+            if mob["health"].as_f64().is_some_and(|h| h <= 0.0) {
+                // Dying: it vanishes after its death animation.
+                seen = mob;
+                break;
+            }
+            if Instant::now() > deadline {
+                return Err(Failure {
+                    reply: json!({
+                        "error": format!("entity {id} still alive after {timeout} s"),
+                        "kind": "timeout",
+                        "hits": hits,
+                        "entity": mob,
+                    }),
+                    status: GAME_ERROR,
+                });
+            }
+            seen = mob.clone();
+            let pos = &mob["pos"];
+            if mob["distance"].as_f64().unwrap_or(f64::MAX) > 2.5 {
+                // A path may not exist (water, a fence); try again from wherever this ends.
+                let _ = self.game(&format!(
+                    "goto {} {} {} --near 1.5 --sprint --timeout 3",
+                    pos[0], pos[1], pos[2]
+                ));
+                continue;
+            }
+            if self.game(&format!("attack {id}")).is_ok() {
+                hits += 1;
+                // Let the weapon recharge (a sword needs about 12 ticks).
+                self.game("wait 12")?;
+            } else {
+                let _ = self.game(&format!(
+                    "goto {} {} {} --near 0.8 --timeout 2",
+                    pos[0], pos[1], pos[2]
+                ));
+            }
+        }
+        // Walk over the drops so they are picked up.
+        if let Some(pos) = seen["pos"].as_array() {
+            let _ = self.game(&format!(
+                "goto {} {} {} --near 0.5 --timeout 4",
+                pos[0], pos[1], pos[2]
+            ));
+            self.game("wait 10")?;
+        }
+        let after = self.game("inventory")?;
+        Ok(json!({
+            "ok": true,
+            "gone": true,
+            "hits": hits,
+            "last_seen": seen,
+            "inventory_change": count_change(&before["counts"], &after["counts"]),
+        }))
+    }
+
+    /// `collect [RADIUS]`: walk over every dropped item within RADIUS, nearest first.
+    fn collect(&mut self, radius: f64) -> Result<Value, Failure> {
+        let before = self.game("inventory")?;
+        // Only the newest sequence number: events after it are this walk's.
+        let mut seq = self.game("events --since 18446744073709551615")?["last"]
+            .as_u64()
+            .unwrap_or_default();
+        let mut tried = Vec::new();
+        let mut left = Vec::new();
+        // Each item is tried once; one that stays put after a walk is out of reach.
+        while let Some(item) = nearest_item(&self.game(&format!("entities {radius}"))?, &tried) {
+            let id = item["id"].as_i64().unwrap_or_default();
+            tried.push(id);
+            let pos = &item["pos"];
+            let walk = self.game(&format!(
+                "goto {} {} {} --near 0.4 --timeout 4",
+                pos[0], pos[1], pos[2]
+            ));
+            self.game("wait 4")?;
+            let near = self.game(&format!("entities {radius}"))?;
+            if let Some(mut still) = find_entity(&near, id) {
+                if let Err(e) = walk {
+                    still["why"] = e.reply["error"].clone();
+                }
+                left.push(still);
+            }
+            // Stop when something hurts the player: walking on into a mob,
+            // a creeper or lava kills an agent that only reads the reply.
+            let events = self.game(&format!("events --since {seq}"))?;
+            seq = events["last"].as_u64().unwrap_or(seq);
+            let hurt = hurts(&events);
+            if !hurt.is_empty() {
+                let after = self.game("inventory")?;
+                return Err(Failure {
+                    reply: json!({
+                        "error": "stopped: the player was hurt",
+                        "kind": "hurt",
+                        "hurt": hurt,
+                        "inventory_change": count_change(&before["counts"], &after["counts"]),
+                        "left": left,
+                    }),
+                    status: GAME_ERROR,
+                });
+            }
+        }
+        let after = self.game("inventory")?;
+        Ok(json!({
+            "ok": true,
+            "inventory_change": count_change(&before["counts"], &after["counts"]),
+            "left": left,
+        }))
     }
 
     /// Run one command (CLI words); Ok(reply) or a failure.
@@ -197,13 +357,43 @@ impl Session {
                     [_, id] if id.parse::<i64>().is_ok() => id,
                     _ => return Err(Failure::usage(format!("usage: {}", usage(name)))),
                 };
-                self.game(&format!("look-at entity {id}"))?;
+                let id: i64 = id.parse().unwrap_or_default();
+                let look = self.game(&format!("look-at entity {id}"))?;
+                if let Err(error) = aimed_at(&look, id) {
+                    return Err(Failure {
+                        reply: json!({ "error": error, "target": look["target"] }),
+                        status: GAME_ERROR,
+                    });
+                }
+                let before = self.game("inventory")?;
                 self.game("mouse right click")?;
                 self.game("wait 2")?;
+                let after = self.game("inventory")?;
                 let mut screen = self.game("screen")?;
                 screen["ok"] = json!(true);
+                screen["inventory_change"] = count_change(&before["counts"], &after["counts"]);
                 Ok(screen)
             }
+            "hunt" => {
+                let (id, timeout) = match words {
+                    [_, id] => (id.parse::<i64>().ok(), Some(30.0)),
+                    [_, id, flag, s] if flag == "--timeout" => {
+                        (id.parse::<i64>().ok(), s.parse::<f64>().ok())
+                    }
+                    _ => (None, None),
+                };
+                let (Some(id), Some(timeout)) = (id, timeout) else {
+                    return Err(Failure::usage(format!("usage: {}", usage(name))));
+                };
+                self.hunt(id, timeout)
+            }
+            "collect" => match words {
+                [_] => self.collect(8.0),
+                [_, r] if r.parse::<f64>().is_ok_and(|r| r > 0.0) => {
+                    self.collect(r.parse().unwrap_or(8.0))
+                }
+                _ => Err(Failure::usage(format!("usage: {}", usage(name)))),
+            },
             "hold" => {
                 let (key, seconds) = match words {
                     [_, key, _] => (key.clone(), number(2, "SECONDS")?),
@@ -264,6 +454,79 @@ impl Session {
     }
 }
 
+/// Whether `look` (a `look-at entity` reply) put entity `id` under the crosshair; if not,
+/// what is there instead, so a right click is not spent on a tree or the air.
+fn aimed_at(look: &Value, id: i64) -> Result<(), String> {
+    let target = &look["target"];
+    let entity = &target["entity"];
+    if entity["id"].as_i64() == Some(id) {
+        return Ok(());
+    }
+    Err(if let Some(other) = entity["id"].as_i64() {
+        format!(
+            "entity {id} is not under the crosshair: {} {other} is in the way",
+            entity["type"].as_str().unwrap_or("an entity")
+        )
+    } else if let Some(block) = target["block"]["block"].as_str() {
+        format!(
+            "entity {id} is not under the crosshair: {block} at {} is in the way",
+            target["block"]["pos"]
+        )
+    } else {
+        format!("entity {id} is not under the crosshair: it is out of reach or moved; walk closer")
+    })
+}
+
+/// The entity `id` in an `entities` reply.
+fn find_entity(reply: &Value, id: i64) -> Option<Value> {
+    reply["entities"]
+        .as_array()?
+        .iter()
+        .find(|e| e["id"].as_i64() == Some(id))
+        .cloned()
+}
+
+/// The nearest dropped item in an `entities` reply (nearest first) whose id is not in `skip`.
+fn nearest_item(reply: &Value, skip: &[i64]) -> Option<Value> {
+    reply["entities"]
+        .as_array()?
+        .iter()
+        .find(|e| e["kind"] == "item" && !e["id"].as_i64().is_some_and(|id| skip.contains(&id)))
+        .cloned()
+}
+
+/// The `hurt` events in an `events` reply.
+fn hurts(reply: &Value) -> Vec<Value> {
+    let events = reply["events"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    events
+        .iter()
+        .filter(|e| e["event"] == "hurt")
+        .cloned()
+        .collect()
+}
+
+/// Item counts that changed from `before` to `after` (`inventory` replies' `counts`).
+fn count_change(before: &Value, after: &Value) -> Value {
+    let empty = serde_json::Map::new();
+    let (before, after) = (
+        before.as_object().unwrap_or(&empty),
+        after.as_object().unwrap_or(&empty),
+    );
+    let mut change = serde_json::Map::new();
+    for item in before.keys().chain(after.keys()) {
+        let n =
+            |m: &serde_json::Map<String, Value>| m.get(item).and_then(Value::as_i64).unwrap_or(0);
+        let delta = n(after) - n(before);
+        if delta != 0 {
+            change.insert(item.clone(), json!(delta));
+        }
+    }
+    Value::Object(change)
+}
+
 /// `logs [--lines N] [--crash]` for the game in `home`: the reply's `text` is the log's last
 /// lines or the report.
 fn logs(home: &Path, words: &[String]) -> Result<Value, Failure> {
@@ -322,6 +585,11 @@ fn absolute_paths(words: &mut [String]) {
     match words.first().map(String::as_str) {
         Some("screenshot") => {
             if let Some(path) = words.get_mut(1) {
+                *path = cwd.join(&*path).display().to_string();
+            }
+        }
+        Some("screenshot-sequence") => {
+            if let Some(path) = words.get_mut(3) {
                 *path = cwd.join(&*path).display().to_string();
             }
         }
@@ -428,6 +696,7 @@ fn main() -> ExitCode {
     let mut socket = horizon_client::control::default_path();
     let mut timeout = None;
     let mut pretty = false;
+    let mut api: Option<String> = None;
     // Global options before the command.
     loop {
         match args.first().map(String::as_str) {
@@ -446,6 +715,10 @@ fn main() -> ExitCode {
                 timeout = Some(Duration::from_secs_f64(s.max(0.001)));
                 args.drain(0..2);
             }
+            Some("--api") if args.len() >= 2 => {
+                api = Some(args[1].clone());
+                args.drain(0..2);
+            }
             Some("--pretty") => {
                 pretty = true;
                 args.remove(0);
@@ -453,7 +726,22 @@ fn main() -> ExitCode {
             _ => break,
         }
     }
+    if let Some(line) = &api {
+        let valid = !line.is_empty()
+            && line.split('.').count() <= 3
+            && line
+                .split('.')
+                .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+        if !valid {
+            print(
+                &json!({ "error": "--api takes a protocol line such as 0.1", "kind": "usage" }),
+                false,
+            );
+            return ExitCode::from(USAGE);
+        }
+    }
     let mut session = Session::new(socket, timeout);
+    session.api = api;
     let name = args.first().cloned();
     let status = match name.as_deref() {
         None | Some("-h" | "--help") => {
@@ -502,13 +790,16 @@ fn main() -> ExitCode {
             eprintln!("horizon-ctl mcp: {}", horizon_core::no_ai::REFUSAL);
             DENIED
         }
-        Some("mcp") => match mcp::serve(&mut session) {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("horizon-ctl mcp: {e}");
-                UNREACHABLE
+        Some("mcp") => {
+            session.paced = args[1..].iter().any(|a| a == "--paced");
+            match mcp::serve(&mut session) {
+                Ok(()) => 0,
+                Err(e) => {
+                    eprintln!("horizon-ctl mcp: {e}");
+                    UNREACHABLE
+                }
             }
-        },
+        }
         // The original form: stdin, keep going after errors.
         Some("-") => script(&mut session, std::io::stdin().lock(), true, pretty),
         Some("script") => {
@@ -555,6 +846,74 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aimed_at_names_what_is_under_the_crosshair_instead() {
+        let on = json!({ "target": { "entity": { "id": 91, "type": "minecraft:sheep" } } });
+        assert_eq!(aimed_at(&on, 91), Ok(()));
+        let sheep = aimed_at(&on, 107).unwrap_err();
+        assert!(
+            sheep.contains("minecraft:sheep 91 is in the way"),
+            "{sheep}"
+        );
+        let log = json!({
+            "target": { "block": { "block": "minecraft:oak_log", "pos": [1, 2, 3] } }
+        });
+        let log = aimed_at(&log, 91).unwrap_err();
+        assert!(
+            log.contains("minecraft:oak_log at [1,2,3] is in the way"),
+            "{log}"
+        );
+        let nothing = aimed_at(&json!({ "target": null }), 91).unwrap_err();
+        assert!(nothing.contains("walk closer"), "{nothing}");
+    }
+
+    #[test]
+    fn find_entity_picks_the_id_out_of_an_entities_reply() {
+        let near = json!({ "entities": [{ "id": 3 }, { "id": 90, "type": "minecraft:chicken" }] });
+        assert_eq!(find_entity(&near, 90).unwrap()["type"], "minecraft:chicken");
+        assert!(find_entity(&near, 7).is_none());
+        assert!(find_entity(&json!({}), 90).is_none());
+    }
+
+    #[test]
+    fn hurts_keeps_only_hurt_events() {
+        let reply = json!({ "events": [
+            { "event": "item", "seq": 1 },
+            { "event": "hurt", "amount": 3.0, "seq": 2 },
+            { "event": "heal", "seq": 3 },
+        ], "last": 3 });
+        assert_eq!(
+            hurts(&reply),
+            vec![json!({ "event": "hurt", "amount": 3.0, "seq": 2 })]
+        );
+        assert!(hurts(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn nearest_item_skips_mobs_and_items_already_tried() {
+        let near = json!({ "entities": [
+            { "id": 1, "kind": "mob" },
+            { "id": 2, "kind": "item" },
+            { "id": 3, "kind": "item" },
+        ] });
+        assert_eq!(nearest_item(&near, &[]).unwrap()["id"], 2);
+        assert_eq!(nearest_item(&near, &[2]).unwrap()["id"], 3);
+        assert!(nearest_item(&near, &[2, 3]).is_none());
+    }
+
+    #[test]
+    fn count_change_keeps_only_items_whose_count_moved() {
+        let before = json!({ "minecraft:shears": 1, "minecraft:white_wool": 1 });
+        let after = json!({
+            "minecraft:shears": 1, "minecraft:white_wool": 3, "minecraft:stick": 2
+        });
+        assert_eq!(
+            count_change(&before, &after),
+            json!({ "minecraft:white_wool": 2, "minecraft:stick": 2 })
+        );
+        assert_eq!(count_change(&after, &before)["minecraft:stick"], json!(-2));
+    }
 
     #[test]
     fn logs_reads_the_end_of_latest_log_and_the_newest_crash_report() {
@@ -622,6 +981,118 @@ mod tests {
         assert!(split_line("type \"open").is_err());
     }
 
+    /// A fake game on a Unix socket: answers every line with `reply`, records the lines it got.
+    #[cfg(unix)]
+    fn fake_game(
+        name: &str,
+        reply: &'static str,
+    ) -> (PathBuf, std::thread::JoinHandle<Vec<String>>) {
+        let path = std::env::temp_dir().join(format!("hctl-{name}-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut lines = Vec::new();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut out = stream;
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap_or(0) > 0 {
+                lines.push(line.trim_end().to_owned());
+                line.clear();
+                writeln!(out, "{reply}").unwrap();
+            }
+            lines
+        });
+        (path, handle)
+    }
+
+    #[cfg(unix)]
+    fn api_session(path: &Path, api: &str) -> Session {
+        let mut s = Session::new(path.to_owned(), Some(Duration::from_secs(5)));
+        s.home = std::env::temp_dir().join("horizon-ctl-api-no-home");
+        s.api = Some(api.to_owned());
+        s
+    }
+
+    #[test]
+    fn api_line_matches_whole_parts() {
+        assert!(on_line("0.1.0", "0.1"));
+        assert!(on_line("0.1.4", "0.1"));
+        assert!(on_line("0.1.0", "0.1.0"));
+        assert!(!on_line("0.1.0", "0.1.1"));
+        assert!(!on_line("0.2.0", "0.1"));
+        assert!(!on_line("0.10.0", "0.1"));
+        assert!(!on_line("1.0.0", "0"));
+        assert!(!on_line("0.1", "0.1.0"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn api_accepts_a_game_on_the_line() {
+        let (path, game) = fake_game(
+            "match",
+            r#"{"protocol":"0.1.0","release":"x","features":[]}"#,
+        );
+        let mut s = api_session(&path, "0.1");
+        let reply = s.game("hello").unwrap();
+        assert_eq!(reply["protocol"], "0.1.0");
+        drop(s);
+        // hello for the check, then the caller's own line.
+        assert_eq!(game.join().unwrap(), ["hello", "hello"]);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn api_refuses_a_game_on_another_line() {
+        let (path, game) = fake_game(
+            "mismatch",
+            r#"{"protocol":"0.2.0","release":"x","features":[]}"#,
+        );
+        let mut s = api_session(&path, "0.1");
+        let f = s.game("state").unwrap_err();
+        assert_eq!(f.status, API_MISMATCH);
+        assert_eq!(f.reply["kind"], "api");
+        let message = f.reply["error"].as_str().unwrap();
+        assert!(
+            message.contains("0.2.0") && message.contains("0.1"),
+            "{message}"
+        );
+        drop(s);
+        // The refused command never reached the game.
+        assert_eq!(game.join().unwrap(), ["hello"]);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn api_refuses_a_game_with_no_protocol_line() {
+        let (path, game) = fake_game("old", r#"{"error":"unknown command hello"}"#);
+        let mut s = api_session(&path, "0.1");
+        let f = s.game("state").unwrap_err();
+        assert_eq!(f.status, API_MISMATCH);
+        assert!(
+            f.reply["error"]
+                .as_str()
+                .unwrap()
+                .contains("predates hello")
+        );
+        drop(s);
+        assert_eq!(game.join().unwrap(), ["hello"]);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn without_api_the_game_is_not_asked_hello() {
+        let (path, game) = fake_game("noapi", r#"{"ok":true}"#);
+        let mut s = Session::new(path.clone(), Some(Duration::from_secs(5)));
+        s.game("state").unwrap();
+        drop(s);
+        assert_eq!(game.join().unwrap(), ["state"]);
+        let _ = std::fs::remove_file(path);
+    }
+
     #[test]
     fn unreachable_games_fail_with_status_3() {
         let home =
@@ -663,5 +1134,9 @@ mod tests {
         let mut words = vec!["screenshot".to_owned(), "a.png".to_owned()];
         absolute_paths(&mut words);
         assert!(Path::new(&words[1]).is_absolute());
+        let mut words = ["screenshot-sequence", "64", "50", "a.png"].map(str::to_owned);
+        absolute_paths(&mut words);
+        assert!(Path::new(&words[3]).is_absolute());
+        assert_eq!(words[1..3], ["64", "50"]);
     }
 }

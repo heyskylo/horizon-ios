@@ -5,7 +5,7 @@
 //! through whatever it hit.
 use super::{
     Game,
-    creatures::{ProjWorld, wind_charge_hit},
+    creatures::{ProjWorld, pickable_projectile_hit},
     dragon::{CRYSTAL_IDS, SPECIAL},
     lan_pvp::meets_players,
     native_hooks::mob_kind,
@@ -33,15 +33,7 @@ pub(super) struct Impact {
 
 /// The type the mods know a projectile by: a spectral arrow is its own.
 fn projectile_type(p: &Projectile) -> &'static str {
-    let spectral = p
-        .arrow
-        .as_ref()
-        .is_some_and(|a| &*a.pickup_item.item == "minecraft:spectral_arrow");
-    if spectral {
-        "minecraft:spectral_arrow"
-    } else {
-        p.kind.id()
-    }
+    p.entity_type()
 }
 
 impl Game<'_> {
@@ -158,7 +150,7 @@ impl Game<'_> {
                     who: Who::Mob(id),
                     at,
                 } => {
-                    if wind_charge_hit(id).is_some() {
+                    if pickable_projectile_hit(id).is_some() {
                         canceled.push(false);
                         continue;
                     }
@@ -211,9 +203,9 @@ impl Game<'_> {
         arrow_events: &mut Vec<(Vec3, ArrowEvent)>,
     ) {
         // The mods see the projectiles where they will be, as `projectile_hit` does.
-        self.creatures.projectiles = std::mem::take(projectiles);
+        self.creatures.projectiles = std::mem::take(projectiles).into();
         let canceled = self.native_projectile_impacts(&impacts);
-        *projectiles = std::mem::take(&mut self.creatures.projectiles);
+        *projectiles = std::mem::take(&mut self.creatures.projectiles).into();
         if !canceled.contains(&true) {
             return;
         }
@@ -227,7 +219,11 @@ impl Game<'_> {
             if present.is_none() && listed[impact.index] {
                 continue;
             }
-            let (p, keep, events) = self.native_projectile_through(impact.before);
+            let mut before = impact.before;
+            // Replaying a canceled impact must not repeat the first-tick event
+            // already queued by the original tick.
+            before.has_been_shot = hits[impact.hit_slot].0.has_been_shot;
+            let (p, keep, events) = self.native_projectile_through(before);
             flown.extend(events);
             match (present, keep) {
                 (Some(i), true) => projectiles[i] = p,
@@ -270,9 +266,6 @@ impl Game<'_> {
             p.owner = shooter;
         }
         let mut targets = self.projectile_targets();
-        if p.arrow.is_some() {
-            targets.extend(self.carts.iter().map(|c| (Who::Mob(c.id), c.bounds())));
-        }
         if mob_shot || pvp {
             targets.extend(self.lan_projectile_targets());
         }

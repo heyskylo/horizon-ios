@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "set_compass_target",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_set_compass_target"
+    }
+  ],
+  "rust_summary": "a player's compass target, kept over respawns and level changes (`native_set_compass_target`), as Bukkit's `setCompassTarget`.",
+  "doc_summary": "`native_set_compass_target(uuid, target)` (`host.set_compass_target`) points one player's compass at a dimension and block position, or at the world spawn again (None), as Bukkit's `Player.setCompassTarget`; the target is sent in place of the world spawn until a mod sets it again or they leave, so a respawn or a level change keeps it. Bundles need \"hooks\": @API:compass_target@."
+}

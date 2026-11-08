@@ -1,6 +1,7 @@
 //! The multiplayer server list, stored like vanilla's ServerList in an
 //! uncompressed `servers.dat`: `{servers: [{name, ip, icon?, acceptTextures?,
-//! acceptedCodeOfConduct?}]}`.
+//! acceptedCodeOfConduct?, hidden}]}`. Hidden entries (servers joined by
+//! Direct Connection or quick play) are not shown but keep their settings.
 use horizon_world::nbt::{self, JavaString, NamedTag, Tag};
 use std::path::Path;
 
@@ -66,38 +67,118 @@ impl ServerEntry {
     }
 }
 
-/// ServerList.load: missing or unreadable files give an empty list.
+/// ServerList.load: the shown entries; missing or unreadable files give an empty list.
 pub fn load(path: &Path) -> Vec<ServerEntry> {
+    load_all(path).0
+}
+/// ServerList.load: the shown entries (`serverList`) and the hidden ones
+/// (`hiddenServerList`, `hidden` set), each in the file's order.
+pub fn load_all(path: &Path) -> (Vec<ServerEntry>, Vec<ServerEntry>) {
+    let (mut shown, mut hidden) = (Vec::new(), Vec::new());
     let Ok(bytes) = std::fs::read(path) else {
-        return Vec::new();
+        return (shown, hidden);
     };
     let Ok((root, _)) = nbt::read_named(&bytes, nbt::Limits::default()) else {
-        return Vec::new();
+        return (shown, hidden);
     };
-    // ServerList skips entries flagged "hidden" (the LAN/quick-play ones).
-    match root.tag.get("servers") {
-        Some(Tag::List(list)) => list
-            .iter()
-            .filter(|t| !matches!(t.get("hidden"), Some(Tag::Byte(1))))
-            .filter_map(ServerEntry::from_tag)
-            .collect(),
-        _ => Vec::new(),
+    if let Some(Tag::List(list)) = root.tag.get("servers") {
+        for t in list {
+            let Some(entry) = ServerEntry::from_tag(t) else {
+                continue;
+            };
+            // CompoundTag.getBooleanOr("hidden", false): any number but zero.
+            let is_hidden = match t.get("hidden") {
+                Some(Tag::Byte(b)) => *b != 0,
+                Some(Tag::Short(n)) => *n as i8 != 0,
+                Some(Tag::Int(n)) => *n as i8 != 0,
+                Some(Tag::Long(n)) => *n as i8 != 0,
+                _ => false,
+            };
+            if is_hidden {
+                hidden.push(entry);
+            } else {
+                shown.push(entry);
+            }
+        }
     }
+    (shown, hidden)
 }
-/// ServerList.save: write to a temporary file, then replace.
+/// ServerList.save for the shown entries, keeping the hidden ones the file has.
 pub fn save(path: &Path, servers: &[ServerEntry]) -> std::io::Result<()> {
+    let (_, hidden) = load_all(path);
+    save_all(path, servers, &hidden)
+}
+/// ServerList.save: the shown entries with `hidden: false`, then the hidden
+/// ones with `hidden: true`, written to a temporary file, then replaced.
+pub fn save_all(
+    path: &Path,
+    servers: &[ServerEntry],
+    hidden: &[ServerEntry],
+) -> std::io::Result<()> {
+    let flagged = |entry: &ServerEntry, flag: bool| {
+        let mut tag = entry.to_tag();
+        if let Tag::Compound(c) = &mut tag {
+            c.insert(JavaString::from("hidden"), Tag::Byte(i8::from(flag)));
+        }
+        tag
+    };
+    let list = servers
+        .iter()
+        .map(|e| flagged(e, false))
+        .chain(hidden.iter().map(|e| flagged(e, true)))
+        .collect();
     let root = NamedTag {
         name: JavaString::from(""),
-        tag: Tag::compound([(
-            "servers",
-            Tag::List(servers.iter().map(ServerEntry::to_tag).collect()),
-        )]),
+        tag: Tag::compound([("servers", Tag::List(list))]),
     };
     write(path, &root)
+}
+/// ServerList.add(server, true): a hidden entry goes first, and only the 16
+/// newest hidden entries are kept (`MAX_HIDDEN_SERVERS`); then saved.
+pub fn add_hidden(path: &Path, entry: ServerEntry) -> std::io::Result<()> {
+    let (shown, mut hidden) = load_all(path);
+    hidden.insert(0, entry);
+    hidden.truncate(16);
+    save_all(path, &shown, &hidden)
 }
 /// Puts `entry` first, keeping every other entry and field as the file has them (the hidden
 /// ones too). A file that is there but can't be read is left as it is.
 pub fn prepend(path: &Path, entry: &ServerEntry) -> std::io::Result<()> {
+    insert(path, entry, |_| None)
+}
+/// Removes every entry `matches` accepts (given its name and address), keeping the other
+/// entries and every field as the file has them (the hidden ones too). Whether any went; a
+/// missing file has none, and the file is only written when something went.
+pub fn remove_where(path: &Path, matches: impl Fn(&str, &str) -> bool) -> std::io::Result<bool> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    let mut root = nbt::read_named(&bytes, nbt::Limits::default())
+        .map_err(std::io::Error::other)?
+        .0;
+    let Some(Tag::List(list)) = root.tag.get_mut("servers") else {
+        return Ok(false);
+    };
+    let text = |t: &Tag, key: &str| match t.get(key) {
+        Some(Tag::String(s)) => s.to_string_lossy(),
+        _ => String::new(),
+    };
+    let before = list.len();
+    list.retain(|t| !matches(&text(t, "name"), &text(t, "ip")));
+    if list.len() == before {
+        return Ok(false);
+    }
+    write(path, &root)?;
+    Ok(true)
+}
+/// Inserts `entry` at the index `at` picks in the file's list (`None`: first).
+fn insert(
+    path: &Path,
+    entry: &ServerEntry,
+    at: impl Fn(&[Tag]) -> Option<usize>,
+) -> std::io::Result<()> {
     let mut root = match std::fs::read(path) {
         Ok(bytes) => {
             nbt::read_named(&bytes, nbt::Limits::default())
@@ -117,7 +198,10 @@ pub fn prepend(path: &Path, entry: &ServerEntry) -> std::io::Result<()> {
         .entry(JavaString::from("servers"))
         .or_insert_with(|| Tag::List(Vec::new()))
     {
-        Tag::List(list) => list.insert(0, entry.to_tag()),
+        Tag::List(list) => {
+            let index = at(list).unwrap_or(0);
+            list.insert(index, entry.to_tag());
+        }
         _ => return Err(std::io::Error::other("servers.dat has no server list")),
     }
     write(path, &root)
@@ -136,18 +220,40 @@ pub fn parse_address(text: &str) -> Option<(String, u16)> {
         return None;
     }
     if let Some(rest) = text.strip_prefix('[') {
-        let (host, tail) = rest.split_once(']')?;
+        let (host, tail) = rest.rsplit_once(']')?;
+        // HostAndPort requires a colon inside a bracketed host; it does not
+        // accept a bracketed DNS name as an IPv6-style address.
+        if !host.contains(':') {
+            return None;
+        }
         let port = match tail.strip_prefix(':') {
-            Some(p) => p.parse().ok()?,
+            Some(p) if p.bytes().all(|byte| byte.is_ascii_digit()) => parse_port(p)?,
             None if tail.is_empty() => 25565,
-            None => return None,
+            _ => return None,
         };
         return Some((host.to_owned(), port));
     }
     match text.rsplit_once(':') {
-        Some((host, port)) if !host.contains(':') => Some((host.to_owned(), port.parse().ok()?)),
+        Some((host, port)) if !host.contains(':') => {
+            if host.is_empty() {
+                return None;
+            }
+            Some((host.to_owned(), parse_port(port)?))
+        }
         Some(_) => Some((text.to_owned(), 25565)),
         None => Some((text.to_owned(), 25565)),
+    }
+}
+
+/// HostAndPort uses the default for an empty port, refuses a leading plus,
+/// and accepts signed zero on its non-bracketed path before checking range.
+fn parse_port(text: &str) -> Option<u16> {
+    if text.is_empty() {
+        Some(25565)
+    } else if text.starts_with('+') {
+        None
+    } else {
+        u16::try_from(text.parse::<i32>().ok()?).ok()
     }
 }
 
@@ -225,5 +331,45 @@ mod tests {
         assert_eq!(parse_address("[::1]:1234"), Some(("::1".into(), 1234)));
         assert_eq!(parse_address("host:notaport"), None);
         assert_eq!(parse_address(""), None);
+    }
+
+    #[test]
+    fn empty_explicit_ports_use_the_vanilla_default() {
+        for (input, host) in [
+            ("example.com:", "example.com"),
+            ("127.0.0.1:", "127.0.0.1"),
+            ("[::1]:", "::1"),
+            ("[2001:db8::1]:", "2001:db8::1"),
+            (" \t[::1]:\r\n", "::1"),
+        ] {
+            assert_eq!(parse_address(input), Some((host.into(), 25565)), "{input}");
+        }
+    }
+
+    #[test]
+    fn ports_and_brackets_keep_vanilla_validation() {
+        for input in [
+            ":",
+            ":25565",
+            "[]",
+            "[]:",
+            "[example.com]",
+            "[example.com]:",
+            "[::1]junk",
+            "example.com:+25565",
+            "[::1]:+25565",
+            "[::1]:-0",
+            "example.com:-1",
+            "example.com:65536",
+            "[::1]:65536",
+            "host:2147483648",
+            "host:1_000",
+            "host:\u{0661}\u{0662}",
+        ] {
+            assert_eq!(parse_address(input), None, "{input}");
+        }
+        assert_eq!(parse_address("host:-0"), Some(("host".into(), 0)));
+        assert_eq!(parse_address("host:0"), Some(("host".into(), 0)));
+        assert_eq!(parse_address("[::1]:65535"), Some(("::1".into(), 65535)));
     }
 }

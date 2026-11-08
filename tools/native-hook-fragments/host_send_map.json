@@ -1,0 +1,8 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "send_map", "target": "horizon_client::game::native_inventories::Game<'_>::native_send_map", "mod_api": {}}
+  ],
+  "rust_summary": "the drawn-map sender on Host (`send_map`, the existing `native_send_map`).",
+  "doc_summary": "`Host::send_map(uuid, map_id, colors)` sends a 128 x 128 map picture (16384 colour bytes) to a player for a filled map with that `map_id`, the existing `native_send_map` (API 132) now reachable from a trait mod. False for a player not here or `colors` not 16384 long. Bundles need \"hooks\": @API:host_send_map@."
+}

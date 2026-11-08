@@ -30,6 +30,13 @@ use std::{
 
 /// Wrong short codes tried at the relay before the host retires it.
 pub const MAX_WRONG: u32 = 5;
+/// Wrong short codes over one sharing session before the host leaves the
+/// relay for good (the full code keeps working directly). Each short code
+/// has a fresh 20-bit secret, so this caps a relay's chance of guessing one
+/// at 50 / 2^20 per session.
+pub const MAX_WRONG_TOTAL: u32 = 50;
+/// The longest wait before registering again after a retired short code.
+const MAX_RETIRE_DELAY: Duration = Duration::from_secs(300);
 /// Sessions open at once (IntegratedServer.MAX_PLAYERS).
 pub const MAX_SESSIONS: usize = 8;
 /// The direct port asked for first, so a port forwarded by hand keeps
@@ -82,10 +89,92 @@ pub enum HostEvent {
     Disconnected {
         session: u64,
     },
-    /// Someone tried a wrong code.
+    /// Someone tried a wrong code (`count`: on this code so far).
     WrongCode {
         count: u32,
     },
+    /// Too many wrong short codes this session: the host left the relay, and
+    /// friends join with the full code only.
+    RelayStopped,
+}
+
+/// How long to wait before registering again after the `retired`th short
+/// code was retired for wrong secrets: 1 s, 2 s, 4 s ... up to 5 minutes.
+pub fn retire_delay(retired: u32) -> Duration {
+    let doubling = retired.saturating_sub(1).min(16);
+    Duration::from_secs(1 << doubling).min(MAX_RETIRE_DELAY)
+}
+
+/// Wrong short-code guesses through the relay. The count for the current
+/// code starts over with each registration; the total and the retired codes
+/// last for the whole sharing session, so registering again can't buy the
+/// relay (or whoever drives its joins) fresh guesses.
+#[derive(Debug, Default)]
+struct Guesses {
+    /// Wrong on the current short code.
+    code: u32,
+    total: u32,
+    /// Key exchanges in progress: each may be one more wrong guess.
+    pending: u32,
+    retired: u32,
+}
+
+/// What `run_relay` does once the control connection ended cleanly.
+#[derive(Debug, PartialEq)]
+enum Next {
+    /// Register again now.
+    Now,
+    /// The code was retired: wait, then register again.
+    Wait(Duration),
+    /// Too many wrong guesses this session: leave the relay.
+    Stop,
+}
+
+impl Guesses {
+    /// Reserve a guess for one relayed key exchange; false when a wrong
+    /// answer from every exchange in progress could pass a limit.
+    fn reserve(&mut self) -> bool {
+        let free =
+            self.code + self.pending < MAX_WRONG && self.total + self.pending < MAX_WRONG_TOTAL;
+        if free {
+            self.pending += 1;
+        }
+        free
+    }
+    fn release(&mut self) {
+        self.pending = self.pending.saturating_sub(1);
+    }
+    /// A wrong secret: the count on this code, and whether to retire it.
+    fn wrong(&mut self) -> (u32, bool) {
+        self.code += 1;
+        self.total += 1;
+        (self.code, self.retiring())
+    }
+    fn retiring(&self) -> bool {
+        self.code >= MAX_WRONG || self.total >= MAX_WRONG_TOTAL
+    }
+    fn registered(&mut self) {
+        self.code = 0;
+    }
+    fn next(&mut self) -> Next {
+        if self.total >= MAX_WRONG_TOTAL {
+            Next::Stop
+        } else if self.code >= MAX_WRONG {
+            self.retired += 1;
+            Next::Wait(retire_delay(self.retired))
+        } else {
+            Next::Now
+        }
+    }
+}
+
+/// A guess reserved in [`Guesses`], released when dropped (count the wrong
+/// answer first).
+struct Reserved(Arc<Shared>);
+impl Drop for Reserved {
+    fn drop(&mut self) {
+        self.0.guesses.lock().unwrap().release();
+    }
 }
 
 struct Shared {
@@ -102,7 +191,7 @@ struct Shared {
     sessions: AtomicUsize,
     handshakes: AtomicUsize,
     wrong: AtomicU32,
-    relay_wrong: AtomicU32,
+    guesses: Mutex<Guesses>,
     reach: Mutex<Option<Reach>>,
 }
 impl Shared {
@@ -164,7 +253,7 @@ impl Host {
             sessions: AtomicUsize::new(0),
             handshakes: AtomicUsize::new(0),
             wrong: AtomicU32::new(0),
-            relay_wrong: AtomicU32::new(0),
+            guesses: Mutex::new(Guesses::default()),
             reach: Mutex::new(None),
         });
         let mut threads = Vec::new();
@@ -425,6 +514,24 @@ fn run_relay(shared: Arc<Shared>, relay: String) {
             Ok(()) => {
                 backoff = Duration::from_secs(1);
                 shared.state.lock().unwrap().relay_problem = None;
+                let next = shared.guesses.lock().unwrap().next();
+                match next {
+                    Next::Now => {}
+                    Next::Wait(delay) => {
+                        // Retired for wrong secrets: a relay that keeps
+                        // guessing waits longer for every new code.
+                        shared.publish(None);
+                        let until = Instant::now() + delay;
+                        while Instant::now() < until && !shared.stopped() {
+                            std::thread::sleep(Duration::from_millis(50));
+                        }
+                    }
+                    Next::Stop => {
+                        shared.publish(None);
+                        shared.emit(HostEvent::RelayStopped);
+                        break;
+                    }
+                }
             }
             Err(e) => {
                 if shared.stopped() {
@@ -474,16 +581,14 @@ fn register(shared: &Arc<Shared>, relay_url: &str) -> io::Result<()> {
         let _ = control.shutdown(Shutdown::Both);
         return Ok(());
     }
-    shared.relay_wrong.store(0, Ordering::Relaxed);
+    shared.guesses.lock().unwrap().registered();
     shared.publish(Some(code.clone()));
     loop {
         let message = match wire::recv_buffered::<_, FromRelay>(&mut reader) {
             Ok(m) => m,
             Err(e) => {
                 shared.control.lock().unwrap().take();
-                return if shared.stopped()
-                    || shared.relay_wrong.load(Ordering::Relaxed) >= MAX_WRONG
-                {
+                return if shared.stopped() || shared.guesses.lock().unwrap().retiring() {
                     Ok(())
                 } else {
                     Err(e)
@@ -493,9 +598,12 @@ fn register(shared: &Arc<Shared>, relay_url: &str) -> io::Result<()> {
         match message {
             FromRelay::Ping => wire::send(&mut control, &ToRelay::Pong)?,
             FromRelay::Join { session } => {
-                if shared.sessions.load(Ordering::Relaxed) >= MAX_SESSIONS {
+                if shared.sessions.load(Ordering::Relaxed) >= MAX_SESSIONS
+                    || !shared.guesses.lock().unwrap().reserve()
+                {
                     continue;
                 }
+                let reserved = Reserved(shared.clone());
                 let (shared, code, token, control, relay_url) = (
                     shared.clone(),
                     code.clone(),
@@ -507,7 +615,8 @@ fn register(shared: &Arc<Shared>, relay_url: &str) -> io::Result<()> {
                     .name("horizon-friends-session".into())
                     .spawn(move || {
                         serve_relayed(
-                            &shared, &relay_url, &code, &token, session, port, relay, &control,
+                            &shared, reserved, &relay_url, &code, &token, session, port, relay,
+                            &control,
                         )
                     });
             }
@@ -521,6 +630,7 @@ fn register(shared: &Arc<Shared>, relay_url: &str) -> io::Result<()> {
 #[allow(clippy::too_many_arguments)]
 fn serve_relayed(
     shared: &Arc<Shared>,
+    reserved: Reserved,
     relay_url: &str,
     code: &Code,
     token: &str,
@@ -555,16 +665,21 @@ fn serve_relayed(
         return;
     };
     let relayed = match session::secure(stream, &key, Role::Host) {
-        Ok(s) => s,
-        Err(e) => {
-            if crypto::is_wrong_code(&e) {
-                let count = shared.relay_wrong.fetch_add(1, Ordering::Relaxed) + 1;
-                shared.emit(HostEvent::WrongCode { count });
-                if count >= MAX_WRONG {
-                    // Retire the short code: dropping the control connection
-                    // ends it at the relay, and `run_relay` registers anew.
-                    let _ = control.shutdown(Shutdown::Both);
-                }
+        Ok(s) => {
+            drop(reserved);
+            s
+        }
+        // Not only a wrong confirmation: the host sends its own before it
+        // reads the guest's, so a peer that checks it against its guess and
+        // hangs up has had its guess as well.
+        Err(_) => {
+            let (count, retire) = shared.guesses.lock().unwrap().wrong();
+            drop(reserved);
+            shared.emit(HostEvent::WrongCode { count });
+            if retire {
+                // Retire the short code: dropping the control connection
+                // ends it at the relay, and `run_relay` registers anew.
+                let _ = control.shutdown(Shutdown::Both);
             }
             return;
         }
@@ -590,5 +705,65 @@ fn serve_relayed(
     shared.routes.lock().unwrap().remove(&session);
     if let Ok(settled) = settled {
         carry(shared, session, settled.secure, settled.direct);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One relayed key exchange that ends without a confirmation.
+    fn guess_wrong(g: &mut Guesses) -> bool {
+        assert!(g.reserve());
+        let (_, retire) = g.wrong();
+        g.release();
+        retire
+    }
+
+    #[test]
+    fn wrong_guesses_add_up_across_registrations() {
+        let mut g = Guesses::default();
+        let mut waits = Vec::new();
+        loop {
+            g.registered();
+            let retired: Vec<bool> = (0..MAX_WRONG).map(|_| guess_wrong(&mut g)).collect();
+            // Only the fifth wrong secret on a code retires it.
+            assert_eq!(retired.iter().filter(|r| **r).count(), 1);
+            assert!(retired[MAX_WRONG as usize - 1]);
+            // No more guesses on a retired code.
+            assert!(!g.reserve());
+            match g.next() {
+                Next::Wait(d) => waits.push(d.as_secs()),
+                Next::Stop => break,
+                Next::Now => panic!("a retired code registers again at once"),
+            }
+        }
+        assert_eq!(g.total, MAX_WRONG_TOTAL);
+        // Every new code waits twice as long; then the host leaves the relay.
+        assert_eq!(waits, [1, 2, 4, 8, 16, 32, 64, 128, 256]);
+        g.registered();
+        assert!(!g.reserve(), "the total is spent");
+    }
+
+    #[test]
+    fn exchanges_in_progress_count_against_the_limit() {
+        let mut g = Guesses::default();
+        for _ in 0..MAX_WRONG {
+            assert!(g.reserve());
+        }
+        // A sixth at once could be a sixth wrong guess on this code.
+        assert!(!g.reserve());
+        // A friend who got in frees the guess.
+        g.release();
+        assert!(g.reserve());
+        // Nothing was wrong: no code retired, no wait.
+        assert_eq!(g.next(), Next::Now);
+    }
+
+    #[test]
+    fn the_wait_doubles_up_to_five_minutes() {
+        let secs: Vec<u64> = (1..=12).map(|n| retire_delay(n).as_secs()).collect();
+        assert_eq!(secs, [1, 2, 4, 8, 16, 32, 64, 128, 256, 300, 300, 300]);
+        assert_eq!(retire_delay(u32::MAX), MAX_RETIRE_DELAY);
     }
 }

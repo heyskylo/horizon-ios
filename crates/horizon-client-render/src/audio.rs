@@ -2,7 +2,9 @@
 //! small mixer standing in for OpenAL: one channel per source with its gain,
 //! pitch, linear distance attenuation (`AL_LINEAR_DISTANCE`, reference 0,
 //! rolloff 1), looping, relative flag and source state, Ogg/Vorbis decoding
-//! (streams on a worker thread) and OpenAL Soft's stereo panning.
+//! (streams on a worker thread) and OpenAL Soft's mixing: mono sources panned
+//! and attenuated, multi-channel buffers (stereo music and records) played
+//! direct as OpenAL does.
 use crate::Result;
 use crate::sound_engine::{
     Attenuation, Backend, Bound, ChannelId, InstanceId, PlayResult, SoundEngine, SoundInstance,
@@ -13,7 +15,7 @@ use crate::sound_events::{Sound, SoundRegistry};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use horizon_core::random::{LegacyRandom, RandomSource};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -29,7 +31,7 @@ enum State {
 }
 /// An OpenAL source.
 struct Channel {
-    samples: Option<(Arc<Vec<f32>>, u32)>,
+    samples: Option<(Arc<Vec<f32>>, u32, u16)>,
     position: f64,
     state: State,
     gain: f32,
@@ -45,12 +47,57 @@ struct Channel {
     world: u32,
     /// The sound file it started and when, to tell another player's copy of it.
     started: Option<(String, std::time::Instant)>,
+    /// Its sound event plays clearly through a mod's muffle (`Audio::muffle`).
+    unmuffled: bool,
+}
+/// The cutoff of the muffle's low-pass at full strength: the world heard through ringing ears.
+const MUFFLED_CUTOFF: f32 = 300.0;
+/// The cutoff it sweeps down from as its strength rises.
+const OPEN_CUTOFF: f32 = 20_000.0;
+/// How long the muffle takes to glide to a new level: a game tick's step (50 ms) would click.
+const MUFFLE_GLIDE: f32 = 0.02;
+/// A mod's muffle (`Audio::muffle`) in the mixer: the other sounds are mixed apart, low-passed by
+/// two one-pole stages and turned down, then added to the sounds it leaves clear. While it is off
+/// (never set, or faded out) the sounds mix straight into the output, as without it.
+#[derive(Default)]
+struct Muffle {
+    /// `[amount, lowpass]`, each 0 to 1, as the game's tick last set them.
+    target: [f32; 2],
+    /// Where the output is now, gliding to `target`.
+    current: [f32; 2],
+    /// The low-pass stages' state for the left and right output channels.
+    stages: [[f32; 2]; 2],
+    /// The muffled sounds of one buffer, reused.
+    bus: Vec<f32>,
+}
+impl Muffle {
+    fn active(&self) -> bool {
+        self.target != [0.0; 2] || self.current.iter().any(|v| *v > 1e-4)
+    }
+    /// Adds `bus` (the muffled sounds) to `data`, low-passed and turned down.
+    fn apply(&mut self, bus: &[f32], data: &mut [f32], channels: usize, rate: u32) {
+        let rate = rate as f32;
+        let glide = 1.0 - (-1.0 / (MUFFLE_GLIDE * rate)).exp();
+        for (frame, muffled) in data.chunks_mut(channels).zip(bus.chunks(channels)) {
+            for (current, target) in self.current.iter_mut().zip(self.target) {
+                *current += (target - *current) * glide;
+            }
+            let [amount, lowpass] = self.current;
+            let gain = 1.0 - amount;
+            let cutoff = OPEN_CUTOFF * (MUFFLED_CUTOFF / OPEN_CUTOFF).powf(lowpass);
+            let a = 1.0 - (-std::f32::consts::TAU * cutoff / rate).exp();
+            for ((out, s), stage) in frame.iter_mut().zip(muffled).zip(&mut self.stages) {
+                stage[0] += (s - stage[0]) * a;
+                stage[1] += (stage[0] - stage[1]) * a;
+                // Dry at no strength, so a muffle that only turns sounds down leaves them as they were.
+                *out += (s + (stage[1] - s) * lowpass) * gain;
+            }
+        }
+    }
 }
 #[derive(Default)]
 struct Mixer {
     channels: HashMap<ChannelId, Channel>,
-    /// Mod audio waiting to be mixed (`native_push_voice`), oldest first.
-    voice: VecDeque<VoiceChunk>,
     listener: [f64; 3],
     listener_yaw: f32,
     listener_pitch: f32,
@@ -63,6 +110,10 @@ struct Mixer {
     world_names: Vec<String>,
     /// The callback's cameras (position, basis, world), kept to be refilled without allocating.
     cameras: Vec<([f64; 3], Basis, u32)>,
+    /// Per-source gain/pan/step cache for one buffer, reused across callbacks.
+    voices: Vec<(ChannelId, [f32; 3], f64)>,
+    /// A mod's muffle of the sounds it does not exempt.
+    muffle: Muffle,
     limiter_peak: f32,
     /// The output device the stream was opened on (`Library.currentDeviceName`).
     #[cfg(feature = "audio")]
@@ -70,20 +121,78 @@ struct Mixer {
     /// The stream reported its device gone (`Library.isCurrentDeviceDisconnected`).
     #[cfg(feature = "audio")]
     device_lost: bool,
+    /// The stream's recent backend errors, which tell a dead stream from a hiccup.
+    #[cfg(feature = "audio")]
+    stream_errors: StreamErrors,
+}
+
+/// A stream's backend errors close together (`StreamErrors::dead`).
+#[cfg(any(feature = "audio", test))]
+#[derive(Default)]
+struct StreamErrors {
+    /// When the current run of errors began, and how many it holds.
+    since: Option<std::time::Instant>,
+    count: u32,
+}
+#[cfg(any(feature = "audio", test))]
+impl StreamErrors {
+    /// Errors this close together...
+    const WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+    /// ...this many of them: the stream is dead. Under vanilla a device that fails unrecoverably
+    /// reads as disconnected (`ALC_CONNECTED`, the `ALC_EXT_disconnect` extension), and
+    /// `SoundEngine` opens the output again; cpal reports a dead ALSA stream (`alsa::poll()`
+    /// returning POLLERR, over and over) as a backend error like any other, so a run of them
+    /// stands for it. One alone is a hiccup the stream recovers from.
+    const DEAD_AFTER: u32 = 3;
+    /// One more backend error at `now`: whether the stream counts as dead.
+    fn dead(&mut self, now: std::time::Instant) -> bool {
+        match self.since {
+            Some(since) if now.duration_since(since) <= Self::WINDOW => self.count += 1,
+            _ => {
+                self.since = Some(now);
+                self.count = 1;
+            }
+        }
+        self.count >= Self::DEAD_AFTER
+    }
+}
+
+/// Opening the output again after it failed: a few more tries, a couple of seconds apart, so a
+/// device that is gone for good isn't asked forever.
+#[cfg(any(feature = "audio", test))]
+#[derive(Default, Debug, PartialEq)]
+struct Reopen {
+    /// The tries left; 0 while the output plays, or after the last try.
+    tries: u32,
+    /// Ticks since the last try.
+    ticks: u32,
+}
+#[cfg(any(feature = "audio", test))]
+impl Reopen {
+    const TRIES: u32 = 5;
+    /// Two seconds of client ticks.
+    const TICKS: u32 = 40;
+    /// The output failed to open: whether to keep trying.
+    fn failed(&mut self, retrying: bool) -> bool {
+        self.ticks = 0;
+        self.tries = if retrying {
+            self.tries.saturating_sub(1)
+        } else {
+            Self::TRIES
+        };
+        self.tries > 0
+    }
+    /// A tick while tries are left: whether to try now.
+    fn due(&mut self) -> bool {
+        if self.tries == 0 {
+            return false;
+        }
+        self.ticks += 1;
+        self.ticks >= Self::TICKS
+    }
 }
 /// A camera's forward, up and right vectors.
 type Basis = ([f64; 3], [f64; 3], [f64; 3]);
-/// A block of voice samples a mod queued, mixed by the output callback.
-pub struct VoiceChunk {
-    /// Mono samples, -1 to 1.
-    samples: Vec<f32>,
-    /// The rate they were sampled at (`native_push_voice`).
-    rate: u32,
-    /// Where they were spoken, for distance and direction; none is plain stereo.
-    at: Option<[f64; 3]>,
-    /// How far into `samples` the callback has got, in source samples.
-    played: f64,
-}
 impl Mixer {
     /// The id of world `name` (1 and up), given once per name.
     fn world_id(&mut self, name: &str) -> u32 {
@@ -109,32 +218,22 @@ pub struct Heard {
     pub range: f32,
     pub looping: bool,
 }
-/// The mixer side of the engine (`Backend`).
-impl MixerBackend {
-    /// Queues a mod's voice samples for the output callback to mix
-    /// (`Host::push_voice`). False when nothing was queued: no device, nothing
-    /// to play, or more than two seconds already waiting.
-    pub fn push_voice(&self, samples: &[f32], rate: u32, at: Option<[f64; 3]>) -> bool {
-        if samples.is_empty() || rate == 0 {
-            return false;
-        }
-        let Ok(mut mixer) = self.mixer.lock() else {
-            return false;
-        };
-        let queued: usize = mixer.voice.iter().map(|chunk| chunk.samples.len()).sum();
-        if queued + samples.len() > 96_000 * 2 {
-            return false;
-        }
-        mixer.voice.push_back(VoiceChunk {
-            samples: samples.to_vec(),
-            rate,
-            at,
-            played: 0.0,
-        });
-        true
+/// A mod's muffle (`Audio::muffle`): its full strength, and the ticks it fades over and has left.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct MuffleFade {
+    amount: f32,
+    lowpass: f32,
+    ticks: u32,
+    left: u32,
+}
+impl MuffleFade {
+    /// `[amount, lowpass]` now: full when set, falling in a straight line to none.
+    fn level(&self) -> [f32; 2] {
+        let left = self.left as f32 / self.ticks as f32;
+        [self.amount * left, self.lowpass * left]
     }
 }
-
+/// The mixer side of the engine (`Backend`).
 pub struct MixerBackend {
     mixer: Arc<Mutex<Mixer>>,
     root: PathBuf,
@@ -171,8 +270,8 @@ impl Drop for MixerBackend {
 static SHARED_CHANNELS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Two players' copies of one sound: started within this of each other.
 const SAME_SOUND: std::time::Duration = std::time::Duration::from_millis(150);
-/// Decoded samples and their rate (`None`: the file did not load).
-type Samples = Option<(Arc<Vec<f32>>, u32)>;
+/// Decoded interleaved samples, their rate and channel count (`None`: the file did not load).
+type Samples = Option<(Arc<Vec<f32>>, u32, u16)>;
 /// Decoded static sounds (`SoundBufferLibrary`'s buffers), dropped least
 /// recently used first past `CACHE_BYTES`: kept forever, every sound heard in
 /// a session stayed (up to 1.4 GiB of samples, villages playing hundreds).
@@ -213,7 +312,7 @@ impl SoundCache {
     fn size(samples: &Samples) -> usize {
         samples
             .as_ref()
-            .map_or(0, |(s, _)| s.len() * std::mem::size_of::<f32>())
+            .map_or(0, |(s, _, _)| s.len() * std::mem::size_of::<f32>())
     }
 }
 /// A static sound to decode for a channel waiting on it.
@@ -221,6 +320,7 @@ struct Decode {
     key: String,
     file: PathBuf,
     channel: ChannelId,
+    looping: bool,
 }
 /// Give a channel waiting on its sound the decoded samples and start it, as
 /// the buffer future attaching and playing the source. A source stopped or
@@ -243,12 +343,16 @@ fn attach(mixer: &Mutex<Mixer>, channel: ChannelId, samples: Samples, looping: b
 type Stream = cpal::Stream;
 #[cfg(not(feature = "audio"))]
 type Stream = std::convert::Infallible;
-impl Audio {
-    /// Plays a mod's voice samples (`Host::push_voice`): mono, `-1` to `1`, at
-    /// `rate`, optional where they were spoken for direction and distance.
-    pub fn push_voice(&self, samples: &[f32], rate: u32, at: Option<[f64; 3]>) -> bool {
-        self.backend.push_voice(samples, rate, at)
-    }
+/// A level sound retained for the network broadcaster, in playback order.
+#[derive(Clone, Debug)]
+pub struct CapturedSound {
+    pub event: String,
+    pub position: [f64; 3],
+    pub volume: f32,
+    pub pitch: f32,
+    pub source: usize,
+    pub entity: Option<u32>,
+    pub except_entity: Option<u32>,
 }
 
 pub struct Audio {
@@ -267,7 +371,7 @@ pub struct Audio {
     source_override: Option<usize>,
     /// Positional sounds played since the last drain, kept while the world
     /// is open to the network so guests hear them too.
-    pub capture: Option<Vec<(String, [f64; 3], f32, f32)>>,
+    pub capture: Option<Vec<CapturedSound>>,
     /// How many times each positional sound played (the control socket's `status`),
     /// with or without an audio device.
     pub heard: std::collections::BTreeMap<String, u32>,
@@ -276,6 +380,8 @@ pub struct Audio {
     pub stopped: std::collections::BTreeMap<String, u32>,
     /// The volume sliders' `SoundPreviewHandler`.
     preview: crate::sound_preview::SoundPreview,
+    /// A mod's muffle fading out (`muffle`), advanced by `tick`.
+    muffle: Option<MuffleFade>,
     /// `SoundEngine.lastSeenDevices`: the system default output last seen.
     #[cfg(feature = "audio")]
     default_seen: Option<String>,
@@ -290,8 +396,45 @@ pub struct Audio {
     /// Ticks since the output devices were last looked at (`DeviceTracker.tick`).
     #[cfg(feature = "audio")]
     device_ticks: u32,
+    /// Opening the output again after it failed to (`Reopen`).
+    #[cfg(feature = "audio")]
+    reopen: Reopen,
+    /// The look at the output devices running on its own thread, until a tick
+    /// takes its answer: listing them can take 100 ms (#11490).
+    #[cfg(feature = "audio")]
+    device_probe: Option<PendingProbe>,
 }
-fn decode(path: &Path) -> Option<(Vec<f32>, u32)> {
+/// What one look at the output devices found: the system default, the
+/// fingerprint, and the device list when those say it may have changed.
+#[cfg(feature = "audio")]
+struct DeviceProbe {
+    default: Option<String>,
+    cards: Option<String>,
+    devices: Option<Vec<String>>,
+}
+#[cfg(feature = "audio")]
+type PendingProbe = Arc<Mutex<Option<DeviceProbe>>>;
+/// Looks at the output devices as `should_change_device` did on the render
+/// thread: the device list only when the default or the fingerprint moved.
+#[cfg(feature = "audio")]
+fn probe_devices(default_seen: Option<String>, cards_seen: Option<String>) -> DeviceProbe {
+    let default = default_output_name();
+    let cards = card_fingerprint();
+    // Listing the devices probes every one (on Linux every built-in PCM,
+    // printing ALSA's errors for the plugins this system lacks; on macOS
+    // every Core Audio device, about 90 ms with twenty of them; on Windows
+    // every endpoint, with no fingerprint to skip it); only the fingerprint's
+    // devices can change the list, and it is cheap.
+    let devices = (default != default_seen
+        || cards_changed(cards_seen.as_deref(), cards.as_deref()))
+    .then(output_devices);
+    DeviceProbe {
+        default,
+        cards,
+        devices,
+    }
+}
+fn decode(path: &Path) -> Option<(Vec<f32>, u32, u16)> {
     use symphonia::core::{
         audio::SampleBuffer, codecs::DecoderOptions, formats::FormatOptions, io::MediaSourceStream,
         meta::MetadataOptions, probe::Hint,
@@ -315,7 +458,8 @@ fn decode(path: &Path) -> Option<(Vec<f32>, u32)> {
     let mut decoder = symphonia::default::get_codecs()
         .make(&track.codec_params, &DecoderOptions::default())
         .ok()?;
-    let mut mono = Vec::new();
+    let mut samples = Vec::new();
+    let mut channels = 0u16;
     while let Ok(packet) = format.next_packet() {
         if packet.track_id() != id {
             continue;
@@ -324,14 +468,34 @@ fn decode(path: &Path) -> Option<(Vec<f32>, u32)> {
             continue;
         };
         let spec = *buffer.spec();
-        let channels = spec.channels.count().max(1);
-        let mut samples = SampleBuffer::<f32>::new(buffer.capacity() as u64, spec);
-        samples.copy_interleaved_ref(buffer);
-        for frame in samples.samples().chunks(channels) {
-            mono.push(frame.iter().sum::<f32>() / channels as f32);
+        let frame_channels = spec.channels.count().max(1);
+        let mut decoded = SampleBuffer::<f32>::new(buffer.capacity() as u64, spec);
+        decoded.copy_interleaved_ref(buffer);
+        if channels == 0 {
+            channels = frame_channels.min(2) as u16;
+        }
+        if frame_channels <= 2 {
+            samples.extend_from_slice(decoded.samples());
+        } else {
+            // OpenAL plays multi-channel buffers direct; a stereo output hears the odd/even split.
+            for frame in decoded.samples().chunks(frame_channels) {
+                let (mut left, mut right) = (0.0, 0.0);
+                let (mut lefts, mut rights) = (0.0f32, 0.0f32);
+                for (i, sample) in frame.iter().enumerate() {
+                    if i % 2 == 0 {
+                        left += sample;
+                        lefts += 1.0;
+                    } else {
+                        right += sample;
+                        rights += 1.0;
+                    }
+                }
+                samples.push(left / lefts.max(1.0));
+                samples.push(right / rights.max(1.0));
+            }
         }
     }
-    Some((mono, rate))
+    (channels != 0).then_some((samples, rate, channels))
 }
 /// A sound file without its variant number (`mob/creeper/say2.ogg` is `mob/creeper/say`): each
 /// player's game picks its own variant of the same event.
@@ -413,6 +577,7 @@ impl Backend for MixerBackend {
                 owner: self.owner,
                 world: self.world,
                 started: None,
+                unmuffled: false,
             },
         );
         Some(id)
@@ -440,6 +605,9 @@ impl Backend for MixerBackend {
     fn set_relative(&mut self, channel: ChannelId, relative: bool) {
         self.with(channel, |c| c.relative = relative);
     }
+    fn set_unmuffled(&mut self, channel: ChannelId, unmuffled: bool) {
+        self.with(channel, |c| c.unmuffled = unmuffled);
+    }
     /// `getCompleteBuffer` (cached, else decoded on the decoder thread) or
     /// `getStream` (decoded on a thread of its own), then attach and
     /// `alSourcePlay`. A sound that cannot load leaves its source initial,
@@ -458,7 +626,7 @@ impl Backend for MixerBackend {
             // A streamed sound loops by restarting its stream.
             let mixer = self.mixer.clone();
             std::thread::spawn(move || {
-                let samples = decode(&file).map(|(s, r)| (Arc::new(s), r));
+                let samples = decode(&file).map(|(s, r, c)| (Arc::new(s), r, c));
                 attach(&mixer, channel, samples, looping);
             });
             return;
@@ -466,7 +634,7 @@ impl Backend for MixerBackend {
         let key = format!("{namespace}:{path}");
         let cached = self.cache.lock().ok().and_then(|mut c| c.get(&key));
         if let Some(samples) = cached {
-            attach(&self.mixer, channel, samples, false);
+            attach(&self.mixer, channel, samples, looping);
             return;
         }
         let decoder = self.decoder.get_or_insert_with(|| {
@@ -479,19 +647,24 @@ impl Backend for MixerBackend {
                         // Queued twice before the first decode finished.
                         let cached = cache.lock().ok().and_then(|mut c| c.get(&job.key));
                         let samples = cached.unwrap_or_else(|| {
-                            let samples = decode(&job.file).map(|(s, r)| (Arc::new(s), r));
+                            let samples = decode(&job.file).map(|(s, r, c)| (Arc::new(s), r, c));
                             if let Ok(mut c) = cache.lock() {
                                 c.insert(job.key, samples.clone());
                             }
                             samples
                         });
-                        attach(&mixer, job.channel, samples, false);
+                        attach(&mixer, job.channel, samples, job.looping);
                     }
                 })
                 .expect("sound decoder thread");
             send
         });
-        let _ = decoder.send(Decode { key, file, channel });
+        let _ = decoder.send(Decode {
+            key,
+            file,
+            channel,
+            looping,
+        });
     }
     /// `alSourceStop`: any state becomes stopped, an initial source too (a
     /// sound still decoding then never starts).
@@ -584,9 +757,8 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
         (forward, up, right)
     };
     // Every camera hearing (splitscreen: the other players' too), in the mixer's own buffer.
-    let mut cameras = std::mem::take(&mut mixer.cameras);
-    cameras.clear();
-    cameras.extend(
+    mixer.cameras.clear();
+    mixer.cameras.extend(
         std::iter::once((
             0,
             (mixer.listener, mixer.listener_yaw, mixer.listener_pitch),
@@ -605,14 +777,19 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
             )
         }),
     );
-    let shared = cameras.len() > 1;
+    let shared = mixer.cameras.len() > 1;
     let dot = |a: [f64; 3], b: [f64; 3]| (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) as f32;
     // Gains and pans per source for this buffer.
-    let mut voices: Vec<(ChannelId, [f32; 3], f64)> = Vec::new();
+    let mut voices = std::mem::take(&mut mixer.voices);
+    voices.clear();
     for (id, c) in &mixer.channels {
-        let Some((_, source_rate)) = &c.samples else {
+        let Some((_, source_rate, source_channels)) = &c.samples else {
             continue;
         };
+        // OpenAL plays a multi-channel buffer direct: no panning and no distance attenuation
+        // (`CalcVoiceParams`' non-spatialized path, vanilla's HRTF-off stereo context). Vanilla's
+        // music and records are stereo. A mono buffer is the positional one.
+        let direct = *source_channels > 1;
         if c.state != State::Playing {
             continue;
         }
@@ -626,7 +803,8 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
         };
         let length = |d: [f64; 3]| d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
         // The nearest camera hears it (one camera but in splitscreen).
-        let camera = cameras
+        let camera = mixer
+            .cameras
             .iter()
             .filter(|camera| c.relative || camera.2 == c.world)
             .min_by(|a, b| length(away(a.0)).total_cmp(&length(away(b.0))))
@@ -636,39 +814,61 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
         let d = if c.relative { at } else { away(listener) };
         let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() as f32;
         let gain = if camera.is_some() {
-            c.gain.clamp(0.0, 1.0) * distance_gain(c.linear, distance)
+            c.gain.clamp(0.0, 1.0)
+                * if direct {
+                    1.0
+                } else {
+                    distance_gain(c.linear, distance)
+                }
         } else {
             0.0
         };
-        // Relative sources are already in OpenAL's listener space (-Z ahead).
-        let [mut left, mut right] = if c.relative {
-            stereo_gains(d[0] as f32, d[1] as f32, -d[2] as f32)
+        let [left, right] = if direct {
+            [gain, gain]
         } else {
-            stereo_gains(dot(d, right), dot(d, up), dot(d, forward))
+            // Relative sources are already in OpenAL's listener space (-Z ahead).
+            let [mut left, mut right] = if c.relative {
+                stereo_gains(d[0] as f32, d[1] as f32, -d[2] as f32)
+            } else {
+                stereo_gains(dot(d, right), dot(d, up), dot(d, forward))
+            };
+            if shared {
+                // Several players on the speakers: half the stereo width, as left and right are
+                // nobody's in particular.
+                let middle = (left + right) / 2.0;
+                left = middle + (left - middle) / 2.0;
+                right = middle + (right - middle) / 2.0;
+            }
+            [left * gain, right * gain]
         };
-        if shared {
-            // Several players on the speakers: half the stereo width, as left and right are
-            // nobody's in particular.
-            let middle = (left + right) / 2.0;
-            left = middle + (left - middle) / 2.0;
-            right = middle + (right - middle) / 2.0;
-        }
-        let [left, right] = [left, right].map(|pan| gain * pan);
         let step = f64::from(*source_rate) / f64::from(rate) * f64::from(c.pitch.max(0.0));
         voices.push((*id, [left, right, gain], step));
     }
-    mixer.cameras = cameras;
-    for (id, [left, right, gain], step) in voices {
+    // A mod's muffle: the sounds it doesn't exempt mix into a bus of their own first.
+    let muffling = mixer.muffle.active();
+    let mut bus = std::mem::take(&mut mixer.muffle.bus);
+    if muffling {
+        bus.clear();
+        bus.resize(data.len(), 0.0);
+    }
+    for (id, [left, right, gain], step) in voices.iter().copied() {
         let Some(c) = mixer.channels.get_mut(&id) else {
             continue;
         };
-        let Some((samples, _)) = c.samples.clone() else {
+        let Some((samples, _, source_channels)) = c.samples.clone() else {
             continue;
         };
-        for frame in data.chunks_mut(channels) {
+        let source_channels = source_channels as usize;
+        let frames = samples.len() / source_channels;
+        let out: &mut [f32] = if muffling && !c.unmuffled {
+            &mut bus
+        } else {
+            &mut *data
+        };
+        for frame in out.chunks_mut(channels) {
             let mut i = c.position as usize;
-            if i + 1 >= samples.len() {
-                if c.looping && samples.len() > 1 {
+            if i + 1 >= frames {
+                if c.looping && frames > 1 {
                     c.position = 0.0;
                     i = 0;
                 } else {
@@ -677,59 +877,37 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
                 }
             }
             let t = (c.position - i as f64) as f32;
-            let s = samples[i] * (1.0 - t) + samples[i + 1] * t;
-            if channels >= 2 {
-                frame[0] += s * left;
-                frame[1] += s * right;
+            if source_channels > 1 {
+                let l = samples[i * 2] * (1.0 - t) + samples[(i + 1) * 2] * t;
+                let r = samples[i * 2 + 1] * (1.0 - t) + samples[(i + 1) * 2 + 1] * t;
+                if channels >= 2 {
+                    frame[0] += l * left;
+                    frame[1] += r * right;
+                } else {
+                    frame[0] += (l + r) * 0.5 * gain;
+                }
             } else {
-                // A mono output has no panning: the source's own gain.
-                frame[0] += s * gain;
+                let s = samples[i] * (1.0 - t) + samples[i + 1] * t;
+                if channels >= 2 {
+                    frame[0] += s * left;
+                    frame[1] += s * right;
+                } else {
+                    // A mono output has no panning: the source's own gain.
+                    frame[0] += s * gain;
+                }
             }
             c.position += step;
         }
     }
-    // Mod audio: a mod's own samples, mixed where it said they were spoken.
-    if !mixer.voice.is_empty() {
-        let (forward, up, right) = basis(mixer.listener_yaw, mixer.listener_pitch);
-        let mut finished = 0usize;
-        for chunk in mixer.voice.iter_mut() {
-            let [left, right_gain] = match chunk.at {
-                Some(at) => {
-                    let d = [
-                        at[0] - mixer.listener[0],
-                        at[1] - mixer.listener[1],
-                        at[2] - mixer.listener[2],
-                    ];
-                    let distance = dot(d, d).sqrt();
-                    let gain = distance_gain(None, distance).max(1.0 / (1.0 + distance));
-                    stereo_gains(dot(d, right), dot(d, up), dot(d, forward)).map(|pan| gain * pan)
-                }
-                None => [1.0, 1.0],
-            };
-            let step = f64::from(chunk.rate.max(1)) / f64::from(rate);
-            for frame in data.chunks_mut(channels) {
-                let i = chunk.played as usize;
-                if i + 1 >= chunk.samples.len() {
-                    break;
-                }
-                let t = (chunk.played - i as f64) as f32;
-                let s = chunk.samples[i] * (1.0 - t) + chunk.samples[i + 1] * t;
-                if channels >= 2 {
-                    frame[0] += s * left;
-                    frame[1] += s * right_gain;
-                } else {
-                    frame[0] += s;
-                }
-                chunk.played += step;
-            }
-            if chunk.played as usize + 1 >= chunk.samples.len() {
-                finished += 1;
-            }
-        }
-        for _ in 0..finished {
-            mixer.voice.pop_front();
-        }
+    mixer.voices = voices;
+    if muffling {
+        mixer.muffle.apply(&bus, data, channels, rate);
+    } else {
+        // Off: the next muffle starts from silence, not from the last one's filter.
+        mixer.muffle.current = [0.0; 2];
+        mixer.muffle.stages = [[0.0; 2]; 2];
     }
+    mixer.muffle.bus = bus;
     // Limit the whole buffer together, preserving waveform and stereo balance
     // instead of flattening each overloaded sample; release over 200 ms
     // (OpenAL Soft's output limiter, `ALC_OUTPUT_LIMITER_SOFT`, releases
@@ -772,21 +950,32 @@ fn open_device(
 ) -> Result<(cpal::Stream, cpal::SupportedStreamConfig)> {
     use cpal::SampleFormat as F;
     let config = device.default_output_config()?;
-    let stream = match config.sample_format() {
-        F::F32 => build_stream::<f32>(device, &config, mixer.clone()),
-        F::F64 => build_stream::<f64>(device, &config, mixer.clone()),
-        F::I16 => build_stream::<i16>(device, &config, mixer.clone()),
-        F::I32 => build_stream::<i32>(device, &config, mixer.clone()),
-        F::I8 => build_stream::<i8>(device, &config, mixer.clone()),
-        F::U16 => build_stream::<u16>(device, &config, mixer.clone()),
-        F::U32 => build_stream::<u32>(device, &config, mixer.clone()),
-        F::U8 => build_stream::<u8>(device, &config, mixer.clone()),
+    let build = |stream_config: &cpal::StreamConfig| match config.sample_format() {
+        F::F32 => build_stream::<f32>(device, &config, stream_config, mixer.clone()),
+        F::F64 => build_stream::<f64>(device, &config, stream_config, mixer.clone()),
+        F::I16 => build_stream::<i16>(device, &config, stream_config, mixer.clone()),
+        F::I32 => build_stream::<i32>(device, &config, stream_config, mixer.clone()),
+        F::I8 => build_stream::<i8>(device, &config, stream_config, mixer.clone()),
+        F::U16 => build_stream::<u16>(device, &config, stream_config, mixer.clone()),
+        F::U32 => build_stream::<u32>(device, &config, stream_config, mixer.clone()),
+        F::U8 => build_stream::<u8>(device, &config, stream_config, mixer.clone()),
         other => Err(format!("unsupported sample format {other}").into()),
-    }?;
+    };
+    let short = audio_stream_config(&config);
+    let stream = match build(&short) {
+        Ok(stream) => stream,
+        // A device that refuses the short fixed buffer still plays with cpal's default one.
+        Err(e) if short != config.config() => {
+            log::info!("Horizon: audio output refused a short buffer ({e}); using the default");
+            build(&config.config())?
+        }
+        Err(e) => return Err(e),
+    };
     stream.play()?;
     if let Ok(mut m) = mixer.lock() {
         m.device_name = device.name().unwrap_or_default();
         m.device_lost = false;
+        m.stream_errors = StreamErrors::default();
     }
     Ok((stream, config))
 }
@@ -863,10 +1052,58 @@ fn cards_changed(seen: Option<&str>, cards: Option<&str>) -> bool {
         _ => true,
     }
 }
+
+/// The buffer size to request for `open_device`. On Linux the ALSA backend's
+/// `BufferSize::Default` means a ~100 ms buffer, so sound effects come out
+/// about 100 ms late: request a short fixed buffer (1024 frames) by default.
+/// An environment override `HORIZON_AUDIO_BUFFER` can specify `default` or a
+/// custom frame count (e.g. 2048) when the default short buffer underruns
+/// (e.g. PipeWire min-quantum >= 1024).
+#[cfg(feature = "audio")]
+fn target_buffer_size(
+    range: (u32, u32),
+    var: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Option<cpal::BufferSize> {
+    if let Some(val) = var("HORIZON_AUDIO_BUFFER").and_then(|v| v.into_string().ok()) {
+        if val == "default" {
+            return Some(cpal::BufferSize::Default);
+        }
+        if let Ok(frames) = val.parse::<u32>() {
+            return Some(cpal::BufferSize::Fixed(frames.clamp(range.0, range.1)));
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Some(cpal::BufferSize::Fixed(1024u32.clamp(range.0, range.1)))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+/// The cpal `StreamConfig` to open an output stream with. On Linux the ALSA
+/// backend's `BufferSize::Default` means a ~100 ms buffer, so sound effects
+/// come out about 100 ms late: request a short fixed buffer there. Other
+/// platforms keep cpal's default behaviour.
+#[cfg(feature = "audio")]
+fn audio_stream_config(config: &cpal::SupportedStreamConfig) -> cpal::StreamConfig {
+    let mut sc = config.config();
+    let range = match config.buffer_size() {
+        cpal::SupportedBufferSize::Range { min, max } => (*min, *max),
+        cpal::SupportedBufferSize::Unknown => (256, 4096),
+    };
+    if let Some(bs) = target_buffer_size(range, |name| std::env::var_os(name)) {
+        sc.buffer_size = bs;
+    }
+    sc
+}
+
 #[cfg(feature = "audio")]
 fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
     device: &cpal::Device,
     config: &cpal::SupportedStreamConfig,
+    stream_config: &cpal::StreamConfig,
     mixer: Arc<Mutex<Mixer>>,
 ) -> Result<cpal::Stream> {
     let rate = config.sample_rate().0;
@@ -874,7 +1111,7 @@ fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
     let mut scratch = Vec::new();
     let on_error = mixer.clone();
     let stream = device.build_output_stream(
-        &config.config(),
+        stream_config,
         move |data: &mut [T], _| {
             scratch.resize(data.len(), 0.0f32);
             if let Ok(mut m) = mixer.lock() {
@@ -888,10 +1125,19 @@ fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
         },
         move |e| {
             log::warn!("Horizon: audio stream error: {e}");
-            if matches!(e, cpal::StreamError::DeviceNotAvailable)
-                && let Ok(mut m) = on_error.lock()
-            {
-                m.device_lost = true;
+            if let Ok(mut m) = on_error.lock() {
+                let dead = match e {
+                    cpal::StreamError::DeviceNotAvailable => true,
+                    cpal::StreamError::BackendSpecific { .. } => {
+                        m.stream_errors.dead(std::time::Instant::now())
+                    }
+                };
+                if dead && !m.device_lost {
+                    if !matches!(e, cpal::StreamError::DeviceNotAvailable) {
+                        log::warn!("Horizon: the audio stream stopped; opening the output again");
+                    }
+                    m.device_lost = true;
+                }
             }
         },
         None,
@@ -997,12 +1243,13 @@ impl Audio {
             listener: [0.0; 3],
             listener_yaw: 0.0,
             master: 1.0,
-            random: LegacyRandom::new(crate::sound_engine::unique_seed()),
+            random: crate::random_source::create(),
             source_override: None,
             capture: None,
             heard: Default::default(),
             stopped: Default::default(),
             preview: Default::default(),
+            muffle: None,
             #[cfg(feature = "audio")]
             default_seen: if live { default_output_name() } else { None },
             #[cfg(feature = "audio")]
@@ -1011,6 +1258,10 @@ impl Audio {
             devices_seen: devices,
             #[cfg(feature = "audio")]
             device_ticks: 0,
+            #[cfg(feature = "audio")]
+            reopen: Reopen::default(),
+            #[cfg(feature = "audio")]
+            device_probe: None,
         }
     }
     #[cfg(not(feature = "audio"))]
@@ -1156,12 +1407,13 @@ impl Audio {
             listener: [0.0; 3],
             listener_yaw: 0.0,
             master: self.master,
-            random: LegacyRandom::new(crate::sound_engine::unique_seed()),
+            random: crate::random_source::create(),
             source_override: None,
             capture: None,
             heard: Default::default(),
             stopped: Default::default(),
             preview: Default::default(),
+            muffle: None,
             // The device belongs to the first player's output, which looks after it.
             #[cfg(feature = "audio")]
             default_seen: self.default_seen.clone(),
@@ -1171,6 +1423,10 @@ impl Audio {
             devices_seen: self.devices_seen.clone(),
             #[cfg(feature = "audio")]
             device_ticks: 0,
+            #[cfg(feature = "audio")]
+            reopen: Reopen::default(),
+            #[cfg(feature = "audio")]
+            device_probe: None,
         }
     }
     /// Sync the volume options, refreshing the categories that changed
@@ -1192,7 +1448,8 @@ impl Audio {
     /// `SoundEngine.shouldChangeDevice`: the open device was lost, the system
     /// default changed (with no device chosen in the options), or the chosen
     /// device came back; the output is then opened again. The devices are looked
-    /// at once a second.
+    /// at once a second, on a thread of their own: a later tick reads what it
+    /// found.
     #[cfg(feature = "audio")]
     fn should_change_device(&mut self) -> bool {
         // A splitscreen share plays through the first player's output: it leaves the device,
@@ -1206,29 +1463,54 @@ impl Audio {
         };
         if lost {
             log::info!("Horizon: audio device was lost");
+            self.device_probe = None;
             self.default_seen = default_output_name();
             self.cards_seen = card_fingerprint();
             self.devices_seen = output_devices();
             return true;
+        }
+        if let Some(pending) = &self.device_probe {
+            let Some(probe) = pending.lock().ok().and_then(|mut found| found.take()) else {
+                return false;
+            };
+            self.device_probe = None;
+            return self.devices_changed(probe, current);
         }
         self.device_ticks += 1;
         if self._stream.is_none() || self.device_ticks < 20 {
             return false;
         }
         self.device_ticks = 0;
-        let default = default_output_name();
-        let cards = card_fingerprint();
-        // Listing the devices probes every one (on Linux every built-in PCM,
-        // printing ALSA's errors for the plugins this system lacks; on macOS
-        // every Core Audio device, about 90 ms with twenty of them); only the
-        // fingerprint's devices can change the list, and it is cheap.
-        if default == self.default_seen
-            && !cards_changed(self.cards_seen.as_deref(), cards.as_deref())
-        {
-            return false;
+        let pending = PendingProbe::default();
+        let out = Arc::clone(&pending);
+        let seen = (self.default_seen.clone(), self.cards_seen.clone());
+        let started = std::thread::Builder::new()
+            .name("audio-devices".into())
+            .spawn(move || {
+                let probe = probe_devices(seen.0, seen.1);
+                if let Ok(mut found) = out.lock() {
+                    *found = Some(probe);
+                }
+            });
+        match started {
+            Ok(_) => self.device_probe = Some(pending),
+            Err(e) => log::warn!("Horizon: could not look at the audio devices: {e}"),
         }
+        false
+    }
+    /// The rest of `shouldChangeDevice` with what a look at the devices found,
+    /// `current` being the device playing now.
+    #[cfg(feature = "audio")]
+    fn devices_changed(&mut self, probe: DeviceProbe, current: String) -> bool {
+        let DeviceProbe {
+            default,
+            cards,
+            devices,
+        } = probe;
+        let Some(devices) = devices else {
+            return false;
+        };
         self.cards_seen = cards;
-        let devices = output_devices();
         // Only a change in the device lists is looked at, as in vanilla: a
         // preferred device that is listed but cannot open is not retried.
         if default == self.default_seen && devices == self.devices_seen {
@@ -1251,6 +1533,27 @@ impl Audio {
         }
         changed
     }
+    /// Opens the output on the chosen device again; `retrying` after an earlier try failed.
+    #[cfg(feature = "audio")]
+    fn reopen_output(&mut self, retrying: bool) {
+        // The old stream lets go of the device first: a dead one may still hold it.
+        self._stream = None;
+        let device = self.device_name.clone();
+        match self.set_device(&device) {
+            Ok(()) => {
+                if retrying {
+                    log::info!("Horizon: the audio output is back");
+                }
+                self.reopen = Reopen::default();
+            }
+            Err(e) if self.reopen.failed(retrying) => {
+                log::warn!("Horizon: could not reopen the audio output ({e}); trying again soon");
+            }
+            Err(e) => {
+                log::warn!("Horizon: could not reopen the audio output ({e}); it stays off");
+            }
+        }
+    }
     /// `SoundManager.tick(paused)`, once per client tick.
     pub fn tick(&mut self, paused: bool, ctx: &TickContext) {
         #[cfg(feature = "audio")]
@@ -1258,14 +1561,57 @@ impl Audio {
             if self.should_change_device() {
                 // SoundEngine.reload: stop every sound, open the output again.
                 self.stop_all();
-                let device = self.device_name.clone();
-                if let Err(e) = self.set_device(&device) {
-                    log::warn!("Horizon: could not reopen the audio output: {e}");
-                }
+                self.reopen_output(false);
+            } else if self.backend.owner == 0 && self.reopen.due() {
+                self.reopen_output(true);
             }
         }
         self.sync_volumes();
         self.engine.tick(paused, ctx, &mut self.backend);
+        // A paused game holds a mod's muffle where it is, as it holds the sounds.
+        if !paused && let Some(fade) = &mut self.muffle {
+            fade.left = fade.left.saturating_sub(1);
+            let level = fade.level();
+            if fade.left == 0 {
+                self.muffle = None;
+                self.engine.set_unmuffled(Vec::new(), &mut self.backend);
+            }
+            self.set_muffle_level(level);
+        }
+    }
+    /// A mod's muffle (`native_muffle_sounds`): `amount` (0 to 1) of every sound's volume taken
+    /// away and `lowpass` (0 to 1) dulling it, from untouched to a 300 Hz low-pass, fading in a
+    /// straight line to none over `ticks` client ticks; the sound events in `exempt` (namespaced,
+    /// `mymod:ear.ringing`) play clearly through it, those already playing too. It replaces any
+    /// muffle in place; `ticks` 0 or no strength ends it. The output's, so in splitscreen every
+    /// player hears it. False for an amount or strength outside 0 to 1.
+    pub fn muffle(&mut self, amount: f32, lowpass: f32, ticks: u32, exempt: &[&str]) -> bool {
+        if !(0.0..=1.0).contains(&amount) || !(0.0..=1.0).contains(&lowpass) {
+            return false;
+        }
+        let on = ticks > 0 && (amount > 0.0 || lowpass > 0.0);
+        let exempt = if on {
+            exempt
+                .iter()
+                .map(|e| crate::sound_events::normalize(e))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        self.engine.set_unmuffled(exempt, &mut self.backend);
+        self.muffle = on.then_some(MuffleFade {
+            amount,
+            lowpass,
+            ticks,
+            left: ticks,
+        });
+        self.set_muffle_level(self.muffle.map_or([0.0; 2], |fade| fade.level()));
+        true
+    }
+    fn set_muffle_level(&mut self, level: [f32; 2]) {
+        if let Ok(mut m) = self.backend.mixer.lock() {
+            m.muffle.target = level;
+        }
     }
     /// The `uiSoundReserve` extra: positional sounds leave
     /// `sound_engine::HEARD_RESERVE` static channels free (off: vanilla's pool).
@@ -1341,7 +1687,17 @@ impl Audio {
     pub fn play_after(&mut self, event: &str, at: [f64; 3], volume: f32, pitch: f32, ticks: i32) {
         let seed = self.random.next_long();
         if let Some(capture) = self.capture.as_mut() {
-            capture.push((event.to_owned(), at, volume, pitch));
+            capture.push(CapturedSound {
+                event: event.to_owned(),
+                position: at,
+                volume,
+                pitch,
+                source: self.source_override.unwrap_or_else(|| {
+                    crate::settings::sound_source(&crate::sound_events::normalize(event))
+                }),
+                entity: None,
+                except_entity: None,
+            });
         }
         *self.heard.entry(event.to_owned()).or_default() += 1;
         self.sync_volumes();
@@ -1351,6 +1707,14 @@ impl Audio {
             .unwrap_or_else(|| crate::settings::sound_source(&event));
         let instance =
             SoundInstance::at(&event, source, volume, pitch, LegacyRandom::new(seed), at);
+        let id = self.engine.add(instance, false);
+        self.engine.play_delayed(id, ticks);
+    }
+    /// `SoundManager.playDelayed` of an instance the caller made: it starts
+    /// `ticks` sound-engine ticks from now.
+    pub fn play_instance_after(&mut self, instance: SoundInstance, ticks: i32) {
+        *self.heard.entry(instance.identifier.clone()).or_default() += 1;
+        self.sync_volumes();
         let id = self.engine.add(instance, false);
         self.engine.play_delayed(id, ticks);
     }
@@ -1368,7 +1732,7 @@ impl Audio {
                 "minecraft:ui.button.click",
                 1.0,
                 0.25,
-                SoundEngine::unseeded(),
+                crate::random_source::create(),
             ),
             false,
         );
@@ -1380,6 +1744,66 @@ impl Audio {
         preview.preview(self, source, volume);
         self.preview = preview;
     }
+    /// An incoming entity-sound packet: retain its seed and category without rebroadcasting it.
+    pub fn play_entity_seeded(
+        &mut self,
+        event: &str,
+        source: usize,
+        volume: f32,
+        pitch: f32,
+        seed: i64,
+        entity: crate::sound_engine::SoundEntity,
+    ) {
+        *self.heard.entry(event.to_owned()).or_default() += 1;
+        let event = crate::sound_events::normalize(event);
+        let instance = SoundInstance::entity_bound(
+            &event,
+            source,
+            volume,
+            pitch,
+            LegacyRandom::new(seed),
+            entity,
+        );
+        self.play_instance(instance, false);
+    }
+    /// A level's entity overload: preserve the emitter and excluded player for
+    /// the server broadcaster while the local sound follows the same object.
+    pub fn play_bound(
+        &mut self,
+        event: &str,
+        source: usize,
+        volume: f32,
+        pitch: f32,
+        entity: crate::sound_engine::SoundEntity,
+        except_entity: Option<u32>,
+    ) {
+        if let Some(capture) = self.capture.as_mut() {
+            capture.push(CapturedSound {
+                event: event.to_owned(),
+                position: entity.state().position,
+                volume,
+                pitch,
+                source,
+                entity: Some(entity.id),
+                except_entity,
+            });
+        }
+        let seed = self.random.next_long();
+        self.play_entity_seeded(event, source, volume, pitch, seed, entity);
+    }
+    /// Removal belongs to the old object even if its numeric id is immediately reused.
+    pub fn remove_sound_entity(&mut self, id: u32) {
+        for entity in self
+            .engine
+            .bound_entities()
+            .into_iter()
+            .filter(|e| e.id == id)
+        {
+            let mut state = entity.state();
+            state.removed = true;
+            entity.update(state);
+        }
+    }
     /// `play` with the seed a sound packet carries.
     pub fn play_seeded(
         &mut self,
@@ -1390,7 +1814,17 @@ impl Audio {
         seed: i64,
     ) {
         if let (Some(capture), Some(at)) = (self.capture.as_mut(), at) {
-            capture.push((event.to_owned(), at, volume, pitch));
+            capture.push(CapturedSound {
+                event: event.to_owned(),
+                position: at,
+                volume,
+                pitch,
+                source: self.source_override.unwrap_or_else(|| {
+                    crate::settings::sound_source(&crate::sound_events::normalize(event))
+                }),
+                entity: None,
+                except_entity: None,
+            });
         }
         if at.is_some() {
             *self.heard.entry(event.to_owned()).or_default() += 1;
@@ -1440,7 +1874,7 @@ impl Audio {
             f64::from(pos[2]) + 0.5,
         ];
         let event = crate::sound_events::normalize(event);
-        let instance = SoundInstance::for_jukebox_song(&event, at, SoundEngine::unseeded());
+        let instance = SoundInstance::for_jukebox_song(&event, at, crate::random_source::create());
         self.play_instance(instance, true).0
     }
     /// Stop and drop a held instance.
@@ -1530,6 +1964,121 @@ impl Sounds for Audio {
 mod tests {
     use super::*;
 
+    /// A run of backend errors close together is a dead stream; one or two, or errors far apart,
+    /// are hiccups.
+    #[test]
+    fn a_run_of_stream_errors_is_a_dead_stream() {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut errors = StreamErrors::default();
+        assert!(!errors.dead(at(0)));
+        assert!(!errors.dead(at(500)));
+        assert!(errors.dead(at(900)));
+        // Spread out, they never add up.
+        let mut apart = StreamErrors::default();
+        for k in 0..10 {
+            assert!(!apart.dead(at(k * 2500)), "error {k}");
+        }
+    }
+
+    /// A failed reopening is tried again every two seconds, five more times, then given up.
+    #[test]
+    fn a_failed_reopening_retries_a_few_times_then_stops() {
+        let mut reopen = Reopen::default();
+        assert!(!reopen.due(), "nothing to retry while the output plays");
+        assert!(reopen.failed(false));
+        let mut tries = 0;
+        for _ in 0..1000 {
+            if reopen.due() {
+                tries += 1;
+                if !reopen.failed(true) {
+                    break;
+                }
+            }
+        }
+        assert_eq!(tries, Reopen::TRIES);
+        assert_eq!(reopen, Reopen::default());
+        // The next lost device starts a fresh run.
+        assert!(reopen.failed(false));
+        assert_eq!(reopen.tries, Reopen::TRIES);
+    }
+
+    #[test]
+    fn level_capture_keeps_order_category_entity_and_actor_exclusion() {
+        let mut audio = Audio::silent(Path::new("/nonexistent/horizon-entity-sound-test"));
+        audio.capture = Some(Vec::new());
+        let mut expected = audio.random.clone();
+        audio.play_on(
+            7,
+            "minecraft:block.amethyst_block.chime",
+            Some([1.0; 3]),
+            0.5,
+            1.0,
+        );
+        let entity = crate::sound_engine::SoundEntity::new(37, [2.123456789, 64.0, -3.0], false);
+        audio.play_bound(
+            "minecraft:block.amethyst_block.chime",
+            6,
+            2.0,
+            1.2,
+            entity,
+            Some(17),
+        );
+        let sounds = audio.capture.as_ref().unwrap();
+        assert_eq!(sounds.len(), 2);
+        assert_eq!(
+            (sounds[0].source, sounds[0].entity, sounds[0].except_entity),
+            (7, None, None)
+        );
+        let bound = &sounds[1];
+        assert_eq!(
+            (bound.source, bound.entity, bound.except_entity),
+            (6, Some(37), Some(17))
+        );
+        assert_eq!(bound.position, [2.123456789, 64.0, -3.0]);
+        assert_eq!((bound.volume, bound.pitch), (2.0, 1.2));
+        expected.next_long();
+        expected.next_long();
+        assert_eq!(audio.random.next_long(), expected.next_long());
+    }
+
+    #[test]
+    fn entity_sound_packets_neither_rebroadcast_nor_advance_the_local_seed_generator() {
+        let mut audio = Audio::silent(Path::new("/nonexistent/horizon-entity-sound-test"));
+        audio.capture = Some(Vec::new());
+        let mut expected = audio.random.clone();
+        let entity = crate::sound_engine::SoundEntity::new(7, [1.0, 2.0, 3.0], false);
+        audio.play_entity_seeded("minecraft:fixture.bound", 6, 0.7, 1.2, 42, entity);
+        assert!(audio.capture.as_ref().unwrap().is_empty());
+        assert_eq!(audio.random.next_long(), expected.next_long());
+    }
+    #[test]
+    fn removal_marks_only_existing_references_to_that_entity() {
+        use crate::sound_engine::SoundEntity;
+        let mut audio = Audio::silent(Path::new("/nonexistent/horizon-entity-sound-test"));
+        let old = SoundEntity::new(7, [0.0; 3], false);
+        let other = SoundEntity::new(8, [0.0; 3], false);
+        for entity in [old.clone(), other.clone()] {
+            audio.engine.add(
+                SoundInstance::entity_bound(
+                    "minecraft:fixture.bound",
+                    6,
+                    1.0,
+                    1.0,
+                    LegacyRandom::new(42),
+                    entity,
+                ),
+                true,
+            );
+        }
+        audio.remove_sound_entity(7);
+        let replacement = SoundEntity::new(7, [10.0; 3], false);
+        assert!(old.state().removed);
+        assert!(!other.state().removed);
+        assert!(!replacement.state().removed);
+    }
+
     #[test]
     fn button_click_uses_vanilla_ui_parameters_without_advancing_world_random() {
         let mut audio = Audio::silent(Path::new("/nonexistent/horizon-test-assets"));
@@ -1564,7 +2113,7 @@ mod tests {
 
     fn channel(samples: Vec<f32>, linear: Option<f32>, at: [f32; 3], looping: bool) -> Channel {
         Channel {
-            samples: Some((Arc::new(samples), 48_000)),
+            samples: Some((Arc::new(samples), 48_000, 1)),
             position: 0.0,
             state: State::Playing,
             gain: 1.0,
@@ -1576,14 +2125,27 @@ mod tests {
             owner: 0,
             world: 0,
             started: None,
+            unmuffled: false,
         }
+    }
+
+    /// A channel whose buffer is interleaved stereo.
+    fn stereo_channel(
+        samples: Vec<f32>,
+        linear: Option<f32>,
+        at: [f32; 3],
+        looping: bool,
+    ) -> Channel {
+        let mut c = channel(Vec::new(), linear, at, looping);
+        c.samples = Some((Arc::new(samples), 48_000, 2));
+        c
     }
 
     #[test]
     fn decoded_sounds_stay_within_the_budget_least_recently_used_out() {
         let mut cache = SoundCache::default();
         let quarter = CACHE_BYTES / 4 / std::mem::size_of::<f32>();
-        let sound = || Some((Arc::new(vec![0.0f32; quarter]), 44100));
+        let sound = || Some((Arc::new(vec![0.0f32; quarter]), 44100, 1));
         for key in ["a", "b", "c", "d"] {
             cache.insert(key.into(), sound());
         }
@@ -1619,6 +2181,42 @@ mod tests {
         assert!(
             output_disabled(env(&[("HORIZON_NO_AUDIO", "1"), ("HORIZON_AUDIO", "1")])).is_some()
         );
+    }
+    #[test]
+    #[cfg(feature = "audio")]
+    fn buffer_size_override_and_defaults() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                pairs
+                    .iter()
+                    .find(|(k, _)| *k == name)
+                    .map(|(_, v)| std::ffi::OsString::from(*v))
+            }
+        };
+        let range = (256, 4096);
+        assert_eq!(
+            target_buffer_size(range, env(&[("HORIZON_AUDIO_BUFFER", "default")])),
+            Some(cpal::BufferSize::Default)
+        );
+        assert_eq!(
+            target_buffer_size(range, env(&[("HORIZON_AUDIO_BUFFER", "2048")])),
+            Some(cpal::BufferSize::Fixed(2048))
+        );
+        assert_eq!(
+            target_buffer_size(range, env(&[("HORIZON_AUDIO_BUFFER", "100")])),
+            Some(cpal::BufferSize::Fixed(256))
+        );
+        assert_eq!(
+            target_buffer_size(range, env(&[("HORIZON_AUDIO_BUFFER", "10000")])),
+            Some(cpal::BufferSize::Fixed(4096))
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            target_buffer_size(range, env(&[])),
+            Some(cpal::BufferSize::Fixed(1024))
+        );
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(target_buffer_size(range, env(&[])), None);
     }
     #[test]
     fn linear_attenuation_reaches_zero_at_the_max_distance() {
@@ -1707,6 +2305,32 @@ mod tests {
             for (g, e) in gains.into_iter().zip(expected) {
                 assert!((g - e).abs() < 1e-4, "{right} {up} {forward}: {gains:?}");
             }
+        }
+    }
+
+    #[test]
+    fn stereo_sounds_play_direct_without_panning_or_distance() {
+        // OpenAL Soft plays a multi-channel buffer direct (its non-spatialized path), so vanilla's
+        // stereo music and records keep their own left/right mix at full volume whichever way the
+        // camera faces and however far it is. Only mono buffers are panned and attenuated.
+        let wave = [0.1, -0.2, 0.3, -0.4, 0.5, -0.6]; // three stereo frames
+        let expected = [wave[0], wave[1], wave[2], wave[3]];
+        for (yaw, at, linear, listener) in [
+            (0.0, [100.0, 0.0, 0.0], Some(16.0), [0.0; 3]),
+            (180.0, [0.0, 0.0, -100.0], Some(16.0), [0.0; 3]),
+            (90.0, [2.0, 1.0, -3.0], Some(16.0), [5.0, 60.0, 5.0]),
+            (0.0, [0.0, 0.0, 0.0], None, [0.0; 3]),
+        ] {
+            let mut m = Mixer {
+                listener,
+                listener_yaw: yaw,
+                ..Mixer::default()
+            };
+            m.channels
+                .insert(1, stereo_channel(wave.to_vec(), linear, at, false));
+            let mut data = [0.0; 4];
+            mix(&mut m, &mut data, 2, 48_000);
+            assert_eq!(data, expected, "yaw {yaw}, source {at:?}");
         }
     }
 
@@ -1922,40 +2546,121 @@ mod tests {
         assert_eq!(data, [0.5; 2]);
     }
 
-    #[test]
-    fn a_queued_voice_chunk_is_mixed_and_then_dropped() {
-        let mut m = Mixer::default();
-        m.voice.push_back(VoiceChunk {
-            samples: vec![0.5; 240],
-            rate: 48_000,
-            at: None,
-            played: 0.0,
-        });
-        let mut data = vec![0.0f32; 240 * 2];
-        mix(&mut m, &mut data, 2, 48_000);
-        // Centred voice fills both channels; the tail is dropped on the next
-        // pass, once the last sample has been reached.
-        assert!(data.iter().take(400).all(|s| (s - 0.5).abs() < 0.01));
-        let mut after = vec![0.0f32; 240 * 2];
-        mix(&mut m, &mut after, 2, 48_000);
-        assert!(m.voice.is_empty());
+    /// One second of a `hz` sine at 48 kHz, amplitude 0.3 (looped, it repeats seamlessly).
+    fn sine(hz: f32) -> Vec<f32> {
+        (0..48_000)
+            .map(|i| 0.3 * (std::f32::consts::TAU * hz * i as f32 / 48_000.0).sin())
+            .collect()
+    }
+
+    fn rms(data: &[f32]) -> f32 {
+        (data.iter().map(|s| s * s).sum::<f32>() / data.len() as f32).sqrt()
+    }
+
+    /// `seconds` of the mixer's stereo output, in the 10 ms buffers an output stream asks for.
+    fn listen(m: &mut Mixer, seconds: f32) -> Vec<f32> {
+        let mut out = Vec::new();
+        let mut buffer = [0.0; 960];
+        for _ in 0..(seconds * 100.0).round() as usize {
+            mix(m, &mut buffer, 2, 48_000);
+            out.extend_from_slice(&buffer);
+        }
+        out
     }
 
     #[test]
-    fn voice_is_panned_by_where_it_was_spoken() {
-        let mut m = Mixer::default();
-        // Facing south (yaw 0), east is on the listener's left: -X is their right.
-        m.voice.push_back(VoiceChunk {
-            samples: vec![0.5; 16],
-            rate: 48_000,
-            at: Some([-4.0, 0.0, 0.0]),
-            played: 0.0,
-        });
-        let mut data = vec![0.0f32; 16 * 2];
-        mix(&mut m, &mut data, 2, 48_000);
-        let left: f32 = data.chunks(2).map(|f| f[0]).sum();
-        let right: f32 = data.chunks(2).map(|f| f[1]).sum();
-        assert!(right > left, "right {right} should beat left {left}");
+    fn a_muffle_dulls_and_quietens_every_sound_but_the_exempt_ones() {
+        // A looping tone heard through a muffle of `[amount, lowpass]`, once it has settled.
+        let heard = |hz: f32, muffle: [f32; 2], unmuffled: bool| {
+            let mut m = Mixer::default();
+            let mut c = channel(sine(hz), None, [0.0, 0.0, 2.0], true);
+            c.unmuffled = unmuffled;
+            m.channels.insert(1, c);
+            m.muffle.target = muffle;
+            listen(&mut m, 0.2);
+            listen(&mut m, 0.2)
+        };
+        let plain = |hz: f32| rms(&heard(hz, [0.0; 2], false));
+        // Fully low-passed, a 6 kHz whine all but goes and a 100 Hz hum keeps most of its level.
+        assert!(rms(&heard(6000.0, [0.0, 1.0], false)) < plain(6000.0) * 0.05);
+        assert!(rms(&heard(100.0, [0.0, 1.0], false)) > plain(100.0) * 0.8);
+        // Half the volume taken and no low-pass: half the level, the tone itself untouched.
+        let ducked = rms(&heard(6000.0, [0.5, 0.0], false)) / plain(6000.0);
+        assert!((ducked - 0.5).abs() < 1e-3, "{ducked}");
+        // An exempt sound plays through as if there were no muffle, sample for sample.
+        assert_eq!(
+            heard(6000.0, [0.5, 1.0], true),
+            heard(6000.0, [0.0; 2], false)
+        );
+    }
+
+    #[test]
+    fn a_faded_muffle_leaves_the_sound_as_it_was() {
+        let mixer = || {
+            let mut m = Mixer::default();
+            m.channels
+                .insert(1, channel(sine(3000.0), None, [2.0, 0.0, 1.0], true));
+            m
+        };
+        let (mut muffled, mut plain) = (mixer(), mixer());
+        muffled.muffle.target = [0.7, 1.0];
+        assert_ne!(listen(&mut muffled, 0.1), listen(&mut plain, 0.1));
+        muffled.muffle.target = [0.0; 2];
+        listen(&mut muffled, 0.5);
+        listen(&mut plain, 0.5);
+        assert_eq!(listen(&mut muffled, 0.1), listen(&mut plain, 0.1));
+    }
+
+    #[test]
+    fn a_mods_muffle_fades_with_the_game_ticks_and_spares_its_exempt_sounds() {
+        let mut audio = Audio::silent(Path::new("/nonexistent/horizon-test-assets"));
+        audio.engine.registry.add_file(
+            "minecraft",
+            br#"{"ambient.cave":{"sounds":["ambient/cave/cave1"]}}"#,
+            &|_, _| true,
+        );
+        audio.engine.registry.add_file(
+            "hztest",
+            br#"{"ear.ringing":{"sounds":["ear/ringing"]}}"#,
+            &|_, _| true,
+        );
+        // The engine makes its channels; with no output, none loads a file.
+        audio.engine.loaded = true;
+        let marks = |audio: &Audio| {
+            let m = audio.backend.mixer.lock().unwrap();
+            let mut marks: Vec<_> = m
+                .channels
+                .iter()
+                .map(|(&id, c)| (id, c.unmuffled))
+                .collect();
+            marks.sort();
+            marks
+        };
+        let level = |audio: &Audio| audio.backend.mixer.lock().unwrap().muffle.target;
+        let close =
+            |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6;
+        // Two sounds already playing, and one exempt sound started under the muffle.
+        audio.play("ambient.cave", None, 1.0, 1.0);
+        audio.play("hztest:ear.ringing", None, 1.0, 1.0);
+        assert!(audio.muffle(0.8, 1.0, 4, &["hztest:ear.ringing"]));
+        audio.play("hztest:ear.ringing", None, 1.0, 1.0);
+        assert_eq!(marks(&audio), [(1, false), (2, true), (3, true)]);
+        assert!(close(level(&audio), [0.8, 1.0]));
+        let ticks = TickContext::default();
+        audio.tick(false, &ticks);
+        assert!(close(level(&audio), [0.6, 0.75]), "{:?}", level(&audio));
+        // A paused game holds it.
+        audio.tick(true, &ticks);
+        assert!(close(level(&audio), [0.6, 0.75]), "{:?}", level(&audio));
+        for _ in 0..3 {
+            audio.tick(false, &ticks);
+        }
+        assert_eq!(level(&audio), [0.0; 2]);
+        // Over: its exemptions go with it.
+        assert_eq!(marks(&audio), [(1, false), (2, false), (3, false)]);
+        // Out of range changes nothing.
+        assert!(!audio.muffle(1.5, 0.0, 10, &[]));
+        assert_eq!(level(&audio), [0.0; 2]);
     }
 
     #[test]

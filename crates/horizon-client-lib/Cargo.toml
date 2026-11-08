@@ -6,7 +6,7 @@ autotests = false
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-rust-version = "1.90"
+rust-version.workspace = true
 description = "Reusable client systems, control tool and parity probes"
 
 [lib]
@@ -18,6 +18,8 @@ horizon-client-core = { path = "../horizon-client-core" }
 horizon-client-input = { path = "../horizon-client-input" }
 horizon-client-render = { path = "../horizon-client-render" }
 horizon-command = { path = "../horizon-command" }
+# Emotes pose the player model (`Mob::emote`, `mobs::anim::setup`).
+horizon-cosmetics = { path = "../horizon-cosmetics" }
 horizon-items = { path = "../horizon-items" }
 horizon-core = { path = "../horizon-core" }
 # `horizon-ctl mcp`: the Model Context Protocol, shared with the launcher and the server.
@@ -30,6 +32,8 @@ horizon-world = { path = "../horizon-world" }
 horizon-protocol = { path = "../horizon-protocol" }
 # server.properties, eula.txt and the user lists, shared with horizon-server.
 horizon-server-files = { path = "../horizon-server-files" }
+# The control endpoint's token (control.rs), as horizon-server's and the relay's.
+getrandom = "0.3"
 # The dedicated server's anticheat, off unless server.toml's [anticheat] turns it on (docs/anticheat.md).
 horizon-anticheat = { path = "../horizon-anticheat" }
 # The dedicated server's chat filter: [chat_filter], the slur list, mutes (docs/chat-filter.md).
@@ -38,7 +42,8 @@ horizon-chat-filter = { path = "../horizon-chat-filter" }
 horizon-shaders = { path = "../horizon-shaders" }
 # Horizon's own shader packs: the format, the stages and the check (docs/shaders.md).
 horizon-shader-api = { path = "../horizon-shader-api" }
-horizon-friends = { path = "../horizon-friends" }
+# Play with Friends: invite codes and their tunnel; the `friends` feature.
+horizon-friends = { path = "../horizon-friends", optional = true }
 # The narrator (GameNarrator): text-to-speech of chat, system messages and screens.
 horizon-narrator = { path = "../horizon-narrator" }
 # Horizon mods: sandboxed WebAssembly components, off unless installed and turned on (docs/mods.md).
@@ -63,11 +68,16 @@ ab_glyph = "0.2.32"
 log = "0.4"
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }
+# The network threads of a server's players: epoll, kqueue or Windows' AFD (lan/io_pool.rs).
+mio = { version = "1.2.4", features = ["os-poll", "net"] }
+# Shared chunk frames are found by one keyed 128-bit hash of their body (lan/conn.rs SharedFrames).
+xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
 horizon-theme = { path = "../horizon-theme" }
 # Opt-in data collection: the game keeps, the launcher sends (docs/telemetry.md); `live` is
-# the anonymous "I'm playing" ping the game sends itself (`heartbeat.rs`).
-horizon-telemetry = { path = "../horizon-telemetry", default-features = false, features = ["live"] }
+# the anonymous "I'm playing" ping the game sends itself (`heartbeat.rs`), the `heartbeat` feature.
+horizon-telemetry = { path = "../horizon-telemetry", default-features = false }
 horizon-bench = { path = "../horizon-bench" }
+crc32fast = "1"
 zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 # Controllers (evdev + libudev on Linux, IOKit on macOS, Windows.Gaming.Input); the `controllers` feature.
 gilrs = { version = "0.11", optional = true }
@@ -87,8 +97,8 @@ rustix = { version = "1", default-features = false, features = ["std", "time", "
 # Use the registered URI handler without routing links through Explorer/cmd.
 open = { version = "5.4.5", features = ["shellexecute-on-windows"] }
 # DirectX 12, where Vulkan has no adapter or device, or by choice (`graphicsApi`, graphics.rs).
-# Shaders compile with FXC (d3dcompiler_47.dll, part of Windows), or DXC when dxcompiler.dll is
-# on the PATH.
+# Shaders compile with FXC (d3dcompiler_47.dll, part of Windows), or on integrated GPUs with DXC
+# (dxcompiler.dll beside the game, gfx/dx12_compiler.rs).
 wgpu = { version = "30.0.1", default-features = false, features = ["dx12"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -104,12 +114,18 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
 
 [features]
-default = ["audio", "controllers"]
+default = ["audio", "controllers", "discord", "friends", "heartbeat"]
 # Sound output. Without it (and `controllers`) the program links neither libasound nor libudev on
 # Linux: the server build (`--no-default-features`, released as horizon-engine; docs/server.md).
 audio = ["horizon-client-render/audio"]
 # Controllers: gilrs, and the DualSense's own output. Without it only `horizon-ctl pad`'s virtual pad.
 controllers = ["dep:gilrs", "dep:horizon-dualsense", "horizon-client-input/controllers"]
+# "Playing Horizon" on the player's Discord profile (`discord_presence`).
+discord = []
+# Play with Friends, joining side (`net.rs`): without it no invite code joins.
+friends = ["dep:horizon-friends"]
+# The anonymous "I'm playing" ping (`heartbeat.rs`, docs/telemetry.md).
+heartbeat = ["horizon-telemetry/live"]
 # Records the call sites of mob random draws (`mob_ai_probe` traces).
 rng-trace = ["horizon-core/rng-trace"]
 # Compatibility with earlier experiment commands: main already uses mimalloc.
@@ -225,3 +241,7 @@ path = "../horizon-client/tests/tall_column.rs"
 [[test]]
 name = "wide_states"
 path = "../horizon-client/tests/wide_states.rs"
+
+[[example]]
+name = "chunk_encoding_bench"
+path = "../horizon-client/examples/chunk_encoding_bench.rs"

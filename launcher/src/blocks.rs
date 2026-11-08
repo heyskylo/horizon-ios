@@ -13,6 +13,12 @@ pub struct Assets;
 
 impl gpui::AssetSource for Assets {
     fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+        if let Some(name) = path
+            .strip_prefix("icons/glass/")
+            .and_then(|p| p.strip_suffix(".svg"))
+        {
+            return Ok(horizon_theme::glass_icons::get(name).map(Cow::Borrowed));
+        }
         let name = path
             .strip_prefix("icons/")
             .and_then(|p| p.strip_suffix(".svg"));
@@ -23,6 +29,11 @@ impl gpui::AssetSource for Assets {
         Ok(horizon_theme::icons::ALL
             .iter()
             .map(|(name, _)| format!("icons/{name}.svg").into())
+            .chain(
+                horizon_theme::glass_icons::ALL
+                    .iter()
+                    .map(|(name, _)| format!("icons/glass/{name}.svg").into()),
+            )
             .collect())
     }
 }
@@ -70,6 +81,10 @@ pub fn edges(top: Hsla, bottom: Hsla, lip: f32) -> [AnyElement; 2] {
 
 /// A panel: rows, cards, notices, dialogs.
 pub fn panel(t: &Theme) -> Div {
+    // The glass look: a glass plate, round at 16 (its tokens leave no border or bevel to see).
+    if t.glass {
+        return crate::glass::plate(horizon_theme::glass::radius::POPOVER);
+    }
     div()
         .relative()
         .bg(t.panel)

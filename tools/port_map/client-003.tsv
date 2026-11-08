@@ -93,7 +93,7 @@ AbstractCubeMobRenderer.extractRenderState	port	crates/horizon-client/src/mobs/c
 AbstractHoglinRenderer.extractRenderState	port	crates/horizon-client/src/mobs/piglin.rs::hoglin_anim	the headbutt count (anim_ticks) drives the head pose
 AbstractHorseRenderer.extractRenderState	port	crates/horizon-client/src/mobs/equine.rs::anim	eat, stand and mouth poses; saddle and armour come from render.rs layers
 AbstractMinecartRenderer.submit	port	crates/horizon-client/src/game/minecarts.rs::Game::cart_geometry	gap: player: no hurt tilt when a cart is hit (hurt_time is not read here); minor: no per-cart offset jitter
-AbstractMinecartRenderer.newRender	missing		minor: experimental minecart movement (new render path) is not implemented
+AbstractMinecartRenderer.newRender	port	crates/horizon-client/src/game/minecarts.rs::Game::cart_geometry	the new path's seat translation after the yaw/pitch rotation, drawn when `minecart_improvements()` is on or a lerp is queued
 AbstractMinecartRenderer.oldRender	port	crates/horizon-client/src/game/minecarts.rs::Game::cart_geometry	rail-based draw is the path Horizon has
 AbstractMinecartRenderer.newExtractState	port	crates/horizon-client/src/game/remote.rs::Game::remote_minecart_lerp	the cart's position and rotation sampled at the frame's partial tick from the steps a NewMinecartBehavior cart has queued; None when the cart has no lerp, and the renderer then keeps the entity's own interpolated position and rotation
 AbstractMinecartRenderer.oldExtractState	port	crates/horizon-client/src/game/minecarts.rs::Game::cart_geometry	rail front and back points are taken from the cart's rail position
@@ -137,7 +137,7 @@ CreeperRenderer.extractRenderState	port	crates/horizon-client-render/src/overlay
 CushionRenderer.extractRenderState	port	crates/horizon-client/src/game/cushions.rs::Game::cushion_geometry	yaw and colour texture are read there
 CushionRenderer.submit	port	crates/horizon-client/src/game/cushions.rs::Game::cushion_geometry	turned to its facing and drawn
 DisplayRenderer.getSkyLightLevel	port	crates/horizon-client/src/game/text_displays.rs::Game::text_display_geometry	brightness override
-DisplayRenderer.getBlockLightLevel	port	crates/horizon-client/src/game/text_displays.rs::Game::text_display_geometry	brightness override
+DisplayRenderer.getBlockLightLevel	port	crates/horizon-client/src/game/text_displays.rs::Game::display_light	the brightness override's sky and block light packed as light coords, else the world light at the display's block position
 DisplayRenderer.getShadowRadius	port	crates/horizon-client/src/shadows.rs::display_caster	the interpolated radius, which shadows::shadow clamps to 32
 DisplayRenderer.getShadowStrength	port	crates/horizon-client/src/shadows.rs::display_caster	the interpolated strength, which shadows::shadow fades over the camera distance
 DisplayRenderer.submit	port	crates/horizon-client/src/game/text_displays.rs::Game::text_display_geometry	gap: player: only text displays are drawn; block and item displays are not

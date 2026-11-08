@@ -1,0 +1,17 @@
+{
+  "hooks": [
+    {
+      "name": "item_dropped_v2",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_item_dropped_v2",
+      "neoforge": "ItemTossEvent",
+      "side": "server",
+      "cancellable": true,
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
+    }
+  ],
+  "rust_summary": "a player's throw with the whole stack, cancellable (`native_item_dropped_v2`), leaving `native_item_dropped` as it was.",
+  "doc_summary": "`native_item_dropped_v2(player, stack, cancel)`: an additive, cancellable version of `native_item_dropped` (NeoForge's `ItemTossEvent`) with the whole stack thrown, its components included (enchantments, unbreakable, attribute modifiers...). Heard just before v1, which keeps its signature and firing point. Set `cancel` and nothing is thrown: the stack goes back into the player's inventory (what does not fit is thrown, unheard) and v1 hears nothing. Bundles that use it need `\"hooks\": @API:item_dropped_v2@`."
+}

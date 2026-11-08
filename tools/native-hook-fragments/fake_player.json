@@ -1,0 +1,11 @@
+{
+  "hooks": [],
+  "helpers": [
+    {"name": "use_as_player", "target": "horizon_client::game::native_machines::Game<'_>::native_use_as_player"}
+  ],
+  "rust_summary": "a mod's fake player uses an item on a block, in the air or on an entity (`native_use_as_player`), as a deployer does.",
+  "doc_summary": "`native_use_as_player(stack, eye, yaw, pitch, target, sneaking)` uses `stack` as NeoForge's `FakePlayer` would: `useItemOn` on a block, `useItem` in the air, or `interactOn` with an entity, in survival with nothing else in hand; it returns whether the use did something and what the fake player holds and carries afterwards. Bundles need \"hooks\": @API:fake_player@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_machines.rs"
+  ]
+}

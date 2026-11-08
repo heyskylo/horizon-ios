@@ -1407,15 +1407,15 @@ def feature_sources_changed(crate, feature, changed):
 
 
 def changed_files(ref):
-    """Files changed between the merge base of HEAD and ref and HEAD (committed or not), or None without a merge base."""
+    """Changed files since the merge base (committed or not), including both sides of renames; None without a base."""
     def git(*arguments):
-        result = subprocess.run(["git", *arguments], cwd=ROOT, capture_output=True, text=True)
-        return result.stdout.split("\n") if result.returncode == 0 else None
+        result = subprocess.run(["git", *arguments], cwd=ROOT, capture_output=True)
+        return result.stdout.decode("utf-8") if result.returncode == 0 else None
     base = git("merge-base", "HEAD", ref)
-    if not base or not base[0]:
+    if not base:
         return None
-    return set(filter(None, git("diff", "--name-only", base[0]) or [])) | \
-        set(filter(None, git("ls-files", "--others", "--exclude-standard") or []))
+    return set(filter(None, (git("diff", "--name-only", "--no-renames", "-z", base.strip()) or "").split("\0"))) | \
+        set(filter(None, (git("ls-files", "--others", "--exclude-standard", "-z") or "").split("\0")))
 
 
 def canonical_dependency_path(path: str) -> str:

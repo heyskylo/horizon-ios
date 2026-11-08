@@ -3,7 +3,7 @@ name = "horizon-server"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-rust-version = "1.90"
+rust-version.workspace = true
 description = "Host a Horizon server: server.toml, the CLI and the supervisor that runs the game headless (docs/server.md)"
 
 [dependencies]
@@ -18,6 +18,9 @@ horizon-chat-filter = { path = "../horizon-chat-filter" }
 horizon-bench = { path = "../horizon-bench" }
 # The log's local times, as the game prints them.
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
+# The control API's token and the panel's login codes and sessions: the OS's random generator (already in the
+# lockfile through the relay).
+getrandom = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1.1"
@@ -32,6 +35,8 @@ sha2 = "0.10"
 sha1 = "0.10"
 base64 = "0.22"
 horizon-core = { path = "../horizon-core" }
+# [prune_chunks]: region files read and rewritten as vanilla's RegionFile does (prune.rs).
+horizon-world = { path = "../horizon-world" }
 # Its TLS (on by default, as vanilla's): rustls on ring, both already in the lockfile through ureq; the keystore
 # is a PKCS12 file, as vanilla's, and one is generated (self-signed) when the owner sets none.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
@@ -49,7 +54,7 @@ zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Threading", "Win32_Storage_FileSystem"] }
 
 [lints]
 workspace = true

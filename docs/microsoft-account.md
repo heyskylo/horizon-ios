@@ -47,6 +47,13 @@ All requests use HTTPS and JSON except the two OAuth calls (form-encoded):
 1. **Device code**: `POST https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode`
    (`client_id`, `scope=XboxLive.signin offline_access`). The launcher shows the `user_code` and
    `verification_uri` (https://www.microsoft.com/link) with a copy button and opens the browser.
+   The device code page takes whatever Microsoft account the browser is signed in to, and the flow has
+   no option for an account picker (no `prompt`, no `login_hint`). To add a different account without any
+   change to the Azure app (#3786), the sign-in panel offers **Open in private window**: the default
+   browser's private window (`launcher/src/private_window.rs`: the `https` ProgId on Windows, LaunchServices
+   on macOS, `xdg-settings` on Linux; `--incognito`, `--inprivate`, `--private`, `--private-window`) has no
+   Microsoft session. Safari and unknown browsers get **Copy link** and a hint instead. **Use a different
+   Microsoft account** opens `login.live.com/logout.srf` and then the code page.
 2. **Poll** `POST …/consumers/oauth2/v2.0/token` (`grant_type=urn:ietf:params:oauth:grant-type:device_code`)
    every `interval` seconds; `authorization_pending` waits, `slow_down` adds 5 s, `authorization_declined`,
    `expired_token` and `bad_verification_code` end the sign-in with a message. Result: the Microsoft
@@ -140,8 +147,11 @@ one is selected. "Sign out" deletes the account's secrets from the keychain.
   secrets the keychain refuses go to `account-secrets.json` in the launcher's data folder instead,
   readable and writable by the player only (0600 on Unix) and never in plain text: the file is
   encrypted (ChaCha20-Poly1305) with a key derived from the computer's identity (`/etc/machine-id`,
-  `/etc/hostid`), so a copy taken off the computer (a backup, a synced home folder) can't be read
-  elsewhere. On the computer itself the file's mode is what keeps other users out. A file that
+  `/etc/hostid`) and a random secret of the install's own, `account-secrets.key` beside it (32
+  bytes, 0600, made at the first write), so a copy taken off the computer (a backup, a synced home
+  folder) can't be read elsewhere, and nobody can work the key out from what every user can read.
+  On the computer itself the files' mode is what keeps other users out. A file sealed by an older
+  launcher (machine identity only) is read once and sealed again under the new key. A file that
   doesn't open (another computer's, or changed) is never written over: remove it and sign in again. The
   launcher never picks one store for a run: every read takes the file's copy first (it was written
   while the keychain was away, so it is the newer one) and the keychain's otherwise, and every write
@@ -235,6 +245,16 @@ machine can read it in the process list. Horizon keeps it out of argv:
 - `HORIZON_SESSION_FILE` is the same as `--session-file` (development and harnesses).
 - `--session-stdin` takes the same JSON on standard input instead, so nothing touches the disk (for other
   launchers: [the Launch API](api/launch.md)).
+
+
+- While the game's Splitscreen setting is on (`splitscreen:true` in `horizon-extras.txt`), the
+  other signed-in accounts get a session file each too, for splitscreen players to sign in with, listed in `HORIZON_ACCOUNT_SESSIONS` (`[{"name", "uuid", "file"}]`). Each token is renewed
+  first when due; after ten seconds no further renewal starts (an in-flight request finishes).
+  Accounts whose sessions cannot be provided are listed with `skipped` instead
+  of `file`, with no token. They remain in the picker marked “(Offline)”, with a “Sign in again
+  in the launcher” tooltip; valid sessions have a “Microsoft online” tooltip. The game logs
+  unavailable accounts and still starts. These names can play in P1's world or on local offline-mode
+  servers; external and online-mode servers require a valid session from the launcher.
 
 ## Online-mode login (game)
 

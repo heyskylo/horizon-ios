@@ -44,7 +44,6 @@ fn start_velocity(velocity: [f64; 3]) -> Option<Vec3> {
     })
 }
 
-#[allow(dead_code)]
 impl Game<'_> {
     /// Throws a falling block of `state` from `pos` (its bottom centre) at
     /// `velocity` (blocks a tick) in the level in place, `dimension`: it
@@ -93,6 +92,8 @@ impl Game<'_> {
         let at = Vec3::new(pos[0], pos[1], pos[2]);
         self.next_entity += 1;
         self.falling.push(FallingBlock {
+            rotation: [0.0, 0.0],
+            join: Default::default(),
             id: self.next_entity,
             state,
             start_pos: cell,

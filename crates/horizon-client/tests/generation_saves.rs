@@ -517,3 +517,35 @@ fn persistent_forwards_the_block_entities_decoration_made_in_a_final_chunk() {
     assert_eq!(made[0].0, (1, 64, 2));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `NoiseGeneratorSettings.disableMobGeneration` reaches the client's
+/// `spawnOriginalMobs` gate from the shipped presets: the End asks for no
+/// creature packs at generation and the overworld and nether ask for them.
+#[test]
+fn the_end_asks_for_no_creature_packs_and_the_overworld_does() {
+    use horizon_client::{assets::Assets, biome::Biomes, vanillagen::VanillaTerrain};
+    let Some(root) = resources() else {
+        return;
+    };
+    let assets = Arc::new(Assets::load(&root).unwrap());
+    let biomes = Arc::new(Biomes::load(&root).unwrap());
+    for (dimension, want) in [
+        ("minecraft:overworld", false),
+        ("minecraft:the_nether", false),
+        ("minecraft:the_end", true),
+    ] {
+        let terrain = VanillaTerrain::for_dimension(
+            &root.join("worldgen"),
+            assets.registry,
+            &biomes,
+            12345,
+            dimension,
+        )
+        .unwrap();
+        assert_eq!(
+            terrain.disable_mob_generation(),
+            want,
+            "disable_mob_generation of {dimension}"
+        );
+    }
+}

@@ -1,0 +1,10 @@
+{
+  "hooks": [],
+  "helpers": [],
+  "rust_summary": "`native_spawn_mob` and `native_summon` for any loaded level, not only the one in place, so a\n`native_server_tick` hook spawns too (`execute in <dimension> run summon`).",
+  "doc_summary": "`native_spawn_mob(dimension, kind, pos, options)` and `native_summon(dimension, kind, pos, nbt)` for any level the server has loaded: the level is put in place for the spawn and the one that was is put back, as `execute in <dimension> run summon` does, so a `native_server_tick` hook spawns into the Nether or the End. A level not loaded is refused. Bundles need \"hooks\": @API:npc_any_level@.",
+  "comments": [
+    "crates/horizon-client/src/game/native_mobs.rs",
+    "crates/horizon-client/src/game/native_entities.rs"
+  ]
+}

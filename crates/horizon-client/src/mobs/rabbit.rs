@@ -272,6 +272,25 @@ fn start_jumping(m: &mut Mob) {
     }
 }
 
+/// `Rabbit.playAttackSound`: only the killer bunny bites with a sound, at
+/// volume 1 and a pitch drawn from its own random. The pitch is an argument of
+/// `playSound`, so its two draws are made even for a silent rabbit.
+pub fn attack_sound(m: &mut Mob, events: &mut Vec<MobEvent>) {
+    if m.extra.variant != EVIL {
+        return;
+    }
+    let pitch = (m.random.next_float() - m.random.next_float()) * 0.2 + 1.0;
+    if m.silent {
+        return;
+    }
+    events.push(MobEvent::Sound(
+        "entity.rabbit.attack",
+        [m.position.x, m.position.y, m.position.z],
+        1.0,
+        pitch,
+    ));
+}
+
 /// Rabbit.customServerAiStep: start a hop toward the current path waypoint;
 /// `target` is where the rabbit's target stands, if it has one.
 pub fn server_ai_step(m: &mut Mob, target: Option<Vec3>) {
@@ -391,18 +410,15 @@ fn jump_scale(m: &Mob) -> f32 {
 
 /// Rabbit.jumpFromGround: ordinary small hops, larger hops toward raised terrain.
 pub fn jump(m: &mut Mob, w: &MobWorld) {
-    let power = jump_power(m, block_jump_factor(m, w));
+    let power = m.jump_power_with(w, jump_scale(m));
     apply_jump(m, power);
 }
+
+#[cfg(test)]
 fn jump_power(m: &Mob, block_factor: f32) -> f32 {
-    let boost = m
-        .extra
-        .effects
-        .iter()
-        .find(|e| e.0 == "minecraft:jump_boost")
-        .map_or(0.0, |e| 0.1 * (e.2 + 1) as f32);
-    m.attrs.jump_strength as f32 * jump_scale(m) * block_factor + boost
+    m.attrs.jump_strength as f32 * jump_scale(m) * block_factor + m.jump_boost_power()
 }
+
 fn apply_jump(m: &mut Mob, power: f32) {
     if power > 1.0e-5 {
         m.velocity.y = f64::from(power).max(m.velocity.y);
@@ -426,29 +442,6 @@ fn apply_jump(m: &mut Mob, power: f32) {
 pub fn hop_event(m: &mut Mob) {
     m.extra.ints[CLIENT_JUMP_DURATION] = 15;
     m.extra.ints[CLIENT_JUMP_TICKS] = 0;
-}
-
-fn block_jump_factor(m: &Mob, w: &MobWorld) -> f32 {
-    let properties = w.movement;
-    let current = w.world.block(
-        m.position.x.floor() as i32,
-        m.position.y.floor() as i32,
-        m.position.z.floor() as i32,
-    );
-    let below = m.on_pos(0.500_001);
-    // shortcut: use mobs' existing on_pos until they track supporting blocks like the player.
-    let lower = w.world.block(below[0], below[1], below[2]);
-    let current = properties
-        .get(current)
-        .expect("validated movement registry")
-        .coefficients
-        .jump_factor;
-    let lower = properties
-        .get(lower)
-        .expect("validated movement registry")
-        .coefficients
-        .jump_factor;
-    if current == 1.0 { lower } else { current }
 }
 
 #[cfg(test)]
@@ -487,6 +480,7 @@ mod tests {
             knockback_resistance: 0.0,
             jump_strength: 0.42,
             attributes: Arc::default(),
+            item_stack_limits: Default::default(),
             gravity: 0.08,
             safe_fall_distance: 3.0,
             fall_damage_multiplier: 1.0,
@@ -503,7 +497,7 @@ mod tests {
                 ..Default::default()
             },
             model,
-            layers: HashMap::new(),
+            layers: Default::default(),
             texture: String::new(),
             brain: Brain::Passive,
             anim: Anim::Rabbit,
@@ -572,7 +566,7 @@ mod tests {
         // Animal.addAdditionalSaveData / readAdditionalSaveData: "InLove" (#1396).
         let mut m = rabbit();
         m.extra.in_love = 570;
-        let tag = crate::entity_nbt::mob_to_nbt(&m, [0, 0, 0, 1], None, None);
+        let tag = crate::entity_nbt::mob_to_nbt(&m, [0, 0, 0, 1], None, None, |_| None);
         assert_eq!(tag.get("InLove"), Some(&horizon_world::nbt::Tag::Int(570)));
         let types = HashMap::from([(m.kind.id.clone(), m.kind.clone())]);
         let back = crate::entity_nbt::mob_from_nbt(&tag, &types, 2, None).unwrap();
@@ -751,5 +745,74 @@ mod tests {
         m.extra.leash = Some(super::super::leash::Holder::Knot([0, 0, 0]));
         base_tick(&mut m);
         assert!(m.anim.states[1].started.is_none());
+    }
+}
+#[cfg(test)]
+mod attack_sound_tests {
+    use super::*;
+    use crate::mobs::sensor_scan_tests::kind;
+
+    fn rabbit(variant: u8) -> Mob {
+        let mut kind = kind();
+        let k = std::sync::Arc::make_mut(&mut kind);
+        k.id = "minecraft:rabbit".into();
+        k.species = Species::Rabbit;
+        let mut m = Mob::new(1, kind, Vec3::new(2.5, 64.0, -1.5), 0.0);
+        m.extra.variant = variant;
+        m
+    }
+
+    /// `Rabbit.playAttackSound`: the killer bunny's bite at volume 1 and
+    /// `(nextFloat - nextFloat) * 0.2 + 1`, and nothing from another rabbit.
+    #[test]
+    fn the_killer_bunny_bites_with_its_own_sound() {
+        let mut m = rabbit(EVIL);
+        let mut probe = m.random.clone();
+        let mut events = Vec::new();
+        attack_sound(&mut m, &mut events);
+        let want = (probe.next_float() - probe.next_float()) * 0.2 + 1.0;
+        assert!(
+            matches!(
+                events.as_slice(),
+                [MobEvent::Sound("entity.rabbit.attack", [2.5, 64.0, -1.5], 1.0, p)] if *p == want
+            ),
+            "{events:?}, pitch {want}"
+        );
+        // A silent killer bunny still pays the pitch's two draws, then says nothing.
+        let mut quiet = rabbit(EVIL);
+        quiet.silent = true;
+        let mut probe = quiet.random.clone();
+        let _ = (probe.next_float(), probe.next_float());
+        let mut events = Vec::new();
+        attack_sound(&mut quiet, &mut events);
+        assert!(events.is_empty(), "{events:?}");
+        assert_eq!(
+            quiet.random.next_int_bound(1000).unwrap_or(0),
+            probe.next_int_bound(1000).unwrap_or(0),
+            "two draws, silent or not"
+        );
+        // A baby killer bunny keeps the plain 1.0 base: the pitch is its own,
+        // not the 1.5 a baby's `getVoicePitch` would give.
+        let mut baby = rabbit(EVIL);
+        baby.extra.age = -24_000;
+        let mut probe = baby.random.clone();
+        let mut events = Vec::new();
+        attack_sound(&mut baby, &mut events);
+        let want = (probe.next_float() - probe.next_float()) * 0.2 + 1.0;
+        assert!(
+            matches!(events.as_slice(), [MobEvent::Sound(_, _, 1.0, p)] if *p == want),
+            "{events:?}, pitch {want}"
+        );
+        // Any other rabbit: no sound and no draw.
+        let mut plain = rabbit(0);
+        let mut probe = plain.random.clone();
+        let mut events = Vec::new();
+        attack_sound(&mut plain, &mut events);
+        assert!(events.is_empty(), "{events:?}");
+        assert_eq!(
+            plain.random.next_int_bound(1000).unwrap_or(0),
+            probe.next_int_bound(1000).unwrap_or(0),
+            "a brown rabbit draws nothing"
+        );
     }
 }

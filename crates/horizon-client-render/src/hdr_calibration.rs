@@ -1,4 +1,4 @@
-//! HDR calibration (Graphics: HDR, Calibrate...): full screen, one step at a time, the way
+//! HDR calibration (the graphics screen's HDR page, Calibrate...): full screen, one step at a time, the way
 //! display calibration tools do it. HDR output draws each step's test picture straight in
 //! nits above a band of controls (`hdr.wgsl`, `Hdr::calibration`), past everything that
 //! shapes the game's picture, so what the player sees is the display alone:
@@ -207,6 +207,16 @@ impl Calibration {
             (l.next, if last { save } else { next }, true),
         ] {
             let hover = over(cursor, rect) && active;
+            let action = if rect == l.cancel {
+                Some(crate::widgets::Action::Cancel)
+            } else if rect == l.back {
+                Some(crate::widgets::Action::Back)
+            } else {
+                None
+            };
+            if let Some(action) = action {
+                crate::widgets::declare_action(action, [rect.0, rect.1, rect.2, 20.0], active);
+            }
             ui::button(
                 batch,
                 atlas,

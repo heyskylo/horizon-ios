@@ -76,6 +76,25 @@ pub fn banner(id: &'static str, width: f32, t: &Theme) -> Stateful<Div> {
     crate::keyboard(el, &t)
 }
 
+/// The banner alone, `width` logical pixels wide, for a card that says "Partner" itself (the
+/// glass Servers page). Hovering lifts it a little.
+pub fn banner_image(id: &'static str, width: f32, t: &Theme) -> Stateful<Div> {
+    let el = div()
+        .id(id)
+        .group(id)
+        .w(px(width))
+        .cursor_pointer()
+        .child(
+            div().relative().group_hover(id, |s| s.top(px(-2.))).child(
+                img(BANNER.clone())
+                    .w(px(width))
+                    .h(px(width * HEIGHT / WIDTH)),
+            ),
+        )
+        .on_click(|_: &ClickEvent, _, cx| cx.open_url(URL));
+    crate::keyboard(el, t)
+}
+
 /// Sculk's characters (Steve, Alex and the wolf) cropped from its banner at 2x the card's width.
 /// Above `ART_TOP` (in the card's 228 logical pixels) the picture is transparent but for their heads
 /// and the pickaxe, which stand out of the card; its foot and right edge fade into `CARD`.
@@ -132,7 +151,7 @@ fn headline() -> StyledText {
 }
 
 /// "HORIZON15 · 15% off" in a dashed cyan frame, as on Sculk's banner.
-fn code_chip(size: f32, height: f32) -> Div {
+fn code_chip(size: f32, height: f32, glass: bool) -> Div {
     div()
         .flex()
         .items_center()
@@ -143,7 +162,7 @@ fn code_chip(size: f32, height: f32) -> Div {
         .border_1()
         .border_dashed()
         .border_color(rgba(CYAN, 0.7))
-        .rounded(px(6.))
+        .rounded(px(if glass { 6. } else { 0. }))
         .font_family(crate::theme::MONO)
         .text_size(px(size))
         .whitespace_nowrap()
@@ -184,10 +203,8 @@ pub fn card(id: &'static str, width: f32, compact: bool, t: &Theme) -> Stateful<
         .flex_none()
         .w(px(width))
         .bg(rgb(CARD))
-        .border_1()
-        .border_color(rgba(CYAN, 0.22))
-        .rounded(px(10.))
-        .group_hover(id, |s| s.top(px(-2.)).border_color(rgba(CYAN, 0.5)));
+        .rounded(px(if t.glass { 10. } else { 0. }))
+        .group_hover(id, |s| s.top(px(-2.)));
     let logo = |height: f32| {
         img(LOGO.clone())
             .flex_none()
@@ -234,7 +251,7 @@ pub fn card(id: &'static str, width: f32, compact: bool, t: &Theme) -> Stateful<
                     .px(px(12.))
                     .pt(px(6.))
                     .pb(px(12.))
-                    .child(code_chip(11., 26.).flex_1()),
+                    .child(code_chip(11., 26., t.glass).flex_1()),
             )
     } else {
         let art_h = width * ART_HEIGHT / ART_WIDTH;
@@ -243,7 +260,7 @@ pub fn card(id: &'static str, width: f32, compact: bool, t: &Theme) -> Stateful<
             .items_center()
             .justify_center()
             .h(px(36.))
-            .rounded(px(8.))
+            .rounded(px(if t.glass { 8. } else { 0. }))
             .bg(rgb(CYAN))
             .group_hover(id, |s| s.bg(rgb(CYAN_HOVER)))
             .text_color(rgb(ON_CYAN))
@@ -287,7 +304,12 @@ pub fn card(id: &'static str, width: f32, compact: bool, t: &Theme) -> Stateful<
                             .child(horizon_launcher::i18n::tr("Ready in under a minute")),
                     )
                     .child(div().mt(px(16.)).child(button))
-                    .child(div().mt(px(8.)).flex().child(code_chip(12., 30.).flex_1())),
+                    .child(
+                        div()
+                            .mt(px(8.))
+                            .flex()
+                            .child(code_chip(12., 30., t.glass).flex_1()),
+                    ),
             )
     };
     let el = div()

@@ -13,7 +13,7 @@ Horizon's own format.
 | Authoring tool | `horizon-shader` (same crate) | `new`, `check`, `pack` |
 | Templates | `crates/horizon-shader-api/templates/` | post, sky, material |
 | Example pack | `crates/horizon-shader-api/packs/golden_hour` | a warm sky and two post passes |
-| In the game: every stage | Options > Horizon Settings > Shader Packs | sky, material, post passes, hot reload |
+| In the game: every stage | Options > Video Settings > Shaders > Shader Packs | sky, material, post passes, hot reload |
 | The registry and the launcher | `shader` kind ([api/mod-index.md](api/mod-index.md)); the Mods page's Shader packs tab | checked, then installed into `shaderpacks/` |
 
 ## Quick start
@@ -47,7 +47,7 @@ my_pack 0.1.0 (shader API 0.1): FAILED
 ## Trying a pack in the game
 
 Put the pack folder (or its `.hshader`) in `shaderpacks/` beside `options.txt` (Open Pack Folder opens it) and pick
-it on Options > Horizon Settings > Shader Packs, which lists Horizon's packs, marked (Horizon), beside packs in the
+it on Options > Video Settings > Shaders > Shader Packs..., which lists Horizon's packs, marked (Horizon), beside packs in the
 `shaders/` format; one runs at a time, and clicking it again turns it off. `HORIZON_SHADER_PACK=<its folder or file
 name>` runs a pack whatever the page says, for development. The game checks the pack first, and refuses one that
 fails, with its problems in the chat. While it runs, the game looks at the pack twice a second: save a file
@@ -60,6 +60,23 @@ right click the one before, shift-click the pack's default, and the options the 
 values that differ from the pack's are yellow. Hovering one shows what the pack says of it (`option.NAME.comment`),
 and the whole label when its name was shortened to fit. Leaving the page saves them to
 `shaderpacks/<pack>.txt` (`NAME=value` lines) and loads the pack again with them.
+
+## Testing a pack frame by frame
+
+A pack that keeps something from frame to frame (`history`, eased values) draws a little differently in every run,
+as frames come when they come. With `HORIZON_STILL=1` and the world frozen the scene holds still
+([agent-control.md](agent-control.md#repeatable-screenshots)), and
+
+```sh
+horizon-ctl screenshot-sequence 64 50 frame64.png
+```
+
+starts the pack over as if just loaded (black `history`, eased values from the start) and draws 64 frames 50 ms
+apart on its clock: frame n has `frame_index` n, `time` (n - 1) × 0.05 and `delta_time` 0.05 (0 on frame 1). The
+64th is written to `frame64.png` (and `frame64-hdr.png` with HDR output on) before the reply. STEP_MS may be a
+decimal: `16.666667` steps a 60 fps clock. The same build, GPU
+and driver write the same bytes every run, so two versions of a pack compare by a pixel diff. `screenshot-sequence
+cancel` stops one.
 
 ## A pack
 
@@ -179,10 +196,12 @@ changes, from at most 2048 sources, the nearest first.
 
 ## Options
 
-A picked pack with options gets a Shader Options... button at the top of the Shader Packs page. A click picks an
-option's next value, a right click the one before, shift-click its default, and Reset all of them; hovering one shows its
-`description`. Each change is saved to `shaderpacks/<pack>.txt` (`id=value` lines, values at their defaults left out) and
-the pack reloads with it within half a second.
+A picked pack with options gets a Shader Options... button at the top of the Shader Packs page. Float and int options
+are sliders that take the nearest `step` (an int's whole numbers), and the arrow keys move a focused one a step at a
+time; bool and choice options are buttons, where a click picks the next value and a right click the one before.
+Shift-click puts either back to its default, and Reset all of them; hovering one shows its `description`. Each change
+is saved to `shaderpacks/<pack>.txt` (`id=value` lines, values at their defaults left out), a slider's when it is
+let go, and the pack reloads with it within half a second.
 
 The page shows every option two a row, unless the pack lays them out in `[[pages]]`: it opens on the first page, and an
 item `"page:<id>"` is a button opening another, so options can be grouped into categories. `""` leaves a slot empty, and
@@ -213,6 +232,25 @@ override saturation: f32 = 1.15;   // type = "float"; bool → bool, int → i32
 The game shows the options on the pack's settings screen. Branches on an option are on a constant, so the GPU
 skips the side that isn't taken.
 
+The shadow map is most of what a pack with `[shadow]` costs: each frame the terrain in the light's square is drawn again.
+Options can size it, so players pick their own quality. While `option` is off there is no map and no shadow pass
+(`frame.has_shadow` reads 0); `resolution_option` and `distance_option` name an `int` option, or a `choice` whose values
+are numbers, whose value replaces `resolution` or `distance`, checked against their ranges. Changing one rebuilds the map
+at the new size. These two need no `override` in your WGSL: the frame has the map's size.
+
+```toml
+[shadow]
+option = "shadows"                        # a bool: no shadow pass while it is off
+resolution_option = "shadow_resolution"
+
+[[options]]
+id = "shadow_resolution"
+name = "Shadow resolution"
+type = "choice"
+values = ["1024", "2048", "4096"]
+default = "2048"
+```
+
 ## What the check does
 
 The game runs the same check when it loads a pack (a pack that fails is refused with the message, and the last good
@@ -221,7 +259,8 @@ one keeps drawing), the launcher before it installs one, and the registry's CI b
 1. The manifest and the package: known keys, valid ids, every file used, sizes.
 2. Each stage built as the renderer builds it and validated by naga.
 3. The stage function's signature, and the rules above.
-4. Each `override` matches its option's type (or has a default); each option is used.
+4. Each `override` matches its option's type (or has a default); each option is used (those sizing the shadow map
+   may be by `[shadow]` alone).
 5. Budgets: 20 000 expressions and 64 texture reads per stage.
 6. Every entry point translated for Vulkan (SPIR-V), Metal and DirectX 12 (HLSL), with the options at their
    defaults, minimums and maximums.
@@ -235,4 +274,5 @@ without the pack.
 
 ## Next
 
-The overlay and lighting stages, and option values other than the defaults.
+An overlay showing what each pass draws (F3 already shows what each costs), and stages for entities, block entities
+and particles (the material stage covers terrain only).

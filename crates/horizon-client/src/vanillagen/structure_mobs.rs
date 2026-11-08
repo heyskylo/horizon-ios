@@ -161,7 +161,8 @@ fn run<R: RandomSource>(
 fn tree(mobs: &[(Mob, Option<Tag>)], i: usize, dimension: &str) -> Compound {
     let (m, raw) = &mobs[i];
     // No block registry here: a carried block stays as the template had it.
-    let Tag::Compound(mut c) = entity_nbt::mob_to_nbt(m, [0; 4], raw.as_ref(), None) else {
+    let saved = entity_nbt::mob_to_nbt(m, [0; 4], raw.as_ref(), None, |_| None);
+    let Tag::Compound(mut c) = saved else {
         return Compound::new();
     };
     c.remove(&"UUID".into());

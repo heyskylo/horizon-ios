@@ -14,14 +14,19 @@ Mods are **off by default**. A fresh install has no `horizon-mods` folder and pl
 
 ## Playing with mods
 
-1. Install a mod from the launcher's Mods page ([mod-browser.md](mod-browser.md)), or put its files by hand in the
+1. Install a mod from the launcher's Mods page ([mod-browser.md](mod-browser.md)) or from the game (Options > Mods >
+   **Browse Mods**: Horizon's registry, checked as the launcher checks it), or put its files by hand in the
    game folder (the one holding `options.txt`): a content mod's `.hmod` (or a folder holding `horizon-mod.toml`) in
    `horizon-mods/`. Native mods go in `horizon-native-mods/`, and the launcher builds them
    ([native-mods.md](native-mods.md)).
 2. Options > **Mods** lists them with what each may do ("May add blocks, items, mob effects and entity types to your
    worlds") and a switch. They start off. The choice is kept in `horizon-mods.txt` (`mod.<id>:true`).
-3. A content mod's blocks, items, mob effects and entity types load once, when the game starts: restart the game after
-   a switch.
+3. A switch applies at once when the mod has only assets and data (textures, models, sounds, languages, recipes, tags,
+   loot tables, advancements, functions): the game reloads its resources, then the world's data as `/reload` does,
+   and the players of a world open to LAN get the new data. A mod that adds blocks, items, mob effects, entity or menu
+   types, or changes world generation, still loads only when the game starts: the Mods page says to restart, and its
+   switch waits outside a world. On another server's world every content mod's switch waits: the server owns its
+   data ([design/mod-hotload.md](design/mod-hotload.md)).
 4. A mod that can't load shows why, in red, on its row.
 
 Two turned-on content mods never own the same namespace: the first by file name loads, and the other stays out with
@@ -32,6 +37,9 @@ Benchmarks (`--benchmark`) never load mods.
 ## Making a content mod
 
 ```sh
+# A prebuilt binary for Linux x86_64/aarch64, macOS x86_64/arm64 or Windows x86_64 (#2120):
+cargo binstall --git https://github.com/horizon-rust/horizon cargo-horizon-mod
+# Or build it from source, without cargo-binstall:
 cargo install --git https://github.com/horizon-rust/horizon cargo-horizon-mod
 cargo horizon-mod new my-mod        # a content mod: manifest, one block with its model, loot and recipe
 cd my-mod
@@ -40,7 +48,10 @@ cargo horizon-mod build             # only build: target/horizon-mod/my_mod.hmod
 cargo horizon-mod check target/horizon-mod/my_mod.hmod   # the registry's checks; --json for JSON
 ```
 
-- `new <path> [--name "Name"]` writes the template. It makes content mods only: any other `--template` is refused.
+- `new <path> [--name "Name"]` writes the template. `--template native [--horizon <commit>]` writes a native trait
+  mod's bundle instead: `horizon-mixin.toml` (pinned to that Horizon commit, else unpinned) and an `[api]` crate with
+  one hook, built with `horizon-launcher native-build <path> --trust-native-code`
+  ([native-mods.md](native-mods.md#trait-mods-draft)). Any other `--template` is refused.
 - `build` packs `horizon-mod.toml`, `assets/` and `data/` into `target/horizon-mod/<id>.hmod`, with the same checks
   the game makes when it reads the content. It refuses a folder with a `Cargo.toml` (code is native now) and a
   manifest without capability `registries`.
@@ -51,6 +62,22 @@ cargo horizon-mod check target/horizon-mod/my_mod.hmod   # the registry's checks
   with `--key <public key> --signature <file>.minisig`. It reads `.hmod`, `.hnmod`, `.hpack`, resource pack `.zip`
   and `.hshader` files.
 - `registry build|review|check|list|release|page` is the registry repository's CI ([api/mod-index.md](api/mod-index.md)).
+
+### A real-game Recipes check
+
+`python tools/lan_e2e.py --check recipes-hmod --bin-dir PATH` runs two real clients against the
+host's integrated server. `PATH` must contain `horizon-client` compiled with the official native
+Recipes mod and a matching `horizon-ctl`. This opt-in check fails if Recipes is absent; ordinary
+LAN runs do not require it.
+
+The runner installs the same original `tools/fixtures/recipes_hmod` package in both scratch game
+folders. It finds the output of an original recipe (flint to two echo shards) in Survival and Creative.
+With the recipe book empty, it verifies that missing ingredients show a warning and preserve the
+occupied grid. It then fills the grid through Recipes' `+`, takes the result, and checks authoritative
+inventory counts before and after Save and Quit/rejoin. Logs, screenshots and `recipes-hmod.json` go under `--out`.
+As an assertion canary, changing only the fixture's result count from two to one must fail the custom
+result check; restore it before running the passing case. This is a content scenario, not general
+Java-mod compatibility or custom-item registration coverage.
 
 ### The manifest
 
@@ -100,6 +127,34 @@ ticks still grows: `"random_ticks": true` for every state (or `false`, to stop a
 `{ "property": "grown", "values": ["false"] }` for the states whose own state property (declared in
 `state_properties`) is one of the values. The block's native `native_random_tick` hook then fires as it does
 for a vanilla block that ticks, and its sections count it.
+
+`state_light` selects emission by the template's or declared state properties. It has the same
+`property` or ordered `properties`, `values` and optional `default` selection as a shape table;
+every value is an integer from 0 to 15:
+
+```json
+{ "template": "minecraft:glass", "state_properties": { "lit": { "type": "boolean" } },
+  "state_light": { "properties": ["lit"], "values": { "false": 0, "true": 15 } } }
+```
+
+Unknown properties, unreachable tuples, repeated property names and uncovered states without a
+`default` reject the declaration. A selected value takes precedence over `properties.light`,
+including zero. Without `state_light`, scalar light and template emission stay unchanged. The
+compiler resolves the table once into the normal per-state emission facts, shared by the client,
+server and saved resource cache. Light propagation uses those facts when a block changes state;
+it performs no declaration lookup or mod callback.
+
+`render_shape` says how a block is drawn whatever its template does, as vanilla's `getRenderShape`:
+`"MODEL"` puts its block model in the chunk mesh, `"ENTITYBLOCK_ANIMATED"` leaves the model out for a block whose
+moving parts its block entity draws every frame (a turning shaft, a machine's arm), and `"INVISIBLE"` draws nothing.
+Its outline, collision, light and occlusion stay as declared: on a template that occludes (stone), the faces it
+covers stay hidden unless it also sets `occludes`.
+
+`occludes: false` makes a block occlude nothing whatever its template does, as vanilla's `noOcclusion()`: the faces
+of the blocks beside it are drawn, so a thin panel or a block drawn by its block entity on a full-cube template
+doesn't leave a hole in the floor under it. It is no longer a solid render either, so light passes it as it passes
+leaves: dampened by 1, or not at all if its template lets skylight down. Unset or `true`, it occludes as its template
+does.
 
 A block copies its template's states. It can also declare state properties of
 its own, which its template does not have — how a pipe says which sides it
@@ -152,6 +207,38 @@ signs `template_hanging_sign_rot_0` to `_rot_3`, `template_attached_hanging_sign
 `minecraft:wall_hanging_signs`, which vanilla's other sign tags and `minecraft:mineable/axe` include. Give the
 wall form a loot table of its own, or name it `<x>_wall_sign` so that it drops what `<x>_sign`'s table does.
 
+A block can override its targeting outline with `shapes` and independently override movement
+collision with `collision_shapes`. Both take the same table format. Boxes are
+`[minX,minY,minZ,maxX,maxY,maxZ]` in block units (one block is 1), at most 16 per shape.
+Coordinates must be finite and each minimum must not exceed its maximum. `[]` is an empty shape.
+
+```json
+{
+  "template": "minecraft:stone",
+  "state_properties": {
+    "facing": { "type": "enum", "values": ["north", "south"] },
+    "count": { "type": "enum", "values": ["1", "2"] }
+  },
+  "shapes": {
+    "properties": ["facing", "count"],
+    "values": { "north,2": [[0,0,0,1,0.5,1]] },
+    "default": [[0,0,0,1,1,1]]
+  },
+  "collision_shapes": { "default": [] }
+}
+```
+
+`properties` names an ordered tuple of template and/or declared state properties; each `values` key
+lists their values in that order, separated by commas without spaces. A nonmatching tuple uses
+`default`. Without `default`, every tuple must be covered. A default-only table gives every state the
+same shape. The existing `{"property":"axis","values":{"x":[...],"y":[...],"z":[...]}}`
+format still works; use either `property` or `properties`, not both. Unknown properties, unreachable
+value tuples, malformed boxes and duplicate property names reject the mod with a load error rather
+than silently ignoring a typo. Omitted `shapes` preserves the template outline (or the connecting
+block's `thickness` outline). Omitted `collision_shapes` preserves the existing behavior: a declared
+outline also becomes collision, otherwise the template collision is retained. An explicit collision
+table can be used without an outline override, and overrides `thickness` collision too.
+
 An item copies its template's data components, with `max_stack_size` and
 `rarity` changed, and any other 26.3 component set or removed in
 `components`, written as a data component patch is: `minecraft:<type>` sets
@@ -167,6 +254,14 @@ gets its own damage and durability, or a tool its mining speed:
       "operation": "add_value", "slot": "mainhand" }],
     "!minecraft:repairable": {} } }
 ```
+
+An item may set `"place_block": "ruby:frame"` to place an ordinary block while retaining its
+own item ID. The target must exist and be a vanilla block or a block in the item's namespace;
+it may have `"item": false`. Multiple items can place the same block. Components still come
+from the item template; specialized behavior such as a sign or bucket item's placement is not
+copied. The compiled binding is used by server placement and client prediction. Placement
+contexts receive the original item ID, and survival placement consumes that item's stack.
+Without `place_block`, template behavior is unchanged.
 
 Native mods can register component types before content loads. A content item
 can set a registered type with a JSON value, such as `"sample:charge": {"charge": 42}`.
@@ -248,10 +343,10 @@ as vanilla's; without one it draws as the missing texture). It does nothing on i
 attribute modifiers. A world opened without the mod drops the effect from its players and mobs. Clients join a server
 only with the same mods' effects, as with its blocks.
 
-A mod entity type is declared in `data/<id>/horizon/entity_type/<name>.json`. It copies a vanilla type: for now only
-`minecraft:snowball`, a thrown item projectile. `item` is one of the mod's own items (one type per item), and `damage`
-(0 by default) is what a hit deals to anything it hits, as `thrown` damage from the thrower (the snowball's 3 to blazes
-is not copied):
+A mod entity type is declared in `data/<id>/horizon/entity_type/<name>.json`. It copies a vanilla type:
+`minecraft:snowball`, a thrown item projectile, or a living mob (below). A thrown type's `item` is one of the mod's own
+items (one type per item), and `damage` (0 by default) is what a hit deals to anything it hits, as `thrown` damage from
+the thrower (the snowball's 3 to blazes is not copied):
 
 ```json
 { "template": "minecraft:snowball", "item": "ruby:ember", "damage": 2.0 }
@@ -262,9 +357,32 @@ thrown: same speed, spread, sound and cooldown, and one item used outside creati
 what it hits with its item's crumbs, and is drawn as its item's model (`ThrownItemRenderer`). Its name is the translation
 `entity.<id>.<name>`. It works in single player and on LAN with the same mods. Dedicated servers share that code,
 untested so far. Clients join a server only with the same mods' entity types, as with its blocks. It is saved with its
-chunk, `/summon <id>:<name>` makes one, and it has its template's row in `entity-types.json`. A world opened without the
+chunk, `/summon <id>:<name>` makes one, and it has its template's row in `entity-types.json`, with `template` naming
+it. A world opened without the
 mod keeps the saved ones as they are, frozen in place. Not yet: a dispenser doesn't throw it, and a vanilla client on a
 server with it may be disconnected when one spawns.
+
+A living type copies a mob, `minecraft:zombie`, `minecraft:villager` or `minecraft:wandering_trader`, the way NeoForge's
+`EntityType.Builder.of(Zombie::new, ...)` makes a type of a vanilla class. The wandering trader is the neutral one whose
+behaviour is all goals, so a native mod's [`register_goals`](native-mods.md#mob-goals) can replace all of it (a citizen,
+a guard, an NPC); its trades on a right click are still a wandering trader's until a native mod answers the
+interaction (`native_interact_entity`). A villager's behaviour is its brain, which stays. It has no `item` or `damage`. `attributes`
+sets default attribute values that differ from its template's (`EntityAttributeCreationEvent`), by attribute id, and
+only for attributes the template has; one it lacks stops the content root's build:
+
+```json
+{ "template": "minecraft:zombie", "attributes": { "minecraft:max_health": 40.0, "minecraft:movement_speed": 0.3 } }
+```
+
+It is a mob of its template's class under its own id, `<id>:<name>`: the template's size, model, texture, sounds and
+behaviour, with its own attributes. It saves what its template's class saves under its own id (a zombie's `IsBaby`,
+`CanBreakDoors` and conversion times) and loads back as itself. Its entity data is its template's class's. Its loot
+table is its own, `<id>:entities/<name>` (vanilla's `EntityType.getDefaultLootTable`). It is not in vanilla's entity type
+tags (`#minecraft:undead`, `#minecraft:zombies`...) unless the mod adds it. Its row in `entity-types.json` is its
+template's, with `template` added and its attributes in place of the template's. Unit tests check all this; it has
+not yet been tried in a running game. Not yet as data: its own model or texture (a native mod draws one with
+`native_mob_submit`) and its own goals (a native mod gives it them with
+[`register_goals`](native-mods.md#mob-goals)).
 
 #### Menu types
 
@@ -286,15 +404,55 @@ mod's own screen (`native_screen`); without one it closes again. Clients join a 
 types, as with its blocks, and a client that isn't Horizon's is never sent one: the block opens nothing for it. Its
 clicks run on the server's vanilla menu engine (`menu::Kind::Mod`), shift-clicks routed as `ChestMenu`'s, and a native
 mod can decide what a slot takes in code with `native_menu_slot_rules` ([native-mods.md](native-mods.md#menu-slot-rules)).
-Not yet: declared per-slot rules beyond `results`, hooks for shift-click routing and `stillValid`, opening with extra
-data, and client prediction of its clicks.
+A native mod can hand the screen bytes of its own when the block opens it
+([native-mods.md](native-mods.md#menu-extra-data)). Not yet: declared per-slot rules beyond `results`, hooks for
+shift-click routing and `stillValid`, and client prediction of its clicks.
+
+`crafting` gives the menu a crafting grid that crafts as vanilla's crafting table does (`CraftingMenu`): `size`x`size`
+slots (2 or 3, 3 by default) from `grid` on, row by row, and the slot that shows their result:
+
+```json
+{ "slots": 12, "crafting": { "grid": 1, "size": 3, "result": 0 } }
+```
+
+The result follows the grid with the world's crafting recipes, data packs' and mods' included (and
+`limitedCrafting`). Taking it uses up one of each ingredient and leaves its remainders (a milk bucket's bucket) in the
+grid, a shift-click on it crafts as many as fit in the inventory, a shift-click from the inventory fills the grid
+first, and the mods' `native_prepare_item_craft` and `native_item_crafted` hear it as on a crafting table (with the
+block's position). The block entity keeps the grid, so what is in it stays when the menu closes, as in a crafting
+station, but never the result: hoppers, comparators and a broken block see only the grid. Slots outside the grid and
+result are the menu's other slots. The grid's slots follow `native_menu_slot_rules`; the result takes nothing. It runs
+on the server, so single player, LAN and dedicated servers craft alike; the result a player is shown is made again
+each tick its grid changed, whoever changed it. The grid and result may not be listed in `results`.
+
+Recipe placement works there as in a crafting table: a recipe viewer's `native_place_recipe` (the recipe book's click,
+`ServerboundPlaceRecipePacket`) and `native_transfer_recipe` fill the grid from the player's inventory, giving what was
+in it back, so JEI ports and the Recipes mod fill it unchanged. A native mod can let the placement take ingredients
+from containers beside the block too ([native-mods.md](native-mods.md#recipe-sources)). Not yet: the ghost recipe the server sends for missing
+items is not drawn on a mod's screen.
+
+`links` gives the menu slots that show other containers' slots instead of the block entity's, as Tinkers' Construct's
+crafting station shows the chest beside it: `count` slots from `from` on, which a native mod links to block containers
+each tick the menu is open ([native-mods.md](native-mods.md#menu-links)):
+
+```json
+{ "slots": 64, "crafting": { "grid": 1, "size": 3, "result": 0 }, "links": { "from": 10, "count": 54 } }
+```
+
+They are real slots of the menu: a click, a shift-click, a drag, a double click or another mod's inventory tool moves
+the linked containers' own items, on the server, and a changed container is saved and its comparators update. A
+shift-click from the inventory fills the other container slots first, in order, so a crafting grid before its links.
+The block entity never holds them, so a broken block drops none of them; leave them out of the container's `faces`.
+Linked slots past the containers' slots hold nothing and take nothing. They may not overlap the crafting grid, its
+result or `results`.
 
 #### Namespaces and limits
 
 The fence: files go in the mod's own namespaces (`assets/<id>/`,
 `data/<id>/`, and those its manifest lists), plus additions to vanilla tags
-(`data/minecraft/tags/`) and to the convention tags NeoForge and Fabric mods
-share (`data/c/tags/`).
+(`data/minecraft/tags/`), to the convention tags NeoForge and Fabric mods
+share (`data/c/tags/`), and sources added to vanilla's atlases
+(`assets/minecraft/atlases/`), which follow vanilla's own as a reload appends them.
 Templates and `sounds` name vanilla blocks; unknown keys are refused.
 
 Some Java mods ship their files under other names than their mod id (Towns and Towers, mod id `t_and_t`, under
@@ -326,6 +484,16 @@ still add theirs, as a higher data pack does. Since the result depends on load o
 of adds are left out, ...". Tags are the only `minecraft` files a mod may hold: its other content stays in its own
 namespaces.
 
+Damage types use vanilla files at `data/<namespace>/damage_type/<name>.json`,
+with required `message_id`, `scaling` and `exhaustion` fields, plus optional
+`effects` and `death_message_type`. Resource-root files and enabled world packs
+load when a world opens; an invalid definition refuses that load. Definitions
+remain frozen for that world session. `/reload` rebuilds
+`tags/damage_type/` against those definitions, so disabling a pack removes its
+tag additions but keeps its registered types until the world is reopened.
+Player damage, damage predicates and synchronized damage tags use that same
+world snapshot; local catalog indices and network registry IDs are separate.
+
 A mod adds to structure sets, template pools and processor lists that are not its own (vanilla's villages, another
 mod's houses) with a set, pool or processor list file in its own namespace holding `horizon:add_to`, a key vanilla data
 never has. Its entries are appended to each set, pool or list named, after every mod's own files, by
@@ -341,13 +509,17 @@ A pool addition holds `"elements"` as a pool does, a processor list addition `"p
 Lithostitched's `add_structure_set_entries`, `add_template_pool_elements` and `add_processor_list_processors` modifiers
 do on NeoForge and Fabric, and `horizon-port-pack carry` writes the last two from those.
 
-A mod's own configured and placed features (`data/<ns>/worldgen/configured_feature/`, `placed_feature/`) generate in
-biomes it does not own (vanilla's) through NeoForge's biome modifiers, files in `data/<ns>/neoforge/biome_modifier/`
-(older Forge mods: `data/<ns>/forge/biome_modifier/`, `forge:` types). `add_features` appends its `features` to one
-generation `step` of every biome in `biomes`; `remove_features` takes them out of its `steps` (every step when it lists
-none); `none` does nothing. `biomes` and `features` are an id, a `#tag` or a list of ids; `biomes` may also be
-NeoForge's `any`, `or`, `and` or `not`. Every addition comes before every removal, each in mod and file order, and a
-feature already in the step is not added twice.
+A mod's own configured and placed features (`data/<ns>/worldgen/feature/`, 26.3's folder, or the older `configured_feature/`; `placed_feature/`) and mob spawn
+changes reach biomes it does not own (vanilla's) through NeoForge's biome modifiers, files in
+`data/<ns>/neoforge/biome_modifier/` (older Forge mods: `data/<ns>/forge/biome_modifier/`, `forge:` types).
+`add_features` appends its `features` to one generation `step` of every biome in `biomes`; `remove_features` takes them
+out of its `steps` (every step when it lists none); `add_spawns` appends its `spawners` (one `{ "type", "weight",
+"minCount", "maxCount" }` object or a list of them) to each entity type's category in
+`minecraft:gameplay/natural_mob_spawns`, turning `minCount` and `maxCount` into 26.3's `count`; `remove_spawns` takes its
+`entity_types` out of every category; `add_spawn_costs` sets `spawn_costs` (`{ "energy_budget", "charge" }`) for its
+`entity_types`, and `remove_spawn_costs` removes them; `none` does nothing. `biomes`, `features` and `entity_types` are
+an id, a `#tag`, a list of ids, or NeoForge's `any`, `or`, `and` or `not`. Every addition comes before every removal,
+each in mod and file order, and a feature already in the step is not added twice.
 
 ```json
 { "type": "neoforge:add_features", "biomes": "#minecraft:is_overworld",
@@ -357,12 +529,13 @@ feature already in the step is not added twice.
 The modifiers rewrite the biomes when the content root builds, and the generator orders every biome's features as
 vanilla's `FeatureSorter` does, so an added feature takes its place in that order (its random seed follows from it). A
 biome no modifier names keeps its text, and a world without mods keeps vanilla's biomes byte for byte. A modifier
-naming a biome, biome tag, feature or feature tag the game doesn't have (another mod's, a `#c:` convention tag), or of a
-type not read yet (spawns and climate: `add_spawns`, `add_carvers`, a mod's own serializer), is skipped with a warning
-naming the mod and file, as NeoForge skips what it can't resolve; the mods still load. A malformed modifier of a type
-that is read (an unknown step, a missing field) stops the build, and the game starts without content mods ("content
-mods not loaded: ..." in the log). Feature tags are vanilla's for now (`#tag` in `features` doesn't read a mod's
-`placed_feature` tags yet); a world's data pack that replaces a biome replaces the mods' changes to it too.
+naming a biome, biome tag, feature, feature tag, entity type or entity type tag the game doesn't have (another mod's, a
+`#c:` convention tag), or of a type not read yet (`add_carvers`, climate, a mod's own serializer), is skipped with a
+warning naming the mod and file, as NeoForge skips what it can't resolve; the mods still load. A malformed modifier of a
+type that is read (an unknown step, a missing field, `minCount > maxCount`) stops the build, and the game starts without
+content mods ("content mods not loaded: ..." in the log). Feature tags are vanilla's for now (`#tag` in `features`
+doesn't read a mod's `placed_feature` tags yet); a world's data pack that replaces a biome replaces the mods' changes to
+it too.
 
 A pool element may be one of Lithostitched's: `lithostitched:limited` (`delegate`, `limit`, `min_depth`) places its
 `delegate` at most `limit` times in one structure start, and `lithostitched:guaranteed` (`delegate`, `count`,
@@ -392,7 +565,10 @@ one, what it pins and why it is not sandboxed: [native-mods.md](native-mods.md).
 A native mod's config files go in the game's shared `config/` folder, beside `options.txt` (on a dedicated server,
 beside `server.properties`), as Fabric and NeoForge mods' do: the mod picks its own file names, such as
 `config/<mod id>.json`. It asks for the folder with `Game::native_config_dir()` (hook points API 26), which needs no
-game, so it works from any hook, and makes the folder when missing. Settings kept with `native_set_setting` stay where they were, in `horizon-mods/.horizon-mod-data/<id>/`.
+game, so it works from any hook, and makes the folder when missing. A mod that lists its files with
+`native_register_configs` gets them read for it, written from their defaults when missing, and handed over again
+when edited (`native_config_loading`, `native_config_reloading`, as NeoForge's `ModConfigEvent`), and a world can
+keep its own server config in `serverconfig/` ([native-mods.md](native-mods.md)). Settings kept with `native_set_setting` stay where they were, in `horizon-mods/.horizon-mod-data/<id>/`.
 
 ## Publish your mod
 
@@ -455,3 +631,41 @@ Horizon's own mods are native. They live in
 The game keeps the parts that must be fast, such as drawing the minimap's map, and a native mod picks the options
 ([extras.md](extras.md)). Far View is not a mod any more: its distance and detail are Graphics > LOD Distance and Far
 Detail ([graphics.md](graphics.md)).
+
+### Entity-context shape declarations
+
+`outline_context_shapes` and `collision_context_shapes` independently override
+`shapes` and `collision_shapes` for a captured entity class. Their keys are
+`item`, `player`, `living` (a non-player living entity) and `other`; each value
+is a `BlockShapes` table with the same properties, tuples, defaults and box
+validation as `shapes`. There is no inheritance between classes or channels.
+An omitted class keeps that channel's ordinary shape. Empty and position-only
+queries always keep the ordinary shape. A selector is not inferred from a
+runtime entity ID.
+
+```json
+{
+  "template": "minecraft:stone",
+  "shapes": { "default": [[0, 0, 0, 1, 0.125, 1]] },
+  "outline_context_shapes": {
+    "player": { "default": [[0, 0.125, 0, 1, 1, 1]] }
+  },
+  "collision_context_shapes": {
+    "item": { "default": [[0, 0, 0, 1, 0.3125, 1]] }
+  },
+  "interaction_shapes": { "default": [[0, 0, 0, 1, 1, 1]] }
+}
+```
+
+`interaction_shapes` uses the same state-table format. It supplies
+`BlockGetter.clipWithInteractionOverride`: an earlier interaction-shape entry
+changes the face of an existing outline hit while keeping its point. It cannot
+create a hit through an empty outline or extend the ray's reach.
+
+Tables compile once per resource snapshot. Collision scan emptiness and
+out-of-cell metadata account for every collision variant. The real dropped-item
+move and overlap check carry `item`, player movement/placement carry `player`,
+and player selection uses its own outline channel. Callers that have not
+captured an entity class retain ordinary shapes; this is not a claim that all
+mob or living-entity call sites have been converted. These declarations select
+state/class-only geometry, not arbitrary world-dependent block behavior.

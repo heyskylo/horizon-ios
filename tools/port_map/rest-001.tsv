@@ -104,6 +104,7 @@ AdvancementRequirements.count	port	crates/horizon-client/src/advancements.rs::Pr
 AdvancementRequirements.anyMatch	inline	crates/horizon-client/src/advancements.rs::Progress::done	the any() over one group
 AdvancementRequirements.validate	missing		minor: shipped advancement requirements are already valid
 AdvancementRequirements.names	skip:java		builds a name set to pre-create progress entries; Horizon creates them on grant
+AdvancementRewards.grant	port	crates/horizon-client/src/game/advancements.rs::Game::award	function reward wired through run_advancement_reward_function; existing XP/recipe/loot paths retained, loot-context gap H292 remains
 AdvancementRewards.Builder.build	skip:data		datagen builder; rewards come from advancement JSON
 AdvancementTree.remove	inline	crates/horizon-client/src/game/advancements.rs::Game::remote_advancements	gap: minor: removes the ids the server lists; children are not walked here
 AdvancementTree.tryInsert	inline	crates/horizon-client/src/advancements.rs::Tree::children	the pass that inserts an advancement once its parent is in
@@ -149,4 +150,4 @@ EnchantmentPredicate.containedIn	port	crates/horizon-client/src/advancements.rs:
 EnchantmentPredicate.matchesEnchantment	inline	crates/horizon-client/src/advancements.rs::item	one enchantment and its level
 FluidPredicate.matches	port	crates/horizon-client/src/advancements.rs::location	gap: minor: the fluid id and tags only; fluid state properties are not checked; no vanilla advancement uses fluid
 FluidPredicate.Builder.of	skip:data		datagen builder
-FoodPredicate.matches	missing		minor: no food level or saturation condition; no vanilla advancement uses one
+FoodPredicate.matches	inline	crates/horizon-client/src/advancements.rs::player_facts	the food key of a player predicate: the level, then the saturation as a double

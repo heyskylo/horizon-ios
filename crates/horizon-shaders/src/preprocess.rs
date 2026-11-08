@@ -126,7 +126,7 @@ impl Run<'_> {
                 while n < lines.len()
                     && n - first < MAX_CALL_LINES
                     && !lines[n].trim_start().starts_with('#')
-                    && self.macros.unfinished_call(&line)
+                    && self.macros.unfinished_call(&line, &lines[n..])
                 {
                     line.push(' ');
                     line.push_str(lines[n]);
@@ -215,27 +215,9 @@ impl Run<'_> {
         }
     }
 
-    /// `#define NAME body` or `#define NAME(a, b) body` (no space before the `(`).
     fn define(&mut self, rest: &str, origin: Origin) {
-        let len = rest
-            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-            .unwrap_or(rest.len());
-        let (name, tail) = rest.split_at(len);
-        if name.is_empty() {
-            return self.diagnose(origin, "`#define` without a name");
-        }
-        if let Some(params) = tail.strip_prefix('(') {
-            let Some((params, body)) = params.split_once(')') else {
-                return self.diagnose(origin, &format!("`#define {name}(` without `)`"));
-            };
-            let params = params
-                .split(',')
-                .map(|p| p.trim().to_owned())
-                .filter(|p| !p.is_empty())
-                .collect();
-            self.macros.define_function(name, params, body.trim());
-        } else {
-            self.macros.define(name, tail.trim());
+        if let Err(e) = self.macros.define_line(rest) {
+            self.diagnose(origin, &e);
         }
     }
 
@@ -397,6 +379,21 @@ mod tests {
             ]
         );
         assert_eq!(p.lines.len(), p.code.split('\n').count());
+    }
+
+    #[test]
+    fn a_paste_with_a_parenthesis_leaves_a_name_that_calls_a_macro() {
+        // Alpha Piscium: `colors2_colorspaces_ ## a ## _to_ ## b ##(x)` makes the name of a
+        // function-like macro and its `(`, which is then rescanned as a call.
+        let p = run(&[(
+            "program/final.fsh",
+            "#define conv_6_to_8(x) aces_to_mc(x)\n\
+             #define _convert(a, b, x) conv_ ## a ## _to_ ## b ##(x)\n\
+             #define convert(a, b, x) _convert(a, b, x)\n\
+             vec3 v = convert(6, 8, c);\n",
+        )]);
+        let lines: Vec<&str> = code_lines(&p).into_iter().map(|(l, _)| l).collect();
+        assert_eq!(lines, ["vec3 v = aces_to_mc(c);"]);
     }
 
     #[test]

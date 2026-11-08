@@ -3,12 +3,13 @@
 //! that happens only after the player confirms, without their home folder or names.
 use super::servers_page::Field;
 use super::*;
-use gpui::{ClipboardItem, ScrollHandle};
+use crate::scrollbar::TakeWheel;
+use gpui::ClipboardItem;
 use horizon_launcher::game_log::{self, Shared};
 
 pub(super) struct Console {
     follow: bool,
-    scroll: ScrollHandle,
+    scroll: Scrollbar,
     /// Lines and search at the last draw: a change means scroll down when following.
     seen: (usize, String),
     confirm_share: bool,
@@ -20,7 +21,7 @@ impl Default for Console {
     fn default() -> Self {
         Console {
             follow: true,
-            scroll: ScrollHandle::new(),
+            scroll: Scrollbar::default(),
             seen: (0, String::new()),
             confirm_share: false,
             sharing: false,
@@ -138,7 +139,7 @@ impl Launcher {
             .collect();
         let now = (count, search);
         if self.console.follow && now != self.console.seen {
-            self.console.scroll.scroll_to_bottom();
+            self.console.scroll.handle.scroll_to_bottom();
         }
         self.console.seen = now;
         let follow = div()
@@ -196,7 +197,7 @@ impl Launcher {
                 button("console-folder", "Open logs folder", Kind::Ghost, &t).on_click(
                     move |_, _, cx| {
                         let _ = std::fs::create_dir_all(&logs);
-                        cx.open_with_system(&logs);
+                        crate::glass_toast::open(cx, &logs);
                     },
                 )
             });
@@ -282,9 +283,10 @@ impl Launcher {
         let shown = lines.len().saturating_sub(LOG_LINES);
         let body = div()
             .id("console-lines")
-            .track_scroll(&self.console.scroll)
+            .track_scroll(&self.console.scroll.handle)
             .h(px(320.))
             .overflow_y_scroll()
+            .take_wheel(&self.console.scroll)
             .p(px(10.))
             .border_2()
             .border_color(t.outline)
@@ -302,5 +304,221 @@ impl Launcher {
                 div().text_color(color).child(line)
             }));
         Some((header, section.child(body)))
+    }
+}
+
+impl Launcher {
+    /// Home's Console tab in the glass look: the count and the tools over the log, which is the
+    /// mockup's `Logs` (round at 12, black at 25 %, Geist Mono 12 px on 1.75, white at 75 %).
+    /// Not in the mockup (its Overview shows a game log only while starting): kept, in its
+    /// patterns. Dark appearance only.
+    pub(super) fn glass_console(&mut self, cx: &mut Context<Self>) -> Option<Div> {
+        use crate::glass_ui::{self as ui, white};
+        use horizon_theme::glass::{ink, radius};
+        let t = self.theme;
+        if self.prepare_log.is_empty() && self.client.is_none() {
+            return None;
+        }
+        let count = self.prepare_log.len();
+        let note = match self.client {
+            Some(_) => trf(
+                "{count} lines, the game is running",
+                &[("count", &count.to_string())],
+            ),
+            None => trf(
+                "{count} lines from the last run",
+                &[("count", &count.to_string())],
+            ),
+        };
+        let search = self.servers.value(Field::ConsoleSearch).trim().to_string();
+        let lines: Vec<String> = self
+            .prepare_log
+            .iter()
+            .filter(|l| game_log::matches(l, &search))
+            .cloned()
+            .collect();
+        let now = (count, search);
+        if self.console.follow && now != self.console.seen {
+            self.console.scroll.handle.scroll_to_bottom();
+        }
+        self.console.seen = now;
+        let follow = div()
+            .id("console-follow")
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .cursor_pointer()
+            .child(ui::toggle(
+                "console-follow-switch",
+                self.console.follow,
+                self.look.accent,
+                self.look.on_accent,
+                &t,
+            ))
+            .child(ui::text(14., FontWeight::NORMAL, ink::BODY).child(tr("Follow")))
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.console.follow = !this.console.follow;
+                this.console.seen.0 = usize::MAX;
+                cx.notify();
+            }));
+        let copied = lines.join("\n");
+        let logs = self
+            .client_home
+            .clone()
+            .or_else(|| self.selected_instance().map(|i| i.home.clone()))
+            .unwrap_or_else(backend::game_home)
+            .join("logs");
+        let share = ui::quiet("console-share", tr("Share log…"), 36., &t);
+        let share = match self.console.sharing {
+            true => share.opacity(0.4).cursor_default(),
+            false => share.on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.console.confirm_share = true;
+                cx.notify();
+            })),
+        };
+        let tools = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(8.))
+            .px(px(12.))
+            .pb(px(12.))
+            .child(self.field(Field::ConsoleSearch, tr("Search the log"), 240., cx))
+            .child(div().ml(px(8.)).child(follow))
+            .child(div().flex_1())
+            .child(
+                ui::quiet("console-copy", tr("Copy"), 36., &t).on_click(cx.listener(
+                    move |this, _: &ClickEvent, _, cx| {
+                        copy_to_clipboard(cx, ClipboardItem::new_string(copied.clone()));
+                        this.console.shared = None;
+                        cx.notify();
+                    },
+                )),
+            )
+            .child(share)
+            .child(
+                ui::icon_button(
+                    "console-folder",
+                    "folder-01",
+                    36.,
+                    17.,
+                    radius::CONTROL,
+                    false,
+                    &t,
+                )
+                .on_click(move |_, _, cx| {
+                    let _ = std::fs::create_dir_all(&logs);
+                    crate::glass_toast::open(cx, &logs);
+                }),
+            );
+        let mut body = div()
+            .flex()
+            .flex_col()
+            .child(ui::list_head(note))
+            .child(tools);
+        // Share log asks first, on a card as the patch log's (white at 4 %, round at 14).
+        if self.console.confirm_share {
+            body = body.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .mx(px(12.))
+                    .mb(px(12.))
+                    .p(px(16.))
+                    .rounded(px(radius::LARGE))
+                    .bg(white(0.04))
+                    .child(div().flex_1().min_w_0().child(
+                        ui::text(13., FontWeight::NORMAL, ink::SOFT).child(tr(
+                            "Upload this log to mclo.gs, a paste service for Minecraft logs? \
+                             Anyone with the link can read it, until it is deleted or unread \
+                             for 90 days. Your home folder, user name and account names are \
+                             taken out first.",
+                        )),
+                    ))
+                    .child(
+                        ui::quiet("console-share-no", tr("Cancel"), 36., &t).on_click(cx.listener(
+                            |this, _: &ClickEvent, _, cx| {
+                                this.console.confirm_share = false;
+                                cx.notify();
+                            },
+                        )),
+                    )
+                    .child(
+                        ui::solid("console-share-yes", tr("Upload"), 36., 14., &t).on_click(
+                            cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.share_log(cx);
+                                cx.notify();
+                            }),
+                        ),
+                    ),
+            );
+        }
+        let status =
+            match &self.console.shared {
+                _ if self.console.sharing => Some(ui::list_head(tr("Sending…"))),
+                Some(Ok(shared)) => {
+                    let (url, open_url) = (shared.url.clone(), shared.url.clone());
+                    Some(
+                        ui::list_head(trf("Shared: {url}", &[("url", &shared.url)])).child(
+                            div()
+                                .flex()
+                                .gap(px(8.))
+                                .child(
+                                    ui::quiet("console-link-copy", tr("Copy link"), 36., &t)
+                                        .on_click(move |_, _, cx| {
+                                            copy_to_clipboard(
+                                                cx,
+                                                ClipboardItem::new_string(url.clone()),
+                                            )
+                                        }),
+                                )
+                                .child(
+                                    ui::quiet("console-link-open", tr("Open"), 36., &t)
+                                        .on_click(move |_, _, cx| cx.open_url(&open_url)),
+                                )
+                                .child(
+                                    ui::quiet("console-unshare", tr("Delete it"), 36., &t)
+                                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                            this.unshare_log(cx);
+                                            cx.notify();
+                                        })),
+                                ),
+                        ),
+                    )
+                }
+                Some(Err(e)) => Some(
+                    div().px(px(12.)).pb(px(8.)).child(
+                        ui::text(13., FontWeight::NORMAL, ink::FULL)
+                            .text_color(ui::danger())
+                            .child(e.clone()),
+                    ),
+                ),
+                None => None,
+            };
+        let shown = lines.len().saturating_sub(LOG_LINES);
+        let log = div()
+            .id("console-lines")
+            .track_scroll(&self.console.scroll.handle)
+            .h(px(320.))
+            .overflow_y_scroll()
+            .take_wheel(&self.console.scroll)
+            .p(px(16.))
+            .rounded(px(radius::ROW))
+            .bg(gpui::black().opacity(0.25))
+            .font_family(theme::MONO)
+            .text_size(px(12.))
+            .line_height(px(21.))
+            .children(lines.into_iter().skip(shown).map(|line| {
+                let color = if line.contains("/ERROR]") || line.contains("ERROR:") {
+                    ui::danger()
+                } else if line.contains("/WARN]") {
+                    ui::warn()
+                } else {
+                    white(0.75)
+                };
+                div().text_color(color).child(line)
+            }));
+        Some(body.children(status).child(log))
     }
 }

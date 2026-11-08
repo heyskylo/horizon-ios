@@ -1,0 +1,15 @@
+{
+  "hooks": [
+    {
+      "name": "fishing_hook_landed",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_fishing_hook_landed",
+      "neoforge": "none (NeoForge's ProjectileImpactEvent leaves the bobber's block contact out; Bukkit's ProjectileHitEvent for a FishHook)",
+      "side": "server",
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "a server player's fishing bobber meeting or lying on a block, each tick (`native_fishing_hook_landed`).",
+  "doc_summary": "`native_fishing_hook_landed(player, hook, dimension, block, face)`: a server player's fishing bobber touching a block, as Bukkit's `ProjectileHitEvent` for a `FishHook`: each tick the flying bobber meets a block or lies on one (then the block under its centre, face `[0, 1, 0]`), with the bobber in place so `native_remove_entity` can take it. Bundles need \"hooks\": @API:fishing_hook_landed@."
+}

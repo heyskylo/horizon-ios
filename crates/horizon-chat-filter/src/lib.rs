@@ -125,7 +125,11 @@ impl Filter {
                     Some(w) => (w, true),
                     None => (word, false),
                 };
-                f.allowed.push((normalise::word(word), prefix));
+                // An allow entry with no letters would allow every word (an empty prefix).
+                let runs = normalise::word(word);
+                if !runs.is_empty() {
+                    f.allowed.push((runs, prefix));
+                }
                 continue;
             }
             let (kind, word) = match line.as_bytes()[0] {
@@ -485,15 +489,36 @@ pub fn parse_duration(text: &str) -> Option<i64> {
     (count > 0).then(|| count.checked_mul(unit)).flatten()
 }
 
-/// `millis` for players, rounded up: minutes up to an hour, hours up to two days, then days.
-pub fn duration_text(millis: i64) -> String {
-    let up = |unit: i64| (millis + unit - 1) / unit;
-    let (count, unit) = if millis <= 60 * MINUTE {
-        (up(MINUTE), "minute")
+/// The unit used when presenting a moderation duration to a player.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DurationUnit {
+    Minute,
+    Hour,
+    Day,
+}
+
+/// A duration's rounded count and unit, shared by logs and translated replies.
+pub fn duration_parts(millis: i64) -> (i64, DurationUnit) {
+    let (unit, kind) = if millis <= 60 * MINUTE {
+        (MINUTE, DurationUnit::Minute)
     } else if millis <= 48 * 60 * MINUTE {
-        (up(60 * MINUTE), "hour")
+        (60 * MINUTE, DurationUnit::Hour)
     } else {
-        (up(24 * 60 * MINUTE), "day")
+        (24 * 60 * MINUTE, DurationUnit::Day)
+    };
+    (
+        millis.div_euclid(unit) + i64::from(millis.rem_euclid(unit) > 0),
+        kind,
+    )
+}
+
+/// `millis` for logs, rounded up: minutes up to an hour, hours up to two days, then days.
+pub fn duration_text(millis: i64) -> String {
+    let (count, unit) = duration_parts(millis);
+    let unit = match unit {
+        DurationUnit::Minute => "minute",
+        DurationUnit::Hour => "hour",
+        DurationUnit::Day => "day",
     };
     format!("{count} {unit}{}", if count == 1 { "" } else { "s" })
 }

@@ -143,13 +143,13 @@ pub(super) fn set_wanted(m: &mut Mob, speed: f64) {
     m.ai.mov.operation = Operation::MoveTo;
 }
 /// AbstractCubeMob.jumpFromGround (and MagmaCube's size boost).
-pub fn jump(m: &mut Mob) {
+pub fn jump(m: &mut Mob, w: &MobWorld) {
     let boost = if m.species() == Species::MagmaCube {
         m.extra.size as f32 * 0.1
     } else {
         0.0
     };
-    m.velocity.y = f64::from(m.jump_power() + boost);
+    m.velocity.y = f64::from(m.jump_power(w) + boost);
 }
 /// `AbstractCubeMob.tick`'s landing splash: crumbs of goo (or flames) around
 /// the cube's feet, drawn by the side that ticks the mob.
@@ -179,16 +179,31 @@ fn landing_splash(m: &mut Mob, events: &mut Vec<MobEvent>) {
         i += 1;
     }
 }
-/// `AbstractCubeMob.tick` on a client of a server: the landing splash follows
-/// the on-ground flag the server sends.
+/// `AbstractCubeMob.tick` on a client of a server: the squish scale (`oSquish`,
+/// the step toward `targetSquish`, the land and takeoff targets, then
+/// `decreaseSquish`) and the landing splash follow the on-ground flag the
+/// server sends. The squish sound stays the server's broadcast.
 pub fn client_tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
     if m.species() == Species::SulfurCube {
         super::sulfur_cube::client_tick(m);
     }
-    if m.on_ground && !m.extra.flag2 {
+    // `AbstractCubeMob.tick`: `oSquish = squish`, then squish toward the target.
+    m.anim.vo[SQUISH] = m.anim.v[SQUISH];
+    m.anim.v[SQUISH] += (m.anim.v[TARGET_SQUISH] - m.anim.v[SQUISH]) * 0.5;
+    let was = m.extra.flag2;
+    if m.on_ground && !was {
         landing_splash(m, events);
+        m.anim.v[TARGET_SQUISH] = -0.5;
+    } else if !m.on_ground && was {
+        m.anim.v[TARGET_SQUISH] = 1.0;
     }
     m.extra.flag2 = m.on_ground;
+    // `AbstractCubeMob.decreaseSquish`; `MagmaCube` multiplies by 0.9.
+    m.anim.v[TARGET_SQUISH] *= if m.species() == Species::MagmaCube {
+        0.9
+    } else {
+        0.6
+    };
 }
 /// AbstractCubeMob.tick squish and landing sounds, plus contact damage.
 pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
@@ -231,10 +246,9 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         // Player.touch: entities within the player's box grown by (1, 0.5, 1).
         && m.bounds().intersects(p.bounds.inflate(Vec3::new(1.0, 0.5, 1.0)))
     {
-        let reach = 2.04f32.sqrt() as f64 - 0.6;
-        if m.bounds()
-            .inflate(Vec3::new(reach, 0.0, reach))
-            .intersects(p.bounds)
+        // isWithinMeleeAttackRange, with what the cube holds.
+        if w.target_info(Who::Player)
+            .is_some_and(|t| m.melee_reaches(w, t.hitbox))
             && m.sees(w, Who::Player)
         {
             events.push(MobEvent::CubeHurtPlayer {
@@ -259,7 +273,8 @@ fn attack_damage(m: &Mob) -> f32 {
 /// `AbstractCubeMob.push(entity)`: an iron golem whose `pushEntities` takes
 /// this cube (its box overlaps the cube's, `EntitySelector.pushableBy`) gets
 /// `dealDamage`: alive, `doTeamsAllowDamage`, `isWithinMeleeAttackRange`
-/// (always true for overlapping boxes) and `hasLineOfSight`, then a
+/// (true for overlapping boxes unless a held spear's minimum range refuses
+/// them) and `hasLineOfSight`, then a
 /// `mobAttack` hit for `getAttackDamage`.
 fn hurt_touching_golems(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     // canDealDamage also needs Mob.isEffectiveAi: a NoAI cube never hurts.
@@ -277,6 +292,7 @@ fn hurt_touching_golems(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
                 && o.species == Species::IronGolem
                 && o.alive
                 && o.bounds.intersects(bounds)
+                && m.melee_reaches(w, o.hitbox)
                 && crate::scoreboard::pushable_by(theirs, own, pushable)
                 && crate::scoreboard::teams_allow_damage(own, theirs)
         })
@@ -406,8 +422,9 @@ impl Goal for CubeKeepJumping {
     fn flags(&self) -> u8 {
         JUMP | MOVE
     }
-    fn can_use(&mut self, _: &mut Mob, _: &mut Cx) -> bool {
-        true
+    fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
+        // `CubeMobKeepOnJumpingGoal.canUse`: not while it is a passenger.
+        !m.extra.passenger
     }
     fn tick(&mut self, m: &mut Mob, _: &mut Cx) {
         set_wanted(m, 1.0);
@@ -517,6 +534,9 @@ mod golem_touch_tests {
                 main_hand: None,
                 off_hand: None,
                 head: None,
+                chest: None,
+                legs: None,
+                feet: None,
                 armor_cover: 0.0,
                 invisible: false,
                 spectator: false,
@@ -535,6 +555,7 @@ mod golem_touch_tests {
                 sleeping: false,
                 sleep_timer: 0,
                 passenger: false,
+                riding_vehicle: None,
                 vehicle: None,
             });
             let mut slime = Mob::new(
@@ -567,6 +588,53 @@ mod golem_touch_tests {
                 .iter()
                 .any(|e| matches!(e, MobEvent::Sound("entity.slime.attack", ..))),
             "ai_step must not emit entity.slime.attack before hurtServer: {events:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod keep_jumping_tests {
+    use super::*;
+    use crate::mobs::world::with_test_world;
+    use horizon_core::random::LegacyRandom;
+    use std::sync::Arc;
+
+    /// `CubeMobKeepOnJumpingGoal.canUse` is `!isPassenger()`: a cube riding
+    /// a boat or another mob holds still, while one on its own keeps hopping.
+    #[test]
+    fn a_cube_that_rides_something_does_not_keep_jumping() {
+        let mut starts = None;
+        let ran = with_test_world(&[], |w, types| {
+            let mut lr = LegacyRandom::new(0);
+            let mut events = Vec::new();
+            let mut cx = Cx {
+                w,
+                lr: &mut lr,
+                events: &mut events,
+            };
+            starts = Some([true, false].map(|passenger| {
+                let mut m = Mob::new(
+                    1,
+                    Arc::new(types.types["minecraft:slime"].clone()),
+                    Vec3::ZERO,
+                    0.0,
+                );
+                m.extra.passenger = passenger;
+                m.ai.goals.add(5, CubeKeepJumping);
+                let mut goals = std::mem::take(&mut m.ai.goals);
+                goals.tick(&mut m, &mut cx);
+                let running = goals.is_running("CubeKeepJumping");
+                m.ai.goals = goals;
+                running
+            }));
+        });
+        if !ran {
+            return;
+        }
+        assert_eq!(
+            starts,
+            Some([false, true]),
+            "a cube riding anything must not start CubeMobKeepOnJumpingGoal"
         );
     }
 }
