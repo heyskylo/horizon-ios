@@ -86,27 +86,23 @@ pub fn with_options(pack: &Pack, macros: &crate::Macros) -> crate::Macros {
     out
 }
 
-/// The macros `shaders.properties` is read with: the pack's options over `macros`, and every
-/// feature Horizon has (`Macros::define_every_feature`), so a custom uniform or a screen behind
-/// `#ifdef IRIS_FEATURE_<name>` is there as in Iris 1.11.7.
+/// The macros `shaders.properties` is read with: the pack's options over `macros`. No
+/// `IRIS_FEATURE_<name>` is among them (spec OQ-2), so what a pack puts behind one is not read.
 pub fn properties_macros(pack: &Pack, macros: &crate::Macros) -> crate::Macros {
-    let mut out = with_options(pack, macros);
-    out.define_every_feature();
-    out
+    with_options(pack, macros)
 }
 
 /// A pack's `shaders.properties` as the game reads it before the programs: parsed with
-/// `properties_macros` over `macros` (the standard set and the renderer's), after which `macros`
-/// gets the features the pack turns on (`iris.features.*`, `Macros::define_features`). Returns
-/// the properties and a note for each required feature Horizon lacks. Whatever reads a pack's
-/// programs (the game, the `real_packs` test) reads them with these macros.
+/// `properties_macros` over `macros` (the standard set and the renderer's). Returns the
+/// properties and a note for each required feature Horizon lacks (`Macros::feature_notes`).
+/// Whatever reads a pack's programs (the game, the `real_packs` test) reads them with `macros`.
 pub fn read_properties(
     pack: &Pack,
     macros: &mut crate::Macros,
 ) -> (crate::Properties, Vec<String>) {
     let text = pack.read_text("shaders.properties").unwrap_or_default();
     let properties = crate::Properties::parse(&text, &properties_macros(pack, macros));
-    let notes = macros.define_features(&properties);
+    let notes = crate::Macros::feature_notes(&properties);
     (properties, notes)
 }
 
@@ -426,19 +422,18 @@ iris.features.required = NOT_A_FEATURE
         let (properties, notes) = read_properties(&pack, &mut macros);
         assert_eq!(properties.get("screen"), Some("x"));
         assert_eq!(properties.get("vendor"), Some("other"));
-        assert!(macros.is_defined("IRIS_FEATURE_SSBO"));
+        assert!(!macros.is_defined("IRIS_FEATURE_SSBO"));
         assert_eq!(
             notes,
             ["the pack requires `NOT_A_FEATURE`, which is not supported yet"]
         );
     }
 
-    /// `shaders.properties` sees every feature Horizon has, listed or not, as Iris 1.11.7 reads
-    /// it (probe pack, measured there: a custom uniform behind each `#ifdef IRIS_FEATURE_<name>`
-    /// was set for an optional, a required and an unlisted feature, the optional list written on
-    /// the last line). The programs still get only the optional ones, as there.
+    /// Neither `shaders.properties` nor the programs see an `IRIS_FEATURE_<name>` (spec OQ-2):
+    /// what a pack puts behind one is skipped, for an optional, a required, an unlisted and an
+    /// unknown feature alike, and a required feature Horizon has gets no note.
     #[test]
-    fn properties_see_every_feature_and_programs_only_the_optional_ones() {
+    fn properties_and_programs_see_no_feature_macro() {
         let bytes = crate::pack::tests::zip(&[(
             "shaders/shaders.properties",
             "iris.features.required = COMPUTE_SHADERS\n\
@@ -452,12 +447,9 @@ iris.features.required = NOT_A_FEATURE
         let mut macros = crate::Macros::standard();
         let (properties, notes) = read_properties(&pack, &mut macros);
         let read = |name: &str| properties.get(&format!("uniform.float.{name}")).is_some();
-        assert!(read("optional") && read("required") && read("unlisted"));
-        assert!(!read("unknown"));
+        assert!(!read("optional") && !read("required") && !read("unlisted") && !read("unknown"));
         assert!(notes.is_empty());
-        assert!(macros.is_defined("IRIS_FEATURE_CUSTOM_IMAGES"));
-        assert!(!macros.is_defined("IRIS_FEATURE_COMPUTE_SHADERS"));
-        assert!(!macros.is_defined("IRIS_FEATURE_SSBO"));
+        assert!(!macros.is_defined("IRIS_FEATURE_CUSTOM_IMAGES"));
     }
 
     #[test]
