@@ -1671,7 +1671,7 @@ API 353 adds A vault is about to eject a loot item: `native_vault_loot(pos, item
 
 API 354 adds A timed world border size change finished: `native_world_border_bounds_change_finish()` fires after the border reaches its final size. Bundles need "hooks": 354.
 
-API 355 adds `Game::native_mod_image(width, height, rgba)`: a mod's own RGBA image, uploaded into the HUD atlas slot `horizon/modimage` (1024 by 1024) and drawn with `native_sprite`, whose source rectangle crops and stretches it, so a map or a schematic view needs no texture of its own. The slot is reserved only while a native mod is loaded, so a game without mods pays none of its 4 MiB. False for an image that is not `width * height` pixels of four bytes, is larger than the slot, or when there is no slot. Each upload is a texture patch of the image, so send one when the image changed, not every frame.
+API 355 adds `Game::native_mod_image(width, height, rgba)`: a mod's own RGBA image, uploaded into the HUD atlas slot `horizon/modimage` (1024 by 1024) and drawn with `native_sprite`, whose source rectangle crops and stretches it, so a map or a schematic view needs no texture of its own. The slot is reserved only in a game built with native mods, so a game without mods pays none of its 4 MiB: one whose source horizon-mixins changed (its `.horizon-mixins-stage.json` names a mod; the launcher's builds and a bundle applied by hand or by a mod's own script alike), one with trait mods installed, or one whose `native-mods.json` lists mods. False for an image that is not `width * height` pixels of four bytes, is larger than the slot, or when there is no slot. Each upload is a texture patch of the image, so send one when the image changed, not every frame.
 API 356 adds a living entity drowning (`native_living_drown`), with changeable drowning and damage, a read-only bubble count and cancellation. Bundles need "hooks": 356.
 
 API 357 adds a living entity's fall (`native_living_fall`), with changeable distance and multiplier and cancellation. Bundles need "hooks": 357.
@@ -4090,6 +4090,24 @@ something happened can time the sound to the distance, such as a blast heard whe
 `delay = distance / speed`. It answers false on a server and for a value out of range; an event the resources lack
 plays nothing.
 
+`native_muffle_sounds(amount, lowpass, ticks, exempt)` (client, `host.muffle_sounds`) muffles the game's sounds for a
+while, as ears ringing after a close blast hear them: `amount` (0 to 1) of every sound's volume is taken away and
+`lowpass` (0 to 1) dulls it, from untouched to a 300 Hz low-pass. Both start in full and fade back in a straight line
+over `ticks` client ticks, held while the game is paused. The sound events in `exempt` (`mymod:ear.ringing`, at most
+64) play clearly through it, those already playing too, so the mod's own ringing stays sharp; everything else is
+muffled, sounds that were already playing, music and the interface's clicks included. A new call replaces the muffle
+in place, and `ticks` 0 ends it at once. The muffle belongs to the sound output, so in splitscreen every player hears
+it. Nothing changes while no mod calls it. It answers false, changing nothing, on a server, for an amount or strength
+outside 0 to 1, and for an exempt event that isn't `namespace:path`.
+
+```rust,ignore
+// A close blast: half the volume gone and the world dulled, back to normal over 4 seconds.
+game.native_muffle_sounds(0.5, 0.9, 80, &["ironfall:ear.ringing"]);
+game.native_play_local_sound("ironfall:ear.ringing", eye, 1.0, 1.0, 0);
+```
+
+Bundles need `"hooks": @API:muffle_sounds@`.
+
 ### Fluid currents
 
 `native_fluid_flow(dimension, pos)` is `FluidState.getFlow(level, pos)`: the normalised current at a position, the
@@ -4443,6 +4461,45 @@ fn world_primitives(&self, _host: &dyn Host, event: &mut WorldPrimitivesEvent<'_
         .scale_with_distance();
 }
 ```
+
+### Holding the world's picture
+
+`native_world_hold(hold)` (the trait's `Hooks::world_hold`) is asked once a frame while a world is shown, on the
+client, just before the frame's terrain uploads. A mod that calls `hold.hold()` keeps the terrain drawn as it stands
+while the world changes under it; one that stops asking lets go, and every change shows on that frame. Use it to make a
+change too big to go in at a stroke (thousands of sections) appear at once: the edits go in over seconds at whatever
+pace suits them, the game lights, meshes and uploads their sections as ever, and letting go only swaps which meshes are
+drawn, with nothing left to upload.
+
+`hold.hold_within(x, z, radius)` holds only the sections whose middle lies in that circle (block coordinates; call it
+again for more, at most 64 a frame). Smaller circles than last frame's let go of what they leave on that frame, and
+changes outside them show as ever from then on: shrink them over a few frames to let a change spread across the land.
+Several mods add up: `hold()` from any of them holds everything, and circles join. A circle that isn't finite or has a
+negative radius is left out.
+
+```rust,ignore
+fn world_hold(&self, _host: &dyn Host, event: &mut WorldHoldEvent<'_>) {
+    if self.crater_going_in() {
+        event.hold.hold_within(120.0, -40.0, 300.0);
+    }
+}
+```
+
+- Only the terrain's sections are held, and only those already on screen: terrain streaming in during a hold shows as
+  ever. In single player, far terrain waits too for the columns the server changes beyond the view inside the hold,
+  and takes them in when it lets go of them, so they show a moment after the sections (far terrain summarizes them
+  again). Far terrain a multiplayer server sends, entities, block entities drawn as entities, particles, light,
+  collisions and the blocks themselves change at once, so the land a player sees may not be the land they stand on.
+- Both the old and the new mesh of each waiting section are in memory. A hold is meant for seconds and is bounded: it
+  lets go by itself after 30 seconds, past 1 GiB of waiting meshes and when memory for meshes runs out, showing what
+  waited early rather than losing it; ended so, it stays off until no mod has asked for a frame. Leaving the world,
+  another dimension, a shader pack that lays terrain out again and chunks unloading drop what waits with the sections.
+- A section still being meshed when the hold lets go shows a frame or so later: give the game a moment between the
+  last edit and letting go.
+- Each player's game is asked for itself (splitscreen: one hold per player). The debug census lists
+  `held_section_vertices`.
+
+Bundles need `"hooks": @API:world_hold@`.
 
 ### Block textures
 
@@ -5024,6 +5081,13 @@ The client `tooltip_color` hook changes the background and top and bottom border
 # Camera and collision reads
 
 The `native_camera()` helper returns the most recently extracted world frame's camera, or none before one exists. Its position, interpolated eye height, partial tick, angles, final FOV, near/far planes and dimension accompany column-major view and projection matrices. The view is camera-relative and includes bob and spin; projection uses reversed Z. Earlier callbacks in a frame can see the previous frame. `native_block_collision(pos)` returns block-local `[min_x, min_y, min_z, max_x, max_y, max_z]` boxes with an empty collision context; unloaded blocks and collision errors give no boxes.
+
+Entity-sensitive static shapes belong to the bundled content declarations
+([entity-context shapes](mods.md#entity-context-shape-declarations)). They compile
+at resource load and are selected by the captured entity class in normal
+movement and selection. They are not callbacks into a native mod from physics.
+Empty-context native reads retain the declared default shape. These declarations
+cannot depend on the level, neighbouring blocks, position or block-entity data.
 
 ### Wind burst block protection
 

@@ -98,8 +98,8 @@ PatrollingMonster.LongDistancePatrolGoal.findPatrolCompanions	port	crates/horizo
 Phantom.registerGoals	port	crates/horizon-client/src/mobs/phantom.rs::register	
 Phantom.updatePhantomSizeInfo	port	crates/horizon-client/src/mobs/phantom.rs::set_size	the size clamps to 0..64, sets the attack damage base to 6 plus the size, and the box is scaled by it (mobs/living.rs::Mob::dims)
 Phantom.finalizeSpawn	inline	crates/horizon-client/src/mobs/phantom.rs::register	the anchor 5 blocks above is set at creation; size 0
-Phantom.readAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	size is read as setPhantomSize; gap: minor: anchor_pos is not read
-Phantom.addAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	size is written; gap: minor: anchor_pos is not written
+Phantom.readAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	size is read as setPhantomSize; anchor_pos is read as the circling anchor (extra.home), absent or unreadable is none
+Phantom.addAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	size is written, and anchor_pos only for a phantom that has an anchor (storeNullable)
 Phantom.getDefaultDimensions	inline	crates/horizon-client/src/mobs/living.rs::Mob::dims	the box, height and eye height scale by 1 + 0.15 per size
 Phantom.PhantomBodyRotationControl.clientTick	inline	crates/horizon-client/src/mobs/phantom.rs::move_control	the head yaw follows the body yaw there
 Phantom.PhantomMoveTargetGoal.touchingTarget	inline	crates/horizon-client/src/mobs/phantom.rs::CircleAroundAnchor::tick	the squared distance under 4 check near the move target

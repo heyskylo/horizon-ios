@@ -283,6 +283,7 @@ pub fn main() -> horizon_client::Result<()> {
                 loot: &loot,
                 damage: Some(source),
                 player: player.filter(|_| pkill),
+                player_killed: pkill,
                 luck: get("luck", "0").parse()?,
                 vehicle: c.get("vehicle").map(|v| LootEntity::new(v)),
                 mob_drops: true,

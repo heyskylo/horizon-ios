@@ -41,6 +41,8 @@ pub use crate::game::{
     NativeStructureTemplate, NativeWorldDraw,
 };
 pub use crate::gamerules::Value as GameRuleValue;
+/// What a mod asks of the terrain's picture each frame (`native_world_hold`). API @API:world_hold@.
+pub use crate::gfx::WorldHold;
 pub use crate::gfx::native_render::{
     BlockSpriteArrays, RenderHooks, RenderNeeds, RenderNeedsEvent, WorldDrawn, WorldDrawnEvent,
     wgpu,
@@ -90,6 +92,7 @@ pub use horizon_world::{
     attachments::{
         AttachmentCodec, AttachmentError, AttachmentHost, AttachmentType, Attachments, Holder,
     },
+    block_state_properties::BlockProperties,
     fluid::{FluidKind, FluidState},
     level::{BlockId, Dimension as LevelDimension, PlacementContext},
     loot::{LootStack, NativeLootContext},
