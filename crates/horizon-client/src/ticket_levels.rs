@@ -298,10 +298,11 @@ impl ChunkTickets {
 
     fn portal_matches(&self, sources: &Sources) -> bool {
         self.portal.len() == sources.portal.len()
-            && sources
-                .portal
-                .iter()
-                .all(|chunk| self.portal.iter().any(|ticket| ticket.chunk == *chunk))
+            && sources.portal.iter().all(|chunk| {
+                self.portal
+                    .iter()
+                    .any(|ticket| (ticket.chunk, ticket.level) == *chunk)
+            })
     }
     pub fn levels(&self) -> Levels {
         self.levels.clone()
