@@ -3100,6 +3100,39 @@ def potion_contents_names():
     return [*setup('/clear @s'), *[cmd(f'/give @s {s}') for s in stacks], *setup('/clear @s')]
 
 
+def ominous_spawner_saved_motion():
+    """`Entity.load` reads `Motion` (a component above 10 loads as 0) and
+    `Entity.saveWithoutId` writes `getDeltaMovement()`. `OminousItemSpawner.tick`
+    never moves the spawner, so its motion stays as given, through a chunk
+    unload and reload too. Its item is far in the future."""
+    x, z, y = 5248, 5120, 300
+    spawners = [(1, 'Motion:[0.6d,0.0d,-0.25d]'), (2, 'Motion:[11.0d,-0.5d,0.0d]'), (3, '')]
+
+    def reads():
+        out = []
+        for n, _ in spawners:
+            target = f'0000c0df-0000-0000-0000-00000000000{n}'
+            out += [cmd(f'/data get entity {target} {field}') for field in ('Motion', 'Pos')]
+        return out
+
+    ops = [*setup(f'/forceload add {x} {z}'), {'op': 'wait_chunks', 'chunks': [[x >> 4, z >> 4]]}]
+    for n, fields in spawners:
+        extra = f',{fields}' if fields else ''
+        ops.append(cmd(f'/summon minecraft:ominous_item_spawner {x + 3 * n}.5 {y} {z + 8}.5 '
+                       f'{{UUID:[I;49375,0,0,{n}],spawn_item_after_ticks:100000L,'
+                       f'item:{{id:"minecraft:stone",count:1}}{extra}}}', expect_result=1))
+    ops += reads()
+    ops.append({'op': 'tick', 'n': 5})
+    ops += reads()
+    # Unload the chunk (saving its entities), then load it again.
+    ops += [*setup(f'/forceload remove {x} {z}'), {'op': 'tick', 'n': 60},
+            cmd(f'/execute unless loaded {x} {y} {z}', expect_result=1),
+            *setup(f'/forceload add {x} {z}'), {'op': 'wait_chunks', 'chunks': [[x >> 4, z >> 4]]}]
+    ops += reads()
+    return ops + setup(f'/kill @e[type=minecraft:ominous_item_spawner,x={x},y={y - 8},z={z},dx=16,dy=24,dz=16]',
+                       f'/forceload remove {x} {z}')
+
+
 def trial_spawner_passengers():
     """Configured passengers must exist as entities with a vehicle (#7254)."""
     ops = [*setup('/fill 1 219 1 13 219 8 stone',
@@ -6626,6 +6659,7 @@ def groups():
         ('passenger teleports', passenger_teleports(cmd, setup)),
         ('mob riding', mob_riding()),
         ('trial spawner passengers', trial_spawner_passengers()),
+        ('ominous spawner saved Motion', ominous_spawner_saved_motion()),
         ('gateway passengers', gateway_passengers(cmd, setup)),
         ('gateway item motion', gateway_item_motion(cmd, setup)),
         ('camel riders', camel_riders()),
