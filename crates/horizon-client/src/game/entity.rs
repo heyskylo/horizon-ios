@@ -1680,7 +1680,7 @@ impl Entity for Projectile {
         self.previous_pitch = self.pitch;
     }
     fn native_type(&self) -> Cow<'static, str> {
-        self.kind.id().into()
+        self.entity_type().into()
     }
     fn save_nbt(
         game: &mut Game<'_>,

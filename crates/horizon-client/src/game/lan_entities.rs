@@ -661,11 +661,7 @@ impl Game<'_> {
         for p in self.creatures.projectiles.iter().filter(|p| p.id > after) {
             use horizon_client::projectiles::ProjectileKind as K;
             // A spectral arrow is its own entity type.
-            let kind = if p.is_spectral_arrow() {
-                "minecraft:spectral_arrow"
-            } else {
-                p.kind.id()
-            };
+            let kind = p.entity_type();
             let data = match p.guest.and_then(|conn| hub.guest(conn)) {
                 Some(g) => g.entity_id,
                 None => owner(p.owner),
