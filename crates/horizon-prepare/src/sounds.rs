@@ -257,7 +257,7 @@ impl Assets {
         log: Log,
     ) -> Result<Self, String> {
         let lock = Lock::read(root)?;
-        let files = artifacts::game_files(minecraft, &lock.version).with(inputs);
+        let files = artifacts::game_files(minecraft, &lock.version).with(inputs, &lock.version);
         let manifest = artifacts::import_manifest(&lock, &files)?;
         let target = crate::resources_dir(root, &lock.version, output);
         let (store, index, bytes) = launcher_assets(

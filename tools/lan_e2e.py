@@ -8641,6 +8641,9 @@ def check_sprint_hit_slowdown(host, guest, out):
     causeExtraKnockback: the horizontal speed times 0.6 and setSprinting(false). Ctrl is released
     before the hit (the sprint holds while W stays down), so only the hit can end it. Input and
     the click run in one control script so command latency cannot carry the guest past the host.
+    The guest builds its sprint speed with a run-up: an absolute /tp zeroes the speed, as
+    vanilla's does (TeleportCommand's relatives carry no DELTA), so a hit right after one
+    sees walking speed.
     """
     if dead(guest):
         guest.raw('respawn')
@@ -8660,18 +8663,20 @@ def check_sprint_hit_slowdown(host, guest, out):
     host('command', command=f'fill {x - 6} {y} {z - 2} {x + 14} {y + 3} {z + 2} minecraft:air')
     host('command', command=f'fill {x - 6} {y - 1} {z - 2} {x + 14} {y - 1} {z + 2} minecraft:stone')
     host('command', command=f'tp @s {x + 0.5} {y} {z + 0.5}')
-    guest('command', command=f'tp @s {x + 12.5} {y} {z + 0.5} 90 0')
+    guest('command', command=f'tp @s {x + 8.5} {y} {z + 0.5} 90 0')
     guest.wait(40)  # a full attack charge
     guest.raw('look-at', f'{x + 0.5}', f'{y + 1.6}', f'{z + 0.5}')
     try:
         replies = guest.script([
             'key w down',
             'key ctrl down',
-            'wait 1',
-            f'command tp @s {x + 3.5} {y} {z + 0.5} 90 0',
+            # 19 ticks from 8 blocks out end about 3 blocks from the host's centre, in reach.
+            *['wait 1'] * 19,
             'state',
             'key ctrl up',
             'mouse left click',
+            'state',
+            'wait 1',
             'state',
             'wait 1',
             'state',
@@ -8690,12 +8695,9 @@ def check_sprint_hit_slowdown(host, guest, out):
              if h.get('source') == 'minecraft:player_attack' and h.get('hurt')),
             None,
         )
-        before_index = next(
-            (i for i, p in enumerate(states) if p['sprinting'] and horizontal(p) > 0.1),
-            None,
-        )
-        before = states[before_index] if before_index is not None else None
-        after = states[before_index + 1 :] if before_index is not None else []
+        # The first sample is taken just before the click.
+        before = states[0] if states and states[0]['sprinting'] else None
+        after = states[1:]
     finally:
         guest.raw('key', 'ctrl', 'up')
         guest.raw('key', 'w', 'up')
@@ -8712,10 +8714,13 @@ def check_sprint_hit_slowdown(host, guest, out):
     ended = next((i for i, a in enumerate(seen['after']) if not a['sprinting']), None)
     assert ended is not None and not any(a['sprinting'] for a in seen['after'][ended:]), \
         f'the hit did not end the guest\'s sprint: {seen}'
-    # The first post-hit sample includes one local movement step after the 0.6 cut. Without the cut,
-    # it would remain at sprint speed until the server's later sprint flag update.
+    # The first post-hit sample includes one local movement step after the 0.6 cut (about 0.68 of
+    # the sprint speed), and the speed then climbs back towards walking. Without the cut the
+    # speed only eases down from sprinting once the server's sprint flag arrives (0.9, then 0.84).
     first = seen['after'][ended]
-    assert first['speed'] < 0.9 * seen['before']['speed'], f'the guest sprints on after the hit: {seen}'
+    assert first['speed'] < 0.75 * seen['before']['speed'], f'the guest sprints on after the hit: {seen}'
+    assert len(seen['after']) > ended + 1 and seen['after'][ended + 1]['speed'] > first['speed'], \
+        f'the guest\'s speed did not climb back after the cut: {seen}'
     return seen
 
 
@@ -13389,6 +13394,113 @@ CHECKS += ['levelup-sounds']
 CHECK_FNS['levelup-sounds'] = check_levelup_sounds
 
 
+def check_entity_die(host, guest, out):
+    """#10046: killing an entity that is no mob is heard (`gameEvent(ENTITY_DIE)`: frequency 15) by a
+    sculk sensor about 3 blocks away, from the player's hit while sneaking (the attacker is the source
+    of `BlockAttachedEntity.kill` and `ArmorStand.kill`, and ENTITY_DIE is no event sneaking hides) and
+    from `/kill`: a cushion, a painting, an empty item frame, an armor stand, a boat and a minecart.
+    An item frame holding an item only gives the item up and does not die (`ItemFrame.hurtServer`)."""
+    hx, hy, hz = (int(v // 1) for v in pos_of(host))
+    old_modes = {g.name: g('state')['gamemode'] for g in (host, guest)}
+    seen = {}
+
+    def quiet(game, sensor):
+        state, still = None, 0
+        for _ in range(200):
+            game.wait(1)
+            state = game.raw('getblock', *sensor)['block']
+            still = still + 1 if 'sculk_sensor_phase=inactive' in state else 0
+            if still == 10:
+                return
+        raise Failed(f'sensor did not settle: {state}')
+
+    try:
+        for game, dz in ((host, -6), (guest, 6)):
+            x, z = hx + 8, hz + dz
+            sensor = (x + 3, hy, z + 2)
+            box = f'x={x - 2},y={hy - 1},z={z - 2},dx=7,dy=5,dz=7'
+            target = (x + 0.5, hy, z + 2.5)
+            hanging = (x + 0.5, hy + 1.5, z + 2.97)
+            cases = {
+                'cushion': ('creative', None, (target[0], hy + .125, target[2]), 'click'),
+                'painting': ('creative', f'summon minecraft:painting {x + .5} {hy + 1} {z + 2.97} '
+                             f'{{block_pos:[I;{x},{hy + 1},{z + 2}],facing:2b,variant:"minecraft:kebab"}}',
+                             hanging, 'click'),
+                'item_frame': ('creative', f'summon minecraft:item_frame {x + .5} {hy + 1} {z + 2.97} '
+                               f'{{block_pos:[I;{x},{hy + 1},{z + 2}],Facing:2b}}', hanging, 'click'),
+                'framed_item': ('creative', f'summon minecraft:item_frame {x + .5} {hy + 1} {z + 2.97} '
+                                f'{{block_pos:[I;{x},{hy + 1},{z + 2}],Facing:2b,'
+                                'Item:{id:"minecraft:diamond",count:1}}', hanging, 'click'),
+                'armor_stand': ('creative', f'summon minecraft:armor_stand {target[0]} {hy} {target[2]}',
+                                (target[0], hy + 1, target[2]), 'click'),
+                'boat': ('survival', f'summon minecraft:oak_boat {target[0]} {hy} {target[2]}',
+                         (target[0], hy + .3, target[2]), 'click'),
+                'minecart': ('survival', f'summon minecraft:minecart {target[0]} {hy} {target[2]}',
+                             (target[0], hy + .3, target[2]), 'click'),
+                'kill_painting': ('creative', f'summon minecraft:painting {x + .5} {hy + 1} {z + 2.97} '
+                                  f'{{block_pos:[I;{x},{hy + 1},{z + 2}],facing:2b,variant:"minecraft:kebab"}}',
+                                  None, f'kill @e[type=minecraft:painting,{box}]'),
+                'kill_boat': ('creative', f'summon minecraft:oak_boat {target[0]} {hy} {target[2]}',
+                              None, f'kill @e[type=minecraft:oak_boat,{box}]'),
+            }
+            heard = {}
+            for kind, (mode, summon, aim, act) in cases.items():
+                host('command', command=f'fill {x - 2} {hy - 1} {z - 2} {x + 4} {hy - 1} {z + 5} minecraft:stone')
+                host('command', command=f'fill {x - 2} {hy} {z - 2} {x + 4} {hy + 3} {z + 5} minecraft:air')
+                # The wall the hanging entities hang on, north of it.
+                host('command', command=f'setblock {x} {hy + 1} {z + 3} minecraft:stone')
+                host('command', command=f'setblock {sensor[0]} {sensor[1]} {sensor[2]} minecraft:sculk_sensor')
+                game('command', command=f'gamemode {mode}')
+                game('command', command=f'tp @s {x + 0.5} {hy} {z + 0.5} 0 0')
+                game('command', command='item replace entity @s weapon.mainhand with minecraft:iron_sword')
+                game.raw('key', 'shift', 'down')
+                game.wait(10)
+                if kind == 'cushion':
+                    game('command', command='item replace entity @s weapon.mainhand with minecraft:red_cushion')
+                    game.wait(5)
+                    game.raw('look-at', target[0], hy, target[2])
+                    game.raw('mouse', 'right', 'click')
+                else:
+                    host('command', command=summon)
+                game.wait(20)
+                quiet(game, sensor)
+                # A fresh sensor: whatever it heard while the entity was set up is gone.
+                host('command', command=f'setblock {sensor[0]} {sensor[1]} {sensor[2]} minecraft:air')
+                host('command', command=f'setblock {sensor[0]} {sensor[1]} {sensor[2]} minecraft:sculk_sensor')
+                game.wait(5)
+                if aim is None:
+                    game('command', command=act)
+                else:
+                    game.raw('look-at', *aim)
+                    game.wait(2)
+                    game.raw('mouse', 'left', 'click')
+                game.wait(10)
+                said = command_says(game, f'data get block {sensor[0]} {sensor[1]} {sensor[2]} last_vibration_frequency')
+                heard[kind] = said.rsplit(' ', 1)[-1]
+                game.raw('key', 'shift', 'up')
+                host('command', command=f'kill @e[type=!minecraft:player,{box}]')
+            seen[game.name] = heard
+            host('command', command=f'fill {x - 2} {hy - 1} {z - 2} {x + 4} {hy + 3} {z + 5} minecraft:air')
+    finally:
+        for game in (host, guest):
+            game.raw('key', 'shift', 'up')
+            back_to_game(game)
+            game('command', command='clear @s')
+            game('command', command='gamemode ' + old_modes[game.name])
+        face_each_other(host, guest)
+    for name, heard in seen.items():
+        for kind, frequency in heard.items():
+            if kind == 'framed_item':
+                assert frequency != '15', f'{name}: the frame holding an item died: {seen}'
+            else:
+                assert frequency == '15', f'{name}: {kind} death not heard: {seen}'
+    return seen
+
+
+CHECKS += ['entity-die']
+CHECK_FNS['entity-die'] = check_entity_die
+
+
 def check_mob_thorns(host, guest, out):
     """A mob's Thorns answers the player who hits it (#9954): `doPostAttackEffectsWithItemSource` runs the victim's
     equipment on every hit, so a husk in a Thorns 255 chestplate (the 15% per level always rolls) hurts the host's
@@ -13699,6 +13811,101 @@ def check_legacy_pvp(host, guest, out):
 
 CHECKS += ['legacy-pvp']
 CHECK_FNS['legacy-pvp'] = check_legacy_pvp
+
+def check_ride_seats(host, guest, out):
+    """RideCommand.mount forces the ride (startRiding(vehicle, true, true)), so an item display, an
+    armor stand or a marker takes a rider: the guest sits on the vehicle's passenger point (its box
+    height, less the player's 0.6 vehicle attachment), follows it when it is moved, and gets off on top
+    of it on sneak (Entity.getDismountLocationForPassenger); a mob rides a marker the same way."""
+    x, y, z = (int(v // 1) for v in pos_of(host))
+    x, z = x + 4, z + 4
+    host('command', command=f'fill {x - 2} {y - 1} {z - 2} {x + 6} {y - 1} {z + 2} minecraft:stone')
+    host('command', command=f'fill {x - 2} {y} {z - 2} {x + 6} {y + 4} {z + 2} minecraft:air')
+    seen = {}
+
+    def seat(kind, nbt, height):
+        tag = f'ride_seat_{kind.split(":")[1]}'
+        host('command', command=f'summon {kind} {x + 0.5} {y} {z + 0.5} {{NoGravity:1b,Tags:["{tag}"]{nbt}}}')
+        sel = f'@e[tag={tag},limit=1]'
+        result = {'mount': host('command', command=f'ride {GUEST_NAME} mount {sel}').get('chat')}
+        guest.wait(10)
+        result['riding'] = guest('status').get('riding') is not None
+        result['y'] = round(pos_of(guest)[1] - y, 3)
+        host('command', command=f'tp {sel} {x + 3.5} {y} {z + 0.5}')
+        guest.wait(10)
+        result['followed'] = round(pos_of(guest)[0] - (x + 3.5), 3)
+        guest.shot(out, f'ride-seat-{kind.split(":")[1]}')
+        guest.raw('key', 'shift', 'down')
+        guest.wait(10)
+        guest.raw('key', 'shift', 'up')
+        guest.wait(10)
+        result['off'] = guest('status').get('riding') is None
+        result['off_y'] = round(pos_of(guest)[1] - y, 3)
+        host('command', command=f'kill @e[tag={tag}]')
+        host('command', command=f'tp {GUEST_NAME} {x + 0.5} {y} {z - 1.5}')
+        guest.wait(10)
+        result['expected'] = (round(height - 0.6, 3), height)
+        return result
+
+    try:
+        seen['item_display'] = seat('minecraft:item_display', '', 0.0)
+        seen['armor_stand'] = seat('minecraft:armor_stand', ',Invisible:1b', 1.975)
+        host('command', command=f'summon minecraft:marker {x + 0.5} {y + 1} {z + 0.5} {{Tags:["ride_seat_mk"]}}')
+        host('command', command=f'summon minecraft:zombie {x + 2.5} {y} {z + 0.5} {{NoAI:1b,Tags:["ride_seat_z"]}}')
+        seen['zombie on marker'] = host('command', command='ride @e[tag=ride_seat_z,limit=1] mount @e[tag=ride_seat_mk,limit=1]').get('chat')
+        host.wait(5)
+        zombie = host('command', command='data get entity @e[tag=ride_seat_z,limit=1] Pos[1]').get('chat')
+        seen['zombie y'] = zombie
+    finally:
+        host('command', command='kill @e[tag=ride_seat_z]')
+        host('command', command='kill @e[tag=ride_seat_mk]')
+    for kind in ('item_display', 'armor_stand'):
+        r = seen[kind]
+        assert r['riding'], f'the guest rides the {kind}: {seen}'
+        assert abs(r['y'] - r['expected'][0]) < 0.01, f'the guest sits on the {kind} passenger point: {seen}'
+        assert abs(r['followed']) < 0.01, f'the guest follows the moved {kind}: {seen}'
+        # Off on top of the vehicle, then falling to the floor below like any player (10 ticks later).
+        assert r['off'] and -0.01 <= r['off_y'] <= r['expected'][1] + 0.01, f'the guest gets off the {kind}: {seen}'
+    assert any('started riding' in line for line in seen['zombie on marker'] or []), f'a mob rides a marker: {seen}'
+    return seen
+
+
+CHECKS += ['ride_seats']
+CHECK_FNS['ride_seats'] = check_ride_seats
+
+
+def check_ride_guest(host, guest, out):
+    """RideCommand.mount and dismount on another server player: the host's /ride seats the guest
+    on a pig and takes them off it, as vanilla does for any ServerPlayer (the console's, a
+    function's or another player's /ride), and a player is never a vehicle."""
+    x, y, z = (int(v // 1) for v in pos_of(host))
+    host('command', command=f'summon minecraft:pig {x + 2.5} {y} {z + 0.5} {{NoAI:1b,Tags:["ride_guest"]}}')
+    pig = '@e[type=minecraft:pig,tag=ride_guest,limit=1]'
+    seen = {}
+    try:
+        seen['mount'] = host('command', command=f'ride {GUEST_NAME} mount {pig}').get('chat')
+        guest.wait(10)
+        seen['guest riding'] = guest('status').get('riding')
+        seen['host riding'] = host('status').get('riding')
+        guest.shot(out, 'ride-guest')
+        seen['on a player'] = host('command', command=f'ride @e[type=minecraft:pig,tag=ride_guest,limit=1] mount {GUEST_NAME}').get('chat')
+        seen['dismount'] = host('command', command=f'ride {GUEST_NAME} dismount').get('chat')
+        guest.wait(10)
+        seen['guest riding after'] = guest('status').get('riding')
+        seen['again'] = host('command', command=f'ride {GUEST_NAME} dismount').get('chat')
+    finally:
+        host('command', command='kill @e[type=minecraft:pig,tag=ride_guest]')
+    assert seen['guest riding'] is not None, f'the guest rides the pig: {seen}'
+    assert seen['host riding'] is None, f'the host stays on foot: {seen}'
+    assert any("can't ride" in line or 'cannot ride' in line or 'players' in line.lower() for line in seen['on a player'] or []), \
+        f'a player is not a vehicle: {seen}'
+    assert seen['guest riding after'] is None, f'the guest got off: {seen}'
+    assert any('not riding' in line for line in seen['again'] or []), f'a second dismount: not riding: {seen}'
+    return seen
+
+
+CHECKS += ['ride_guest']
+CHECK_FNS['ride_guest'] = check_ride_guest
 
 
 if __name__ == '__main__':

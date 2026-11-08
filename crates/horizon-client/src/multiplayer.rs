@@ -879,7 +879,7 @@ impl Screen {
                     quarter(h) + 96.0 + 18.0,
                     200.0,
                     &crate::lang::get_or("horizon.multiplayer.join", "Join"),
-                    horizon_friends::invite::parse(code).is_some(),
+                    crate::net::is_invite(code, false),
                     56,
                 ),
                 b(
@@ -1530,6 +1530,27 @@ impl Screen {
             _ => Outcome::None,
         }
     }
+    /// Move the selected saved server one row, as its arrows do: the pad's way to them, since a
+    /// click on a row lands at its centre. Whether there was one to move.
+    pub fn move_selected(&mut self, down: bool, saves: &Path) -> bool {
+        let Self::List {
+            servers, selected, ..
+        } = self
+        else {
+            return false;
+        };
+        let Some(k) = selected.filter(|k| *k < servers.len()) else {
+            return false;
+        };
+        let to = if down { k + 1 } else { k.wrapping_sub(1) };
+        if to < servers.len() {
+            servers.swap(k, to);
+            save_servers(&servers_file(saves), servers);
+            *selected = Some(to);
+        }
+        true
+    }
+
     pub fn click(
         &mut self,
         id: Option<u8>,
@@ -1761,7 +1782,7 @@ impl Screen {
                 };
             }
             (Self::Friend { code, relay, .. }, Some(56)) => {
-                if horizon_friends::invite::parse(code).is_some() {
+                if crate::net::is_invite(code, false) {
                     crate::net::save_friends_relay(relay.trim());
                     let code: String = code.chars().filter(|c| !c.is_whitespace()).collect();
                     return Outcome::Connect {
@@ -2081,10 +2102,7 @@ impl Screen {
 /// friend (a short relay code could be a host name, so it needs Join a Friend).
 fn direct_address(address: &str) -> String {
     let code: String = address.chars().filter(|c| !c.is_whitespace()).collect();
-    if matches!(
-        horizon_friends::invite::parse(&code),
-        Some(horizon_friends::invite::Parsed::Long(_))
-    ) {
+    if crate::net::is_invite(&code, true) {
         format!("{}{code}", crate::net::FRIEND)
     } else {
         address.trim().to_owned()
@@ -2242,6 +2260,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "friends")]
     #[test]
     fn direct_connection_joins_a_pasted_invite_and_keeps_host_names() {
         let invite = horizon_friends::invite::Invite {

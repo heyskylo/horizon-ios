@@ -1152,7 +1152,7 @@ impl Menu {
     fn anvil_result(&mut self, env: &Env) {
         let hover = self.containers[MAIN][0]
             .as_ref()
-            .map(|i| crate::stations::hover_name(&|id| env.names.display_item(id), i))
+            .map(|i| crate::stations::hover_name(env.names, i))
             .unwrap_or_default();
         let out = crate::stations::anvil_result(
             env.enchantments,
