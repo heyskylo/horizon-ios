@@ -2422,7 +2422,9 @@ impl Game<'_> {
                 if let Some(i) = self.boats.iter().position(|b| b.id == id) {
                     self.release_vehicle_container(id);
                     let b = self.boats.remove(i);
-                    self.spill_killed_vehicle_contents(b.position, &b.items);
+                    // AbstractChestBoat.remove, after the live menu writes
+                    // back its slots.
+                    self.drop_vehicle_contents(b.position.components(), &b.items);
                     self.boat_removed(&b);
                 }
             }
@@ -2430,7 +2432,8 @@ impl Game<'_> {
                 self.release_vehicle_container(id);
                 if let Some(i) = self.carts.iter().position(|c| c.id == id) {
                     let c = self.carts.remove(i);
-                    self.spill_killed_vehicle_contents(c.position, &c.items);
+                    // AbstractMinecartContainer.remove.
+                    self.drop_vehicle_contents(c.position.components(), &c.items);
                 }
             }
             Target::Other(id) => self.others.retain(|o| o.id != id),
@@ -2451,30 +2454,6 @@ impl Game<'_> {
             self.entity_killed_event(at, false);
         }
         self.native_leaves_flush();
-    }
-    /// `AbstractChestBoat.remove` / `AbstractMinecartContainer.remove` for
-    /// destroying removal (`Entity.kill`): `Containers.dropContents`, separate
-    /// from hurt-time hull drops and after the live menu writes back its slots.
-    fn spill_killed_vehicle_contents(&mut self, pos: Vec3, slots: &[Option<ItemStack>]) {
-        for stack in slots {
-            let count = stack.as_ref().map_or(0, |s| s.count);
-            for piece in horizon_world::level::removal::drop_item_stack_at(
-                &mut self.world.random,
-                pos.components(),
-                count,
-            ) {
-                let Some(stack) = stack else { continue };
-                self.spawn_item(
-                    ItemStack {
-                        count: piece.count,
-                        ..stack.clone()
-                    },
-                    piece.pos,
-                    piece.motion,
-                    0,
-                );
-            }
-        }
     }
     fn cmd_kill(&mut self, ctx: &Context) -> R<i32> {
         let targets = if ctx.get("targets").is_some() {
