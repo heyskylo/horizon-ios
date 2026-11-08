@@ -97,8 +97,8 @@ RemoveBlockGoal.getPosWithBlock	inline	crates/horizon-client/src/mobs/undead.rs:
 RunAroundLikeCrazyGoal.start	inline	crates/horizon-client/src/mobs/equine.rs::RunAroundLikeCrazy::can_use	navigation to the random spot starts in can_use
 SpearUseGoal	home	crates/horizon-client/src/mobs/spear_use.rs	
 SpearUseGoal.SpearUseState	home	crates/horizon-client/src/mobs/spear_use.rs	the charge's engagement phase, its spear-down timer and the flee state (struct SpearUseState)
-StrollThroughVillageGoal.tick	missing		minor: foxes do not wander through villages at night (goal missing; no village-bound step)
-StrollThroughVillageGoal.moveRandomly	missing		minor: foxes do not wander through villages at night
+StrollThroughVillageGoal.tick	port	crates/horizon-client/src/mobs/fox.rs::StrollThroughVillage::tick	with the path done and the wanted spot past 10, a 10 block step toward it on the MOTION_BLOCKING_NO_LEAVES surface
+StrollThroughVillageGoal.moveRandomly	inline	crates/horizon-client/src/mobs/fox.rs::StrollThroughVillage::tick	a random spot within 8 on the surface when the step has no path
 TemptGoal.shouldFollow	inline	crates/horizon-client/src/mobs/goals.rs::Tempt::can_use	main hand or off hand holds a tempt item
 TemptGoal.ForNonPathfinders.navigateTowards	port	crates/horizon-client/src/mobs/happy_ghast.rs::GhastTempt::tick	random fraction of the way to the player's eye as the wanted position; the sulfur cube has its own SulfurTempt
 WaterAvoidingRandomFlyingGoal.getPosition	inline	crates/horizon-client/src/mobs/goals.rs::Stroll::can_use	gap: minor: a flying stroll (the wither) draws a plain default_random_pos(10, 7), not HoverRandomPos along its view direction and AirAndWaterRandomPos

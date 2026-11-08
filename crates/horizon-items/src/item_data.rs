@@ -777,6 +777,17 @@ pub fn encode_components(stack: &ItemStack) -> Option<Tag> {
             return None;
         }
     }
+    // Items.ENCHANTED_BOOK has empty stored enchantments in its prototype.
+    // Keep the live presence marker; only the saved component patch elides it.
+    if &*stack.item == "minecraft:enchanted_book"
+        && matches!(components.get("minecraft:stored_enchantments"), Some(Tag::Compound(entries)) if entries.is_empty())
+        && let Tag::Compound(entries) = &mut components
+    {
+        entries.remove(&JavaString::from("minecraft:stored_enchantments"));
+        if entries.is_empty() {
+            return None;
+        }
+    }
     // Items.BEEHIVE/BEE_NEST use this whole block-state map as their prototype.
     // Empty maps and maps with extra properties are distinct, nondefault patches.
     if matches!(&*stack.item, "minecraft:beehive" | "minecraft:bee_nest")
@@ -1249,6 +1260,61 @@ pub fn command_components(text: &str) -> Result<Tag, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_empty_enchanted_book_patch_is_elided_only_when_saved() {
+        let stack = parse_stack(r#"{id:"minecraft:enchanted_book",count:1,components:{"minecraft:stored_enchantments":{}}}"#)
+            .unwrap().unwrap();
+        let live = components_tag(stack.damage, stack.data());
+        assert!(
+            live.as_ref()
+                .unwrap()
+                .get("minecraft:stored_enchantments")
+                .is_some()
+        );
+        assert_eq!(
+            crate::item_nbt::item_to_nbt(&stack),
+            horizon_world::nbt::parse_snbt(r#"{id:"minecraft:enchanted_book",count:1}"#)
+                .unwrap()
+                .0,
+        );
+        assert_eq!(
+            components_tag(stack.damage, stack.data()),
+            live,
+            "saving must not remove live presence"
+        );
+    }
+
+    #[test]
+    fn nondefault_stored_enchantment_patches_are_preserved() {
+        for (item, patch) in [
+            ("minecraft:book", r#"{"minecraft:stored_enchantments":{}}"#),
+            ("minecraft:stone", r#"{"minecraft:stored_enchantments":{}}"#),
+            (
+                "minecraft:enchanted_book",
+                r#"{"minecraft:stored_enchantments":{"minecraft:sharpness":1}}"#,
+            ),
+            (
+                "minecraft:enchanted_book",
+                r#"{"!minecraft:stored_enchantments":{}}"#,
+            ),
+        ] {
+            let expected = horizon_world::nbt::parse_snbt(patch).unwrap().0;
+            let stack = parse_stack(&format!("{{id:'{item}',count:1,components:{patch}}}"))
+                .unwrap()
+                .unwrap();
+            assert_eq!(encode_components(&stack), Some(expected), "{item}: {patch}");
+        }
+    }
+
+    #[test]
+    fn an_empty_book_patch_keeps_unrelated_components() {
+        let stack = parse_stack(r#"{id:"minecraft:enchanted_book",count:1,components:{"minecraft:stored_enchantments":{},"minecraft:custom_data":{keep:7}}}"#).unwrap().unwrap();
+        let expected = horizon_world::nbt::parse_snbt(r#"{"minecraft:custom_data":{keep:7}}"#)
+            .unwrap()
+            .0;
+        assert_eq!(encode_components(&stack), Some(expected));
+    }
 
     fn check_lodestone_saved_default(decoded: bool) {
         const TRACKER: &str = "minecraft:lodestone_tracker";

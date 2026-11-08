@@ -569,9 +569,14 @@ impl Game<'_> {
     /// A saved dropped item.
     pub(super) fn load_item(&mut self, tag: Tag, uuid: Option<[i32; 4]>) {
         self.next_entity += 1;
-        let bob = self.world.random.next_float() * std::f32::consts::PI * 2.0;
+        // `ItemEntity(EntityType, Level)` before the load: the item's own random
+        // makes its UUID (kept unless the tag has one) and bobOffs, not the level's.
+        // Its yaw, the next draw, is always replaced by the saved rotation.
+        let mut own = random_source::entity();
+        let fresh = horizon_client::save::insecure_uuid(&mut own);
+        let bob = own.next_float() * std::f32::consts::PI * 2.0;
         if let Some(e) = entity_nbt::item_entity_from_nbt(&tag, self.next_entity, bob) {
-            self.remember(e.id, uuid, tag);
+            self.remember(e.id, Some(uuid.unwrap_or(fresh)), tag);
             self.dropped.push(e);
         }
     }
@@ -1334,11 +1339,17 @@ impl Game<'_> {
         // absolute game time, so it goes on while the chunk is unloaded, and
         // the target is the entity the mob is angry at.
         let anger = self.mobs[i].extra.anger;
-        self.mobs[i].extra.anger_end = if anger > 0 {
-            self.world.game_time + i64::from(anger)
-        } else {
-            -1
-        };
+        // A loaded NoAI Enderman owns an absolute NeutralMob timestamp;
+        // its skipped AI does not decrement the derived gameplay counter.
+        if !(self.mobs[i].species() == horizon_client::mobs::Species::Enderman
+            && self.mobs[i].no_ai)
+        {
+            self.mobs[i].extra.anger_end = if anger > 0 {
+                self.world.game_time + i64::from(anger)
+            } else {
+                -1
+            };
+        }
         self.mobs[i].extra.angry_at = if anger > 0 {
             // A wolf and an iron golem keep their anger's target themselves,
             // also once the target is gone (`tame::update_persistent_anger`).
@@ -1836,9 +1847,9 @@ impl Game<'_> {
         alive
     }
     /// `ServerLevel.EntityCallbacks.onDestroyed` → `Scoreboard.entityRemoved`
-    /// for every kind of entity, not only the mobs `score_entity_removed`
-    /// covers as they die: an item picked up or killed, an expired cloud, a
-    /// discarded projectile leaves the board and its team. Unloaded and
+    /// for every kind of entity: a mob's body once it is removed, an item
+    /// picked up or killed, an expired cloud, a discarded projectile leaves
+    /// the board and its team. Unloaded and
     /// travelling entities leave `persist.uuids` first (`forget_entity`,
     /// `detach_entity`), so they keep their scores, as vanilla's do. Once a
     /// tick, so a command in the same tick still sees them; nothing to do
@@ -3651,6 +3662,254 @@ mod item_display_saved_transform_tests {
                     .unwrap()
                     .health,
                 10.0
+            );
+        });
+    }
+}
+
+#[cfg(test)]
+mod h262_enderman_absolute_anger_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use horizon_client::{chunk::Chunk, motion::PlayerMotion};
+    use horizon_core::{geometry::Vec3, position::ChunkPos, random::LegacyRandom};
+    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+                .join(format!("h262-{:?}", std::thread::current().id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("difficulty normal"));
+        assert!(game.run_command("forceload add 0 0"));
+        for (x, z) in [(0, 1), (1, 0), (1, 1)] {
+            game.world
+                .chunks
+                .insert((x, z), Arc::new(Chunk::empty(x, z)));
+            game.block_ticks
+                .add_empty_chunk(ChunkPos::new(x, z))
+                .unwrap();
+        }
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
+        game.creative = true;
+        assert!(game.run_command("fill 0 199 0 31 199 31 stone"));
+        assert!(
+            game.run_command("summon pig 13.5 200 2.5 {UUID:[I;262,0,0,99],NoAI:1b,NoGravity:1b}")
+        );
+        game.world.random = LegacyRandom::new(262);
+        test(&mut game);
+    }
+    fn load(game: &mut Game<'_>, n: i32, end: Option<i64>) -> (u32, usize) {
+        let suffix = end
+            .map(|v| format!(",anger_end_time:{v}L"))
+            .unwrap_or_default();
+        let cmd = format!(
+            "summon enderman 6.5 200 4.5 {{UUID:[I;262,1,0,{n}],Health:40f,NoAI:1b,NoGravity:1b,Motion:[0d,0d,0d],Tags:[h262],CustomName:\"end\"{suffix}}}"
+        );
+        assert!(game.run_command(&cmd));
+        let id = game
+            .persist
+            .uuids
+            .iter()
+            .find_map(|(id, u)| (*u == [262, 1, 0, n]).then_some(*id))
+            .unwrap();
+        let i = game.mobs.iter().position(|m| m.id == id).unwrap();
+        assert_eq!(
+            game.mobs[i].species(),
+            horizon_client::mobs::Species::Enderman
+        );
+        assert!(game.mobs[i].no_ai);
+        assert_eq!(game.mobs[i].health, 40.0);
+        assert_eq!(game.mobs[i].position, Vec3::new(6.5, 200.0, 4.5));
+        assert_eq!(game.mobs[i].extra.anger_end, end.unwrap_or(-1));
+        (id, i)
+    }
+    fn check(
+        game: &mut Game<'_>,
+        i: usize,
+        expected: i64,
+        label: &str,
+        failures: &mut Vec<String>,
+    ) {
+        let saved = game.mob_tree_nbt(i);
+        if saved.get("anger_end_time") != Some(&Tag::Long(expected)) {
+            failures.push(format!(
+                "{label}: expected {expected}L, actual {:?}",
+                saved.get("anger_end_time")
+            ));
+        }
+        assert_eq!(
+            saved.get("UUID"),
+            Some(&Tag::IntArray(
+                game.persist.uuids[&game.mobs[i].id].to_vec()
+            ))
+        );
+        // Tags follow the existing raw-field policy; a deliberately no-raw
+        // subject has no synthetic source of Tags. Preserve them when present.
+        if let Some(tags) = game
+            .persist
+            .raw
+            .get(&game.mobs[i].id)
+            .and_then(|raw| raw.get("Tags"))
+        {
+            assert_eq!(saved.get("Tags"), Some(tags));
+        }
+        assert!(saved.get("CustomName").is_some());
+    }
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn h262_loaded_noai_enderman_actual_ticks_and_model_projection() {
+        with_game(|game| {
+            game.world.game_time = 100;
+            assert!(game.run_command("gamerule spawn_mobs false"));
+            let (id, i) = load(game, 1, Some(999999));
+            let age = game.mobs[i].age;
+            let mut failures = Vec::new();
+            for tick in 0..=2 {
+                if tick > 0 {
+                    game.world.game_time += 1;
+                    game.update_chunk_tickets();
+                    assert!(game.entity_ticking_area()(6, 4));
+                    game.tick_creature_entities().unwrap();
+                }
+                assert_eq!(game.mobs[i].id, id);
+                assert_eq!(game.mobs[i].age, age + tick);
+                assert_eq!(game.world.game_time, 100 + i64::from(tick));
+                assert_eq!(game.mobs[i].position, Vec3::new(6.5, 200.0, 4.5));
+                assert_eq!(game.mobs[i].velocity, Vec3::ZERO);
+                check(game, i, 999999, "loaded/ticked", &mut failures);
+                check(game, i, 999999, "repeated", &mut failures);
+            }
+            game.persist.raw.remove(&id);
+            game.mobs[i].extra.anger_end = 777777;
+            check(game, i, 777777, "no raw/model mutation", &mut failures);
+            game.persist.raw.insert(
+                id,
+                Tag::compound([
+                    ("anger_end_time", Tag::Long(123)),
+                    ("retained", Tag::Int(17)),
+                ]),
+            );
+            game.mobs[i].extra.anger_end = 888888;
+            check(
+                game,
+                i,
+                888888,
+                "contradictory raw/model mutation",
+                &mut failures,
+            );
+            assert_eq!(game.mob_tree_nbt(i).get("retained"), Some(&Tag::Int(17)));
+            assert!(failures.is_empty(), "{failures:#?}");
+        });
+    }
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn h262_noai_enderman_absent_zero_past_and_future_are_actual_longs() {
+        with_game(|game| {
+            game.world.game_time = 100;
+            let mut failures = Vec::new();
+            for (n, end) in [None, Some(0), Some(-5), Some(1), Some(999999)]
+                .into_iter()
+                .enumerate()
+            {
+                let (_, i) = load(game, n as i32 + 2, end);
+                check(
+                    game,
+                    i,
+                    end.unwrap_or(-1),
+                    "typed loaded boundary",
+                    &mut failures,
+                );
+            }
+            assert!(failures.is_empty(), "{failures:#?}");
+        });
+    }
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn h262_live_enderman_write_uses_actual_decoded_timestamp() {
+        with_game(|game| {
+            game.world.game_time = 100;
+            let (id, i) = load(game, 9, Some(999999));
+            let age = game.mobs[i].age;
+            assert!(game.run_command("data modify entity 00000106-0000-0001-0000-000000000009 anger_end_time set value 777777L"));
+            assert_eq!(
+                game.mobs[i].extra.anger_end, 777777,
+                "actual adoption, before saved read"
+            );
+            assert_eq!(game.mobs[i].id, id);
+            assert_eq!(game.mobs[i].age, age);
+            assert_eq!(game.world.game_time, 100);
+            assert!(game.mobs[i].ai.target.is_none());
+            let mut failures = Vec::new();
+            check(game, i, 777777, "live write", &mut failures);
+            assert!(failures.is_empty(), "{failures:#?}");
+        });
+    }
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn h262_existing_ai_and_other_neutral_counter_projection_is_unchanged() {
+        with_game(|game| {
+            game.world.game_time = 100;
+            let (_, i) = load(game, 20, Some(999999));
+            game.mobs[i].no_ai = false;
+            game.mobs[i].extra.anger = 50;
+            assert_eq!(
+                game.mob_tree_nbt(i).get("anger_end_time"),
+                Some(&Tag::Long(150))
+            );
+            assert!(
+                game.run_command(
+                    "summon wolf 8.5 200 4.5 {UUID:[I;262,1,0,21],NoAI:1b,NoGravity:1b}"
+                )
+            );
+            let i = game
+                .mobs
+                .iter()
+                .position(|m| m.species() == horizon_client::mobs::Species::Wolf)
+                .unwrap();
+            game.mobs[i].extra.anger = 50;
+            assert_eq!(
+                game.mob_tree_nbt(i).get("anger_end_time"),
+                Some(&Tag::Long(150))
+            );
+            game.world.game_time += 1;
+            assert_eq!(
+                game.mob_tree_nbt(i).get("anger_end_time"),
+                Some(&Tag::Long(151))
             );
         });
     }

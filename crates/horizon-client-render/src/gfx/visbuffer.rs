@@ -70,8 +70,7 @@ impl Visbuffer {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon visibility buffer"),
             source: wgpu::ShaderSource::Wgsl(
-                (include_str!("../terrain.wgsl").to_owned() + include_str!("../visbuffer.wgsl"))
-                    .into(),
+                (super::terrain_shader() + include_str!("../visbuffer.wgsl")).into(),
             ),
         });
         let fragment = wgpu::ShaderStages::FRAGMENT;
