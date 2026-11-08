@@ -1,9 +1,10 @@
 //! The sampler session that runs beside a dedicated server's capture and becomes its `samples` field.
+use super::SamplerOptions;
 use horizon_perf_format::Interner;
-use horizon_perf_format::v1::{Overhead, SampleProfile, Symbols};
+use horizon_perf_format::v1::{Overhead, SampleProfile, Side, Symbols, Unit};
 
-/// The sampled thread's name; the query tools read it as the server's main thread.
-pub const THREAD: &str = "tick";
+/// The longest window a capture records, and the one a capture without a window gets.
+pub const MAX_WINDOW_S: f64 = 600.0;
 
 /// Seconds per time block: 5 s, longer when the window would need more than 32 of them.
 fn block_s(window_s: f64) -> f32 {
@@ -24,7 +25,6 @@ pub use other::{Sampling, Stopped};
 mod linux {
     use super::*;
     use horizon_client_render::perf_capture;
-    use horizon_perf_format::v1::{Side, Unit};
     use horizon_threads::profile::{self, Profile, SymbolQuality};
     use horizon_threads::sampler;
 
@@ -34,17 +34,31 @@ mod linux {
     pub struct Stopped(Profile);
 
     impl Sampling {
-        /// Samples the calling thread, which must be the tick thread, until [`Sampling::stop`].
-        pub fn start(window_s: f64, slow_ms: f32) -> Option<Self> {
-            if !sampler::sampled_thread(THREAD) {
+        /// Samples the calling thread, which must be the one `thread` names, until [`Sampling::stop`].
+        pub fn start(
+            thread: &'static str,
+            window_s: f64,
+            over_ms: f32,
+            options: &SamplerOptions,
+        ) -> Option<Self> {
+            if !sampler::sampled_thread(thread) {
                 log::warn!(
-                    "Horizon: this platform cannot sample the tick thread; capturing without samples"
+                    "Horizon: this platform cannot sample the {thread} thread; capturing without samples"
                 );
                 return None;
             }
             let config = profile::Config {
-                threads: vec![THREAD.into()],
-                ticks_over_ms: f64::from(slow_ms),
+                sampler: sampler::Config {
+                    hz: Sampling::hz(options),
+                    wall: options.wall,
+                    ..sampler::Config::default()
+                },
+                threads: if options.all_threads {
+                    Vec::new()
+                } else {
+                    vec![thread.into()]
+                },
+                ticks_over_ms: f64::from(over_ms),
                 block_s: block_s(window_s),
                 ..profile::Config::default()
             };
@@ -59,8 +73,8 @@ mod linux {
             }
         }
 
-        pub fn hz() -> u32 {
-            sampler::DEFAULT_HZ
+        pub fn hz(options: &SamplerOptions) -> u32 {
+            options.hz.unwrap_or(sampler::DEFAULT_HZ)
         }
 
         pub fn symbols() -> Symbols {
@@ -85,16 +99,16 @@ mod linux {
 
     impl Stopped {
         /// Symbolizes and converts; reads the running binary's debug info, so run it off the tick thread.
-        pub fn finish(self, block_names: &[String], strings: &mut Interner) -> Finished {
+        pub fn finish(
+            self,
+            side: Side,
+            unit: Unit,
+            block_names: &[String],
+            strings: &mut Interner,
+        ) -> Finished {
             let name = |id: u16| block_names.get(usize::from(id)).cloned();
             Finished {
-                samples: perf_capture::sample_profile(
-                    &self.0,
-                    Side::Server,
-                    Unit::Tick,
-                    &name,
-                    strings,
-                ),
+                samples: perf_capture::sample_profile(&self.0, side, unit, &name, strings),
                 overhead: perf_capture::overhead(&self.0),
             }
         }
@@ -109,11 +123,11 @@ mod other {
     pub enum Stopped {}
 
     impl Sampling {
-        pub fn start(_: f64, _: f32) -> Option<Self> {
+        pub fn start(_: &'static str, _: f64, _: f32, _: &SamplerOptions) -> Option<Self> {
             None
         }
 
-        pub fn hz() -> u32 {
+        pub fn hz(_: &SamplerOptions) -> u32 {
             0
         }
 
@@ -127,7 +141,7 @@ mod other {
     }
 
     impl Stopped {
-        pub fn finish(self, _: &[String], _: &mut Interner) -> Finished {
+        pub fn finish(self, _: Side, _: Unit, _: &[String], _: &mut Interner) -> Finished {
             match self {}
         }
     }

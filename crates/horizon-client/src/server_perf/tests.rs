@@ -21,7 +21,7 @@ impl Drop for Scratch {
 
 fn options(window_s: f64) -> CaptureOptions {
     CaptureOptions {
-        window_s,
+        window_s: Some(window_s),
         trigger: Trigger::Console,
         start: Start {
             players: 3,
@@ -29,6 +29,7 @@ fn options(window_s: f64) -> CaptureOptions {
             ..Start::default()
         },
         samples: false,
+        sampler: SamplerOptions::default(),
         block_names: Vec::new(),
         levels: Vec::new(),
         wire: Vec::new(),

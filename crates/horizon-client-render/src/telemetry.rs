@@ -67,6 +67,12 @@ pub fn set_gpu(gpu: Gpu) {
     *GPU.lock().unwrap_or_else(|e| e.into_inner()) = Some(gpu);
 }
 
+/// The adapter's name, once the renderer has one.
+pub fn gpu_name() -> Option<String> {
+    let gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
+    gpu.as_ref().map(|g| g.name.clone())
+}
+
 /// The screen the window is on: size in physical pixels, refresh rate, scale.
 pub fn set_display(width: u32, height: u32, refresh_hz: u32, scale: f64) {
     *DISPLAY.lock().unwrap_or_else(|e| e.into_inner()) = Some(Display {

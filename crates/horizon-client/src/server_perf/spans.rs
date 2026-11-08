@@ -153,6 +153,8 @@ pub struct Tick<'a> {
 /// Sums the server thread's ticks into blocks of [`BLOCK_S`] seconds and, at the end, into the capture's totals.
 pub struct SpanRecorder {
     thread: &'static str,
+    side: Side,
+    unit: Unit,
     block: u32,
     units: u32,
     rows: FxHashMap<Key, Sum>,
@@ -167,14 +169,16 @@ pub struct SpanRecorder {
 
 impl Default for SpanRecorder {
     fn default() -> Self {
-        Self::new("")
+        Self::new("", Side::Server, Unit::Tick)
     }
 }
 
 impl SpanRecorder {
-    pub fn new(thread: &'static str) -> Self {
+    pub fn new(thread: &'static str, side: Side, unit: Unit) -> Self {
         Self {
             thread,
+            side,
+            unit,
             block: 0,
             units: 0,
             rows: FxHashMap::default(),
@@ -264,7 +268,7 @@ impl SpanRecorder {
         }
         rows.sort_by(|a, b| b.1.wall_ms.total_cmp(&a.1.wall_ms).then(a.0.cmp(&b.0)));
         let mut block = SpanBlock {
-            side: Side::Server as i32,
+            side: self.side as i32,
             thread: strings.intern(self.thread),
             block: self.block,
             t0: f64::from(self.block) * f64::from(BLOCK_S),
@@ -299,9 +303,9 @@ impl SpanRecorder {
         });
         let thread = strings.intern(self.thread);
         let summary = SpanSummary {
-            side: Side::Server as i32,
+            side: self.side as i32,
             thread,
-            unit: Unit::Tick as i32,
+            unit: self.unit as i32,
             count: self.count,
             spans: totals
                 .into_iter()

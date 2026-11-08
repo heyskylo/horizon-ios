@@ -778,6 +778,10 @@ impl Game<'_> {
                 self.export_repro_key();
                 true
             }
+            DebugAction::ProfileCapture => {
+                self.profile_key();
+                true
+            }
             DebugAction::DumpDynamicTextures => {
                 // `KeyboardHandler`: `TextureUtil.getDebugTexturePath` is the game
                 // folder's `screenshots/debug`; `TextureManager.dumpAllSheets` then

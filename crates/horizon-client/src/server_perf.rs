@@ -1,12 +1,12 @@
-//! A dedicated server's .hzperf capture (docs/perf-platform.md §3, §4.1) and the always-on health history and slow ring behind it.
+//! A side's .hzperf capture (docs/perf-platform.md §3, §4.1), the dedicated server's or the client's, and the always-on health history and slow ring behind it.
 use crate::spans::Span;
 use horizon_perf_format::files;
 use horizon_perf_format::v1::{
-    Kind, Options, Overhead, Side, Start, Stop, StopReason, ThreadSelection, Trigger, Unit,
+    Kind, Mark, Options, Overhead, Side, Start, Stop, StopReason, ThreadSelection, Trigger, Unit,
 };
 use horizon_perf_format::{
-    CounterReporter, Field, FieldSender, HealthRecorder, Interner, SlowRecord, SlowRing, SlowSpan,
-    WriterThread, counter_registry,
+    CounterReporter, Field, FieldSender, Gauges, HealthRecorder, Interner, SlowRecord, SlowRing,
+    SlowSpan, WriterThread, counter_registry,
 };
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -21,15 +21,47 @@ pub mod spans;
 mod system;
 pub mod traffic;
 pub mod world;
+pub use samples::MAX_WINDOW_S;
 use samples::{Sampling, Stopped};
 use spans::{SpanRecorder, Tick};
-use system::SystemProbe;
-pub use system::{build, game_rules, hardware, horizon_options, machine, settings, warm_hardware};
+use system::{BackgroundProbe, SystemProbe};
+pub use system::{
+    build, game_rules, hardware, hardware_now, horizon_options, machine, settings, warm_hardware,
+};
 use traffic::{TrafficRecorder, Wire};
 use world::{LevelCounts, MobCosts, WorkerJobs};
 
-/// The thread whose ticks the span recorder sums: vanilla's name for it.
-const SERVER_THREAD: &str = "Server thread";
+/// What a capturing side is: which side of the file it writes and the unit and sampled thread it counts in.
+#[derive(Clone, Copy)]
+pub struct Role {
+    pub side: Side,
+    pub kind: Kind,
+    pub unit: Unit,
+    pub thread: &'static str,
+    /// The thread whose units the span recorder sums.
+    pub span_thread: &'static str,
+    /// Whether the process and machine probes run off the thread that feeds `tick`.
+    pub background_probe: bool,
+}
+
+impl Role {
+    pub const DEDICATED: Role = Role {
+        side: Side::Server,
+        kind: Kind::Dedicated,
+        unit: Unit::Tick,
+        thread: "tick",
+        span_thread: "Server thread",
+        background_probe: false,
+    };
+    pub const CLIENT: Role = Role {
+        side: Side::Client,
+        kind: Kind::Client,
+        unit: Unit::Frame,
+        thread: "render",
+        span_thread: "Render thread",
+        background_probe: true,
+    };
+}
 
 /// What a tick spent its time on, gathered by the tick loop only when the tick was slow or a capture runs.
 pub struct TickDetail {
@@ -46,14 +78,27 @@ pub struct WorldCounts {
     pub entities: u32,
 }
 
+/// The sampler's switches (`profile start --hz --over --wall --threads`); the default is the sampler's own.
+#[derive(Clone, Copy, Default)]
+pub struct SamplerOptions {
+    pub hz: Option<u32>,
+    /// Only ticks or frames at least this slow are sampled; the slow ring's threshold when unset.
+    pub over_ms: Option<f32>,
+    pub wall: bool,
+    /// Every thread that opted in, not just the side's main thread.
+    pub all_threads: bool,
+}
+
 /// Switches of one capture.
 pub struct CaptureOptions {
-    pub window_s: f64,
+    /// Unset when the capture runs until stopped, which the file records and the longest window ends.
+    pub window_s: Option<f64>,
     pub trigger: Trigger,
     /// Settings, machine and build for `Start`; the capture fills the rest.
     pub start: Start,
-    /// Whether the tick thread is sampled (where the platform can).
+    /// Whether the side's main thread is sampled (where the platform can).
     pub samples: bool,
+    pub sampler: SamplerOptions,
     /// Block names by id, for the samples' contexts.
     pub block_names: Vec<String>,
     /// The levels as the capture begins.
@@ -80,7 +125,16 @@ pub struct Saved {
     pub deleted: Vec<PathBuf>,
 }
 
+/// Where a running capture is, for `profile status`.
+pub struct CaptureStatus {
+    pub path: PathBuf,
+    pub elapsed_s: f64,
+    pub bytes: u64,
+}
+
 struct Session {
+    side: Side,
+    unit: Unit,
     writer: WriterThread<File>,
     tx: FieldSender,
     path: PathBuf,
@@ -103,12 +157,15 @@ enum Ending {
 
 /// The server's health tiers and slow ring, always on, and the capture running from them, if any.
 pub struct ServerPerf {
+    role: Role,
     base: f64,
     health: HealthRecorder,
     slow: SlowRing,
     ticks: u64,
     gauges_at: f64,
     system: SystemProbe,
+    background: Option<BackgroundProbe>,
+    frame_medians: (Option<f32>, Option<f32>),
     session: Option<Session>,
     ending: Vec<Ending>,
 }
@@ -116,13 +173,20 @@ pub struct ServerPerf {
 impl ServerPerf {
     /// `start` is the clock reading (seconds) every later time is on; `slow_ms` is the slow ring's threshold.
     pub fn new(start: f64, slow_ms: f32) -> Self {
+        Self::with_role(Role::DEDICATED, start, slow_ms)
+    }
+
+    pub fn with_role(role: Role, start: f64, slow_ms: f32) -> Self {
         Self {
+            role,
             base: start,
-            health: HealthRecorder::new(Side::Server, start),
+            health: HealthRecorder::new(role.side, start),
             slow: SlowRing::new(slow_ms),
             ticks: 0,
             gauges_at: start,
             system: SystemProbe::default(),
+            background: None,
+            frame_medians: (None, None),
             session: None,
             ending: Vec::new(),
         }
@@ -140,7 +204,17 @@ impl ServerPerf {
         &self.health
     }
 
-    /// One server tick that took `wall_ms` and ended at `t`; `world` and `wire` are read when the gauges are due.
+    /// Whether the next `tick` reads the gauges, so a client can set the frame medians of the second first.
+    pub fn gauges_due(&self, t: f64) -> bool {
+        t - self.gauges_at >= 1.0
+    }
+
+    /// The median CPU and GPU time of the frames since the last second, for the gauges read next.
+    pub fn set_frame_medians(&mut self, cpu_ms: Option<f32>, gpu_ms: Option<f32>) {
+        self.frame_medians = (cpu_ms, gpu_ms);
+    }
+
+    /// One tick or frame that took `wall_ms` and ended at `t`; `world` and `wire` are read when the gauges are due.
     pub fn tick(
         &mut self,
         t: f64,
@@ -149,10 +223,29 @@ impl ServerPerf {
         world: impl FnOnce() -> WorldCounts,
         wire: impl FnOnce() -> Wire,
     ) {
-        if t - self.gauges_at >= 1.0 {
+        let first_background = self.role.background_probe && self.background.is_none();
+        let due = self.gauges_due(t);
+        let counts = (first_background || due).then(world);
+        if let (true, Some(counts)) = (first_background, counts) {
+            let probe = BackgroundProbe::spawn();
+            probe.request(t, counts);
+            self.background = Some(probe);
+        }
+        if let (true, Some(counts)) = (due, counts) {
             self.gauges_at = t;
-            let counts = world();
-            let g = self.system.read(t, counts);
+            let mut g = match &self.background {
+                Some(probe) => {
+                    probe.request(t, counts);
+                    Gauges {
+                        players: counts.players,
+                        chunks: counts.chunks,
+                        entities: counts.entities,
+                        ..probe.latest()
+                    }
+                }
+                None => self.system.read(t, counts),
+            };
+            (g.frame_cpu_ms_p50, g.frame_gpu_ms_p50) = self.frame_medians;
             self.health.set_gauges(g);
             if let Some(session) = &mut self.session {
                 session.traffic.sample(t - session.origin, &wire());
@@ -163,7 +256,7 @@ impl ServerPerf {
         if wall_ms > self.slow.threshold_ms() {
             let record = SlowRecord {
                 t,
-                unit: Unit::Tick,
+                unit: self.role.unit,
                 counter: self.ticks,
                 wall_ms,
                 cpu_ms: detail.as_ref().and_then(|d| d.cpu_ms).unwrap_or(0.0),
@@ -207,12 +300,21 @@ impl ServerPerf {
         let tx = writer.sender();
         let sampling = options
             .samples
-            .then(|| Sampling::start(options.window_s, self.slow.threshold_ms()))
+            .then(|| {
+                Sampling::start(
+                    self.role.thread,
+                    options.window_s.unwrap_or(MAX_WINDOW_S),
+                    options.sampler.over_ms.unwrap_or(self.slow.threshold_ms()),
+                    &options.sampler,
+                )
+            })
             .flatten();
         self.health.advance(t);
         let (_, pushed) = self.health.samples_since(u64::MAX, t);
         let partial = (t - self.base).fract() > 1e-9;
         let mut session = Session {
+            side: self.role.side,
+            unit: self.role.unit,
             writer,
             tx,
             path: path.clone(),
@@ -220,29 +322,34 @@ impl ServerPerf {
             origin: t,
             cursor: pushed + u64::from(partial),
             strings: Interner::default(),
-            counters: CounterReporter::new(Side::Server),
+            counters: CounterReporter::new(self.role.side),
             sampling,
             block_names: options.block_names,
-            spans: SpanRecorder::new(SERVER_THREAD),
+            spans: SpanRecorder::new(self.role.span_thread, self.role.side, self.role.unit),
             traffic: TrafficRecorder::new(options.wire),
         };
         let mut start = options.start;
-        start.side = Side::Server as i32;
-        start.kind = Kind::Dedicated as i32;
+        start.side = self.role.side as i32;
+        start.kind = self.role.kind as i32;
         start.trigger = options.trigger as i32;
         start.started_unix_ms = now_ms;
         start.uptime_s = t - self.base;
-        let window = Some(options.window_s);
         let sampled = session.sampling.is_some();
-        let threads = if sampled {
-            ThreadSelection::Main
-        } else {
-            ThreadSelection::Unspecified
+        let threads = match (sampled, options.sampler.all_threads) {
+            (false, _) => ThreadSelection::Unspecified,
+            (true, false) => ThreadSelection::Main,
+            (true, true) => ThreadSelection::All,
         };
         start.options = Some(Options {
-            window_s: window,
-            hz: if sampled { Sampling::hz() } else { 0 },
+            window_s: options.window_s,
+            hz: if sampled {
+                Sampling::hz(&options.sampler)
+            } else {
+                0
+            },
             threads: threads as i32,
+            ticks_over_ms: options.sampler.over_ms.filter(|_| sampled),
+            wall: sampled && options.sampler.wall,
             samples: sampled,
             ..start.options.unwrap_or_default()
         });
@@ -250,10 +357,11 @@ impl ServerPerf {
             build.symbols = Sampling::symbols() as i32;
         }
         session.tx.send(Field::Start(start));
-        let world = world::snapshot("start", 0.0, &options.levels, None, &mut session.strings);
+        let mut world = world::snapshot("start", 0.0, &options.levels, None, &mut session.strings);
+        world.side = self.role.side as i32;
         session.entries();
         session.tx.send(Field::World(world));
-        for event in self.slow.snapshot(Side::Server, t, &mut session.strings) {
+        for event in self.slow.snapshot(self.role.side, t, &mut session.strings) {
             session.entries();
             session.tx.send(Field::SlowHistory(event));
         }
@@ -290,6 +398,11 @@ impl ServerPerf {
         true
     }
 
+    /// Whether a stopped capture's file is still being finished or waits in [`ServerPerf::take_saved`].
+    pub fn finishing(&self) -> bool {
+        !self.ending.is_empty()
+    }
+
     /// The captures whose files are done, oldest first; with `wait`, every one that was begun.
     pub fn take_saved(&mut self, wait: bool) -> Vec<std::io::Result<Saved>> {
         let mut saved = Vec::new();
@@ -307,6 +420,29 @@ impl ServerPerf {
             }
         }
         saved
+    }
+
+    /// Types `name` into the running capture at `t`; false when none runs.
+    pub fn mark(&mut self, t: f64, name: &str) -> bool {
+        let Some(session) = &mut self.session else {
+            return false;
+        };
+        session.tx.send(Field::Mark(Mark {
+            side: session.side as i32,
+            t: t - session.origin,
+            name: name.to_owned(),
+        }));
+        true
+    }
+
+    /// The running capture's file, age and size so far; None when none runs.
+    pub fn status(&self, t: f64) -> Option<CaptureStatus> {
+        let session = self.session.as_ref()?;
+        Some(CaptureStatus {
+            path: session.path.clone(),
+            elapsed_s: t - session.origin,
+            bytes: std::fs::metadata(&session.path).map_or(0, |m| m.len()),
+        })
     }
 
     /// Ends the running capture and waits for its file; None when none runs.
@@ -342,7 +478,7 @@ fn overhead(spans: &SpanRecorder, end: &CaptureEnd) -> Overhead {
 
 impl Session {
     fn entries(&mut self) {
-        for entry in self.strings.take_new(Side::Server) {
+        for entry in self.strings.take_new(self.side) {
             self.tx.send(Field::String(entry));
         }
     }
@@ -366,15 +502,18 @@ impl Session {
         let overhead = overhead(&self.spans, &end);
         self.traffic.sample(rel, &end.wire);
         let (last_block, summary) = std::mem::take(&mut self.spans).finish(&mut self.strings);
-        let traffic = std::mem::take(&mut self.traffic).finish(rel);
-        let workers = world::workers(&end.jobs, rel, &mut self.strings);
-        let world = world::snapshot(
+        let mut traffic = std::mem::take(&mut self.traffic).finish(rel);
+        traffic.side = self.side as i32;
+        let mut workers = world::workers(&end.jobs, rel, &mut self.strings);
+        workers.side = self.side as i32;
+        let mut world = world::snapshot(
             "stop",
             rel,
             &end.levels,
             Some(&end.mob_costs),
             &mut self.strings,
         );
+        world.side = self.side as i32;
         self.entries();
         if let Some(block) = last_block {
             self.tx.send(Field::SpanBlock(block));
@@ -387,7 +526,7 @@ impl Session {
     }
 
     fn slow(&mut self, record: &SlowRecord) {
-        let event = record.to_proto(Side::Server, self.origin, &mut self.strings);
+        let event = record.to_proto(self.side, self.origin, &mut self.strings);
         self.entries();
         self.tx.send(Field::Slow(event));
     }
@@ -429,7 +568,7 @@ impl Session {
         mut overhead: Overhead,
     ) -> std::io::Result<Saved> {
         if let Some(stopped) = stopped {
-            let done = stopped.finish(&self.block_names, &mut self.strings);
+            let done = stopped.finish(self.side, self.unit, &self.block_names, &mut self.strings);
             self.entries();
             self.tx.send(Field::Samples(done.samples));
             overhead = Overhead {
@@ -441,7 +580,7 @@ impl Session {
             };
         }
         self.tx.send(Field::Stop(Stop {
-            side: Side::Server as i32,
+            side: self.side as i32,
             t: stop_t,
             reason: reason as i32,
             overhead: Some(overhead),
