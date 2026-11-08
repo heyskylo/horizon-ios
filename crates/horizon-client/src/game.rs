@@ -18314,11 +18314,11 @@ fn write_level_for_role(
 }
 
 #[cfg(test)]
+mod inline_feature_parse_tests;
+#[cfg(test)]
 mod kill_die_cancel_tests;
 #[cfg(test)]
 mod kill_die_vibration_tests;
-#[cfg(test)]
-mod inline_feature_parse_tests;
 #[cfg(test)]
 mod mannequin_save_tests;
 #[cfg(test)]
