@@ -438,6 +438,7 @@ impl Game<'_> {
         }
     }
     pub(super) fn tick_particles(&mut self) {
+        let mut laps = horizon_client::spans::laps();
         let eye = self.eye_position();
         if let Some(e) = eye {
             let brightness = self.eye_brightness(e);
@@ -457,6 +458,7 @@ impl Game<'_> {
             let (rain, sky_light, rains) = self.rain_fog_inputs(e);
             update_rain_fog(&mut self.fog, rain, sky_light, rains, 1.0);
         }
+        laps.lap("tp_fx");
         self.particles.particle_level = self.settings.particles;
         if let Some(e) = eye {
             self.particles.camera = e;
@@ -523,7 +525,9 @@ impl Game<'_> {
                 e[1].floor() as i32,
                 e[2].floor() as i32,
             ];
+            laps.lap("tp_ctx");
             animate_tick(self.res.animate(), &mut self.particles, &ctx, block);
+            laps.lap("tp_animate");
             // The Horizon Weather option off means no rain visuals or sounds at all.
             if rain > 0.0 && self.settings.horizon.weather {
                 // ClientLevel.tickWeatherEffects: rain splashes within the weather
@@ -614,6 +618,7 @@ impl Game<'_> {
                 },
             );
         }
+        laps.lap("tp_rain_campfire");
         // SpellParticle.isCloseToScopingPlayer: the eye of a local player looking
         // through a spyglass in first person.
         let scope_eye = self
@@ -637,8 +642,11 @@ impl Game<'_> {
                 .as_ref()
                 .map(|p| ([p.position.x, p.position.y, p.position.z], p.velocity.y)),
         };
+        laps.lap("tp_level");
         self.particles.tick(&level);
+        laps.lap("tp_engine");
         self.tick_pickups();
+        laps.lap("tp_pickups");
         let camera = self.particles.camera;
         for (name, at, volume, pitch, delayed) in std::mem::take(&mut self.particles.sounds) {
             if delayed {
