@@ -67,6 +67,9 @@ pub struct ParticleOptions {
     /// `nextInt(40) + 10` after constructing the particle. Set by the client for an older
     /// server only, never read from the wire.
     pub legacy_trail_lifetime: bool,
+    /// The block or item a `BlockParticleOption` or `ItemParticleOption` carries
+    /// (`minecraft:stone`), for resource packs' particle modifier filters.
+    pub source: Option<std::sync::Arc<str>>,
     /// What the Polytone emitter that spawned this custom particle sets on it.
     pub polytone_seed: Option<std::sync::Arc<polytone::Seed>>,
 }
@@ -86,14 +89,7 @@ impl ParticleOptions {
             legacy_entity_effect: None,
             legacy_trail_lifetime: false,
             polytone_seed: None,
-        }
-    }
-    /// A native mod's `SimpleParticleType`: the sprite set of
-    /// `assets/<namespace>/particles/<path>.json`, drawn as a plain billboard.
-    pub fn named(name: impl Into<String>) -> Self {
-        Self {
-            mod_particle: Some(name.into()),
-            ..Self::simple(ParticleType::Smoke)
+            source: None,
         }
     }
     /// `GeyserParticleOptions(type, waterBlocks)`.
@@ -2071,7 +2067,7 @@ impl ParticleEngine {
                     Some(name) => name.clone(),
                     None => format!("minecraft:{}", options.ty.name()),
                 };
-                polytone::modify(registry, &id, &mut particle);
+                polytone::modify(registry, &id, options.source.as_deref(), &mut particle);
             }
             // The provider has drawn, so rejecting here keeps vanilla's RNG order.
             // shortcut: counts live plus queued particles by scanning instead of
