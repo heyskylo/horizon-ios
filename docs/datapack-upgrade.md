@@ -19,6 +19,10 @@ Horizon does not apply a data pack's world generation yet (see
 [the mod browser](mod-browser.md)); the upgraded pack loads in vanilla 26.3,
 and the checks below run it there.
 
+A modpack's mod jars that are only a data pack go through the same upgrade when the launcher
+ports the pack, into the packs every new world of its profile starts with
+([modpacks.md](modpacks.md#data-packs-in-mod-jars)).
+
 The command prints what it rewrote, what it could not rewrite faithfully
 (`not faithful`) and the types it does not know (`left as it is`).
 

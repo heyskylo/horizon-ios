@@ -2222,3 +2222,218 @@ mod mob_equipment_stack_tests {
         });
     }
 }
+
+#[cfg(test)]
+mod builtin_component_delivery_tests {
+    use crate::game::{Game, lan::LanHost};
+    use horizon_client::{
+        items::ItemStack,
+        lan::{Joined, NetConfig, Out, PlayerSender, guest::Guest, hub::HubConfig},
+    };
+    use horizon_core::position::ChunkPos;
+    use horizon_protocol::{
+        buf::{Codec, Reader, Writer},
+        item::{Slot, component},
+        packets::{configuration::ClientInformation, play},
+    };
+    use horizon_world::nbt::Tag;
+    use std::sync::{Arc, atomic::AtomicI32, mpsc};
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn h283_actual_command_inventory_bridge_encodes_four_builtin_components() {
+        let mut game = crate::game::native_machines::tests::server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        assert!(game.world.loaded(8, 8));
+        game.lan_host(
+            crate::game::lan::LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            NetConfig {
+                announce: false,
+                ..NetConfig::loopback(0, "component-wire-test".into(), 2)
+            },
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: "minecraft:overworld".into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 2,
+                integrated: false,
+                levels: Default::default(),
+            },
+        )
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut guest = Guest::new(
+            Joined {
+                conn: 2,
+                uuid: 283,
+                name: "ComponentGuest".into(),
+                properties: Vec::new(),
+                info: ClientInformation::new(2),
+                brand: "test".into(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
+            },
+            2,
+            [8.5, 200.0, 8.5],
+            2,
+        );
+        guest.dimension = "minecraft:overworld".into();
+        guest.placed = true;
+        guest.loaded = true;
+        guest.selected = 1;
+        guest.permission = 2;
+        let mut host = game.lan.take().unwrap();
+        host.hub.guests.push(guest);
+        let clock = game.world.game_time;
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let registries: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("registries.json")).unwrap()).unwrap();
+        let id = |registry: &str, name: &str| {
+            registries[registry]["entries"][name]["protocol_id"]
+                .as_i64()
+                .unwrap() as i32
+        };
+        let command = |game: &mut Game<'_>, host: &mut LanHost, input: &str| {
+            assert!(
+                game.as_guest(host, 2, |g| g.run_command(input)).unwrap(),
+                "{input}"
+            );
+        };
+        let capture = |host: &mut LanHost| {
+            while rx.try_recv().is_ok() {}
+            host.hub.send_inventory(0);
+            let mut packets = Vec::new();
+            for out in rx.try_iter() {
+                match out {
+                    Out::Packet(body) => packets.push(body),
+                    Out::Packets(bodies) => packets.extend(bodies),
+                    Out::Disconnect(_) => panic!("unexpected disconnect"),
+                }
+            }
+            let mut contents = Vec::new();
+            for body in packets {
+                let mut r = Reader::new(&body);
+                let packet = r.varint().unwrap();
+                if packet == horizon_protocol::ids::play::clientbound::CONTAINER_SET_CONTENT {
+                    let content = play::ContainerSetContent::read(&mut r).unwrap();
+                    assert_eq!(r.remaining(), 0, "complete enclosing content payload");
+                    assert_eq!(content.container, 0);
+                    assert_eq!(content.items.len(), 46);
+                    assert!(content.carried.is_none());
+                    contents.push(content);
+                }
+            }
+            assert_eq!(contents.len(), 1, "one actual inventory content packet");
+            contents.pop().unwrap().items[9].clone().unwrap()
+        };
+        command(
+            &mut game,
+            &mut host,
+            "item replace entity @s inventory.0 with stone[minecraft:custom_name=\"H283 control\"] 3",
+        );
+        let control = capture(&mut host);
+        assert_eq!(control.item, id("minecraft:item", "minecraft:stone"));
+        assert_eq!(control.count, 3);
+        assert!(control.component(component::CUSTOM_NAME).is_some());
+        command(
+            &mut game,
+            &mut host,
+            "item replace entity @s inventory.0 with gold_ingot",
+        );
+        let plain = capture(&mut host);
+        assert!(
+            plain
+                .component(id(
+                    "minecraft:data_component_type",
+                    "minecraft:provides_trim_material"
+                ))
+                .is_none()
+        );
+        assert!(plain.removed.is_empty());
+        let mut failures = Vec::new();
+        for (name, item, value, expected) in [
+            (
+                "minecraft:provides_trim_material",
+                "minecraft:diamond",
+                "\"minecraft:gold\"",
+                Tag::String("minecraft:gold".into()),
+            ),
+            (
+                "minecraft:provides_banner_patterns",
+                "minecraft:paper",
+                "\"#minecraft:pattern_item/globe\"",
+                Tag::String("#minecraft:pattern_item/globe".into()),
+            ),
+            (
+                "minecraft:can_place_on",
+                "minecraft:stone",
+                "{blocks:\"minecraft:dirt\"}",
+                Tag::compound([("blocks", Tag::String("minecraft:dirt".into()))]),
+            ),
+            (
+                "minecraft:can_break",
+                "minecraft:diamond_pickaxe",
+                "{blocks:\"minecraft:stone\",state:{}}",
+                Tag::compound([
+                    ("blocks", Tag::String("minecraft:stone".into())),
+                    ("state", Tag::compound(std::iter::empty::<(&str, Tag)>())),
+                ]),
+            ),
+        ] {
+            command(
+                &mut game,
+                &mut host,
+                &format!("item replace entity @s inventory.0 with {item}[{name}={value}]"),
+            );
+            let source: ItemStack = host.hub.guest(2).unwrap().inventory[9].clone().unwrap();
+            assert_eq!(source.item.as_ref(), item);
+            assert_eq!(source.count, 1);
+            assert_eq!(
+                source.data().unwrap().other(name),
+                Some(&expected),
+                "actual registered command adoption"
+            );
+            assert!(source.wire_patch().is_none(), "no cached wire fallback");
+            let received = capture(&mut host);
+            assert_eq!(received.item, id("minecraft:item", item));
+            assert_eq!(received.count, 1);
+            assert!(received.removed.is_empty());
+            let kind = id("minecraft:data_component_type", name);
+            let mut w = Writer::new();
+            Slot::write(&Some(received.clone()), &mut w);
+            let mut r = Reader::new(&w.data);
+            let reread = Slot::read(&mut r).unwrap().unwrap();
+            assert_eq!(r.remaining(), 0, "complete nested slot payload");
+            assert_eq!(reread.component(kind), received.component(kind));
+            if received.component(kind).is_none() {
+                failures.push((name, received));
+            }
+            assert_eq!(host.hub.guest(2).unwrap().uuid, 283);
+            assert_eq!(host.hub.guest(2).unwrap().health, 20.0);
+            assert_eq!(host.hub.guest(2).unwrap().position, [8.5, 200.0, 8.5]);
+            assert_eq!(game.world.game_time, clock);
+        }
+        assert!(
+            failures.is_empty(),
+            "actual command -> network_stack -> full protocol packet missing builtin components: {failures:?}"
+        );
+    }
+}
