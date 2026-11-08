@@ -10,6 +10,7 @@ pub mod client_session;
 pub mod ids;
 pub mod layout_26_2;
 mod legacy;
+mod pinned_ids;
 pub mod session;
 mod translate;
 pub(crate) use translate::v1_20_2::read_component as read_legacy_component;
