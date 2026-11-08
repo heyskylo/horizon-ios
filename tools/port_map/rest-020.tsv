@@ -10,7 +10,7 @@ PlayerList.deop	inline	crates/horizon-client/src/game/dedicated.rs::Game::consol
 PlayerList.saveAll	port	crates/horizon-client/src/game/dedicated.rs::Game::stop_dedicated	gap: minor: /save-all (save-all arm of console_command) writes the world only; players are saved on leave and when the server stops
 PlayerList.getPlayersWithAddress	inline	crates/horizon-client/src/game/dedicated.rs::Game::console_command	the ban-ip arm filters the guests by address
 PlayerList.getPlayerStats	inline	crates/horizon-client/src/game/lan.rs::Game::load_guest_records	statistics are read when the guest joins, not on first use
-PlayerList.locateStatsFile	missing		minor: a name-based stats or advancements file from old versions is not moved to the uuid file (player_json takes only the uuid)
+PlayerList.locateStatsFile	port	crates/horizon-client/src/game/stats.rs::locate_player_json	the stats file an older version named after the player is moved to the uuid file; FileUtil.isValidPathSegment refuses a name vanilla would not write, and 26.3 has no name-based advancements file
 PlayerList.getPlayerAdvancements	inline	crates/horizon-client/src/game/lan.rs::Game::load_guest_records	advancements are read when the guest joins, not on first use
 PlayerList.getPlayer	port	crates/horizon-client/src/game/commands/players.rs::Game::target_by_uuid	gap: minor: the uuid lookup also returns entities (selector fallback); the name overload is Game::player_named
 PlayerList.reloadResources	port	crates/horizon-client/src/game/functions.rs::Game::reload_datapacks	gap: player: /reload re-reads the datapacks but sends no tags or recipes to connected players and does not reload advancements; the sync data is loaded once per process (game/lan.rs SYNC), so new tags and recipes wait for a restart

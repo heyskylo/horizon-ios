@@ -3,7 +3,8 @@
 //! `minecraft:audio/ambient_sounds` attribute, `UnderwaterAmbientSoundHandler`
 //! and `LocalPlayer.updateIsUnderwater` (enter/exit sounds and the
 //! `UnderLiquidAmbientSoundInstance` loop), played through the sound engine.
-use crate::sound_engine::{AMBIENT, InstanceId, PLAYERS, SoundEngine, SoundInstance, Sounds};
+use crate::random_source;
+use crate::sound_engine::{AMBIENT, InstanceId, PLAYERS, SoundInstance, Sounds};
 use horizon_core::random::{LegacyRandom, RandomSource};
 use serde_json::Value;
 use std::{collections::HashMap, path::Path};
@@ -160,7 +161,7 @@ pub struct Ambience {
 }
 impl Default for Ambience {
     fn default() -> Self {
-        Self::new(crate::sound_engine::unique_seed())
+        Self::new(random_source::unique_seed())
     }
 }
 impl Ambience {
@@ -225,7 +226,7 @@ impl Ambience {
                 );
                 let instance = SoundInstance::under_liquid_loop(
                     "minecraft:ambient.underwater.loop",
-                    SoundEngine::unseeded(),
+                    random_source::create(),
                 );
                 sounds.play_instance(instance, false);
             }
@@ -276,7 +277,7 @@ impl Ambience {
             };
             if let Some(sound) = sound {
                 self.underwater_delay = 0;
-                let instance = SoundInstance::under_liquid_sub(sound, SoundEngine::unseeded());
+                let instance = SoundInstance::under_liquid_sub(sound, random_source::create());
                 sounds.play_instance(instance, false);
             }
         }
@@ -308,7 +309,7 @@ impl Ambience {
                 let id = match self.loops.iter().find(|(e, _)| *e == event) {
                     Some((_, id)) => *id,
                     None => {
-                        let instance = SoundInstance::biome_loop(&event, SoundEngine::unseeded());
+                        let instance = SoundInstance::biome_loop(&event, random_source::create());
                         let id = sounds.engine().add(instance, true);
                         sounds.play_id(id);
                         self.loops.push((event, id));
@@ -323,7 +324,7 @@ impl Ambience {
         for (sound, chance) in &ctx.sounds.additions {
             if self.random.next_double() < *chance {
                 let event = crate::sound_events::normalize(sound);
-                let instance = SoundInstance::for_ambient_addition(&event, SoundEngine::unseeded());
+                let instance = SoundInstance::for_ambient_addition(&event, random_source::create());
                 sounds.play_instance(instance, false);
             }
         }
@@ -376,7 +377,7 @@ impl Ambience {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sound_engine::{Bound, TickContext, test_backend::Null};
+    use crate::sound_engine::{Bound, SoundEngine, TickContext, test_backend::Null};
     use crate::sound_events::SoundRegistry;
 
     fn engine() -> SoundEngine {

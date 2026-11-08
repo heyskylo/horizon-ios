@@ -103,13 +103,28 @@ fn game_language() -> &'static str {
     }
 }
 
-/// The account's skin as the preview takes it: from the profile heads' cache, 64×64 only (older
-/// 64×32 skins and missing ones show a plain figure).
-fn skin(account: &account::Account) -> Option<(Arc<Texture>, bool)> {
-    let (url, model) = account.skin.as_ref()?;
-    let png =
-        horizon_launcher::heads::cached_skin(url, &backend::data_dir().join("profile-heads"))?;
-    Some((skin_texture(&png)?, model == "slim"))
+/// The account's skin as the preview takes it, 64×64 only: its own from the profile heads'
+/// cache, else the default skin (Steve, Alex…) its UUID wears in the game, from the player's
+/// prepared game files in `resources`. None (a stand-in figure) when neither reads.
+fn skin(account: &account::Account, resources: &std::path::Path) -> Option<(Arc<Texture>, bool)> {
+    let own = account.skin.as_ref().and_then(|(url, model)| {
+        let cache = backend::data_dir().join("profile-heads");
+        let png = horizon_launcher::heads::cached_skin(url, &cache)?;
+        Some((skin_texture(&png)?, model == "slim"))
+    });
+    own.or_else(|| {
+        let (file, slim) = horizon_launcher::heads::default_skin_file(resources, &account.uuid)?;
+        Some((skin_texture(&std::fs::read(file).ok()?)?, slim))
+    })
+}
+
+/// Whether two skins are the same picture and arms.
+fn same_skin(a: &Option<(Arc<Texture>, bool)>, b: &Option<(Arc<Texture>, bool)>) -> bool {
+    match (a, b) {
+        (Some((a, x)), Some((b, y))) => x == y && a.rgba == b.rgba,
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 /// A plain figure's texture, for an account without a skin the preview can read: head and arms,
@@ -401,6 +416,7 @@ impl Launcher {
         {
             return;
         }
+        let resources = self.game_resources();
         let keep = self.wardrobe.take().filter(|w| w.uuid == account.uuid);
         let saved = Saved::load(&dir(), &account.uuid);
         let slot = keep.as_ref().map_or("head", |w| w.slot);
@@ -413,7 +429,7 @@ impl Launcher {
             saved: saved.clone(),
             items: keep.map(|w| w.items).unwrap_or_default(),
             session: session.clone(),
-            skin: skin(&account),
+            skin: skin(&account, &resources),
             status: Status::Loading,
             busy: true,
             slot,
@@ -435,11 +451,18 @@ impl Launcher {
             if let Err(e) = trip.saved.save(&dir(), &account.uuid) {
                 eprintln!("Horizon: the outfit is not saved: {e}");
             }
-            trip
+            // The account's own skin may have reached the profile heads' cache meanwhile (its
+            // first download runs at start, beside this).
+            (trip, skin(&account, &resources))
         });
         cx.spawn(async move |this, cx| {
-            let trip = task.await;
+            let (trip, skin) = task.await;
             let _ = this.update(cx, |this, cx| {
+                if let Some(w) = this.wardrobe.as_mut() {
+                    if !same_skin(&w.skin, &skin) {
+                        w.skin = skin;
+                    }
+                }
                 this.wardrobe_back(trip, None);
                 cx.notify();
             });

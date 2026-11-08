@@ -879,6 +879,7 @@ mod tests {
             solid,
             solid_slots: u64::from(solid) * 4,
             packed: false,
+            packed_far: false,
             sides: crate::mesher::Sides::unsorted(solid),
             translucent,
             sort: super::super::translucency::SortState::new(Vec::new()),
@@ -1047,7 +1048,15 @@ mod tests {
                 hdr: None,
             }
         };
-        let mut flat = flat::Flat::new(&device, &terrain_layout, 4 * GRAIN, 0, pipeline, solid);
+        let mut flat = flat::Flat::new(
+            &device,
+            &terrain_layout,
+            4 * GRAIN,
+            0,
+            false,
+            pipeline,
+            solid,
+        );
         let stride = std::mem::size_of::<crate::mesher::TerrainVertex>() as u64;
         let mut translucent = Arena::translucent(&device, stride, 4 * GRAIN);
         translucent.page_limit = 4 * GRAIN;
@@ -1083,6 +1092,7 @@ mod tests {
             solid: 64,
             solid_slots: 64 * 4,
             packed: false,
+            packed_far: false,
             sides: crate::mesher::Sides::unsorted(64),
             translucent: 128,
             sort: super::super::translucency::SortState::new(Vec::new()),
@@ -1310,6 +1320,7 @@ mod tests {
                 solid,
                 solid_slots: u64::from(solid) * 4,
                 packed: false,
+                packed_far: false,
                 sides: crate::mesher::Sides::unsorted(solid),
                 translucent,
                 sort: super::super::translucency::SortState::new(Vec::new()),

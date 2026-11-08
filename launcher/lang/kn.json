@@ -1250,5 +1250,15 @@
   "Use a different Microsoft account": "ಬೇರೆ Microsoft ಖಾತೆಯನ್ನು ಬಳಸಿ",
   "Buy": "ಖರೀದಿಸಿ",
   "Gift": "ಉಡುಗೊರೆ ನೀಡಿ",
-  "Looks": "ಲುಕ್‌ಗಳು"
+  "Found on this computer": "ಈ ಕಂಪ್ಯೂಟರ್‌ನಲ್ಲಿ ಕಂಡುಬಂದವು",
+  "Looks": "ಲುಕ್‌ಗಳು",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "ನಿಮ್ಮ ಸಿಸ್ಟಮ್ ಕೀರಿಂಗ್ {seconds} ಸೆಕೆಂಡುಗಳಲ್ಲಿ ಉತ್ತರಿಸಲಿಲ್ಲ. ಅದು ಚಾಲನೆಯಲ್ಲಿದೆ ಮತ್ತು ಅನ್‌ಲಾಕ್ ಆಗಿದೆ ಎಂದು ಖಚಿತಪಡಿಸಿಕೊಳ್ಳಿ, ನಂತರ ಲಾಂಚರ್ ಅನ್ನು ಮರುಪ್ರಾರಂಭಿಸಿ.",
+  "Can't read {name}'s sign-in: {why}": "{name} ಅವರ ಸೈನ್-ಇನ್ ಓದಲು ಸಾಧ್ಯವಿಲ್ಲ: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: ನೀವು ಆಡುವ Horizon ಗಾಗಿ ಮಾಡಿದ ಆವೃತ್ತಿ {version} ಬಳಸಲಾಗುತ್ತಿದೆ",
+  "Recommended": "ಶಿಫಾರಸು ಮಾಡಲಾಗಿದೆ",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "ಹಳೆಯ ಆವೃತ್ತಿ {version} ನೀವು ಆಡುವ Horizon ನಲ್ಲಿ ಬಿಲ್ಡ್ ಆಗುತ್ತದೆ: ಇನ್‌ಸ್ಟಾಲ್ ಮಾಡಿದರೆ ಅದೇ ಆಯ್ಕೆಯಾಗುತ್ತದೆ",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: ಆವೃತ್ತಿ {version} ಬಿಲ್ಡ್ ಆಗಲಿಲ್ಲ, {older} ಪ್ರಯತ್ನಿಸಲಾಗುತ್ತಿದೆ",
+  "Use recommended (kept at {version})": "ಶಿಫಾರಸು ಮಾಡಿದ್ದನ್ನು ಬಳಸಿ ({version} ನಲ್ಲಿ ಇರಿಸಲಾಗಿದೆ)"
 }

@@ -31,7 +31,7 @@ pub(super) struct ThrownTrident {
     pub(super) yaw: f32,
     pub(super) pitch: f32,
     pub(super) in_ground: bool,
-    in_ground_time: u32,
+    pub(super) in_ground_time: u32,
     /// `AbstractArrow.shakeTime`: seven ticks after sticking, no pickup.
     shake: u32,
     dealt_damage: bool,
@@ -47,6 +47,8 @@ pub(super) struct ThrownTrident {
     was_touching_water: bool,
     /// `Entity.random`, used for the extinguishing sound and a breeze's turn.
     random: horizon_core::random::LegacyRandom,
+    /// `AbstractArrow.lastState`: the block it stuck in; not saved.
+    last_state: Option<horizon_world::registry::BlockStateId>,
     /// `Projectile.lastDeflectedBy`: the breeze that already turned this trident.
     deflected_by: Option<u32>,
     /// `Entity.tickCount`: `ProjectileUtil.computeMargin` grows with it.
@@ -136,7 +138,24 @@ impl ThrownTrident {
             owner: 0,
             guest: None,
             deflected_by: None,
+            last_state: None,
         }
+    }
+    /// `AbstractArrow.shouldFall`: stuck, and nothing solid within 0.06 of it.
+    fn should_fall(&self, scene: &horizon_client::arrows::ArrowScene<'_, '_>) -> bool {
+        let at = self.position;
+        self.in_ground
+            && scene.no_block_collision(Aabb::new(at, at).inflate(Vec3::new(0.06, 0.06, 0.06)))
+    }
+    /// `AbstractArrow.startFalling`: unstick, scaling the velocity by three
+    /// draws of `nextFloat() * 0.2F` in x, y, z order.
+    fn start_falling(&mut self) {
+        self.in_ground = false;
+        let v = self.velocity;
+        let x = f64::from(self.random.next_float() * 0.2);
+        let y = f64::from(self.random.next_float() * 0.2);
+        let z = f64::from(self.random.next_float() * 0.2);
+        self.velocity = Vec3::new(v.x * x, v.y * y, v.z * z);
     }
     /// `ThrownTrident.tick`'s Loyalty return: pulled up and towards the
     /// owner's eye.
@@ -480,6 +499,7 @@ impl Game<'_> {
             owner: 0,
             guest: self.lan_acting,
             deflected_by: None,
+            last_state: None,
         });
         self.player_projectile_shot();
         self.audio.play_bound(
@@ -716,6 +736,17 @@ impl Game<'_> {
             }
             let stuck_tick = t.in_ground && !t.no_physics;
             if t.in_ground {
+                // AbstractArrow.tick: `if (lastState != blockState && shouldFall())
+                // startFalling();` (`blockState` is the block at its position).
+                // Its `else tickDespawn()` has no counterpart here: no `life`.
+                if !t.no_physics {
+                    let rain = self.arrow_rain();
+                    let scene = self.arrow_scene(&rain);
+                    let state = scene.block(BlockPos::containing(t.position));
+                    if t.last_state != Some(state) && t.should_fall(&scene) {
+                        t.start_falling();
+                    }
+                }
                 t.in_ground_time += 1;
                 if !t.no_physics {
                     let at = t.position;
@@ -974,6 +1005,7 @@ impl Game<'_> {
                         t.position = stop;
                         t.velocity = Vec3::ZERO;
                         t.in_ground = true;
+                        t.last_state = Some(self.world.block(block.x, block.y, block.z));
                         t.shake = 7;
                         self.audio.play(
                             "minecraft:item.trident.hit_ground",
@@ -1165,8 +1197,23 @@ horizon_client::impl_joined!(ThrownTrident);
 
 #[cfg(test)]
 mod tests {
-    use super::breeze_deflect;
+    use super::{ThrownTrident, breeze_deflect};
     use horizon_core::geometry::Vec3;
+
+    /// `AbstractArrow.startFalling` on `new Random(42)`: its first three
+    /// `nextFloat() * 0.2F` draws (computed from Java's LCG) scale x, y, z.
+    #[test]
+    fn a_falling_trident_scales_its_velocity_by_three_draws() {
+        let mut t = ThrownTrident::remote(42, Vec3::ZERO, 0.0, 0.0);
+        t.in_ground = true;
+        t.velocity = Vec3::new(1.0, 1.0, 1.0);
+        t.start_falling();
+        assert!(!t.in_ground);
+        assert_eq!(
+            t.velocity,
+            Vec3::new(0.14551274478435516, 0.0109330415725708, 0.13664469122886658)
+        );
+    }
 
     /// `ProjectileDeflection.REVERSE` at power 1: half speed, the other way,
     /// and a turn of 170 degrees plus a fifth of the random draw.

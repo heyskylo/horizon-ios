@@ -1,4 +1,4 @@
-use alloc::{borrow::ToOwned as _, sync::Arc, vec::Vec};
+use alloc::{borrow::ToOwned as _, string::String, sync::Arc, vec::Vec};
 use core::{mem::align_of, ptr::NonNull};
 
 use bytemuck::TransparentWrapper;
@@ -158,6 +158,69 @@ const fn convert_vertex_format_to_naga(format: wgt::VertexFormat) -> nt::VertexF
     }
 }
 
+/// Rewrites Naga's compute MSL for Haswell-era Intel drivers. Those compilers abort on
+/// `max_total_threads_per_threadgroup` and on references to runtime-sized arrays of structs
+/// or atomics. Element pointers preserve the indexing semantics without either construct.
+fn legacy_intel_compute(source: &str) -> String {
+    const ATTRIBUTE: &str = "[[max_total_threads_per_threadgroup(";
+    let mut source = source.to_owned();
+    while let Some(start) = source.find(ATTRIBUTE) {
+        let Some(end) = source[start..].find(")]]") else {
+            break;
+        };
+        let mut range_end = start + end + ")]]".len();
+        if source[range_end..].starts_with(' ') {
+            range_end += 1;
+        }
+        source.replace_range(start..range_end, "");
+    }
+
+    // Naga emits a runtime-sized array as `typedef Element type_N[1];`.
+    let arrays: Vec<(String, String)> = source
+        .lines()
+        .filter_map(|line| {
+            let declared = line.strip_prefix("typedef ")?.strip_suffix("[1];")?;
+            let (element, name) = declared.rsplit_once(' ')?;
+            Some((name.to_owned(), element.to_owned()))
+        })
+        .collect();
+    for (name, element) in arrays {
+        source = source
+            .replace(
+                &format!("device {name} const& "),
+                &format!("device {element} const* "),
+            )
+            .replace(&format!("device {name}& "), &format!("device {element}* "));
+    }
+    source
+}
+
+#[cfg(test)]
+mod legacy_intel_tests {
+    use super::legacy_intel_compute;
+
+    #[test]
+    fn compute_msl_uses_element_pointers_and_omits_the_workgroup_attribute() {
+        let source = concat!(
+            "typedef Range type_0[1];\n",
+            "typedef atomic_uint type_1[1];\n",
+            "[[max_total_threads_per_threadgroup(64)]] kernel void flatten(\n",
+            "    device type_0 const& ranges [[buffer(0)]],\n",
+            "    device type_1& calls [[buffer(1)]]);\n",
+        );
+        assert_eq!(
+            legacy_intel_compute(source),
+            concat!(
+                "typedef Range type_0[1];\n",
+                "typedef atomic_uint type_1[1];\n",
+                "kernel void flatten(\n",
+                "    device Range const* ranges [[buffer(0)]],\n",
+                "    device atomic_uint* calls [[buffer(1)]]);\n",
+            )
+        );
+    }
+}
+
 impl super::Device {
     fn load_shader(
         &self,
@@ -261,6 +324,15 @@ impl super::Device {
                     &pipeline_options,
                 )
                 .map_err(|e| crate::PipelineError::Linkage(stage_bit, format!("MSL: {e:?}")))?;
+
+                let source = if naga_stage == naga::ShaderStage::Compute
+                    && (self.shared.private_caps.legacy_intel
+                        || std::env::var_os("HORIZON_METAL_LEGACY_INTEL").is_some())
+                {
+                    legacy_intel_compute(&source)
+                } else {
+                    source
+                };
 
                 log::debug!(
                     "Naga generated shader for entry point '{}' and stage {:?}\n{}",

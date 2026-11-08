@@ -9,6 +9,7 @@ pub mod carry;
 pub mod check;
 pub mod classes;
 pub mod classify;
+pub mod datapacks;
 pub mod entry;
 pub mod events;
 pub mod fetch;

@@ -8,7 +8,7 @@
 //! exit portal, the egg and the next gateway; and its rendering and boss bar.
 use super::commands::Target;
 use super::{
-    Dim, Game,
+    Game,
     potions::{Victim, mob_can_be_affected},
 };
 use horizon_client::{
@@ -19,6 +19,7 @@ use horizon_client::{
     mobs::{Damage, DamageKind, Who},
     particles::{ParticleOptions, ParticleType},
     projectiles::ProjectileKind,
+    random_source,
     text::Text,
 };
 use horizon_core::position::BlockPos;
@@ -927,7 +928,7 @@ fn hurt_source(
     direct: Option<&ProjectileKind>,
 ) -> HurtSource<'static> {
     let causing = by.unwrap_or(0);
-    let melee = direct.is_none() && super::creatures::melee(kind);
+    let melee = direct.is_none() && (super::creatures::melee(kind) || kind == DamageKind::Thorns);
     HurtSource {
         damage_type: super::creatures::damage_type(kind, by.is_some()),
         causing,
@@ -1188,7 +1189,7 @@ impl Game<'_> {
     pub(super) fn tick_fight(&mut self) {
         // A dragon outside the End (`/summon`) has no fight: `ServerLevel.getDragonFight` is
         // null there, but `EnderDragon.aiStep` still flies it.
-        if self.dim != Dim::End {
+        if !self.dimension_type().has_ender_dragon_fight {
             self.tick_dragon();
             return;
         }
@@ -1310,7 +1311,7 @@ impl Game<'_> {
     /// `EndCrystal.tick` in every dimension: the time (the spin and bob),
     /// and fire at its block where there is a dragon fight (the End).
     pub(super) fn tick_crystals(&mut self) {
-        let fire = (self.dim == Dim::End)
+        let fire = (self.dimension_type().has_ender_dragon_fight)
             .then(|| self.pack.assets.registry.default_state("minecraft:fire"))
             .flatten();
         for i in 0..self.crystals.len() {
@@ -1352,7 +1353,13 @@ impl Game<'_> {
                 Vec3::new(x - 1.0, y, z - 1.0),
                 Vec3::new(x + 1.0, y + 2.0, z + 1.0),
             ));
-            let _ = self.server_explode(at, 6.0, interaction, false);
+            let _ = self.server_explode_from(
+                at,
+                6.0,
+                interaction,
+                false,
+                super::explosion::ExplosionSource::default().with_silence(self.entity_silent(c.id)),
+            );
             self.combat.explosion_in_water = false;
             self.fight.blast_by = None;
         }
@@ -1576,9 +1583,9 @@ impl Game<'_> {
     ) -> Hurt {
         // `dealDefaultKnockback` for a player's melee: away from the attacker's
         // feet. The scope names that player to the knockback hook.
-        let _attacker = (kind == DamageKind::PlayerAttack)
+        let _attacker = (matches!(kind, DamageKind::PlayerAttack | DamageKind::Thorns))
             .then(|| self.knockback_scope(self.player.as_ref().map_or(0, |p| p.entity_id)));
-        let from = (kind == DamageKind::PlayerAttack)
+        let from = (matches!(kind, DamageKind::PlayerAttack | DamageKind::Thorns))
             .then(|| self.player.as_ref().map(|p| p.position))
             .flatten();
         self.hurt_dragon_part_at(part, damage, counts, by, kind, direct, from)
@@ -1626,6 +1633,10 @@ impl Game<'_> {
             let pitch = 0.8 + self.world.random.next_float() * 0.3;
             self.audio
                 .play("minecraft:entity.ender_dragon.hurt", Some(at), 5.0, pitch);
+            if kind == DamageKind::Thorns {
+                self.audio
+                    .play("minecraft:enchant.thorns.hit", Some(at), 1.0, 1.0);
+            }
             if let Some(s) = source {
                 d.last_source = Some((
                     s.damage_type,
@@ -2678,8 +2689,25 @@ impl Game<'_> {
                     )
                 })
                 .collect();
-            for (mob, allowed) in self.mobs.iter_mut().zip(allowed) {
-                horizon_client::mobs::dragon_contacts::contact(mob, &frame, allowed);
+            // knockBack(wing1), knockBack(wing2), hurt(head), hurt(neck): each
+            // part's list in turn, so Thorns' level and dragon draws follow it.
+            for part in 0..4 {
+                for (index, &allowed) in allowed.iter().enumerate() {
+                    if horizon_client::mobs::dragon_contacts::contact_part(
+                        &mut self.mobs[index],
+                        &frame,
+                        allowed,
+                        part,
+                    ) {
+                        let id = self.mobs[index].id;
+                        self.mob_post_attack(
+                            id,
+                            Some(horizon_client::mobs::Who::Mob(frame.dragon_id)),
+                            Some("minecraft:ender_dragon"),
+                            Some("minecraft:mob_attack"),
+                        );
+                    }
+                }
             }
         }
         // checkWalls over head, neck and body.
@@ -3105,6 +3133,35 @@ impl Game<'_> {
             });
         }
         self.combat.forget_noted(canceled);
+        if !sitting
+            && !hurt_lately
+            && let Some(id) = self.dragon.as_ref().map(|d| d.id)
+        {
+            self.thorns(id);
+        }
+    }
+    /// `DamageEntity.apply`: the dragon's own random, including when the
+    /// wearer's mob source cannot take health from it.
+    pub(super) fn dragon_effect_random(&mut self, id: u32) -> Option<f32> {
+        self.dragon
+            .as_mut()
+            .filter(|d| d.id == id)
+            .map(|d| d.random.next_float())
+    }
+    /// `EnderDragon.hurtServer`: Thorns hits the body part, so damage is
+    /// quartered plus at most one, with the player as its causing entity.
+    pub(super) fn dragon_thorns(&mut self, attacker: u32, min: f32, max: f32) {
+        let Some(d) = self.dragon.as_mut().filter(|d| d.id == attacker) else {
+            return;
+        };
+        let damage = d.random.next_float() * (max - min) + min;
+        self.hurt_dragon(
+            2,
+            damage,
+            true,
+            Some(self.acting_player()),
+            DamageKind::Thorns,
+        );
     }
     /// Damage from the dragon, which is its causing entity
     /// (`DamageSources.mobAttack(dragon)`, `indirectMagic(cloud, dragon)`): the
@@ -3112,6 +3169,13 @@ impl Game<'_> {
     fn dragon_hurts_player(&mut self, damage_type: &str, amount: f32) {
         self.note_dragon_attacker(damage_type);
         self.hurt_player_by(damage_type, amount);
+        // EnderDragon.hurt(List) runs effects even when hurtServer refused.
+        // The breath cloud's indirect magic never runs them.
+        if damage_type == "minecraft:mob_attack"
+            && let Some(id) = self.dragon.as_ref().map(|d| d.id)
+        {
+            self.thorns(id);
+        }
     }
     /// The causing entity of the dragon's next `damage_type` damage, for the
     /// death message.
@@ -3142,7 +3206,11 @@ impl Game<'_> {
     /// (`EnderDragonFight.dragonEvent`, visible while the fight is not won
     /// and the player is alive within 192 blocks of (0, 128, 0)).
     pub(super) fn dragon_boss_progress(&self, at: [f64; 3], alive: bool) -> Option<f32> {
-        if self.dim != Dim::End || !alive || !self.fight.loaded || self.fight.killed {
+        if !self.dimension_type().has_ender_dragon_fight
+            || !alive
+            || !self.fight.loaded
+            || self.fight.killed
+        {
             return None;
         }
         let near = at[0].powi(2) + (at[1] - 128.0).powi(2) + at[2].powi(2) <= 192.0 * 192.0;
@@ -3817,6 +3885,8 @@ impl Game<'_> {
             vertical_collision: false,
             horizontal_collision: false,
             needs_sync: false,
+            sync_position: false,
+            stepped: true,
             idle: false,
             bare: false,
             leash: None,
@@ -3898,9 +3968,7 @@ impl Game<'_> {
             return false;
         }
         // EndCrystal's constructor: `this.random.nextInt(100000)`, the crystal's own random.
-        let drawn = super::dispenser::entity_random()
-            .next_int_bound(100_000)
-            .unwrap_or(0);
+        let drawn = random_source::entity().next_int_bound(100_000).unwrap_or(0);
         let at = Vec3::new(x + 0.5, y, z + 0.5);
         let time = Crystal::start_time(at, drawn, self.clock.still());
         // EndCrystal's constructor takes an id from the entity counter, so
@@ -3917,7 +3985,7 @@ impl Game<'_> {
         // EndCrystalItem.useOn: ENTITY_PLACE at the block above, by the player.
         self.post_block_game_event("minecraft:entity_place", above, self.sculk_actor(), None);
         self.world.modified.insert((above[0] >> 4, above[2] >> 4));
-        if self.dim == Dim::End {
+        if self.dimension_type().has_ender_dragon_fight {
             self.try_respawn();
         }
         if !self.creative {
@@ -4248,7 +4316,8 @@ impl Game<'_> {
     /// It becomes the fight's dragon (`dragonUUID = dragon.getUUID()`).
     fn create_new_dragon(&mut self) {
         let yaw = self.world.random.next_float() * 360.0;
-        let seed = self.world.random.next_long();
+        // The dragon's own random (`Entity.random`), not the level's.
+        let seed = random_source::unique_seed();
         let mut d = Dragon::new(Vec3::new(0.0, 128.0, 0.0), yaw, seed);
         // `dragon.getPhaseManager().setPhase(EnderDragonPhase.HOLDING_PATTERN)`.
         d.phase = Phase::Holding {
@@ -4305,7 +4374,7 @@ impl Game<'_> {
     /// The dragon is the End fight's own (`EnderDragon.dragonFight`, set
     /// only for the dragon whose UUID is the fight's `dragonUUID`).
     fn is_fight_dragon(&mut self) -> bool {
-        if self.dim != Dim::End {
+        if !self.dimension_type().has_ender_dragon_fight {
             return false;
         }
         match (self.dragon.as_ref().map(|d| d.id), self.fight.dragon_uuid) {
@@ -4333,11 +4402,13 @@ impl Game<'_> {
                     c.position.x.floor() as i32 >> 4,
                     c.position.z.floor() as i32 >> 4,
                 ));
-                let _ = self.server_explode(
+                let _ = self.server_explode_from(
                     [c.position.x, c.position.y, c.position.z],
                     6.0,
                     super::explosion::BlockInteraction::Keep,
                     false,
+                    super::explosion::ExplosionSource::default()
+                        .with_silence(self.entity_silent(c.id)),
                 );
             }
         }
@@ -4450,7 +4521,7 @@ impl Game<'_> {
         let _ = self.world.random.triangle(0.0, 0.114_850_000_000_000_01);
         let _ = self.world.random.next_float();
         // The dragon's own random (`Entity.random`), not the level's.
-        let seed = super::dispenser::entity_random().next_long();
+        let seed = random_source::unique_seed();
         let mut dragon = Dragon::new(position, yaw, seed);
         dragon.id = self.next_entity + 1;
         self.next_entity += 9;
@@ -5675,3 +5746,7 @@ mod tests {
         assert_eq!(d.hurt_time, 10);
     }
 }
+
+#[cfg(test)]
+#[path = "thorns_tests.rs"]
+mod thorns_tests;

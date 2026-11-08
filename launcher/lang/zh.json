@@ -1250,5 +1250,15 @@
   "Use a different Microsoft account": "使用其他 Microsoft 账户",
   "Buy": "购买",
   "Gift": "赠送",
-  "Looks": "造型"
+  "Found on this computer": "在这台电脑上找到",
+  "Looks": "造型",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "系统密钥环在 {seconds} 秒内没有响应。请确认它正在运行且已解锁，然后重新启动启动器。",
+  "Can't read {name}'s sign-in: {why}": "无法读取 {name} 的登录信息：{why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon 会运行数据包中的函数、函数标签、谓词、物品修饰器、配方、战利品表、进度、村民交易、伤害类型、大部分标签以及大部分世界生成内容（生物群系、地物、结构、维度）。世界预设等其他文件暂时还不会读取。",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} 目前不会改变 Horizon 中的任何内容：Horizon 还不会读取它的 {files}。",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}：使用为你所玩的 Horizon 制作的版本 {version}",
+  "Recommended": "推荐",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "较旧的版本 {version} 可在你玩的 Horizon 上构建：安装时会选它",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}：版本 {version} 构建失败，正在尝试 {older}",
+  "Use recommended (kept at {version})": "使用推荐版本（当前保持在 {version}）"
 }

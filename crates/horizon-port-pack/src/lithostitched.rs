@@ -122,7 +122,7 @@ fn ids(v: &Value) -> Option<Vec<String>> {
 }
 
 /// NeoForge's load conditions (`neoforge:conditions`): all must pass.
-fn conditions_pass(v: &Value, loaded: &dyn Fn(&str) -> bool) -> bool {
+pub(crate) fn conditions_pass(v: &Value, loaded: &dyn Fn(&str) -> bool) -> bool {
     fn pass(c: &Value, loaded: &dyn Fn(&str) -> bool) -> bool {
         let all = |key: &str| {
             c[key]

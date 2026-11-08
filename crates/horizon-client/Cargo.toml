@@ -92,8 +92,8 @@ dunce = "1.0.5"
 # Use the registered URI handler without routing links through Explorer/cmd.
 open = { version = "5.4.5", features = ["shellexecute-on-windows"] }
 # DirectX 12, where Vulkan has no adapter or device, or by choice (`graphicsApi`, graphics.rs).
-# Shaders compile with FXC (d3dcompiler_47.dll, part of Windows), or DXC when dxcompiler.dll is
-# on the PATH.
+# Shaders compile with FXC (d3dcompiler_47.dll, part of Windows), or on integrated GPUs with DXC
+# (dxcompiler.dll beside the game, gfx/dx12_compiler.rs).
 wgpu = { version = "30.0.1", default-features = false, features = ["dx12"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -109,12 +109,19 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
 
 [features]
-default = ["audio", "controllers", "discord", "friends", "heartbeat"]
+default = ["audio", "controllers", "horizon-extras"]
 # Sound output. Without it (and `controllers`) the program links neither libasound nor libudev on
 # Linux: the server build (`--no-default-features`, released as horizon-engine; docs/server.md).
 audio = ["horizon-client-render/audio", "horizon-client-lib/audio"]
 # Controllers: gilrs, and the DualSense's own output. Without it only `horizon-ctl pad`'s virtual pad.
 controllers = ["horizon-client-lib/controllers", "dep:gilrs", "dep:horizon-dualsense", "horizon-client-input/controllers"]
+# Horizon's own extras over the vanilla game, for a fork that wants them out (docs/forking.md):
+# cosmetics and emotes, the "Horizon player" presence, the official server added to
+# the server list, the Horizon Settings and Mods pages, Discord, Play with Friends and the
+# heartbeat. Players always get them; there is no switch. `grep -rn horizon-extras crates/` lists
+# every place it gates. Without it (`--no-default-features --features audio,controllers`) the
+# client is best effort: CI builds only the default.
+horizon-extras = ["discord", "friends", "heartbeat"]
 # Online extras a server or a port can leave out; the server build has none of them. "Playing Horizon"
 # on Discord (game/discord.rs).
 discord = ["horizon-client-lib/discord"]

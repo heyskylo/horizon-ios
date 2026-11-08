@@ -1250,5 +1250,15 @@
   "Use a different Microsoft account": "Brug en anden Microsoft-konto",
   "Buy": "Køb",
   "Gift": "Giv i gave",
-  "Looks": "Looks"
+  "Found on this computer": "Fundet på denne computer",
+  "Looks": "Looks",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Dit systems nøglering svarede ikke inden for {seconds} sekunder. Sørg for, at den kører og er låst op, og genstart derefter launcheren.",
+  "Can't read {name}'s sign-in: {why}": "Kan ikke læse {name}s login: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.",
+  "{mod}: using version {version}, made for the Horizon you play": "{mod}: bruger version {version}, lavet til det Horizon, du spiller",
+  "Recommended": "Anbefalet",
+  "An older version, {version}, builds on the Horizon you play: installing picks it": "En ældre version, {version}, bygger på det Horizon, du spiller: installation vælger den",
+  "{mod}: version {version} didn't build, trying {older}": "{mod}: version {version} kunne ikke bygges, prøver {older}",
+  "Use recommended (kept at {version})": "Brug anbefalet (holdt på {version})"
 }

@@ -163,6 +163,27 @@ def build(entry, schematics, states, full):
             'steps': steps(entry, bits, full)}, None
 
 
+def fixed_cases(states):
+    """Contraptions of our own, outside the archive, that must match.
+
+    A repeater or comparator on a downward piston that pushes (or pulls) a target block, powered through a stone
+    block by a lever: while the piston retracts, the base below the diode is a moving piston whose block entity
+    holds the extended base, and `DiodeBlock.canSurviveOn` finds its top face rigid there (#12019).
+    """
+    for piston in ('piston', 'sticky_piston'):
+        for diode in ('repeater', 'comparator'):
+            cells = [[1, 1, 1, states.id(f'{piston}[facing=down]')], [1, 2, 1, states.id(f'{diode}[facing=south]')],
+                     [1, 0, 1, states.id('target')], [2, 1, 1, states.id('stone')],
+                     [3, 1, 1, states.id('lever[face=wall,facing=east]')]]
+            # A long pulse, a 1-tick-off pulse and a 1-tick-on pulse (two flips in one step act in the same tick).
+            lever = [3, 1, 1]
+            steps = [[[*lever, 1]], [[*lever, 0]], [[*lever, 1]], [[*lever, 0], [*lever, 1]], [[*lever, 0]],
+                     [[*lever, 1], [*lever, 0]]]
+            yield {'code': f'horizon-{diode}-on-{piston}', 'size': [4, 3, 3], 'cells': cells, 'comparators': [],
+                   'containers': [], 'lecterns': [], 'outputs': [[1, 1, 1], [1, 2, 1], [3, 1, 1]], 'settle': 600,
+                   'max': 300, 'budget': 2500, 'steps': steps}
+
+
 def split(text):
     """Output text -> {code: (lines compared, analog lines, other lines)}."""
     out, code = {}, None
@@ -201,8 +222,14 @@ def main():
     entries = load_catalog()
     schematics = fetch_schematics(entries)
     entries = [e for e in entries if not args.only or e['code'] in args.only.split(',')][shard - 1::shards]
+    status = {}
     states = States(resources)
     cases, skipped = [], {}
+    if shard == 1:
+        for case in fixed_cases(states):
+            if not args.only or case['code'] in args.only.split(','):
+                cases.append(case)
+                status[case['code']] = 'verified'
     for entry in entries:
         if entry['status'] == 'no_schematic':
             continue
@@ -232,7 +259,7 @@ def main():
     probe = lab.cargo_target() / 'release/examples' / ('world_probe.exe' if os.name == 'nt' else 'world_probe')
     run([str(probe), 'redstone_catalog_fixture', str(resources), str(work / 'rust-cases.jsonl'), str(work / 'rust.txt')], args.full)
     rust = split((work / 'rust.txt').read_text())
-    status = {e['code']: e['status'] for e in entries}
+    status.update({e['code']: e['status'] for e in entries})
     report, failures = {}, []
     for case in cases:
         code = case['code']

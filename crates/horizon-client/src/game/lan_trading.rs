@@ -397,17 +397,6 @@ impl Game<'_> {
         let Some(mut gm) = host.play.get_mut(&conn).and_then(|p| p.merchant.take()) else {
             return false;
         };
-        let uuid = host
-            .hub
-            .guests
-            .iter()
-            .find(|g| g.conn == conn)
-            .map(|g| uuid_words(g.uuid));
-        if std::mem::take(&mut gm.merchant.session.last_traded)
-            && let (Some(id), Some(uuid)) = (gm.merchant.mob, uuid)
-        {
-            self.villager_traded_by(id, uuid);
-        }
         self.merchant_closed(&mut gm.merchant);
         true
     }
@@ -423,8 +412,8 @@ impl Game<'_> {
             .find(|m| m.id == id)
             .is_some_and(|m| m.alive() && guest_within_entity_range(g, &m.bounds(), 4.0))
     }
-    /// `Villager.customServerAiStep` for the guests' trading villagers: the
-    /// TRADE reputation event, then the prices follow.
+    /// `AbstractVillager.stillValid`: close invalid guest merchant screens.
+    /// Trade reputation is delivered by the villager's actual AI phase.
     pub(super) fn lan_merchant_tick(&mut self, host: &mut LanHost) {
         // `AbstractVillager.stillValid`: the trade screen closes once the trader
         // is gone or dead, or the guest is more than 4 blocks past its reach.
@@ -450,13 +439,16 @@ impl Game<'_> {
                 );
             }
         }
+    }
+    /// Refresh open guest prices after the actual villager reputation event.
+    pub(super) fn lan_merchant_reputation(&mut self, host: &mut LanHost, id: u32) {
         let conns: Vec<u32> = host
             .play
             .iter()
             .filter(|(_, p)| {
                 p.merchant
                     .as_ref()
-                    .is_some_and(|m| m.merchant.session.villager && m.merchant.session.last_traded)
+                    .is_some_and(|m| m.merchant.mob == Some(id) && m.merchant.session.villager)
             })
             .map(|(c, _)| *c)
             .collect();
@@ -470,12 +462,6 @@ impl Game<'_> {
             else {
                 continue;
             };
-            let Some(gm) = host.play.get_mut(&conn).and_then(|p| p.merchant.as_mut()) else {
-                continue;
-            };
-            gm.merchant.session.last_traded = false;
-            let Some(id) = gm.merchant.mob else { continue };
-            self.villager_traded_by(id, uuid);
             let reputation = self.villager_reputation_of(id, uuid);
             self.lan_merchant_op(host, conn, None, |menu, env| {
                 if let Some(s) = menu.merchant.as_mut() {

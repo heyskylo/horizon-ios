@@ -40,7 +40,8 @@
           "max_expect_seconds": 60,
           "max_expected": 64,
           "max_freeze_seconds": 30,
-          "max_hold_seconds": 60
+          "max_hold_seconds": 60,
+          "stop_wait_seconds": 10
         },
         "updates": {"keep": 1},
         "world": {

@@ -7,6 +7,7 @@ use horizon_client::{
     entities::{ItemFrame, Painting},
     items::ItemStack,
     mesher::Vertex,
+    random_source,
 };
 use horizon_core::{
     geometry::{Aabb, Vec3},
@@ -242,7 +243,7 @@ impl Game<'_> {
         };
         fitting.retain(|v| v.width * v.height >= largest);
         // Util.getRandomSafe(variants, candidate.random): the painting's own random.
-        let pick = super::dispenser::entity_random()
+        let pick = random_source::entity()
             .next_int_bound(fitting.len() as i32)
             .unwrap_or(0) as usize;
         let v = &fitting[pick];
@@ -443,6 +444,7 @@ impl Game<'_> {
                 1.0 / 32.0,
             );
             let entity_start = out.len();
+            self.mark_motion(entity_start, Self::MOTION_OBJECT | u64::from(p.id));
             let light = self.world.light(p.pos[0], p.pos[1], p.pos[2]);
             let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
             let mut quad =
@@ -578,6 +580,7 @@ mod tests {
             invisible: false,
             check_interval: 0,
             custom_name: None,
+            random: horizon_client::random_source::entity(),
         };
         for glow in [false, true] {
             f.glow = glow;

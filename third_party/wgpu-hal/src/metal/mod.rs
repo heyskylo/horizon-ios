@@ -228,6 +228,7 @@ bitflags!(
 #[allow(dead_code)]
 struct CapabilitiesQuery {
     msl_version: MTLLanguageVersion,
+    legacy_intel: bool,
     fragment_rw_storage: bool,
     read_write_texture_tier: MTLReadWriteTextureTier,
     msaa_desktop: bool,
@@ -337,6 +338,8 @@ struct CapabilitiesQuery {
 #[derive(Debug)]
 struct PrivateCapabilities {
     msl_version: MTLLanguageVersion,
+    /// Haswell-era Intel Metal drivers need conservative shader and draw paths.
+    legacy_intel: bool,
     low_power: bool,
     headless: bool,
     has_unified_memory: Option<bool>,

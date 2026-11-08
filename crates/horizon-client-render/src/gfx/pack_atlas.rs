@@ -728,6 +728,13 @@ impl PackAtlas {
             ),
             ("mc_Entity", entity),
             ("at_midBlock", mid_block),
+            // Horizon's own: the face's HDR tier (`mesher::emitting`'s code in the colour's low
+            // alpha nibble): 0 for none, 1 to 4 for low to very bright, plus 4 when the whole
+            // face shines (`mesher::WHOLE`).
+            (
+                "horizonTier",
+                "float(15u - (uint(round(hz_v_color.a * 255.0)) & 15u))",
+            ),
             (
                 "mc_midTexCoord",
                 "vec4((hz_cell + hz_mid) * hz_scale, 0.0, 1.0)",
@@ -750,6 +757,7 @@ impl PackAtlas {
             alpha_test: None,
             item_id_declared: false,
             far_depth: false,
+            paged_maps: false,
         }
     }
 }

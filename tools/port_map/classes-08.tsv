@@ -122,17 +122,17 @@ ModifyContainerContents.run	missing		minor: no vanilla loot table uses modify_co
 SequenceFunction.compose	port	crates/horizon-world/src/loot.rs::Context::run	sequence arm
 SetAttributesFunction	missing		minor: set_attributes is not ported; no vanilla loot table uses it
 SetAttributesFunction.ModifierBuilder.build	skip:java		builder
-SetBannerPatternFunction.run	missing		minor: banner pattern layers from loot are not set; no vanilla loot table uses set_banner_pattern
+SetBannerPatternFunction.run	port	crates/horizon-world/src/loot.rs::Context::run	the set_banner_pattern arm: the table's layers replace the component's list, or with append follow it; `crates/horizon-items/src/item_data.rs::StackData::set_loot_component` dresses the banner from the component
 SetBannerPatternFunction.Builder	skip:java		builder
-SetBookCoverFunction.apply	missing		minor: no vanilla loot table uses set_book_cover
+SetBookCoverFunction.apply	port	crates/horizon-world/src/loot.rs::Context::run	the written book's title (raw text, filtered kept), author and generation, over the component the stack already has, pages kept; `crates/horizon-items/src/item_data.rs::StackData::set_loot_component` then reads it into the book's fields
 SetComponentsFunction.run	port	crates/horizon-world/src/loot.rs::Context::run	loot tables apply set_components when the stack becomes an item (trial chamber trims included), not only /item modify
 SetComponentsFunction.setComponent	skip:java		builder factory
 SetContainerContents.run	missing		minor: no vanilla loot table uses set_contents
 SetContainerContents.Builder	skip:java		builder
 SetContainerLootTable	missing		minor: no vanilla loot table uses set_loot_table
 SetCustomDataFunction.run	port	crates/horizon-client/src/game/commands/items.rs::Game::apply_item_modifier	gap: minor: only /item modify runs it; no loot table uses set_custom_data
-SetCustomModelDataFunction.apply	missing		minor: custom_model_data changes from loot; no vanilla loot table uses it
-SetCustomModelDataFunction.run	missing		minor: custom_model_data changes from loot; no vanilla loot table uses it
+SetCustomModelDataFunction.apply	port	crates/horizon-world/src/loot.rs::list_operation	the four lists' replace_all, replace_section, insert and append, over the component the stack already carries
+SetCustomModelDataFunction.run	port	crates/horizon-world/src/loot.rs::Context::run	the set_custom_model_data arm: floats and colors drawn from their number providers, flags and strings as written
 SetCustomModelDataFunction.validate	skip:data		validation at datapack load
 SetEnchantmentsFunction.run	port	crates/horizon-world/src/loot.rs::Context::run	set_enchantments arm
 SetEnchantmentsFunction.validate	skip:data		validation at datapack load
@@ -144,8 +144,8 @@ SetItemCountFunction.run	port	crates/horizon-world/src/loot.rs::Context::run	set
 SetItemCountFunction.setCount	skip:java		builder factory
 SetItemDamageFunction.run	port	crates/horizon-world/src/loot.rs::Context::run	set_damage arm
 SetItemDamageFunction.setDamage	skip:java		builder factory
-SetLoreFunction.run	port	crates/horizon-client/src/game/commands/items.rs::Game::apply_item_modifier	gap: minor: only /item modify runs set_lore; no loot table uses it
-SetLoreFunction.updateLore	inline	crates/horizon-client/src/game/commands/items.rs::Game::apply_item_modifier	set_lore arm, list_operation
+SetLoreFunction.run	port	crates/horizon-world/src/loot.rs::Context::run	set_lore arm: the lines go through the function's list operation over the minecraft:lore component; the item layer reads the component from other for the tooltip
+SetLoreFunction.updateLore	inline	crates/horizon-world/src/loot.rs::list_operation	the set_lore arm builds the lore list through the shared list operation
 SetLoreFunction.getReferencedContextParams	skip:data		validation of referenced context params
 SetLoreFunction.Builder	skip:java		builder
 SetOminousBottleAmplifierFunction.run	port	crates/horizon-world/src/loot.rs::Context::run	set_ominous_bottle_amplifier arm

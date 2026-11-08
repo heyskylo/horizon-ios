@@ -8,6 +8,7 @@ use std::sync::Arc;
 use horizon_shaders::{CoreProgram, Glue};
 
 use super::{HudBatch, HudVertex};
+use crate::gfx::hud_coverage::Pipeline;
 
 /// GUI text's vertex format (`POSITION_TEX_COLOR`) from the HUD's vertices. A glyph is two
 /// triangles here, its corners top left, top right, bottom right, top left, bottom right, bottom
@@ -81,7 +82,7 @@ const BLOCK_SIZES: [u64; 4] = [48, 64, 160, 48];
 
 /// The pipeline and its resources.
 pub(super) struct PackText {
-    pipeline: wgpu::RenderPipeline,
+    pipeline: Pipeline,
     group: wgpu::BindGroup,
     uniform: wgpu::Buffer,
 }
@@ -92,6 +93,7 @@ impl PackText {
         format: wgpu::TextureFormat,
         atlas: &wgpu::TextureView,
         program: &CoreProgram,
+        coverage: bool,
     ) -> Option<Self> {
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = |label, module: &naga::Module| {
@@ -179,7 +181,7 @@ impl PackText {
             ..Default::default()
         });
         let attributes = wgpu::vertex_attr_array![0=>Float32x2,1=>Float32x2,2=>Unorm8x4];
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let desc = wgpu::RenderPipelineDescriptor {
             label: Some("Resource pack text"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -208,11 +210,17 @@ impl PackText {
             }),
             multiview_mask: None,
             cache: None,
-        });
+        };
+        let source = wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(program.fragment.clone()));
+        let pipeline = Pipeline::new(device, &desc, source, coverage);
         if let Some(e) = pollster::block_on(scope.pop()) {
             log::warn!("the resource pack's text shader is not used: {e}");
             return None;
         }
+        let Some(pipeline) = pipeline else {
+            log::warn!("the resource pack's text shader is not used: it has no colour output");
+            return None;
+        };
         Some(Self {
             pipeline,
             group,
@@ -234,8 +242,13 @@ impl PackText {
 
     /// Draw `range` (whole glyph quads) with the pack's shader; the caller sets its own
     /// pipeline and bind group again after.
-    pub(super) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, range: std::ops::Range<u32>) {
-        pass.set_pipeline(&self.pipeline);
+    pub(super) fn draw(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        range: std::ops::Range<u32>,
+        coverage: bool,
+    ) {
+        pass.set_pipeline(self.pipeline.get(coverage));
         pass.set_bind_group(0, &self.group, &[]);
         pass.draw(range.clone(), range.start..range.start + 1);
     }
