@@ -11932,6 +11932,7 @@ fn in_storage_range(view_distance: i32, center: (i32, i32), x: i32, z: i32) -> b
 #[cfg(test)]
 mod tests {
     #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn joining_a_server_empties_the_off_hand_too() {
         // ClientPacketListener.handleLogin makes a new LocalPlayer, whose whole Inventory is
         // empty: a server that never sends slot 45 must not leave the last server's item.
