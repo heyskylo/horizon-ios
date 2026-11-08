@@ -489,6 +489,30 @@ impl ItemColumns {
     }
 }
 
+/// [`ItemColumns`] for a pass in which items can move (a command, an
+/// explosion's push): rebuilt whenever the item list was written since they
+/// were built (its [`ListStamp`](horizon_client::join_seq::ListStamp)).
+#[derive(Default)]
+pub(super) struct StampedItemColumns {
+    stamp: Option<horizon_client::join_seq::ListStamp>,
+    columns: ItemColumns,
+}
+impl StampedItemColumns {
+    /// [`ItemColumns::may_reach_area`] for the items as they are now.
+    pub(super) fn may_reach_area(
+        &mut self,
+        items: &horizon_client::join_seq::JoinList<horizon_client::entities::ItemEntity>,
+        xs: (i32, i32),
+        zs: (i32, i32),
+    ) -> bool {
+        if self.stamp != Some(items.stamp()) {
+            self.stamp = Some(items.stamp());
+            self.columns = ItemColumns::default();
+        }
+        self.columns.may_reach_area(items, xs, zs)
+    }
+}
+
 fn bone_meal() -> ItemStack {
     ItemStack {
         item: "minecraft:bone_meal".into(),
@@ -1329,14 +1353,7 @@ impl Game<'_> {
     /// the columns were built (an explosion's push, a command, a pickup)
     /// rebuilds them.
     fn cart_suck_items(&mut self, hopper: &View, min: [f64; 3], max: [f64; 3]) -> bool {
-        let stamp = self.dropped.stamp();
-        if let Some((seen, columns)) = self.cart_item_columns.as_mut()
-            && *seen != stamp
-        {
-            *seen = stamp;
-            *columns = Default::default();
-        }
-        if let Some((_, columns)) = self.cart_item_columns.as_mut()
+        if let Some(columns) = self.cart_item_columns.as_mut()
             && !columns.may_reach_area(
                 &self.dropped,
                 (min[0].floor() as i32, max[0].floor() as i32),
@@ -1778,6 +1795,22 @@ mod item_column_tests {
             assert_eq!(a, b);
             println!("{hoppers} hoppers, {count} items: {before:.3} ms -> {after:.3} ms");
         }
+    }
+
+    /// An item moved in place (a `/tp`, an explosion's push) keeps the list's
+    /// length and last id; the stamped columns still see where it went.
+    #[test]
+    fn a_moved_item_is_seen_where_it_went() {
+        let mut items = horizon_client::join_seq::JoinList::from(vec![
+            item(1, 0.5, 64.0, 0.5),
+            item(2, 40.5, 64.0, 40.5),
+        ]);
+        let mut columns = super::StampedItemColumns::default();
+        let far = ((100, 100), (100, 100));
+        assert!(!columns.may_reach_area(&items, far.0, far.1));
+        items[0].position = horizon_core::geometry::Vec3::new(100.5, 64.0, 100.5);
+        assert!(columns.may_reach_area(&items, far.0, far.1));
+        assert!(!columns.may_reach_area(&items, (0, 0), (0, 0)));
     }
 
     #[test]

@@ -1945,7 +1945,7 @@ impl Game<'_> {
         let ids: Vec<u32> = self.carts.iter().map(|c| c.id).collect();
         let mut index = CartIndex::default();
         // Hopper carts' item columns, rebuilt whenever the items are written.
-        self.cart_item_columns = Some((self.dropped.stamp(), Default::default()));
+        self.cart_item_columns = Some(Default::default());
         let mut hint = 0;
         for &id in &ids {
             let Some(i) = cart_at(&self.carts, id, hint) else {

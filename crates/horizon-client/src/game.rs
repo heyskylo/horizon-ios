@@ -3099,13 +3099,13 @@ struct Game<'a> {
     /// Where item entities are, while the block entities tick (hoppers).
     item_columns: Option<machines::ItemColumns>,
     /// The item columns for one pass of the players' pickups
-    /// (`tick_guests`), in which items do not move: see `item_columns`.
-    pickup_columns: Option<machines::ItemColumns>,
+    /// (`tick_guests`), rebuilt after any write to the items (a pickup, a
+    /// command, an explosion): see `item_columns`.
+    pickup_columns: Option<machines::StampedItemColumns>,
     /// The item columns for one pass of the carts (`tick_carts`): hopper
-    /// minecarts ask them before scanning every item. Kept with the item
-    /// list's stamp: an explosion, a command or a pickup writes the list, and
-    /// the columns are rebuilt.
-    cart_item_columns: Option<(horizon_client::join_seq::ListStamp, machines::ItemColumns)>,
+    /// minecarts ask them before scanning every item. An explosion, a
+    /// command or a pickup writes the items, and the columns are rebuilt.
+    cart_item_columns: Option<machines::StampedItemColumns>,
     /// Where the mobs are, while the block entities tick (potent sulfur gas).
     pass_mobs: Option<potent_sulfur::PassMobs>,
     /// Block-entity positions retained between ticks for client effects.
