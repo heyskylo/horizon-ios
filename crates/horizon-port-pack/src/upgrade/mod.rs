@@ -460,6 +460,39 @@ mod tests {
     }
 
     #[test]
+    fn weird_scaled_samplers_become_vanilla_s_interval_select() {
+        // 1.21.1's spaghetti caves: the noise sampled at 1/s and scaled by s,
+        // s picked from the rarity input (26.3's overworld/caves/entrances).
+        let n = |s: f64| {
+            json!({"type": "minecraft:mul", "left": {"type": "minecraft:noise",
+            "noise": "minecraft:spaghetti_3d_1", "xz_scale": 1.0 / s, "y_scale": 1.0 / s}, "right": s})
+        };
+        let (v, r) = up(
+            "data/x/worldgen/density_function/f.json",
+            json!({"type": "minecraft:weird_scaled_sampler", "rarity_value_mapper": "type_1",
+                "noise": "minecraft:spaghetti_3d_1", "input": {"type": "minecraft:cache_once",
+                    "argument": "x:rarity"}}),
+        );
+        assert_eq!(
+            v,
+            json!({"type": "minecraft:abs", "input": {"type": "minecraft:interval_select",
+                "input": {"type": "minecraft:cache", "input": "x:rarity"},
+                "thresholds": [-0.5, 0.0, 0.5], "functions": [n(0.75), n(1.0), n(1.5), n(2.0)]}})
+        );
+        assert!(r.unknown.is_empty(), "{:?}", r.unknown);
+        let (v, _) = up(
+            "data/x/worldgen/density_function/g.json",
+            json!({"type": "minecraft:weird_scaled_sampler", "rarity_value_mapper": "type_2",
+                "noise": "minecraft:spaghetti_3d_1", "input": 0.0}),
+        );
+        assert_eq!(v["input"]["thresholds"], json!([-0.75, -0.5, 0.5, 0.75]));
+        assert_eq!(
+            v["input"]["functions"],
+            json!([n(0.5), n(0.75), n(1.0), n(2.0), n(3.0)])
+        );
+    }
+
+    #[test]
     fn flat_cache_slices_at_y_zero_only_what_depends_on_y() {
         let flat = |argument: Value| {
             up(
