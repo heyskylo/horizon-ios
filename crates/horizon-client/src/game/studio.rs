@@ -642,6 +642,10 @@ impl Game<'_> {
             TopBarAction::ToggleTimeline => {
                 self.studio_timeline.visible = !self.studio_timeline.visible;
             }
+            TopBarAction::SplitClip => {
+                self.studio_timeline
+                    .split_at(self.studio_timeline.current_time_ms);
+            }
         }
     }
 
@@ -652,7 +656,22 @@ impl Game<'_> {
     ) {
         use horizon_client::studio::TimelineAction;
         match action {
+            TimelineAction::PauseForSeek => {
+                self.studio_timeline.playing = false;
+                if let Some(replay) = self.studio_replay.as_mut() {
+                    replay.set_paused(true);
+                }
+            }
             TimelineAction::Seek(time_ms) => {
+                let time_ms = if self.studio_replay_standalone {
+                    time_ms
+                } else {
+                    let current =
+                        self.studio_replay
+                            .as_ref()
+                            .map_or(0, ReplayDriver::position_ms) as u64;
+                    time_ms.max(current)
+                };
                 self.studio_timeline.current_time_ms = time_ms;
                 if let Err(error) = self.seek_studio_replay(time_ms.min(u32::MAX as u64) as u32) {
                     log::warn!("Studio timeline seek failed: {error}");
@@ -713,6 +732,9 @@ impl Game<'_> {
             }
             TimelineAction::SelectKeyframe(index) => {
                 self.studio_timeline.selected_keyframe = Some(index);
+            }
+            TimelineAction::KeyframeMoved => {
+                self.studio_camera_track_dirty = true;
             }
             TimelineAction::SplitClip(time_ms) => self.studio_timeline.split_at(time_ms),
             TimelineAction::None => {}

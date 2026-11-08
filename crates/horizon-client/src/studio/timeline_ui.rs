@@ -15,6 +15,7 @@ use horizon_client_render::{
 /// Action emitted when a user interacts with the timeline UI.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TimelineAction {
+    PauseForSeek,
     Seek(u64),
     TogglePlay,
     StepBack,
@@ -26,8 +27,61 @@ pub enum TimelineAction {
     AddCameraKeyframe,
     RemoveCameraKeyframe(usize),
     SelectKeyframe(usize),
+    KeyframeMoved,
     SplitClip(u64),
     None,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TimelineHeaderLayout {
+    transport_x: [f32; 5],
+    time_x: f32,
+    compact_time: bool,
+    speed_x: Option<f32>,
+    freecam_x: Option<f32>,
+    freecam_width: f32,
+    keyframe_x: Option<f32>,
+}
+
+impl TimelineHeaderLayout {
+    fn new(screen_width: f32) -> Self {
+        let transport_x = [6.0, 26.0, 46.0, 66.0, 86.0];
+        let compact_time = screen_width < 460.0;
+        let time_x = 110.0;
+        let mut next = time_x + (if compact_time { 68.0 } else { 135.0 }) + 6.0;
+        let speed_x = (screen_width >= 230.0).then_some(next);
+        if speed_x.is_some() {
+            next += 38.0;
+        }
+        let freecam_width = if screen_width < 360.0 {
+            42.0
+        } else if screen_width < 520.0 {
+            78.0
+        } else {
+            100.0
+        };
+        let freecam_x =
+            (screen_width >= 280.0 && next + freecam_width <= screen_width).then_some(next);
+        if freecam_x.is_some() {
+            next += freecam_width + 6.0;
+        }
+        let keyframe_x = (screen_width >= 460.0 && next + 122.0 <= screen_width).then_some(next);
+        Self {
+            transport_x,
+            time_x,
+            compact_time,
+            speed_x,
+            freecam_x,
+            freecam_width,
+            keyframe_x,
+        }
+    }
+}
+
+fn timeline_track_bounds(screen_width: f32) -> (f32, f32) {
+    let start = (screen_width * 0.28).clamp(0.0, 90.0);
+    let right_margin = (screen_width * 0.04).min(10.0);
+    (start, (screen_width - start - right_margin).max(1.0))
 }
 
 /// In-game timeline UI state and renderer.
@@ -40,6 +94,7 @@ pub struct TimelineUi {
     pub speed: f64,
     pub selected_keyframe: Option<usize>,
     pub dragging_playhead: bool,
+    pending_seek_ms: Option<u64>,
     pub dragging_keyframe: Option<usize>,
     pub split_points: Vec<u64>,
     pub selected_scene: usize,
@@ -56,6 +111,7 @@ impl Default for TimelineUi {
             speed: 1.0,
             selected_keyframe: None,
             dragging_playhead: false,
+            pending_seek_ms: None,
             dragging_keyframe: None,
             split_points: Vec::new(),
             selected_scene: 0,
@@ -130,8 +186,7 @@ impl TimelineUi {
         let ruler_y = panel_y + 24.0;
         let bar_y = ruler_y + 18.0;
         let bar_h = 24.0;
-        let track_start_x = 90.0;
-        let track_w = screen_w - track_start_x - 10.0;
+        let (track_start_x, track_w) = timeline_track_bounds(screen_w);
         let total_dur = self.duration_ms.max(1) as f32;
 
         for (idx, kf) in freecam.track.keyframes.iter().enumerate() {
@@ -172,8 +227,7 @@ impl TimelineUi {
 
         // 3. Time Ruler Bar
         let ruler_y = panel_y + 24.0;
-        let track_start_x = 90.0;
-        let track_w = screen_w - track_start_x - 10.0;
+        let (track_start_x, track_w) = timeline_track_bounds(screen_w);
         self.render_ruler(batch, atlas, cursor, ruler_y, track_start_x, track_w);
 
         // 4. Unified Big Master Sequence Bar with Scenes and Keyframes
@@ -207,7 +261,7 @@ impl TimelineUi {
         freecam: &StudioFreecam,
         y: f32,
     ) {
-        let mut x = 6.0;
+        let layout = TimelineHeaderLayout::new(batch.width);
 
         // Transport buttons: |<<  <<  > / ||  >>  >>|
         let btn_w = 18.0;
@@ -220,7 +274,8 @@ impl TimelineUi {
             (">>|", "End"),
         ];
 
-        for (label, _hint) in buttons {
+        for (index, (label, _hint)) in buttons.into_iter().enumerate() {
+            let x = layout.transport_x[index];
             let rect = [x, y, btn_w, btn_h];
             let hover = ui::hovered(cursor, x, y, btn_w, btn_h);
             style::button(
@@ -230,97 +285,105 @@ impl TimelineUi {
                 &Text::literal(label),
                 (hover, true, false),
             );
-            x += btn_w + 2.0;
         }
 
-        x += 6.0;
-
         // Time Readout: 00:00.00 / 00:30.00
-        let time_str = format!(
-            "{:02}:{:02}.{:02} / {:02}:{:02}.{:02}",
-            self.current_time_ms / 60_000,
-            (self.current_time_ms % 60_000) / 1000,
-            (self.current_time_ms % 1000) / 10,
-            self.duration_ms / 60_000,
-            (self.duration_ms % 60_000) / 1000,
-            (self.duration_ms % 1000) / 10
-        );
+        let time_str = if layout.compact_time {
+            format!(
+                "{}:{:02}/{}:{:02}",
+                self.current_time_ms / 60_000,
+                (self.current_time_ms % 60_000) / 1000,
+                self.duration_ms / 60_000,
+                (self.duration_ms % 60_000) / 1000
+            )
+        } else {
+            format!(
+                "{:02}:{:02}.{:02} / {:02}:{:02}.{:02}",
+                self.current_time_ms / 60_000,
+                (self.current_time_ms % 60_000) / 1000,
+                (self.current_time_ms % 1000) / 10,
+                self.duration_ms / 60_000,
+                (self.duration_ms % 60_000) / 1000,
+                (self.duration_ms % 1000) / 10
+            )
+        };
         batch.text_styled(
             atlas,
             &Text::literal(&time_str),
-            x,
+            layout.time_x,
             y + 4.0,
             style::WHITE,
             true,
         );
-        x += 135.0;
+        if let Some(x) = layout.speed_x {
+            let speed_str = format!("{:.1}x", self.speed);
+            let speed_hover = ui::hovered(cursor, x, y, 32.0, btn_h);
+            style::button(
+                batch,
+                atlas,
+                [x, y, 32.0, btn_h],
+                &Text::literal(&speed_str),
+                (speed_hover, true, false),
+            );
+        }
 
-        // Speed badge: 1.0x
-        let speed_str = format!("{:.1}x", self.speed);
-        let speed_rect = [x, y, 32.0, btn_h];
-        let speed_hover = ui::hovered(cursor, x, y, 32.0, btn_h);
-        style::button(
-            batch,
-            atlas,
-            speed_rect,
-            &Text::literal(&speed_str),
-            (speed_hover, true, false),
-        );
-        x += 38.0;
+        if let Some(x) = layout.freecam_x {
+            let freecam_label = Text::translate(
+                if batch.width < 520.0 {
+                    if freecam.active {
+                        "horizon.studio.timeline.freecam_active_short"
+                    } else {
+                        "horizon.studio.timeline.freecam_short"
+                    }
+                } else if freecam.active {
+                    "horizon.studio.timeline.freecam_on"
+                } else {
+                    "horizon.studio.timeline.freecam_off"
+                },
+                &[],
+            );
+            let freecam_hover = ui::hovered(cursor, x, y, layout.freecam_width, btn_h);
+            style::button(
+                batch,
+                atlas,
+                [x, y, layout.freecam_width, btn_h],
+                &freecam_label,
+                (freecam_hover, true, freecam.active),
+            );
+        }
 
-        // Freecam Toggle Button
-        let freecam_label = Text::translate(
-            if freecam.active {
-                "horizon.studio.timeline.freecam_on"
-            } else {
-                "horizon.studio.timeline.freecam_off"
-            },
-            &[],
-        );
-        let freecam_rect = [x, y, 78.0, btn_h];
-        let freecam_hover = ui::hovered(cursor, x, y, 78.0, btn_h);
-        style::button(
-            batch,
-            atlas,
-            freecam_rect,
-            &freecam_label,
-            (freecam_hover, true, freecam.active),
-        );
-        x += 84.0;
-
-        // Keyframe controls: [+ Key] [- Del] [Split]
-        let add_w = 40.0;
-        let add_hover = ui::hovered(cursor, x, y, add_w, btn_h);
-        style::button(
-            batch,
-            atlas,
-            [x, y, add_w, btn_h],
-            &Text::translate("horizon.studio.timeline.add_keyframe_short", &[]),
-            (add_hover, true, false),
-        );
-        x += add_w + 3.0;
-
-        let has_sel = self.selected_keyframe.is_some();
-        let del_w = 38.0;
-        let del_hover = ui::hovered(cursor, x, y, del_w, btn_h);
-        style::button(
-            batch,
-            atlas,
-            [x, y, del_w, btn_h],
-            &Text::translate("horizon.studio.timeline.delete_keyframe_short", &[]),
-            (del_hover, has_sel, has_sel),
-        );
-        x += del_w + 3.0;
-
-        let split_w = 38.0;
-        let split_hover = ui::hovered(cursor, x, y, split_w, btn_h);
-        style::button(
-            batch,
-            atlas,
-            [x, y, split_w, btn_h],
-            &Text::translate("horizon.studio.timeline.split", &[]),
-            (split_hover, true, false),
-        );
+        if let Some(mut x) = layout.keyframe_x {
+            let add_w = 40.0;
+            let add_hover = ui::hovered(cursor, x, y, add_w, btn_h);
+            style::button(
+                batch,
+                atlas,
+                [x, y, add_w, btn_h],
+                &Text::translate("horizon.studio.timeline.add_keyframe_short", &[]),
+                (add_hover, true, false),
+            );
+            x += add_w + 3.0;
+            let has_sel = self.selected_keyframe.is_some();
+            let del_w = 38.0;
+            let del_hover = ui::hovered(cursor, x, y, del_w, btn_h);
+            style::button(
+                batch,
+                atlas,
+                [x, y, del_w, btn_h],
+                &Text::translate("horizon.studio.timeline.delete_keyframe_short", &[]),
+                (del_hover, has_sel, has_sel),
+            );
+            x += del_w + 3.0;
+            let split_w = 38.0;
+            let split_hover = ui::hovered(cursor, x, y, split_w, btn_h);
+            style::button(
+                batch,
+                atlas,
+                [x, y, split_w, btn_h],
+                &Text::translate("horizon.studio.timeline.split", &[]),
+                (split_hover, true, false),
+            );
+        }
     }
 
     fn render_ruler(
@@ -570,30 +633,28 @@ impl TimelineUi {
         let btn_h = 16.0;
 
         // Transport buttons
-        let mut x = 6.0;
-        if ui::hovered(cursor, x, y, btn_w, btn_h) {
+        let layout = TimelineHeaderLayout::new(screen_w);
+        if ui::hovered(cursor, layout.transport_x[0], y, btn_w, btn_h) {
             return TimelineAction::SeekStart;
         }
-        x += btn_w + 2.0;
-        if ui::hovered(cursor, x, y, btn_w, btn_h) {
+        if ui::hovered(cursor, layout.transport_x[1], y, btn_w, btn_h) {
             return TimelineAction::StepBack;
         }
-        x += btn_w + 2.0;
-        if ui::hovered(cursor, x, y, btn_w, btn_h) {
+        if ui::hovered(cursor, layout.transport_x[2], y, btn_w, btn_h) {
             return TimelineAction::TogglePlay;
         }
-        x += btn_w + 2.0;
-        if ui::hovered(cursor, x, y, btn_w, btn_h) {
+        if ui::hovered(cursor, layout.transport_x[3], y, btn_w, btn_h) {
             return TimelineAction::StepForward;
         }
-        x += btn_w + 2.0;
-        if ui::hovered(cursor, x, y, btn_w, btn_h) {
+        if ui::hovered(cursor, layout.transport_x[4], y, btn_w, btn_h) {
             return TimelineAction::SeekEnd;
         }
 
         // Speed button
-        let speed_x = 6.0 + 5.0 * (btn_w + 2.0) + 6.0 + 135.0;
-        if ui::hovered(cursor, speed_x, y, 32.0, btn_h) {
+        if layout
+            .speed_x
+            .is_some_and(|x| ui::hovered(cursor, x, y, 32.0, btn_h))
+        {
             let next_speed = match (self.speed * 10.0).round() as i32 {
                 2 => 0.5,
                 5 => 1.0,
@@ -605,30 +666,33 @@ impl TimelineUi {
         }
 
         // Freecam button
-        let freecam_x = speed_x + 38.0;
-        if ui::hovered(cursor, freecam_x, y, 78.0, btn_h) {
+        if layout
+            .freecam_x
+            .is_some_and(|x| ui::hovered(cursor, x, y, layout.freecam_width, btn_h))
+        {
             return TimelineAction::ToggleFreecam;
         }
 
         // Keyframe controls: [+ Key] [- Del] [Split]
-        let mut kf_x = freecam_x + 84.0;
-        let add_w = 40.0;
-        if ui::hovered(cursor, kf_x, y, add_w, btn_h) {
-            return TimelineAction::AddCameraKeyframe;
-        }
-        kf_x += add_w + 3.0;
+        if let Some(mut kf_x) = layout.keyframe_x {
+            let add_w = 40.0;
+            if ui::hovered(cursor, kf_x, y, add_w, btn_h) {
+                return TimelineAction::AddCameraKeyframe;
+            }
+            kf_x += add_w + 3.0;
 
-        let del_w = 38.0;
-        if ui::hovered(cursor, kf_x, y, del_w, btn_h)
-            && let Some(sel) = self.selected_keyframe
-        {
-            return TimelineAction::RemoveCameraKeyframe(sel);
-        }
-        kf_x += del_w + 3.0;
+            let del_w = 38.0;
+            if ui::hovered(cursor, kf_x, y, del_w, btn_h)
+                && let Some(sel) = self.selected_keyframe
+            {
+                return TimelineAction::RemoveCameraKeyframe(sel);
+            }
+            kf_x += del_w + 3.0;
 
-        let split_w = 38.0;
-        if ui::hovered(cursor, kf_x, y, split_w, btn_h) {
-            return TimelineAction::SplitClip(self.current_time_ms);
+            let split_w = 38.0;
+            if ui::hovered(cursor, kf_x, y, split_w, btn_h) {
+                return TimelineAction::SplitClip(self.current_time_ms);
+            }
         }
 
         // Check keyframe nodes selection in the master sequence bar
@@ -639,8 +703,7 @@ impl TimelineUi {
         }
 
         // Check click on Ruler or Master Sequence Bar to seek playhead
-        let track_start_x = 90.0;
-        let track_w = screen_w - track_start_x - 10.0;
+        let (track_start_x, track_w) = timeline_track_bounds(screen_w);
         let total_dur = self.duration_ms.max(1) as f32;
         let ruler_y = panel_y + 24.0;
         let bar_y = ruler_y + 18.0;
@@ -657,7 +720,8 @@ impl TimelineUi {
                 let scene_start = self.scene_start_time(scene);
                 self.current_time_ms = scene_start;
                 self.dragging_playhead = true;
-                return TimelineAction::Seek(scene_start);
+                self.pending_seek_ms = Some(scene_start);
+                return TimelineAction::PauseForSeek;
             }
 
             // Click on Ruler: scrub playhead smoothly
@@ -665,7 +729,8 @@ impl TimelineUi {
                 self.selected_scene = self.scene_at_time(click_time);
                 self.current_time_ms = click_time;
                 self.dragging_playhead = true;
-                return TimelineAction::Seek(click_time);
+                self.pending_seek_ms = Some(click_time);
+                return TimelineAction::PauseForSeek;
             }
         }
 
@@ -679,8 +744,7 @@ impl TimelineUi {
         screen_w: f32,
         freecam: &mut StudioFreecam,
     ) -> TimelineAction {
-        let track_start_x = 90.0;
-        let track_w = screen_w - track_start_x - 10.0;
+        let (track_start_x, track_w) = timeline_track_bounds(screen_w);
         let total_dur = self.duration_ms.max(1) as f32;
         let norm = ((cursor.0 - track_start_x) / track_w).clamp(0.0, 1.0);
         let time_ms = (norm * total_dur).round() as u64;
@@ -688,7 +752,8 @@ impl TimelineUi {
         if self.dragging_playhead {
             self.current_time_ms = time_ms;
             self.selected_scene = self.scene_at_time(time_ms);
-            return TimelineAction::Seek(time_ms);
+            self.pending_seek_ms = Some(time_ms);
+            return TimelineAction::None;
         }
 
         if let Some(idx) = self.dragging_keyframe
@@ -708,16 +773,18 @@ impl TimelineUi {
                 self.selected_keyframe = Some(pos);
                 self.dragging_keyframe = Some(pos);
             }
-            return TimelineAction::Seek(time_ms);
+            return TimelineAction::KeyframeMoved;
         }
 
         TimelineAction::None
     }
 
     /// Release mouse drag state.
-    pub fn handle_mouse_up(&mut self) {
+    pub fn handle_mouse_up(&mut self) -> TimelineAction {
+        let seek = self.pending_seek_ms.take().map(TimelineAction::Seek);
         self.dragging_playhead = false;
         self.dragging_keyframe = None;
+        seek.unwrap_or(TimelineAction::None)
     }
 }
 
@@ -778,17 +845,99 @@ mod tests {
         let action = ui.handle_mouse_down((click_x, click_y), screen_w, screen_h, &freecam);
 
         // Slider/playhead snaps to start of Scene 2 (10_000ms)
-        assert_eq!(action, TimelineAction::Seek(10_000));
+        assert_eq!(action, TimelineAction::PauseForSeek);
         assert_eq!(ui.current_time_ms, 10_000);
         assert_eq!(ui.selected_scene, 1);
+        assert_eq!(ui.handle_mouse_up(), TimelineAction::Seek(10_000));
 
         // Click in Scene 3 (80% through timeline = 24_000ms = norm 0.8)
         let click_x3 = track_start_x + 0.8 * track_w;
         let action3 = ui.handle_mouse_down((click_x3, click_y), screen_w, screen_h, &freecam);
 
         // Slider/playhead snaps to start of Scene 3 (20_000ms)
-        assert_eq!(action3, TimelineAction::Seek(20_000));
+        assert_eq!(action3, TimelineAction::PauseForSeek);
         assert_eq!(ui.current_time_ms, 20_000);
         assert_eq!(ui.selected_scene, 2);
+        assert_eq!(ui.handle_mouse_up(), TimelineAction::Seek(20_000));
+    }
+
+    #[test]
+    fn dragging_a_keyframe_moves_it_without_seeking_playback() {
+        use super::super::spline::CameraKeyframe;
+
+        let mut ui = TimelineUi::new();
+        ui.duration_ms = 30_000;
+        let mut freecam = StudioFreecam::default();
+        freecam.track.keyframes.push(CameraKeyframe {
+            time_ms: 10_000,
+            position: [1.0, 2.0, 3.0],
+            yaw: 0.0,
+            pitch: 0.0,
+            roll: 0.0,
+            fov: 70.0,
+        });
+        let screen_w = 1000.0;
+        let screen_h = 700.0;
+        let (start_x, track_w) = timeline_track_bounds(screen_w);
+        let y = screen_h - ui.height() + 24.0 + 18.0 + 12.0;
+        let start_x = start_x + track_w / 3.0;
+        assert_eq!(
+            ui.handle_mouse_down((start_x, y), screen_w, screen_h, &freecam),
+            TimelineAction::SelectKeyframe(0)
+        );
+        let moved_x = timeline_track_bounds(screen_w).0 + track_w * 0.6;
+        assert_eq!(
+            ui.handle_mouse_drag((moved_x, y), screen_w, &mut freecam),
+            TimelineAction::KeyframeMoved
+        );
+        assert_eq!(freecam.track.keyframes[0].time_ms, 18_000);
+        assert_eq!(ui.handle_mouse_up(), TimelineAction::None);
+    }
+
+    #[test]
+    fn playhead_drag_previews_then_commits_one_seek_on_release() {
+        let mut ui = TimelineUi::new();
+        ui.duration_ms = 30_000;
+        let freecam = StudioFreecam::default();
+        let screen_w = 1000.0;
+        let screen_h = 700.0;
+        let (start_x, track_w) = timeline_track_bounds(screen_w);
+        let ruler_y = screen_h - ui.height() + 24.0 + 4.0;
+        assert_eq!(
+            ui.handle_mouse_down(
+                (start_x + track_w * 0.2, ruler_y),
+                screen_w,
+                screen_h,
+                &freecam
+            ),
+            TimelineAction::PauseForSeek
+        );
+        assert_eq!(
+            ui.handle_mouse_drag(
+                (start_x + track_w * 0.75, ruler_y),
+                screen_w,
+                &mut StudioFreecam::default()
+            ),
+            TimelineAction::None
+        );
+        assert_eq!(ui.current_time_ms, 22_500);
+        assert_eq!(ui.handle_mouse_up(), TimelineAction::Seek(22_500));
+    }
+
+    #[test]
+    fn timeline_header_controls_fit_small_logical_widths() {
+        for width in [240.0, 280.0, 320.0, 459.0, 640.0] {
+            let layout = TimelineHeaderLayout::new(width);
+            let end = layout.keyframe_x.map_or_else(
+                || {
+                    layout.freecam_x.map_or_else(
+                        || layout.speed_x.map_or(104.0, |x| x + 32.0),
+                        |x| x + layout.freecam_width,
+                    )
+                },
+                |x| x + 122.0,
+            );
+            assert!(end <= width, "header controls overflow at width {width}");
+        }
     }
 }

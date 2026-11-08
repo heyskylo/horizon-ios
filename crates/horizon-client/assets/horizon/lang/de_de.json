@@ -462,6 +462,8 @@
   "horizon.tempban.list.entry": "%1$s wurde von %2$s gesperrt, %3$s (bis %4$s)",
   "horizon.studio.timeline.freecam_on": "Freie Kamera: EIN",
   "horizon.studio.timeline.freecam_off": "Freie Kamera: AUS",
+  "horizon.studio.timeline.freecam_short": "Cam",
+  "horizon.studio.timeline.freecam_active_short": "Cam ✓",
   "horizon.studio.timeline.add_keyframe_short": "+ Bild",
   "horizon.studio.timeline.delete_keyframe_short": "− Löschen",
   "horizon.studio.timeline.split": "Teilen",
@@ -473,9 +475,14 @@
   "horizon.studio.topbar.file": "Datei",
   "horizon.studio.topbar.camera": "Kamera",
   "horizon.studio.topbar.view": "Ansicht",
+  "horizon.studio.topbar.file_short": "Datei",
+  "horizon.studio.topbar.camera_short": "Cam",
+  "horizon.studio.topbar.view_short": "Ans.",
   "horizon.studio.topbar.game_pause_menu": "⏸ Pausenmenü",
+  "horizon.studio.topbar.pause_short": "Pause",
   "horizon.studio.topbar.open_recordings": "📁 Aufnahmeordner öffnen",
   "horizon.studio.topbar.close_replay": "✕ Wiedergabe schließen",
+  "horizon.studio.topbar.exit": "Beenden",
   "horizon.studio.topbar.toggle_freecam": "Freie Kamera umschalten",
   "horizon.studio.topbar.reset_to_player": "👤 Auf Spieler zurücksetzen",
   "horizon.studio.topbar.unlock_freecam": "🔓 Freie Kamera entsperren",
@@ -483,5 +490,6 @@
   "horizon.studio.topbar.add_keyframe": "➕ Schlüsselbild hinzufügen",
   "horizon.studio.topbar.add_marker": "Markierung hinzufügen",
   "horizon.studio.topbar.clear_keyframes": "🗑 Schlüsselbilder löschen",
-  "horizon.studio.topbar.timeline_hud": "⏱ Zeitleiste"
+  "horizon.studio.topbar.timeline_hud": "⏱ Zeitleiste",
+  "horizon.studio.topbar.split_scene": "Szene teilen"
 }
