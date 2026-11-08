@@ -3,7 +3,8 @@
 .layout,
 .controls,
 .legend,
-.focusBar {
+.focusBar,
+.flame {
   --crate-world: #7fb69a;
   --crate-client: #7c9fd8;
   --crate-horizon: #6fb8c4;
@@ -336,4 +337,106 @@
   .searchControl {
     max-width: none;
   }
+}
+
+/* The flame graph */
+
+.flame {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.flameHint,
+.flameTrail {
+  min-height: 32px;
+}
+
+.flameHint {
+  display: flex;
+  align-items: center;
+  margin: 0;
+}
+
+.flameTrail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  align-items: center;
+  font-size: 13px;
+}
+
+.flameCrumb {
+  max-width: 28ch;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: transparent;
+  color: var(--ink-soft);
+  font: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.flameCrumb:hover {
+  background: var(--plate-soft);
+  color: var(--ink);
+}
+
+.flameHere {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.flamePick {
+  max-width: 100%;
+}
+
+.flamePick select {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.flameWrap {
+  position: relative;
+  min-width: 0;
+}
+
+.flameCanvas {
+  display: block;
+  width: 100%;
+  border-radius: 6px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.flameTip {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  gap: 2px;
+  max-width: min(360px, 100%);
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: var(--plate);
+  color: var(--ink-soft);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.flameTipName {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.flameTipCrate {
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
 }

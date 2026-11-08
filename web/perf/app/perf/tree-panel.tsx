@@ -7,14 +7,15 @@ import { t } from "@/lib/i18n";
 import { ALL_CLOSED, HOT_OPEN } from "@/lib/tree-model";
 import type { OpenState } from "@/lib/tree-model";
 import { sampleFilters } from "@/lib/tree-options";
-import type { GroupKind, SampleOptions, SampleSelection } from "@/lib/tree-options";
+import type { GroupKind, SampleOptions, SampleSelection, ViewKind } from "@/lib/tree-options";
 import type { TreeRow } from "@/lib/types";
 import { amountKind } from "@/lib/units";
+import { TreeFlame } from "./tree-flame";
 import { GroupList, ScopedTree } from "./tree-groups";
 import { TreeDetail } from "./tree-detail";
 import { TreeBody, TreeHeader } from "./tree-rows";
-import { TREE_SHAPE, TreeEnvProvider, useSampleOptions } from "./tree-state";
-import type { Scope, Target, TreeEnv } from "./tree-state";
+import { TREE_SHAPE, TreeEnvProvider, WHOLE_TREE, useSampleOptions } from "./tree-state";
+import type { Target, TreeEnv } from "./tree-state";
 import { TreeLegend, TreeToolbar } from "./tree-toolbar";
 import { useRows } from "./use-capture";
 import type { LoadedCapture } from "./use-capture";
@@ -26,8 +27,6 @@ interface Props {
   capture: LoadedCapture;
 }
 
-const WHOLE: Scope = { id: "", filters: null };
-
 interface ViewProps extends Props {
   options: SampleOptions;
 }
@@ -36,6 +35,7 @@ function TreeView({ reader, capture, options }: ViewProps) {
   const [selection, setSelection] = useState<SampleSelection>(options.selections[0]);
   const [group, setGroup] = useState<GroupKind>("none");
   const [thread, setThread] = useState<string | null>(null);
+  const [view, setView] = useState<ViewKind>("list");
   const [merge, setMerge] = useState(false);
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState<OpenState>(HOT_OPEN);
@@ -78,6 +78,7 @@ function TreeView({ reader, capture, options }: ViewProps) {
         selection={selection}
         group={group}
         thread={thread}
+        view={view}
         merge={merge}
         query={query}
         onSelection={(value) => {
@@ -92,6 +93,7 @@ function TreeView({ reader, capture, options }: ViewProps) {
           setThread(value);
           fresh();
         }}
+        onView={setView}
         onMerge={() => {
           setMerge((value) => !value);
           fresh();
@@ -109,27 +111,31 @@ function TreeView({ reader, capture, options }: ViewProps) {
           </button>
         </div>
       ) : null}
-      <div className={tree.layout} data-detail={selected !== null}>
-        <div className={tree.list}>
-          <TreeHeader />
-          {focused ? (
-            <ScopedTree scope={focused.scope} focusKey={focused.key} rows={focused.scope.filters ? null : whole.rows} />
-          ) : group === "none" ? (
-            <TreeBody rows={whole.rows} scope={WHOLE} />
-          ) : (
-            <GroupList kind={group} />
-          )}
+      {view === "flame" ? (
+        <TreeFlame whole={whole.rows} group={group} focused={focused} />
+      ) : (
+        <div className={tree.layout} data-detail={selected !== null}>
+          <div className={tree.list}>
+            <TreeHeader />
+            {focused ? (
+              <ScopedTree scope={focused.scope} focusKey={focused.key} rows={focused.scope.filters ? null : whole.rows} />
+            ) : group === "none" ? (
+              <TreeBody rows={whole.rows} scope={WHOLE_TREE} />
+            ) : (
+              <GroupList kind={group} />
+            )}
+          </div>
+          {selected ? (
+            <TreeDetail
+              key={`${selected.scope.id}${selected.key}`}
+              target={selected}
+              focused={focused?.key === selected.key}
+              onFocus={() => setFocused(selected)}
+              onClose={() => select(null)}
+            />
+          ) : null}
         </div>
-        {selected ? (
-          <TreeDetail
-            key={`${selected.scope.id}${selected.key}`}
-            target={selected}
-            focused={focused?.key === selected.key}
-            onFocus={() => setFocused(selected)}
-            onClose={() => select(null)}
-          />
-        ) : null}
-      </div>
+      )}
     </TreeEnvProvider>
   );
 }

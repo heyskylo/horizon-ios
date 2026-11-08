@@ -3,8 +3,9 @@
 import { CRATE_GROUPS } from "@/lib/crate-group";
 import type { CrateGroup } from "@/lib/crate-group";
 import { t } from "@/lib/i18n";
-import type { GroupKind, SampleOptions, SampleSelection } from "@/lib/tree-options";
+import type { GroupKind, SampleOptions, SampleSelection, ViewKind } from "@/lib/tree-options";
 import type { Side } from "@/lib/types";
+import { Segmented } from "./segmented";
 import { Swatch } from "./tree-rows";
 import styles from "./page.module.css";
 import tree from "./tree.module.css";
@@ -15,11 +16,13 @@ interface Props {
   selection: SampleSelection;
   group: GroupKind;
   thread: string | null;
+  view: ViewKind;
   merge: boolean;
   query: string;
   onSelection: (value: SampleSelection) => void;
   onGroup: (value: GroupKind) => void;
   onThread: (value: string) => void;
+  onView: (value: ViewKind) => void;
   onMerge: () => void;
   onQuery: (value: string) => void;
   onCollapse: () => void;
@@ -27,11 +30,23 @@ interface Props {
 }
 
 export function TreeToolbar(props: Props) {
-  const { options, side, selection, group, merge, query } = props;
+  const { options, side, selection, group, view, merge, query } = props;
   const pace = side === "client" ? "Frames" : "Ticks";
   const thread = props.thread ?? options.thread ?? "";
   return (
     <div className={tree.controls}>
+      <div className={tree.control}>
+        <span className={tree.controlLabel}>{t("tree.view")}</span>
+        <Segmented
+          label={t("tree.view")}
+          value={view}
+          onChange={props.onView}
+          options={[
+            { id: "list", text: t("tree.view.list") },
+            { id: "flame", text: t("tree.view.flame") },
+          ]}
+        />
+      </div>
       <label className={tree.control}>
         <span className={tree.controlLabel}>{t("tree.selection")}</span>
         <select
@@ -94,12 +109,16 @@ export function TreeToolbar(props: Props) {
         <button type="button" className={styles.buttonSmall} aria-pressed={merge} onClick={props.onMerge}>
           {t("tree.merge")}
         </button>
-        <button type="button" className={styles.buttonSmall} onClick={props.onCollapse}>
-          {t("tree.collapseAll")}
-        </button>
-        <button type="button" className={styles.buttonSmall} onClick={props.onHottest}>
-          {t("tree.hottest")}
-        </button>
+        {view === "list" ? (
+          <>
+            <button type="button" className={styles.buttonSmall} onClick={props.onCollapse}>
+              {t("tree.collapseAll")}
+            </button>
+            <button type="button" className={styles.buttonSmall} onClick={props.onHottest}>
+              {t("tree.hottest")}
+            </button>
+          </>
+        ) : null}
       </div>
     </div>
   );
