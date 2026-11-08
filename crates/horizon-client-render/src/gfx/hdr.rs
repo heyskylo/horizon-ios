@@ -201,6 +201,10 @@ pub struct Hdr {
     pub calibration: Option<Calibration>,
 }
 
+pub(super) fn shader() -> String {
+    include_str!("../hdr_light.wgsl").to_owned() + include_str!("../hdr.wgsl")
+}
+
 impl Hdr {
     pub fn new(
         device: &wgpu::Device,
@@ -224,7 +228,7 @@ impl Hdr {
         let coverage_debug = coverage && debug == Some("coverage");
         // The layered frame's last pass, else today's.
         let entry_point = if coverage { "fs_hdr_layered" } else { "fs_hdr" };
-        let mut source = include_str!("../hdr.wgsl").to_owned();
+        let mut source = shader();
         if coverage_debug {
             // The debug view wraps the last pass as it is, so the picture under the tint is
             // exactly the one without it.
@@ -943,6 +947,99 @@ mod tests {
     use wgpu::{SurfaceColorSpaces as S, TextureFormat as F};
 
     #[test]
+    fn shared_light_matches_the_original_for_every_mark() {
+        use wgpu::util::DeviceExt;
+        let Some((device, queue)) = gpu() else {
+            eprintln!("HDR equivalence GPU unavailable");
+            return;
+        };
+        // All 8-bit marks, both easing policies, non-grey and over-white colours, look,
+        // debug, headroom and tier shares; half-float neighbours straddle mark boundaries.
+        let source = include_str!("../hdr_light.wgsl").to_owned()
+            + r#"
+struct ReferenceParams { peak: f32, scene: f32, world: f32, debug: f32, share: vec4<f32> }
+var<private> params: ReferenceParams;
+@group(0) @binding(0) var<storage, read_write> errors: array<u32>;
+"# + include_str!("hdr_light_reference.txt")
+            + r#"
+@compute @workgroup_size(64) fn check(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x;
+    let mark = f32(i % 256u) / 255.0;
+    let mode = i / 256u;
+    let eased = (mode & 1u) != 0u;
+    let shows = (mode & 2u) != 0u;
+    params = ReferenceParams(select(1.0, 1000.0 / 203.0, (mode & 4u) != 0u),
+        select(1.0, 4.0, (mode & 8u) != 0u), select(0.0, 1.0, (mode & 16u) != 0u),
+        select(0.0, 1.0, (mode & 32u) != 0u), vec4(0.2, 0.5, 0.6, 1.0));
+    let color = select(vec3(0.9, 0.4, 0.02), vec3(1.4, 0.8, 0.2), (mode & 64u) != 0u);
+    let expected = reference_lit(color, mark, shows, eased);
+    let actual = hdr_mark_light(color, mark, shows, eased,
+        vec4(params.peak, params.scene, params.world, params.debug), params.share);
+    errors[i] = select(0u, 1u, any(abs(expected.light - actual.light) > vec3(1e-6)) || expected.lifted != actual.lifted);
+    let boundary = (f32(i % 255u) + 0.5) / 255.0;
+    for (var step = -1; step <= 1; step++) {
+        let stored = unpack2x16float(pack2x16float(vec2(boundary + f32(step) / 65536.0))).x;
+        let quantized = round(saturate(stored) * 255.0) / 255.0;
+        let want = pow(reference_lit(color, quantized, params.world > 0.5 && params.peak > 1.0, false).light, vec3(1.0 / 2.2));
+        let got = hdr_written(color, stored, vec4(params.peak, params.scene, params.world, params.debug), params.share);
+        errors[i] |= select(0u, 2u, any(abs(want - got) > vec3(1e-6)));
+    }
+}
+"#;
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("shared HDR equivalence"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None,
+            layout: None,
+            module: &shader,
+            entry_point: Some("check"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let count = 256 * 128;
+        let output = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None,
+            contents: &vec![0; count * 4],
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        });
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: (count * 4) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: output.as_entire_binding(),
+            }],
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.dispatch_workgroups(count as u32 / 64, 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, (count * 4) as u64);
+        queue.submit([encoder.finish()]);
+        readback.map_async(wgpu::MapMode::Read, .., |r| r.unwrap());
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let data = readback.get_mapped_range(..).unwrap();
+        for (i, bytes) in data.as_chunks::<4>().0.iter().enumerate() {
+            assert_eq!(u32::from_le_bytes(*bytes), 0, "case {i}");
+        }
+        eprintln!(
+            "HDR equivalence GPU ran {count} cases and {} half-float boundary cases",
+            count * 3
+        );
+    }
+
+    #[test]
     fn coverage_target_resizes_resets_and_shows_in_the_debug_view() {
         let instance = crate::gfx::test_gpu::instance();
         let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
@@ -1292,7 +1389,7 @@ mod tests {
     fn hdr_shaders_validate() {
         let entity = crate::overlay::wgsl_constants() + include_str!("../entity.wgsl");
         for source in [
-            include_str!("../hdr.wgsl"),
+            &super::shader(),
             include_str!("../terrain.wgsl"),
             include_str!("../hdr_stats.wgsl"),
             include_str!("stars.wgsl"),
