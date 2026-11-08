@@ -816,7 +816,7 @@ fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {
     fs::remove_dir_all(scratch).unwrap();
 }
 
-fn prepared() -> Option<PathBuf> {
+pub(super) fn prepared() -> Option<PathBuf> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     [
         manifest.join("../../.local/horizon-client/26.3"),
@@ -828,7 +828,7 @@ fn prepared() -> Option<PathBuf> {
 
 /// A content mod folder: a full block, a door and an item-less glass from
 /// templates, items, a recipe, a vanilla tag addition and a language file.
-fn ruby_mod(dir: &Path) -> ContentMod {
+pub(super) fn ruby_mod(dir: &Path) -> ContentMod {
     let files: [(&str, &str); 11] = [
         (
             "horizon-mod.toml",
@@ -2541,7 +2541,7 @@ fn content_shapes_drive_outline_and_collision() {
     let facts = BlockFacts::load(&root, registry).unwrap();
     let (named, _) = nbt::read_named(
         &fs::read(root.join("cached-collision.nbt")).unwrap(),
-        Limits::tables(),
+        nbt::Limits::tables(),
     )
     .unwrap();
     let collision = CachedCollisionRegistry::from_nbt(&named.tag, registry).unwrap();
