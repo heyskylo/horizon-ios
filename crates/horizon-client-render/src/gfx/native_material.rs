@@ -309,7 +309,8 @@ pub struct NativeMaterial {
 /// every name it declares prefixed.
 fn vanilla_terrain() -> String {
     prefixed(
-        section(TERRAIN, "struct Globals {", "// Sky (SkyRenderer)"),
+        &(include_str!("../hdr_light.wgsl").to_owned()
+            + section(TERRAIN, "struct Globals {", "// Sky (SkyRenderer)")),
         PREFIX,
     )
 }

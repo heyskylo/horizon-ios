@@ -1104,11 +1104,20 @@ impl Game<'_> {
         true
     }
     /// Whether the open screen takes `native_place_recipe`: a crafting grid's
-    /// book (the inventory's or a crafting table's).
+    /// book (the inventory's or a crafting table's), or a mod menu type's
+    /// crafting grid.
     pub(super) fn mod_recipe_screen(&self) -> bool {
         self.screen == Screen::Inventory
-            && self.active_book() == Some(BookType::Crafting)
+            && (self.active_book() == Some(BookType::Crafting) || self.mod_crafting_open())
             && !self.spectator()
+    }
+    /// Whether the open menu is a mod menu type with a crafting grid.
+    fn mod_crafting_open(&self) -> bool {
+        self.remote
+            .as_ref()
+            .and_then(|r| r.menu.as_ref())
+            .and_then(|(_, menu)| horizon_client::containers::mod_menu_type(menu))
+            .is_some_and(|t| t.crafting.is_some())
     }
     /// `native_place_recipe`: the book's click on the recipe with this display
     /// id, refused as `handlePlaceRecipe` refuses it (no crafting screen,
@@ -1131,7 +1140,9 @@ impl Game<'_> {
     }
     pub(super) fn transfer_viewer_recipe(&mut self, display_id: i32) {
         self.panel.transfer_warning = None;
-        if !self.mod_recipe_screen() || (self.creative && self.craft_size != 3) {
+        if !self.mod_recipe_screen()
+            || (self.creative && self.craft_size != 3 && !self.mod_crafting_open())
+        {
             self.show_transfer_result(3);
             return;
         }

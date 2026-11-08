@@ -284,7 +284,23 @@ fn register_menu_types(mods: &[horizon_client::mod_content::ContentMod]) {
     let menus = horizon_client::mod_content::menu_types(mods);
     let set = containers::register_mod_menu_types(menus.iter().map(|m| {
         let results = m.results.iter().map(|&r| usize::from(r)).collect();
-        (m.id.clone(), m.slots.into(), m.data_slots.into(), results)
+        let crafting = m.crafting.map(|c| containers::ModCrafting {
+            grid: c.grid.into(),
+            size: c.size.into(),
+            result: c.result.into(),
+        });
+        let links = m.links.map(|l| containers::ModLinks {
+            from: l.from.into(),
+            count: l.count.into(),
+        });
+        (
+            m.id.clone(),
+            m.slots.into(),
+            m.data_slots.into(),
+            results,
+            crafting,
+            links,
+        )
     }));
     if !set
         && containers::mod_menu_types()
