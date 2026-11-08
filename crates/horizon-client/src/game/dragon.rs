@@ -3044,6 +3044,7 @@ impl Game<'_> {
             .dragon
             .as_ref()
             .is_some_and(|d| !matches!(d.phase, Phase::Flaming { .. }));
+        let ticking = self.entity_ticking_area();
         let mut clouds = std::mem::take(&mut self.breath_clouds);
         clouds.retain_mut(|c| {
             // Lingering potions' clouds tick with the potions.
@@ -3052,6 +3053,10 @@ impl Game<'_> {
             }
             if c.from_dragon && flame_over {
                 return false;
+            }
+            // ServerLevel.tick: only entities in entity-ticking chunks tick.
+            if !ticking(c.at[0].floor() as i32, c.at[2].floor() as i32) {
+                return true;
             }
             c.age += 1;
             if breath_expired(c.age, c.duration) {
