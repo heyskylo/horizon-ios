@@ -266,7 +266,7 @@ fn number(flag: &str, text: &str, range: RangeInclusive<u32>) -> Result<u32, Str
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Started {
     pub ok: bool,
-    /// The sides being captured, server first.
+    /// The sides asked for, server first; the server thread's join is confirmed by `status` and `stop`.
     pub sides: Vec<ProfileSide>,
     pub path: String,
     pub seconds: Option<u32>,
@@ -314,6 +314,7 @@ pub struct Traced {
 pub struct Marked {
     pub ok: bool,
     pub name: String,
+    /// Seconds on the game clock, which counts from when the game began, for every side.
     pub t: f64,
 }
 

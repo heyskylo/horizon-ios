@@ -62,9 +62,9 @@ def check_ctl(bins, resources):
         running = ctl('profile', 'status')
         assert running['capturing'] is True and running['sides'] == ['server', 'client'], running
         time.sleep(RUN_S)
-        ctl('profile', 'mark', 'checkpoint', 'one')
+        client_mark = ctl('profile', 'mark', 'checkpoint', 'one')
         server_mark = ctl('profile', 'server', 'mark', 'server', 'only')
-        assert 0 <= server_mark['t'] <= RUN_S + 1.5, server_mark
+        assert RUN_S <= client_mark['t'] <= server_mark['t'] <= client_mark['t'] + 1.5, (client_mark, server_mark)
         time.sleep(RUN_S)
         running = ctl('profile', 'status')
         assert running['elapsed_s'] >= 2 * RUN_S and running['bytes'] > 0, running

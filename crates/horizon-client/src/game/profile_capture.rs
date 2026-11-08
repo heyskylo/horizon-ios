@@ -80,6 +80,8 @@ struct ServerOnly {
     live: Arc<Live>,
     path: PathBuf,
     since: Instant,
+    /// The window's game clock when the capture began.
+    began: f64,
 }
 
 /// The game's capture state: the health history, the running capture and who is waiting on it.
@@ -185,7 +187,7 @@ impl Profile {
         }
     }
 
-    /// Marks the window's capture if `side` wants it; also the `t` of a server mark that is due, for the caller to post.
+    /// Marks the window's capture if `side` wants it; also the `t` of a server mark that is due, for the caller to post. Every `t` is on the game clock.
     fn mark(&mut self, side: Option<ProfileSide>, name: &str) -> (Option<f64>, Option<f64>) {
         let want = |s| side.is_none_or(|only| only == s);
         let t = self.perf.now();
@@ -198,7 +200,7 @@ impl Profile {
             self.server_only
                 .as_ref()
                 .filter(|s| s.live.active())
-                .map(|s| s.since.elapsed().as_secs_f64())
+                .map(|s| s.began + s.since.elapsed().as_secs_f64())
         };
         (client, server)
     }
@@ -405,6 +407,7 @@ impl Game<'_> {
             .integrated
             .as_ref()
             .ok_or("profile server: no single-player world is open")?;
+        let began = self.profile.perf.now();
         let live = Live::new();
         let target = Target::Own {
             options: options.clone(),
@@ -426,6 +429,7 @@ impl Game<'_> {
             live,
             path,
             since: Instant::now(),
+            began,
         });
         Ok(started)
     }
@@ -696,6 +700,7 @@ mod tests {
             live: live(phase),
             path,
             since: Instant::now() - running_for,
+            began: 0.0,
         }
     }
 
@@ -714,6 +719,7 @@ mod tests {
             samples: false,
             ..StartOptions::default()
         };
+        std::thread::sleep(Duration::from_millis(30));
         let t = profile.perf.now();
         profile
             .perf
@@ -740,10 +746,15 @@ mod tests {
             Duration::from_secs(1000),
             dir.join("old.hzperf"),
         ));
+        let before = profile.perf.now();
         let (client, server) = profile.mark(Some(ProfileSide::Server), "boss");
         assert_eq!(client, None);
         let t = server.expect("a joined capture takes a server mark");
-        assert!((0.0..=profile.perf.now()).contains(&t), "{t}");
+        // The capture began 30 ms into the game, so a capture-relative `t` would fall short of `before`.
+        assert!(
+            (before..=profile.perf.now()).contains(&t),
+            "{t} vs {before}"
+        );
 
         let (client, server) = profile.mark(None, "both");
         assert_eq!(client, server);
@@ -775,16 +786,14 @@ mod tests {
     }
 
     #[test]
-    fn a_server_only_mark_counts_from_its_own_start() {
+    fn a_server_only_mark_is_stamped_on_the_window_clock() {
         let mut profile = Profile::new(50.0);
-        profile.server_only = Some(server_only(
-            Phase::Running,
-            Duration::from_secs(30),
-            PathBuf::from("a"),
-        ));
+        let mut alone = server_only(Phase::Running, Duration::from_secs(30), PathBuf::from("a"));
+        alone.began = 100.0;
+        profile.server_only = Some(alone);
         let (client, server) = profile.mark(None, "x");
         assert_eq!(client, None);
-        assert!((30.0..40.0).contains(&server.unwrap()), "{server:?}");
+        assert!((130.0..140.0).contains(&server.unwrap()), "{server:?}");
     }
 
     #[test]

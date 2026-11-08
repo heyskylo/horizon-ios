@@ -537,7 +537,7 @@ horizon-ctl profile mark NAME
   `profile start` before a world opens, `HORIZON_PROFILE` and F3+O are joined by the server when it comes up (once per
   capture). `profile server start` makes a file of the server thread alone; with no single-player world it is refused
   until R1a gives it a remote server to reach. `stop` ends the capture with every side it holds (a `--side` it does not hold is an error), `status` lists
-  the sides that run, and `mark` goes to every running side or the one `--side` names. Replies list `sides`, server first. With `--threads all`
+  the sides that run, and `mark` goes to every running side or the one `--side` names. Replies list `sides`, server first; on `start` they are the sides asked for, and `status` and `stop` confirm which wrote. A `mark` reply's `t` is the window's game clock for every side, while the file stores it from the capture's start. With `--threads all`
   the window's sampler claims every opted-in thread, the server thread included, so the server side has no samples of its own.
 - **As built (C1):** `profile client` captures the window only. A client capture without `--seconds` stops at the 600 s window cap with
   `STOP_REASON_WINDOW_CAP`, so `HORIZON_PROFILE` records the first 10 minutes of a run. The client's slow ring takes
