@@ -1151,9 +1151,15 @@ pub fn carry(
                 // Additions to other sets and pools, as files the game merges.
                 let modifier = serde_json::from_slice::<Value>(&bytes).ok();
                 let types = &mut report.worldgen_types;
-                if let Some((kind, mut added)) =
-                    modifier.and_then(|v| crate::lithostitched::modifier(&v, loaded, types))
-                {
+                let modifier =
+                    modifier.and_then(|v| crate::lithostitched::modifier(&v, loaded, types));
+                if let Some(("biome_modifier", file)) = &modifier {
+                    let to = format!("data/{id}/neoforge/biome_modifier/lithostitched/{path}");
+                    write(
+                        &inside.join(to),
+                        &serde_json::to_vec_pretty(file).unwrap_or_default(),
+                    )?;
+                } else if let Some((kind, mut added)) = modifier {
                     crate::processors::carry(
                         kind,
                         &mut added,
