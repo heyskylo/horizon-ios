@@ -422,7 +422,7 @@ def finish_profile(server, directory, result, run=subprocess.run):
     try:
         server.wait_for(SAVED.pattern, 120)
         capture = saved_capture(server.since(0), directory)
-        attach_run(capture, result, directory, run)
+        attach_run(capture, {k: v for k, v in result.items() if k != 'bots_failed'}, directory, run)
         result['profile'] = str(capture)
     except (RuntimeError, subprocess.CalledProcessError, OSError) as e:
         result['profile_error'] = str(e)

@@ -205,6 +205,7 @@ pub fn parse(words: &[&str]) -> Result<Parsed, String> {
             "--no-samples" => options.samples = false,
             "--timeline" => options.timeline = true,
             "--bench" => {
+                // The line arrives split on whitespace, so a run of spaces or a tab in the path becomes one space.
                 let path = words.by_ref().collect::<Vec<_>>().join(" ");
                 if path.is_empty() {
                     return Err(format!("--bench needs a report path; usage: {USAGE}"));

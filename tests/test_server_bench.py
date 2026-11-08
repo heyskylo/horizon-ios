@@ -166,7 +166,7 @@ class ServerBenchProfileTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as folder:
             directory = Path(folder)
-            result = dict(record)
+            result = dict(record, bots_failed=[{'error': 'connect to 10.0.0.5:25599 refused'}])
             finish_profile(FakeServer(['starting', SAVED_LINE]), directory, result, run=attach)
         [(argv, body, kwargs)] = calls
         capture = directory / 'reports/profile-20261108-100211Z.hzperf'

@@ -108,6 +108,37 @@ fn a_benchmark_report_given_at_stop_is_in_the_capture_verbatim() {
 }
 
 #[test]
+fn a_benchmark_reports_local_paths_and_label_stay_out_of_the_capture() {
+    let scratch = Scratch::new("bench-local");
+    let mut perf = ClientPerf::new(SLOW_FRAME_MS);
+    run(&mut perf, 0, 2, 60, 16.0);
+    perf.start(
+        2.0,
+        &scratch.0,
+        Trigger::Benchmark,
+        &no_samples(),
+        Start::default(),
+        Vec::new(),
+    )
+    .unwrap();
+    run(&mut perf, 2, 4, 60, 16.0);
+    let mut report = benchmark_report();
+    report.label = Some("someone's laptop".into());
+    report.local = vec!["/home/someone/logs/latest.log".into()];
+    let result = bench_result(report.to_json()).unwrap();
+    assert!(perf.stop_with(4.0, R::Normal, vec![result]));
+    let saved = perf.take_saved(true).pop().unwrap().unwrap();
+
+    let embedded = &read(&saved.path).bench[0].report_json;
+    assert!(!embedded.contains("someone"), "{embedded}");
+    assert!(!embedded.contains("latest.log"), "{embedded}");
+    let mut expected = report.clone();
+    expected.label = None;
+    expected.local.clear();
+    assert_eq!(*embedded, expected.to_json());
+}
+
+#[test]
 fn only_a_benchmark_report_can_be_embedded() {
     assert!(bench_result("{\"format\":\"something-else\"}".into()).is_err());
     assert!(bench_result("not json".into()).is_err());

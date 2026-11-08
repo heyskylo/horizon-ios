@@ -202,13 +202,15 @@ impl ClientPerf {
     }
 }
 
-/// A benchmark report's JSON as the capture embeds it; anything but a `horizon-benchmark-report` is refused.
+/// A benchmark report as the capture embeds it, minus its local-only label and paths; anything but a `horizon-benchmark-report` is refused.
 pub fn bench_result(report_json: String) -> Result<BenchResult, String> {
-    horizon_bench::Report::parse(&report_json)?;
+    let mut report = horizon_bench::Report::parse(&report_json)?;
+    report.label = None;
+    report.local.clear();
     Ok(BenchResult {
         side: Side::Client as i32,
         format: horizon_bench::FORMAT.to_owned(),
-        report_json,
+        report_json: report.to_json(),
         corpus_id: String::new(),
     })
 }
