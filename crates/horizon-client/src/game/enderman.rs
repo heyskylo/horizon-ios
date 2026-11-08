@@ -55,7 +55,8 @@ impl Game<'_> {
         }
         Ok(())
     }
-    /// `EndermanLeaveBlockGoal.tick`: normalize, check, place, then clear.
+    /// `EndermanLeaveBlockGoal.tick`: normalize, check, place, post
+    /// BLOCK_PLACE with the enderman and the placed state, then clear.
     pub(super) fn enderman_place_block(
         &mut self,
         mob: u32,
@@ -95,18 +96,25 @@ impl Game<'_> {
                 || !support.full_collision
                 || occupants.iter().any(|bounds| bounds.intersects(area))
             {
-                return false;
+                return None;
             }
             // AIR is a legitimate normalized state. setBlock may report no
             // change for it; the eligible operation still empties the hand.
             b.set_block(level, ticks, at, state, flags::UPDATE_ALL);
-            true
+            Some(state)
         });
-        if placed
-            && let Some(m) = self.mobs.iter_mut().find(|m| {
-                m.id == mob && m.species() == Species::Enderman && m.extra.carried == Some(carried)
-            })
-        {
+        let Some(state) = placed else {
+            return self.process_level_events();
+        };
+        self.post_block_game_event(
+            "minecraft:block_place",
+            pos,
+            Some(horizon_client::mobs::Who::Mob(mob)),
+            Some(state),
+        );
+        if let Some(m) = self.mobs.iter_mut().find(|m| {
+            m.id == mob && m.species() == Species::Enderman && m.extra.carried == Some(carried)
+        }) {
             m.extra.carried = None;
         }
         self.process_level_events()

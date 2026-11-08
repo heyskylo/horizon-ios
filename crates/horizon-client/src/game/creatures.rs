@@ -2419,13 +2419,13 @@ impl Game<'_> {
                     self.post_game_event(event, at, ctx);
                 }
                 MobEvent::GameEvent {
-                    event: "minecraft:block_place",
+                    event: event @ ("minecraft:block_place" | "minecraft:block_destroy"),
                     at,
                     source,
                     state,
                 } => {
                     let ctx = self.who_context(Some(Who::Mob(source)), Some(state));
-                    self.post_game_event("minecraft:block_place", at, ctx);
+                    self.post_game_event(event, at, ctx);
                 }
                 // The sculk layer tracks steps and bee/bat flaps itself
                 // (`entity_motion_events`, `tick_mob_sculk_events`). Birds
@@ -2825,7 +2825,7 @@ impl Game<'_> {
                         let _ = self.process_level_events();
                     }
                 }
-                MobEvent::ChestOpen { chest, open } => self.golem_chest_open(chest, open),
+                MobEvent::ChestOpen { chest, open, mob } => self.golem_chest_open(chest, open, mob),
                 MobEvent::ChestSlot { chest, slot, stack } => {
                     self.golem_chest_slot(chest, slot, stack)
                 }
@@ -6217,7 +6217,7 @@ impl Game<'_> {
             self.swing_arm();
             return Ok(true);
         }
-        if let Some(sheared) = self.shear_pig_saddle(index, &item) {
+        if let Some(sheared) = self.shear_saddle(index, &item) {
             if sheared {
                 self.swing_arm();
             }
@@ -7111,6 +7111,8 @@ impl Game<'_> {
             on_ground,
         );
         self.add_projectile(proj);
+        // SnowballItem.use / EggItem.use / EnderpearlItem.use: awardStat(ITEM_USED).
+        self.award_stat("used", item, 1);
         // ItemStack.use's applyAfterUseComponentSideEffects: the pearl's
         // second is the `use_cooldown` component, as for any thrown item.
         self.apply_use_cooldown(stack);

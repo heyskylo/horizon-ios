@@ -1997,6 +1997,9 @@ impl Game<'_> {
             return;
         }
         self.riding = None;
+        if self.dismount_in_portal(self.carts[i].position) {
+            return;
+        }
         let c = &self.carts[i];
         let (bx, by, bz) = (
             c.position.x.floor() as i32,
