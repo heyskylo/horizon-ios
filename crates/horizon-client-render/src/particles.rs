@@ -1265,6 +1265,9 @@ impl ParticleLevel<'_> {
 pub struct ParticleEngine {
     particles: Vec<Particle>,
     pending: Vec<Particle>,
+    /// While the live particles tick (out of `particles`), what their emitters spawn waits
+    /// here, so a spawn's `limit` and `exclusion_radius` see every live particle.
+    spawned_in_tick: Option<Vec<(ParticleOptions, [f64; 3], [f64; 3])>>,
     /// `ParticleEngine.random`, handed to every `ParticleProvider`.
     random: LegacyRandom,
     /// `ClientLevel.random` as particle constructors use it (`level.getRandom()`).
@@ -1477,6 +1480,7 @@ impl ParticleEngine {
         let mut engine = Self {
             particles: Vec::new(),
             pending: Vec::new(),
+            spawned_in_tick: None,
             random: LegacyRandom::new(0x7061_7274),
             level_random: LegacyRandom::new(0x6c65_7665),
             spell_random: LegacyRandom::new(0x7370_656c),
@@ -3811,11 +3815,15 @@ impl ParticleEngine {
             }
         }
         let mut particles = std::mem::take(&mut self.particles);
+        self.spawned_in_tick = Some(Vec::new());
         for p in &mut particles {
             self.tick_particle(p, level);
         }
         particles.retain(|p| !p.removed);
         self.particles = particles;
+        for (options, pos, velocity) in self.spawned_in_tick.take().unwrap_or_default() {
+            self.add(&options, pos, velocity);
+        }
         let pending = std::mem::take(&mut self.pending);
         for mut p in pending {
             if p.pre_tick {
@@ -3923,8 +3931,12 @@ impl ParticleEngine {
                     if let Some(frame) = update.frame {
                         self.set_sprite_frame(p, frame);
                     }
-                    for (options, pos, velocity) in update.spawned {
-                        self.add(&options, pos, velocity);
+                    if let Some(later) = &mut self.spawned_in_tick {
+                        later.extend(update.spawned);
+                    } else {
+                        for (options, pos, velocity) in update.spawned {
+                            self.add(&options, pos, velocity);
+                        }
                     }
                 } else {
                     p.remove();

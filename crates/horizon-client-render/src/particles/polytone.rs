@@ -1663,6 +1663,50 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// A particle's emitter spawns while the live particles tick: its children's
+    /// `exclusion_radius` sees the ones alive, so a ray emitted every tick at one spot stays one.
+    #[test]
+    fn a_particles_emitter_respects_the_exclusion_radius_of_its_children() {
+        let blocks = blocks();
+        let root = pack(&[
+            (
+                "assets/test/polytone/custom_particles/holder.json",
+                serde_json::json!({"has_physics": false, "render_type": "invisible",
+                    "initializer": {"lifetime": "100"},
+                    "particle_emitters": [{"particle": "test:ray", "chance": "1"}]}),
+            ),
+            (
+                "assets/test/polytone/custom_particles/ray.json",
+                serde_json::json!({"has_physics": false, "render_type": "invisible",
+                    "exclusion_radius": 1, "initializer": {"lifetime": "100"}}),
+            ),
+            (
+                "assets/minecraft/polytone/entity_modifiers/player.json",
+                serde_json::json!({"emitters": [{"particle": "test:holder", "chance": "1"}]}),
+            ),
+        ]);
+        let scene = scene(blocks);
+        let level = ParticleLevel {
+            world: &scene.world,
+            facts: &scene.facts,
+            collision: &scene.collision,
+            player: None,
+        };
+        let mut engine = engine(Registry::read(&root, Default::default(), blocks));
+        engine.polytone_entity(&level, "minecraft:player", [1.0, 70.0, 1.0]);
+        for _ in 0..10 {
+            engine.tick(&level);
+        }
+        let rays = engine
+            .particles
+            .iter()
+            .chain(&engine.pending)
+            .filter(|p| p.polytone_type.as_deref() == Some("test:ray"))
+            .count();
+        assert_eq!(rays, 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn a_gpu_particle_is_a_record_drawn_until_its_life_ends() {
         let blocks = blocks();
