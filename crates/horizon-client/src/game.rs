@@ -18275,6 +18275,8 @@ mod storage_alias_tests;
 #[cfg(test)]
 mod sulfur_bucket_tests;
 #[cfg(test)]
+mod test_pos_guest_tests;
+#[cfg(test)]
 mod vibration_tests;
 
 #[cfg(test)]
