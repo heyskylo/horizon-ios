@@ -12,8 +12,6 @@ impl Gpu {
         let instance = crate::gfx::test_gpu::instance();
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
         if !hud_coverage::supported(
-            (false, true, true),
-            true,
             adapter.limits().max_color_attachments,
             adapter.get_downlevel_capabilities().flags,
             adapter.get_texture_format_features(hud_coverage::FORMAT),

@@ -223,6 +223,33 @@ pub fn who_uuid(who: Who, uuid_of: &mut impl FnMut(u32) -> Option<[i32; 4]>) -> 
         Who::Mob(id) => uuid_of(id),
     }
 }
+/// Replace every reference to the player `old` in a saved entity with `new`. Older
+/// Horizon worlds named their single player by the offline UUID (`Owner` on tamed
+/// animals and horses, a projectile's `Owner` and an item's `Thrower`, a fox's
+/// `Trusted`, `angry_at`, a leash's `UUID`); when such a world opens under the
+/// account (`lan::playerdata::migrate_owner`), a chunk's entities are rewritten as
+/// they load, and their next save keeps the account's UUID. A reference is the
+/// player's four ints, wherever the entity keeps it; an entity's own `UUID` never
+/// names the player.
+pub fn migrate_player_uuid(tag: &mut Tag, old: [i32; 4], new: [i32; 4]) {
+    if old == new {
+        return;
+    }
+    match tag {
+        Tag::IntArray(uuid) if uuid.as_slice() == old.as_slice() => uuid.copy_from_slice(&new),
+        Tag::List(list) => {
+            for tag in list {
+                migrate_player_uuid(tag, old, new);
+            }
+        }
+        Tag::Compound(map) => {
+            for tag in map.values_mut() {
+                migrate_player_uuid(tag, old, new);
+            }
+        }
+        _ => {}
+    }
+}
 /// The entity a stored UUID names, while it is in the level: `player` (the
 /// player's own UUID, when one is in the level), or the mob `uuids` gives that
 /// UUID to. `uuids` is the game layer's id -> UUID map, so this is the read half
@@ -606,11 +633,17 @@ pub fn mob_to_nbt(
         put(
             &mut tag,
             "anger_end_time",
-            Tag::Long(if m.extra.anger_end > 0 {
-                m.extra.anger_end
-            } else {
-                -1
-            }),
+            Tag::Long(
+                if (m.species() == crate::mobs::Species::Enderman && m.no_ai)
+                    || m.extra.anger_end > 0
+                {
+                    // NeutralMob saves the actual absolute value, including zero
+                    // and past values, while this Enderman's AI is disabled.
+                    m.extra.anger_end
+                } else {
+                    -1
+                },
+            ),
         );
         // `angry_at` only while there is an anger target: the UUID of the one
         // the level has (`uuid_of`). A mob target read from the save that is
@@ -1443,12 +1476,20 @@ pub fn mob_to_nbt(
     // the attack damage.
     use crate::mobs::finalize::Attr;
     // Every other living entity's first tick makes the movement_speed instance
-    // (LivingEntity.removeFrost reads it through getAttribute).
-    let made = if species == crate::mobs::Species::Rabbit {
-        vec![Attr::MovementSpeed, Attr::AttackDamage]
-    } else {
-        vec![Attr::MovementSpeed]
-    };
+    // (LivingEntity.removeFrost reads it through getAttribute); before it, the
+    // mob has only the instances it was loaded with (the kept list above).
+    let speed_at_load =
+        crate::mobs::doors::is_zombie(species) || species == crate::mobs::Species::Piglin;
+    let mut made = Vec::new();
+    if speed_at_load || m.age > 0 {
+        made.push(Attr::MovementSpeed);
+    }
+    if species == crate::mobs::Species::Rabbit {
+        made.push(Attr::AttackDamage);
+    }
+    // AttributeMap.pack writes the list even when no instance exists.
+    map.entry("attributes".into())
+        .or_insert_with(|| Tag::List(Vec::new()));
     for attr in made {
         let base = crate::mobs::finalize::base_value(m, attr);
         let mut list = match map.get(&"attributes".into()) {
@@ -1485,6 +1526,15 @@ pub fn mob_to_nbt(
     // including zero and negative values, rather than stale loaded NBT.
     if matches!(m.species(), S::Evoker | S::Illusioner) {
         map.insert("SpellTicks".into(), Tag::Int(m.extra.counter));
+    }
+    // Vindicator.addAdditionalSaveData: `Johnny` only while the flag is set
+    // (`if (this.isJohnny) output.putBoolean("Johnny", true)`).
+    if m.species() == S::Vindicator {
+        if m.extra.johnny {
+            map.insert("Johnny".into(), Tag::Byte(1));
+        } else {
+            map.remove(&"Johnny".into());
+        }
     }
     crate::mobs::raider::write_nbt(m, map);
     crate::mobs::riders::write_nbt(m, map);
@@ -2129,6 +2179,13 @@ pub fn mob_from_nbt(
                     .map(Box::new),
             );
         }
+        if m.extra
+            .effects
+            .iter()
+            .any(|e| e.0 == "minecraft:health_boost")
+        {
+            crate::mobs::finalize::health_boost_changed(&mut m);
+        }
     }
     m.silent = flag(tag, "Silent");
     m.invulnerable_flag = flag(tag, "Invulnerable");
@@ -2175,12 +2232,9 @@ pub fn mob_from_nbt(
         if m.species() == crate::mobs::Species::Piglin
             && let Some(Tag::List(items)) = tag.get("Inventory")
         {
-            // InventoryCarrier.readInventoryFromTag (eight slots).
-            m.extra.inventory = items
-                .iter()
-                .filter_map(crate::save::item_from_nbt)
-                .take(8)
-                .collect();
+            // InventoryCarrier.readInventoryFromTag -> SimpleContainer
+            // .fromItemList (eight slots).
+            m.extra.inventory = crate::mobs::villager::load_container(&m, items, 8);
         }
     }
     if matches!(
@@ -2657,6 +2711,11 @@ pub fn mob_from_nbt(
     ) {
         m.extra.counter = number(tag.get("SpellTicks")).unwrap_or(0) as i32;
     }
+    // Vindicator.readAdditionalSaveData: `Johnny`, false when absent. A name
+    // that is Johnny latches the flag again on the next AI step.
+    if m.species() == crate::mobs::Species::Vindicator {
+        m.extra.johnny = flag(tag, "Johnny");
+    }
     crate::mobs::raider::read_nbt(&mut m, tag);
     crate::mobs::riders::read_nbt(&mut m, tag);
     // A mannequin is an `Avatar`, not a `Mob`: it reads none of
@@ -2757,6 +2816,7 @@ pub fn tnt_to_nbt(
     position: Vec3,
     motion: Vec3,
     on_ground: bool,
+    fall_distance: f64,
     fuse: i32,
     power: f32,
     block_state: Tag,
@@ -2772,7 +2832,7 @@ pub fn tnt_to_nbt(
         motion,
         rotation,
         on_ground,
-        fall_distance: 0.0,
+        fall_distance,
     }
     .tag(raw);
     put(&mut tag, "fuse", Tag::Short(fuse as i16));
@@ -2978,6 +3038,9 @@ pub fn orbs_from_nbt(tag: &Tag) -> Vec<ExperienceOrb> {
         count,
         ticks: 0,
         health: number(tag.get("Health")).unwrap_or(5) as i32,
+        // ExperienceOrb's followingPlayer is transient: never saved, so a
+        // loaded orb starts without one.
+        following: None,
     };
     vec![orb]
 }
@@ -3040,9 +3103,15 @@ pub fn arrow_to_nbt(
         map.remove(&"LeftOwner".into());
         map.remove(&"inBlockState".into());
         map.remove(&"weapon".into());
+        map.remove(&"can_break".into());
     }
     if let Some(weapon) = &a.fired_from_weapon {
         put(&mut tag, "weapon", item_to_nbt(weapon));
+    }
+    // `Projectile.addAdditionalSaveData`: the actual decoded predicate,
+    // never a stale source compound or the pickup item's component patch.
+    if let Some(predicate) = &a.can_break {
+        put(&mut tag, "can_break", predicate.clone());
     }
     if p.left_owner {
         put(&mut tag, "LeftOwner", Tag::Byte(1));
@@ -3099,6 +3168,18 @@ pub fn arrow_from_nbt(
     a.pickup = Pickup::from_byte(number(tag.get("pickup")).unwrap_or(0));
     a.pierce = number(tag.get("PierceLevel")).unwrap_or(0) as u8;
     a.has_been_shot = flag(tag, "HasBeenShot");
+    // `Projectile.readAdditionalSaveData`: one block predicate or a nonempty
+    // list. Unsupported conjuncts remain saved, but cannot grant permission.
+    a.can_break = tag
+        .get("can_break")
+        .filter(|predicate| match predicate {
+            Tag::Compound(_) => true,
+            Tag::List(list) => {
+                !list.is_empty() && list.iter().all(|p| matches!(p, Tag::Compound(_)))
+            }
+            _ => false,
+        })
+        .cloned();
     a.fire_ticks = number(tag.get("Fire")).unwrap_or(0) as i16 as i32;
     a.fall_distance = float(tag.get("fall_distance")).unwrap_or(0.0);
     a.spectral = spectral;
@@ -4278,6 +4359,7 @@ mod tnt_power_tests {
             Vec3::ZERO,
             Vec3::ZERO,
             false,
+            0.0,
             20,
             10.0,
             string("minecraft:tnt"),
@@ -4291,6 +4373,7 @@ mod tnt_power_tests {
             Vec3::ZERO,
             Vec3::ZERO,
             false,
+            0.0,
             20,
             4.0,
             string("minecraft:tnt"),
@@ -4310,6 +4393,7 @@ mod tnt_power_tests {
                 Vec3::new(1.5, 200.0, 4.5),
                 Vec3::ZERO,
                 false,
+                0.0,
                 80,
                 power,
                 block.clone(),
@@ -4365,6 +4449,7 @@ mod tnt_power_tests {
                 Vec3::ZERO,
                 Vec3::ZERO,
                 false,
+                0.0,
                 80,
                 4.0,
                 t,
@@ -4455,8 +4540,88 @@ mod spell_ticks_nbt_tests {
 
 #[cfg(test)]
 mod tests {
+    // Added after the actual old Game proof: live mutation and a fresh absent
+    // load cannot inherit a predicate from a contradictory saved compound.
+    #[test]
+    fn arrow_can_break_mutation_clone_and_absent_load_save_actual_state() {
+        let parse = |text: &str| horizon_world::nbt::parse_snbt(text).unwrap().0;
+        let raw = parse(
+            "{id:\"minecraft:arrow\",Pos:[1d,200d,1d],NoGravity:1b,marker:37,can_break:{blocks:\"minecraft:chorus_flower\"}}",
+        );
+        let (mut arrow, _) = super::arrow_from_nbt(&raw, None, |_| None).unwrap();
+        let original = raw.get("can_break").unwrap().clone();
+        assert_eq!(
+            arrow.arrow.as_ref().unwrap().can_break.as_ref(),
+            Some(&original)
+        );
+        let replacement = parse("{blocks:\"minecraft:stone\"}");
+        arrow.arrow.as_mut().unwrap().can_break = Some(replacement.clone());
+        let cloned = arrow.clone();
+        for source in [None, Some(&raw)] {
+            let saved = super::arrow_to_nbt(&cloned, [197, 0, 0, 1], None, None, source).unwrap();
+            assert_eq!(saved.get("can_break"), Some(&replacement));
+            assert_eq!(saved.get("NoGravity"), Some(&super::Tag::Byte(1)));
+        }
+        arrow.arrow.as_mut().unwrap().can_break = None;
+        let saved = super::arrow_to_nbt(&arrow, [197, 0, 0, 1], None, None, Some(&raw)).unwrap();
+        assert!(saved.get("can_break").is_none());
+        assert_eq!(saved.get("marker"), Some(&super::Tag::Int(37)));
+        let absent = parse("{id:\"minecraft:arrow\",Pos:[1d,200d,1d]}");
+        let (fresh, _) = super::arrow_from_nbt(&absent, None, |_| None).unwrap();
+        assert!(fresh.arrow.as_ref().unwrap().can_break.is_none());
+        assert!(
+            super::arrow_to_nbt(&fresh, [197, 0, 0, 2], None, None, Some(&raw))
+                .unwrap()
+                .get("can_break")
+                .is_none()
+        );
+    }
     use super::*;
     use crate::items::ItemStack;
+
+    /// Older worlds name their single player by the offline UUID; the migration rewrites
+    /// every reference to it (owner, thrower, trusted list, anger, leash) and nothing else.
+    #[test]
+    fn a_players_offline_uuid_becomes_the_accounts_everywhere_in_an_entity() {
+        let old = [1, 2, 3, 4];
+        let new = [5, 6, 7, 8];
+        let mut tag = Tag::compound([
+            ("id", string("minecraft:wolf")),
+            ("UUID", Tag::IntArray(vec![9, 9, 9, 9])),
+            ("Owner", Tag::IntArray(old.to_vec())),
+            ("Thrower", Tag::IntArray(old.to_vec())),
+            ("angry_at", Tag::IntArray(old.to_vec())),
+            (
+                "Trusted",
+                Tag::List(vec![
+                    Tag::IntArray(old.to_vec()),
+                    Tag::IntArray(vec![3, 3, 3, 3]),
+                ]),
+            ),
+            (
+                "leash",
+                Tag::compound([("UUID", Tag::IntArray(old.to_vec()))]),
+            ),
+            ("Health", Tag::Float(20.0f32.to_bits())),
+        ]);
+        migrate_player_uuid(&mut tag, old, new);
+        assert_eq!(tag.get("Owner"), Some(&Tag::IntArray(new.to_vec())));
+        assert_eq!(tag.get("Thrower"), Some(&Tag::IntArray(new.to_vec())));
+        assert_eq!(tag.get("angry_at"), Some(&Tag::IntArray(new.to_vec())));
+        assert_eq!(
+            tag.get("Trusted"),
+            Some(&Tag::List(vec![
+                Tag::IntArray(new.to_vec()),
+                Tag::IntArray(vec![3, 3, 3, 3]),
+            ]))
+        );
+        assert_eq!(
+            tag.get("leash").and_then(|leash| leash.get("UUID")),
+            Some(&Tag::IntArray(new.to_vec()))
+        );
+        // The entity's own UUID is not the player's.
+        assert_eq!(tag.get("UUID"), Some(&Tag::IntArray(vec![9, 9, 9, 9])));
+    }
 
     #[test]
     fn empty_saved_tags_are_omitted_without_changing_raw_or_nonempty_tags() {
@@ -5792,6 +5957,7 @@ mod tests {
             Vec3::ZERO,
             Vec3::ZERO,
             false,
+            0.0,
             20,
             4.0,
             string("minecraft:tnt"),
@@ -5837,6 +6003,7 @@ mod tests {
             count: 1,
             ticks: 0,
             health: 5,
+            following: None,
         };
         let tag = orb_to_nbt(&orb, [0; 4]);
         assert_eq!(tag.get("Fire"), Some(&Tag::Short(0)));
@@ -5900,6 +6067,7 @@ mod tests {
             count: 3,
             ticks: 0,
             health: 5,
+            following: None,
         };
         let tag = orb_to_nbt(&o, [0; 4]);
         let back = orbs_from_nbt(&tag);

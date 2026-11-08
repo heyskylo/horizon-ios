@@ -241,7 +241,7 @@ fn added_issuer_actor_missing_guest_and_restoration_controls() {
         Dim::Overworld,
         Rotation::None,
     );
-    game.track_and_start_runner(vec![info], false, None);
+    game.track_and_start_runner(vec![info], false, None, false);
     assert!(
         game.game_tests
             .runner

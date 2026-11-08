@@ -1131,6 +1131,9 @@ pub struct Extra {
     pub party_jukebox: Option<[i32; 3]>,
     /// The owner's UUID (tamed animals).
     pub owner: Option<[i32; 4]>,
+    /// `Vindicator.isJohnny`: a custom name that was ever `Johnny`, which
+    /// `setCustomName` latches and nothing clears.
+    pub johnny: bool,
     /// Slime/magma cube size (0 = not sized).
     pub size: i32,
     /// Sheep eat-grass / iron golem attack / ravager animation ticks.
@@ -2447,6 +2450,8 @@ pub struct SpawnSetup {
     pub owner_mob: Option<u32>,
     pub home: Option<[i32; 3]>,
     pub life: Option<i32>,
+    /// Whether to skip `finalizeSpawn`'s rolls (e.g. conversions or EntityType.create).
+    pub skip_finalize: bool,
 }
 /// A snapshot of another entity mobs can see this tick.
 #[derive(Clone, Debug)]
@@ -3675,6 +3680,17 @@ impl Mob {
         if !amount.is_finite() {
             amount = f32::MAX;
         }
+        // LivingEntity.hurtServer: inside the hurt cooldown a hit is compared
+        // with `lastHurt` by this incoming amount, before armor and Resistance,
+        // and `actuallyHurt` gets only what it adds.
+        let incoming = amount;
+        let cooldown = self.invulnerable as f32 > 10.0;
+        if cooldown {
+            if incoming <= self.last_hurt {
+                return false;
+            }
+            amount = incoming - self.last_hurt;
+        }
         // LivingEntity.getDamageAfterArmorAbsorb asks `hurtArmor` *before*
         // `CombatRules.getDamageAfterAbsorb`, so a worn piece wears by the
         // damage the armour, toughness and enchantment reductions have not
@@ -3736,22 +3752,18 @@ impl Mob {
         let mut knock = true;
         // What came off the health, for `LivingDamageEvent.Post`.
         let mut taken = 0.0;
-        let dealt = if self.invulnerable as f32 > 10.0 {
-            if amount <= self.last_hurt {
-                return false;
-            }
-            let dealt = amount - self.last_hurt;
+        let dealt = if cooldown {
             if absorbed {
-                self.hurt_wolf_armor(dealt);
+                self.hurt_wolf_armor(amount);
             } else {
-                let through = self.soak_hit(dealt, &source);
+                let through = self.soak_hit(amount, &source);
                 taken = self.hurt_health(through, &source);
             }
-            self.last_hurt = amount;
+            self.last_hurt = incoming;
             knock = false;
-            dealt
+            amount
         } else {
-            self.last_hurt = amount;
+            self.last_hurt = incoming;
             self.invulnerable = 20;
             if absorbed {
                 self.hurt_wolf_armor(amount);
@@ -4255,16 +4267,24 @@ impl Mob {
     fn apply_death_effect(&mut self, effect: &crate::items::ConsumeEffect) {
         use crate::items::ConsumeEffect;
         match effect {
-            // `LivingEntity.removeAllEffects`: the absorption hearts go with it.
+            // `LivingEntity.removeAllEffects` -> `onEffectsRemoved` ->
+            // `refreshDirtyAttributes` -> `onAttributeUpdated(MAX_ABSORPTION)`:
+            // the absorption amount is clamped to the remaining maximum.
             ConsumeEffect::ClearAllEffects => {
+                let had_absorption = self.has_effect("minecraft:absorption");
+                let had_boost = self.has_effect("minecraft:health_boost");
                 self.extra.effect_fallbacks.clear();
-                for e in std::mem::take(&mut self.extra.effects) {
-                    if e.0 == "minecraft:absorption" {
-                        self.absorption = (self.absorption - 4.0 * (e.2 + 1) as f32).max(0.0);
-                    }
+                self.extra.effects.clear();
+                if had_absorption {
+                    self.absorption = self.absorption.min(armor::max_absorption(self));
+                }
+                if had_boost {
+                    finalize::health_boost_changed(self);
                 }
             }
             ConsumeEffect::RemoveEffects(ids) => {
+                let had_absorption = self.has_effect("minecraft:absorption");
+                let had_boost = self.has_effect("minecraft:health_boost");
                 self.extra.effects.retain(|e| {
                     let held = e.0.trim_start_matches("minecraft:");
                     !ids.iter()
@@ -4273,6 +4293,12 @@ impl Mob {
                 self.extra
                     .effect_fallbacks
                     .retain(|h| self.extra.effects.iter().any(|e| e.0 == h.id));
+                if had_absorption && !self.has_effect("minecraft:absorption") {
+                    self.absorption = self.absorption.min(armor::max_absorption(self));
+                }
+                if had_boost && !self.has_effect("minecraft:health_boost") {
+                    finalize::health_boost_changed(self);
+                }
             }
             // `ApplyStatusEffectsConsumeEffect.apply`: one random draw, even at
             // probability 1.
@@ -6474,6 +6500,80 @@ mod visibility_percent_tests {
     }
 }
 
+/// Added controls (H248): `LivingEntity.hurtServer` compares a hit inside
+/// the hurt cooldown, and keeps `lastHurt`, by its incoming amount; the
+/// reductions (`actuallyHurt`) get only the accepted difference.
+#[cfg(test)]
+mod hurt_cooldown_incoming_tests {
+    use super::*;
+
+    fn mob(species: Species) -> Mob {
+        let mut kind = (*sensor_scan_tests::kind()).clone();
+        kind.species = species;
+        let mut m = Mob::new(1, Arc::new(kind), Vec3::ZERO, 0.0);
+        m.attrs.max_health = 40.0;
+        m.health = 40.0;
+        m
+    }
+
+    #[test]
+    fn full_resistance_keeps_the_incoming_amounts_and_takes_a_stronger_hit() {
+        let mut m = mob(Species::Pig);
+        m.extra.effects.push(("minecraft:resistance", 600, 4));
+        assert!(m.damage(1.0, Damage::of(DamageKind::Generic)));
+        assert_eq!((m.health, m.invulnerable, m.last_hurt), (40.0, 20, 1.0));
+        assert!(!m.damage(1.0, Damage::of(DamageKind::Generic)));
+        assert!(m.damage(2.0, Damage::of(DamageKind::Generic)));
+        assert_eq!((m.health, m.invulnerable, m.last_hurt), (40.0, 20, 2.0));
+        assert!(!m.damage(1.5, Damage::of(DamageKind::Generic)));
+        assert_eq!(m.last_hurt, 2.0);
+    }
+
+    #[test]
+    fn the_armor_effectiveness_callback_runs_only_for_accepted_hits() {
+        let mut m = mob(Species::Pig);
+        m.extra.chest = Some("minecraft:iron_chestplate".into());
+        let mut calls = 0;
+        let mut breach = |f: f32| {
+            calls += 1;
+            f
+        };
+        assert!(m.damage_with(4.0, Damage::of(DamageKind::Cactus), Some(&mut breach)));
+        assert!(!m.damage_with(4.0, Damage::of(DamageKind::Cactus), Some(&mut breach)));
+        assert!(m.damage_with(8.0, Damage::of(DamageKind::Cactus), Some(&mut breach)));
+        assert_eq!(calls, 2);
+        assert_eq!(m.last_hurt, 8.0);
+    }
+
+    #[test]
+    fn absorption_soaks_the_accepted_difference() {
+        let mut m = mob(Species::Pig);
+        m.absorption = 1.5;
+        assert!(m.damage(1.0, Damage::of(DamageKind::Generic)));
+        assert_eq!((m.health, m.absorption), (40.0, 0.5));
+        // 3 after 1: the difference 2, the last 0.5 absorption first.
+        assert!(m.damage(3.0, Damage::of(DamageKind::Generic)));
+        assert_eq!((m.health, m.absorption, m.last_hurt), (38.5, 0.0, 3.0));
+    }
+
+    #[test]
+    fn a_horse_armor_wears_by_the_accepted_difference() {
+        let mut m = mob(Species::Horse);
+        m.extra.body = Some("minecraft:iron_horse_armor".into());
+        assert!(m.damage(4.0, Damage::of(DamageKind::Cactus)));
+        assert!(m.damage(8.0, Damage::of(DamageKind::Cactus)));
+        let worn: Vec<f32> = m
+            .outbox
+            .iter()
+            .filter_map(|e| match e {
+                MobEvent::ArmorHurt { amount, .. } => Some(*amount),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(worn, [4.0, 4.0]);
+    }
+}
+
 #[cfg(test)]
 mod hidden_speed_mob_tick_tests {
     use super::*;
@@ -6582,5 +6682,104 @@ mod hidden_speed_mob_tick_tests {
         assert!(m.extra.hidden_effects.contains(&"minecraft:speed"));
         assert!(!m.extra.effect_fallbacks[0].ambient);
         assert!(m.extra.effect_fallbacks[0].visible);
+    }
+
+    #[test]
+    fn health_boost_death_effect_clear_clamps_health() {
+        let mut kind = (*sensor_scan_tests::kind()).clone();
+        kind.id = "minecraft:pig".into();
+        kind.species = Species::Pig;
+        let mut m = Mob::new(202, Arc::new(kind), Vec3::ZERO, 0.0);
+        finalize::set_base(&mut m, finalize::Attr::MaxHealth, 10.0);
+        m.add_effect("health_boost", 200, 1);
+        assert_eq!(m.attrs.max_health, 18.0);
+        m.health = 18.0;
+        m.apply_death_effect(&crate::items::ConsumeEffect::ClearAllEffects);
+        assert_eq!(m.attrs.max_health, 10.0);
+        assert_eq!(m.health, 10.0);
+    }
+
+    #[test]
+    fn consume_effect_removal_clamps_absorption_to_remaining_maximum() {
+        use horizon_world::attributes::entity::Catalog;
+        let bits = |v: f64| format!("{:016x}", v.to_bits());
+        let catalog = Arc::new(
+            Catalog::from_json(&serde_json::json!({
+                "data_version": horizon_world::DATA_VERSION,
+                "attributes": [
+                    {"id":"minecraft:max_absorption", "default":bits(0.0), "min":bits(0.0), "max":bits(2048.0), "syncable":true}
+                ],
+                "entities": {"minecraft:pig":{"minecraft:max_absorption":bits(0.0)}}
+            }))
+            .unwrap(),
+        );
+        let key = catalog.id("minecraft:max_absorption").unwrap();
+
+        let mut kind = (*sensor_scan_tests::kind()).clone();
+        kind.id = "minecraft:pig".into();
+        kind.species = Species::Pig;
+        let kind = Arc::new(kind);
+
+        // Case 1: Base 0 mob with Absorption I (granting 4.0 absorption hearts, max_absorption 4.0).
+        // On ClearAllEffects, max_absorption becomes 0.0, amount drops to 0.0.
+        let mut m0 = Mob::new(1, kind.clone(), Vec3::ZERO, 0.0);
+        m0.add_effect("absorption", 600, 0);
+        assert_eq!(armor::max_absorption(&m0), 4.0);
+        assert_eq!(m0.absorption, 4.0);
+        m0.apply_death_effect(&crate::items::ConsumeEffect::ClearAllEffects);
+        assert_eq!(
+            m0.absorption, 0.0,
+            "base 0 mob loses absorption on ClearAllEffects"
+        );
+
+        // Case 2: Base 20 mob with Absorption I (granting 4.0 absorption hearts, max_absorption 24.0).
+        // On ClearAllEffects, max_absorption becomes 20.0; amount 4.0 is <= 20.0, so it keeps 4.0.
+        let mut m20 = Mob::new(2, kind.clone(), Vec3::ZERO, 0.0);
+        let mut attrs = catalog.create("minecraft:pig").unwrap();
+        attrs.edit(key, |value, observer| {
+            value.set_base_value(20.0, observer).unwrap();
+        });
+        m20.extra.armor_attributes = Some(Box::new(attrs));
+        m20.add_effect("absorption", 600, 0);
+        assert_eq!(armor::max_absorption(&m20), 24.0);
+        assert_eq!(m20.absorption, 4.0);
+        m20.apply_death_effect(&crate::items::ConsumeEffect::ClearAllEffects);
+        assert_eq!(
+            m20.absorption, 4.0,
+            "base 20 mob keeps absorption on ClearAllEffects"
+        );
+
+        // Case 3: Base 20 mob with Absorption I and absorption raised to 24.0.
+        // On RemoveEffects(["minecraft:absorption"]), remaining max_absorption is 20.0,
+        // so amount 24.0 is clamped to 20.0.
+        let mut m20_clamp = Mob::new(3, kind.clone(), Vec3::ZERO, 0.0);
+        let mut attrs3 = catalog.create("minecraft:pig").unwrap();
+        attrs3.edit(key, |value, observer| {
+            value.set_base_value(20.0, observer).unwrap();
+        });
+        m20_clamp.extra.armor_attributes = Some(Box::new(attrs3));
+        m20_clamp.add_effect("absorption", 600, 0);
+        m20_clamp.absorption = 24.0;
+        m20_clamp.apply_death_effect(&crate::items::ConsumeEffect::RemoveEffects(vec![
+            "minecraft:absorption".into(),
+        ]));
+        assert_eq!(
+            m20_clamp.absorption, 20.0,
+            "base 20 mob clamps absorption to 20.0 on RemoveEffects"
+        );
+
+        // Case 4: Base 0 mob with Absorption I (granting 4.0 absorption hearts, max_absorption 4.0).
+        // On RemoveEffects(["minecraft:absorption"]), remaining max_absorption is 0.0,
+        // so amount drops to 0.0.
+        let mut m0_remove = Mob::new(4, kind, Vec3::ZERO, 0.0);
+        m0_remove.add_effect("absorption", 600, 0);
+        assert_eq!(m0_remove.absorption, 4.0);
+        m0_remove.apply_death_effect(&crate::items::ConsumeEffect::RemoveEffects(vec![
+            "minecraft:absorption".into(),
+        ]));
+        assert_eq!(
+            m0_remove.absorption, 0.0,
+            "base 0 mob loses absorption on RemoveEffects"
+        );
     }
 }

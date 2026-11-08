@@ -1,0 +1,14 @@
+{
+  "hooks": [
+    {
+      "name": "fishing_medium",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_fishing_medium",
+      "neoforge": "none (FishingHook only fishes in water; lava-fishing mods replace the hook entity)",
+      "side": "both",
+      "mod_api": {"contract": "replace", "out": "medium"}
+    }
+  ],
+  "rust_summary": "a fishing bobber outside water floating and fishing where a mod says (`native_fishing_medium`).",
+  "doc_summary": "`native_fishing_medium(dimension, hook, position, owner, medium)`: a fishing bobber that is flying or floating and not in water asks the mods, each tick on the server and on the clients that draw it, whether its spot is a fishing medium (lava, the void below an island, a cloud). The first `Some(NativeFishingMedium)` makes it one: below its `surface` the bobber floats and fishes as in still water, a fish comes after `lure_ticks` when set, and a catch rolls its `loot_table` (vanilla's `minecraft:gameplay/fishing` when None). No answer keeps vanilla: the bobber falls. Bundles need \"hooks\": @API:fishing_medium@.",
+  "comments": ["crates/horizon-client/src/game/fishing.rs"]
+}

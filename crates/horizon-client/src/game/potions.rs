@@ -431,12 +431,9 @@ impl Game<'_> {
             }
             for _ in 0..count {
                 // spawnSlimeOffspring: a size 2 slime half a block up.
-                if let Some(id) = self.spawn_mob_for(
-                    "minecraft:slime",
-                    [feet.x, feet.y + 0.5, feet.z],
-                    false,
-                    true,
-                ) && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
+                if let Some(id) =
+                    self.spawn_mob_raw("minecraft:slime", [feet.x, feet.y + 0.5, feet.z], false)
+                    && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
                 {
                     horizon_client::mobs::cube::set_size(m, 2);
                 }
@@ -514,7 +511,7 @@ impl Game<'_> {
     /// (`horizon_client::mobs::infested_silverfish`).
     pub(super) fn spawn_infested(&mut self, at: [f64; 3], velocities: Vec<Vec3>) {
         for velocity in velocities {
-            if let Some(id) = self.spawn_mob_for("minecraft:silverfish", at, false, true)
+            if let Some(id) = self.spawn_mob_raw("minecraft:silverfish", at, false)
                 && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
             {
                 m.velocity = velocity;

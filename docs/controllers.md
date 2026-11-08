@@ -199,7 +199,7 @@ the crafting result, armour to the player's grid.
 | Y | quick move (shift-click) in inventories; on the pause menu, moves the focus to the exit button, for A to confirm |
 | View | throw one item from the focused slot (Q) |
 | Left stick click | throw the focused stack (Ctrl+Q) |
-| LB / RB | previous / next tab (Create World, Player Social, the graphics settings' sidebar) |
+| LB / RB | previous / next tab (Create World, Player Social, the settings shell's page list, as on Graphics) |
 | Right stick | scroll the list, wherever the focus is: the focus stays on its row (when the row leaves the view, on the nearest one still in view), no value changes, and nothing scrolls under the on-screen keyboard |
 
 - **Tooltips**: an options page's tooltip hangs from the focused widget's bottom left while the pad's focus drives
@@ -211,6 +211,12 @@ the crafting result, armour to the player's grid.
   faster while held). A or B lets go and keeps the value, and up or down lets go
   and moves on. Until then left and right move the focus, so passing over a
   slider doesn't change it.
+- **Choices on the settings shell** (Extras, Graphics: a value between `<` `>`): left and right step the
+  focused one back and on at once, as its arrows show, and A steps it on. They are a press and a Shift press
+  (`Screen::press` with `back`), so Undo and saving follow as for a click. Up and down leave the row, and LB
+  and RB go to the page list (the previous or next page, focused); a choice declares itself with
+  `widgets::steps_value`. Stepping at once rather than after A, as sliders do, keeps A's step and adds no
+  mode to find: passing over a choice with up and down never changes it.
 - **The server list**: the bumpers move the selected server up or down, as its arrows do.
 - **Lists** follow focus: a step out of a list that can still scroll that way
   scrolls it and lands on the next row once it is drawn, so every row can be
@@ -245,6 +251,8 @@ most for the narrator: the focused widget is the narration's focused one.
   and right change the value (one pixel per press, `1 / (width - 8)`);
   focused with an arrow they move the focus until Enter lets them change
   it. Enter toggles that. Up and down always move the focus.
+- **Choices on the settings shell**: left and right step the focused one back and on, as the D-pad does;
+  Tab and Shift+Tab, up and down leave it.
 - **Text fields** keep left and right for their caret (`EditBox.keyPressed`),
   and Enter and Space for themselves; Tab, up and down leave them. Focus
   landing on a field focuses it with the caret at the end; leaving it

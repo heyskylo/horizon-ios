@@ -1122,6 +1122,28 @@ fn axolotl_air_supply(m: &mut Mob, w: &MobWorld) {
         }
     }
 }
+/// `Nautilus.baseTick`: `LivingEntity.baseTick` refills the air of this
+/// water breather, then, unless it has no AI, `Nautilus.handleAirSupply`
+/// takes it back out of water, where the nautilus dries out.
+fn nautilus_air_supply(m: &mut Mob) {
+    const MAX_AIR: i32 = 300;
+    let before = m.air;
+    if m.alive() {
+        m.air = (m.air + 4).min(MAX_AIR);
+    }
+    if m.no_ai {
+        return;
+    }
+    if m.alive() && !m.fluids.in_water {
+        m.air = before - 1;
+        if m.air <= -20 {
+            m.air = 0;
+            m.damage(2.0, Damage::of(DamageKind::DryOut));
+        }
+    } else {
+        m.air = MAX_AIR;
+    }
+}
 /// `Entity.isInWall` (minus the noPhysics early-out, which the caller applies):
 /// visit every cell covered by the thin eye box and ask whether a suffocating
 /// collision shape actually intersects it. Width multiplication is a float.
@@ -1254,7 +1276,9 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) -> bool {
         // superclass Breath/drown path must still process its air.
         if m.species() == Species::Axolotl {
             axolotl_air_supply(m, w);
-        } else if m.kind.flags.needs_water && !(m.no_ai && m.species() == Species::Nautilus) {
+        } else if m.species() == Species::Nautilus {
+            nautilus_air_supply(m);
+        } else if m.kind.flags.needs_water {
             if !m.fluids.in_water {
                 m.air -= 1;
                 if m.air == -20 {
@@ -3027,6 +3051,12 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
     // a totem adds its effects to it). An effect a tick appends ticks from
     // the next tick on.
     let first = m.extra.effects.len();
+    let old_boost_amp = m
+        .extra
+        .effects
+        .iter()
+        .find(|e| e.0 == "minecraft:health_boost")
+        .map(|e| e.2);
     let mut i = 0;
     while i < m.extra.effects.len() && i < first {
         let (effect, amp) = (m.extra.effects[i].0, m.extra.effects[i].2);
@@ -3114,11 +3144,6 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
         .effects
         .iter()
         .any(|e| e.0 == "minecraft:absorption" && e.1 <= 0 && e.1 != -1);
-    let boost_gone = m
-        .extra
-        .effects
-        .iter()
-        .any(|e| e.0 == "minecraft:health_boost" && e.1 <= 0 && e.1 != -1);
     m.extra.effects.retain(|e| e.1 > 0 || e.1 == -1);
     // LivingEntity.onEffectsRemoved -> refreshDirtyAttributes ->
     // onAttributeUpdated(MAX_ABSORPTION): the amount is clamped to the
@@ -3126,8 +3151,14 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
     if absorption_gone {
         m.absorption = m.absorption.min(super::armor::max_absorption(m));
     }
-    // LivingEntity.onEffectsRemoved -> refreshDirtyAttributes.
-    if boost_gone {
+    // LivingEntity.onEffectsRemoved / onEffectUpdated -> refreshDirtyAttributes.
+    let new_boost_amp = m
+        .extra
+        .effects
+        .iter()
+        .find(|e| e.0 == "minecraft:health_boost")
+        .map(|e| e.2);
+    if old_boost_amp != new_boost_amp {
         super::finalize::health_boost_changed(m);
     }
     m.extra

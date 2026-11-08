@@ -128,6 +128,7 @@ pub mod test_block;
 pub mod test_instance_block;
 pub mod testgen;
 pub mod title_edition;
+pub mod touch;
 pub mod trims;
 pub mod ui;
 pub mod vault;

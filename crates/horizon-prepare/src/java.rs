@@ -3,6 +3,7 @@
 
 use std::ffi::OsStr;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -338,6 +339,37 @@ fn find_tools(major: i64, more: &[PathBuf], compiler: bool) -> Result<Jdk, Strin
     }
 }
 
+/// Add a repair hint only for a failure the exporter actually reported.
+pub(crate) fn export_failure(error: String, java: &Path, log: &Path) -> String {
+    // An incomplete JDK can still pass `java -version`. Diagnose its actual failure,
+    // rather than requiring one vendor's runtime layout from every Java installation.
+    let mut bytes = Vec::new();
+    let read = fs::File::open(log).and_then(|file| file.take(64 * 1024).read_to_end(&mut bytes));
+    if read.is_ok()
+        && String::from_utf8_lossy(&bytes).lines().any(|line| {
+            let missing = [
+                "java.io.FileNotFoundException: ",
+                "java.nio.file.NoSuchFileException: ",
+            ]
+            .into_iter()
+            .find_map(|exception| line.split_once(exception).map(|(_, path)| path));
+            missing.is_some_and(|path| {
+                ["/lib/tzdb.dat", r"\lib\tzdb.dat"]
+                    .into_iter()
+                    .filter_map(|name| path.split_once(name).map(|(_, rest)| rest))
+                    .any(|rest| rest.is_empty() || rest.starts_with(" ("))
+            })
+        })
+    {
+        return format!(
+            "{error}\nJava at {} cannot load its timezone data (lib/tzdb.dat). \
+             Repair that Java installation or select another compatible Java runtime.",
+            java.display()
+        );
+    }
+    error
+}
+
 /// A classpath with the platform's separator.
 pub fn classpath<'a>(paths: impl IntoIterator<Item = &'a Path>) -> String {
     let separator = if cfg!(windows) { ";" } else { ":" };
@@ -414,6 +446,53 @@ fn run(mut command: Command, log: &fs::File) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_timezone_data_explains_which_java_to_repair() {
+        let dir = std::env::temp_dir().join(format!("horizon-java-tzdb-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("export.log");
+        let java = Path::new("selected-runtime/bin/java");
+        for failure in [
+            r"Caused by: java.io.FileNotFoundException: C:\Java\jdk-25\lib\tzdb.dat (missing)",
+            "Caused by: java.nio.file.NoSuchFileException: /opt/java/lib/tzdb.dat",
+            "Caused by: java.nio.file.NoSuchFileException: /opt/java (25)/lib/tzdb.dat",
+        ] {
+            fs::write(&log, failure).unwrap();
+            let error = export_failure("java failed (-1)".into(), java, &log);
+            assert!(error.contains("java failed (-1)"), "{error}");
+            assert!(error.contains("selected-runtime"), "{error}");
+            assert!(error.contains("timezone data"), "{error}");
+            assert!(error.contains("Repair"), "{error}");
+        }
+        fs::remove_file(log).unwrap();
+        fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn unrelated_export_failures_keep_their_original_diagnostic() {
+        let dir = std::env::temp_dir().join(format!("horizon-java-other-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("export.log");
+        for text in [
+            "Using tzdb.dat\njava.io.FileNotFoundException: missing-pack.json",
+            "java.lang.IllegalStateException: tzdb.dat was mentioned",
+            "java.io.FileNotFoundException: /opt/java/lib/not-tzdb.dat.backup",
+            "java.io.FileNotFoundException: /pack/tzdb.dat (missing)",
+        ] {
+            fs::write(&log, text).unwrap();
+            assert_eq!(
+                export_failure("java failed (-1)".into(), Path::new("java"), &log),
+                "java failed (-1)"
+            );
+        }
+        fs::remove_file(&log).unwrap();
+        assert_eq!(
+            export_failure("java failed (-1)".into(), Path::new("java"), &log),
+            "java failed (-1)"
+        );
+        fs::remove_dir(dir).unwrap();
+    }
 
     #[test]
     fn jvms_ignore_the_players_global_options() {
