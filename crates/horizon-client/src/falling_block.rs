@@ -119,11 +119,19 @@ pub fn bounds(position: Vec3) -> Aabb {
 pub fn web_multiplier() -> Vec3 {
     Vec3::new(0.25, f64::from(0.05_f32), 0.25)
 }
+/// `PowderSnowBlock.entityInside`'s `makeStuckInBlock` multiplier for an
+/// entity that is not living: the next move goes at 0.9F across, 1.5 down.
+pub fn powder_snow_multiplier() -> Vec3 {
+    Vec3::new(f64::from(0.9_f32), 1.5, f64::from(0.9_f32))
+}
 /// What a block a falling block moves through does to it in `entityInside`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Inside {
     /// `WebBlock`: `Entity.makeStuckInBlock`.
     Cobweb,
+    /// `PowderSnowBlock`, for an entity that is not living:
+    /// `Entity.makeStuckInBlock`.
+    PowderSnow,
     /// `BubbleColumnBlock`: lifts or drags it.
     BubbleColumn(BubbleColumn),
     Nothing,
@@ -132,8 +140,9 @@ pub enum Inside {
 /// (`from` to `to`; `original` the move it asked for, when the move was
 /// recorded; `velocity` already zeroed on the axes `Entity.move` collided on):
 /// the blocks it went through (`block` says what each is) push it and reset
-/// its fall. Returns whether a cobweb made it stuck, and adds to `surfaces` the
-/// column blocks it is at the top of (`Entity.sendBubbleColumnParticles`).
+/// its fall. Returns the multiplier of the last block that made it stuck
+/// (`Entity.makeStuckInBlock`), and adds to `surfaces` the column blocks it is
+/// at the top of (`Entity.sendBubbleColumnParticles`).
 pub fn apply_effects_from_blocks(
     from: Vec3,
     to: Vec3,
@@ -142,13 +151,17 @@ pub fn apply_effects_from_blocks(
     fall_distance: &mut f64,
     surfaces: &mut Vec<BlockPos>,
     mut block: impl FnMut(BlockPos) -> Inside,
-) -> bool {
-    let mut stuck = false;
+) -> Option<Vec3> {
+    let mut stuck = None;
     inside_blocks(from, to, original, |p, intersects| match block(p) {
         Inside::Cobweb => {
             // makeStuckInBlock forgets the fall.
             *fall_distance = 0.0;
-            stuck = true;
+            stuck = Some(web_multiplier());
+        }
+        Inside::PowderSnow => {
+            *fall_distance = 0.0;
+            stuck = Some(powder_snow_multiplier());
         }
         // BubbleColumnBlock.entityInside acts only when intersecting.
         Inside::BubbleColumn(column) if intersects => {
@@ -323,8 +336,8 @@ mod tests {
                 }
             },
         );
-        assert_eq!(fall == 0.0, stuck);
-        stuck
+        assert_eq!(fall == 0.0, stuck.is_some());
+        stuck.is_some()
     }
     #[test]
     fn a_cobweb_on_the_path_or_at_the_end_holds_a_falling_block() {
@@ -387,7 +400,7 @@ mod tests {
                 &mut tops.borrow_mut(),
                 block,
             );
-            assert!(!stuck);
+            assert!(stuck.is_none());
             (velocity.y, fall)
         };
         let near = |a: f64, b: f64| (a - b).abs() < 1.0e-9;

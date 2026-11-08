@@ -27,6 +27,13 @@ pub(super) struct PrimedTnt {
     pub velocity: Vec3,
     pub fuse: i32,
     pub on_ground: bool,
+    /// `Entity.fallDistance` (`fall_distance` in its save).
+    pub fall_distance: f64,
+    /// `Entity.stuckSpeedMultiplier`: set by powder snow or a cobweb it is
+    /// in, it scales the next move, which then starts from rest.
+    pub stuck: Vec3,
+    /// `Entity.wasTouchingWater`, from its last immersion update.
+    pub in_water: bool,
     pub owner: Option<Who>,
     pub guest: Option<u32>,
     /// `Entity.noGravity` (`NoGravity` in its save).
@@ -89,19 +96,45 @@ impl PrimedTnt {
     ) -> Result<Vec<BlockPos>> {
         self.previous = self.position;
         self.velocity.y -= self.get_gravity();
+        let mut wanted = self.velocity;
+        if self.stuck.length_squared() > 1.0e-7 {
+            wanted = wanted.multiply(self.stuck);
+            self.stuck = Vec3::ZERO;
+            self.velocity = Vec3::ZERO;
+        }
+        // PowderSnowBlock.getCollisionShape: a top that holds it once it has
+        // fallen more than 2.5 blocks, read through its entity context.
         let scene = SceneCollisions {
             world,
             binding: collision,
-            subject: None,
+            subject: Some(horizon_client::collisions::PowderSnowSubject {
+                fall_distance: self.fall_distance,
+                ..Default::default()
+            }),
         };
-        let wanted = self.velocity;
+        let context = horizon_world::collision_context::CollisionContext::for_entity(
+            horizon_world::collision_context::CollisionEntity {
+                identity: horizon_world::entity_obstruction::EntityIdentity(u64::from(self.id)),
+                kind: horizon_world::collision_context::EntityContextKind::Other,
+                y: self.position.y,
+                descending: false,
+                main_hand: None,
+            },
+            false,
+        );
         // Entity.collide: the world border's walls and the entities that
         // `canBeCollidedWith` it (a boat, a shulker) stop it too.
         let border = border.map(|b| (b, [self.position.x, self.position.z]));
-        let moved = scene
-            .resolve_in_border_with(self.bounds(), wanted, 0.0, self.on_ground, border, entities)
-            .unwrap_or(Vec3::ZERO);
-        if horizon_client::entities::move_applies(wanted, moved) {
+        let moved = horizon_client::collisions::EntityCollisions {
+            blocks: scene,
+            entities,
+            border,
+        }
+        .resolve_with_context(self.bounds(), wanted, 0.0, self.on_ground, context)
+        .unwrap_or(Vec3::ZERO);
+        let from = self.position;
+        let recorded = horizon_client::entities::move_applies(wanted, moved);
+        if recorded {
             self.position = Vec3::new(
                 self.position.x + moved.x,
                 self.position.y + moved.y,
@@ -109,6 +142,14 @@ impl PrimedTnt {
             );
         }
         self.on_ground = wanted.y < 0.0 && moved.y != wanted.y;
+        // Entity.checkFallDamage: out of water, each step down is narrowed to
+        // a float before it adds to the fall; landing forgets it.
+        if !self.in_water && moved.y < 0.0 {
+            self.fall_distance -= f64::from(moved.y as f32);
+        }
+        if self.on_ground {
+            self.fall_distance = 0.0;
+        }
         if moved.x != wanted.x {
             self.velocity.x = 0.0;
         }
@@ -122,8 +163,9 @@ impl PrimedTnt {
                 (self.position.y - f64::from(1.0e-5_f32)).floor() as i32,
                 self.position.z.floor() as i32,
             );
+            // Restitution reads the velocity, at rest after a stuck move.
             self.velocity.y = horizon_client::entities::vertical_collision_velocity(
-                wanted.y,
+                self.velocity.y,
                 moved.y,
                 0.04,
                 wanted.y < 0.0,
@@ -137,12 +179,31 @@ impl PrimedTnt {
                 horizon_client::motion::block_speed_factor_at(world, blocks, self.position, None);
             self.velocity = horizon_world::entity_move::scale_by_block_speed(self.velocity, factor);
         }
-        // Entity.applyEffectsFromBlocks: a bubble column lifts or drags it, and the
+        // Entity.applyEffectsFromBlocks: powder snow and cobwebs it went
+        // through make it stuck, a bubble column lifts or drags it, and the
         // columns it is at the top of send their surface particles.
         let mut tops = Vec::new();
-        self.push_by_bubble_column_over(world, assets.registry, facts, collision, |pos| {
+        let stuck = horizon_client::falling_block::apply_effects_from_blocks(
+            from,
+            self.position,
+            recorded.then_some(wanted),
+            &mut self.velocity,
+            &mut self.fall_distance,
+            &mut Vec::new(),
+            |p| match &*facts.get(world.block(p.x, p.y, p.z)).name {
+                "minecraft:powder_snow" => horizon_client::falling_block::Inside::PowderSnow,
+                "minecraft:cobweb" => horizon_client::falling_block::Inside::Cobweb,
+                _ => horizon_client::falling_block::Inside::Nothing,
+            },
+        );
+        if let Some(multiplier) = stuck {
+            self.stuck = multiplier;
+        }
+        if self.push_by_bubble_column_over(world, assets.registry, facts, collision, |pos| {
             tops.push(pos)
-        });
+        }) {
+            self.fall_distance = 0.0;
+        }
         if self.on_ground {
             // Entity.applyEffectsFromBlocks -> SlimeBlock.stepOn.
             let under = world.block(
@@ -168,8 +229,13 @@ impl PrimedTnt {
         }
         self.fuse -= 1;
         if self.fuse > 0 {
-            // PrimedTnt updates immersion after moving and decrementing its fuse.
-            self.push_by_fluid(world, fluids);
+            // PrimedTnt updates immersion after moving and decrementing its
+            // fuse; water forgets the fall.
+            let (water, _) = self.push_by_fluid(world, fluids);
+            self.in_water = water > 0.0;
+            if self.in_water {
+                self.fall_distance = 0.0;
+            }
         }
         Ok(tops)
     }
@@ -261,6 +327,9 @@ impl Game<'_> {
             velocity: Vec3::new(-rot.sin() * 0.02, f64::from(0.2f32), -rot.cos() * 0.02),
             fuse,
             on_ground: false,
+            fall_distance: 0.0,
+            stuck: Vec3::ZERO,
+            in_water: false,
             owner,
             guest,
             // PrimedTnt's constructor: 4 when nothing sets it.
@@ -354,6 +423,7 @@ impl Game<'_> {
             t.position,
             t.velocity,
             t.on_ground,
+            t.fall_distance,
             t.fuse,
             t.power,
             t.block_state_nbt(self.pack.assets.registry),
@@ -657,6 +727,9 @@ mod tests {
             velocity: Vec3::ZERO,
             fuse: 400,
             on_ground: false,
+            fall_distance: 0.0,
+            stuck: Vec3::ZERO,
+            in_water: false,
             owner: None,
             guest: None,
             no_gravity: true,
@@ -674,6 +747,7 @@ mod tests {
                 tnt.position,
                 tnt.velocity,
                 tnt.on_ground,
+                tnt.fall_distance,
                 tnt.fuse,
                 tnt.power,
                 tnt.block_state_nbt(&registry),
@@ -721,6 +795,9 @@ mod tests {
             velocity: Vec3::ZERO,
             fuse: 80,
             on_ground: true,
+            fall_distance: 0.0,
+            stuck: Vec3::ZERO,
+            in_water: false,
             owner: None,
             guest: None,
             power: 4.0,
@@ -764,6 +841,9 @@ mod tests {
                 velocity: Vec3::new(1.5, 0.0, 0.0),
                 fuse: 80,
                 on_ground: true,
+                fall_distance: 0.0,
+                stuck: Vec3::ZERO,
+                in_water: false,
                 owner: None,
                 guest: None,
                 power: 4.0,
@@ -826,6 +906,9 @@ mod tests {
                 velocity: Vec3::new(0.2, 0.0, 0.0),
                 fuse: 80,
                 on_ground: true,
+                fall_distance: 0.0,
+                stuck: Vec3::ZERO,
+                in_water: false,
                 owner: None,
                 guest: None,
                 power: 4.0,
@@ -892,6 +975,9 @@ mod tests {
             velocity: Vec3::ZERO,
             fuse: 80,
             on_ground: false,
+            fall_distance: 0.0,
+            stuck: Vec3::ZERO,
+            in_water: false,
             owner: None,
             guest: None,
             power: 4.0,
@@ -997,6 +1083,9 @@ mod tests {
             velocity: Vec3::ZERO,
             fuse: 80,
             on_ground: false,
+            fall_distance: 0.0,
+            stuck: Vec3::ZERO,
+            in_water: false,
             owner: None,
             guest: None,
             power: 4.0,
@@ -1078,6 +1167,9 @@ mod tests {
             velocity: Vec3::ZERO,
             fuse: 80,
             on_ground: false,
+            fall_distance: 0.0,
+            stuck: Vec3::ZERO,
+            in_water: false,
             owner: None,
             guest: None,
             power: 4.0,
@@ -1220,6 +1312,7 @@ mod tests {
                 t.position,
                 t.velocity,
                 t.on_ground,
+                t.fall_distance,
                 t.fuse,
                 t.power,
                 state,

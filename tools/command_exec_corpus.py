@@ -5767,6 +5767,48 @@ def piston_push_ground():
     return ops
 
 
+def primed_tnt_fall():
+    """#12021: primed TNT is an `Entity`: `checkFallDamage` adds each step down,
+    narrowed to a float, to its double `fall_distance`, which it saves and
+    `/data` reads and writes. `PowderSnowBlock` holds it on a top 0.9 high
+    once that is over 2.5 (`getCollisionShape`), and otherwise makes it stuck
+    (`entityInside` -> `makeStuckInBlock`, 0.9F/1.5/0.9F), so it sinks; a
+    cobweb makes it stuck the same way (0.25/0.05F/0.25)."""
+    sel = '@e[type=minecraft:tnt,tag=tnt_fall,limit=1]'
+    ops = []
+
+    def track(ticks):
+        out = []
+        for _ in range(ticks):
+            out.append({'op': 'tick', 'n': 1})
+            for path in ('Pos', 'Motion', 'fall_distance'):
+                out.append(cmd(f'/data get entity {sel} {path}'))
+        return out
+
+    # block at 32 210 32, summon y, fields, ticks recorded
+    for block, y, fields, ticks in (
+            ('air', 216, 'Motion:[0.0d,-1.0d,0.0d]', 3),
+            ('stone', 211.1, 'fall_distance:3.0d,Motion:[0.0d,-1.0d,0.0d]', 2),
+            ('powder_snow', 216, 'Motion:[0.0d,-1.0d,0.0d]', 8),
+            ('powder_snow', 210.75, 'Motion:[0.0d,0.0d,0.0d]', 4),
+            ('powder_snow', 211.1, 'fall_distance:3.0d,Motion:[0.0d,-1.0d,0.0d]', 4),
+            ('cobweb', 212, 'Motion:[0.0d,-0.5d,0.0d]', 5)):
+        ops += setup('/kill @e[type=!player]', '/fill 28 205 28 36 220 36 air',
+                     '/fill 30 209 30 34 209 34 stone', f'/setblock 32 210 32 {block}',
+                     f'/summon minecraft:tnt 32.5 {y} 32.5 {{fuse:200s,{fields},Tags:["tnt_fall"]}}')
+        ops += track(ticks)
+    # /data writes the field the next fall adds to.
+    ops += setup('/kill @e[type=!player]', '/fill 28 205 28 36 220 36 air',
+                 '/fill 30 209 30 34 209 34 stone',
+                 '/summon minecraft:tnt 32.5 216 32.5 {fuse:200s,NoGravity:1b,Tags:["tnt_fall"]}')
+    ops.append(cmd(f'/data modify entity {sel} fall_distance set value 2.25d'))
+    ops.append(cmd(f'/data get entity {sel} fall_distance'))
+    ops.append(cmd(f'/data merge entity {sel} {{NoGravity:0b,Motion:[0.0d,-0.5d,0.0d]}}'))
+    ops += track(2)
+    ops += setup('/kill @e[type=!player]', '/fill 28 205 28 36 220 36 air')
+    return ops
+
+
 def loaded_ticket_removal(blocks=False):
     """Entity-ticking command visibility after forced tickets leave; FULL is separate."""
     targets = [(d, x, z) for d in range(2, 7)
@@ -6225,6 +6267,7 @@ def groups():
         ('wither spawn', wither_spawn()),
         ('riding teleport', riding_teleport()),
         ('piston entity tick order', piston_entity_tick_order()),
+        ('primed tnt fall', primed_tnt_fall()),
         ('piston push ground', piston_push_ground()),
         ('carpet farms', carpet_farms(cmd, setup)),
         ('passenger teleports', passenger_teleports(cmd, setup)),
