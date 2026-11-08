@@ -233,6 +233,35 @@ mod tests {
         assert_eq!(screen.wheel_step(&mut s, ExtraRow::Zoom(0), true), None);
     }
 
+    /// Extras has no Undo: a change leaves none to press or reach.
+    #[test]
+    fn a_change_on_extras_leaves_no_undo() {
+        use crate::settings_shell::{Columns, Target};
+        use winit::keyboard::KeyCode as K;
+        let mut s = Settings::default();
+        let mut shell = Shell::<ExtrasScreen>::default();
+        let at = shell.point_at(&s, SIZE, ExtraRow::Item(Item::Sort));
+        assert!(
+            !shell
+                .click(&mut s, at, SIZE, false, false, false)
+                .is_empty()
+        );
+        assert!(s.extras.sort && !shell.changed());
+        let cols = Columns::of(SIZE.0, SIZE.1).with_note_lines(NOTE_LINES);
+        let [x, y, ..] = cols.button(1);
+        assert!(
+            shell
+                .click(&mut s, (x + 2.0, y + 2.0), SIZE, false, false, false)
+                .is_empty()
+        );
+        assert!(s.extras.sort);
+        let reached = (0..100).any(|_| {
+            shell.key(&mut s, K::Tab, None, false, SIZE);
+            shell.focused() == Some(Target::Undo)
+        });
+        assert!(!reached);
+    }
+
     /// A page with no page list has Done under the search field: Down goes to the first row
     /// instead, from the keys and, as the frame declares it, from a controller's focus.
     #[test]

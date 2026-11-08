@@ -208,6 +208,18 @@ pub fn layout(solid: &[TerrainVertex], tints: &[u32]) -> Vec<[u32; 6]> {
         .zip(tints)
         .map(|(q, &t)| pack_quad(q, t))
         .collect();
+    place(&records, quads)
+}
+
+/// A mesh's solid range from a record per quad, `None` where no record fits:
+/// the records in mesh order, padded to a multiple of 4 slots, then the four
+/// vertices of each quad without one, whose record holds the distance to them
+/// (`FULL`). Empty where that would not be smaller than the vertices, which is
+/// what makes the layout never a loss.
+///
+/// Shared with `lod::packed`, whose records hold a far tile's quads instead but
+/// spill and pad the same way.
+pub fn place(records: &[Option<[u32; 6]>], quads: &[[TerrainVertex; 4]]) -> Vec<[u32; 6]> {
     let n = quads.len();
     let packed = records.iter().filter(|r| r.is_some()).count();
     let full = n - packed;
@@ -229,7 +241,7 @@ pub fn layout(solid: &[TerrainVertex], tints: &[u32]) -> Vec<[u32; 6]> {
         }));
     }
     out.resize(n + pad, [0; 6]);
-    for (q, record) in quads.iter().zip(&records) {
+    for (q, record) in quads.iter().zip(records) {
         if record.is_none() {
             out.extend(
                 q.iter()

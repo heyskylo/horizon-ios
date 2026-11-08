@@ -1251,5 +1251,7 @@
   "Buy": "Գնել",
   "Gift": "Նվիրել",
   "Found on this computer": "Գտնվել են այս համակարգչում",
-  "Looks": "Կերպարներ"
+  "Looks": "Կերպարներ",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Ձեր համակարգի բանալիների կապը չպատասխանեց {seconds} վայրկյանի ընթացքում։ Համոզվեք, որ այն աշխատում է և ապակողպված է, ապա վերագործարկեք գործարկիչը։",
+  "Can't read {name}'s sign-in: {why}": "Հնարավոր չէ կարդալ {name}-ի մուտքը՝ {why}"
 }

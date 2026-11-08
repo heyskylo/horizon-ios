@@ -2807,8 +2807,20 @@ impl Game<'_> {
     /// destroy event, the block's drops without a tool or breaker, then its
     /// fluid's block, the block entity spilling its contents on the way.
     pub(super) fn destroy_block_dropping(&mut self, pos: [i32; 3]) -> R<()> {
+        self.destroy_block_dropping_with_breaker(pos, false)
+    }
+    /// `Level.destroyBlock` with entity presence for the direct target's loot.
+    /// The context belongs to this level call and cannot reach later destroys.
+    pub(super) fn destroy_block_dropping_with_breaker(
+        &mut self,
+        pos: [i32; 3],
+        breaker: bool,
+    ) -> R<()> {
         let at = horizon_core::position::BlockPos::new(pos[0], pos[1], pos[2]);
-        self.with_level(|b, level, ticks| b.destroy_block(level, ticks, at, true));
+        self.with_level(|b, level, ticks| {
+            level.drop_breaker_at = breaker.then_some(at);
+            b.destroy_block(level, ticks, at, true)
+        });
         self.process_level_events()
             .map_err(|e| CommandError::new(Text::literal(e.to_string())))
     }

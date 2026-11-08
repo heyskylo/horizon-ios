@@ -6591,6 +6591,8 @@ impl Game<'_> {
         if running {
             self.border.tick();
         }
+        // ClientLevel.tick: the End's sky flash, frozen or not.
+        self.tick_end_flash();
         self.player_border();
         self.tick_remote_entities(running);
         self.tick_random_textures();

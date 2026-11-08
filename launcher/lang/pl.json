@@ -1251,5 +1251,7 @@
   "Buy": "Kup",
   "Gift": "Podaruj",
   "Found on this computer": "Znalezione na tym komputerze",
-  "Looks": "Stylizacje"
+  "Looks": "Stylizacje",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Systemowy pęk kluczy nie odpowiedział w ciągu {seconds} sekund. Upewnij się, że działa i jest odblokowany, a następnie uruchom ponownie launcher.",
+  "Can't read {name}'s sign-in: {why}": "Nie można odczytać logowania konta {name}: {why}"
 }

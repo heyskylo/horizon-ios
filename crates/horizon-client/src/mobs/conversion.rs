@@ -65,6 +65,7 @@ pub fn single(from: &Mob, to: &mut Mob, params: Params) {
     to.extra.leash_player = from.extra.leash_player;
     // convertCommon.
     to.extra.effects = from.extra.effects.clone();
+    to.extra.effect_fallbacks = from.extra.effect_fallbacks.clone();
     to.extra.hidden_effects = from.extra.hidden_effects.clone();
     to.extra.ambient_effects = from.extra.ambient_effects.clone();
     if from.is_baby() {
