@@ -95,7 +95,7 @@ pub(in crate::game) struct OtherEntity {
     pub position: Vec3,
     pub yaw: f32,
     pub pitch: f32,
-    pub item_transformation: Option<super::native_entities::ItemDisplayTransformation>,
+    pub item_transformation: Option<super::native_entities::DisplayTransformation>,
     /// A `minecraft:interaction`'s saved settings; None for every other kind.
     pub interaction: Option<super::interactions::InteractionState>,
     /// Only explicitly loaded leash knots own this BlockAttachedEntity check counter.

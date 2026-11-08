@@ -871,7 +871,10 @@ impl RolledLoot {
     /// Puts the loot table back in place of `Items` while they are still the
     /// roll; false once the container holds anything else.
     pub fn restore(&self, map: &mut Compound) -> bool {
-        if map.get(&"Items".into()) != Some(&self.items) {
+        // An empty shulker box saves no `Items`, which matches an empty roll.
+        let saved = map.get(&"Items".into());
+        let empty = matches!(&self.items, Tag::List(l) if l.is_empty());
+        if saved != Some(&self.items) && !(saved.is_none() && empty) {
             return false;
         }
         map.remove(&"Items".into());

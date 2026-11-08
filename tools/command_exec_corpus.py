@@ -986,6 +986,98 @@ def minecart_numeric_fields():
                        '/tick unfreeze', '/forceload remove 0 0 15 15')
 
 
+def vehicle_saved_ground_and_fall():
+    """Entity.load/saveWithoutId's OnGround and fall_distance on boats and minecarts.
+
+    AbstractBoat.checkFallDamage resets the fall on the ground and adds the drop off it; a cart that loads on
+    the ground slows as one on the ground does. Read after summoning, after one and five ticks, after an
+    unload and reload (frozen, so only the save and the load count), and three ticks later.
+    """
+    x0, y0, z0 = 3264, 300, 3264
+    chunk = [[x0 >> 4, z0 >> 4]]
+    subjects = [('oak_boat', 1, 0, ',OnGround:1b,fall_distance:2.5d'),
+                ('minecart', 4, 0, ',OnGround:1b,fall_distance:2.5d'),
+                ('cherry_boat', 7, 0, ''),
+                ('bamboo_raft', 10, 6, ',Motion:[0d,0d,0d]'),
+                ('minecart', 13, 6, ',Motion:[0d,0d,0d]'),
+                ('command_block_minecart', 1, 0, ',Motion:[0.6d,0d,0d]')]
+    ops = [cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk},
+           cmd(f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} stone', expect_result=256)]
+    for n, (kind, dx, dy, body) in enumerate(subjects, 1):
+        z = z0 + (12 if n == len(subjects) else 4)
+        ops.append(cmd(f'/summon {kind} {x0 + dx}.5 {y0 + dy} {z}.5 {{UUID:[I;12517,0,{n},1]{body}}}',
+                       expect_result=1))
+
+    def reads():
+        for n, (kind, _, _, _) in enumerate(subjects, 1):
+            keys = ['OnGround', 'fall_distance'] + (['Motion'] if kind == 'command_block_minecart' else [])
+            for key in keys:
+                ops.append(cmd(f'/data get entity 000030e5-0000-0000-0000-{n:04x}00000001 {key}'))
+
+    reads()
+    ops.append({'op': 'tick', 'n': 1})
+    reads()
+    ops.append({'op': 'tick', 'n': 4})
+    reads()
+    ops += [cmd('/tick freeze', False), cmd(f'/forceload remove {x0} {z0}', False), {'op': 'tick', 'n': 60},
+            cmd(f'/execute unless loaded {x0} {y0} {z0}', expect_result=1),
+            cmd(f'/forceload add {x0} {z0}', False), {'op': 'wait_chunks', 'chunks': chunk}]
+    reads()
+    ops += [cmd('/tick unfreeze', False), {'op': 'tick', 'n': 3}]
+    reads()
+    return ops + setup(f'/kill @e[type=!player,x={x0},y={y0 - 8},z={z0},dx=16,dy=24,dz=16]',
+                       f'/fill {x0} {y0 - 1} {z0} {x0 + 15} {y0 - 1} {z0 + 15} air',
+                       f'/forceload remove {x0} {z0}')
+
+
+def vehicle_ground_and_fall():
+    """Entity.load reads OnGround (getBooleanOr) and fall_distance (getDoubleOr) for every entity,
+    and Entity.saveWithoutId writes the live values: boats, rafts and minecarts keep both. Frozen
+    first (the loaded values as they are), then live: a boat at rest on stone is on the ground, and
+    a falling boat (AbstractBoat.checkFallDamage) or minecart counts its fall."""
+    ops = setup('/forceload add 256 256 287 287', '/fill 256 199 256 287 199 287 minecraft:stone')
+    ops += [{'op': 'settle', 'required_chunks': [[x, z] for x in (16, 17) for z in (16, 17)]}]
+    ops += setup('/tick freeze')
+    cases = (
+        ('oak_boat', '{OnGround:1b,fall_distance:2.5d}'),
+        ('cherry_chest_boat', '{OnGround:1b,fall_distance:2.5d}'),
+        ('bamboo_raft', '{OnGround:2b,fall_distance:7.25f}'),
+        ('minecart', '{OnGround:1b,fall_distance:2.5d}'),
+        ('command_block_minecart', '{OnGround:1b,fall_distance:1L}'),
+        ('hopper_minecart', '{OnGround:0.5f,fall_distance:2.5d}'),
+        ('tnt_minecart', '{OnGround:1b,fall_distance:2.5d}'),
+    )
+    for i, (kind, nbt) in enumerate(cases):
+        tag = f'veh_fall_{i}'
+        ops += setup(f'/summon {kind} {258 + i * 3}.5 230 258.5 '
+                     f'{{Tags:["{tag}"],NoGravity:1b,{nbt[1:-1]}}}')
+        ops += [cmd(f'/data get entity @e[tag={tag},limit=1] OnGround'),
+                cmd(f'/data get entity @e[tag={tag},limit=1] fall_distance')]
+    ops += setup(*[f'/kill @e[tag=veh_fall_{i}]' for i in range(len(cases))], '/tick unfreeze')
+    # Live: at rest on the stone, falling from 12 blocks up, and floating (NoGravity: no move
+    # down, so the loaded fall stays; Entity.checkFallDamage counts only a drop).
+    ops += setup('/summon oak_boat 260.5 200 270.5 {Tags:["veh_rest"]}',
+                 '/summon minecart 264.5 200 270.5 {Tags:["veh_rest"]}',
+                 '/summon oak_boat 268.5 212 270.5 {Tags:["veh_drop"]}',
+                 '/summon minecart 272.5 212 270.5 {Tags:["veh_drop"]}',
+                 '/summon oak_boat 276.5 220 270.5 {Tags:["veh_float"],NoGravity:1b,fall_distance:2.5d}',
+                 '/summon minecart 280.5 220 270.5 {Tags:["veh_float"],NoGravity:1b,fall_distance:2.5d}')
+    ops += [{'op': 'tick', 'n': 3}]
+    for sel, x0 in (('veh_rest', 260), ('veh_drop', 268), ('veh_float', 276)):
+        for n in (0, 1):
+            target = f'@e[tag={sel},limit=1,sort=nearest,x={x0 + 4 * n}.5,y=200,z=270.5]'
+            ops += [cmd(f'/data get entity {target} OnGround'),
+                    cmd(f'/data get entity {target} fall_distance')]
+    # A boat dropped into a pool: Entity.baseTick's updateFluidInteraction resets the fall in water.
+    ops += setup('/fill 282 200 280 286 202 284 minecraft:water',
+                 '/summon oak_boat 284.5 209 282.5 {Tags:["veh_pool"]}')
+    ops += [{'op': 'tick', 'n': 30},
+            cmd('/data get entity @e[tag=veh_pool,limit=1] fall_distance')]
+    return ops + setup('/kill @e[tag=veh_rest]', '/kill @e[tag=veh_drop]', '/kill @e[tag=veh_float]',
+                       '/kill @e[tag=veh_pool]', '/fill 282 200 280 286 202 284 minecraft:air',
+                       '/fill 256 199 256 287 199 287 minecraft:air', '/forceload remove 256 256 287 287')
+
+
 def enderman_command_damage():
     """DamageCommand -> Enderman.hurtServer: with no living entity behind the damage,
     random.nextInt(10) != 0 teleports the enderman then and there (teleport()), also when
@@ -2861,6 +2953,32 @@ def experience_orb_fall():
         *setup('/kill @e[type=minecraft:experience_orb]', '/fill 20 214 20 28 214 28 minecraft:air'),
         {'op': 'tick', 'n': 5},
     ]
+
+
+def shulker_box_empty_items():
+    """`ShulkerBoxBlockEntity.saveAdditional`: `saveAllItems(output, items,
+    false)` leaves `Items` out for an empty box, placed empty or emptied, and
+    through a chunk unload and reload. A chest (two-argument overload) always
+    writes the list. A box with a loot table keeps it until opened, even one
+    that rolls nothing."""
+    x, z, y = 5184, 5120, 300
+    blocks = [(x, 'shulker_box'), (x + 2, 'red_shulker_box{Items:[{Slot:0b,id:"minecraft:stone",count:1}]}'),
+              (x + 4, 'chest'), (x + 6, 'shulker_box{LootTable:"minecraft:empty"}')]
+
+    def reads():
+        return [cmd(f'/data get block {bx} {y} {z + 8}') for bx, _ in blocks]
+
+    ops = [*setup(f'/forceload add {x} {z}'), {'op': 'wait_chunks', 'chunks': [[x >> 4, z >> 4]]}]
+    ops += [cmd(f'/setblock {bx} {y} {z + 8} {block}', expect_result=1) for bx, block in blocks]
+    ops += reads()
+    ops += [cmd(f'/data remove block {x + 2} {y} {z + 8} Items', expect_result=1)]
+    ops += reads()
+    # Unload the chunk (saving its block entities), then load it again.
+    ops += [*setup(f'/forceload remove {x} {z}'), {'op': 'tick', 'n': 60},
+            cmd(f'/execute unless loaded {x} {y} {z}', expect_result=1),
+            *setup(f'/forceload add {x} {z}'), {'op': 'wait_chunks', 'chunks': [[x >> 4, z >> 4]]}]
+    ops += reads()
+    return ops + setup(f'/fill {x} {y} {z + 8} {x + 6} {y} {z + 8} minecraft:air', f'/forceload remove {x} {z}')
 
 
 def creative_shulker_drops():
@@ -6763,6 +6881,7 @@ def groups():
         ('wither breaks', wither_breaks()),
         ('tnt minecart rails', tnt_minecart_rails()),
         ('creative shulker drops', creative_shulker_drops()),
+        ('shulker box empty Items', shulker_box_empty_items()),
         ('minecart drag', minecart_drag()),
         ('ender dragon', ender_dragon()),
         ('summoned dragon hovers', summoned_dragon_hovers()),
@@ -6778,6 +6897,8 @@ def groups():
         ('summoned potions', summoned_potions()),
         ('potion contents names', potion_contents_names()),
         ('creeper cloud selectors', creeper_cloud_selectors()),
+        ('vehicle ground and fall', vehicle_ground_and_fall()),
+        ('vehicle saved ground and fall', vehicle_saved_ground_and_fall()),
         # Last: it leaves the player in other food than it found.
         (player_food.GROUP, player_food.cases(cmd, setup)),
     ]

@@ -1118,7 +1118,7 @@ impl Game<'_> {
         }
     }
     /// The player acting now: the guest whose turn it is, else the host.
-    fn acting_player(&self) -> FightWho {
+    pub(super) fn acting_player(&self) -> FightWho {
         self.lan_acting.map_or(FightWho::Host, FightWho::Guest)
     }
     /// Names the acting player behind the blast about to go off (a large
@@ -3634,6 +3634,7 @@ impl Dragon {
             self.position,
             self.velocity,
             [self.yaw, 0.0],
+            (false, 0.0),
             uuid,
             raw,
         );
@@ -3676,6 +3677,7 @@ impl Crystal {
             self.position,
             Vec3::ZERO,
             [0.0, 0.0],
+            (false, 0.0),
             uuid,
             raw,
         );
@@ -3707,6 +3709,35 @@ impl Crystal {
     }
 }
 impl Game<'_> {
+    /// `FireworkRocketEntity.dealExplosionDamage` on the dragon: a living
+    /// entity in the rocket's `inflate(5)` box and within 5 blocks, seen at its
+    /// feet or middle, takes `EnderDragon.hurtServer` (`hurt(body, ...)`).
+    pub(super) fn rocket_blast_dragon(
+        &mut self,
+        from: Vec3,
+        damage: f32,
+        reach: Aabb,
+        by: Option<FightWho>,
+    ) {
+        let Some(d) = self.dragon.as_ref() else {
+            return;
+        };
+        let p = d.position;
+        let d2 = (p.x - from.x).powi(2) + (p.y - from.y).powi(2) + (p.z - from.z).powi(2);
+        if d2 > 25.0 || !d.whole_box().intersects(reach) {
+            return;
+        }
+        let world = self.mob_world_base(&[]);
+        let sees = (0..2).any(|step| {
+            let to = Vec3::new(p.x, p.y + 8.0 * 0.5 * f64::from(step), p.z);
+            world.clear_between(from, to, false)
+        });
+        if !sees {
+            return;
+        }
+        let amount = super::fireworks::blast_damage(damage, from, p);
+        self.hurt_dragon(2, amount, true, by, DamageKind::Fireworks);
+    }
     /// `ServerExplosion.hurtEntities`: crystals in reach are removed without
     /// another blast; explosions always hurt dragons.
     pub(super) fn explosion_hits_special(

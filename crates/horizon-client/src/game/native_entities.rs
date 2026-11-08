@@ -12,16 +12,16 @@ use super::{
 use horizon_core::geometry::Vec3;
 use horizon_world::nbt::{Compound, Tag};
 
-/// The modeled four-part transformation of an item display; durations stay in their existing route.
+/// The four parts saved by the display transformation codec.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct ItemDisplayTransformation {
+pub(super) struct DisplayTransformation {
     translation: [f32; 3],
     left_rotation: [f32; 4],
     scale: [f32; 3],
     right_rotation: [f32; 4],
 }
 
-impl From<&NativeDisplay> for ItemDisplayTransformation {
+impl From<&NativeDisplay> for DisplayTransformation {
     fn from(display: &NativeDisplay) -> Self {
         Self {
             translation: display.translation,
@@ -32,25 +32,19 @@ impl From<&NativeDisplay> for ItemDisplayTransformation {
     }
 }
 
-impl ItemDisplayTransformation {
-    pub(super) fn from_tag(tag: Option<&Tag>) -> Option<Self> {
-        match tag {
-            None => Some((&NativeDisplay::default()).into()),
-            Some(tag @ Tag::Compound(_)) => {
-                let (translation, left_rotation, scale, right_rotation) =
-                    horizon_client::text_display::transformation(tag)?;
-                let value = NativeDisplay {
-                    translation,
-                    left_rotation,
-                    scale,
-                    right_rotation,
-                    ..NativeDisplay::default()
-                };
-                // Keep unsupported numerical forms on the existing raw path, too.
-                value.valid().then(|| (&value).into())
-            }
-            // Matrix and invalid shapes keep their previous unprojected/raw path.
-            Some(_) => None,
+impl DisplayTransformation {
+    /// `Transformation.EXTENDED_CODEC`: the four parts, or a decomposed matrix.
+    pub(super) fn from_tag(tag: Option<&Tag>) -> Self {
+        let Some((translation, left_rotation, scale, right_rotation)) =
+            tag.and_then(horizon_client::text_display::transformation)
+        else {
+            return (&NativeDisplay::default()).into();
+        };
+        Self {
+            translation,
+            left_rotation,
+            scale,
+            right_rotation,
         }
     }
 
@@ -64,14 +58,20 @@ impl ItemDisplayTransformation {
     }
 }
 
-/// The transformation-only portion of Display.addAdditionalSaveData and the native writer.
+/// The compound form written by `Transformation.EXTENDED_CODEC`.
 fn transformation_tag(
     translation: [f32; 3],
     left_rotation: [f32; 4],
     scale: [f32; 3],
     right_rotation: [f32; 4],
 ) -> Tag {
-    let floats = |v: &[f32]| Tag::List(v.iter().map(|x| Tag::Float(x.to_bits())).collect());
+    let floats = |v: &[f32]| {
+        Tag::List(
+            v.iter()
+                .map(|&x| Tag::Float(if x == 0.0 { 0 } else { x.to_bits() }))
+                .collect(),
+        )
+    };
     let mut t = Compound::new();
     t.insert("translation".into(), floats(&translation));
     t.insert("left_rotation".into(), floats(&left_rotation));
