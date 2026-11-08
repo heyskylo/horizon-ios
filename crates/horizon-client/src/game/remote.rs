@@ -619,6 +619,11 @@ pub(super) struct Remote {
     /// follows (`horizon:menu_extra`).
     menu_extra: Option<horizon_protocol::menu_extra::Message>,
     entities: HashMap<i32, Tracked>,
+    /// Per-tick remote entity scratch retained between frames.
+    tick_fluids: Vec<Option<horizon_client::mobs::living::Fluids>>,
+    tick_rain: Vec<bool>,
+    tick_standings: Vec<Option<String>>,
+    tick_water_fx: Vec<horizon_client::mobs::MobEvent>,
     /// Complete network riding graph, including invisible plugin seat entities.
     pub(super) passenger_vehicles: HashMap<u32, u32>,
     lerps: HashMap<i32, Lerp>,
@@ -1177,6 +1182,10 @@ impl Game<'_> {
             use_target: None,
             menu_extra: None,
             entities: HashMap::new(),
+            tick_fluids: Vec::new(),
+            tick_rain: Vec::new(),
+            tick_standings: Vec::new(),
+            tick_water_fx: Vec::new(),
             passenger_vehicles: HashMap::new(),
             lerps: HashMap::new(),
             cart_lerps: HashMap::new(),
@@ -1401,6 +1410,10 @@ impl Game<'_> {
             use_target: None,
             menu_extra: None,
             entities: HashMap::new(),
+            tick_fluids: Vec::new(),
+            tick_rain: Vec::new(),
+            tick_standings: Vec::new(),
+            tick_water_fx: Vec::new(),
             passenger_vehicles: HashMap::new(),
             lerps: HashMap::new(),
             cart_lerps: HashMap::new(),
@@ -7155,48 +7168,53 @@ impl Game<'_> {
         // tropical fish lie on their side without `in_water`, #1591).
         // A frozen level ticks only the players, as below.
         // Entity.isInRain for the wolves, which dry off by their own `Wolf.tick`.
-        let (fluids, rain, standings, thundering): (Vec<_>, Vec<_>, Vec<_>, bool) = {
+        let (mut fluids, mut rain, mut standings, mut water_fx) = {
+            let r = self
+                .remote
+                .as_mut()
+                .expect("remote entity tick without remote state");
+            (
+                std::mem::take(&mut r.tick_fluids),
+                std::mem::take(&mut r.tick_rain),
+                std::mem::take(&mut r.tick_standings),
+                std::mem::take(&mut r.tick_water_fx),
+            )
+        };
+        let thundering = {
             let w = self.mob_world_base(&[]);
             let players = self.remote.as_ref().map(|r| &r.level_players);
-            let fluids = self
-                .mobs
-                .iter()
-                .map(|m| {
-                    (running || players.is_some_and(|p| p.contains_key(&(m.id as i32))))
-                        .then(|| w.fluids(m.bounds(), m.eye_y()))
-                })
-                .collect();
-            let rain = self
-                .mobs
-                .iter()
-                .map(|m| {
-                    m.species() == horizon_client::mobs::Species::Wolf
-                        && horizon_client::mobs::tame::in_rain(m, &w)
-                })
-                .collect();
+            fluids.clear();
+            fluids.extend(self.mobs.iter().map(|m| {
+                (running || players.is_some_and(|p| p.contains_key(&(m.id as i32))))
+                    .then(|| w.fluids(m.bounds(), m.eye_y()))
+            }));
+            rain.clear();
+            rain.extend(self.mobs.iter().map(|m| {
+                m.species() == horizon_client::mobs::Species::Wolf
+                    && horizon_client::mobs::tame::in_rain(m, &w)
+            }));
             // The block under each mob the packs' random-model rules read (a grazing
             // cow), one hair below the feet like `Entity.getBlockStateOn`; nothing
             // without rules.
-            let standings = self
-                .mobs
-                .iter()
-                .map(|m| {
-                    horizon_client::mobs::cem::tracks_standing(&m.kind.id).then(|| {
-                        let (x, y, z) = (
-                            m.position.x.floor() as i32,
-                            (m.position.y - 0.0001).floor() as i32,
-                            m.position.z.floor() as i32,
-                        );
-                        w.block_name(x, y, z).to_owned()
-                    })
+            standings.clear();
+            standings.extend(self.mobs.iter().map(|m| {
+                horizon_client::mobs::cem::tracks_standing(&m.kind.id).then(|| {
+                    let (x, y, z) = (
+                        m.position.x.floor() as i32,
+                        (m.position.y - 0.0001).floor() as i32,
+                        m.position.z.floor() as i32,
+                    );
+                    w.block_name(x, y, z).to_owned()
                 })
-                .collect();
-            (fluids, rain, standings, w.thundering)
+            }));
+            w.thundering
         };
         // The window's own player already splashes from its motion tick.
         let own = self.remote.as_ref().map(|r| r.entity_id);
-        let mut water_fx = Vec::new();
-        for ((m, fluids), standing) in self.mobs.iter_mut().zip(fluids).zip(standings) {
+        for i in 0..self.mobs.len() {
+            let m = &mut self.mobs[i];
+            let fluids = fluids[i].take();
+            let standing = standings[i].take();
             if let Some(fluids) = fluids {
                 let was = m.fluids.in_water;
                 let first = m.first_tick;
@@ -7326,7 +7344,9 @@ impl Game<'_> {
         let tab_players = &r.tab_players;
         let mut using = Vec::new();
         let mut mob_fx = water_fx;
-        for (m, rain) in self.mobs.iter_mut().zip(rain) {
+        for i in 0..self.mobs.len() {
+            let m = &mut self.mobs[i];
+            let rain = rain[i];
             let player = players.contains_key(&(m.id as i32));
             if player {
                 // AvatarRenderer.extractRenderState: isSpectator, from the player list.
@@ -7633,7 +7653,13 @@ impl Game<'_> {
         for splash in entered {
             self.apply_item_splash(splash);
         }
-        let _ = self.handle_mob_events(mob_fx);
+        let _ = self.handle_mob_events_reusable(&mut mob_fx);
+        if let Some(r) = self.remote.as_mut() {
+            r.tick_fluids = fluids;
+            r.tick_rain = rain;
+            r.tick_standings = standings;
+            r.tick_water_fx = mob_fx;
+        }
         for (item, ticks, at, eye, pitch, yaw) in using {
             self.remote_player_eating(&item, ticks, at, eye, pitch, yaw);
         }
