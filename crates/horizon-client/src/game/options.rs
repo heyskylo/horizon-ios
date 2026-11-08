@@ -179,7 +179,7 @@ impl Game<'_> {
         let context = self.controller_settings_context();
         let mut ui = std::mem::take(&mut self.ui.options);
         if ui.controller_open() {
-            ui.controller.context = context;
+            ui.set_controller_context(context);
         }
         ui.draw(&self.settings, batch, &self.gui.atlas, self.cursor);
         self.ui.options = ui;
@@ -197,8 +197,7 @@ impl Game<'_> {
             player,
             device: self.pad.device_or_virtual(),
             detected: detected_controller_style(self.pad.device.as_ref(), self.pad.style),
-            style: self.ui.options.pad_style,
-            by_letter: self.ui.options.pad_by_letter,
+            glyphs: self.ui.options.pad_glyphs,
         }
     }
     /// HDR calibration's test picture to the renderer, full screen while it runs: the
