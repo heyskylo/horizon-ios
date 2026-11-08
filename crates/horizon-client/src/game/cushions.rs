@@ -381,6 +381,18 @@ impl Game<'_> {
     /// `Cushion.dropItem`: the break sound and particles, then the coloured
     /// item unless drops are off or the breaker has infinite materials.
     pub(super) fn break_cushion(&mut self, index: usize, by_player: bool) {
+        self.break_cushion_by(
+            index,
+            by_player,
+            by_player.then_some(super::commands::Target::Player),
+        )
+    }
+    pub(super) fn break_cushion_by(
+        &mut self,
+        index: usize,
+        by_player: bool,
+        source: Option<super::commands::Target>,
+    ) {
         let c = self.cushions.remove(index);
         let p = c.position;
         self.world.modified.insert((c.pos[0] >> 4, c.pos[2] >> 4));
@@ -388,7 +400,7 @@ impl Game<'_> {
             self.dismount_removed_vehicle(p.y);
         }
         // BlockAttachedEntity.kill, before dropItem.
-        self.entity_killed_event([p.x, p.y, p.z], by_player);
+        self.entity_killed_event_by([p.x, p.y, p.z], source);
         self.audio.play(
             "minecraft:entity.cushion.break",
             Some([p.x, p.y, p.z]),

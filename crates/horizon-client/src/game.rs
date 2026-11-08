@@ -19234,3 +19234,6 @@ mod player_save_projection_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod entity_die_tests;
