@@ -6601,6 +6601,21 @@ mod hidden_speed_mob_tick_tests {
     }
 
     #[test]
+    fn health_boost_death_effect_clear_clamps_health() {
+        let mut kind = (*sensor_scan_tests::kind()).clone();
+        kind.id = "minecraft:pig".into();
+        kind.species = Species::Pig;
+        let mut m = Mob::new(202, Arc::new(kind), Vec3::ZERO, 0.0);
+        finalize::set_base(&mut m, finalize::Attr::MaxHealth, 10.0);
+        m.add_effect("health_boost", 200, 1);
+        assert_eq!(m.attrs.max_health, 18.0);
+        m.health = 18.0;
+        m.apply_death_effect(&crate::items::ConsumeEffect::ClearAllEffects);
+        assert_eq!(m.attrs.max_health, 10.0);
+        assert_eq!(m.health, 10.0);
+    }
+
+    #[test]
     fn consume_effect_removal_clamps_absorption_to_remaining_maximum() {
         use horizon_world::attributes::entity::Catalog;
         let bits = |v: f64| format!("{:016x}", v.to_bits());
