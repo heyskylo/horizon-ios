@@ -45,6 +45,9 @@ pub(crate) fn upgrade(
     v: &mut Value,
     lost: &mut BTreeMap<String, usize>,
 ) -> Option<bool> {
+    if v["type"] == "lithostitched:weighted_selector" {
+        return Some(weighted_selector(v));
+    }
     if kind != "structure" || v["type"] != JIGSAW {
         return None;
     }
@@ -143,6 +146,25 @@ pub(crate) fn conditions_pass(v: &Value, loaded: &dyn Fn(&str) -> bool) -> bool 
         }
     }
     (v["neoforge:conditions"].as_array().into_iter().flatten()).all(|c| pass(c, loaded))
+}
+
+/// A `weighted_selector` feature in 26.3's form (`config` unwrapped) as
+/// 26.3's `weighted_random_selector`, which reads only `{data, weight}`
+/// entries: an entry without a weight weighs 1. Whether it was one.
+pub(crate) fn weighted_selector(v: &mut Value) -> bool {
+    let Some(features) = (v["type"] == "lithostitched:weighted_selector")
+        .then(|| v["features"].as_array_mut())
+        .flatten()
+    else {
+        return false;
+    };
+    for f in features.iter_mut() {
+        if f.get("weight").is_none() || f.get("data").is_none() {
+            *f = json!({"data": f.take(), "weight": 1});
+        }
+    }
+    v["type"] = "minecraft:weighted_random_selector".into();
+    true
 }
 
 /// A worldgen modifier as a file the game merges: `("template_pool", file)`
@@ -351,6 +373,25 @@ pub(crate) fn mark_loaded(data: &mut ProcessorData, loaded: &dyn Fn(&str) -> boo
 mod tests {
     use super::*;
     use crate::worldgen::upgrade as upgrade_file;
+
+    /// Regions Unexplored's tree and flower groups: a weighted pick of placed
+    /// features, an entry without `weight` weighing 1, is 26.3's own
+    /// `weighted_random_selector`, which reads only `{data, weight}` entries.
+    #[test]
+    fn weighted_selectors_become_vanillas() {
+        let mut lost = BTreeMap::new();
+        let oak = json!({"feature": "ru:tree/oak", "placement": []});
+        let big = json!({"feature": "ru:tree/big_oak", "placement": []});
+        let mut f = json!({"type": "lithostitched:weighted_selector",
+            "features": [{"data": oak, "weight": 2}, big]});
+        assert_eq!(upgrade("configured_feature", &mut f, &mut lost), Some(true));
+        assert_eq!(
+            f,
+            json!({"type": "minecraft:weighted_random_selector",
+                "features": [{"data": oak, "weight": 2}, {"data": big, "weight": 1}]})
+        );
+        assert!(lost.is_empty());
+    }
 
     #[test]
     fn jigsaws_become_vanillas() {
