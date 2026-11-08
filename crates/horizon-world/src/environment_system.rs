@@ -237,7 +237,10 @@ impl Builder {
             .filter_map(|(id, (attribute, layers))| {
                 let mut base = attribute.default_value()?;
                 let mut layers = layers.into_iter().peekable();
-                while let Some(Layer::Constant(entry)) = layers.peek() {
+                // A pack's dynamic entry changes with the frame: it stays a layer.
+                while let Some(Layer::Constant(entry)) = layers.peek()
+                    && !matches!(entry, Entry::Dynamic(_))
+                {
                     base = entry.apply(&base);
                     layers.next();
                 }

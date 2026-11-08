@@ -473,7 +473,7 @@ pub(crate) fn parse_meta(bytes: &[u8]) -> Option<serde_json::Value> {
 }
 /// A pack's Polytone config entries (`assets/<namespace>/polytone/config_entries/<name>.json`,
 /// in the pack's base, not its overlays) at their default values.
-fn polytone_configs(source: &Source) -> horizon_polytone::pack::Configs {
+pub fn polytone_configs(source: &Source) -> horizon_polytone::pack::Configs {
     let mut configs = horizon_polytone::pack::Configs::default();
     let id_of = |name: &str| -> Option<String> {
         let rest = name.strip_prefix("assets/")?;

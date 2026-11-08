@@ -14316,6 +14316,35 @@ impl Game<'_> {
             }
         }
         let (rain, thunder) = self.view_weather(alpha as f32);
+        // What the packs' attribute expressions read (only a pack's stack has any).
+        if self.pack.environments.is_some() {
+            let light = self.world.light(block[0], block[1], block[2]);
+            environment.set_frame(horizon_client::environment::Frame {
+                rain,
+                thunder,
+                game_time: self.world.game_time,
+                day_time: self.view_day_time(),
+                render_distance: self.streaming.radius,
+                sky_type: match self.dim {
+                    Dim::Overworld => 1,
+                    Dim::End => 2,
+                    Dim::Nether => 0,
+                },
+                dimension: match self.dim {
+                    Dim::Overworld => "minecraft:overworld",
+                    Dim::Nether => "minecraft:the_nether",
+                    Dim::End => "minecraft:the_end",
+                }
+                .to_owned(),
+                player: self.player.as_ref().map_or(camera.to_array(), |p| {
+                    [p.position.x, p.position.y, p.position.z]
+                }),
+                in_water: underwater,
+                camera: camera.to_array(),
+                sky_light: i32::from(light >> 4),
+                block_light: i32::from(light & 15),
+            });
+        }
         let mut sky = environment.sample(&horizon_client::environment::Sample {
             day_time: self.view_day_time(),
             rain,

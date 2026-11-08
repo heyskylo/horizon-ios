@@ -238,6 +238,9 @@ fn pack_environments(root: &std::path::Path) -> Option<Arc<[Environment; 3]>> {
     if modifiers.is_empty() {
         return None;
     }
+    let modifiers = modifiers.with_configs(horizon_client::packs::polytone_configs(
+        &horizon_client::packs::Source::Dir(root.to_path_buf()),
+    ));
     let load = |d: &str| Environment::load_dimension_with(root, d, &modifiers);
     match (load("overworld"), load("the_nether"), load("the_end")) {
         (Ok(o), Ok(n), Ok(e)) => Some(Arc::new([o, n, e])),

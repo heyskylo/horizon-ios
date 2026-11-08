@@ -10,9 +10,12 @@ use horizon_world::environment_timeline::Timeline;
 use serde_json::Value as Json;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::{Arc, RwLock};
 
 pub struct Environment {
     system: System,
+    /// What the packs' expressions read; the frame sets it before sampling.
+    frame: Arc<RwLock<Frame>>,
     /// Biome attribute maps by biome id, where resource packs changed them; the biome layer
     /// reads these instead of the biome's own.
     biomes: HashMap<String, AttributeMap>,
@@ -68,6 +71,8 @@ pub struct Sample<'a> {
 pub struct PackModifiers {
     biomes: Vec<horizon_polytone::BiomeModifier>,
     dimensions: Vec<horizon_polytone::DimensionModifier>,
+    /// The packs' config values, for `config(id)` in expressions.
+    configs: horizon_polytone::pack::Configs,
 }
 
 impl PackModifiers {
@@ -122,68 +127,235 @@ impl PackModifiers {
     pub fn is_empty(&self) -> bool {
         self.biomes.is_empty() && self.dimensions.is_empty()
     }
+
+    /// The config values expressions read.
+    pub fn with_configs(mut self, configs: horizon_polytone::pack::Configs) -> Self {
+        self.configs = configs;
+        self
+    }
 }
 
-/// A Polytone layer as a vanilla entry: `Some(None)` removes the attribute's entry, `None` is a
-/// value not supported yet (expressions and colormaps).
-fn vanilla_entry(
-    attribute: &'static Attribute,
-    layer: &horizon_polytone::Layer,
-) -> Option<Option<Entry>> {
-    use horizon_polytone::{Argument, Layer, Modifier};
-    let (modifier, argument) = match layer {
-        Layer::Remove => return Some(None),
-        Layer::Apply {
-            modifier, argument, ..
-        } => (modifier, argument),
-    };
-    let op = match modifier {
-        Modifier::Override => "override",
-        Modifier::Add => "add",
-        Modifier::Subtract => "subtract",
-        Modifier::Multiply => "multiply",
-        Modifier::Minimum => "minimum",
-        Modifier::Maximum => "maximum",
-        Modifier::AlphaBlend => "alpha_blend",
-        Modifier::BlendToGray => "blend_to_gray",
-        Modifier::And => "and",
-        Modifier::Nand => "nand",
-        Modifier::Or => "or",
-        Modifier::Nor => "nor",
-        Modifier::Xor => "xor",
-        Modifier::Xnor => "xnor",
-    };
-    let json = match argument {
-        Argument::Number(n) => Json::from(*n),
-        Argument::Bool(b) => Json::Bool(*b),
-        // Polytone colours may leave out the `#`; vanilla's codec wants it, 6 digits for RGB.
-        Argument::Color(c) if attribute.kind == Kind::RgbColor => {
-            Json::String(format!("#{:06x}", c & 0x00ff_ffff))
+/// What a pack's expression can ask about the frame (wiki "Scripting Expressions": the global,
+/// player, camera and positional contexts), set before the frame samples the sky.
+#[derive(Clone, Debug, Default)]
+pub struct Frame {
+    pub rain: f32,
+    pub thunder: f32,
+    pub game_time: i64,
+    pub day_time: i64,
+    /// The render distance in chunks.
+    pub render_distance: i32,
+    /// `skyType`: 1 for the overworld's sky, 2 for the End's, 0 for none.
+    pub sky_type: i32,
+    pub dimension: String,
+    pub player: [f64; 3],
+    pub in_water: bool,
+    pub camera: [f64; 3],
+    /// The sky and block light at the camera.
+    pub sky_light: i32,
+    pub block_light: i32,
+}
+
+/// The game side of a pack expression in an attribute value: `g`, `p`, `c`, `o` (the camera's
+/// position) and `r`, `v` (the value so far) and the pack's `config`.
+struct FrameHost<'a> {
+    frame: &'a Frame,
+    configs: &'a horizon_polytone::pack::Configs,
+    value: f64,
+    seed: u64,
+}
+
+impl horizon_polytone::expr::Host for FrameHost<'_> {
+    fn root(&mut self, root: horizon_polytone::expr::Root) -> horizon_polytone::expr::Value {
+        use horizon_polytone::expr::{Root, Value as V};
+        match root {
+            Root::Value => V::Num(self.value),
+            other => V::Object(other as u32),
         }
-        Argument::Color(c) => Json::String(format!("#{c:08x}")),
-        Argument::Object(o) => Json::Object(o.clone()),
-        Argument::Colormap(_) | Argument::Expression(_) => return None,
-    };
-    match Entry::with_modifier(attribute, op, &json) {
-        Ok(entry) => Some(Some(entry)),
-        Err(e) => {
-            log::warn!("{}: {e}", attribute.id);
-            None
+    }
+    fn method(
+        &mut self,
+        target: &horizon_polytone::expr::Value,
+        name: &str,
+        _args: &[horizon_polytone::expr::Value],
+    ) -> std::result::Result<horizon_polytone::expr::Value, String> {
+        use horizon_polytone::expr::{Root, Value as V};
+        let f = self.frame;
+        let on = |root: Root| *target == V::Object(root as u32);
+        let num = |n: f64| Ok(V::Num(n));
+        match name {
+            "rain" if on(Root::Global) => num(f64::from(f.rain)),
+            "time" if on(Root::Global) => num(f.game_time as f64),
+            "dayTime" if on(Root::Global) => num(f.day_time as f64),
+            "skyType" if on(Root::Global) => num(f64::from(f.sky_type)),
+            "dimensionType" if on(Root::Global) => Ok(V::Str(f.dimension.as_str().into())),
+            "renderDistance" if on(Root::Global) => num(f64::from(f.render_distance)),
+            "moonPhase" if on(Root::Global) => {
+                num(f.day_time.div_euclid(24_000).rem_euclid(8) as f64)
+            }
+            "seaLevel" if on(Root::Global) => num(63.0),
+            "viewDistance" if on(Root::Camera) => num(f64::from(f.render_distance * 16)),
+            "x" | "y" | "z" if on(Root::Player) || on(Root::Camera) || on(Root::Object) => {
+                let at = if on(Root::Player) { f.player } else { f.camera };
+                num(at[usize::from(name.as_bytes()[0] - b'x')])
+            }
+            "inWater" if on(Root::Player) => Ok(V::Bool(f.in_water)),
+            "skyLight" if on(Root::Object) || on(Root::Player) => num(f64::from(f.sky_light)),
+            "blockLight" if on(Root::Object) || on(Root::Player) => num(f64::from(f.block_light)),
+            "rand" if on(Root::Random) => {
+                // A splitmix64 step: the frame's own sequence.
+                self.seed = self.seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+                let mut z = self.seed;
+                z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+                num(((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64)
+            }
+            _ => Err(format!(
+                "{name} is not available in an attribute expression"
+            )),
+        }
+    }
+    fn function(
+        &mut self,
+        name: &str,
+        args: &[horizon_polytone::expr::Value],
+    ) -> std::result::Result<horizon_polytone::expr::Value, String> {
+        match (name, args) {
+            ("config", [horizon_polytone::expr::Value::Str(id)]) => self
+                .configs
+                .get(id)
+                .map(horizon_polytone::pack::ConfigValue::to_value)
+                .ok_or_else(|| format!("no config {id}")),
+            _ => Err(format!(
+                "{name} is not available in an attribute expression"
+            )),
         }
     }
 }
 
-/// Applies a group of Polytone layers to `map`: entries set or replaced, `REMOVE` drops them.
-fn apply_group(map: &mut AttributeMap, group: &horizon_polytone::Attributes) {
-    for (id, layer) in group {
-        let Some(attribute) = attribute(id) else {
-            log::warn!("unknown attribute {id}");
-            continue;
+/// A value as an expression's `v`: floats as they are, colours packed ARGB (`ARGB.as8BitChannel`).
+fn as_number(value: &Value) -> f64 {
+    let byte = |c: f32| ((c.clamp(0.0, 1.0) * 255.0).floor() as u32) & 255;
+    match value {
+        Value::Float(f) => f64::from(*f),
+        Value::Bool(b) => f64::from(u8::from(*b)),
+        Value::Rgb([r, g, b]) => {
+            f64::from((0xff00_0000 | byte(*r) << 16 | byte(*g) << 8 | byte(*b)) as i32)
+        }
+        Value::Argb([r, g, b, a]) => {
+            f64::from((byte(*a) << 24 | byte(*r) << 16 | byte(*g) << 8 | byte(*b)) as i32)
+        }
+        Value::Other(_) => 0.0,
+    }
+}
+
+/// Turns Polytone layers into vanilla entries, compiling expressions against the frame.
+struct Resolver {
+    frame: Arc<RwLock<Frame>>,
+    configs: Arc<horizon_polytone::pack::Configs>,
+}
+
+impl Resolver {
+    /// A Polytone layer as a vanilla entry: `Some(None)` removes the attribute's entry, `None`
+    /// is a value not supported yet (colormaps) or a broken one.
+    fn entry(
+        &self,
+        attribute: &'static Attribute,
+        layer: &horizon_polytone::Layer,
+    ) -> Option<Option<Entry>> {
+        use horizon_polytone::{Argument, Layer, Modifier};
+        let (modifier, argument) = match layer {
+            Layer::Remove => return Some(None),
+            Layer::Apply {
+                modifier, argument, ..
+            } => (modifier, argument),
         };
-        match vanilla_entry(attribute, layer) {
-            Some(Some(entry)) => map.set(attribute, entry),
-            Some(None) => map.remove(attribute),
-            None => {}
+        let op = match modifier {
+            Modifier::Override => "override",
+            Modifier::Add => "add",
+            Modifier::Subtract => "subtract",
+            Modifier::Multiply => "multiply",
+            Modifier::Minimum => "minimum",
+            Modifier::Maximum => "maximum",
+            Modifier::AlphaBlend => "alpha_blend",
+            Modifier::BlendToGray => "blend_to_gray",
+            Modifier::And => "and",
+            Modifier::Nand => "nand",
+            Modifier::Or => "or",
+            Modifier::Nor => "nor",
+            Modifier::Xor => "xor",
+            Modifier::Xnor => "xnor",
+        };
+        let json = match argument {
+            Argument::Number(n) => Json::from(*n),
+            Argument::Bool(b) => Json::Bool(*b),
+            // Polytone colours may leave out the `#`; vanilla's codec wants it, 6 digits for RGB.
+            Argument::Color(c) if attribute.kind == Kind::RgbColor => {
+                Json::String(format!("#{:06x}", c & 0x00ff_ffff))
+            }
+            Argument::Color(c) => Json::String(format!("#{c:08x}")),
+            Argument::Object(o) => Json::Object(o.clone()),
+            Argument::Expression(src) => return self.expression(attribute, op, src).map(Some),
+            Argument::Colormap(_) => return None,
+        };
+        match Entry::with_modifier(attribute, op, &json) {
+            Ok(entry) => Some(Some(entry)),
+            Err(e) => {
+                log::warn!("{}: {e}", attribute.id);
+                None
+            }
+        }
+    }
+
+    /// An expression value: compiled once, evaluated against the frame each time the layer
+    /// applies, its result read as the modifier's argument (a number, a boolean, or a packed
+    /// colour for colour attributes).
+    fn expression(
+        &self,
+        attribute: &'static Attribute,
+        op: &'static str,
+        src: &str,
+    ) -> Option<Entry> {
+        let program = match horizon_polytone::expr::Program::compile(src) {
+            Ok(program) => program,
+            Err(e) => {
+                log::warn!("{}: {e}", attribute.id);
+                return None;
+            }
+        };
+        let (frame, configs) = (self.frame.clone(), self.configs.clone());
+        let f = move |value: &Value| -> Option<Entry> {
+            let frame = frame.read().ok()?;
+            let mut host = FrameHost {
+                frame: &frame,
+                configs: &configs,
+                value: as_number(value),
+                seed: 0,
+            };
+            let json = match program.eval(&mut host).ok()? {
+                horizon_polytone::expr::Value::Bool(b) => Json::Bool(b),
+                result => Json::from(result.num()),
+            };
+            Entry::with_modifier(attribute, op, &json).ok()
+        };
+        Some(Entry::Dynamic(
+            horizon_world::environment_attributes::Dynamic(Arc::new(f)),
+        ))
+    }
+
+    /// Applies a group of Polytone layers to `map`: entries set or replaced, `REMOVE` drops
+    /// them.
+    fn apply(&self, map: &mut AttributeMap, group: &horizon_polytone::Attributes) {
+        for (id, layer) in group {
+            let Some(attribute) = attribute(id) else {
+                log::warn!("unknown attribute {id}");
+                continue;
+            };
+            match self.entry(attribute, layer) {
+                Some(Some(entry)) => map.set(attribute, entry),
+                Some(None) => map.remove(attribute),
+                None => {}
+            }
         }
     }
 }
@@ -283,14 +455,19 @@ impl Environment {
             .iter()
             .filter(|m| m.targets.matches(&id, |_| false))
             .collect();
+        let frame = Arc::new(RwLock::new(Frame::default()));
+        let resolver = Resolver {
+            frame: frame.clone(),
+            configs: Arc::new(packs.configs.clone()),
+        };
         let mut dimension_map = AttributeMap::parse(&json["attributes"])?;
         let (mut rain, mut thunder) = horizon_world::environment_system::weather_maps();
         let mut dimension_post = AttributeMap::default();
         for m in &mine {
-            apply_group(&mut dimension_map, &m.base);
-            apply_group(&mut rain, &m.rain);
-            apply_group(&mut thunder, &m.thunder);
-            apply_group(&mut dimension_post, &m.post_process);
+            resolver.apply(&mut dimension_map, &m.base);
+            resolver.apply(&mut rain, &m.rain);
+            resolver.apply(&mut thunder, &m.thunder);
+            resolver.apply(&mut dimension_post, &m.post_process);
         }
         let mut builder = Builder::default();
         builder.constant_layer(&dimension_map);
@@ -316,8 +493,8 @@ impl Environment {
                     let in_tag =
                         |tag: &str| biome_tag(root, tag, &mut tags.borrow_mut()).contains(&name);
                     if m.targets.matches(&name, in_tag) {
-                        apply_group(&mut map, &m.base);
-                        apply_group(&mut post_map, &m.post_process);
+                        resolver.apply(&mut map, &m.base);
+                        resolver.apply(&mut post_map, &m.post_process);
                     }
                 }
                 if !post_map.is_empty() {
@@ -352,9 +529,17 @@ impl Environment {
         builder.constant_layer(&dimension_post);
         Ok(Self {
             system: builder.build(),
+            frame,
             biomes,
             post,
         })
+    }
+
+    /// Sets what the packs' expressions read for the next samples.
+    pub fn set_frame(&self, frame: Frame) {
+        if let Ok(mut f) = self.frame.write() {
+            *f = frame;
+        }
     }
 
     /// A biome's attribute map (by id, `minecraft:plains`), as the packs left it.
@@ -505,7 +690,9 @@ mod tests {
         for (path, text) in pack {
             write(&format!("pack/{path}"), text);
         }
-        let modifiers = PackModifiers::read(&dir.join("pack"));
+        let modifiers = PackModifiers::read(&dir.join("pack")).with_configs(
+            crate::packs::polytone_configs(&crate::packs::Source::Dir(dir.join("pack"))),
+        );
         let env =
             Environment::load_dimension_with(&dir.join("world"), "overworld", &modifiers).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
@@ -586,5 +773,36 @@ mod tests {
             [1.0, 1.0, 1.0]
         );
         assert!(env.biome_post("minecraft:desert").is_none());
+    }
+
+    #[test]
+    fn expression_values_read_the_frame_and_the_value_so_far() {
+        let env = with_packs(&[
+            (
+                "assets/minecraft/polytone/dimension_modifiers/overworld.json",
+                r#"{"attributes_modifiers": {
+                    "visual/fog_end_distance": "14 * (c.viewDistance / 16) + min(g.rain * 2, 1) * 100",
+                    "visual/fog_start_distance": {"argument": "v + config('mypack:shift')", "modifier": "override"},
+                    "visual/cloud_height": "v * 0.5"}}"#,
+            ),
+            (
+                "assets/mypack/polytone/config_entries/shift.json",
+                r#"{"default_value": 7}"#,
+            ),
+        ]);
+        let at = |rain: f32, chunks: i32| {
+            env.set_frame(Frame {
+                rain,
+                render_distance: chunks,
+                ..Frame::default()
+            });
+            sky_at(&env, "minecraft:plains", 0.0)
+        };
+        // `c.viewDistance` is in blocks: 16 chunks are 256.
+        assert_eq!(at(0.0, 16).fog_end, 224.0);
+        assert_eq!(at(0.25, 32).fog_end, 498.0);
+        // `v` is the value the layers before gave: the default start 0, and 192.33 for clouds.
+        assert_eq!(at(0.0, 16).fog_start, 7.0);
+        assert_eq!(at(0.0, 16).cloud_height, 192.33 * 0.5);
     }
 }

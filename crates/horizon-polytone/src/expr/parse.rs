@@ -3,7 +3,7 @@
 //! error here, when the pack loads, not when the expression runs.
 use super::lex::{Token, tokens};
 use super::{MATH, MathFn, Root, Value, legacy};
-use std::rc::Rc;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum BinOp {
@@ -35,9 +35,9 @@ pub(super) enum Expr {
     /// A math or color function.
     Call(MathFn, Vec<Expr>),
     /// A global function the game answers (`config`, `colormap`...).
-    Host(Rc<str>, Vec<Expr>),
+    Host(Arc<str>, Vec<Expr>),
     /// `target.name(args)`; `p.age`, `p.age()` and `p.getAge()` all name `age`.
-    Method(Box<Expr>, Rc<str>, Vec<Expr>),
+    Method(Box<Expr>, Arc<str>, Vec<Expr>),
 }
 
 #[derive(Debug)]
