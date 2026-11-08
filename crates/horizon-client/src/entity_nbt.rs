@@ -3014,7 +3014,7 @@ pub fn orb_to_nbt(o: &ExperienceOrb, uuid: [i32; 4]) -> Tag {
     for (key, value) in [
         ("Health", Tag::Short(o.health as i16)),
         ("Age", Tag::Short(o.age.min(i16::MAX as u32) as i16)),
-        ("Value", Tag::Short(o.value.min(i16::MAX as u32) as i16)),
+        ("Value", Tag::Short(o.value as i16)),
         ("Count", Tag::Int(o.count.min(i32::MAX as u32) as i32)),
     ] {
         put(&mut tag, key, value);
@@ -3039,7 +3039,8 @@ pub fn orbs_from_nbt(tag: &Tag) -> Vec<ExperienceOrb> {
         position,
         previous: position,
         velocity: motion(tag),
-        value: number(tag.get("Value")).unwrap_or(1).max(1) as u32,
+        // `getShortOr("Value", 0)`, unclamped.
+        value: number(tag.get("Value")).unwrap_or(0) as i16 as i32,
         age: number(tag.get("Age")).unwrap_or(0).max(0) as u32,
         on_ground: flag(tag, "OnGround"),
         count,

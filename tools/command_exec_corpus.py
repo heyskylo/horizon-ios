@@ -2979,6 +2979,36 @@ def experience_orb_stuck():
     ]
 
 
+def experience_orb_saved_value():
+    """`ExperienceOrb.readAdditionalSaveData`: `getShortOr("Value", 0)` with no
+    clamp, saved back as `(short) getValue()`. A missing Value is 0, and 0 or
+    a negative Value stays as given, through a chunk unload and reload too. The
+    orbs are far from the player and float in place (NoGravity, no motion)."""
+    x, z, y = 5120, 5120, 300
+    orbs = [(1, None, 0), (2, 0, 0), (3, -5, -5), (4, 7, 7)]
+
+    def reads():
+        return [cmd(f'/data get entity 0000c0de-0000-0000-0000-00000000000{n} Value', expect_result=v)
+                for n, _, v in orbs]
+
+    ops = [*setup(f'/forceload add {x} {z}'), {'op': 'wait_chunks', 'chunks': [[x >> 4, z >> 4]]},
+           *setup(f'/fill {x} {y - 1} {z} {x + 15} {y - 1} {z + 15} minecraft:stone')]
+    for n, value, _ in orbs:
+        tag = '' if value is None else f',Value:{value}s'
+        ops.append(cmd(f'/summon minecraft:experience_orb {x + 3 * n}.5 {y} {z + 8}.5 '
+                       f'{{UUID:[I;49374,0,0,{n}],NoGravity:1b,Motion:[0d,0d,0d]{tag}}}', expect_result=1))
+    ops += reads()
+    # Unload the chunk (saving its entities), then load it again.
+    ops += [*setup(f'/forceload remove {x} {z}'), {'op': 'tick', 'n': 60},
+            cmd(f'/execute unless loaded {x} {y} {z}', expect_result=1),
+            *setup(f'/forceload add {x} {z}'), {'op': 'wait_chunks', 'chunks': [[x >> 4, z >> 4]]},
+            {'op': 'tick', 'n': 2}]
+    ops += reads()
+    return ops + setup(f'/kill @e[type=minecraft:experience_orb,x={x},y={y - 8},z={z},dx=16,dy=24,dz=16]',
+                       f'/fill {x} {y - 1} {z} {x + 15} {y - 1} {z + 15} minecraft:air',
+                       f'/forceload remove {x} {z}')
+
+
 def summoned_potions():
     """`ThrowableItemProjectile.getItem`/`readAdditionalSaveData` and
     `AbstractThrownPotion.getDefaultGravity`: a summoned splash or lingering
@@ -6620,6 +6650,7 @@ def groups():
         ('experience orb fall', experience_orb_fall()),
         ('piglin pickups', piglin_pickups()),
         ('experience orb stuck', experience_orb_stuck()),
+        ('experience orb saved Value', experience_orb_saved_value()),
         ('summoned potions', summoned_potions()),
         ('potion contents names', potion_contents_names()),
         ('creeper cloud selectors', creeper_cloud_selectors()),

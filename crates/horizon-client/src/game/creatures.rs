@@ -9442,7 +9442,7 @@ mod breeding_orb_tests {
             game.breeding_orb(7, [8.5, 64.0, 8.5]);
             assert_eq!(game.orbs.len(), orbs + 1, "a fresh orb, not merged");
             assert_eq!(
-                game.orbs.last().map(|o| (o.value, o.count)),
+                game.orbs.last().map(|o| (o.points(), o.count)),
                 Some((roll, 1))
             );
             values.insert(roll);
