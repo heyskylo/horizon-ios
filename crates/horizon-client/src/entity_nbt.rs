@@ -3040,7 +3040,7 @@ pub fn orbs_from_nbt(tag: &Tag) -> Vec<ExperienceOrb> {
         previous: position,
         velocity: motion(tag),
         // `getShortOr("Value", 0)`, unclamped.
-        value: number(tag.get("Value")).unwrap_or(0) as i16 as i32,
+        value: tag.get("Value").and_then(int_value).unwrap_or(0) as i16 as i32,
         age: number(tag.get("Age")).unwrap_or(0).max(0) as u32,
         on_ground: flag(tag, "OnGround"),
         count,
