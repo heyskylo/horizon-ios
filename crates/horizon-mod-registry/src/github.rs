@@ -368,6 +368,40 @@ impl GitHub {
             .map_err(failure)?;
         Ok(())
     }
+
+    /// Checks whether release asset `name` exists in release tag `tag`.
+    pub fn release_asset_exists(&self, tag: &str, name: &str) -> Result<bool> {
+        let response = self.call("GET", &format!("/releases/tags/{tag}")).call();
+        let release = match response {
+            Ok(r) => read(r)?,
+            Err(ureq::Error::Status(404, _)) => return Ok(false),
+            Err(e) => return Err(failure(e)),
+        };
+        Ok(release["assets"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|x| x["name"] == name)))
+    }
+
+    /// Dispatches the `native-build.yml` workflow on `ref_name` with inputs for target, base, and mods.
+    pub fn dispatch_native_build(
+        &self,
+        ref_name: &str,
+        target: &str,
+        base: &str,
+        mods: &str,
+    ) -> Result<()> {
+        self.call("POST", "/actions/workflows/native-build.yml/dispatches")
+            .send_json(json!({
+                "ref": ref_name,
+                "inputs": {
+                    "targets": target,
+                    "base": base,
+                    "mods": mods,
+                }
+            }))
+            .map_err(failure)?;
+        Ok(())
+    }
 }
 
 /// Percent-encodes a query value.
