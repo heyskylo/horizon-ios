@@ -1203,6 +1203,20 @@ pub trait Host {
     fn instance_dir(&self) -> PathBuf {
         unimplemented!("Host::instance_dir")
     }
+    /// Plays a block of a mod's own audio: `samples` are mono, -1 to 1, at
+    /// `sample_rate` hertz. `at` is where they were spoken, for distance and
+    /// direction; none plays them centred. The call queues and returns; the
+    /// output callback mixes them with the game's sounds, so a mod can carry
+    /// voice without the game shipping one. Queued samples are capped at two
+    /// seconds, and a burst past that is refused rather than delayed. False
+    /// when nothing was queued: no audio device, nothing to play, or the cap.
+    /// API 360.
+    fn push_voice(&mut self, samples: &[f32], sample_rate: u32, at: Option<[f64; 3]>) -> bool {
+        let _ = samples;
+        let _ = sample_rate;
+        let _ = at;
+        unimplemented!("Host::push_voice")
+    }
     /// The most recently extracted world frame's camera, if one exists.
     fn camera(&self) -> Option<NativeCamera> {
         unimplemented!("Host::camera")

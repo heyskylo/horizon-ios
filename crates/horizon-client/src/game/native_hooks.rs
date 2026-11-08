@@ -6196,6 +6196,22 @@ impl Game<'_> {
     pub(super) fn native_net_from_client(&mut self, player: u128, channel: &str, data: &[u8]) {
         mod_api::dispatch_net_from_client(self, mod_api::mods(), player, channel, data);
     }
+    /// Plays a block of a mod's own audio: `samples` are mono, -1 to 1, at
+    /// `sample_rate` hertz. `at` is where they were spoken, for distance and
+    /// direction; none plays them centred. The call queues and returns; the
+    /// output callback mixes them with the game's sounds, so a mod can carry
+    /// voice without the game shipping one. Queued samples are capped at two
+    /// seconds, and a burst past that is refused rather than delayed. False
+    /// when nothing was queued: no audio device, nothing to play, or the cap.
+    /// API 360.
+    pub(super) fn native_push_voice(
+        &mut self,
+        samples: &[f32],
+        sample_rate: u32,
+        at: Option<[f64; 3]>,
+    ) -> bool {
+        self.audio.push_voice(samples, sample_rate, at)
+    }
     /// A message from the server on `channel` (`mod_id:name`), whose `data`
     /// is the sender's own bytes. The window's game only. API 40.
     pub(super) fn native_net_from_server(&mut self, channel: &str, data: &[u8]) {

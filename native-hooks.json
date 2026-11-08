@@ -451,6 +451,10 @@
     {
       "name": "instance_dir",
       "target": "horizon_client::game::native_hooks::Game<'_>::native_instance_dir"
+    },
+    {
+      "name": "push_voice",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_push_voice"
     }
   ],
   "hooks": [

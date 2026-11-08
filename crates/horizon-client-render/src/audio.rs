@@ -13,7 +13,7 @@ use crate::sound_events::{Sound, SoundRegistry};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use horizon_core::random::{LegacyRandom, RandomSource};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -49,6 +49,8 @@ struct Channel {
 #[derive(Default)]
 struct Mixer {
     channels: HashMap<ChannelId, Channel>,
+    /// Mod audio waiting to be mixed (`native_push_voice`), oldest first.
+    voice: VecDeque<VoiceChunk>,
     listener: [f64; 3],
     listener_yaw: f32,
     listener_pitch: f32,
@@ -71,6 +73,17 @@ struct Mixer {
 }
 /// A camera's forward, up and right vectors.
 type Basis = ([f64; 3], [f64; 3], [f64; 3]);
+/// A block of voice samples a mod queued, mixed by the output callback.
+pub struct VoiceChunk {
+    /// Mono samples, -1 to 1.
+    samples: Vec<f32>,
+    /// The rate they were sampled at (`native_push_voice`).
+    rate: u32,
+    /// Where they were spoken, for distance and direction; none is plain stereo.
+    at: Option<[f64; 3]>,
+    /// How far into `samples` the callback has got, in source samples.
+    played: f64,
+}
 impl Mixer {
     /// The id of world `name` (1 and up), given once per name.
     fn world_id(&mut self, name: &str) -> u32 {
@@ -97,6 +110,31 @@ pub struct Heard {
     pub looping: bool,
 }
 /// The mixer side of the engine (`Backend`).
+impl MixerBackend {
+    /// Queues a mod's voice samples for the output callback to mix
+    /// (`Host::push_voice`). False when nothing was queued: no device, nothing
+    /// to play, or more than two seconds already waiting.
+    pub fn push_voice(&self, samples: &[f32], rate: u32, at: Option<[f64; 3]>) -> bool {
+        if samples.is_empty() || rate == 0 {
+            return false;
+        }
+        let Ok(mut mixer) = self.mixer.lock() else {
+            return false;
+        };
+        let queued: usize = mixer.voice.iter().map(|chunk| chunk.samples.len()).sum();
+        if queued + samples.len() > 96_000 * 2 {
+            return false;
+        }
+        mixer.voice.push_back(VoiceChunk {
+            samples: samples.to_vec(),
+            rate,
+            at,
+            played: 0.0,
+        });
+        true
+    }
+}
+
 pub struct MixerBackend {
     mixer: Arc<Mutex<Mixer>>,
     root: PathBuf,
@@ -205,6 +243,14 @@ fn attach(mixer: &Mutex<Mixer>, channel: ChannelId, samples: Samples, looping: b
 type Stream = cpal::Stream;
 #[cfg(not(feature = "audio"))]
 type Stream = std::convert::Infallible;
+impl Audio {
+    /// Plays a mod's voice samples (`Host::push_voice`): mono, `-1` to `1`, at
+    /// `rate`, optional where they were spoken for direction and distance.
+    pub fn push_voice(&self, samples: &[f32], rate: u32, at: Option<[f64; 3]>) -> bool {
+        self.backend.push_voice(samples, rate, at)
+    }
+}
+
 pub struct Audio {
     _stream: Option<Stream>,
     device_name: String,
@@ -640,6 +686,48 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
                 frame[0] += s * gain;
             }
             c.position += step;
+        }
+    }
+    // Mod audio: a mod's own samples, mixed where it said they were spoken.
+    if !mixer.voice.is_empty() {
+        let (forward, up, right) = basis(mixer.listener_yaw, mixer.listener_pitch);
+        let mut finished = 0usize;
+        for chunk in mixer.voice.iter_mut() {
+            let [left, right_gain] = match chunk.at {
+                Some(at) => {
+                    let d = [
+                        at[0] - mixer.listener[0],
+                        at[1] - mixer.listener[1],
+                        at[2] - mixer.listener[2],
+                    ];
+                    let distance = dot(d, d).sqrt();
+                    let gain = distance_gain(None, distance).max(1.0 / (1.0 + distance));
+                    stereo_gains(dot(d, right), dot(d, up), dot(d, forward)).map(|pan| gain * pan)
+                }
+                None => [1.0, 1.0],
+            };
+            let step = f64::from(chunk.rate.max(1)) / f64::from(rate);
+            for frame in data.chunks_mut(channels) {
+                let i = chunk.played as usize;
+                if i + 1 >= chunk.samples.len() {
+                    break;
+                }
+                let t = (chunk.played - i as f64) as f32;
+                let s = chunk.samples[i] * (1.0 - t) + chunk.samples[i + 1] * t;
+                if channels >= 2 {
+                    frame[0] += s * left;
+                    frame[1] += s * right_gain;
+                } else {
+                    frame[0] += s;
+                }
+                chunk.played += step;
+            }
+            if chunk.played as usize + 1 >= chunk.samples.len() {
+                finished += 1;
+            }
+        }
+        for _ in 0..finished {
+            mixer.voice.pop_front();
         }
     }
     // Limit the whole buffer together, preserving waveform and stereo balance
@@ -1832,6 +1920,42 @@ mod tests {
         let mut data = [0.0; 2];
         mix(&mut m, &mut data, 1, 48_000);
         assert_eq!(data, [0.5; 2]);
+    }
+
+    #[test]
+    fn a_queued_voice_chunk_is_mixed_and_then_dropped() {
+        let mut m = Mixer::default();
+        m.voice.push_back(VoiceChunk {
+            samples: vec![0.5; 240],
+            rate: 48_000,
+            at: None,
+            played: 0.0,
+        });
+        let mut data = vec![0.0f32; 240 * 2];
+        mix(&mut m, &mut data, 2, 48_000);
+        // Centred voice fills both channels; the tail is dropped on the next
+        // pass, once the last sample has been reached.
+        assert!(data.iter().take(400).all(|s| (s - 0.5).abs() < 0.01));
+        let mut after = vec![0.0f32; 240 * 2];
+        mix(&mut m, &mut after, 2, 48_000);
+        assert!(m.voice.is_empty());
+    }
+
+    #[test]
+    fn voice_is_panned_by_where_it_was_spoken() {
+        let mut m = Mixer::default();
+        // Facing south (yaw 0), east is on the listener's left: -X is their right.
+        m.voice.push_back(VoiceChunk {
+            samples: vec![0.5; 16],
+            rate: 48_000,
+            at: Some([-4.0, 0.0, 0.0]),
+            played: 0.0,
+        });
+        let mut data = vec![0.0f32; 16 * 2];
+        mix(&mut m, &mut data, 2, 48_000);
+        let left: f32 = data.chunks(2).map(|f| f[0]).sum();
+        let right: f32 = data.chunks(2).map(|f| f[1]).sum();
+        assert!(right > left, "right {right} should beat left {left}");
     }
 
     #[test]

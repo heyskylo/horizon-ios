@@ -489,6 +489,9 @@ impl Host for super::Game<'_> {
     fn instance_dir(&self) -> PathBuf {
         self.native_instance_dir()
     }
+    fn push_voice(&mut self, samples: &[f32], sample_rate: u32, at: Option<[f64; 3]>) -> bool {
+        self.native_push_voice(samples, sample_rate, at)
+    }
     fn camera(&self) -> Option<NativeCamera> {
         self.native_camera()
     }
