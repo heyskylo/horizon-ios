@@ -132,6 +132,7 @@ def main():
     parser.add_argument('--item-contents-fixture', action='store_true')
     parser.add_argument('--item-contents-provider-empty-control', action='store_true')
     parser.add_argument("--boat-item-hit-fixture", action="store_true")
+    parser.add_argument("--stand-entity-collision-fixture", action="store_true")
     parser.add_argument("--reference-only", action="store_true")
     parser.add_argument("--boat-leash-view-fixture", action="store_true")
     parser.add_argument("--boat-motion-diagnostic", action="store_true")
@@ -375,6 +376,9 @@ def main():
     if args.boat_item_hit_fixture:
         from boat_item_hit_corpus import boat_item_hits
         groups = [('boat item hit', boat_item_hits(args.boat_motion_diagnostic))]
+    if args.stand_entity_collision_fixture:
+        from stand_entity_collision_corpus import stand_entity_collisions
+        groups = [('stand entity collisions', stand_entity_collisions())]
     if args.pufferfish_mob_fixture:
         from pufferfish_mob_contact_corpus import mob_contacts, overlapping_cod_control
         groups = [("pufferfish mob contact", overlapping_cod_control() if args.pufferfish_mob_overlap_control
