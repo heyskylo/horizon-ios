@@ -19072,6 +19072,8 @@ mod loot_kill_guest_tests;
 #[cfg(test)]
 mod mannequin_save_tests;
 #[cfg(test)]
+mod mob_landing_support_tests;
+#[cfg(test)]
 mod orb_data_tests;
 #[cfg(test)]
 mod stand_break_loot_tests;
