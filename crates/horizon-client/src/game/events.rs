@@ -28,9 +28,12 @@ struct Snapshot {
     counts: BTreeMap<String, i64>,
     /// The player's health and food level, while there is a player.
     vitals: Option<(f32, i64)>,
-    /// The newest damage: when, its type, the amount and what dealt it.
-    hit: Option<(i64, String, f32, Option<String>)>,
+    hit: Option<Hit>,
 }
+
+/// The newest damage: a number that changes with each, the damage type, the amount and the
+/// name of what dealt it.
+type Hit = (i64, String, Option<f32>, Option<String>);
 
 /// What the newest damage was, for a `hurt` or `death` event.
 fn add_cause(event: &mut Value, before: &Snapshot, now: &Snapshot) {
@@ -38,7 +41,10 @@ fn add_cause(event: &mut Value, before: &Snapshot, now: &Snapshot) {
         && before.hit.as_ref().is_none_or(|h| h.0 != *at)
     {
         event["cause"] = kind.as_str().into();
-        event["damage"] = (*damage).into();
+        // A server's client only learns the health it is left with.
+        if let Some(damage) = damage {
+            event["damage"] = (*damage).into();
+        }
         if let Some(by) = by {
             event["by"] = by.as_str().into();
         }
@@ -69,6 +75,9 @@ pub(super) struct Events {
     log: VecDeque<Value>,
     last: Option<Snapshot>,
     waits: Vec<Wait>,
+    /// On a server's client (single player included), where the combat tracker is the
+    /// server's: the newest `DamageEvent` it sent about this player.
+    remote_hit: Option<Hit>,
 }
 
 impl Events {
@@ -80,6 +89,12 @@ impl Events {
             self.log.pop_front();
         }
         self.log.push_back(event);
+    }
+    /// `ClientboundDamageEventPacket` for this player: the damage type and the causing
+    /// entity's type.
+    pub(super) fn note_hit(&mut self, cause: String, by: Option<String>) {
+        let n = self.remote_hit.as_ref().map_or(0, |h| h.0) + 1;
+        self.remote_hit = Some((n, cause, None, by));
     }
     /// An event from outside the once-a-turn comparison (`user-input`).
     pub(super) fn note(&mut self, tick: u64, event: Value) {
@@ -226,7 +241,11 @@ impl Game<'_> {
                 .as_ref()
                 .filter(|_| world.is_some())
                 .map(|p| (p.health.health(), p.health.food.food as i64)),
-            hit: self.combat.last_hit(),
+            hit: if self.remote.is_some() {
+                self.events.remote_hit.clone()
+            } else {
+                self.combat.last_hit()
+            },
             world,
         }
     }
@@ -360,11 +379,28 @@ mod tests {
     }
 
     #[test]
+    fn a_servers_damage_event_names_the_cause() {
+        let mut events = Events::default();
+        events.note_hit("minecraft:mob_attack".into(), Some("minecraft:drowned".into()));
+        let before = snap("playing", 0, 0);
+        let mut now = snap("playing", 0, 0);
+        now.vitals = Some((17.0, 20));
+        now.hit = events.remote_hit.clone();
+        let hurt = &diff(&before, &now, &[])[0];
+        assert_eq!(hurt["cause"], "minecraft:mob_attack");
+        assert_eq!(hurt["by"], "minecraft:drowned");
+        assert!(hurt.get("damage").is_none(), "the server's client only knows the health");
+        // The next hit of the same kind is another hit.
+        events.note_hit("minecraft:mob_attack".into(), Some("minecraft:drowned".into()));
+        assert_ne!(events.remote_hit.as_ref().unwrap().0, now.hit.as_ref().unwrap().0);
+    }
+
+    #[test]
     fn health_and_food_changes_are_events() {
         let before = snap("playing", 0, 0);
         let mut now = snap("playing", 0, 0);
         now.vitals = Some((17.0, 19));
-        now.hit = Some((40, "mob_attack".into(), 3.0, Some("Zombie".into())));
+        now.hit = Some((40, "mob_attack".into(), Some(3.0), Some("Zombie".into())));
         let events = diff(&before, &now, &[]);
         assert_eq!(
             events[0],
