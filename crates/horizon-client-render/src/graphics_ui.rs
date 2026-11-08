@@ -76,6 +76,7 @@ pub enum H {
     EntityCullingPrecheck,
     ParticleCulling,
     LeafCulling,
+    OpaqueIce,
     CacheShulkerBoxes,
     CacheSigns,
     CacheDecoratedPots,
@@ -452,6 +453,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             H::LeafCulling,
                             Saves,
                             "Draws or drops leaf faces inside canopies. Off keeps vanilla's fancy leaves.",
+                        ),
+                        h(
+                            H::OpaqueIce,
+                            Saves,
+                            "Draws ice in the solid pass, without its see-through texture.",
                         ),
                     ],
                 ),
@@ -851,6 +857,7 @@ impl H {
             ),
             H::ParticleCulling => labelled("Particle Culling", g.particle_culling.label()),
             H::LeafCulling => labelled("Leaf Culling", g.leaf_culling.label()),
+            H::OpaqueIce => labelled("Opaque Ice", on_off(g.opaque_ice)),
             H::CacheShulkerBoxes => labelled("Shulker Boxes", on_off(g.cache_shulker_boxes)),
             H::CacheSigns => labelled("Signs", on_off(g.cache_signs)),
             H::CacheDecoratedPots => labelled("Decorated Pots", on_off(g.cache_decorated_pots)),
@@ -1021,6 +1028,7 @@ impl H {
             H::LeafCulling => {
                 g.leaf_culling = step(&LeafCullingMode::ALL, g.leaf_culling, back);
             }
+            H::OpaqueIce => g.opaque_ice = !g.opaque_ice,
             H::CacheShulkerBoxes => g.cache_shulker_boxes = !g.cache_shulker_boxes,
             H::CacheSigns => g.cache_signs = !g.cache_signs,
             H::CacheDecoratedPots => g.cache_decorated_pots = !g.cache_decorated_pots,
@@ -1167,6 +1175,7 @@ impl Item {
         Some(match self {
             Item::Horizon(H::BlueMapAutoDetect) => g.blue_map.auto_detect,
             Item::Horizon(H::CaveCulling) => g.cave_culling,
+            Item::Horizon(H::OpaqueIce) => g.opaque_ice,
             Item::Horizon(H::GpuCulling) => {
                 g.gpu_culling && crate::graphics::gpu_culling_offer().reason().is_none()
             }
@@ -3137,6 +3146,32 @@ mod tests {
                 assert_eq!(s.horizon.gpu_culling, on, "{preset:?}");
             }
         }
+    }
+
+    #[test]
+    fn opaque_ice_toggles_and_round_trips() {
+        let mut s = Settings::default();
+        let item = Item::Horizon(H::OpaqueIce);
+        assert_eq!(item.switch(&s), Some(false));
+        assert_eq!(item.label(&s).plain(), "Opaque Ice: Off");
+        item.cycle(&mut s, false, FB);
+        assert_eq!(item.label(&s).plain(), "Opaque Ice: On");
+        assert!(
+            crate::graphics::Graphics::parse(&s.horizon.serialize()).opaque_ice,
+            "the choice is saved"
+        );
+        item.cycle(&mut s, false, FB);
+        assert_eq!(item.switch(&s), Some(false));
+        assert!(!crate::graphics::Graphics::parse(&s.horizon.serialize()).opaque_ice);
+
+        // It sits with the other culling switches on the Performance page.
+        let group = rows()
+            .into_iter()
+            .flat_map(|(page, groups)| groups.into_iter().map(move |(_, b)| (page, b)))
+            .find(|(_, b)| b.iter().any(|r| r.item == item))
+            .unwrap();
+        assert_eq!(group.0, Page::Performance);
+        assert!(group.1.iter().any(|r| r.item == item));
     }
 
     #[test]
