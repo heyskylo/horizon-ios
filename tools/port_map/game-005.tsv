@@ -131,7 +131,7 @@ EntityType.loadStaticEntity	port	crates/horizon-client/src/entity_nbt.rs::mob_fr
 EntityType.Builder.passengerAttachments	inline	crates/horizon-client/src/mobs/riders.rs::passenger_attachment	per species heights for the vehicles that carry riders; others use the box top
 EntityType.Builder.attach	inline	crates/horizon-client/src/mobs/riders.rs::passenger_attachment	only the PASSENGER point is a table; NAME_TAG and the rest use their defaults
 EntityType.Builder.build	skip:data		entity types are read from entity-types.json (MobType) instead of being built in code
-EquipmentSlot.isArmor	skip:other		slots are plain head, chest, legs and feet constants; armour logic names them (Ctx::armor)
+EquipmentSlot.isArmor	port	crates/horizon-client/src/mobs/equip.rs::Slot::is_armor	the four armour slots, not the hands; slot_for and mob loot replacement read it
 EquipmentSlot.byName	skip:data		slot names are read as strings from data and NBT
 EquipmentSlotGroup.bySlot	inline	crates/horizon-client/src/game/lan_attributes.rs::slot_in_group	a slot is its own group, so the test is group == slot
 EquipmentTable.createForAllSlots	skip:data		drop chances come from the loot and entity data
