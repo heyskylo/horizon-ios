@@ -6266,7 +6266,10 @@ impl Game<'_> {
                 );
                 self.container_edge_sound(key, true);
             }
-        } else if &*name == "minecraft:beacon" && self.open_station(pos, &name) {
+        } else if matches!(&*name, "minecraft:beacon" | "minecraft:enchanting_table")
+            && self.open_station(pos, &name)
+        {
+            // Station menus whose block has a block entity, not a container.
             self.world.block_entities.get_or_insert_with(key, || {
                 BlockEntity::for_block(&name).unwrap_or(BlockEntity::Chest(Vec::new()))
             });

@@ -46,6 +46,15 @@ def conduit_table_entities(cmd, setup):
     ops += setup(f'/forceload add {X} {Z}')
     ops += [{'op': 'wait_chunks', 'chunks': CHUNK}]
     ops += read()
-    ops += setup(f'/fill {X} {Y - 1} {Z} {X + 15} {Y + 1} {Z + 15} air',
+    # Using the table still opens its enchanting menu: an item and a lapis slot.
+    ops += setup('/gamemode survival', '/clear @s', f'/tp @s {X + 4}.5 {Y} {Z + 4}.5 0 0')
+    ops += [{'op': 'tick', 'n': 1},
+            cmd(f'/execute if entity @s[x={X + 4}.5,y={Y},z={Z + 4}.5,distance=..0.01]', expect_result=1),
+            {'op': 'menu_state', 'label': 'before-table-use', 'expect_observation': {'own_slots': 0}},
+            {'op': 'use_block', 'pos': [X + 4, Y, Z + 2], 'face': 1, 'sequence': 12519},
+            {'op': 'menu_state', 'label': 'after-table-use', 'expect_observation': {'own_slots': 2}},
+            {'op': 'close_menu'}]
+    ops += setup('/gamemode creative', '/tp @s 8.5 230 8.5 0 0',
+                 f'/fill {X} {Y - 1} {Z} {X + 15} {Y + 1} {Z + 15} air',
                  f'/forceload remove {X} {Z}')
     return ops
