@@ -491,6 +491,12 @@ impl Game<'_> {
         };
         // `limitPistonMovement` returns zero once the tick's budget is spent.
         if limited == Vec3::ZERO {
+            // `Entity.move` stops there; `moveEntityByPiston` still applies
+            // the block effects.
+            if let Target::Entity(EntityHandle::Tnt(i)) = target {
+                let from = self.tnts[i].position;
+                self.tnt_piston_block_effects(i, from);
+            }
             return;
         }
         // Primed TNT: a `PISTON` move uses up a pending stuck multiplier

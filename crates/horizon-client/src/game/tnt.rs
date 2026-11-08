@@ -397,6 +397,12 @@ impl Game<'_> {
             None,
         );
         t.velocity = horizon_world::entity_move::scale_by_block_speed(t.velocity, factor);
+        self.tnt_piston_block_effects(i, from);
+    }
+    /// `moveEntityByPiston`'s `applyEffectsFromBlocks(previousPos, position)`
+    /// for primed TNT `i`, also run when `limitPistonMovement` left no push.
+    pub(super) fn tnt_piston_block_effects(&mut self, i: usize, from: Vec3) {
+        let t = &mut self.tnts[i];
         let known = t.velocity;
         let tops = t.apply_effects_from_blocks(
             &self.world,

@@ -5835,7 +5835,11 @@ def piston_tnt_effects():
             (down + ('/setblock 32 210 31 stone',), '32.5 211',
              'fall_distance:3.0d', '/setblock 32 213 31'),
             (down + ('/setblock 32 210 31 slime_block',), '32.5 211',
-             'fall_distance:3.0d,Motion:[0.0d,0.0d,0.05d]', '/setblock 32 213 31')):
+             'fall_distance:3.0d,Motion:[0.0d,0.0d,0.05d]', '/setblock 32 213 31'),
+            # Two pistons push it in one tick: the second finds the tick's
+            # 0.51 spent, but `moveEntityByPiston` still runs the slime's stepOn.
+            (down + ('/setblock 33 212 31 piston[facing=down]', '/fill 32 210 31 33 210 31 slime_block'),
+             '33.0 211', 'Motion:[0.0d,0.0d,0.05d]', '/fill 32 213 31 33 213 31')):
         ops += setup('/kill @e[type=!player]', '/fill 28 208 28 36 218 34 air', *blocks,
                      f'/summon minecraft:tnt {at} 31.5 '
                      f'{{fuse:200s,NoGravity:1b,{fields},Tags:["piston_tnt"]}}')
