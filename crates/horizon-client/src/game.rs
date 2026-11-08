@@ -14343,6 +14343,8 @@ impl Game<'_> {
                 camera: camera.to_array(),
                 sky_light: i32::from(light >> 4),
                 block_light: i32::from(light & 15),
+                temperature: biomes.get(biome).temperature,
+                downfall: biomes.get(biome).downfall,
             });
         }
         let mut sky = environment.sample(&horizon_client::environment::Sample {
