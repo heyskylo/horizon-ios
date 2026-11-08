@@ -630,9 +630,34 @@ pub fn mob_to_nbt(
     // `Mannequin.addAdditionalSaveData`: the profile whose skin it wears, whether it
     // is `immovable`, and its description (the default is not written; none is `hide_description`).
     if m.species() == crate::mobs::Species::Mannequin {
-        if let Some(profile) = &m.profile {
-            put(&mut tag, "profile", profile_nbt(profile));
-        }
+        // The empty static profile (`DEFAULT_PROFILE`) when it has none.
+        let profile = m
+            .profile
+            .as_ref()
+            .map_or_else(|| Tag::Compound(Compound::new()), profile_nbt);
+        put(&mut tag, "profile", profile);
+        // `LAYERS_CODEC`: the hidden layers, in `PlayerModelPart` order.
+        let hidden = MODEL_PARTS
+            .iter()
+            .enumerate()
+            .filter(|(bit, _)| m.extra.hidden_model_parts & (1 << bit) != 0)
+            .map(|(_, part)| string(part))
+            .collect();
+        put(&mut tag, "hidden_layers", Tag::List(hidden));
+        let hand = if m.extra.main_hand_left {
+            "left"
+        } else {
+            "right"
+        };
+        put(&mut tag, "main_hand", string(hand));
+        let pose = match m.extra.avatar_pose {
+            crate::pose::Pose::Crouching => "crouching",
+            crate::pose::Pose::Swimming => "swimming",
+            crate::pose::Pose::FallFlying => "fall_flying",
+            crate::pose::Pose::Sleeping => "sleeping",
+            _ => "standing",
+        };
+        put(&mut tag, "pose", string(pose));
         put(
             &mut tag,
             "immovable",
@@ -1582,8 +1607,41 @@ pub fn mob_to_nbt(
             map.insert("equipment".into(), Tag::Compound(equipment));
         }
     }
+    // A mannequin is an `Avatar`, not a `Mob`: none of
+    // `Mob.addAdditionalSaveData`'s fields are its, written or loaded.
+    if m.species() == crate::mobs::Species::Mannequin
+        && let Tag::Compound(map) = &mut tag
+    {
+        for key in MOB_ONLY_KEYS {
+            map.remove(&horizon_world::nbt::JavaString::from(key));
+        }
+    }
     tag
 }
+
+/// `PlayerModelPart` in its order: bit `i` of a hidden-layer mask is part `i`.
+const MODEL_PARTS: [&str; 7] = [
+    "cape",
+    "jacket",
+    "left_sleeve",
+    "right_sleeve",
+    "left_pants_leg",
+    "right_pants_leg",
+    "hat",
+];
+/// The keys `Mob.addAdditionalSaveData` writes.
+const MOB_ONLY_KEYS: [&str; 10] = [
+    "NoAI",
+    "PersistenceRequired",
+    "CanPickUpLoot",
+    "LeftHanded",
+    "drop_chances",
+    "leash",
+    "home_radius",
+    "home_pos",
+    "DeathLootTable",
+    "DeathLootTableSeed",
+];
 /// `AttributeMap.pack` for the attributes with a base or permanent modifier
 /// finalizeSpawn set, over the saved list.
 fn put_attributes(map: &mut Compound, m: &Mob, a: &crate::mobs::finalize::Attributes) {
@@ -1981,6 +2039,21 @@ pub fn mob_from_nbt(
             Some("fall_flying") => crate::pose::Pose::FallFlying,
             Some("sleeping") => crate::pose::Pose::Sleeping,
             _ => crate::pose::Pose::Standing,
+        };
+        // `HumanoidArm.CODEC`, right when absent or not an arm.
+        m.extra.main_hand_left = text(tag.get("main_hand")).as_deref() == Some("left");
+        // `LAYERS_CODEC`: every listed part hidden; an entry that is not a
+        // part fails the whole list, which reads as `ALL_LAYERS` (none hidden).
+        m.extra.hidden_model_parts = match tag.get("hidden_layers") {
+            Some(Tag::List(parts)) => parts
+                .iter()
+                .try_fold(0u8, |mask, part| {
+                    let name = text(Some(part))?;
+                    let bit = MODEL_PARTS.iter().position(|p| *p == name)?;
+                    Some(mask | 1 << bit)
+                })
+                .unwrap_or(0),
+            _ => 0,
         };
         m.extra.immovable = flag(tag, "immovable");
         m.extra.description = if flag(tag, "hide_description") {
@@ -2586,6 +2659,14 @@ pub fn mob_from_nbt(
     }
     crate::mobs::raider::read_nbt(&mut m, tag);
     crate::mobs::riders::read_nbt(&mut m, tag);
+    // A mannequin is an `Avatar`, not a `Mob`: it reads none of
+    // `Mob.readAdditionalSaveData`'s flags, after the common reads above.
+    if m.species() == crate::mobs::Species::Mannequin {
+        m.persistent = false;
+        m.extra.pick_up_loot = false;
+        m.extra.left_handed = false;
+        m.no_ai = false;
+    }
     // A mob saved mid-death finishes dying; one saved dead is dropped.
     if m.health <= 0.0 && m.death_time == 0 {
         return None;

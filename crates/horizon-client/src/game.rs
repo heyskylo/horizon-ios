@@ -18309,6 +18309,8 @@ fn write_level_for_role(
 }
 
 #[cfg(test)]
+mod mannequin_save_tests;
+#[cfg(test)]
 mod storage_alias_tests;
 #[cfg(test)]
 mod sulfur_bucket_tests;
