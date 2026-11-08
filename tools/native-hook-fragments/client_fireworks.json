@@ -1,0 +1,12 @@
+{
+  "hooks": [],
+  "helpers": [
+    {
+      "name": "client_fireworks",
+      "target": "horizon_client::game::native_client_particles::Game<'_>::native_client_fireworks"
+    }
+  ],
+  "rust_summary": "a firework's bursts drawn and heard on this client only (`native_client_fireworks`), with no rocket.",
+  "doc_summary": "`native_client_fireworks(at, velocity, explosions)` (client, `host.client_fireworks`) draws a firework's explosions at `at` as `ClientLevel.createFireworks` does (shapes, colours, fade, trail, twinkle, the blast and twinkle sounds) with no rocket entity, no damage and nothing on the server. `FireworkExplosion` and `FireworkShape` are in `mod_api`. False on a server, without a client level, for non-finite input and past 64 explosions. Bundles need \"hooks\": @API:client_fireworks@.",
+  "comments": ["crates/horizon-client/src/game/native_client_particles.rs"]
+}

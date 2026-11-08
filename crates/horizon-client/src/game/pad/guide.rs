@@ -22,6 +22,21 @@ pub(in crate::game) struct Shown {
     rect: Rect,
 }
 
+/// A row's glyphs: the one held with it, if any, and its own.
+struct Keys {
+    with: Option<pad_glyph::Glyph>,
+    key: Option<pad_glyph::Glyph>,
+}
+
+impl Keys {
+    /// How wide the glyphs show side by side, in GUI pixels.
+    fn width(&self, atlas: &horizon_client::hud::HudAtlas) -> f32 {
+        let key = self.key.map_or(0.0, |k| pad_glyph::width(atlas, k));
+        self.with
+            .map_or(key, |with| pad_glyph::width(atlas, with) + 1.0 + key)
+    }
+}
+
 /// A drawn quad covering this much of the view is the screen's dimming, not something to avoid.
 const GUIDE_BACKDROP_SHARE: f32 = 0.9;
 
@@ -174,17 +189,24 @@ impl Game<'_> {
         rows: &[Row],
         taken: &mut Vec<Rect>,
     ) {
+        // Each row's glyphs, from what its buttons do: a rebinding or the pad's letters reach them.
+        let keys: Vec<Keys> = rows
+            .iter()
+            .map(|r| Keys {
+                with: r.with.and_then(|w| self.glyph(w)),
+                key: self.glyph(r.of),
+            })
+            .collect();
         let atlas = &self.gui.atlas;
-        let style = self.ui.options.pad_style;
         let width = |text: &str| HudBatch::text_width(atlas, text).ceil();
         let captions: Vec<String> = rows
             .iter()
             .map(|r| horizon_client::lang::get(r.caption))
             .collect();
-        let widths: Vec<f32> = rows
+        let widths: Vec<f32> = keys
             .iter()
             .zip(&captions)
-            .map(|(r, c)| Self::guide_keys_width(atlas, r, style) + width(c) + 6.0)
+            .map(|(k, c)| k.width(atlas) + width(c) + 6.0)
             .collect();
         let view = [batch.width, batch.height];
         let places = if up {
@@ -192,11 +214,11 @@ impl Game<'_> {
         } else {
             gameplay_guide::place_column(view, left, &widths, taken)
         };
-        for ((row, caption), place) in rows.iter().zip(&captions).zip(places) {
+        for (((row, keys), caption), place) in rows.iter().zip(&keys).zip(&captions).zip(places) {
             let Some(rect @ [x, y, w, h]) = place else {
                 continue;
             };
-            let key = Self::guide_keys_width(atlas, row, style);
+            let key = keys.width(atlas);
             let (key_x, text_x) = if left {
                 (x, x + key + 3.0)
             } else {
@@ -205,11 +227,13 @@ impl Game<'_> {
             batch.fill(atlas, x, y, w, h, self.settings.text_background(0.4));
             // One taller than its row, into the gap above: the rows' glyphs meet but don't overlap.
             let mut glyph_x = key_x + 1.0;
-            if let Some(with) = row.with {
-                pad_glyph::draw(batch, atlas, with, style, glyph_x, y + 1.0);
-                glyph_x += pad_glyph::width(atlas, with, style) + 1.0;
+            if let Some(with) = keys.with {
+                pad_glyph::draw(batch, atlas, with, glyph_x, y + 1.0);
+                glyph_x += pad_glyph::width(atlas, with) + 1.0;
             }
-            pad_glyph::draw(batch, atlas, row.button, style, glyph_x, y + 1.0);
+            if let Some(key) = keys.key {
+                pad_glyph::draw(batch, atlas, key, glyph_x, y + 1.0);
+            }
             batch.text(atlas, caption, text_x, y + 1.0, u32::MAX, true);
             self.pad.guide_shown.push(Shown {
                 left,
@@ -219,19 +243,9 @@ impl Game<'_> {
         }
     }
 
-    /// A row's glyphs, side by side.
-    fn guide_keys_width(
-        atlas: &horizon_client::hud::HudAtlas,
-        row: &Row,
-        style: horizon_client::gamepad::GlyphStyle,
-    ) -> f32 {
-        let key = pad_glyph::width(atlas, row.button, style);
-        row.with
-            .map_or(key, |with| pad_glyph::width(atlas, with, style) + 1.0 + key)
-    }
-
     /// The rows last drawn, for `pad status`.
     pub(in crate::game) fn pad_guide_status(&self) -> Value {
+        let pad = &self.settings.controller;
         let column = |left: bool| -> Vec<Value> {
             self.pad
                 .guide_shown
@@ -239,8 +253,9 @@ impl Game<'_> {
                 .filter(|s| s.left == left)
                 .map(|s| {
                     json!({
-                        "with": s.row.with.map(|b| b.name()),
-                        "button": s.row.button.name(),
+                        "with": s.row.with.and_then(|w| w.button(pad)).map(|b| b.name()),
+                        "button": s.row.of.button(pad).map(|b| b.name()),
+                        "label": self.glyph(s.row.of).map(|g| g.label()),
                         "caption": s.row.caption,
                         "rect": s.rect,
                     })

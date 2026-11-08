@@ -2,13 +2,14 @@
 //! notices.
 use super::*;
 use horizon_client::controller_notice::NoticeSlot;
-use horizon_client::gamepad::Button;
+use horizon_client::gamepad::{GlyphStyle, MenuJob};
 use horizon_client::hud::{HudBatch, rgba};
 use horizon_client::hud_kit::{
     plate::{self, Plate},
     room::Room,
 };
 use horizon_client::pad_glyph;
+use horizon_client::pad_glyph::Glyphs;
 use std::time::Duration;
 
 /// Where the join strip and notices go with nothing above them, in GUI px from the view's top.
@@ -36,7 +37,11 @@ pub(in crate::game) struct Hud {
 pub(super) struct Prompt {
     pub(super) ask: Ask,
     pub(super) title: String,
-    pub(super) choices: Vec<(Button, String)>,
+    /// Each answer: the menu job whose button gives it, and its words.
+    pub(super) choices: Vec<(MenuJob, String)>,
+    /// The family of the controller asked (a joining one), whose glyphs answer it; none when any
+    /// controller may answer (one lost), shown in this player's family.
+    pub(super) family: Option<GlyphStyle>,
 }
 
 /// What a prompt asks: a controller may join (every view, a strip at the top: nobody stops
@@ -72,9 +77,10 @@ pub(super) fn lost_prompt(name: &str) -> Prompt {
         ask: Ask::Lost,
         title: tr("lost", &[&name]),
         choices: vec![
-            (Button::South, tr("lost.use_another", &[])),
-            (Button::East, tr("lost.leave", &[])),
+            (MenuJob::Confirm, tr("lost.use_another", &[])),
+            (MenuJob::Back, tr("lost.leave", &[])),
         ],
+        family: None,
     }
 }
 
@@ -112,7 +118,10 @@ impl Game<'_> {
         let (top, notice_top) = tops(&self.ui.room, below_strip);
         // A question: centred over the view dimmed, or a strip at the top (a controller joining).
         if let Some(prompt) = &self.split_hud.prompt {
-            let style = self.ui.options.pad_style;
+            // Join and lost-controller questions are answered by a controller nobody holds yet,
+            // whose letters aren't read yet: by places (docs/controllers.md, Nintendo pads).
+            let family = prompt.family.unwrap_or(self.pad.style);
+            let places = Glyphs::unheld(&self.settings.controller, family);
             let dim = prompt.ask != Ask::Join;
             if dim {
                 batch.fill(atlas, 0.0, 0.0, w, h, rgba(0, 0, 0, 120));
@@ -120,7 +129,10 @@ impl Game<'_> {
             let glyphs: Vec<_> = prompt
                 .choices
                 .iter()
-                .map(|(b, what)| (*b, pad_glyph::width(atlas, *b, style), what.as_str()))
+                .map(|(job, what)| {
+                    let glyph = pad_glyph::Glyph::menu(*job, places);
+                    (glyph, pad_glyph::width(atlas, glyph), what.as_str())
+                })
                 .collect();
             let line: f32 = glyphs
                 .iter()
@@ -148,8 +160,8 @@ impl Game<'_> {
             );
             let mut x = (px + (pw - line) / 2.0).floor();
             let y = py + 20.0;
-            for (button, gw, what) in glyphs {
-                pad_glyph::draw(batch, atlas, button, style, x, y);
+            for (glyph, gw, what) in glyphs {
+                pad_glyph::draw(batch, atlas, glyph, x, y);
                 x += gw + 4.0;
                 batch.text(atlas, what, x, y, rgba(220, 220, 220, 255), false);
                 x += width(what) + gap(what);
