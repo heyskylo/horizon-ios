@@ -15,6 +15,7 @@ use std::{
     path::Path,
 };
 
+#[derive(Clone)]
 pub struct ServerAdvancements {
     tree: std::sync::Arc<Tree>,
     kids: Vec<Vec<usize>>,
@@ -1085,6 +1086,33 @@ mod tests {
                 vec![item("minecraft:raw_copper")]
             ]
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A world's own load over the data its packs gave (`SyncData::load_over`, which keeps
+    /// that data's recipes) sends what a full read of the same packs sends: their recipes too.
+    #[test]
+    fn a_world_load_over_its_packs_data_sends_what_a_full_read_does() {
+        let cut = |input: &str| {
+            format!(
+                r#"{{"type":"minecraft:stonecutting","ingredient":"{input}",
+                "result":{{"id":"minecraft:copper_ingot"}}}}"#
+            )
+        };
+        let vanilla_cut = cut("minecraft:raw_copper");
+        let root = resources("load_over", &[("z_cut", vanilla_cut.as_str())]);
+        let packs = [(
+            "recipe/pack:a_cut".to_owned(),
+            vec![cut("minecraft:redstone").into_bytes()],
+        )];
+        let overlay = horizon_world::loot::PackOverlay { files: &packs };
+        let vanilla = SyncData::load(&root, &horizon_world::loot::PackOverlay::NONE).unwrap();
+        let packed = SyncData::load(&root, &overlay).unwrap();
+        let over = SyncData::load_over(&root, &overlay, None, &packed).unwrap();
+        let full = SyncData::load_with_kept(&root, &overlay, None, Some(&packed)).unwrap();
+        assert_ne!(full.recipes, vanilla.recipes, "the pack's recipe is sent");
+        assert_eq!(over.recipes, full.recipes);
+        assert_eq!(over.advancements.recipes, full.advancements.recipes);
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -116,6 +116,9 @@ public final class VanillaMobAiOracle {
     static PrintWriter out;
     /** The temporary world directory, deleted before the oracle halts. */
     static Path UNIVERSE;
+    /** Where each tick of a scenario starts, and where its last one ends, for a JFR method trace of the
+     *  setters (tools/test_mob_ai_parity.py --writers): the setter calls between two marks are that tick's. */
+    static void tickMark() {}
     static final List<String> SOUNDS = new ArrayList<>();
 
     /** Draws of a traced mob random: the caller frames of each draw (AI_TRACE=scenario:from-to). */
@@ -417,6 +420,9 @@ public final class VanillaMobAiOracle {
                 } catch (Exception e) {
                     // best effort
                 }
+                // halt skips JFR's dump on exit: a recording (--writers) is written when it stops.
+                if (jdk.jfr.FlightRecorder.isInitialized())
+                    for (jdk.jfr.Recording r : jdk.jfr.FlightRecorder.getFlightRecorder().getRecordings()) r.stop();
                 Runtime.getRuntime().halt(0);
                 return;
             }
@@ -754,6 +760,7 @@ public final class VanillaMobAiOracle {
                         }
             for (int i = 0; i < ENTS.size(); i++) print(0, i, ENTS.get(i));
             for (int t = 1; t <= s.ticks; t++) {
+                tickMark();
                 if (s.daycycle) this.clockManager().setTotalTicks(clock, s.time + t);
                 for (Object[] e : s.timed) if ((Integer) e[0] == t) place((String[]) e[1], level);
                 level.environmentAttributes().invalidateTickCache();
@@ -884,6 +891,7 @@ public final class VanillaMobAiOracle {
                 for (String line : TRACE) out.println(line);
                 TRACE.clear();
             }
+            tickMark(); // the end of the scenario's ticks
             for (Entity e : ENTS) e.discard();
             if (boat != null) {
                 player.stopRiding();
