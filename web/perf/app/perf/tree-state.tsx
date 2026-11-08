@@ -19,6 +19,8 @@ export interface Scope {
   filters: Partial<SampleFilters> | null;
 }
 
+export const WHOLE_TREE: Scope = { id: "", filters: null };
+
 /** The line the detail panel describes. */
 export interface Target {
   scope: Scope;

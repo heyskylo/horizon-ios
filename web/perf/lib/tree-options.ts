@@ -16,6 +16,9 @@ const SELECTIONS: Record<SampleSelection, { select: WireSelect; slow: boolean }>
   live: { select: "live", slow: false },
 };
 
+/** How the tree is drawn: as lines to open, or as a flame graph. */
+export type ViewKind = "list" | "flame";
+
 /** What the tree is divided by before it is a tree. */
 export type GroupKind = "none" | "thread" | "span" | "entity" | "block" | "chunk" | "dimension";
 
