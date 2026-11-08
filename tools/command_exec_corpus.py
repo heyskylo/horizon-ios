@@ -1577,6 +1577,29 @@ def aquatic_from_bucket():
     return ops
 
 
+def dispensed_spawn_egg_persistence():
+    """`SpawnEggItemBehavior.execute` spawns with `EntitySpawnReason.DISPENSER`
+    and never calls `Mob.setPersistenceRequired`: the mob saves
+    `PersistenceRequired: 0b`, as one from a spawn egg used by hand does."""
+    x, z, y = 5312, 5120, 300
+    eggs = [(x + 2, 'zombie'), (x + 6, 'pig')]
+    ops = [*setup(f'/forceload add {x} {z} {x + 15} {z + 15}'),
+           {'op': 'wait_chunks', 'chunks': [[x >> 4, z >> 4]]},
+           *setup(f'/fill {x} {y - 1} {z} {x + 15} {y - 1} {z + 15} minecraft:stone')]
+    for bx, kind in eggs:
+        ops += [cmd(f'/setblock {bx} {y} {z + 4} minecraft:dispenser[facing=south]'
+                    f'{{Items:[{{Slot:0b,id:"minecraft:{kind}_spawn_egg",count:1}}]}}', expect_result=1),
+                cmd(f'/setblock {bx} {y + 1} {z + 4} minecraft:redstone_block', expect_result=1)]
+    ops.append({'op': 'tick', 'n': 6})
+    for bx, kind in eggs:
+        near = f'@e[type=minecraft:{kind},x={bx}.5,y={y},z={z + 5}.5,distance=..4,limit=1,sort=nearest]'
+        ops += [cmd(f'/execute if entity {near}', expect_result=1),
+                cmd(f'/data get entity {near} PersistenceRequired', expect_result=0)]
+    return ops + setup(f'/kill @e[type=!minecraft:player,x={x},y={y - 8},z={z},dx=16,dy=24,dz=16]',
+                       f'/fill {x} {y - 1} {z} {x + 15} {y + 1} {z + 15} minecraft:air',
+                       f'/forceload remove {x} {z} {x + 15} {z + 15}')
+
+
 
 
 def summoned_fangs_lifetime():
@@ -6533,6 +6556,7 @@ def groups():
         ('command minecart loaded success', command_minecart_loaded_success()),
         ('ravager NoAI counters', ravager_noai_counters()),
         ('aquatic FromBucket', aquatic_from_bucket()),
+        ('dispensed spawn egg persistence', dispensed_spawn_egg_persistence()),
         ('villager command names', villager_command_names()),
         ('item lifetime counters', item_lifetime_counters()),
         ('seed sync proof', seed_sync_proof(cmd, setup)),
