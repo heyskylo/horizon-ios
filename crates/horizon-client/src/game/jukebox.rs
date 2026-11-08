@@ -318,7 +318,7 @@ impl Game<'_> {
                 &mut self.world.random,
                 horizon_core::position::BlockPos::new(pos[0], pos[1], pos[2]),
             );
-            self.spawn_item(record, at, super::dispenser::new_item_motion(), 10);
+            self.spawn_item_own(record, at, 10);
         }
         self.set_has_record(pos, false);
         self.jukebox_changed(pos);

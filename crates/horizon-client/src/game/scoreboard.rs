@@ -547,13 +547,6 @@ impl Game<'_> {
             }
         }
     }
-    /// `Scoreboard.entityRemoved`: a dead non-player entity leaves the board.
-    pub(super) fn score_entity_removed(&mut self, id: u32) {
-        let Some(uuid) = self.persist.uuids.get(&id).copied() else {
-            return;
-        };
-        self.score.board.entity_removed(&uuid_text(uuid));
-    }
 
     // ---- teams in gameplay -----------------------------------------------------
 

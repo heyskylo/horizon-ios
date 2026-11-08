@@ -14,7 +14,9 @@ impl Game<'_> {
         if self.dialog_open() {
             return self.dialog_has_text_field();
         }
-        if let Some(title) = self.title.as_mut() {
+        if self.title_input_active()
+            && let Some(title) = self.title.as_mut()
+        {
             // A caret field, an append-only one (`focused_field`), or a game
             // rule's box (`has_caret_field` asks the rules screen itself, and
             // `title_edit` types into it).
@@ -124,7 +126,7 @@ impl Game<'_> {
         if self.dialog_type(&text) {
             return;
         }
-        if self.title.is_some() {
+        if self.title_input_active() {
             self.title_edit(Some(&text), false);
         } else if self.book.is_some() {
             self.book_input(None, Some(&text));
