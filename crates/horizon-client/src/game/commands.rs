@@ -2696,11 +2696,16 @@ impl Game<'_> {
             .map_err(|_| err("argument.block.id.invalid", &[&input.id]))
     }
     /// Place a state like BlockInput.place: false when nothing changed.
+    /// `BlockInput.place` for a block of a command. `command`: `/setblock` and `/fill` place with
+    /// `UPDATE_CLIENTS | UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS`, so `Level.setBlock` notifies no neighbour,
+    /// and send that notice themselves once the shape updates are done (`update_neighbours_on_block_set`):
+    /// a block those shape updates pop off is gone before its neighbours are told of it.
     pub(super) fn place_state(
         &mut self,
         pos: [i32; 3],
         state: BlockStateId,
         strict: bool,
+        command: bool,
     ) -> R<bool> {
         let previous = self.world.block(pos[0], pos[1], pos[2]);
         if previous == state {
@@ -2732,6 +2737,14 @@ impl Game<'_> {
             });
             self.process_level_events()
                 .map_err(|e| CommandError::new(Text::literal(e.to_string())))?;
+        } else if command {
+            self.level_set_with_flags(
+                pos,
+                state,
+                horizon_world::level::flags::UPDATE_CLIENTS
+                    | horizon_world::level::flags::UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS,
+            )
+            .map_err(|e| CommandError::new(Text::literal(e.to_string())))?;
         } else {
             self.level_set(pos, state)
                 .map_err(|e| CommandError::new(Text::literal(e.to_string())))?;
@@ -2773,13 +2786,18 @@ impl Game<'_> {
         };
         if place_needed {
             let state = self.block_input_state(pos, &b, state, ctx.has("strict"))?;
-            let placed = self.place_state(pos, state, ctx.has("strict"))?;
+            // SetBlockCommand.setBlock reads the old state after a destroy.
+            let old_state = self.world.block(pos[0], pos[1], pos[2]);
+            let placed = self.place_state(pos, state, ctx.has("strict"), true)?;
             let loaded = match &b.nbt {
                 Some(nbt) => self.load_block_entity_nbt(pos, nbt),
                 None => false,
             };
             if !placed && !loaded {
                 return Err(err("commands.setblock.failed", &[]));
+            }
+            if !ctx.has("strict") {
+                self.update_neighbours_on_block_set(pos, old_state)?;
             }
         } else if !ctx.has("strict") {
             // ServerLevel.updateNeighboursOnBlockSet still runs when placing
@@ -2802,6 +2820,20 @@ impl Game<'_> {
             &[&pos[0], &pos[1], &pos[2]],
         ));
         Ok(1)
+    }
+    /// `ServerLevel.updateNeighboursOnBlockSet` (`Behaviours::update_neighbours_on_block_set`) for the
+    /// block now at `pos`, which replaced `old`.
+    fn update_neighbours_on_block_set(&mut self, pos: [i32; 3], old: BlockStateId) -> R<()> {
+        self.with_level(|b, level, ticks| {
+            b.update_neighbours_on_block_set(
+                level,
+                ticks,
+                horizon_core::position::BlockPos::new(pos[0], pos[1], pos[2]),
+                old,
+            );
+        });
+        self.process_level_events()
+            .map_err(|e| CommandError::new(Text::literal(e.to_string())))
     }
     /// `Level.destroyBlock(pos, true)` through the behaviour library: the
     /// destroy event, the block's drops without a tool or breaker, then its
@@ -3045,6 +3077,8 @@ impl Game<'_> {
                 .data(state)
                 .is(horizon_world::level::classes::Class::Note);
         let mut count = 0;
+        // What was placed, and what it replaced, for the notices after the last block.
+        let mut updated: Vec<([i32; 3], BlockStateId)> = Vec::new();
         // Whether the filter takes a state, worked out once per state: a fill visits up to 32768 blocks of a handful
         // of states, and matching a tag is a name lookup.
         let mut matched: std::collections::HashMap<BlockStateId, bool> =
@@ -3108,11 +3142,21 @@ impl Game<'_> {
                     } else {
                         target
                     };
-                    if self.place_state([x, y, z], target, strict)? || affected {
+                    let previous = self.world.block(x, y, z);
+                    if self.place_state([x, y, z], target, strict, true)? {
+                        count += 1;
+                        if !strict {
+                            updated.push(([x, y, z], previous));
+                        }
+                    } else if affected {
                         count += 1;
                     }
                 }
             }
+        }
+        // FillCommand.fillBlocks: every block is in before any neighbour hears of one.
+        for (pos, previous) in updated {
+            self.update_neighbours_on_block_set(pos, previous)?;
         }
         if count == 0 {
             return Err(err("commands.fill.failed", &[]));
@@ -3183,7 +3227,7 @@ impl Game<'_> {
         }
         if moving {
             for (from, ..) in &copies {
-                self.place_state(*from, air, true)?;
+                self.place_state(*from, air, true, false)?;
             }
         }
         let strict = ctx.has("strict");
@@ -3192,7 +3236,7 @@ impl Game<'_> {
         let barrier = self.pack.assets.registry.default_state("minecraft:barrier");
         let mut count = 0;
         for (_, to, s, entity, name) in copies {
-            self.place_state(to, s, strict)?;
+            self.place_state(to, s, strict, false)?;
             if Some(s) != barrier {
                 count += 1;
             }

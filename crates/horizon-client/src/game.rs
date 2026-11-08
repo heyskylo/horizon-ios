@@ -156,6 +156,8 @@ mod foxes;
 mod frames;
 #[cfg(feature = "friends")]
 mod friends;
+#[cfg(test)]
+mod setblock_order_tests;
 // Without Play with Friends: nothing shared, no Friends button (game/friends_off.rs).
 #[cfg(test)]
 mod entity_inside_tests;
@@ -1984,10 +1986,12 @@ impl LevelAccess for GameLevel<'_> {
         )
         .unwrap_or(false)
     }
-    /// `ServerLevel.isPositionTickingWithEntitiesLoaded`: block ticking, and
-    /// a ticking chunk.
+    /// `ServerLevel.isPositionTickingWithEntitiesLoaded`: block ticking, a
+    /// ticking chunk, and its entities loaded.
     fn is_ticking_chunk(&self, chunk: horizon_core::position::ChunkPos) -> bool {
-        self.tickets.block_ticking(chunk.x, chunk.z) && ticking_chunk(self.world, chunk.x, chunk.z)
+        self.tickets.block_ticking(chunk.x, chunk.z)
+            && ticking_chunk(self.world, chunk.x, chunk.z)
+            && !self.world.entities_pending.contains(&(chunk.x, chunk.z))
     }
     /// Entities that trigger pressure plates, tripwires, detector rails and
     /// wooden buttons: the players (the host and the LAN guests), the mobs,
@@ -4512,10 +4516,7 @@ impl Game<'_> {
             // ItemEntity.tick's noPhysics (servers only): out of a block
             // placed on it, towards the closest open side (#1252).
             let no_physics = merging && item.inside_block(&self.world, self.collision);
-            if no_physics {
-                let speed = self.world.random.next_float() * 0.2 + 0.1;
-                item.move_towards_closest_space(&self.world, self.res.facts(), speed);
-            }
+            let escape_speed = no_physics.then(|| self.world.random.next_float() * 0.2 + 0.1);
             // `getEntityCollisions(entity, bounds.expandTowards(movement))`: the boxes around
             // where the item can reach this tick (a block of slack for the next velocity).
             let reach = Vec3::new(
@@ -4527,7 +4528,7 @@ impl Game<'_> {
             let mut entered = Vec::new();
             let (alive, discarded) = self.tick_item_with_block_contacts(
                 item,
-                no_physics,
+                escape_speed,
                 &nearby,
                 false,
                 &mut |splash| entered.push(splash),
@@ -7843,6 +7844,10 @@ impl Game<'_> {
             horizon_client::spans::time("tick_particles", || self.tick_particles());
             self.tick_client_ambient();
         }
+        // ServerLevel.tick's `entityManager.tick()`, frozen or not, after every
+        // block entity ticker (the bells, conduits and gateways above too): the
+        // chunks loaded before this pass have their entities loaded from the next.
+        self.world.entities_pending.clear();
         self.tick_frame_visuals(running);
         if running {
             // MinecraftServer.tickServer: GameTestTicker.SINGLETON.tick().
