@@ -127,22 +127,27 @@ fn anon_key(kind: &str, p: Vec3) -> (String, [u64; 3]) {
 }
 /// The loaded compound underneath the fields Horizon models: what the entity was
 /// loaded with, with every key of `modelled` replacing its loaded value.
-pub(super) fn with_raw(modelled: Tag, raw: Option<&Tag>) -> Tag {
-    let (Some(Tag::Compound(raw)), Tag::Compound(modelled)) = (raw, &modelled) else {
-        return modelled;
-    };
-    let mut out = raw.clone();
-    for (k, v) in modelled {
-        // Defaults Horizon invents for fields it does not simulate give way to the save.
-        let invented = matches!(
-            k.to_string_lossy().as_str(),
-            "Fire" | "Air" | "Invulnerable" | "PortalCooldown" | "HasBeenShot"
-        );
-        if !(invented && out.contains_key(k)) {
-            out.insert(k.clone(), v.clone());
+pub(super) fn with_raw(mut modelled: Tag, raw: Option<&Tag>) -> Tag {
+    if let (Some(Tag::Compound(raw)), Tag::Compound(fields)) = (raw, &modelled) {
+        let mut out = raw.clone();
+        for (key, value) in fields {
+            // Defaults Horizon invents for fields it does not simulate give way to the save.
+            let invented = matches!(
+                key.to_string_lossy().as_str(),
+                "Fire" | "Air" | "Invulnerable" | "PortalCooldown" | "HasBeenShot"
+            );
+            if !(invented && out.contains_key(key)) {
+                out.insert(key.clone(), value.clone());
+            }
         }
+        modelled = Tag::Compound(out);
     }
-    Tag::Compound(out)
+    // The overlay may restore raw bytes for fields whose false value the
+    // live writer omitted. Entity.saveWithoutId always writes booleans.
+    let on_ground = entity_nbt::flag(&modelled, "OnGround");
+    let no_gravity = entity_nbt::flag(&modelled, "NoGravity");
+    entity_nbt::write_saved_flags(&mut modelled, on_ground, no_gravity);
+    modelled
 }
 
 fn read_attachments(
@@ -1591,6 +1596,7 @@ impl Game<'_> {
         for key in [
             "Silent",
             "Glowing",
+            "HasVisualFire",
             "Invulnerable",
             "CustomName",
             "CustomNameVisible",

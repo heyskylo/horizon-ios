@@ -1,4 +1,4 @@
-"""Entity.load and Entity.saveWithoutId on boats, minecarts and cushions (#12523)."""
+"""Entity.load and Entity.saveWithoutId on non-mob entities (#12523)."""
 
 OPTIONAL_FLAGS = ('NoGravity', 'Silent', 'Glowing', 'HasVisualFire', 'CustomNameVisible')
 COMMON_FLAGS = ('Invulnerable', 'OnGround', *OPTIONAL_FLAGS)
@@ -73,4 +73,65 @@ def vehicle_boolean_flags(cmd):
         read_flags(target, label, True, on_ground=True if kind == 'cushion' else None)
         ops.append(cmd(f'/kill {target}', expect_result=1))
     ops.append(cmd('/forceload remove 4096 0', expect_result=1))
+    return ops
+
+
+def other_entity_boolean_flags(cmd):
+    """Cover both shared save paths and false fields restored by raw overlays."""
+    ops = [cmd('/forceload add 4096 32', expect_result=1),
+           {'op': 'wait_chunks', 'chunks': [[256, 2]]}]
+    actors = []
+    case_id = 0x12523
+    kinds = [('snowball', ''), ('experience_orb', ',Value:1s'),
+             ('falling_block', ',BlockState:{Name:"minecraft:stone"},Time:1')]
+    cases = [('0b', False), ('-1b', True), ('2b', True),
+             ('256s', False), ('-0.5f', True), ('"invalid"', False)]
+
+    def read_flags(target, enabled, *, glowing=None):
+        expected = {'Invulnerable': enabled}
+        expected.update((field, enabled) for field in OPTIONAL_FLAGS)
+        if glowing is not None:
+            expected['Glowing'] = glowing
+        saved = ','.join(f'{field}:{int(value)}b' for field, value in expected.items()
+                         if value or field == 'Invulnerable')
+        ops.append(cmd(f'/execute as {target} if entity @s[nbt={{{saved}}}]', expect_result=1))
+        ops.append(cmd(f'/data get entity {target} Invulnerable', expect_result=int(enabled)))
+        absent = ' '.join(f'unless data entity {target} {field}'
+                          for field, value in expected.items()
+                          if not value and field != 'Invulnerable')
+        if absent:
+            ops.append(cmd(f'/execute {absent}', expect_result=1))
+
+    for index, (kind, extra) in enumerate(kinds, 1):
+        pos = f'{4096 + index * 4}.5 305 36.5'
+        for serial, (value, enabled) in enumerate(cases, 1):
+            target = f'{case_id:08x}-0000-0000-{index + 20:04x}-{serial:012x}'
+            flags = ','.join(f'{field}:{value}' for field in ('Invulnerable', *OPTIONAL_FLAGS))
+            ops.append(cmd(f'/summon {kind} {pos} {{UUID:[I;{case_id},0,{(index + 20) << 16},{serial}],'
+                           f'{flags}{extra}}}', expect_result=1))
+            read_flags(target, enabled)
+            ops.append(cmd(f'/kill {target}', expect_result=1))
+
+        # Keep noncanonical true flags through the physical unload. The orb
+        # also checks that an explicitly false optional field stays omitted.
+        target = f'{case_id:08x}-0000-0000-{index + 20:04x}-000000000007'
+        flags = ','.join(f'{field}:2b' for field in ('Invulnerable', *OPTIONAL_FLAGS)
+                         if field != 'Glowing')
+        glowing = kind != 'experience_orb'
+        ops.append(cmd(f'/summon {kind} {pos} {{UUID:[I;{case_id},0,{(index + 20) << 16},7],'
+                       f'{flags},Glowing:{2 if glowing else 0}b{extra}}}', expect_result=1))
+        read_flags(target, True, glowing=glowing)
+        actors.append((target, glowing))
+
+    ops.extend([cmd('/forceload remove 4096 32', expect_result=1),
+                {'op': 'tick', 'n': 60},
+                cmd('/execute unless loaded 4096 305 32', expect_result=1)])
+    for target, _ in actors:
+        ops.append(cmd(f'/execute unless entity {target}', expect_result=1))
+    ops.extend([cmd('/forceload add 4096 32', expect_result=1),
+                {'op': 'wait_chunks', 'chunks': [[256, 2]]}])
+    for target, glowing in actors:
+        read_flags(target, True, glowing=glowing)
+        ops.append(cmd(f'/kill {target}', expect_result=1))
+    ops.append(cmd('/forceload remove 4096 32', expect_result=1))
     return ops

@@ -141,6 +141,8 @@ impl Base<'_> {
                 map.entry(key.into()).or_insert(value);
             }
         }
+        let no_gravity = flag(&tag, "NoGravity");
+        write_saved_flags(&mut tag, self.on_ground, no_gravity);
         tag
     }
     /// Preserve Entity data without flags owned by Mob's save writer.
@@ -3847,7 +3849,6 @@ pub fn painting_from_nbt(tag: &Tag) -> Option<([i32; 3], u8, String)> {
 pub fn cushion_to_nbt(c: &Cushion, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
     // A block-attached cushion does not update these movement flags.
     let on_ground = raw.is_some_and(|tag| flag(tag, "OnGround"));
-    let no_gravity = raw.is_some_and(|tag| flag(tag, "NoGravity"));
     let base = Base {
         id: "minecraft:cushion",
         uuid,
@@ -3858,7 +3859,6 @@ pub fn cushion_to_nbt(c: &Cushion, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
         fall_distance: 0.0,
     };
     let mut tag = base.tag(raw);
-    write_saved_flags(&mut tag, on_ground, no_gravity);
     put(&mut tag, "block_pos", Tag::IntArray(c.pos.to_vec()));
     put(&mut tag, "color", string(c.color_name()));
     if let Some(name) = &c.custom_name {
