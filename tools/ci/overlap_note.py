@@ -24,6 +24,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 MARKER = "<!-- overlap-note -->"
@@ -158,9 +159,16 @@ def git(*args: str, check: bool = True) -> str:
     return r.stdout
 
 
-def has_commit(sha: str) -> bool:
-    return bool(sha) and subprocess.run(["git", *SAFE_GIT, "cat-file", "-e", f"{sha}^{{commit}}"],
-                                        capture_output=True).returncode == 0
+def present(shas: list[str]) -> set[str]:
+    """The commits of `shas` this clone already holds, in one git call. Lazy fetching is off: in the blobless clone,
+    git asks the server for each object it misses, one round trip each (82 checks took 134 s)."""
+    shas = [s for s in shas if s]
+    if not shas:
+        return set()
+    r = subprocess.run(["git", *SAFE_GIT, "cat-file", "--batch-check=%(objectname) %(objecttype)"],
+                       input="".join(f"{s}\n" for s in shas), capture_output=True, text=True,
+                       env={**os.environ, "GIT_NO_LAZY_FETCH": "1"})
+    return {line.split()[0] for line in r.stdout.splitlines() if line.endswith(" commit")}
 
 
 OPEN_PULLS = """
@@ -216,18 +224,23 @@ def fill_functions(pulls: list[Pull], base: str = "origin/main") -> None:
     attrs = ["-c", f"core.attributesFile={f.name}"]
     try:
         # The workflow's clone is blobless: the fetch brings commits and trees, the diff only the blobs it reads.
-        missing = [p.head for p in pulls if not has_commit(p.head)]
+        held = present([p.head for p in pulls])
+        missing = [p.head for p in pulls if p.head and p.head not in held]
         if missing:  # a bare `git fetch origin` would fetch every branch
             git("fetch", "--quiet", "--no-tags", "origin", *missing, check=False)
-        for p in pulls:
-            if not has_commit(p.head):
-                continue  # force-pushed away
+            held = present([p.head for p in pulls])
+
+        def diff(p: Pull) -> str:
             files = [x for x in p.files if not IGNORED.search(x)]
-            if not files:
-                continue
-            diff = git(*attrs, "diff", "-U0", "--no-color", "--no-ext-diff", "--no-textconv", f"{base}...{p.head}",
+            if p.head not in held or not files:
+                return ""  # force-pushed away, or only lists and manifests
+            return git(*attrs, "diff", "-U0", "--no-color", "--no-ext-diff", "--no-textconv", f"{base}...{p.head}",
                        "--", *files, check=False)
-            p.funcs = functions(diff)
+
+        # Each diff fetches its own blobs from the server: in parallel, the waits overlap.
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for p, text in zip(pulls, pool.map(diff, pulls)):
+                p.funcs = functions(text)
     finally:
         os.unlink(f.name)
 
