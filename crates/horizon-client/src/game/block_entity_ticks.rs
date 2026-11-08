@@ -41,6 +41,7 @@ impl Game<'_> {
         let mut spawners = Vec::new();
         let mut trial_spawners = Vec::new();
         self.item_columns = Some(Default::default());
+        self.pass_mobs = Some(Default::default());
         for slot in self.world.block_entity_tickers().iter().copied() {
             let pos = slot.0;
             // Ticks before this one can remove it (`TickingBlockEntity.isRemoved`).
@@ -87,6 +88,7 @@ impl Game<'_> {
         }
         // Items move between passes: the columns hold for this one only.
         self.item_columns = None;
+        self.pass_mobs = None;
         self.update_song_volumes();
         self.scan_for_hearts();
         // The client ticks (particles, sounds, the turning mob) are for a
@@ -197,12 +199,13 @@ impl Game<'_> {
             })
             .collect()
     }
-    /// `ServerLevel.shouldTickBlocksAt` in a block-ticking chunk
-    /// (`LevelChunk.isTicking`, block coordinates), from every player's
-    /// tickets (`update_chunk_tickets`).
-    fn block_ticking_area(&self) -> impl Fn(i32, i32) -> bool + use<> {
+    /// `LevelChunk.isTicking` (block coordinates): a block-ticking chunk from
+    /// every player's tickets (`update_chunk_tickets`), its entities loaded
+    /// (`ServerLevel.areEntitiesLoaded`).
+    pub(super) fn block_ticking_area(&self) -> impl Fn(i32, i32) -> bool + use<> {
         let levels = self.tickets.levels();
-        move |x, z| levels.block_ticking_at(x, z)
+        let pending = self.world.entities_pending.clone();
+        move |x, z| levels.block_ticking_at(x, z) && !pending.contains(&(x >> 4, z >> 4))
     }
     /// `DaylightDetectorBlock.tickEntity` of the detector at `pos`.
     fn tick_daylight_detector(&mut self, pos: Pos) {
