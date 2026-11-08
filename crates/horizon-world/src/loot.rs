@@ -516,6 +516,46 @@ fn int_bounds(v: &Value, value: i32) -> bool {
     }
 }
 
+/// `ListOperation`: the list a `set_*` function's `values` and `mode` ask
+/// for over the list the component already had - `replace_all`,
+/// `replace_section` (`offset` and an optional `size`, default the new
+/// values'), `insert` at `offset`, or `append`. An offset past the end is
+/// logged and changes nothing in vanilla; it does the same here.
+fn list_operation<T: Clone>(
+    spec: &Value,
+    existing: Vec<T>,
+    mut draw: impl FnMut(&Value) -> T,
+) -> Vec<T> {
+    let values: Vec<T> = (spec["values"].as_array().into_iter().flatten())
+        .map(&mut draw)
+        .collect();
+    let offset = spec["offset"].as_i64().unwrap_or(0).max(0) as usize;
+    // A section replacement or an insertion past the end is logged and ignored.
+    let fits = offset <= existing.len();
+    match spec["mode"].as_str().unwrap_or("replace_all") {
+        "append" => existing.into_iter().chain(values).collect(),
+        "insert" if fits => {
+            let mut out = existing;
+            let tail = out.split_off(offset);
+            out.extend(values);
+            out.extend(tail);
+            out
+        }
+        "replace_section" if fits => {
+            let mut out = existing;
+            let size = (spec["size"].as_i64()).map_or(values.len(), |s| s.max(0) as usize);
+            let tail = out.split_off((offset + size).min(out.len()));
+            out.truncate(offset);
+            out.extend(values);
+            out.extend(tail);
+            out
+        }
+        "insert" | "replace_section" => existing,
+        // `replace_all`, and a mode the codec refuses
+        _ => values,
+    }
+}
+
 /// A JSON number read by an int codec (`Number.intValue`): `3.0`, which
 /// 1.21.1 mods write for rolls and counts, is 3.
 fn int_value(v: &Value) -> Option<i64> {
@@ -1634,6 +1674,106 @@ impl<R: RandomSource> Context<'_, R> {
                 stack.names.retain(|(k, _)| *k != id);
                 stack.names.push((id, f["name"].clone()));
             }
+            // SetCustomModelDataFunction: the model data's four lists, each
+            // by a `ListOperation` over the component the stack already has.
+            // Floats and colours come from number providers (drawn with the
+            // loot random), flags and strings as they are written.
+            "minecraft:set_custom_model_data" => {
+                let id = "minecraft:custom_model_data";
+                let content = stack.components.iter().find(|(k, _)| k == id);
+                let mut content = content
+                    .map(|(_, v)| v.clone())
+                    .filter(Value::is_object)
+                    .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+                let old = |key: &str| -> Vec<Value> {
+                    content[key].as_array().cloned().unwrap_or_default()
+                };
+                let mut replaced: Vec<(&str, Vec<Value>)> = Vec::new();
+                if f["floats"].is_object() {
+                    let list =
+                        list_operation(&f["floats"], old("floats"), |v| Value::from(self.float(v)));
+                    replaced.push(("floats", list));
+                }
+                if f["flags"].is_object() {
+                    let list = list_operation(&f["flags"], old("flags"), |v| {
+                        Value::Bool(v.as_bool().unwrap_or(false))
+                    });
+                    replaced.push(("flags", list));
+                }
+                if f["strings"].is_object() {
+                    let list = list_operation(&f["strings"], old("strings"), |v| {
+                        Value::String(v.as_str().unwrap_or_default().to_owned())
+                    });
+                    replaced.push(("strings", list));
+                }
+                if f["colors"].is_object() {
+                    let list =
+                        list_operation(&f["colors"], old("colors"), |v| Value::from(self.int(v)));
+                    replaced.push(("colors", list));
+                }
+                let Value::Object(map) = &mut content else {
+                    unreachable!("an object above")
+                };
+                for (key, list) in replaced {
+                    map.insert(key.to_owned(), Value::Array(list));
+                }
+                stack.components.retain(|(k, _)| k != id);
+                stack.components.push((id.to_owned(), content));
+            }
+            // SetBannerPatternFunction: the layers a banner or shield gets,
+            // replacing the component's own list or added to its end
+            // (`BannerPatternLayers.Builder.addAll` twice). A layer is a
+            // pattern id and a dye name, so the list is kept as it came.
+            "minecraft:set_banner_pattern" => {
+                let id = "minecraft:banner_patterns";
+                let layers = f["patterns"].as_array().cloned().unwrap_or_default();
+                let layers = if f["append"].as_bool() == Some(true) {
+                    stack
+                        .components
+                        .iter()
+                        .find(|(k, _)| k == id)
+                        .and_then(|(_, v)| v.as_array().cloned())
+                        .unwrap_or_default()
+                        .into_iter()
+                        .chain(layers)
+                        .collect()
+                } else {
+                    layers
+                };
+                stack.components.retain(|(k, _)| k != id);
+                stack.components.push((id.to_owned(), Value::Array(layers)));
+            }
+            // SetBookCoverFunction: the written book's title, author and
+            // generation, kept over the component the stack already carries (an
+            // earlier function's) with its pages and resolved flag. The title is
+            // a `Filterable` (raw text, filtered when a server filtered it), so
+            // it is kept as it came; a non-book item takes the component too, as
+            // any component may sit on any stack.
+            "minecraft:set_book_cover" => {
+                let id = "minecraft:written_book_content";
+                let mut content = stack
+                    .components
+                    .iter()
+                    .find(|(k, _)| k == id)
+                    .map(|(_, v)| v.clone())
+                    .filter(Value::is_object)
+                    .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+                if let Value::Object(map) = &mut content {
+                    for field in ["title", "author"] {
+                        if let Some(value) = f.get(field) {
+                            map.insert(field.to_owned(), value.clone());
+                        }
+                    }
+                    // `WrittenBookContent`'s generation is 0 to 3; the codec
+                    // refuses the rest, so a table that asks for more is clamped
+                    // as the item's own parse does.
+                    if let Some(generation) = f["generation"].as_i64() {
+                        map.insert("generation".to_owned(), Value::from(generation.clamp(0, 3)));
+                    }
+                }
+                stack.components.retain(|(k, _)| k != id);
+                stack.components.push((id.to_owned(), content));
+            }
             // SetComponentsFunction: the patch's components, applied when the
             // stack becomes an item (trim on worn armour, see `mobs::finalize`).
             "minecraft:set_components" => {
@@ -2000,6 +2140,170 @@ mod namespace_tests {
         let filled = data.fill("kaisyn:village/forest/house", 1, 27, None);
         let count: i32 = filled.iter().flatten().map(|s| s.count).sum();
         assert_eq!(count, 3);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `SetCustomModelDataFunction`: each of the model data's four lists goes
+    /// through its `ListOperation` over the component the stack already has -
+    /// floats appended, flags and strings replaced, a colour inserted first -
+    /// and the lists no operation names are left as the earlier function wrote
+    /// them.
+    #[test]
+    fn set_custom_model_data_applies_each_list_operation() {
+        let root = std::env::temp_dir().join(format!("horizon-loot-cmd-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let table = r#"{"pools": [{"rolls": 1, "entries": [{"type": "minecraft:item", "name": "minecraft:stick",
+            "modifier": [
+                {"type": "minecraft:set_components", "components": {"minecraft:custom_model_data": {"floats": [1.0], "strings": ["old"]}}},
+                {"type": "minecraft:set_custom_model_data",
+                 "floats": {"mode": "append", "values": [{"type": "minecraft:constant", "value": 2.0}]},
+                 "flags": {"mode": "replace_all", "values": [true]},
+                 "strings": {"mode": "replace_all", "values": ["new"]},
+                 "colors": {"mode": "insert", "offset": 0, "values": [{"type": "minecraft:constant", "value": 16711680}]}}
+            ]}]}]}"#;
+        let files = [
+            ("items.json", r#"{"minecraft:stick": {}}"#),
+            ("data/minecraft/loot_table/chests/model.json", table),
+        ];
+        for (name, text) in files {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        let data = LootData::load(&root, &PackOverlay::NONE).unwrap();
+        let filled = data.fill("minecraft:chests/model", 3, 27, None);
+        let stack = filled.iter().flatten().next().expect("a stick");
+        let component: Vec<_> = stack
+            .components
+            .iter()
+            .filter(|(k, _)| k == "minecraft:custom_model_data")
+            .collect();
+        assert_eq!(component.len(), 1, "{:?}", stack.components);
+        let component = &component[0].1;
+        assert_eq!(component["floats"], serde_json::json!([1.0, 2.0]));
+        assert_eq!(component["flags"], serde_json::json!([true]));
+        assert_eq!(component["strings"], serde_json::json!(["new"]));
+        assert_eq!(component["colors"], serde_json::json!([16711680]));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The edges `ListOperation` names but a table rarely reaches: a section
+    /// replacement of a known size, and an offset past the end, which vanilla
+    /// logs and ignores instead of failing the roll.
+    #[test]
+    fn list_operations_replace_a_section_and_ignore_a_far_offset() {
+        let int = |v: &Value| v.as_i64().unwrap() as i32;
+        let section = serde_json::json!({
+            "mode": "replace_section", "offset": 1, "size": 1, "values": [9],
+        });
+        assert_eq!(list_operation(&section, vec![1, 2, 3], int), [1, 9, 3]);
+        // No size: the new values' own length.
+        let section = serde_json::json!({"mode": "replace_section", "offset": 0, "values": [7, 8]});
+        assert_eq!(list_operation(&section, vec![1, 2, 3], int), [7, 8, 3]);
+        // Past the end: nothing changes.
+        let past = serde_json::json!({"mode": "insert", "offset": 9, "values": [4]});
+        assert_eq!(list_operation(&past, vec![1, 2], int), [1, 2]);
+        // A mode the codec would refuse reads as a replacement.
+        let unknown = serde_json::json!({"mode": "sideways", "values": [5]});
+        assert_eq!(list_operation(&unknown, vec![1, 2], int), [5]);
+    }
+
+    /// `SetBannerPatternFunction`: a banner from a loot table gets the layers
+    /// the table names - over the ones an earlier function wrote when the
+    /// function appends, and alone when it does not.
+    #[test]
+    fn set_banner_pattern_writes_the_layers() {
+        let root = std::env::temp_dir().join(format!("horizon-loot-banner-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let table = r#"{"pools": [{"rolls": 1, "entries": [{"type": "minecraft:item", "name": "minecraft:white_banner",
+            "modifier": [
+                {"type": "minecraft:set_components", "components": {"minecraft:banner_patterns": [{"pattern": "minecraft:stripe_bottom", "color": "red"}]}},
+                {"type": "minecraft:set_banner_pattern", "append": true,
+                 "patterns": [{"pattern": "minecraft:border", "color": "blue"}]}
+            ]}]}]}"#;
+        let files = [
+            ("items.json", r#"{"minecraft:white_banner": {}}"#),
+            ("data/minecraft/loot_table/chests/banner.json", table),
+        ];
+        for (name, text) in files {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        let data = LootData::load(&root, &PackOverlay::NONE).unwrap();
+        let filled = data.fill("minecraft:chests/banner", 5, 27, None);
+        let banner = filled.iter().flatten().next().expect("a banner");
+        let component: Vec<_> = banner
+            .components
+            .iter()
+            .filter(|(k, _)| k == "minecraft:banner_patterns")
+            .collect();
+        assert_eq!(component.len(), 1, "{:?}", banner.components);
+        assert_eq!(
+            component[0].1,
+            serde_json::json!([
+                {"pattern": "minecraft:stripe_bottom", "color": "red"},
+                {"pattern": "minecraft:border", "color": "blue"},
+            ])
+        );
+        // Without `append` the function's layers are the whole list.
+        let table = table.replace(r#""append": true,"#, r#""append": false,"#);
+        fs::write(
+            root.join("data/minecraft/loot_table/chests/banner.json"),
+            table,
+        )
+        .unwrap();
+        let data = LootData::load(&root, &PackOverlay::NONE).unwrap();
+        let filled = data.fill("minecraft:chests/banner", 5, 27, None);
+        let banner = filled.iter().flatten().next().expect("a banner");
+        let component: Vec<_> = banner
+            .components
+            .iter()
+            .filter(|(k, _)| k == "minecraft:banner_patterns")
+            .collect();
+        assert_eq!(
+            component[0].1,
+            serde_json::json!([{"pattern": "minecraft:border", "color": "blue"}])
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `SetBookCoverFunction`: a written book from a loot table carries the
+    /// title (raw text) and author the table names, over a component that is
+    /// already there, keeping its pages.
+    #[test]
+    fn set_book_cover_titles_the_written_book() {
+        let root = std::env::temp_dir().join(format!("horizon-loot-book-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let table = r#"{"pools": [{"rolls": 1, "entries": [{"type": "minecraft:item", "name": "minecraft:written_book",
+            "modifier": [
+                {"type": "minecraft:set_components", "components": {"minecraft:written_book_content": {"title": {"raw": "Old"}, "author": "Nobody", "pages": [{"raw": "page one"}]}}},
+                {"type": "minecraft:set_book_cover", "title": {"raw": "A Guide"}, "author": "Cartographer", "generation": 2}
+            ]}]}]}"#;
+        let files = [
+            ("items.json", r#"{"minecraft:written_book": {}}"#),
+            ("data/minecraft/loot_table/chests/book.json", table),
+        ];
+        for (name, text) in files {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        let data = LootData::load(&root, &PackOverlay::NONE).unwrap();
+        let filled = data.fill("minecraft:chests/book", 7, 27, None);
+        let book = filled.iter().flatten().next().expect("a book");
+        let content: Vec<_> = book
+            .components
+            .iter()
+            .filter(|(k, _)| k == "minecraft:written_book_content")
+            .collect();
+        assert_eq!(content.len(), 1, "{:?}", book.components);
+        let content = &content[0].1;
+        assert_eq!(content["title"]["raw"], "A Guide");
+        assert_eq!(content["author"], "Cartographer");
+        assert_eq!(content["generation"], 2);
+        // The pages an earlier function wrote are still the book's.
+        assert_eq!(content["pages"][0]["raw"], "page one");
         let _ = fs::remove_dir_all(&root);
     }
 
