@@ -2398,6 +2398,22 @@ struct WorldIcon {
     last_attempt: Option<Instant>,
 }
 
+/// Temporary block-contact collections rebuilt on every server tick. Keeping
+/// their backing storage on `Game` avoids reallocating them while the world is
+/// ticking; the wrapper around `tick_blocks` restores the scratch even when a
+/// phase returns an error.
+#[derive(Default)]
+struct TickScratch {
+    ticking: Vec<(i32, i32)>,
+    inside: Vec<BlockPos>,
+    standing: Vec<(BlockPos, bool, f64)>,
+    boat_cells: Vec<BlockPos>,
+    touched: Vec<BlockPos>,
+    sensing: Vec<BlockPos>,
+    rest: Vec<BlockPos>,
+    later: Vec<BlockPos>,
+}
+
 struct Game<'a> {
     /// Shared with an integrated server; `collision` and `motion` borrow from it.
     res: Arc<Resources>,
@@ -2887,6 +2903,7 @@ struct Game<'a> {
     win: Option<win::Win>,
     end: end::EndState,
     block_ticks: Ticks,
+    tick_scratch: TickScratch,
     tick_chunks: horizon_client::tick_chunk_membership::TickChunkMembership,
     tickets: horizon_client::ticket_levels::ChunkTickets,
     random_tick_sections: horizon_client::random_tick_sections::RandomTickSections,
@@ -5192,6 +5209,13 @@ impl Game<'_> {
     /// (`ServerChunkCache.tick`'s broadcast), before the block events and the
     /// block entities ran.
     fn tick_blocks(&mut self) -> Result<Option<usize>> {
+        let mut scratch = std::mem::take(&mut self.tick_scratch);
+        let result = self.tick_blocks_with_scratch(&mut scratch);
+        self.tick_scratch = scratch;
+        result
+    }
+
+    fn tick_blocks_with_scratch(&mut self, scratch: &mut TickScratch) -> Result<Option<usize>> {
         let mut laps = horizon_client::spans::laps();
         // ServerChunkCache.tick: the tickets that time out.
         self.tickets.tick_portal();
@@ -5202,26 +5226,23 @@ impl Game<'_> {
         let bounds = levels.random_tick_bounds();
         // Keep the world map's chunk order, including empty chunks
         // (tick_chunk_random still draws for precipitation in those).
-        let ticking: Vec<_> = self
-            .world
-            .chunks
-            .keys()
-            .copied()
-            .filter(|&(x, z)| {
+        scratch.ticking.clear();
+        scratch
+            .ticking
+            .extend(self.world.chunks.keys().copied().filter(|&(x, z)| {
                 if let Some((min_x, min_z, max_x, max_z)) = bounds
                     && (x < min_x || x > max_x || z < min_z || z > max_z)
                 {
                     return false;
                 }
                 levels.random_ticking(x, z) && ticking_chunk(&self.world, x, z)
-            })
-            .collect();
+            }));
         laps.lap("tb_chunks");
         // Entity.checkInsideBlocks for the plates, tripwires, detector rails and
         // buttons under the players (the host and the LAN guests), the minecarts
         // and the arrows (the mobs and other entities are added in `with_level`
         // below).
-        let mut inside = Vec::new();
+        scratch.inside.clear();
         let guests = self.lan_block_trigger_boxes();
         let boxes = self
             .player
@@ -5247,7 +5268,7 @@ impl Game<'_> {
             for x in (lo[0] + 1e-7).floor() as i32..=(hi[0] - 1e-7).floor() as i32 {
                 for y in (lo[1] + 1e-7).floor() as i32..=(hi[1] - 1e-7).floor() as i32 {
                     for z in (lo[2] + 1e-7).floor() as i32..=(hi[2] - 1e-7).floor() as i32 {
-                        inside.push(BlockPos::new(x, y, z));
+                        scratch.inside.push(BlockPos::new(x, y, z));
                     }
                 }
             }
@@ -5261,19 +5282,19 @@ impl Game<'_> {
             .iter()
             .filter(|p| p.arrow.is_some())
         {
-            inside.extend(horizon_client::arrows::blocks_inside(
+            scratch.inside.extend(horizon_client::arrows::blocks_inside(
                 p.previous, p.position,
             ));
         }
         for t in &self.tridents {
-            inside.extend(horizon_client::arrows::blocks_inside(
+            scratch.inside.extend(horizon_client::arrows::blocks_inside(
                 t.position, t.position,
             ));
         }
         // BigDripleafBlock.entityInside also asks whether the player stands on
         // the ground and how high its feet are: the leaves its box's feet
         // layer is inside (the host and the LAN guests).
-        let mut standing = Vec::new();
+        scratch.standing.clear();
         let feet = self
             .player
             .iter()
@@ -5294,7 +5315,9 @@ impl Game<'_> {
             let y = (at[1] + 1e-7).floor() as i32;
             for x in (at[0] - w + 1e-7).floor() as i32..=(at[0] + w - 1e-7).floor() as i32 {
                 for z in (at[2] - w + 1e-7).floor() as i32..=(at[2] + w - 1e-7).floor() as i32 {
-                    standing.push((BlockPos::new(x, y, z), on_ground, at[1]));
+                    scratch
+                        .standing
+                        .push((BlockPos::new(x, y, z), on_ground, at[1]));
                 }
             }
         }
@@ -5305,29 +5328,29 @@ impl Game<'_> {
         let first_contact_drop = self.next_entity + 1;
         self.with_level(|b, level, ticks| {
             // LilyPadBlock.entityInside: a boat inside a lily pad breaks it.
-            let mut boat_cells: Vec<BlockPos> = Vec::new();
+            scratch.boat_cells.clear();
             for bounds in level.boat_trigger_boxes() {
                 let (lo, hi) = (bounds.min_position(), bounds.max_position());
                 for x in (lo.x + 1e-7).floor() as i32..=(hi.x - 1e-7).floor() as i32 {
                     for y in (lo.y + 1e-7).floor() as i32..=(hi.y - 1e-7).floor() as i32 {
                         for z in (lo.z + 1e-7).floor() as i32..=(hi.z - 1e-7).floor() as i32 {
-                            boat_cells.push(BlockPos::new(x, y, z));
+                            scratch.boat_cells.push(BlockPos::new(x, y, z));
                         }
                     }
                 }
             }
-            for pos in boat_cells {
+            for pos in scratch.boat_cells.drain(..) {
                 b.boat_inside(level, ticks, pos);
             }
             // The mobs and the other entities (items, orbs, projectiles...) too.
-            let mut touched: Vec<BlockPos> = Vec::new();
+            scratch.touched.clear();
             use entity::{Entity as _, for_each_entity};
             let mut touch = |bounds: Aabb| {
                 let (lo, hi) = (bounds.min_position(), bounds.max_position());
                 for x in (lo.x + 1e-7).floor() as i32..=(hi.x - 1e-7).floor() as i32 {
                     for y in (lo.y + 1e-7).floor() as i32..=(hi.y - 1e-7).floor() as i32 {
                         for z in (lo.z + 1e-7).floor() as i32..=(hi.z - 1e-7).floor() as i32 {
-                            touched.push(BlockPos::new(x, y, z));
+                            scratch.touched.push(BlockPos::new(x, y, z));
                         }
                     }
                 }
@@ -5351,7 +5374,7 @@ impl Game<'_> {
             for &bounds in &level.trigger_extras {
                 touch(bounds);
             }
-            for pos in inside {
+            for pos in scratch.inside.drain(..) {
                 b.entity_inside(level, ticks, pos);
             }
             // The touched blocks go once each, in (x, y, z) order. Only an
@@ -5361,18 +5384,24 @@ impl Game<'_> {
             // are sorted. Once a block changes, every later one goes, as the
             // whole sorted list would.
             let key = |p: &BlockPos| (p.x, p.y, p.z);
-            let (mut sensing, rest): (Vec<_>, Vec<_>) = touched
-                .into_iter()
-                .partition(|p| b.senses_entities(level.world.block(p.x, p.y, p.z)));
-            sensing.sort_unstable_by_key(key);
-            sensing.dedup();
+            scratch.sensing.clear();
+            scratch.rest.clear();
+            for pos in scratch.touched.drain(..) {
+                if b.senses_entities(level.world.block(pos.x, pos.y, pos.z)) {
+                    scratch.sensing.push(pos);
+                } else {
+                    scratch.rest.push(pos);
+                }
+            }
+            scratch.sensing.sort_unstable_by_key(key);
+            scratch.sensing.dedup();
             let looked = (
                 level.world.revision,
                 level.world.chunks.membership_revision(),
             );
             let mut i = 0;
-            while i < sensing.len() {
-                let pos = sensing[i];
+            while i < scratch.sensing.len() {
+                let pos = scratch.sensing[i];
                 b.entity_inside(level, ticks, pos);
                 i += 1;
                 let now = (
@@ -5380,20 +5409,19 @@ impl Game<'_> {
                     level.world.chunks.membership_revision(),
                 );
                 if now != looked {
-                    let mut later: Vec<_> = rest
-                        .into_iter()
-                        .chain(sensing.drain(i..))
-                        .filter(|p| key(p) > key(&pos))
-                        .collect();
-                    later.sort_unstable_by_key(key);
-                    later.dedup();
-                    for pos in later {
+                    scratch.later.clear();
+                    scratch.later.append(&mut scratch.rest);
+                    scratch.later.extend(scratch.sensing.drain(i..));
+                    scratch.later.retain(|p| key(p) > key(&pos));
+                    scratch.later.sort_unstable_by_key(key);
+                    scratch.later.dedup();
+                    for pos in scratch.later.drain(..) {
                         b.entity_inside(level, ticks, pos);
                     }
                     break;
                 }
             }
-            for (pos, on_ground, feet_y) in standing {
+            for (pos, on_ground, feet_y) in scratch.standing.drain(..) {
                 b.entity_on_big_dripleaf(level, ticks, pos, on_ground, feet_y);
             }
         });
@@ -5408,7 +5436,7 @@ impl Game<'_> {
         }
         self.with_level(|b, level, ticks| {
             horizon_client::spans::time("random_ticks", || {
-                for (x, z) in ticking.into_iter().filter(|_| !debug) {
+                for (x, z) in scratch.ticking.drain(..).filter(|_| !debug) {
                     // The last answer, asked from Y `from` at a world revision:
                     // the next ticking section and its mask. It stands for a
                     // later Y up to that section's until a block changes.
@@ -17049,6 +17077,7 @@ impl<'a> Game<'a> {
             win: None,
             end: Default::default(),
             block_ticks: Ticks::new(0),
+            tick_scratch: TickScratch::default(),
             tick_chunks: Default::default(),
             tickets: Default::default(),
             random_tick_sections: Default::default(),
