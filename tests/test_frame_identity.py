@@ -150,6 +150,26 @@ class SessionCheckTests(unittest.TestCase):
         self.assertEqual(identity.session_checks(
             self.dir, ['vanilla', 'golden_hour', 'golden_hour_hdr', 'hdr_toggle']), [])
 
+    def test_float_oit_must_change_the_float_picture(self):
+        for scene in identity.SESSIONS['float_hdr'][2]:
+            for name in ('float_hdr', 'float_oit'):
+                for suffix in ('.png', '-hdr.png'):
+                    self.shot(f'{name}.{scene}{suffix}')
+        self.assertEqual(identity.session_checks(self.dir, ['float_hdr', 'float_oit']),
+                         ["float_oit: the same as without Improved Transparency: it didn't run"])
+        other = [bytes(255 - v for v in r) for r in self.rows]
+        self.shot('float_oit.glass-hdr.png', other)
+        self.assertEqual(identity.session_checks(self.dir, ['float_hdr', 'float_oit']), [])
+
+    def test_float_visibility_buffer_needs_its_gpu_log(self):
+        for scene in identity.SESSIONS['float_visbuffer'][2]:
+            for suffix in ('.png', '-hdr.png'):
+                self.shot(f'float_visbuffer.{scene}{suffix}')
+        self.assertEqual(identity.session_checks(self.dir, ['float_visbuffer']),
+                         ["float_visbuffer: the visibility buffer didn't run"])
+        (self.dir / 'float_visbuffer.log').write_text('drawing through a visibility buffer')
+        self.assertEqual(identity.session_checks(self.dir, ['float_visbuffer']), [])
+
 
 class BaseTests(unittest.TestCase):
     def test_only_files_no_binary_is_built_from_let_the_base_reuse_the_change(self):

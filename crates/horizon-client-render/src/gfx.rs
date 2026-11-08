@@ -35,8 +35,8 @@ fn entity_shader() -> String {
     crate::overlay::wgsl_constants() + include_str!("hdr_light.wgsl") + include_str!("entity.wgsl")
 }
 
-fn written_lane(layered: bool, format: wgpu::TextureFormat, pack: bool, world: bool) -> bool {
-    layered && format == LINEAR_FRAME && !pack && world
+fn no_pack_hdr_gain(layered: bool, pack: bool, world: bool) -> bool {
+    layered && !pack && world
 }
 
 fn light_marks(format: wgpu::TextureFormat, hdr: bool) -> bool {
@@ -444,7 +444,8 @@ struct Globals {
     /// full (`hdr::Hdr::windows`); zero without HDR.
     hdr_windows: [[f32; 4]; 2],
     hdr_light: [f32; 4],
-    /// Headroom, effective scene gain, world/look and debug, from the resolve pass's snapshot.
+    /// Headroom, effective scene gain, world/look and debug, as HDR output's pass has them
+    /// (`Hdr::draw_params`).
     hdr_settings: [f32; 4],
     hdr_shares: [f32; 4],
 }
@@ -1519,7 +1520,6 @@ pub struct Renderer {
     hdr_marker: Option<std::path::PathBuf>,
     /// The HDR Lighting setting, kept for the HDR output made when HDR turns on.
     hdr_lighting_setting: bool,
-    hdr_written: bool,
     /// The shader pack's post-processing, and the dimension (legacy id) it was loaded for.
     pack_post: Option<(i32, Option<pack_post::PackPost>)>,
     /// A `shaders/` pack whose pipelines build on a thread of their own (`load_shader_pack`).
@@ -5139,7 +5139,6 @@ impl Renderer {
             entity_atlas: atlas_view.clone(),
             hdr: None,
             hdr_lighting_setting: true,
-            hdr_written: false,
             emission_stats,
             hdr_output,
             frame_format,
@@ -8194,37 +8193,21 @@ impl Renderer {
         if let Some(hdr) = &mut self.hdr {
             hdr.lighting = hdr_lighting && hdr.look;
         }
-        let hdr_written = written_lane(
+        let hdr_gain = no_pack_hdr_gain(
             self.hdr.as_ref().is_some_and(|h| h.layered()),
-            self.frame_format,
             self.shader_pack_kind().is_some(),
             !frame.title,
         );
-        if self.hdr_written != hdr_written {
-            log::info!(
-                "Horizon HDR frame: {}",
-                if hdr_written {
-                    "written light"
-                } else if self.frame_format == LINEAR_FRAME {
-                    "plain colour"
-                } else {
-                    "marked"
-                }
-            );
-        }
-        self.hdr_written = hdr_written;
         let (hdr_settings, hdr_shares) = self
             .hdr
             .as_ref()
             .map_or(([0.0; 4], [0.0; 4]), |h| h.draw_params(!frame.title));
-        self.world_post
-            .light_representation(self.hdr_written.then(|| {
-                (
-                    hdr_settings,
-                    hdr_shares,
-                    self.hdr.as_ref().unwrap().windows(),
-                )
-            }));
+        self.world_post.baked_light(
+            hdr_gain,
+            hdr_settings,
+            hdr_shares,
+            self.hdr.as_ref().map_or([[0.0; 4]; 2], hdr::Hdr::windows),
+        );
         let jitter = self.world_post.jitter(
             [self.config.width, self.config.height],
             taa,
@@ -8379,7 +8362,7 @@ impl Renderer {
                 },
                 // Only HDR output reads the solid terrain's lighting alpha.
                 if self.hdr.is_some() { 1.0 } else { 0.0 },
-                f32::from(u8::from(self.hdr_written)),
+                f32::from(u8::from(hdr_gain)),
             ],
             hdr_settings,
             hdr_shares,
@@ -10933,7 +10916,7 @@ impl Renderer {
                 pass.set_bind_group(0, &self.group, &[]);
             }
             // Cracks multiply the existing light; scalar OIT coverage cannot carry that factor.
-            if crumbling_quads > 0 && (!oit_on || self.hdr_written) {
+            if crumbling_quads > 0 && (!oit_on || hdr_gain) {
                 pass.set_pipeline(&self.crumbling_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
@@ -11109,7 +11092,7 @@ impl Renderer {
                             }
                         };
                         quads(pass, &f.text[s], text_quads, entity_quads);
-                        if !self.hdr_written {
+                        if !hdr_gain {
                             quads(
                                 pass,
                                 &f.crumbling[s],
@@ -11342,7 +11325,7 @@ impl Renderer {
             if outline_edges > 0 && frame.outline_after_terrain && !pack_draws_outline {
                 self.draw_outline(&mut pass, outline_edges as u32, frame.outline_high_contrast);
             }
-            if translucent_crumbling_quads > 0 && (!oit_on || self.hdr_written) {
+            if translucent_crumbling_quads > 0 && (!oit_on || hdr_gain) {
                 pass.set_pipeline(&self.crumbling_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
@@ -11941,7 +11924,7 @@ impl Renderer {
             pass.draw_indexed(0..overlay.hand_quads * 6, overlay.first_hand_vertex, 0..1);
             drop(pass);
             if let Some(hdr) = &self.hdr
-                && !self.hdr_written
+                && !no_pack_hdr_gain(layered, self.shader_pack_kind().is_some(), !frame.title)
             {
                 hdr.mark_hand(encoder, timing.as_mut());
                 // The non-layered 0.2 hand keeps its UI-brightness sentinel, not light marks.
@@ -13073,25 +13056,12 @@ mod tests {
     }
 
     #[test]
-    fn written_light_requires_the_entire_default_layered_world_lane() {
-        use super::{LINEAR_FRAME, WIDE_FRAME, written_lane};
-        assert!(written_lane(true, LINEAR_FRAME, false, true));
-        for bits in 0..8 {
-            let layered = bits & 1 != 0;
-            let pack = bits & 2 != 0;
-            let world = bits & 4 != 0;
-            assert_eq!(
-                written_lane(layered, LINEAR_FRAME, pack, world),
-                layered && !pack && world
-            );
-            assert!(!written_lane(layered, WIDE_FRAME, pack, world));
-            assert!(!written_lane(
-                layered,
-                wgpu::TextureFormat::Bgra8Unorm,
-                pack,
-                world,
-            ));
-        }
+    fn only_a_no_pack_layered_world_applies_hdr_gain() {
+        use super::no_pack_hdr_gain;
+        assert!(no_pack_hdr_gain(true, false, true));
+        assert!(!no_pack_hdr_gain(false, false, true));
+        assert!(!no_pack_hdr_gain(true, true, true));
+        assert!(!no_pack_hdr_gain(true, false, false));
     }
 
     #[test]
