@@ -173,7 +173,9 @@ pub fn blaze_server_ai_step(m: &mut Mob, cx: &mut Cx) {
         && !(t.is_player && t.creative)
         && t.eye_y > m.eye_y() + m.extra.vector[0]
     {
-        m.velocity.y += (0.3 - m.velocity.y) * 0.3;
+        // (0.3F - y) * 0.3F: the floats widened.
+        let k = f64::from(0.3_f32);
+        m.velocity.y += (k - m.velocity.y) * k;
     }
 }
 /// `BlazeModel.setupAnim`: three rings of rods circling and bobbing.
