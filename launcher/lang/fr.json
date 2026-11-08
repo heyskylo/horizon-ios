@@ -462,7 +462,6 @@
   "Copying…": "Copie…",
   "Filters": "Filtres",
   "{count} followers": "{count} abonnés",
-  "{count} stars on GitHub": "{count} étoiles sur GitHub",
   "Connect an AI agent": "Connecter un agent IA",
   "Each switch is off unless you turn it on. What it sends is below it; the privacy page on playhorizon.dev says how long it is kept.": "Chaque interrupteur est désactivé à moins que vous ne l'activiez. Ce qu'il envoie se trouve en dessous ; la page de confidentialité sur playhorizon.dev indique combien de temps il est conservé.",
   "Players": "Joueurs",
@@ -1181,7 +1180,6 @@
   "Builds on the Horizon you play": "Se compile sur le Horizon auquel vous jouez",
   "Needs native hook points v{needs}, the Horizon you play has v{has}: update Horizon first": "Nécessite les points d'accroche natifs v{needs}, le Horizon auquel vous jouez a la v{has} : mettez d'abord Horizon à jour",
   "Made for Horizon {pin}, but {mods} pin another commit: the build will ask you to Build anyway and may not compile": "Fait pour Horizon {pin}, mais {mods} visent un autre commit : la compilation vous demandera « Compiler quand même » et risque d'échouer",
-  "Made for Horizon {pin}, you play {yours}: the launcher builds your game on {pin}": "Fait pour Horizon {pin}, vous jouez à {yours} : le launcher compile votre jeu sur {pin}",
   "{title} {version} waits for you: it no longer has {ids}, which your worlds may use. Update it on the Mods page when you're ready.": "{title} {version} vous attend : il n'a plus {ids}, que vos mondes utilisent peut-être. Mettez-le à jour depuis la page Mods quand vous serez prêt.",
   "Tags": "Tags",
   "Windows' Smart App Control is blocking the build (os error 4551). It only lets signed programs run, and a native build runs programs no one has signed: the ones it compiles on this computer and some of the compiler's own. To build native mods, turn it off in Windows Security > App & browser control > Smart App Control settings, then build again. On some Windows versions it can't be turned back on without reinstalling Windows. Content mods (.hmod) need no build and work with it on.": "Le contrôle intelligent des applications (Smart App Control) de Windows bloque la compilation (os error 4551). Il ne laisse s'exécuter que les programmes signés, et une compilation native lance des programmes que personne n'a signés : ceux qu'elle compile sur cet ordinateur et certains du compilateur lui-même. Pour compiler des mods natifs, désactivez-le dans Sécurité Windows > Contrôle des applications et du navigateur > Paramètres du contrôle intelligent des applications, puis relancez la compilation. Sur certaines versions de Windows, il ne peut pas être réactivé sans réinstaller Windows. Les mods de contenu (.hmod) n'ont pas besoin de compilation et fonctionnent avec lui.",
@@ -1260,5 +1258,11 @@
   "Recommended": "Recommandée",
   "An older version, {version}, builds on the Horizon you play: installing picks it": "Une version plus ancienne, {version}, compile sur le Horizon auquel tu joues : l'installation la choisit",
   "{mod}: version {version} didn't build, trying {older}": "{mod} : la version {version} n'a pas compilé, essai de {older}",
-  "Use recommended (kept at {version})": "Utiliser la recommandée (gardée à {version})"
+  "Use recommended (kept at {version})": "Utiliser la recommandée (gardée à {version})",
+  "Only what works on {instance}": "Seulement ce qui marche sur {instance}",
+  "{count} versions that don't work on {instance} are hidden": "{count} versions qui ne marchent pas sur {instance} sont masquées",
+  "Made for Horizon {pin}: the launcher builds it on {yours}, the one you play, and on {pin} only if it doesn't compile there": "Fait pour Horizon {pin} : le launcher le compile sur {yours}, celui auquel tu joues, et sur {pin} seulement s'il n'y compile pas",
+  "{mods} didn't build on the Horizon you play: building on the one they were made for": "{mods} n'ont pas compilé sur le Horizon auquel tu joues : compilation sur celui pour lequel ils ont été faits",
+  "In the last build, on Horizon {commit} for {mods}, not on {horizon}": "Dans la dernière compilation, sur Horizon {commit} pour {mods}, pas sur {horizon}",
+  "In the last build, on {horizon}": "Dans la dernière compilation, sur {horizon}"
 }
