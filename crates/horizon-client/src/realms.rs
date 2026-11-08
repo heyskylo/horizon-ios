@@ -517,6 +517,59 @@ fn template_image(encoded: &str) -> Option<Vec<u8>> {
     resample_icon(width, height, &rgba)
 }
 
+/// A cheap identity for a base64 picture, so two images of the same length never share
+/// a cache entry.
+fn encoded_key(encoded: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    encoded.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// `RealmsWorldSlotButton.State`'s picture, in `extractContents`' order: a minigame's
+/// image (or `presets/isles.png` when it has none), the empty frame, a template's own
+/// image, or the slot's title panorama.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SlotPicture<'a> {
+    Image(&'a str),
+    Preset,
+    Empty,
+    Panorama(&'static str),
+}
+
+/// `RealmsWorldSlotButton.State`: `image` is the minigame's `minigameImage` for slot 4
+/// and the slot's `templateImage` otherwise (only when its `templateId` is not -1).
+fn slot_picture(slot: i32, empty: bool, image: Option<&str>) -> SlotPicture<'_> {
+    if slot == 4 {
+        return image.map_or(SlotPicture::Preset, SlotPicture::Image);
+    }
+    if empty {
+        return SlotPicture::Empty;
+    }
+    if let Some(image) = image {
+        return SlotPicture::Image(image);
+    }
+    match slot {
+        1 => SlotPicture::Panorama("panorama_0"),
+        2 => SlotPicture::Panorama("panorama_2"),
+        3 => SlotPicture::Panorama("panorama_3"),
+        _ => SlotPicture::Empty,
+    }
+}
+
+/// `TextRenderingUtils.decompose(I18n.get("mco.template.select.none", "%link"), link)`:
+/// the translated message's lines, the one holding the `%s` argument split into
+/// `before`/`link`/`after`; every other line is whole (`link` is None).
+fn template_none_lines(text: &str, link: &str) -> Vec<(String, Option<String>, String)> {
+    text.replacen("%s", "%link", 1)
+        .split('\n')
+        .map(|line| match line.split_once("%link") {
+            Some((before, after)) => (before.to_owned(), Some(link.to_owned()), after.to_owned()),
+            None => (line.to_owned(), None, String::new()),
+        })
+        .collect()
+}
+
 fn resample_icon(width: u32, height: u32, rgba: &[u8]) -> Option<Vec<u8>> {
     let (w, h) = (width as usize, height as usize);
     if w == 0 || h == 0 || rgba.len() < w * h * 4 {
@@ -955,9 +1008,9 @@ impl TemplateGroup {
     }
 }
 
-/// `RealmsSelectWorldTemplateScreen`'s list: a page fetched on a worker, and the next one
-/// (`0` once the service answered an empty page).
-type TemplatePages = Job<Result<(Vec<WorldTemplate>, i32), RealmsError>>;
+/// `RealmsSelectWorldTemplateScreen`'s list: one page fetched on a worker, the number of
+/// the page after it, and whether it was the last (the list shows each page as it lands).
+type TemplatePages = Job<Result<(Vec<WorldTemplate>, i32, bool), RealmsError>>;
 
 #[derive(Clone, Debug)]
 pub enum SubScreen {
@@ -1434,26 +1487,26 @@ fn pdp_row_narration(row: usize, trial: bool) -> String {
     crate::screen_narrator::translate("narrator.select", &[&pdp_row_lines(row, trial).join("\n")])
 }
 
-/// `RealmsSelectWorldTemplateScreen.fetchTemplatesAsync`: the pages after `start`, up to the
-/// first empty one (vanilla keeps asking until a page comes back empty).
-fn fetch_template_pages(
+/// `RealmsSelectWorldTemplateScreen.fetchTemplates`: one page at a time; the list shows it
+/// as it arrives and the screen chains the next page until the last or an empty one.
+fn fetch_template_page(
     client: &RealmsClient,
     world_type: &str,
-    start: i32,
+    page: i32,
     page_size: i32,
-) -> Result<(Vec<WorldTemplate>, i32), RealmsError> {
-    let mut templates = Vec::new();
-    let mut page = start;
-    // Vanilla's loop has no bound; 20 pages (200 templates) is far past any world type's list.
-    for _ in 0..20 {
-        let answer = client.fetch_world_templates(page, page_size, world_type)?;
-        if answer.templates.is_empty() {
-            return Ok((templates, 0));
-        }
-        templates.extend(answer.templates);
-        page += 1;
-    }
-    Ok((templates, page))
+) -> Result<(Vec<WorldTemplate>, i32, bool), RealmsError> {
+    let answer = client.fetch_world_templates(page, page_size, world_type)?;
+    let empty = answer.templates.is_empty();
+    Ok((
+        answer.templates,
+        page + 1,
+        empty || last_template_page(answer.page, answer.size, answer.total),
+    ))
+}
+
+/// `WorldTemplatePaginatedList.isLastPage`.
+fn last_template_page(page: i32, size: i32, total: i32) -> bool {
+    page > 0 && size > 0 && total > 0 && page * size >= total
 }
 
 fn wrap_lines(text: &str, atlas: &HudAtlas, width: f32) -> Vec<String> {
@@ -2414,6 +2467,7 @@ impl Screen {
                 server,
                 templates,
                 job,
+                group,
                 select,
                 error,
                 ..
@@ -2421,7 +2475,19 @@ impl Screen {
                 if let Some(result) = job.as_ref().and_then(take) {
                     *job = None;
                     match result {
-                        Ok((page, _next)) => templates.extend(page),
+                        // `fetchTemplatesAsync`: each page joins the list as it arrives;
+                        // the next one is asked for while the answer is not the last page.
+                        Ok((page, next_page, last)) => {
+                            templates.extend(page);
+                            if !last && let Some(client) = client() {
+                                let world_type = group
+                                    .map_or("MINIGAME", TemplateGroup::world_type)
+                                    .to_owned();
+                                *job = Some(spawn(move || {
+                                    fetch_template_page(&client, &world_type, next_page, 10)
+                                }));
+                            }
+                        }
                         // `fetchTemplatesAsync`: a page failure keeps the list and shows
                         // `mco.template.select.failure` when nothing arrived.
                         Err(e) => *error = Some(e.text()),
@@ -3165,6 +3231,7 @@ impl Screen {
                 slot,
                 kind,
                 creation,
+                group,
                 select,
                 ..
             } => {
@@ -3172,6 +3239,10 @@ impl Screen {
                     // The minigame switch runs in the task screen: Escape cancels it.
                     task.abort.store(true, Ordering::Relaxed);
                     Escape::CancelTask(server.clone())
+                } else if group.is_none() {
+                    // `RealmsWorldsTab.switchToMinigame`'s callback: the list belongs to
+                    // the configuration screen, not to a reset screen.
+                    Escape::Configure(server.clone())
                 } else {
                     Escape::Reset(server.clone(), *slot, *kind, creation.clone())
                 }
@@ -4048,7 +4119,7 @@ impl Screen {
             let world_type = group
                 .map_or("MINIGAME", TemplateGroup::world_type)
                 .to_owned();
-            spawn(move || fetch_template_pages(&client, world_type.as_str(), next_page, page_size))
+            spawn(move || fetch_template_page(&client, world_type.as_str(), next_page, page_size))
         });
         self.subscreen = SubScreen::TemplateList {
             server,
@@ -4753,21 +4824,29 @@ impl Screen {
                     slot,
                     kind,
                     creation,
+                    group,
                     ..
                 } = &self.subscreen
                 {
-                    let (server, slot, kind) = (server.clone(), *slot, *kind);
+                    let (server, slot, kind, group) = (server.clone(), *slot, *kind, *group);
                     let creation = creation.clone();
-                    self.subscreen = SubScreen::ResetWorld {
-                        server,
-                        slot,
-                        kind,
-                        creation,
-                        templates: None,
-                        job: None,
-                        reset: None,
-                        error: None,
-                    };
+                    // `RealmsWorldsTab.switchToMinigame`'s callback sends a cancelled
+                    // minigame list back to the configuration screen; the reset screen's
+                    // own list returns to the reset screen (`realmCreationTask` kept).
+                    if group.is_none() {
+                        self.back_to_configure_worlds(server);
+                    } else {
+                        self.subscreen = SubScreen::ResetWorld {
+                            server,
+                            slot,
+                            kind,
+                            creation,
+                            templates: None,
+                            job: None,
+                            reset: None,
+                            error: None,
+                        };
+                    }
                 }
                 Outcome::None
             }
@@ -5756,6 +5835,11 @@ impl Screen {
 
     /// `ConfirmLinkScreen.confirmLink`'s press: the confirm, over the screen that asked.
     fn open_link(&mut self, url: String) {
+        // `ConfirmLinkScreen.confirmLink`: no link, no question. An empty URI would be
+        // handed to the desktop's opener, which opens the game directory.
+        if url.trim().is_empty() {
+            return;
+        }
         let parent = self.subscreen.clone();
         self.subscreen = SubScreen::Popup(Popup::OpenLink {
             url,
@@ -8390,29 +8474,75 @@ impl Screen {
                                         entry.is_some_and(|slot| slot.is_hardcore()),
                                     )
                                 };
-                                // A template's image is a runtime dynamic texture the port
-                                // has no decoder for; 26.3's panoramas are solid grey.
-                                let image = if empty {
-                                    "gui/realms/empty_frame"
+                                // `RealmsWorldSlotButton.State`'s picture: the minigame's
+                                // image or `isles.png`, the empty frame, the slot's own
+                                // template image, or the slot's panorama (the atlas keeps
+                                // the four slot pictures at full size).
+                                let image = if slot == 4 {
+                                    server.minigame_image.as_deref()
                                 } else {
-                                    match slot {
-                                        1 => "gui/title/background/panorama_0",
-                                        2 => "gui/title/background/panorama_2",
-                                        3 => "gui/title/background/panorama_3",
-                                        _ => "gui/title/background/panorama_0",
-                                    }
+                                    entry.and_then(|entry| {
+                                        (entry.options.template_id != -1)
+                                            .then_some(entry.options.template_image.as_deref())
+                                            .flatten()
+                                    })
                                 };
                                 let tint = if active { u32::MAX } else { 0xFF8E_8E8E };
-                                crate::ui::blit_sprite(
-                                    batch,
-                                    atlas,
-                                    image,
-                                    x + 1.0,
-                                    y + 1.0,
-                                    size - 2.0,
-                                    size - 2.0,
-                                    tint,
-                                );
+                                match slot_picture(slot, empty, image) {
+                                    SlotPicture::Empty => crate::ui::blit_sprite(
+                                        batch,
+                                        atlas,
+                                        "gui/realms/empty_frame",
+                                        x + 1.0,
+                                        y + 1.0,
+                                        size - 2.0,
+                                        size - 2.0,
+                                        tint,
+                                    ),
+                                    SlotPicture::Image(encoded) => {
+                                        let key = format!("slot-{slot}-{}", encoded_key(encoded));
+                                        let pixels = {
+                                            let mut cache = self.template_images.borrow_mut();
+                                            cache
+                                                .entry(key)
+                                                .or_insert_with(|| template_image(encoded))
+                                                .clone()
+                                        };
+                                        if let Some(sprite) = pixels.as_deref().and_then(|rgba| {
+                                            icon_sprite(batch, atlas, slot as usize - 1, rgba)
+                                        }) {
+                                            batch.sprite_scaled(
+                                                atlas,
+                                                &sprite,
+                                                x + 1.0,
+                                                y + 1.0,
+                                                size - 2.0,
+                                                size - 2.0,
+                                                tint,
+                                            );
+                                        }
+                                    }
+                                    SlotPicture::Preset => crate::ui::blit_sprite(
+                                        batch,
+                                        atlas,
+                                        "gui/presets/isles",
+                                        x + 1.0,
+                                        y + 1.0,
+                                        size - 2.0,
+                                        size - 2.0,
+                                        tint,
+                                    ),
+                                    SlotPicture::Panorama(panorama) => crate::ui::blit_sprite(
+                                        batch,
+                                        atlas,
+                                        &format!("gui/title/background/{panorama}"),
+                                        x + 1.0,
+                                        y + 1.0,
+                                        size - 2.0,
+                                        size - 2.0,
+                                        tint,
+                                    ),
+                                }
                                 // `RealmsWorldSlotButton.extractContents`: a switchable slot
                                 // shows the white frame while hovered, the active one its
                                 // 0.8 grey, the rest 0.56 grey.
@@ -10195,35 +10325,41 @@ impl Screen {
                         } else if job.is_some() {
                             centered(batch, atlas, loading_dots(), cx, top + 10.0, GREY);
                         } else {
-                            // `mco.template.select.none` decomposed at `%link`
-                            // (`TextRenderingUtils.decompose`): the link segment in
-                            // -13408581 (0xFF3366BB), the rest white, each line centred;
-                            // hovering the link shows its URL and a click asks first.
-                            let none = t("mco.template.select.none");
-                            let link = t("mco.template.select.none.linkTitle");
+                            // `RealmsSelectWorldTemplateScreen` asks
+                            // `I18n.get("mco.template.select.none", "%link")` and decomposes
+                            // the result (`TextRenderingUtils.decompose`): only the line with
+                            // the `%s` argument carries the link (the raw translation has
+                            // `%s`, not `%link`), in -13408581 (0xFF3366BB), the rest white,
+                            // each line centred; hovering the link shows its URL.
+                            let lines = template_none_lines(
+                                &t("mco.template.select.none"),
+                                &t("mco.template.select.none.linkTitle"),
+                            );
                             let mut link_rect = [0.0; 4];
-                            for (i, line) in none.split('\n').enumerate() {
-                                let (before, after) = line
-                                    .split_once("%link")
-                                    .map_or((line, ""), |(before, after)| (before, after));
+                            for (i, (before, link, after)) in lines.iter().enumerate() {
                                 let y = 92.0 + i as f32 * 13.0;
-                                let width =
-                                    HudBatch::text_width(atlas, &format!("{before}{link}{after}"));
+                                let width = HudBatch::text_width(atlas, before)
+                                    + link
+                                        .as_deref()
+                                        .map_or(0.0, |link| HudBatch::text_width(atlas, link))
+                                    + HudBatch::text_width(atlas, after);
                                 let mut x = cx - (width / 2.0).floor();
                                 batch.text(atlas, before, x, y, u32::MAX, true);
                                 x += HudBatch::text_width(atlas, before);
-                                batch.text(atlas, &link, x, y, 0xFF33_66BB, true);
-                                let link_w = HudBatch::text_width(atlas, &link);
-                                if crate::ui::hovered(cursor, x, y - 3.0, link_w, 11.0) {
-                                    crate::ui::tooltip(
-                                        batch,
-                                        atlas,
-                                        &[Text::literal(REALMS_CONTENT_CREATION)],
-                                        cursor,
-                                    );
-                                    link_rect = [x, y - 3.0, link_w, 11.0];
+                                if let Some(link) = link {
+                                    batch.text(atlas, link, x, y, 0xFF33_66BB, true);
+                                    let link_w = HudBatch::text_width(atlas, link);
+                                    if crate::ui::hovered(cursor, x, y - 3.0, link_w, 11.0) {
+                                        crate::ui::tooltip(
+                                            batch,
+                                            atlas,
+                                            &[Text::literal(REALMS_CONTENT_CREATION)],
+                                            cursor,
+                                        );
+                                        link_rect = [x, y - 3.0, link_w, 11.0];
+                                    }
+                                    x += link_w;
                                 }
-                                x += link_w;
                                 batch.text(atlas, after, x, y, u32::MAX, true);
                             }
                             self.template_link_rect.set(link_rect);
@@ -11695,6 +11831,52 @@ mod tests {
         assert_eq!(boxes[3].1, 50.0);
     }
 
+    /// `RealmsWorldSlotButton.State`'s texture order: the minigame's image (or
+    /// `isles.png`), the empty frame, the slot's template image, the panoramas.
+    #[test]
+    fn the_slot_picture_follows_vanillas_order() {
+        assert_eq!(
+            slot_picture(4, true, Some("img")),
+            SlotPicture::Image("img")
+        );
+        assert_eq!(slot_picture(4, true, None), SlotPicture::Preset);
+        assert_eq!(slot_picture(4, false, None), SlotPicture::Preset);
+        assert_eq!(slot_picture(2, true, Some("img")), SlotPicture::Empty);
+        assert_eq!(
+            slot_picture(2, false, Some("img")),
+            SlotPicture::Image("img")
+        );
+        assert_eq!(
+            slot_picture(1, false, None),
+            SlotPicture::Panorama("panorama_0")
+        );
+        assert_eq!(
+            slot_picture(2, false, None),
+            SlotPicture::Panorama("panorama_2")
+        );
+        assert_eq!(
+            slot_picture(3, false, None),
+            SlotPicture::Panorama("panorama_3")
+        );
+    }
+
+    /// `RealmsSelectWorldTemplateScreen`'s empty message: vanilla passes `"%link"` as the
+    /// translation's `%s` argument, so only that line carries the link.
+    #[test]
+    fn the_empty_template_message_links_one_line() {
+        let lines = template_none_lines("Oops.\nPlease check back,\n%s.", "submit something");
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], ("Oops.".into(), None, String::new()));
+        assert_eq!(lines[1], ("Please check back,".into(), None, String::new()));
+        assert_eq!(
+            lines[2],
+            ("".into(), Some("submit something".into()), ".".into())
+        );
+        // The Chinese translation's third line is `%s。`.
+        let zh = template_none_lines("抱歉。\n请稍后再来，\n%s。", "提交内容");
+        assert_eq!(zh[2], ("".into(), Some("提交内容".into()), "。".into()));
+    }
+
     /// `RealmsInviteScreen.onInvite`: a blank name and one already invited are refused
     /// before any request.
     #[test]
@@ -12055,6 +12237,59 @@ mod tests {
                 "mco.reset.world.inspiration"
             ]
         );
+    }
+
+    /// `WorldTemplatePaginatedList.isLastPage`: page*size >= total, all three set.
+    #[test]
+    fn a_template_page_knows_when_it_is_the_last() {
+        assert!(!last_template_page(1, 10, 11));
+        assert!(last_template_page(2, 10, 11));
+        assert!(last_template_page(1, 10, 10));
+        assert!(!last_template_page(1, 10, 0));
+        assert!(!last_template_page(0, 10, 10));
+    }
+
+    /// `RealmsWorldsTab.switchToMinigame`'s list returns to the Worlds tab when cancelled
+    /// (Back and Escape); a reset screen's template list still cancels back to the reset
+    /// screen.
+    #[test]
+    fn leaving_the_minigame_template_list_returns_to_the_worlds_tab() {
+        let mut screen = listed(vec![server(7, None)]);
+        let template_list = |group: Option<TemplateGroup>| SubScreen::TemplateList {
+            server: server(7, None),
+            slot: 1,
+            kind: ResetKind::Reset,
+            creation: None,
+            group,
+            templates: Vec::new(),
+            selected: None,
+            scroll: crate::ui::Scroll::default(),
+            job: None,
+            select: None,
+            icons: std::cell::RefCell::new(Vec::new()),
+            error: None,
+        };
+        screen.subscreen = template_list(None);
+        let _ = screen.click(Some(78), 0.0, 0.0, (800.0, 600.0));
+        assert!(matches!(
+            &screen.subscreen,
+            SubScreen::Configure {
+                tab: ConfigureTab::Worlds,
+                ..
+            }
+        ));
+        screen.subscreen = template_list(None);
+        assert!(!screen.escape());
+        assert!(matches!(
+            &screen.subscreen,
+            SubScreen::Configure {
+                tab: ConfigureTab::Worlds,
+                ..
+            }
+        ));
+        screen.subscreen = template_list(Some(TemplateGroup::ALL[0]));
+        let _ = screen.click(Some(78), 0.0, 0.0, (800.0, 600.0));
+        assert!(matches!(&screen.subscreen, SubScreen::ResetWorld { .. }));
     }
 
     fn backups_screen(server: RealmServer, list: Vec<Backup>) -> Screen {

@@ -1,6 +1,7 @@
 //! Biome colours from the pinned biome definitions and colormaps
 //! (`Biome.getGrassColor`/`getFoliageColor`/..., `BlockTintSources`).
 use crate::Result;
+use horizon_client_core::particle_type::ParticleType;
 use horizon_core::{noise::SimplexNoise, position::BlockPos, random::LegacyRandom};
 use serde_json::Value;
 use std::{
@@ -106,11 +107,28 @@ pub struct BiomeInfo {
     /// The biome's own fog colour attribute; otherwise the dimension's applies.
     pub fog: Option<u32>,
     pub water_fog: u32,
+    /// `minecraft:visual/ambient_particles` entries and their probabilities.
+    pub ambient_particles: Vec<(ParticleType, f32)>,
     /// `BiomeGenerationSettings.features`: the placed feature ids of each
     /// `GenerationStep.Decoration` step, in order.
     pub features: Vec<Vec<String>>,
 }
 impl BiomeInfo {
+    fn ambient_particles(v: &Value) -> Vec<(ParticleType, f32)> {
+        let list = &v["attributes"]["minecraft:visual/ambient_particles"];
+        let entries = list["argument"].as_array().or_else(|| list.as_array());
+        entries
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| {
+                Some((
+                    ParticleType::from_name(entry["particle"]["type"].as_str()?)?,
+                    entry["probability"].as_f64().unwrap_or(0.0) as f32,
+                ))
+            })
+            .collect()
+    }
+
     /// `Biome.getHeightAdjustedTemperature`: the frozen modifier, then cooler
     /// with height above `sea_level + 17`.
     pub fn temperature_at(&self, pos: BlockPos, sea_level: i32) -> f32 {
@@ -245,6 +263,7 @@ impl BiomeInfo {
             sky: color(&attributes["minecraft:visual/sky_color"]),
             fog: color(&attributes["minecraft:visual/fog_color"]),
             water_fog: color(&attributes["minecraft:visual/water_fog_color"]).unwrap_or(0x050533),
+            ambient_particles: Self::ambient_particles(v),
             features: v["features"]
                 .as_array()
                 .into_iter()
@@ -563,7 +582,9 @@ mod pack_tests {
     #[test]
     fn packs_replace_in_place_and_add_after_the_builtin_biomes() {
         let base = builtin(&["minecraft:meadow", "minecraft:plains", "minecraft:river"]);
-        let red = json!({"temperature": 2.0, "effects": {"water_color": "#ff0000"}});
+        let red = json!({"temperature": 2.0, "effects": {"water_color": "#ff0000"},
+            "attributes": {"minecraft:visual/ambient_particles": {
+                "argument": [{"particle": {"type": "minecraft:ash"}, "probability": 0.25}]}}});
         let hot = json!({"effects": {"grass_color": 0x123456}});
         let files = [
             ("pack:zeta", &hot),
@@ -576,6 +597,9 @@ mod pack_tests {
         assert_eq!(world.id("minecraft:river"), 2);
         assert_eq!(world.get(2).water, 0xFF0000);
         assert_eq!(world.get(2).temperature, 2.0);
+        assert_eq!(world.get(2).ambient_particles.len(), 1);
+        assert_eq!(world.get(2).ambient_particles[0].0.name(), "ash");
+        assert_eq!(world.get(2).ambient_particles[0].1, 0.25);
         // New biomes follow, in registry order.
         assert_eq!(world.id("minecraft:molten_peaks"), 3);
         assert_eq!(world.id("pack:zeta"), 4);

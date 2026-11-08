@@ -31,7 +31,7 @@ Fox.FoxLookAtPlayerGoal.canContinueToUse	inline	crates/horizon-client/src/mobs/f
 Fox.FoxMeleeAttackGoal.checkAndPerformAttack	inline	crates/horizon-client/src/mobs/goals.rs::MeleeAttack::tick	the generic melee strike, then the fox bite at entity.fox.bite 1.0/1.0 (MeleeAttack::bite, set in fox.rs::register)
 Fox.FoxPanicGoal.shouldPanic	inline	crates/horizon-client/src/mobs/fox.rs::register	Panic(2.2); the not-defending test is moot because defending is never set
 Fox.FoxPounceGoal.canContinueToUse	inline	crates/horizon-client/src/mobs/fox.rs::Pounce::can_continue	target alive, still in the air or tilted 15 degrees, not faceplanted
-Fox.FoxStrollThroughVillageGoal.canFoxMove	missing		minor: the stroll-through-village goal is not ported (foxes never follow village streets); fox.rs::can_move is Fox.canMove, a different test
+Fox.FoxStrollThroughVillageGoal.canFoxMove	port	crates/horizon-client/src/mobs/fox.rs::can_fox_move	not sleeping, sitting or defending, and no target; fox.rs::can_move is Fox.canMove, a different test
 Frog.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	variant holder and tongue target id
 Frog.getTongueTarget	inline	crates/horizon-client/src/mobs/frog.rs::ShootTongue::tick	gap: minor: the target lives in Frog.State; FrogLookControl.resetXRotOnTick has no frog case, so the head pitch is zeroed while the tongue is out
 Frog.get	port	crates/horizon-client/src/mobs/finalize.rs::species_variant_component	frog/variant component

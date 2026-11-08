@@ -76,6 +76,9 @@ def named_paths(arguments):
             paths += [entry for entry in argument.split(os.pathsep) if entry]
         elif argument.startswith("-D") and "=" in argument:
             paths.append(argument.split("=", 1)[1])
+        elif argument.startswith("-javaagent:"):
+            # The jar is an input; its options, after "=", are in the command line already.
+            paths.append(argument.removeprefix("-javaagent:").split("=", 1)[0])
         elif not argument.startswith("-"):
             paths.append(argument)
     return [os.path.abspath(path) for path in paths if path]
