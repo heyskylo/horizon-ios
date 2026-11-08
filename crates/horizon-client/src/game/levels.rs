@@ -357,25 +357,26 @@ impl Game<'_> {
     /// Stream the level in place until each chunk its tickets make block
     /// ticking is a ticking chunk (lit, with its neighbours loaded).
     fn wait_for_ticket_chunks(&mut self, deadline: Instant) {
-        // Forced chunks are checked two chunks out (their ticket block ticks one);
-        // a `PORTAL` ticket reaches `BLOCK_TICKING - level`: two for
-        // `placePortalTicket`'s, more or less for a saved one of another level.
+        // Forced chunks are checked two chunks out (their ticket block ticks one).
+        // A `PORTAL` ticket's chunks are streamed as an area of their own (the
+        // network tick does it, which hasn't run yet), whose chunks out to its
+        // radius can become ticking chunks: those are waited for.
+        let portal = self.portal_ticket_areas();
+        for area in &portal {
+            if !self.streaming.extra.contains(area) {
+                self.streaming.extra.push(*area);
+            }
+        }
         loop {
             self.update_chunk_tickets();
             let levels = self.tickets.levels();
             let streaming = &self.streaming;
-            let block_ticking = i32::from(horizon_client::ticket_levels::BLOCK_TICKING);
             let ready = streaming
                 .forced
                 .iter()
                 .chain(&streaming.mod_forced)
                 .map(|&c| (c, 2))
-                .chain(
-                    self.tickets
-                        .portal_tickets()
-                        .iter()
-                        .map(|t| (t.chunk, (block_ticking - t.level).max(0))),
-                )
+                .chain(portal.iter().copied())
                 .all(|((cx, cz), reach)| {
                     (cz - reach..=cz + reach).all(|z| {
                         (cx - reach..=cx + reach).all(|x| {
@@ -856,6 +857,18 @@ impl Game<'_> {
                 .get(&dim)
                 .map_or(&[], |p| p.tickets.portal_tickets())
         }
+    }
+
+    /// The areas the level in place's portal tickets keep streamed: around each
+    /// exit its entity-ticking chunks and their neighbours, and at least the
+    /// chunks its expiry waits for (`portal_ticket_can_expire`).
+    pub(super) fn portal_ticket_areas(&self) -> Vec<((i32, i32), i32)> {
+        let entity_ticking = i32::from(horizon_client::ticket_levels::ENTITY_TICKING);
+        self.tickets
+            .portal_tickets()
+            .iter()
+            .map(|t| (t.chunk, (entity_ticking - t.level).max(1)))
+            .collect()
     }
 
     /// Count the parked levels' empty ticks, and save and close the ones
