@@ -403,6 +403,18 @@ impl Game<'_> {
         self.spawn_item(stack, [p.x, p.y, p.z], [0.0; 3], 10);
     }
 
+    /// `Entity.kill` of a cushion (`/kill`): gone with no drop, its rider let go.
+    pub(super) fn kill_cushion(&mut self, id: u32) {
+        let Some(i) = self.cushions.iter().position(|c| c.id == id) else {
+            return;
+        };
+        let c = self.cushions.remove(i);
+        self.world.modified.insert((c.pos[0] >> 4, c.pos[2] >> 4));
+        if self.riding == Some(c.id) {
+            self.dismount_removed_vehicle(c.position.y);
+        }
+    }
+
     /// `Cushion.showBreakingParticles`: ten of the matching wool block.
     fn cushion_break_particles(&mut self, c: &Cushion) {
         let name = format!("minecraft:{}_wool", c.color_name());
