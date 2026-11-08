@@ -286,7 +286,7 @@ enum Job {
     Decorate(i32, i32, Box<[Proto; 9]>, Vec<(usize, Chunk)>),
     Finish(Proto),
     Light(i32, i32, Box<Region>, u64, bool),
-    Mesh(i32, i32, i32, Box<Region>, u64, MeshSettings),
+    Mesh(i32, i32, i32, Arc<Region>, u64, MeshSettings),
     /// Proto chunks checked out to be saved (`ChunkGenerator::save_protos`),
     /// off the main thread like vanilla's IOWorker.
     Save(Vec<((i32, i32), Proto)>),
@@ -1525,7 +1525,7 @@ impl Streaming {
             z,
         )
     }
-    fn region(world: &World, x: i32, z: i32) -> Option<Box<Region>> {
+    fn region(world: &World, x: i32, z: i32) -> Option<Arc<Region>> {
         let mut region: Region = Default::default();
         for dz in 0..3 {
             for dx in 0..3 {
@@ -1537,7 +1537,7 @@ impl Streaming {
                 );
             }
         }
-        Some(Box::new(region))
+        Some(Arc::new(region))
     }
     pub fn is_lit(&self, x: i32, z: i32) -> bool {
         self.lit.contains(&(x, z))
@@ -1937,8 +1937,8 @@ impl Streaming {
                 }) {
                     continue;
                 }
-                let keys: Vec<(i32, i32)> =
-                    (0..9).map(|i| (x + (i % 3) - 1, z + (i / 3) - 1)).collect();
+                let keys: [(i32, i32); 9] =
+                    std::array::from_fn(|i| (x + (i as i32 % 3) - 1, z + (i as i32 / 3) - 1));
                 // A final neighbour cannot be generated again: a generator that
                 // can decorates beside it (a chunk of an older world), writing
                 // into it as vanilla's features do; the others skip decoration
@@ -1963,24 +1963,17 @@ impl Streaming {
                 }) {
                     continue;
                 }
-                let region: Vec<Proto> = keys
-                    .iter()
-                    .enumerate()
-                    .map(|(i, k)| {
-                        if finals.iter().any(|(f, _)| *f == i) {
-                            return Box::new(()) as Proto;
-                        }
-                        self.light_views.remove(k);
-                        self.protos
-                            .insert(*k, None)
-                            .flatten()
-                            .expect("present proto")
-                    })
-                    .collect();
-                let region: Box<[Proto; 9]> = match region.try_into() {
-                    Ok(r) => Box::new(r),
-                    Err(_) => continue,
-                };
+                let region: Box<[Proto; 9]> = Box::new(std::array::from_fn(|i| {
+                    let k = &keys[i];
+                    if finals.iter().any(|(f, _)| *f == i) {
+                        return Box::new(()) as Proto;
+                    }
+                    self.light_views.remove(k);
+                    self.protos
+                        .insert(*k, None)
+                        .flatten()
+                        .expect("present proto")
+                }));
                 self.decorating += 1;
                 self.decorating_finals
                     .extend(finals.iter().map(|(i, _)| keys[*i]));

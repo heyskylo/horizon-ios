@@ -1,6 +1,6 @@
 use super::{
     Hdr, Output,
-    tests::{gpu, texel},
+    tests::{gpu, legacy_light, texel},
 };
 use wgpu::TextureFormat as F;
 use wgpu::util::DeviceExt;
@@ -543,6 +543,11 @@ impl<'a> Draw<'a> {
             "fs_native_fluid" => "test_fluid",
             _ => "test_vertex",
         };
+        let format = if !written && !self.raw {
+            F::Rgba16Unorm
+        } else {
+            F::Rgba16Float
+        };
         let pipeline = |entry, mark| {
             self.device
                 .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -568,7 +573,7 @@ impl<'a> Draw<'a> {
                             ..Default::default()
                         },
                         targets: &[Some(wgpu::ColorTargetState {
-                            format: F::Rgba16Float,
+                            format,
                             blend: Some(
                                 if self.raw || mark || (self.terrain && entry != "fs_translucent") {
                                     wgpu::BlendState::REPLACE
@@ -598,7 +603,22 @@ impl<'a> Draw<'a> {
                 true,
             )
         });
-        let frame = hdr.frame(self.device, [1, 1]);
+        let frame = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
         let view = frame.create_view(&Default::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
         {
@@ -627,8 +647,9 @@ impl<'a> Draw<'a> {
             }
         }
         if !written && !self.raw {
-            hdr.begin(self.queue, true);
-            hdr.resolve(&mut encoder, None);
+            let light = hdr.frame(self.device, [1, 1]);
+            legacy_light(self.device, &mut encoder, hdr, &frame, &light);
+            return texel(self.device, self.queue, encoder, &light);
         }
         texel(self.device, self.queue, encoder, &frame)
     }
@@ -873,11 +894,18 @@ fn float_material_wrappers_keep_rgb_and_coverage_including_displacement() {
 }
 
 #[test]
-fn actual_opaque_writers_match_marks_then_resolve() {
+fn actual_opaque_writers_match_the_legacy_non_float_oracle() {
     let Some((device, queue)) = gpu() else {
         eprintln!("HDR draw GPU unavailable");
         return;
     };
+    if !device.features().contains(
+        wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+            | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+    ) {
+        eprintln!("opaque oracle GPU skipped: 16-bit UNORM unavailable");
+        return;
+    }
     let mut hdr = Hdr::with_debug(&device, &queue, F::Rgba16Float, Output::Pq, true, None);
     (hdr.paper_white, hdr.peak) = (203.0, 1000.0);
     let (settings, shares) = hdr.draw_params(true);
@@ -914,8 +942,8 @@ fn actual_opaque_writers_match_marks_then_resolve() {
                                 draw.render(&mut hdr, false, entry, tier, overlay, [0.0; 4]);
                             let written =
                                 draw.render(&mut hdr, true, entry, tier, overlay, [0.0; 4]);
-                            // The marked path stores half floats before conversion; the written
-                            // one stores after it. Allow two half-float ULPs in gamma light.
+                            // The oracle stores UNORM before conversion; the direct writer
+                            // stores half floats after it. Allow two half-float ULPs in gamma light.
                             for i in 0..3 {
                                 assert!(
                                     (marked[i] - written[i]).abs() <= 0.002 * marked[i].max(1.0),
@@ -999,6 +1027,13 @@ fn unmarked_entity_users_keep_their_source_gain() {
     let Some((device, queue)) = gpu() else {
         return;
     };
+    if !device.features().contains(
+        wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+            | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+    ) {
+        eprintln!("legacy oracle GPU skipped: 16-bit UNORM unavailable");
+        return;
+    }
     let mut hdr = Hdr::with_debug(&device, &queue, F::Rgba16Float, Output::Pq, true, None);
     let (settings, shares) = hdr.draw_params(true);
     let globals = super::super::Globals {
@@ -1036,6 +1071,13 @@ fn additive_texels_below_the_mark_cutoff_keep_their_gain() {
     let Some((device, queue)) = gpu() else {
         return;
     };
+    if !device.features().contains(
+        wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
+            | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+    ) {
+        eprintln!("legacy oracle GPU skipped: 16-bit UNORM unavailable");
+        return;
+    }
     let mut hdr = Hdr::with_debug(&device, &queue, F::Rgba16Float, Output::Pq, true, None);
     let (settings, shares) = hdr.draw_params(true);
     let globals = super::super::Globals {

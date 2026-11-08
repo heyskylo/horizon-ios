@@ -49,9 +49,17 @@ impl Game<'_> {
                 creative,
                 options,
             } => self.open_world(&folder, Some(&name), seed, creative, Some(&options))?,
-            Action::Connect { address, lan } => {
-                self.connect_server_with_options(&address, &self.options.player_name(), None, lan)?
-            }
+            Action::Connect {
+                address,
+                lan,
+                realm,
+            } => self.connect_server_with_options(
+                &address,
+                &self.options.player_name(),
+                None,
+                lan,
+                realm,
+            )?,
             Action::DataPacks { dir, selected } => {
                 self.keys.clear();
                 self.screen = Screen::Options;

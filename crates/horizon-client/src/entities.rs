@@ -14,7 +14,7 @@ use crate::{
 use horizon_core::{
     geometry::{Aabb, Direction, Vec3, VoxelShape, border::BorderGeometry},
     position::BlockPos,
-    random::RandomSource,
+    random::{LegacyRandom, RandomSource},
 };
 use horizon_world::{
     block_collision::BlockCollisionRegistry,
@@ -1104,6 +1104,7 @@ pub struct ObstacleGrid {
     /// Each box's entity's `getRootVehicle` when it rides something; empty
     /// when none was given.
     roots: Vec<Option<u32>>,
+    found: Vec<u32>,
 }
 impl ObstacleGrid {
     const CELL: f64 = 8.0;
@@ -1129,6 +1130,7 @@ impl ObstacleGrid {
             cells,
             boxes,
             roots,
+            found: Vec::new(),
         }
     }
     fn span(b: Aabb) -> ((i32, i32, i32), (i32, i32, i32)) {
@@ -1145,13 +1147,13 @@ impl ObstacleGrid {
         self.boxes.is_empty()
     }
     /// The boxes meeting `area` (`getEntityCollisions`'s query box), in the order they were given.
-    pub fn near(&self, area: Aabb, out: &mut Vec<Aabb>) {
+    pub fn near(&mut self, area: Aabb, out: &mut Vec<Aabb>) {
         self.near_except(area, None, out);
     }
     /// [`Self::near`] without the boxes of what rides `vehicle` (given with
     /// [`Self::with_roots`]): `Entity.canCollideWith` leaves out
     /// `isPassengerOfSameVehicle`, so a stand's riders do not stop it.
-    pub fn near_except(&self, area: Aabb, vehicle: Option<u32>, out: &mut Vec<Aabb>) {
+    pub fn near_except(&mut self, area: Aabb, vehicle: Option<u32>, out: &mut Vec<Aabb>) {
         out.clear();
         if self.boxes.is_empty() {
             return;
@@ -1175,25 +1177,24 @@ impl ObstacleGrid {
             );
             return;
         }
-        let mut found: Vec<u32> = Vec::new();
+        self.found.clear();
         for x in lo.0..=hi.0 {
             for y in lo.1..=hi.1 {
                 for z in lo.2..=hi.2 {
                     if let Some(list) = self.cells.get(&(x, y, z)) {
-                        found.extend(list);
+                        self.found.extend(list);
                     }
                 }
             }
         }
-        found.sort_unstable();
-        found.dedup();
-        out.extend(
-            found
-                .into_iter()
-                .filter(|&i| kept(i as usize))
-                .map(|i| self.boxes[i as usize])
-                .filter(|b| b.intersects(area)),
-        );
+        self.found.sort_unstable();
+        self.found.dedup();
+        for &i in &self.found {
+            let b = self.boxes[i as usize];
+            if kept(i as usize) && b.intersects(area) {
+                out.push(b);
+            }
+        }
     }
 }
 
@@ -1978,6 +1979,7 @@ pub struct ItemFrame {
     pub check_interval: u32,
     /// `Entity.getCustomName` (`CustomName`), copied onto the dropped frame.
     pub custom_name: Option<horizon_world::nbt::Tag>,
+    pub random: LegacyRandom,
 }
 impl ItemFrame {
     pub fn step(&self) -> [i32; 3] {
@@ -4157,7 +4159,7 @@ mod entity_collision_tests {
                 Vec3::new(x + 1.375, 64.5625, 1.375),
             )
         };
-        let grid = ObstacleGrid::new((0..1000).map(|i| boat(f64::from(i) * 100.0)).collect());
+        let mut grid = ObstacleGrid::new((0..1000).map(|i| boat(f64::from(i) * 100.0)).collect());
         let mut out = Vec::new();
         // Around the 7th boat: only it.
         let area = Aabb::new(Vec3::new(699.0, 63.0, -1.0), Vec3::new(701.0, 66.0, 1.0));
@@ -4169,7 +4171,7 @@ mod entity_collision_tests {
         assert!(out.is_empty());
         // A box spanning cells is found from any of them, once.
         let wide = Aabb::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(20.0, 1.0, 1.0));
-        let grid = ObstacleGrid::new(vec![wide]);
+        let mut grid = ObstacleGrid::new(vec![wide]);
         let area = Aabb::new(Vec3::new(17.0, 0.0, 0.0), Vec3::new(18.0, 1.0, 1.0));
         grid.near(area, &mut out);
         assert_eq!(out, vec![wide]);
@@ -4180,7 +4182,7 @@ mod entity_collision_tests {
         let unit = |x: f64| Aabb::new(Vec3::new(x, 64.0, 0.0), Vec3::new(x + 1.0, 65.0, 1.0));
         // The shulker at x = 2 rides stand 7; the one at x = 0 and the boat
         // at x = 4 ride nothing.
-        let grid = ObstacleGrid::with_roots(
+        let mut grid = ObstacleGrid::with_roots(
             vec![unit(0.0), unit(2.0), unit(4.0)],
             vec![None, Some(7), None],
         );
@@ -4234,7 +4236,7 @@ mod entity_collision_tests {
             hits += boxes.iter().filter(|b| b.intersects(area)).count();
         }
         let scan = start.elapsed();
-        let grid = ObstacleGrid::new(boxes);
+        let mut grid = ObstacleGrid::new(boxes);
         let start = std::time::Instant::now();
         let (mut out, mut found) = (Vec::new(), 0);
         for item in &items {

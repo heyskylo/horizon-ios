@@ -134,6 +134,15 @@ pub fn bounds_at(m: &Mob, position: Vec3) -> Aabb {
         m.model_scale(),
     )
 }
+/// Where `ShulkerBullet(level, shulker, ...)` starts: the centre of the
+/// shulker's box (`getBoundingBox().getCenter()`), which `Shulker.makeBoundingBox`
+/// grows toward the open side by the lid's physical peek, so an open shulker
+/// on a floor fires from the top of its block, not its middle. The attack goal
+/// runs before `Shulker.tick` eases the peek, so the box is the one the peek
+/// built last tick, as here.
+pub fn bullet_origin(m: &Mob) -> Vec3 {
+    bounds_at(m, m.position).center()
+}
 /// Block queries shared by attachment and teleport candidates. Entity overlap
 /// is checked separately, using the nearby-entity index from MobWorld.
 struct BlockSpace<'w, 'r> {
@@ -716,11 +725,13 @@ impl ProjectileWorld for Probe<'_, '_> {
     fn empty(&self, p: [i32; 3]) -> bool {
         self.w.facts.is_air(self.w.world.block(p[0], p[1], p[2]))
     }
-    fn solid(&self, p: [i32; 3]) -> bool {
-        self.w
-            .facts
-            .get(self.w.world.block(p[0], p[1], p[2]))
-            .full_collision
+    fn can_stand_on(&self, p: [i32; 3], entity_y: f64) -> bool {
+        crate::collisions::projectile_can_stand_on(
+            self.w.world,
+            self.w.collision,
+            horizon_core::position::BlockPos::new(p[0], p[1], p[2]),
+            entity_y,
+        )
     }
 }
 /// `level().getDifficulty() != Difficulty.PEACEFUL`, which the shulker's
@@ -752,6 +763,8 @@ impl Goal for ShulkerAttack {
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         set_peek(m, 0, cx.events);
     }
+    /// `Shulker.ShulkerAttackGoal.tick`: the bullet starts at the centre of
+    /// the shulker's box ([`bullet_origin`]).
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         if !peaceful_off(m, cx.w) {
             return;
@@ -780,7 +793,7 @@ impl Goal for ShulkerAttack {
         };
         let seed = m.random.next_long() as u64 | 1;
         let bullet =
-            Projectile::shulker_bullet(&probe, block_pos(m), Who::Mob(m.id), who, axis, seed);
+            Projectile::shulker_bullet(&probe, bullet_origin(m), Who::Mob(m.id), who, axis, seed);
         cx.events.push(MobEvent::Projectile(bullet));
         let pitch = (m.random.next_float() - m.random.next_float()) * 0.2 + 1.0;
         cx.events.push(MobEvent::Sound(

@@ -135,7 +135,92 @@ pub(super) fn biome(v: &Value, report: &mut Report) -> Value {
             p,
         );
     }
+    effects_1_21_1(o, report);
     v
+}
+
+/// A 1.21.1 colour (an integer) as 26.3 writes it, `#rrggbb`.
+fn hex(c: &Value) -> Value {
+    c.as_i64()
+        .map_or_else(|| c.clone(), |n| json!(format!("#{:06x}", n & 0xff_ffff)))
+}
+
+/// A 1.21.1 biome's parts 26.3 moved (1.21.2 and the 26.x attributes): the
+/// air carvers by step become the carver list, and sky, fog, water fog,
+/// music, sounds and particles leave `effects` for attributes. Written as
+/// the biome's own attributes, so they stand over the dimension's as the
+/// biome's effects did.
+fn effects_1_21_1(o: &mut Map<String, Value>, report: &mut Report) {
+    if let Some(Value::Object(steps)) = o.get("carvers").cloned() {
+        if steps
+            .iter()
+            .any(|(s, l)| s != "air" && l.as_array().is_some_and(|l| !l.is_empty()))
+        {
+            report.lossy("biome: liquid carvers (26.3 carves air only)");
+        }
+        o.insert(
+            "carvers".into(),
+            steps.get("air").cloned().unwrap_or(json!([])),
+        );
+    }
+    let Some(Value::Object(effects)) = o.get_mut("effects") else {
+        return;
+    };
+    let mut moved = Map::new();
+    for (from, to) in [
+        ("sky_color", "minecraft:visual/sky_color"),
+        ("fog_color", "minecraft:visual/fog_color"),
+        ("water_fog_color", "minecraft:visual/water_fog_color"),
+    ] {
+        if let Some(c) = effects.remove(from) {
+            moved.insert(to.into(), hex(&c));
+        }
+    }
+    if let Some(Value::Object(mut music)) = effects.remove("music") {
+        music.remove("replace_current_music");
+        moved.insert(
+            "minecraft:audio/background_music".into(),
+            json!({"default": music}),
+        );
+    }
+    let mut sounds = Map::new();
+    for (from, to) in [
+        ("mood_sound", "mood"),
+        ("ambient_sound", "loop"),
+        ("additions_sound", "additions"),
+    ] {
+        if let Some(s) = effects.remove(from) {
+            sounds.insert(to.into(), s);
+        }
+    }
+    if !sounds.is_empty() {
+        moved.insert(
+            "minecraft:audio/ambient_sounds".into(),
+            Value::Object(sounds),
+        );
+    }
+    if let Some(p) = effects.remove("particle") {
+        moved.insert(
+            "minecraft:visual/ambient_particles".into(),
+            json!({"modifier": "append", "argument": [{"particle": p["options"],
+                "probability": p["probability"]}]}),
+        );
+    }
+    for k in [
+        "water_color",
+        "grass_color",
+        "foliage_color",
+        "dry_foliage_color",
+    ] {
+        if let Some(c) = effects.get_mut(k) {
+            *c = hex(c);
+        }
+    }
+    if let Some(Value::Object(attributes)) = o.get_mut("attributes") {
+        for (k, x) in moved {
+            attributes.entry(k).or_insert(x);
+        }
+    }
 }
 
 /// A dimension type: the bed rule's `explodes` is 26.3's `destroy_on_use`.

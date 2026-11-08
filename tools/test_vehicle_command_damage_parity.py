@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generic no-attacker vehicle damage, exact command records and raw bodies."""
+"""Generic vehicle damage (no attacker, or a creative player), exact command records and raw bodies."""
 import hashlib,json,sys,tempfile,uuid
 from pathlib import Path
 import test_command_exec_parity as driver
@@ -10,6 +10,16 @@ def program():
   if result is not None:op['expect_result']=result
   if diagnostic:op.update(record=False,trace=True)
   ops.append(op)
+ def dirt(near,label):
+  # Every pile of the chest's 40 dirt, whatever the random split: one is in the vehicle's block,
+  # and their counts add up to 40 (each pile's count into its own score, then summed).
+  sel=f'@e[type=item,nbt={{Item:{{id:"minecraft:dirt"}}}},{near}'
+  cmd(f'/execute if entity {sel},limit=1]',label+'-dirt-present',1,admission=False)
+  cmd(f'/execute as {sel}] store result score @s h050 run data get entity @s Item.count',label+'-dirt-counts',diagnostic=True)
+  holder=label.replace('-','_')+'_dirt'
+  cmd(f'/scoreboard players set {holder} h050 0',label+'-dirt-total-reset',0)
+  cmd(f'/scoreboard players operation {holder} h050 += {sel}] h050',label+'-dirt-total-sum',diagnostic=True)
+  cmd(f'/scoreboard players get {holder} h050',label+'-dirt-total',40,admission=False)
  def action(text,label):
   for k in ['result','success']:cmd(f'/scoreboard players set {k} h050 -99',label+'-reset-'+k,-99)
   cmd('/execute store result score result h050 store success score success h050 run '+text,label,admission=False)
@@ -63,7 +73,38 @@ def program():
  cmd('/execute if entity @e[type=item,nbt={Item:{id:"minecraft:diamond",count:5}},x=3,y=200,z=13,dx=0,dy=0,dz=0]','chest-cart-diamonds',admission=False)
  cmd('/data get entity @e[type=item,nbt={Item:{id:"minecraft:diamond"}},limit=1] PickupDelay','chest-cart-diamonds-delay',admission=False)
  cmd('/execute if entity @e[type=item,nbt={Item:{id:"minecraft:dirt",count:40}}]','chest-cart-dirt-split',admission=False)
- cmd('/execute if entity @e[type=item,nbt={Item:{id:"minecraft:dirt"}},x=3,y=200,z=13,dx=0,dy=0,dz=0]','chest-cart-dirt-pieces',admission=False,diagnostic=True)
+ dirt('x=3,y=200,z=13,dx=0,dy=0,dz=0','chest-cart')
+ # AbstractChestBoat.remove: the same Containers.dropContents scatter for a destroyed chest boat;
+ # its hull item still comes from VehicleEntity.destroy's spawnAtLocation.
+ u=str(uuid.UUID(int=(500<<96)|9))
+ cmd('/execute if block 7 199 13 stone','chest-boat-support',1)
+ cmd(f'/summon oak_chest_boat 7.5 200 13.5 {{UUID:[I;500,0,0,9],NoGravity:1b,Motion:[0d,0d,0d],Items:{items}}}','chest-boat-summon',1)
+ cmd(f'/execute as {u} if entity @s[type=oak_chest_boat,nbt={{Items:{items}}}]','chest-boat-actor',1)
+ action(f'damage {u} 5 minecraft:generic','chest-boat-break')
+ cmd(f'/execute unless entity {u}','chest-boat-removed',admission=False)
+ cmd('/execute if entity @e[type=item,nbt={Item:{id:"minecraft:oak_chest_boat",count:1}}]','chest-boat-hull',admission=False)
+ cmd('/data get entity @e[type=item,nbt={Item:{id:"minecraft:oak_chest_boat"}},limit=1] PickupDelay','chest-boat-hull-delay',admission=False)
+ near='x=7,y=200,z=13,dx=0,dy=0,dz=0'
+ cmd(f'/execute if entity @e[type=item,nbt={{Item:{{id:"minecraft:diamond",count:5}}}},{near}]','chest-boat-diamonds',admission=False)
+ cmd(f'/data get entity @e[type=item,nbt={{Item:{{id:"minecraft:diamond"}}}},{near},limit=1] PickupDelay','chest-boat-diamonds-delay',admission=False)
+ cmd(f'/execute if entity @e[type=item,nbt={{Item:{{id:"minecraft:dirt",count:40}}}},{near}]','chest-boat-dirt-split',admission=False)
+ dirt(near,'chest-boat')
+ # The contents spill whatever entity_drops says, on the death path and on a creative player's
+ # discard alike; only the cart item (and chestVehicleDestroyed's second, empty spill) follow the rule.
+ cmd('/gamerule entity_drops false','drops-off')
+ for name,i,z,source in [('no-drops-cart',10,13,''),('creative-cart',11,11,' by @s')]:
+  u=str(uuid.UUID(int=(500<<96)|i));near=f'x=11,y=200,z={z},dx=0,dy=0,dz=0'
+  cmd(f'/execute if block 11 199 {z} stone',name+'-support',1)
+  cmd(f'/summon chest_minecart 11.5 200 {z}.5 {{UUID:[I;500,0,0,{i}],NoGravity:1b,Motion:[0d,0d,0d],Items:{items}}}',name+'-summon',1)
+  cmd(f'/execute as {u} if entity @s[type=chest_minecart,nbt={{Items:{items}}}]',name+'-actor',1)
+  action(f'damage {u} '+('1' if source else '5')+' minecraft:generic'+source,name+'-break')
+  cmd(f'/execute unless entity {u}',name+'-removed',admission=False)
+  cmd(f'/execute if entity @e[type=item,nbt={{Item:{{id:"minecraft:diamond",count:5}}}},{near}]',name+'-diamonds',admission=False)
+  cmd(f'/data get entity @e[type=item,nbt={{Item:{{id:"minecraft:diamond"}}}},{near},limit=1] PickupDelay',name+'-diamonds-delay',admission=False)
+  dirt(near,name)
+  # Only the first chest minecart's item, from the break above with entity_drops on.
+  cmd('/execute if entity @e[type=item,nbt={Item:{id:"minecraft:chest_minecart"}}]',name+'-no-hull',admission=False)
+ cmd('/gamerule entity_drops true','drops-restored')
  cmd('/summon pig 13.5 200 6.5 {UUID:[I;500,0,0,7],Health:10f,NoAI:1b,NoGravity:1b}','pig-summon',1)
  pig=str(uuid.UUID(int=(500<<96)|7))
  cmd(f'/execute as {pig} if entity @s[type=pig,nbt={{Health:10f,NoAI:1b,NoGravity:1b}}]','pig-before',1)

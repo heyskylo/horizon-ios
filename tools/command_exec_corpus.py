@@ -1528,6 +1528,33 @@ def loot_world_pack_tables():
     ]
 
 
+def loot_give_full_inventory():
+    """LootCommand.playerGive: `Inventory.add` keeps what fits and throws nothing out. A drop
+    counts only when all of it went in, and always for a player with infinite materials
+    (creative)."""
+    import json
+    two_dirt = {'pools': [{'rolls': 1, 'entries': [{'type': 'minecraft:item', 'name': 'minecraft:dirt',
+                                                     'modifier': {'type': 'minecraft:set_count', 'count': 2}}]}]}
+    give = '/loot give @s loot ' + json.dumps(two_dirt)
+    dropped = '/execute if entity @e[type=minecraft:item,distance=..8]'
+    ops = setup('/clear @s', '/gamemode survival', '/kill @e[type=minecraft:item]',
+                *[f'/item replace entity @s container.{i} with minecraft:stone 64' for i in range(35)],
+                '/item replace entity @s container.35 with minecraft:dirt 63')
+    return ops + [
+        # One of the two fits: it stays, the other is lost, and the drop doesn't count.
+        cmd(give),
+        cmd('/clear @s minecraft:dirt 0'),
+        cmd(dropped),
+        # None fits.
+        cmd(give),
+        cmd(dropped),
+        *setup('/gamemode creative'),
+        cmd(give),
+        cmd(dropped),
+        *setup('/clear @s', '/kill @e[type=minecraft:item]'),
+    ]
+
+
 def aquatic_from_bucket():
     """Saved bucket flags default false, except the always-true tadpole (#7763)."""
     ops = []
@@ -3022,6 +3049,24 @@ def summoned_potions():
     ]
     ops += [*setup('/kill @e[type=!player]'), {'op': 'tick', 'n': 25}]
     return ops
+
+
+def potion_contents_names():
+    """`PotionItem.getName` and `TippedArrowItem.getName`: a potion or a tipped arrow is
+    named by its contents (`PotionContents.getName`: their own `custom_name`, the potion,
+    else `empty`), over its `item_name`; without contents it takes the item's own name, and a
+    custom name still wins."""
+    stacks = [
+        'minecraft:potion[minecraft:item_name="Bottle",minecraft:potion_contents={potion:"minecraft:long_swiftness"}]',
+        'minecraft:potion',
+        'minecraft:splash_potion[minecraft:potion_contents={custom_effects:[{id:"minecraft:speed",duration:600}]}]',
+        'minecraft:lingering_potion[minecraft:item_name="Cloud",minecraft:potion_contents={potion:"minecraft:poison"}]',
+        'minecraft:tipped_arrow[minecraft:item_name="Dart",minecraft:potion_contents={potion:"minecraft:poison"}]',
+        'minecraft:potion[minecraft:potion_contents={potion:"minecraft:water",custom_name:"swiftness"}]',
+        'minecraft:potion[!minecraft:potion_contents,minecraft:item_name="Bottle"]',
+        'minecraft:potion[minecraft:custom_name="Mine",minecraft:potion_contents={potion:"minecraft:swiftness"}]',
+    ]
+    return [*setup('/clear @s'), *[cmd(f'/give @s {s}') for s in stacks], *setup('/clear @s')]
 
 
 def trial_spawner_passengers():
@@ -6348,6 +6393,10 @@ def groups():
     except ImportError:
         from vehicle_kill_corpus import vehicle_kill_contents
     try:
+        from .vehicle_container_corpus import vehicle_containers
+    except ImportError:
+        from vehicle_container_corpus import vehicle_containers
+    try:
         from .data_literal_corpus import storage_literals
     except ImportError:
         from data_literal_corpus import storage_literals
@@ -6359,6 +6408,10 @@ def groups():
         from .potion_effect_icon_corpus import cases as potion_effect_icons
     except ImportError:
         from potion_effect_icon_corpus import cases as potion_effect_icons
+    try:
+        from .trader_llama_delay_corpus import llama_delay
+    except ImportError:
+        from trader_llama_delay_corpus import llama_delay
     try:
         from .transmute_patch_corpus import cases as transmute_patches
     except ImportError:
@@ -6407,6 +6460,7 @@ def groups():
         ('setup', group_setup()),
         ('spectral saved duration', spectral_saved_duration(cmd, setup)),
         ('item Health short load', item_health_load(cmd, setup)),
+        ('vehicle container saved fields', vehicle_containers(cmd)),
         ('macro source type error', macro_source_type_error()),
         ('potion custom effect icons', potion_effect_icons(cmd, setup)),
         ('stand saved fall distance', stand_saved_fall()),
@@ -6535,6 +6589,7 @@ def groups():
         ('entity landing sensors', entity_landing_sensors()),
         ('loot set damage', loot_set_damage()),
         ('loot set name and components', loot_set_name_and_components()),
+        ('loot give full inventory', loot_give_full_inventory()),
         ('item NBT count bounds', item_nbt_count_bounds()),
         ('item block containers', item_block_containers()),
         ('world', world_misc()),
@@ -6566,9 +6621,11 @@ def groups():
         ('piglin pickups', piglin_pickups()),
         ('experience orb stuck', experience_orb_stuck()),
         ('summoned potions', summoned_potions()),
+        ('potion contents names', potion_contents_names()),
         ('creeper cloud selectors', creeper_cloud_selectors()),
         # Last: it leaves the player in other food than it found.
         (player_food.GROUP, player_food.cases(cmd, setup)),
     ]
     result.insert(1, ('vehicle kill contents', vehicle_kill_contents(cmd)))
+    result.insert(1, ('trader llama NoAI delay', llama_delay(cmd)))
     return result

@@ -37,12 +37,15 @@ pub(super) struct Context<'a> {
     pub(super) generated: BTreeMap<String, Value>,
     /// Material rules the upgrade adds (one per noise settings), by id.
     pub(super) rules: BTreeMap<String, Value>,
+    /// The biomes the pack defines, by id.
+    pub(super) biomes: BTreeSet<String>,
 }
 
 impl<'a> Context<'a> {
     pub(super) fn new(files: &'a BTreeMap<String, Value>) -> Self {
         let mut functions = BTreeMap::new();
         let mut settings = Vec::new();
+        let mut biomes = BTreeSet::new();
         for (path, v) in files {
             let Some(f) = PackFile::parse(path) else {
                 continue;
@@ -52,6 +55,9 @@ impl<'a> Context<'a> {
                     functions.insert(f.id(), v);
                 }
                 "worldgen/noise_settings" => settings.push(v),
+                "worldgen/biome" => {
+                    biomes.insert(f.id());
+                }
                 _ => {}
             }
         }
@@ -62,6 +68,7 @@ impl<'a> Context<'a> {
             all_cells: BTreeSet::new(),
             generated: BTreeMap::new(),
             rules: BTreeMap::new(),
+            biomes,
         };
         for s in settings {
             let cell = cell_of(s.get("noise").unwrap_or(&Value::Null));
@@ -194,6 +201,26 @@ impl<'a> Context<'a> {
             }
             "shift_a" | "shift_b" | "shift" => {
                 json!({"type": format!("minecraft:{t}"), "noise": noise_holder(&arg("argument"), report)})
+            }
+            // 1.21.1's `RarityValueMapper` scales, as 26.3's own caves spell
+            // them: |noise(p / s) * s| with s chosen by the input's interval.
+            "weird_scaled_sampler" => {
+                let (thresholds, scales): (&[f64], &[f64]) =
+                    match arg("rarity_value_mapper").as_str() {
+                        Some("type_2") => (&[-0.75, -0.5, 0.5, 0.75], &[0.5, 0.75, 1.0, 2.0, 3.0]),
+                        _ => (&[-0.5, 0.0, 0.5], &[0.75, 1.0, 1.5, 2.0]),
+                    };
+                let noise = noise_holder(&arg("noise"), report);
+                let functions: Vec<Value> = scales
+                    .iter()
+                    .map(|s| {
+                        json!({"type": "minecraft:mul", "left": {"type": "minecraft:noise",
+                            "noise": noise, "xz_scale": 1.0 / s, "y_scale": 1.0 / s}, "right": s})
+                    })
+                    .collect();
+                let input = self.density(&arg("input"), report);
+                json!({"type": "minecraft:abs", "input": {"type": "minecraft:interval_select",
+                    "input": input, "thresholds": thresholds, "functions": functions}})
             }
             "end_islands" => json!({"type": "minecraft:end_outer_islands"}),
             "constant" => arg("argument"),

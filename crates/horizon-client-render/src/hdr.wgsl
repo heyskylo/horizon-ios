@@ -34,7 +34,7 @@ struct Params {
 // Horizon's logo, 1 inside, 0 outside, for calibration's test pictures.
 @group(0) @binding(3) var logo: texture_2d<f32>;
 // The float frame with HUD coverage (Hdr::layered): the frame keeps the world as light
-// (fs_resolve), the HUD draws on a picture of its own (`hud`, fs_keep), and `coverage` says how
+// directly from its writers; the HUD draws on a picture of its own (`hud`, fs_keep), and `coverage` says how
 // much of the world it hides there (gfx/hud_coverage.rs).
 @group(0) @binding(4) var coverage: texture_2d<f32>;
 @group(0) @binding(5) var hud: texture_2d<f32>;
@@ -209,16 +209,6 @@ fn display(light: vec3<f32>) -> vec4<f32> {
     // The HUD and menus at their own brightness, by how much they cover.
     light *= mix(1.0, params.ui, ui);
     return display(light);
-}
-
-// Hdr::resolve, after the world and the hand: the marks they left (`world` holds the frame as
-// they drew it) become light in the frame, in gamma as the frame stores it, alpha 1, past the
-// peak if they lift it there (the tone curve eases it in). What draws after it (camera overlays,
-// the menu blur) draws on light, and nothing is lifted later.
-@fragment fn fs_resolve(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-    let w = frame_texel(textureLoad(world, vec2<i32>(pos.xy), 0));
-    let shows = params.world > 0.5 && params.peak > 1.0;
-    return vec4(pow(lit(w.rgb, w.a, shows, false).light, vec3(1.0 / 2.2)), 1.0);
 }
 
 // The tone curve's knee: up to it light stays as it is. Where HDR lighting eased into the peak
