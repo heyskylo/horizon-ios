@@ -67,3 +67,6 @@ command above to inspect the selection rather than relying on historical counts.
 | 38 | Command parsing (34) | `C/` (`args.rs`, `selector.rs`, `tree_*.rs`, `vanilla.rs`); `cargo test -p horizon-command` | command_parse (corpus `tools/command_parse_corpus.py`) |
 | 39 | Benchmarks and telemetry (34) | `L/benchmark.rs`, `tools/perf_bench.py`, `R/telemetry.rs`, `crates/horizon-telemetry*/`, `crates/horizon-bench/` | `python3 -m unittest tests.test_perf_bench`; [benchmark.md](benchmark.md) |
 | 40 | Explosions and TNT (31) | `G/explosion.rs`, `G/tnt.rs` | lan_e2e blast; no dedicated harness yet |
+
+Controller glyphs (`R/pad_glyph.rs`, drawn by the gameplay guide, notices, splitscreen prompts and declared
+buttons) are part of the same kit: [ui-kit.md](ui-kit.md) says how to ask for one and how to test it.

@@ -147,14 +147,14 @@ pub(super) struct PlayerAction {
 impl PlayerAction {
     fn from_tag(tag: Option<&horizon_world::nbt::Tag>) -> Option<Self> {
         use horizon_world::nbt::Tag;
-        let (Some(Tag::IntArray(player)), Some(Tag::Long(timestamp))) =
-            (tag?.get("player"), tag?.get("timestamp"))
-        else {
+        let tag = tag?;
+        let Tag::IntArray(player) = tag.get("player")? else {
             return None;
         };
+        let timestamp = horizon_client::save::number(tag.get("timestamp"))?;
         Some(Self {
             player: player.as_slice().try_into().ok()?,
-            timestamp: *timestamp,
+            timestamp,
         })
     }
     fn to_tag(self) -> horizon_world::nbt::Tag {
@@ -178,24 +178,18 @@ pub(super) struct InteractionState {
 }
 
 impl InteractionState {
-    /// `getFloatOr("width", 1)`, `getFloatOr("height", 1)`, the two
-    /// `PlayerAction`s (absent unless they decode) and
-    /// `getBooleanOr("response", false)`.
+    /// `Interaction.readAdditionalSaveData`: the dimensions, optional action records and response.
     pub fn from_tag(tag: &horizon_world::nbt::Tag) -> Self {
-        use horizon_world::nbt::Tag;
-        let float = |key: &str| match tag.get(key) {
-            Some(Tag::Float(bits)) => f32::from_bits(*bits),
-            _ => 1.0,
-        };
+        let float = |key| horizon_client::save::float(tag.get(key)).unwrap_or(1.0) as f32;
         Self {
             width: float("width"),
             height: float("height"),
-            response: matches!(tag.get("response"), Some(Tag::Byte(b)) if *b != 0),
+            response: horizon_client::entity_nbt::flag(tag, "response"),
             attack: PlayerAction::from_tag(tag.get("attack")),
             interaction: PlayerAction::from_tag(tag.get("interaction")),
         }
     }
-    /// `addAdditionalSaveData`: the settings, and each action when set.
+    /// `Interaction.addAdditionalSaveData`: the settings, and each action when set.
     pub fn write(&self, c: &mut horizon_world::nbt::Compound) {
         use horizon_world::nbt::Tag;
         c.insert("width".into(), Tag::Float(self.width.to_bits()));
