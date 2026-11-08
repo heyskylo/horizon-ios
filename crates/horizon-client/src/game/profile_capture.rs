@@ -424,6 +424,7 @@ impl Game<'_> {
             path: shown(&path),
             seconds: options.seconds,
             samples: options.samples,
+            gpu: GpuSwitch::Off,
         };
         self.profile.server_only = Some(ServerOnly {
             live,

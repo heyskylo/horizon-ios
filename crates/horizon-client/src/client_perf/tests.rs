@@ -637,6 +637,9 @@ fn server_options() -> CaptureOptions {
         block_names: Vec::new(),
         levels: Vec::new(),
         wire: Wire::new(),
+        gpu: GpuMode::Unspecified,
+        timeline: None,
+        file: None,
     }
 }
 

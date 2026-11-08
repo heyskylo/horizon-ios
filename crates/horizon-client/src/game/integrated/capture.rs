@@ -12,7 +12,7 @@ use horizon_client::server_perf::{
 use horizon_client::spans;
 use horizon_perf_format::{
     files,
-    v1::{Start, StopReason, Trigger},
+    v1::{GpuMode, Start, StopReason, Trigger},
 };
 use std::io;
 use std::path::PathBuf;
@@ -245,6 +245,9 @@ impl Game<'_> {
             block_names: self.block_names(),
             levels: self.level_counts(),
             wire: self.wire_bytes(),
+            gpu: GpuMode::Unspecified,
+            timeline: options.timeline.then(Default::default),
+            file: None,
         }
     }
 
