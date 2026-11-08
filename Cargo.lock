@@ -1837,6 +1837,7 @@ dependencies = [
  "horizon-bench",
  "horizon-perf-format",
  "prost",
+ "regex",
  "serde",
  "serde_json",
 ]

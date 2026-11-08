@@ -115,17 +115,45 @@ pub fn counter(name: &str, labels: &[(String, String)]) -> String {
 
 const ALPHABET: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
 
-/// The key of a function or call-path id: 8 base32 characters from the low 40 bits of FNV-1a 64.
-pub fn hashed(text: &str) -> String {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in text.bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+/// FNV-1a 64, streamed so a call path's hash extends its parent's.
+#[derive(Clone, Copy, Debug)]
+pub struct Fnv(u64);
+
+impl Default for Fnv {
+    fn default() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
     }
-    (0..8)
-        .rev()
-        .map(|i| ALPHABET[((hash >> (5 * i)) & 31) as usize] as char)
-        .collect()
+}
+
+impl Fnv {
+    pub fn write(&mut self, text: &str) {
+        for byte in text.bytes() {
+            self.0 ^= u64::from(byte);
+            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+
+    /// The key of a function or call-path id: 8 base32 characters from the low 40 bits.
+    pub fn key(self) -> String {
+        (0..8)
+            .rev()
+            .map(|i| ALPHABET[((self.0 >> (5 * i)) & 31) as usize] as char)
+            .collect()
+    }
+}
+
+pub fn hashed(text: &str) -> String {
+    let mut fnv = Fnv::default();
+    fnv.write(text);
+    fnv.key()
+}
+
+pub fn function(key: &str) -> String {
+    Id::new(Kind::Function, key).to_string()
+}
+
+pub fn path(key: &str) -> String {
+    Id::new(Kind::Path, key).to_string()
 }
 
 #[cfg(test)]

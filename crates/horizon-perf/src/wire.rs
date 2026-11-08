@@ -67,7 +67,7 @@ macro_rules! mirror {
 }
 
 vocab! {
-    /// The `op` of a query: the ones that read the samples section are listed but not answered yet.
+    /// The `op` of a query: `gpu`, `bench` and `samples` are listed but not answered yet.
     Op {
         Spans = "spans",
         Ticks = "ticks",
@@ -93,19 +93,10 @@ vocab! {
 }
 
 impl Op {
-    /// Ops that read the samples section, which this reader does not read yet.
-    pub fn needs_samples(self) -> bool {
+    /// Ops no piece answers yet: `gpu`, `bench` and `samples` wait for their sections.
+    pub fn unanswered(self) -> bool {
         match self {
-            Op::Hot
-            | Op::Tree
-            | Op::Callers
-            | Op::Callees
-            | Op::Split
-            | Op::Group
-            | Op::Frames
-            | Op::Gpu
-            | Op::Bench
-            | Op::Samples => true,
+            Op::Gpu | Op::Bench | Op::Samples => true,
             Op::Spans
             | Op::Ticks
             | Op::Tick
@@ -115,14 +106,29 @@ impl Op {
             | Op::Meta
             | Op::Memory
             | Op::Marks
-            | Op::Warnings => false,
+            | Op::Warnings
+            | Op::Hot
+            | Op::Tree
+            | Op::Callers
+            | Op::Callees
+            | Op::Split
+            | Op::Group
+            | Op::Frames => false,
         }
+    }
+
+    /// Ops that read the samples section.
+    pub fn reads_samples(self) -> bool {
+        matches!(
+            self,
+            Op::Hot | Op::Tree | Op::Callers | Op::Callees | Op::Split | Op::Group | Op::Frames
+        )
     }
 
     pub fn answered() -> String {
         let names: Vec<&str> = Op::ALL
             .iter()
-            .filter(|op| !op.needs_samples())
+            .filter(|op| !op.unanswered())
             .map(|op| op.as_str())
             .collect();
         names.join(", ")
@@ -183,6 +189,10 @@ vocab! {
         MsPerFrame = "ms_per_frame",
         MsPerSlowTick = "ms_per_slow_tick",
         MsPerSlowFrame = "ms_per_slow_frame",
+        BytesPerTick = "bytes_per_tick",
+        BytesPerFrame = "bytes_per_frame",
+        BytesPerSlowTick = "bytes_per_slow_tick",
+        BytesPerSlowFrame = "bytes_per_slow_frame",
         KibPerS = "kib_per_s",
         Count = "count",
         Series = "series",
@@ -191,6 +201,52 @@ vocab! {
         Warnings = "warnings",
         Memory = "memory",
         MemoryDiff = "memory_diff",
+    }
+}
+
+vocab! {
+    /// `hot --by`: which time ranks the functions.
+    HotBy {
+        SelfTime = "self",
+        Total = "total",
+    }
+}
+
+vocab! {
+    /// `split --by` and `group --by`: the context a weight is divided by; `group` takes all but the last two.
+    SampleBy {
+        Span = "span",
+        Entity = "entity",
+        Block = "block",
+        Chunk = "chunk",
+        Dim = "dim" | "dimension",
+        Thread = "thread",
+        State = "state",
+        Slow = "slow",
+    }
+}
+
+impl SampleBy {
+    /// Whether `group` takes it: `state` and `slow` only divide one node's weight.
+    pub fn groups(self) -> bool {
+        !matches!(self, SampleBy::State | SampleBy::Slow)
+    }
+}
+
+vocab! {
+    /// The state of a sample.
+    StateName {
+        Cpu = "cpu",
+        Running = "running",
+        Waiting = "waiting",
+    }
+}
+
+vocab! {
+    /// Whether a sample belongs to a slow tick or frame.
+    PaceName {
+        Slow = "slow",
+        Normal = "normal",
     }
 }
 

@@ -5,6 +5,7 @@ use crate::error::{Error, side_name};
 use crate::health::{live, max, mean, trailing_mean};
 use crate::view::View;
 
+mod hot;
 mod sections;
 
 /// Default size of a summary in tokens, measured as bytes / 4.

@@ -29,8 +29,9 @@ pub(super) fn all(
     options: &SummaryOptions,
     base: Option<&Diff>,
 ) -> Result<Vec<Section>, Error> {
-    let parts = [
-        phases(view, side, options, base)?,
+    let mut parts = vec![phases(view, side, options, base)?];
+    parts.extend(super::hot::sections(view, side, options));
+    parts.extend([
         worst(view, side),
         net(view, side),
         memory(view, side),
@@ -38,7 +39,7 @@ pub(super) fn all(
         workers(view, side),
         cost(view, side),
         warnings(view, side),
-    ];
+    ]);
     Ok(parts.into_iter().filter(|p| !p.is_empty()).collect())
 }
 
@@ -545,6 +546,9 @@ pub(super) fn next(view: &View, sides: &[Side], options: &SummaryOptions) -> Str
         None => commands.push(format!(
             "horizon-perf query series {health} --from -900{flag}"
         )),
+    }
+    if let Some(id) = super::hot::top_function(view, side, options) {
+        commands.push(format!("horizon-perf query callers {id}{flag}"));
     }
     if view.snapshots(side).len() > 1 {
         commands.push(format!("horizon-perf query memory --diff{flag}"));
