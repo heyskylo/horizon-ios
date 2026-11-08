@@ -253,6 +253,35 @@ impl Activity {
 /// Horizon's pad-only actions (no vanilla key mapping).
 pub const HOTBAR_PREVIOUS: &str = "pad.hotbarPrevious";
 pub const HOTBAR_NEXT: &str = "pad.hotbarNext";
+/// Held, opens the radial menu (`radial.rs`).
+pub const RADIAL: &str = "pad.radial";
+
+/// The buttons under the right thumb, which steers the right stick.
+const RIGHT_THUMB: [Button; 4] = [
+    Button::South,
+    Button::West,
+    Button::North,
+    Button::RightStick,
+];
+/// The buttons under the left thumb, which steers the left stick.
+const LEFT_THUMB: [Button; 5] = [
+    Button::DPadUp,
+    Button::DPadDown,
+    Button::DPadLeft,
+    Button::DPadRight,
+    Button::LeftStick,
+];
+
+/// Whether the radial menu's opener can't be `button` while `stick` selects. One rule: the opener
+/// is never under a thumb that selects (holding it and steering are two jobs for one thumb), nor
+/// B, which cancels the open menu. So with the right stick the face buttons and R3 go, with the
+/// left the D-pad and L3, with either both; a bumper, a trigger and View are always free, and
+/// with a bumper for the opener the other bumper turns the pages.
+pub fn opener_refused(stick: RadialStick, button: Button) -> bool {
+    button == Button::East
+        || (stick != RadialStick::Left && RIGHT_THUMB.contains(&button))
+        || (stick != RadialStick::Right && LEFT_THUMB.contains(&button))
+}
 
 /// Bindable actions and their default buttons: vanilla key mappings (the
 /// game acts as their default key) and Horizon's pad-only actions. Start is
@@ -612,6 +641,57 @@ pub fn steam_keyboard(choice: TextKeyboard) -> bool {
         TextKeyboard::Steam => true,
         TextKeyboard::Horizon => false,
         TextKeyboard::Auto => std::env::var("SteamDeck").is_ok_and(|v| v == "1"),
+    }
+}
+
+/// How the radial menu's opener holds it open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RadialMode {
+    /// Held: letting go runs what is selected.
+    #[default]
+    Hold,
+    /// A press opens it; A or the opener again runs what is selected, B closes it.
+    Toggle,
+}
+impl RadialMode {
+    pub const ALL: [Self; 2] = [Self::Hold, Self::Toggle];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Hold => "hold",
+            Self::Toggle => "toggle",
+        }
+    }
+    pub fn parse(value: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|mode| mode.name() == value)
+            .unwrap_or_default()
+    }
+}
+
+/// The stick that selects in the radial menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RadialStick {
+    #[default]
+    Right,
+    Left,
+    /// The last stick to lean past the select tilt.
+    Either,
+}
+impl RadialStick {
+    pub const ALL: [Self; 3] = [Self::Right, Self::Left, Self::Either];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Right => "right",
+            Self::Left => "left",
+            Self::Either => "either",
+        }
+    }
+    pub fn parse(value: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|stick| stick.name() == value)
+            .unwrap_or_default()
     }
 }
 
@@ -1440,6 +1520,14 @@ pub enum Rumble {
         radius: f32,
     },
     Totem,
+    /// The radial menu's stick reached a slot that would run: a tick.
+    RadialSlot,
+    /// The radial menu's page turned: a shorter tick.
+    RadialPage,
+    /// The page turn went round an end: a second tick after the first.
+    RadialWrap,
+    /// A release ran nothing after something had been selected: a soft buzz.
+    RadialNothing,
 }
 /// A vibration: the heavy (low-frequency) and light motors, 0..1, and how
 /// long it lasts.
@@ -1449,6 +1537,7 @@ pub struct Pulse {
     pub weak: f32,
     pub millis: u32,
 }
+use crate::radial::{RADIAL_NOTHING, RADIAL_PAGE_TICK, RADIAL_TICK};
 impl Rumble {
     pub fn name(self) -> &'static str {
         match self {
@@ -1456,6 +1545,10 @@ impl Rumble {
             Rumble::BlockBroken => "block",
             Rumble::Explosion { .. } => "explosion",
             Rumble::Totem => "totem",
+            Rumble::RadialSlot => "radial",
+            Rumble::RadialPage => "radial_page",
+            Rumble::RadialWrap => "radial_wrap",
+            Rumble::RadialNothing => "radial_nothing",
         }
     }
     /// The pulse, or `None` when it is too faint to feel.
@@ -1482,6 +1575,9 @@ impl Rumble {
                     millis: 350,
                 })
             }
+            Rumble::RadialSlot => Some(RADIAL_TICK),
+            Rumble::RadialPage | Rumble::RadialWrap => Some(RADIAL_PAGE_TICK),
+            Rumble::RadialNothing => Some(RADIAL_NOTHING),
             Rumble::Totem => Some(Pulse {
                 strong: 0.7,
                 weak: 0.7,
@@ -1503,6 +1599,10 @@ impl Rumble {
         };
         match self {
             Rumble::BlockBroken => vec![Pulse { millis: 35, ..p }],
+            Rumble::RadialSlot
+            | Rumble::RadialPage
+            | Rumble::RadialWrap
+            | Rumble::RadialNothing => vec![p],
             Rumble::Hurt(_) => {
                 let tail = p.millis.saturating_sub(50) / 2;
                 vec![step(1.0, 50), step(0.55, tail), step(0.25, tail)]
@@ -1669,6 +1769,25 @@ pub fn bow_power(ticks: u32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_radial_menus_ticks_are_felt_and_tell_apart() {
+        let tick = Rumble::RadialSlot.pulse().unwrap();
+        assert!((40..=50).contains(&tick.millis), "{tick:?}");
+        assert!((0.25..=0.35).contains(&tick.weak), "{tick:?}");
+        let page = Rumble::RadialPage.pulse().unwrap();
+        assert!(page.millis < tick.millis, "a page turn is the shorter tick");
+        assert_eq!(Rumble::RadialWrap.pulse(), Some(page));
+        let nothing = Rumble::RadialNothing.pulse().unwrap();
+        assert!(
+            nothing.strong > 0.0 && nothing.millis > tick.millis,
+            "{nothing:?}"
+        );
+        assert!(
+            nothing.strong.max(nothing.weak) < 0.3,
+            "a soft buzz: {nothing:?}"
+        );
+    }
 
     #[test]
     fn every_bindable_action_reaches_the_game() {
