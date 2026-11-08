@@ -144,7 +144,7 @@ impl Game<'_> {
         if let (true, Some(old)) = (drop_old, old) {
             let mut dropped = ItemStack::new(&old, 1);
             dropped.set_crafting_enchantments(old_enchantments);
-            self.spawn_item(dropped, at, super::dispenser::new_item_motion(), 10);
+            self.spawn_item_own(dropped, at, 10);
         }
         true
     }

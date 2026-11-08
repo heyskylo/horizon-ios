@@ -89,6 +89,31 @@ pub struct Registries {
     pub trigger_objectives: Vec<String>,
     /// Objectives with the `trigger` criterion -> holder -> whether its score is locked.
     pub trigger_scores: BTreeMap<String, BTreeMap<String, bool>>,
+    /// The `ConfiguredFeature` codec for an inline `minecraft:worldgen/feature`
+    /// value (`ResourceOrIdArgument`), where the source has the server's live
+    /// features; None leaves the decode to when the command runs.
+    pub inline_feature: Option<InlineFeatureCheck>,
+}
+
+/// A codec check of an inline value: its error message when it does not decode.
+#[derive(Clone)]
+pub struct InlineFeatureCheck(
+    std::sync::Arc<dyn Fn(&horizon_world::nbt::Tag) -> Result<(), String> + Send + Sync>,
+);
+impl InlineFeatureCheck {
+    pub fn new(
+        check: impl Fn(&horizon_world::nbt::Tag) -> Result<(), String> + Send + Sync + 'static,
+    ) -> Self {
+        Self(std::sync::Arc::new(check))
+    }
+    pub fn check(&self, value: &horizon_world::nbt::Tag) -> Result<(), String> {
+        (self.0)(value)
+    }
+}
+impl std::fmt::Debug for InlineFeatureCheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("InlineFeatureCheck(..)")
+    }
 }
 /// The ids and tag ids of one registry.
 #[derive(Clone, Debug, Default)]

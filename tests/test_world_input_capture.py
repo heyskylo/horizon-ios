@@ -18,14 +18,17 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def method(source, name):
-    start = source.index(f"    fn {name}(")
+    # A method moved out of game.rs is `pub(super)` in its own file; the fixtures paste it as a
+    # private one.
+    plain, moved = f"    fn {name}(", f"    pub(super) fn {name}("
+    start = source.index(plain if plain in source else moved)
     opening = source.index("{", start)
     depth = 1
     end = opening + 1
     while depth:
         depth += (source[end] == "{") - (source[end] == "}")
         end += 1
-    return source[start:end]
+    return source[start:end].replace("pub(super) fn", "fn", 1)
 
 
 def function(source, name):
@@ -41,7 +44,8 @@ def function(source, name):
 
 class WorldInputCaptureTests(unittest.TestCase):
     def test_loading_completion_wiring(self):
-        game = (ROOT / "crates/horizon-client/src/game.rs").read_text(encoding="utf-8")
+        game = "".join((ROOT / "crates/horizon-client/src" / path).read_text(encoding="utf-8")
+                       for path in ("game/player_spawn.rs", "game/window_handler.rs", "game.rs"))
         remote = (ROOT / "crates/horizon-client/src/game/remote.rs").read_text(encoding="utf-8")
         spawn = method(game, "spawn_player")
         self.assertLess(spawn.index("self.player = Some(player)"),
@@ -57,7 +61,8 @@ class WorldInputCaptureTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
     def test_capture_lifecycle(self):
-        source = (ROOT / "crates/horizon-client/src/game.rs").read_text(encoding="utf-8")
+        source = "".join((ROOT / "crates/horizon-client/src" / path).read_text(encoding="utf-8")
+                         for path in ("game.rs", "game/pointer_capture.rs"))
         mouse = (ROOT / "crates/horizon-client-input/src/mouse.rs").read_text(encoding="utf-8")
         fixture = r'''
 use std::cell::Cell;
@@ -103,6 +108,8 @@ struct Mouse { ignore_first: bool }
 impl Mouse { fn set_ignore_first_move(&mut self) { self.ignore_first = true; } }
 struct Remote;
 #[derive(Default)]
+struct StudioFreecam { active: bool }
+#[derive(Default)]
 struct Options { offscreen: bool }
 #[derive(Default)]
 struct ServerPacks { prompt: Option<()> }
@@ -111,6 +118,7 @@ struct Game {
     keyboard_mouse: bool, split_window: bool, view_at: [u32; 2],
     captured: bool, capture_mode: Option<CursorGrabMode>, regrab_on_refocus: bool, title: Option<()>, screen: Screen,
     remote: Option<Remote>,
+    studio_replay: Option<()>, studio_freecam: StudioFreecam, studio_rmb_down: bool,
     mining: bool, lan_acting: Option<u32>, renderer: Option<Renderer>, cursor: (f32, f32),
     server_packs: ServerPacks, command_prompt: Option<()>, options: Options,
 }
@@ -119,7 +127,9 @@ impl Default for Game {
         Self { focused: true, agent_pointer: false, window: Some(Window::default()),
             keyboard_mouse: true, split_window: false, view_at: [0, 0],
             mouse: Mouse::default(), captured: false, capture_mode: None, regrab_on_refocus: false, title: None,
-            screen: Screen::Playing, remote: None, mining: false, lan_acting: None,
+            screen: Screen::Playing, remote: None, studio_replay: None,
+            studio_freecam: StudioFreecam::default(), studio_rmb_down: false,
+            mining: false, lan_acting: None,
             renderer: None, cursor: (0.0, 0.0), server_packs: ServerPacks::default(),
             command_prompt: None, options: Options::default() }
     }
@@ -241,6 +251,22 @@ fn main() {
         game.regrab_on_refocus();
         assert!(!game.captured);
     }
+    // Studio replays keep the pointer released after focus returns; camera look
+    // only captures it while the right mouse button is held.
+    {
+        let mut game = Game::default();
+        game.studio_replay = Some(());
+        game.studio_rmb_down = true;
+        game.capture(true);
+        assert!(game.captured);
+        game.regrab_on_refocus = true;
+        game.focused = false;
+        game.capture(false);
+        game.focused = true;
+        game.regrab_on_refocus();
+        assert!(!game.captured);
+        assert!(!game.studio_rmb_down);
+    }
     // A controller-only player's screens leave the shared native pointer alone.
     {
         let mut game = Game::default();
@@ -359,7 +385,8 @@ fn main() {
 
     @unittest.skipUnless(shutil.which("rustc"), "requires Rust")
     def test_native_split_mouse_turns_only_its_owner(self):
-        source = (ROOT / "crates/horizon-client/src/game.rs").read_text(encoding="utf-8")
+        source = "".join((ROOT / "crates/horizon-client/src" / path).read_text(encoding="utf-8")
+                         for path in ("game/window_handler.rs", "game.rs"))
         fixture = r'''
 use std::time::Instant;
 #[path = "MOUSE_PATH"] mod mouse;

@@ -55,6 +55,7 @@ impl Features {
         entity: &wgpu::BindGroupLayout,
         weather: &wgpu::BindGroupLayout,
         border: &wgpu::BindGroupLayout,
+        format: wgpu::TextureFormat,
     ) -> Self {
         let entity_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon improved transparency features"),
@@ -113,6 +114,15 @@ impl Features {
                     bind_group_layouts: &[groups[0], groups[1], Some(&layouts[stage as usize])],
                     ..Default::default()
                 });
+                let fragment = if kind.label == "text" && stage == Stage::Accumulate {
+                    "fs_oit_text_accumulate".to_owned()
+                } else {
+                    format!("fs_oit_{}_{suffix}", kind.name)
+                };
+                let constants = [(
+                    "HDR_WRITE_LIGHT",
+                    f64::from(u8::from(format == super::LINEAR_FRAME)),
+                )];
                 device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: Some(&format!("OIT {} {suffix}", kind.label)),
                     layout: Some(&layout),
@@ -136,8 +146,15 @@ impl Features {
                     multisample: Default::default(),
                     fragment: Some(wgpu::FragmentState {
                         module,
-                        entry_point: Some(&format!("fs_oit_{}_{suffix}", kind.name)),
-                        compilation_options: Default::default(),
+                        entry_point: Some(&fragment),
+                        compilation_options: wgpu::PipelineCompilationOptions {
+                            constants: if kind.name == "border" {
+                                &[]
+                            } else {
+                                &constants
+                            },
+                            ..Default::default()
+                        },
                         targets: &stage_targets(stage),
                     }),
                     multiview_mask: None,

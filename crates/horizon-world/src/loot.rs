@@ -437,6 +437,69 @@ pub fn level_value(v: &Value, level: i32) -> f32 {
     }
 }
 /// `MinMaxBounds.Ints.matches` (a number or `{min, max}`).
+/// `CustomDataPredicate` (`NbtPredicate.matches`): `pattern` is a typed
+/// subset of the stack's custom data (`CustomData.matchedBy`,
+/// `NbtUtils.compareNbt(pattern, data, true)`), and a stack without custom
+/// data has `{}`. The pattern is SNBT, as data packs write it, or a JSON
+/// object (`TagParser.LENIENT_CODEC`); one that is not a compound matches
+/// nothing, where vanilla refuses to load the table.
+pub fn custom_data_matches(pattern: &Value, data: Option<&crate::nbt::Compound>) -> bool {
+    let Some(Tag::Compound(pattern)) = nbt_predicate_tag(pattern) else {
+        return false;
+    };
+    let empty = crate::nbt::Compound::new();
+    let data = data.unwrap_or(&empty);
+    pattern
+        .iter()
+        .all(|(k, v)| crate::nbt::compare_nbt(v, data.get(k)))
+}
+/// A tag written in a data pack's JSON: SNBT text read whole, or JSON as
+/// DataFixerUpper's `JsonOps.convertTo(NbtOps)` turns it into NBT (whole
+/// numbers in the smallest of byte, short, int and long; others a float
+/// when exact, else a double; booleans as bytes).
+pub fn nbt_predicate_tag(value: &Value) -> Option<Tag> {
+    match value {
+        Value::String(text) => {
+            let (tag, used) = crate::nbt::parse_snbt(text).ok()?;
+            text[used..].trim().is_empty().then_some(tag)
+        }
+        _ => json_tag(value),
+    }
+}
+fn json_tag(value: &Value) -> Option<Tag> {
+    Some(match value {
+        Value::Null => return None,
+        Value::Bool(b) => Tag::Byte(i8::from(*b)),
+        Value::String(s) => Tag::String(s.as_str().into()),
+        Value::Number(n) => {
+            let whole = n.as_i64().or_else(|| {
+                let d = n.as_f64()?;
+                (d.fract() == 0.0 && d >= i64::MIN as f64 && d < i64::MAX as f64)
+                    .then_some(d as i64)
+            });
+            match whole {
+                Some(l) if i8::try_from(l).is_ok() => Tag::Byte(l as i8),
+                Some(l) if i16::try_from(l).is_ok() => Tag::Short(l as i16),
+                Some(l) if i32::try_from(l).is_ok() => Tag::Int(l as i32),
+                Some(l) => Tag::Long(l),
+                None => {
+                    let d = n.as_f64()?;
+                    if f64::from(d as f32) == d {
+                        Tag::Float((d as f32).to_bits())
+                    } else {
+                        Tag::Double(d.to_bits())
+                    }
+                }
+            }
+        }
+        Value::Array(items) => Tag::List(items.iter().map(json_tag).collect::<Option<_>>()?),
+        Value::Object(map) => Tag::Compound(
+            map.iter()
+                .map(|(k, v)| Some((k.as_str().into(), json_tag(v)?)))
+                .collect::<Option<_>>()?,
+        ),
+    })
+}
 fn int_bounds(v: &Value, value: i32) -> bool {
     match v {
         Value::Null => true,
@@ -487,6 +550,10 @@ impl LootTables {
     }
     pub fn contains_key(&self, id: &str) -> bool {
         self.0.contains_key(id)
+    }
+    /// The tables' ids, in no order.
+    pub fn ids(&self) -> impl Iterator<Item = &str> {
+        self.0.keys().map(String::as_str)
     }
     pub fn len(&self) -> usize {
         self.0.len()
@@ -1181,68 +1248,7 @@ impl<R: RandomSource> Context<'_, R> {
     }
     /// EntityPredicate.matches (false without an entity).
     fn entity_matches(&self, p: &Value, e: Option<&LootEntity>) -> bool {
-        let Some(e) = e else { return false };
-        let Some(parts) = p.as_object() else {
-            return true;
-        };
-        let data = self.data;
-        parts.iter().all(|(key, v)| match key.as_str() {
-            "minecraft:entity_type" => match v.as_str() {
-                Some(s) => match s.strip_prefix('#') {
-                    Some(tag) => data.in_tag("entity_type", tag, &e.kind),
-                    None => s == e.kind,
-                },
-                None => v
-                    .as_array()
-                    .is_some_and(|a| a.iter().any(|x| x.as_str() == Some(&e.kind))),
-            },
-            "minecraft:flags" => v.as_object().into_iter().flatten().all(|(flag, want)| {
-                let want = want.as_bool().unwrap_or(false);
-                match flag.as_str() {
-                    "is_on_fire" => e.on_fire == want,
-                    // EntityFlagsPredicate: only living entities have an age.
-                    "is_baby" => !e.living || e.baby == want,
-                    "is_fall_flying" => !e.living || !want,
-                    _ => !want,
-                }
-            }),
-            "minecraft:equipment" => {
-                e.living
-                    && v.as_object().into_iter().flatten().all(|(slot, item)| {
-                        e.item(slot)
-                            .is_some_and(|stack| self.item_matches(item, stack))
-                    })
-            }
-            "minecraft:components" => v.as_object().into_iter().flatten().all(|(c, want)| match c
-                .as_str()
-            {
-                "minecraft:sheep/color" => e
-                    .sheep
-                    .as_ref()
-                    .is_some_and(|(color, _)| want.as_str() == Some(color)),
-                "minecraft:frog/variant" => {
-                    e.frog_variant.is_some() && want.as_str() == e.frog_variant.as_deref()
-                }
-                "minecraft:chicken/variant" => {
-                    e.chicken_variant.is_some() && want.as_str() == e.chicken_variant.as_deref()
-                }
-                _ => false,
-            }),
-            "minecraft:type_specific/sheep" => e
-                .sheep
-                .as_ref()
-                .is_some_and(|(_, sheared)| v["sheared"].as_bool().is_none_or(|w| w == *sheared)),
-            "minecraft:type_specific/cube_mob" => {
-                e.cube_size.is_some_and(|size| int_bounds(&v["size"], size))
-            }
-            // RaiderPredicate: no raid is running here.
-            "minecraft:type_specific/raider" => e.captain.is_some_and(|captain| {
-                !v["has_raid"].as_bool().unwrap_or(false)
-                    && captain == v["is_captain"].as_bool().unwrap_or(false)
-            }),
-            "minecraft:vehicle" => self.entity_matches(v, e.vehicle.as_deref()),
-            _ => false,
-        })
+        self.data.entity_matches(p, e)
     }
     /// A number provider. An unknown type gives 0, as in items.rs `number`
     /// (a data pack's typo yields nothing rather than a full roll).
@@ -1647,36 +1653,7 @@ impl<R: RandomSource> Context<'_, R> {
     }
     /// ItemPredicate subset used by filtered modifiers and equipment.
     fn item_matches(&self, p: &Value, stack: &LootStack) -> bool {
-        if !p["items"].is_null() && !self.data.item_in(&stack.item, &p["items"]) {
-            return false;
-        }
-        if !int_bounds(&p["count"], stack.count) {
-            return false;
-        }
-        if p["predicates"].get("minecraft:map_id").is_some() && !stack.map {
-            return false;
-        }
-        // EnchantmentsPredicate: every entry must hold.
-        if let Some(list) = p["predicates"]["minecraft:enchantments"].as_array() {
-            let data = self.data;
-            let ok = list.iter().all(|e| {
-                let levels = &e["levels"];
-                match &e["enchantments"] {
-                    Value::Null => stack
-                        .enchantments
-                        .iter()
-                        .any(|(_, l)| int_bounds(levels, *l)),
-                    set => data.holder_set("enchantment", set).iter().any(|name| {
-                        let level = item_level(stack, name);
-                        level != 0 && int_bounds(levels, level)
-                    }),
-                }
-            });
-            if !ok {
-                return false;
-            }
-        }
-        true
+        self.data.item_matches(p, stack)
     }
     /// EnchantmentHelper.selectEnchantment.
     fn select_enchantments(
@@ -2425,5 +2402,204 @@ mod location_check_biome_tests {
         assert!(drops(&data, Some("minecraft:bamboo_jungle")));
         assert!(drops(&data, Some("minecraft:desert")));
         assert!(!drops(&data, Some("minecraft:savanna")));
+    }
+}
+
+impl LootData {
+    /// `EntityPredicate.matches`: the existing pure matcher shared by loot contexts.
+    pub fn entity_matches(&self, p: &Value, e: Option<&LootEntity>) -> bool {
+        let Some(e) = e else { return false };
+        let Some(parts) = p.as_object() else {
+            return true;
+        };
+        let data = self;
+        parts.iter().all(|(key, v)| match key.as_str() {
+            "minecraft:entity_type" => match v.as_str() {
+                Some(s) => match s.strip_prefix('#') {
+                    Some(tag) => data.in_tag("entity_type", tag, &e.kind),
+                    None => s == e.kind,
+                },
+                None => v
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|x| x.as_str() == Some(&e.kind))),
+            },
+            "minecraft:flags" => v.as_object().into_iter().flatten().all(|(flag, want)| {
+                let want = want.as_bool().unwrap_or(false);
+                match flag.as_str() {
+                    "is_on_fire" => e.on_fire == want,
+                    // EntityFlagsPredicate: only living entities have an age.
+                    "is_baby" => !e.living || e.baby == want,
+                    "is_fall_flying" => !e.living || !want,
+                    _ => !want,
+                }
+            }),
+            "minecraft:equipment" => {
+                e.living
+                    && v.as_object().into_iter().flatten().all(|(slot, item)| {
+                        e.item(slot)
+                            .is_some_and(|stack| self.item_matches(item, stack))
+                    })
+            }
+            "minecraft:components" => v.as_object().into_iter().flatten().all(|(c, want)| match c
+                .as_str()
+            {
+                "minecraft:sheep/color" => e
+                    .sheep
+                    .as_ref()
+                    .is_some_and(|(color, _)| want.as_str() == Some(color)),
+                "minecraft:frog/variant" => {
+                    e.frog_variant.is_some() && want.as_str() == e.frog_variant.as_deref()
+                }
+                "minecraft:chicken/variant" => {
+                    e.chicken_variant.is_some() && want.as_str() == e.chicken_variant.as_deref()
+                }
+                _ => false,
+            }),
+            "minecraft:type_specific/sheep" => e
+                .sheep
+                .as_ref()
+                .is_some_and(|(_, sheared)| v["sheared"].as_bool().is_none_or(|w| w == *sheared)),
+            "minecraft:type_specific/cube_mob" => {
+                e.cube_size.is_some_and(|size| int_bounds(&v["size"], size))
+            }
+            // RaiderPredicate: no raid is running here.
+            "minecraft:type_specific/raider" => e.captain.is_some_and(|captain| {
+                !v["has_raid"].as_bool().unwrap_or(false)
+                    && captain == v["is_captain"].as_bool().unwrap_or(false)
+            }),
+            "minecraft:vehicle" => self.entity_matches(v, e.vehicle.as_deref()),
+            _ => false,
+        })
+    }
+    fn item_matches(&self, p: &Value, stack: &LootStack) -> bool {
+        if !p["items"].is_null() && !self.item_in(&stack.item, &p["items"]) {
+            return false;
+        }
+        if !int_bounds(&p["count"], stack.count) {
+            return false;
+        }
+        if p["predicates"].get("minecraft:map_id").is_some() && !stack.map {
+            return false;
+        }
+        if let Some(pattern) = p["predicates"].get("minecraft:custom_data") {
+            let data = stack
+                .components
+                .iter()
+                .rev()
+                .find(|(id, _)| id == "minecraft:custom_data")
+                .and_then(|(_, value)| nbt_predicate_tag(value));
+            let data = match &data {
+                Some(Tag::Compound(c)) => Some(c),
+                _ => None,
+            };
+            if !custom_data_matches(pattern, data) {
+                return false;
+            }
+        }
+        // EnchantmentsPredicate: every entry must hold.
+        if let Some(list) = p["predicates"]["minecraft:enchantments"].as_array() {
+            let data = self;
+            let ok = list.iter().all(|e| {
+                let levels = &e["levels"];
+                match &e["enchantments"] {
+                    Value::Null => stack
+                        .enchantments
+                        .iter()
+                        .any(|(_, l)| int_bounds(levels, *l)),
+                    set => data.holder_set("enchantment", set).iter().any(|name| {
+                        let level = item_level(stack, name);
+                        level != 0 && int_bounds(levels, level)
+                    }),
+                }
+            });
+            if !ok {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+#[cfg(test)]
+mod custom_data_predicate_tests {
+    use super::*;
+
+    const PATTERNS: [(&str, &str); 10] = [
+        ("white", r#""{h:1b}""#),
+        ("orange", r#""{h:1}""#),
+        ("magenta", r#""{nested:{k:7}}""#),
+        ("light_blue", r#""{entries:[{k:2b}]}""#),
+        ("yellow", r#""{entries:[{k:2b},{k:1b}]}""#),
+        ("lime", r#""{entries:[]}""#),
+        ("pink", r#""{wide:9007199254740993L}""#),
+        ("gray", r#""{wide:9007199254740992L}""#),
+        ("light_gray", r#""{}""#),
+        ("cyan", r#"{"h":1}"#),
+    ];
+
+    /// One pool per pattern: its wool, given `data` by `set_components`,
+    /// doubled by `filtered` when the pattern matches. The wools doubled.
+    fn doubled(data: Option<&str>) -> Vec<&'static str> {
+        let set = data.map_or(String::new(), |d| {
+            let d = serde_json::to_string(d).unwrap();
+            format!(r#"{{"type":"minecraft:set_components","components":{{"minecraft:custom_data":{d}}}}},"#)
+        });
+        let pools: Vec<String> = PATTERNS
+            .iter()
+            .map(|(wool, pattern)| {
+                format!(
+                    r#"{{"rolls":1,"entries":[{{"type":"minecraft:item","name":"minecraft:{wool}_wool","modifier":[{set}{{"type":"minecraft:filtered","item_filter":{{"items":"minecraft:{wool}_wool","predicates":{{"minecraft:custom_data":{pattern}}}}},"on_pass":{{"type":"minecraft:set_count","count":2}}}}]}}]}}"#
+                )
+            })
+            .collect();
+        let root = std::env::temp_dir().join(format!(
+            "loot-custom-data-{}-{}",
+            std::process::id(),
+            data.map_or(0, str::len)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("data/minecraft/loot_table");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("test.json"),
+            format!(r#"{{"pools":[{}]}}"#, pools.join(",")),
+        )
+        .unwrap();
+        std::fs::write(root.join("items.json"), "{}").unwrap();
+        let loot = LootData::load(&root, &PackOverlay::NONE).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        let drops = loot.roll("minecraft:test", &mut LegacyRandom::new(1), 0.0, None, None);
+        assert_eq!(drops.len(), PATTERNS.len());
+        PATTERNS
+            .iter()
+            .zip(&drops)
+            .filter(|(_, stack)| stack.count == 2)
+            .map(|((wool, _), _)| *wool)
+            .collect()
+    }
+
+    /// What vanilla 26.3 doubles for the same tables (an entity table rolled
+    /// by `loot give @s kill`, VanillaCommandExecOracle, #12196): a typed NBT
+    /// subset (`NbtUtils.compareNbt`), lists matched element by element, no
+    /// custom data read as `{}`, and a JSON pattern's whole numbers as bytes.
+    #[test]
+    fn filtered_matches_custom_data_as_vanilla() {
+        let rich = r#"{h:1b,nested:{k:7,extra:9},entries:[{k:1b,extra:2b},{k:2b}],wide:9007199254740993L,spare:"keep"}"#;
+        assert_eq!(
+            doubled(Some(rich)),
+            [
+                "white",
+                "magenta",
+                "light_blue",
+                "yellow",
+                "pink",
+                "light_gray",
+                "cyan"
+            ]
+        );
+        assert_eq!(doubled(Some("{h:2b}")), ["light_gray"]);
+        assert_eq!(doubled(Some("{h:1}")), ["orange", "light_gray"]);
+        assert_eq!(doubled(Some("{entries:[]}")), ["lime", "light_gray"]);
+        assert_eq!(doubled(None), ["light_gray"]);
     }
 }

@@ -65,13 +65,18 @@ impl Visbuffer {
         let resolve_constants: Vec<(&str, f64)> = constants
             .iter()
             .copied()
-            .chain([("VIS_BLOCKS_PER_PAGE", blocks_per_page as f64)])
+            .chain([
+                ("VIS_BLOCKS_PER_PAGE", blocks_per_page as f64),
+                (
+                    "HDR_WRITE_LIGHT",
+                    f64::from(u8::from(color == super::LINEAR_FRAME)),
+                ),
+            ])
             .collect();
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon visibility buffer"),
             source: wgpu::ShaderSource::Wgsl(
-                (include_str!("../terrain.wgsl").to_owned() + include_str!("../visbuffer.wgsl"))
-                    .into(),
+                (super::terrain_shader() + include_str!("../visbuffer.wgsl")).into(),
             ),
         });
         let fragment = wgpu::ShaderStages::FRAGMENT;

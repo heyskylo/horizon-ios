@@ -3,13 +3,21 @@
 //! Feeds recorded `.mcpr` packet streams into the client's packet processing
 //! loop at user-controlled playback speeds (slow-motion, 1x, fast-forward, pause).
 
-use super::mcpr::{McprReader, Metadata, TimestampedPacket};
-use std::{io, path::Path, time::Duration};
+use super::{
+    mcpr::{Marker, McprReader, McprWriter, Metadata, TimestampedPacket},
+    spline::CameraTrack,
+};
+use std::{
+    io,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 /// Playback controller driving recorded packets according to a virtual timeline.
 pub struct ReplayDriver {
     pub metadata: Metadata,
     reader: McprReader,
+    path: PathBuf,
     cursor_ms: f64,
     speed: f64,
     paused: bool,
@@ -33,6 +41,7 @@ impl ReplayDriver {
         Ok(Self {
             metadata,
             reader,
+            path: path.to_path_buf(),
             cursor_ms: 0.0,
             speed: 1.0,
             paused: false,
@@ -55,6 +64,37 @@ impl ReplayDriver {
     /// Total number of indexed packets in the recording stream.
     pub fn packet_count(&self) -> usize {
         self.reader.total_packets()
+    }
+
+    /// Camera keyframes saved alongside the packet stream, if present.
+    pub fn camera_track(&self) -> Option<&CameraTrack> {
+        self.reader.camera_track.as_ref()
+    }
+
+    /// Markers saved alongside the packet stream, in timeline order.
+    pub fn markers(&self) -> &[Marker] {
+        &self.reader.markers
+    }
+
+    /// Add a bookmark at the current playhead and persist it in `markers.json`.
+    pub fn add_marker(&mut self, label: String) -> io::Result<Marker> {
+        let marker = Marker {
+            time_ms: self.position_ms(),
+            label,
+        };
+        let mut markers = self.reader.markers.clone();
+        markers.push(marker.clone());
+        markers.sort_by_key(|entry| entry.time_ms);
+        McprWriter::replace_markers(&self.path, &markers)?;
+        self.reader.markers = markers;
+        Ok(marker)
+    }
+
+    /// Save the edited camera path in the recording archive.
+    pub fn save_camera_track(&mut self, track: &CameraTrack) -> io::Result<()> {
+        McprWriter::replace_camera_track(&self.path, track)?;
+        self.reader.camera_track = (!track.is_empty()).then(|| track.clone());
+        Ok(())
     }
 
     /// Current playback progress as a fraction from 0.0 to 1.0.

@@ -61,6 +61,10 @@ another project's source may also be read and used, **only when that project's l
   "source available" licenses, all rights reserved (OptiFine), and any project with no license or an unclear one.
   Don't read, copy, translate or paraphrase their source, and don't send code an AI tool wrote from it. Being able
   to download a mod or a pack does not give you the right to read its files.
+- **Java's own library is GPL too.** OpenJDK's source (`java.lang.Math`, `StrictMath`, `FdLibm`, `HashMap`, the
+  sorts, `Double.toString`, HotSpot's intrinsics...) is GPL-2.0, so it is off limits like the rest. Reproduce Java's
+  behaviour from its API documentation (the Javadoc) and from what a JVM returns, or from a permissive original such
+  as Sun's fdlibm C sources (see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)); see #6741.
 - **Check the license yourself.** Read the LICENSE file at the commit you use and the header of each file you take:
   some repositories mix licenses, and a file under another license is off limits. A license that changed: the one at
   your commit counts. In doubt, don't: ask in #contributors first.
