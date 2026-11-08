@@ -1251,5 +1251,9 @@
   "Buy": "Keyp",
   "Gift": "Gev í gávu",
   "Found on this computer": "Funnið á hesi teldu",
-  "Looks": "Útsjónir"
+  "Looks": "Útsjónir",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Lyklaringurin í skipanini svaraði ikki innan {seconds} sekund. Ansa eftir, at hann koyrir og er læstur upp, og byrja so leysaran av nýggjum.",
+  "Can't read {name}'s sign-in: {why}": "Kann ikki lesa innritanina hjá {name}: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}."
 }

@@ -1251,5 +1251,9 @@
   "Buy": "Comprar",
   "Gift": "Oferecer",
   "Found on this computer": "Encontrados neste computador",
-  "Looks": "Visuais"
+  "Looks": "Visuais",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "O porta-chaves do sistema não respondeu em {seconds} segundos. Confirme que está em execução e desbloqueado e reinicie o launcher.",
+  "Can't read {name}'s sign-in: {why}": "Não é possível ler a sessão de {name}: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "O Horizon executa as funções, etiquetas de funções, predicados, modificadores de itens, receitas, tabelas de saque, conquistas, trocas de aldeões, tipos de dano, a maioria das etiquetas e a maior parte da geração do mundo (biomas, características, estruturas, dimensões) de um pacote de dados. Os outros ficheiros, como as predefinições de mundo, ainda não são lidos.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} ainda não mudaria nada no Horizon: o Horizon ainda não lê os seus {files}."
 }

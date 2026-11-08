@@ -1251,5 +1251,9 @@
   "Buy": "Купи",
   "Gift": "Подари",
   "Found on this computer": "Пронајдени на овој компјутер",
-  "Looks": "Изгледи"
+  "Looks": "Изгледи",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "Приврзокот за клучеви на вашиот систем не одговори во рок од {seconds} секунди. Проверете дали работи и дали е отклучен, а потоа рестартирајте го покренувачот.",
+  "Can't read {name}'s sign-in: {why}": "Не може да се прочита најавата на {name}: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}."
 }

@@ -71,7 +71,12 @@ pub fn client_tick(m: &mut Mob, game_time: i64, events: &mut Vec<MobEvent>) {
         // (`Warden.clientDiggingParticles`), so the events have to leave here.
         Species::Warden => warden::client_tick(m, events),
         Species::Sniffer => sniffer::animate(m),
-        Species::Breeze => breeze::ai_step(m),
+        // Breeze.tick and Mob.baseTick: the whirl and idle sounds are local
+        // sounds, so the client makes its own.
+        Species::Breeze => {
+            breeze::ai_step(m);
+            breeze::client_sounds(m, events);
+        }
         Species::Camel | Species::CamelHusk => camel::client_tick(m, game_time),
         Species::Shulker => shulker::client_tick(m),
         Species::Ravager => ravager::client_tick(m),
