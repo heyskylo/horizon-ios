@@ -4839,6 +4839,13 @@ depends on, else in bundle order). The package is not a
 `[[crate]]`: it depends on the game instead of the game depending on it. A bundle with no
 injections, state, bridges, modules, mixin crates or post-build steps skips horizon-mixins.
 
+The package may depend on the bundle's own `[[crate]]`s by path, a sibling folder of the package in the bundle
+(`shared = { path = "../shared" }` from `engine/`, where `shared` is a `[[crate]]` with `path = "shared"`). The
+launcher points that dependency at the crate's staged copy, `native-crates/<mod>/<crate>`, so the crate is built once
+with the game, as a `[[crate]]`'s own is. Any other path is refused, since only the package's folder is copied.
+A crate used this way follows the same rules as a `[[crate]]`: no `horizon-client`, and only crates in Horizon's
+`Cargo.lock`.
+
 Turning a trait mod off in Options > Mods takes effect at once: the game skips its `Hooks` from the next dispatch on,
 on the server thread and in the window alike, and turning it on again resumes it, with no rebuild while it is still in
 the build. It stays loaded and keeps what it holds; what it registered at start (blocks, items, component types)
