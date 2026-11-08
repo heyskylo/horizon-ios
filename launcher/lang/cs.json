@@ -1134,6 +1134,7 @@
   "Order {id}": "Objednávka {id}",
   "Paste a friend's invite code": "Vložte kód pozvánky od přítele",
   "Plays {build}, built on Horizon {commit}, the commit pinned by {mods}, not on {version}.": "Hraje {build}, postavený na Horizon {commit}, commitu připnutém {mods}, ne na {version}.",
+  "Could not open the data folder: {error}": "Nepodařilo se otevřít složku s daty: {error}",
   "Choose an empty folder for Horizon's data.": "Vyberte prázdnou složku pro data Horizonu.",
   "Choose data folder": "Vybrat složku s daty",
   "Close the game and servers, and wait for downloads, builds, imports and sign-in to finish before moving data.": "Před přesunem dat zavřete hru i servery a počkejte na dokončení stahování, sestavování, importů a přihlášení.",
