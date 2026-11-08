@@ -181,6 +181,7 @@ fn a_shader_pack_lights_the_faces_itself() {
             blend_radius: 0,
             smooth_lighting: false,
             cutout_leaves: true,
+            opaque_ice: false,
             translucent_layers: &[],
             leaf_culling: LeafCullingMode::Off,
         };
@@ -237,6 +238,7 @@ fn a_shader_pack_lights_every_nether_face_like_an_up_face() {
             blend_radius: 0,
             smooth_lighting: false,
             cutout_leaves: true,
+            opaque_ice: false,
             translucent_layers: &[],
             leaf_culling: LeafCullingMode::Off,
         };
@@ -289,6 +291,7 @@ fn separate_ao_passes_ao_in_alpha_without_darkening_rgb() {
         blend_radius: 0,
         smooth_lighting: true,
         cutout_leaves: true,
+        opaque_ice: false,
         translucent_layers: &[],
         leaf_culling: LeafCullingMode::Off,
     };
@@ -364,6 +367,7 @@ fn reused_mesh_matches_fresh_geometry_across_sections_and_resource_reload() {
             blend_radius: 2,
             smooth_lighting: reload == 0,
             cutout_leaves: reload == 0,
+            opaque_ice: false,
             translucent_layers: &[],
             leaf_culling: LeafCullingMode::Off,
         };
@@ -513,6 +517,7 @@ fn a_shader_pack_s_still_water_top_starts_at_its_south_west_corner() {
             blend_radius: 0,
             smooth_lighting: true,
             cutout_leaves: true,
+            opaque_ice: false,
             translucent_layers: &[],
             leaf_culling: LeafCullingMode::Off,
         };
