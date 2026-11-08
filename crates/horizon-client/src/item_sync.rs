@@ -109,6 +109,106 @@ fn glider_and_slot(
     (glider, slot)
 }
 
+/// The parts of a stack's `equippable` component (`Equippable`) the client
+/// draws with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Equippable {
+    /// `slot`: `EquipmentSlot`'s serialized name.
+    pub slot: String,
+    /// `assetId`: the equipment asset drawn when worn (`minecraft:iron`).
+    pub asset_id: Option<String>,
+    /// `cameraOverlay`: the texture drawn over the screen when worn
+    /// (`minecraft:misc/pumpkinblur`).
+    pub camera_overlay: Option<String>,
+}
+
+/// `stack.get(DataComponents.EQUIPPABLE)`: the item's own, replaced or removed
+/// by the saved components (a command's, a save's), then by the server's patch.
+pub fn equippable(stack: &ItemStack, items: &crate::items::Items) -> Option<Equippable> {
+    let mut out = item_equippable(&stack.item, items);
+    let Some(data) = stack.data() else {
+        return out;
+    };
+    if data.other("!minecraft:equippable").is_some() {
+        out = None;
+    } else if let Some(e) = data.other("minecraft:equippable") {
+        let string = |key: &str| match e.get(key) {
+            Some(Tag::String(s)) => Some(s.to_string_lossy()),
+            _ => None,
+        };
+        out = string("slot").map(|slot| Equippable {
+            slot,
+            asset_id: string("asset_id").map(namespaced),
+            camera_overlay: string("camera_overlay").map(namespaced),
+        });
+    }
+    let Some((added, removed)) = data
+        .wire
+        .patch()
+        .and_then(|p| horizon_protocol::item::WirePatch::decode(p).ok())
+    else {
+        return out;
+    };
+    if removed.contains(&component::EQUIPPABLE) {
+        out = None;
+    }
+    for (kind, c) in &added {
+        if let (component::EQUIPPABLE, Component::Raw(bytes)) = (*kind, c) {
+            out = decode_equippable(bytes);
+        }
+    }
+    out
+}
+
+/// The `equippable` component `item`'s prototype has.
+pub fn item_equippable(item: &str, items: &crate::items::Items) -> Option<Equippable> {
+    let info = items.get(item)?;
+    Some(Equippable {
+        slot: info.equip_slot.clone()?,
+        asset_id: info.equip_asset.clone(),
+        camera_overlay: info.equip_camera_overlay.clone(),
+    })
+}
+
+/// `Identifier.parse`: an id without a namespace is `minecraft`'s.
+fn namespaced(id: String) -> String {
+    if id.contains(':') {
+        id
+    } else {
+        format!("minecraft:{id}")
+    }
+}
+
+/// `Equippable.STREAM_CODEC` up to the camera overlay: the slot, the equip
+/// sound, the asset id and the camera overlay.
+fn decode_equippable(bytes: &[u8]) -> Option<Equippable> {
+    let mut r = Reader::new(bytes);
+    let slot = equipment_slot_name(r.varint().ok()?)?.to_owned();
+    // SoundEvent.STREAM_CODEC (ByteBufCodecs.holder): a registry id + 1, or 0
+    // then the direct event, its id and optional fixed range.
+    if r.varint().ok()? == 0 {
+        r.string(32767).ok()?;
+        if r.bool().ok()? {
+            r.f32().ok()?;
+        }
+    }
+    let asset_id = if r.bool().ok()? {
+        Some(r.string(32767).ok()?)
+    } else {
+        None
+    };
+    let camera_overlay = if r.bool().ok()? {
+        Some(r.string(32767).ok()?)
+    } else {
+        None
+    };
+    Some(Equippable {
+        slot,
+        asset_id,
+        camera_overlay,
+    })
+}
+
 /// `EquipmentSlot.byId`'s serialized names.
 fn equipment_slot_name(id: i32) -> Option<&'static str> {
     Some(match id {

@@ -471,6 +471,51 @@ fn is_air(registry: &BlockRegistry, state: BlockStateId) -> bool {
         )
     })
 }
+/// The Mob codec's existing numeric reads, recursively for the same effect.
+fn mob_hidden_effect(tag: &Tag, id: &'static str) -> Option<crate::effects::EffectInstance> {
+    if !matches!(tag, Tag::Compound(_)) {
+        return None;
+    }
+    let visible = number(tag.get("show_particles")).is_none_or(|v| v != 0);
+    Some(crate::effects::EffectInstance {
+        id,
+        duration: number(tag.get("duration")).unwrap_or(0) as i32,
+        amplifier: number(tag.get("amplifier")).unwrap_or(0) as i32,
+        ambient: number(tag.get("ambient")).is_some_and(|v| v != 0),
+        visible,
+        show_icon: number(tag.get("show_icon")).map_or(visible, |v| v != 0),
+        hidden: tag
+            .get("hidden_effect")
+            .and_then(|h| mob_hidden_effect(h, id))
+            .map(Box::new),
+    })
+}
+/// `MobEffectInstance.Details`: the active tuple and its modeled weaker nodes.
+fn mob_effect_tag(e: &crate::effects::EffectInstance, root: bool) -> Tag {
+    let mut fields = Vec::new();
+    if root {
+        fields.push(("id", string(crate::brewing::namespaced(e.id))));
+    }
+    if e.amplifier != 0 {
+        fields.push((
+            "amplifier",
+            Tag::Byte(e.amplifier.clamp(0, 255) as u8 as i8),
+        ));
+    }
+    fields.push(("duration", Tag::Int(e.duration)));
+    if e.ambient {
+        fields.push(("ambient", Tag::Byte(1)));
+    }
+    if !e.visible {
+        fields.push(("show_particles", Tag::Byte(0)));
+    }
+    fields.push(("show_icon", Tag::Byte(i8::from(e.show_icon))));
+    if let Some(hidden) = e.hidden.as_deref() {
+        fields.push(("hidden_effect", mob_effect_tag(hidden, false)));
+    }
+    Tag::compound(fields)
+}
+
 /// The mob's entity compound. `registry` is what writes a field holding a block
 /// state (an enderman's `carriedBlockState`): without one, a caller that has no
 /// resources (unit tests, structure templates) keeps whatever the loaded
@@ -561,11 +606,17 @@ pub fn mob_to_nbt(
         put(
             &mut tag,
             "anger_end_time",
-            Tag::Long(if m.extra.anger_end > 0 {
-                m.extra.anger_end
-            } else {
-                -1
-            }),
+            Tag::Long(
+                if (m.species() == crate::mobs::Species::Enderman && m.no_ai)
+                    || m.extra.anger_end > 0
+                {
+                    // NeutralMob saves the actual absolute value, including zero
+                    // and past values, while this Enderman's AI is disabled.
+                    m.extra.anger_end
+                } else {
+                    -1
+                },
+            ),
         );
         // `angry_at` only while there is an anger target: the UUID of the one
         // the level has (`uuid_of`). A mob target read from the save that is
@@ -585,9 +636,34 @@ pub fn mob_to_nbt(
     // `Mannequin.addAdditionalSaveData`: the profile whose skin it wears, whether it
     // is `immovable`, and its description (the default is not written; none is `hide_description`).
     if m.species() == crate::mobs::Species::Mannequin {
-        if let Some(profile) = &m.profile {
-            put(&mut tag, "profile", profile_nbt(profile));
-        }
+        // The empty static profile (`DEFAULT_PROFILE`) when it has none.
+        let profile = m
+            .profile
+            .as_ref()
+            .map_or_else(|| Tag::Compound(Compound::new()), profile_nbt);
+        put(&mut tag, "profile", profile);
+        // `LAYERS_CODEC`: the hidden layers, in `PlayerModelPart` order.
+        let hidden = MODEL_PARTS
+            .iter()
+            .enumerate()
+            .filter(|(bit, _)| m.extra.hidden_model_parts & (1 << bit) != 0)
+            .map(|(_, part)| string(part))
+            .collect();
+        put(&mut tag, "hidden_layers", Tag::List(hidden));
+        let hand = if m.extra.main_hand_left {
+            "left"
+        } else {
+            "right"
+        };
+        put(&mut tag, "main_hand", string(hand));
+        let pose = match m.extra.avatar_pose {
+            crate::pose::Pose::Crouching => "crouching",
+            crate::pose::Pose::Swimming => "swimming",
+            crate::pose::Pose::FallFlying => "fall_flying",
+            crate::pose::Pose::Sleeping => "sleeping",
+            _ => "standing",
+        };
+        put(&mut tag, "pose", string(pose));
         put(
             &mut tag,
             "immovable",
@@ -631,33 +707,12 @@ pub fn mob_to_nbt(
         }
     }
     // LivingEntity.addAdditionalSaveData: `active_effects` only when there are
-    // any (MobEffectInstance.CODEC; a mob's effects are never ambient, and one
-    // given with `hideParticles` shows neither particles nor its icon).
+    // any (MobEffectInstance.CODEC), including their modeled weaker instances.
     if m.extra.effects.is_empty() {
         map.remove(&horizon_world::nbt::JavaString::from("active_effects"));
     } else {
-        let effects = m
-            .extra
-            .effects
-            .iter()
-            .map(|&(effect, duration, amplifier)| {
-                let shown = !m.extra.hidden_effects.contains(&effect);
-                let ambient = m.extra.ambient_effects.contains(&effect);
-                let mut e = vec![("id", string(crate::brewing::namespaced(effect)))];
-                // The codec leaves out an amplifier of 0 (its default).
-                if amplifier != 0 {
-                    e.push(("amplifier", Tag::Byte(amplifier.clamp(0, 255) as u8 as i8)));
-                }
-                e.push(("duration", Tag::Int(duration)));
-                if ambient {
-                    e.push(("ambient", Tag::Byte(1)));
-                }
-                if !shown {
-                    e.push(("show_particles", Tag::Byte(0)));
-                }
-                e.push(("show_icon", Tag::Byte(i8::from(shown))));
-                Tag::compound(e)
-            });
+        let effects =
+            (0..m.extra.effects.len()).map(|i| mob_effect_tag(&m.effect_instance(i), true));
         map.insert("active_effects".into(), Tag::List(effects.collect()));
     }
     map.insert(
@@ -1388,6 +1443,7 @@ pub fn mob_to_nbt(
     if let Some(a) = m.extra.attributes.as_deref() {
         put_attributes(map, m, a);
     }
+    put_sulfur_attributes(map, m);
     // The attribute their load makes, which AttributeMap.pack then saves:
     // Zombie and Piglin.setBaby (even for an adult) the speed, Rabbit.setVariant
     // the attack damage.
@@ -1557,8 +1613,41 @@ pub fn mob_to_nbt(
             map.insert("equipment".into(), Tag::Compound(equipment));
         }
     }
+    // A mannequin is an `Avatar`, not a `Mob`: none of
+    // `Mob.addAdditionalSaveData`'s fields are its, written or loaded.
+    if m.species() == crate::mobs::Species::Mannequin
+        && let Tag::Compound(map) = &mut tag
+    {
+        for key in MOB_ONLY_KEYS {
+            map.remove(&horizon_world::nbt::JavaString::from(key));
+        }
+    }
     tag
 }
+
+/// `PlayerModelPart` in its order: bit `i` of a hidden-layer mask is part `i`.
+const MODEL_PARTS: [&str; 7] = [
+    "cape",
+    "jacket",
+    "left_sleeve",
+    "right_sleeve",
+    "left_pants_leg",
+    "right_pants_leg",
+    "hat",
+];
+/// The keys `Mob.addAdditionalSaveData` writes.
+const MOB_ONLY_KEYS: [&str; 10] = [
+    "NoAI",
+    "PersistenceRequired",
+    "CanPickUpLoot",
+    "LeftHanded",
+    "drop_chances",
+    "leash",
+    "home_radius",
+    "home_pos",
+    "DeathLootTable",
+    "DeathLootTableSeed",
+];
 /// `AttributeMap.pack` for the attributes with a base or permanent modifier
 /// finalizeSpawn set, over the saved list.
 fn put_attributes(map: &mut Compound, m: &Mob, a: &crate::mobs::finalize::Attributes) {
@@ -1606,6 +1695,68 @@ fn put_attributes(map: &mut Compound, m: &Mob, a: &crate::mobs::finalize::Attrib
         }
     }
     map.insert("attributes".into(), Tag::List(list));
+}
+/// `AttributeMap.pack` of a sulfur cube's body archetype attributes: the
+/// base and permanent modifiers of each instance its own map holds (the
+/// archetype's transient modifiers are not saved).
+fn put_sulfur_attributes(map: &mut Compound, m: &Mob) {
+    use horizon_world::attributes::Operation;
+    if m.species() != crate::mobs::Species::SulfurCube {
+        return;
+    }
+    let Some(attributes) = m.extra.armor_attributes.as_deref() else {
+        return;
+    };
+    let mut list = match map.get(&"attributes".into()) {
+        Some(Tag::List(l)) => l.clone(),
+        _ => Vec::new(),
+    };
+    let mut changed = false;
+    for id in crate::mobs::sulfur_cube::ARCHETYPE_ATTRIBUTES {
+        let Some(instance) = attributes
+            .catalog()
+            .id(id)
+            .and_then(|k| attributes.instance(k))
+        else {
+            continue;
+        };
+        let packed = instance.pack();
+        let mut entry = vec![
+            ("id", string(id)),
+            ("base", Tag::Double(packed.base.to_bits())),
+        ];
+        if !packed.modifiers.is_empty() {
+            let modifiers = packed
+                .modifiers
+                .iter()
+                .map(|x| {
+                    let op = match x.operation() {
+                        Operation::AddValue => "add_value",
+                        Operation::AddMultipliedBase => "add_multiplied_base",
+                        Operation::AddMultipliedTotal => "add_multiplied_total",
+                    };
+                    Tag::compound([
+                        ("id", string(x.id())),
+                        ("amount", Tag::Double(x.amount().to_bits())),
+                        ("operation", string(op)),
+                    ])
+                })
+                .collect();
+            entry.push(("modifiers", Tag::List(modifiers)));
+        }
+        let entry = Tag::compound(entry);
+        match list
+            .iter_mut()
+            .find(|t| text(t.get("id")).as_deref() == Some(id))
+        {
+            Some(t) => *t = entry,
+            None => list.push(entry),
+        }
+        changed = true;
+    }
+    if changed {
+        map.insert("attributes".into(), Tag::List(list));
+    }
 }
 /// `Brain.Packed`: the memories finalizeSpawn set, over the saved ones.
 pub fn put_brain(map: &mut Compound, m: &Mob, dimension: &str) {
@@ -1895,6 +2046,21 @@ pub fn mob_from_nbt(
             Some("sleeping") => crate::pose::Pose::Sleeping,
             _ => crate::pose::Pose::Standing,
         };
+        // `HumanoidArm.CODEC`, right when absent or not an arm.
+        m.extra.main_hand_left = text(tag.get("main_hand")).as_deref() == Some("left");
+        // `LAYERS_CODEC`: every listed part hidden; an entry that is not a
+        // part fails the whole list, which reads as `ALL_LAYERS` (none hidden).
+        m.extra.hidden_model_parts = match tag.get("hidden_layers") {
+            Some(Tag::List(parts)) => parts
+                .iter()
+                .try_fold(0u8, |mask, part| {
+                    let name = text(Some(part))?;
+                    let bit = MODEL_PARTS.iter().position(|p| *p == name)?;
+                    Some(mask | 1 << bit)
+                })
+                .unwrap_or(0),
+            _ => 0,
+        };
         m.extra.immovable = flag(tag, "immovable");
         m.extra.description = if flag(tag, "hide_description") {
             crate::mobs::MannequinDescription::Hidden
@@ -1944,7 +2110,12 @@ pub fn mob_from_nbt(
             };
             let effect = crate::brewing::namespaced(def.id);
             let duration = number(e.get("duration")).unwrap_or(0) as i32;
-            let amplifier = number(e.get("amplifier")).unwrap_or(0) as i32;
+            // `MobEffectInstance.Details`: Codec.BYTE uses boxed Number.byteValue,
+            // then UNSIGNED_BYTE interprets the resulting byte as 0..255.
+            let amplifier = e
+                .get("amplifier")
+                .and_then(horizon_world::datafix::dynamic::as_number)
+                .map_or(0, |n| i32::from(n.byte_value() as u8));
             m.extra.effects.retain(|x| x.0 != effect);
             m.extra.effects.push((effect, duration, amplifier));
             // Details.CODEC: `show_particles` defaults to true.
@@ -1957,6 +2128,12 @@ pub fn mob_from_nbt(
             if number(e.get("ambient")).is_some_and(|a| a != 0) {
                 m.extra.ambient_effects.push(effect);
             }
+            m.set_effect_fallback(
+                effect,
+                e.get("hidden_effect")
+                    .and_then(|h| mob_hidden_effect(h, effect))
+                    .map(Box::new),
+            );
         }
     }
     m.silent = flag(tag, "Silent");
@@ -2488,6 +2665,14 @@ pub fn mob_from_nbt(
     }
     crate::mobs::raider::read_nbt(&mut m, tag);
     crate::mobs::riders::read_nbt(&mut m, tag);
+    // A mannequin is an `Avatar`, not a `Mob`: it reads none of
+    // `Mob.readAdditionalSaveData`'s flags, after the common reads above.
+    if m.species() == crate::mobs::Species::Mannequin {
+        m.persistent = false;
+        m.extra.pick_up_loot = false;
+        m.extra.left_handed = false;
+        m.no_ai = false;
+    }
     // A mob saved mid-death finishes dying; one saved dead is dropped.
     if m.health <= 0.0 && m.death_time == 0 {
         return None;
@@ -2645,6 +2830,28 @@ pub fn evoker_fangs_to_nbt(
 fn item_uuid_from_tag(tag: Option<&Tag>) -> Option<[i32; 4]> {
     let values = horizon_world::datafix::dynamic::as_int_stream(tag)?;
     values.get(..4)?.try_into().ok()
+}
+
+/// The `Entity` fields a saved non-mob entity carries (`Base::tag`), for a
+/// caller that writes its own kind's fields around them.
+pub fn entity_base_tag(
+    id: &str,
+    position: Vec3,
+    motion: Vec3,
+    rotation: [f32; 2],
+    uuid: [i32; 4],
+    raw: Option<&Tag>,
+) -> Tag {
+    Base {
+        id,
+        uuid,
+        position,
+        motion,
+        rotation,
+        on_ground: raw.is_some_and(|t| flag(t, "OnGround")),
+        fall_distance: 0.0,
+    }
+    .tag(raw)
 }
 
 /// `ItemEntity.readAdditionalSaveData`: Health uses NumericTag's short conversion;
@@ -9397,6 +9604,292 @@ mod carrier_inventory_tests {
                 .get("Inventory")
                 .is_none()
         );
+    }
+}
+
+/// Added controls (H192): the sulfur cube's saved archetype attributes are
+/// its map's base and permanent modifiers, replacing a stale entry of the
+/// same id once, never its transient modifiers.
+#[cfg(test)]
+mod sulfur_attribute_save_tests {
+    use super::*;
+    use horizon_world::attributes::{Modifier, Operation};
+
+    #[test]
+    fn the_save_writes_base_and_permanent_modifiers_and_replaces_stale_entries() {
+        let mut m = crate::mobs::sulfur_cube::adopt_body_tests::cube(None);
+        let map = m.extra.armor_attributes.as_deref_mut().unwrap();
+        let kr = map.catalog().id("minecraft:knockback_resistance").unwrap();
+        let friction = map.catalog().id("minecraft:friction_modifier").unwrap();
+        map.edit(kr, |i, o| {
+            i.set_base_value(0.5, o).unwrap();
+            i.add_permanent(
+                Modifier::new(
+                    "minecraft:bouncy_add_knockback_resistance",
+                    0.25,
+                    Operation::AddValue,
+                )
+                .unwrap(),
+                o,
+            )
+            .unwrap();
+            // The archetype's transient modifier of the same id shadows it.
+            i.add_or_update_transient(
+                Modifier::new(
+                    "minecraft:bouncy_add_knockback_resistance",
+                    -2.0,
+                    Operation::AddValue,
+                )
+                .unwrap(),
+                o,
+            )
+            .unwrap();
+        });
+        map.edit(friction, |i, o| {
+            i.add_or_update_transient(
+                Modifier::new(
+                    "minecraft:bouncy_mul_friction_modifier",
+                    -0.7,
+                    Operation::AddMultipliedTotal,
+                )
+                .unwrap(),
+                o,
+            )
+            .unwrap();
+        });
+        let stale =
+            |id: &str| Tag::compound([("id", string(id)), ("base", Tag::Double(9.0f64.to_bits()))]);
+        let mut nbt = Compound::new();
+        nbt.insert(
+            "attributes".into(),
+            Tag::List(vec![
+                stale("minecraft:max_health"),
+                stale("minecraft:knockback_resistance"),
+            ]),
+        );
+        put_sulfur_attributes(&mut nbt, &m);
+        let Some(Tag::List(list)) = nbt.get(&"attributes".into()) else {
+            panic!("no attributes");
+        };
+        let ids: Vec<_> = list.iter().map(|t| text(t.get("id")).unwrap()).collect();
+        assert_eq!(
+            ids,
+            [
+                "minecraft:max_health",
+                "minecraft:knockback_resistance",
+                "minecraft:friction_modifier"
+            ]
+        );
+        let base = |t: &Tag| match t.get("base") {
+            Some(Tag::Double(b)) => f64::from_bits(*b),
+            other => panic!("base {other:?}"),
+        };
+        assert_eq!(base(&list[0]), 9.0);
+        assert_eq!(base(&list[1]), 0.5);
+        let Some(Tag::List(modifiers)) = list[1].get("modifiers") else {
+            panic!("no modifiers");
+        };
+        assert_eq!(modifiers.len(), 1);
+        assert_eq!(
+            modifiers[0].get("amount"),
+            Some(&Tag::Double(0.25f64.to_bits()))
+        );
+        assert_eq!(
+            text(modifiers[0].get("operation")).as_deref(),
+            Some("add_value")
+        );
+        // Friction holds only a transient modifier: its base, no modifiers.
+        assert_eq!(base(&list[2]), 1.0);
+        assert!(list[2].get("modifiers").is_none());
+    }
+
+    #[test]
+    fn another_species_map_is_not_saved_by_the_bridge() {
+        let mut m = crate::mobs::sulfur_cube::adopt_body_tests::cube(None);
+        std::sync::Arc::make_mut(&mut m.kind).species = crate::mobs::Species::Slime;
+        let map = m.extra.armor_attributes.as_deref_mut().unwrap();
+        let kr = map.catalog().id("minecraft:knockback_resistance").unwrap();
+        map.edit(kr, |i, o| i.set_base_value(0.5, o).unwrap());
+        let mut nbt = Compound::new();
+        put_sulfur_attributes(&mut nbt, &m);
+        assert!(!nbt.contains_key(&"attributes".into()));
+    }
+}
+
+#[cfg(test)]
+mod mob_hidden_speed_tests {
+    use super::*;
+    use crate::mobs::{Species, sensor_scan_tests::kind};
+    fn types() -> HashMap<String, Arc<MobType>> {
+        let mut pig = (*kind()).clone();
+        pig.id = "minecraft:pig".into();
+        pig.species = Species::Pig;
+        HashMap::from([("minecraft:pig".to_owned(), Arc::new(pig))])
+    }
+    fn saved(m: &Mob) -> Tag {
+        mob_to_nbt(m, [202, 0, 0, 1], None, None, |_| None)
+    }
+    #[test]
+    fn loaded_speed_fallback_survives_a_no_raw_save() {
+        let input = horizon_world::nbt::parse_snbt(r#"{id:"minecraft:pig",UUID:[I;202,0,0,1],Pos:[2.5d,200d,4.5d],Health:10f,NoAI:1b,NoGravity:1b,active_effects:[{id:"minecraft:speed",amplifier:1b,duration:40,show_icon:1b,hidden_effect:{duration:200,ambient:1b,show_particles:0b,show_icon:0b}}]}"#).unwrap().0;
+        let m = mob_from_nbt(&input, &types(), 7, None).unwrap();
+        assert_eq!(m.id, 7);
+        assert_eq!(m.kind.id, "minecraft:pig");
+        assert!(m.no_ai && m.no_gravity);
+        assert_eq!(m.health, 10.0);
+        assert_eq!(m.extra.effects, [("minecraft:speed", 40, 1)]);
+        let tag = saved(&m);
+        let hidden = tag
+            .get("active_effects")
+            .and_then(|t| match t {
+                Tag::List(v) => v.first(),
+                _ => None,
+            })
+            .and_then(|e| e.get("hidden_effect"));
+        assert_eq!(
+            hidden.and_then(|t| t.get("duration")),
+            Some(&Tag::Int(200)),
+            "real decoder must retain weaker duration without raw input"
+        );
+    }
+    // Added after the frozen old proof: modeled mutation and stale raw controls.
+    #[test]
+    fn fallback_model_wins_over_stale_raw_and_clears_without_resurrection() {
+        let input = horizon_world::nbt::parse_snbt(r#"{id:"minecraft:pig",Pos:[2.5d,200d,4.5d],Tags:["untouched"],active_effects:[{id:"minecraft:speed",amplifier:1b,duration:40,hidden_effect:{duration:200,ambient:1b,show_particles:0b,show_icon:0b}}]}"#).unwrap().0;
+        let mut m = mob_from_nbt(&input, &types(), 7, None).unwrap();
+        let h = &m.extra.effect_fallbacks[0];
+        assert_eq!(
+            (
+                h.id,
+                h.duration,
+                h.amplifier,
+                h.ambient,
+                h.visible,
+                h.show_icon
+            ),
+            ("minecraft:speed", 200, 0, true, false, false)
+        );
+        m.extra.effect_fallbacks[0].duration = 123;
+        m.extra.effects[0].1 = 30;
+        let actual = mob_to_nbt(&m, [202, 0, 0, 1], Some(&input), None, |_| None);
+        let first = |t: &Tag| match t.get("active_effects").unwrap() {
+            Tag::List(v) => v[0].clone(),
+            _ => panic!(),
+        };
+        assert_eq!(first(&actual).get("duration"), Some(&Tag::Int(30)));
+        assert_eq!(
+            first(&actual).get("hidden_effect").unwrap().get("duration"),
+            Some(&Tag::Int(123))
+        );
+        assert_eq!(actual.get("Tags"), input.get("Tags"));
+        m.extra.effect_fallbacks.clear();
+        for raw in [None, Some(&input)] {
+            let actual = mob_to_nbt(&m, [202, 0, 0, 1], raw, None, |_| None);
+            assert!(first(&actual).get("hidden_effect").is_none());
+        }
+    }
+}
+
+#[cfg(test)]
+mod mob_effect_amplifier_codec {
+    use super::*;
+
+    fn types() -> HashMap<String, Arc<MobType>> {
+        let kind = crate::mobs::sensor_scan_tests::kind();
+        HashMap::from([(kind.id.clone(), kind)])
+    }
+
+    fn input(amplifier: Option<Tag>) -> Tag {
+        let mut effect = Tag::compound([
+            ("id", string("minecraft:night_vision")),
+            ("duration", Tag::Int(200)),
+            ("ambient", Tag::Byte(1)),
+            ("show_particles", Tag::Byte(0)),
+            ("show_icon", Tag::Byte(0)),
+        ]);
+        if let Some(value) = amplifier {
+            put(&mut effect, "amplifier", value);
+        }
+        Tag::compound([
+            ("id", string("minecraft:cow")),
+            ("Pos", doubles(&[6.5, 200.0, 6.5])),
+            ("Health", Tag::Float(10.0f32.to_bits())),
+            ("NoAI", Tag::Byte(1)),
+            ("NoGravity", Tag::Byte(1)),
+            ("Tags", Tag::List(vec![string("amplifier-control")])),
+            ("active_effects", Tag::List(vec![effect])),
+        ])
+    }
+
+    fn saved_effect(tag: &Tag) -> &Tag {
+        let Some(Tag::List(effects)) = tag.get("active_effects") else {
+            panic!("actual effect missing: {tag:?}");
+        };
+        assert_eq!(effects.len(), 1);
+        &effects[0]
+    }
+
+    #[test]
+    fn decoded_numeric_amplifiers_roundtrip_without_raw_input() {
+        let cases = [
+            (None, 0),
+            (Some(Tag::Byte(0)), 0),
+            (Some(Tag::Int(1)), 1),
+            (Some(Tag::Byte(127)), 127),
+            (Some(Tag::Byte(-128)), 128),
+            (Some(Tag::Byte(-1)), 255),
+            (Some(Tag::Int(256)), 0),
+            (Some(Tag::Int(-1)), 255),
+            (Some(Tag::Long(9007199254740993)), 1),
+            (Some(Tag::Long(-4294967297)), 255),
+            (Some(Tag::Float(1.75f32.to_bits())), 1),
+            (Some(Tag::Float((-0.5f32).to_bits())), 0),
+            (Some(Tag::Double((-1.75f64).to_bits())), 255),
+            (Some(Tag::Double(256.75f64.to_bits())), 0),
+            (Some(Tag::Double(1e20f64.to_bits())), 255),
+            (Some(Tag::Double((-1e20f64).to_bits())), 0),
+        ];
+        let types = types();
+        for (value, expected) in cases {
+            let raw = input(value.clone());
+            let mob = mob_from_nbt(&raw, &types, 7, None).unwrap();
+            assert_eq!(
+                mob.extra.effects,
+                [("minecraft:night_vision", 200, expected)],
+                "{value:?}"
+            );
+            for source in [None, Some(&raw)] {
+                let saved = mob_to_nbt(&mob, [158, 0, 0, 1], source, None, |_| None);
+                let effect = saved_effect(&saved);
+                let expected_tag = (expected != 0).then_some(Tag::Byte(expected as u8 as i8));
+                assert_eq!(effect.get("amplifier"), expected_tag.as_ref(), "{value:?}");
+                assert_eq!(effect.get("duration"), Some(&Tag::Int(200)));
+                assert_eq!(effect.get("ambient"), Some(&Tag::Byte(1)));
+                assert_eq!(effect.get("show_particles"), Some(&Tag::Byte(0)));
+                assert_eq!(effect.get("show_icon"), Some(&Tag::Byte(0)));
+                let back = mob_from_nbt(&saved, &types, 8, None).unwrap();
+                assert_eq!(back.extra.effects, mob.extra.effects);
+            }
+        }
+    }
+
+    #[test]
+    fn modeled_amplifier_mutation_overrides_stale_raw_and_omits_zero() {
+        let raw = input(Some(Tag::Byte(12)));
+        let mut mob = mob_from_nbt(&raw, &types(), 7, None).unwrap();
+        for amplifier in [0, 128, 255, 1] {
+            mob.extra.effects[0].2 = amplifier;
+            for source in [None, Some(&raw)] {
+                let saved = mob_to_nbt(&mob, [158, 0, 0, 2], source, None, |_| None);
+                let expected = (amplifier != 0).then_some(Tag::Byte(amplifier as u8 as i8));
+                assert_eq!(saved_effect(&saved).get("amplifier"), expected.as_ref());
+                assert_eq!(saved.get("Health"), Some(&Tag::Float(10.0f32.to_bits())));
+                assert_eq!(saved.get("NoAI"), Some(&Tag::Byte(1)));
+                if source.is_some() {
+                    assert_eq!(saved.get("Tags"), raw.get("Tags"));
+                }
+            }
+        }
     }
 }
 

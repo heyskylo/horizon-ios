@@ -96,6 +96,8 @@ pub(in crate::game) struct OtherEntity {
     pub yaw: f32,
     pub pitch: f32,
     pub item_transformation: Option<super::native_entities::ItemDisplayTransformation>,
+    /// Only explicitly loaded leash knots own this BlockAttachedEntity check counter.
+    pub knot_check: Option<u8>,
 }
 pub(super) fn err(key: &str, args: &[&dyn std::fmt::Display]) -> CommandError {
     CommandError::tr(key, args)
@@ -2805,8 +2807,20 @@ impl Game<'_> {
     /// destroy event, the block's drops without a tool or breaker, then its
     /// fluid's block, the block entity spilling its contents on the way.
     pub(super) fn destroy_block_dropping(&mut self, pos: [i32; 3]) -> R<()> {
+        self.destroy_block_dropping_with_breaker(pos, false)
+    }
+    /// `Level.destroyBlock` with entity presence for the direct target's loot.
+    /// The context belongs to this level call and cannot reach later destroys.
+    pub(super) fn destroy_block_dropping_with_breaker(
+        &mut self,
+        pos: [i32; 3],
+        breaker: bool,
+    ) -> R<()> {
         let at = horizon_core::position::BlockPos::new(pos[0], pos[1], pos[2]);
-        self.with_level(|b, level, ticks| b.destroy_block(level, ticks, at, true));
+        self.with_level(|b, level, ticks| {
+            level.drop_breaker_at = breaker.then_some(at);
+            b.destroy_block(level, ticks, at, true)
+        });
         self.process_level_events()
             .map_err(|e| CommandError::new(Text::literal(e.to_string())))
     }
@@ -3024,6 +3038,12 @@ impl Game<'_> {
             ctx.has("strict"),
             ctx.has("keep"),
         );
+        let normalize_note = !strict
+            && self
+                .res
+                .behaviours()
+                .data(state)
+                .is(horizon_world::level::classes::Class::Note);
         let mut count = 0;
         // Whether the filter takes a state, worked out once per state: a fill visits up to 32768 blocks of a handful
         // of states, and matching a tag is a name lookup.
@@ -3038,7 +3058,9 @@ impl Game<'_> {
                         continue;
                     }
                     // Already the block it would become: nothing to place (place_state would do nothing either).
-                    if plain && current == state {
+                    // `BlockInput.place` can change a note's instrument even
+                    // when the raw input equals the current state.
+                    if plain && current == state && !normalize_note {
                         continue;
                     }
                     if let Some(f) = &filter {
@@ -3080,6 +3102,11 @@ impl Game<'_> {
                         air
                     } else {
                         state
+                    };
+                    let target = if normalize_note && target == state {
+                        self.block_input_state([x, y, z], &block, target, strict)?
+                    } else {
+                        target
                     };
                     if self.place_state([x, y, z], target, strict)? || affected {
                         count += 1;
@@ -3734,6 +3761,46 @@ impl Game<'_> {
                                 horizon_world::nbt::Tag::Int(i) => n == i64::from(*i),
                                 _ => false,
                             }
+                        }
+                        // `MinMaxBounds.Ints.matches`: DamagePredicate's damage-only
+                        // Int bounds shape; effective DAMAGE presence is required.
+                        // Other fields keep the entire existing predicate path.
+                        ("minecraft:damage", Some(ref v))
+                            if matches!(v, horizon_world::nbt::Tag::Compound(c) if c.len() == 1)
+                                && match v.get("damage") {
+                                    Some(horizon_world::nbt::Tag::Int(_)) => true,
+                                    Some(horizon_world::nbt::Tag::Compound(bounds)) => {
+                                        bounds.iter().all(|(key, value)| {
+                                            matches!(key.to_string_lossy().as_str(), "min" | "max")
+                                                && matches!(value, horizon_world::nbt::Tag::Int(_))
+                                        })
+                                    }
+                                    _ => false,
+                                } =>
+                        {
+                            let removed = stack
+                                .data()
+                                .is_some_and(|data| data.other("!minecraft:damage").is_some());
+                            let has_damage = !removed
+                                && (present.is_some()
+                                    || self.items().get(&stack.item).is_some_and(|item| {
+                                        item.components.iter().any(|c| c == "minecraft:damage")
+                                    }));
+                            let n = i64::from(stack.damage);
+                            has_damage
+                                && match v.get("damage").unwrap() {
+                                    horizon_world::nbt::Tag::Int(exact) => n == i64::from(*exact),
+                                    bounds => {
+                                        let get = |key| match bounds.get(key) {
+                                            Some(horizon_world::nbt::Tag::Int(value)) => {
+                                                Some(i64::from(*value))
+                                            }
+                                            _ => None,
+                                        };
+                                        get("min").is_none_or(|min| n >= min)
+                                            && get("max").is_none_or(|max| n <= max)
+                                    }
+                                }
                         }
                         (_, Some(v)) => present.is_some_and(|have| {
                             horizon_client::nbt_path::compare_nbt(&v, Some(have))
@@ -5125,6 +5192,303 @@ mod forced_respawn_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod fill_note_instrument_tests {
+    use super::*;
+    use crate::game::{Audio, Options, Progress, Settings, load_resources};
+    use horizon_client::{chunk::Chunk, motion::PlayerMotion};
+    use horizon_core::position::ChunkPos;
+    use std::sync::Arc;
+    fn with_game(test: impl FnOnce(&mut Game<'_>)) {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.game_dir = Some(
+            std::path::PathBuf::from(std::env::var_os("HORIZON_HOME").unwrap())
+                .join(format!("h164-{:?}", std::thread::current().id())),
+        );
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        game.set_allow_commands(true);
+
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap());
+        game.creative = true;
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("tick freeze"));
+        assert!(game.run_command("fill 0 198 0 15 199 15 stone"));
+        test(&mut game);
+    }
+
+    fn instrument(game: &Game<'_>, x: i32, z: i32) -> String {
+        let state = game
+            .pack
+            .assets
+            .registry
+            .state(game.world.block(x, 200, z))
+            .unwrap();
+        assert_eq!(state.name, "minecraft:note_block");
+        state.properties["instrument"].clone()
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn ordinary_fill_normalizes_a_note_block_against_real_stone() {
+        with_game(|game| {
+            let clock = game.world.game_time;
+            assert!(
+                game.world.chunks.contains_key(&(0, 0)),
+                "actual fill chunk is resident"
+            );
+            assert!(game.run_command("execute if block 4 199 4 stone"));
+            assert!(game.run_command("execute if block 4 200 4 air"));
+            assert!(game.run_command("setblock 8 200 4 note_block"));
+            assert_eq!(
+                instrument(game, 8, 4),
+                "basedrum",
+                "positive setblock counterpart"
+            );
+            assert!(game.run_command("fill 4 200 4 4 200 4 note_block"));
+            assert_eq!(
+                instrument(game, 4, 4),
+                "basedrum",
+                "actual registered fill must normalize instrument"
+            );
+            assert!(game.run_command("execute if block 4 200 4 note_block[note=0,powered=false]"));
+            assert_eq!(game.world.game_time, clock);
+        });
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn an_existing_default_state_does_not_skip_note_normalization() {
+        with_game(|game| {
+            let clock = game.world.game_time;
+            assert!(game.run_command("setblock 4 200 4 note_block strict"));
+            assert_eq!(instrument(game, 4, 4), "harp");
+            assert!(
+                game.run_command("fill 4 200 4 4 200 4 note_block"),
+                "valid fill changes existing harp to basedrum"
+            );
+            assert_eq!(instrument(game, 4, 4), "basedrum");
+            assert_eq!(game.world.game_time, clock);
+        });
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn strict_explicit_and_filtered_out_inputs_keep_their_existing_contracts() {
+        with_game(|game| {
+            let clock = game.world.game_time;
+            assert!(game.run_command("fill 4 200 4 4 200 4 note_block strict"));
+            assert_eq!(instrument(game, 4, 4), "harp");
+            assert!(game.run_command("fill 8 200 4 8 200 4 note_block[instrument=banjo,note=7]"));
+            assert_eq!(instrument(game, 8, 4), "banjo");
+            assert!(game.run_command("execute if block 8 200 4 note_block[note=7,powered=false]"));
+            assert!(game.run_command("fill 12 200 4 12 200 4 note_block[instrument=harp,note=7]"));
+            assert_eq!(instrument(game, 12, 4), "harp");
+            assert!(!game.run_command("fill 4 200 4 4 200 4 note_block[instrument=banjo] keep"));
+            assert!(
+                !game
+                    .run_command("fill 4 200 4 4 200 4 note_block[instrument=banjo] replace glass")
+            );
+            assert_eq!(instrument(game, 4, 4), "harp");
+            assert_eq!(game.world.game_time, clock);
+        });
+    }
+}
+
+#[cfg(test)]
+mod item_damage_range_tests {
+    use super::super::native_machines::tests::server_game;
+    use super::*;
+    use horizon_core::position::BlockPos;
+
+    #[test]
+    #[ignore = "needs prepared resources and scratch homes/cwd"]
+    fn actual_chest_damage_range_uses_live_damage_and_effective_presence() {
+        let mut game = server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.block_ticks
+            .add_empty_chunk(BlockPos::new(0, 0, 0).chunk())
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("setblock 4 199 4 stone"));
+        assert!(game.run_command(r#"setblock 4 200 4 chest{Items:[{Slot:0b,id:"minecraft:diamond_sword",count:1,components:{"minecraft:custom_data":{marker:195}}},{Slot:1b,id:"minecraft:diamond_sword",count:1,components:{"minecraft:damage":3,"minecraft:custom_data":{marker:195}}},{Slot:2b,id:"minecraft:diamond_sword",count:1,components:{"minecraft:damage":4,"minecraft:custom_data":{marker:195}}},{Slot:3b,id:"minecraft:diamond_sword",count:1,components:{"minecraft:damage":5,"minecraft:custom_data":{marker:195}}},{Slot:4b,id:"minecraft:stone",count:1,components:{"minecraft:custom_data":{marker:195}}},{Slot:5b,id:"minecraft:diamond_sword",count:1,components:{"!minecraft:damage":{},"minecraft:custom_data":{marker:195}}}]}"#));
+        assert!(game.run_command("scoreboard objectives add h195 dummy"));
+        assert!(game.world.loaded(4, 4));
+        assert!(game.run_command("execute if block 4 199 4 stone"));
+        let clock = game.world.game_time;
+        let stacks = match game.world.block_entities.get(&(4, 200, 4)).unwrap() {
+            horizon_client::containers::BlockEntity::Chest(slots) => slots.clone(),
+            _ => panic!("actual loaded chest missing"),
+        };
+        for (slot, damage) in [0, 3, 4, 5, 0, 0].into_iter().enumerate() {
+            let stack = stacks[slot].as_ref().unwrap();
+            assert_eq!(stack.damage, damage);
+            assert_eq!(stack.count, 1);
+            assert_eq!(
+                &*stack.item,
+                if slot == 4 {
+                    "minecraft:stone"
+                } else {
+                    "minecraft:diamond_sword"
+                }
+            );
+            assert_eq!(
+                stack.custom_data().unwrap().get(&"marker".into()),
+                Some(&horizon_world::nbt::Tag::Int(195))
+            );
+            assert!(game.run_command(&format!(
+                "execute if items block 4 200 4 container.{slot} {}",
+                stack.item
+            )));
+        }
+        assert!(stacks[6].is_none());
+        assert!(
+            game.items()
+                .get("minecraft:diamond_sword")
+                .unwrap()
+                .components
+                .iter()
+                .any(|c| c == "minecraft:damage")
+        );
+        assert!(
+            !game
+                .items()
+                .get("minecraft:stone")
+                .unwrap()
+                .components
+                .iter()
+                .any(|c| c == "minecraft:damage")
+        );
+        let removed =
+            horizon_client::item_data::encode_components(stacks[5].as_ref().unwrap()).unwrap();
+        assert!(
+            removed.get("!minecraft:damage").is_some(),
+            "actual removal patch must survive load before evaluating it"
+        );
+        assert!(game.run_command(
+            "execute unless data block 4 200 4 Items[{Slot:0b}].components.\"minecraft:damage\""
+        ));
+        assert!(game.run_command(
+            "execute if data block 4 200 4 Items[{Slot:2b,components:{\"minecraft:damage\":4}}]"
+        ));
+        assert!(game.run_command(
+            "execute if data block 4 200 4 Items[{Slot:5b}].components.\"!minecraft:damage\""
+        ));
+        let mut cases = Vec::new();
+        for (slot, damage) in [(1, 3), (2, 4), (3, 5)] {
+            for (shape, expected) in [
+                ("4", damage == 4),
+                ("{min:4}", damage >= 4),
+                ("{max:4}", damage <= 4),
+                ("{min:3,max:4}", (3..=4).contains(&damage)),
+            ] {
+                cases.push((
+                    slot,
+                    format!("minecraft:damage~{{damage:{shape}}}"),
+                    expected,
+                ));
+            }
+        }
+        cases.extend([
+            (0, "damage~{damage:0}".into(), true),
+            (0, "damage~{damage:{min:1}}".into(), false),
+            (4, "damage~{damage:0}".into(), false),
+            (5, "damage~{damage:0}".into(), false),
+            (2, "!damage~{damage:4}".into(), false),
+            (1, "!damage~{damage:4}".into(), true),
+            (1, "damage=3".into(), true),
+            (1, "damage=4".into(), false),
+            (1, "count~1".into(), true),
+            (1, "custom_data~{marker:195}".into(), true),
+        ]);
+        let mut mismatches = Vec::new();
+        for (slot, term, expected) in cases {
+            let stack = stacks[slot].as_ref().unwrap();
+            let predicate = ItemInput {
+                id: stack.item.to_string(),
+                tag: false,
+                any: false,
+                components: Some(format!("[{term}]")),
+            };
+            let actual = game.stack_matches(&predicate, stack);
+            if actual != expected {
+                mismatches.push(format!(
+                    "direct slot{slot} {term}: {actual}, expected{expected}"
+                ));
+            }
+            assert!(game.run_command("scoreboard players set #r h195 91"));
+            assert!(game.run_command("scoreboard players set #s h195 17"));
+            let command = format!(
+                "execute store result score #r h195 store success score #s h195 if items block 4 200 4 container.{slot} {}[{term}]",
+                stack.item
+            );
+            game.run_command(&command);
+            let r = game.score.board.score("#r", "h195").map(|s| s.value);
+            let s = game.score.board.score("#s", "h195").map(|s| s.value);
+            if (r, s) != (Some(i32::from(expected)), Some(i32::from(expected))) {
+                mismatches.push(format!("command {term}: {r:?}/{s:?}, expected{expected}"));
+            }
+            assert!(game.run_command("scoreboard players set #branch h195 23"));
+            game.run_command(&format!("execute unless items block 4 200 4 container.{slot} {}[{term}] run scoreboard players set #branch h195 7",stack.item));
+            let branch = game.score.board.score("#branch", "h195").map(|s| s.value);
+            if branch != Some(if expected { 23 } else { 7 }) {
+                mismatches.push(format!("unless {term}: {branch:?}"));
+            }
+        }
+        assert!(!game.run_command(
+            "execute if items block 4 200 4 container.4 diamond_sword[damage~{damage:4}]"
+        ));
+        assert!(!game.run_command(
+            "execute if items block 4 200 4 container.6 diamond_sword[damage~{damage:4}]"
+        ));
+        let actual = match game.world.block_entities.get(&(4, 200, 4)).unwrap() {
+            horizon_client::containers::BlockEntity::Chest(slots) => slots,
+            _ => panic!("source chest changed"),
+        };
+        assert_eq!(
+            actual, &stacks,
+            "queries must leave the authoritative loaded stacks unchanged"
+        );
+        assert_eq!(game.world.game_time, clock);
+        assert!(
+            mismatches.is_empty(),
+            "damage-only command predicate mismatches: {mismatches:#?}"
+        );
     }
 }
 

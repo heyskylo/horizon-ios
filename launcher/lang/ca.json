@@ -1251,5 +1251,9 @@
   "Buy": "Compra",
   "Gift": "Regala",
   "Found on this computer": "Trobats en aquest ordinador",
-  "Looks": "Estils"
+  "Looks": "Estils",
+  "Your system keyring didn't answer within {seconds} seconds. Make sure it is running and unlocked, then restart the launcher.": "L'anell de claus del sistema no ha respost en {seconds} segons. Comprova que funciona i que està desbloquejat i després reinicia el llançador.",
+  "Can't read {name}'s sign-in: {why}": "No es pot llegir l'inici de sessió de {name}: {why}",
+  "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.": "Horizon runs a data pack's functions, function tags, predicates, item modifiers, recipes, loot tables, advancements, villager trades, damage types, most tags and most worldgen (biomes, features, structures, dimensions). Other files, such as world presets, are not read yet.",
+  "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}.": "{title} would change nothing in Horizon yet: Horizon doesn't read its {files}."
 }

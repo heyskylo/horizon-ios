@@ -170,7 +170,6 @@ pub const DROPPED_COMPONENTS: &[(u16, &str)] = &[
     (16, "minecraft:hide_tooltip"),
     (35, "minecraft:map_color"),
 ];
-
 /// Stand-ins for pinned block states 1.21.3 lacks, in the pinned numbering.
 #[rustfmt::skip]
 pub const BLOCK_STATE_SUBSTITUTES: &[(u16, u16, u16)] = &[
@@ -187,7 +186,6 @@ pub const BLOCK_STATE_SUBSTITUTES: &[(u16, u16, u16)] = &[
     (18307, 15322, 6), (18313, 15322, 6), (18319, 15322, 6), (18325, 15322, 6), (18331, 15322, 6), (18337, 15322, 6), (18343, 15322, 6), (18349, 15322, 6),
     (18355, 15322, 6), (18361, 15322, 6), (18367, 15322, 6), (18373, 15322, 6), (18379, 15322, 6), (18385, 15322, 6), (18391, 15322, 6), (18397, 15322, 6),
 ];
-
 /// Stand-ins for pinned `minecraft:block` entries 1.21.3 lacks, in the pinned numbering.
 #[rustfmt::skip]
 pub const BLOCK_SUBSTITUTES: &[(u16, u16, u16)] = &[
@@ -204,7 +202,6 @@ pub const BLOCK_SUBSTITUTES: &[(u16, u16, u16)] = &[
     (807, 678, 1), (808, 678, 1), (809, 678, 1), (810, 678, 1), (811, 678, 1), (812, 678, 1), (813, 678, 1), (814, 678, 1),
     (815, 678, 1),
 ];
-
 /// Stand-ins for pinned `minecraft:item` entries 1.21.3 lacks, in the pinned numbering.
 #[rustfmt::skip]
 pub const ITEM_SUBSTITUTES: &[(u16, u16, u16)] = &[
@@ -222,19 +219,16 @@ pub const ITEM_SUBSTITUTES: &[(u16, u16, u16)] = &[
     (1239, 1238, 1), (1240, 1238, 1), (1241, 1238, 1), (1242, 1238, 1), (1243, 1238, 1), (1244, 1238, 1), (1245, 1238, 1), (1246, 1238, 1),
     (1247, 1238, 1), (1248, 1238, 1), (1249, 1238, 1), (1250, 1238, 1), (1251, 1238, 1), (1252, 1238, 1), (1253, 1238, 1), (1254, 1238, 1),
 ];
-
 /// Stand-ins for pinned `minecraft:entity_type` entries 1.21.3 lacks, in the pinned numbering.
 #[rustfmt::skip]
 pub const ENTITY_TYPE_SUBSTITUTES: &[(u16, u16, u16)] = &[
     (106, 12, 2),
 ];
-
 /// Stand-ins for pinned `minecraft:particle_type` entries 1.21.3 lacks, in the pinned numbering.
 #[rustfmt::skip]
 pub const PARTICLE_TYPE_SUBSTITUTES: &[(u16, u16, u16)] = &[
     (43, 41, 1), (44, 41, 1), (45, 41, 1),
 ];
-
 /// Stand-ins for pinned `minecraft:sound_event` entries 1.21.3 lacks, in the pinned numbering.
 #[rustfmt::skip]
 pub const SOUND_EVENT_SUBSTITUTES: &[(u16, u16, u16)] = &[
