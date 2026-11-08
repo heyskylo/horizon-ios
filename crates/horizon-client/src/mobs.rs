@@ -2447,6 +2447,8 @@ pub struct SpawnSetup {
     pub owner_mob: Option<u32>,
     pub home: Option<[i32; 3]>,
     pub life: Option<i32>,
+    /// Whether to skip `finalizeSpawn`'s rolls (e.g. conversions or EntityType.create).
+    pub skip_finalize: bool,
 }
 /// A snapshot of another entity mobs can see this tick.
 #[derive(Clone, Debug)]
