@@ -208,7 +208,7 @@ where
         Ok(resolve_world_movement(
             self,
             MovementRequest {
-                entity: EntityIdentity(0),
+                entity: context.entity().unwrap_or(EntityIdentity(0)),
                 context,
                 bounds,
                 movement,
@@ -244,10 +244,23 @@ impl SceneCollisions<'_, '_> {
         on_ground: bool,
         border: Option<(&BorderGeometry, [f64; 2])>,
     ) -> Result<Vec3> {
+        self.resolve_in_border_with(bounds, movement, max_step, on_ground, border, &[])
+    }
+    /// [`Self::resolve_in_border`], also stopped by `entities`: the boxes
+    /// `EntityGetter.getEntityCollisions` gave the moving entity.
+    pub fn resolve_in_border_with(
+        self,
+        bounds: Aabb,
+        movement: Vec3,
+        max_step: f32,
+        on_ground: bool,
+        border: Option<(&BorderGeometry, [f64; 2])>,
+        entities: &[Aabb],
+    ) -> Result<Vec3> {
         let context = self.context(bounds);
         EntityCollisions {
             blocks: self,
-            entities: &[],
+            entities,
             border,
         }
         .resolve_with_context(bounds, movement, max_step, on_ground, context)
@@ -266,7 +279,7 @@ impl SceneCollisions<'_, '_> {
         Ok(resolve_world_movement(
             self,
             MovementRequest {
-                entity: EntityIdentity(0),
+                entity: context.entity().unwrap_or(EntityIdentity(0)),
                 context,
                 bounds,
                 movement,
@@ -287,6 +300,7 @@ impl SceneCollisions<'_, '_> {
         CollisionContext::for_entity(
             CollisionEntity {
                 identity: EntityIdentity(0),
+                kind: horizon_world::collision_context::EntityContextKind::Living,
                 y,
                 descending: false,
                 main_hand: Some(CollisionItem::EMPTY),
@@ -321,6 +335,26 @@ where
     W: BlockCollisionWorld<Error = E> + EntityMovementWorld<Error = E>,
 {
     no_collision_in(world, bounds, true)
+}
+/// `CollisionGetter.noCollision(entity, bounds)`: retain the real entity snapshot.
+pub fn no_collision_with_context<W, E>(
+    world: &mut W,
+    bounds: Aabb,
+    context: CollisionContext<'_>,
+) -> bool
+where
+    W: BlockCollisionWorld<Error = E> + EntityMovementWorld<Error = E>,
+{
+    no_world_collision(
+        world,
+        CollisionCheckRequest {
+            entity: context.entity().unwrap_or(EntityIdentity(0)),
+            context,
+            bounds,
+            candidate_budget: 1_000_000,
+        },
+    )
+    .unwrap_or(false)
 }
 fn no_collision_in<W, E>(world: &mut W, bounds: Aabb, fluids: bool) -> bool
 where

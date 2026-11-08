@@ -8,7 +8,7 @@
 //! exit portal, the egg and the next gateway; and its rendering and boss bar.
 use super::commands::Target;
 use super::{
-    Dim, Game,
+    Game,
     potions::{Victim, mob_can_be_affected},
 };
 use horizon_client::{
@@ -19,6 +19,7 @@ use horizon_client::{
     mobs::{Damage, DamageKind, Who},
     particles::{ParticleOptions, ParticleType},
     projectiles::ProjectileKind,
+    random_source,
     text::Text,
 };
 use horizon_core::position::BlockPos;
@@ -191,6 +192,20 @@ pub(super) struct Crystal {
     pub invulnerable: bool,
 }
 impl Crystal {
+    /// The start of `time` (the spin and bob) for a crystal at `position`: the random draw
+    /// vanilla makes, or under `HORIZON_STILL` one seeded from the position alone. Which crystal
+    /// gets which draw, and a server's entity ids, follow the order chunks load in, which differs
+    /// between launches; the position is the same in every copy of the world. The draw is made
+    /// either way, so the random stays where it would be.
+    pub(super) fn start_time(position: Vec3, drawn: i32, still: bool) -> i32 {
+        if still {
+            horizon_client::mobs::entity_random(0, position)
+                .next_int_bound(100_000)
+                .unwrap_or(0)
+        } else {
+            drawn
+        }
+    }
     /// `EntityType.END_CRYSTAL`: 2 x 2.
     pub(super) fn bounds(&self) -> Aabb {
         let p = self.position;
@@ -1174,7 +1189,7 @@ impl Game<'_> {
     pub(super) fn tick_fight(&mut self) {
         // A dragon outside the End (`/summon`) has no fight: `ServerLevel.getDragonFight` is
         // null there, but `EnderDragon.aiStep` still flies it.
-        if self.dim != Dim::End {
+        if !self.dimension_type().has_ender_dragon_fight {
             self.tick_dragon();
             return;
         }
@@ -1260,7 +1275,8 @@ impl Game<'_> {
             {
                 continue;
             }
-            let time = self.world.random.next_int_bound(100_000).unwrap_or(0);
+            let drawn = self.world.random.next_int_bound(100_000).unwrap_or(0);
+            let time = Crystal::start_time(at, drawn, self.clock.still());
             // EndCrystal's constructor takes an id from the entity counter.
             self.next_entity += 1;
             self.crystals.push(Crystal {
@@ -1295,7 +1311,7 @@ impl Game<'_> {
     /// `EndCrystal.tick` in every dimension: the time (the spin and bob),
     /// and fire at its block where there is a dragon fight (the End).
     pub(super) fn tick_crystals(&mut self) {
-        let fire = (self.dim == Dim::End)
+        let fire = (self.dimension_type().has_ender_dragon_fight)
             .then(|| self.pack.assets.registry.default_state("minecraft:fire"))
             .flatten();
         for i in 0..self.crystals.len() {
@@ -1337,7 +1353,13 @@ impl Game<'_> {
                 Vec3::new(x - 1.0, y, z - 1.0),
                 Vec3::new(x + 1.0, y + 2.0, z + 1.0),
             ));
-            let _ = self.server_explode(at, 6.0, interaction, false);
+            let _ = self.server_explode_from(
+                at,
+                6.0,
+                interaction,
+                false,
+                super::explosion::ExplosionSource::default().with_silence(self.entity_silent(c.id)),
+            );
             self.combat.explosion_in_water = false;
             self.fight.blast_by = None;
         }
@@ -2575,15 +2597,17 @@ impl Game<'_> {
     pub(super) fn dragon_target(&self) -> Option<(u32, horizon_client::mobs::TargetInfo)> {
         let d = self.dragon.as_ref().filter(|d| d.alive())?;
         let p = d.position;
+        let bounds = Aabb::new(
+            Vec3::new(p.x - 8.0, p.y, p.z - 8.0),
+            Vec3::new(p.x + 8.0, p.y + 8.0, p.z + 8.0),
+        );
         Some((
             d.id,
             horizon_client::mobs::TargetInfo {
                 position: p,
                 eye_y: p.y + 6.8,
-                bounds: Aabb::new(
-                    Vec3::new(p.x - 8.0, p.y, p.z - 8.0),
-                    Vec3::new(p.x + 8.0, p.y + 8.0, p.z + 8.0),
-                ),
+                bounds,
+                hitbox: bounds,
                 alive: true,
                 can_be_seen_as_enemy: true,
                 is_player: false,
@@ -3125,7 +3149,11 @@ impl Game<'_> {
     /// (`EnderDragonFight.dragonEvent`, visible while the fight is not won
     /// and the player is alive within 192 blocks of (0, 128, 0)).
     pub(super) fn dragon_boss_progress(&self, at: [f64; 3], alive: bool) -> Option<f32> {
-        if self.dim != Dim::End || !alive || !self.fight.loaded || self.fight.killed {
+        if !self.dimension_type().has_ender_dragon_fight
+            || !alive
+            || !self.fight.loaded
+            || self.fight.killed
+        {
             return None;
         }
         let near = at[0].powi(2) + (at[1] - 128.0).powi(2) + at[2].powi(2) <= 192.0 * 192.0;
@@ -3881,15 +3909,15 @@ impl Game<'_> {
             return false;
         }
         // EndCrystal's constructor: `this.random.nextInt(100000)`, the crystal's own random.
-        let time = super::dispenser::entity_random()
-            .next_int_bound(100_000)
-            .unwrap_or(0);
+        let drawn = random_source::entity().next_int_bound(100_000).unwrap_or(0);
+        let at = Vec3::new(x + 0.5, y, z + 0.5);
+        let time = Crystal::start_time(at, drawn, self.clock.still());
         // EndCrystal's constructor takes an id from the entity counter, so
         // the crystal is an entity a command can name (`@e[type=end_crystal]`).
         self.next_entity += 1;
         self.crystals.push(Crystal {
             id: self.next_entity,
-            position: Vec3::new(x + 0.5, y, z + 0.5),
+            position: at,
             show_bottom: false,
             time,
             beam: None,
@@ -3898,7 +3926,7 @@ impl Game<'_> {
         // EndCrystalItem.useOn: ENTITY_PLACE at the block above, by the player.
         self.post_block_game_event("minecraft:entity_place", above, self.sculk_actor(), None);
         self.world.modified.insert((above[0] >> 4, above[2] >> 4));
-        if self.dim == Dim::End {
+        if self.dimension_type().has_ender_dragon_fight {
             self.try_respawn();
         }
         if !self.creative {
@@ -4178,7 +4206,8 @@ impl Game<'_> {
         let at = Vec3::new(f64::from(cx) + 0.5, f64::from(h + 1), f64::from(cz) + 0.5);
         self.crystals
             .retain(|c| c.position.distance_squared(at) > 0.01);
-        let time = self.world.random.next_int_bound(100_000).unwrap_or(0);
+        let drawn = self.world.random.next_int_bound(100_000).unwrap_or(0);
+        let time = Crystal::start_time(at, drawn, self.clock.still());
         self.crystals.push(Crystal {
             id: 0,
             position: at,
@@ -4228,7 +4257,8 @@ impl Game<'_> {
     /// It becomes the fight's dragon (`dragonUUID = dragon.getUUID()`).
     fn create_new_dragon(&mut self) {
         let yaw = self.world.random.next_float() * 360.0;
-        let seed = self.world.random.next_long();
+        // The dragon's own random (`Entity.random`), not the level's.
+        let seed = random_source::unique_seed();
         let mut d = Dragon::new(Vec3::new(0.0, 128.0, 0.0), yaw, seed);
         // `dragon.getPhaseManager().setPhase(EnderDragonPhase.HOLDING_PATTERN)`.
         d.phase = Phase::Holding {
@@ -4285,7 +4315,7 @@ impl Game<'_> {
     /// The dragon is the End fight's own (`EnderDragon.dragonFight`, set
     /// only for the dragon whose UUID is the fight's `dragonUUID`).
     fn is_fight_dragon(&mut self) -> bool {
-        if self.dim != Dim::End {
+        if !self.dimension_type().has_ender_dragon_fight {
             return false;
         }
         match (self.dragon.as_ref().map(|d| d.id), self.fight.dragon_uuid) {
@@ -4313,11 +4343,13 @@ impl Game<'_> {
                     c.position.x.floor() as i32 >> 4,
                     c.position.z.floor() as i32 >> 4,
                 ));
-                let _ = self.server_explode(
+                let _ = self.server_explode_from(
                     [c.position.x, c.position.y, c.position.z],
                     6.0,
                     super::explosion::BlockInteraction::Keep,
                     false,
+                    super::explosion::ExplosionSource::default()
+                        .with_silence(self.entity_silent(c.id)),
                 );
             }
         }
@@ -4430,7 +4462,7 @@ impl Game<'_> {
         let _ = self.world.random.triangle(0.0, 0.114_850_000_000_000_01);
         let _ = self.world.random.next_float();
         // The dragon's own random (`Entity.random`), not the level's.
-        let seed = super::dispenser::entity_random().next_long();
+        let seed = random_source::unique_seed();
         let mut dragon = Dragon::new(position, yaw, seed);
         dragon.id = self.next_entity + 1;
         self.next_entity += 9;
@@ -4829,6 +4861,31 @@ mod tests {
         )
     }
 
+    /// Under `HORIZON_STILL` a crystal's spin and bob start from its position, whichever order
+    /// the crystals load in; without it each takes the next draw, as vanilla's do.
+    #[test]
+    fn a_still_crystal_starts_from_its_position_in_any_load_order() {
+        let spikes = [Vec3::new(42.5, 77.0, 0.5), Vec3::new(-33.5, 95.0, 24.5)];
+        let starts = |order: [usize; 2], still: bool| {
+            let mut random = LegacyRandom::new(5);
+            let mut times = [0; 2];
+            for i in order {
+                let drawn = random.next_int_bound(100_000).unwrap();
+                times[i] = Crystal::start_time(spikes[i], drawn, still);
+            }
+            times
+        };
+        let still = starts([0, 1], true);
+        assert_eq!(still, starts([1, 0], true));
+        assert_ne!(still[0], still[1], "each crystal keeps its own phase");
+        let first = LegacyRandom::new(5).next_int_bound(100_000).unwrap();
+        assert_eq!(starts([0, 1], false)[0], first);
+        assert_eq!(
+            starts([1, 0], false)[1],
+            first,
+            "the first loaded takes the first draw"
+        );
+    }
     /// `Mth.wrapDegrees`: `% 360` then one step of 360, exact for a negative angle
     /// (a remainder made positive and back again loses the float's low bits).
     #[test]

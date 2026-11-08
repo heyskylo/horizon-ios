@@ -320,11 +320,65 @@ pub fn trail_part(item: &Item) -> Option<Part> {
 /// Draws `draws` into a `width`×`height` picture seen from `camera`. At `Camera::HOME`'s zoom
 /// the head's top is a fifth of the way down (room for a hat) and the feet 13% up.
 pub fn render(draws: &[Draw], width: u32, height: u32, camera: &Camera) -> Image {
+    render_view(draws, width, height, camera.view(width, height))
+}
+
+/// Each corner of every face `draws` holds, in model space (blocks).
+fn corners(draws: &[Draw], mut each: impl FnMut(Vec3)) {
+    for d in draws {
+        let mut stack = vec![(&*d.root, d.base)];
+        while let Some((part, parent)) = stack.pop() {
+            let m = parent * pose_matrix(pose_of(part, &d.poses));
+            for face in &part.faces {
+                for v in &face.vertices {
+                    each(m.transform_point3(Vec3::new(v[0], v[1], v[2]) / 16.0));
+                }
+            }
+            for child in &part.children {
+                stack.push((child, m));
+            }
+        }
+    }
+}
+
+/// A view of `draws` alone, turned `yaw` degrees and seen from `pitch` degrees above as
+/// `Camera` turns, as large as fits a `width`×`height` picture with `margin` of its smaller side
+/// left free on each side: a shop's picture of one item, framed on it. None when there is
+/// nothing to see.
+pub fn fitted_view(
+    draws: &[Draw],
+    (width, height): (u32, u32),
+    (yaw, pitch): (f32, f32),
+    margin: f32,
+) -> Option<Mat4> {
+    let turn = Mat4::from_rotation_x(pitch.to_radians()) * Mat4::from_rotation_y(yaw.to_radians());
+    let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+    corners(draws, |p| {
+        let p = turn.transform_point3(p);
+        (lo, hi) = (lo.min(p), hi.max(p));
+    });
+    let size = hi - lo;
+    if !size.is_finite() || size.x <= 0.0 && size.y <= 0.0 {
+        return None;
+    }
+    let free = margin * width.min(height) as f32 * 2.0;
+    let (w, h) = (width as f32 - free, height as f32 - free);
+    let scale = (w / size.x.max(1e-3)).min(h / size.y.max(1e-3));
+    let centre = (lo + hi) / 2.0;
+    Some(
+        Mat4::from_translation(Vec3::new(width as f32 / 2.0, height as f32 / 2.0, 0.0))
+            * Mat4::from_scale(Vec3::splat(scale))
+            * Mat4::from_translation(-centre)
+            * turn,
+    )
+}
+
+/// Draws `draws` into a `width`×`height` picture through `view` (model space to the picture's
+/// pixels, depth growing away from the viewer: `Camera::view`, `fitted_view`).
+pub fn render_view(draws: &[Draw], width: u32, height: u32, view: Mat4) -> Image {
     let (w, h) = (width as usize, height as usize);
     let mut rgba = vec![0u8; w * h * 4];
     let mut depth = vec![f32::INFINITY; w * h];
-    // Model space has y down and the front at -z: the camera looks along +z from the front.
-    let view = camera.view(width, height);
     // Solid first; see-through over them, unsorted (an aura is one thin layer).
     let solid = draws.iter().filter(|d| d.alpha >= 1.0);
     for d in solid.chain(draws.iter().filter(|d| d.alpha < 1.0)) {
@@ -439,6 +493,57 @@ fn raster(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The drawn pixels' bounds: (left, top, right, bottom), inclusive.
+    fn drawn(image: &Image) -> Option<(u32, u32, u32, u32)> {
+        let mut out: Option<(u32, u32, u32, u32)> = None;
+        for y in 0..image.height {
+            for x in 0..image.width {
+                if image.rgba[((y * image.width + x) * 4 + 3) as usize] > 0 {
+                    let (l, t, r, b) = out.unwrap_or((x, y, x, y));
+                    out = Some((l.min(x), t.min(y), r.max(x), b.max(y)));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_fitted_view_fills_the_picture_with_the_head_alone() {
+        let (body, skin) = (player_model(false), skin());
+        let head = body.children.iter().find(|p| p.name == "head").unwrap();
+        let draws = [Draw::model(head, &skin)];
+        // Straight at the front: the head is a square, centred, a tenth of the height free
+        // around its (see-through, half a pixel larger) hat layer: 48 of 60 pixels for 9 of the
+        // skin's, so 42.7 for the head's 8.
+        let view = fitted_view(&draws, (100, 60), (0.0, 0.0), 0.1).unwrap();
+        let image = render_view(&draws, 100, 60, view);
+        assert_eq!(drawn(&image), Some((29, 9, 70, 50)));
+        // Its front is the red face, lit as a face toward the viewer is (three quarters).
+        assert_eq!(
+            &image.rgba[((30 * 100 + 50) * 4) as usize..][..3],
+            &[150, 0, 0]
+        );
+        // Turned, it is wider than tall, and still within the margins.
+        let view = fitted_view(&draws, (100, 100), (45.0, 20.0), 0.1).unwrap();
+        let (l, t, r, b) = drawn(&render_view(&draws, 100, 100, view)).unwrap();
+        assert!(l >= 9 && t >= 9 && r <= 90 && b <= 90, "{l} {t} {r} {b}");
+        assert!(r - l >= 68 || b - t >= 68, "fills one way: {l} {t} {r} {b}");
+    }
+
+    #[test]
+    fn nothing_to_see_has_no_fitted_view() {
+        let (skin, empty) = (
+            skin(),
+            Part {
+                name: "empty".into(),
+                pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                faces: Vec::new(),
+                children: Vec::new(),
+            },
+        );
+        assert!(fitted_view(&[Draw::model(&empty, &skin)], (64, 64), (30.0, 15.0), 0.1).is_none());
+    }
 
     /// A 64×64 skin in one colour per region: what lands where shows which face was drawn.
     fn skin() -> Texture {

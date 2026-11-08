@@ -130,6 +130,7 @@ impl<'w, 'r> BlockSpace<'w, 'r> {
         };
         CollisionContext::for_entity(
             CollisionEntity {
+                kind: horizon_world::collision_context::EntityContextKind::Living,
                 identity: EntityIdentity(u64::from(m.id)),
                 // A teleport candidate is queried before setPos changes the entity.
                 y: m.position.y,
@@ -790,6 +791,18 @@ mod tests {
     use super::*;
     use crate::mobs::sensor_scan_tests::kind;
     use std::sync::Arc;
+
+    /// `Shulker.setPos`: a piston's push lands on the block centre, the y
+    /// rounded by `floor(y + 0.5)`, not left at the pushed offset.
+    #[test]
+    fn a_pushed_position_snaps_to_the_block_centre() {
+        let mut m = shulker();
+        m.position = Vec3::new(0.5, 4.0, 0.5);
+        client_set_pos(&mut m, 0.5, 3.49, 0.5);
+        assert_eq!(m.position, Vec3::new(0.5, 3.0, 0.5));
+        client_set_pos(&mut m, 2.9, 3.0, -0.2);
+        assert_eq!(m.position, Vec3::new(2.5, 3.0, -0.5));
+    }
 
     /// Shulker.setRawPeekAmount: the lid opening posts CONTAINER_OPEN and shutting
     /// CONTAINER_CLOSE, for the sculk sensors and wardens nearby.

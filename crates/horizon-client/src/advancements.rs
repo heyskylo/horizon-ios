@@ -146,6 +146,16 @@ fn frame(v: &Value) -> Frame {
     }
 }
 impl Tree {
+    /// `PlayerAdvancements.checkForAutomaticTriggers`: the advancements that
+    /// have no criteria at all, so nothing can ever grant them a criterion and
+    /// vanilla hands them over (and grants their rewards) as the player's
+    /// progress loads.
+    pub fn automatic(&self) -> Vec<usize> {
+        (0..self.list.len())
+            .filter(|&i| self.list[i].criteria.is_empty())
+            .collect()
+    }
+
     /// [`Tree::load`], shared while anyone holds it: a server's advancement
     /// packets (`ServerAdvancements`) and its game's criteria read the same
     /// files, and each kept its own copy (7 MB). A world whose data packs bring
@@ -333,8 +343,17 @@ impl Tree {
         out.sort_unstable();
         out
     }
+    pub fn find_id(&self, id: &str) -> Option<usize> {
+        self.by_id.get(id).copied().or_else(|| {
+            if let Some(rest) = id.strip_prefix("minecraft:") {
+                self.by_id.get(rest).copied()
+            } else {
+                self.by_id.get(full(id).as_ref()).copied()
+            }
+        })
+    }
     pub fn get(&self, id: &str) -> Option<&Advancement> {
-        self.by_id.get(id).map(|&i| &self.list[i])
+        self.find_id(id).map(|i| &self.list[i])
     }
 }
 
@@ -457,7 +476,7 @@ fn parse(id: &str, v: &Value) -> Option<Advancement> {
     };
     Some(Advancement {
         id: id.to_owned(),
-        parent: v["parent"].as_str().map(str::to_owned),
+        parent: v["parent"].as_str().map(|p| full(p).into_owned()),
         display,
         criteria,
         requirements,
@@ -619,6 +638,9 @@ pub struct ItemView {
     pub enchantments: Vec<(String, u32)>,
     pub potion: Option<String>,
     pub custom_name: bool,
+    /// Typed snapshot for supported mob equipment views. `None` leaves this
+    /// family unprojected and unsupported; an empty compound is actual absence.
+    pub custom_data: Option<horizon_world::nbt::Tag>,
 }
 /// An entity as predicates see it.
 #[derive(Clone, Debug, Default)]
@@ -656,20 +678,31 @@ pub struct EntityView {
     pub variant: Option<String>,
     /// The data components the entity reports (`Entity.get`): id and value.
     pub components: Vec<(String, String)>,
+    /// `Entity.get(CUSTOM_NAME)`: the live Text component, preserving styles
+    /// and siblings rather than treating its contents as a registry id.
+    pub custom_name: Option<Value>,
     /// The entity as saved (`NbtPredicate.getEntityTagToCompare`), for
     /// `minecraft:nbt`; built only when a criterion may ask (`Tree::tests_nbt`).
     pub nbt: Option<horizon_world::nbt::Tag>,
     /// `Entity.getTeam().getName()` (a tamed pet answers its owner's team);
     /// `None` without a team or where the identity is not bound.
     pub team: Option<String>,
+    /// Existing objective scores for the bound command source holder. `None`
+    /// means this context did not bind a scoreboard holder; an empty map is a
+    /// real holder without scores. Named predicates snapshot current values.
+    pub scores: Option<BTreeMap<String, i32>>,
 }
-/// What `PlayerPredicate` reads of a player beyond its entity. Each part is
-/// filled only when a criterion may ask for it (`Tree::player_facts_asked`);
-/// a predicate that asks for a part left `None` fails.
+/// What `PlayerPredicate` reads of a player beyond its entity. Each record
+/// is filled only when a criterion may ask for it (`Tree::player_facts_asked`),
+/// the food always (two numbers); a predicate that asks for a part left
+/// `None` fails.
 #[derive(Clone, Default)]
 pub struct PlayerFacts {
     /// `Player.experienceLevel`.
     pub level: Option<i32>,
+    /// `Player.getFoodData`: `FoodData.getFoodLevel` and
+    /// `FoodData.getSaturationLevel`.
+    pub food: Option<(i32, f32)>,
     /// `ServerStatsCounter`: stat type -> stat id -> value, both namespaced.
     pub stats: Option<BTreeMap<String, BTreeMap<String, i32>>>,
     /// `PlayerAdvancements`: the loaded advancements and the player's
@@ -682,6 +715,7 @@ impl std::fmt::Debug for PlayerFacts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PlayerFacts")
             .field("level", &self.level)
+            .field("food", &self.food)
             .field("stats", &self.stats)
             .field(
                 "advancements",
@@ -821,6 +855,20 @@ pub fn item(v: &Value, it: &ItemView, w: &dyn World) -> bool {
             return false;
         }
     }
+    // `CustomDataPredicate.matches`: typed subset matching of a projected
+    // stack snapshot. Unprojected consumers keep their unsupported behavior.
+    if let Some(pattern) = keyed(preds, "minecraft:custom_data").and_then(Value::as_str)
+        && let Some(actual) = it.custom_data.as_ref()
+    {
+        let Ok(pattern @ horizon_world::nbt::Tag::Compound(_)) =
+            crate::command::snbt::parse_fully(pattern)
+        else {
+            return false;
+        };
+        if !crate::nbt_path::compare_nbt(&pattern, Some(actual)) {
+            return false;
+        }
+    }
     true
 }
 /// `LockCode.canUnlock`: a spectator opens any container; otherwise the
@@ -931,12 +979,20 @@ pub fn location(v: &Value, p: [f64; 3], w: &dyn World) -> bool {
 }
 /// `DataComponentExactPredicate.test` on an entity: every expected
 /// component equals what the entity reports (absent ones never match).
-fn components(expected: &Value, have: &[(String, String)]) -> bool {
+fn components(expected: &Value, entity: &EntityView) -> bool {
     expected.as_object().is_some_and(|o| {
         o.iter().all(|(id, want)| {
             let id = full(id);
+            if id == "minecraft:custom_name" {
+                return entity.custom_name.as_ref().is_some_and(|have| {
+                    crate::scoreboard::canonical_component(have)
+                        == crate::scoreboard::canonical_component(want)
+                });
+            }
             want.as_str().is_some_and(|want| {
-                have.iter()
+                entity
+                    .components
+                    .iter()
                     .any(|(k, v)| full(k) == id && full(v) == full(want))
             })
         })
@@ -1043,7 +1099,7 @@ pub fn entity(v: &Value, e: &EntityView, w: &dyn World, origin: [f64; 3]) -> boo
             "minecraft:type_specific/fishing_hook" => p["in_open_water"]
                 .as_bool()
                 .is_none_or(|want| e.fishing_open_water == Some(want)),
-            "minecraft:components" => components(p, &e.components),
+            "minecraft:components" => components(p, e),
             // `TeamPredicate.matches`: a non-null effective team whose name
             // equals the string exactly.
             "minecraft:team" => {
@@ -1059,14 +1115,28 @@ pub fn entity(v: &Value, e: &EntityView, w: &dyn World, origin: [f64; 3]) -> boo
     true
 }
 /// The rest of `PlayerPredicate.matches` (expected from it): the experience
-/// level in the `level` bounds; each `stats` entry's value (0 when never
-/// counted) in its bounds; each listed recipe known or not as asked; each
-/// listed advancement loaded, and done or not, or each named criterion of it
-/// granted or not. A field asked of facts that weren't filled fails.
+/// level in the `level` bounds; the food (`FoodPredicate.matches`); each
+/// `stats` entry's value (0 when never counted) in its bounds; each listed
+/// recipe known or not as asked; each listed advancement loaded, and done or
+/// not, or each named criterion of it granted or not. A field asked of facts
+/// that weren't filled fails.
 fn player_facts(p: &Value, f: &PlayerFacts) -> bool {
     let level = &p["level"];
     if !level.is_null() && !f.level.is_some_and(|l| range_i(level, i64::from(l))) {
         return false;
+    }
+    // `FoodPredicate.matches`: the food level in `level`, then the
+    // saturation (a float, compared as a double) in `saturation`.
+    let food = &p["food"];
+    if !food.is_null() {
+        let Some((level, saturation)) = f.food else {
+            return false;
+        };
+        if !range_i(&food["level"], i64::from(level))
+            || !range_f(&food["saturation"], f64::from(saturation))
+        {
+            return false;
+        }
     }
     let stats = &p["stats"];
     if !stats.is_null() {
@@ -1343,6 +1413,30 @@ pub fn conditions(v: &Value, ctx: &Entities, w: &dyn World) -> bool {
                 .and_then(Value::as_str)
                 .unwrap_or("");
             match &*full(ty) {
+                // EntityHasScoreCondition.test/hasScore: missing objective or
+                // score fails; this bounded path supports constant integer ranges.
+                "minecraft:entity_scores" if v["entity"].as_str() == Some("this") => {
+                    let scores = ctx.this.and_then(|e| e.scores.as_ref());
+                    v["scores"].as_object().is_some_and(|tests| {
+                        scores.is_some_and(|scores| {
+                            tests.iter().all(|(objective, range)| {
+                                // Do not treat unsupported number providers as
+                                // absent min/max bounds in the shared range helper.
+                                let numeric = range.as_i64().is_some()
+                                    || range.as_object().is_some_and(|bounds| {
+                                        bounds.iter().all(|(key, value)| {
+                                            matches!(key.as_str(), "min" | "max")
+                                                && value.as_i64().is_some()
+                                        })
+                                    });
+                                numeric
+                                    && scores
+                                        .get(objective)
+                                        .is_some_and(|score| range_i(range, i64::from(*score)))
+                            })
+                        })
+                    })
+                }
                 "minecraft:entity_properties" => ctx
                     .this
                     .is_some_and(|e| entity(&v["predicate"], e, w, ctx.origin)),
@@ -1603,8 +1697,8 @@ impl Tree {
             pending.retain(|&i| {
                 let parent = match &self.list[i].parent {
                     None => None,
-                    Some(p) => match self.by_id.get(p) {
-                        Some(&p) if inserted[p] => Some(p),
+                    Some(p) => match self.find_id(p) {
+                        Some(p) if inserted[p] => Some(p),
                         _ => return true,
                     },
                 };
@@ -2638,6 +2732,28 @@ mod tests {
         p.grant("minecraft:t", "b", "now");
         assert!(p.done(&a));
     }
+    /// `AdvancementRequirements.test` answers false with no requirement groups, so an advancement
+    /// without criteria is never done by `isDone`; `PlayerAdvancements.checkForAutomaticTriggers`
+    /// still grants its rewards as progress loads, and `Tree::automatic` is the list it walks.
+    #[test]
+    fn an_advancement_without_criteria_is_not_done_but_granted_automatically() {
+        let empty = parse("minecraft:free", &serde_json::json!({"criteria": {}})).unwrap();
+        assert!(!Progress::default().done(&empty), "no groups: not done");
+        let waiting = parse(
+            "minecraft:waits",
+            &serde_json::json!({"criteria": {"a": {"trigger": "minecraft:tick"}}}),
+        )
+        .unwrap();
+        assert!(!Progress::default().done(&waiting));
+        let tree = tree_of(&[
+            (
+                "minecraft:waits",
+                serde_json::json!({"criteria": {"a": {"trigger": "minecraft:tick"}}}),
+            ),
+            ("minecraft:free", serde_json::json!({"criteria": {}})),
+        ]);
+        assert_eq!(tree.automatic(), vec![1]);
+    }
     #[test]
     fn layout_spreads_children_like_tree_node_position() {
         let mut tree = Tree::default();
@@ -2729,6 +2845,59 @@ mod tests {
             &PlayerFacts::default()
         ));
         assert!(player_matches(json!({}), &PlayerFacts::default()));
+    }
+    #[test]
+    fn player_food_tests_level_and_saturation_in_their_bounds() {
+        let fed = PlayerFacts {
+            food: Some((17, 3.0)),
+            ..PlayerFacts::default()
+        };
+        for (food, expected) in [
+            (json!({}), true),
+            (json!({"level": {"min": 17}}), true),
+            (json!({"level": {"min": 18}}), false),
+            (json!({"level": {"max": 16}}), false),
+            (json!({"level": 17}), true),
+            (json!({"saturation": {"min": 3.0}}), true),
+            (json!({"saturation": {"min": 3.5}}), false),
+            (json!({"saturation": {"max": 2.9}}), false),
+            (
+                json!({"level": {"min": 17}, "saturation": {"max": 3.0}}),
+                true,
+            ),
+            (
+                json!({"level": {"min": 17}, "saturation": {"min": 3.5}}),
+                false,
+            ),
+            (
+                json!({"level": {"min": 18}, "saturation": {"min": 3.0}}),
+                false,
+            ),
+        ] {
+            assert_eq!(
+                player_matches(json!({"food": food}), &fed),
+                expected,
+                "{food}"
+            );
+        }
+        // The saturation float widens to a double: 1.2f is 1.2000000476837158.
+        let widened = PlayerFacts {
+            food: Some((20, 1.2)),
+            ..PlayerFacts::default()
+        };
+        assert!(player_matches(
+            json!({"food": {"saturation": {"min": 1.2}}}),
+            &widened
+        ));
+        assert!(!player_matches(
+            json!({"food": {"saturation": {"max": 1.2}}}),
+            &widened
+        ));
+        // No food known: food asked fails, even unbounded.
+        assert!(!player_matches(
+            json!({"food": {}}),
+            &PlayerFacts::default()
+        ));
     }
     #[test]
     fn player_stats_match_each_counter_by_type_and_id() {
@@ -3029,5 +3198,166 @@ mod tests {
             date_millis("2026-10-17 05:30:00 +0000")
         );
         assert_eq!(date_millis("not a date"), None);
+    }
+
+    #[test]
+    fn simulate_progression_advancements() {
+        let mut tree = Tree::default();
+        let advs = [
+            ("minecraft:story/root", None),
+            ("minecraft:story/mine_stone", Some("story/root")),
+            (
+                "minecraft:story/upgrade_tools",
+                Some("minecraft:story/mine_stone"),
+            ),
+            ("minecraft:story/smelt_iron", Some("story/upgrade_tools")),
+            (
+                "minecraft:story/obtain_armor",
+                Some("minecraft:story/smelt_iron"),
+            ),
+            (
+                "minecraft:story/lava_bucket",
+                Some("minecraft:story/smelt_iron"),
+            ),
+            (
+                "minecraft:story/iron_tools",
+                Some("minecraft:story/smelt_iron"),
+            ),
+            (
+                "minecraft:story/deflect_arrow",
+                Some("minecraft:story/obtain_armor"),
+            ),
+            (
+                "minecraft:story/form_obsidian",
+                Some("minecraft:story/lava_bucket"),
+            ),
+            (
+                "minecraft:story/mine_diamond",
+                Some("minecraft:story/iron_tools"),
+            ),
+            (
+                "minecraft:story/enter_the_nether",
+                Some("minecraft:story/form_obsidian"),
+            ),
+            (
+                "minecraft:story/shiny_gear",
+                Some("minecraft:story/mine_diamond"),
+            ),
+            (
+                "minecraft:story/enchant_item",
+                Some("minecraft:story/mine_diamond"),
+            ),
+            (
+                "minecraft:story/cure_zombie_villager",
+                Some("minecraft:story/enter_the_nether"),
+            ),
+            (
+                "minecraft:story/follow_ender_eye",
+                Some("minecraft:story/enter_the_nether"),
+            ),
+            (
+                "minecraft:story/enter_the_end",
+                Some("minecraft:story/follow_ender_eye"),
+            ),
+        ];
+        for (id, parent) in advs {
+            let a = parse(
+                id,
+                &serde_json::json!({
+                    "parent": parent,
+                    "criteria": {"crit": {"trigger": "minecraft:tick"}},
+                    "display": {"icon": {"id": "minecraft:stone"}, "title": "t", "description": "d"}
+                }),
+            )
+            .unwrap();
+            tree.by_id.insert(id.to_string(), tree.list.len());
+            tree.list.push(a);
+        }
+        for i in 16..124 {
+            let id = format!("minecraft:custom/{i}");
+            let a = parse(
+                &id,
+                &serde_json::json!({
+                    "criteria": {"crit": {"trigger": "minecraft:tick"}},
+                    "display": {"icon": {"id": "minecraft:stone"}, "title": "t", "description": "d"}
+                }),
+            )
+            .unwrap();
+            tree.by_id.insert(id, tree.list.len());
+            tree.list.push(a);
+        }
+
+        fn get_list(tree: &Tree, target: Option<&str>, mode: &str) -> Vec<usize> {
+            match target {
+                None => (0..tree.list.len()).collect(),
+                Some(id) => {
+                    let i = *tree.by_id.get(id).unwrap();
+                    let mut out = Vec::new();
+                    if mode == "until" || mode == "through" {
+                        let mut p = tree.list[i].parent.as_ref();
+                        while let Some(&pi) = p.and_then(|pid| tree.by_id.get(pid)) {
+                            out.push(pi);
+                            p = tree.list[pi].parent.as_ref();
+                        }
+                    }
+                    out.push(i);
+                    if mode == "from" || mode == "through" {
+                        let kids = tree.children();
+                        fn add(kids: &[Vec<usize>], i: usize, out: &mut Vec<usize>) {
+                            for &c in &kids[i] {
+                                out.push(c);
+                                add(kids, c, out);
+                            }
+                        }
+                        add(&kids, i, &mut out);
+                    }
+                    out
+                }
+            }
+        }
+
+        fn grant(tree: &Tree, prog: &mut Progress, list: &[usize]) -> i32 {
+            let mut count = 0;
+            for &i in list {
+                let a = &tree.list[i];
+                if prog.done(a) {
+                    continue;
+                }
+                for c in &a.criteria {
+                    prog.grant(&a.id, &c.name, "now");
+                }
+                count += 1;
+            }
+            count
+        }
+
+        fn revoke(tree: &Tree, prog: &mut Progress, list: &[usize]) -> i32 {
+            let mut count = 0;
+            for &i in list {
+                let a = &tree.list[i];
+                let mut any = false;
+                for c in &a.criteria {
+                    any |= prog.revoke(&a.id, &c.name);
+                }
+                if any {
+                    count += 1;
+                }
+            }
+            count
+        }
+
+        let mut p = Progress::default();
+        let until = get_list(&tree, Some("minecraft:story/smelt_iron"), "until");
+        assert_eq!(grant(&tree, &mut p, &until), 4);
+
+        let from = get_list(&tree, Some("minecraft:story/root"), "from");
+        assert_eq!(grant(&tree, &mut p, &from), 12);
+
+        let through = get_list(&tree, Some("minecraft:story/iron_tools"), "through");
+        assert_eq!(revoke(&tree, &mut p, &through), 8);
+
+        let all = get_list(&tree, None, "everything");
+        let granted_everything = grant(&tree, &mut p, &all);
+        assert_eq!(granted_everything, 116);
     }
 }

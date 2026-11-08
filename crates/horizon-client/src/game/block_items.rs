@@ -81,7 +81,13 @@ impl Game<'_> {
         if let (Some(name), Tag::Compound(map)) = (self.world.block_names.get(&key), &mut tag) {
             map.insert("CustomName".into(), Tag::String(name.as_str().into()));
         }
-        block_entity_nbt::canonical(&tag)
+        if matches!(entity, BlockEntity::Mod(_)) {
+            // The mod owns its serializer; the vanilla canonicalizer only knows
+            // vanilla entity types and must not discard this instance's data.
+            Some(tag)
+        } else {
+            block_entity_nbt::canonical(&tag)
+        }
     }
 
     /// The `CustomName` a block entity loads from `tag`
@@ -125,11 +131,26 @@ impl Game<'_> {
                 Some(t) if t == "sticky" => "minecraft:sticky_piston",
                 _ => "minecraft:piston",
             });
-        let item = clone_item(&facts.name, head.unwrap_or(&facts.item));
-        // FlowerPotBlock.getCloneItemStack: a potted plant picks as that plant
-        // (`new ItemStack(potted)`), an empty pot as the pot itself.
-        let item = picked_item(self.res.behaviours(), state, item)?;
-        let mut stack = ItemStack::new(item, 1);
+        let mut custom = None;
+        self.native_block_clone_item(&facts.name, pos, state, &mut custom);
+        let mut stack = match custom {
+            Some(stack) => {
+                if stack.count == 0
+                    || stack.item.as_ref() == "minecraft:air"
+                    || self.items().get(&stack.item).is_none()
+                {
+                    return None;
+                }
+                stack
+            }
+            None => {
+                let item = clone_item(&facts.name, head.unwrap_or(&facts.item));
+                // FlowerPotBlock.getCloneItemStack: a potted plant picks as
+                // that plant (`new ItemStack(potted)`), an empty pot as itself.
+                let item = picked_item(self.res.behaviours(), state, item)?;
+                ItemStack::new(item, 1)
+            }
+        };
         let mut patch = Compound::new();
         // BeehiveBlock.getCloneItemStack: the honey level as the item's block state.
         if include_data
@@ -185,7 +206,13 @@ impl Game<'_> {
         // DecoratedPotBlock.getCloneItemStack: createDecoratedPotInstance, the
         // sherds only; the pot's item comes with include_data.
         let pot = &*facts.name == "minecraft:decorated_pot";
-        if (include_data || banner || pot)
+        // CopperGolemStatueBlockEntity.getItem: collectComponents (the golem's
+        // custom name), data or not.
+        let statue = matches!(
+            self.world.block_entities.get(&key),
+            Some(BlockEntity::CopperGolemStatue(_))
+        );
+        if (include_data || banner || pot || statue)
             && let Some(saved) = self.saved_block_entity(key)
         {
             let mut picked = block_entity_item::pick(&saved);

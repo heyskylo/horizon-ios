@@ -10,7 +10,10 @@ use horizon_client::{
     furnace::FurnaceCooking,
     items::ItemStack,
     lan::{guest::Guest, menu::Slots},
-    menu::{Env, Input, Kind, Menu},
+    menu::{
+        Env, Input, Kind, Menu,
+        place::{PostPlace, TransferError},
+    },
 };
 use horizon_protocol::packets::play::{self, Clientbound as C};
 
@@ -125,16 +128,27 @@ impl Game<'_> {
         menu: &mut Menu,
         op: impl FnOnce(&mut Menu, &Env) -> R,
     ) -> R {
-        // The cartography table reads and makes the host level's maps.
-        let maps = (menu.kind() == Kind::Cartography).then(|| {
+        // Crafting and cartography read and derive this level's saved maps.
+        let maps = matches!(
+            menu.kind(),
+            Kind::Cartography | Kind::Crafting | Kind::Inventory
+        )
+        .then(|| {
             let g = &host.hub.guests[gi];
-            let held: Vec<ItemStack> = (0..menu.slot_count())
+            (0..menu.slot_count())
                 .filter_map(|s| menu.slot(s).cloned())
                 .chain(g.inventory.iter().flatten().cloned())
                 .chain(g.carried.clone())
-                .collect();
-            self.level_maps(&held)
-        });
+                .collect::<Vec<_>>()
+        })
+        .filter(|held| {
+            menu.kind() == Kind::Cartography
+                || held
+                    .iter()
+                    .filter_map(super::maps::map_id)
+                    .any(|id| self.map(id).is_some())
+        })
+        .map(|held| self.level_maps(&held));
         let env = Env {
             maps: maps.as_ref().map(|m| m as &dyn horizon_client::menu::Maps),
             limited_crafting: host.hub.limited_crafting,
@@ -432,7 +446,7 @@ impl Game<'_> {
     }
 
     /// ServerGamePacketListenerImpl.handlePlaceRecipe: the guest's recipe
-    /// book places a known recipe in their inventory grid or crafting table
+    /// book places a known recipe in their inventory grid, crafting table or furnace
     /// (`ServerPlaceRecipe`), and answers with a ghost recipe when the items
     /// are missing.
     pub(super) fn lan_place_recipe(
@@ -441,7 +455,6 @@ impl Game<'_> {
         conn: u32,
         p: &horizon_protocol::packets::recipes::PlaceRecipe,
     ) {
-        use horizon_client::menu::place::PostPlace;
         let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
             return;
         };
@@ -470,7 +483,116 @@ impl Game<'_> {
         let (player, name) = (g.uuid, g.name.clone());
         self.native_player_recipe_book_click(player, &name, &id, p.use_max);
         let creative = g.creative();
-        let placed = if p.container == 0 {
+        // AbstractFurnaceMenu.handlePlacement: the current furnace's slots,
+        // rather than the separate crafting-table menu, own cooking inputs.
+        let furnace = host.hub.guests[gi]
+            .menu
+            .as_ref()
+            .filter(|m| p.container != 0 && m.window == p.container)
+            .and_then(|m| match m.slots {
+                Slots::Block(pos) => Some(pos),
+                _ => None,
+            })
+            .and_then(|pos| match self.world.block_entities.get(&pos) {
+                Some(BlockEntity::Furnace(f)) => {
+                    let recipe = match f.kind.recipe_type() {
+                        "minecraft:blasting" => "blasting",
+                        "minecraft:smoking" => "smoking",
+                        _ => "smelting",
+                    };
+                    Some((pos, Kind::Furnace(recipe), f.items.clone()))
+                }
+                _ => None,
+            });
+        let placed = if let Some((pos, kind, items)) = furnace {
+            // Opening need not have created the click/drag cache yet.
+            let mut menu = host
+                .play
+                .entry(conn)
+                .or_default()
+                .crafting
+                .machine
+                .take()
+                .filter(|(window, m)| *window == p.container && m.kind() == kind)
+                .map_or_else(|| Box::new(Menu::new(kind)), |(_, m)| m);
+            let placed = self.guest_menu_op(host, gi, &mut menu, |menu, env| {
+                for (k, item) in items.iter().enumerate() {
+                    menu.set_slot(env, k, item.clone());
+                }
+                menu.place_recipe(env, &id, p.use_max, creative, None)
+            });
+            let changed = (0..3).any(|k| menu.slot(k) != items[k].as_ref());
+            if let Some(BlockEntity::Furnace(f)) = self.world.block_entities.get_mut(&pos) {
+                for k in 0..3 {
+                    f.items[k] = menu.slot(k).cloned();
+                }
+                f.input_clicked(world_recipes!(self), items[0].clone());
+            }
+            if changed {
+                self.container_changed(pos);
+            }
+            host.play.entry(conn).or_default().crafting.machine = Some((p.container, menu));
+            // Hub::sync_containers broadcasts the actual changed slots.
+            Some(placed)
+        } else {
+            self.lan_apply_recipe(host, gi, p.container, |menu, env| {
+                menu.place_recipe(env, &id, p.use_max, creative, None)
+            })
+        };
+        if placed == Some(PostPlace::Ghost) {
+            host.hub.send_ghost_recipe(conn, p.container, &id);
+        }
+    }
+
+    pub(super) fn guest_recipe_transfer(&mut self, host: &mut LanHost, conn: u32, data: &[u8]) {
+        use horizon_protocol::buf::{Reader, Writer};
+        let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) else {
+            return;
+        };
+        let g = &host.hub.guests[gi];
+        if g.brand != "horizon" || g.spectator() {
+            return;
+        }
+        let mut reader = Reader::new(data);
+        let (Ok(container), Ok(id)) = (reader.varint(), reader.string(512)) else {
+            return;
+        };
+        if reader.remaining() != 0 {
+            return;
+        }
+        let result = if container == 0 && (g.menu.is_some() || g.creative()) {
+            Err(TransferError::Unavailable)
+        } else {
+            self.lan_apply_recipe(host, gi, container, |menu, env| {
+                menu.transfer_recipe(env, &id)
+            })
+            .unwrap_or(Err(TransferError::Unavailable))
+        };
+        let mut reply = Writer::new();
+        reply.varint(container);
+        reply.u8(match result {
+            Ok(()) => 0,
+            Err(TransferError::Missing) => 1,
+            Err(TransferError::NoRoom) => 2,
+            Err(TransferError::Unavailable) => 3,
+        });
+        host.hub.guests[gi].send(&C::CustomPayload(
+            horizon_protocol::packets::configuration::CustomPayload {
+                channel: horizon_client::lan::recipes::TRANSFER_CHANNEL.into(),
+                data: reply.data,
+            },
+        ));
+    }
+
+    fn lan_apply_recipe<R>(
+        &mut self,
+        host: &mut LanHost,
+        gi: usize,
+        container: i32,
+        apply: impl FnOnce(&mut Menu, &Env) -> R,
+    ) -> Option<R> {
+        let conn = host.hub.guests[gi].conn;
+        let placed = if container == 0 {
             let crafting = host.play.entry(conn).or_default();
             let mut menu = crafting
                 .crafting
@@ -482,7 +604,7 @@ impl Game<'_> {
                 for (k, s) in grid.into_iter().enumerate() {
                     menu.set_slot(env, 1 + k, s);
                 }
-                menu.place_recipe(env, &id, p.use_max, creative, None)
+                apply(menu, env)
             });
             let g = &mut host.hub.guests[gi];
             for k in 0..4 {
@@ -493,23 +615,16 @@ impl Game<'_> {
             host.hub.send_inventory(gi);
             placed
         } else {
-            let Some((window, state, mut menu, pos)) = host
+            let (window, state, mut menu, pos) = host
                 .play
                 .get_mut(&conn)
-                .and_then(|play| play.crafting.table.take_if(|(w, ..)| *w == p.container))
-            else {
-                return;
-            };
-            let placed = self.guest_menu_op(host, gi, &mut menu, |menu, env| {
-                menu.place_recipe(env, &id, p.use_max, creative, None)
-            });
+                .and_then(|play| play.crafting.table.take_if(|(w, ..)| *w == container))?;
+            let placed = self.guest_menu_op(host, gi, &mut menu, apply);
             host.play.entry(conn).or_default().crafting.table = Some((window, state, menu, pos));
             self.lan_send_table_content(host, conn);
             placed
         };
-        if placed == PostPlace::Ghost {
-            host.hub.send_ghost_recipe(conn, p.container, &id);
-        }
+        Some(placed)
     }
 
     /// The guest opened a crafting table (`CraftingTableBlock.getMenuProvider`).
@@ -760,5 +875,248 @@ impl Game<'_> {
         for stack in dropped {
             self.spawn_item(stack, g.position, [0.0, 0.1, 0.0], 40);
         }
+    }
+}
+
+#[cfg(test)]
+mod machine_recipe_placement_tests {
+    use super::*;
+    use horizon_client::lan::{Joined, NetConfig, PlayerSender, guest::Guest, hub::HubConfig};
+    use horizon_core::position::ChunkPos;
+    use horizon_protocol::packets::{
+        configuration::ClientInformation,
+        play::{Serverbound, UseItemOn},
+        recipes::PlaceRecipe,
+    };
+    use std::sync::{Arc, atomic::AtomicI32, mpsc};
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn h234_registered_place_recipe_reaches_actual_furnace_and_preserves_controls() {
+        let mut game = crate::game::native_machines::tests::server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.block_ticks
+            .add_empty_chunk(ChunkPos::new(0, 0))
+            .unwrap();
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        assert!(game.world.loaded(8, 8));
+        game.lan_host(
+            crate::game::lan::LanSettings {
+                port: 0,
+                guest_commands: true,
+                force_game_mode: false,
+            },
+            NetConfig {
+                announce: false,
+                ..NetConfig::loopback(0, "machine-place-test".into(), 2)
+            },
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: true,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: "minecraft:overworld".into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 2,
+                integrated: false,
+                levels: Default::default(),
+            },
+        )
+        .unwrap();
+        let (tx, _rx) = mpsc::channel();
+        let mut guest = Guest::new(
+            Joined {
+                conn: 2,
+                uuid: 234,
+                name: "RecipeGuest".into(),
+                properties: Vec::new(),
+                info: ClientInformation::new(2),
+                brand: "test".into(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
+                configured: Default::default(),
+            },
+            2,
+            [8.5, 200.0, 8.5],
+            2,
+        );
+        guest.dimension = "minecraft:overworld".into();
+        guest.placed = true;
+        guest.loaded = true;
+        guest.selected = 1;
+        guest.permission = 2;
+        let mut host = game.lan.take().unwrap();
+        host.hub.guests.push(guest);
+        let clock = game.world.game_time;
+        let planks = game
+            .stations()
+            .recipe_index
+            .first_display("minecraft:oak_planks")
+            .unwrap();
+        let charcoal = game
+            .stations()
+            .recipe_index
+            .first_display("minecraft:charcoal")
+            .unwrap();
+        let command = |game: &mut Game<'_>, host: &mut LanHost, text: &str| {
+            assert!(
+                game.as_guest(host, 2, |g| g.run_command(text)).unwrap(),
+                "{text}"
+            );
+        };
+        let place = |game: &mut Game<'_>, host: &mut LanHost, container, recipe| {
+            game.lan_guest_packet(
+                host,
+                2,
+                Serverbound::PlaceRecipe(PlaceRecipe {
+                    container,
+                    recipe,
+                    use_max: false,
+                }),
+            );
+        };
+        let open = |game: &mut Game<'_>, host: &mut LanHost, pos| {
+            game.lan_guest_packet(
+                host,
+                2,
+                Serverbound::UseItemOn(UseItemOn {
+                    hand: 0,
+                    pos,
+                    face: 1,
+                    cursor: [0.5, 1.0, 0.5],
+                    inside: false,
+                    world_border: false,
+                    sequence: 234,
+                }),
+            );
+            assert!(host.hub.guest(2).unwrap().ack_up_to.get() >= 234);
+            host.play
+                .get(&2)
+                .and_then(|p| p.crafting.table.as_ref())
+                .map(|(window, ..)| *window)
+                .or_else(|| host.hub.guest(2).unwrap().menu.as_ref().map(|m| m.window))
+                .expect("actual table or machine window opened")
+        };
+        command(&mut game, &mut host, "recipe give @s minecraft:oak_planks");
+        command(&mut game, &mut host, "recipe give @s minecraft:charcoal");
+        assert!(
+            host.hub
+                .guest(2)
+                .unwrap()
+                .recipe_book
+                .knows("minecraft:charcoal")
+        );
+        command(
+            &mut game,
+            &mut host,
+            "item replace entity @s hotbar.0 with oak_log 3",
+        );
+        place(&mut game, &mut host, 0, planks);
+        assert_eq!(
+            host.hub.guest(2).unwrap().craft_grid[0],
+            Some(ItemStack::new("minecraft:oak_log", 1))
+        );
+        assert_eq!(
+            host.hub.guest(2).unwrap().craft_result,
+            Some(ItemStack::new("minecraft:oak_planks", 4))
+        );
+        assert_eq!(
+            host.hub.guest(2).unwrap().inventory[0]
+                .as_ref()
+                .unwrap()
+                .count,
+            2
+        );
+        game.lan_crafting_closed(&mut host, 2, Some(0));
+        assert!(game.run_command("setblock 10 200 8 crafting_table"));
+        let window = open(&mut game, &mut host, [10, 200, 8]);
+        place(&mut game, &mut host, window, planks);
+        let (_, _, table, _) = host.play[&2].crafting.table.as_ref().unwrap();
+        assert_eq!(
+            table.slot(0),
+            Some(&ItemStack::new("minecraft:oak_planks", 4))
+        );
+        game.guest_close_all(&mut host, 2);
+        let mut failures = Vec::new();
+        for (label, count, known) in [
+            ("place", 3, true),
+            ("ghost", 0, true),
+            ("forgotten", 3, false),
+        ] {
+            game.as_guest(&mut host, 2, |g| {
+                g.run_command("clear @s");
+            })
+            .unwrap();
+            if count > 0 {
+                command(
+                    &mut game,
+                    &mut host,
+                    "item replace entity @s hotbar.0 with oak_log 3",
+                );
+            }
+            command(
+                &mut game,
+                &mut host,
+                "item replace entity @s hotbar.8 with stick[minecraft:custom_data={h234:1}] 7",
+            );
+            assert!(game.run_command("setblock 10 200 8 air"));
+            assert!(game.run_command("setblock 10 200 8 furnace"));
+            assert!(game.run_command("item replace block 10 200 8 container.1 with coal[minecraft:custom_data={h234:2}] 2"));
+            let window = open(&mut game, &mut host, [10, 200, 8]);
+            if !known {
+                command(&mut game, &mut host, "recipe take @s minecraft:charcoal");
+            }
+            assert_eq!(
+                host.hub
+                    .guest(2)
+                    .unwrap()
+                    .recipe_book
+                    .knows("minecraft:charcoal"),
+                known
+            );
+            let before = host.hub.guest(2).unwrap().inventory.clone();
+            let pos = (10, 200, 8);
+            let Some(BlockEntity::Furnace(f)) = game.world.block_entities.get(&pos) else {
+                panic!("actual furnace missing")
+            };
+            assert!(f.items[0].is_none() && f.items[2].is_none());
+            let fuel = f.items[1].clone();
+            assert_eq!(fuel.as_ref().unwrap().count, 2);
+            place(&mut game, &mut host, window, charcoal);
+            let Some(BlockEntity::Furnace(f)) = game.world.block_entities.get(&pos) else {
+                panic!("furnace removed")
+            };
+            assert_eq!(f.items[1], fuel);
+            assert!(f.items[2].is_none());
+            let mut expected = before.clone();
+            let input = if label == "place" {
+                expected[0].as_mut().unwrap().count = 2;
+                Some(ItemStack::new("minecraft:oak_log", 1))
+            } else {
+                None
+            };
+            if f.items[0] != input || host.hub.guest(2).unwrap().inventory != expected {
+                failures.push((
+                    label,
+                    f.items.clone(),
+                    host.hub.guest(2).unwrap().inventory.clone(),
+                ));
+            }
+            assert_eq!(host.hub.guest(2).unwrap().uuid, 234);
+            assert_eq!(host.hub.guest(2).unwrap().health, 20.0);
+            assert_eq!(host.hub.guest(2).unwrap().position, [8.5, 200.0, 8.5]);
+            assert_eq!(game.world.game_time, clock);
+            game.guest_close_all(&mut host, 2);
+        }
+        assert!(
+            failures.is_empty(),
+            "actual registered PlaceRecipe furnace failures: {failures:?}"
+        );
     }
 }

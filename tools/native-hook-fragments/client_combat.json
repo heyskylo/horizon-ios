@@ -1,0 +1,25 @@
+{
+  "hooks": [
+    {
+      "name": "client_attack",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_client_attack",
+      "neoforge": "AttackEntityEvent",
+      "side": "client",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
+    },
+    {
+      "name": "client_hurt",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_client_hurt",
+      "side": "client",
+      "cancellable": false,
+      "mod_api": {
+        "contract": "listen"
+      }
+    }
+  ],
+  "rust_summary": "the local player's own combat on the client (`native_client_attack`, `native_client_hurt`).",
+  "doc_summary": "the local player's combat as the window sees it, on any server: `native_client_attack(target, player)` when it attacks an entity, `native_client_hurt(attacker, player)` when the server says it was hurt; `player` says whether the other side is a player. Client only, no answer. Bundles need \"hooks\": @API:client_combat@."
+}

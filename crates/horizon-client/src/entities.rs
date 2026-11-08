@@ -1,5 +1,5 @@
 //! Non-player entities simulated on the client world. Dropped items follow
-//! `ItemEntity.tick`: gravity 0.04, 0.98 drag (block friction on the ground),
+//! `ItemEntity.tick`: gravity 0.04, 0.98F drag (block friction on the ground),
 //! a ground bounce of -0.5, slime landing restitution (0.8, including a moving
 //! piston that is carrying slime), water buoyancy, pickup delay, 6000-tick despawn,
 //! `HoneyBlock.entityInside` when falling against a honey block's side, and
@@ -369,7 +369,8 @@ impl crate::entity_rules::EntityRules for ArmorStand {
 #[derive(Clone, Copy)]
 pub struct ItemStep {
     old_velocity: Vec3,
-    moved: bool,
+    movement: Option<Vec3>,
+    clipped_vertical: bool,
 }
 #[cfg(test)]
 impl ItemEntity {
@@ -523,9 +524,25 @@ impl ItemEntity {
         spilled.extend(crate::item_data::destroyed_container(&mut self.stack));
         Some(spilled)
     }
+    /// The ItemEntity snapshot used by both its move and its noCollision check.
+    fn collision_context(&self) -> horizon_world::collision_context::CollisionContext<'static> {
+        use horizon_world::collision_context::{
+            CollisionContext, CollisionEntity, EntityContextKind,
+        };
+        CollisionContext::for_entity(
+            CollisionEntity {
+                identity: horizon_world::entity_obstruction::EntityIdentity(u64::from(self.id)),
+                kind: EntityContextKind::Item,
+                y: self.position.y,
+                descending: false,
+                main_hand: None,
+            },
+            false,
+        )
+    }
     /// `ItemEntity.tick` on a server: an item whose box is inside a block
     /// (one placed where it lay) has no physics this tick
-    /// (`level.noCollision(box.deflate(1.0E-7))`).
+    /// (`level.noCollision(this, box.deflate(1.0E-7))`).
     pub fn inside_block(&self, world: &World, collision: &BlockCollisionRegistry<'_>) -> bool {
         let mut scene = SceneCollisions {
             world,
@@ -533,7 +550,7 @@ impl ItemEntity {
             subject: None,
         };
         let inner = self.bounds().deflate(Vec3::new(1.0e-7, 1.0e-7, 1.0e-7));
-        !crate::collisions::no_collision_empty(&mut scene, inner)
+        !crate::collisions::no_collision_with_context(&mut scene, inner, self.collision_context())
     }
     /// `Entity.updateFluidInteraction`: entering water after the first tick
     /// runs `doWaterSplashEffect`.
@@ -574,6 +591,22 @@ impl ItemEntity {
             speed,
         );
     }
+    /// `ItemEntity.setUnderwaterMovement` / `setUnderLavaMovement`: horizontal
+    /// drag is a float (`0.99F` / `0.95F`), and a slow item is lifted by
+    /// `5.0E-4F` while slower than `0.06F`.
+    fn set_fluid_movement(&mut self, drag: f32) {
+        let drag = f64::from(drag);
+        let lift = if self.velocity.y < f64::from(0.06_f32) {
+            f64::from(5.0e-4_f32)
+        } else {
+            0.0
+        };
+        self.velocity = Vec3::new(
+            self.velocity.x * drag,
+            self.velocity.y + lift,
+            self.velocity.z * drag,
+        );
+    }
     /// `ItemEntity.tick` up to the blocks' push. The game has just run the
     /// fluid push (`Entity::push_by_fluid`) and passes the heights it found;
     /// it pushes by a bubble column next (`Entity::push_by_bubble_column`) and
@@ -585,10 +618,35 @@ impl ItemEntity {
         facts: &BlockFacts,
         collision: &BlockCollisionRegistry<'_>,
         no_physics: bool,
-        (water_height, lava_height): (f64, f64),
+        heights: (f64, f64),
         entity_boxes: &[Aabb],
         border: Option<&BorderGeometry>,
         blocks: Option<&horizon_world::movement_properties::BoundMovementProperties>,
+    ) -> ItemStep {
+        let step = self.tick_move_before_block_effects(
+            world,
+            facts,
+            collision,
+            no_physics,
+            heights,
+            entity_boxes,
+            border,
+        );
+        self.finish_move_block_effects(world, facts, no_physics, blocks, step);
+        step
+    }
+
+    /// Resolve the item's move before the owner handles block contact and
+    /// resumes the normal block effects.
+    pub fn tick_move_before_block_effects(
+        &mut self,
+        world: &World,
+        facts: &BlockFacts,
+        collision: &BlockCollisionRegistry<'_>,
+        no_physics: bool,
+        (water_height, lava_height): (f64, f64),
+        entity_boxes: &[Aabb],
+        border: Option<&BorderGeometry>,
     ) -> ItemStep {
         self.ticks += 1;
         self.previous = self.position;
@@ -598,18 +656,11 @@ impl ItemEntity {
         let old_velocity = self.velocity;
         let in_water = water_height > f64::from(0.1f32);
         if in_water {
-            // ItemEntity.setUnderwaterMovement
-            self.velocity = Vec3::new(
-                self.velocity.x * 0.99,
-                self.velocity.y + if self.velocity.y < 0.06 { 5.0e-4 } else { 0.0 },
-                self.velocity.z * 0.99,
-            );
+            // ItemEntity.setUnderwaterMovement: 0.99F, 5.0E-4F, 0.06F.
+            self.set_fluid_movement(0.99_f32);
         } else if lava_height > f64::from(0.1f32) {
-            self.velocity = Vec3::new(
-                self.velocity.x * 0.95,
-                self.velocity.y + if self.velocity.y < 0.06 { 5.0e-4 } else { 0.0 },
-                self.velocity.z * 0.95,
-            );
+            // ItemEntity.setUnderLavaMovement: 0.95F, 5.0E-4F, 0.06F.
+            self.set_fluid_movement(0.95_f32);
         } else {
             self.velocity.y -= self.get_gravity();
         }
@@ -640,14 +691,20 @@ impl ItemEntity {
                 wanted
             } else {
                 // `Entity.collide`: the entities that `canBeCollidedWith` the item stop it
-                // too (a boat, a minecart, a shulker, a happy ghast held still), and
+                // too (a boat, a shulker, a happy ghast held still; not a minecart), and
                 // so does the world border (`Entity.collectColliders`).
                 crate::collisions::EntityCollisions {
                     blocks: scene,
                     entities: entity_boxes,
                     border: border.map(|b| (b, [self.position.x, self.position.z])),
                 }
-                .resolve(self.bounds(), wanted, 0.0, self.on_ground)
+                .resolve_with_context(
+                    self.bounds(),
+                    wanted,
+                    0.0,
+                    self.on_ground,
+                    self.collision_context(),
+                )
                 .unwrap_or(Vec3::ZERO)
             };
             if move_applies(wanted, moved) {
@@ -686,22 +743,10 @@ impl ItemEntity {
                     slime,
                 );
             }
-            // Entity.move's last step: soul sand and honey slow the item's
-            // horizontal speed. A move through blocks (noPhysics) returns
-            // before it. `blocks` is None only for the isolated unit tests.
-            if !no_physics && let Some(blocks) = blocks {
-                let factor =
-                    crate::motion::block_speed_factor_at(world, blocks, self.position, None);
-                self.velocity =
-                    horizon_world::entity_move::scale_by_block_speed(self.velocity, factor);
-            }
-            // Entity.move -> applyEffectsFromBlocks: honey then bubble columns
-            // (before air drag), matching ItemEntity.tick.
-            self.apply_honey_slide(world, facts);
-            self.stuck = self.stuck_multiplier(world, facts).unwrap_or(Vec3::ZERO);
             return ItemStep {
                 old_velocity,
-                moved: true,
+                movement: Some(moved),
+                clipped_vertical: !no_physics && moved.y != wanted.y,
             };
         }
         // applyEffectsFromBlocksForLastMovements: still lift/drag while idle.
@@ -710,7 +755,67 @@ impl ItemEntity {
         }
         ItemStep {
             old_velocity,
-            moved: false,
+            movement: None,
+            clipped_vertical: false,
+        }
+    }
+
+    /// The block at `Entity.getOnPosLegacy` for this tick's clipped move.
+    /// Idle ticks retain the entity's collision flags but have no contact.
+    pub fn vertical_contact(
+        &self,
+        world: &World,
+        collision: &BlockCollisionRegistry<'_>,
+        blocks: &horizon_world::movement_properties::BoundMovementProperties,
+        step: ItemStep,
+    ) -> Option<BlockPos> {
+        if !step.clipped_vertical {
+            return None;
+        }
+        let mut scene = SceneCollisions {
+            world,
+            binding: collision,
+            subject: None,
+        };
+        let mut ground = horizon_world::ground_support::GroundState::default();
+        ground
+            .check_support(self.on_ground, self.bounds(), step.movement, |bounds| {
+                horizon_world::ground_support::find_supporting_block(
+                    &mut scene,
+                    horizon_world::collision_context::CollisionContext::empty(false),
+                    self.position,
+                    bounds,
+                    1_000_000,
+                )
+            })
+            .ok()?;
+        Some(crate::motion::legacy_block_support_at(
+            world,
+            blocks,
+            self.position,
+            ground.supporting_block,
+        ))
+    }
+
+    /// Resume the normal block effects after the collision response.
+    pub fn finish_move_block_effects(
+        &mut self,
+        world: &World,
+        facts: &BlockFacts,
+        no_physics: bool,
+        blocks: Option<&horizon_world::movement_properties::BoundMovementProperties>,
+        step: ItemStep,
+    ) {
+        if step.movement.is_some() {
+            // Entity.move applies the block's speed factor before block effects.
+            if !no_physics && let Some(blocks) = blocks {
+                let factor =
+                    crate::motion::block_speed_factor_at(world, blocks, self.position, None);
+                self.velocity =
+                    horizon_world::entity_move::scale_by_block_speed(self.velocity, factor);
+            }
+            self.apply_honey_slide(world, facts);
+            self.stuck = self.stuck_multiplier(world, facts).unwrap_or(Vec3::ZERO);
         }
     }
     /// The rest of `ItemEntity.tick`, after the bubble column's push: slime,
@@ -724,24 +829,28 @@ impl ItemEntity {
         no_physics: bool,
         step: ItemStep,
     ) -> bool {
-        if step.moved {
+        if step.movement.is_some() {
             // Entity.applyEffectsFromBlocks -> SlimeBlock.stepOn, with the
             // vertical speed the bounce just left (before the air drag).
             if !no_physics {
                 self.slime_step_on(world, facts);
             }
-            let mut friction = 0.98;
+            // `float friction = getAirDrag()` (0.98F); on the ground, times
+            // the block's friction as a float, then widened for the scale.
+            let mut friction = 0.98_f32;
             if self.on_ground {
                 let below = world.block(
                     self.position.x.floor() as i32,
                     (self.position.y - 0.999_999).floor() as i32,
                     self.position.z.floor() as i32,
                 );
-                friction = f64::from(facts.get(below).friction) * 0.98;
+                friction *= facts.get(below).friction;
             }
+            let friction = f64::from(friction);
+            let air = f64::from(0.98_f32);
             self.velocity = Vec3::new(
                 self.velocity.x * friction,
-                self.velocity.y * 0.98,
+                self.velocity.y * air,
                 self.velocity.z * friction,
             );
             if self.on_ground && self.velocity.y < 0.0 {
@@ -1240,6 +1349,35 @@ impl ExperienceOrb {
         fluids: &crate::motion::FluidResources,
         on_sound: &mut dyn FnMut([f64; 3], f32),
     ) -> bool {
+        self.tick_among(
+            world,
+            facts,
+            collision,
+            player,
+            server,
+            next_float,
+            border,
+            fluids,
+            on_sound,
+            &[],
+        )
+    }
+    /// [`Self::tick`], its move also stopped by `entities`: the boxes of the
+    /// entities that `canBeCollidedWith` it (`EntityGetter.getEntityCollisions`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn tick_among(
+        &mut self,
+        world: &World,
+        facts: &BlockFacts,
+        collision: &BlockCollisionRegistry<'_>,
+        player: Option<[f64; 3]>,
+        server: bool,
+        next_float: &mut dyn FnMut() -> f32,
+        border: Option<&BorderGeometry>,
+        fluids: &crate::motion::FluidResources,
+        on_sound: &mut dyn FnMut([f64; 3], f32),
+        entities: &[Aabb],
+    ) -> bool {
         self.ticks += 1;
         self.previous = self.position;
         self.update_fluids(world, fluids);
@@ -1300,10 +1438,11 @@ impl ExperienceOrb {
         // `double fallSpeed = getDeltaMovement().y`, taken after the stuck
         // push and before the move.
         let wanted = self.velocity;
-        // Entity.collide: the world border's walls stop the orb too.
+        // Entity.collide: the world border's walls and the entities that
+        // `canBeCollidedWith` it (a boat, a shulker) stop the orb too.
         let border = border.map(|b| (b, [self.position.x, self.position.z]));
         let moved = scene
-            .resolve_in_border(bounds, wanted, 0.0, self.on_ground, border)
+            .resolve_in_border_with(bounds, wanted, 0.0, self.on_ground, border, entities)
             .unwrap_or(Vec3::ZERO);
         self.position = Vec3::new(
             self.position.x + moved.x,
@@ -2267,6 +2406,7 @@ impl ArmorStand {
             let context = horizon_world::collision_context::CollisionContext::for_entity(
                 horizon_world::collision_context::CollisionEntity {
                     identity: horizon_world::entity_obstruction::EntityIdentity(u64::from(self.id)),
+                    kind: horizon_world::collision_context::EntityContextKind::Living,
                     y: self.position.y,
                     descending: false,
                     main_hand: Some(horizon_world::collision_context::CollisionItem::EMPTY),
@@ -3508,10 +3648,51 @@ mod slime_bounce_tests {
 
     #[test]
     fn a_slime_landing_stays_upward_after_item_friction() {
-        // ItemEntity then multiplies Y by 0.98 and applies -0.5 only if still
+        // ItemEntity then multiplies Y by 0.98F and applies -0.5 only if still
         // negative on the ground. A slime bounce must remain positive.
-        let bounced = vertical_collision_velocity(-1.0, -0.5, ITEM_GRAVITY, true, true) * 0.98;
+        let bounced =
+            vertical_collision_velocity(-1.0, -0.5, ITEM_GRAVITY, true, true) * f64::from(0.98_f32);
         assert!(bounced > 0.0);
+    }
+
+    #[test]
+    fn item_air_drag_widens_get_air_drag() {
+        // ItemEntity.tick: getAirDrag 0.98F, not the f64 0.98 (#6814).
+        let mut item = super::honey_slide_tests::falling_item(0.5, 64.0, 0.5, 0.1, 0.2, -0.1);
+        let world = World::new(horizon_world::registry::BlockStateId(0), 0);
+        let facts = BlockFacts {
+            states: Vec::new(),
+            air: horizon_world::registry::BlockStateId(0),
+            woods: Default::default(),
+        };
+        item.tick_settle(
+            &world,
+            &facts,
+            true,
+            ItemStep {
+                old_velocity: item.velocity,
+                movement: Some(item.velocity),
+                clipped_vertical: false,
+            },
+        );
+        assert_eq!(item.velocity.x.to_bits(), 0x3fb9_1687_3333_3334);
+        assert_eq!(item.velocity.y.to_bits(), 0x3fc9_1687_3333_3334);
+        assert_eq!(item.velocity.z.to_bits(), 0xbfb9_1687_3333_3334);
+    }
+
+    #[test]
+    fn item_fluid_drags_widen_float_constants() {
+        // setUnderwaterMovement 0.99F / 5.0E-4F; setUnderLavaMovement 0.95F.
+        let mut water = super::honey_slide_tests::falling_item(0.5, 64.0, 0.5, 0.1, 0.01, -0.2);
+        water.set_fluid_movement(0.99_f32);
+        assert_eq!(water.velocity.x.to_bits(), 0x3fb9_5810_6666_6667);
+        assert_eq!(water.velocity.y.to_bits(), 0x3f85_8106_25ae_147b);
+        assert_eq!(water.velocity.z.to_bits(), 0xbfc9_5810_6666_6667);
+        let mut lava = super::honey_slide_tests::falling_item(0.5, 64.0, 0.5, 0.1, 0.01, -0.2);
+        lava.set_fluid_movement(0.95_f32);
+        assert_eq!(lava.velocity.x.to_bits(), 0x3fb8_51eb_8000_0000);
+        assert_eq!(lava.velocity.y.to_bits(), 0x3f85_8106_25ae_147b);
+        assert_eq!(lava.velocity.z.to_bits(), 0xbfc8_51eb_8000_0000);
     }
 
     #[test]

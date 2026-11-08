@@ -10,6 +10,7 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.RegistryDataLoader;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.Bootstrap;
 import net.minecraft.server.RegistryLayer;
 import net.minecraft.server.packs.PackType;
@@ -18,17 +19,21 @@ import net.minecraft.server.packs.resources.MultiPackResourceManager;
 import net.minecraft.tags.EnchantmentTags;
 import net.minecraft.tags.TagLoader;
 import net.minecraft.util.RandomSource;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.enchantment.Enchantment;
 import net.minecraft.world.item.enchantment.EnchantmentHelper;
 import net.minecraft.world.item.enchantment.EnchantmentInstance;
+import net.minecraft.world.item.enchantment.ItemEnchantments;
 
 /**
  * Original oracle: loads the vanilla data pack's enchantment registry and
  * replays the enchanting table offer computation (EnchantmentMenu.slotsChanged
  * and getEnchantmentList) through EnchantmentHelper for fixture lines
- * "seed bookcases item", printing costs, clues and the enchantments applied.
+ * "seed bookcases item damage enchantments", printing costs, clues and the
+ * enchantments applied. The stack carries the case's damage and
+ * minecraft:enchantments, and the isEnchantable gate is applied first.
  */
 public final class VanillaEnchantingOracle {
     private static String name(EnchantmentInstance e) {
@@ -67,7 +72,22 @@ public final class VanillaEnchantingOracle {
                 String[] f = line.split(" ");
                 int seed = Integer.parseInt(f[0]), bookcases = Integer.parseInt(f[1]);
                 ItemStack stack = new ItemStack(BuiltInRegistries.ITEM.getValue(Identifier.parse(f[2])));
+                if (f.length > 3) stack.setDamageValue(Integer.parseInt(f[3]));
+                if (f.length > 4 && !f[4].equals("-")) {
+                    var levels = new ItemEnchantments.Mutable(ItemEnchantments.EMPTY);
+                    var enchants = access.lookupOrThrow(Registries.ENCHANTMENT);
+                    for (String part : f[4].split(",")) {
+                        String[] kv = part.split("=");
+                        levels.set(enchants.getOrThrow(ResourceKey.create(Registries.ENCHANTMENT, Identifier.parse(kv[0]))),
+                                   Integer.parseInt(kv[1]));
+                    }
+                    stack.set(DataComponents.ENCHANTMENTS, levels.toImmutable());
+                }
                 int[] costs = new int[3];
+                if (!stack.isEnchantable()) {
+                    for (int i = 0; i < 3; i++) w.println(line + " " + i + " 0 - -");
+                    continue;
+                }
                 random.setSeed(seed);
                 for (int i = 0; i < 3; i++) {
                     costs[i] = EnchantmentHelper.getEnchantmentCost(random, i, bookcases, stack);

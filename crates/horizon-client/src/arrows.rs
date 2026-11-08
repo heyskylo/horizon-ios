@@ -172,6 +172,8 @@ pub struct ArrowState {
     pub pickup: Pickup,
     /// Its entity type is `SpectralArrow` (the type is its own, not the pickup item's).
     pub spectral: bool,
+    /// `SpectralArrow` saved duration; its constructor default is 200.
+    pub spectral_duration: i32,
     /// `pickupItemStack`: what picking the arrow up gives.
     pub pickup_item: crate::items::ItemStack,
     /// `AbstractArrow.firedFromWeapon`: the crossbow or bow it was shot from.
@@ -240,6 +242,7 @@ impl ArrowState {
             last_state: None,
             pickup: Pickup::Disallowed,
             spectral: false,
+            spectral_duration: 200,
             pickup_item: crate::items::ItemStack::new("minecraft:arrow", 1),
             fired_from_weapon: None,
             no_physics: false,
@@ -331,6 +334,17 @@ pub struct ArrowScene<'a, 'r> {
     /// The `mob_griefing` and `tnt_explodes` game rules.
     pub mob_griefing: bool,
     pub tnt_explodes: bool,
+    pub owners: &'a dyn OwnerLookup,
+}
+/// `EntityReference.getEntity` for an owner the arrow only knows by UUID.
+pub trait OwnerLookup {
+    /// A loaded entity other than a player has this UUID.
+    fn non_player_entity(&self, uuid: [i32; 4]) -> bool;
+}
+impl OwnerLookup for () {
+    fn non_player_entity(&self, _: [i32; 4]) -> bool {
+        false
+    }
 }
 impl ArrowScene<'_, '_> {
     fn block(&self, p: BlockPos) -> BlockStateId {
@@ -1065,9 +1079,17 @@ impl Ticker<'_, '_, '_, '_> {
         self.st.pierce = 0;
         self.st.pierced.clear();
     }
-    /// `Projectile.mayInteract`: a mob's arrows need `mob_griefing`.
+    /// `Projectile.mayInteract`: an arrow owned by anything but a player needs `mob_griefing`.
     fn may_interact(&self) -> bool {
-        !matches!(self.p.owner, Some(Who::Mob(_))) || self.scene.mob_griefing
+        let by_entity = match self.p.owner {
+            Some(Who::Mob(_)) => true,
+            Some(Who::Player) => false,
+            None => self
+                .p
+                .owner_uuid
+                .is_some_and(|u| self.scene.owners.non_player_entity(u)),
+        };
+        !by_entity || self.scene.mob_griefing
     }
     /// `onProjectileHit` of the blocks a burning projectile lights.
     fn block_reaction(&self, state: BlockStateId) -> Option<BlockReaction> {

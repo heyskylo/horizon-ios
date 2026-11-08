@@ -96,7 +96,7 @@ pub fn register_iron(m: &mut Mob) {
         3,
         NearestTarget::player(true)
             .interval(10)
-            .when(|m, _| m.extra.anger > 0),
+            .when(super::tame::angry_at_player),
     );
     m.ai.targets.add(
         3,
@@ -399,17 +399,11 @@ pub fn iron_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
         attack
     };
     let from = [m.position.x, m.position.y, m.position.z];
-    match who {
-        Who::Player => cx.events.push(MobEvent::AttackPlayer(amount, from)),
-        Who::Mob(id) => cx.events.push(MobEvent::AttackMob {
-            target: id,
-            amount,
-            source: super::Damage::mob(m.id, from),
-        }),
-    }
-    cx.events.push(MobEvent::Launch {
+    // The hit, then the toss only if it landed (game/creatures.rs).
+    cx.events.push(MobEvent::IronGolemHit {
         target: who,
-        up: 0.4,
+        amount,
+        source: super::Damage::mob(m.id, from),
     });
     cx.events.push(MobEvent::Sound(
         "entity.iron_golem.attack",
@@ -445,20 +439,17 @@ pub fn client_tick(m: &mut Mob) {
         m.extra.counter -= 1;
     }
 }
-/// `IronGolem.aiStep` timers and anger.
-pub fn iron_ai_step(m: &mut Mob) {
+/// `IronGolem.aiStep` timers and anger: `updatePersistentAnger(level, true)`,
+/// as a wolf's, so any target (a monster too) restarts the anger timer with a
+/// draw of the golem's random every tick it is held.
+pub fn iron_ai_step(m: &mut Mob, w: &MobWorld) {
     if m.extra.anim_ticks > 0 {
         m.extra.anim_ticks -= 1;
     }
     if m.extra.counter > 0 {
         m.extra.counter -= 1;
     }
-    if m.extra.anger > 0 {
-        m.extra.anger -= 1;
-        if m.extra.anger == 0 && m.ai.target == Some(Who::Player) {
-            m.ai.target = None;
-        }
-    }
+    super::tame::update_persistent_anger(m, w);
 }
 /// `Crackiness.GOLEM` texture for the health left.
 pub fn crackiness(m: &Mob) -> Option<&'static str> {
@@ -532,7 +523,7 @@ fn snowball_attack(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
     let mut p = Projectile::new(ProjectileKind::Snowball, start, Some(Who::Mob(m.id)));
     // SnowGolem.rangedAttackUncertainty: 12 on every difficulty.
     p.shoot(
-        &mut crate::projectiles::own_random(m),
+        &mut crate::random_source::entity(),
         [xd, yd + yo - start.y, zd],
         1.6,
         12.0,
@@ -554,7 +545,7 @@ pub fn snow_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         m.position.z.floor() as i32,
     );
     // EnvironmentAttributes.SNOW_GOLEM_MELTS: the hot biomes and the Nether.
-    if w.nether || w.temperature(x, y, z) > 1.0 {
+    if w.dimension_type.snow_golem_melts || w.temperature(x, y, z) > 1.0 {
         events.push(MobEvent::HurtSelf {
             mob: m.id,
             kind: super::DamageKind::OnFire,
@@ -564,6 +555,7 @@ pub fn snow_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if !w.mob_griefing {
         return;
     }
+    let mut placed = Vec::new();
     for i in 0..4 {
         let xx = (m.position.x + f64::from((i % 2 * 2 - 1) as f32 * 0.25)).floor() as i32;
         let zz = (m.position.z + f64::from((i / 2 % 2 * 2 - 1) as f32 * 0.25)).floor() as i32;
@@ -574,7 +566,12 @@ pub fn snow_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             below.name.as_ref(),
             "minecraft:ice" | "minecraft:packed_ice" | "minecraft:barrier"
         );
-        if here.name.as_ref() == "minecraft:air" && below.full_collision && !ice {
+        if here.name.as_ref() == "minecraft:air"
+            && below.full_collision
+            && !ice
+            && !placed.contains(&[xx, y, zz])
+        {
+            placed.push([xx, y, zz]);
             events.push(MobEvent::SetBlockName {
                 mob: Some(m.id),
                 pos: [xx, y, zz],
@@ -582,6 +579,14 @@ pub fn snow_ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
                 effect: false,
                 flags: horizon_world::level::flags::UPDATE_ALL,
             });
+            if let Some(state) = w.registry.default_state("minecraft:snow") {
+                events.push(MobEvent::GameEvent {
+                    event: "minecraft:block_place",
+                    at: [f64::from(xx) + 0.5, f64::from(y) + 0.5, f64::from(zz) + 0.5],
+                    source: m.id,
+                    state,
+                });
+            }
         }
     }
     let _ = z;
@@ -597,6 +602,54 @@ mod tests {
         let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
         kind.species = species;
         Mob::new(id, Arc::new(kind), at, 0.0)
+    }
+
+    #[test]
+    fn snow_trail_posts_block_place_with_golem_and_snow_state() {
+        let ran = crate::mobs::world::with_built_test_world(
+            &[],
+            |world, reg| {
+                world
+                    .chunks
+                    .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+                world
+                    .set(1, 0, 1, reg.default_state("minecraft:stone").unwrap())
+                    .unwrap();
+            },
+            |w, _| {
+                let mut golem = mob(42, Species::SnowGolem, Vec3::new(1.5, 1.0, 1.5));
+                let mut events = Vec::new();
+                snow_ai_step(&mut golem, w, &mut events);
+                let snow = w.registry.default_state("minecraft:snow").unwrap();
+                let posted: Vec<_> = events
+                    .iter()
+                    .filter_map(|e| match e {
+                        MobEvent::GameEvent {
+                            event,
+                            at,
+                            source,
+                            state,
+                        } => Some((*event, *at, *source, *state)),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(
+                    posted,
+                    vec![("minecraft:block_place", [1.5, 1.5, 1.5], 42, snow)]
+                );
+                events.clear();
+                let mut denied = w.clone();
+                denied.mob_griefing = false;
+                snow_ai_step(&mut golem, &denied, &mut events);
+                assert!(
+                    events
+                        .iter()
+                        .all(|e| !matches!(e, MobEvent::GameEvent { .. }))
+                );
+            },
+        );
+        // Without the vanilla data under .local/horizon-client the world cannot be built: the test has nothing to check.
+        let _ = ran;
     }
 
     /// `MoveTowardsTargetGoal.canUse` picks a random spot within 16 blocks and
@@ -710,6 +763,23 @@ mod tests {
         }
     }
 
+    /// The golems' target predicates test `instanceof Enemy`: the zombie
+    /// horse and camel husk share the monster category but are not `Enemy`.
+    #[test]
+    fn mounts_in_the_monster_category_are_not_golem_prey() {
+        let prey = |sp| {
+            let mut m = mob(2, sp, Vec3::new(0.5, 64.0, 0.5));
+            let mut kind = (*m.kind).clone();
+            kind.category = "monster".into();
+            m.kind = Arc::new(kind);
+            golem_prey(&m.seen(None))
+        };
+        assert!(prey(Species::Zombie));
+        assert!(!prey(Species::Creeper));
+        assert!(!prey(Species::ZombieHorse));
+        assert!(!prey(Species::CamelHusk));
+    }
+
     /// `IronGolem.canAttack` refuses creepers, and `HurtByTargetGoal.canUse`
     /// asks it: the creeper that hurt the golem is never fought back, while
     /// a zombie that hurts it is.
@@ -750,6 +820,7 @@ mod tests {
             w.player = Some(test_player(Vec3::new(3.5, 64.0, 0.5)));
             let mut golem = mob(1, Species::IronGolem, Vec3::new(0.5, 64.0, 0.5));
             golem.extra.anger = 100;
+            golem.extra.angry_at = Some(Who::Player);
             let mut events = Vec::new();
             let mut lr = horizon_core::random::LegacyRandom::new(0);
             let mut cx = Cx {
@@ -759,7 +830,7 @@ mod tests {
             };
             let mut goal = NearestTarget::player(true)
                 .interval(0)
-                .when(|m, _| m.extra.anger > 0);
+                .when(super::super::tame::angry_at_player);
             assert!(goal.can_use(&mut golem, &mut cx));
             goal.start(&mut golem, &mut cx);
             assert_eq!(golem.ai.target, Some(Who::Player));
@@ -801,8 +872,9 @@ mod created_golem_tests {
                 let mut m = Mob::new(id, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
                 // `CarvedPumpkinBlock.trySpawnGolem`: setPlayerCreated(true).
                 m.extra.player_created = created;
-                // The anger a player's hit gives it (`after_hurt`).
+                // The anger at the player who hit it (`updatePersistentAnger`).
                 m.extra.anger = 400;
+                m.extra.angry_at = Some(Who::Player);
                 m
             };
             let zombie = Mob::new(

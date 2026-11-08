@@ -14,6 +14,16 @@ impl Game<'_> {
     /// Whether mob `i` takes a right click with `hand`'s item on this
     /// client (`Mob.interact`'s result consumes the action).
     pub(super) fn remote_mob_takes(&mut self, i: usize, hand: Hand) -> bool {
+        self.remote_mob_answers(i, hand, true)
+    }
+
+    /// The same answer, changing nothing: an allay's and a dyed sheep's answer is the
+    /// interaction itself, and the controller's guide asks every frame.
+    pub(super) fn remote_mob_would_take(&mut self, i: usize, hand: Hand) -> bool {
+        self.remote_mob_answers(i, hand, false)
+    }
+
+    fn remote_mob_answers(&mut self, i: usize, hand: Hand, act: bool) -> bool {
         let Some(m) = self.mobs.get(i).filter(|m| m.alive()) else {
             return false;
         };
@@ -69,6 +79,7 @@ impl Game<'_> {
             // TamableAnimal (wolf, cat, parrot) on a client: CONSUME once tame.
             Species::Wolf | Species::Cat | Species::Parrot => m.extra.tame,
             // Allay.mobInteract: gives an item or takes it back.
+            Species::Allay if !act => self.allay_would_take(i, hand, stack.cloned()),
             Species::Allay => self.predict_allay_interaction(i, hand, stack.cloned()),
             Species::Cow | Species::Goat => item == "minecraft:bucket" && !baby,
             Species::Mooshroom => {
@@ -78,6 +89,9 @@ impl Game<'_> {
                         "minecraft:bucket" | "minecraft:bowl" | "minecraft:shears"
                     ) || m.extra.variant == 1
                         && horizon_client::flowers::stew_effect(item).is_some())
+            }
+            Species::Sheep if !act => {
+                item == "minecraft:shears" || self.sheep_would_take_dye(i, hand)
             }
             Species::Sheep => item == "minecraft:shears" || self.interact_sheep_dye(i, hand, true),
             // SnowGolem.mobInteract: shears take the pumpkin off.

@@ -196,6 +196,27 @@ impl BlockShapes {
     }
 }
 
+/// The querying entity class, captured by the real caller. Empty and position-only
+/// queries have no entity and always use the ordinary shape tables.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
+pub enum ShapeEntityKind {
+    Item,
+    Player,
+    Living,
+    Other,
+}
+impl ShapeEntityKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Item => "item",
+            Self::Player => "player",
+            Self::Living => "living",
+            Self::Other => "other",
+        }
+    }
+}
+
 /// A state property a block declares on its own, beside its template's.
 /// A block's states become the template's states times these values, so a
 /// pipe can have a connection per side without a template that has one.
@@ -236,6 +257,11 @@ struct BlockFile {
     shapes: Option<BlockShapes>,
     collision_shapes: Option<BlockShapes>,
     #[serde(default)]
+    outline_context_shapes: BTreeMap<ShapeEntityKind, BlockShapes>,
+    #[serde(default)]
+    collision_context_shapes: BTreeMap<ShapeEntityKind, BlockShapes>,
+    interaction_shapes: Option<BlockShapes>,
+    #[serde(default)]
     state_properties: BTreeMap<String, StateProperty>,
     #[serde(default)]
     default_state: BTreeMap<String, String>,
@@ -269,6 +295,11 @@ pub struct Block {
     pub properties: BlockProperties,
     pub shapes: Option<BlockShapes>,
     pub collision_shapes: Option<BlockShapes>,
+    /// Independent overrides for actual entity queries; omitted kinds use the defaults.
+    pub outline_context_shapes: BTreeMap<ShapeEntityKind, BlockShapes>,
+    pub collision_context_shapes: BTreeMap<ShapeEntityKind, BlockShapes>,
+    /// Ray-face override; does not replace the outline hit point or create a hit.
+    pub interaction_shapes: Option<BlockShapes>,
     /// State properties of its own, which its template does not have.
     pub state_properties: BTreeMap<String, StateProperty>,
     /// State properties overlaid on the template default.
@@ -333,6 +364,7 @@ struct ItemFile {
     #[serde(default)]
     components: BTreeMap<String, serde_json::Value>,
     crafting_remainder: Option<String>,
+    place_block: Option<String>,
 }
 
 /// An item the mod adds: a vanilla template item's components under a new
@@ -350,6 +382,9 @@ pub struct Item {
     /// What it leaves in the crafting grid (`Item.Properties.craftRemainder`):
     /// a vanilla item or one of the mod's own.
     pub crafting_remainder: Option<String>,
+    /// An ordinary `BlockItem` binding to a vanilla block or this namespace's block.
+    /// Components still come from `template`; placement retains this item's identity.
+    pub place_block: Option<String>,
 }
 
 /// `MobEffectCategory`.
@@ -782,6 +817,9 @@ impl Content {
                 properties: file.properties,
                 shapes: file.shapes,
                 collision_shapes: file.collision_shapes,
+                outline_context_shapes: file.outline_context_shapes,
+                collision_context_shapes: file.collision_context_shapes,
+                interaction_shapes: file.interaction_shapes,
                 state_properties: file.state_properties,
                 default_state: file.default_state,
                 item: file.item,
@@ -812,6 +850,7 @@ impl Content {
                 rarity: file.rarity,
                 components: file.components,
                 crafting_remainder: file.crafting_remainder,
+                place_block: file.place_block,
             };
             check_item(&item).map_err(|e| format!("{name}: {e}"))?;
             if !ids.insert(item.id.clone()) {
@@ -991,6 +1030,13 @@ fn check_item(item: &Item) -> Result<(), String> {
     if item.max_stack_size.is_some_and(|n| !(1..=99).contains(&n)) {
         return Err("max_stack_size is 1 to 99".into());
     }
+    if let Some(block) = &item.place_block
+        && (!namespaced_id(block)
+            || block.split_once(':').map(|(ns, _)| ns) != item.id.split_once(':').map(|(ns, _)| ns)
+                && !vanilla_id(block))
+    {
+        return Err("place_block is a vanilla block or a block in this item's namespace".into());
+    }
     check_components(&item.components, &["max_stack_size", "rarity"])
 }
 
@@ -1003,7 +1049,14 @@ fn check_block(file: &Block) -> Result<(), String> {
             file.template
         ));
     }
-    for shapes in file.shapes.iter().chain(file.collision_shapes.iter()) {
+    for shapes in file
+        .shapes
+        .iter()
+        .chain(file.collision_shapes.iter())
+        .chain(file.outline_context_shapes.values())
+        .chain(file.collision_context_shapes.values())
+        .chain(file.interaction_shapes.iter())
+    {
         shapes.check()?;
     }
     for (name, property) in &file.state_properties {
@@ -1301,6 +1354,49 @@ capabilities = ["registries"]
     }
 
     #[test]
+    fn place_block_checks_files_and_native_declarations() {
+        for (i, target) in ["ruby:frame", "minecraft:stone"].iter().enumerate() {
+            let text = format!(r#"{{"template":"minecraft:stick","place_block":"{target}"}}"#);
+            let content = hmod(
+                &format!("place-block-{i}"),
+                MANIFEST_TEXT,
+                &[("data/ruby/horizon/item/empty_frame.json", text.as_bytes())],
+            )
+            .unwrap();
+            assert_eq!(content.items[0].place_block.as_deref(), Some(*target));
+        }
+        for (i, target) in ["stone", "other:frame", "ruby:Bad", "ruby:"]
+            .iter()
+            .enumerate()
+        {
+            let text = format!(r#"{{"template":"minecraft:stick","place_block":"{target}"}}"#);
+            assert!(
+                hmod(
+                    &format!("bad-place-block-{i}"),
+                    MANIFEST_TEXT,
+                    &[("data/ruby/horizon/item/empty_frame.json", text.as_bytes())]
+                )
+                .is_err()
+            );
+            let mut content = Content::declared("ruby");
+            assert!(
+                content
+                    .declare(
+                        &[],
+                        &[Item {
+                            id: "ruby:empty_frame".into(),
+                            template: "minecraft:stick".into(),
+                            place_block: Some((*target).into()),
+                            ..Default::default()
+                        }]
+                    )
+                    .is_err()
+            );
+            assert!(content.items.is_empty());
+        }
+    }
+
+    #[test]
     fn blocks_and_items_declared_in_code_pass_the_files_checks() {
         let block = |id: &str| Block {
             id: id.into(),
@@ -1397,6 +1493,9 @@ capabilities = ["registries"]
                 template: "minecraft:iron_block".into(),
                 shapes: None,
                 collision_shapes: None,
+                outline_context_shapes: BTreeMap::new(),
+                collision_context_shapes: BTreeMap::new(),
+                interaction_shapes: None,
                 state_properties: BTreeMap::new(),
                 default_state: BTreeMap::new(),
                 properties: BlockProperties {
@@ -2282,5 +2381,49 @@ capabilities = ["registries"]
         ] {
             assert!(check_path(bad).is_err(), "{bad}");
         }
+    }
+}
+
+#[cfg(test)]
+mod context_shape_tests {
+    use super::*;
+    #[test]
+    fn context_shape_selectors_and_tables_are_validated() {
+        for selector in ["item", "player", "living", "other"] {
+            for channel in ["outline_context_shapes", "collision_context_shapes"] {
+                let text = format!(
+                    r#"{{"template":"minecraft:stone","{channel}":{{"{selector}":{{"default":[]}}}}}}"#
+                );
+                let _: BlockFile = serde_json::from_str(&text).unwrap();
+            }
+        }
+        for selector in ["none", "Item", "minecraft:item", "entity"] {
+            let text = format!(
+                r#"{{"template":"minecraft:stone","collision_context_shapes":{{"{selector}":{{"default":[]}}}}}}"#
+            );
+            assert!(serde_json::from_str::<BlockFile>(&text).is_err());
+        }
+        let mut block = Block {
+            template: "minecraft:stone".into(),
+            ..Default::default()
+        };
+        let bad = BlockShapes {
+            property: String::new(),
+            properties: vec![],
+            values: BTreeMap::new(),
+            default: Some(vec![[1., 0., 0., 0., 1., 1.]]),
+        };
+        block
+            .outline_context_shapes
+            .insert(ShapeEntityKind::Player, bad.clone());
+        assert!(check_block(&block).is_err());
+        block.outline_context_shapes.clear();
+        block
+            .collision_context_shapes
+            .insert(ShapeEntityKind::Item, bad.clone());
+        assert!(check_block(&block).is_err());
+        block.collision_context_shapes.clear();
+        block.interaction_shapes = Some(bad);
+        assert!(check_block(&block).is_err());
     }
 }

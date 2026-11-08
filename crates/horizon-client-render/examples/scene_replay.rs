@@ -224,6 +224,8 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         settings.translucent_batching,
         false,
         false,
+        false,
+        false,
     ))?;
     drop(pixels);
     render.pixels.pack();
@@ -243,6 +245,7 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
         settings.fxaa,
         settings.taa,
         settings.upscale,
+        0.85,
     );
     let mut notes = Vec::new();
     let mut note = |what: &str, result: horizon_client_render::Result<()>| {

@@ -298,6 +298,7 @@ pub(super) fn item_view(s: &ItemStack) -> ItemView {
             .collect(),
         potion: s.potion().map(str::to_owned),
         custom_name: s.custom_name().is_some(),
+        custom_data: None,
     }
 }
 impl Game<'_> {
@@ -392,6 +393,15 @@ impl Game<'_> {
         let tree = self.adv.tree.clone();
         self.adv.progress = progress;
         self.ui.registries.advancements = tree.list.iter().map(|a| a.id.clone()).collect();
+        // `PlayerAdvancements.checkForAutomaticTriggers`: an advancement with no
+        // criteria is never done (`AdvancementRequirements.test` is false), but
+        // its rewards are granted as the progress loads. Vanilla's `award(holder, "")` finds no `""`
+        // criterion to grant and so returns without a toast or an announcement;
+        // the reward grant is the whole effect, and it happens again on the next
+        // load because there is no criterion to record it.
+        for index in tree.automatic() {
+            self.grant_rewards(index);
+        }
     }
     pub(super) fn save_advancements(&self) {
         if !self.adv.loaded || self.remote.is_some() || self.no_player_here() {
@@ -521,6 +531,8 @@ impl Game<'_> {
         let stats = (host.play.get(&conn).map(|p| &p.stats)).filter(|s| s.loaded);
         adv::PlayerFacts {
             level: asked.level.then_some(g.xp_level),
+            // The guest's food as last written back from its body.
+            food: Some((g.food, g.saturation)),
             stats: stats.filter(|_| asked.stats).map(|s| s.values.clone()),
             advancements: asked
                 .advancements
@@ -552,13 +564,17 @@ impl Game<'_> {
         me
     }
     /// The player's level, statistics, advancements and recipes that
-    /// `asked` names, for `PlayerPredicate`; records not loaded stay `None`.
+    /// `asked` names, and its food, for `PlayerPredicate`; records not
+    /// loaded stay `None`.
     fn player_facts(&self, asked: adv::FactsAsked) -> adv::PlayerFacts {
-        if self.player.is_none() {
+        let Some(p) = self.player.as_ref() else {
             return adv::PlayerFacts::default();
-        }
+        };
         adv::PlayerFacts {
             level: asked.level.then_some(self.experience.level),
+            // `ServerPlayer.getFoodData`, read by every player predicate:
+            // two numbers, so always filled.
+            food: Some((p.health.food.food, p.health.food.saturation)),
             stats: (asked.stats && self.stats.loaded).then(|| self.stats.values.clone()),
             advancements: (asked.advancements && self.adv.loaded)
                 .then(|| (self.adv.tree.clone(), self.adv.progress.clone())),
@@ -661,6 +677,8 @@ impl Game<'_> {
             ..Default::default()
         }
     }
+    /// `Entity.get`: the mob's live custom-name component and type variants,
+    /// alongside the other state the entity predicate asks for.
     pub(super) fn mob_entity(&self, m: &horizon_client::mobs::Mob) -> EntityView {
         // mainhand, offhand, head, chest, legs, feet.
         let slot = |i: &Option<std::sync::Arc<str>>| {
@@ -679,6 +697,24 @@ impl Game<'_> {
             armor.damage = m.extra.body_damage.max(0) as u32;
             item_view(&armor)
         });
+        // Only the new snapshot is adopted; the existing view fields stay as
+        // constructed above. Body and other view consumers stay unprojected.
+        use horizon_client::mobs::finalize;
+        for (view, slot) in equipment[..6].iter_mut().zip([
+            finalize::MAINHAND,
+            finalize::OFFHAND,
+            finalize::HEAD,
+            finalize::CHEST,
+            finalize::LEGS,
+            finalize::FEET,
+        ]) {
+            if let Some(view) = view {
+                let data = finalize::item_stack(m, slot)
+                    .and_then(|stack| stack.custom_data().cloned())
+                    .unwrap_or_default();
+                view.custom_data = Some(horizon_world::nbt::Tag::Compound(data));
+            }
+        }
         let passengers: Vec<EntityView> = self
             .mobs
             .iter()
@@ -720,6 +756,7 @@ impl Game<'_> {
                 .map(|(id, value)| (id.to_owned(), value))
                 .into_iter()
                 .collect(),
+            custom_name: m.custom_name_text.as_ref().map(Text::component),
             passengers,
             nbt,
             team: self.mob_team_of(m).map(|t| t.name.clone()),
@@ -917,47 +954,7 @@ impl Game<'_> {
         if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
             self.native_player_advancement_done(player, &name, &a.id);
         }
-        // AdvancementRewards.grant
-        if a.rewards.experience > 0 {
-            let old_level = self.experience.level;
-            let points = self.xp_change(a.rewards.experience).map_or(0, |p| p.max(0));
-            let gained_level = self.experience.give(points);
-            if let Some(level) = gained_level {
-                self.play_level_up(1, level);
-            }
-            self.native_player_level_changed(old_level);
-        }
-        // ServerPlayer.awardRecipesByKey: the rewards that name a recipe.
-        let rewards: Vec<String> = a
-            .rewards
-            .recipes
-            .iter()
-            .filter(|r| world_stations!(self).recipe_index.contains(r))
-            .cloned()
-            .collect();
-        let (_, unlocked) = self
-            .level
-            .recipe_book
-            .add_recipes(&world_stations!(self).recipe_index, &rewards);
-        for table in &a.rewards.loot {
-            let items = world_items!(self).loot_table(table, false, None, &mut self.world.random);
-            for s in items {
-                // Inventory.add returns false when anything is left, and
-                // AdvancementRewards then drops that remainder with no
-                // pickup sound. A stack the inventory takes whole plays
-                // entity.item.pickup at the player's feet.
-                if let Some(rest) = self.give(s) {
-                    if let Some(eye) = self.eye_position() {
-                        self.spawn_item(rest, eye, [0.0; 3], 0);
-                    }
-                } else {
-                    self.advancement_pickup_sound();
-                }
-            }
-        }
-        if let Some(function) = &a.rewards.function {
-            self.run_advancement_reward_function(function);
-        }
+        let unlocked = self.grant_rewards(index);
         if let Some(d) = &a.display {
             // A network player's client shows its own toast.
             if d.show_toast
@@ -1008,6 +1005,56 @@ impl Game<'_> {
             }
         }
         self.recipe_unlocked(&unlocked);
+    }
+    /// `AdvancementRewards.grant`: the experience, recipes, loot and function of
+    /// a finished advancement, and the recipes it unlocked for the
+    /// `recipe_unlocked` trigger, which the caller runs after its toast and
+    /// announcement. Returns those recipes.
+    fn grant_rewards(&mut self, index: usize) -> Vec<String> {
+        let tree = self.adv.tree.clone();
+        let a = &tree.list[index];
+        // AdvancementRewards.grant
+        if a.rewards.experience > 0 {
+            let old_level = self.experience.level;
+            let points = self.xp_change(a.rewards.experience).map_or(0, |p| p.max(0));
+            let gained_level = self.experience.give(points);
+            if let Some(level) = gained_level {
+                self.play_level_up(1, level);
+            }
+            self.native_player_level_changed(old_level);
+        }
+        // ServerPlayer.awardRecipesByKey: the rewards that name a recipe.
+        let rewards: Vec<String> = a
+            .rewards
+            .recipes
+            .iter()
+            .filter(|r| world_stations!(self).recipe_index.contains(r))
+            .cloned()
+            .collect();
+        let (_, unlocked) = self
+            .level
+            .recipe_book
+            .add_recipes(&world_stations!(self).recipe_index, &rewards);
+        for table in &a.rewards.loot {
+            let items = world_items!(self).loot_table(table, false, None, &mut self.world.random);
+            for s in items {
+                // Inventory.add returns false when anything is left, and
+                // AdvancementRewards then drops that remainder with no
+                // pickup sound. A stack the inventory takes whole plays
+                // entity.item.pickup at the player's feet.
+                if let Some(rest) = self.give(s) {
+                    if let Some(eye) = self.eye_position() {
+                        self.spawn_item(rest, eye, [0.0; 3], 0);
+                    }
+                } else {
+                    self.advancement_pickup_sound();
+                }
+            }
+        }
+        if let Some(function) = &a.rewards.function {
+            self.run_advancement_reward_function(function);
+        }
+        unlocked
     }
     /// `InventoryChangeTrigger`, checked when the inventory changes.
     pub(super) fn check_inventory_trigger(&mut self) {
@@ -2393,6 +2440,91 @@ mod tests {
 
     #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn mob_name_components_read_live_text_without_saved_nbt() {
+        use crate::game::{Audio, Options, Settings, commands::Target, load_resources};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            Instant::now(),
+            false,
+            true,
+            &crate::game::Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.build_registries();
+        let kind = game.res.mob_types()["minecraft:pig"].clone();
+        game.mobs.push(horizon_client::mobs::Mob::new(
+            12500,
+            kind,
+            Vec3::new(4.5, 200.0, 4.5),
+            0.0,
+        ));
+        let matches = |game: &Game<'_>, key: &str, want: Value| {
+            let view = game.entity_view_of(Target::Mob(12500));
+            assert_eq!(view.kind, "minecraft:pig");
+            assert!(view.nbt.is_none());
+            let mut predicate = serde_json::Map::new();
+            predicate.insert(
+                key.into(),
+                serde_json::json!({"minecraft:custom_name": want}),
+            );
+            adv::entity(
+                &Value::Object(predicate),
+                &view,
+                &View(game),
+                [4.5, 200.0, 4.5],
+            )
+        };
+        for key in ["components", "minecraft:components"] {
+            assert!(!matches(&game, key, serde_json::json!("Bob")));
+        }
+        for (name, unequal) in [
+            (serde_json::json!("Bob"), serde_json::json!("minecraft:Bob")),
+            (serde_json::json!("minecraft:Bob"), serde_json::json!("Bob")),
+            (
+                serde_json::json!({"text": "Bob", "color": "red", "bold": true}),
+                serde_json::json!("Bob"),
+            ),
+            (
+                serde_json::json!({"text": "B", "extra": [{"text": "ob"}]}),
+                serde_json::json!("Bob"),
+            ),
+        ] {
+            let text = horizon_client::scoreboard::comp_text(&name);
+            game.mobs[0].custom_name = Some(text.plain());
+            game.mobs[0].custom_name_text = Some(text);
+            for key in ["components", "minecraft:components"] {
+                assert!(matches(&game, key, name.clone()), "{key}: {name}");
+                assert!(!matches(&game, key, unequal.clone()), "{key}: {unequal}");
+            }
+        }
+        game.mobs[0].custom_name = None;
+        game.mobs[0].custom_name_text = None;
+        for key in ["components", "minecraft:components"] {
+            assert!(!matches(&game, key, serde_json::json!("Bob")));
+        }
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn mob_predicate_view_reads_active_effect_instances() {
         use crate::game::{Audio, Options, Settings, commands::Target, load_resources};
         let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
@@ -2813,7 +2945,11 @@ mod structure_tag_tests {
         let game_tags = pack.join("data/minecraft/tags/worldgen/structure");
         std::fs::create_dir_all(&tags).unwrap();
         std::fs::create_dir_all(&game_tags).unwrap();
-        std::fs::write(pack.join("pack.mcmeta"), "{}").unwrap();
+        std::fs::write(
+            pack.join("pack.mcmeta"),
+            r#"{"pack":{"description":"fixture"}}"#,
+        )
+        .unwrap();
         std::fs::write(
             tags.join("village.json"),
             r##"{"values": ["#minecraft:village", "minecraft:igloo"]}"##,
@@ -2840,5 +2976,143 @@ mod structure_tag_tests {
         ));
         assert!(holds(&game, "#minecraft:shipwreck", "minecraft:shipwreck"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod custom_data_equipment_tests {
+    use super::*;
+    use crate::game::native_machines::tests::server_game;
+    use horizon_client::{mobs::finalize, save};
+    use horizon_core::position::BlockPos;
+    use horizon_world::nbt::{Tag, parse_snbt};
+
+    fn item_predicate(pattern: &str) -> Value {
+        serde_json::json!({"items":"minecraft:stick","count":1,
+            "predicates":{"minecraft:custom_data":pattern}})
+    }
+    fn condition(pattern: &str) -> Value {
+        serde_json::json!({"type":"minecraft:entity_properties","entity":"this",
+            "predicate":{"minecraft:entity_type":"minecraft:pig",
+                "minecraft:equipment":{"mainhand":item_predicate(pattern)}}})
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn actual_mob_equipment_projects_typed_custom_data_into_named_predicate_evaluation() {
+        let mut game = server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.block_ticks
+            .add_empty_chunk(BlockPos::new(0, 0, 0).chunk())
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        let clock = game.world.game_time;
+        let rich = r#"{h289:1b,nested:{k:7,extra:9},entries:[{k:1b,extra:2b},{k:2b}],wide:9007199254740993L,spare:"keep"}"#;
+        let mut failures = Vec::new();
+        for (i, data) in [(1, Some(rich)), (2, None)] {
+            let uuid = [289, 1, 0, i];
+            let actor = format!("00000121-0000-0001-0000-{i:012x}");
+            let components = data.map_or(String::new(), |d| {
+                format!(",components:{{\"minecraft:custom_data\":{d}}}")
+            });
+            let x = f64::from(i) + 0.5;
+            assert!(game.run_command(&format!(
+                "summon minecraft:pig {x} 200 4.5 {{UUID:[I;289,1,0,{i}],NoAI:1b,NoGravity:1b,Silent:1b,PersistenceRequired:1b,Health:10f,equipment:{{mainhand:{{id:\"minecraft:stick\",count:1{components}}}}}}}"
+            )));
+            assert!(game.world.loaded(i, 4));
+            assert_eq!(
+                &*game.res.facts().get(game.world.block(i, 199, 4)).name,
+                "minecraft:stone"
+            );
+            assert!(game.run_command(&format!("execute as {actor} if entity @s[type=pig,nbt={{UUID:[I;289,1,0,{i}],NoAI:1b,Health:10f,Pos:[{x}d,200d,4.5d]}}]")));
+            let id = *game
+                .persist
+                .uuids
+                .iter()
+                .find(|(_, value)| **value == uuid)
+                .expect("actual admitted UUID")
+                .0;
+            let mob = game.mobs.iter().find(|m| m.id == id).unwrap();
+            assert!(mob.no_ai);
+            let stack = finalize::item_stack(mob, finalize::MAINHAND)
+                .expect("actual loaded equipment stack");
+            assert_eq!((&*stack.item, stack.count), ("minecraft:stick", 1));
+            let saved = save::item_to_nbt(&stack);
+            if let Some(data) = data {
+                let (expected, used) = parse_snbt(data).unwrap();
+                assert_eq!(used, data.len());
+                assert_eq!(
+                    saved
+                        .get("components")
+                        .and_then(|t| t.get("minecraft:custom_data")),
+                    Some(&expected)
+                );
+                assert_eq!(
+                    stack.custom_data().unwrap().get(&"h289".into()),
+                    Some(&Tag::Byte(1))
+                );
+                assert_eq!(
+                    stack.custom_data().unwrap().get(&"wide".into()),
+                    Some(&Tag::Long(9_007_199_254_740_993))
+                );
+                // Contradictory retained raw equipment must not replace actual stack state.
+                let (wrong, _) = parse_snbt(r#"{equipment:{mainhand:{id:"minecraft:stick",count:1,components:{"minecraft:custom_data":{h289:2b}}}}}"#).unwrap();
+                let raw = game
+                    .persist
+                    .raw
+                    .entry(id)
+                    .or_insert_with(|| Tag::Compound(Default::default()));
+                let Tag::Compound(raw) = raw else {
+                    panic!("actual raw compound")
+                };
+                raw.insert("equipment".into(), wrong.get("equipment").unwrap().clone());
+                assert!(game.run_command(&format!("execute if data entity {actor} equipment.mainhand.components{{\"minecraft:custom_data\":{{h289:1b}}}}")));
+            } else {
+                assert!(stack.custom_data().is_none());
+                assert!(game.run_command(&format!("execute unless data entity {actor} equipment.mainhand.components.\"minecraft:custom_data\"")));
+            }
+            let mob = game.mobs.iter().find(|m| m.id == id).unwrap();
+            let view = game.mob_entity(mob);
+            assert_eq!(
+                (
+                    &*view.equipment[0].as_ref().unwrap().id,
+                    view.equipment[0].as_ref().unwrap().count
+                ),
+                ("minecraft:stick", 1)
+            );
+            let probes: Vec<(&str, bool)> = if data.is_some() {
+                vec![
+                    ("{h289:1b}", true),
+                    ("{nested:{k:7}}", true),
+                    ("{entries:[{k:2b}]}", true),
+                    ("{entries:[{k:2b},{k:1b}]}", true),
+                    ("{wide:9007199254740993L}", true),
+                    ("{}", true),
+                    ("{h289:2b}", false),
+                    ("{h289:1}", false),
+                    ("{missing:1b}", false),
+                    ("{entries:[]}", false),
+                    ("{wide:9007199254740992L}", false),
+                ]
+            } else {
+                vec![("{}", true), ("{h289:1b}", false)]
+            };
+            for (pattern, want) in probes {
+                let actual =
+                    game.conditions_hold(&condition(pattern), Some(&view), [x, 200.0, 4.5]);
+                if actual != want {
+                    failures.push((i, pattern, actual, want));
+                }
+            }
+            // Existing non-equipment views are unprojected and retain unsupported legacy behavior.
+            assert!(game.loot_item_filter(&item_predicate("{h289:99b}"), &stack));
+            assert_eq!(game.world.game_time, clock, "zero observation ticks");
+        }
+        assert!(
+            failures.is_empty(),
+            "actual mob-equipment custom_data mismatch: {failures:?}"
+        );
     }
 }

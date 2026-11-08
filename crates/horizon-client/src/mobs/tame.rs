@@ -606,13 +606,14 @@ pub fn forgive_dead_player(m: &mut Mob) {
         stop_being_angry(m);
     }
 }
-/// `NeutralMob.updatePersistentAnger(level, true)` from `Wolf.aiStep`: any
-/// target (the attacker, a pack-mate's attacker the `HurtByTargetGoal` alert
-/// gave it, prey, the owner's enemy) is the anger's target, and the 20 to 39
-/// seconds of `PERSISTENT_ANGER_TIME` start over every tick it is held.
+/// `NeutralMob.updatePersistentAnger(level, true)` from `Wolf.aiStep` and
+/// `IronGolem.aiStep`: any target (the attacker, a pack-mate's attacker the
+/// `HurtByTargetGoal` alert gave it, prey, the owner's enemy, a golem's
+/// monster) is the anger's target, and the 20 to 39 seconds of
+/// `PERSISTENT_ANGER_TIME` (the same for both) start over every tick it is held.
 /// Without a target the anger runs out (`extra.anger` counts down to the end
 /// time), and anger at a mob ends when that mob dies.
-fn update_persistent_anger(m: &mut Mob, w: &MobWorld) {
+pub(super) fn update_persistent_anger(m: &mut Mob, w: &MobWorld) {
     let angry_at = m.extra.angry_at;
     if let Some(target @ Who::Mob(id)) = m.ai.target
         && w.seen(id).is_none_or(|s| !s.alive)
@@ -1217,11 +1218,12 @@ impl Goal for CatRelaxOnOwner {
         // The `gameplay/cat_waking_up_gift_chance` of the `day` timeline: 0.7
         // from tick 23667 of the day to tick 362 of the next, 0 in between.
         let day = cx.w.day_time.rem_euclid(24000);
-        let chance = if !cx.w.nether && !cx.w.end && !(362..23667).contains(&day) {
-            0.7
-        } else {
-            0.0
-        };
+        let chance =
+            if cx.w.dimension_type.has_timeline("minecraft:day") && !(362..23667).contains(&day) {
+                0.7
+            } else {
+                0.0
+            };
         if cx
             .w
             .player

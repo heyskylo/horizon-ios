@@ -11,17 +11,6 @@ use horizon_core::{
     random::RandomSource,
 };
 
-/// A new projectile entity's own random: vanilla seeds every entity's random
-/// unpredictably, and a projectile's spread (and an arrow's base damage) come
-/// from it, never from the shooter's random.
-pub fn own_random(shooter: &crate::mobs::Mob) -> horizon_core::random::LegacyRandom {
-    horizon_core::random::LegacyRandom::new(
-        i64::from(shooter.id).wrapping_mul(0x9E37_79B9)
-            ^ i64::from(shooter.age)
-            ^ shooter.position.x.to_bits() as i64,
-    )
-}
-
 /// a content mod's thrown item projectile, a copy of `Snowball` that deals
 /// `damage` and flies as its `item`.
 #[derive(Debug, PartialEq)]
@@ -298,6 +287,12 @@ pub trait ProjectileWorld {
     fn ignites(&self, _p: [i32; 3]) -> bool {
         false
     }
+    /// `BubbleColumnBlock.entityInside`'s view of the block at `p`: a bubble
+    /// column's `drag`, and whether nothing is above it (its surface, where
+    /// it throws harder); None for any other block.
+    fn bubble_column(&self, _p: [i32; 3]) -> Option<(bool, bool)> {
+        None
+    }
 }
 /// `CollisionGetter.clipIncludingBorder` over a block clip's result: a ray
 /// from inside the world border whose hit (or end, on a miss) lies outside it
@@ -430,11 +425,9 @@ impl Projectile {
             fire_ticks: 0,
             item,
             arrow: kind_is_arrow.then(|| {
-                // Entity.random: seeded unpredictably, the position stands in.
+                // The arrow's own random (`Entity.random`).
                 Box::new(crate::arrows::ArrowState::new(
-                    horizon_core::random::LegacyRandom::new(
-                        position.x.to_bits() as i64 ^ position.z.to_bits().rotate_left(17) as i64,
-                    ),
+                    crate::random_source::entity(),
                 ))
             }),
         }
@@ -1027,9 +1020,9 @@ impl Projectile {
         let inertia = f64::from(match self.kind {
             ProjectileKind::WitherSkull { dangerous: true } => 0.73_f32,
             // AbstractWindCharge.getInertia and getLiquidInertia.
-            ProjectileKind::WindCharge | ProjectileKind::BreezeWindCharge => 1.0,
-            _ if water => 0.8,
-            _ => 0.95,
+            ProjectileKind::WindCharge | ProjectileKind::BreezeWindCharge => 1.0_f32,
+            _ if water => 0.8_f32,
+            _ => 0.95_f32,
         });
         let v = self.velocity;
         let len = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt().max(1.0e-9);
@@ -1043,6 +1036,107 @@ impl Projectile {
     /// One tick: returns whether to keep the projectile and what it hit.
     pub fn tick(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
         self.tick_with(w, true)
+    }
+    /// One tick of a server's projectile on its client: [`tick`](Self::tick)
+    /// with `ThrowableProjectile.tick`'s bubble columns, which push it on the
+    /// client too, so a pearl held in a stasis chamber hovers between the
+    /// server's updates instead of sinking and snapping back. The integrated
+    /// and dedicated servers push their pearls in the creature tick instead.
+    pub fn tick_remote(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
+        if !self.is_throwable_projectile() {
+            return self.tick(w);
+        }
+        // handleFirstTickBubbleColumn: before gravity, every column block in
+        // the box (`findBlocksIn`, BlockPos.containing of both corners),
+        // entered precisely.
+        if self.age == 0 {
+            let b = self.bounds();
+            let (lo, hi) = (b.min_position(), b.max_position());
+            for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
+                for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
+                    for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
+                        if let Some((drag, surface)) = w.bubble_column([x, y, z]) {
+                            self.bubble_column_push(drag, surface);
+                        }
+                    }
+                }
+            }
+        }
+        let from = self.position;
+        let result = self.tick(w);
+        self.bubble_columns_along(w, from);
+        result
+    }
+    /// A `ThrowableProjectile`: the thrown kinds but llama spit, a plain
+    /// `Projectile` with its own tick.
+    fn is_throwable_projectile(&self) -> bool {
+        self.is_thrown() && self.kind != ProjectileKind::LlamaSpit
+    }
+    /// `Projectile.onAboveBubbleColumn` / `onInsideBubbleColumn`: unlike
+    /// `Entity`'s, a projectile's pushes are not clamped.
+    fn bubble_column_push(&mut self, drag: bool, surface: bool) {
+        self.velocity.y += match (drag, surface) {
+            (true, _) => -0.03,
+            (false, true) => 0.1,
+            (false, false) => 0.06,
+        };
+    }
+    /// `applyEffectsFromBlocks`' bubble columns (`Entity.checkInsideBlocks`):
+    /// the blocks the box swept through from `from`, each once, pushing when
+    /// the move was long or the final box (deflated by 1e-5F) is inside it.
+    fn bubble_columns_along(&mut self, w: &impl ProjectileWorld, from: Vec3) {
+        let to = self.position;
+        let eps = f64::from(1.0e-5_f32);
+        let deflated = self.bounds().deflate(Vec3::new(eps, eps, eps));
+        let far = from.distance_squared(to) > 0.999_990_000_000_252_6f64 * 0.999_990_000_000_252_6;
+        let mut cells = Vec::new();
+        let mut used = 0;
+        let _ = horizon_core::geometry::sweep_intersected_blocks(
+            from,
+            to,
+            deflated,
+            1_000_000,
+            |p, step| {
+                if step >= 16 {
+                    return false;
+                }
+                used = step;
+                cells.push(p);
+                true
+            },
+        );
+        // A sweep that used all 16 steps checks the end position once more.
+        if used + 1 >= 16 {
+            let _ = horizon_core::geometry::sweep_intersected_blocks(
+                to,
+                to,
+                deflated,
+                1_000_000,
+                |p, step| {
+                    if step >= 1 {
+                        return false;
+                    }
+                    cells.push(p);
+                    true
+                },
+            );
+        }
+        // Each block once, in the sweep's order: a handful of cells, no set.
+        for (i, &p) in cells.iter().enumerate() {
+            if cells[..i].contains(&p) {
+                continue;
+            }
+            let Some((drag, surface)) = w.bubble_column([p.x, p.y, p.z]) else {
+                continue;
+            };
+            let cell = Aabb::new(
+                Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z)),
+                Vec3::new(f64::from(p.x + 1), f64::from(p.y + 1), f64::from(p.z + 1)),
+            );
+            if far || deflated.intersects(cell) {
+                self.bubble_column_push(drag, surface);
+            }
+        }
     }
     /// One tick that meets nothing: what `tick` would have done had its hit been
     /// canceled (`ProjectileImpactEvent`). The projectile goes the whole way of its
@@ -1203,10 +1297,12 @@ impl Projectile {
                 return (false, Hit::None);
             }
             self.position = to;
+            // LlamaSpit.getAirDrag is 0.99F, widened before it scales motion.
+            let drag = f64::from(0.99_f32);
             self.velocity = Vec3::new(
-                self.velocity.x * 0.99,
-                self.velocity.y * 0.99 - self.get_gravity(),
-                self.velocity.z * 0.99,
+                self.velocity.x * drag,
+                self.velocity.y * drag - self.get_gravity(),
+                self.velocity.z * drag,
             );
             self.update_rotation();
             return (self.position.y > -128.0 && self.age < 6000, spit_hit);
@@ -1304,6 +1400,100 @@ mod tests {
             &self.0
         }
     }
+    /// Water filled with one kind of bubble column, as in a stasis chamber.
+    struct Column {
+        drag: bool,
+        surface: bool,
+    }
+    impl ProjectileWorld for Column {
+        fn clip(&self, _: Vec3, _: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
+            None
+        }
+        fn in_water(&self, _: Aabb) -> bool {
+            true
+        }
+        fn targets(&self) -> &[(Who, Aabb)] {
+            &[]
+        }
+        fn bubble_column(&self, _: [i32; 3]) -> Option<(bool, bool)> {
+            Some((self.drag, self.surface))
+        }
+    }
+    /// A pearl resting in the water of a column, past its first tick.
+    fn resting_pearl() -> Projectile {
+        let mut p = Projectile::new(ProjectileKind::EnderPearl, Vec3::new(0.5, 100.2, 0.5), None);
+        p.age = 5;
+        p.touching_water = true;
+        p
+    }
+    #[test]
+    fn a_pearl_in_a_bubble_column_is_pushed_after_it_moves() {
+        // ThrowableProjectile.tick: gravity 0.03, the water drag 0.8F, the
+        // move, then applyEffectsFromBlocks' BubbleColumnBlock.entityInside:
+        // Projectile.onInsideBubbleColumn adds 0.06 (-0.03 dragging down) and
+        // onAboveBubbleColumn 0.1 at the surface, with no clamp.
+        let drag = f64::from(0.8_f32);
+        for (column, push) in [
+            (
+                Column {
+                    drag: false,
+                    surface: false,
+                },
+                0.06,
+            ),
+            (
+                Column {
+                    drag: false,
+                    surface: true,
+                },
+                0.1,
+            ),
+            (
+                Column {
+                    drag: true,
+                    surface: false,
+                },
+                -0.03,
+            ),
+            (
+                Column {
+                    drag: true,
+                    surface: true,
+                },
+                -0.03,
+            ),
+        ] {
+            let mut p = resting_pearl();
+            p.tick_remote(&column);
+            assert_eq!(p.position.y, 100.2 + -0.03 * drag, "the move comes first");
+            assert_eq!(
+                p.velocity.y,
+                -0.03 * drag + push,
+                "drag {} surface {}",
+                column.drag,
+                column.surface
+            );
+        }
+    }
+    #[test]
+    fn a_new_pearl_takes_its_first_bubble_column_push_before_gravity() {
+        // ThrowableProjectile.handleFirstTickBubbleColumn on the first tick,
+        // before gravity, then the air drag 0.99F (not yet touching water),
+        // then the push after the move.
+        let mut p = Projectile::new(ProjectileKind::EnderPearl, Vec3::new(0.5, 100.2, 0.5), None);
+        p.tick_remote(&Column {
+            drag: false,
+            surface: false,
+        });
+        let air = f64::from(0.99_f32);
+        assert_eq!(p.velocity.y, (0.06 - 0.03) * air + 0.06);
+    }
+    #[test]
+    fn a_pearl_outside_any_bubble_column_only_falls() {
+        let mut p = resting_pearl();
+        p.tick_remote(&Empty(vec![]));
+        assert_eq!(p.velocity.y, -0.03 * f64::from(0.8_f32));
+    }
     #[test]
     fn first_tick_shoot_event_uses_base_tick_position_and_saved_flag() {
         let w = Empty(vec![]);
@@ -1337,8 +1527,8 @@ mod tests {
         p.tick(&w);
         // ThrowableProjectile: gravity before inertia, then move.
         // `getAirDrag` is 0.99F, widened to double: 0.9900000095367432.
-        assert!((p.velocity.y - (-0.03 * 0.99)).abs() < 1e-9);
-        assert!((p.position.x - f64::from(0.99_f32)).abs() < 1e-9);
+        assert_eq!(p.velocity.y.to_bits(), 0xbf9e_69ad_47ae_147b);
+        assert_eq!(p.position.x.to_bits(), 0x3fef_ae14_8000_0000);
     }
     /// One fire block in the cell (0, 99, 0), open air around it: a throwable
     /// inside that cell is set alight, and one that has left it burns down.
@@ -1748,7 +1938,7 @@ mod tests {
         let (keep, _) = p.tick(&w);
         assert!(keep);
         assert!((p.position.x - 1.0).abs() < 1e-9);
-        assert!((p.velocity.x - 0.99).abs() < 1e-9);
+        assert_eq!(p.velocity.x.to_bits(), 0x3fef_ae14_8000_0000);
         assert!((p.velocity.y + 0.06).abs() < 1e-9);
     }
     #[test]

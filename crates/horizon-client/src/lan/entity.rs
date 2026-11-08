@@ -726,6 +726,10 @@ pub struct TrackEvent {
 pub struct Tracker {
     seen: crate::fast_hash::FxHashMap<i32, Arc<Tracked>>,
     events: Vec<TrackEvent>,
+    /// The entities a native mod hid from this client alone
+    /// (`native_hide_entity_from`): it never tracks them. A change takes
+    /// effect when the client's pairs are checked again (`Guest.moved`).
+    pub hidden: crate::fast_hash::FxHashSet<i32>,
 }
 
 impl Tracker {
@@ -811,14 +815,17 @@ struct Probe {
 /// `ServerPlayer.broadcastToPlayer` (`Entity`'s is `true`): to a spectator,
 /// a player is shown only while its camera is itself; to anyone else, a
 /// spectator is hidden. A player a native mod hid is shown only to players
-/// of at least its level.
+/// of at least its level, and an entity a native mod hid from this client
+/// alone (`Tracker.hidden`) to nobody there.
 fn broadcast_to_player(v: &Viewer, p: &Probe) -> bool {
     let shown = if v.spectator {
         !p.watching
     } else {
         !p.spectator
     };
-    shown && p.hidden.is_none_or(|level| v.permission >= level)
+    shown
+        && p.hidden.is_none_or(|level| v.permission >= level)
+        && (v.tracker.hidden.is_empty() || !v.tracker.hidden.contains(&p.id))
 }
 
 /// TrackedEntity.updatePlayer: within the type's range (capped by the view
@@ -1219,7 +1226,7 @@ impl Entities {
             let mut removed = Vec::new();
             if kept != v.tracker.seen.len() {
                 let states = &self.states;
-                let Tracker { seen, events } = &mut *v.tracker;
+                let Tracker { seen, events, .. } = &mut *v.tracker;
                 seen.retain(|id, tracked| match states.get(id) {
                     Some(s) if s.seen == now && flags[s.index] & TRACKS != 0 => true,
                     other => {

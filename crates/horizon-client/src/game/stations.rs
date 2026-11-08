@@ -32,6 +32,7 @@ use horizon_client::{
     enchant::Enchantments,
     hud::{HudBatch, rgba},
     items::ItemStack,
+    random_source,
     stations::{self, AnvilResult, EnchantOffers},
     text::Text,
 };
@@ -389,9 +390,7 @@ impl Station {
             beacon_levels: None,
             loom: Default::default(),
             cycling: Default::default(),
-            book: EnchantBook::new(LegacyRandom::new(
-                horizon_client::sound_engine::unique_seed(),
-            )),
+            book: EnchantBook::new(random_source::create()),
         }
     }
     pub(super) fn new_kind(kind: Kind, pos: [i32; 3]) -> Self {
@@ -695,6 +694,38 @@ impl Game<'_> {
             None => String::new(),
         }
     }
+    /// NeoForge's `AnvilUpdateEvent` (`CommonHooks.onAnvilUpdate`) about
+    /// `result`, vanilla's for `left`, `right` and the rename box's
+    /// `item_name`: the mods' answer takes its place. `player` (`name`) is
+    /// who uses the anvil: the window's own player, or a host's guest.
+    pub(super) fn anvil_update(
+        &mut self,
+        player: u128,
+        name: &str,
+        left: &ItemStack,
+        right: Option<&ItemStack>,
+        item_name: Option<&str>,
+        result: &mut AnvilResult,
+    ) {
+        let material = i32::try_from(result.repair_item_count_cost).unwrap_or(i32::MAX);
+        let mut output = result.result.clone();
+        let (mut xp_cost, mut material_cost, mut canceled) = (result.cost, material, false);
+        self.native_anvil_update(
+            player,
+            name,
+            left,
+            right,
+            item_name,
+            result.result.as_ref(),
+            result.cost,
+            material,
+            &mut output,
+            &mut xp_cost,
+            &mut material_cost,
+            &mut canceled,
+        );
+        result.answer_update(canceled, output, xp_cost, material_cost);
+    }
     /// `slotsChanged` / `createResult` for the open station.
     pub(super) fn station_changed(&mut self) {
         let Some(mut s) = self.station.take() else {
@@ -728,7 +759,7 @@ impl Game<'_> {
                 let name = self.anvil_item_name(&s);
                 let hover = s.inputs[0]
                     .as_ref()
-                    .map(|i| stations::hover_name(&|id| self.pack.names.display_item(id), i))
+                    .map(|i| stations::hover_name(&self.pack.names, i))
                     .unwrap_or_default();
                 s.anvil = stations::anvil_result(
                     &data.enchantments,
@@ -739,6 +770,13 @@ impl Game<'_> {
                     &hover,
                     creative,
                 );
+                // NeoForge's AnvilUpdateEvent, where the client menu's createResult ends.
+                // The player is the one the server knows, as its own call names it.
+                if let Some(left) = s.inputs[0].as_ref() {
+                    let (player, player_name) = (self.own_uuid(), self.own_profile_name());
+                    let right = s.inputs[1].as_ref();
+                    self.anvil_update(player, &player_name, left, right, Some(&name), &mut s.anvil);
+                }
                 s.result = s.anvil.result.clone();
             }
             Kind::Grindstone => {
@@ -1185,7 +1223,7 @@ impl Game<'_> {
             s.anvil_last = s.inputs[0].clone();
             s.name = s.inputs[0]
                 .as_ref()
-                .map(|i| stations::hover_name(&|id| self.pack.names.display_item(id), i))
+                .map(|i| stations::hover_name(&self.pack.names, i))
                 .unwrap_or_default();
             let name = s.name.clone();
             s.rename.set_value(&name);

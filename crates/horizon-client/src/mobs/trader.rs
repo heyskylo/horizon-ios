@@ -11,10 +11,16 @@ use super::{
 };
 use horizon_core::random::RandomSource;
 
-// Trader state: `point` the wander target, `home` the place it is tied to
-// with `ints[4]` the radius, `ints[5]` the despawn delay, `flag2` whether
+// Trader state: `point` the wander target, `ints[5]` the despawn delay, `flag2` whether
 // a player is trading with it and `using_item` how long it has been
 // drinking.
+
+/// `WanderingTraderSpawner.spawn`: set the trader's visit and home.
+pub fn start_visit(m: &mut Mob, reference: [i32; 3]) {
+    m.extra.ints[5] = DESPAWN_DELAY;
+    m.extra.point = Some(reference.map(f64::from));
+    m.ai.restore_home(reference, 16);
+}
 
 /// `WanderingTraderSpawner`: how long a spawned trader stays.
 pub const DESPAWN_DELAY: i32 = 48000;
@@ -104,7 +110,7 @@ impl Goal for DrinkItem {
         // Level.isDarkOutside / isBrightOutside: a dimension with a fixed
         // time (the Nether and the End) is neither dark nor bright outside,
         // so neither potion is drunk.
-        if cx.w.nether || cx.w.end {
+        if cx.w.dimension_type.has_fixed_time {
             return false;
         }
         if self.dark {
@@ -251,15 +257,15 @@ impl Goal for WanderToPosition {
 }
 /// `Mob.isWithinHome`.
 pub fn within_home(m: &Mob) -> bool {
-    let Some(h) = m.extra.home else { return true };
-    let r = m.extra.ints[4];
-    if r <= 0 {
+    let Some((home, radius)) = m.ai.home else {
         return true;
-    }
-    let d = (h[0] - m.position.x.floor() as i32).pow(2)
-        + (h[1] - m.position.y.floor() as i32).pow(2)
-        + (h[2] - m.position.z.floor() as i32).pow(2);
-    d < r * r
+    };
+    let pos = [
+        m.position.x.floor() as i32,
+        m.position.y.floor() as i32,
+        m.position.z.floor() as i32,
+    ];
+    super::goals::within_home(home, radius, pos)
 }
 /// `MoveTowardsRestrictionGoal`.
 #[derive(Clone, Debug)]
@@ -284,7 +290,9 @@ impl Goal for MoveTowardsRestriction {
         if within_home(m) {
             return false;
         }
-        let Some(h) = m.extra.home else { return false };
+        let Some((h, _)) = m.ai.home else {
+            return false;
+        };
         let to = [
             f64::from(h[0]) + 0.5,
             f64::from(h[1]),
@@ -317,6 +325,7 @@ pub fn ai_step(m: &mut Mob, _w: &MobWorld) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horizon_world::dimension_type::DimensionFacts;
 
     #[test]
     fn despawn_delay_is_two_days() {
@@ -359,14 +368,13 @@ mod tests {
                 };
             let mut night = w.clone();
             night.daylight = false;
-            night.end = false;
-            night.nether = false;
+            night.dimension_type = DimensionFacts::overworld();
             assert_eq!(
                 decide(&night, &mut m, &mut potion, &mut milk),
                 (true, false)
             );
             let mut end_dark = night.clone();
-            end_dark.end = true;
+            end_dark.dimension_type = DimensionFacts::vanilla("minecraft:the_end").unwrap();
             assert_eq!(
                 decide(&end_dark, &mut m, &mut potion, &mut milk),
                 (false, false)
@@ -374,11 +382,10 @@ mod tests {
             m.extra.effects.push((INVISIBILITY, 3600, 0));
             let mut day = w.clone();
             day.daylight = true;
-            day.end = false;
-            day.nether = false;
+            day.dimension_type = DimensionFacts::overworld();
             assert_eq!(decide(&day, &mut m, &mut potion, &mut milk), (false, true));
             let mut end_bright = day.clone();
-            end_bright.end = true;
+            end_bright.dimension_type = DimensionFacts::vanilla("minecraft:the_end").unwrap();
             assert_eq!(
                 decide(&end_bright, &mut m, &mut potion, &mut milk),
                 (false, false)
