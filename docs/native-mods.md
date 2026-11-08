@@ -4631,6 +4631,32 @@ placement counts and takes from the player's inventory first, then the sources i
 and its comparators update. Every mod adds to the same list. With no answer the placement is vanilla's, from the
 inventory alone. A recipe viewer's craftable marks are still worked out on the client from the player's inventory.
 
+### Menu links
+
+`native_menu_links(player, menu, pos, links)` is asked on the server each tick while `player` has a mod menu type with
+`links` ([mods.md](mods.md#menu-types)) open at `pos`. Push block positions onto `links` and the menu's linked slots
+show the containers there, their slots in order, as real slots of the menu: a crafting station's side panel showing
+the chest beside it, with a tab per neighbour, is a button (`native_screen_click`, `native_menu_button`) that changes
+what the mod answers for that player:
+
+```rust
+fn menu_links(&self, _host: &mut dyn Host, event: &mut MenuLinksEvent<'_>) {
+    if event.menu == "mystation:station" {
+        let [x, y, z] = event.pos;
+        event.links.push([x + 1, y, z]);
+    }
+}
+```
+
+Chests, barrels, shulker boxes, hoppers, dispensers, droppers and mod containers (their container slots) in the
+player's level count; anything else, the menu's own block and repeats are passed by, and at most 64 are used. A
+double chest is its two halves: push both, the first half first, as its own menu orders them. Linked slots past the
+containers' slots hold nothing and are left out of clicks, as a hidden slot is. Every mod adds to the same list, and
+with no answer the linked slots are empty. Clicks run on the server's menu engine as on the block's own slots, so
+nothing is copied: what a player takes out of a linked slot leaves the chest in the same step. The menu does not check
+the player's reach to a linked container: keep links to the blocks beside the menu's own. Guests, single player's
+server thread and dedicated servers work alike; the deprecated in-frame mode does not show links.
+
 ### What a mod's container takes
 
 `native_container_accepts(pos, entity, slot, stack, face, cancel)` is a hook (NeoForge's `IItemHandler.isItemValid`).

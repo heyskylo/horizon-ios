@@ -3901,6 +3901,7 @@ pub(crate) mod tests {
             slots: 1,
             data_slots: 0,
             results: vec![],
+            links: None,
             crafting: None,
         })));
         let menu = Menu::new(kind);
@@ -3982,6 +3983,7 @@ pub(crate) mod tests {
             slots: 4,
             data_slots: 0,
             results: vec![3],
+            links: None,
             crafting: None,
         })))
     }
@@ -4075,6 +4077,7 @@ pub(crate) mod tests {
             slots: 10,
             data_slots: 0,
             results: vec![],
+            links: None,
             crafting: Some(crate::containers::ModCrafting {
                 grid: 1,
                 size: 3,

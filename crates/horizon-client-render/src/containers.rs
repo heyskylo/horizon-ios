@@ -21,6 +21,24 @@ pub struct ModMenuType {
     pub results: Vec<usize>,
     /// its crafting grid, if it has one (`crafting`).
     pub crafting: Option<ModCrafting>,
+    /// its linked slots, if it has any (`links`).
+    pub links: Option<ModLinks>,
+}
+
+/// a mod menu type's linked slots: `count` container slots from `from` on,
+/// which show the slots of the containers a native mod links them to
+/// (`native_menu_links`) instead of the block entity's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModLinks {
+    pub from: usize,
+    pub count: usize,
+}
+
+impl ModLinks {
+    /// The linked container slots.
+    pub fn slots(&self) -> std::ops::Range<usize> {
+        self.from..self.from + self.count
+    }
 }
 
 /// a mod menu type's crafting grid: `size`x`size` container slots from
@@ -42,23 +60,34 @@ impl ModCrafting {
 
 static MOD_MENU_TYPES: std::sync::OnceLock<Vec<ModMenuType>> = std::sync::OnceLock::new();
 
-/// registers the content mods' menu types, `(id, slots, data slots,
-/// results, crafting)`, a list set once per process (false when it already was).
-pub fn register_mod_menu_types(
-    menus: impl IntoIterator<Item = (String, usize, usize, Vec<usize>, Option<ModCrafting>)>,
-) -> bool {
+/// One menu type as [`register_mod_menu_types`] takes it: `(id, slots, data
+/// slots, results, crafting, links)`.
+pub type ModMenuTypeEntry = (
+    String,
+    usize,
+    usize,
+    Vec<usize>,
+    Option<ModCrafting>,
+    Option<ModLinks>,
+);
+
+/// registers the content mods' menu types, a list set once per process
+/// (false when it already was).
+pub fn register_mod_menu_types(menus: impl IntoIterator<Item = ModMenuTypeEntry>) -> bool {
     if MOD_MENU_TYPES.get().is_some() {
         return false;
     }
-    let menus = menus
-        .into_iter()
-        .map(|(id, slots, data_slots, results, crafting)| ModMenuType {
-            id: Box::leak(id.into_boxed_str()),
-            slots,
-            data_slots,
-            results,
-            crafting,
-        });
+    let menus =
+        menus.into_iter().map(
+            |(id, slots, data_slots, results, crafting, links)| ModMenuType {
+                id: Box::leak(id.into_boxed_str()),
+                slots,
+                data_slots,
+                results,
+                crafting,
+                links,
+            },
+        );
     MOD_MENU_TYPES.set(menus.collect()).is_ok()
 }
 
