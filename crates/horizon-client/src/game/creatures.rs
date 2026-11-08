@@ -2967,6 +2967,21 @@ impl Game<'_> {
                         m.ai.target = Some(target);
                     }
                 }
+                MobEvent::HoglinAttackTarget { mob, target } => {
+                    let places: Vec<(u32, horizon_core::geometry::Vec3)> = self
+                        .mobs
+                        .iter()
+                        .filter(|m| m.alive())
+                        .map(|m| (m.id, m.position))
+                        .collect();
+                    let position = |who: Who| match who {
+                        Who::Mob(id) => places.iter().find(|(i, _)| *i == id).map(|(_, p)| *p),
+                        Who::Player => None,
+                    };
+                    if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) {
+                        horizon_client::mobs::piglin::receive_attack_target(m, target, position);
+                    }
+                }
                 MobEvent::HuntHoglin { mob, target, ticks } => {
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) {
                         m.extra.ints[0] = ticks;
@@ -4191,29 +4206,22 @@ impl Game<'_> {
         let events_before = self.player.as_ref().map_or(0, |p| p.events.len());
         let mut resolved_damage = None;
         let damage_outcome = if let Some(id) = self.health_resources.damage.id(damage_type) {
-            if self
+            // Every source that reaches the armor boundary wears it first:
+            // `getDamageAfterArmorAbsorb` calls `hurtArmor` before it reads
+            // the armor value, so a piece that breaks on this hit takes no
+            // part in the reduction of the hit that broke it (#11696). The
+            // hit's own advancement keeps the helmet phase's reported amount.
+            let damages_helmet = self
                 .health_resources
                 .damage
-                .in_tag(id, "minecraft:damages_helmet")
-            {
-                self.hurt_player_equipment(id, amount, blocking, living_cause, causing)
-                    .map(|(outcome, actual)| {
+                .in_tag(id, "minecraft:damages_helmet");
+            self.hurt_player_equipment(id, amount, blocking, living_cause, causing)
+                .map(|(outcome, actual)| {
+                    if damages_helmet {
                         resolved_damage = Some(actual);
-                        outcome
-                    })
-            } else if let Some(player) = self.player.as_mut() {
-                player.hurt_caused_by(
-                    &self.health_resources,
-                    self.world.health_rules,
-                    id,
-                    amount,
-                    blocking,
-                    living_cause,
-                    causing,
-                )
-            } else {
-                Ok(Default::default())
-            }
+                    }
+                    outcome
+                })
         } else {
             Ok(Default::default())
         };
@@ -4373,15 +4381,8 @@ impl Game<'_> {
     pub(super) fn hurt_player_by(&mut self, damage_type: &str, amount: f32) {
         let mut canceled = false;
         if !self.creative
-            && let Some(player) = self.player.as_mut()
             && let Some(id) = self.health_resources.damage.id(damage_type)
-            && let Ok(o) = player.hurt_blocking(
-                &self.health_resources,
-                self.world.health_rules,
-                id,
-                amount,
-                None,
-            )
+            && let Ok((o, _)) = self.hurt_player_equipment(id, amount, None, false, 0)
         {
             canceled = o.canceled;
         }
@@ -4771,6 +4772,7 @@ impl Game<'_> {
             self.projectile_shoot_event(owner, guest, at);
         }
         self.smoke_trails(trails);
+        self.dragon_breath_trails();
         for pos in bubble_tops {
             self.bubble_column_particles(pos);
         }
@@ -5285,7 +5287,10 @@ impl Game<'_> {
             who: Who::Mob(id), ..
         } = hit
             && id >= super::dragon::SPECIAL
-            && !matches!(p.kind, ProjectileKind::WitherSkull { .. })
+            && !matches!(
+                p.kind,
+                ProjectileKind::WitherSkull { .. } | ProjectileKind::DragonFireball
+            )
         {
             let by_player = p.owner == Some(Who::Player);
             if p.arrow.is_some() {
@@ -6053,6 +6058,9 @@ impl Game<'_> {
                     }
                 }
             },
+            // DragonFireball.onHit (its own owner's hit never gets here): the
+            // dragon's breath where it burst.
+            (ProjectileKind::DragonFireball, _) => self.dragon_fireball_on_hit(at),
             (ProjectileKind::WitherSkull { .. }, hit) => {
                 let who = match hit {
                     Hit::Entity { who, .. } => Some(who),

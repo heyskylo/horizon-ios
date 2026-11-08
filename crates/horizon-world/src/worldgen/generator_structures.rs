@@ -921,7 +921,7 @@ fn saved_piece_id(piece: &crate::nbt::Tag) -> Option<&'static str> {
 }
 /// A saved piece's tag as the JSON `PoolPiece::from_saved` reads: compounds and lists as they
 /// are, numbers as numbers.
-fn tag_json(tag: &crate::nbt::Tag) -> Value {
+pub(crate) fn tag_json(tag: &crate::nbt::Tag) -> Value {
     use crate::nbt::Tag;
     match tag {
         Tag::Byte(v) => Value::from(i64::from(*v)),
