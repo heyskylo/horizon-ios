@@ -76,6 +76,12 @@ fn with_stick_table(game: &mut Game<'_>, name: &str) {
     .unwrap();
     game.world_root = dir;
     game.world_tables = game.build_world_tables(false, &[]).unwrap().0;
+    // World open warms the loot data with the world's packs (game.rs); the
+    // break's roll reads that copy.
+    let _ = horizon_client::structure_blocks::world_loot_data(
+        &game.options.resources,
+        &game.pack_files(),
+    );
     // The table the pack installed: a direct roll, far from the stand.
     assert!(game.run_command("loot spawn 12.5 100 12.5 loot minecraft:entities/armor_stand"));
     assert!(
@@ -129,4 +135,38 @@ fn a_small_burnt_out_stand_drops_no_loot() {
     with_stick_table(&mut game, "small");
     burn(&mut game, true);
     assert!(!game.run_command(STICK));
+}
+
+// Controls added after the baseline: the roll is gated by mob_drops, and one
+// break rolls the table once.
+
+fn sticks(game: &mut Game<'_>) -> String {
+    game.chat_capture = Some(Vec::new());
+    game.run_command(STICK);
+    let said = game.chat_capture.take().unwrap_or_default();
+    said.iter().map(horizon_client::text::Text::plain).collect()
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn control_mob_drops_off_rolls_nothing() {
+    let mut game = game();
+    with_stick_table(&mut game, "nodrops");
+    assert!(game.run_command("gamerule mob_drops false"));
+    burn(&mut game, false);
+    assert!(!game.run_command(STICK));
+}
+
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn control_one_break_rolls_the_table_once() {
+    let mut game = game();
+    with_stick_table(&mut game, "once");
+    burn(&mut game, false);
+    assert_eq!(sticks(&mut game), "Test passed. Count: 1");
+    for _ in 0..20 {
+        assert!(game.run_command("tick step 1"));
+        game.tick_server(false).unwrap();
+    }
+    assert_eq!(sticks(&mut game), "Test passed. Count: 1");
 }

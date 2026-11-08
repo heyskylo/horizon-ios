@@ -8365,7 +8365,7 @@ fn to_loot(stack: &ItemStack) -> horizon_world::loot::LootStack {
     }
 }
 /// A generated loot stack as a Horizon item stack.
-fn from_loot(stack: &horizon_world::loot::LootStack) -> ItemStack {
+pub(super) fn from_loot(stack: &horizon_world::loot::LootStack) -> ItemStack {
     let mut item = ItemStack {
         item: Arc::from(stack.item.as_str()),
         count: stack.count.max(1) as u32,
