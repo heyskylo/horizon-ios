@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -14,8 +14,10 @@ use horizon_perf_format::v1::Side;
 use serde::Serialize;
 
 use crate::follow::Follower;
-use crate::read::read_capture;
-use crate::summary::{Baseline, DEFAULT_BUDGET, SummaryOptions, summarize};
+use crate::mcp;
+use crate::ops;
+use crate::request::{self, RequestError};
+use crate::summary::{Baseline, DEFAULT_BUDGET, SummaryOptions};
 use crate::watch::Watcher;
 use crate::wire::{GroupBy, HotBy, Op, SampleBy, SideName, vocab};
 
@@ -47,6 +49,7 @@ usage:
   horizon-perf diff    A B [--min-ms X] [--side client|server] [--thread T] [--limit N] [--json] [--dir DIR]
   horizon-perf list    [DIR]
   horizon-perf follow  [FILE|latest] [--every S] [--json] [--dir DIR]
+  horizon-perf mcp                                     MCP server on stdio: perf_summary, perf_query, perf_diff, perf_list, perf_follow
 
 OPs: {ops}.
 FILTERS: --side client|server --thread T --from T --to T (seconds; negative counts from the end; mark:NAME) --limit N --dir DIR
@@ -124,7 +127,7 @@ impl Flag {
 
 /// One reply as the line it is printed as.
 fn json_line<T: Serialize>(reply: &T) -> Result<String, CliError> {
-    serde_json::to_string(reply)
+    ops::json_text(reply)
         .map(|text| text + "\n")
         .map_err(failed)
 }
@@ -177,6 +180,12 @@ pub fn run(args: &[String], env: &Env, out: &mut dyn Write) -> Result<(), CliErr
         "follow" => follow(rest, env, out),
         "query" => query::query(rest, env, out),
         "diff" => diff::run(rest, env, out),
+        "mcp" => {
+            if !rest.is_empty() {
+                return Err(CliError::Usage("mcp takes no arguments".into()));
+            }
+            mcp::serve(&mut std::io::stdin().lock(), out, env).map_err(failed)
+        }
         "help" | "--help" | "-h" => writeln!(out, "{}", usage()).map_err(failed),
         other => Err(CliError::Usage(format!("unknown command {other}"))),
     }
@@ -267,7 +276,7 @@ pub fn reports_dir(dir: Option<&str>, env: &Env) -> PathBuf {
     PathBuf::from("reports")
 }
 
-fn resolve(
+pub(crate) fn resolve(
     file: Option<&str>,
     dir: Option<&str>,
     env: &Env,
@@ -281,21 +290,18 @@ fn resolve(
     }
 }
 
-fn file_name(path: &Path) -> String {
-    path.file_name()
-        .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
-}
-
 fn side_flag(parsed: &Parsed) -> Result<Option<Side>, CliError> {
     let Some(text) = parsed.flags.get(&Flag::Side) else {
         return Ok(None);
     };
-    match SideName::from_str(text) {
-        Ok(SideName::Server) => Ok(Some(Side::Server)),
-        Ok(SideName::Client) => Ok(Some(Side::Client)),
-        Ok(SideName::Unspecified) | Err(_) => Err(CliError::Usage(format!(
-            "--side is client or server, got {text}"
-        ))),
+    let name = SideName::from_str(text)
+        .map_err(|_| CliError::Usage(format!("--side is client or server, got {text}")))?;
+    request::side(Some(name)).map_err(|e| CliError::Usage(format!("--{e}, got {text}")))
+}
+
+impl From<RequestError> for CliError {
+    fn from(e: RequestError) -> Self {
+        CliError::Usage(e.0)
     }
 }
 
@@ -330,16 +336,7 @@ fn summary(args: &[String], env: &Env, out: &mut dyn Write) -> Result<(), CliErr
         .get(&Flag::Baseline)
         .map(|file| -> Result<Baseline, CliError> {
             let path = resolve(Some(file), dir, env, true)?;
-            match diff::load(&path)? {
-                diff::Report::Capture(capture) => Ok(Baseline {
-                    name: file_name(&path),
-                    capture: *capture,
-                }),
-                diff::Report::Bench(_) => Err(failed(format!(
-                    "{} is a benchmark report: summary --baseline needs a capture",
-                    path.display()
-                ))),
-            }
+            ops::baseline(&path).map_err(failed)
         })
         .transpose()?;
     let options = SummaryOptions {
@@ -347,24 +344,15 @@ fn summary(args: &[String], env: &Env, out: &mut dyn Write) -> Result<(), CliErr
         ..options
     };
     let path = resolve(parsed.one_file()?, dir, env, true)?;
-    let bytes =
-        std::fs::read(&path).map_err(|e| failed(format!("cannot read {}: {e}", path.display())))?;
-    let capture = read_capture(&bytes).map_err(failed)?;
-    let text = summarize(&capture, &file_name(&path), &options).map_err(failed)?;
+    let text = ops::summary(&path, &options).map_err(failed)?;
     out.write_all(text.as_bytes()).map_err(failed)
 }
 
 fn list(args: &[String], env: &Env, out: &mut dyn Write) -> Result<(), CliError> {
     let parsed = parse(args, &[])?;
     let dir = reports_dir(parsed.one_file()?, env);
-    let paths = files::captures_in(&dir)
-        .map_err(|e| failed(format!("cannot read {}: {e}", dir.display())))?;
-    for path in paths {
-        let line = match files::peek(&path) {
-            Ok(peek) => files::list_line(&path, &peek),
-            Err(e) => format!("{}  unreadable: {e}", file_name(&path)),
-        };
-        writeln!(out, "{line}").map_err(failed)?;
+    for listing in ops::list(&dir).map_err(failed)? {
+        writeln!(out, "{}", listing.line).map_err(failed)?;
     }
     Ok(())
 }

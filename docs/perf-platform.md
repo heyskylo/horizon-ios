@@ -923,13 +923,13 @@ CLI subcommand of the same name, so CLI and MCP replies are identical.
 
 | Tool | Params | Returns |
 |---|---|---|
-| `perf_summary` | `file`, `baseline`, `budget`, `side`, `thread`, `slow` | the summary text; `json: true` gives structure |
+| `perf_summary` | `file`, `baseline`, `budget`, `side`, `thread`, `slow` | the summary text (it has no structured form, so there is no `json` flag) |
 | `perf_query` | `op`, `args`, `files`, `filters` | §6.3's envelope |
-| `perf_diff` | `a`, `b`, `min_ms` | diff rows and the text table |
+| `perf_diff` | `a`, `b`, `min_ms`, `side`, `thread`, `limit` | `{text, reply}`: the text table and the rows `diff --json` prints |
 | `perf_list` | `dir` | captures with time, sides, kind, seconds, size |
-| `perf_follow` | `file`, `cursor` | health and slow events written since `cursor`, and the next cursor; `done: true` once every side has its `Stop` |
+| `perf_follow` | `file`, `cursor` | `{events, cursor, done}`: every `follow --json` event (health samples unthrottled) written since `cursor`, the next cursor, and `done: true` once every side has its `Stop` |
 
-The tools open only files ending in `.hzperf` or benchmark-report `.json`.
+The tools open only files ending in `.hzperf`; `perf_diff` also takes benchmark-report `.json`. Anything else is refused whatever it holds. A `perf_follow` cursor is the number of top-level fields already read; each call re-reads the file, so no state outlives it.
 
 What leaves the game: there are no `profile-summary`, `-query`, `-diff`, `-list` or `-export` rows in `horizon-ctl`
 (`crates/horizon-client/src/bin/horizon-ctl/commands.rs:314-617`). There are no such tools in `horizon-server mcp`

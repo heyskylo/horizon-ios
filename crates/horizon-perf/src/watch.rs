@@ -100,10 +100,29 @@ impl Watcher {
     }
 
     pub fn feed(&mut self, entry: &Entry) -> Vec<String> {
+        let json = self.json;
+        self.line(entry)
+            .map(|(text, event)| {
+                if json {
+                    serde_json::to_string(&event).expect("an event always serializes")
+                } else {
+                    text
+                }
+            })
+            .into_iter()
+            .collect()
+    }
+
+    /// The event this entry reports, if it reports one.
+    pub fn event(&mut self, entry: &Entry) -> Option<Event> {
+        self.line(entry).map(|(_, event)| event)
+    }
+
+    fn line(&mut self, entry: &Entry) -> Option<Line> {
         let Entry::Field(field) = entry else {
-            return Vec::new();
+            return None;
         };
-        let line = match field {
+        match field {
             Field::String(s) => {
                 self.strings.insert((s.side, s.id), s.text.clone());
                 None
@@ -133,15 +152,7 @@ impl Watcher {
             Field::Warning(w) => Some(warning(w)),
             Field::Stop(s) => Some(stop(s)),
             _ => None,
-        };
-        line.map(|(text, event)| {
-            vec![if self.json {
-                serde_json::to_string(&event).expect("an event always serializes")
-            } else {
-                text
-            }]
-        })
-        .unwrap_or_default()
+        }
     }
 
     fn health(&mut self, h: &HealthSample) -> Option<Line> {
