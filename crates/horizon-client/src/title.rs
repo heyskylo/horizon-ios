@@ -8,6 +8,7 @@ use crate::{
     save::Level,
     text::{Text, format_translation},
 };
+use horizon_core::random::RandomSource;
 use horizon_world::datafix::world_upgrader::{self, WorldUpgrader};
 use std::path::{Path, PathBuf};
 use std::{
@@ -210,6 +211,8 @@ pub struct WorldEntry {
     pub file_fixing: bool,
     /// `BackupStatus.DOWNGRADE`: a newer version saved the world.
     pub downgrade: bool,
+    /// `LevelSummary.isExperimental`: an experimental feature flag is enabled.
+    pub experimental: bool,
 }
 impl WorldEntry {
     /// `LevelSummary.isCompatible`: the saved series is this build's.
@@ -248,6 +251,7 @@ impl WorldEntry {
             incompatible: None,
             file_fixing: false,
             downgrade: false,
+            experimental: false,
         }
     }
 }
@@ -585,11 +589,37 @@ pub fn list_worlds(saves: &Path) -> Vec<WorldEntry> {
                 incompatible: crate::save::incompatible_version(&path),
                 file_fixing: crate::save::needs_file_fixes(&path),
                 downgrade: crate::save::downgraded_from(&path).is_some(),
+                experimental: experimental_features(data),
             })
         })
         .collect();
     worlds.sort_by_key(|w| std::cmp::Reverse(w.modified));
     worlds
+}
+/// `FeatureFlags.isExperimental` of `LevelStorageSource.parseFeatureFlagsFromSummary`:
+/// level.dat's `enabled_features` name a known flag other than `minecraft:vanilla`
+/// (unknown names are dropped).
+fn experimental_features(data: &horizon_world::nbt::Tag) -> bool {
+    const EXPERIMENTAL: [&str; 3] = [
+        "minecraft:trade_rebalance",
+        "minecraft:redstone_experiments",
+        "minecraft:minecart_improvements",
+    ];
+    let Some(horizon_world::nbt::Tag::List(flags)) = data.get("enabled_features") else {
+        return false;
+    };
+    flags.iter().any(|flag| {
+        let horizon_world::nbt::Tag::String(name) = flag else {
+            return false;
+        };
+        let name = name.to_string_lossy();
+        let id = if name.contains(':') {
+            name
+        } else {
+            format!("minecraft:{name}")
+        };
+        EXPERIMENTAL.contains(&id.as_str())
+    })
 }
 /// LevelSummary.createInfo: a hardcore world's mode in red (CommonColors.RED),
 /// else `gameMode.` + its GameType name, then commands and the version.
@@ -643,6 +673,18 @@ fn world_info(world: &WorldEntry) -> crate::text::Text {
     } else {
         String::new()
     };
+    // An experimental world says so in yellow (ChatFormatting.YELLOW).
+    let (mode, commands) = if world.experimental {
+        let mode = mode
+            .append(crate::text::Text::literal(format!("{commands}, ")))
+            .append(crate::text::Text::colored(
+                lang::get_or("selectWorld.experimental", "Experimental"),
+                0xFFFF55,
+            ));
+        (mode, String::new())
+    } else {
+        (mode, commands)
+    };
     // A world that asks for a backup shows its version in italics, red when downgrading.
     let version = crate::text::Text::literal(world.version.clone());
     let version = if !world.should_backup() {
@@ -689,31 +731,27 @@ fn choose_splash(text: &str, index: usize, date: (u32, u32)) -> Option<String> {
     if let Some(special) = special {
         return Some(special.to_owned());
     }
-    let splashes: Vec<_> = text
-        .lines()
-        .map(str::trim)
-        // SplashManager.prepare keeps blank lines: only the hidden splash is dropped.
-        .filter(|s| horizon_core::random::java_string_hash(s.encode_utf16()) != 125780783)
-        .collect();
+    let splashes: Vec<_> = splash_lines(text).collect();
     splashes
         .get(index.checked_rem(splashes.len())?)
         .map(|s| (*s).to_owned())
 }
+/// `SplashManager.prepare`: the splash list. Blank lines are kept; only the
+/// hidden splash is dropped.
+fn splash_lines(text: &str) -> impl Iterator<Item = &str> {
+    text.lines()
+        .map(str::trim)
+        .filter(|s| horizon_core::random::java_string_hash(s.encode_utf16()) != 125780783)
+}
 
 /// `SplashManager.getSplash`: outside the special dates, a one in `size` roll
 /// (`nextInt(size) == 42`) shows the logged-in player's name instead of a splash.
-fn rolls_user_splash(text: &str, seed: u64, date: (u32, u32)) -> bool {
-    use horizon_core::random::{LegacyRandom, RandomSource};
+fn rolls_user_splash(text: &str, random: &mut impl RandomSource, date: (u32, u32)) -> bool {
     if matches!(date, (12, 24) | (1, 1) | (10, 31)) {
         return false;
     }
-    let size = text
-        .lines()
-        .map(str::trim)
-        .filter(|s| horizon_core::random::java_string_hash(s.encode_utf16()) != 125780783)
-        .count();
-    i32::try_from(size)
-        .is_ok_and(|size| size > 0 && LegacyRandom::new(seed as i64).next_int_bound(size) == Ok(42))
+    i32::try_from(splash_lines(text).count())
+        .is_ok_and(|size| size > 0 && random.next_int_bound(size) == Ok(42))
 }
 
 impl Mode {
@@ -760,15 +798,14 @@ impl Title {
         let splashes =
             std::fs::read_to_string(resources.join("assets/minecraft/texts/splashes.txt"))
                 .unwrap_or_default();
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .subsec_nanos() as usize;
-        let splash_you = rolls_user_splash(
-            &splashes,
-            (seed as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ ((seed as u64) >> 7),
-            (today.month(), today.day()),
-        );
+        // `SplashManager.RANDOM`: `RandomSource.create()`. `getSplash` rolls for
+        // the player's name first, then picks the splash with `nextInt(size)`.
+        let mut random = crate::random_source::create();
+        let splash_you = rolls_user_splash(&splashes, &mut random, (today.month(), today.day()));
+        let splash_index = i32::try_from(splash_lines(&splashes).count())
+            .ok()
+            .filter(|&size| size > 0)
+            .map_or(0, |size| random.next_int_bound(size).unwrap_or(0) as usize);
         let mode = Mode::Main;
         let now = std::time::Instant::now();
         Self {
@@ -800,7 +837,7 @@ impl Title {
             connect_request: None,
             toast: None,
             icons: RefCell::new(std::collections::HashMap::new()),
-            splash: choose_splash(&splashes, seed, (today.month(), today.day())),
+            splash: choose_splash(&splashes, splash_index, (today.month(), today.day())),
             splash_you,
             recent: std::cell::RefCell::new(None),
             rules: RefCell::new(None),
@@ -834,7 +871,7 @@ impl Title {
             seed: String::new(),
             creative: false,
             focus: 0,
-            options: WorldOptions::default(),
+            options: WorldOptions::for_new_world(),
         }
     }
     /// WorldSelectionList.handleNewLevels: a singleplayer list that comes
@@ -4125,6 +4162,9 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             }
             Mode::Multiplayer(screen) => match screen.confirm() {
                 crate::multiplayer::Outcome::Connect { address, lan } => {
+                    if matches!(screen, crate::multiplayer::Screen::Direct { .. }) {
+                        crate::multiplayer::remember_direct_join(&self.saves, &address);
+                    }
                     (Action::Connect { address, lan }, true)
                 }
                 _ => (Action::None, false),

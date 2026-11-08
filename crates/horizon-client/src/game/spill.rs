@@ -52,7 +52,10 @@ impl Pending {
             self.banner.insert(pos, banner.clone());
             return;
         }
-        if let Some(name) = name {
+        // The vanilla crafter loot table does not copy the block entity's name.
+        if let Some(name) = name
+            && !matches!(entity, BlockEntity::Crafter(_))
+        {
             self.names.insert(pos, (block.to_owned(), name));
         }
         // `copy_components` from the block entity: the head tables copy the
@@ -66,6 +69,8 @@ impl Pending {
             ],
             BlockEntity::Skull(_) => &["minecraft:custom_name"],
             BlockEntity::Beehive(_) => &["minecraft:bees"],
+            // The statue loot tables copy the custom name of the golem it was.
+            BlockEntity::CopperGolemStatue(_) => &["minecraft:custom_name"],
             _ => &[],
         };
         if !include.is_empty() {
@@ -897,5 +902,139 @@ mod tests {
                 Some(Tag::Compound(components.clone()))
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod crafter_drop_name_tests {
+    use super::super::native_machines::tests::server_game;
+    use super::*;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and scratch homes/cwd"]
+    fn actual_crafter_destruction_keeps_source_name_off_the_dropped_item() {
+        let mut game = server_game();
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.block_ticks
+            .add_empty_chunk(BlockPos::new(0, 0, 0).chunk())
+            .unwrap();
+        assert!(game.run_command("forceload add 0 0"));
+        assert!(game.run_command("fill 0 199 0 15 199 15 stone"));
+        assert!(game.ui.rules.bool("block_drops"));
+        let clock = game.world.game_time;
+        let mut unexpected = Vec::new();
+        // Positive name-copy and unnamed controls precede the assigned case.
+        for (x, z, kind, name) in [
+            (3, 11, "chest", Some("Box")),
+            (11, 11, "shulker_box", Some("Box")),
+            (11, 3, "crafter", None),
+            (3, 3, "crafter", Some("Rig")),
+        ] {
+            let extra = name.map_or(String::new(), |n| format!(",CustomName:\"{n}\""));
+            assert!(game.run_command(&format!(
+                "setblock {x} 200 {z} minecraft:{kind}{{Items:[{{Slot:0b,id:\"minecraft:diamond\",count:3,components:{{\"minecraft:custom_data\":{{h212:1}}}}}}]{extra}}} strict"
+            )));
+            let key = (x, 200, z);
+            let item_id = format!("minecraft:{kind}");
+            assert_eq!(
+                &*game.res.facts().get(game.world.block(x, 200, z)).name,
+                item_id
+            );
+            assert_eq!(
+                &*game.res.facts().get(game.world.block(x, 199, z)).name,
+                "minecraft:stone"
+            );
+            assert_eq!(game.world.block_names.get(&key).map(String::as_str), name);
+            let entity = game
+                .world
+                .block_entities
+                .get(&key)
+                .expect("actual source block entity");
+            assert_eq!(matches!(entity, BlockEntity::Crafter(_)), kind == "crafter");
+            let diamond = entity.slots()[0].as_ref().expect("actual loaded inventory");
+            assert_eq!((&*diamond.item, diamond.count), ("minecraft:diamond", 3));
+            assert_eq!(
+                diamond
+                    .data()
+                    .and_then(|d| d.other("minecraft:custom_data"))
+                    .and_then(|t| t.get("h212")),
+                Some(&Tag::Int(1))
+            );
+            assert!(game.world.loaded(x, z), "actual destruction-level chunk");
+            assert!(game.run_command(&format!(
+                "execute if data block {x} 200 {z} {{id:\"minecraft:{kind}\",x:{x},y:200,z:{z}}}"
+            )));
+            if let Some(n) = name {
+                assert!(game.run_command(&format!(
+                    "execute if data block {x} 200 {z} {{CustomName:\"{n}\"}}"
+                )));
+            } else {
+                assert!(
+                    game.run_command(&format!("execute unless data block {x} 200 {z} CustomName"))
+                );
+            }
+            let start = game.dropped.len();
+            assert!(game.run_command(&format!("setblock {x} 200 {z} air destroy")));
+            game.flush_spill();
+            assert!(game.res.facts().is_air(game.world.block(x, 200, z)));
+            assert!(!game.world.block_entities.contains_key(&key));
+            assert!(!game.world.block_names.contains_key(&key));
+            let emitted = &game.dropped[start..];
+            let matching: Vec<_> = emitted
+                .iter()
+                .filter(|d| *d.stack.item == item_id)
+                .collect();
+            assert_eq!(matching.len(), 1, "one actual block item: {kind}");
+            let drop = matching[0];
+            assert_eq!(drop.stack.count, 1);
+            assert_eq!((drop.age, drop.pickup_delay), (0, 10));
+            let actual = drop.stack.data().and_then(|d| d.custom_name.as_ref());
+            if kind == "crafter" {
+                if actual.is_some() {
+                    unexpected.push((name, actual.cloned()));
+                }
+            } else {
+                assert_eq!(
+                    actual,
+                    Some(&Tag::String("Box".into())),
+                    "positive ordinary name-copy control"
+                );
+            }
+            if kind == "shulker_box" {
+                let contents = &drop.stack.data().unwrap().container;
+                assert_eq!(contents.len(), 1);
+                let kept = &contents[0].1;
+                assert_eq!((&*kept.item, kept.count), ("minecraft:diamond", 3));
+                assert_eq!(
+                    kept.data()
+                        .and_then(|d| d.other("minecraft:custom_data"))
+                        .and_then(|t| t.get("h212")),
+                    Some(&Tag::Int(1))
+                );
+                assert_eq!(emitted.len(), 1);
+            } else {
+                let contents: Vec<_> = emitted
+                    .iter()
+                    .filter(|d| &*d.stack.item == "minecraft:diamond")
+                    .collect();
+                assert_eq!(contents.len(), 1);
+                assert_eq!(contents[0].stack.count, 3);
+                assert_eq!(
+                    contents[0]
+                        .stack
+                        .data()
+                        .and_then(|d| d.other("minecraft:custom_data"))
+                        .and_then(|t| t.get("h212")),
+                    Some(&Tag::Int(1))
+                );
+                assert_eq!(emitted.len(), 2);
+            }
+            assert_eq!(game.world.game_time, clock, "zero observation ticks");
+        }
+        assert!(
+            unexpected.is_empty(),
+            "actual vanilla crafter drop retained source name: {unexpected:?}"
+        );
     }
 }
