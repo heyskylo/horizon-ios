@@ -1105,6 +1105,22 @@ pub(super) fn make(
             return None;
         }
     }
+    // `exclusion_radius`: none spawns within that distance of a live one of its type (rain
+    // splashes, one per patch of ground).
+    if def.exclusion_radius > 0.0 && def.gpu.is_none() {
+        let r2 = def.exclusion_radius * def.exclusion_radius;
+        let crowded = engine.particles.iter().chain(&engine.pending).any(|p| {
+            !p.removed
+                && p.polytone_type.as_deref() == Some(name)
+                && (0..3)
+                    .map(|i| (p.position[i] - position[i]).powi(2))
+                    .sum::<f64>()
+                    < r2
+        });
+        if crowded {
+            return None;
+        }
+    }
     let mut random = LegacyRandom::new(seed);
     let mut particle = Particle::at(&mut random, ParticleType::Smoke, position);
     particle.velocity = velocity;
@@ -1170,7 +1186,8 @@ pub(super) fn make(
         customs.extend(seed.customs.iter().map(|(k, v)| (k.clone(), *v)));
     }
     particle.random = random;
-    particle.polytone_type = def.limit.map(|_| Arc::from(name));
+    particle.polytone_type =
+        (def.limit.is_some() || def.exclusion_radius > 0.0).then(|| Arc::from(name));
     particle.bb = super::aabb_at(position, particle.bb_width, particle.bb_height);
     particle.controller = Some(Box::new(Controller {
         def: def.clone(),
@@ -1494,6 +1511,47 @@ mod tests {
         // `limit` 1: no second one while the first lives.
         engine.polytone_entity(&level, "minecraft:player", feet);
         assert_eq!(engine.pending.len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn no_particle_spawns_within_the_exclusion_radius_of_its_type() {
+        let blocks = blocks();
+        let root = pack(&[
+            (
+                "assets/test/polytone/custom_particles/splash.json",
+                serde_json::json!({"has_physics": false, "exclusion_radius": 1, "render_type": "invisible"}),
+            ),
+            (
+                "assets/test/polytone/custom_particles/drop.json",
+                serde_json::json!({"has_physics": false, "render_type": "invisible"}),
+            ),
+            (
+                "assets/minecraft/polytone/entity_modifiers/player.json",
+                serde_json::json!({"emitters": [
+                    {"particle": "test:splash", "x": "0", "chance": "1"},
+                    // 0.5 from the first: excluded.
+                    {"particle": "test:splash", "x": "0.5", "chance": "1"},
+                    // 3 away: spawns.
+                    {"particle": "test:splash", "x": "3", "chance": "1"},
+                    // Another type is not excluded by it.
+                    {"particle": "test:drop", "x": "0.5", "chance": "1"}
+                ]}),
+            ),
+        ]);
+        let scene = scene(blocks);
+        let level = ParticleLevel {
+            world: &scene.world,
+            facts: &scene.facts,
+            collision: &scene.collision,
+            player: None,
+        };
+        let registry = Registry::read(&root, Default::default(), blocks);
+        let mut engine = engine(registry);
+        engine.polytone_entity(&level, "minecraft:player", [1.0, 64.0, 1.0]);
+        let mut xs: Vec<f64> = engine.pending.iter().map(|p| p.position[0]).collect();
+        xs.sort_by(f64::total_cmp);
+        assert_eq!(xs, [1.0, 1.5, 4.0]);
         std::fs::remove_dir_all(root).unwrap();
     }
 
