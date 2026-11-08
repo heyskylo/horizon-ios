@@ -112,7 +112,8 @@ pub struct HudAtlas {
     /// Of the shared atlas's textures, their LabPBR normal and specular maps as paged maps
     /// (`paged_maps.rs`), read while loading for shader packs (`sprites::labpbr_maps`).
     pub material_maps: std::sync::Arc<[Option<crate::paged_maps::PagedMap>; 2]>,
-    white: Rect,
+    /// The white texel flat fills sample (also `hud_kit::shapes`).
+    pub(crate) white: Rect,
 }
 /// Atlas rows reserved for glyphs rasterized at run time.
 pub const GLYPH_ROWS: u32 = 512;
@@ -1669,6 +1670,17 @@ pub struct HudVertex {
     /// pack's text shader draws when it has one.
     pub text: u32,
 }
+/// `a` to `b` at `t` (0 to 1), each 8-bit channel of the batch's colour on its own.
+fn mix_colour(a: u32, b: u32, t: f32) -> u32 {
+    if a == b {
+        return a;
+    }
+    let channel = |shift: u32| {
+        let (p, q) = (((a >> shift) & 0xFF) as f32, ((b >> shift) & 0xFF) as f32);
+        ((p + (q - p) * t).round().clamp(0.0, 255.0) as u32) << shift
+    };
+    channel(0) | channel(8) | channel(16) | channel(24)
+}
 /// Sutherland-Hodgman against one half plane, interpolating every attribute.
 fn clip_polygon(poly: &[HudVertex], axis: usize, limit: f32, keep_below: bool) -> Vec<HudVertex> {
     let inside = |v: &HudVertex| {
@@ -1684,6 +1696,8 @@ fn clip_polygon(poly: &[HudVertex], axis: usize, limit: f32, keep_below: bool) -
         v.pos = [mix(a.pos[0], b.pos[0]), mix(a.pos[1], b.pos[1])];
         v.uv = [mix(a.uv[0], b.uv[0]), mix(a.uv[1], b.uv[1])];
         v.depth = mix(a.depth, b.depth);
+        // A shaded shape (a gradient, `hud_kit::shapes`) keeps its colours across the cut.
+        v.color = mix_colour(a.color, b.color, t);
         v.glint_uv = [
             mix(a.glint_uv[0], b.glint_uv[0]),
             mix(a.glint_uv[1], b.glint_uv[1]),

@@ -16,6 +16,7 @@ The kit grows a piece at a time, each with something on screen that needs it:
 |---|---|
 | `hud_kit::room` | `Room`: what of a view an overlay may use, clear of vanilla's boss bars |
 | `hud_kit::plate` | `Plate`: the box behind a notice's text, or a guide row's backing |
+| `hud_kit::shapes` | triangles, fans, arcs, discs and radial gradients for `HudBatch`; `alpha_since`, `translate_since` |
 | `pad_glyph`, with `GlyphOf` and `MenuJob` in `gamepad.rs` | `Glyph`: a controller button, asked for by what it does, in the player's `Glyphs` |
 | `hud_kit::fit` | `ellipsize`, `wrap`, `chord` and `fit_in_circle`: text cut or wrapped to the room it has |
 | `hud_kit::hint` | `HintRow`: glyphs and what they do, "(A) Jump", measured, fitted and drawn one way |
@@ -80,6 +81,42 @@ screen.
   sprites.
 - `hud_kit::room` tests cover an empty room and when an overlay moves.
 - `game/split/hud.rs` tests place the join strip and the notice with 0 to 3 bars.
+
+## Shapes
+
+`hud_kit::shapes` adds non-rectangular fills to `HudBatch` (an `impl HudBatch` in the kit, so
+`hud.rs` stays as it is):
+
+| Method | Draws |
+|---|---|
+| `fill_triangle(atlas, [a, b, c], colour)` | one triangle |
+| `fill_fan(atlas, centre, rim, colour)` | a triangle from the centre to each two neighbouring rim points |
+| `fill_arc(atlas, centre, [r0, r1], [a0, a1], colour)` | an annular sector; `r0 = 0` is a pie slice, a span of `TAU` a ring |
+| `fill_disc(atlas, centre, r, colour)` | a disc |
+| `fill_disc_gradient(atlas, centre, r, &[Stop(fraction, colour)...])` | a disc whose colour runs through the stops from the centre out |
+| `alpha_since(start, factor)` | multiplies the alpha of everything drawn since `start` |
+| `translate_since(start, dx, dy)` | moves everything drawn since `start` |
+
+- **Units.** Every shape is 6-vertex units, as rectangles are: a triangle is the quad `a, b, c, a,
+  c, c`. `clip_since`, blend runs (`blend_since`) and code that reads a batch a quad at a time keep
+  working, and a triangle is never taken for a rectangle (its fourth corner repeats the third).
+- **Angles** are radians from straight up, clockwise, as a stick and the radial dial's slots go.
+- **Radii** snap to whole GUI px. An arc has one segment per 4 GUI px of its outer edge
+  (`arc_segments`, `ARC_STEP`), at most 256.
+
+```rust
+use horizon_client_render::hud_kit::shapes::Stop;
+use std::f32::consts::FRAC_PI_8;
+
+// The radial dial: a dark disc fading out, its track, and the top sector lit.
+batch.fill_disc_gradient(atlas, centre, 90.0, &[Stop(0.0, dark), Stop(1.0, clear)]);
+batch.fill_arc(atlas, centre, [40.0, 70.0], [0.0, TAU], track);
+batch.fill_arc(atlas, centre, [40.0, 70.0], [-FRAC_PI_8, FRAC_PI_8], accent);
+```
+
+Tests (`hud_kit/shapes.rs`): areas against the true circle's, arcs inside their band and span,
+segment counts, a clip that keeps half a disc and its blend run, gradient stops, and that
+`alpha_since` and `translate_since` touch only what came after the mark.
 
 ## Glyphs
 

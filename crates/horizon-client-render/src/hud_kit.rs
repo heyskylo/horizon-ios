@@ -6,6 +6,8 @@
 //! - `plate`: the box behind a notice's text.
 //! - `fit`: text cut, wrapped or fitted in a circle to the room it has.
 //! - `hint`: a controller's glyphs and what they do, "(A) Jump".
+//! - `shapes`: triangles, fans, arcs and discs for `HudBatch`, and fades and moves of what was
+//!   drawn since a point.
 //! - `tabs`: a collapsed page strip, the name between arrows with a pip per page.
 //!
 //! Vanilla's own display lists (`hud_layout`, `screen_draw`) never use the kit: they stay
@@ -14,6 +16,7 @@ pub mod fit;
 pub mod hint;
 pub mod plate;
 pub mod room;
+pub mod shapes;
 pub mod tabs;
 
 /// `0xRRGGBB` and an alpha as the batch's colour (`hud::rgba`), for named colour constants.
