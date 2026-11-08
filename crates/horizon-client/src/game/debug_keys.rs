@@ -528,7 +528,7 @@ impl Game<'_> {
         }
         // Horizon's own: HDR's output while the setting is on, under the GPU (a group of its
         // own would move others to the other column).
-        if self.settings.horizon.hdr
+        if self.settings.horizon.hdr_wanted()
             && let Some(r) = self.renderer.as_ref()
         {
             d.group("system", [r.hdr_line()]);
@@ -1167,7 +1167,7 @@ impl Game<'_> {
                     (0.3125, 0.265_625)
                 }
                 K::WindCharge | K::BreezeWindCharge => (0.3125, 0.0),
-                K::LargeFireball { .. } => (1.0, 0.85),
+                K::LargeFireball { .. } | K::DragonFireball => (1.0, 0.85),
             };
             g.hitbox(
                 at(p.previous, p.position),
