@@ -2,12 +2,13 @@
 //! item carrying the `death_protection` component, whatever item it is, and
 //! entity event 35 on the client).
 use super::Game;
+use super::render_tick::player_tracking_body;
 use horizon_assets::item_model::DisplayContext;
 use horizon_client::{
     block_entity_render::vertex_light,
     items::ItemStack,
     mesher::Vertex,
-    particles::{ParticleOptions, ParticleType},
+    particles::{ParticleOptions, ParticleType, TrackingBody, TrackingTarget},
 };
 
 const TOTEM: &str = "minecraft:totem_of_undying";
@@ -75,9 +76,7 @@ impl Game<'_> {
         p.health.totem_used = false;
         let _ = p.set_health(1.0, false);
         let body = Body {
-            at: [p.position.x, p.position.y, p.position.z],
-            width: f64::from(p.dimensions.width),
-            height: f64::from(p.dimensions.height),
+            bounds: player_tracking_body(p),
             protector: None,
         };
         // `checkTotemDeathProtection`: the selected slot first, then the
@@ -104,7 +103,7 @@ impl Game<'_> {
         self.trigger_item("minecraft:used_totem", &protector);
         // ItemStack.causeUseVibration: the totem's use effects make one.
         let ctx = self.player_context(None);
-        self.post_game_event("minecraft:item_interact_finish", body.at, ctx);
+        self.post_game_event("minecraft:item_interact_finish", body.bounds.feet, ctx);
         // `DeathProtection.applyEffects`: the component's own `death_effects`,
         // read from the protector copy (the totem's clear-then-effects, or a
         // custom list; `death_protection={}` has none).
@@ -122,45 +121,34 @@ impl Game<'_> {
         let Some(body) = self.apply_totem() else {
             return;
         };
-        self.totem_event(body, true);
+        self.totem_event(TrackingTarget::LocalPlayer, body);
     }
     /// Entity event 35 from a server, for this client's own player or an
     /// entity it draws.
     pub(super) fn remote_totem(&mut self, id: i32) {
-        let own = self.remote.as_ref().is_some_and(|r| r.entity_id == id);
-        let body = if own {
-            self.player.as_ref().map(|p| Body {
-                at: [p.position.x, p.position.y, p.position.z],
-                width: f64::from(p.dimensions.width),
-                height: f64::from(p.dimensions.height),
-                protector: None,
-            })
-        } else {
-            self.mobs.iter().find(|m| m.id == id as u32).map(|m| Body {
-                at: [m.position.x, m.position.y, m.position.z],
-                width: f64::from(m.width()),
-                height: f64::from(m.height()),
-                protector: None,
-            })
-        };
-        if let Some(body) = body {
-            self.totem_event(body, own);
+        if let Some((target, bounds)) = self.remote_tracking_body(id) {
+            self.totem_event(
+                target,
+                Body {
+                    bounds,
+                    protector: None,
+                },
+            );
         }
     }
     /// `ClientPacketListener.handleEntityEvent` 35: the totem particles (a
     /// 30-tick emitter) and its sound, heard here only (`playLocalSound`),
     /// and the player's own rumble.
-    pub(super) fn totem_event(&mut self, body: Body, own: bool) {
+    pub(super) fn totem_event(&mut self, target: TrackingTarget, body: Body) {
         self.particles.tracking_emitter_for(
             ParticleOptions::simple(ParticleType::TotemOfUndying),
-            body.at,
-            body.width,
-            body.height,
+            target,
+            body.bounds,
             30,
         );
         self.audio
-            .play_unshared("minecraft:item.totem.use", Some(body.at), 1.0, 1.0);
-        if own {
+            .play_unshared("minecraft:item.totem.use", Some(body.bounds.feet), 1.0, 1.0);
+        if target == TrackingTarget::LocalPlayer {
             self.pad_rumble(horizon_client::gamepad::Rumble::Totem);
             // findTotem, then LocalPlayer.displayItemActivation. The offsets
             // come from the player's own random in vanilla, not the level's:
@@ -316,6 +304,101 @@ mod death_protection_tests {
             }
         }
     }
+
+    /// A server sends the component as wire bytes, not as a saved tag: the
+    /// stack's data has to carry it for the hand lookup, or an apple given
+    /// `[death_protection={}]` animates as a plain totem (#12632).
+    #[test]
+    fn a_servers_patch_reaches_the_hand_lookup() {
+        use horizon_client::items::{ConsumeEffect, ConsumeEffectSpec};
+        use horizon_protocol::item::{Component, Stack, component};
+        use horizon_protocol::registry::{Builtin, Dynamic, Ids};
+
+        let items = [
+            "minecraft:air",
+            "minecraft:apple",
+            "minecraft:totem_of_undying",
+        ];
+        let mut names = vec![String::new(); component::DEATH_PROTECTION as usize + 1];
+        names[component::DEATH_PROTECTION as usize] = "minecraft:death_protection".into();
+        let builtin = Builtin {
+            registries: [
+                (
+                    "minecraft:item".into(),
+                    Ids::from_names(items.iter().map(|s| s.to_string()).collect()),
+                ),
+                (
+                    "minecraft:data_component_type".into(),
+                    Ids::from_names(names),
+                ),
+                (
+                    "minecraft:mob_effect".into(),
+                    Ids::from_names(vec!["minecraft:speed".into()]),
+                ),
+            ]
+            .into(),
+        };
+        let from_wire = |item, added, removed| {
+            let mut wire = Stack::new(item, 1);
+            wire.added = added;
+            wire.removed = removed;
+            crate::item_sync::from_network(&wire, &builtin, &Dynamic::default())
+        };
+        let models = ItemModels::default();
+        // `death_protection={}`: an empty effect list and no saved tag.
+        let apple = from_wire(
+            1,
+            vec![(component::DEATH_PROTECTION, Component::Raw(vec![0]))],
+            vec![],
+        );
+        assert_eq!(
+            death_protection_of(&models, &apple.item, Some(&apple)).map(|v| v.into_owned()),
+            Some(json!({})),
+            "the apple carries the server's component"
+        );
+        // `clear_all_effects`, then speed 1 for 100 ticks.
+        let mut bytes = vec![2, 2, 0, 1, 0, 1, 100, 0, 1, 1, 0];
+        bytes.extend(1.0f32.to_bits().to_be_bytes());
+        let boosted = from_wire(
+            1,
+            vec![(component::DEATH_PROTECTION, Component::Raw(bytes))],
+            vec![],
+        );
+        let component = death_protection_of(&models, &boosted.item, Some(&boosted))
+            .expect("the apple carries the server's component")
+            .into_owned();
+        assert_eq!(
+            horizon_client::items::death_effects(&component),
+            [
+                ConsumeEffect::ClearAllEffects,
+                ConsumeEffect::ApplyEffects {
+                    effects: vec![ConsumeEffectSpec {
+                        id: "minecraft:speed".into(),
+                        duration: 100,
+                        amplifier: 1,
+                        ambient: false,
+                        show_particles: true,
+                        show_icon: true,
+                    }],
+                    probability: 1.0,
+                }
+            ],
+            "death_effects cross the wire"
+        );
+        // `totem_of_undying[!death_protection]` keeps the prototype's
+        // component from protecting.
+        let mut models = ItemModels::default();
+        models.prototypes.insert(
+            "minecraft:totem_of_undying".into(),
+            [("minecraft:death_protection".to_owned(), json!({}))].into(),
+        );
+        let stripped = from_wire(2, vec![], vec![component::DEATH_PROTECTION]);
+        assert_eq!(
+            death_protection_of(&models, &stripped.item, Some(&stripped)),
+            None,
+            "a removed component is no protection"
+        );
+    }
 }
 
 /// Where an entity event's entity stands and its size, and, for the event
@@ -323,8 +406,6 @@ mod death_protection_tests {
 /// protector copy the activation animation shows.
 #[derive(Clone)]
 pub(super) struct Body {
-    pub at: [f64; 3],
-    width: f64,
-    height: f64,
+    pub bounds: TrackingBody,
     protector: Option<ItemStack>,
 }

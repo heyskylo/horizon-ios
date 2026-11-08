@@ -24,6 +24,7 @@ use horizon_client::{
         menu::{Rules, Slots},
     },
     motion::{MotionEvent, MotionWorld, PlayerMotion},
+    particles::TrackingTarget,
     pose::Dimensions,
 };
 use horizon_core::{
@@ -1180,9 +1181,9 @@ impl Game<'_> {
         if let Some(body) = totem {
             let id = host.hub.guests[i].entity_id;
             host.hub
-                .entity_event(id, super::totem::TOTEM_EVENT, body.at);
+                .entity_event(id, super::totem::TOTEM_EVENT, body.bounds.feet);
             if self.player.is_some() {
-                self.totem_event(body, false);
+                self.totem_event(TrackingTarget::Entity(id), body);
             }
         }
         host.play.insert(conn, play);
@@ -5104,6 +5105,10 @@ impl Game<'_> {
                     });
                 from = to;
             }
+            // handleMovePlayer moves the player before it checks the fall: a
+            // cobweb or a sweet berry bush it moves through has already made it
+            // forget the fall (`makeStuckInBlock`), so landing in one is safe.
+            let _ = w.server_stuck_in_blocks(start);
             for (moved, on_ground) in moves {
                 let movement = Vec3::new(moved[0], moved[1], moved[2]);
                 let landed = (|| -> horizon_client::Result<()> {
@@ -5886,13 +5891,15 @@ impl Game<'_> {
         }
         if listened {
             let dimension = self.dim.id();
+            let points = orb.points();
+            let mut value = points;
             let called = self.as_guest(host, conn, |game| {
                 let player = game.native_acting_id();
                 game.native_experience_orb_pickup(
                     player,
                     dimension,
                     orb.id,
-                    &mut orb.value,
+                    &mut value,
                     &mut orb.count,
                     &mut canceled,
                 );
@@ -5900,7 +5907,10 @@ impl Game<'_> {
             if called.is_none() || canceled {
                 return;
             }
-            orb.value = orb.value.clamp(1, i32::MAX as u32);
+            // A mod's new value is at least 1; an untouched one stays as loaded.
+            if value != points {
+                orb.value = value.clamp(1, i32::MAX as u32) as i32;
+            }
             orb.count = orb.count.max(1);
             self.orbs[index].value = orb.value;
             self.orbs[index].count = orb.count;
@@ -5922,7 +5932,7 @@ impl Game<'_> {
             0.1,
             pitch,
         );
-        let value = orb.value;
+        let value = orb.points();
         self.as_guest(host, conn, |game| {
             let rest = game.mending(value);
             if rest > 0 {

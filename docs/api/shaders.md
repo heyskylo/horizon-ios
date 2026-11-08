@@ -225,6 +225,10 @@ and particles (the material stage covers terrain only).
 
 ## Changelog
 
+- 2026-11-08: API 0.2 (change, experimental): `horizon-shader check` refuses a 0.2 pack that constructs `Frame`, a
+  stage input (`PostInput(...)`) or `SurfaceData`, which may gain fields; reading and passing them along are
+  unchanged, and `Surface` is still constructed. The reference says `[tonemap]` runs once per pixel per output. API
+  0.1 is unchanged.
 - 2026-11-08: API 0.2 (fix, experimental): the world a post pass reads holds coverage in its alpha, as the
   reference says, instead of Horizon's light-source marks. API 0.1 is unchanged.
 - 2026-11-07: API 0.2 (change, experimental): with `HORIZON_HDR_FRAME=float`, a 0.2 pack picked or dropped gets its

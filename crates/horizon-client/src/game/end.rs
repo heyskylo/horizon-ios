@@ -549,7 +549,9 @@ impl Game<'_> {
         self.end.gateway_cooldown = self.end.gateway_cooldown.saturating_sub(1);
         if self.dimension_type().has_ender_dragon_fight {
             self.tick_fight();
-            self.tick_dragon_fireballs();
+            // The fireballs fly with the other projectiles; the breath
+            // clouds tick here, once.
+            self.tick_breath();
         } else {
             // `/summon ender_dragon` outside the End: no fight, but the dragon flies.
             self.tick_fight();

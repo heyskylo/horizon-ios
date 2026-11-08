@@ -36,11 +36,30 @@ const PI: f32 = std::f64::consts::PI as f32;
 /// negative default NaN), which `-` makes positive and `+ 1.0F` keeps. LLVM may fold `-r + 1.0` into `1.0 - r`,
 /// whose NaN keeps the root's sign, so the NaN is returned before the addition.
 fn in_circ(x: f32) -> f32 {
-    let negated = (-f64::from(1.0 - x * x).sqrt()) as f32;
-    if negated.is_nan() {
-        return f32::from_bits(0x7fc0_0000);
+    let radicand = f64::from(1.0 - x * x);
+    if radicand < 0.0 {
+        const IN_CIRC_NAN: u32 = if cfg!(target_arch = "aarch64") {
+            0xffc0_0000
+        } else {
+            0x7fc0_0000
+        };
+        return f32::from_bits(IN_CIRC_NAN);
     }
-    negated + 1.0
+    ((-radicand.sqrt()) as f32) + 1.0
+}
+
+fn out_circ(x: f32) -> f32 {
+    let d = x - 1.0;
+    let radicand = f64::from(1.0 - d * d);
+    if radicand < 0.0 {
+        const OUT_CIRC_NAN: u32 = if cfg!(target_arch = "aarch64") {
+            0x7fc0_0000
+        } else {
+            0xffc0_0000
+        };
+        return f32::from_bits(OUT_CIRC_NAN);
+    }
+    radicand.sqrt() as f32
 }
 
 const EASINGS: [(&str, fn(f32) -> f32); 32] = [
@@ -159,9 +178,7 @@ const EASINGS: [(&str, fn(f32) -> f32); 32] = [
         1.0 + 2.701_58 * cube(x - 1.0) + 1.701_58 * square(x - 1.0)
     }),
     ("out_bounce", out_bounce),
-    ("out_circ", |x| {
-        f64::from(1.0 - square(x - 1.0)).sqrt() as f32
-    }),
+    ("out_circ", out_circ),
     ("out_cubic", |x| 1.0 - cube(1.0 - x)),
     ("out_elastic", |x| {
         if x == 0.0 {
@@ -555,5 +572,28 @@ impl Timeline {
     /// `Timeline.getPeriodCount`: whole periods the clock has run.
     pub fn period_count(&self, total: i64) -> i32 {
         self.period.map_or(0, |p| (total / i64::from(p)) as i32)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn out_of_domain_circ_easings_preserve_vanilla_nan_bits() {
+        let expected_in = if cfg!(target_arch = "aarch64") {
+            0xffc0_0000
+        } else {
+            0x7fc0_0000
+        };
+        let expected_out = if cfg!(target_arch = "aarch64") {
+            0x7fc0_0000
+        } else {
+            0xffc0_0000
+        };
+        let in_circ = Easing::parse(&serde_json::json!("in_circ")).unwrap();
+        let out_circ = Easing::parse(&serde_json::json!("out_circ")).unwrap();
+        assert_eq!(in_circ.apply(1.2).to_bits(), expected_in);
+        assert_eq!(out_circ.apply(-0.2).to_bits(), expected_out);
     }
 }

@@ -41,6 +41,23 @@ fn put(index: &Index, local: bool, home: &Path) -> Result<Vec<installed::Entry>,
 }
 
 #[test]
+fn a_search_keeps_only_what_its_filter_takes() {
+    let mut index = sample();
+    index.projects[0].kind = index::Kind::NativeMod;
+    index.projects[0].versions[0].file.name = "coords_hud-0.1.0.hnmod".into();
+    let id = index.projects[0].id.clone();
+    let query = Query::new("", Kind::Mod);
+    let found = |keep: bool| -> Vec<String> {
+        search_where(&index, &query, |p| keep || p.id != id)
+            .into_iter()
+            .map(|p| p.id)
+            .collect()
+    };
+    assert!(found(true).contains(&id));
+    assert!(!found(false).contains(&id));
+}
+
+#[test]
 fn native_registry_entries_are_mods_that_say_they_run_native_code() {
     assert_eq!(kind_of(&index::Kind::NativeMod), Some(Kind::Mod));
     let mut index = sample();
