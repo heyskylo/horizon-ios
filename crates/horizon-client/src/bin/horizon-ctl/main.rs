@@ -473,15 +473,17 @@ fn aimed_at(look: &Value, id: i64) -> Result<(), String> {
             target["block"]["pos"]
         )
     } else {
-        format!(
-            "entity {id} is not under the crosshair: it is out of reach or moved; walk closer"
-        )
+        format!("entity {id} is not under the crosshair: it is out of reach or moved; walk closer")
     })
 }
 
 /// The entity `id` in an `entities` reply.
 fn find_entity(reply: &Value, id: i64) -> Option<Value> {
-    reply["entities"].as_array()?.iter().find(|e| e["id"].as_i64() == Some(id)).cloned()
+    reply["entities"]
+        .as_array()?
+        .iter()
+        .find(|e| e["id"].as_i64() == Some(id))
+        .cloned()
 }
 
 /// The nearest dropped item in an `entities` reply (nearest first) whose id is not in `skip`.
@@ -495,8 +497,15 @@ fn nearest_item(reply: &Value, skip: &[i64]) -> Option<Value> {
 
 /// The `hurt` events in an `events` reply.
 fn hurts(reply: &Value) -> Vec<Value> {
-    let events = reply["events"].as_array().map(Vec::as_slice).unwrap_or_default();
-    events.iter().filter(|e| e["event"] == "hurt").cloned().collect()
+    let events = reply["events"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    events
+        .iter()
+        .filter(|e| e["event"] == "hurt")
+        .cloned()
+        .collect()
 }
 
 /// Item counts that changed from `before` to `after` (`inventory` replies' `counts`).
@@ -508,9 +517,8 @@ fn count_change(before: &Value, after: &Value) -> Value {
     );
     let mut change = serde_json::Map::new();
     for item in before.keys().chain(after.keys()) {
-        let n = |m: &serde_json::Map<String, Value>| {
-            m.get(item).and_then(Value::as_i64).unwrap_or(0)
-        };
+        let n =
+            |m: &serde_json::Map<String, Value>| m.get(item).and_then(Value::as_i64).unwrap_or(0);
         let delta = n(after) - n(before);
         if delta != 0 {
             change.insert(item.clone(), json!(delta));
@@ -844,12 +852,18 @@ mod tests {
         let on = json!({ "target": { "entity": { "id": 91, "type": "minecraft:sheep" } } });
         assert_eq!(aimed_at(&on, 91), Ok(()));
         let sheep = aimed_at(&on, 107).unwrap_err();
-        assert!(sheep.contains("minecraft:sheep 91 is in the way"), "{sheep}");
+        assert!(
+            sheep.contains("minecraft:sheep 91 is in the way"),
+            "{sheep}"
+        );
         let log = json!({
             "target": { "block": { "block": "minecraft:oak_log", "pos": [1, 2, 3] } }
         });
         let log = aimed_at(&log, 91).unwrap_err();
-        assert!(log.contains("minecraft:oak_log at [1,2,3] is in the way"), "{log}");
+        assert!(
+            log.contains("minecraft:oak_log at [1,2,3] is in the way"),
+            "{log}"
+        );
         let nothing = aimed_at(&json!({ "target": null }), 91).unwrap_err();
         assert!(nothing.contains("walk closer"), "{nothing}");
     }
@@ -869,7 +883,10 @@ mod tests {
             { "event": "hurt", "amount": 3.0, "seq": 2 },
             { "event": "heal", "seq": 3 },
         ], "last": 3 });
-        assert_eq!(hurts(&reply), vec![json!({ "event": "hurt", "amount": 3.0, "seq": 2 })]);
+        assert_eq!(
+            hurts(&reply),
+            vec![json!({ "event": "hurt", "amount": 3.0, "seq": 2 })]
+        );
         assert!(hurts(&json!({})).is_empty());
     }
 

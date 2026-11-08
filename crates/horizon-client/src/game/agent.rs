@@ -137,7 +137,11 @@ impl Args<'_> {
     /// center the way the player stands in it; a decimal is an exact position.
     fn column(&self, i: usize, what: &str) -> Result<f64> {
         let v = self.f64(i, what)?;
-        Ok(if whole(self.get(i, what)?) { v + 0.5 } else { v })
+        Ok(if whole(self.get(i, what)?) {
+            v + 0.5
+        } else {
+            v
+        })
     }
     fn i32(&self, i: usize, what: &str) -> Result<i32> {
         let v = self.get(i, what)?;

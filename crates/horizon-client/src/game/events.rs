@@ -145,8 +145,7 @@ fn diff(before: &Snapshot, now: &Snapshot, chat: &[String]) -> Vec<Value> {
         && let (Some((health0, food0)), Some((health, food))) = (before.vitals, now.vitals)
     {
         if health < health0 {
-            let mut hurt =
-                json!({ "event": "hurt", "amount": health0 - health, "health": health });
+            let mut hurt = json!({ "event": "hurt", "amount": health0 - health, "health": health });
             add_cause(&mut hurt, before, now);
             out.push(hurt);
         } else if health > health0 {
@@ -177,9 +176,7 @@ fn parse_events(words: &[&str]) -> Result<(u64, Option<usize>)> {
     while let Some(word) = it.next() {
         match (*word, it.next()) {
             ("--since", Some(n)) => since = n.parse().map_err(|_| "--since takes a number")?,
-            ("--limit", Some(n)) => {
-                limit = Some(n.parse().map_err(|_| "--limit takes a number")?)
-            }
+            ("--limit", Some(n)) => limit = Some(n.parse().map_err(|_| "--limit takes a number")?),
             _ => return Err("events [--since SEQ] [--limit N]".into()),
         }
     }
@@ -384,7 +381,10 @@ mod tests {
     #[test]
     fn events_take_since_and_limit_in_any_order() {
         assert_eq!(parse_events(&[]).unwrap(), (0, None));
-        assert_eq!(parse_events(&["--limit", "5", "--since", "42"]).unwrap(), (42, Some(5)));
+        assert_eq!(
+            parse_events(&["--limit", "5", "--since", "42"]).unwrap(),
+            (42, Some(5))
+        );
         assert!(parse_events(&["--limit"]).is_err());
         assert!(parse_events(&["--since", "x"]).is_err());
     }
@@ -404,7 +404,10 @@ mod tests {
     #[test]
     fn a_servers_damage_event_names_the_cause() {
         let mut events = Events::default();
-        events.note_hit("minecraft:mob_attack".into(), Some("minecraft:drowned".into()));
+        events.note_hit(
+            "minecraft:mob_attack".into(),
+            Some("minecraft:drowned".into()),
+        );
         let before = snap("playing", 0, 0);
         let mut now = snap("playing", 0, 0);
         now.vitals = Some((17.0, 20));
@@ -412,10 +415,19 @@ mod tests {
         let hurt = &diff(&before, &now, &[])[0];
         assert_eq!(hurt["cause"], "minecraft:mob_attack");
         assert_eq!(hurt["by"], "minecraft:drowned");
-        assert!(hurt.get("damage").is_none(), "the server's client only knows the health");
+        assert!(
+            hurt.get("damage").is_none(),
+            "the server's client only knows the health"
+        );
         // The next hit of the same kind is another hit.
-        events.note_hit("minecraft:mob_attack".into(), Some("minecraft:drowned".into()));
-        assert_ne!(events.remote_hit.as_ref().unwrap().0, now.hit.as_ref().unwrap().0);
+        events.note_hit(
+            "minecraft:mob_attack".into(),
+            Some("minecraft:drowned".into()),
+        );
+        assert_ne!(
+            events.remote_hit.as_ref().unwrap().0,
+            now.hit.as_ref().unwrap().0
+        );
     }
 
     #[test]

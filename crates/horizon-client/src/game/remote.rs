@@ -4616,7 +4616,8 @@ impl Game<'_> {
                             .get(&self.mobs, id)
                             .map(|m| m.kind.id.to_string())
                     });
-                    self.events.note_hit(cause.unwrap_or_else(|| "unknown".into()), by);
+                    self.events
+                        .note_hit(cause.unwrap_or_else(|| "unknown".into()), by);
                     let at = self
                         .player
                         .as_ref()
