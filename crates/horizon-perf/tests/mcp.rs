@@ -149,6 +149,7 @@ fn every_filter() -> QueryRequest {
         depth: Some(1),
         min_pct: Some(1.0),
         self_share: true,
+        stats: true,
     }
 }
 

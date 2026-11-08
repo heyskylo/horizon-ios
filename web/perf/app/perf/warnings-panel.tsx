@@ -24,16 +24,14 @@ export function WarningsPanel({ reader, capture }: Props) {
       <thead>
         <tr>
           <th>{t("table.time")}</th>
-          <th>{t("table.code")}</th>
-          <th>{t("table.text")}</th>
+          <th>{t("table.warning")}</th>
         </tr>
       </thead>
       <tbody>
         {rows.map((row, index) => (
           <tr key={`${row.t}-${index}`}>
             <td>{num(row.t, 1)} s</td>
-            <td>{row.code}</td>
-            <td>{row.text}</td>
+            <td>{t(`${row.code}`, { seconds: num(row.args[0] ?? 0, 0), mib: num((row.args[1] ?? 0) / (1024 * 1024), 1) })}</td>
           </tr>
         ))}
       </tbody>

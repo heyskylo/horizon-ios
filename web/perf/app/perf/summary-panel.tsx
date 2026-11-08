@@ -3,9 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import type { HorizonPerf } from "@/lib/generated/horizon_perf";
-import { at, grouped, mib, num, shortId, withUnit } from "@/lib/format";
-import { byField, stats } from "@/lib/health";
-import type { Stats } from "@/lib/health";
+import { grouped, mib, num, shortId, withUnit } from "@/lib/format";
+import { byField } from "@/lib/health";
 import { t } from "@/lib/i18n";
 import {
   attributed,
@@ -14,17 +13,17 @@ import {
   loadOverview,
   phaseTree,
   share,
-  topSpans,
 } from "@/lib/overview";
+import { windowsWithin } from "@/lib/trailing";
 import type { Overview, PhaseNode } from "@/lib/overview";
-import type { CostRow, GroupRow, HotRow, TickRow } from "@/lib/types";
-import { spanId } from "@/lib/info";
+import type { CostRow, GroupRow, HotRow, SeriesStats } from "@/lib/types";
 import type { Changes } from "@/lib/compare";
 import { useChanges } from "./comparison";
-import { Delta } from "./delta";
+import { Delta, NewRows } from "./delta";
 import { RowTools } from "./row-tools";
 import { Segmented } from "./segmented";
 import { Spark } from "./spark";
+import { QUERY_FILE } from "./use-capture";
 import type { LoadedCapture } from "./use-capture";
 import styles from "./page.module.css";
 
@@ -204,10 +203,10 @@ export function SummaryView({ capture, data, text }: ViewProps) {
   const [copied, setCopied] = useState(false);
 
   const fields = useMemo(() => byField(data.series), [data]);
-  const phases = useMemo(() => flatPhases(phaseTree(data.spans)), [data]);
+  const phases = useMemo(() => flatPhases(phaseTree(data.spans)).filter(([, depth]) => depth <= 1), [data]);
   const phaseMax = useMemo(() => largest(phases.map(([node]) => node.ms)), [phases]);
 
-  const get = (name: string): Stats | null => stats(fields.get(name)?.values ?? []);
+  const get = (name: string): SeriesStats | null => fields.get(name)?.stats ?? null;
   const side = capture.side;
   const meta = capture.meta.rows.find((row) => row.side === side);
 
@@ -241,7 +240,7 @@ export function SummaryView({ capture, data, text }: ViewProps) {
 
   const resident = fields.get("h:rss_mb")?.values ?? [];
   const firstResident = resident.find((value): value is number => typeof value === "number");
-  const change =
+  const grew =
     firstResident !== undefined && rss?.last !== undefined ? rss.last - firstResident : null;
 
   const header = [
@@ -284,25 +283,24 @@ export function SummaryView({ capture, data, text }: ViewProps) {
         {side === "server" ? (
           <Tile
             title={t("health.tps")}
-            value={num(tps?.last ?? null, 1)}
+            value={num(tps?.mean ?? null, 1)}
             unit={t("health.unitTps")}
-            rows={[
-              [t("health.window1m"), num(data.trailing[0] ?? null, 1)],
-              [t("health.window5m"), num(data.trailing[1] ?? null, 1)],
-              [t("health.window15m"), num(data.trailing[2] ?? null, 1)],
-            ]}
+            rows={windowsWithin(data.seconds).map((window, index): [string, string] => [
+              t(window.label),
+              withUnit(data.trailing[index], t("health.unitTps")),
+            ])}
           >
             <Spark values={fields.get("h:tps")?.values ?? []} label={t("health.tps")} />
           </Tile>
         ) : (
           <Tile
             title={t("health.fps")}
-            value={num(fps?.last ?? null, 1)}
+            value={num(fps?.mean ?? null, 1)}
             unit={t("health.unitFps")}
             rows={[
-              [t("health.min"), num(fps?.min ?? null, 1)],
-              [t("health.median"), num(fps?.median ?? null, 1)],
-              [t("health.max"), num(fps?.max ?? null, 1)],
+              [t("health.min"), withUnit(fps?.min, t("health.unitFps"))],
+              [t("health.median"), withUnit(fps?.median, t("health.unitFps"))],
+              [t("health.max"), withUnit(fps?.max, t("health.unitFps"))],
             ]}
           >
             <Spark values={fields.get("h:fps")?.values ?? []} label={t("health.fps")} />
@@ -315,10 +313,10 @@ export function SummaryView({ capture, data, text }: ViewProps) {
             value={num(mspt?.mean ?? null, 1)}
             unit={t("health.unitMs")}
             rows={[
-              [t("health.min"), num(mspt?.min ?? null, 1)],
-              [t("health.median"), num(mspt?.median ?? null, 1)],
-              [t("health.worstP95"), num(worstSecond?.max ?? null, 1)],
-              [t("health.max"), num(peak?.max ?? null, 1)],
+              [t("health.min"), withUnit(mspt?.min, "ms")],
+              [t("health.median"), withUnit(mspt?.median, "ms")],
+              [t("health.worstP95"), withUnit(worstSecond?.max, "ms")],
+              [t("health.max"), withUnit(peak?.max, "ms")],
             ]}
           >
             <Spark values={fields.get("h:mspt_p95")?.values ?? []} label={t("health.mspt")} />
@@ -329,11 +327,11 @@ export function SummaryView({ capture, data, text }: ViewProps) {
             value={num(frame?.median ?? null, 1)}
             unit={t("health.unitMs")}
             rows={[
-              [t("health.p50"), num(frameP50?.median ?? null, 1)],
-              [t("health.p99"), num(frameP99?.median ?? null, 1)],
-              [t("health.max"), num(frameMax?.max ?? null, 1)],
-              ...(frameCpu ? ([[t("health.cpu"), num(frameCpu.median, 1)]] as [string, string][]) : []),
-              ...(frameGpu ? ([[t("health.gpu"), num(frameGpu.median, 1)]] as [string, string][]) : []),
+              [t("health.p50"), withUnit(frameP50?.median, "ms")],
+              [t("health.p99"), withUnit(frameP99?.median, "ms")],
+              [t("health.max"), withUnit(frameMax?.max, "ms")],
+              ...(frameCpu ? ([[t("health.cpu"), withUnit(frameCpu.median, "ms")]] as [string, string][]) : []),
+              ...(frameGpu ? ([[t("health.gpu"), withUnit(frameGpu.median, "ms")]] as [string, string][]) : []),
             ]}
           >
             <Spark values={fields.get("h:frame_ms_p95")?.values ?? []} label={t("health.frame")} />
@@ -348,8 +346,8 @@ export function SummaryView({ capture, data, text }: ViewProps) {
             [
               t("health.system"),
               meta?.machine
-                ? `${num(system?.mean ?? null, 2)} / ${meta.machine.cpu_threads}`
-                : num(system?.mean ?? null, 2),
+                ? t("health.systemOf", { used: num(system?.mean ?? null, 2), total: meta.machine.cpu_threads })
+                : withUnit(system?.mean, t("health.unitCores"), 2),
             ],
           ]}
         >
@@ -365,7 +363,7 @@ export function SummaryView({ capture, data, text }: ViewProps) {
           rows={[
             [t("health.physical"), mib(physical?.last)],
             [t("health.swap"), mib(swap?.last)],
-            [t("summary.change"), change === null ? "—" : `${num(change, 0)} MB`],
+            [t("summary.change"), grew === null ? "—" : `${grew > 0 ? "+" : ""}${withUnit(grew, "MiB", 0)}`],
           ]}
         >
           <Spark values={resident} label={t("health.memory")} />
@@ -419,8 +417,8 @@ export function SummaryView({ capture, data, text }: ViewProps) {
         <div className={styles.meterList} data-delta={changes ? "value" : undefined}>
           <MeterHead
             name={t("summary.phase")}
-            value={t("summary.msPerTick")}
-            extra={t("summary.pctOfTick")}
+            value={t(side === "client" ? "summary.msPerFrame" : "summary.msPerTick")}
+            extra={t(side === "client" ? "summary.pctOfFrame" : "summary.pctOfTick")}
             change={changes ? t("compare.columnChange") : undefined}
             changeFirst
           />
@@ -449,8 +447,8 @@ export function SummaryView({ capture, data, text }: ViewProps) {
               <div className={styles.meterList} data-delta={changes ? "last" : undefined}>
                 <MeterHead
                   name={t("summary.function")}
-                  value={t("summary.self")}
-                  extra={t("summary.total")}
+                  value={t("summary.selfMs")}
+                  extra={t("summary.totalMs")}
                   change={changes ? t("compare.columnTotalChange") : undefined}
                 />
                 {data.hot.map((row: HotRow) => (
@@ -469,59 +467,17 @@ export function SummaryView({ capture, data, text }: ViewProps) {
               </div>
             </Card>
           ) : null}
-
-          {data.worst.length > 0 ? (
-            <Card
-              title={t(side === "client" ? "summary.worstFrames" : "summary.worst")}
-              note={t(side === "client" ? "summary.worstFramesNote" : "summary.worstNote")}
-            >
-              <div className={styles.ticks}>
-                {data.worst.map((tick: TickRow) => (
-                  <div key={tick.id} className={styles.tickRow}>
-                    <details className={styles.tick}>
-                      <summary className={styles.tickHead}>
-                        <span className={styles.tickMs}>{num(tick.wall_ms, 1)} ms</span>
-                        <span className={styles.tickAt}>
-                          {t("summary.at", { time: at(tick.t) })}
-                        </span>
-                        <span className={styles.tickSpans}>
-                          {topSpans(tick).map(([name, , ms]) => (
-                            <span key={name} className={styles.chip}>
-                              {name} {num(ms, 1)}
-                            </span>
-                          ))}
-                        </span>
-                      </summary>
-                      <div className={styles.tickBody}>
-                        {tick.spans.map(([name, depth, wall], index) => (
-                          <div
-                            key={`${name}-${index}`}
-                            className={styles.tickSpan}
-                            style={{ paddingLeft: depth * 12 }}
-                          >
-                            <span className={styles.tickSpanName}>
-                              <span className={styles.nameText}>{name}</span>
-                              <RowTools id={spanId(name)} name={name} />
-                            </span>
-                            <span className={styles.tickSpanMs}>{num(wall, 2)} ms</span>
-                          </div>
-                        ))}
-                      </div>
-                    </details>
-                    <span className={styles.tickTools}>
-                      <RowTools id={tick.id} name={at(tick.t)} />
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </Card>
-          ) : null}
         </div>
 
         <div className={styles.stack}>
           {entityRows.length > 0 ? (
             <Card title={t("summary.entities")} note={t("summary.entitiesNote")}>
               <div className={styles.meterList}>
+                <MeterHead
+                  name={t("summary.type")}
+                  value={t(side === "client" ? "summary.msPerFrame" : "summary.msPerTick")}
+                  extra={t("summary.share")}
+                />
                 {entityRows.map((row: GroupRow) => (
                   <Meter
                     key={row.key}
@@ -540,6 +496,11 @@ export function SummaryView({ capture, data, text }: ViewProps) {
           {blockRows.length > 0 ? (
             <Card title={t("summary.blocks")} note={t("summary.blocksNote")}>
               <div className={styles.meterList}>
+                <MeterHead
+                  name={t("summary.type")}
+                  value={t(side === "client" ? "summary.msPerFrame" : "summary.msPerTick")}
+                  extra={t("summary.share")}
+                />
                 {blockRows.map((row: GroupRow) => (
                   <Meter
                     key={row.key}
@@ -560,7 +521,7 @@ export function SummaryView({ capture, data, text }: ViewProps) {
               <div className={styles.meterList}>
                 <MeterHead
                   name={t("summary.type")}
-                  value={t("summary.msPerTick")}
+                  value={t(side === "client" ? "summary.msPerFrame" : "summary.msPerTick")}
                   extra={t("summary.usPerMob")}
                 />
                 {data.costs.map((row: CostRow) => (
@@ -594,14 +555,14 @@ export function SummaryPanel({ reader, capture }: Props) {
     setError(null);
     setData(null);
     try {
-      setData(loadOverview(reader, capture.handle, capture.name, capture.side, capture.meta));
+      setData(loadOverview(reader, capture.handle, QUERY_FILE, capture.side, capture.meta));
     } catch (failure) {
       setError(message(failure));
     }
     // A capture with no report only loses the copy button.
     try {
-      const report = reader.summary(capture.handle, { file: capture.name, side: capture.side });
-      const lead = `${capture.name}: `;
+      const report = reader.summary(capture.handle, { file: QUERY_FILE, side: capture.side });
+      const lead = `${QUERY_FILE}: `;
       setText(report.startsWith(lead) ? report.slice(lead.length) : report);
     } catch {
       setText("");

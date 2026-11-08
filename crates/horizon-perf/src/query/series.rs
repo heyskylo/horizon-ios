@@ -2,10 +2,11 @@ use std::str::FromStr;
 
 use horizon_perf_format::v1::{CounterKind, Side};
 
-use super::rows::{Row, SeriesRow};
+use super::rows::{Row, SeriesRow, SeriesStats};
 use super::{Ctx, QueryError, Reply, num, opt_num};
 use crate::health::{HealthField, Series};
 use crate::ids::{self, Id, Kind};
+use crate::stats::median;
 use crate::view::{CounterInfo, View};
 use crate::wire::{Candidate, SeriesUnit, Unit};
 
@@ -43,18 +44,48 @@ pub(super) fn series(ctx: &Ctx) -> Result<Reply, QueryError> {
     for arg in &ctx.q.args {
         for field in resolve(ctx, side, arg)? {
             let (id, unit, values) = field.values(ctx, side, &buckets)?;
+            let stats = ctx
+                .q
+                .stats
+                .then(|| {
+                    series_stats(
+                        &values,
+                        field.window_mean(ctx, side, window.from, window.to),
+                    )
+                })
+                .flatten();
             rows.push(Row::Series(SeriesRow {
                 field: id,
                 unit,
                 step_s: num(every),
                 t: starts.iter().map(|&t| num(t)).collect(),
                 values: values.into_iter().map(opt_num).collect(),
+                stats,
             }));
         }
     }
     let mut reply = Reply::new(Unit::Series, rows);
     reply.window = Some(window);
     Ok(reply)
+}
+
+/// The statistics of a series' finite points; None when it has none.
+fn series_stats(values: &[Option<f64>], window_mean: Option<f64>) -> Option<SeriesStats> {
+    let points: Vec<f64> = values.iter().flatten().copied().collect();
+    let last = *points.last()?;
+    let mut sorted = points.clone();
+    sorted.sort_by(f64::total_cmp);
+    let n = sorted.len();
+    let mean = window_mean.unwrap_or_else(|| points.iter().sum::<f64>() / n as f64);
+    Some(SeriesStats {
+        min: num(sorted[0]),
+        mean: num(mean),
+        median: num(median(&points)?),
+        p95: num(sorted[((n - 1) as f64 * 0.95).floor() as usize]),
+        max: num(sorted[n - 1]),
+        last: num(last),
+        points: n,
+    })
 }
 
 enum Field {
@@ -170,6 +201,16 @@ fn counters_named(view: &View, side: Side, text: &str) -> Result<Vec<Field>, Que
 }
 
 impl Field {
+    /// The mean over the whole window, where the capture can state one better than the points' average.
+    fn window_mean(&self, ctx: &Ctx, side: Side, from: f64, to: f64) -> Option<f64> {
+        match self {
+            Field::Health(field) => {
+                Series::new(ctx.views[0].capture, side, field.pick()).mean(from, to, 0.0)
+            }
+            Field::Span(_) | Field::Counter(_) => None,
+        }
+    }
+
     fn values(
         &self,
         ctx: &Ctx,

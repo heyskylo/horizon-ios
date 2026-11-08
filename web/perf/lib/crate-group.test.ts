@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { crateGroup, groupsIn, modCrates } from "./crate-group.ts";
 import type { ModInfo, TreeRow } from "./types.ts";
 
-const mod = (id: string, kind: string, crate_name: string): ModInfo => ({ id, version: "1", kind, crate_name });
+const mod = (id: string, kind: ModInfo["kind"], crate: string): ModInfo => ({ id, version: "1", kind, crate });
 const none = new Set<string>();
 
 test("the game's own crates split into world, client and the rest", () => {

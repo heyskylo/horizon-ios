@@ -26,6 +26,7 @@ import { MarksPanel } from "./marks-panel";
 import { WarningsPanel } from "./warnings-panel";
 import { HotPanel } from "./hot-panel";
 import { TreePanel } from "./tree-panel";
+import { QUERY_FILE } from "./use-capture";
 import type { LoadedCapture } from "./use-capture";
 import styles from "./page.module.css";
 
@@ -84,7 +85,7 @@ function Shown({ reader, capture, showSide, onClose }: Props) {
   const tabs = useMemo(() => {
     const ask = <R,>(op: string, limit?: number) => {
       try {
-        const reply = reader.query<R>(capture.handle, { op, file: capture.name, filters: { side: capture.side, ...(limit ? { limit } : {}) } });
+        const reply = reader.query<R>(capture.handle, { op, file: QUERY_FILE, filters: { side: capture.side, ...(limit ? { limit } : {}) } });
         return reply.ok ? reply.rows : [];
       } catch {
         return [];
@@ -94,7 +95,7 @@ function Shown({ reader, capture, showSide, onClose }: Props) {
       (row) => "players" in row && row.out_kib_s + row.in_kib_s > 0,
     );
     return tabsFor((query) => ask(query, 1).length > 0, hasTraffic);
-  }, [reader, capture.handle, capture.name, capture.side]);
+  }, [reader, capture.handle, capture.side]);
   const tab = tabs.includes(picked) ? picked : "summary";
   const exports = useMemo(() => exportsFor(capture.meta.rows), [capture.meta]);
 

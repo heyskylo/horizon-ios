@@ -354,6 +354,10 @@
   outline-offset: -2px;
 }
 
+.panel :is(button, summary, select, input, textarea, [tabindex]) {
+  scroll-margin-top: 56px;
+}
+
 .panel {
   min-height: 240px;
   min-width: 0;
@@ -831,8 +835,9 @@
 }
 
 .tickHead {
+  box-sizing: border-box;
   display: grid;
-  grid-template-columns: 84px 76px minmax(0, 1fr);
+  grid-template-columns: 84px 76px minmax(0, 1fr) 16px;
   gap: 12px;
   align-items: center;
   width: 100%;
@@ -847,8 +852,14 @@
   cursor: pointer;
 }
 
-.tickHead[aria-pressed="true"] {
-  background: var(--plate);
+.tickChevron {
+  display: flex;
+  color: var(--muted);
+  transition: transform 150ms ease;
+}
+
+.tick[open] .tickChevron {
+  transform: rotate(180deg);
 }
 
 .tickMs {
@@ -868,13 +879,6 @@
   font-size: 12px;
 }
 
-.tickSpans {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  min-width: 0;
-}
-
 .tickBody {
   display: grid;
   gap: 1px;
@@ -883,7 +887,7 @@
 
 .tickSpan {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 72px;
+  grid-template-columns: minmax(0, 1fr) 72px 72px;
   gap: 12px;
   font-size: 13px;
 }
@@ -904,7 +908,7 @@
 .tickTools {
   position: absolute;
   top: 0;
-  right: 8px;
+  right: 36px;
   height: 28px;
 }
 
@@ -932,10 +936,10 @@
   }
 
   .tickHead {
-    grid-template-columns: 84px minmax(0, 1fr);
+    grid-template-columns: 84px minmax(0, 1fr) 16px;
   }
 
-  .tickAt {
+  .tickHead > .meterTrack {
     display: none;
   }
 }

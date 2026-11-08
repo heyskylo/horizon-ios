@@ -5,6 +5,9 @@ import type { HorizonPerf } from "@/lib/generated/horizon_perf";
 import type { Envelope, MetaRow, QueryRequest, Side } from "@/lib/types";
 import { t } from "@/lib/i18n";
 
+/** What queries call the open capture: the replies echo it, so it is never the real file name. */
+export const QUERY_FILE = "capture";
+
 export interface LoadedCapture {
   handle: number;
   name: string;
@@ -63,7 +66,7 @@ export function useReader() {
       try {
         const bytes = await file.arrayBuffer();
         handle = reader.open(bytes);
-        const meta = reader.query<MetaRow>(handle, { op: "meta", file: name });
+        const meta = reader.query<MetaRow>(handle, { op: "meta", file: QUERY_FILE });
         if (!meta.ok) throw new Error(meta.error ? replyError(meta.error) : t("error.metaFailed"));
         const sides = meta.rows.map((row) => row.side);
         const side: Side = sides.includes("server") ? "server" : (sides[0] ?? "client");
@@ -111,7 +114,7 @@ export function useRows<R>(
     try {
       const reply = reader.query<R>(capture.handle, {
         op,
-        file: capture.name,
+        file: QUERY_FILE,
         args: JSON.parse(argsKey) as string[],
         filters: { side: capture.side, ...(JSON.parse(key) as QueryRequest["filters"]) },
       });
@@ -121,5 +124,5 @@ export function useRows<R>(
     } catch (failure) {
       return { rows: [], error: message(failure), reply: null };
     }
-  }, [reader, capture.handle, capture.name, capture.side, op, key, argsKey, enabled]);
+  }, [reader, capture.handle, capture.side, op, key, argsKey, enabled]);
 }

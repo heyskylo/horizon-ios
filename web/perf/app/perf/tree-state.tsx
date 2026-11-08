@@ -9,6 +9,7 @@ import { probeOptions } from "@/lib/tree-options";
 import type { Ask, SampleFilters, SampleOptions } from "@/lib/tree-options";
 import type { TreeRow, Unit } from "@/lib/types";
 import type { AmountKind } from "@/lib/units";
+import { QUERY_FILE } from "./use-capture";
 import type { LoadedCapture } from "./use-capture";
 
 /** The shape of the tree the wasm answers with: deep, with siblings under 0.05 % folded into their parent's `folded`. */
@@ -83,11 +84,11 @@ const NO_OPTIONS: SampleOptions = { selections: [], groups: ["none"], threads: [
 export function useSampleOptions(reader: HorizonPerf, capture: LoadedCapture): SampleOptions {
   return useMemo(() => {
     const ask: Ask = <R,>(op: string, filters: Record<string, unknown>) =>
-      reader.query<R>(capture.handle, { op, file: capture.name, filters: { side: capture.side, ...filters } });
+      reader.query<R>(capture.handle, { op, file: QUERY_FILE, filters: { side: capture.side, ...filters } });
     try {
       return probeOptions(ask);
     } catch {
       return NO_OPTIONS;
     }
-  }, [reader, capture.handle, capture.name, capture.side]);
+  }, [reader, capture.handle, capture.side]);
 }

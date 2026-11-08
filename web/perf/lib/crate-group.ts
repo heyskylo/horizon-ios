@@ -14,7 +14,7 @@ function symbolName(crate: string): string {
 
 /** The crates of the native mods a capture lists. */
 export function modCrates(mods: readonly ModInfo[]): ReadonlySet<string> {
-  return new Set(mods.filter((mod) => mod.kind === "native" && mod.crate_name).map((mod) => symbolName(mod.crate_name)));
+  return new Set(mods.filter((mod) => mod.kind === "native" && mod.crate).map((mod) => symbolName(mod.crate)));
 }
 
 /** The group a crate is coloured as; none when the capture did not record one. */

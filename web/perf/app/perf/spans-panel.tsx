@@ -64,7 +64,7 @@ export function SpansPanel({ reader, capture }: Props) {
         <div className={styles.meterHead}>
           <span>{t("spans.name")}</span>
           <span />
-          <span>{t("summary.msPerTick")}</span>
+          <span>{t(capture.side === "client" ? "summary.msPerFrame" : "summary.msPerTick")}</span>
           {compare ? <span>{t("compare.columnChange")}</span> : null}
           <span>{t("spans.seen")}</span>
         </div>

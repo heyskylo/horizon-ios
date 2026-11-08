@@ -16,7 +16,7 @@ function tag(verdict: DiffRow["verdict"]): string {
     case "negligible":
       return "~";
     case "too_few_blocks":
-      return "?";
+      return "";
     default:
       return t(`compare.verdict.${verdict}`);
   }

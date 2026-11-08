@@ -20,15 +20,15 @@ export function MarksPanel({ reader, capture }: Props) {
   if (error) return <p className={styles.error}>{error}</p>;
   if (rows.length === 0) return <p className={styles.empty}>{t("meta.empty")}</p>;
   return (
-    <ul className={styles.meterList}>
+    <div className={styles.meterList}>
       {rows.map((row) => (
-        <li key={`${row.t}-${row.name}`} className={styles.meterRow}>
+        <div key={`${row.t}-${row.name}`} className={styles.meterRow}>
           <span className={styles.meterName}>{row.name}</span>
           <span />
-          <span className={styles.meterValue}>{num(row.t, 1)} s</span>
-          <span className={styles.meterExtra}>{row.side}</span>
-        </li>
+          <span className={styles.meterValue}>{t("summary.at", { time: `${num(row.t, 1)} s` })}</span>
+          <span />
+        </div>
       ))}
-    </ul>
+    </div>
   );
 }

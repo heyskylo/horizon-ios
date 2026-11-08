@@ -172,6 +172,10 @@ fn filters() -> Schema {
                 "self_share",
                 Schema::boolean("tree: give each row its own time as a percent"),
             ),
+            (
+                "stats",
+                Schema::boolean("series: add each series' min, mean, median, p95, max and last"),
+            ),
         ],
         &[],
     )

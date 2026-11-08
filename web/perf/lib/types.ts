@@ -2,10 +2,25 @@
 
 export type Side = "server" | "client" | "unspecified";
 
+/** Where a capture was recorded, as the wasm names it. */
+export type CaptureKind = "dedicated" | "integrated" | "client" | "unknown";
+
+export type Trigger = "unspecified" | "console" | "ctl" | "key" | "env" | "benchmark" | "remote";
+
+export type StopReason = "unspecified" | "normal" | "window_cap" | "disconnected" | "shutdown";
+
+export type GpuMode = "unspecified" | "off" | "passes" | "detail";
+
+export type ThreadSelection = "unspecified" | "main" | "all";
+
+export type SymbolsKind = "unspecified" | "dwarf" | "symtab" | "none";
+
+export type ModKind = "unspecified" | "content" | "native";
+
 export interface CaptureInfo {
   file: string;
   sides: Side[];
-  kind: string;
+  kind: CaptureKind;
   seconds: number;
 }
 
@@ -54,7 +69,7 @@ export interface BuildInfo {
   profile: string;
   target: string;
   features: string[];
-  symbols: string;
+  symbols: SymbolsKind;
 }
 
 export interface MachineInfo {
@@ -72,20 +87,20 @@ export interface MachineInfo {
 
 export interface OptionsInfo {
   hz: number;
-  threads: string;
+  threads: ThreadSelection;
   ticks_over_ms: number | null;
   wall: boolean;
   timeline: boolean;
-  gpu: string;
+  gpu: GpuMode;
   samples: boolean;
   window_s: number | null;
 }
 
 export interface SettingsInfo {
-  view_distance: number;
-  simulation_distance: number;
-  max_players: number;
-  network_compression_threshold: number;
+  view_distance: number | null;
+  simulation_distance: number | null;
+  max_players: number | null;
+  network_compression_threshold: number | null;
 }
 
 export interface GameRulesInfo {
@@ -108,8 +123,9 @@ export interface HorizonOptionsInfo {
 export interface ModInfo {
   id: string;
   version: string;
-  kind: string;
-  crate_name: string;
+  kind: ModKind;
+  /** The mod's crate; the wasm names the field `crate`. */
+  crate: string;
 }
 
 /** What the profiler itself cost, as `Stop.overhead` records it (the summary's `cost` line). */
@@ -127,8 +143,8 @@ export interface MetaRow {
   side: Side;
   seconds: number;
   sections: Record<string, number>;
-  kind: string;
-  trigger: string;
+  kind: CaptureKind;
+  trigger: Trigger;
   started_unix_ms: number;
   uptime_s: number;
   same_process: boolean;
@@ -142,7 +158,7 @@ export interface MetaRow {
   game_rules?: GameRulesInfo | null;
   horizon_options?: HorizonOptionsInfo | null;
   mods: ModInfo[];
-  stop?: { t: number; reason: string; overhead?: OverheadInfo } | null;
+  stop?: { t: number; reason: StopReason; overhead?: OverheadInfo } | null;
 }
 
 export interface SeriesRow {
@@ -151,6 +167,19 @@ export interface SeriesRow {
   step_s: number;
   t: number[];
   values: (number | null)[];
+  /** Asked for with `filters.stats`: the wasm's own min, mean, median, p95, max and last. */
+  stats?: SeriesStats;
+}
+
+/** The statistics of a series' points; `mean` covers the whole window. */
+export interface SeriesStats {
+  min: number;
+  mean: number;
+  median: number;
+  p95: number;
+  max: number;
+  last: number;
+  points: number;
 }
 
 export interface MemoryRow {
@@ -197,12 +226,21 @@ export interface MarkRow {
   name: string;
 }
 
+/** What a warning is about, as the wasm names it; `args` carry its numbers. */
+export type WarningCode =
+  | "WARNING_CODE_UNSPECIFIED"
+  | "WARNING_CODE_SERVER_NOT_HORIZON"
+  | "WARNING_CODE_SERVER_DENIED"
+  | "WARNING_CODE_SERVER_ALREADY_RUNNING"
+  | "WARNING_CODE_SERVER_PART_INCOMPLETE"
+  | "WARNING_CODE_TIMELINE_CAPPED"
+  | "WARNING_CODE_GPU_UNAVAILABLE";
+
 export interface WarningRow {
   side: Side;
   t: number;
-  code: string;
+  code: WarningCode;
   args: number[];
-  text: string;
 }
 
 export interface SpanRow {

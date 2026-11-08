@@ -100,7 +100,7 @@ function Metrics({ row }: { row: BenchRow }) {
                   </td>
                   <td>{m.n}</td>
                   <td>{withUnit(m.mean)}</td>
-                  <td>{m.ci95 == null ? "—" : num(m.ci95, 2)}</td>
+                  <td>{m.ci95 == null ? "—" : withUnit(m.ci95)}</td>
                   <td>
                     {num(m.min, 2)} – {withUnit(m.max)}
                   </td>

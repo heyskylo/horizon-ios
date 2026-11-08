@@ -107,6 +107,7 @@ fn request(parsed: &Parsed) -> Result<QueryRequest, CliError> {
         depth: parsed.number(Flag::Depth)?,
         min_pct: parsed.number(Flag::MinPct)?,
         self_share: false,
+        stats: false,
     })
 }
 

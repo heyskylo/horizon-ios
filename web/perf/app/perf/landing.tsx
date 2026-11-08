@@ -5,7 +5,7 @@ import styles from "./page.module.css";
 
 const WAYS = [
   { name: "landing.way.game", how: "F3+O" },
-  { name: "landing.way.ctl", how: "horizon-ctl profile start" },
+  { name: "landing.way.ctl", how: "horizon-ctl profile start | stop" },
   { name: "landing.way.server", how: "horizon-report 60" },
 ];
 
