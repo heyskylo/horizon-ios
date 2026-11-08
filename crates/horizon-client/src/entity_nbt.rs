@@ -1283,6 +1283,10 @@ pub fn mob_to_nbt(
                 Tag::Byte(i8::from(m.extra.player_created)),
             );
         }
+        // SnowGolem.addAdditionalSaveData: whether it still wears its pumpkin.
+        "minecraft:snow_golem" => {
+            map.insert("Pumpkin".into(), Tag::Byte(i8::from(!m.extra.sheared)));
+        }
         // `Warden.addAdditionalSaveData`: the anger - one `{uuid, anger}` pair
         // per suspect - and the vibration listener, and nothing else. A warden
         // is no `NeutralMob`, so there is no `angry_at` or `anger_end_time`: the
@@ -2656,6 +2660,13 @@ pub fn mob_from_nbt(
     // IronGolem.readAdditionalSaveData: not player created when absent.
     if m.species() == crate::mobs::Species::IronGolem {
         m.extra.player_created = flag(tag, "PlayerCreated");
+    }
+    // SnowGolem.readAdditionalSaveData: getBooleanOr("Pumpkin", true).
+    if m.species() == crate::mobs::Species::SnowGolem {
+        m.extra.sheared = !tag
+            .get("Pumpkin")
+            .and_then(int_value)
+            .is_none_or(|value| value as i8 != 0);
     }
     // Pufferfish.readAdditionalSaveData: `getIntOr("PuffState", 0)`, at most 2.
     if m.species() == crate::mobs::Species::Pufferfish {
@@ -7038,6 +7049,45 @@ mod sheep_nbt_tests {
             .collect();
         let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
         assert_eq!((back.extra.color, back.extra.sheared), (14, true));
+    }
+
+    #[test]
+    fn a_snow_golem_keeps_its_pumpkin_state() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let data = crate::mobs::MobTypes::load(&root).unwrap();
+        let types: HashMap<String, Arc<MobType>> = data
+            .types
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
+            .collect();
+        let saved = |pumpkin: Option<i8>| {
+            let mut tag = Tag::compound([
+                ("id", string("minecraft:snow_golem")),
+                ("Pos", doubles(&[0.5, 64.0, 0.5])),
+            ]);
+            if let Some(value) = pumpkin {
+                put(&mut tag, "Pumpkin", Tag::Byte(value));
+            }
+            tag
+        };
+        // SnowGolem.readAdditionalSaveData: getBooleanOr("Pumpkin", true).
+        for (pumpkin, sheared) in [(None, false), (Some(1), false), (Some(0), true)] {
+            let m = mob_from_nbt(&saved(pumpkin), &types, 2, None).unwrap();
+            assert_eq!(m.extra.sheared, sheared, "{pumpkin:?}");
+            // addAdditionalSaveData always writes it, over the loaded value.
+            let tag = mob_to_nbt(&m, [1, 2, 3, 4], Some(&saved(pumpkin)), None, |_| None);
+            assert_eq!(number(tag.get("Pumpkin")), Some(i64::from(!sheared)));
+        }
+        // Sheared in game: the save and the next load keep it off.
+        let mut m = mob_from_nbt(&saved(None), &types, 3, None).unwrap();
+        m.extra.sheared = true;
+        let tag = mob_to_nbt(&m, [1, 2, 3, 4], None, None, |_| None);
+        assert!(mob_from_nbt(&tag, &types, 4, None).unwrap().extra.sheared);
     }
 
     /// `Hoglin.readAdditionalSaveData` and `addAdditionalSaveData`:
