@@ -2219,6 +2219,19 @@ impl Overlay<'_> {
         fs::write(path, bytes)?;
         Ok(())
     }
+    /// `write` with a file's own bytes, copied without reading them (a clone on APFS).
+    fn copy(&self, rel: &str, from: &Path) -> Result<()> {
+        let rel = Path::new(rel);
+        if let Some(parent) = rel.parent() {
+            self.dir(parent)?;
+        }
+        let path = self.out.join(rel);
+        if fs::symlink_metadata(&path).is_ok() {
+            fs::remove_file(&path)?;
+        }
+        fs::copy(from, path)?;
+        Ok(())
+    }
 }
 fn out_path(overlay: &Overlay<'_>, rel: &str) -> PathBuf {
     overlay.out.join(rel)
@@ -2517,8 +2530,20 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
         let declarations = format!("data/{}/horizon/", m.id);
         let mut reader = m.content.reader()?;
         for file in &m.content.files {
-            let bytes = reader.read(file)?;
             let is_tag = file.starts_with("data/") && file.contains("/tags/");
+            // Most files (textures, models...) only go into the overlay: copied, not read and
+            // written again, they take a fraction of the time (Chipped alone has 10k textures).
+            let plain = !(is_tag && file.ends_with(".json"))
+                && !(file.starts_with("assets/minecraft/atlases/") && file.ends_with(".json"))
+                && !file.starts_with(&declarations)
+                && !biomes::is_modifier(file)
+                && worldgen_entry(file).is_none()
+                && !(file.starts_with("data/") && file.contains("/structure/"));
+            if plain && let Some(from) = reader.path(file)? {
+                overlay.copy(file, &from)?;
+                continue;
+            }
+            let bytes = reader.read(file)?;
             if is_tag && file.ends_with(".json") {
                 let doc: J = serde_json::from_slice(&bytes).map_err(|e| format!("{file}: {e}"))?;
                 let Some(J::Arr(values)) = doc.get("values") else {
