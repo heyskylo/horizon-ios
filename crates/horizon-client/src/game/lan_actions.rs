@@ -4144,6 +4144,7 @@ impl Game<'_> {
         self.lan_stations_tick(host);
         self.lan_tables_tick(host);
         self.lan_mod_crafting_tick(host);
+        self.lan_menu_links_tick(host);
         self.lan_containers_tick(host);
         self.tick_lan_mount_menus(host);
         self.tick_player_menus(host);
