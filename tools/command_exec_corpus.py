@@ -5859,6 +5859,9 @@ def primed_tnt_fall():
             ('stone', 211.1, 'fall_distance:3.0d,Motion:[0.0d,-1.0d,0.0d]', 2),
             ('powder_snow', 216, 'Motion:[0.0d,-1.0d,0.0d]', 8),
             ('powder_snow', 210.75, 'Motion:[0.0d,0.0d,0.0d]', 4),
+            # It passes a fall of 2.5 just above the snow: its 0.9-high top
+            # only counts once the TNT reaches it.
+            ('powder_snow', 213.86, 'Motion:[0.0d,0.0d,0.0d]', 14),
             ('powder_snow', 211.1, 'fall_distance:3.0d,Motion:[0.0d,-1.0d,0.0d]', 4),
             ('cobweb', 212, 'Motion:[0.0d,-0.5d,0.0d]', 5)):
         ops += setup('/kill @e[type=!player]', '/fill 28 205 28 36 220 36 air',

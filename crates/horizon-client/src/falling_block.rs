@@ -153,40 +153,60 @@ pub fn apply_effects_from_blocks(
     mut block: impl FnMut(BlockPos) -> Inside,
 ) -> Option<Vec3> {
     let mut stuck = None;
-    inside_blocks(from, to, original, |p, intersects| match block(p) {
-        Inside::Cobweb => {
-            // makeStuckInBlock forgets the fall.
-            *fall_distance = 0.0;
-            stuck = Some(web_multiplier());
-        }
-        Inside::PowderSnow => {
-            *fall_distance = 0.0;
-            stuck = Some(powder_snow_multiplier());
-        }
-        // BubbleColumnBlock.entityInside acts only when intersecting.
-        Inside::BubbleColumn(column) if intersects => {
-            if column.push(velocity) {
+    inside_blocks(
+        from,
+        to,
+        original,
+        |p, intersects, step_from, step_to| match block(p) {
+            Inside::Cobweb => {
+                // makeStuckInBlock forgets the fall.
                 *fall_distance = 0.0;
+                stuck = Some(web_multiplier());
+                true
             }
-            if column.surface {
-                surfaces.push(p);
+            Inside::PowderSnow => {
+                // getEntityInsideCollisionShape: after a fall over 2.5 it is the
+                // 0.9-high top, which only counts once the step reaches it.
+                let corner = Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z));
+                let top = Aabb::new(
+                    corner,
+                    corner.add_vector(Vec3::new(1.0, f64::from(0.9_f32), 1.0)),
+                );
+                let entered = *fall_distance <= 2.5
+                    || bounds(step_from).collided_along_vector(step_to.subtract(step_from), &[top]);
+                if entered {
+                    *fall_distance = 0.0;
+                    stuck = Some(powder_snow_multiplier());
+                }
+                entered
             }
-        }
-        Inside::BubbleColumn(_) | Inside::Nothing => {}
-    });
+            // BubbleColumnBlock.entityInside acts only when intersecting.
+            Inside::BubbleColumn(column) if intersects => {
+                if column.push(velocity) {
+                    *fall_distance = 0.0;
+                }
+                if column.surface {
+                    surfaces.push(p);
+                }
+                true
+            }
+            Inside::BubbleColumn(_) | Inside::Nothing => true,
+        },
+    );
     stuck
 }
-/// Each block `checkInsideBlocks` reaches, once, in order, with
-/// whether its `entityInside` counts the block as intersected (every block of a
-/// movement a block or longer, else only those the box ends in). Each movement
-/// sweeps its axes in `Direction.axisStepOrder` within 16 iterations, then the
-/// end alone. The blocks the caller acts on (cobwebs, bubble columns) have a
-/// whole-block `getEntityInsideCollisionShape`, so every one visited counts.
+/// Each block `checkInsideBlocks` reaches, in order, with whether its
+/// `entityInside` counts the block as intersected (every block of a movement a
+/// block or longer, else only those the box ends in) and the step reaching it.
+/// Each movement sweeps its axes in `Direction.axisStepOrder` within 16
+/// iterations, then the end alone. `visit` says whether the box was inside the
+/// block's `getEntityInsideCollisionShape`; only a block it was inside is not
+/// visited again.
 fn inside_blocks(
     from: Vec3,
     to: Vec3,
     original: Option<Vec3>,
-    mut visit: impl FnMut(BlockPos, bool),
+    mut visit: impl FnMut(BlockPos, bool, Vec3, Vec3) -> bool,
 ) {
     let mut seen = std::collections::HashSet::new();
     // checkInsideBlocks(from, to, ..): the iterations used plus one.
@@ -201,11 +221,13 @@ fn inside_blocks(
                 return false;
             }
             iterations = iteration;
-            if seen.insert(p) {
+            if !seen.contains(&p) {
                 let corner = Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z));
                 let inside =
                     target.intersects_corners(corner, corner.add_vector(Vec3::new(1.0, 1.0, 1.0)));
-                visit(p, long || inside);
+                if visit(p, long || inside, from, to) {
+                    seen.insert(p);
+                }
             }
             true
         });
